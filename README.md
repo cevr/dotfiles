@@ -30,5 +30,9 @@ ln -sf $(pwd)/atuin.toml ~/.config/atuin/config.toml
 ## Brew packages
 
 ```bash
+# Install everything from Brewfile
+brew bundle
+
+# Or manually:
 brew install aws-vault fzf fd eza zsh-completions trash lazygit bat git-delta ripgrep
 ```
