@@ -1,6 +1,5 @@
 tap "blackmann/brew"
 tap "github/gh"
-tap "heroku/brew"
 tap "homebrew/autoupdate"
 tap "libsql/sqld"
 tap "mongodb/brew"
