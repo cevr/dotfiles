@@ -38,13 +38,30 @@ esac
 export PATH="$PATH:./node_modules/.bin"
 
 # ===========================================
-# NODE VERSION MANAGER (fnm only - fast)
+# NODE VERSION MANAGER (nvm)
 # ===========================================
-FNM_PATH="/Users/cvr/Library/Application Support/fnm"
-if [ -d "$FNM_PATH" ]; then
-  export PATH="$FNM_PATH:$PATH"
-  eval "$(fnm env --use-on-cd --shell zsh)"
-fi
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+
+# Auto-switch node version when entering directory with .nvmrc
+autoload -U add-zsh-hook
+load-nvmrc() {
+  local nvmrc_path="$(nvm_find_nvmrc)"
+  if [ -n "$nvmrc_path" ]; then
+    local nvmrc_node_version=$(nvm version "$(cat "${nvmrc_path}")")
+    if [ "$nvmrc_node_version" = "N/A" ]; then
+      nvm install
+    elif [ "$nvmrc_node_version" != "$(nvm version)" ]; then
+      nvm use
+    fi
+  elif [ -n "$(PWD=$OLDPWD nvm_find_nvmrc)" ] && [ "$(nvm version)" != "$(nvm version default)" ]; then
+    echo "Reverting to nvm default version"
+    nvm use default
+  fi
+}
+add-zsh-hook chpwd load-nvmrc
+load-nvmrc
 
 # ===========================================
 # PROMPT
@@ -76,34 +93,8 @@ export PATH="$HOME/.local/bin:$PATH"
 # ===========================================
 # FUNCTIONS
 # ===========================================
-# Interactive "Did you mean?" for typos
-command_not_found_handler() {
-  local cmd="$1"
-  shift
-  local args="$@"
-
-  # Find the best matching command (first 3 chars, case-insensitive)
-  local suggestion=$(whence -m "${cmd:0:3}*" 2>/dev/null | head -1)
-
-  if [[ -z "$suggestion" ]]; then
-    suggestion=$(compgen -c 2>/dev/null | grep -i "^${cmd:0:3}" | head -1)
-  fi
-
-  if [[ -n "$suggestion" ]]; then
-    echo "zsh: command not found: $cmd"
-    printf "Did you mean '\e[1;32m%s\e[0m'? [Y/n] " "$suggestion"
-    read -r -k 1 response
-    echo
-    if [[ "$response" =~ ^[Yy]$ ]] || [[ -z "$response" ]]; then
-      "$suggestion" $args
-      return $?
-    fi
-  else
-    echo "zsh: command not found: $cmd"
-  fi
-
-  return 127
-}
+# Silence shopt warnings (bash compatibility)
+shopt() { :; }
 
 # Git default branch detection (main vs master)
 git_default_branch() {
@@ -134,7 +125,7 @@ gbite() {
 
 # Convert all HEIC files in current directory to JPEG
 heic2jpg() {
-  for f in *.HEIC *.heic; do
+  for f in *.HEIC(N) *.heic(N); do
     [ -e "$f" ] || continue
     sips -s format jpeg "$f" --out "${f%.*}.jpg"
   done
@@ -179,6 +170,7 @@ alias zb='z bite'
 alias zbur='z bureau'
 alias zvit='z vitrine'
 alias zbib='z bible'
+alias zdot='z dotfiles'
 
 # fd (find replacement) - ignore node_modules/git by default
 alias f='fd --hidden --exclude node_modules --exclude .git'

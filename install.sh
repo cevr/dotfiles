@@ -18,4 +18,13 @@ ln -sf "$DOTFILES_DIR/ghostty/config" ~/Library/Application\ Support/com.mitchel
 mkdir -p ~/.config/atuin
 ln -sf "$DOTFILES_DIR/atuin.toml" ~/.config/atuin/config.toml
 
+# Neovim
+mkdir -p ~/.config
+rm -rf ~/.config/nvim
+ln -sf "$DOTFILES_DIR/nvim" ~/.config/nvim
+
+# Lazygit
+mkdir -p ~/.config/lazygit
+ln -sf "$DOTFILES_DIR/lazygit.yml" ~/.config/lazygit/config.yml
+
 echo "Done! Run 'source ~/.zshrc' to reload."

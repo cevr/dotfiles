@@ -58,8 +58,6 @@ brew "srt"
 brew "tesseract"
 # Play, record, convert, and stream audio and video
 brew "ffmpeg"
-# Fast and simple Node.js version manager
-brew "fnm"
 # Command-line fuzzy finder written in Go
 brew "fzf"
 # GitHub command-line tool
