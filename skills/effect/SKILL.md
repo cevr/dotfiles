@@ -71,6 +71,86 @@ rg "Context.Tag" ~/.claude/repos/Effect-TS/effect/packages --glob "*.ts" -C 2
    - Use `Schema.TaggedError` for typed errors
    - Use `Schema.Class` for data models with branded IDs
 
+## No Standalone Side-Effect Functions
+
+**NEVER create standalone exported functions that perform side effects.** Side effects include:
+- Running system commands (`execa`, `spawn`, `exec`)
+- File I/O operations
+- Network requests
+- Database operations
+- Anything that makes testing difficult
+
+### Why This Matters
+
+Standalone functions with side effects cannot be mocked in tests, leading to:
+- Tests that run real system commands (slow, flaky, environment-dependent)
+- Tests that skip important behavior verification
+- Untestable code paths
+
+### The Pattern
+
+❌ **Bad: Standalone function with side effects**
+```typescript
+// This cannot be mocked - tests must run real lsof commands
+export const findProcessOnPort = (port: number): Effect.Effect<number | null> =>
+  Effect.promise(async () => {
+    const result = await execa('lsof', ['-ti', `tcp:${port}`]);
+    return parseInt(result.stdout) || null;
+  });
+```
+
+✅ **Good: Encapsulate in a service with Test layer**
+```typescript
+export interface PortServiceShape {
+  readonly findProcessOnPort: (port: number) => Effect.Effect<number | null>;
+}
+
+export class PortService extends Context.Tag('@cli/PortService')<
+  PortService,
+  PortServiceShape
+>() {
+  // Live implementation runs real commands
+  static Live = Layer.sync(PortService, () => ({
+    findProcessOnPort: (port) =>
+      Effect.promise(async () => {
+        const result = await execa('lsof', ['-ti', `tcp:${port}`]);
+        return parseInt(result.stdout) || null;
+      }),
+  }));
+
+  // Test implementation is fully mockable
+  static Test = (config: { processesOnPort?: Map<number, number> } = {}) =>
+    Layer.succeed(PortService, {
+      findProcessOnPort: (port) =>
+        Effect.succeed(config.processesOnPort?.get(port) ?? null),
+    });
+}
+```
+
+### Testing with Service Mocks
+
+```typescript
+it.effect('should check port availability', () =>
+  Effect.gen(function* () {
+    const portService = yield* PortService;
+    const pid = yield* portService.findProcessOnPort(6363);
+    expect(pid).toBe(12345);
+  }).pipe(
+    Effect.provide(
+      PortService.Test({ processesOnPort: new Map([[6363, 12345]]) })
+    )
+  )
+);
+```
+
+### What CAN Be Standalone
+
+- Pure functions (no I/O, no side effects)
+- Schema definitions
+- Type utilities
+- Constants and configuration objects
+- String/data transformations
+
 ## CLI Option Services Pattern
 
 For required CLI options, create services that:

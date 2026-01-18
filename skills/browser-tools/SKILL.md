@@ -28,6 +28,8 @@ browser close                        # Close browser and daemon
 | `browser open --headed <url>` | Navigate with visible browser window |
 | `browser open --profile true <url>` | Use default Chrome profile (cookies/auth) |
 | `browser open --profile /path <url>` | Use custom profile path |
+| `browser open --cdp http://127.0.0.1:9222 <url>` | Connect to existing Chrome via CDP |
+| `browser open --waitUntil networkidle <url>` | Wait for network idle (load, domcontentloaded, networkidle) |
 | `browser back` | Go back in history |
 | `browser forward` | Go forward in history |
 | `browser reload` | Reload current page |
@@ -39,9 +41,14 @@ browser close                        # Close browser and daemon
 | `browser snapshot` | Get page accessibility tree with refs |
 | `browser snapshot -i` | Interactive elements only |
 | `browser snapshot -c` | Compact mode (no empty elements) |
+| `browser snapshot --depth 3` | Limit tree depth |
+| `browser snapshot --selector ".main"` | Snapshot specific element |
 | `browser screenshot [path]` | Take screenshot |
 | `browser screenshot -f` | Full page screenshot |
+| `browser screenshot --selector ".modal"` | Screenshot specific element |
+| `browser screenshot --format jpeg --quality 80` | JPEG with quality |
 | `browser content` | Get page HTML |
+| `browser content ".main"` | Get element's outer HTML |
 | `browser get url` | Get current URL |
 | `browser get title` | Get page title |
 | `browser get text <selector>` | Get element text |
@@ -51,14 +58,23 @@ browser close                        # Close browser and daemon
 | Command | Description |
 |---------|-------------|
 | `browser click <selector>` | Click element (supports @refs) |
-| `browser fill <selector> <value>` | Fill input field |
+| `browser click --button right <selector>` | Right-click element |
+| `browser click --count 2 <selector>` | Double-click element |
+| `browser fill <selector> <value>` | Fill input field (clears first) |
 | `browser type <selector> <text>` | Type text character by character |
+| `browser type --delay 100 <selector> <text>` | Type with delay between keys (ms) |
+| `browser type --clear <selector> <text>` | Clear field before typing |
 | `browser hover <selector>` | Hover over element |
 | `browser check <selector>` | Check checkbox |
 | `browser uncheck <selector>` | Uncheck checkbox |
-| `browser press <key>` | Press keyboard key |
+| `browser press <key>` | Press keyboard key (Enter, Tab, Escape, etc.) |
+| `browser press --selector <sel> <key>` | Press key on specific element |
 | `browser select <selector> <value>` | Select dropdown option |
 | `browser scroll down` | Scroll page down |
+| `browser scroll up` | Scroll page up |
+| `browser scroll --amount 500 down` | Scroll specific amount (pixels) |
+| `browser scroll --selector ".container" down` | Scroll within element |
+| `browser scroll -x 100 -y 200` | Scroll to specific coordinates |
 
 ### Tabs
 
@@ -74,15 +90,21 @@ browser close                        # Close browser and daemon
 | Command | Description |
 |---------|-------------|
 | `browser console` | Get console messages |
+| `browser console --clear` | Get and clear console messages |
 | `browser errors` | Get page errors |
-| `browser eval <script>` | Evaluate JavaScript |
-| `browser wait <selector>` | Wait for element |
+| `browser errors --clear` | Get and clear page errors |
+| `browser eval <script>` | Evaluate JavaScript and return result |
+| `browser wait <selector>` | Wait for element to appear |
+| `browser wait --state visible <selector>` | Wait for element to be visible |
+| `browser wait --state hidden <selector>` | Wait for element to be hidden |
+| `browser wait --timeout 10000 <selector>` | Wait with custom timeout (ms) |
 
 ### Interactive
 
 | Command | Description |
 |---------|-------------|
 | `browser pick <message>` | Interactive element picker (let user click to select) |
+| `browser pick --multi <message>` | Pick multiple elements |
 
 ### Session Management
 
@@ -160,6 +182,42 @@ browser open --profile "/path/to/profile" https://github.com
 - Use `--headed` when working with profiles to see the browser state
 - The profile is copied once per session, so changes won't affect your real Chrome
 - Close Chrome before using a profile if you experience issues
+
+**Limitations:**
+- Chrome profile cookies are encrypted by macOS Keychain and cannot be decrypted by Playwright
+- For full cookie/auth access, use CDP mode (see below)
+
+## CDP Mode (Connect to Existing Chrome)
+
+Use `--cdp` to connect to an existing Chrome instance via Chrome DevTools Protocol. This gives full access to your running Chrome with all authentication state preserved.
+
+**Step 1:** Start Chrome with remote debugging enabled:
+```bash
+# macOS
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+
+# Linux
+google-chrome --remote-debugging-port=9222
+
+# Windows
+chrome.exe --remote-debugging-port=9222
+```
+
+**Step 2:** Connect via the browser CLI:
+```bash
+browser open --cdp http://127.0.0.1:9222 https://github.com
+```
+
+**Benefits:**
+- Full access to Chrome's decrypted cookies and auth state
+- Works with sites using strict cookie encryption
+- Control your actual Chrome tabs, not a separate Playwright browser
+- No profile copying needed
+
+**Tips:**
+- The CDP endpoint URL can be found in Chrome at `chrome://inspect`
+- You can connect to an already-running Chrome if it was started with `--remote-debugging-port`
+- CDP mode ignores `--headed` and `--profile` options since you control the Chrome instance directly
 
 ## Sessions
 
