@@ -105,8 +105,9 @@ Provide commands to:
 | Layer | Technology |
 |-------|------------|
 | Runtime | Bun |
-| Monorepo | Turborepo + Bun workspaces |
+| Monorepo | Bun workspaces (simple) or Turborepo (complex builds) |
 | Core Logic | Effect |
+| Platform | @effect/platform-bun |
 | Validation | @effect/schema |
 | HTTP Server | @effect/platform HttpApi |
 | HTTP Client | HttpApiClient (auto-generated) |
@@ -116,6 +117,8 @@ Provide commands to:
 | Desktop | Tauri |
 | Testing | @effect/vitest |
 | CLI | @effect/cli |
+| Binary | `bun build --compile` |
+| Process | `Bun.spawn` (prefer over node:child_process) |
 
 ## Quick Reference
 
@@ -126,8 +129,12 @@ See supporting files for detailed patterns:
 - [Effect Services](patterns/effect-services.md)
 - [Effect Errors](patterns/effect-errors.md)
 - [Event Bus](patterns/bus.md)
+- [Transport Abstraction](patterns/transport.md)
 - [Storage & Database](patterns/storage.md)
 - [Authentication](patterns/auth.md)
+- [Layered Config](patterns/config.md)
+- [Plugin System](patterns/plugins.md)
+- [Exhaustive Types](patterns/exhaustive-types.md)
 
 **HTTP Patterns:**
 - [HttpApi Schema](patterns/http-api.md)

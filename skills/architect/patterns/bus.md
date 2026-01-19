@@ -262,6 +262,110 @@ export const EventsGroupLive = HttpApiBuilder.group(
 )
 ```
 
+## Event-Sourced State Derivation
+
+Events as source of truth; state derived from event stream:
+
+```typescript
+// State derived from events
+type AppState = {
+  sessions: Map<SessionId, Session>
+  messages: Map<MessageId, Message>
+}
+
+const initialState: AppState = {
+  sessions: new Map(),
+  messages: new Map(),
+}
+
+// Pure reducer - no side effects
+function reduce(state: AppState, event: AppEvent): AppState {
+  switch (event.type) {
+    case "session.created":
+      return {
+        ...state,
+        sessions: new Map(state.sessions).set(event.data.id, event.data),
+      }
+    case "session.deleted":
+      const sessions = new Map(state.sessions)
+      sessions.delete(event.data.id)
+      return { ...state, sessions }
+    case "message.added":
+      return {
+        ...state,
+        messages: new Map(state.messages).set(event.data.id, event.data),
+      }
+    default:
+      return state
+  }
+}
+
+// Client subscribes and derives local state
+function createStore() {
+  let state = initialState
+
+  const subscribers = new Set<(state: AppState) => void>()
+
+  return {
+    getState: () => state,
+    subscribe: (fn: (state: AppState) => void) => {
+      subscribers.add(fn)
+      return () => subscribers.delete(fn)
+    },
+    // Called when events arrive from server
+    applyEvent: (event: AppEvent) => {
+      state = reduce(state, event)
+      subscribers.forEach((fn) => fn(state))
+    },
+  }
+}
+```
+
+### Benefits of Event-Sourced State
+
+1. **Replay**: Reconstruct any past state from event log
+2. **Sync**: Any client can catch up by replaying events
+3. **Debug**: Full audit trail of state changes
+4. **Branching**: Fork state for "what if" scenarios
+
+```typescript
+// Replay from event log
+function replayEvents(events: AppEvent[]): AppState {
+  return events.reduce(reduce, initialState)
+}
+
+// Branch for experimentation
+function branchState(currentState: AppState, hypotheticalEvents: AppEvent[]): AppState {
+  return hypotheticalEvents.reduce(reduce, currentState)
+}
+
+// Time travel
+function stateAtEvent(events: AppEvent[], eventIndex: number): AppState {
+  return events.slice(0, eventIndex + 1).reduce(reduce, initialState)
+}
+```
+
+### Client Integration
+
+```typescript
+// SolidJS client with event-sourced state
+import { createSignal, onCleanup } from "solid-js"
+
+function useEventSourcedState(eventSource: EventSource) {
+  const [state, setState] = createSignal<AppState>(initialState)
+
+  const handler = (e: MessageEvent) => {
+    const event = JSON.parse(e.data) as AppEvent
+    setState((prev) => reduce(prev, event))
+  }
+
+  eventSource.addEventListener("message", handler)
+  onCleanup(() => eventSource.removeEventListener("message", handler))
+
+  return state
+}
+```
+
 ## Key Points
 
 1. **Typed events**: BusEvent.define creates type-safe event definitions
@@ -269,3 +373,5 @@ export const EventsGroupLive = HttpApiBuilder.group(
 3. **Effect-native**: All operations return Effect
 4. **Testable**: BusService.Test provides no-op implementation
 5. **SSE ready**: Easy to stream events to clients
+6. **Event-sourced**: Derive state from events, enable replay/sync/branching
+7. **Pure reducers**: State derivation has no side effects

@@ -220,6 +220,122 @@ render(() => (
 ), document.getElementById("root"))
 ```
 
+## Plugin System
+
+OpenCode supports extensibility via plugins:
+
+```typescript
+// Plugin interface
+interface Plugin {
+  name: string
+  version: string
+  hooks: {
+    auth?: (input: AuthInput) => Promise<AuthOutput>
+    tools?: (tools: Tool[]) => Promise<Tool[]>
+    event?: (event: BusEvent) => Promise<BusEvent | null>
+    config?: (config: Config) => Promise<Config>
+  }
+}
+
+// Registration
+Plugins.register({
+  name: "custom-auth",
+  version: "1.0.0",
+  hooks: {
+    auth: async (input) => {
+      // Custom auth logic
+      return { token: await getOAuthToken(), type: "Bearer" }
+    },
+  },
+})
+
+// Hook triggering (with fallback to default)
+const auth = await Plugins.trigger("auth", input, defaultAuth)
+```
+
+See [Plugin System Pattern](../patterns/plugins.md) for Effect-based implementation.
+
+## Layered Configuration
+
+Configuration merges from multiple sources:
+
+```typescript
+// Priority: project > user > remote
+const config = Config.merge(
+  await Config.loadRemote(),      // org defaults from URL
+  await Config.loadGlobal(),      // ~/.opencode/config.json
+  await Config.loadProject(),     // ./opencode.config.json
+)
+
+// Merge semantics:
+// - Scalars: higher priority wins
+// - Arrays: concatenate
+// - Objects: deep merge
+```
+
+Example configuration files:
+
+```json
+// Remote (org defaults)
+{
+  "model": "claude-3-sonnet",
+  "features": { "streaming": true }
+}
+
+// User (~/.opencode/config.json)
+{
+  "model": "claude-3-opus",
+  "plugins": ["@company/custom-tools"]
+}
+
+// Project (./opencode.config.json)
+{
+  "maxTokens": 4096,
+  "plugins": ["./local-plugin.ts"]
+}
+
+// Merged result:
+{
+  "model": "claude-3-opus",
+  "maxTokens": 4096,
+  "plugins": ["@company/custom-tools", "./local-plugin.ts"],
+  "features": { "streaming": true }
+}
+```
+
+See [Layered Config Pattern](../patterns/config.md) for Effect-based implementation.
+
+## Transport Abstraction
+
+Core logic emits protocol-agnostic events; clients interpret:
+
+```typescript
+// Core yields events
+async function* runAgent(input: string) {
+  yield { type: "message.start", messageId: "msg-1" }
+  for await (const chunk of llm.stream(input)) {
+    yield { type: "message.delta", content: chunk }
+  }
+  yield { type: "done" }
+}
+
+// TUI interprets
+for await (const event of runAgent(input)) {
+  tui.render(event)
+}
+
+// Web interprets (via SSE)
+const stream = new EventSource("/api/agent")
+stream.onmessage = (e) => webUI.update(JSON.parse(e.data))
+
+// Slack interprets
+for await (const event of runAgent(input)) {
+  await slack.updateMessage(event)
+}
+```
+
+See [Transport Abstraction Pattern](../patterns/transport.md) for full implementation.
+
 ## Key Takeaways
 
 1. **Server is truth**: All state changes go through server
@@ -228,3 +344,6 @@ render(() => (
 4. **Platform adapters**: Each client adapts to its environment
 5. **Decoupled components**: Bus enables loose coupling
 6. **Migration support**: Database schema evolves with migrations
+7. **Plugin hooks**: Extensibility without forking
+8. **Layered config**: Org → user → project priority
+9. **Transport agnostic**: Core logic independent of delivery mechanism
