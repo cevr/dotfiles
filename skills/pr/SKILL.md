@@ -1,3 +1,8 @@
+---
+name: pr
+description: Create pull requests with consistent formatting and automatic context extraction.
+---
+
 # PR Creation Skill
 
 Create pull requests with consistent formatting and automatic context extraction.
@@ -125,3 +130,18 @@ Closes: BITE-1234
 - Always push branch before creating PR
 - Use HEREDOC for body to preserve formatting
 - Return PR URL when done
+
+## Bite Contributors (Active - Last 3 Months)
+
+Quick reference for reviewers/assignees:
+
+| Name | GitHub |
+|------|--------|
+| Cristian | cevr |
+| Antwan Daher | antwandaher |
+| Stas Nikiforov | stasnikiforov |
+| James Goudie | JamesGGoudie |
+| Andrew Goupil | AndrewGoupil |
+| Derek Wang | Derek-X-Wang |
+| Quinn | QuinnNCH |
+| Tianyun Shan | nuynait |
