@@ -1,3 +1,22 @@
+---
+name: sentry
+description: Interact with Sentry from the command line for issues, releases, and project management.
+---
+
+## Installation
+
+Requires [Bun](https://bun.sh) runtime.
+
+```bash
+# Install globally
+bun add -g @cvr/sentry
+
+# Or run directly
+bunx @cvr/sentry <command>
+```
+
+Source: [github.com/cevr/sentry-cli](https://github.com/cevr/sentry-cli)
+
 # Sentry CLI Skill
 
 Use this CLI to interact with Sentry from the command line.
