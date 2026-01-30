@@ -12,14 +12,6 @@ plugins=(git z zsh-completions zsh-autosuggestions zsh-syntax-highlighting)
 source $ZSH/oh-my-zsh.sh
 
 # ===========================================
-# AWS (secure - no hardcoded credentials)
-# ===========================================
-export AWS_REGION=us-east-1
-export CLAUDE_CODE_USE_BEDROCK=1
-export ANTHROPIC_MODEL="global.anthropic.claude-opus-4-5-20251101-v1:0"
-# Credentials managed via aws-vault or ~/.aws/credentials
-
-# ===========================================
 # PACKAGE MANAGERS (bun preferred)
 # ===========================================
 # bun (primary)
@@ -99,6 +91,11 @@ shopt() { :; }
 # Git default branch detection (main vs master)
 git_default_branch() {
   git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "master"
+}
+
+# Kill all node processes
+knode() {
+  killall -9 node 2>/dev/null || echo "No node processes found"
 }
 
 # Fetch and merge origin's version of current branch

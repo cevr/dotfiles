@@ -1,3 +1,8 @@
+---
+name: linear
+description: Interact with Linear issues from the command line.
+---
+
 # Linear CLI
 
 Interact with Linear issues from the command line.
