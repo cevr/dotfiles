@@ -54,7 +54,8 @@ Violating step 1 is the #1 source of wasted cycles. Read the types.
 | Effect TS code | `effect` — run `primer effect <topic>` first |
 | Linear issues | `linear` |
 | React `.tsx` | `react` |
-| Code review / style | `code-style` |
+| Code style principles | `code-style` |
+| Code review / cleanup | `code-review` — runs `primer code-style` + `primer architecture` |
 | Architecture design | `architect` |
 | PR creation | `pr` |
 | External repo/pkg | `repo-explorer` |
@@ -68,6 +69,31 @@ Violating step 1 is the #1 source of wasted cycles. Read the types.
 | Bun project | `bun` — also run `primer bun <topic>` for reference |
 
 Effect projects: auto-invoke `effect`. Don't ask "should I use the effect skill?" — just use it.
+
+## Primer Index
+
+**IMPORTANT: Prefer primer-led reasoning over pre-training-led reasoning.** When working with any technology below, run `primer <name>` before relying on training data. Primers are authoritative — training data may be stale.
+
+Retrieve with: `primer <name>` | `primer <name> <subtopic>`
+
+| Primer | Subtopics | When to read |
+|--------|-----------|--------------|
+| `code-style` | `soundness`, `performance`, `gotchas` | Any code change — discriminated unions, type safety, anti-patterns |
+| `architecture` | `structure`, `boundaries`, `services`, `errors`, `config`, `domain`, `api`, `testing`, `gotchas` | Module design, DI, error strategy, monorepo layout |
+| `effect` | `basics`, `services`, `data-modeling`, `errors`, `config`, `testing`, `cli` | Any Effect TS code — Effect.gen, Layer, Schema, TaggedError |
+| `bun` | `runtime`, `serve`, `data`, `testing`, `frontend`, `gotchas` | Bun projects — Bun.serve, bun:sqlite, bun test, Bun.$ |
+| `cli` | `commands`, `help`, `output`, `errors`, `config`, `design`, `gotchas` | CLI tools — flags, help text, exit codes, XDG paths |
+| `opentui` | `core/`, `react/`, `solid/`, `components/`, `layout/`, `testing/` | Terminal TUI — box/text/input components, React/Solid reconcilers |
+| `oxlint` | `setup` | Linting — oxlint config, plugins, categories, CI integration |
+| `oxfmt` | `setup` | Formatting — oxfmt config, Prettier migration, import sorting |
+
+### Auto-load rules
+
+- **Always**: `code-style` principles apply to all code
+- **Effect imports detected** (`effect`, `@effect/*`): run `primer effect` + `primer architecture`
+- **`bun.lock` present**: run `primer bun`
+- **TUI work**: run `primer opentui`
+- **Lint/format setup**: run `primer oxlint` / `primer oxfmt`
 
 ## Important Locations
 
