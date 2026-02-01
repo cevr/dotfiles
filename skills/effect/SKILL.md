@@ -8,30 +8,36 @@ allowed-tools: [Bash, Read, Grep, Glob]
 
 Before implementing Effect features, consult the available resources.
 
-## Primary Resource: effect-solutions CLI
+## Pre-Implementation (mandatory)
 
-Run `effect-solutions show <topic>` to read the relevant guide.
+Before writing Effect code:
+1. Read the file's existing imports and type signatures
+2. Run `primer effect <relevant-topic>` for the pattern
+3. Read target module's types (Context.Tags, TaggedErrors, Schema classes)
+4. Only then implement
+
+Skipping this causes multi-cycle type fixes. Read the types.
+
+## Primary Resource: primer
+
+Run `primer effect <topic>` to read the relevant guide.
 
 **Available topics:**
 
 | Topic | Description |
 |-------|-------------|
-| `quick-start` | Getting started with Effect |
-| `project-setup` | Effect Language Service & strict project defaults |
-| `tsconfig` | TypeScript compiler settings tuned for Effect |
 | `basics` | Effect.fn, Effect.gen, pipe for instrumentation |
-| `services-and-layers` | Context.Tag, Layer patterns, dependency injection |
+| `services` | Context.Tag, Layer patterns, dependency injection |
 | `data-modeling` | Schema.Class, branded types, variants, JSON serialization |
-| `error-handling` | Schema.TaggedError, catchTag, catchTags, defects |
-| `config` | Config module, providers, Schema.Config |
+| `errors` | Schema.TaggedError, catchTag, catchTags, defects |
 | `testing` | @effect/vitest, test layers, TestClock |
 | `cli` | @effect/cli for command-line interfaces |
 
 **Commands:**
 ```bash
-effect-solutions list              # List all topics
-effect-solutions show basics       # Show a specific guide
-effect-solutions show services-and-layers error-handling  # Show multiple guides
+primer effect              # Overview + all topics
+primer effect basics       # Show a specific guide
+primer effect services     # Dependency injection patterns
 ```
 
 ## Secondary Resource: Effect Source Code
@@ -62,7 +68,7 @@ rg "Context.Tag" ~/.claude/repos/Effect-TS/effect/packages --glob "*.ts" -C 2
 
 ## Workflow
 
-1. **Start with guides**: Run `effect-solutions show <topic>` for the relevant pattern
+1. **Start with guides**: Run `primer effect <topic>` for the relevant pattern
 2. **If guide is insufficient**: Clone and search Effect source for real implementations
 3. **Follow established patterns**:
    - Use `Context.Tag` for service definitions
