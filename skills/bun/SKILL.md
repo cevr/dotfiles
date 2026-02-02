@@ -3,7 +3,7 @@ name: bun
 description: >
   Bun runtime and tooling conventions. Use when working in projects with bun.lock
   or Bun-based package.json scripts.
-allowed-tools: [Bash, Read, Grep, Glob]
+allowed-tools: Bash, Read, Grep, Glob
 ---
 
 # Bun

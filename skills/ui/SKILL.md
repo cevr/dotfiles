@@ -1,7 +1,7 @@
 ---
 name: ui
 description: Build accessible, performant, distinctive UIs. Use when implementing web interfaces, components, or reviewing UI code.
-allowed-tools: [Read, Grep, Glob, Edit, Write]
+allowed-tools: Read, Grep, Glob, Edit, Write
 ---
 
 # UI Skill

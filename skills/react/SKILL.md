@@ -1,7 +1,7 @@
 ---
 name: react
 description: React best practices for state management, composition patterns, async patterns (use, useTransition, useOptimistic, Suspense), and avoiding common pitfalls. Use when writing React components, managing state, handling async operations, or structuring component hierarchies.
-allowed-tools: [Read, Grep, Glob, Edit, Write]
+allowed-tools: Read, Grep, Glob, Edit, Write
 ---
 
 # React Best Practices

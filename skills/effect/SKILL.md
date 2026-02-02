@@ -1,7 +1,7 @@
 ---
 name: effect
 description: Guide for implementing Effect TypeScript features. Use when writing Effect code, setting up Effect projects, or implementing patterns like services, layers, error handling, config, testing, or CLIs.
-allowed-tools: [Bash, Read, Grep, Glob]
+allowed-tools: Bash, Read, Grep, Glob
 ---
 
 # Effect TypeScript Best Practices

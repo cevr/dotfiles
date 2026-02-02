@@ -4,7 +4,7 @@ description: >
   Code style guidelines for sound, simple, consistent, disciplined, and far-seeing architecture.
   Use when writing new code, reviewing code, or ensuring codebase consistency.
   Invoked automatically by other skills (effect, react, architect) for generated code.
-allowed-tools: [Read, Grep, Glob, Edit, Write, Bash, Skill]
+allowed-tools: Read, Grep, Glob, Edit, Write, Bash, Skill
 ---
 
 # Code Style

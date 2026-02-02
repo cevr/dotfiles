@@ -1,7 +1,7 @@
 ---
 name: repo-explorer
 description: Clone and analyze external repositories. Use when asked to explore, search, or read files from a GitHub repo or package registry.
-allowed-tools: [Bash, Read, Grep, Glob, Task]
+allowed-tools: Bash, Read, Grep, Glob, Task
 ---
 
 # Repository Explorer

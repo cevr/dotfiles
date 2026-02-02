@@ -1,7 +1,7 @@
 ---
 name: documenter
 description: Distill session learnings into AGENTS.md and CODEMAP.md files. Use after completing complex tasks, debugging sessions, or discovering non-obvious patterns that future agents should know.
-allowed-tools: [Read, Write, Edit, Glob, Grep, Task]
+allowed-tools: Read, Write, Edit, Glob, Grep, Task
 ---
 
 # Documenter
