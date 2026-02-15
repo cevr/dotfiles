@@ -185,18 +185,59 @@ z-50   tooltips/popovers
 
 ## Typography
 
-- **MUST**: `text-balance` for headings; `text-pretty` for body
-- **MUST**: `tabular-nums` for data/comparisons
-- **MUST**: Font weight should not change on hover/selected (prevents layout shift)
+### Body Text
+
+- **MUST**: Body text 15–25px; fine-tune per font (visual size varies at same px)
+- **MUST**: `line-height: 1.20–1.45` (unitless); narrower columns tighter, wider columns looser
+- **MUST**: Line length 45–90 characters; constrain with `max-width` on content containers
 - **MUST**: `-webkit-text-size-adjust: 100%` to prevent iOS landscape resizing
-- **MUST**: Use ellipsis character `…` (not `...`)
-- **MUST**: Non-breaking spaces: `10&nbsp;MB`, `⌘&nbsp;+&nbsp;K`
 - **SHOULD**: `-webkit-font-smoothing: antialiased`
 - **SHOULD**: `text-rendering: optimizeLegibility`
-- **SHOULD**: Subset fonts; avoid weights below 400
-- **SHOULD**: Medium headings: font weight 500-600
+- **SHOULD**: Dark gray body text over pure black on screens (projected light makes #000 harsh)
 - **SHOULD**: CSS `clamp()` for fluid sizing
-- **SHOULD**: Curly quotes (" "); avoid widows/orphans
+- **SHOULD**: Subset fonts; avoid weights below 400
+
+### Headings
+
+- **MUST**: `text-balance` for headings; `text-pretty` for body
+- **MUST**: Limit to 2–3 heading levels max
+- **MUST**: Minimal size increase from body (try +1–2px, not 2x)
+- **MUST**: Font weight should not change on hover/selected (prevents layout shift)
+- **SHOULD**: Bold headings, not italic (more contrast, easier to read)
+- **SHOULD**: Medium headings: font weight 500–600
+- **SHOULD**: Don't center headings (left-aligned is almost always correct)
+- **SHOULD**: Suppress hyphenation in headings
+- **NEVER**: Underline headings
+
+### Emphasis & Formatting
+
+- **MUST**: Bold and italic are mutually exclusive — never combine
+- **MUST**: Sans-serif: skip italic, use bold only (sans italic is too subtle)
+- **MUST**: Use sparingly — if everything is emphasized, nothing is
+- **MUST**: All-caps only for <1 line (labels, short headings); always add `letter-spacing: 0.05em–0.12em`
+- **MUST**: Prefer `text-transform: uppercase` over typing in caps
+- **MUST**: Always enable kerning (`font-feature-settings: "kern"`)
+- **MUST**: Reserve color for clickable elements — colored non-link text confuses users
+- **NEVER**: Underline text (except hyperlinks)
+- **NEVER**: Bold or italicize entire paragraphs
+
+### Punctuation & Special Characters
+
+- **MUST**: Use ellipsis character `…` (not `...`); nonbreaking space adjacent
+- **MUST**: Curly quotes `"` `"` `'` `'` — never straight quotes in rendered UI text
+- **MUST**: Curly apostrophes pointing downward (`'`); watch word-initial (`'70s`, `rock 'n' roll`)
+- **MUST**: Non-breaking spaces: `10&nbsp;MB`, `⌘&nbsp;+&nbsp;K`, brand names
+- **MUST**: En dash `–` for ranges (1–10, pages 3–5); em dash `—` for sentence breaks
+- **MUST**: One space after punctuation, never two
+- **MUST**: `tabular-nums` for data/comparisons
+- **SHOULD**: Avoid widows/orphans
+- **NEVER**: Approximate dashes with `--` or `---`; use proper `–` / `—`
+
+### Spacing & Paragraphs
+
+- **MUST**: Paragraph spacing via `margin` (50–100% of body size), not extra line breaks
+- **SHOULD**: First-line indent OR paragraph spacing — never both
+- **SHOULD**: `text-indent` for first-line indents (1–4x body size), not spaces/tabs
 
 ---
 
@@ -282,6 +323,8 @@ z-50   tooltips/popovers
 - **SHOULD**: Match browser UI to page background
 - **SHOULD**: Avoid gradient banding (use masks when needed)
 - **SHOULD**: Style `::selection`
+- **SHOULD**: Rules/borders: 0.5–1pt single solid lines only; try whitespace first before adding lines
+- **SHOULD**: Minimize table grid lines — let data be prominent, not the lines
 - **NEVER**: Add gratuitous gradients; use only when purposeful
 
 ---
@@ -307,5 +350,6 @@ z-50   tooltips/popovers
 
 Distilled from:
 - [Vercel Web Interface Guidelines](https://github.com/vercel-labs/web-interface-guidelines)
+- [Butterick's Practical Typography](https://practicaltypography.com/)
 - [raunofreiberg/interfaces](https://github.com/raunofreiberg/interfaces)
 - [ui-skills.com](https://ui-skills.com)
