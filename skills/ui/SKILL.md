@@ -190,7 +190,7 @@ z-50   tooltips/popovers
 - **MUST**: Redundant status cues (not color-only); icons have text labels
 - **MUST**: `scroll-margin-top` on headings; "Skip to content" link; hierarchical `<h1–h6>`
 - **MUST**: Resilient to user-generated content (short/avg/very long)
-- **MUST**: Locale-aware dates/times/numbers/currency
+- **MUST**: Locale-aware dates/times/numbers/currency (`Intl.DateTimeFormat`, `Intl.NumberFormat` — never hardcoded formats)
 - **MUST**: Accurate `aria-label`; decorative elements `aria-hidden`
 - **MUST**: Prefer native semantics (`button`, `a`, `label`, `table`) before ARIA
 - **MUST**: Images use `<img>` (screen readers, right-click copy)
@@ -223,6 +223,32 @@ z-50   tooltips/popovers
 
 ---
 
+## Dark Mode & Theming
+
+- **MUST**: `color-scheme: dark` on `<html>` for dark themes (fixes scrollbar, native inputs, system dialogs)
+- **MUST**: `<meta name="theme-color">` matches page background; update on theme switch
+- **MUST**: Native `<select>`: set explicit `background-color` and `color` (Windows dark mode renders broken defaults)
+- **MUST**: Theme switching should not trigger transitions (disable transitions during switch, re-enable after paint)
+- **MUST**: Inputs with `value` need `onChange` (or `defaultValue` for uncontrolled) — prevents hydration mismatch
+- **SHOULD**: Guard date/time rendering against hydration mismatch (server vs client locale); use `suppressHydrationWarning` only where truly needed
+- **SHOULD**: Detect language via `Accept-Language` / `navigator.languages`, not IP geolocation
+
+---
+
+## Copy & Microcopy
+
+- **MUST**: Active voice: "Install the CLI" not "The CLI will be installed"
+- **MUST**: Specific button labels: "Save API Key" not "Continue"
+- **MUST**: Error messages include fix/next step, not just the problem
+- **MUST**: Loading states end with `…`: "Saving…", "Loading…"
+- **SHOULD**: Title Case for headings/buttons (Chicago style)
+- **SHOULD**: Numerals for counts: "8 deployments" not "eight"
+- **SHOULD**: Second person; avoid first person
+- **SHOULD**: `&` over "and" where space-constrained
+- **SHOULD**: Ellipsis (`…`) for options opening follow-ups: "Rename…"
+
+---
+
 ## Design
 
 - **MUST**: Meet contrast – prefer [APCA](https://apcacontrast.com/) over WCAG 2
@@ -237,6 +263,23 @@ z-50   tooltips/popovers
 - **SHOULD**: Avoid gradient banding (use masks when needed)
 - **SHOULD**: Style `::selection`
 - **NEVER**: Add gratuitous gradients; use only when purposeful
+
+---
+
+## Anti-Patterns (flag these in review)
+
+- `user-scalable=no` or `maximum-scale=1` — disables zoom
+- `onPaste` + `preventDefault` — blocks paste
+- `transition: all` — list properties explicitly
+- `outline-none` / `outline: none` without `:focus-visible` replacement
+- `<div>` / `<span>` with `onClick` — should be `<button>` or `<a>`
+- Images without `width`/`height` — causes CLS
+- Large arrays `.map()` without virtualization
+- Form inputs without `<label>` or `aria-label`
+- Icon buttons without `aria-label`
+- Hardcoded date/number formats — use `Intl.*`
+- `autoFocus` without clear justification
+- Arbitrary Tailwind values (`w-[347px]`) — prefer design tokens
 
 ---
 

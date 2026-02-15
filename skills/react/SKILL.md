@@ -1,60 +1,160 @@
 ---
 name: react
-description: React best practices for state management, composition patterns, async patterns (use, useTransition, useOptimistic, Suspense), and avoiding common pitfalls. Use when writing React components, managing state, handling async operations, or structuring component hierarchies.
+description: React best practices for state management, composition patterns, async patterns (use, useTransition, useOptimistic, Suspense), performance optimization, and avoiding common pitfalls. Use when writing React components, managing state, handling async operations, or structuring component hierarchies.
 allowed-tools: Read, Grep, Glob, Edit, Write
 ---
 
 # React Best Practices
 
-## 1. You Might Not Need an Effect
+## Navigation
+
+```
+What are you working on?
+├─ Component has too many boolean props    → §1 Composition
+├─ State management / where to put state   → §2 State
+├─ Async operations / loading / optimistic → §3 Async Patterns
+├─ Slow renders / unnecessary re-renders   → §4 Performance
+├─ Bundle size / code splitting            → §5 Bundle
+├─ Event listeners / subscriptions         → §6 Events
+└─ Data fetching / waterfalls              → §3 + §7 Async Perf
+```
+
+---
+
+## 1. Composition Over Configuration
+
+Avoid monolithic components with boolean props. Use composition with compound components and injectable context.
+
+### Boolean Prop Explosion → Explicit Variants
+
+Each boolean doubles possible states. Five booleans = 32 branches to reason about.
+
+```tsx
+// BAD: Monolithic component with flags
+<Composer isThread isEditing={false} showAttachments channelId="abc" />
+
+// GOOD: Explicit variant components
+<ThreadComposer channelId="abc" />
+<EditComposer messageId="123" />
+```
+
+### Compound Components
+
+Structure complex UIs as composable subcomponents with shared context:
+
+```tsx
+const Composer = {
+  Provider: ComposerProvider,
+  Frame: ComposerFrame,
+  Input: ComposerInput,
+  DropZone: ComposerDropZone,
+  Submit: ComposerSubmit,
+}
+
+// Usage: render to opt-in
+function ChannelComposer() {
+  return (
+    <Composer.Provider state={state} actions={actions}>
+      <Composer.Frame>
+        <Composer.Input />
+        <Composer.DropZone /> {/* Just render to enable */}
+        <Composer.Submit />
+      </Composer.Frame>
+    </Composer.Provider>
+  );
+}
+```
+
+### Generic Context Interface
+
+Three-part contract: `state`, `actions`, `meta`. Any provider can implement it.
+
+```tsx
+interface ComposerContextValue {
+  state: { input: string; attachments: File[]; isSubmitting: boolean }
+  actions: { update: (text: string) => void; submit: () => void }
+  meta: { inputRef: RefObject<HTMLTextAreaElement> }
+}
+```
+
+### Decouple State From UI
+
+Provider defines how state is managed. UI components only consume the interface. Different providers, same UI:
+
+```tsx
+// Local state provider
+function LocalComposerProvider({ children }: { children: React.ReactNode }) {
+  const [text, setText] = useState('');
+  return (
+    <ComposerContext value={{ state: { input: text }, actions: { update: setText, submit: () => {} } }}>
+      {children}
+    </ComposerContext>
+  );
+}
+
+// Synced state provider — same UI, different backing store
+function SyncedComposerProvider({ children }: { children: React.ReactNode }) {
+  const { text, updateText, submit } = useSyncedComposer();
+  return (
+    <ComposerContext value={{ state: { input: text }, actions: { update: updateText, submit } }}>
+      {children}
+    </ComposerContext>
+  );
+}
+```
+
+### Lift Provider for Flexible Layouts
+
+Components outside the main UI but inside the provider can access state/actions:
+
+```tsx
+function ForwardMessageModal() {
+  return (
+    <ForwardMessageProvider>
+      <ComposerUI />
+      <MessagePreview /> {/* Accesses composer state via context */}
+      <div className="modal-footer">
+        <ForwardButton /> {/* Can call submit() from context */}
+      </div>
+    </ForwardMessageProvider>
+  );
+}
+```
+
+### React 19 API Changes
+
+- `ref` is a regular prop — no `forwardRef` wrapper needed
+- `use(MyContext)` replaces `useContext(MyContext)` — can be called conditionally
+
+---
+
+## 2. State Management
+
+### You Might Not Need an Effect
 
 Effects are for **synchronizing with external systems**. Most other uses are antipatterns.
-
-### Derived State: Calculate During Render
 
 ```tsx
 // BAD: useEffect to derive state
 const [fullName, setFullName] = useState('');
-useEffect(() => {
-  setFullName(firstName + ' ' + lastName);
-}, [firstName, lastName]);
+useEffect(() => setFullName(first + ' ' + last), [first, last]);
 
 // GOOD: Calculate during render
-const fullName = firstName + ' ' + lastName;
+const fullName = first + ' ' + last;
 ```
-
-### Expensive Calculations: Use useMemo
-
-```tsx
-// GOOD: Memoize expensive computations
-const visibleTodos = useMemo(
-  () => getFilteredTodos(todos, filter),
-  [todos, filter]
-);
-```
-
-### Resetting State: Use key Prop
 
 ```tsx
 // BAD: useEffect to reset state on prop change
-useEffect(() => {
-  setComment('');
-}, [userId]);
+useEffect(() => setComment(''), [userId]);
 
 // GOOD: Use key to reset entire component
 <Profile userId={userId} key={userId} />
 ```
 
-### Event Logic: Keep in Event Handlers
-
 ```tsx
 // BAD: Effect triggered by event
 const [submitted, setSubmitted] = useState(false);
-useEffect(() => {
-  if (submitted) {
-    post('/api/submit', data);
-  }
-}, [submitted]);
+useEffect(() => { if (submitted) post('/api/submit', data); }, [submitted]);
 
 // GOOD: Logic in event handler
 function handleSubmit() {
@@ -63,182 +163,100 @@ function handleSubmit() {
 }
 ```
 
-### When Effects ARE Appropriate
+**When effects ARE appropriate:** Subscriptions (WebSocket, event listeners), syncing with non-React widgets (maps, video players), analytics on page view.
 
-- Fetching data on mount (but prefer React Query/SWR)
-- Setting up subscriptions (WebSocket, event listeners)
-- Syncing with non-React widgets (maps, video players)
-- Sending analytics on page view
+### You Might Not Need State
 
----
+Prefer computing values and using the platform.
 
-## 2. You Might Not Need State
-
-State is a last resort. Prefer computing values and using the platform.
-
-### Compute Over Store
-
-Don't store what you can derive:
+**Compute over store:**
 
 ```tsx
-// BAD: Storing derived state
-const [items, setItems] = useState<Item[]>([]);
+// BAD
 const [totalPrice, setTotalPrice] = useState(0);
+useEffect(() => setTotalPrice(items.reduce((s, i) => s + i.price, 0)), [items]);
 
-useEffect(() => {
-  setTotalPrice(items.reduce((sum, item) => sum + item.price, 0));
-}, [items]);
-
-// GOOD: Compute during render
-const [items, setItems] = useState<Item[]>([]);
+// GOOD
 const totalPrice = items.reduce((sum, item) => sum + item.price, 0);
 ```
 
-### Use the Platform: Forms
-
-Use uncontrolled inputs with `FormData` instead of controlled state:
+**Expensive computations — useMemo:**
 
 ```tsx
-// BAD: Controlled inputs for simple form
-function ContactForm() {
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [message, setMessage] = useState('');
+const visibleTodos = useMemo(() => getFilteredTodos(todos, filter), [todos, filter]);
+```
 
-  return (
-    <form onSubmit={e => {
-      e.preventDefault();
-      submit({ name, email, message });
-    }}>
-      <input value={name} onChange={e => setName(e.target.value)} />
-      <input value={email} onChange={e => setEmail(e.target.value)} />
-      <textarea value={message} onChange={e => setMessage(e.target.value)} />
-      <button type="submit">Send</button>
-    </form>
-  );
-}
+**Use the platform — FormData over controlled inputs:**
 
+```tsx
 // GOOD: Uncontrolled with FormData
 function ContactForm() {
   return (
     <form onSubmit={e => {
       e.preventDefault();
-      const formData = new FormData(e.currentTarget);
-      submit({
-        name: formData.get('name') as string,
-        email: formData.get('email') as string,
-        message: formData.get('message') as string,
-      });
+      const fd = new FormData(e.currentTarget);
+      submit(Object.fromEntries(fd));
     }}>
       <input name="name" required />
       <input name="email" type="email" required />
-      <textarea name="message" required />
       <button type="submit">Send</button>
     </form>
   );
 }
 ```
 
-### Use the Platform: Browser Validation
-
-Let the browser validate instead of custom state:
+**Use the platform — URL state:**
 
 ```tsx
-// GOOD: Native validation attributes
-<input
-  name="email"
-  type="email"
-  required
-  pattern="[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$"
-/>
-
-<input
-  name="age"
-  type="number"
-  min={18}
-  max={120}
-  required
-/>
-
-<input
-  name="username"
-  minLength={3}
-  maxLength={20}
-  required
-/>
-```
-
-### Use the Platform: URL State
-
-Store filter/sort/pagination state in the URL:
-
-```tsx
-// BAD: Local state for filters (lost on refresh/share)
+// BAD: Local state (lost on refresh/share)
 const [filter, setFilter] = useState('all');
-const [sort, setSort] = useState('date');
 
-// GOOD: URL state (shareable, bookmarkable, back-button works)
-function ProductList() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const filter = searchParams.get('filter') ?? 'all';
-  const sort = searchParams.get('sort') ?? 'date';
-
-  return (
-    <>
-      <select
-        value={filter}
-        onChange={e => setSearchParams(prev => {
-          prev.set('filter', e.target.value);
-          return prev;
-        })}
-      >
-        <option value="all">All</option>
-        <option value="active">Active</option>
-      </select>
-      <ProductGrid filter={filter} sort={sort} />
-    </>
-  );
-}
+// GOOD: URL state with nuqs (typed, validated, shareable)
+import { parseAsStringEnum, useQueryState } from 'nuqs';
+const [filter, setFilter] = useQueryState('filter',
+  parseAsStringEnum(['all', 'active', 'completed']).withDefault('all')
+);
 ```
 
-For complex URL state with validation, use libraries like **nuqs**:
+**When you DO need state:** Controlled inputs (real-time validation, masking), optimistic updates, multi-step forms, animations.
+
+### Union State Modeling
+
+Prefer discriminated unions over multiple booleans.
 
 ```tsx
-import { parseAsStringEnum, useQueryState } from 'nuqs';
+// BAD: Multiple booleans create impossible states
+const [isLoading, setIsLoading] = useState(false);
+const [isError, setIsError] = useState(false);
+const [data, setData] = useState<Data | null>(null);
 
-const filterParser = parseAsStringEnum(['all', 'active', 'completed']).withDefault('all');
+// GOOD: Discriminated union
+type State =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'success'; data: Data }
+  | { status: 'error'; error: Error };
 
-function ProductList() {
-  const [filter, setFilter] = useQueryState('filter', filterParser);
-  // filter is typed as 'all' | 'active' | 'completed', never null
-  // Invalid URL values fall back to 'all'
+const [state, setState] = useState<State>({ status: 'idle' });
+
+switch (state.status) {
+  case 'idle': return <button onClick={fetch}>Load</button>;
+  case 'loading': return <Spinner />;
+  case 'success': return <DataView data={state.data} />;
+  case 'error': return <ErrorView error={state.error} />;
 }
 ```
 
-### When You DO Need State
-
-- **Controlled inputs**: Real-time validation, input masking, character counts
-- **Optimistic updates**: Show change before server confirms
-- **Multi-step forms**: Wizard-style flows with back/forward
-- **Animations**: Transitioning between values
-- **Derived state that's expensive**: Use `useMemo` instead of recalculating
-
----
-
-## 3. State Colocation
+### State Colocation
 
 Keep state as close to where it's used as possible.
 
-### Extract Components With Their Own State
-
-When a piece of UI has its own state, extract it into a component. This prevents parent re-renders from affecting it.
+**Extract components with their own state** to prevent parent re-renders:
 
 ```tsx
 // BAD: Search state causes entire list to re-render
 function ProductPage() {
   const [search, setSearch] = useState('');
-  const [products] = useState(initialProducts);
-
   return (
     <div>
       <input value={search} onChange={e => setSearch(e.target.value)} />
@@ -250,459 +268,132 @@ function ProductPage() {
 // GOOD: Search input is its own component
 function SearchInput({ onSearch }: { onSearch: (q: string) => void }) {
   const [search, setSearch] = useState('');
-
-  return (
-    <input
-      value={search}
-      onChange={e => {
-        setSearch(e.target.value);
-        onSearch(e.target.value);
-      }}
-    />
-  );
-}
-
-function ProductPage() {
-  const [products] = useState(initialProducts);
-  const [query, setQuery] = useState('');
-
-  return (
-    <div>
-      <SearchInput onSearch={setQuery} />
-      <ProductList products={filterProducts(products, query)} />
-    </div>
-  );
+  return <input value={search} onChange={e => { setSearch(e.target.value); onSearch(e.target.value); }} />;
 }
 ```
 
-### State Location Hierarchy
+**State location hierarchy:**
 
-1. **Local state**: Default choice. `useState` in the component that uses it.
-2. **Lifted state**: When siblings need to share. Lift to nearest common parent.
-3. **Context**: When distant components need access. Use Provider pattern.
-4. **External store**: When state needs to persist across routes or sync externally.
+1. **Local state** — default. `useState` in the component that uses it.
+2. **Lifted state** — siblings need to share. Lift to nearest common parent.
+3. **Context** — distant components need access. Provider pattern.
+4. **External store** — persist across routes or sync externally.
 
----
+### Functional setState Updates
 
-## 4. Composition Over Configuration
-
-Avoid monolithic components with boolean props. Use composition.
-
-### The Antipattern: Boolean Prop Explosion
+When next state depends on current state, use updater functions to avoid stale closures:
 
 ```tsx
-// BAD: Monolithic component with flags
-<UserForm
-  isUpdateUser
-  hideWelcome
-  skipOnboarding
-  onlyEditName
-  isSlugRequired={false}
-/>
-```
+// BAD: Stale closure in async
+setItems([...items, ...newItems]);
 
-### The Solution: Compound Components
-
-```tsx
-// GOOD: Composition - render to opt-in
-function ChannelComposer() {
-  return (
-    <ComposerProvider>
-      <ComposerFrame>
-        <ComposerHeader />
-        <ComposerInput />
-        <ComposerDropZone /> {/* Just render to enable feature */}
-        <ComposerFooter>
-          <CommonActions />
-          <SubmitButton />
-        </ComposerFooter>
-      </ComposerFrame>
-    </ComposerProvider>
-  );
-}
-```
-
-### Decouple State From UI
-
-Provider defines the interface, implementation can vary:
-
-```tsx
-// Local state provider
-function LocalComposerProvider({ children }: { children: React.ReactNode }) {
-  const [text, setText] = useState('');
-
-  const value = {
-    text,
-    updateText: setText,
-    submit: () => { /* local submit logic */ }
-  };
-
-  return (
-    <ComposerContext.Provider value={value}>
-      {children}
-    </ComposerContext.Provider>
-  );
-}
-
-// Synced state provider - same interface, different implementation
-function SyncedComposerProvider({ children }: { children: React.ReactNode }) {
-  const { text, updateText, submit } = useSyncedComposer();
-
-  return (
-    <ComposerContext.Provider value={{ text, updateText, submit }}>
-      {children}
-    </ComposerContext.Provider>
-  );
-}
-```
-
-### Lift Provider for Flexible Layouts
-
-Access context from outside the main UI:
-
-```tsx
-function ForwardMessageModal() {
-  return (
-    <ForwardMessageProvider>
-      <ComposerUI />
-      <MessagePreview /> {/* Accesses composer state */}
-      <div className="modal-footer">
-        <ForwardButton /> {/* Can call submit() */}
-      </div>
-    </ForwardMessageProvider>
-  );
-}
+// GOOD: Always reads current state
+setItems(curr => [...curr, ...newItems]);
 ```
 
 ---
 
-## 5. Union State Modeling
-
-Prefer discriminated unions over multiple booleans.
-
-### The Problem: Boolean State
-
-```tsx
-// BAD: Multiple booleans create impossible states
-const [isLoading, setIsLoading] = useState(false);
-const [isError, setIsError] = useState(false);
-const [data, setData] = useState<Data | null>(null);
-
-// Can accidentally have isLoading=true AND isError=true
-```
-
-### The Solution: Union State
-
-```tsx
-// GOOD: Discriminated union - impossible states are unrepresentable
-type State =
-  | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'success'; data: Data }
-  | { status: 'error'; error: Error };
-
-const [state, setState] = useState<State>({ status: 'idle' });
-
-// Usage with exhaustive matching
-switch (state.status) {
-  case 'idle':
-    return <button onClick={fetch}>Load</button>;
-  case 'loading':
-    return <Spinner />;
-  case 'success':
-    return <DataView data={state.data} />;
-  case 'error':
-    return <ErrorView error={state.error} />;
-}
-```
-
-### With useReducer
-
-```tsx
-type Action =
-  | { type: 'FETCH_START' }
-  | { type: 'FETCH_SUCCESS'; data: Data }
-  | { type: 'FETCH_ERROR'; error: Error };
-
-function reducer(state: State, action: Action): State {
-  switch (action.type) {
-    case 'FETCH_START':
-      return { status: 'loading' };
-    case 'FETCH_SUCCESS':
-      return { status: 'success', data: action.data };
-    case 'FETCH_ERROR':
-      return { status: 'error', error: action.error };
-  }
-}
-```
-
-### Key Benefits
-
-- **Type safety**: Each state variant carries only its relevant context
-- **Impossible states**: Can't have `loading` and `error` simultaneously
-- **Exhaustive checks**: TypeScript ensures all cases handled
-- **Self-documenting**: State machine is explicit in the types
-
----
-
-## 6. Async React Patterns
-
-Modern React patterns for handling async operations with Suspense, transitions, and optimistic updates.
+## 3. Async React Patterns
 
 ### The `use()` API
 
-`use` reads values from Promises or Context. Unlike hooks, it CAN be called in conditionals and loops.
+Reads values from Promises or Context. Unlike hooks, it CAN be called in conditionals and loops.
 
 ```tsx
 import { use } from 'react';
 
 function MessageComponent({ messagePromise }) {
   const message = use(messagePromise);  // Suspends until resolved
-  const theme = use(ThemeContext);       // Also works with context
-  // ...
+  const theme = use(ThemeContext);       // Works with context too
 }
 ```
 
-**Key Rules:**
-- Must be called inside a Component or Hook (not regular functions)
-- Cannot be called in try-catch blocks (use Error Boundaries instead)
-- CAN be called in conditionals and loops (unlike useContext)
+**Rules:** Must be inside a Component or Hook. Cannot be in try-catch (use Error Boundaries). CAN be called conditionally.
 
-**Conditional Context (preferred over useContext):**
+**Error handling:**
 
 ```tsx
-function HorizontalRule({ show }) {
-  if (show) {
-    const theme = use(ThemeContext);  // Conditionally read context
-    return <hr className={theme} />;
-  }
-  return null;
-}
-```
-
-**Server vs Client Components:**
-- In Server Components: prefer `async`/`await` over `use`
-- Create Promises in Server Components, pass to Client Components
-- Client Component Promises are recreated on every render (unstable)
-
-**Error Handling (cannot use try-catch):**
-
-```tsx
-// Option 1: Error Boundary
 <ErrorBoundary fallback={<p>Error</p>}>
-  <Suspense fallback={<p>Loading...</p>}>
+  <Suspense fallback={<p>Loading…</p>}>
     <Message messagePromise={messagePromise} />
   </Suspense>
 </ErrorBoundary>
 
-// Option 2: Promise.catch for fallback value
+// Or: Promise.catch for fallback value
 const messagePromise = fetchMessage().catch(() => "No message found");
 ```
 
-**IMPORTANT: Avoiding Unnecessary Fallbacks**
-
-For library authors/cached data: set `status`, `value`, `reason` fields to let React synchronously read settled Promises without suspending.
+**Avoiding unnecessary fallbacks** — for cached/settled promises, set `status`/`value`/`reason` fields so React reads synchronously:
 
 ```tsx
-// Simple approach: augment the promise
 function preloadData(id) {
   const value = cachedData[id];
   const promise = Promise.resolve(value);
-
-  // Set fields so React can read synchronously
   promise.status = "fulfilled";
   promise.value = value;
   return promise;
 }
-
-// Full subclass for pending promises
-class PromiseWithStatus<T> extends Promise<T> {
-  status: "pending" | "fulfilled" | "rejected" = "pending";
-  value?: T;
-  reason?: unknown;
-
-  constructor(executor: (
-    resolve: (value: T) => void,
-    reject: (reason: unknown) => void
-  ) => void) {
-    let resolve: (v: T) => void;
-    let reject: (e: unknown) => void;
-    super((_resolve, _reject) => {
-      resolve = _resolve;
-      reject = _reject;
-    });
-    executor(
-      (value) => {
-        this.status = "fulfilled";
-        this.value = value;
-        resolve(value);
-      },
-      (reason) => {
-        this.status = "rejected";
-        this.reason = reason;
-        reject(reason);
-      }
-    );
-  }
-}
 ```
 
-Without these fields, even already-resolved Promises cause unnecessary fallback flickers.
+### useTransition
 
----
-
-### useTransition for Async Actions
-
-Wrap async operations in transitions to track pending state and keep UI responsive.
+Wrap async operations in transitions to track pending state and keep UI responsive:
 
 ```tsx
-// BAD: No pending state feedback
-function Button({ onClick, children }) {
-  return <button onClick={onClick}>{children}</button>;
-}
-
-// GOOD: useTransition tracks pending state
 function Button({ action, children }) {
   const [isPending, startTransition] = useTransition();
 
-  function handleClick() {
-    startTransition(async () => {
-      await action();
-    });
-  }
-
   return (
-    <button onClick={handleClick} disabled={isPending}>
+    <button onClick={() => startTransition(async () => { await action(); })} disabled={isPending}>
       {isPending ? <Spinner /> : children}
     </button>
   );
 }
-
-// Usage - consumer just provides async function
-<Button action={async () => {
-  await login(credentials);
-  router.navigate('/');
-}}>
-  Login
-</Button>
 ```
 
----
+### useOptimistic
 
-### useOptimistic for Instant Feedback
-
-Show UI updates immediately, before async operations complete.
+Show UI updates immediately, before async operations complete:
 
 ```tsx
-// BAD: Wait for server to update UI
-function CompleteButton({ complete, onToggle }) {
-  const [isPending, setIsPending] = useState(false);
-
-  async function handleClick() {
-    setIsPending(true);
-    await onToggle();
-    setIsPending(false);
-  }
-
-  return (
-    <button onClick={handleClick} disabled={isPending}>
-      {complete ? '✓' : '○'}
-    </button>
-  );
-}
-
-// GOOD: Optimistic update with immediate feedback
 function CompleteButton({ complete, action }) {
   const [optimisticComplete, setOptimisticComplete] = useOptimistic(complete);
 
   function handleClick() {
     startTransition(async () => {
-      setOptimisticComplete(!optimisticComplete);  // Update immediately
-      await action();  // Server catches up
+      setOptimisticComplete(!optimisticComplete);
+      await action();
     });
   }
 
-  return (
-    <button onClick={handleClick}>
-      {optimisticComplete ? '✓' : '○'}
-    </button>
-  );
+  return <button onClick={handleClick}>{optimisticComplete ? '✓' : '○'}</button>;
 }
 ```
-
-**Optimistic Input with Pending Detection:**
-
-```tsx
-function SearchInput({ value, onSearch }) {
-  const [inputValue, setInputValue] = useOptimistic(value);
-  const isPending = inputValue !== value;  // Detect pending state
-
-  function handleChange(e) {
-    const newValue = e.target.value;
-    startTransition(async () => {
-      setInputValue(newValue);  // Optimistic update
-      await onSearch(newValue);  // Actual search
-    });
-  }
-
-  return (
-    <div>
-      <input value={inputValue} onChange={handleChange} />
-      {isPending && <Spinner />}
-    </div>
-  );
-}
-```
-
----
 
 ### Suspense + Transitions
 
-Suspense fallbacks only show on initial load. Transitions keep showing current content while loading.
+Suspense fallbacks only show on initial load. Transitions keep showing current content while loading new data:
 
 ```tsx
 function Home() {
   const [tab, setTab] = useState('all');
 
-  function changeTab(newTab) {
-    startTransition(() => {
-      setTab(newTab);  // Wrapped in transition
-    });
-  }
-
   return (
     <>
-      <TabList activeTab={tab} onChange={changeTab} />
-      {/*
-        Fallback shows on initial load only.
-        Tab switches show pending state instead of fallback
-        because the state update is wrapped in a transition.
-      */}
+      <TabList activeTab={tab} onChange={t => startTransition(() => setTab(t))} />
       <Suspense fallback={<SkeletonList />}>
         <LessonList tab={tab} />
       </Suspense>
     </>
   );
 }
-
-function LessonList({ tab }) {
-  const lessons = use(getLessons(tab));  // Suspends on new data
-  return (
-    <ul>
-      {lessons.map(lesson => <li key={lesson.id}>{lesson.title}</li>)}
-    </ul>
-  );
-}
 ```
-
----
 
 ### Action Prop Pattern
 
-Design components that accept async `action` props and handle transitions internally.
+Design components that accept async `action` props and handle transitions internally:
 
 ```tsx
-// Design component handles all async complexity
 function TabList({ activeTab, changeAction, children }) {
   const [optimisticTab, setActiveTab] = useOptimistic(activeTab);
   const isPending = optimisticTab !== activeTab;
@@ -716,112 +407,56 @@ function TabList({ activeTab, changeAction, children }) {
 
   return (
     <Tabs value={optimisticTab} onValueChange={onTabClick}>
-      <TabsTrigger value="all">
-        All {isPending && optimisticTab === 'all' && <Spinner />}
-      </TabsTrigger>
-      <TabsTrigger value="active">
-        Active {isPending && optimisticTab === 'active' && <Spinner />}
-      </TabsTrigger>
+      <TabsTrigger value="all">All {isPending && optimisticTab === 'all' && <Spinner />}</TabsTrigger>
       {children}
     </Tabs>
   );
 }
-
-// Consumer provides simple async action
-function Page() {
-  const router = useRouter();
-
-  function tabAction(tab) {
-    router.setParams('tab', tab);  // Router handles transition
-  }
-
-  return (
-    <TabList activeTab={router.query.tab} changeAction={tabAction}>
-      <Content />
-    </TabList>
-  );
-}
 ```
-
----
 
 ### Suspense-Enabled Data Fetching
 
-Cache promises for Suspense, revalidate after mutations, prefetch before navigation.
+Cache promises, revalidate after mutations, prefetch before navigation:
 
 ```tsx
-// Simple promise cache
 let cache = new Map();
 
-export function revalidate() {
-  cache = new Map();
-}
+export function revalidate() { cache = new Map(); }
 
 export function getData(key) {
-  if (cache.has(key)) {
-    return cache.get(key);  // Return cached promise
+  if (!cache.has(key)) {
+    cache.set(key, fetch(`/api/data?key=${key}`).then(r => r.json()));
   }
-
-  const promise = fetch(`/api/data?key=${key}`).then(r => r.json());
-  cache.set(key, promise);
-  return promise;
+  return cache.get(key);
 }
 
-// Prefetch before navigation (with timeout)
+// Prefetch with timeout
 export function prefetchData(key) {
-  const promise = getData(key);
-  return Promise.race([
-    promise,
-    new Promise(resolve => setTimeout(resolve, 1000))
-  ]);
-}
-
-// Usage: Prefetch then navigate
-async function handleLogin() {
-  await login(credentials);
-  await prefetchData('dashboard');  // Load data before navigation
-  router.navigate('/dashboard');
-}
-
-// Revalidate after mutation
-async function handleToggle(id) {
-  await toggleItem(id);
-  revalidate();  // Clear cache
-  router.refresh();  // Re-fetch data
+  return Promise.race([getData(key), new Promise(r => setTimeout(r, 1000))]);
 }
 ```
 
----
-
-## 7. Tailwind Data Attribute Styling
-
-Use data attributes for conditional styling instead of `classnames` object syntax. Data attributes have higher specificity than regular classes, making style precedence predictable.
+### Per-Request Deduplication with React.cache()
 
 ```tsx
-// BAD: cn/clsx/classnames object - order-dependent, verbose
-<div className={cn({
-  'bg-blue-500': !isActive,
-  'bg-red-500': isActive,
-})} />
+import { cache } from 'react';
 
-// GOOD: data attributes - base style + conditional override
-<div
-  className="bg-blue-500 data-[active]:bg-red-500"
-  data-active={isActive ? '' : undefined}
-/>
+export const getCurrentUser = cache(async () => {
+  const res = await fetch('/api/user');
+  return res.json();
+});
+// Multiple components calling getCurrentUser() in the same render share one fetch
 ```
 
-**Caveat with `group`:** When using Tailwind's `group` with `group-data-*` selectors, parent data attributes affect all descendants. Use unique attribute names if children have the same states as parents.
+**Caveat:** Uses `Object.is` for args. Inline objects always miss cache. Use primitives or stable references.
 
 ---
 
-## 8. Re-render Optimization
+## 4. Performance
 
-Minimize unnecessary re-renders for better performance.
+### Re-render Optimization
 
-### Lazy State Initialization
-
-Pass a function to `useState` for expensive initial values:
+**Lazy state initialization:**
 
 ```tsx
 // BAD: Expensive call runs every render
@@ -831,26 +466,9 @@ const [data, setData] = useState(parseLocalStorage());
 const [data, setData] = useState(() => parseLocalStorage());
 ```
 
-Use lazy initialization for:
-- localStorage/sessionStorage parsing
-- Building data structures (indexes, maps)
-- DOM reads
-- Heavy computational transformations
-
-### Extract to Memoized Components
-
-Extract expensive work into `memo()` components to enable early returns:
+**Extract to memoized components** to enable early returns:
 
 ```tsx
-// BAD: useMemo still executes before early return
-function UserCard({ user, loading }) {
-  const avatar = useMemo(() => generateAvatar(user), [user]);
-
-  if (loading) return <Skeleton />;
-  return <div><img src={avatar} /></div>;
-}
-
-// GOOD: Memoized component skips work entirely
 const Avatar = memo(function Avatar({ user }) {
   const avatar = generateAvatar(user);
   return <img src={avatar} />;
@@ -862,170 +480,85 @@ function UserCard({ user, loading }) {
 }
 ```
 
-### Subscribe to Derived State
-
-Subscribe to booleans, not continuous values:
+**Subscribe to derived state, not continuous values:**
 
 ```tsx
-// BAD: Re-renders on every pixel change
-function Sidebar() {
-  const { width } = useWindowSize();
-  const isMobile = width < 768;
-  // ...
-}
+// BAD: Re-renders on every pixel
+const { width } = useWindowSize();
+const isMobile = width < 768;
 
-// GOOD: Re-renders only when threshold crossed
-function Sidebar() {
-  const isMobile = useMediaQuery('(max-width: 767px)');
-  // ...
-}
+// GOOD: Re-renders only on threshold cross
+const isMobile = useMediaQuery('(max-width: 767px)');
 ```
 
-### Narrow Effect Dependencies
-
-Use primitives in dependency arrays, not objects:
+**Narrow effect dependencies — use primitives, not objects:**
 
 ```tsx
 // BAD: Runs when any user property changes
-useEffect(() => {
-  fetchUserData(user.id);
-}, [user]);
+useEffect(() => fetchUserData(user.id), [user]);
 
 // GOOD: Runs only when id changes
-useEffect(() => {
-  fetchUserData(user.id);
-}, [user.id]);
+useEffect(() => fetchUserData(user.id), [user.id]);
 ```
 
-Compute derived values outside effects:
-
-```tsx
-// BAD: Logic inside effect
-useEffect(() => {
-  if (width < 768) {
-    setLayout('mobile');
-  }
-}, [width]);
-
-// GOOD: Derive outside, effect only responds to meaningful changes
-const isMobile = width < 768;
-useEffect(() => {
-  setLayout(isMobile ? 'mobile' : 'desktop');
-}, [isMobile]);
-```
-
-### Defer State Reads
-
-Read values on-demand instead of subscribing:
+**Defer state reads — read on-demand instead of subscribing:**
 
 ```tsx
 // BAD: Re-renders on every searchParams change
 function ShareButton() {
   const [searchParams] = useSearchParams();
-
-  function handleClick() {
-    share(searchParams.get('id'));
-  }
-
-  return <button onClick={handleClick}>Share</button>;
+  return <button onClick={() => share(searchParams.get('id'))}>Share</button>;
 }
 
 // GOOD: Read on-demand, no subscription
 function ShareButton() {
-  function handleClick() {
-    const params = new URLSearchParams(window.location.search);
-    share(params.get('id'));
-  }
-
-  return <button onClick={handleClick}>Share</button>;
+  return <button onClick={() => share(new URLSearchParams(location.search).get('id'))}>Share</button>;
 }
 ```
 
-### Store Event Handlers in Refs
-
-Stable subscriptions without re-adding listeners:
+**Use transitions for non-urgent updates:**
 
 ```tsx
-// BAD: Listener removed and re-added when handler changes
-function useKeyboard(handler: (e: KeyboardEvent) => void) {
-  useEffect(() => {
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [handler]); // Re-runs on every handler change
-}
-
-// GOOD: Stable subscription, handler accessed via ref
-function useKeyboard(handler: (e: KeyboardEvent) => void) {
-  const handlerRef = useRef(handler);
-
-  useEffect(() => {
-    handlerRef.current = handler;
-  });
-
-  useEffect(() => {
-    const listener = (e: KeyboardEvent) => handlerRef.current(e);
-    window.addEventListener('keydown', listener);
-    return () => window.removeEventListener('keydown', listener);
-  }, []); // Never re-runs
-}
+// Scroll tracking without blocking input
+const onScroll = (e) => startTransition(() => setScrollY(e.target.scrollTop));
 ```
 
----
-
-## 9. Rendering Optimization
-
-Optimize what and how React renders.
-
-### Hoist Static JSX
-
-Extract unchanging JSX to module scope:
+**Use refs for transient values** (mouse position, scroll tracking, intervals):
 
 ```tsx
-// BAD: SVG recreated every render
-function Icon({ active }) {
-  const svg = (
-    <svg viewBox="0 0 24 24">
-      <path d="M12 2L2 7l10 5 10-5-10-5z" />
-    </svg>
-  );
+const scrollYRef = useRef(0);
+const onScroll = (e) => { scrollYRef.current = e.target.scrollTop; };
+// Mutate DOM directly — no re-renders
+```
 
-  return active ? svg : null;
-}
+### Rendering Optimization
 
-// GOOD: SVG created once at module level
-const svg = (
-  <svg viewBox="0 0 24 24">
-    <path d="M12 2L2 7l10 5 10-5-10-5z" />
-  </svg>
+**Hoist static JSX** to module scope:
+
+```tsx
+const icon = (
+  <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z" /></svg>
 );
 
 function Icon({ active }) {
-  return active ? svg : null;
+  return active ? icon : null;
 }
 ```
 
-### Explicit Conditional Rendering
-
-Use ternary `? :` when condition can be `0` or `NaN`:
+**Explicit conditional rendering** — ternary when condition can be `0` or `NaN`:
 
 ```tsx
 // BAD: Renders "0" when count is 0
 {count && <Badge count={count} />}
 
-// GOOD: Renders null when count is 0
+// GOOD
 {count > 0 ? <Badge count={count} /> : null}
-
-// Also GOOD: Convert to boolean
-{!!count && <Badge count={count} />}
-{Boolean(count) && <Badge count={count} />}
 ```
 
-### Activity Component for Visibility
-
-Preserve state and DOM when toggling visibility:
+**Activity component** — preserve state/DOM when toggling visibility:
 
 ```tsx
-// BAD: Component unmounts, loses state
+// BAD: Unmounts, loses state
 {isVisible && <ExpensiveEditor />}
 
 // GOOD: State preserved, DOM hidden
@@ -1034,25 +567,52 @@ Preserve state and DOM when toggling visibility:
 </Activity>
 ```
 
-Use for frequently toggled expensive components like editors, charts, or media players.
+**CSS content-visibility** for long lists without full virtualization:
+
+```css
+.list-item {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 80px;
+}
+```
+
+### Extract Default Non-Primitives to Constants
+
+Inline functions/objects in props break `memo()`:
+
+```tsx
+// BAD: New function ref every render, defeats memo
+<MemoizedButton onClick={() => {}} />
+
+// GOOD: Stable reference
+const NOOP = () => {};
+<MemoizedButton onClick={NOOP} />
+```
+
+### Initialize App Once
+
+Module-level guard for effects that should run once globally, not per mount:
+
+```tsx
+let didInit = false;
+
+function App() {
+  useEffect(() => {
+    if (didInit) return;
+    didInit = true;
+    initAnalytics();
+    loadFeatureFlags();
+  }, []);
+}
+```
 
 ---
 
-## 10. Bundle Optimization
-
-Reduce initial bundle size for faster page loads.
+## 5. Bundle Optimization
 
 ### Dynamic Imports for Heavy Components
 
-Defer loading until needed:
-
 ```tsx
-import { lazy, Suspense } from 'react';
-
-// BAD: Monaco bundled with main chunk
-import { Editor } from '@monaco-editor/react';
-
-// GOOD: Monaco loaded on demand
 const Editor = lazy(() => import('@monaco-editor/react'));
 
 function CodeEditor() {
@@ -1064,58 +624,70 @@ function CodeEditor() {
 }
 ```
 
-### Preload Before Navigation
+### Avoid Barrel File Imports
 
-Load critical data before route transitions:
+Barrel files (`index.js` with `export *`) pull in thousands of unused modules:
 
 ```tsx
-// Preload function with timeout
-function preload(key: string) {
-  const promise = fetchData(key);
-  return Promise.race([
-    promise,
-    new Promise(resolve => setTimeout(resolve, 1000))
-  ]);
-}
+// BAD: Imports entire library
+import { Check, X } from 'lucide-react';
 
-// Preload then navigate
-async function handleLogin() {
-  await login(credentials);
-  await preload('dashboard');  // Start loading before navigation
-  router.navigate('/dashboard');
-}
+// GOOD: Direct import
+import Check from 'lucide-react/dist/esm/icons/check';
+import X from 'lucide-react/dist/esm/icons/x';
+```
+
+### Preload on User Intent
+
+Warm the cache before the user clicks:
+
+```tsx
+<button
+  onMouseEnter={() => void import('./HeavyModal')}
+  onClick={() => setShowModal(true)}
+>
+  Open
+</button>
 ```
 
 ---
 
-## 11. Event Handling Patterns
+## 6. Event Handling Patterns
 
-Efficient patterns for event subscriptions.
+### Store Event Handlers in Refs
+
+Stable subscriptions without re-adding listeners:
+
+```tsx
+function useKeyboard(handler: (e: KeyboardEvent) => void) {
+  const handlerRef = useRef(handler);
+  useEffect(() => { handlerRef.current = handler; });
+
+  useEffect(() => {
+    const listener = (e: KeyboardEvent) => handlerRef.current(e);
+    window.addEventListener('keydown', listener);
+    return () => window.removeEventListener('keydown', listener);
+  }, []);
+}
+```
 
 ### useLatest for Stable Callbacks
-
-Access current values without effect dependencies:
 
 ```tsx
 function useLatest<T>(value: T) {
   const ref = useRef(value);
-  useEffect(() => {
-    ref.current = value;
-  });
+  useEffect(() => { ref.current = value; });
   return ref;
 }
 
-// Usage: Debounced search with stable callback
 function Search({ onSearch }) {
   const onSearchRef = useLatest(onSearch);
   const [query, setQuery] = useState('');
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      onSearchRef.current(query);
-    }, 300);
+    const timer = setTimeout(() => onSearchRef.current(query), 300);
     return () => clearTimeout(timer);
-  }, [query]); // onSearch not in deps, accessed via ref
+  }, [query]);
 
   return <input value={query} onChange={e => setQuery(e.target.value)} />;
 }
@@ -1126,33 +698,98 @@ function Search({ onSearch }) {
 Single listener shared across component instances:
 
 ```tsx
-// Centralized subscription manager
 const callbacks = new Map<string, Set<(e: KeyboardEvent) => void>>();
 
-function subscribe(key: string, callback: (e: KeyboardEvent) => void) {
-  if (!callbacks.has(key)) {
-    callbacks.set(key, new Set());
-  }
-  callbacks.get(key)!.add(callback);
-
-  return () => {
-    callbacks.get(key)!.delete(callback);
-  };
+function subscribe(key: string, cb: (e: KeyboardEvent) => void) {
+  if (!callbacks.has(key)) callbacks.set(key, new Set());
+  callbacks.get(key)!.add(cb);
+  return () => { callbacks.get(key)!.delete(cb); };
 }
 
-// Single global listener
 if (typeof window !== 'undefined') {
   window.addEventListener('keydown', (e) => {
-    callbacks.forEach((set) => {
-      set.forEach((cb) => cb(e));
-    });
+    callbacks.forEach(set => set.forEach(cb => cb(e)));
   });
 }
 
-// Hook: Multiple components share one listener
 function useKeydown(key: string, handler: (e: KeyboardEvent) => void) {
-  useEffect(() => {
-    return subscribe(key, handler);
-  }, [key, handler]);
+  useEffect(() => subscribe(key, handler), [key, handler]);
+}
+```
+
+### Passive Event Listeners
+
+Use `{ passive: true }` on `touchstart`/`wheel` to enable immediate scrolling. Don't use when you need `preventDefault()`.
+
+---
+
+## 7. Async Performance
+
+### Eliminate Waterfalls
+
+**Defer await until needed:**
+
+```tsx
+// BAD: Always awaits even when skipping
+async function handle(userId, skip) {
+  const data = await fetchData(userId);
+  if (skip) return { skipped: true };
+  return process(data);
+}
+
+// GOOD: Early return before expensive work
+async function handle(userId, skip) {
+  if (skip) return { skipped: true };
+  const data = await fetchData(userId);
+  return process(data);
+}
+```
+
+**Parallelize independent operations:**
+
+```tsx
+// BAD: Sequential — each waits for the previous
+const user = await fetchUser();
+const config = await fetchConfig();
+const posts = await fetchPosts();
+
+// GOOD: Parallel
+const [user, config, posts] = await Promise.all([
+  fetchUser(), fetchConfig(), fetchPosts()
+]);
+```
+
+**Dependency-based parallelization** — start independent work immediately, chain dependents:
+
+```tsx
+const userPromise = fetchUser();
+const configPromise = fetchConfig();
+const profilePromise = userPromise.then(u => fetchProfile(u.id));
+
+const [user, config, profile] = await Promise.all([
+  userPromise, configPromise, profilePromise
+]);
+```
+
+### Strategic Suspense Boundaries
+
+Wrap async components in `<Suspense>` so the shell renders immediately while data loads. Make parent non-async and let children each fetch independently:
+
+```tsx
+// BAD: Sequential fetching
+export default async function Page() {
+  const header = await fetchHeader();
+  const sidebar = await fetchSidebar();
+  return <div><Header data={header} /><Sidebar data={sidebar} /></div>;
+}
+
+// GOOD: Parallel via component composition
+export default function Page() {
+  return (
+    <div>
+      <Suspense fallback={<HeaderSkeleton />}><Header /></Suspense>
+      <Suspense fallback={<SidebarSkeleton />}><Sidebar /></Suspense>
+    </div>
+  );
 }
 ```

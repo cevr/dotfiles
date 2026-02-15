@@ -54,6 +54,7 @@ Violating step 1 is the #1 source of wasted cycles. Read the types.
 | Effect TS code | `effect` — run `primer effect <topic>` first |
 | Linear issues | `linear` |
 | React `.tsx` | `react` |
+| React Native | `react-native` |
 | Code style principles | `code-style` |
 | Code review / cleanup | `code-review` — runs `primer code-style` + `primer architecture` |
 | Architecture design | `architect` |
