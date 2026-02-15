@@ -98,6 +98,11 @@ knode() {
   killall -9 node 2>/dev/null || echo "No node processes found"
 }
 
+# Kill all bun processes
+kbun() {
+  killall -9 bun 2>/dev/null || echo "No bun processes found"
+}
+
 # Fetch and merge origin's version of current branch
 gfmo() {
   local branch=$(git branch --show-current)
