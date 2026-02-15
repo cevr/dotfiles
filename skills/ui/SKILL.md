@@ -33,6 +33,26 @@ allowed-tools: Read, Grep, Glob, Edit, Write
 - **Primitives**: Radix / Base UI / React Aria – never mix systems
 - **Icons**: Lucide, Heroicons, or project-specific; icon-only buttons need `aria-label`
 
+### Tailwind Data Attribute Styling
+
+Use data attributes for conditional styling instead of `classnames` object syntax. Data attributes have higher specificity, making style precedence predictable.
+
+```tsx
+// BAD: cn/clsx object - order-dependent, verbose
+<div className={cn({
+  'bg-blue-500': !isActive,
+  'bg-red-500': isActive,
+})} />
+
+// GOOD: data attributes - base style + conditional override
+<div
+  className="bg-blue-500 data-[active]:bg-red-500"
+  data-active={isActive ? '' : undefined}
+/>
+```
+
+**Caveat with `group`:** `group-data-*` selectors affect all descendants. Use unique attribute names if children have the same states as parents.
+
 ---
 
 ## Interactions
