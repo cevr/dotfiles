@@ -158,22 +158,6 @@ alias gcom='git checkout master'
 alias gcod='git checkout develop'
 alias lg='lazygit'
 
-# pnpm shortcuts
-alias pi='pnpm i'
-alias pid='pnpm i -D'
-alias pr='pnpm run'
-alias prd='pnpm run dev'
-alias prc='pnpm run compile'
-alias prt='pnpm run typecheck'
-alias prl='pnpm run lint'
-
-# Quick navigation
-alias zb='z bite'
-alias zbur='z bureau'
-alias zvit='z vitrine'
-alias zbib='z bible'
-alias zdot='z dotfiles'
-
 # fd (find replacement) - ignore node_modules/git by default
 alias f='fd --hidden --exclude node_modules --exclude .git'
 
