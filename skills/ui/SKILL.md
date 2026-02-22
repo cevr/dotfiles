@@ -154,6 +154,14 @@ Use data attributes for conditional styling instead of `classnames` object synta
 - **NEVER**: Animate large blur/backdrop surfaces
 - **NEVER**: Use `will-change` outside active animations
 
+### Motion Choreography
+
+- **SHOULD**: Spring physics for interactive elements: `type: "spring", stiffness: 100, damping: 20` — no linear easing
+- **MUST**: Continuous animations (magnetic hover, cursor tracking) use `useMotionValue`/`useTransform` — never `useState` for per-frame updates
+- **SHOULD**: Staggered entrances via `staggerChildren` or CSS `animation-delay` cascade; parent+children must share same client component tree
+- **SHOULD**: Layout transitions via `layout`/`layoutId` for reorder, resize, shared-element animation
+- **SHOULD**: Glassmorphism done right: `backdrop-blur` + `border-white/10` + `shadow-[inset_0_1px_0_rgba(255,255,255,0.1)]` — not just blur alone
+
 ---
 
 ## Layout
@@ -281,6 +289,8 @@ z-50   tooltips/popovers
 - **SHOULD**: Detect and adapt to hardware/network capabilities ([react-adaptive-hooks](https://github.com/GoogleChromeLabs/react-adaptive-hooks))
 - **NEVER**: Large `blur()` values on `filter`/`backdrop-filter`
 - **NEVER**: Scale/blur filled rectangles (causes banding); use radial gradients
+- **MUST**: Grain/noise texture filters: fixed pseudo-element only, `pointer-events-none`, never on scrolling containers
+- **MUST**: Perpetual/infinite animations: isolate in own memoized leaf component — never re-render parent
 
 ---
 
@@ -329,6 +339,40 @@ z-50   tooltips/popovers
 
 ---
 
+## Anti-Slop Aesthetics
+
+### Typography
+
+- **NEVER**: Default to Inter/Roboto/Arial — these signal "template"
+- **SHOULD**: Reach for distinctive sans: Geist, Outfit, Satoshi, Cabinet Grotesk, General Sans, Plus Jakarta Sans
+- **NEVER**: Serif fonts in dashboard/software UIs — serif is for editorial/marketing only
+
+### Color
+
+- **MUST**: Max 1 accent color per surface; saturation <80%
+- **NEVER**: AI purple (#7C3AED and friends), neon gradients, rainbow accent combos
+- **MUST**: Stick to one palette — don't mix warm and cool accents
+
+### Layout
+
+- **NEVER**: Centered hero section when content is high-variance (dashboards, feeds, tools)
+- **NEVER**: Generic 3-column equal card rows — force asymmetric, split, zigzag, or bento alternatives
+- **SHOULD**: Break symmetry intentionally — offset grids, varied card sizes, editorial whitespace
+
+### Content Realism
+
+- **NEVER**: Generic placeholder names — no John Doe, Jane Smith, Acme Corp, Nexus AI
+- **NEVER**: Fake round numbers ($99.99, 1,000 users, 99.9% uptime) — use organic-looking data
+- **NEVER**: AI filler words in UI copy: Elevate, Seamless, Unleash, Supercharge, Empower, Cutting-edge
+- **MUST**: Use `picsum.photos` or inline SVG placeholders — never broken Unsplash `source.unsplash.com` links
+- **MUST**: No emojis in UI code unless explicitly part of the design spec
+
+### Component Libraries
+
+- **NEVER**: Ship shadcn/ui components in default state — always customize radii, colors, shadows, and spacing to match the project's design language
+
+---
+
 ## Anti-Patterns (flag these in review)
 
 - `user-scalable=no` or `maximum-scale=1` — disables zoom
@@ -347,6 +391,8 @@ z-50   tooltips/popovers
 ---
 
 ## Reference
+
+**Creative pattern catalog**: `references/creative-patterns.md` — navigation, layout, card, scroll, gallery, typography, and micro-interaction patterns. Load when building distinctive/exploratory UI.
 
 Distilled from:
 - [Vercel Web Interface Guidelines](https://github.com/vercel-labs/web-interface-guidelines)
