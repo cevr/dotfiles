@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "seo-audit": {
+      "source": "coreyhaines31/marketingskills@seo-audit",
+      "skillPath": "skills/seo-audit/SKILL.md",
+      "installedAt": "2026-02-22T21:13:37.708Z",
+      "updatedAt": "2026-02-22T21:13:37.708Z"
+    },
+    "agent-browser": {
+      "source": "vercel-labs/agent-browser",
+      "skillPath": "skills/agent-browser/SKILL.md",
+      "installedAt": "2026-02-23T19:45:10.142Z",
+      "updatedAt": "2026-02-23T19:45:10.142Z"
+    }
+  }
+}
