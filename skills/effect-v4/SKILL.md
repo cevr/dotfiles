@@ -129,6 +129,87 @@ export class NotFound extends Schema.TaggedErrorClass<NotFound>()(
 
 Same as v3. Wrap in services with static `layer`/`layerTest`.
 
+### 7. Never try/catch in Effect generators
+
+The `@effect/language-service` flags `tryCatchInEffectGen`. Use `Effect.try` or `Effect.tryPromise` instead.
+
+```typescript
+// BAD
+const load = Effect.fn("load")(function* () {
+  try {
+    const data = yield* Effect.promise(() => file.text())
+    return JSON.parse(data)
+  } catch {
+    return defaultValue
+  }
+})
+
+// GOOD
+const load = Effect.fn("load")(function* () {
+  const data = yield* Effect.promise(() => file.text())
+  return yield* Effect.try({
+    try: () => JSON.parse(data) as unknown,
+    catch: () => new ParseError({ message: "invalid json" }),
+  })
+})
+```
+
+### 8. Never JSON.parse/JSON.stringify — use Schema
+
+The LSP flags `preferSchemaOverJson`. Use `Schema.fromJsonString` for type-safe JSON parsing/encoding.
+
+```typescript
+// BAD
+const data = JSON.parse(text) as MyType
+
+// GOOD
+const MySchema = Schema.Struct({ name: Schema.String, count: Schema.Number })
+const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(MySchema))
+const encode = Schema.encodeEffect(Schema.fromJsonString(MySchema))
+
+const data = yield* decode(text)                    // string → MyType
+const json = yield* encode(data)                    // MyType → string
+```
+
+### 9. No unnecessary Effect.gen
+
+The LSP flags `unnecessaryEffectGen` for generators with a single yield/return. Flatten these.
+
+```typescript
+// BAD — single yield, unnecessary gen
+const getName = (id: string) =>
+  Effect.gen(function* () {
+    yield* recorder.record({ service: "User", method: "getName", args: { id } })
+  })
+
+// GOOD — direct call
+const getName = (id: string) =>
+  recorder.record({ service: "User", method: "getName", args: { id } })
+
+// BAD — single yield + return
+const getCount = () =>
+  Effect.gen(function* () {
+    yield* recorder.record({ service: "Counter", method: "get" })
+    return 42
+  })
+
+// GOOD — pipe with Effect.as
+const getCount = () =>
+  recorder.record({ service: "Counter", method: "get" }).pipe(Effect.as(42))
+```
+
+### 10. Deterministic service keys
+
+The LSP flags `deterministicKeys`. Use `@scope/package/path/ServiceName` format.
+
+```typescript
+// BAD
+class MyService extends ServiceMap.Service<...>()("MyService") {}
+
+// GOOD
+class MyService extends ServiceMap.Service<...>()("@myorg/mypackage/services/MyService") {}
+```
+
 ## Services (quick ref)
 
 v4 uses `ServiceMap.Service` instead of `Context.Tag`. Static layers use `layer`/`layerTest` naming.
@@ -232,6 +313,23 @@ rg "ServiceMap.Service" ~/.claude/repos/Effect-TS/effect-smol/packages --glob "*
 rg "TaggedErrorClass" ~/.claude/repos/Effect-TS/effect-smol/packages --glob "*.ts" -C 3
 ```
 
+## LSP Diagnostics
+
+The `@effect/language-service` plugin provides diagnostics beyond `tsc`. Patch TypeScript to get them in CLI:
+
+```sh
+# Add to package.json scripts
+"prepare": "effect-language-service patch && lefthook install"
+```
+
+Suppress diagnostics with comments:
+
+```typescript
+// @effect-diagnostics-next-line effect/strictEffectProvide:off   (single line)
+// @effect-diagnostics effect/strictEffectProvide:off              (rest of file)
+// @effect-diagnostics *:off                                       (all diagnostics, rest of file)
+```
+
 ## Gotchas
 
 - **`ServiceMap.Service` not `Context.Tag`** — Context.Tag is removed in v4
@@ -249,3 +347,8 @@ rg "TaggedErrorClass" ~/.claude/repos/Effect-TS/effect-smol/packages --glob "*.t
 - **Unstable imports** — `effect/unstable/http` not `@effect/platform`
 - **`BunServices.layer`** not `BunContext.layer` — platform context renamed
 - **`static layer`/`static layerTest`** not `static Live`/`static Test` — naming convention
+- **No `Schema.parseJson`** — use `Schema.fromJsonString(schema)` for JSON string ↔ typed data
+- **`Schema.Record` takes two args** — `Schema.Record(Schema.String, ValueSchema)` not `Schema.Record({ key, value })`
+- **No try/catch in generators** — use `Effect.try` / `Effect.tryPromise`
+- **No unnecessary `Effect.gen`** — single yield? Use pipe + `Effect.as` / `Effect.andThen`
+- **Deterministic keys** — `@scope/pkg/path/Name` format for service identifiers

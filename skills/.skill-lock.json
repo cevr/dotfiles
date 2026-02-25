@@ -12,6 +12,18 @@
       "skillPath": "skills/agent-browser/SKILL.md",
       "installedAt": "2026-02-23T19:45:10.142Z",
       "updatedAt": "2026-02-23T19:45:10.142Z"
+    },
+    "ai-sdk": {
+      "source": "vercel/ai@ai-sdk",
+      "skillPath": "skills/use-ai-sdk/SKILL.md",
+      "installedAt": "2026-02-25T18:06:54.042Z",
+      "updatedAt": "2026-02-25T18:06:54.042Z"
+    },
+    "turborepo": {
+      "source": "vercel/turborepo@turborepo",
+      "skillPath": "skills/turborepo/SKILL.md",
+      "installedAt": "2026-02-25T18:07:10.004Z",
+      "updatedAt": "2026-02-25T18:07:10.004Z"
     }
   }
 }

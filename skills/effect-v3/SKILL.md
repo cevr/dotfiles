@@ -148,6 +148,79 @@ Effect.fail(new NotFound({ id }))
 
 Wrap in services with static `Live`/`Test`. See `references/services.md`.
 
+### 7. Never try/catch in Effect generators
+
+The `@effect/language-service` flags `tryCatchInEffectGen`. Use `Effect.try` or `Effect.tryPromise` instead.
+
+```typescript
+// BAD
+const load = Effect.fn("load")(function* () {
+  try {
+    const data = yield* Effect.promise(() => file.text())
+    return JSON.parse(data)
+  } catch {
+    return defaultValue
+  }
+})
+
+// GOOD
+const load = Effect.fn("load")(function* () {
+  const data = yield* Effect.promise(() => file.text())
+  return yield* Effect.try({
+    try: () => JSON.parse(data) as unknown,
+    catch: () => new ParseError({ message: "invalid json" }),
+  })
+})
+```
+
+### 8. Never JSON.parse/JSON.stringify — use Schema
+
+The LSP flags `preferSchemaOverJson`. Use `Schema.parseJson` for type-safe JSON parsing/encoding.
+
+```typescript
+// BAD
+const data = JSON.parse(text) as MyType
+
+// GOOD
+const MySchema = Schema.Struct({ name: Schema.String, count: Schema.Number })
+const decode = Schema.decodeUnknownSync(Schema.parseJson(MySchema))
+const encode = Schema.encodeSync(Schema.parseJson(MySchema))
+
+const data = decode(text)                    // string → MyType
+const json = encode(data)                    // MyType → string
+
+// GOOD — effectful
+const decodeEffect = Schema.decodeUnknown(Schema.parseJson(MySchema))
+const data = yield* decodeEffect(text)
+```
+
+### 9. No unnecessary Effect.gen
+
+The LSP flags `unnecessaryEffectGen` for generators with a single yield/return. Flatten these.
+
+```typescript
+// BAD — single yield, unnecessary gen
+const getName = (id: string) =>
+  Effect.gen(function* () {
+    yield* recorder.record({ service: "User", method: "getName", args: { id } })
+  })
+
+// GOOD — direct call
+const getName = (id: string) =>
+  recorder.record({ service: "User", method: "getName", args: { id } })
+
+// BAD — single yield + return
+const getCount = () =>
+  Effect.gen(function* () {
+    yield* recorder.record({ service: "Counter", method: "get" })
+    return 42
+  })
+
+// GOOD — pipe with Effect.as
+const getCount = () =>
+  recorder.record({ service: "Counter", method: "get" }).pipe(Effect.as(42))
+```
+
 ## Services (quick ref)
 
 Canonical pattern: `Context.Tag` with static `Live`/`Test`/`Noop`.
@@ -280,6 +353,23 @@ rg "Context.Tag" ~/.claude/repos/Effect-TS/effect/packages --glob "*.ts" -C 2
 rg "HttpApiGroup" ~/.claude/repos/Effect-TS/effect/packages --glob "*.ts" -C 3
 ```
 
+## LSP Diagnostics
+
+The `@effect/language-service` plugin provides diagnostics beyond `tsc`. Patch TypeScript to get them in CLI:
+
+```sh
+# Add to package.json scripts
+"prepare": "effect-language-service patch && lefthook install"
+```
+
+Suppress diagnostics with comments:
+
+```typescript
+// @effect-diagnostics-next-line effect/strictEffectProvide:off   (single line)
+// @effect-diagnostics effect/strictEffectProvide:off              (rest of file)
+// @effect-diagnostics *:off                                       (all diagnostics, rest of file)
+```
+
 ## Gotchas
 
 - **`@effect/schema` merged into `effect`** — import `Schema` from `"effect"`, not `"@effect/schema"`
@@ -291,3 +381,6 @@ rg "HttpApiGroup" ~/.claude/repos/Effect-TS/effect/packages --glob "*.ts" -C 3
 - **`Effect.gen` `this` binding** — `Effect.gen(this, function* () { ... })` when inside a class
 - **Schema field order matters for decode** — put required fields before optional
 - **`yield*` not `yield`** — `yield*` delegates to the Effect, `yield` just returns the Effect object
+- **No `JSON.parse`** — use `Schema.parseJson(schema)` for type-safe JSON string ↔ typed data
+- **No try/catch in generators** — use `Effect.try` / `Effect.tryPromise`
+- **No unnecessary `Effect.gen`** — single yield? Use pipe + `Effect.as` / `Effect.andThen`
