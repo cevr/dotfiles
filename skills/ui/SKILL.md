@@ -310,7 +310,23 @@ z-50   tooltips/popovers
 
 - **MUST**: Active voice: "Install the CLI" not "The CLI will be installed"
 - **MUST**: Specific button labels: "Save API Key" not "Continue"
-- **MUST**: Error messages include fix/next step, not just the problem
+- **MUST**: Error messages follow the 5-part anatomy (see below)
+
+### Error Message Anatomy
+
+Every error message should include, in order:
+
+| # | Element | Purpose | Example |
+|---|---------|---------|---------|
+| 1 | **Title** | Say what happened — clear, specific | "Unable to connect your account" |
+| 2 | **Reassurance** | Confirm what did work | "Your changes were saved, but…" |
+| 3 | **Cause** | Say why — technical cause in plain language | "…we could not connect due to a technical issue on our end." |
+| 4 | **Escape hatch** | Give a way out if stuck | "If the issue keeps happening, contact Customer Care." |
+| 5 | **Action** | Help them fix it — actionable next step | `[ Try Again ]` button |
+
+- Skip reassurance (#2) only when nothing succeeded
+- Primary action (#5) should always be present; secondary dismiss is optional
+- Never blame the user; own the failure ("we could not" not "you failed to")
 - **MUST**: Loading states end with `…`: "Saving…", "Loading…"
 - **SHOULD**: Title Case for headings/buttons (Chicago style)
 - **SHOULD**: Numerals for counts: "8 deployments" not "eight"

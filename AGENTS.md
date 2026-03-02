@@ -69,6 +69,7 @@ Violating step 1 is the #1 source of wasted cycles. Read the types.
 | Bun project | `bun` |
 | New project setup | `project-scaffolding` |
 | CLI design | `cli` |
+| Brain vault / reflect / meditate / ruminate / plan / review | `brain` |
 
 Effect projects: auto-invoke `effect-v3` or `effect-v4`. Don't ask "should I use the effect skill?" — just use it.
 
@@ -79,6 +80,7 @@ Effect projects: auto-invoke `effect-v3` or `effect-v4`. Don't ask "should I use
 - **`bun.lock` present**: invoke `bun`
 - **TUI work**: invoke `opentui`
 - **New project**: invoke `project-scaffolding`
+- **Brain vault writes**: invoke `brain`
 
 ## Important Locations
 
