@@ -293,7 +293,108 @@ class UsersApi extends HttpApiGroup.make('users')
 {}
 ```
 
-### 7. Testing Services
+### 7. Dual Export Pattern (CLI Commands)
+
+Export both unprovided (for tests) and provided (for CLI) versions:
+
+```typescript
+// commands/deploy.ts
+import { Command } from "@effect/cli"
+
+// Unprovided - tests inject their own layers
+export const deployCommand = Command.make("deploy", { env: Args.text() }, ({ env }) =>
+  Effect.gen(function* () {
+    const git = yield* GitService
+    yield* git.ensureClean()
+    const deploy = yield* DeployService
+    yield* deploy.push(env)
+  })
+)
+
+// Provided - CLI uses this
+export const deployCommandLive = deployCommand.pipe(Command.provide(AppLayer))
+```
+
+### 8. Test Factory Pattern
+
+Services expose test helpers with call tracking:
+
+```typescript
+class GitService extends Context.Tag("GitService")<
+  GitService,
+  {
+    readonly ensureClean: () => Effect.Effect<void, DirtyWorkingTree>
+    readonly getCurrentBranch: () => Effect.Effect<string>
+  }
+>() {
+  static Live = Layer.effect(...)
+
+  static Test(config: { branch?: string; dirty?: boolean } = {}) {
+    const calls: Array<{ method: string; args: unknown[] }> = []
+
+    const layer = Layer.succeed(GitService, GitService.of({
+      ensureClean: () => {
+        calls.push({ method: "ensureClean", args: [] })
+        return config.dirty ? Effect.fail(new DirtyWorkingTree()) : Effect.void
+      },
+      getCurrentBranch: () => {
+        calls.push({ method: "getCurrentBranch", args: [] })
+        return Effect.succeed(config.branch ?? "main")
+      },
+    }))
+
+    return { layer, getCalls: () => calls }
+  }
+}
+```
+
+### 9. Sequence-Based Testing
+
+Test orchestration, not just outputs:
+
+```typescript
+it.effect("checks clean before deploying", () =>
+  Effect.gen(function* () {
+    const git = GitService.Test()
+    const deploy = DeployService.Test()
+
+    yield* deployCommand.pipe(
+      Effect.provide(git.layer),
+      Effect.provide(deploy.layer)
+    )
+
+    // Verify call sequence
+    expect(git.getCalls()[0]).toMatchObject({ method: "ensureClean" })
+    expect(deploy.getCalls()[0]).toMatchObject({ method: "push" })
+  })
+)
+```
+
+### 10. Lazy Layer Provision
+
+Pay layer cost only when needed:
+
+```typescript
+// Heavy layer - DB connection
+const DbLayer = Layer.scoped(SqlClient, /* expensive connection */)
+
+// Wrapper for lazy provision
+function withDb<A, E>(
+  effect: Effect.Effect<A, E, SqlClient>
+): Effect.Effect<A, E | DbConnectionError> {
+  return Effect.provide(effect, DbLayer)
+}
+
+// In command: only connects if path taken
+const command = Command.make("cmd", { query: Args.optional(Args.text()) }, ({ query }) =>
+  Option.match(query, {
+    onNone: () => showHelp(), // No DB needed
+    onSome: (q) => withDb(runQuery(q)), // DB only when querying
+  })
+)
+```
+
+### 11. Testing Services
 
 ```typescript
 import { it, expect } from "@effect/vitest"
@@ -326,7 +427,7 @@ it.effect("returns error for missing user", () =>
 )
 ```
 
-### 8. Layer Dependencies Visualization
+### 12. Layer Dependencies Visualization
 
 ```
                     ┌─────────────┐

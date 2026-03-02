@@ -1,6 +1,13 @@
 ---
 name: architecture
-description: Effect-first TypeScript application architecture patterns. Use when designing module structure, wiring services/DI, defining error strategies, modeling domain types, designing APIs, or organizing monorepos. Covers Context.Tag, Layer composition, TaggedError, Config, Schema.Class, HttpApi, and testing patterns.
+description: >
+  Effect-first TypeScript application architecture patterns. Use when designing module
+  structure, wiring services/DI, defining error strategies, modeling domain types, designing
+  APIs, organizing monorepos, or architecting multi-client applications with shared core logic.
+  Covers Context.Tag, Layer composition, TaggedError, Config, Schema.Class, HttpApi, testing,
+  auth, storage, event bus, transport, plugins, and client templates (TUI, web, desktop, bot).
+  Triggers on "architect", "architecture", "design", "structure", "module layout", "monorepo".
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash, AskUserQuestion, Skill
 ---
 
 # Architecture Patterns
@@ -14,35 +21,80 @@ Effect-first patterns for TypeScript application architecture.
 3. **Errors are types** — TaggedError with typed error channel
 4. **Config fails fast** — invalid config = startup failure
 5. **Branded strings everywhere** — monotonic IDs (ULID/KSUID), no integer IDs
+6. **Server is single source of truth** — clients are thin presentation adapters
 
 ## Navigation
 
 ```
-Building something?
-├─ Organizing a monorepo        → references/structure.md
-├─ Defining module boundaries   → references/boundaries.md
-├─ Wiring up services/DI        → references/services.md
-├─ Handling errors              → references/errors.md
-├─ Managing configuration       → references/config.md
-├─ Modeling domain types        → references/domain.md
-├─ Designing APIs               → references/api.md
-├─ Writing tests                → references/testing.md
-└─ Avoiding pitfalls            → references/gotchas.md
+What are you doing?
+├─ Designing an app from scratch    → §Multi-Client Architecture + patterns/monorepo.md
+├─ Organizing a monorepo            → references/structure.md + patterns/monorepo.md
+├─ Defining module boundaries       → references/boundaries.md
+├─ Wiring up services/DI            → references/services.md
+├─ Handling errors                   → references/errors.md
+├─ Managing configuration            → references/config.md + patterns/config-layered.md
+├─ Modeling domain types             → references/domain.md
+├─ Designing APIs                    → references/api.md
+├─ Implementing HTTP server          → patterns/http-server.md
+├─ Building HTTP client              → patterns/http-client.md
+├─ Adding authentication             → patterns/auth.md
+├─ Event bus / pub-sub               → patterns/bus.md
+├─ Storage / database                → patterns/storage.md
+├─ Transport abstraction             → patterns/transport.md
+├─ Plugin system                     → patterns/plugins.md
+├─ Exhaustive type patterns          → patterns/exhaustive-types.md
+├─ UI composition                    → patterns/ui-composition.md
+├─ UI state management               → patterns/ui-state.md
+├─ Building a TUI client             → clients/tui.md
+├─ Building a web client             → clients/web.md
+├─ Building a desktop client         → clients/desktop.md
+├─ Building a bot integration        → clients/bot.md
+├─ Writing tests                     → references/testing.md
+├─ Code quality checklist            → reference/code-style.md
+└─ Avoiding pitfalls                 → references/gotchas.md
 ```
 
 ## Topic Index
 
-| Topic             | File                         | When to Read                         |
-| ----------------- | ---------------------------- | ------------------------------------ |
-| Project structure | `references/structure.md`    | Setting up monorepo, package layout  |
-| Module boundaries | `references/boundaries.md`   | Deciding import rules, isolation     |
-| Services & DI     | `references/services.md`     | Context.Tag, Layer composition       |
-| Error handling    | `references/errors.md`       | TaggedError, catchTag, recovery      |
-| Configuration     | `references/config.md`       | Config.*, redacted secrets           |
-| Domain modeling   | `references/domain.md`       | Schema.Class, branded types          |
-| API design        | `references/api.md`          | HttpApi, endpoints, middleware       |
-| Testing           | `references/testing.md`      | Test layers, mocking                 |
-| Common mistakes   | `references/gotchas.md`      | Effect-specific pitfalls             |
+### References (foundational patterns)
+
+| Topic             | File                         | When to Read                              |
+| ----------------- | ---------------------------- | ----------------------------------------- |
+| Project structure | `references/structure.md`    | Package layout, monorepo patterns         |
+| Module boundaries | `references/boundaries.md`   | Import rules, isolation, barrel files     |
+| Services & DI     | `references/services.md`     | Context.Tag, Layer, test factories, lazy  |
+| Error handling    | `references/errors.md`       | TaggedError, catchTag, retry, recovery    |
+| Configuration     | `references/config.md`       | Effect Config.*, redacted secrets         |
+| Domain modeling   | `references/domain.md`       | Schema.Class, branded types, unions       |
+| API design        | `references/api.md`          | HttpApi, endpoints, middleware, OpenAPI   |
+| Testing           | `references/testing.md`      | Test layers, mocking, fixtures            |
+| Common mistakes   | `references/gotchas.md`      | Effect-specific pitfalls                  |
+
+### Patterns (concrete implementations)
+
+| Topic             | File                              | When to Read                           |
+| ----------------- | --------------------------------- | -------------------------------------- |
+| Auth              | `patterns/auth.md`                | JWT, HttpApiMiddleware, AuthService    |
+| Event bus         | `patterns/bus.md`                 | PubSub, SSE streaming, event sourcing |
+| Layered config    | `patterns/config-layered.md`      | Multi-source config merge, hot reload  |
+| Exhaustive types  | `patterns/exhaustive-types.md`    | assertNever, Match, discriminated      |
+| HTTP client       | `patterns/http-client.md`         | HttpApiClient, SolidJS context         |
+| HTTP server       | `patterns/http-server.md`         | HttpApiBuilder, server wiring          |
+| Monorepo          | `patterns/monorepo.md`            | package.json, tsconfig, turbo.json     |
+| Plugins           | `patterns/plugins.md`             | Plugin interface, hook types           |
+| Storage           | `patterns/storage.md`             | Drizzle, repository pattern, SQL       |
+| Transport         | `patterns/transport.md`           | Protocol-agnostic event protocol       |
+| UI composition    | `patterns/ui-composition.md`      | Provider, compound components          |
+| UI state          | `patterns/ui-state.md`            | Union state, derived values, URL state |
+
+### Clients (implementation templates)
+
+| Client  | File              | When to Read                   |
+| ------- | ----------------- | ------------------------------ |
+| TUI     | `clients/tui.md`  | Terminal UI with @opentui      |
+| Web     | `clients/web.md`  | SolidJS with HttpApiClient     |
+| Desktop | `clients/desktop.md` | Tauri integration           |
+| Bot     | `clients/bot.md`  | Slack/Discord/webhook adapters |
 
 ## Quick Decision Trees
 
@@ -74,6 +126,57 @@ API endpoint?
 ├─ Full API                     → HttpApi.make
 └─ Add authentication           → HttpApiMiddleware.Tag
 ```
+
+## Multi-Client Architecture
+
+For applications needing multiple clients (TUI, web, desktop, mobile, bot):
+
+```
+┌─────────────────────────────────────────┐
+│         UI LAYER (Multiple Clients)     │
+│   TUI / Web / Desktop / Mobile / Bot    │
+└────────────────┬────────────────────────┘
+                 │
+        HTTP REST + SSE/WebSocket
+                 │
+┌────────────────▼────────────────────────┐
+│         API LAYER (Effect HttpApi)      │
+│   HttpApiBuilder / HttpLayerRouter      │
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│         CORE BUSINESS LOGIC             │
+│   Effect Services / Layers / Storage    │
+└─────────────────────────────────────────┘
+```
+
+### Technology Stack
+
+| Layer | Technology |
+|-------|------------|
+| Runtime | Bun |
+| Monorepo | Bun workspaces (simple) or Turborepo (complex) |
+| Core Logic | Effect |
+| Platform | @effect/platform-bun |
+| Validation | @effect/schema |
+| HTTP Server | @effect/platform HttpApi |
+| HTTP Client | HttpApiClient (auto-generated) |
+| Database | @effect/sql + Drizzle |
+| Web UI | SolidJS |
+| TUI | @opentui/solid |
+| Desktop | Tauri |
+| Testing | @effect/vitest |
+| CLI | @effect/cli |
+| Binary | `bun build --compile` |
+
+### Generation Workflow
+
+When asked to architect a multi-client app:
+
+1. **Gather requirements** — app type, target clients, real-time needs, domain entities, database, constraints
+2. **Generate architecture** — package structure, data flow, Effect services, file tree
+3. **Generate code** — `packages/api` (HttpApi schemas), `packages/core` (services), `apps/server`, `apps/web`, `apps/tui`
+4. **Verify** — `bun install`, migrations, `bun run dev`, `bun test`
 
 ## Key Imports
 

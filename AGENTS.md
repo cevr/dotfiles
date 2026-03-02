@@ -57,7 +57,7 @@ Violating step 1 is the #1 source of wasted cycles. Read the types.
 | React Native | `react-native` |
 | Code style principles | `code-style` |
 | Code review / cleanup | `code-review` |
-| Architecture design | `architect` / `architecture` |
+| Architecture design | `architecture` |
 | PR creation | `pr` |
 | External repo/pkg | `repo-explorer` |
 | UI implementation | `ui` |
