@@ -36,9 +36,10 @@ What do you need?
 | `brain list [--json]`                 | List all vault files (one per line)                        |
 | `brain skills list [--json]`          | List installed skills, flag outdated ones                  |
 | `brain skills sync`                   | Sync skills from source to installed (idempotent)          |
-| `brain daemon start`                  | Install launchd jobs (reflect/ruminate/meditate)           |
-| `brain daemon stop`                   | Uninstall all daemon launchd jobs                          |
-| `brain daemon status [--json]`        | Show loaded jobs and last run times                        |
+| `brain daemon start`                  | Install unified scheduler (auto-migrates legacy plists)    |
+| `brain daemon stop`                   | Uninstall daemon scheduler                                 |
+| `brain daemon status [--json]`        | Show scheduler state and per-job last run times            |
+| `brain daemon tick`                   | Scheduler tick — dispatches job based on current day/hour  |
 | `brain daemon run <job>`              | Run a specific job immediately (reflect/ruminate/meditate) |
 | `brain daemon logs [job] [--tail]`    | View daemon logs (optional job as positional arg)          |
 
@@ -138,18 +139,26 @@ Common error codes: `NOT_INITIALIZED`, `READ_FAILED`, `WRITE_FAILED`, `INDEX_MIS
 
 ## Daemon
 
-Automated vault maintenance via launchd (**macOS-only**). Three jobs on different cadences:
+Automated vault maintenance via launchd (**macOS-only**). Single unified plist (`com.cvr.brain-daemon`) fires at 9am, 1pm, 5pm, 9pm. `brain daemon tick` dispatches via `resolveJob()` in `schedule.ts`:
 
-| Job      | Cadence           | Model  | What                                                   |
-| -------- | ----------------- | ------ | ------------------------------------------------------ |
-| reflect  | Hourly            | sonnet | Pass session file paths to Claude /reflect per project |
-| ruminate | Weekly (Sun 3am)  | opus   | Mine session archives for missed patterns              |
-| meditate | Monthly (1st 3am) | opus   | Audit + prune + distill vault quality                  |
+| Timeslot | Sun       | Mon-Thu   | Fri-Sat |
+| -------- | --------- | --------- | ------- |
+| 9am      | meditate  | ruminate  | skip    |
+| 1pm      | reflect   | reflect   | skip    |
+| 5pm      | reflect   | reflect   | skip    |
+| 9pm      | reflect   | reflect   | skip    |
+
+| Job      | Model  | What                                                   |
+| -------- | ------ | ------------------------------------------------------ |
+| reflect  | sonnet | Pass session file paths to Claude /reflect per project |
+| ruminate | opus   | Mine session archives for missed patterns              |
+| meditate | opus   | Audit + prune + distill vault quality                  |
 
 **State**: `~/.brain/.daemon.json` tracks processed sessions and last run times.
 **Locks**: `~/.brain/.daemon-{job}.lock` — atomic acquisition via `O_EXCL`, stale lock detection. `Effect.ensuring` guarantees release on interruption.
-**Logs**: `~/.brain/logs/daemon-{job}.log` — size-based rotation (truncate to last 1000 lines when >10MB).
+**Logs**: `~/.brain/logs/daemon.log` (unified) + legacy `daemon-{job}.log`. Size-based rotation (truncate to last 1000 lines when >10MB).
 **Session detection**: A session is "settled" when its mtime is >30 min ago. Already-processed sessions (same mtime) are skipped.
 **Reflect approach**: Passes session JSONL file paths with line ranges in the prompt so Claude reads them via its Read tool. Max 2000 lines per group, newest first.
-**`--json` output**: All subcommands (start/stop/status/run) support `--json`. Status includes schedule, lock state, and processed session count.
+**`--json` output**: All subcommands (start/stop/status/run/tick) support `--json`. Status includes schedule, lock state, and processed session count.
+**Migration**: `brain daemon start` auto-removes legacy per-job plists (`com.cvr.brain-daemon-{reflect,ruminate,meditate}`).
 **Error codes**: `NO_HOME` (HOME unset), `UNSUPPORTED_PLATFORM` (non-macOS), `LOCKED` (job already running, includes lock path in message).
