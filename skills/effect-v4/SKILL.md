@@ -115,7 +115,45 @@ Same as v3. No free-floating effectful functions.
 
 Same as v3. Don't provide layers deep inside.
 
-### 5. Never raw errors — always tagged
+### 5. Never pass context as parameters — yield it
+
+Don't thread services/refs through function arguments. Yield them from context directly and let requirements bubble through the type system.
+
+```typescript
+// BAD — threading context as parameters
+const processOrder = Effect.fn("processOrder")(function* (
+  order: Order,
+  db: DatabaseService,    // ← passing context as param
+  logger: LoggerService,  // ← passing context as param
+) {
+  yield* logger.info(`Processing ${order.id}`)
+  yield* db.save(order)
+})
+
+// caller has to manually thread services
+const program = Effect.fn("program")(function* () {
+  const db = yield* Database
+  const logger = yield* Logger
+  yield* processOrder(order, db, logger)
+})
+
+// GOOD — yield context directly, requirements bubble
+const processOrder = Effect.fn("processOrder")(function* (order: Order) {
+  const db = yield* Database
+  const logger = yield* Logger
+  yield* logger.info(`Processing ${order.id}`)
+  yield* db.save(order)
+})
+
+// caller just calls — no threading
+const program = Effect.fn("program")(function* () {
+  yield* processOrder(order)
+})
+```
+
+This applies to any yieldable context: services, refs, config, etc. If you can `yield*` it, don't pass it.
+
+### 6. Never raw errors — always tagged
 
 ```typescript
 // v4: Schema.TaggedErrorClass (renamed from TaggedError)
@@ -125,11 +163,11 @@ export class NotFound extends Schema.TaggedErrorClass<NotFound>()(
 ) {}
 ```
 
-### 6. Never standalone exported functions with side effects
+### 7. Never standalone exported functions with side effects
 
 Same as v3. Wrap in services with static `layer`/`layerTest`.
 
-### 7. Never try/catch in Effect generators
+### 8. Never try/catch in Effect generators
 
 The `@effect/language-service` flags `tryCatchInEffectGen`. Use `Effect.try` or `Effect.tryPromise` instead.
 
@@ -154,7 +192,7 @@ const load = Effect.fn("load")(function* () {
 })
 ```
 
-### 8. Never JSON.parse/JSON.stringify — use Schema
+### 9. Never JSON.parse/JSON.stringify — use Schema
 
 The LSP flags `preferSchemaOverJson`. Use `Schema.fromJsonString` for type-safe JSON parsing/encoding.
 
@@ -171,7 +209,7 @@ const data = yield* decode(text)                    // string → MyType
 const json = yield* encode(data)                    // MyType → string
 ```
 
-### 9. No unnecessary Effect.gen
+### 10. No unnecessary Effect.gen
 
 The LSP flags `unnecessaryEffectGen` for generators with a single yield/return. Flatten these.
 
@@ -198,7 +236,7 @@ const getCount = () =>
   recorder.record({ service: "Counter", method: "get" }).pipe(Effect.as(42))
 ```
 
-### 10. Deterministic service keys
+### 11. Deterministic service keys
 
 The LSP flags `deterministicKeys`. Use `@scope/package/path/ServiceName` format.
 
@@ -352,3 +390,4 @@ Suppress diagnostics with comments:
 - **No try/catch in generators** — use `Effect.try` / `Effect.tryPromise`
 - **No unnecessary `Effect.gen`** — single yield? Use pipe + `Effect.as` / `Effect.andThen`
 - **Deterministic keys** — `@scope/pkg/path/Name` format for service identifiers
+- **Never pass context as parameters** — yield services/refs/config directly; don't thread them through function args
