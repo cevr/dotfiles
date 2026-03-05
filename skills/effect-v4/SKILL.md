@@ -236,7 +236,28 @@ const getCount = () =>
   recorder.record({ service: "Counter", method: "get" }).pipe(Effect.as(42))
 ```
 
-### 11. Deterministic service keys
+### 11. No pointless wrapper functions
+
+If a function just delegates to a single effect call without adding logic, don't create the function — use the effect directly at the call site.
+
+```typescript
+// BAD — wrapper adds nothing
+const getUser = (id: string) => userService.findUser(id)
+const deleteAll = () => repository.clear()
+
+// GOOD — call the effect directly where you need it
+yield* userService.findUser(id)
+yield* repository.clear()
+
+// OK — wrapper adds real value (transforms, combines, or adds context)
+const getActiveUser = (id: string) =>
+  userService.findUser(id).pipe(Effect.filterOrFail(
+    (u) => u.active,
+    () => new InactiveUser({ id })
+  ))
+```
+
+### 12. Deterministic service keys
 
 The LSP flags `deterministicKeys`. Use `@scope/package/path/ServiceName` format.
 
@@ -389,5 +410,6 @@ Suppress diagnostics with comments:
 - **`Schema.Record` takes two args** — `Schema.Record(Schema.String, ValueSchema)` not `Schema.Record({ key, value })`
 - **No try/catch in generators** — use `Effect.try` / `Effect.tryPromise`
 - **No unnecessary `Effect.gen`** — single yield? Use pipe + `Effect.as` / `Effect.andThen`
+- **No pointless wrapper functions** — if it just delegates to one effect call, use that call directly
 - **Deterministic keys** — `@scope/pkg/path/Name` format for service identifiers
 - **Never pass context as parameters** — yield services/refs/config directly; don't thread them through function args
