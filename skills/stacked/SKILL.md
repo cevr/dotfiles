@@ -45,7 +45,7 @@ What do you need?
 | `stacked down`               | Move down one branch in the stack                                                           |
 | `stacked top`                | Jump to top of stack                                                                        |
 | `stacked bottom`             | Jump to bottom of stack                                                                     |
-| `stacked sync`               | Fetch + rebase stack on trunk (`--from`, `--dry-run`, `--json`)                             |
+| `stacked sync`               | Fetch + rebase + force-push stack on trunk (`--from`, `--dry-run`, `--json`)                |
 | `stacked detect`             | Detect branch chains and register as stacks (`--dry-run`, `--json`)                         |
 | `stacked clean`              | Remove merged branches + remote branches (`--dry-run`, `--json`)                            |
 | `stacked delete <name>`      | Remove branch from stack + git + remote (`--keep-remote`, `--force`, `--dry-run`, `--json`) |
@@ -140,13 +140,13 @@ stacked bottom               # jump to bottom (trunk-adjacent)
 
 All navigation commands support `--json` for structured output. `checkout` falls through to `git checkout` for branches not in any stack.
 
-## Syncing / Rebasing
+## Syncing / Rebasing / Pushing
 
-Fetch latest trunk and rebase the entire stack bottom-to-top:
+Fetch latest trunk, rebase the entire stack bottom-to-top, then force-push each rebased branch (`--force-with-lease`):
 
 ```sh
 stacked sync
-stacked sync --dry-run    # preview rebase plan without executing
+stacked sync --dry-run    # preview rebase/push plan without executing
 stacked sync --json       # structured output: { branches: [{ name, action, base }] }
 ```
 
@@ -355,7 +355,7 @@ stacked down  # go to previous branch
 ## Gotchas
 
 - `stacked sync` requires a clean working tree — commit or stash first (except `--dry-run`)
-- `stacked sync` rebases bottom-to-top — resolve conflicts one branch at a time
+- `stacked sync` rebases bottom-to-top and force-pushes each rebased branch with lease
 - `stacked sync` leaves rebase in progress on conflict — resolve with `git rebase --continue`, then resume with `stacked sync --from <parent>`
 - `stacked submit` force-pushes by default (use `--no-force` to disable)
 - `stacked submit` and `stacked clean` require `gh` CLI authenticated (`gh auth login`)
