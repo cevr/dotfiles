@@ -81,7 +81,7 @@ const providerConfigs: ProviderConfigMap = {
   anthropic: {
     baseUrl: "https://api.anthropic.com",
     authHeader: "x-api-key",
-    models: ["claude-3-opus", "claude-3-sonnet", "claude-3-haiku"],
+    models: ["claude-3-7-sonnet-latest", "claude-3-5-haiku-latest"],
   },
   openai: {
     baseUrl: "https://api.openai.com",
@@ -91,7 +91,7 @@ const providerConfigs: ProviderConfigMap = {
   bedrock: {
     baseUrl: "https://bedrock.amazonaws.com",
     authHeader: "Authorization",
-    models: ["anthropic.claude-3-opus", "anthropic.claude-3-sonnet"],
+    models: ["amazon.titan-text-premier-v1:0", "meta.llama3-1-70b-instruct-v1:0"],
   },
 }
 ```

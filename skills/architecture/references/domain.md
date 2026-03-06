@@ -344,10 +344,10 @@ const PartialUser = S.partial(User)
 ## Validation at Boundaries
 
 ```typescript
-// API input validation
-const handler = (req: Request) =>
+// API input validation (framework pseudocode)
+const handler = (body: unknown) =>
   Effect.gen(function* () {
-    const input = yield* S.decodeUnknown(CreateUserSchema)(req.body)
+    const input = yield* S.decodeUnknown(CreateUserSchema)(body)
     return yield* createUser(input)
   })
 

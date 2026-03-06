@@ -239,7 +239,9 @@ function Map(props: { center: LatLng }) {
     const map = new google.maps.Map(mapRef)
     map.setCenter(props.center)
 
-    onCleanup(() => map.destroy())
+    onCleanup(() => {
+      google.maps.event.clearInstanceListeners(map)
+    })
   })
 
   return <div ref={mapRef} />

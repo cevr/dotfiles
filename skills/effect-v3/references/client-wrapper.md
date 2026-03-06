@@ -29,11 +29,13 @@ export class StripeService extends Context.Tag("StripeService")<
   StripeServiceShape
 >() {
   // Live: wraps the real SDK
-  static Live = (apiKey: string) =>
-    Layer.succeed(StripeService, {
+  static Live = (apiKey: string) => {
+    const stripe = new Stripe(apiKey)
+
+    return Layer.succeed(StripeService, {
       use: (fn) =>
         Effect.tryPromise({
-          try: () => fn(new Stripe(apiKey)),
+          try: () => fn(stripe),
           catch: (e) =>
             new StripeError({
               message: e instanceof Error ? e.message : String(e),
@@ -41,6 +43,7 @@ export class StripeService extends Context.Tag("StripeService")<
             }),
         }),
     })
+  }
 
   // Test: mock implementation
   static Test = (mock: Partial<Stripe> = {}) =>

@@ -110,9 +110,10 @@ export const HandlersLive = Layer.mergeAll(
 ```typescript
 // apps/server/src/main.ts
 import { HttpLayerRouter, OpenApi } from "@effect/platform"
+import { HttpServerResponse } from "@effect/platform"
 import { HttpApiScalar } from "@effect/platform/HttpApiScalar"
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { Layer } from "effect"
+import { Effect, Layer } from "effect"
 import { AppApi } from "@my-app/api/definition"
 import { HandlersLive } from "./handlers"
 import { ServicesLive } from "./services"

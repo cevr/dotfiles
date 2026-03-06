@@ -53,7 +53,7 @@ What are you working on?
 ### Async
 - `use()` for promises and context — can be called conditionally
 - `useTransition` over manual `isLoading` state — auto-resets on error
-- `useOptimistic` for instant UI feedback during mutations
+- React 19: `useOptimistic` for instant UI feedback during mutations
 - Suspense fallbacks for initial load, transitions for subsequent
 
 ### Performance
@@ -77,4 +77,4 @@ What are you working on?
 - `stateRef` hack for submit-time reads = loses reactivity — lift to provider
 - Animate `<div>` wrapper not `<svg>` directly — GPU acceleration
 - `React.cache()` uses `Object.is` — inline objects always miss
-- `forwardRef` unnecessary in React 19 — `ref` is a regular prop
+- React 19: `forwardRef` unnecessary — `ref` is a regular prop

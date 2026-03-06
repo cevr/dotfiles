@@ -62,6 +62,7 @@ Show UI updates immediately, before async operations complete:
 
 ```tsx
 function CompleteButton({ complete, action }) {
+  const [isPending, startTransition] = useTransition();
   const [optimisticComplete, setOptimisticComplete] = useOptimistic(complete);
 
   function handleClick() {
@@ -71,7 +72,7 @@ function CompleteButton({ complete, action }) {
     });
   }
 
-  return <button onClick={handleClick}>{optimisticComplete ? '✓' : '○'}</button>;
+  return <button onClick={handleClick} disabled={isPending}>{optimisticComplete ? '✓' : '○'}</button>;
 }
 ```
 
@@ -82,10 +83,12 @@ Suspense fallbacks only show on initial load. Transitions keep showing current c
 ```tsx
 function Home() {
   const [tab, setTab] = useState('all');
+  const [isPending, startTransition] = useTransition();
 
   return (
     <>
       <TabList activeTab={tab} onChange={t => startTransition(() => setTab(t))} />
+      {isPending ? <Spinner /> : null}
       <Suspense fallback={<SkeletonList />}>
         <LessonList tab={tab} />
       </Suspense>

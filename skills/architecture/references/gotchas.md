@@ -9,7 +9,7 @@ Common mistakes and anti-patterns in Effect architecture.
 | Missing service           | "Service not found" at runtime | Check Layer.provide order         |
 | Circular layer deps       | Stack overflow, hang           | Extract shared deps               |
 | Generator without yield\* | Value is Effect, not result    | Use yield\* not yield             |
-| Catching defects          | Silent failures                | Use catchAll, not catchAllCause   |
+| Catching defects          | Silent failures                | Use catchAll, or catchAllCause with defect re-throw |
 | Forgetting to run         | Nothing happens                | Add Effect.runPromise             |
 | Config at wrong time      | Undefined config values        | Read config in Layer.effect       |
 | Mixing sync/async         | Type errors                    | Use Effect.sync vs Effect.promise |
@@ -346,9 +346,9 @@ Use `decodeUnknown` for external data:
 
 ```typescript
 // API input - use decodeUnknown
-const handler = (req: Request) =>
+const handler = (body: unknown) =>
   Effect.gen(function* () {
-    const input = yield* S.decodeUnknown(CreateUserSchema)(req.body)
+    const input = yield* S.decodeUnknown(CreateUserSchema)(body)
     return yield* createUser(input)
   })
 

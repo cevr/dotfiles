@@ -231,8 +231,8 @@ z-50   tooltips/popovers
 
 ### Punctuation & Special Characters
 
-- **MUST**: Use ellipsis character `…` (not `...`); nonbreaking space adjacent
-- **MUST**: Curly quotes `"` `"` `'` `'` — never straight quotes in rendered UI text
+- **MUST**: Use ellipsis character `…` (not `...`); no extra space before it
+- **MUST**: Curly quotes `“` `”` `‘` `’` — never straight quotes in rendered UI text
 - **MUST**: Curly apostrophes pointing downward (`'`); watch word-initial (`'70s`, `rock 'n' roll`)
 - **MUST**: Non-breaking spaces: `10&nbsp;MB`, `⌘&nbsp;+&nbsp;K`, brand names
 - **MUST**: En dash `–` for ranges (1–10, pages 3–5); em dash `—` for sentence breaks

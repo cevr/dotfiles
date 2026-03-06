@@ -1,6 +1,6 @@
 ---
 name: cli
-description: CLI design patterns and best practices. Use when building command-line tools, designing commands/flags, formatting output, handling errors, managing config/credentials, or reviewing CLI UX. Covers 12-Factor CLI, Unix philosophy, TTY detection, exit codes, NO_COLOR, XDG paths.
+description: CLI design patterns and best practices. Use when building command-line tools, designing commands/flags, formatting output, handling errors, managing config/credentials, reviewing CLI UX, or designing CLIs for AI agent consumers. Covers 12-Factor CLI, Unix philosophy, TTY detection, exit codes, NO_COLOR, XDG paths, agent DX (schema introspection, input hardening, field masks, MCP surfaces).
 ---
 
 # CLI Design
@@ -9,7 +9,7 @@ Build CLIs that feel native, fail gracefully, compose beautifully.
 
 ## Core Principles
 
-1. **Human-first, machine-friendly** — default to human output; `--json` for scripts
+1. **Human-first, machine-friendly** — default to human output; `--json` for scripts/agents
 2. **Respond in 100ms** — print something fast; show progress for slow ops
 3. **Fail gracefully** — clear errors, recovery suggestions, easy bug reports
 4. **Respect conventions** — standard flags, XDG paths, NO_COLOR
@@ -26,6 +26,7 @@ What are you designing?
 ├─ Error handling           → references/errors.md
 ├─ Config/credentials       → references/config.md
 ├─ UX/responsiveness        → references/design.md
+├─ Agent/LLM consumers      → references/agent-dx.md
 └─ "Is this bad?"           → references/gotchas.md
 ```
 
@@ -39,6 +40,7 @@ What are you designing?
 | Output           | `references/output.md`      | TTY detection, colors, tables, streams  |
 | Errors           | `references/errors.md`      | Anatomy of great errors, recovery       |
 | Config           | `references/config.md`      | Precedence, XDG spec, credentials       |
+| Agent DX         | `references/agent-dx.md`    | Designing for AI agent consumers        |
 | Anti-patterns    | `references/gotchas.md`     | Common mistakes to avoid                |
 
 ## 12-Factor CLI (Quick Reference)

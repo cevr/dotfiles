@@ -280,6 +280,59 @@ const getActiveUser = (id: string) =>
   ))
 ```
 
+### 12. Never null/undefined — use Option
+
+Effect has `Option<A>` for representing optional values. Don't leak nullish types into Effect code.
+
+```typescript
+// BAD — nullish in Effect code
+const findUser = Effect.fn("findUser")(function* (id: string) {
+  const db = yield* Database
+  const row = yield* db.query(id)
+  return row ?? null  // ← null leaking into Effect
+})
+// return type: Effect<User | null, ...>
+
+// BAD — null checks inside Effect code
+const getName = Effect.fn("getName")(function* (id: string) {
+  const user = yield* findUser(id)
+  if (user === null) {
+    return yield* Effect.fail(new UserNotFound({ id }))
+  }
+  return user.name
+})
+
+// GOOD — Option throughout
+const findUser = Effect.fn("findUser")(function* (id: string) {
+  const db = yield* Database
+  const row = yield* db.query(id)
+  return Option.fromNullable(row)  // ← convert at boundary
+})
+// return type: Effect<Option<User>, ...>
+
+// GOOD — Option composes with Effect combinators
+const getName = Effect.fn("getName")(function* (id: string) {
+  const user = yield* findUser(id)
+  return Option.map(user, (u) => u.name)
+})
+
+// GOOD — fail on None
+const getUser = Effect.fn("getUser")(function* (id: string) {
+  return yield* findUser(id).pipe(
+    Effect.flatMap(Effect.fromOption(() => new UserNotFound({ id })))
+  )
+})
+```
+
+**Boundary rule:** convert nullish → `Option` at the system boundary (3rd-party SDK, DB driver, DOM API), then use `Option` everywhere inside Effect code. Key conversions:
+
+| From | To | How |
+|------|----|-----|
+| `T \| null \| undefined` | `Option<T>` | `Option.fromNullable(value)` |
+| `Option<T>` | `T \| undefined` | `Option.getOrUndefined(opt)` (at exit boundary) |
+| `Effect<T, Err>` | `Effect<Option<T>>` | `Effect.option(effect)` |
+| `Effect<Option<T>>` | `Effect<T, Err>` | `Effect.flatMap(Effect.fromOption(() => err))` |
+
 ## Services (quick ref)
 
 Canonical pattern: `Context.Tag` with static `Live`/`Test`/`Noop`.
@@ -445,3 +498,4 @@ Suppress diagnostics with comments:
 - **No try/catch in generators** — use `Effect.try` / `Effect.tryPromise`
 - **No unnecessary `Effect.gen`** — single yield? Use pipe + `Effect.as` / `Effect.andThen`
 - **No pointless wrapper functions** — if it just delegates to one effect call, use that call directly
+- **No `null`/`undefined`** — use `Option` from effect; convert nullish → `Option.fromNullable` at boundaries

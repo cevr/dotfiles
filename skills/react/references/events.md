@@ -48,8 +48,12 @@ const callbacks = new Map<string, Set<(e: KeyboardEvent) => void>>();
 
 function subscribe(key: string, cb: (e: KeyboardEvent) => void) {
   if (!callbacks.has(key)) callbacks.set(key, new Set());
-  callbacks.get(key)!.add(cb);
-  return () => { callbacks.get(key)!.delete(cb); };
+  const set = callbacks.get(key)!;
+  set.add(cb);
+  return () => {
+    set.delete(cb);
+    if (set.size === 0) callbacks.delete(key);
+  };
 }
 
 if (typeof window !== 'undefined') {

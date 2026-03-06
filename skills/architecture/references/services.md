@@ -151,10 +151,12 @@ const DatabaseLive = Layer.scoped(
 
 ```typescript
 // Single dependency
-const UserRepoLive = Layer.effect(UserRepo /* needs Database */).pipe(Layer.provide(DatabaseLive))
+const UserRepoLive = Layer.effect(/* UserRepo, Effect.gen(...) */).pipe(
+  Layer.provide(DatabaseLive),
+)
 
 // Multiple dependencies
-const AppLive = Layer.effect(App /* needs UserRepo, Logger, Config */).pipe(
+const AppLive = Layer.effect(/* App, Effect.gen(...) */).pipe(
   Layer.provide([UserRepoLive, Logger.Live, ConfigLive]),
 )
 

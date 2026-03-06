@@ -102,6 +102,8 @@ const workers = Config.integer("WORKERS").pipe(Config.withDefault(4))
 ### 5. Config.option - Optional Values
 
 ```typescript
+import { Config, Effect, Option } from "effect"
+
 // Returns Option<T> instead of failing
 const apiKey = Config.string("OPTIONAL_API_KEY").pipe(Config.option)
 
