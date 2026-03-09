@@ -280,7 +280,138 @@ const getActiveUser = (id: string) =>
   ))
 ```
 
-### 12. Never null/undefined — use Option
+### 12. No `withX` scope wrappers — use `Effect.scoped` or `it.scoped` directly
+
+Don't create helper functions that just acquire a scoped resource and pass it to a callback. Use `Effect.scoped` directly in production code, or `it.scoped` in tests.
+
+```typescript
+// BAD — withX wrapper that's just a scope
+const withTempDir = <A, E, R>(fn: (dir: string) => Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem
+    const dir = yield* fs.makeTempDirectoryScoped()
+    return yield* fn(dir)
+  }).pipe(Effect.scoped)
+
+// BAD — withX in tests doing Effect.scoped + runPromise manually
+const withDb = <A, E>(fn: (db: Db) => Effect.Effect<A, E, Mongo>): Promise<A> =>
+  Effect.gen(function* () {
+    const db = yield* Db
+    return yield* fn(db)
+  }).pipe(Effect.scoped, Effect.provide(TestDb), Effect.runPromise)
+
+// GOOD — use it.scoped in tests, acquire resource inline
+it.scoped("uses temp dir", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem
+    const dir = yield* fs.makeTempDirectoryScoped()
+    // ... test logic using dir
+  }).pipe(Effect.provide(FileSystem.Live))
+)
+
+// GOOD — use Effect.scoped directly in production code
+const program = Effect.gen(function* () {
+  const fs = yield* FileSystem
+  const dir = yield* fs.makeTempDirectoryScoped()
+  // ... use dir
+}).pipe(Effect.scoped)
+
+// OK — wrapper adds real value (acquire + release + transform)
+const withConnection = Effect.acquireRelease(
+  connect(),
+  (conn) => Effect.sync(() => conn.close())
+)
+```
+
+### 13. Never Node/browser builtins — use Effect platform
+
+Don't reach for `fs`, `path`, `child_process`, `crypto`, `fetch`, or other Node/browser builtins. Effect has platform-agnostic services (`FileSystem`, `HttpClient`, `Path`, `Command`) that are testable, traceable, and compose with the Effect ecosystem.
+
+```typescript
+// BAD — Node builtins
+import fs from "node:fs"
+import { execSync } from "node:child_process"
+
+const readConfig = Effect.fn("readConfig")(function* () {
+  const text = fs.readFileSync("config.json", "utf-8")  // ← untraced, untestable
+  return JSON.parse(text)
+})
+
+// GOOD — Effect platform services
+const readConfig = Effect.fn("readConfig")(function* () {
+  const fs = yield* FileSystem
+  const text = yield* fs.readFileString("config.json")
+  return yield* Schema.decodeUnknown(ConfigSchema)(JSON.parse(text))
+})
+
+// BAD — raw fetch
+const getUser = (id: string) =>
+  Effect.tryPromise(() => fetch(`/users/${id}`).then(r => r.json()))
+
+// GOOD — HttpClient
+const getUser = Effect.fn("getUser")(function* (id: string) {
+  const client = yield* HttpClient.HttpClient
+  return yield* client.get(`/users/${id}`).pipe(
+    HttpClientResponse.schemaBodyJson(User)
+  )
+})
+```
+
+| Instead of | Use |
+|-----------|-----|
+| `node:fs` | `FileSystem` from `@effect/platform` |
+| `node:path` | `Path` from `@effect/platform` |
+| `node:child_process` | `Command` from `@effect/platform` |
+| `fetch` / `node:http` | `HttpClient` from `@effect/platform` |
+| `node:crypto` randomness | `Effect.sync(() => crypto.randomUUID())` wrapped in a service |
+
+### 14. Never escape to plain JS for callbacks — use Effect.async
+
+Don't drop out of Effect to work with callback/event-based APIs (Node streams, sockets, EventEmitter). Use `Effect.async` or `Effect.asyncEffect` to bring them into the Effect world with proper interruption and resource safety.
+
+```typescript
+// BAD — escaping to plain JS, losing Effect guarantees
+const readStream = (stream: NodeStream.Readable) =>
+  Effect.promise(() => new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = []
+    stream.on("data", (chunk) => chunks.push(chunk))
+    stream.on("end", () => resolve(Buffer.concat(chunks)))
+    stream.on("error", reject)
+    // ← no cleanup on interruption, no fiber safety
+  }))
+
+// GOOD — Effect.async with cleanup
+const readStream = (stream: NodeStream.Readable) =>
+  Effect.async<Buffer, StreamError>((resume) => {
+    const chunks: Buffer[] = []
+    stream.on("data", (chunk) => chunks.push(chunk))
+    stream.on("end", () => resume(Effect.succeed(Buffer.concat(chunks))))
+    stream.on("error", (err) => resume(Effect.fail(new StreamError({ cause: err }))))
+    return Effect.sync(() => {
+      stream.removeAllListeners()
+      stream.destroy()
+    })
+  })
+
+// GOOD — for streams, prefer Effect Stream
+const fromReadable = (stream: NodeStream.Readable) =>
+  Stream.async<Buffer, StreamError>((emit) => {
+    stream.on("data", (chunk) => emit.single(chunk))
+    stream.on("end", () => emit.end())
+    stream.on("error", (err) => emit.fail(new StreamError({ cause: err })))
+  })
+```
+
+Key APIs for callback interop:
+
+| API | When |
+|-----|------|
+| `Effect.async` | Single async result from callback/event |
+| `Effect.asyncEffect` | Need to run effects during setup before registering callbacks |
+| `Stream.async` | Multiple values from event emitter / readable stream |
+| `Stream.asyncScoped` | Stream + scoped resource cleanup |
+
+### 15. Never null/undefined — use Option
 
 Effect has `Option<A>` for representing optional values. Don't leak nullish types into Effect code.
 
@@ -447,7 +578,12 @@ CLI testing → `references/cli-testing.md`
 
 ## Source Code
 
-Effect v3 repo: `~/.claude/repos/Effect-TS/effect`
+Use `/repo-explorer` to fetch and explore the Effect v3 codebase:
+
+```bash
+repo fetch effect-ts/effect    # fetch/update
+repo path effect-ts/effect     # get local path
+```
 
 | Package | Import | What |
 |---------|--------|------|
@@ -459,11 +595,14 @@ Effect v3 repo: `~/.claude/repos/Effect-TS/effect`
 | `vitest/` | `@effect/vitest` | Test utilities |
 | `rpc/` | `@effect/rpc` | RPC framework |
 
+Then search with Grep/Read on the local path:
+
 ```bash
-# Search for API usage
-rg "Context.Tag" ~/.claude/repos/Effect-TS/effect/packages --glob "*.ts" -C 2
-rg "HttpApiGroup" ~/.claude/repos/Effect-TS/effect/packages --glob "*.ts" -C 3
+rg "Context.Tag" $(repo path -q effect-ts/effect)/packages --glob "*.ts" -C 2
+rg "HttpApiGroup" $(repo path -q effect-ts/effect)/packages --glob "*.ts" -C 3
 ```
+
+Also useful: `repo fetch effect-ts/language-service` for the Effect LSP plugin source (all diagnostic rules, config options).
 
 ## LSP Diagnostics
 
@@ -498,4 +637,7 @@ Suppress diagnostics with comments:
 - **No try/catch in generators** — use `Effect.try` / `Effect.tryPromise`
 - **No unnecessary `Effect.gen`** — single yield? Use pipe + `Effect.as` / `Effect.andThen`
 - **No pointless wrapper functions** — if it just delegates to one effect call, use that call directly
+- **No `withX` scope wrappers** — use `Effect.scoped` or `it.scoped` directly; don't create `withDb`/`withTempDir` helpers
+- **No Node/browser builtins** — use Effect platform (`FileSystem`, `HttpClient`, `Path`, `Command`) not `node:fs`/`fetch`/etc.
+- **No plain JS callback escape hatches** — use `Effect.async`/`Stream.async` for event emitters, Node streams, sockets
 - **No `null`/`undefined`** — use `Option` from effect; convert nullish → `Option.fromNullable` at boundaries

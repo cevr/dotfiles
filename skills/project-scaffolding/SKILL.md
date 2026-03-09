@@ -90,7 +90,11 @@ Every project uses this base. No exceptions.
           "unnecessaryEffectGen": "warning",
           "unnecessaryFailYieldableError": "warning",
           "unnecessaryPipe": "warning",
-          "unnecessaryPipeChain": "warning"
+          "unnecessaryPipeChain": "warning",
+          "extendsNativeError": "error",
+          "nodeBuiltinImport": "error",
+          "serviceNotAsClass": "warning",
+          "outdatedApi": "warning"
         },
         "keyPatterns": [
           {
@@ -300,6 +304,21 @@ jobs:
 | LSP patch | `effect-language-service patch` in `prepare` — surfaces Effect diagnostics in `tsc` |
 | Monorepo orchestration | turbo for multi-package, concurrently for single-package |
 | Version catalog | `"catalog": {}` in root `package.json` for monorepos — pins shared dep versions |
+
+## Reference Repos
+
+Use `/repo-explorer` to fetch and explore these when you need implementation details:
+
+| Repo | What | Fetch |
+|------|------|-------|
+| `effect-ts/language-service` | Effect LSP plugin — all diagnostic rules, config options, quick fixes | `repo fetch effect-ts/language-service` |
+| `effect-ts/effect-smol` | Effect v4 source — ServiceMap.Service, Schema, unstable modules | `repo fetch effect-ts/effect-smol` |
+| `effect-ts/effect` | Effect v3 source — Context.Tag, Schema, platform packages | `repo fetch effect-ts/effect` |
+
+**When to explore:**
+- Adding new diagnostics to `diagnosticSeverity` — check `src/diagnostics.ts` in `language-service` for all rules + defaults
+- Unsure about a v4 API — search `effect-smol/packages/effect/src/`
+- Looking for usage examples — search test files in any of these repos
 
 ## Gotchas
 

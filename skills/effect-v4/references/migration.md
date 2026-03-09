@@ -48,7 +48,18 @@ Condensed diff for migrating Effect v3 codebases to v4.
 | `.pipe(Schema.int())` | `.check(Schema.isInt())` | Schema |
 | `Schema.Literal("a","b")` | `Schema.Literals(["a","b"])` | Schema |
 | `Schema.Union(A, B)` | `Schema.Union([A, B])` | Schema |
+| `Schema.decodeUnknown(S)` | `Schema.decodeUnknownEffect(S)` | Schema |
+| `Schema.encodeUnknown(S)` | `Schema.encodeUnknownEffect(S)` | Schema |
+| `Schema.parseJson(S)` | `Schema.fromJsonString(S)` | Schema |
+| `Schema.Record({ key: K, value: V })` | `Schema.Record(K, V)` | Schema |
 | `decodeUnknownEither` | `decodeUnknownResult` | Schema |
+| `ParseResult.ParseError` | `Schema.SchemaError` | Schema |
+| `Option.fromNullable(v)` | `Option.fromNullishOr(v)` | Option |
+| `Args.text({ name: "x" })` | `Argument.string("x")` | CLI |
+| `Options.text("name")` | `Flag.string("name")` | CLI |
+| `Options.withAlias` / `withDescription` / `optional` | `Flag.withAlias` / `withDescription` / `Flag.optional` | CLI |
+| `Command.run(cmd, { name, version })` | `Command.run(cmd, { version })` (args from Stdio) | CLI |
+| `Layer.setConfigProvider(ConfigProvider.fromMap(...))` | `ConfigProvider.layer(ConfigProvider.fromUnknown(...))` | Config |
 | `Effect.gen(this, fn)` | `Effect.gen({ self: this }, fn)` | Generator |
 | `BunContext.layer` | `BunServices.layer` | Platform |
 | `NodeContext.layer` | `NodeServices.layer` | Platform |
@@ -93,6 +104,12 @@ yield* Effect.atomic(Effect.gen(function* () {
 7. **Import paths** — `@effect/platform` → `effect/unstable/http` etc.
 8. **`Layer.scoped` removed** — use `Layer.effect` which auto-strips `Scope`
 9. **`Effect.ignore` expanded** — still exists but now accepts `{ log?: boolean | Severity }` option
+10. **Config is Yieldable but not Effect** — `Config.pipe(Effect.orDie)` breaks; use `yield* config` directly or `Effect.orDie(Effect.gen(function*() { return yield* config }))`
+11. **`Effect.flatMap(ServiceTag, fn)` removed** — use `Effect.gen` + `yield* ServiceTag` instead
+12. **`FileSystem`, `Path` moved to `effect`** — no longer from `@effect/platform`
+13. **`FetchHttpClient` from `effect/unstable/http`** — not `@effect/platform`
+14. **`@effect/language-service` has no v4 beta** — keep at `^0.79.0`, it's a transitive dep of effect
+15. **CLI `Command.run` reads args from `Stdio`** — no longer pass `process.argv`; `BunServices`/`NodeServices` provide `Stdio`
 
 ## Full Migration Guides
 

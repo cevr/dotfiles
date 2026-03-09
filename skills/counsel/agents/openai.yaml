@@ -1,0 +1,4 @@
+interface:
+  display_name: "Counsel"
+  short_description: "Route prompts to the opposite agent"
+  default_prompt: "Use $counsel to get a grounded second opinion from the opposite local coding agent on this change."

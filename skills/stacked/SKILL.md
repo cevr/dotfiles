@@ -71,11 +71,12 @@ What do you need?
 ## Setup
 
 ```sh
-# Trunk is auto-detected (main > master > develop). Override if needed:
-stacked trunk develop
-
 # Install the Claude skill (optional, compiled binary only):
 stacked init
+
+# Trunk is auto-detected on first use from origin/HEAD when available
+# (fallback: main > master > develop). Override only if needed:
+stacked trunk <name>
 ```
 
 Requires `gh` CLI installed and authenticated for `submit` and `clean`.
@@ -315,7 +316,7 @@ Stack metadata lives in `.git/stacked.json`. Each branch's parent is implied by 
 - `branches[0]` → parent is trunk
 - `branches[n]` → parent is `branches[n-1]`
 
-Trunk is auto-detected on first use by checking for `main`, `master`, or `develop` branches. Override with `stacked trunk <name>`.
+Trunk is auto-detected on first use from `origin/HEAD` when available, then falls back to local `main`, `master`, or `develop`. Override with `stacked trunk <name>`.
 
 A repo can have multiple independent stacks. The current stack is determined by which branch you're on.
 
@@ -361,7 +362,7 @@ stacked down  # go to previous branch
 - `stacked submit` and `stacked clean` require `gh` CLI authenticated (`gh auth login`)
 - PRs target parent branches, not trunk — this is intentional for stacked review
 - PRs include auto-generated stack metadata (position, navigation links)
-- Trunk is auto-detected (`main` > `master` > `develop`) — use `stacked trunk <name>` to override
+- Trunk is auto-detected (`origin/HEAD` first, then `main` > `master` > `develop`) — use `stacked trunk <name>` only when detection is wrong
 - Forked branches (one parent, multiple children) are not supported — `detect` reports them but skips
 - `stacked delete --force` on a mid-stack branch requires `stacked sync` afterward
 - `stacked checkout` falls through to `git checkout` for branches not in a stack
