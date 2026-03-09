@@ -128,7 +128,7 @@ The monorepo gate differs from single-package: turbo handles typecheck/test/buil
           "deterministicKeys": "warning",
           "importFromBarrel": "warning",
           "instanceOfSchema": "warning",
-          "missedPipeableOpportunity": "warning",
+          "missedPipeableOpportunity": "suggestion",
           "missingEffectServiceDependency": "warning",
           "schemaUnionOfLiterals": "warning",
           "strictBooleanExpressions": "warning",

@@ -69,7 +69,7 @@ Every project uses this base. No exceptions.
           "deterministicKeys": "warning",
           "importFromBarrel": "warning",
           "instanceOfSchema": "warning",
-          "missedPipeableOpportunity": "warning",
+          "missedPipeableOpportunity": "suggestion",
           "missingEffectServiceDependency": "warning",
           "schemaUnionOfLiterals": "warning",
           "strictBooleanExpressions": "warning",
