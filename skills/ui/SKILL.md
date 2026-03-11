@@ -1,6 +1,6 @@
 ---
 name: ui
-description: Build accessible, performant, distinctive UIs. Use when implementing web interfaces, components, or reviewing UI code.
+description: Build accessible, performant, distinctive UIs. Use when implementing web interfaces, components, reviewing UI code, or working with animations/motion/easing/transitions. Includes animation reference with easing curves, timing guidelines, springs, and practical patterns.
 allowed-tools: Read, Grep, Glob, Edit, Write
 ---
 
@@ -407,6 +407,8 @@ Every error message should include, in order:
 ---
 
 ## Reference
+
+**Animation guide**: `references/animation.md` — easing curves, timing, springs, practical patterns. Load when implementing or reviewing animations.
 
 **Creative pattern catalog**: `references/creative-patterns.md` — navigation, layout, card, scroll, gallery, typography, and micro-interaction patterns. Load when building distinctive/exploratory UI.
 
