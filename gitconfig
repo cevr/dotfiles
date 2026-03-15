@@ -36,3 +36,6 @@
 	conflictStyle = zdiff3
 [coderabbit]
 	machineId = cli/ae32e1361d7f437092e77fdf2a12dab1
+[merge "mergiraf"]
+	name = mergiraf
+	driver = mergiraf merge --git %O %A %B -s %S -x %X -y %Y -p %P -l %L

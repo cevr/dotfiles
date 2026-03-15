@@ -13,7 +13,7 @@ Principle-grounded code review. **The review IS the deliverable — no changes.*
 
 ### 1. Load principles
 
-Read `$(brain vault)/principles.md`. Follow every `[[wikilink]]` and read each linked principle file.
+Read `$(okra brain vault)/principles.md`. Follow every `[[wikilink]]` and read each linked principle file.
 
 **Do NOT skip this. Do NOT use memorized principle content — always read fresh.**
 
@@ -46,7 +46,7 @@ Run in order:
 
 #### Scope Check
 
-If a plan exists in `$(brain vault)/plans/`, run `git diff --stat` and `git log --oneline` for relevant commits. Flag drift from phase scope.
+If a plan exists in `$(okra brain vault)/plans/`, run `git diff --stat` and `git log --oneline` for relevant commits. Flag drift from phase scope.
 
 #### Architecture
 
@@ -80,7 +80,7 @@ If a plan exists in `$(brain vault)/plans/`, run `git diff --stat` and `git log 
 
 #### Principle Compliance
 
-Check each applicable principle from `$(brain vault)/principles/` against the code under review.
+Check each applicable principle from `$(okra brain vault)/principles/` against the code under review.
 
 Common violations:
 

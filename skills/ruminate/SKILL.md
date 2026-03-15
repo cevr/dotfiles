@@ -14,8 +14,8 @@ Deep-mine full conversation archives for knowledge `/reflect` missed. This is th
 ### 1. Build brain snapshot
 
 ```bash
-VAULT=$(brain vault)
-brain snapshot "$VAULT" --output /tmp/brain-snapshot-ruminate.md
+VAULT=$(okra brain vault)
+okra brain snapshot "$VAULT" --output /tmp/brain-snapshot-ruminate.md
 ```
 
 ### 2. Locate conversations
@@ -32,7 +32,7 @@ CONV_DIR=~/.claude/projects/<pick-matching-dir>/
 
 ```bash
 OUT_DIR=/tmp/brain-ruminate
-brain extract "$CONV_DIR" "$OUT_DIR" --batches N
+okra brain extract "$CONV_DIR" "$OUT_DIR" --batches N
 # N ≈ 1 per 20 conversations, min 2, max 10
 ```
 

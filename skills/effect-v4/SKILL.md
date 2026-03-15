@@ -581,11 +581,22 @@ Also useful: `repo fetch effect-ts/language-service` for the Effect LSP plugin s
 
 ## LSP Diagnostics
 
-The `@effect/language-service` plugin provides diagnostics beyond `tsc`. Patch TypeScript to get them in CLI:
+The `@effect/language-service` plugin provides diagnostics beyond `tsc`. Use `@effect/language-service@^0.80.0` with v4. Patch TypeScript to get them in CLI:
 
 ```sh
 # Add to package.json scripts
 "prepare": "effect-language-service patch && lefthook install"
+```
+
+Required tsconfig plugin fields for v4:
+
+```jsonc
+"plugins": [{
+  "name": "@effect/language-service",
+  "transform": "@effect/language-service/transform",
+  "namespaceImportPackages": ["effect", "@effect/*"],
+  // ... diagnosticSeverity overrides
+}]
 ```
 
 Suppress diagnostics with comments:
@@ -602,6 +613,7 @@ Suppress diagnostics with comments:
 - **`Schema.TaggedErrorClass`** not `Schema.TaggedError` — renamed
 - **`Effect.catch`** not `Effect.catchAll` — renamed
 - **`Effect.catchCause`** not `Effect.catchAllCause` — renamed
+- **`Effect.result`** not `Effect.either` — returns `Result` not `Either`; `.failure`/`.success` not `.left`/`.right`
 - **`Effect.forkChild`** not `Effect.fork` — renamed
 - **`Effect.forkDetach`** not `Effect.forkDaemon` — renamed
 - **`Result`** not `Either` — `Result.succeed`/`Result.fail` instead of `Either.right`/`Either.left`
@@ -609,11 +621,18 @@ Suppress diagnostics with comments:
 - **`.annotate()` not `.annotations()`** — method renamed on Schema
 - **`Effect.gen({ self: this }, fn)`** not `Effect.gen(this, fn)` — self binding changed
 - **`Layer.effect` auto-strips Scope** — `Layer.scoped` removed; `Layer.effect` handles it
+- **`Layer.scopedContext` removed** — use `Layer.effect(tag, eff)` for single service or `Layer.effectServices(eff)` for multi-service `ServiceMap`
+- **`Effect.zipRight` removed** — use `a.pipe(Effect.andThen(b))`
+- **`Effect.makeSemaphore` moved** — use `Semaphore.make` from `effect/Semaphore`
+- **`Ref.unsafeMake` → `Ref.makeUnsafe`** — renamed
+- **Console is sync** — `Console.Console` methods return `void`, not `Effect<void>`. Test mocks must be sync.
+- **`Schema.mutable` only for arrays** — `Schema.mutable(Schema.Struct(...))` breaks; structs are already mutable. Use only on `Schema.Array`.
 - **`Cause` is flat** — `{ reasons: Reason[] }` not recursive tree
 - **Unstable imports** — `effect/unstable/http` not `@effect/platform`
 - **`BunServices.layer`** not `BunContext.layer` — platform context renamed
 - **`static layer`/`static layerTest`** not `static Live`/`static Test` — naming convention
 - **No `Schema.parseJson`** — use `Schema.fromJsonString(schema)` for JSON string ↔ typed data
+- **`@effect/language-service@0.80.0`** — works with v4; needs `transform` and `namespaceImportPackages` in tsconfig plugin
 - **`Schema.Record` takes two args** — `Schema.Record(Schema.String, ValueSchema)` not `Schema.Record({ key, value })`
 - **No try/catch in generators** — use `Effect.try` / `Effect.tryPromise`
 - **No unnecessary `Effect.gen`** — single yield? Use pipe + `Effect.as` / `Effect.andThen`

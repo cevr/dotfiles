@@ -12,7 +12,7 @@ Mine the current conversation for brain-worthy knowledge.
 1. **Read the brain index**
 
    ```bash
-   VAULT=$(brain vault)
+   VAULT=$(okra brain vault)
    cat "$VAULT/index.md"
    ```
 
@@ -29,16 +29,16 @@ Mine the current conversation for brain-worthy knowledge.
 
 3. **Skip** anything trivial, one-off, or already captured in the brain.
 
-4. **Structural enforcement check** — before routing a learning to `brain/`, ask: can this be a lint rule, script, metadata flag, or runtime check? If yes, encode it structurally and skip the brain note. See `$(brain vault)/principles/encode-lessons-in-structure.md`.
+4. **Structural enforcement check** — before routing a learning to `brain/`, ask: can this be a lint rule, script, metadata flag, or runtime check? If yes, encode it structurally and skip the brain note. See `$(okra brain vault)/principles/encode-lessons-in-structure.md`.
 
 5. **Route each learning**:
 
    **Brain files**: one topic per file, group in directories with index files using wikilinks, no inlined content in index files.
    | Destination | When |
    |-------------|------|
-   | `$(brain vault)/principles/` | General engineering principle |
-   | `$(brain vault)/projects/<project-name>/` | Project-specific knowledge (auto-detected by git root / cwd) |
-   | `$(brain vault)/` root | Cross-cutting knowledge |
+   | `$(okra brain vault)/principles/` | General engineering principle |
+   | `$(okra brain vault)/projects/<project-name>/` | Project-specific knowledge (auto-detected by git root / cwd) |
+   | `$(okra brain vault)/` root | Cross-cutting knowledge |
 
    **Skill improvements**: update `~/.claude/skills/<skill>/` directly if the learning is about a skill's own process.
 
@@ -46,7 +46,7 @@ Mine the current conversation for brain-worthy knowledge.
 
 6. **Write files** to the vault. The PostToolUse hook auto-rebuilds `index.md`.
 
-7. **Update entrypoints** — if you added a principle, update `$(brain vault)/principles.md`. Update `$(brain vault)/index.md` if files were added or removed.
+7. **Update entrypoints** — if you added a principle, update `$(okra brain vault)/principles.md`. Update `$(okra brain vault)/index.md` if files were added or removed.
 
 ## Output format
 

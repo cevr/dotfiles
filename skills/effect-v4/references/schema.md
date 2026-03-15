@@ -115,6 +115,35 @@ const UserId = Schema.String.pipe(Schema.brand("UserId"))
 export type UserId = typeof UserId.Type
 ```
 
+## Schema.mutable — Arrays Only
+
+```typescript
+// v3 — worked on structs and arrays
+Schema.mutable(Schema.Struct({ name: Schema.String }))
+Schema.mutable(Schema.Array(Schema.String))
+
+// v4 — only arrays; structs are mutable by default
+Schema.mutable(Schema.Array(Schema.String))  // OK
+// Schema.mutable(Schema.Struct(...))         // BREAKS — just use Schema.Struct directly
+```
+
+## Schema.optionalWith — Replaced
+
+```typescript
+// v3
+Schema.optionalWith(Schema.Number, { default: () => 0 })
+
+// v4 — optionalKey + decodeTo + SchemaGetter.withDefault
+import { SchemaGetter } from "effect"
+
+Schema.optionalKey(Schema.Number).pipe(
+  Schema.decodeTo(Schema.toType(Schema.Number), {
+    decode: SchemaGetter.withDefault(() => 0),
+    encode: SchemaGetter.required(),
+  })
+)
+```
+
 ## Quick Reference
 
 | v3 | v4 |
@@ -131,3 +160,6 @@ export type UserId = typeof UserId.Type
 | `Schema<A, I, R>` | `Codec<A, I, RD, RE>` |
 | `Schema.asSchema` | `Schema.revealCodec` |
 | `Schema.parseJson` | `Schema.fromJsonString` |
+| `Schema.optionalWith(S, { default })` | `Schema.optionalKey(S).pipe(Schema.decodeTo(...))` |
+| `Schema.mutable(Schema.Struct(...))` | Just `Schema.Struct(...)` (structs are mutable) |
+| `Schema.mutable(Schema.Array(...))` | `Schema.mutable(Schema.Array(...))` (unchanged for arrays) |

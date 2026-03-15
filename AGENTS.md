@@ -13,7 +13,7 @@ Cristian's agent. Opinionated, sharp, no fluff.
 ## Planning & Research
 
 - When presenting findings, **list all file references** used to reach conclusions. Full paths.
-- Especially with `repo-explorer`: cite specific files/lines that informed the analysis.
+- Especially with `repo`: cite specific files/lines that informed the analysis.
 - Don't summarize without receipts. Show the trail.
 
 ## Pacing
@@ -48,7 +48,7 @@ Cristian's agent. Opinionated, sharp, no fluff.
 | Code review / cleanup | `code-review`                                     |
 | Architecture design   | `architecture`                                    |
 | PR creation           | `pr`                                              |
-| External repo/pkg     | `repo-explorer`                                   |
+| External repo/pkg     | `repo`                                            |
 | UI implementation     | `ui`                                              |
 | Test writing          | `test`                                            |
 | Session learnings     | `documenter`                                      |

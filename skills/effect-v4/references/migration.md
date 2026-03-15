@@ -34,6 +34,9 @@ Condensed diff for migrating Effect v3 codebases to v4.
 | `Either.left(e)` | `Result.fail(e)` | Data |
 | `Either.isRight` | `Result.isSuccess` | Data |
 | `Either.isLeft` | `Result.isFailure` | Data |
+| `Effect.either(eff)` | `Effect.result(eff)` | Data |
+| `.left` (on Either) | `.failure` (on Result) | Data |
+| `.right` (on Either) | `.success` (on Result) | Data |
 | `FiberRef` | `ServiceMap.Reference` / `References.*` | State |
 | `Effect.fork` | `Effect.forkChild` | Forking |
 | `Effect.forkDaemon` | `Effect.forkDetach` | Forking |
@@ -61,10 +64,18 @@ Condensed diff for migrating Effect v3 codebases to v4.
 | `Command.run(cmd, { name, version })` | `Command.run(cmd, { version })` (args from Stdio) | CLI |
 | `Layer.setConfigProvider(ConfigProvider.fromMap(...))` | `ConfigProvider.layer(ConfigProvider.fromUnknown(...))` | Config |
 | `Effect.gen(this, fn)` | `Effect.gen({ self: this }, fn)` | Generator |
+| `Effect.zipRight(a, b)` | `a.pipe(Effect.andThen(b))` | Combinators |
+| `Effect.makeSemaphore(n)` | `Semaphore.make(n)` (import from `effect/Semaphore`) | Concurrency |
+| `Ref.unsafeMake(val)` | `Ref.makeUnsafe(val)` | Ref |
 | `BunContext.layer` | `BunServices.layer` | Platform |
 | `NodeContext.layer` | `NodeServices.layer` | Platform |
 | `Runtime<R>` | Removed; use `ServiceMap<R>` | Runtime |
 | `Layer.scoped(tag, eff)` | Removed → `Layer.effect(tag, eff)` (auto-strips Scope) | Layer |
+| `Layer.scopedContext(eff)` | `Layer.effect(tag, eff)` (single) or `Layer.effectServices(eff)` (multi) | Layer |
+| `Context.make(tag, impl)` | `ServiceMap.make(tag, impl)` | Services |
+| `Schema.mutable(struct)` | Removed for structs; only works on arrays: `Schema.mutable(Schema.Array(...))` | Schema |
+| `Option.fromNullable(v)` | `Option.fromNullishOr(v)` | Option |
+| `Console.log(msg)` (returns Effect) | `Console.log(msg)` (returns void — Console is sync in v4) | Console |
 
 ## Structural Changes
 
@@ -100,20 +111,29 @@ yield* Effect.atomic(Effect.gen(function* () {
 3. **`catchAll` → `catch`** — watch for this in every error handler
 4. **`catchSome` → `catchIf`** — and `catchSomeCause` → `catchCauseIf`
 5. **`fork` → `forkChild`** — and `forkDaemon` → `forkDetach`
-6. **`Either` → `Result`** — everywhere, including Schema decode returns
+6. **`Either` → `Result`** — everywhere, including `Effect.either` → `Effect.result`; `.left`→`.failure`, `.right`→`.success`
 7. **Import paths** — `@effect/platform` → `effect/unstable/http` etc.
 8. **`Layer.scoped` removed** — use `Layer.effect` which auto-strips `Scope`
-9. **`Effect.ignore` expanded** — still exists but now accepts `{ log?: boolean | Severity }` option
-10. **Config is Yieldable but not Effect** — `Config.pipe(Effect.orDie)` breaks; use `yield* config` directly or `Effect.orDie(Effect.gen(function*() { return yield* config }))`
-11. **`Effect.flatMap(ServiceTag, fn)` removed** — use `Effect.gen` + `yield* ServiceTag` instead
-12. **`FileSystem`, `Path` moved to `effect`** — no longer from `@effect/platform`
-13. **`FetchHttpClient` from `effect/unstable/http`** — not `@effect/platform`
-14. **`@effect/language-service` has no v4 beta** — keep at `^0.79.0`, it's a transitive dep of effect
-15. **CLI `Command.run` reads args from `Stdio`** — no longer pass `process.argv`; `BunServices`/`NodeServices` provide `Stdio`
+9. **`Layer.scopedContext` removed** — use `Layer.effect(tag, eff)` for single service or `Layer.effectServices(eff)` for multi-service `ServiceMap`
+10. **`Effect.zipRight` removed** — use `a.pipe(Effect.andThen(b))` or `Effect.flatMap(a, () => b)`
+11. **Console is sync in v4** — `Console.Console` methods return `void`, not `Effect<void>`. Mock Console in tests must use sync void methods.
+12. **`Schema.mutable` only works on arrays** — `Schema.mutable(Schema.Struct(...))` breaks; structs are mutable by default. Use `Schema.mutable(Schema.Array(...))` only.
+13. **Config is Yieldable but not Effect** — `Config.pipe(Effect.orDie)` breaks; use `yield* config` directly
+14. **`Effect.flatMap(ServiceTag, fn)` removed** — use `Effect.gen` + `yield* ServiceTag` instead
+15. **`FileSystem`, `Path` moved to `effect`** — no longer from `@effect/platform`
+16. **`@effect/language-service@^0.80.0`** — works with v4; requires `"transform": "@effect/language-service/transform"` and `"namespaceImportPackages": ["effect", "@effect/*"]` in tsconfig plugin config
+17. **CLI `Command.run` reads args from `Stdio`** — no longer pass `process.argv`; `BunServices`/`NodeServices` provide `Stdio`
+18. **`Option.fromNullable` removed** — use `Option.fromNullishOr(v)` instead
 
 ## Full Migration Guides
 
-For detailed per-topic guides, read files in `~/.claude/repos/Effect-TS/effect-smol/migration/`:
+Fetch the effect-smol repo for detailed per-topic guides:
+
+```bash
+repo fetch effect-ts/effect-smol
+```
+
+Then read files in `$(repo path -q effect-ts/effect-smol)/migration/`:
 - `services.md` — Context.Tag → ServiceMap.Service
 - `error-handling.md` — catch* renames
 - `forking.md` — fork renames
@@ -122,5 +142,7 @@ For detailed per-topic guides, read files in `~/.claude/repos/Effect-TS/effect-s
 - `runtime.md` — Runtime<R> removal
 - `scope.md` — Scope changes
 - `yieldable.md` — Effect subtyping changes
+- `schema.md` — Schema v4 migration (optionalWith, transforms, filters)
+- `generators.md` — Effect.gen self binding
 
-Schema v4 full guide: `~/.claude/repos/Effect-TS/effect-smol/packages/effect/SCHEMA.md`
+Schema v4 full docs: `$(repo path -q effect-ts/effect-smol)/packages/effect/SCHEMA.md`

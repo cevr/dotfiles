@@ -16,10 +16,10 @@ Quality audit of the brain vault. Prune noise, merge overlaps, distill unstated 
 ### 1. Build snapshots
 
 ```bash
-VAULT=$(brain vault)
-brain snapshot "$VAULT" --output /tmp/brain-snapshot.md
+VAULT=$(okra brain vault)
+okra brain snapshot "$VAULT" --output /tmp/brain-snapshot.md
 SKILLS_DIR=~/.claude/skills
-brain snapshot "$SKILLS_DIR" --output /tmp/skills-snapshot.md
+okra brain snapshot "$SKILLS_DIR" --output /tmp/skills-snapshot.md
 ```
 
 Also locate the auto-memory directory: `~/.claude/projects/<project>/memory/`.
@@ -63,7 +63,7 @@ Work through findings systematically:
 
 ### 6. Housekeep
 
-Update `brain/index.md` for any files added or removed. Run `brain reindex`.
+Update `brain/index.md` for any files added or removed. Run `okra brain reindex`.
 
 ### 7. Cleanup
 

@@ -1,5 +1,5 @@
 ---
-name: plan
+name: brain-plan
 description: Create structured implementation plans grounded in brain vault principles. Planning only — no implementation. Use when user says "plan this", "break this down", or needs a structured approach before coding.
 ---
 
@@ -19,7 +19,7 @@ Trivially small (1-2 files, obvious approach)? Tell the user and stop — don't 
 
 ### 1. Load principles
 
-Read `$(brain vault)/principles.md`. Follow every `[[wikilink]]` and read each linked principle file. These principles govern all plan decisions — refer back to them throughout.
+Read `$(okra brain vault)/principles.md`. Follow every `[[wikilink]]` and read each linked principle file. These principles govern all plan decisions — refer back to them throughout.
 
 **Do NOT skip this. Do NOT use memorized principle content — always read fresh.**
 
@@ -52,10 +52,10 @@ Check `~/.claude/skills/` for matching skills. Invoke matched skills, read outpu
 
 ### 5. Write the plan
 
-**Location**: `$(brain vault)/plans/NN-slug-name/`
+**Location**: `$(okra brain vault)/plans/NN-slug-name/`
 
 ```
-$(brain vault)/plans/42-mvp/
+$(okra brain vault)/plans/42-mvp/
 ├── overview.md
 ├── 01-scaffold.md
 ├── 02-core-types.md
@@ -64,7 +64,7 @@ $(brain vault)/plans/42-mvp/
 └── ...
 ```
 
-Single file for small plans: `$(brain vault)/plans/NN-slug-name.md`
+Single file for small plans: `$(okra brain vault)/plans/NN-slug-name.md`
 
 **Overview must include**:
 
@@ -103,7 +103,7 @@ If a phase involves creating or updating a skill, the phase must instruct the im
 
 ### 8. Update indexes
 
-Update `$(brain vault)/plans/index.md`. Do NOT edit `brain/index.md` — the auto-index hook maintains it automatically.
+Update `$(okra brain vault)/plans/index.md`. Do NOT edit `brain/index.md` — the auto-index hook maintains it automatically.
 
 ### 9. Present to user
 

@@ -328,6 +328,26 @@ Warm the cache before the user clicks:
 </button>
 ```
 
+**Don't define components inside components:**
+
+```tsx
+// BAD: InnerList remounts on every Parent render (new reference each time)
+function Parent({ items }) {
+  function InnerList() {
+    return items.map(i => <Item key={i.id} item={i} />);
+  }
+  return <InnerList />;
+}
+
+// GOOD: extract to module scope
+function InnerList({ items }) {
+  return items.map(i => <Item key={i.id} item={i} />);
+}
+function Parent({ items }) {
+  return <InnerList items={items} />;
+}
+```
+
 ## JS Performance Patterns
 
 **Use Map/Set for lookups:**
@@ -376,4 +396,100 @@ el1Height = el1.offsetHeight;
 el2Height = el2.offsetHeight;
 el1.style.height = '100px';
 el2.style.height = '100px';
+```
+
+**Cache repeated function results** — module-level Map for expensive calls:
+
+```tsx
+// BAD: slugify() called 100+ times for same project names
+projects.map(p => <Card key={p.id} slug={slugify(p.name)} />);
+
+// GOOD: cache at module level
+const slugCache = new Map<string, string>();
+function cachedSlugify(text: string): string {
+  let result = slugCache.get(text);
+  if (result === undefined) {
+    result = slugify(text);
+    slugCache.set(text, result);
+  }
+  return result;
+}
+```
+
+**Cache localStorage/sessionStorage reads** — synchronous I/O is expensive:
+
+```tsx
+// BAD: reads storage on every call
+function getTheme() { return localStorage.getItem('theme') ?? 'light'; }
+
+// GOOD: in-memory cache, synced on write
+const storageCache = new Map<string, string | null>();
+function getLocal(key: string) {
+  if (!storageCache.has(key)) storageCache.set(key, localStorage.getItem(key));
+  return storageCache.get(key);
+}
+function setLocal(key: string, value: string) {
+  localStorage.setItem(key, value);
+  storageCache.set(key, value);
+}
+// Invalidate on cross-tab changes
+window.addEventListener('storage', (e) => { if (e.key) storageCache.delete(e.key); });
+```
+
+**Combine multiple iterations** — multiple `.filter()` calls = multiple passes:
+
+```tsx
+// BAD: 3 passes over users
+const admins = users.filter(u => u.isAdmin);
+const testers = users.filter(u => u.isTester);
+const inactive = users.filter(u => !u.isActive);
+
+// GOOD: 1 pass
+const admins: User[] = [], testers: User[] = [], inactive: User[] = [];
+for (const u of users) {
+  if (u.isAdmin) admins.push(u);
+  if (u.isTester) testers.push(u);
+  if (!u.isActive) inactive.push(u);
+}
+```
+
+**Check length before expensive comparison:**
+
+```tsx
+// BAD: always sorts even when lengths differ
+function hasChanges(current: string[], original: string[]) {
+  return current.sort().join() !== original.sort().join();
+}
+
+// GOOD: O(1) bail-out, then compare
+function hasChanges(current: string[], original: string[]) {
+  if (current.length !== original.length) return true;
+  const a = current.toSorted(), b = original.toSorted();
+  return a.some((v, i) => v !== b[i]);
+}
+```
+
+**Loop for min/max, not sort:**
+
+```tsx
+// BAD: O(n log n) to find one value
+const latest = [...projects].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+
+// GOOD: O(n) single pass
+let latest = projects[0];
+for (let i = 1; i < projects.length; i++) {
+  if (projects[i].updatedAt > latest.updatedAt) latest = projects[i];
+}
+```
+
+**Cache property access in hot loops:**
+
+```tsx
+// BAD: deep lookup on every iteration
+for (let i = 0; i < arr.length; i++) process(obj.config.settings.value);
+
+// GOOD: hoist to local
+const value = obj.config.settings.value;
+const len = arr.length;
+for (let i = 0; i < len; i++) process(value);
 ```

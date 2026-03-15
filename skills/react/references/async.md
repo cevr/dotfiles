@@ -195,6 +195,7 @@ const [user, config, posts] = await Promise.all([
 **Dependency-based parallelization** — start independent work immediately, chain dependents:
 
 ```tsx
+// Manual approach — start promises early, await late
 const userPromise = fetchUser();
 const configPromise = fetchConfig();
 const profilePromise = userPromise.then(u => fetchProfile(u.id));
@@ -202,6 +203,15 @@ const profilePromise = userPromise.then(u => fetchProfile(u.id));
 const [user, config, profile] = await Promise.all([
   userPromise, configPromise, profilePromise
 ]);
+
+// Or use better-all — auto-starts each task at the earliest moment
+import { all } from 'better-all';
+
+const { user, config, profile } = await all({
+  async user() { return fetchUser(); },
+  async config() { return fetchConfig(); },
+  async profile() { return fetchProfile((await this.$.user).id); },
+});
 ```
 
 ## Strategic Suspense Boundaries

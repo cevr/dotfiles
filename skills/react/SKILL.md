@@ -61,9 +61,15 @@ What are you working on?
 - `memo()` extracted component > `useMemo` inside parent with early return
 - Refs + direct DOM mutation for high-frequency values (mouse, scroll)
 - Don't `useMemo` simple expressions — inline boolean OR is cheaper
+- Don't define components inside components — remounts on every parent render
 - Barrel files pull everything — use direct imports
 - `.toSorted()` not `.sort()` on prop arrays
 - `suppressHydrationWarning` for dates/random IDs; inline script for theme
+- Cache repeated function results in module-level Maps, not hooks
+- Cache `localStorage`/`sessionStorage` reads — synchronous I/O is expensive
+- Combine multiple `.filter()` into a single loop
+- Check `.length` before expensive array comparisons — O(1) bail-out
+- Loop for min/max, not `.sort()` — O(n) vs O(n log n)
 
 ### Events
 - Store handlers in refs for stable subscriptions
@@ -78,3 +84,4 @@ What are you working on?
 - Animate `<div>` wrapper not `<svg>` directly — GPU acceleration
 - `React.cache()` uses `Object.is` — inline objects always miss
 - React 19: `forwardRef` unnecessary — `ref` is a regular prop
+- Global regex (`/g`) has mutable `lastIndex` — alternating `.test()` calls flip true/false
