@@ -143,10 +143,39 @@ Springs feel more natural — no fixed duration, real physics simulation.
 
 ### Button Press Feel
 
+Always `scale(0.96)`. Never below `0.95` — feels exaggerated. Use CSS transitions for interruptibility.
+
 ```css
-button:active {
-  transform: scale(0.97);
+button { transition-property: scale; transition-duration: 150ms; transition-timing-function: ease-out; }
+button:active { scale: 0.96; }
+```
+
+```tsx
+// Tailwind
+<button className="transition-[scale] duration-150 ease-out active:scale-[0.96]">Click me</button>
+
+// Motion
+<motion.button whileTap={{ scale: 0.96 }}>Click me</motion.button>
+```
+
+**Static prop pattern** — disable scale when motion would be distracting:
+
+```tsx
+const tapScale = "active:not-disabled:scale-[0.96]";
+
+function Button({ static: isStatic, className, children, ...props }) {
+  return (
+    <button
+      className={cn("transition-[scale] duration-150 ease-out", !isStatic && tapScale, className)}
+      {...props}
+    >
+      {children}
+    </button>
+  );
 }
+
+<Button>Click me</Button>        {/* scales on press */}
+<Button static>Submit</Button>   {/* no scale */}
 ```
 
 ### Never scale(0)
@@ -259,11 +288,143 @@ When reviewing animations, use a before/after table:
 | `animation: fadeIn 400ms ease-in`| `animation: fadeIn 200ms ease-out`             |
 | No reduced motion support        | `@media (prefers-reduced-motion: reduce) {...}` |
 
+## Contextual Icon Animations
+
+Animate icons on state change with `opacity`, `scale`, and `blur` — never toggle visibility.
+
+**Exact values (don't deviate):**
+- `scale`: `0.25` → `1`
+- `opacity`: `0` → `1`
+- `filter`: `blur(4px)` → `blur(0px)`
+- Spring: `{ type: "spring", duration: 0.3, bounce: 0 }` — **bounce must be `0`**
+
+### Motion Approach
+
+```tsx
+import { AnimatePresence, motion } from "motion/react";
+
+function IconButton({ isActive, icon: Icon }) {
+  return (
+    <button>
+      <AnimatePresence mode="popLayout" initial={false}>
+        <motion.span
+          key={isActive ? "active" : "inactive"}
+          initial={{ opacity: 0, scale: 0.25, filter: "blur(4px)" }}
+          animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
+          exit={{ opacity: 0, scale: 0.25, filter: "blur(4px)" }}
+          transition={{ type: "spring", duration: 0.3, bounce: 0 }}
+        >
+          <Icon />
+        </motion.span>
+      </AnimatePresence>
+    </button>
+  );
+}
+```
+
+### CSS Fallback (No Motion Dependency)
+
+Keep both icons in DOM, cross-fade. Non-absolute icon defines layout size; absolute icon overlays.
+
+```tsx
+function IconButton({ isActive, ActiveIcon, InactiveIcon }) {
+  return (
+    <button>
+      <div className="relative">
+        <div className={cn(
+          "absolute inset-0 flex items-center justify-center",
+          "transition-[opacity,filter,scale] duration-300 [transition-timing-function:cubic-bezier(0.2,0,0,1)]",
+          isActive ? "scale-100 opacity-100 blur-0" : "scale-[0.25] opacity-0 blur-[4px]"
+        )}>
+          <ActiveIcon />
+        </div>
+        <div className={cn(
+          "transition-[opacity,filter,scale] duration-300 [transition-timing-function:cubic-bezier(0.2,0,0,1)]",
+          isActive ? "scale-[0.25] opacity-0 blur-[4px]" : "scale-100 opacity-100 blur-0"
+        )}>
+          <InactiveIcon />
+        </div>
+      </div>
+    </button>
+  );
+}
+```
+
+**Rule:** Check `package.json` for `motion`/`framer-motion`. If present, use Motion. If not, use CSS cross-fade — don't add a dependency just for icon transitions.
+
+| Animate | Don't Animate |
+|---------|---------------|
+| Icons appearing on hover (action buttons) | Static navigation icons |
+| State change icons (play→pause, like→liked) | Decorative icons |
+| Icons in contextual toolbars | Icons that are always visible |
+| Loading/success indicators | Icon labels (text next to icon) |
+
+## Enter/Exit Choreography
+
+### Staggered Enter
+
+Split content into semantic chunks. Stagger ~100ms. Combine `opacity`, `blur`, `translateY`.
+
+```tsx
+// Motion — staggered enter
+<motion.div initial="hidden" animate="visible" variants={{ visible: { transition: { staggerChildren: 0.1 } } }}>
+  {["h1", "p", "div"].map((_, i) => (
+    <motion.div key={i} variants={{
+      hidden: { opacity: 0, y: 12, filter: "blur(4px)" },
+      visible: { opacity: 1, y: 0, filter: "blur(0px)" },
+    }} />
+  ))}
+</motion.div>
+```
+
+```css
+/* CSS-only stagger */
+.stagger-item {
+  opacity: 0; transform: translateY(12px); filter: blur(4px);
+  animation: fadeInUp 400ms ease-out forwards;
+}
+.stagger-item:nth-child(1) { animation-delay: 0ms; }
+.stagger-item:nth-child(2) { animation-delay: 100ms; }
+.stagger-item:nth-child(3) { animation-delay: 200ms; }
+
+@keyframes fadeInUp { to { opacity: 1; transform: translateY(0); filter: blur(0); } }
+```
+
+### Subtle Exit
+
+Exit should be softer than enter. Small fixed `translateY`, shorter duration.
+
+```tsx
+<motion.div exit={{ opacity: 0, y: -12, filter: "blur(4px)", transition: { duration: 0.15, ease: "easeIn" } }}>
+  {content}
+</motion.div>
+```
+
+- Exit duration ~50% of enter (150ms vs 300ms)
+- Small fixed `translateY` (e.g., `-12px`) — not full container height
+- Keep directional movement to indicate where element went
+- Don't remove exit animations entirely — subtle motion preserves context
+
+### Skip Animation on Page Load
+
+`initial={false}` on `AnimatePresence` prevents enter animations on first render. Elements in their default state shouldn't animate in on mount — only on subsequent state changes.
+
+```tsx
+// Good — icon doesn't animate on mount, only on state change
+<AnimatePresence initial={false} mode="popLayout">
+  <motion.span key={isActive ? "active" : "inactive"} initial={...} animate={...} exit={...}>
+    <Icon />
+  </motion.span>
+</AnimatePresence>
+```
+
+**Don't use** when the component relies on `initial` for a first-time entrance (staggered page hero, loading state). Verify on full page refresh.
+
 ## Quick Reference
 
 | Problem                         | Fix                                             |
 | ------------------------------- | ----------------------------------------------- |
-| Buttons feel dead               | `transform: scale(0.97)` on `:active`           |
+| Buttons feel dead               | `scale: 0.96` on `:active`                      |
 | Element appears from nowhere    | Start from `scale(0.95)`, not `scale(0)`        |
 | Shaky/jittery                   | `will-change: transform`                        |
 | Hover causes flicker            | Animate child, not parent                       |

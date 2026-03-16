@@ -1,6 +1,6 @@
 ---
 name: ui
-description: Build accessible, performant, distinctive UIs. Use when implementing web interfaces, components, reviewing UI code, or working with animations/motion/easing/transitions. Includes animation reference with easing curves, timing guidelines, springs, and practical patterns.
+description: Build accessible, performant, distinctive UIs. Use when implementing web interfaces, components, reviewing UI code, or working with animations/motion/easing/transitions. Includes references for animation (easing, springs, icon animations, enter/exit choreography), surfaces (concentric radii, optical alignment, shadows, image outlines), and creative patterns.
 allowed-tools: Read, Grep, Glob, Edit, Write
 ---
 
@@ -136,7 +136,8 @@ Use data attributes for conditional styling instead of `classnames` object synta
 - **MUST**: Theme switching should not trigger transitions
 - **MUST**: Looping animations pause when off-screen
 - **SHOULD**: Duration ≤200ms for interactions to feel immediate
-- **SHOULD**: Animation values proportional to trigger size (scale from ~0.96, not 0→1)
+- **SHOULD**: Animation values proportional to trigger size (scale from ~0.96, not 0→1; never scale(0))
+- **SHOULD**: `initial={false}` on `AnimatePresence` for elements in default state — skip enter animation on first render
 - **SHOULD**: Frequent/low-novelty actions avoid extraneous animations
 - **SHOULD**: `scroll-behavior: smooth` for in-page anchors with appropriate offset
 
@@ -344,8 +345,9 @@ Every error message should include, in order:
 - **MUST**: Auth redirects happen server-side (no URL jank)
 - **SHOULD**: Layered shadows (ambient + direct)
 - **SHOULD**: Crisp edges via semi-transparent borders + shadows
-- **SHOULD**: Nested radii: child ≤ parent; concentric
+- **MUST**: Nested radii concentric: `outerRadius = innerRadius + padding` (when padding ≤ ~24px)
 - **SHOULD**: Hue consistency: tint borders/shadows/text toward bg hue
+- **SHOULD**: Subtle `1px` inset outline on images (`outline-black/10 dark:outline-white/10`) for consistent depth
 - **SHOULD**: Match browser UI to page background
 - **SHOULD**: Avoid gradient banding (use masks when needed)
 - **SHOULD**: Style `::selection`
@@ -408,12 +410,15 @@ Every error message should include, in order:
 
 ## Reference
 
-**Animation guide**: `references/animation.md` — easing curves, timing, springs, practical patterns. Load when implementing or reviewing animations.
-
-**Creative pattern catalog**: `references/creative-patterns.md` — navigation, layout, card, scroll, gallery, typography, and micro-interaction patterns. Load when building distinctive/exploratory UI.
+| File | When to Load |
+|------|-------------|
+| `references/animation.md` | Implementing or reviewing animations — easing curves, timing, springs, icon animations, enter/exit choreography |
+| `references/surfaces.md` | Building cards, buttons, containers — concentric radii, optical alignment, shadow systems, image outlines |
+| `references/creative-patterns.md` | Building distinctive/exploratory UI — navigation, layout, card, scroll, gallery, typography, micro-interactions |
 
 Distilled from:
 - [Vercel Web Interface Guidelines](https://github.com/vercel-labs/web-interface-guidelines)
 - [Butterick's Practical Typography](https://practicaltypography.com/)
 - [raunofreiberg/interfaces](https://github.com/raunofreiberg/interfaces)
 - [ui-skills.com](https://ui-skills.com)
+- [jakubkrehel/make-interfaces-feel-better](https://github.com/jakubkrehel/make-interfaces-feel-better)
