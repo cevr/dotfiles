@@ -20,25 +20,25 @@ What do you need?
 
 ## Quick Reference
 
-| Command | What it does |
-|---------|-------------|
-| `repo fetch <spec>` | Fetch/update. stdout = path, stderr = progress. `--json`, `--force` |
-| `repo path <spec>` | Pure cache lookup. stdout = path, nonzero on miss. No network. |
-| `repo list` | List cached repos. `--registry`, `--sort`, `--json` |
-| `repo remove <spec>` | Remove from cache |
-| `repo clean --days N` | Prune by age |
-| `repo clean --max-size 100M` | Prune by size |
-| `repo clean --all -y` | Remove everything |
-| `repo clean --dry-run` | Preview what would be removed |
+| Command                      | What it does                                                        |
+| ---------------------------- | ------------------------------------------------------------------- |
+| `repo fetch <spec>`          | Fetch/update. stdout = path, stderr = progress. `--json`, `--force` |
+| `repo path <spec>`           | Pure cache lookup. stdout = path, nonzero on miss. No network.      |
+| `repo list`                  | List cached repos. `--registry`, `--sort`, `--json`                 |
+| `repo remove <spec>`         | Remove from cache                                                   |
+| `repo clean --days N`        | Prune by age                                                        |
+| `repo clean --max-size 100M` | Prune by size                                                       |
+| `repo clean --all -y`        | Remove everything                                                   |
+| `repo clean --dry-run`       | Preview what would be removed                                       |
 
 ### Spec Formats
 
-| Format | Example |
-|--------|---------|
-| GitHub | `owner/repo`, `owner/repo@v1.0.0` |
-| npm | `npm:lodash`, `npm:@effect/cli@0.73.0` |
-| PyPI | `pypi:requests@2.31.0` |
-| Crates | `crates:serde@1.0.0` |
+| Format | Example                                |
+| ------ | -------------------------------------- |
+| GitHub | `owner/repo`, `owner/repo@v1.0.0`      |
+| npm    | `npm:lodash`, `npm:@effect/cli@0.73.0` |
+| PyPI   | `pypi:requests@2.31.0`                 |
+| Crates | `crates:serde@1.0.0`                   |
 
 ## Fetching
 
@@ -68,12 +68,12 @@ repo path owner/repo
 
 ## Cache Layout
 
-| Registry | Path |
-|----------|------|
-| GitHub | `~/.cache/repo/{owner}/{repo}` |
-| npm | `~/.cache/repo/{package}/{version}` |
-| PyPI | `~/.cache/repo/{package}/{version}` |
-| Crates | `~/.cache/repo/{crate}/{version}` |
+| Registry | Path                                |
+| -------- | ----------------------------------- |
+| GitHub   | `~/.cache/repo/{owner}/{repo}`      |
+| npm      | `~/.cache/repo/{package}/{version}` |
+| PyPI     | `~/.cache/repo/{package}/{version}` |
+| Crates   | `~/.cache/repo/{crate}/{version}`   |
 
 ## Search Tools
 
@@ -103,14 +103,14 @@ fd -e ts ~/.cache/repo/{owner}/{repo}
 
 ### Exploration strategy
 
-| Scope | Tool |
-|-------|------|
+| Scope             | Tool                             |
+| ----------------- | -------------------------------- |
 | Broad exploration | Explore agent on the cached path |
-| Text patterns | `rg` (ripgrep) |
-| Code structures | `ast-grep` |
-| File names | `fd` or Glob tool |
-| Specific files | Read tool with full path |
-| Directory tree | `eza --tree` on repo path |
+| Text patterns     | `rg` (ripgrep)                   |
+| Code structures   | `ast-grep`                       |
+| File names        | `fd` or Glob tool                |
+| Specific files    | Read tool with full path         |
+| Directory tree    | `eza --tree` on repo path        |
 
 ## Cache Management
 

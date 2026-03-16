@@ -72,7 +72,7 @@ Every project uses this base. No exceptions.
           "missedPipeableOpportunity": "suggestion",
           "missingEffectServiceDependency": "warning",
           "schemaUnionOfLiterals": "warning",
-          "strictBooleanExpressions": "warning",
+          "strictBooleanExpressions": "off",
           "strictEffectProvide": "warning",
           "catchAllToMapError": "warning",
           "catchUnfailableEffect": "warning",
@@ -137,6 +137,7 @@ Every project uses this base. No exceptions.
       "error",
       { "prefer": "type-imports", "fixStyle": "separate-type-imports" }
     ],
+    "typescript/no-unsafe-type-assertion": "error",
     "import/no-duplicates": "error",
     "no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }]
   },
@@ -146,7 +147,8 @@ Every project uses this base. No exceptions.
       "files": ["**/*.test.ts", "**/*.test.tsx", "**/tests/**"],
       "rules": {
         "typescript/no-non-null-assertion": "off",
-        "typescript/no-explicit-any": "off"
+        "typescript/no-explicit-any": "off",
+        "typescript/no-unsafe-type-assertion": "off"
       }
     }
   ]
@@ -186,7 +188,7 @@ pre-commit:
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "test": "bun test",
-    "gate": "concurrently -n type,lint,fmt,test,build -c blue,yellow,magenta,green,cyan \"bun run typecheck\" \"bun run lint\" \"bun run fmt\" \"bun run test\" \"bun run build\"",
+    "gate": "concurrently -n type,lint,fmt,test,build -c blue,yellow,magenta,green,cyan \"bun run typecheck\" \"bun run lint:fix\" \"bun run fmt\" \"bun run test\" \"bun run build\"",
     "prepare": "effect-language-service patch && lefthook install"
   }
 }

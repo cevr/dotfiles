@@ -58,7 +58,7 @@ mkdir -p packages/core/src packages/cli/src
     "lint:fix": "oxlint --fix",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
-    "gate": "concurrently -n turbo,lint,fmt -c blue,yellow,magenta \"turbo run typecheck test build\" \"bun run lint\" \"bun run fmt\"",
+    "gate": "concurrently -n turbo,lint,fmt -c blue,yellow,magenta \"turbo run typecheck test build\" \"bun run lint:fix\" \"bun run fmt\"",
     "clean": "rm -rf .turbo */.turbo */*/.turbo",
     "prepare": "lefthook install"
   },
@@ -93,7 +93,7 @@ Key points:
 The monorepo gate differs from single-package: turbo handles typecheck/test/build (respecting `dependsOn` ordering), while lint/fmt run at root in parallel.
 
 ```json
-"gate": "concurrently -n turbo,lint,fmt -c blue,yellow,magenta \"turbo run typecheck test build\" \"bun run lint\" \"bun run fmt\""
+"gate": "concurrently -n turbo,lint,fmt -c blue,yellow,magenta \"turbo run typecheck test build\" \"bun run lint:fix\" \"bun run fmt\""
 ```
 
 ## Step 3: Root tsconfig.json
