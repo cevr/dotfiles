@@ -10,7 +10,7 @@ compaction is **disabled** in this environment. context is managed via handoff �
 ## what you need to know
 
 - you have ~200k tokens of context. that's plenty for focused work.
-- at ~85% usage, the handoff extension auto-generates a transfer prompt and stages `/handoff` in the editor. the user just presses Enter to continue in a new session.
+- at ~85% usage, the handoff extension auto-generates a transfer prompt and shows a handoff choice flow. the user can hand off immediately, dismiss it, or edit the handoff message before switching.
 - you will NOT be compacted. if you exhaust context, you hit a wall. plan accordingly.
 
 ## your responsibilities
@@ -32,17 +32,18 @@ you have a `handoff` tool. call it directly when:
 handoff({ goal: "implement the auth middleware we planned" })
 ```
 
-the tool generates a handoff prompt (via extraction model) and stages `/handoff` in the editor. the user presses Enter to review the prompt, then confirms to switch sessions.
+the tool generates a handoff prompt (via an extraction model) and opens the handoff choice flow. the user can hand off immediately, dismiss it, or edit the prompt before switching sessions.
 
-the user can also run `/handoff <goal>` manually — this generates a prompt and shows it for review before sending.
+the user can also run `/handoff <goal>` manually — this generates a prompt and shows the same choice flow.
 
 ## what happens during handoff
 
-1. conversation is serialized and sent to a dedicated model (haiku 4.5)
+1. conversation is serialized and sent to a dedicated extraction model
 2. the model is forced to call a `create_handoff_context` tool that extracts structured output: `relevantInformation` (first-person context bullets) + `relevantFiles` (workspace-relative paths)
 3. the final prompt is assembled in code: session link → @file references → context bullets → goal
-4. a new session is created with `parentSession` linking to the old one
-5. the prompt is sent as the first message — you start working immediately
+4. the user gets a choice: hand off now, dismiss, or edit the prompt
+5. if confirmed, a new session is created with `parentSession` linking to the old one
+6. the prompt is sent as the first message — you start working immediately
 
 ## session tools
 
