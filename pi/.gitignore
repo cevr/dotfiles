@@ -1,7 +1,0 @@
-node_modules
-dist
-auth.json
-prompts/
-.env
-*.log
-bun.lock
