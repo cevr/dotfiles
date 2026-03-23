@@ -609,46 +609,109 @@ Suppress diagnostics with comments:
 
 ## Gotchas
 
-- **`ServiceMap.Service` not `Context.Tag`** — Context.Tag is removed in v4
-- **`Schema.TaggedErrorClass`** not `Schema.TaggedError` — renamed
-- **`Effect.catch`** not `Effect.catchAll` — renamed
-- **`Effect.catchCause`** not `Effect.catchAllCause` — renamed
-- **`Effect.result`** not `Effect.either` — returns `Result` not `Either`; `.failure`/`.success` not `.left`/`.right`
-- **`Effect.forkChild`** not `Effect.fork` — renamed
-- **`Effect.forkDetach`** not `Effect.forkDaemon` — renamed
-- **`Result`** not `Either` — `Result.succeed`/`Result.fail` instead of `Either.right`/`Either.left`
-- **`.check()` not pipe filters** — `Schema.Number.check(Schema.isInt())` not `Schema.Number.pipe(Schema.int())`
-- **`.annotate()` not `.annotations()`** — method renamed on Schema
-- **`Effect.gen({ self: this }, fn)`** not `Effect.gen(this, fn)` — self binding changed
-- **`Layer.effect` auto-strips Scope** — `Layer.scoped` removed; `Layer.effect` handles it
-- **`Layer.scopedContext` removed** — use `Layer.effect(tag, eff)` for single service or `Layer.effectServices(eff)` for multi-service `ServiceMap`
-- **`Effect.zipRight` removed** — use `a.pipe(Effect.andThen(b))`
-- **`Effect.makeSemaphore` moved** — use `Semaphore.make` from `effect/Semaphore`
-- **`Ref.unsafeMake` → `Ref.makeUnsafe`** — renamed
-- **Console is sync** — `Console.Console` methods return `void`, not `Effect<void>`. Test mocks must be sync.
-- **`Schema.mutable` only for arrays** — `Schema.mutable(Schema.Struct(...))` breaks; structs are already mutable. Use only on `Schema.Array`.
-- **`Cause` is flat** — `{ reasons: Reason[] }` not recursive tree
-- **Unstable imports** — `effect/unstable/http` not `@effect/platform`
-- **`BunServices.layer`** not `BunContext.layer` — platform context renamed
-- **`static layer`/`static layerTest`** not `static Live`/`static Test` — naming convention
-- **No `Schema.parseJson`** — use `Schema.fromJsonString(schema)` for JSON string ↔ typed data
-- **`@effect/language-service@0.80.0`** — works with v4; needs `transform` and `namespaceImportPackages` in tsconfig plugin
-- **`Schema.Record` takes two args** — `Schema.Record(Schema.String, ValueSchema)` not `Schema.Record({ key, value })`
-- **No try/catch in generators** — use `Effect.try` / `Effect.tryPromise`
-- **No unnecessary `Effect.gen`** — single yield? Use pipe + `Effect.as` / `Effect.andThen`
-- **No pointless wrapper functions** — if it just delegates to one effect call, use that call directly
-- **No `withX` scope wrappers** — use `Effect.scoped` or `it.scoped` directly; don't create `withDb`/`withTempDir` helpers
-- **No Node/browser builtins** — use Effect platform (`FileSystem`, `HttpClient`, `Path`, `Command`) not `node:fs`/`fetch`/etc.
-- **No plain JS callback escape hatches** — use `Effect.callback`/`Effect.async`/`Stream.async` for event emitters, Node streams, sockets
-- **No `null`/`undefined`** — use `Option` from effect; convert nullish → `Option.fromNullishOr` at boundaries
-- **`Option.fromNullable` removed** — use `Option.fromNullishOr` instead
-- **`Schema.decodeUnknown` → `Schema.decodeUnknownEffect`** — and `encodeUnknown` → `encodeUnknownEffect`
-- **`ParseResult.ParseError` removed** — use `Schema.SchemaError` instead
-- **Config is Yieldable but not Effect** — `config.pipe(Effect.orDie)` breaks; `yield* config` directly or wrap in `Effect.gen`
-- **`Effect.flatMap(ServiceTag, fn)` removed** — use `Effect.gen` + `yield* ServiceTag` instead
-- **CLI `Args` → `Argument`**, `Options` → `Flag` — `Argument.string("name")`, `Flag.string("name")`
-- **CLI `Command.run` reads args from `Stdio`** — no `process.argv`; `BunServices`/`NodeServices` provide it
-- **`FileSystem`, `Path` from `"effect"`** — not `@effect/platform`
-- **`ConfigProvider.fromMap` removed** — use `ConfigProvider.fromUnknown(obj)` + `ConfigProvider.layer(...)`
+### Services & Layer
+- **`ServiceMap.Service` not `Context.Tag`** — Context.Tag removed
+- **`Effect.flatMap(ServiceTag, fn)` removed** — use `ServiceTag.use(fn)` or `yield* ServiceTag` in gen
+- **`Layer.effect` auto-strips Scope** — `Layer.scoped` removed
+- **`Layer.scopedContext` removed** — use `Layer.effect(tag, eff)` or `Layer.effectServices(eff)`
+- **`Layer.unwrapEffect` → `Layer.unwrap`**
+- **`static layer`/`static layerTest`** not `static Live`/`static Test`
 - **Deterministic keys** — `@scope/pkg/path/Name` format for service identifiers
-- **Never pass context as parameters** — yield services/refs/config directly; don't thread them through function args
+- **Never pass context as parameters** — yield services/refs/config directly
+
+### Errors & Cause
+- **`Effect.catch`** not `Effect.catchAll` — renamed
+- **`Effect.catchCause`** not `Effect.catchAllCause`**
+- **`Effect.catchIf`** not `Effect.catchSome`**
+- **`Effect.dieMessage(msg)` removed** — use `Effect.die(new Error(msg))`
+- **`Cause.UnknownException` → `Cause.UnknownError`**
+- **`Cause` is flat** — `{ reasons: Reason[] }` not recursive tree
+- **`Cause.isEmpty` removed** — use `cause.reasons.length === 0`
+- **`Cause.isInterruptedOnly` → `Cause.hasInterruptsOnly`**
+- **`Cause.pretty(cause, opts)` → `Cause.pretty(cause)`** — no options arg
+- **`ConfigError` barrel import removed** — use `Config.ConfigError`
+
+### Schema
+- **`Schema.TaggedErrorClass`** not `Schema.TaggedError`
+- **`.check()` not pipe filters** — `Schema.Number.check(Schema.isInt())`
+- **`.annotate()` not `.annotations()`**
+- **`Schema.Record(K, V)`** not `Schema.Record({ key, value })`
+- **`Schema.fromJsonString`** not `Schema.parseJson`; `{ space: 2 }` option removed
+- **`Schema.optionalWith` removed** — use `Schema.optionalKey(Schema.OptionFromUndefinedOr(T))` for `{ as: 'Option' }`, `Schema.optionalKey(Schema.NullishOr(T))` for `{ nullable: true }`
+- **`Schema.Config` removed** — use `Config.schema(codec, "name")`
+- **`Schema.pick` removed** — destructure `.fields` into new `Schema.Struct`
+- **`Schema.typeSchema` → `Schema.toType`**
+- **`Schema.transformOrFail` restructured** — use `Schema.decodeTo` + `SchemaGetter.transformOrFail`
+- **`Schema.disableValidation` option removed** — just remove it
+- **`Schema.Schema.AnyNoContext` → `Schema.Any`** or `Schema.Top`
+- **`Schema.decodeUnknown` → `Schema.decodeUnknownEffect`**
+- **`ParseResult.ParseError` → `Schema.SchemaError`**
+- **`Schema.mutable` only for arrays** — structs already mutable
+
+### Data & Option
+- **`Either` → `Result`** everywhere; `.left`→`.failure`, `.right`→`.success`
+- **`Effect.either` → `Effect.result`** — returns `Result` not `Either`
+- **`Option.fromNullable` removed** — use `Option.fromNullishOr`
+- **`Effect.fromNullable` removed** — use `Effect.fromNullishOr`
+
+### Fiber & Runtime
+- **`Effect.forkChild`** not `Effect.fork`
+- **`Effect.forkDetach`** not `Effect.forkDaemon`
+- **`Effect.scheduleForked` removed** — use `Effect.repeat({ schedule }).pipe(Effect.fork)`
+- **`Fiber.interruptFork` → `Fiber.interrupt`**
+- **`Fiber.RuntimeFiber` → `Fiber.Fiber`**
+- **`Runtime<R>` removed** — use `ManagedRuntime` or `Effect.run*With(services)`
+- **`Runtime.runFork/runPromise/runSync` removed** — use `Effect.runForkWith(services)`, `Effect.runPromiseWith(services)`
+- **`Effect.runtime()` → `Effect.services()`** — returns `ServiceMap`, not `Runtime`
+
+### Stream
+- **`Stream.fromChunk` → `Stream.fromIterable`** or `Stream.fromArray`
+- **`Stream.paginateEffect` → `Stream.paginate`** (returns `[Array<A>, Option<S>]`)
+- **`Chunk.toReadonlyArray` unnecessary** — `Stream.runCollect` returns `Array` in v4
+
+### Logger
+- **`Logger.remove(defaultLogger)` → `Logger.layer([])`** (empty = no loggers)
+- **`Logger.replace(default, custom)` → `Logger.layer([custom])`**
+- **`Logger.withMinimumLogLevel` removed** — use `References.MinimumLogLevel`
+
+### CLI
+- **`Args` → `Argument`**, `Options` → `Flag`
+- **`Argument.string("name")`** not `Args.text({ name })`
+- **`Flag.string("name")`** not `Options.text("name")`
+- **`Argument.variadic()` — must call with `()`** when piping (`.pipe(Argument.variadic())`)
+- **`Flag.atLeast(0)`** replaces `Options.repeated` (0+); `Flag.atLeast(1)` for 1+
+- **`Command.run` reads from Stdio** — no `process.argv`; use `Command.runWith(cmd, { version })(args)` for tests
+- **`Command.transformHandler` removed** — use `Command.provideEffect`
+
+### Config
+- **Config is Yieldable but not Effect** — `config.pipe(Effect.orDie)` breaks
+- **`ConfigProvider.fromMap` removed** — use `ConfigProvider.fromUnknown(obj)` or `ConfigProvider.make(...)`
+- **`ConfigProvider.fromEnv()` caches** — use `ConfigProvider.layer(provider)` for per-test isolation
+
+### HttpApi
+- **`HttpApiEndpoint.setPath/setUrlParams` removed** — pass inline at construction
+- **`HttpApiSchema.annotate({ status })` → `HttpApiSchema.status(code)`**
+- **`HttpApiBuilder.api()` → `HttpApiBuilder.layer()`**
+- **`HttpApiScalar.layer()` → `HttpApiScalar.layer(api)`** — api arg required
+- **`HttpClientResponse.value` removed** — v4 returns decoded value directly
+- **`HttpServer.serve` is curried** — `serve(middleware)(httpEffect)`; use `HttpRouter.toHttpEffect(appLayer)` to get the handler
+
+### Platform & Imports
+- **`FileSystem`, `Path` from `"effect"`** — not `@effect/platform`
+- **`BunServices.layer`** not `BunContext.layer`
+- **Unstable imports** — `effect/unstable/http` not `@effect/platform`
+- **Merge duplicate `from 'effect'` imports** — linter flags `import/no-duplicates`
+
+### LSP
+- **`@effect/language-service@0.80.0+`** — needs `transform` and `namespaceImportPackages`
+- **`ignoreEffectWarningsInTscExitCode: true`** in tsconfig — prevents warnings from failing tsc
+- **`// @effect-diagnostics nodeBuiltinImport:off`** — per-file suppression for scripts using node builtins
+
+### Code Style (rules 8-16)
+- **No try/catch in generators** — use `Effect.try` / `Effect.tryPromise`
+- **No unnecessary `Effect.gen`** — single yield? Use pipe
+- **No pointless wrapper functions** — call effects directly
+- **No `withX` scope wrappers** — use `Effect.scoped` or `it.scoped` directly
+- **No Node/browser builtins** — use Effect platform services
+- **No plain JS callback escape** — use `Effect.callback`/`Effect.async`/`Stream.async`
+- **No `null`/`undefined`** — use `Option`; convert at boundaries

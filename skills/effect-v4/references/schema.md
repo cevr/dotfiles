@@ -130,18 +130,20 @@ Schema.mutable(Schema.Array(Schema.String))  // OK
 ## Schema.optionalWith — Replaced
 
 ```typescript
-// v3
+// v3: { as: 'Option' } — decode to Option<T>
+Schema.optionalWith(MySchema, { as: 'Option' })
+// v4:
+Schema.optionalKey(Schema.OptionFromUndefinedOr(MySchema))
+
+// v3: { nullable: true } — accept null
+Schema.optionalWith(MySchema, { nullable: true })
+// v4:
+Schema.optionalKey(Schema.NullishOr(MySchema))
+
+// v3: { default: () => value } — provide default
 Schema.optionalWith(Schema.Number, { default: () => 0 })
-
-// v4 — optionalKey + decodeTo + SchemaGetter.withDefault
-import { SchemaGetter } from "effect"
-
-Schema.optionalKey(Schema.Number).pipe(
-  Schema.decodeTo(Schema.toType(Schema.Number), {
-    decode: SchemaGetter.withDefault(() => 0),
-    encode: SchemaGetter.required(),
-  })
-)
+// v4:
+Schema.optional(Schema.Number).pipe(Schema.withConstructorDefault(() => 0))
 ```
 
 ## Quick Reference
@@ -152,14 +154,31 @@ Schema.optionalKey(Schema.Number).pipe(
 | `.annotations({...})` | `.annotate({...})` |
 | `.pipe(Schema.int())` | `.check(Schema.isInt())` |
 | `.pipe(Schema.positive())` | `.check(Schema.isGreaterThan(0))` |
+| `.pipe(Schema.nonNegative())` | `.check(Schema.isGreaterThanOrEqualTo(0))` |
 | `.pipe(Schema.nonEmpty())` | `.check(Schema.isNonEmpty())` |
+| `.pipe(Schema.between(a,b))` | `.check(Schema.isBetween({ minimum: a, maximum: b }))` |
 | `Schema.Literal("a", "b")` | `Schema.Literals(["a", "b"])` |
 | `Schema.Union(A, B)` | `Schema.Union([A, B])` |
+| `Schema.Record({ key, value })` | `Schema.Record(K, V)` |
+| `Schema.pick(S, keys)` | Destructure `S.fields` into new `Schema.Struct` |
+| `Schema.typeSchema(S)` | `Schema.toType(S)` |
+| `Schema.Config("name", codec)` | `Config.schema(codec, "name")` |
+| `Schema.transformOrFail(F, T, {...})` | `Schema.decodeTo` + `SchemaGetter.transformOrFail` |
+| `Schema.disableValidation` option | Removed — just delete the option |
+| `Schema.Schema.AnyNoContext` | `Schema.Any` or `Schema.Top` |
+| `decodeUnknown` | `decodeUnknownEffect` |
+| `encodeUnknown` | `encodeUnknownEffect` |
+| `decode(S)` | `decodeEffect(S)` |
+| `encode(S)` | `encodeEffect(S)` |
 | `decodeUnknownEither` | `decodeUnknownResult` |
 | `decodeEither` | `decodeResult` |
+| `ParseResult.ParseError` | `Schema.SchemaError` |
 | `Schema<A, I, R>` | `Codec<A, I, RD, RE>` |
 | `Schema.asSchema` | `Schema.revealCodec` |
 | `Schema.parseJson` | `Schema.fromJsonString` |
-| `Schema.optionalWith(S, { default })` | `Schema.optionalKey(S).pipe(Schema.decodeTo(...))` |
+| `Schema.fromJsonString(S, { space: 2 })` | Removed — use `JSON.stringify(data, null, 2)` |
+| `Schema.optionalWith(S, { as: 'Option' })` | `Schema.optionalKey(Schema.OptionFromUndefinedOr(S))` |
+| `Schema.optionalWith(S, { nullable: true })` | `Schema.optionalKey(Schema.NullishOr(S))` |
+| `Schema.optionalWith(S, { default: () => v })` | `Schema.optional(S).pipe(Schema.withConstructorDefault(() => v))` |
 | `Schema.mutable(Schema.Struct(...))` | Just `Schema.Struct(...)` (structs are mutable) |
 | `Schema.mutable(Schema.Array(...))` | `Schema.mutable(Schema.Array(...))` (unchanged for arrays) |
