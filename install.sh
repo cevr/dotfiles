@@ -23,6 +23,11 @@ mkdir -p ~/.config
 rm -rf ~/.config/nvim
 ln -sf "$DOTFILES_DIR/nvim" ~/.config/nvim
 
+# Pure prompt (vendored)
+mkdir -p ~/.zsh
+rm -rf ~/.zsh/pure
+ln -sf "$DOTFILES_DIR/pure" ~/.zsh/pure
+
 # Lazygit
 mkdir -p ~/.config/lazygit
 ln -sf "$DOTFILES_DIR/lazygit.yml" ~/.config/lazygit/config.yml
