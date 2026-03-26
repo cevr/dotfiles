@@ -284,6 +284,22 @@ Run: mycli db:migrate
 
 ## Input Handling
 
+### Interactive Prompts Without Flag Fallbacks
+
+```bash
+# Bad - no way to skip the prompt
+$ mycli deploy
+? Which environment? (use arrow keys)
+  staging
+  production
+
+# Good - flag-driven with interactive fallback
+$ mycli deploy --env staging          # non-interactive
+$ mycli deploy                         # prompts only when TTY + no flags
+```
+
+Every prompt needs a flag equivalent. Agents, CI, and scripts can't answer interactive prompts.
+
 ### Hanging on Empty Input
 
 ```bash

@@ -113,7 +113,6 @@ agent-browser close                   # Close browser
 
 # Snapshot
 agent-browser snapshot -i             # Interactive elements with refs (recommended)
-agent-browser snapshot -i -C          # Include cursor-interactive elements (divs with onclick, cursor:pointer)
 agent-browser snapshot -s "#selector" # Scope to CSS selector
 
 # Interaction (use @refs from snapshot)
@@ -151,6 +150,10 @@ agent-browser --download-path ./downloads open <url>  # Set default download dir
 
 # Network
 agent-browser network requests                 # Inspect tracked requests
+agent-browser network requests --type xhr,fetch  # Filter by resource type
+agent-browser network requests --method POST   # Filter by HTTP method
+agent-browser network requests --status 2xx    # Filter by status (200, 2xx, 400-499)
+agent-browser network request <requestId>      # View full request/response detail
 agent-browser network route "**/api/*" --abort  # Block matching requests
 agent-browser network har start                # Start HAR recording
 agent-browser network har stop ./capture.har   # Stop and save HAR file
@@ -173,6 +176,12 @@ agent-browser clipboard read                      # Read text from clipboard
 agent-browser clipboard write "Hello, World!"     # Write text to clipboard
 agent-browser clipboard copy                      # Copy current selection
 agent-browser clipboard paste                     # Paste from clipboard
+
+# Dialogs (alert, confirm, prompt)
+agent-browser dialog accept              # Accept dialog
+agent-browser dialog accept "my input"   # Accept prompt dialog with text
+agent-browser dialog dismiss             # Dismiss/cancel dialog
+agent-browser dialog status              # Check if a dialog is currently open
 
 # Diff (compare page states)
 agent-browser diff snapshot                          # Compare current vs last snapshot
@@ -518,6 +527,26 @@ agent-browser wait 5000
 ```
 
 When dealing with consistently slow websites, use `wait --load networkidle` after `open` to ensure the page is fully loaded before taking a snapshot. If a specific element is slow to render, wait for it directly with `wait <selector>` or `wait @ref`.
+
+## JavaScript Dialogs (alert / confirm / prompt)
+
+When a page opens a JavaScript dialog (`alert()`, `confirm()`, or `prompt()`), it blocks all other browser commands (snapshot, screenshot, click, etc.) until the dialog is dismissed. If commands start timing out unexpectedly, check for a pending dialog:
+
+```bash
+# Check if a dialog is blocking
+agent-browser dialog status
+
+# Accept the dialog (dismiss the alert / click OK)
+agent-browser dialog accept
+
+# Accept a prompt dialog with input text
+agent-browser dialog accept "my input"
+
+# Dismiss the dialog (click Cancel)
+agent-browser dialog dismiss
+```
+
+When a dialog is pending, all command responses include a `warning` field indicating the dialog type and message. In `--json` mode this appears as a `"warning"` key in the response object.
 
 ## Session Management and Cleanup
 

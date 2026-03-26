@@ -1,6 +1,6 @@
 ---
 name: cli
-description: CLI design patterns and best practices. Use when building command-line tools, designing commands/flags, formatting output, handling errors, managing config/credentials, reviewing CLI UX, or designing CLIs for AI agent consumers. Covers 12-Factor CLI, Unix philosophy, TTY detection, exit codes, NO_COLOR, XDG paths, agent DX (schema introspection, input hardening, field masks, MCP surfaces).
+description: CLI design patterns and best practices. Use when building command-line tools, designing commands/flags, formatting output, handling errors, managing config/credentials, reviewing CLI UX, or designing CLIs for AI agent consumers. Covers 12-Factor CLI, Unix philosophy, TTY detection, exit codes, NO_COLOR, XDG paths, agent DX (non-interactive defaults, idempotency, fail-fast errors, predictable structure, stdin/pipelines, --yes/--force, return data on success, schema introspection, input hardening, field masks, MCP surfaces).
 ---
 
 # CLI Design
@@ -40,7 +40,7 @@ What are you designing?
 | Output           | `references/output.md`      | TTY detection, colors, tables, streams  |
 | Errors           | `references/errors.md`      | Anatomy of great errors, recovery       |
 | Config           | `references/config.md`      | Precedence, XDG spec, credentials       |
-| Agent DX         | `references/agent-dx.md`    | Designing for AI agent consumers        |
+| Agent DX         | `references/agent-dx.md`    | Non-interactive, idempotent, fail-fast CLIs for agents |
 | Anti-patterns    | `references/gotchas.md`     | Common mistakes to avoid                |
 
 ## 12-Factor CLI (Quick Reference)
