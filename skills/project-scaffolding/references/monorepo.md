@@ -118,39 +118,14 @@ The monorepo gate differs from single-package: turbo handles typecheck/test/buil
       "@scope/core": ["packages/core/src/index.ts"],
       "@scope/cli": ["packages/cli/src/index.ts"]
     },
+    // Use diagnosticSeverity + keyPatterns from SKILL.md §tsconfig.json (base)
+    // Only difference: keyPatterns.skipLeadingPath = ["packages/"] instead of ["src/"]
     "plugins": [
       {
         "name": "@effect/language-service",
         "diagnostics": true,
         "diagnosticsName": true,
-        "diagnosticSeverity": {
-          "anyUnknownInErrorContext": "error",
-          "deterministicKeys": "warning",
-          "importFromBarrel": "warning",
-          "instanceOfSchema": "warning",
-          "missedPipeableOpportunity": "suggestion",
-          "missingEffectServiceDependency": "warning",
-          "schemaUnionOfLiterals": "warning",
-          "strictBooleanExpressions": "warning",
-          "strictEffectProvide": "warning",
-          "catchAllToMapError": "warning",
-          "catchUnfailableEffect": "warning",
-          "effectFnOpportunity": "warning",
-          "effectMapVoid": "warning",
-          "effectSucceedWithVoid": "warning",
-          "leakingRequirements": "warning",
-          "preferSchemaOverJson": "warning",
-          "redundantSchemaTagIdentifier": "warning",
-          "returnEffectInGen": "warning",
-          "runEffectInsideEffect": "error",
-          "schemaStructWithTag": "warning",
-          "schemaSyncInEffect": "warning",
-          "tryCatchInEffectGen": "warning",
-          "unnecessaryEffectGen": "warning",
-          "unnecessaryFailYieldableError": "warning",
-          "unnecessaryPipe": "warning",
-          "unnecessaryPipeChain": "warning"
-        },
+        "diagnosticSeverity": { /* see SKILL.md */ },
         "keyPatterns": [
           {
             "target": "service",

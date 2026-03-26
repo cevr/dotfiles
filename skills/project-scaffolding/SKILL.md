@@ -69,7 +69,7 @@ Every project uses this base. No exceptions.
           "deterministicKeys": "warning",
           "importFromBarrel": "warning",
           "instanceOfSchema": "warning",
-          "missedPipeableOpportunity": "suggestion",
+          "missedPipeableOpportunity": "off",
           "missingEffectServiceDependency": "warning",
           "schemaUnionOfLiterals": "warning",
           "strictBooleanExpressions": "off",
@@ -94,7 +94,17 @@ Every project uses this base. No exceptions.
           "extendsNativeError": "error",
           "nodeBuiltinImport": "error",
           "serviceNotAsClass": "warning",
-          "outdatedApi": "warning"
+          "outdatedApi": "warning",
+          "globalFetch": "warning",
+          "globalFetchInEffect": "warning",
+          "globalDate": "warning",
+          "globalDateInEffect": "warning",
+          "globalConsole": "warning",
+          "globalConsoleInEffect": "warning",
+          "globalRandom": "warning",
+          "globalRandomInEffect": "warning",
+          "globalTimers": "warning",
+          "globalTimersInEffect": "warning"
         },
         "keyPatterns": [
           {
@@ -198,19 +208,17 @@ The `gate` script runs everything in parallel — this is the main quality gate.
 
 ### Dev Dependencies (base)
 
-```json
-{
-  "devDependencies": {
-    "@effect/language-service": "^0.76.0",
-    "@types/bun": "^1.3.9",
-    "concurrently": "^9.2.1",
-    "effect-bun-test": "^0.2.1",
-    "lefthook": "^2.1.1",
-    "oxfmt": "^0.35.0",
-    "oxlint": "^1.50.0",
-    "typescript": "^5.9.3"
-  }
-}
+Always `bun add -D` with **latest versions** — check npm before installing, never hardcode version pins.
+
+```
+@effect/language-service
+@types/bun
+concurrently
+effect-bun-test
+lefthook
+oxfmt
+oxlint
+typescript
 ```
 
 ## Publishing
