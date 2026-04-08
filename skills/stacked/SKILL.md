@@ -45,7 +45,7 @@ What do you need?
 | `stacked down`               | Move down one branch in the stack                                                           |
 | `stacked top`                | Jump to top of stack                                                                        |
 | `stacked bottom`             | Jump to bottom of stack                                                                     |
-| `stacked sync`               | Fetch + rebase + force-push stack on trunk (`--from`, `--dry-run`, `--json`)                |
+| `stacked sync`               | Fetch + sync stack on trunk (`--from`, `--dry-run`, `--continue`, `--abort`, `--json`)      |
 | `stacked detect`             | Detect branch chains and register as stacks (`--dry-run`, `--json`)                         |
 | `stacked clean`              | Remove merged branches + remote branches (`--dry-run`, `--json`)                            |
 | `stacked delete <name>`      | Remove branch from stack + git + remote (`--keep-remote`, `--force`, `--dry-run`, `--json`) |
@@ -143,23 +143,34 @@ All navigation commands support `--json` for structured output. `checkout` falls
 
 ## Syncing / Rebasing / Pushing
 
-Fetch latest trunk, rebase the entire stack bottom-to-top, then force-push each rebased branch (`--force-with-lease`):
+Fetch latest trunk, then incrementally sync the stack bottom-to-top using fork-point tracking:
 
 ```sh
 stacked sync
-stacked sync --dry-run    # preview rebase/push plan without executing
-stacked sync --json       # structured output: { branches: [{ name, action, base }] }
+stacked sync --dry-run       # preview sync plan with predicted actions per branch
+stacked sync --continue      # continue after resolving conflicts
+stacked sync --abort         # abort sync and discard conflict markers
+stacked sync --json          # structured output: { branches: [{ name, action, base }] }
 ```
 
-After mid-stack changes, rebase only the branches above a specific point:
+**How sync works:**
+
+1. Fetch and rebase trunk onto `origin/trunk`
+2. For each branch, check if parent moved since last sync (`syncedOnto` metadata)
+3. If parent unchanged → skip (no push needed)
+4. If parent changed → try tree-merge fast path (es-git: `mergeTrees`, creates merge commit, no replay)
+5. If tree-merge conflicts → fall back to rebase with corrected fork-point as `oldBase`
+6. Force-push changed branches, update `syncedOnto` metadata
+
+After mid-stack changes, sync only the branches above a specific point:
 
 ```sh
 stacked checkout feat-auth
 # ... make changes, commit ...
-stacked sync --from feat-auth    # rebases only children of feat-auth
+stacked sync --from feat-auth    # syncs only children of feat-auth
 ```
 
-**Note:** `sync` requires a clean working tree — commit or stash before running (except with `--dry-run`). On rebase conflict, the rebase is left in progress so you can resolve it:
+**Note:** `sync` requires a clean working tree — commit or stash before running (except with `--dry-run`). On rebase conflict (fallback path), the rebase is left in progress so you can resolve it:
 
 ```sh
 # On conflict:
@@ -284,7 +295,7 @@ All errors include a machine-readable code for programmatic handling:
 | `BRANCH_NOT_FOUND`    | Branch not found in any stack               |
 | `NOT_IN_STACK`        | Current branch not tracked in a stack       |
 | `DIRTY_WORKTREE`      | Working tree has uncommitted changes        |
-| `REBASE_CONFLICT`     | Rebase conflict during sync/amend           |
+| `SYNC_CONFLICT`       | Merge conflict during sync/amend            |
 | `GH_NOT_INSTALLED`    | `gh` CLI not installed or not authenticated |
 | `STACK_NOT_FOUND`     | Stack not found                             |
 | `STACK_EXISTS`        | Stack name already taken                    |
@@ -311,10 +322,11 @@ Usage errors (invalid args, bad state) exit code 2. Operational errors (git/gh f
 
 ## Data Model
 
-Stack metadata lives in `.git/stacked.json`. Each branch's parent is implied by array position:
+Stack metadata lives in `.git/stacked.json`. Each branch record stores:
 
-- `branches[0]` → parent is trunk
-- `branches[n]` → parent is `branches[n-1]`
+- `stack` — which stack it belongs to
+- `parent` — parent branch name (null for root)
+- `syncedOnto` — (optional) the parent branch tip SHA at last sync, used for incremental sync
 
 Trunk is auto-detected on first use from `origin/HEAD` when available, then falls back to local `main`, `master`, or `develop`. Override with `stacked trunk <name>`.
 
@@ -356,8 +368,10 @@ stacked down  # go to previous branch
 ## Gotchas
 
 - `stacked sync` requires a clean working tree — commit or stash first (except `--dry-run`)
-- `stacked sync` rebases bottom-to-top and force-pushes each rebased branch with lease
-- `stacked sync` leaves rebase in progress on conflict — resolve with `git rebase --continue`, then resume with `stacked sync --from <parent>`
+- `stacked sync` uses tree-merge by default (es-git); falls back to rebase on conflict or CLI backend
+- `stacked sync` skips branches whose parent hasn't moved since last sync
+- `stacked sync` leaves rebase in progress on conflict (fallback path) — resolve with `git rebase --continue`, then resume with `stacked sync --from <parent>`
+- `syncedOnto` metadata may become stale if branches are rebased outside `stacked` — first sync after that falls back to `merge-base`
 - `stacked submit` force-pushes by default (use `--no-force` to disable)
 - `stacked submit` and `stacked clean` require `gh` CLI authenticated (`gh auth login`)
 - PRs target parent branches, not trunk — this is intentional for stacked review
@@ -369,4 +383,5 @@ stacked down  # go to previous branch
 - Detached HEAD is detected and produces a clear error — checkout a branch first
 - Stack file writes are atomic (write to tmp, then rename) to prevent corruption
 - `create` and `adopt` are idempotent — safe to re-run after transient failures
-- Use `stacked doctor` to detect and fix metadata drift (stale branches, missing trunk)
+- Use `stacked doctor` to detect and fix metadata drift (stale branches, missing trunk, stale syncedOnto)
+- `stacked doctor --fix` clears stale `syncedOnto` entries pointing at non-existent commits
