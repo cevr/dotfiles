@@ -44,8 +44,11 @@ Launch both in background simultaneously:
 
 ### Stream A — Codex Deep Research
 
+Invoke the counsel skill to delegate to Codex:
+
 ```
-okra counsel --deep "
+/counsel codex deep
+
 Research: [TOPIC]
 
 Context: [project context, affected areas, constraints]
@@ -65,7 +68,6 @@ Deliverables:
 - File paths that informed each conclusion
 
 Do NOT speculate. If you can't ground a claim, say so.
-"
 ```
 
 ### Stream B — Claude Research (parallel)
@@ -89,7 +91,7 @@ Use `Agent` tool with `subagent_type: Explore` (or multiple parallel Explore age
 
 **Goal**: Merge both research streams into a unified analysis.
 
-1. Read Stream A output: `/tmp/counsel/<slug>/codex.md`
+1. Read Stream A output (counsel writes to `/tmp/counsel/<slug>/codex.md`)
 2. Read Stream B output: agent results from Phase 1
 3. Produce a synthesis document:
 
@@ -123,7 +125,8 @@ Use `Agent` tool with `subagent_type: Explore` (or multiple parallel Explore age
 **Goal**: Adversarial review of the synthesis by Codex.
 
 ```
-okra counsel --deep "
+/counsel codex deep
+
 Review this research synthesis for a planify run.
 
 Brain vault principles are at: $(okra brain vault)/principles/
@@ -140,7 +143,6 @@ Read principles.md and follow all wikilinks.
 5. Ground YOUR review in principles and file paths too
 
 Be adversarial. Poke holes. Don't rubber-stamp.
-"
 ```
 
 ---
@@ -242,7 +244,8 @@ Create the commit with the conventional commit message from the plan.
 ### 5d. Codex Review (per-commit)
 
 ```
-okra counsel "
+/counsel codex
+
 Review this commit against the planify plan.
 
 Plan:
@@ -258,10 +261,9 @@ Check:
 4. Any issues the gate wouldn't catch?
 
 Be concise. Flag issues only.
-"
 ```
 
-Note: standard counsel (not --deep) for per-commit reviews — speed over depth.
+Note: standard `/counsel codex` (not deep) for per-commit reviews — speed over depth.
 
 If Codex flags issues: fix them, re-gate, amend or create a fixup commit, re-review.
 
@@ -311,7 +313,8 @@ Ground every finding in file paths and principle names.
 ### Reviewer B — Codex Deep
 
 ```
-okra counsel --deep "
+/counsel codex deep
+
 Deep verification of a planify execution.
 
 Brain vault principles are at: $(okra brain vault)/principles/
@@ -334,7 +337,6 @@ Review ALL commits against the plan:
 5. Missed issues — anything per-commit reviews missed
 
 Ground every finding in file paths and principle names. Be thorough and adversarial.
-"
 ```
 
 ### Synthesis
@@ -383,10 +385,10 @@ If interrupted:
 
 - **Always read principles fresh** — never rely on memorized content
 - **Gate failures block progress** — no exceptions, no skipping
-- **Codex counsel is one-shot** — craft prompts with full context, no back-and-forth
+- **`/counsel codex` is one-shot** — craft prompts with full context, no back-and-forth
 - **File paths decay** — verify paths still exist before citing in later phases
 - **Plan is the contract** — if execution drifts from plan, stop and reconcile
 - **Don't parallelize commits** — sequential execution, each gated before the next
 - **Keep plan scope tight** — if research reveals the task is huge, split into multiple planify runs
-- **Per-commit review uses standard counsel** — save `--deep` for Phase 1, 3, and 6
+- **Per-commit review uses `/counsel codex`** — save `deep` for Phase 1, 3, and 6
 - **Phase 6 reviewers are independent** — don't share one reviewer's findings with the other
