@@ -40,11 +40,13 @@ Before every planify run:
 
 **Goal**: Two independent research streams producing grounded findings.
 
-Launch both in background simultaneously:
+**Launch BOTH immediately and simultaneously. Do NOT wait for one to finish before starting the other.
+Do NOT wait for "enough context" — Codex does its own exploration. Fire and forget.**
 
 ### Stream A — Codex Deep Research
 
-Invoke the counsel skill to delegate to Codex:
+Invoke `/counsel codex deep` **immediately** with the topic and whatever context you have. Codex
+will do its own codebase exploration — you don't need to pre-research for it.
 
 ```
 /counsel codex deep
@@ -70,7 +72,7 @@ Deliverables:
 Do NOT speculate. If you can't ground a claim, say so.
 ```
 
-### Stream B — Claude Research (parallel)
+### Stream B — Claude Research (parallel, same moment)
 
 Use `Agent` tool with `subagent_type: Explore` (or multiple parallel Explore agents for independent areas):
 
@@ -386,6 +388,7 @@ If interrupted:
 - **Always read principles fresh** — never rely on memorized content
 - **Gate failures block progress** — no exceptions, no skipping
 - **`/counsel codex` is one-shot** — craft prompts with full context, no back-and-forth
+- **Launch counsel immediately** — don't wait for explore agents or "enough context" first. Codex explores on its own
 - **File paths decay** — verify paths still exist before citing in later phases
 - **Plan is the contract** — if execution drifts from plan, stop and reconcile
 - **Don't parallelize commits** — sequential execution, each gated before the next
