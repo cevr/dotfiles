@@ -9,8 +9,10 @@ Defining a service?
 ├─ Simple value/config          → Layer.succeed
 ├─ Lazy initialization          → Layer.sync
 ├─ Async initialization         → Layer.effect
-├─ Resource with cleanup        → Layer.scoped
+├─ Resource with cleanup        → Layer.effect (v4 auto-strips Scope)
 └─ From existing service        → Layer.effect + yield* dependency
+
+Note: Layer.scoped is removed in v4. Use Layer.effect — it auto-strips Scope.
 
 Composing layers?
 ├─ A needs B                    → A.pipe(Layer.provide(B))
@@ -63,11 +65,10 @@ const DatabaseConfigLive = Layer.succeed(DatabaseConfig, {
 })
 
 // Inline static implementation
-class Logger extends Context.Tag("Logger")<
-  Logger,
-  { log: (msg: string) => Effect.Effect<void> }
->() {
-  static Live = Layer.succeed(this, {
+class Logger extends Context.Service<Logger, {
+  log: (msg: string) => Effect.Effect<void>
+}>()("Logger") {
+  static layer = Layer.succeed(this, {
     log: (msg) => Effect.sync(() => console.log(msg)),
   })
 }

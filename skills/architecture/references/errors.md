@@ -36,7 +36,7 @@ import { Schema as S } from "effect"
 import { HttpApiSchema } from "effect/unstable/httpapi"
 
 // Error with payload
-class UserNotFoundError extends S.TaggedError<UserNotFoundError>()(
+class UserNotFoundError extends S.TaggedErrorClass<UserNotFoundError>()(
   "UserNotFoundError",
   {
     userId: UserIdSchema,
@@ -46,7 +46,7 @@ class UserNotFoundError extends S.TaggedError<UserNotFoundError>()(
 ) {}
 
 // Error with validation details
-class ValidationError extends S.TaggedError<ValidationError>()(
+class ValidationError extends S.TaggedErrorClass<ValidationError>()(
   "ValidationError",
   {
     field: S.String,
@@ -57,14 +57,14 @@ class ValidationError extends S.TaggedError<ValidationError>()(
 ) {}
 
 // Simple error
-class UnauthorizedError extends S.TaggedError<UnauthorizedError>()(
+class UnauthorizedError extends S.TaggedErrorClass<UnauthorizedError>()(
   "UnauthorizedError",
   { message: S.String },
   HttpApiSchema.annotations({ status: 401 }),
 ) {}
 
 // Rate limit error with retry info
-class RateLimitError extends S.TaggedError<RateLimitError>()(
+class RateLimitError extends S.TaggedErrorClass<RateLimitError>()(
   "RateLimitError",
   {
     retryAfter: S.Number,

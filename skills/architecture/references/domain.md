@@ -132,7 +132,7 @@ Errors with schema validation and HTTP mapping:
 ```typescript
 import { HttpApiSchema } from "effect/unstable/httpapi"
 
-class UserNotFoundError extends S.TaggedError<UserNotFoundError>()(
+class UserNotFoundError extends S.TaggedErrorClass<UserNotFoundError>()(
   "UserNotFoundError",
   {
     userId: UserIdSchema,
@@ -141,7 +141,7 @@ class UserNotFoundError extends S.TaggedError<UserNotFoundError>()(
   HttpApiSchema.annotations({ status: 404 }),
 ) {}
 
-class ValidationError extends S.TaggedError<ValidationError>()(
+class ValidationError extends S.TaggedErrorClass<ValidationError>()(
   "ValidationError",
   {
     field: S.String,
@@ -150,7 +150,7 @@ class ValidationError extends S.TaggedError<ValidationError>()(
   HttpApiSchema.annotations({ status: 400 }),
 ) {}
 
-class UnauthorizedError extends S.TaggedError<UnauthorizedError>()(
+class UnauthorizedError extends S.TaggedErrorClass<UnauthorizedError>()(
   "UnauthorizedError",
   { message: S.String },
   HttpApiSchema.annotations({ status: 401 }),

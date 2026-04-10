@@ -1,6 +1,6 @@
 # API Design
 
-Effect patterns for declarative APIs using @effect/platform.
+Effect patterns for declarative APIs using the HttpApi modules.
 
 ## Decision Tree
 

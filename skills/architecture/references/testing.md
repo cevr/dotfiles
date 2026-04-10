@@ -234,8 +234,8 @@ it.scoped("acquires and releases resource", () =>
 
 ```typescript
 const IntegrationLayer = Layer.mergeAll(
-  UserRepo.Live,
-  Database.Test, // Real impl pointing to test DB
+  UserRepo.layer,
+  Database.layerTest, // Real impl pointing to test DB
 )
 
 describe("Integration", () => {
