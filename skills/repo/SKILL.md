@@ -1,6 +1,6 @@
 ---
 name: repo
-description: Multi-registry source code cache manager CLI. Use when exploring external repos/packages — fetch, search, read code from GitHub/npm/PyPI/Crates. Triggers on "repo", "repo fetch", "repo path", "explore repo", "fetch repo", external repo analysis, or when needing to read source from another project.
+description: Multi-registry source code cache manager CLI. Use when exploring external repos/packages — fetch, search, read code from GitHub/npm/PyPI/Crates. Triggers on "repo", "okra repo fetch", "okra repo path", "explore repo", "fetch repo", external repo analysis, or when needing to read source from another project.
 ---
 
 # repo
@@ -22,14 +22,14 @@ What do you need?
 
 | Command                      | What it does                                                        |
 | ---------------------------- | ------------------------------------------------------------------- |
-| `repo fetch <spec>`          | Fetch/update. stdout = path, stderr = progress. `--json`, `--force` |
-| `repo path <spec>`           | Pure cache lookup. stdout = path, nonzero on miss. No network.      |
-| `repo list`                  | List cached repos. `--registry`, `--sort`, `--json`                 |
-| `repo remove <spec>`         | Remove from cache                                                   |
-| `repo clean --days N`        | Prune by age                                                        |
-| `repo clean --max-size 100M` | Prune by size                                                       |
-| `repo clean --all -y`        | Remove everything                                                   |
-| `repo clean --dry-run`       | Preview what would be removed                                       |
+| `okra repo fetch <spec>`          | Fetch/update. stdout = path, stderr = progress. `--json`, `--force` |
+| `okra repo path <spec>`           | Pure cache lookup. stdout = path, nonzero on miss. No network.      |
+| `okra repo list`                  | List cached repos. `--registry`, `--sort`, `--json`                 |
+| `okra repo remove <spec>`         | Remove from cache                                                   |
+| `okra repo clean --days N`        | Prune by age                                                        |
+| `okra repo clean --max-size 100M` | Prune by size                                                       |
+| `okra repo clean --all -y`        | Remove everything                                                   |
+| `okra repo clean --dry-run`       | Preview what would be removed                                       |
 
 ### Spec Formats
 
@@ -44,16 +44,16 @@ What do you need?
 
 ```bash
 # Fetch a repo (prints path to stdout)
-repo fetch vercel/next.js
+okra repo fetch vercel/next.js
 
 # Compose with shell
-cd $(repo fetch effect-ts/effect-smol)
+cd $(okra repo fetch effect-ts/effect-smol)
 
 # Force re-clone
-repo fetch -f owner/repo
+okra repo fetch -f owner/repo
 
 # JSON output (path, size, ref, fresh)
-repo fetch --json owner/repo
+okra repo fetch --json owner/repo
 ```
 
 stdout = path only. All status/progress goes to stderr. This makes piping work.
@@ -62,7 +62,7 @@ stdout = path only. All status/progress goes to stderr. This makes piping work.
 
 ```bash
 # Instant check, no network
-repo path owner/repo
+okra repo path owner/repo
 # Exit 0 + path on stdout if cached, nonzero if not
 ```
 
@@ -110,37 +110,37 @@ fd -e ts ~/.cache/repo/{owner}/{repo}
 | Code structures   | `ast-grep`                       |
 | File names        | `fd` or Glob tool                |
 | Specific files    | Read tool with full path         |
-| Directory tree    | `eza --tree` on repo path        |
+| Directory tree    | `eza --tree` on okra repo path        |
 
 ## Cache Management
 
 ```bash
 # List everything
-repo list
-repo list --json
-repo list -r npm              # filter by registry
-repo list -s size             # sort by size/date/name
+okra repo list
+okra repo list --json
+okra repo list -r npm              # filter by registry
+okra repo list -s size             # sort by size/date/name
 
 # Remove one
-repo remove owner/repo
+okra repo remove owner/repo
 
 # Prune old/large
-repo clean --days 30          # not accessed in 30 days
-repo clean --max-size 1G      # larger than 1GB
-repo clean --days 30 --dry-run
+okra repo clean --days 30          # not accessed in 30 days
+okra repo clean --max-size 1G      # larger than 1GB
+okra repo clean --days 30 --dry-run
 
 # Nuke
-repo clean --all -y
+okra repo clean --all -y
 ```
 
 ## Typical Workflow
 
 ```bash
 # 1. Fetch
-repo fetch effect-ts/effect-smol
+okra repo fetch effect-ts/effect-smol
 
 # 2. Get path
-REPO=$(repo path effect-ts/effect-smol)
+REPO=$(okra repo path effect-ts/effect-smol)
 
 # 3. Explore
 Read file_path="$REPO/package.json"
@@ -153,8 +153,8 @@ Agent subagent_type="Explore" prompt="Explore $REPO to understand the service pa
 
 ## Gotchas
 
-- `repo fetch` always refreshes git repos on fetch (pull latest)
-- `repo path` does zero network I/O — pure metadata lookup
+- `okra repo fetch` always refreshes git repos on fetch (pull latest)
+- `okra repo path` does zero network I/O — pure metadata lookup
 - stdout/stderr discipline: never parse stderr, only stdout has data
-- `repo list --json` returns `{ repos: [...], total, totalSize }` — useful for programmatic queries
+- `okra repo list --json` returns `{ repos: [...], total, totalSize }` — useful for programmatic queries
 - Size formats for `--max-size`: `100M`, `1G`, `500KB`
