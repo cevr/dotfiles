@@ -6,14 +6,15 @@ Auto-generated type-safe client from HttpApi schema.
 
 ```typescript
 // apps/web/src/api/client.ts
-import { HttpApiClient, HttpClient, HttpClientRequest } from "@effect/platform"
+import { HttpApiClient } from "effect/unstable/httpapi"
+import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { Effect, Layer } from "effect"
 import { AppApi } from "@my-app/api/definition"
 
 // Create type-safe client from schema
 export const makeClient = (baseUrl: string, token?: string) =>
   Effect.gen(function* () {
-    const httpClient = yield* HttpClient.HttpClient
+    const httpClient = yield* HttpClient
 
     // Optionally add auth header
     const clientWithAuth = token
@@ -33,7 +34,7 @@ export const makeClient = (baseUrl: string, token?: string) =>
 
 ```typescript
 import { Effect } from "effect"
-import { BrowserHttpClient } from "@effect/platform-browser"
+import { BrowserHttpClient } from "effect/unstable/http"
 import { makeClient } from "./api/client"
 
 const program = Effect.gen(function* () {
@@ -63,8 +64,8 @@ const program = Effect.gen(function* () {
 // apps/web/src/context/api.tsx
 import { createContext, useContext, type JSX } from "solid-js"
 import { Effect, Runtime } from "effect"
-import { BrowserHttpClient } from "@effect/platform-browser"
-import type { HttpApiClient } from "@effect/platform"
+import { BrowserHttpClient } from "effect/unstable/http"
+import type { HttpApiClient } from "effect/unstable/httpapi"
 import { AppApi } from "@my-app/api/definition"
 import { makeClient } from "../api/client"
 

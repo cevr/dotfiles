@@ -4,7 +4,7 @@ description: >
   Effect-first TypeScript application architecture patterns. Use when designing module
   structure, wiring services/DI, defining error strategies, modeling domain types, designing
   APIs, organizing monorepos, or architecting multi-client applications with shared core logic.
-  Covers Context.Tag, Layer composition, TaggedError, Config, Schema.Class, HttpApi, testing,
+  Covers Context.Service, Layer composition, TaggedErrorClass, Config, Schema.Class, HttpApi, testing,
   auth, storage, event bus, transport, plugins, and client templates (TUI, web, desktop, bot).
   Triggers on "architect", "architecture", "design", "structure", "module layout", "monorepo".
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash, AskUserQuestion, Skill
@@ -17,7 +17,7 @@ Effect-first patterns for TypeScript application architecture.
 ## Core Principles
 
 1. **Schema is source of truth** — types, validation, serialization from Effect Schema
-2. **Services are interfaces, layers are implementations** — Context.Tag + Layer
+2. **Services are interfaces, layers are implementations** — Context.Service + Layer
 3. **Errors are types** — TaggedError with typed error channel
 4. **Config fails fast** — invalid config = startup failure
 5. **Branded strings everywhere** — monotonic IDs (ULID/KSUID), no integer IDs
@@ -62,7 +62,7 @@ What are you doing?
 | ----------------- | ---------------------------- | ----------------------------------------- |
 | Project structure | `references/structure.md`    | Package layout, monorepo patterns         |
 | Module boundaries | `references/boundaries.md`   | Import rules, isolation, barrel files     |
-| Services & DI     | `references/services.md`     | Context.Tag, Layer, test factories, lazy  |
+| Services & DI     | `references/services.md`     | Context.Service, Layer, test factories, lazy |
 | Error handling    | `references/errors.md`       | TaggedError, catchTag, retry, recovery    |
 | Configuration     | `references/config.md`       | Effect Config.*, redacted secrets         |
 | Domain modeling   | `references/domain.md`       | Schema.Class, branded types, unions       |
@@ -102,12 +102,12 @@ What are you doing?
 Defining a service?
 ├─ Simple value/config          → Layer.succeed
 ├─ Lazy initialization          → Layer.sync
-├─ Async initialization         → Layer.effect
-├─ Resource with cleanup        → Layer.scoped
+├─ Async initialization         → Layer.effect (auto-strips Scope in v4)
+├─ Resource with cleanup        → Layer.effect (Scope auto-handled)
 └─ From existing service        → Layer.effect + yield* dep
 
 Error handling strategy?
-├─ Domain/business error        → Schema.TaggedError
+├─ Domain/business error        → Schema.TaggedErrorClass
 ├─ Handle specific error        → Effect.catchTag
 ├─ Handle multiple errors       → Effect.catchTags
 ├─ Retry on failure             → Effect.retry + Schedule
@@ -181,10 +181,12 @@ When asked to architect a multi-client app:
 ## Key Imports
 
 ```typescript
+// v4 imports
 import { Effect, Layer, Context, Config, Schema as S } from "effect"
 import {
   HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup,
   HttpApiMiddleware, HttpApiSchema, HttpApiSecurity,
-} from "@effect/platform"
-import { NodeRuntime, NodeHttpServer } from "@effect/platform-node"
+} from "effect/unstable/httpapi"
+import { HttpClient, HttpServer } from "effect/unstable/http"
+import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
 ```

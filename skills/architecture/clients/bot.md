@@ -16,8 +16,7 @@ Bot integration adapter for Slack, Discord, and other messaging platforms.
   "dependencies": {
     "@my-app/api": "workspace:*",
     "@my-app/shared": "workspace:*",
-    "effect": "^3.0.0",
-    "@effect/platform": "^0.77.0",
+    "effect": "catalog:",
     "@slack/bolt": "^3.17.0",
     "discord.js": "^14.14.0"
   }
@@ -43,7 +42,7 @@ export interface BotResponse {
   blocks?: unknown[]  // Platform-specific rich content
 }
 
-export class BotService extends Context.Tag("BotService")<
+export class BotService extends Context.Service<
   BotService,
   {
     readonly sendMessage: (
@@ -61,7 +60,7 @@ export class BotService extends Context.Tag("BotService")<
       response: BotResponse
     ) => Effect.Effect<void>
   }
->() {}
+>()("BotService") {}
 ```
 
 ## Slack Adapter
@@ -238,7 +237,7 @@ export function createDiscordHandler(
 ```typescript
 // apps/bot/src/handler.ts
 import { Effect } from "effect"
-import { HttpApiClient, FetchHttpClient } from "@effect/platform"
+import { HttpApiClient, FetchHttpClient } from "effect/unstable/http"
 import { AppApi } from "@my-app/api"
 import type { BotMessage, BotResponse } from "./bot"
 
@@ -279,7 +278,7 @@ export function createMessageHandler(apiBaseUrl: string) {
       }
     }).pipe(
       Effect.provide(FetchHttpClient.layer),
-      Effect.catchAll((error) =>
+      Effect.catch((error) =>
         Effect.succeed({
           text: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
         })

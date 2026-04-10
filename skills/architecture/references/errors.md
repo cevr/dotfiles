@@ -6,7 +6,7 @@ Effect patterns for typed errors, recovery, and HTTP mapping.
 
 ```
 Error type?
-├─ Domain/business error        → Schema.TaggedError
+├─ Domain/business error        → Schema.TaggedErrorClass
 ├─ API error (empty body)       → HttpApiSchema.EmptyError
 ├─ Unexpected/bug               → Defect (Effect.die)
 ├─ Multiple error types         → Schema.Union of TaggedErrors
@@ -14,7 +14,7 @@ Error type?
 
 Recovery strategy?
 ├─ Handle specific error        → Effect.catchTag
-├─ Handle all expected          → Effect.catchAll
+├─ Handle all expected          → Effect.catch
 ├─ Handle including defects     → Effect.catchAllCause
 ├─ Fallback value               → Effect.orElse
 ├─ Retry on failure             → Effect.retry with Schedule
@@ -27,13 +27,13 @@ Recovery strategy?
 
 ## Patterns
 
-### 1. Schema.TaggedError
+### 1. Schema.TaggedErrorClass
 
 Domain errors with schema validation:
 
 ```typescript
 import { Schema as S } from "effect"
-import { HttpApiSchema } from "@effect/platform"
+import { HttpApiSchema } from "effect/unstable/httpapi"
 
 // Error with payload
 class UserNotFoundError extends S.TaggedError<UserNotFoundError>()(
@@ -79,7 +79,7 @@ class RateLimitError extends S.TaggedError<RateLimitError>()(
 For errors without body (just status code):
 
 ```typescript
-import { HttpApiSchema } from "@effect/platform"
+import { HttpApiSchema } from "effect/unstable/httpapi"
 
 class BadRequest extends HttpApiSchema.EmptyError<BadRequest>()({
   tag: "BadRequest",
@@ -147,11 +147,11 @@ const program = processOrder(orderId).pipe(
 )
 ```
 
-#### catchAll - Handle All Expected Errors
+#### catch - Handle All Expected Errors
 
 ```typescript
 const program = riskyOperation().pipe(
-  Effect.catchAll((error) => {
+  Effect.catch((error) => {
     // error is the union of all expected errors
     logger.error("Operation failed", { error })
     return Effect.succeed(fallbackValue)
@@ -305,7 +305,7 @@ const StreamEvent = S.Union(
 const streamData = Effect.gen(function* () {
   const stream = yield* getDataStream()
   return stream.pipe(
-    Stream.catchAll((error) =>
+    Stream.catch((error) =>
       Stream.succeed({
         _tag: "error" as const,
         code: "STREAM_ERROR",
@@ -322,7 +322,7 @@ const streamData = Effect.gen(function* () {
 ```typescript
 // Catch layer creation errors
 const DatabaseLive = Layer.effect(Database, createConnection()).pipe(
-  Layer.catchAll((error) => Layer.fail(new DatabaseConnectionError({ cause: error }))),
+  Layer.catch((error) => Layer.fail(new DatabaseConnectionError({ cause: error }))),
 )
 
 // Fallback layer

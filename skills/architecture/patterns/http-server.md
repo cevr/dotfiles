@@ -6,7 +6,7 @@ Implementing HttpApi schemas with HttpApiBuilder and HttpLayerRouter.
 
 ```typescript
 // apps/server/src/handlers/SessionGroupLive.ts
-import { HttpApiBuilder } from "@effect/platform"
+import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Effect, Layer } from "effect"
 import { AppApi, SessionNotFound } from "@my-app/api/definition"
 import { SessionService } from "@my-app/core"
@@ -56,7 +56,7 @@ import { Effect, Layer, Redacted } from "effect"
 import { AuthMiddleware, AuthContext, Unauthorized } from "@my-app/api/definition"
 import { AuthService } from "@my-app/core"
 
-export const AuthMiddlewareLive = Layer.effect(
+export const AuthMiddlewareLayer = Layer.effect(
   AuthMiddleware,
   Effect.gen(function* () {
     const auth = yield* AuthService
@@ -73,7 +73,7 @@ export const AuthMiddlewareLive = Layer.effect(
           }
 
           const user = yield* auth.verifyToken(tokenValue).pipe(
-            Effect.catchAll(() =>
+            Effect.catch(() =>
               Effect.fail(new Unauthorized({ message: "Invalid token" }))
             )
           )
@@ -96,22 +96,21 @@ import { Layer } from "effect"
 import { SessionGroupLive } from "./SessionGroupLive"
 import { UserGroupLive } from "./UserGroupLive"
 import { HealthGroupLive } from "./HealthGroupLive"
-import { AuthMiddlewareLive } from "../middleware/AuthMiddlewareLive"
+import { AuthMiddlewareLayer } from "../middleware/AuthMiddlewareLive"
 
 export const HandlersLive = Layer.mergeAll(
   SessionGroupLive,
   UserGroupLive,
   HealthGroupLive
-).pipe(Layer.provide(AuthMiddlewareLive))
+).pipe(Layer.provide(AuthMiddlewareLayer))
 ```
 
 ## Server Entry Point
 
 ```typescript
 // apps/server/src/main.ts
-import { HttpLayerRouter, OpenApi } from "@effect/platform"
-import { HttpServerResponse } from "@effect/platform"
-import { HttpApiScalar } from "@effect/platform/HttpApiScalar"
+import { HttpLayerRouter, OpenApi, HttpApiScalar } from "effect/unstable/httpapi"
+import { HttpServerResponse } from "effect/unstable/http"
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { AppApi } from "@my-app/api/definition"
@@ -169,13 +168,13 @@ import { SessionService, UserService, AuthService } from "@my-app/core"
 import { StorageService, BusService, ConfigService } from "@my-app/core"
 
 export const ServicesLive = Layer.mergeAll(
-  SessionService.Live,
-  UserService.Live,
-  AuthService.Live
+  SessionService.layer,
+  UserService.layer,
+  AuthService.layer
 ).pipe(
-  Layer.provide(StorageService.Live),
-  Layer.provide(BusService.Live),
-  Layer.provide(ConfigService.Live)
+  Layer.provide(StorageService.layer),
+  Layer.provide(BusService.layer),
+  Layer.provide(ConfigService.layer)
 )
 ```
 
@@ -188,7 +187,7 @@ import { PgClient } from "@effect/sql-pg"
 import * as PgDrizzle from "@effect/sql-drizzle/Pg"
 import * as Client from "@effect/sql/SqlClient"
 
-const PgLive = Layer.scopedContext(
+const PgLive = Layer.effectServices(
   Effect.gen(function* () {
     const host = yield* Config.string("DB_HOST")
     const port = yield* Config.number("DB_PORT")

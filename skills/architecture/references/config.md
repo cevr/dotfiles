@@ -142,7 +142,7 @@ const redisConfig = Config.nested("REDIS")(
 
 ```typescript
 // Database layer reads config at creation
-const DatabaseLive = Layer.scoped(
+const DatabaseLive = Layer.effect(
   Database,
   Effect.gen(function* () {
     // Config read here - fails fast if missing

@@ -56,7 +56,7 @@ type ShutdownHook = () => Effect.Effect<void>
 ```typescript
 import { Context, Effect, Layer, Ref } from "effect"
 
-export class PluginService extends Context.Tag("PluginService")<
+export class PluginService extends Context.Service<
   PluginService,
   {
     readonly register: (plugin: Plugin) => Effect.Effect<void>
@@ -68,8 +68,8 @@ export class PluginService extends Context.Tag("PluginService")<
     ) => Effect.Effect<ReturnType<NonNullable<PluginHooks[K]>>>
     readonly list: () => Effect.Effect<readonly Plugin[]>
   }
->() {
-  static Live = Layer.effect(
+>()("PluginService") {
+  static layer = Layer.effect(
     PluginService,
     Effect.gen(function* () {
       const plugins = yield* Ref.make<Map<string, Plugin>>(new Map())
@@ -263,7 +263,7 @@ const shutdownPlugins = () =>
     for (const plugin of registered) {
       if (plugin.hooks?.shutdown) {
         yield* plugin.hooks.shutdown().pipe(
-          Effect.catchAll((e) =>
+          Effect.catch((e) =>
             Effect.logWarning(`Plugin ${plugin.name} shutdown error: ${e}`)
           )
         )

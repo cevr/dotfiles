@@ -21,11 +21,11 @@ Composing layers?
 
 ## Core Principle
 
-**Services are interfaces, layers are implementations.** Define what you need with `Context.Tag`, provide how it works with `Layer`.
+**Services are interfaces, layers are implementations.** Define what you need with `Context.Service`, provide how it works with `Layer`.
 
 ## Patterns
 
-### 1. Context.Tag Definition
+### 1. Context.Service Definition
 
 Define service interface:
 
@@ -33,27 +33,21 @@ Define service interface:
 import { Context, Effect, Layer } from "effect"
 
 // Service with methods
-class UserRepo extends Context.Tag("UserRepo")<
-  UserRepo,
-  {
-    readonly findById: (id: UserId) => Effect.Effect<User, UserNotFoundError>
-    readonly create: (data: CreateUserInput) => Effect.Effect<User>
-    readonly delete: (id: UserId) => Effect.Effect<void>
-  }
->() {}
+class UserRepo extends Context.Service<UserRepo, {
+  readonly findById: (id: UserId) => Effect.Effect<User, UserNotFoundError>
+  readonly create: (data: CreateUserInput) => Effect.Effect<User>
+  readonly delete: (id: UserId) => Effect.Effect<void>
+}>()("UserRepo") {}
 
 // Service with single value
-class CurrentUser extends Context.Tag("CurrentUser")<CurrentUser, User>() {}
+class CurrentUser extends Context.Service<CurrentUser, User>()("CurrentUser") {}
 
 // Service with config
-class DatabaseConfig extends Context.Tag("DatabaseConfig")<
-  DatabaseConfig,
-  {
-    readonly host: string
-    readonly port: number
-    readonly database: string
-  }
->() {}
+class DatabaseConfig extends Context.Service<DatabaseConfig, {
+  readonly host: string
+  readonly port: number
+  readonly database: string
+}>()("DatabaseConfig") {}
 ```
 
 ### 2. Layer Constructors
@@ -117,11 +111,11 @@ const UserRepoLive = Layer.effect(
 )
 ```
 
-#### Layer.scoped - Resource with Cleanup
+#### Layer.effect - Resource with Cleanup
 
 ```typescript
-// Acquire resource, release on scope close
-const DatabaseLive = Layer.scoped(
+// Acquire resource, release on scope close (v4 auto-strips Scope)
+const DatabaseLive = Layer.effect(
   Database,
   Effect.gen(function* () {
     const config = yield* DatabaseConfig
@@ -179,20 +173,17 @@ const InfraLive = Layer.merge(Logger.Live, MetricsLive, TracingLive)
 const AllServices = Layer.mergeAll(UserRepoLive, OrderRepoLive, ProductRepoLive, NotificationLive)
 ```
 
-### 4. Static Live Pattern
+### 4. Static layer Pattern
 
 Define implementation alongside service:
 
 ```typescript
-class UserRepo extends Context.Tag('UserRepo')<
-  UserRepo,
-  {
-    readonly findById: (id: UserId) => Effect.Effect<User, UserNotFoundError>
-    readonly create: (data: CreateUserInput) => Effect.Effect<User>
-  }
->() {
+class UserRepo extends Context.Service<UserRepo, {
+  readonly findById: (id: UserId) => Effect.Effect<User, UserNotFoundError>
+  readonly create: (data: CreateUserInput) => Effect.Effect<User>
+}>()('UserRepo') {
   // Implementation as static property
-  static Live = Layer.effect(
+  static layer = Layer.effect(
     this,
     Effect.gen(function* () {
       const db = yield* Database
@@ -204,7 +195,7 @@ class UserRepo extends Context.Tag('UserRepo')<
   )
 
   // Test implementation
-  static Test = Layer.succeed(this, {
+  static layerTest = Layer.succeed(this, {
     findById: () => Effect.succeed(testUser),
     create: (data) => Effect.succeed({ ...testUser, ...data }),
   })
@@ -218,13 +209,13 @@ const program = Effect.gen(function* () {
 
 // Run with live
 Effect.runPromise(program.pipe(
-  Effect.provide(UserRepo.Live),
-  Effect.provide(Database.Live),
+  Effect.provide(UserRepo.layer),
+  Effect.provide(Database.layer),
 ))
 
 // Run with test
 Effect.runPromise(program.pipe(
-  Effect.provide(UserRepo.Test),
+  Effect.provide(UserRepo.layerTest),
 ))
 ```
 
@@ -254,13 +245,13 @@ const UsersApiLive = HttpApiBuilder.group(Api, "users", (handlers) =>
         }),
       )
   }),
-).pipe(Layer.provide([UserRepo.Live, AuthService.Live]))
+).pipe(Layer.provide([UserRepo.layer, AuthService.layer]))
 ```
 
 ### 6. Middleware as Service
 
 ```typescript
-import { HttpApiMiddleware, HttpApiSecurity } from '@effect/platform'
+import { HttpApiMiddleware, HttpApiSecurity } from "effect/unstable/httpapi"
 
 // Define middleware service
 class Authorization extends HttpApiMiddleware.Tag<Authorization>()(
@@ -322,14 +313,11 @@ export const deployCommandLive = deployCommand.pipe(Command.provide(AppLayer))
 Services expose test helpers with call tracking:
 
 ```typescript
-class GitService extends Context.Tag("GitService")<
-  GitService,
-  {
-    readonly ensureClean: () => Effect.Effect<void, DirtyWorkingTree>
-    readonly getCurrentBranch: () => Effect.Effect<string>
-  }
->() {
-  static Live = Layer.effect(...)
+class GitService extends Context.Service<GitService, {
+  readonly ensureClean: () => Effect.Effect<void, DirtyWorkingTree>
+  readonly getCurrentBranch: () => Effect.Effect<string>
+}>()("GitService") {
+  static layer = Layer.effect(...)
 
   static Test(config: { branch?: string; dirty?: boolean } = {}) {
     const calls: Array<{ method: string; args: unknown[] }> = []
@@ -378,7 +366,7 @@ Pay layer cost only when needed:
 
 ```typescript
 // Heavy layer - DB connection
-const DbLayer = Layer.scoped(SqlClient, /* expensive connection */)
+const DbLayer = Layer.effect(SqlClient, /* expensive connection */)
 
 // Wrapper for lazy provision
 function withDb<A, E>(

@@ -1,19 +1,19 @@
 # Services
 
-Effect v4 service patterns using `ServiceMap.Service`.
+Effect v4 service patterns using `Context.Service`.
 
-## Canonical Pattern: ServiceMap.Service with Static Layers
+## Canonical Pattern: Context.Service with Static Layers
 
 ```typescript
-import { ServiceMap, Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 
 // Function style (anonymous service)
-const Database = ServiceMap.Service<{
+const Database = Context.Service<{
   readonly query: (sql: string) => Effect.Effect<string, DbError>
 }>("Database")
 
 // Class style (named service)
-class FileService extends ServiceMap.Service<FileService, {
+class FileService extends Context.Service<FileService, {
   readonly readFile: (path: string) => Effect.Effect<string, FileError>
   readonly writeFile: (path: string, content: string) => Effect.Effect<void, FileError>
 }>()("FileService") {
@@ -59,12 +59,12 @@ class FileService extends ServiceMap.Service<FileService, {
 }
 ```
 
-## ServiceMap.Service with `make` Option
+## Context.Service with `make` Option
 
 v4 supports inline `make` for auto-generating Layer:
 
 ```typescript
-class Logger extends ServiceMap.Service<Logger>()("Logger", {
+class Logger extends Context.Service<Logger>()("Logger", {
   make: Effect.gen(function* () {
     const config = yield* AppConfig
     return {
@@ -78,14 +78,14 @@ class Logger extends ServiceMap.Service<Logger>()("Logger", {
 }
 ```
 
-## ServiceMap.Reference (replaces FiberRef/Context.Reference)
+## Context.Reference (replaces FiberRef/Context.Reference)
 
 Fiber-local state with a default value:
 
 ```typescript
-import { ServiceMap, Effect } from "effect"
+import { Context, Effect } from "effect"
 
-const CurrentLogLevel = ServiceMap.Reference<"info" | "warn" | "error">(
+const CurrentLogLevel = Context.Reference<"info" | "warn" | "error">(
   "CurrentLogLevel",
   { defaultValue: () => "info" as const }
 )
@@ -101,10 +101,10 @@ const withDebug = Effect.provideService(program, CurrentLogLevel, "warn")
 
 ## CLI Option Service (option → config → prompt fallback)
 
-Same pattern as v3, adapted for ServiceMap.Service:
+Same pattern as v3, adapted for Context.Service:
 
 ```typescript
-class OrgService extends ServiceMap.Service<OrgService, {
+class OrgService extends Context.Service<OrgService, {
   readonly get: () => Effect.Effect<string, ConfigError | ApiError>
 }>()("OrgService") {
   static make = (orgOption: Option.Option<string>) =>
@@ -142,13 +142,13 @@ class OrgService extends ServiceMap.Service<OrgService, {
 
 | v3 | v4 |
 |----|----|
-| `Context.Tag("id")<Self, Shape>()` | `ServiceMap.Service<Self, Shape>()("id")` |
-| `Context.GenericTag<Shape>("id")` | `ServiceMap.Service<Shape>("id")` |
+| `Context.Tag("id")<Self, Shape>()` | `Context.Service<Self, Shape>()("id")` |
+| `Context.GenericTag<Shape>("id")` | `Context.Service<Shape>("id")` |
 | `static Live = ...` | `static layer = ...` |
 | `static Test = ...` | `static layerTest = ...` |
-| `Context.make(tag, impl)` | `ServiceMap.make(tag, impl)` |
-| `Context.get(ctx, tag)` | `ServiceMap.get(map, tag)` |
-| `Context.Reference` | `ServiceMap.Reference` |
+| `Context.make(tag, impl)` | `Context.make(tag, impl)` (same module name, new semantics) |
+| `Context.get(ctx, tag)` | `Context.get(ctx, tag)` (unchanged) |
+| `FiberRef` / `Context.Reference` (v3) | `Context.Reference` |
 
 ## Layer Quick Reference
 

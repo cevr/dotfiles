@@ -32,7 +32,9 @@ project-name/
 │   └── workflows/
 │       └── release.yml      — GitHub Actions release (if publishing)
 ├── package.json
-├── tsconfig.json
+├── tsconfig.json            — base TS config (minimal, TS6 defaults)
+├── tsconfig.lsp.json        — Effect LSP plugin (strict, all errors)
+├── tsconfig.lsp.test.json   — Effect LSP plugin (relaxed for tests)
 ├── .oxlintrc.json
 ├── lefthook.yml
 ├── .gitignore
@@ -56,8 +58,8 @@ Set `"type": "module"` in `package.json`.
 bun add effect @effect/platform-bun
 
 # Dev tooling
-bun add -D typescript @types/bun @effect/language-service \
-  oxlint oxfmt lefthook concurrently effect-bun-test
+bun add -D typescript @typescript/native-preview @types/bun \
+  @effect/language-service oxlint oxfmt lefthook concurrently effect-bun-test
 
 # If publishing to npm
 bun add -D @changesets/cli @changesets/changelog-github
@@ -66,10 +68,12 @@ bun add -D @changesets/cli @changesets/changelog-github
 ## Step 3: Configure
 
 Copy configs from SKILL.md §Tooling Stack:
-- `tsconfig.json` — base config with Effect LSP plugin
+- `tsconfig.json` — base config (minimal, TS6 defaults)
+- `tsconfig.lsp.json` — Effect LSP plugin (strict, all errors)
+- `tsconfig.lsp.test.json` — Effect LSP plugin (relaxed for tests)
 - `.oxlintrc.json` — standard rules
 - `lefthook.yml` — pre-commit hooks
-- `package.json` scripts — dev, build, gate, prepare, etc.
+- `package.json` scripts — dev, build, gate, lint:ox, lint:effect, etc.
 
 ## Step 4: Project Structure
 
@@ -137,10 +141,10 @@ export const subcommandA = Command.make("do-thing", { name: nameArg, force: forc
 ### Services
 
 ```typescript
-import { Effect, Layer, ServiceMap } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { MyError } from "../errors/index.js"
 
-export class MyService extends ServiceMap.Service<
+export class MyService extends Context.Service<
   MyService,
   {
     readonly doThing: (name: string, force: boolean) => Effect.Effect<void, MyError>
@@ -152,7 +156,7 @@ export class MyService extends ServiceMap.Service<
     }),
   }))
 
-  static layerTest = (impl: Partial<ServiceMap.Service.Shape<typeof MyService>> = {}) =>
+  static layerTest = (impl: Partial<Context.Service.Shape<typeof MyService>> = {}) =>
     Layer.succeed(MyService, {
       doThing: () => Effect.void,
       ...impl,
@@ -209,7 +213,7 @@ console.log(`Symlinked to: ${linkPath}`)
 ### Test Helper (`tests/helpers/test-cli.ts`)
 
 ```typescript
-import { Effect, Layer, Ref, ServiceMap } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 import { MyService } from "../../src/services/MyService.js"
 
 // Call recorder for verifying service interactions
@@ -219,7 +223,7 @@ export interface ServiceCall {
   args?: unknown
 }
 
-export class CallRecorder extends ServiceMap.Service<
+export class CallRecorder extends Context.Service<
   CallRecorder,
   {
     readonly record: (call: ServiceCall) => Effect.Effect<void>
@@ -326,11 +330,13 @@ If publishing to npm, follow SKILL.md §Publishing for:
 ## Checklist
 
 - [ ] `bun init` + `"type": "module"`
-- [ ] Install deps (effect, platform-bun, dev tooling)
-- [ ] `tsconfig.json` with Effect LSP plugin
+- [ ] Install deps (effect, platform-bun, dev tooling incl. `@typescript/native-preview`)
+- [ ] `tsconfig.json` (base, minimal TS6)
+- [ ] `tsconfig.lsp.json` (Effect diagnostics, all errors)
+- [ ] `tsconfig.lsp.test.json` (relaxed for tests)
 - [ ] `.oxlintrc.json`
 - [ ] `lefthook.yml`
-- [ ] `package.json` scripts (dev, build, gate, prepare)
+- [ ] `package.json` scripts (dev, build, gate, lint:ox, lint:effect, prepare)
 - [ ] `src/main.ts` entry point
 - [ ] `src/commands/index.ts` root command
 - [ ] `src/services/` with `layer` + `layerTest` statics

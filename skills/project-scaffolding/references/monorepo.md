@@ -26,7 +26,9 @@ project-name/
 │   └── ...
 ├── tests/                   — root-level integration tests (optional)
 ├── package.json             — root: workspaces, catalog, devDeps
-├── tsconfig.json            — root: paths, Effect LSP, shared compiler opts
+├── tsconfig.json            — root: base TS config (minimal, TS6 defaults)
+├── tsconfig.lsp.json        — root: Effect LSP plugin (strict, all errors)
+├── tsconfig.lsp.test.json   — root: Effect LSP plugin (relaxed for tests)
 ├── turbo.json               — task orchestration
 ├── .oxlintrc.json           — shared lint config
 ├── .oxfmtrc.json            — shared format config (optional)
@@ -52,32 +54,34 @@ mkdir -p packages/core/src packages/cli/src
   "type": "module",
   "scripts": {
     "typecheck": "turbo run typecheck",
-    "build": "turbo run build",
-    "test": "turbo run test",
-    "lint": "oxlint",
+    "lint": "concurrently -n ox,effect -c yellow,blue \"oxlint\" \"turbo run lint\"",
+    "lint:ox": "oxlint",
+    "lint:effect": "turbo run lint",
     "lint:fix": "oxlint --fix",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
-    "gate": "concurrently -n turbo,lint,fmt -c blue,yellow,magenta \"turbo run typecheck test build\" \"bun run lint:fix\" \"bun run fmt\"",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "gate": "concurrently -n type,style,build,test -c blue,yellow,cyan,green \"bun run typecheck\" \"bun run lint && bun run fmt\" \"bun run build\" \"bun run test\"",
     "clean": "rm -rf .turbo */.turbo */*/.turbo",
     "prepare": "lefthook install"
   },
   "devDependencies": {
-    "@effect/language-service": "^0.76.0",
-    "@types/bun": "^1.3.9",
-    "concurrently": "^9.2.1",
+    "@effect/language-service": "latest",
+    "@typescript/native-preview": "latest",
+    "@types/bun": "latest",
+    "concurrently": "latest",
     "effect": "catalog:",
-    "effect-bun-test": "^0.2.1",
-    "lefthook": "^2.1.1",
-    "oxfmt": "^0.35.0",
-    "oxlint": "^1.50.0",
-    "turbo": "^2.8.10",
-    "typescript": "^5.9.3"
+    "effect-bun-test": "latest",
+    "lefthook": "latest",
+    "oxfmt": "latest",
+    "oxlint": "latest",
+    "turbo": "latest",
+    "typescript": "latest"
   },
-  "packageManager": "bun@1.3.6",
   "catalog": {
-    "effect": "4.0.0-beta.12",
-    "@effect/platform-bun": "4.0.0-beta.12"
+    "effect": "4.0.0-beta.44",
+    "@effect/platform-bun": "4.0.0-beta.44"
   }
 }
 ```
@@ -87,59 +91,42 @@ Key points:
 - `"catalog"` — pins shared dependency versions; leaf packages reference with `"catalog:"`
 - `effect` in devDeps as `catalog:` — available for root-level tests
 - Lint/fmt run at root (not per-package) — oxlint/oxfmt scan the whole tree
+- `lint` runs `lint:ox` and `lint:effect` (turbo per-package) in parallel via concurrently
+- `@typescript/native-preview` provides `tsgo` binary for fast type checking
 
 ### Gate script
 
-The monorepo gate differs from single-package: turbo handles typecheck/test/build (respecting `dependsOn` ordering), while lint/fmt run at root in parallel.
+The monorepo gate: turbo handles typecheck/build/test (respecting `dependsOn` ordering), while lint+fmt runs in parallel alongside.
 
-```json
-"gate": "concurrently -n turbo,lint,fmt -c blue,yellow,magenta \"turbo run typecheck test build\" \"bun run lint:fix\" \"bun run fmt\""
-```
+### Lint strategy
 
-## Step 3: Root tsconfig.json
+| Script | Scope | What |
+|--------|-------|------|
+| `lint:ox` | Root | `oxlint` — runs on entire tree |
+| `lint:effect` | Root | `turbo run lint` — fans out per-package |
+| `lint` (per-package) | Leaf | `effect-language-service diagnostics --project tsconfig.json` |
+
+Root `lint` runs `lint:ox` and `lint:effect` in parallel via concurrently.
+
+## Step 3: Root tsconfig files
+
+### tsconfig.json (base)
 
 ```json
 {
   "compilerOptions": {
-    "strict": true,
     "noUncheckedIndexedAccess": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
     "noPropertyAccessFromIndexSignature": true,
-    "target": "ESNext",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
     "moduleDetection": "force",
-    "esModuleInterop": true,
     "skipLibCheck": true,
+    "types": ["bun"],
     "noEmit": true,
-    "baseUrl": ".",
     "paths": {
       "@scope/core": ["packages/core/src/index.ts"],
       "@scope/cli": ["packages/cli/src/index.ts"]
-    },
-    // Use diagnosticSeverity + keyPatterns from SKILL.md §tsconfig.json (base)
-    // Only difference: keyPatterns.skipLeadingPath = ["packages/"] instead of ["src/"]
-    "plugins": [
-      {
-        "name": "@effect/language-service",
-        "diagnostics": true,
-        "diagnosticsName": true,
-        "diagnosticSeverity": { /* see SKILL.md */ },
-        "keyPatterns": [
-          {
-            "target": "service",
-            "pattern": "default",
-            "skipLeadingPath": ["packages/"]
-          },
-          {
-            "target": "error",
-            "pattern": "default",
-            "skipLeadingPath": ["packages/"]
-          }
-        ]
-      }
-    ]
+    }
   },
   "include": [],
   "exclude": ["node_modules"]
@@ -147,11 +134,59 @@ The monorepo gate differs from single-package: turbo handles typecheck/test/buil
 ```
 
 Key differences from single-package:
-- `"baseUrl": "."` + `"paths"` — maps `@scope/pkg` → source for editor resolution
+- `"paths"` — maps `@scope/pkg` → source for editor resolution
 - `"include": []` — root tsconfig is for editor/LSP only, leaf tsconfigs handle compilation
-- `"skipLeadingPath": ["packages/"]` — deterministic keys strip `packages/` prefix
 
 **Add every new package to `paths`.** Without it, the editor can't resolve workspace imports.
+
+### tsconfig.lsp.json (Effect diagnostics — strict)
+
+```json
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnostics": true,
+        "diagnosticsName": true,
+        "diagnosticSeverity": {
+          "strictEffectProvide": "error"
+        },
+        "keyPatterns": [
+          { "target": "service", "pattern": "default", "skipLeadingPath": ["packages/"] },
+          { "target": "error", "pattern": "default", "skipLeadingPath": ["packages/"] }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Full `diagnosticSeverity` — see SKILL.md §tsconfig.lsp.json for all rules (all promoted to errors).
+
+### tsconfig.lsp.test.json (relaxed for tests)
+
+```json
+{
+  "extends": "./tsconfig.lsp.json",
+  "compilerOptions": {
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnostics": true,
+        "diagnosticsName": true,
+        "diagnosticSeverity": {
+          "strictEffectProvide": "off",
+          "nodeBuiltinImport": "off",
+          "globalConsole": "off",
+          "globalConsoleInEffect": "off"
+        }
+      }
+    ]
+  }
+}
+```
 
 ## Step 4: turbo.json
 
@@ -162,12 +197,12 @@ Key differences from single-package:
   "tasks": {
     "typecheck": {
       "dependsOn": ["^typecheck"],
-      "inputs": ["src/**/*.ts", "src/**/*.tsx", "tsconfig.json", "package.json"],
+      "inputs": ["src/**/*.ts", "src/**/*.tsx", "tsconfig.json", "../../tsconfig.lsp.json", "package.json"],
       "outputs": []
     },
     "build": {
       "dependsOn": ["^build"],
-      "inputs": ["src/**/*.ts", "src/**/*.tsx", "tsconfig.json", "package.json"],
+      "inputs": ["src/**/*.ts", "src/**/*.tsx", "tsconfig.json", "../../tsconfig.lsp.json", "package.json"],
       "outputs": ["dist/**"]
     },
     "test": {
@@ -189,7 +224,7 @@ Key differences from single-package:
 
 - `"dependsOn": ["^typecheck"]` — typecheck/build run dependencies first (topological order)
 - `"cache": false` for tests — always re-run, cached results hide failures
-- `"outputs": ["dist/**"]` for build — turbo caches build artifacts
+- `"../../tsconfig.lsp.json"` in inputs — LSP config changes invalidate turbo cache
 
 ## Step 5: Leaf Package — Core
 
@@ -204,7 +239,9 @@ Key differences from single-package:
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsgo --noEmit",
+    "lint": "effect-language-service diagnostics --project tsconfig.json",
+    "test": "bun test tests/"
   },
   "peerDependencies": {
     "effect": "catalog:"
@@ -215,26 +252,15 @@ Key differences from single-package:
 Key patterns:
 - `"exports": { ".": "./src/index.ts" }` — source-first, no build step for dev
 - `"peerDependencies"` with `"catalog:"` — version comes from root catalog
+- `typecheck` uses `tsgo` — native Go compiler
+- `lint` runs `effect-language-service diagnostics` against the package tsconfig
 - No devDeps — inherited from root workspace
-
-For granular sub-path exports (when core grows large):
-
-```json
-{
-  "exports": {
-    ".": "./src/index.ts",
-    "./types": "./src/types/index.ts",
-    "./errors": "./src/errors/index.ts",
-    "./services": "./src/services/index.ts"
-  }
-}
-```
 
 `packages/core/tsconfig.json`:
 
 ```json
 {
-  "extends": "../../tsconfig.json",
+  "extends": "../../tsconfig.lsp.json",
   "compilerOptions": {
     "noEmit": true
   },
@@ -242,8 +268,9 @@ For granular sub-path exports (when core grows large):
 }
 ```
 
-- Extends root — gets all strict options + Effect LSP plugin
+- Extends `tsconfig.lsp.json` — gets strict Effect diagnostics
 - Only includes `src` — each package typechecks independently
+- Tests run via `bun test` without tsc type-checking
 
 ## Step 6: Leaf Package — CLI
 
@@ -258,9 +285,11 @@ For granular sub-path exports (when core grows large):
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsgo --noEmit",
+    "lint": "effect-language-service diagnostics --project tsconfig.json",
     "dev": "bun run src/main.ts",
-    "build": "bun run scripts/build.ts"
+    "build": "bun run scripts/build.ts",
+    "test": "bun test tests/"
   },
   "dependencies": {
     "@scope/core": "workspace:*",
@@ -279,11 +308,11 @@ For granular sub-path exports (when core grows large):
 
 ```json
 {
-  "extends": "../../tsconfig.json",
+  "extends": "../../tsconfig.lsp.json",
   "compilerOptions": {
     "noEmit": true
   },
-  "include": ["src", "tests"]
+  "include": ["src"]
 }
 ```
 
@@ -331,18 +360,20 @@ Rules:
 2. Add `"@scope/new-pkg": ["packages/new-pkg/src/index.ts"]` to root `tsconfig.json` paths
 3. If it depends on another workspace package: `"@scope/core": "workspace:*"` in deps
 4. If it needs effect: `"effect": "catalog:"` in peerDeps
-5. Add `"typecheck": "tsc --noEmit"` to its scripts
+5. Add `"typecheck": "tsgo --noEmit"` and `"lint": "effect-language-service diagnostics --project tsconfig.json"` to its scripts
 6. Run `bun install` to link
 
 ## Checklist
 
-- [ ] Root `package.json` with `workspaces`, `catalog`, `gate` script
-- [ ] Root `tsconfig.json` with `paths` for all packages
-- [ ] `turbo.json` with `dependsOn` for typecheck/build
+- [ ] Root `package.json` with `workspaces`, `catalog`, `gate`, `lint:ox`, `lint:effect` scripts
+- [ ] Root `tsconfig.json` with `paths` for all packages (minimal, TS6 defaults)
+- [ ] Root `tsconfig.lsp.json` with Effect diagnostics (all errors)
+- [ ] Root `tsconfig.lsp.test.json` with relaxed rules
+- [ ] `turbo.json` with `dependsOn` for typecheck/build, `lint` task
 - [ ] `.oxlintrc.json` with `node/no-process-env`
 - [ ] `lefthook.yml`
-- [ ] Core package: `peerDependencies`, `exports`, extends root tsconfig
+- [ ] Core package: `peerDependencies`, `exports`, extends `tsconfig.lsp.json`
 - [ ] CLI package: `workspace:*` dep on core, platform-bun
-- [ ] Each leaf has `"typecheck": "tsc --noEmit"` script
+- [ ] Each leaf has `"typecheck": "tsgo --noEmit"` and `"lint": "effect-language-service diagnostics --project tsconfig.json"`
 - [ ] `.gitignore` includes `.turbo/`
 - [ ] `bun run gate` passes

@@ -64,19 +64,19 @@ type AppConfig = S.Schema.Type<typeof AppConfigSchema>
 
 ```typescript
 import { Context, Effect, Layer, Config as EffectConfig } from "effect"
-import { FileSystem } from "@effect/platform"
+import { FileSystem } from "effect"
 
-export class ConfigService extends Context.Tag("ConfigService")<
+export class ConfigService extends Context.Service<
   ConfigService,
   {
     readonly get: () => Effect.Effect<AppConfig>
     readonly reload: () => Effect.Effect<AppConfig>
   }
->() {
-  static Live = Layer.effect(
+>()("ConfigService") {
+  static layer = Layer.effect(
     ConfigService,
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem
+      const fs = yield* FileSystem
       let cached: AppConfig | null = null
 
       const loadConfig = () =>
@@ -121,15 +121,15 @@ const loadRemoteConfig = () =>
     const response = yield* Effect.tryPromise(() =>
       fetch(orgUrl).then((r) => r.json())
     ).pipe(
-      Effect.catchAll(() => Effect.succeed({})),
+      Effect.catch(() => Effect.succeed({})),
       Effect.timeout("5 seconds"),
-      Effect.catchAll(() => Effect.succeed({}))
+      Effect.catch(() => Effect.succeed({}))
     )
 
     return response as Partial<AppConfig>
   })
 
-const loadUserConfig = (fs: FileSystem.FileSystem) =>
+const loadUserConfig = (fs: FileSystem) =>
   Effect.gen(function* () {
     const home = yield* EffectConfig.string("HOME")
     const configPath = `${home}/.config/app/config.json`
@@ -139,9 +139,9 @@ const loadUserConfig = (fs: FileSystem.FileSystem) =>
 
     const content = yield* fs.readFileString(configPath)
     return JSON.parse(content) as Partial<AppConfig>
-  }).pipe(Effect.catchAll(() => Effect.succeed({})))
+  }).pipe(Effect.catch(() => Effect.succeed({})))
 
-const loadProjectConfig = (fs: FileSystem.FileSystem) =>
+const loadProjectConfig = (fs: FileSystem) =>
   Effect.gen(function* () {
     const cwd = yield* EffectConfig.string("PWD")
 
@@ -162,7 +162,7 @@ const loadProjectConfig = (fs: FileSystem.FileSystem) =>
     }
 
     return {}
-  }).pipe(Effect.catchAll(() => Effect.succeed({})))
+  }).pipe(Effect.catch(() => Effect.succeed({})))
 ```
 
 ## Merge Semantics
@@ -325,7 +325,7 @@ const applyEnvOverrides = (config: AppConfig): Effect.Effect<AppConfig> =>
 ```typescript
 const watchConfig = () =>
   Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem
+    const fs = yield* FileSystem
     const config = yield* ConfigService
     const bus = yield* BusService
     const cwd = yield* EffectConfig.string("PWD")
@@ -341,7 +341,7 @@ const watchConfig = () =>
         })
       ),
       Stream.runDrain,
-      Effect.fork
+      Effect.forkChild
     )
   })
 ```

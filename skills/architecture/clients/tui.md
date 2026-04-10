@@ -17,8 +17,7 @@ TUI client using @opentui/solid for terminal rendering.
     "@my-app/api": "workspace:*",
     "@my-app/shared": "workspace:*",
     "@opentui/solid": "^0.1.0",
-    "effect": "^3.0.0",
-    "@effect/platform": "^0.77.0",
+    "effect": "catalog:",
     "solid-js": "^1.9.0"
   }
 }
@@ -79,7 +78,7 @@ function MainLayout() {
 // apps/tui/src/context/api.tsx
 import { createContext, useContext, type JSX } from "solid-js"
 import { Effect, Layer, ManagedRuntime } from "effect"
-import { FetchHttpClient, HttpApiClient } from "@effect/platform"
+import { FetchHttpClient, HttpApiClient } from "effect/unstable/http"
 import { AppApi } from "@my-app/api"
 
 interface ApiContextValue {

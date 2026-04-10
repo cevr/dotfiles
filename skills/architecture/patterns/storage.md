@@ -8,7 +8,7 @@ Database abstraction using @effect/sql with Drizzle ORM.
 // packages/core/src/storage/storage.ts
 import { Context, Effect, Layer, Schema as S } from "effect"
 
-export class StorageService extends Context.Tag("StorageService")<
+export class StorageService extends Context.Service<
   StorageService,
   {
     readonly get: <A>(key: string) => Effect.Effect<A | null>
@@ -17,7 +17,7 @@ export class StorageService extends Context.Tag("StorageService")<
     readonly list: <A>(pattern: string) => Effect.Effect<A[]>
     readonly exists: (key: string) => Effect.Effect<boolean>
   }
->() {
+>()("StorageService") {
   // In-memory implementation for development
   static Memory = Layer.succeed(
     StorageService,
@@ -102,7 +102,7 @@ import { PgClient } from "@effect/sql-pg"
 import * as PgDrizzle from "@effect/sql-drizzle/Pg"
 import * as Client from "@effect/sql/SqlClient"
 
-const PgLive = Layer.scopedContext(
+const PgLive = Layer.effectServices(
   Effect.gen(function* () {
     const host = yield* Config.string("DB_HOST").pipe(
       Config.withDefault("localhost")
@@ -159,7 +159,7 @@ export const SessionRepository = {
         .where(eq(sessions.id, id))
         .limit(1)
 
-      return Option.fromNullable(results[0])
+      return Option.fromNullishOr(results[0])
     }),
 
   findAll: (options: { limit: number; afterId?: SessionId }) =>
@@ -202,7 +202,7 @@ export const SessionRepository = {
         .where(eq(sessions.id, id))
         .returning()
 
-      return Option.fromNullable(session)
+      return Option.fromNullishOr(session)
     }),
 
   delete: (id: SessionId) =>

@@ -100,7 +100,7 @@ type EventPayload<D extends BusEvent.Definition> = {
   timestamp: Date
 }
 
-export class BusService extends Context.Tag("BusService")<
+export class BusService extends Context.Service<
   BusService,
   {
     readonly publish: <D extends BusEvent.Definition>(
@@ -115,8 +115,8 @@ export class BusService extends Context.Tag("BusService")<
       handler: (payload: EventPayload<BusEvent.Definition>) => Effect.Effect<void>
     ) => Effect.Effect<void>
   }
->() {
-  static Live = Layer.effect(
+>()("BusService") {
+  static layer = Layer.effect(
     BusService,
     Effect.gen(function* () {
       const pubsub = yield* PubSub.unbounded<EventPayload<BusEvent.Definition>>()
@@ -168,13 +168,13 @@ export class BusService extends Context.Tag("BusService")<
                 const event = yield* Queue.take(queue)
                 yield* handler(event)
               })
-            ).pipe(Effect.fork)
+            ).pipe(Effect.forkChild)
           }),
       })
     })
   )
 
-  static Test = Layer.succeed(
+  static layerTest = Layer.succeed(
     BusService,
     BusService.of({
       publish: () => Effect.void,
@@ -191,8 +191,8 @@ export class BusService extends Context.Tag("BusService")<
 // packages/core/src/services/session.ts
 import { BusService, Events } from "../bus"
 
-export class SessionService extends Context.Tag("SessionService")<...>() {
-  static Live = Layer.effect(
+export class SessionService extends Context.Service<...>()("SessionService") {
+  static layer = Layer.effect(
     SessionService,
     Effect.gen(function* () {
       const storage = yield* StorageService
@@ -231,7 +231,8 @@ export class SessionService extends Context.Tag("SessionService")<...>() {
 
 ```typescript
 // apps/server/src/handlers/EventsGroupLive.ts
-import { HttpApiBuilder, HttpServerResponse } from "@effect/platform"
+import { HttpApiBuilder } from "effect/unstable/httpapi"
+import { HttpServerResponse } from "effect/unstable/http"
 import { Effect, Stream } from "effect"
 import { BusService } from "@my-app/core"
 
@@ -371,7 +372,7 @@ function useEventSourcedState(eventSource: EventSource) {
 1. **Typed events**: BusEvent.define creates type-safe event definitions
 2. **Decoupled**: Publishers don't know about subscribers
 3. **Effect-native**: All operations return Effect
-4. **Testable**: BusService.Test provides no-op implementation
+4. **Testable**: BusService.layerTest provides no-op implementation
 5. **SSE ready**: Easy to stream events to clients
 6. **Event-sourced**: Derive state from events, enable replay/sync/branching
 7. **Pure reducers**: State derivation has no side effects

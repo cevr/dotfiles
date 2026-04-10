@@ -34,7 +34,7 @@ type SequenceRef = Ref.Ref<Array<RecordedCall>>
 ## Mock Service Factory (v4 adapted)
 
 ```typescript
-// v4: ServiceMap.Service instead of Context.Tag
+// v4: Context.Service instead of Context.Tag
 const createMockGitService = (options: {
   initialState: { currentBranch: string; isClean: boolean }
   sequenceRef: SequenceRef
@@ -167,4 +167,4 @@ it.effect("deploy command pushes to staging", () =>
 
 ## Key Principles
 
-Same as v3. Only difference: services use `ServiceMap.Service` and `static layerTest` naming.
+Same as v3. Only difference: services use `Context.Service` and `static layerTest` naming.

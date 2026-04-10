@@ -34,9 +34,11 @@ Condensed diff for migrating Effect v3 codebases to v4.
 
 | v3 | v4 | Category |
 |----|----|----|
-| `Context.Tag("id")<Self, Shape>()` | `ServiceMap.Service<Self, Shape>()("id")` | Services |
-| `Context.GenericTag<Shape>("id")` | `ServiceMap.Service<Shape>("id")` | Services |
-| `Context.make(tag, impl)` | `ServiceMap.make(tag, impl)` | Services |
+| `Context.Tag("id")<Self, Shape>()` | `Context.Service<Self, Shape>()("id")` | Services |
+| `Context.GenericTag<Shape>("id")` | `Context.Service<Shape>("id")` | Services |
+| `Context.make(tag, impl)` | `Context.make(tag, impl)` (unchanged name, new module) | Services |
+| `ServiceMap.Service` (early v4 beta) | `Context.Service` (beta.44+) | Services |
+| `ServiceMap.Reference` (early v4 beta) | `Context.Reference` (beta.44+) | Services |
 | `Effect.flatMap(ServiceTag, fn)` | `ServiceTag.use(fn)` or `yield* ServiceTag` in gen | Services |
 | `static Live` | `static layer` | Convention |
 | `static Test` | `static layerTest` | Convention |
@@ -45,7 +47,7 @@ Condensed diff for migrating Effect v3 codebases to v4.
 | `Either.isRight` / `Either.isLeft` | `Result.isSuccess` / `Result.isFailure` | Data |
 | `Effect.either(eff)` | `Effect.result(eff)` | Data |
 | `.left` / `.right` (on Either) | `.failure` / `.success` (on Result) | Data |
-| `FiberRef` | `ServiceMap.Reference` / `References.*` | State |
+| `FiberRef` | `Context.Reference` / `References.*` | State |
 | `Effect.fork` | `Effect.forkChild` | Forking |
 | `Effect.forkDaemon` | `Effect.forkDetach` | Forking |
 | `Effect.scheduleForked(schedule)` | `Effect.repeat({ schedule }).pipe(Effect.fork)` | Forking |
@@ -93,11 +95,11 @@ Condensed diff for migrating Effect v3 codebases to v4.
 | `Chunk.toReadonlyArray(c)` | v4 `Stream.runCollect` returns `Array` directly | Stream |
 | `Fiber.interruptFork(fiber)` | `Fiber.interrupt(fiber)` | Fiber |
 | `Fiber.RuntimeFiber<A, E>` | `Fiber.Fiber<A, E>` | Fiber |
-| `Runtime.Runtime<R>` | Removed; use `ManagedRuntime` or `ServiceMap<R>` | Runtime |
+| `Runtime.Runtime<R>` | Removed; use `ManagedRuntime` or `Context<R>` | Runtime |
 | `Runtime.runFork(runtime)(eff)` | `Effect.runForkWith(services)(eff)` | Runtime |
 | `Runtime.runPromise(runtime)(eff)` | `Effect.runPromiseWith(services)(eff)` | Runtime |
 | `Runtime.runSync(runtime)(eff)` | `runtime.runSync(eff)` (ManagedRuntime) | Runtime |
-| `Effect.runtime()` | `Effect.services()` (returns ServiceMap, not Runtime) | Runtime |
+| `Effect.runtime()` | `Effect.services()` (returns `Context`, not `Runtime`) | Runtime |
 | `Logger.remove(Logger.defaultLogger)` | `Logger.layer([])` (empty loggers) | Logger |
 | `Logger.replace(defaultLogger, custom)` | `Logger.layer([custom])` | Logger |
 | `Logger.withMinimumLogLevel(LogLevel.X)` | `References.MinimumLogLevel` + `"Debug"` / `"Info"` strings | Logger |
@@ -135,8 +137,8 @@ Schema.optionalKey(Schema.NullishOr(MySchema))
 
 // v3: { default: () => value }
 Schema.optionalWith(MySchema, { default: () => 0 })
-// v4: withConstructorDefault
-Schema.optional(MySchema).pipe(Schema.withConstructorDefault(() => 0))
+// v4: withConstructorDefault (accepts Effect<T>)
+Schema.optional(MySchema).pipe(Schema.withConstructorDefault(Effect.succeed(0)))
 ```
 
 ## Schema.pick → v4
@@ -341,7 +343,7 @@ repo fetch effect-ts/effect-smol
 ```
 
 Then read files in `$(repo path -q effect-ts/effect-smol)/migration/`:
-- `services.md` — Context.Tag → ServiceMap.Service
+- `services.md` — Context.Tag → Context.Service
 - `error-handling.md` — catch* renames
 - `forking.md` — fork renames
 - `fiberref.md` — FiberRef → References

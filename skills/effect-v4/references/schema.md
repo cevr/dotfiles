@@ -95,6 +95,37 @@ Schema.Char               // String.check(isLengthBetween(1, 1))
 Schema.Int                // Number.check(isInt())
 Schema.Finite             // Number.check(isFinite())
 Schema.DateValid          // Date.check(isDateValid())
+
+// v4 string encoding/decoding schemas (beta.44+)
+Schema.DateFromString       // string → Date
+Schema.BigIntFromString     // string → BigInt
+Schema.BigDecimalFromString // string → BigDecimal
+Schema.StringFromBase64     // base64 string → UTF-8 string
+Schema.StringFromBase64Url  // base64url string → UTF-8 string
+Schema.StringFromHex        // hex string → UTF-8 string
+Schema.StringFromUriComponent // URI-encoded string → UTF-8 string
+```
+
+## Schema.make / Schema.makeEffect
+
+```typescript
+// Schema.make(input) — sync construction with validation (renamed from makeUnsafe)
+const user = Schema.make(User)({ name: "Ada", email: "ada@example.com" })
+
+// Schema.makeEffect(input) — effectful construction, fails with SchemaError
+const user = yield* Schema.makeEffect(User)({ name: "Ada", email: "ada@example.com" })
+```
+
+## Schema.asClass
+
+Convert any schema into a class with static method support:
+
+```typescript
+const UserSchema = Schema.Struct({ name: Schema.String, age: Schema.Number })
+const User = Schema.asClass(UserSchema, "User")
+
+const user = new User({ name: "Ada", age: 30 })
+user.name // "Ada"
 ```
 
 ## Schema.Class (unchanged)
@@ -142,8 +173,8 @@ Schema.optionalKey(Schema.NullishOr(MySchema))
 
 // v3: { default: () => value } — provide default
 Schema.optionalWith(Schema.Number, { default: () => 0 })
-// v4:
-Schema.optional(Schema.Number).pipe(Schema.withConstructorDefault(() => 0))
+// v4: withConstructorDefault accepts Effect<T>
+Schema.optional(Schema.Number).pipe(Schema.withConstructorDefault(Effect.succeed(0)))
 ```
 
 ## Quick Reference
@@ -179,6 +210,6 @@ Schema.optional(Schema.Number).pipe(Schema.withConstructorDefault(() => 0))
 | `Schema.fromJsonString(S, { space: 2 })` | Removed — use `JSON.stringify(data, null, 2)` |
 | `Schema.optionalWith(S, { as: 'Option' })` | `Schema.optionalKey(Schema.OptionFromUndefinedOr(S))` |
 | `Schema.optionalWith(S, { nullable: true })` | `Schema.optionalKey(Schema.NullishOr(S))` |
-| `Schema.optionalWith(S, { default: () => v })` | `Schema.optional(S).pipe(Schema.withConstructorDefault(() => v))` |
+| `Schema.optionalWith(S, { default: () => v })` | `Schema.optional(S).pipe(Schema.withConstructorDefault(Effect.succeed(v)))` |
 | `Schema.mutable(Schema.Struct(...))` | Just `Schema.Struct(...)` (structs are mutable) |
 | `Schema.mutable(Schema.Array(...))` | `Schema.mutable(Schema.Array(...))` (unchanged for arrays) |

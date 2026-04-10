@@ -52,13 +52,13 @@ function* runAgent(input: string): Generator<AgentEvent> {
 import { Effect, Stream } from "effect"
 
 // Agent service yields event stream
-export class AgentService extends Context.Tag("AgentService")<
+export class AgentService extends Context.Service<
   AgentService,
   {
     readonly run: (input: string) => Stream.Stream<AgentEvent, AgentError>
   }
->() {
-  static Live = Layer.effect(
+>()("AgentService") {
+  static layer = Layer.effect(
     AgentService,
     Effect.gen(function* () {
       const llm = yield* LlmService

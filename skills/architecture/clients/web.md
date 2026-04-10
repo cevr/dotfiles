@@ -17,8 +17,7 @@ SolidJS web application with Vite, following UI composition patterns.
   "dependencies": {
     "@my-app/api": "workspace:*",
     "@my-app/shared": "workspace:*",
-    "effect": "^3.0.0",
-    "@effect/platform": "^0.77.0",
+    "effect": "catalog:",
     "@solidjs/router": "^0.15.0",
     "solid-js": "^1.9.0"
   },
@@ -121,7 +120,7 @@ function LoadingScreen() {
 // apps/web/src/context/api.tsx
 import { createContext, useContext, type JSX } from "solid-js"
 import { Effect, Layer, ManagedRuntime } from "effect"
-import { FetchHttpClient, HttpApiClient } from "@effect/platform"
+import { FetchHttpClient, HttpApiClient } from "effect/unstable/http"
 import { AppApi } from "@my-app/api"
 
 interface ApiContextValue {

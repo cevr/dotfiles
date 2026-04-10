@@ -10,7 +10,7 @@ Modeling a type?
 ├─ Constrained value            → Schema with refinements
 ├─ Serializable data            → Schema.Class
 ├─ Union of states              → Schema.Union (tagged)
-├─ Error type                   → Schema.TaggedError
+├─ Error type                   → Schema.TaggedErrorClass
 └─ Simple enum                  → Schema.Literal union
 
 Organizing domain code?
@@ -125,12 +125,12 @@ const user = new User({
 })
 ```
 
-### 5. Schema.TaggedError (Domain Errors)
+### 5. Schema.TaggedErrorClass (Domain Errors)
 
 Errors with schema validation and HTTP mapping:
 
 ```typescript
-import { HttpApiSchema } from "@effect/platform"
+import { HttpApiSchema } from "effect/unstable/httpapi"
 
 class UserNotFoundError extends S.TaggedError<UserNotFoundError>()(
   "UserNotFoundError",

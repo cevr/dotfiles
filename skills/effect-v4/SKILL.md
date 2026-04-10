@@ -1,6 +1,6 @@
 ---
 name: effect-v4
-description: Effect v4 (effect-smol) patterns for production TypeScript. Use when writing Effect v4 code — ServiceMap.Service, layers, errors, HttpApi, RPC, CLI, testing, concurrency, streams, config, transactions. Covers v4 API changes from v3 including Schema.TaggedErrorClass, Result, References, TxRef, and unstable module imports.
+description: Effect v4 (effect-smol) patterns for production TypeScript. Use when writing Effect v4 code — Context.Service, layers, errors, HttpApi, RPC, CLI, testing, concurrency, streams, config, transactions. Covers v4 API changes from v3 including Schema.TaggedErrorClass, Result, References, TxRef, and unstable module imports.
 allowed-tools: Bash, Read, Grep, Glob
 ---
 
@@ -33,7 +33,7 @@ What are you working on?
 
 | Topic | Resource | When to Read |
 |-------|----------|--------------|
-| Services | `references/services.md` | ServiceMap.Service, Layer, layer/layerTest statics |
+| Services | `references/services.md` | Context.Service, Context.Reference, Layer, layer/layerTest statics |
 | Client wrapper | `references/client-wrapper.md` | Wrapping Promise SDKs |
 | Schema v4 | `references/schema.md` | .check(), .annotate(), Codec, TaggedErrorClass |
 | HTTP API | `references/http-api.md` | HttpApi from effect/unstable/httpapi |
@@ -63,7 +63,7 @@ What are you working on?
 
 Before writing Effect v4 code:
 
-1. **Read types** — find relevant ServiceMap.Service, TaggedErrorClass, Schema classes
+1. **Read types** — find relevant Context.Service, TaggedErrorClass, Schema classes
 2. **Check import paths** — v4 uses `effect/unstable/*` for platform/rpc/cli
 3. **Read sibling code** — match existing patterns
 4. **Check migration** — `references/migration.md` for v3→v4 renames
@@ -87,19 +87,19 @@ export const getUser = Effect.fn("getUser")(function* (id: string) {
 })
 ```
 
-### 2. `ServiceMap.Service` is canonical — NOT `Effect.Service`
+### 2. `Context.Service` is canonical — NOT `Effect.Service`
 
 ```typescript
-import { ServiceMap } from "effect"
+import { Context } from "effect"
 
 // BAD
 class MyService extends Effect.Service<MyService>()("MyService", { ... }) {}
 
 // GOOD — function style
-const Database = ServiceMap.Service<{ query: (sql: string) => string }>("Database")
+const Database = Context.Service<{ query: (sql: string) => string }>("Database")
 
 // GOOD — class style
-class Database extends ServiceMap.Service<Database, {
+class Database extends Context.Service<Database, {
   readonly query: (sql: string) => Effect.Effect<string, DbError>
 }>()("Database") {
   static layer = Layer.effect(Database, ...)
@@ -263,10 +263,10 @@ The LSP flags `deterministicKeys`. Use `@scope/package/path/ServiceName` format.
 
 ```typescript
 // BAD
-class MyService extends ServiceMap.Service<...>()("MyService") {}
+class MyService extends Context.Service<...>()("MyService") {}
 
 // GOOD
-class MyService extends ServiceMap.Service<...>()("@myorg/mypackage/services/MyService") {}
+class MyService extends Context.Service<...>()("@myorg/mypackage/services/MyService") {}
 ```
 
 ### 13. No `withX` scope wrappers — use `Effect.scoped` or `it.scoped` directly
@@ -439,7 +439,7 @@ const getName = Effect.fn("getName")(function* (id: string) {
 const findUser = Effect.fn("findUser")(function* (id: string) {
   const db = yield* Database
   const row = yield* db.query(id)
-  return Option.fromNullable(row)  // ← convert at boundary
+  return Option.fromNullishOr(row)  // ← convert at boundary
 })
 // return type: Effect<Option<User>, ...>
 
@@ -461,19 +461,19 @@ const getUser = Effect.fn("getUser")(function* (id: string) {
 
 | From | To | How |
 |------|----|-----|
-| `T \| null \| undefined` | `Option<T>` | `Option.fromNullable(value)` |
+| `T \| null \| undefined` | `Option<T>` | `Option.fromNullishOr(value)` |
 | `Option<T>` | `T \| undefined` | `Option.getOrUndefined(opt)` (at exit boundary) |
 | `Effect<T, Err>` | `Effect<Option<T>>` | `Effect.option(effect)` |
 | `Effect<Option<T>>` | `Effect<T, Err>` | `Effect.flatMap(Effect.fromOption(() => err))` |
 
 ## Services (quick ref)
 
-v4 uses `ServiceMap.Service` instead of `Context.Tag`. Static layers use `layer`/`layerTest` naming.
+v4 uses `Context.Service` instead of `Context.Tag`. Static layers use `layer`/`layerTest` naming.
 
 ```typescript
-import { ServiceMap, Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref } from "effect"
 
-class ConsoleService extends ServiceMap.Service<ConsoleService, {
+class ConsoleService extends Context.Service<ConsoleService, {
   readonly log: (msg: string) => Effect.Effect<void>
   readonly error: (msg: string) => Effect.Effect<void>
 }>()("ConsoleService") {
@@ -563,7 +563,7 @@ repo path effect-ts/effect-smol     # get local path
 
 | Location | What |
 |----------|------|
-| `packages/effect/src/` | Core: Effect, Schema, ServiceMap, Layer, Stream, TxRef |
+| `packages/effect/src/` | Core: Effect, Schema, Context, Layer, Stream, TxRef |
 | `packages/effect/src/unstable/` | Unstable: http, httpapi, rpc, cli, sql, ai, etc. |
 | `MIGRATION.md` | Migration guide index |
 | `migration/` | Per-topic migration guides |
@@ -573,7 +573,7 @@ Then search with Grep/Read on the local path:
 
 ```bash
 # Get the path, then search
-rg "ServiceMap.Service" $(repo path -q effect-ts/effect-smol)/packages --glob "*.ts" -C 2
+rg "Context.Service" $(repo path -q effect-ts/effect-smol)/packages --glob "*.ts" -C 2
 rg "TaggedErrorClass" $(repo path -q effect-ts/effect-smol)/packages --glob "*.ts" -C 3
 ```
 
@@ -610,7 +610,7 @@ Suppress diagnostics with comments:
 ## Gotchas
 
 ### Services & Layer
-- **`ServiceMap.Service` not `Context.Tag`** — Context.Tag removed
+- **`Context.Service` not `Context.Tag`** — v3 `Context.Tag` removed; v4 `ServiceMap` renamed to `Context`
 - **`Effect.flatMap(ServiceTag, fn)` removed** — use `ServiceTag.use(fn)` or `yield* ServiceTag` in gen
 - **`Layer.effect` auto-strips Scope** — `Layer.scoped` removed
 - **`Layer.scopedContext` removed** — use `Layer.effect(tag, eff)` or `Layer.effectServices(eff)`
@@ -647,6 +647,11 @@ Suppress diagnostics with comments:
 - **`Schema.decodeUnknown` → `Schema.decodeUnknownEffect`**
 - **`ParseResult.ParseError` → `Schema.SchemaError`**
 - **`Schema.mutable` only for arrays** — structs already mutable
+- **`Schema.make` (not `makeUnsafe`)** — `makeUnsafe` renamed back to `make` in beta.44
+- **`Schema.makeEffect(input)`** — new effectful constructor, fails with `Schema.SchemaError`
+- **`Schema.withConstructorDefault(Effect.succeed(v))`** — accepts `Effect<T>` not `() => T`
+- **`Schema.withDecodingDefault(Effect.succeed(v))`** — accepts `Effect<T>` not `() => T`
+- **`Schema.asClass(schema, "Name")`** — converts any schema to a class
 
 ### Data & Option
 - **`Either` → `Result`** everywhere; `.left`→`.failure`, `.right`→`.success`
@@ -662,7 +667,7 @@ Suppress diagnostics with comments:
 - **`Fiber.RuntimeFiber` → `Fiber.Fiber`**
 - **`Runtime<R>` removed** — use `ManagedRuntime` or `Effect.run*With(services)`
 - **`Runtime.runFork/runPromise/runSync` removed** — use `Effect.runForkWith(services)`, `Effect.runPromiseWith(services)`
-- **`Effect.runtime()` → `Effect.services()`** — returns `ServiceMap`, not `Runtime`
+- **`Effect.runtime()` → `Effect.services()`** — returns `Context`, not `Runtime`
 
 ### Stream
 - **`Stream.fromChunk` → `Stream.fromIterable`** or `Stream.fromArray`

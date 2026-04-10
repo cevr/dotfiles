@@ -28,9 +28,9 @@ const dbConfig = Config.all({
 ## Config in Services (v4 naming)
 
 ```typescript
-import { ServiceMap, Layer, Effect, Config, Redacted } from "effect"
+import { Context, Layer, Effect, Config, Redacted } from "effect"
 
-class AppConfig extends ServiceMap.Service<AppConfig, {
+class AppConfig extends Context.Service<AppConfig, {
   readonly port: number
   readonly host: string
   readonly apiKey: Redacted.Redacted<string>

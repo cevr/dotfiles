@@ -34,7 +34,7 @@ Pagination?
 ### 1. HttpApiEndpoint - Single Endpoint
 
 ```typescript
-import { HttpApiEndpoint, HttpApiSchema } from "@effect/platform"
+import { HttpApiEndpoint, HttpApiSchema } from "effect/unstable/httpapi"
 import { Schema as S } from "effect"
 
 // GET /users/:id
@@ -90,7 +90,7 @@ const getOrderItem = HttpApiEndpoint.get(
 ### 3. HttpApiGroup - Related Endpoints
 
 ```typescript
-import { HttpApiGroup } from "@effect/platform"
+import { HttpApiGroup } from "effect/unstable/httpapi"
 
 class UsersApi extends HttpApiGroup.make("users")
   .add(getUser)
@@ -114,7 +114,7 @@ class OrdersApi extends HttpApiGroup.make("orders")
 ### 4. HttpApi - Full API
 
 ```typescript
-import { HttpApi } from "@effect/platform"
+import { HttpApi } from "effect/unstable/httpapi"
 
 class Api extends HttpApi.make("api")
   .add(UsersApi)
@@ -134,7 +134,7 @@ class Api extends HttpApi.make("api")
 ### 5. Handler Implementation
 
 ```typescript
-import { HttpApiBuilder } from "@effect/platform"
+import { HttpApiBuilder } from "effect/unstable/httpapi"
 
 const UsersApiLive = HttpApiBuilder.group(Api, "users", (handlers) =>
   Effect.gen(function* () {
@@ -152,13 +152,13 @@ const UsersApiLive = HttpApiBuilder.group(Api, "users", (handlers) =>
       )
       .handle("delete", ({ path }) => repo.delete(path.id))
   }),
-).pipe(Layer.provide([UserRepo.Live, AuthService.Live]))
+).pipe(Layer.provide([UserRepo.layer, AuthService.layer]))
 ```
 
 ### 6. Middleware Definition
 
 ```typescript
-import { HttpApiMiddleware, HttpApiSecurity } from "@effect/platform"
+import { HttpApiMiddleware, HttpApiSecurity } from "effect/unstable/httpapi"
 
 // Bearer token auth
 class Authorization extends HttpApiMiddleware.Tag<Authorization>()("Authorization", {
@@ -285,7 +285,7 @@ const decodeCursor = (cursor: string) => Buffer.from(cursor, "base64url").toStri
 ### 9. OpenAPI Annotations
 
 ```typescript
-import { OpenApi } from "@effect/platform"
+import { OpenApi } from "effect/unstable/httpapi"
 
 const listUsers = HttpApiEndpoint.get("list", "/users")
   .setUrlParams(
@@ -310,8 +310,9 @@ class UsersApi extends HttpApiGroup.make("users").add(listUsers).annotate(OpenAp
 ### 10. Server Setup
 
 ```typescript
-import { HttpApiBuilder, HttpMiddleware, HttpServer } from "@effect/platform"
-import { NodeHttpServer, NodeRuntime } from "@effect/platform-node"
+import { HttpApiBuilder } from "effect/unstable/httpapi"
+import { HttpMiddleware, HttpServer } from "effect/unstable/http"
+import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
 
 // Combine all group implementations
 const HttpApiLive = HttpApiBuilder.api(Api).pipe(
@@ -323,17 +324,17 @@ const HttpApiLive = HttpApiBuilder.api(Api).pipe(
 // Build server
 const HttpLive = HttpApiBuilder.serve(HttpMiddleware.logger).pipe(
   Layer.provide(HttpApiLive),
-  Layer.provide(NodeHttpServer.layer({ port: 3000 })),
+  Layer.provide(BunHttpServer.layer({ port: 3000 })),
 )
 
 // Run
-NodeRuntime.runMain(Layer.launch(HttpLive))
+BunRuntime.runMain(Layer.launch(HttpLive))
 ```
 
 ### 11. OpenAPI Spec Generation
 
 ```typescript
-import { OpenApi } from '@effect/platform'
+import { OpenApi } from "effect/unstable/httpapi"
 
 // Generate spec
 const spec = OpenApi.fromApi(Api)

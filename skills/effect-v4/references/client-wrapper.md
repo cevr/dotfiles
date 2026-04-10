@@ -5,7 +5,7 @@ Wrap third-party Promise-based SDKs as Effect services (v4).
 ## Template
 
 ```typescript
-import { ServiceMap, Effect, Layer, Schema } from "effect"
+import { Context, Effect, Layer, Schema } from "effect"
 
 // 1. Error class — v4 uses TaggedErrorClass
 export class StripeError extends Schema.TaggedErrorClass<StripeError>()(
@@ -16,8 +16,8 @@ export class StripeError extends Schema.TaggedErrorClass<StripeError>()(
   }
 ) {}
 
-// 2. Service — v4 uses ServiceMap.Service
-class StripeService extends ServiceMap.Service<StripeService, {
+// 2. Service — v4 uses Context.Service
+class StripeService extends Context.Service<StripeService, {
   readonly use: <A>(fn: (client: Stripe) => Promise<A>) => Effect.Effect<A, StripeError>
 }>()("StripeService") {
   // Live → layer
@@ -65,7 +65,7 @@ const createCheckout = Effect.fn("createCheckout")(
 ## Named Operations Variant
 
 ```typescript
-class SentryApi extends ServiceMap.Service<SentryApi, {
+class SentryApi extends Context.Service<SentryApi, {
   readonly listOrganizations: () => Effect.Effect<Array<Org>, ApiError>
   readonly getProject: (slug: string) => Effect.Effect<Project, ApiError>
   readonly use: <A>(fn: (client: SentryClient) => Promise<A>) => Effect.Effect<A, ApiError>

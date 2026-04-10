@@ -9,17 +9,17 @@ JWT-based authentication using Effect services.
 import { Context, Effect, Layer, Schema as S, Config } from "effect"
 import * as jose from "jose"
 
-export class AuthInvalidCredentials extends S.TaggedError<AuthInvalidCredentials>()(
+export class AuthInvalidCredentials extends S.TaggedErrorClass<AuthInvalidCredentials>()(
   "AuthInvalidCredentials",
   { message: S.String }
 ) {}
 
-export class AuthTokenExpired extends S.TaggedError<AuthTokenExpired>()(
+export class AuthTokenExpired extends S.TaggedErrorClass<AuthTokenExpired>()(
   "AuthTokenExpired",
   { message: S.String }
 ) {}
 
-export class AuthTokenInvalid extends S.TaggedError<AuthTokenInvalid>()(
+export class AuthTokenInvalid extends S.TaggedErrorClass<AuthTokenInvalid>()(
   "AuthTokenInvalid",
   { message: S.String }
 ) {}
@@ -35,7 +35,7 @@ export interface AuthTokens {
   expiresIn: number
 }
 
-export class AuthService extends Context.Tag("AuthService")<
+export class AuthService extends Context.Service<
   AuthService,
   {
     readonly login: (
@@ -54,8 +54,8 @@ export class AuthService extends Context.Tag("AuthService")<
       hash: string
     ) => Effect.Effect<boolean>
   }
->() {
-  static Live = Layer.effect(
+>()("AuthService") {
+  static layer = Layer.effect(
     AuthService,
     Effect.gen(function* () {
       const jwtSecret = yield* Config.redacted("JWT_SECRET")
@@ -117,7 +117,7 @@ export class AuthService extends Context.Tag("AuthService")<
             const result = yield* Effect.tryPromise(() =>
               jose.jwtVerify(token, secret)
             ).pipe(
-              Effect.catchAll((error) => {
+              Effect.catch((error) => {
                 if (error instanceof jose.errors.JWTExpired) {
                   return Effect.fail(
                     new AuthTokenExpired({ message: "Token expired" })
@@ -137,7 +137,7 @@ export class AuthService extends Context.Tag("AuthService")<
             const result = yield* Effect.tryPromise(() =>
               jose.jwtVerify(token, secret)
             ).pipe(
-              Effect.catchAll(() =>
+              Effect.catch(() =>
                 Effect.fail(new AuthTokenInvalid({ message: "Invalid refresh token" }))
               )
             )
@@ -193,21 +193,21 @@ export class AuthService extends Context.Tag("AuthService")<
 ```typescript
 // packages/api/src/definition/middleware/AuthMiddleware.ts
 import { Context, Schema as S } from "effect"
-import { HttpApiMiddleware, HttpApiSchema, HttpApiSecurity } from "@effect/platform"
+import { HttpApiMiddleware, HttpApiSchema, HttpApiSecurity } from "effect/unstable/httpapi"
 
-export class Unauthorized extends S.TaggedError<Unauthorized>()(
+export class Unauthorized extends S.TaggedErrorClass<Unauthorized>()(
   "Unauthorized",
   { message: S.String },
   HttpApiSchema.annotations({ status: 401 })
 ) {}
 
-export class AuthContext extends Context.Tag("AuthContext")<
+export class AuthContext extends Context.Service<
   AuthContext,
   {
     readonly userId: string
     readonly roles: ReadonlyArray<string>
   }
->() {}
+>()("AuthContext") {}
 
 export class AuthMiddleware extends HttpApiMiddleware.Tag<AuthMiddleware>()(
   "AuthMiddleware",
@@ -229,7 +229,7 @@ import { Effect, Layer, Redacted } from "effect"
 import { AuthMiddleware, AuthContext, Unauthorized } from "@my-app/api/definition"
 import { AuthService } from "@my-app/core"
 
-export const AuthMiddlewareLive = Layer.effect(
+export const AuthMiddlewareLayer = Layer.effect(
   AuthMiddleware,
   Effect.gen(function* () {
     const auth = yield* AuthService
@@ -251,7 +251,7 @@ export const AuthMiddlewareLive = Layer.effect(
                 Effect.fail(new Unauthorized({ message: "Token expired" })),
               AuthTokenInvalid: () =>
                 Effect.fail(new Unauthorized({ message: "Invalid token" })),
-            })
+            }),
           )
 
           return AuthContext.of({
@@ -268,7 +268,7 @@ export const AuthMiddlewareLive = Layer.effect(
 
 ```typescript
 // packages/api/src/definition/groups/AuthGroup.ts
-import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "@effect/platform"
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi"
 import { Schema as S } from "effect"
 
 const LoginRequest = S.Struct({
@@ -282,7 +282,7 @@ const TokenResponse = S.Struct({
   expiresIn: S.Number,
 })
 
-export class InvalidCredentials extends S.TaggedError<InvalidCredentials>()(
+export class InvalidCredentials extends S.TaggedErrorClass<InvalidCredentials>()(
   "InvalidCredentials",
   { message: S.String },
   HttpApiSchema.annotations({ status: 401 })
