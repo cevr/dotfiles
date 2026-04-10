@@ -83,14 +83,14 @@ Same patterns throughout the codebase.
 ```typescript
 // Pick ONE pattern and use it everywhere
 
-// Services: Always use Context.Tag + Layer
-export class SessionService extends Context.Tag("SessionService")<...>() {
-  static Live = Layer.effect(...)
-  static Test = Layer.succeed(...)
+// Services: Always use Context.Service + Layer
+export class SessionService extends Context.Service<...>()("SessionService") {
+  static layer = Layer.effect(...)
+  static layerTest = Layer.succeed(...)
 }
 
-// Errors: Always use Schema.TaggedError
-export class SessionNotFound extends Schema.TaggedError<SessionNotFound>()(
+// Errors: Always use Schema.TaggedErrorClass
+export class SessionNotFound extends Schema.TaggedErrorClass<SessionNotFound>()(
   "SessionNotFound",
   { sessionId: Schema.String }
 ) {}
@@ -168,13 +168,10 @@ Minimize mental overhead for readers:
 
 ```typescript
 // Service definition - consistent pattern
-export class MyService extends Context.Tag("MyService")<
-  MyService,
-  {
-    readonly method: (arg: Arg) => Effect.Effect<Result, MyError>
-  }
->() {
-  static Live = Layer.effect(MyService, Effect.gen(function* () {
+export class MyService extends Context.Service<MyService, {
+  readonly method: (arg: Arg) => Effect.Effect<Result, MyError>
+}>()("MyService") {
+  static layer = Layer.effect(MyService, Effect.gen(function* () {
     const dep = yield* DependencyService
     return MyService.of({
       method: (arg) => Effect.gen(function* () {
@@ -184,8 +181,8 @@ export class MyService extends Context.Tag("MyService")<
   }))
 }
 
-// Error definition - always Schema.TaggedError
-export class MyError extends Schema.TaggedError<MyError>()(
+// Error definition - always Schema.TaggedErrorClass
+export class MyError extends Schema.TaggedErrorClass<MyError>()(
   "MyError",  // Tag matches class name
   { field: Schema.String }
 ) {}

@@ -146,8 +146,7 @@ my-app/
     "./definition": "./src/definition/index.ts"
   },
   "dependencies": {
-    "@effect/platform": "^0.94.0",
-    "effect": "^3.19.0"
+    "effect": "^4.0.0"
   }
 }
 ```
@@ -161,7 +160,7 @@ my-app/
   "type": "module",
   "main": "./src/index.ts",
   "dependencies": {
-    "effect": "^3.19.0"
+    "effect": "^4.0.0"
   }
 }
 ```
@@ -176,7 +175,7 @@ my-app/
   "main": "./src/index.ts",
   "dependencies": {
     "@my-app/shared": "workspace:*",
-    "effect": "^3.19.0"
+    "effect": "^4.0.0"
   }
 }
 ```
@@ -197,13 +196,12 @@ my-app/
     "@my-app/api": "workspace:*",
     "@my-app/core": "workspace:*",
     "@my-app/shared": "workspace:*",
-    "@effect/platform": "^0.94.0",
     "@effect/platform-bun": "^0.79.0",
     "@effect/sql": "^0.49.0",
     "@effect/sql-drizzle": "^0.48.0",
     "@effect/sql-pg": "^0.50.0",
     "@effect/opentelemetry": "^0.60.0",
-    "effect": "^3.19.0",
+    "effect": "^4.0.0",
     "drizzle-orm": "^0.40.0"
   },
   "devDependencies": {
@@ -228,8 +226,7 @@ my-app/
   "dependencies": {
     "@my-app/api": "workspace:*",
     "@my-app/shared": "workspace:*",
-    "@effect/platform": "^0.94.0",
-    "effect": "^3.19.0",
+    "effect": "^4.0.0",
     "solid-js": "^1.9.0"
   },
   "devDependencies": {
@@ -244,7 +241,7 @@ my-app/
 
 | Package | Purpose | Dependencies |
 |---------|---------|--------------|
-| `packages/api` | Schema-only, shareable | @effect/platform, effect |
+| `packages/api` | Schema-only, shareable | effect |
 | `packages/shared` | Branded types | effect |
 | `packages/core` | Business logic | shared, effect |
 | `apps/server` | HTTP implementation | api, core, shared, @effect/platform-bun |

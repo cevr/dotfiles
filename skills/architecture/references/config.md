@@ -177,19 +177,16 @@ For config needed across services:
 
 ```typescript
 // Define config service
-class AppConfig extends Context.Tag("AppConfig")<
-  AppConfig,
-  {
-    readonly port: number
-    readonly env: string
-    readonly logLevel: LogLevel
-    readonly features: {
-      readonly enableBeta: boolean
-      readonly maxItems: number
-    }
+class AppConfig extends Context.Service<AppConfig, {
+  readonly port: number
+  readonly env: string
+  readonly logLevel: LogLevel
+  readonly features: {
+    readonly enableBeta: boolean
+    readonly maxItems: number
   }
->() {
-  static Live = Layer.effect(
+}>()("AppConfig") {
+  static layer = Layer.effect(
     this,
     Effect.gen(function* () {
       return {

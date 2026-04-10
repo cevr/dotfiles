@@ -9,7 +9,7 @@ Common mistakes and anti-patterns in Effect architecture.
 | Missing service           | "Service not found" at runtime | Check Layer.provide order         |
 | Circular layer deps       | Stack overflow, hang           | Extract shared deps               |
 | Generator without yield\* | Value is Effect, not result    | Use yield\* not yield             |
-| Catching defects          | Silent failures                | Use catchAll, or catchAllCause with defect re-throw |
+| Catching defects          | Silent failures                | Use Effect.catch, or catchAllCause with defect re-throw |
 | Forgetting to run         | Nothing happens                | Add Effect.runPromise             |
 | Config at wrong time      | Undefined config values        | Read config in Layer.effect       |
 | Mixing sync/async         | Type errors                    | Use Effect.sync vs Effect.promise |
@@ -43,8 +43,8 @@ Provide all required layers:
 ```typescript
 Effect.runPromise(
   program.pipe(
-    Effect.provide(UserRepo.Live),
-    Effect.provide(Database.Live), // UserRepo depends on this
+    Effect.provide(UserRepo.layer),
+    Effect.provide(Database.layer), // UserRepo depends on this
   ),
 )
 ```
@@ -159,7 +159,7 @@ Only catch expected errors, let defects crash:
 
 ```typescript
 // Good - only catch expected errors
-const program = riskyOperation().pipe(Effect.catchAll((error) => Effect.succeed(fallbackValue)))
+const program = riskyOperation().pipe(Effect.catch((error) => Effect.succeed(fallbackValue)))
 
 // Or handle defects explicitly
 const program = riskyOperation().pipe(
@@ -205,8 +205,8 @@ Effect.runPromise(program).then(console.log)
 // Or with sync
 Effect.runSync(program)
 
-// Or in Node with proper exit
-NodeRuntime.runMain(program)
+// Or in Bun with proper exit
+BunRuntime.runMain(program)
 ```
 
 ---
@@ -298,8 +298,8 @@ Layers provided in wrong order:
 // UserRepo needs Database
 // But Database provided after UserRepo
 const wrong = program.pipe(
-  Effect.provide(UserRepo.Live), // Fails - no Database yet
-  Effect.provide(Database.Live),
+  Effect.provide(UserRepo.layer), // Fails - no Database yet
+  Effect.provide(Database.layer),
 )
 ```
 
@@ -309,10 +309,10 @@ Provide dependencies first, or use Layer.provide:
 
 ```typescript
 // Option 1: Correct order
-const correct = program.pipe(Effect.provide(Database.Live), Effect.provide(UserRepo.Live))
+const correct = program.pipe(Effect.provide(Database.layer), Effect.provide(UserRepo.layer))
 
 // Option 2: Layer composition (better)
-const UserRepoWithDeps = UserRepo.Live.pipe(Layer.provide(Database.Live))
+const UserRepoWithDeps = UserRepo.layer.pipe(Layer.provide(Database.layer))
 
 const program = Effect.gen(function* () {
   const repo = yield* UserRepo
