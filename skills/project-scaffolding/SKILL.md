@@ -41,7 +41,7 @@ Every project uses this base. No exceptions.
 | **oxlint** | Linting (fast, Rust-based) | `.oxlintrc.json` |
 | **oxfmt** | Formatting (fast, Rust-based) | `.oxfmtrc.json` (optional) |
 | **lefthook** | Git hooks (pre-commit) | `lefthook.yml` |
-| **Effect LSP** | Effect-specific diagnostics via `effect-language-service diagnostics` CLI | `tsconfig.lsp.json` |
+| **Effect LSP** | Effect-specific diagnostics via `effect-language-service diagnostics` CLI | `.effect-lsp.json` |
 | **concurrently** | Parallel script runner for `gate` and `lint` | `package.json` scripts |
 
 ### tsconfig.json (base)
@@ -69,121 +69,95 @@ Minimal — TS6 defaults handle `strict`, `target`, `module`, `moduleResolution`
 
 **Monorepo**: add `paths` mapping for workspace packages.
 
-### tsconfig.lsp.json (Effect diagnostics — main code)
+### .effect-lsp.json (Effect diagnostic config)
 
-Extends base, adds Effect LSP plugin. All rules promoted to **errors** for CI enforcement.
+Standalone config file for `effect-language-service diagnostics` CLI. All rules promoted to **errors** for CI enforcement. Passed via `--lspconfig "$(cat .effect-lsp.json)"`.
+
+**Why a separate file:** The CLI's `--project` flag only controls which files to scan. It does NOT read diagnostic config from tsconfig plugins. The `--lspconfig` flag is required for the diagnostics engine to actually check anything.
 
 ```json
 {
-  "extends": "./tsconfig.json",
-  "compilerOptions": {
-    "plugins": [
-      {
-        "name": "@effect/language-service",
-        "diagnostics": true,
-        "diagnosticsName": true,
-        "diagnosticSeverity": {
-          "anyUnknownInErrorContext": "error",
-          "deterministicKeys": "error",
-          "importFromBarrel": "error",
-          "instanceOfSchema": "error",
-          "missedPipeableOpportunity": "off",
-          "missingEffectServiceDependency": "error",
-          "schemaUnionOfLiterals": "error",
-          "strictBooleanExpressions": "off",
-          "strictEffectProvide": "error",
-          "catchAllToMapError": "error",
-          "catchUnfailableEffect": "error",
-          "effectFnOpportunity": "error",
-          "effectMapVoid": "error",
-          "effectSucceedWithVoid": "error",
-          "leakingRequirements": "error",
-          "preferSchemaOverJson": "error",
-          "redundantSchemaTagIdentifier": "error",
-          "returnEffectInGen": "error",
-          "runEffectInsideEffect": "error",
-          "schemaStructWithTag": "error",
-          "schemaSyncInEffect": "error",
-          "tryCatchInEffectGen": "error",
-          "unnecessaryEffectGen": "error",
-          "unnecessaryFailYieldableError": "error",
-          "unnecessaryPipe": "error",
-          "unnecessaryPipeChain": "error",
-          "extendsNativeError": "error",
-          "nodeBuiltinImport": "error",
-          "serviceNotAsClass": "error",
-          "outdatedApi": "error",
-          "globalFetch": "error",
-          "globalFetchInEffect": "error",
-          "globalDate": "error",
-          "globalDateInEffect": "error",
-          "globalConsole": "error",
-          "globalConsoleInEffect": "error",
-          "globalRandom": "error",
-          "globalRandomInEffect": "error",
-          "globalTimers": "error",
-          "globalTimersInEffect": "error",
-          "globalErrorInEffectCatch": "error",
-          "globalErrorInEffectFailure": "error"
-        },
-        "keyPatterns": [
-          {
-            "target": "service",
-            "pattern": "default",
-            "skipLeadingPath": ["src/"]
-          },
-          {
-            "target": "error",
-            "pattern": "default",
-            "skipLeadingPath": ["src/"]
-          }
-        ]
-      }
-    ]
-  }
+  "diagnostics": true,
+  "diagnosticsName": true,
+  "diagnosticSeverity": {
+    "anyUnknownInErrorContext": "error",
+    "deterministicKeys": "error",
+    "importFromBarrel": "error",
+    "instanceOfSchema": "error",
+    "missedPipeableOpportunity": "off",
+    "missingEffectServiceDependency": "error",
+    "schemaUnionOfLiterals": "error",
+    "strictBooleanExpressions": "off",
+    "strictEffectProvide": "error",
+    "catchAllToMapError": "error",
+    "catchUnfailableEffect": "error",
+    "effectFnOpportunity": "error",
+    "effectMapVoid": "error",
+    "effectSucceedWithVoid": "error",
+    "leakingRequirements": "error",
+    "preferSchemaOverJson": "error",
+    "redundantSchemaTagIdentifier": "error",
+    "returnEffectInGen": "error",
+    "runEffectInsideEffect": "error",
+    "schemaStructWithTag": "error",
+    "schemaSyncInEffect": "error",
+    "tryCatchInEffectGen": "error",
+    "unnecessaryEffectGen": "error",
+    "unnecessaryFailYieldableError": "error",
+    "unnecessaryPipe": "error",
+    "unnecessaryPipeChain": "error",
+    "extendsNativeError": "error",
+    "nodeBuiltinImport": "error",
+    "serviceNotAsClass": "error",
+    "outdatedApi": "error",
+    "globalFetch": "error",
+    "globalFetchInEffect": "error",
+    "globalDate": "error",
+    "globalDateInEffect": "error",
+    "globalConsole": "error",
+    "globalConsoleInEffect": "error",
+    "globalRandom": "error",
+    "globalRandomInEffect": "error",
+    "globalTimers": "error",
+    "globalTimersInEffect": "error",
+    "globalErrorInEffectCatch": "error",
+    "globalErrorInEffectFailure": "error"
+  },
+  "keyPatterns": [
+    {
+      "target": "service",
+      "pattern": "default",
+      "skipLeadingPath": ["src/"]
+    },
+    {
+      "target": "error",
+      "pattern": "default",
+      "skipLeadingPath": ["src/"]
+    }
+  ]
 }
 ```
 
 **Monorepo variant**: set `skipLeadingPath: ["packages/"]`.
 
-### tsconfig.lsp.test.json (Effect diagnostics — test code)
-
-Relaxed rules for tests. `strictEffectProvide` off — test files often provide layers loosely.
+**Test variant**: create `.effect-lsp.test.json` that relaxes rules for test files:
 
 ```json
 {
-  "extends": "./tsconfig.lsp.json",
-  "compilerOptions": {
-    "plugins": [
-      {
-        "name": "@effect/language-service",
-        "diagnostics": true,
-        "diagnosticsName": true,
-        "diagnosticSeverity": {
-          "strictEffectProvide": "off",
-          "nodeBuiltinImport": "off",
-          "globalConsole": "off",
-          "globalConsoleInEffect": "off"
-        }
-      }
-    ]
+  "diagnostics": true,
+  "diagnosticsName": true,
+  "diagnosticSeverity": {
+    "strictEffectProvide": "off",
+    "nodeBuiltinImport": "off",
+    "globalConsole": "off",
+    "globalConsoleInEffect": "off",
+    "globalDate": "off",
+    "globalDateInEffect": "off"
   }
 }
 ```
 
-### Package-level tsconfig.json
-
-Each package extends `tsconfig.lsp.json` for main code:
-
-```json
-{
-  "extends": "../../tsconfig.lsp.json",
-  "compilerOptions": { "noEmit": true },
-  "include": ["src"]
-}
-```
-
-Tests are run by `bun test` directly — no tsc type-checking of tests. Effect LSP diagnostics for tests use `tsconfig.lsp.test.json` via the per-package `lint:effect` script.
+No separate `tsconfig.lsp.json` needed — the CLI uses `--project tsconfig.json` for file scoping (reads the `include` array) and `--lspconfig` for diagnostic config.
 
 ### .oxlintrc.json
 
@@ -229,13 +203,10 @@ Tests are run by `bun test` directly — no tsc type-checking of tests. Effect L
 
 ```yaml
 pre-commit:
-  parallel: false
+  parallel: true
   jobs:
-    - name: fmt
-      run: bun run fmt
-      stage_fixed: true
-    - name: lint
-      run: bun run lint:fix
+    - name: fmt+lint
+      run: bun run fmt && bun run lint:fix
       stage_fixed: true
     - name: typecheck
       run: bun run typecheck
@@ -255,7 +226,7 @@ pre-commit:
     "typecheck": "tsgo --noEmit",
     "lint": "concurrently -n ox,effect -c yellow,blue \"oxlint\" \"bun run lint:effect\"",
     "lint:ox": "oxlint",
-    "lint:effect": "effect-language-service diagnostics --project tsconfig.lsp.json",
+    "lint:effect": "effect-language-service diagnostics --project tsconfig.json --lspconfig \"$(cat .effect-lsp.json)\"",
     "lint:fix": "oxlint --fix",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
@@ -293,7 +264,7 @@ pre-commit:
 {
   "scripts": {
     "typecheck": "tsgo --noEmit",
-    "lint": "effect-language-service diagnostics --project tsconfig.json",
+    "lint": "effect-language-service diagnostics --project tsconfig.json --lspconfig \"$(cat ../../.effect-lsp.json)\"",
     "test": "bun test tests/"
   }
 }
@@ -410,7 +381,7 @@ jobs:
 | Tracing | `Effect.fn("ServiceName.methodName")` on all service methods |
 | Quality gate | `bun run gate` before any commit/PR/ship |
 | Git hooks | lefthook pre-commit runs lint, fmt, typecheck, test |
-| Effect linting | `effect-language-service diagnostics` CLI — no patching, separate tsconfigs for main/test |
+| Effect linting | `effect-language-service diagnostics` CLI — config in `.effect-lsp.json`, passed via `--lspconfig` |
 | Lint scripts | `lint:ox` (oxlint) + `lint:effect` (Effect LSP diagnostics) run via `concurrently` |
 | Monorepo orchestration | turbo for multi-package, concurrently for single-package |
 | Version catalog | `"catalog": {}` in root `package.json` for monorepos — pins shared dep versions |
@@ -475,14 +446,15 @@ Use `/repo-explorer` to fetch and explore these when you need implementation det
 ## Gotchas
 
 - **`types: ["bun"]` required** — TS6 defaults `types` to `[]` (no auto-discovery). Without it, `Bun.*` globals are invisible.
-- **No `effect-language-service patch`** — use `effect-language-service diagnostics --project tsconfig.lsp.json` CLI instead. No patching, no `prepare` script dance.
-- **Two lsp tsconfigs** — `tsconfig.lsp.json` (strict, all errors) for main code; `tsconfig.lsp.test.json` (relaxed) for tests. Packages extend `.lsp.json` for their tsconfig.
+- **No `effect-language-service patch`** — use `effect-language-service diagnostics --project tsconfig.json --lspconfig "$(cat .effect-lsp.json)"` CLI instead. No patching, no `prepare` script dance.
+- **`--lspconfig` is mandatory** — the CLI does NOT read diagnostic config from tsconfig plugins. Without `--lspconfig`, it reports "Checked 0 files" — files are scanned but nothing is actually checked. Always pass `--lspconfig` with the config file contents.
+- **`.effect-lsp.json` for config, `tsconfig.json` for scoping** — diagnostic rules live in `.effect-lsp.json`. The `--project` flag just reads the tsconfig's `include` array to find files. For relaxed test rules, create `.effect-lsp.test.json`.
 - **`repository.url` required for npm provenance** — publish will 422 without it.
 - **`noUncheckedIndexedAccess`** — array/record indexing returns `T | undefined`. Use `??` or guards, not `!`.
 - **Monorepo `paths`** — root `tsconfig.json` maps `@scope/pkg` → `packages/pkg/src/index.ts`. Without this, the editor can't resolve workspace packages.
 - **`catalog:` in peerDependencies** — bun workspace catalog protocol. Only works in monorepo root.
 - **oxfmt defaults are fine** — only create `.oxfmtrc.json` if you need `semi: false` or `singleQuote: true`.
 - **`turbo.json` test cache** — always `"cache": false` for tests. Cached test results hide real failures.
-- **`turbo.json` lsp input** — add `../../tsconfig.lsp.json` to typecheck/build inputs so LSP config changes invalidate cache.
+- **`turbo.json` lsp input** — add `../../.effect-lsp.json` to lint task inputs so diagnostic config changes invalidate cache.
 - **`downlevelIteration` is a hard error in TS6** — remove it entirely, don't set to `false`.
 - **`baseUrl` deprecated in TS6** — inline the value into `paths` entries instead.
