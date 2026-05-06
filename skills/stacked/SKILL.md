@@ -1,11 +1,11 @@
 ---
 name: stacked
-description: Use the `stacked` CLI to manage stacked PRs. Use when the user wants to create branch stacks, rebase, sync, submit PRs, or navigate stacked branches. Triggers on "stacked", "stack", "stacked PRs", branch stacking workflows, or any git workflow involving parent-child branch relationships.
+description: Use the `stacked` CLI to manage stacked PRs. Use when the user wants to create branch stacks, sync, submit PRs, or navigate stacked branches. Triggers on "stacked", "stack", "stacked PRs", branch stacking workflows, or any git workflow involving parent-child branch relationships.
 ---
 
 # stacked
 
-Branch-based stacked PR manager. Manages parent-child branch relationships, automates rebasing, creates/updates GitHub PRs via `gh`.
+Branch-based stacked PR manager. Manages parent-child branch relationships, propagates upstream changes via merges, creates/updates GitHub PRs via `gh`.
 
 Key idea: **branches** are the unit, not commits. Each branch in a stack has exactly one parent — position in the stack determines lineage.
 
@@ -18,8 +18,8 @@ What do you need?
 ├─ See current stack          → §Viewing the Stack
 ├─ Quick orientation          → §Status
 ├─ Navigate between branches  → §Navigation
-├─ Rebase after changes       → §Rebasing
-├─ Amend + auto-rebase        → §Amending
+├─ Sync after changes         → §Syncing
+├─ Amend + auto-sync          → §Amending
 ├─ Push + create PRs          → §Submitting
 ├─ Adopt existing branches    → §Adopting Branches
 ├─ Detect existing branches   → §Detecting Existing Branches
@@ -52,7 +52,7 @@ What do you need?
 | `stacked submit`             | Push + create/update PRs (`--title`, `--body`, `--only`, `--draft`, `--json`)               |
 | `stacked adopt <branch>`     | Add existing git branch into the stack (`--after`, `--json`)                                |
 | `stacked log`                | Show commits grouped by branch (`--json`)                                                   |
-| `stacked amend`              | Amend current commit and rebase children (`--edit`, `--from`, `--json`)                     |
+| `stacked amend`              | Amend current commit and merge into children (`--edit`, `--from`, `--json`)                 |
 | `stacked doctor`             | Check stack metadata for issues (`--fix`, `--json`)                                         |
 | `stacked rename <old> <new>` | Rename a stack (`--json`)                                                                   |
 | `stacked reorder <branch>`   | Move a branch within the stack (`--before`, `--after`, `--json`)                            |
@@ -141,26 +141,27 @@ stacked bottom               # jump to bottom (trunk-adjacent)
 
 All navigation commands support `--json` for structured output. `checkout` falls through to `git checkout` for branches not in any stack.
 
-## Syncing / Rebasing / Pushing
+## Syncing
 
-Fetch latest trunk, then incrementally sync the stack bottom-to-top using fork-point tracking:
+Fetch latest trunk, fast-forward trunk, then merge each parent into its child bottom-to-top:
 
 ```sh
 stacked sync
 stacked sync --dry-run       # preview sync plan with predicted actions per branch
 stacked sync --continue      # continue after resolving conflicts
-stacked sync --abort         # abort sync and discard conflict markers
+stacked sync --abort         # abort in-progress merge
 stacked sync --json          # structured output: { branches: [{ name, action, base }] }
 ```
 
 **How sync works:**
 
-1. Fetch and rebase trunk onto `origin/trunk`
+1. Fetch and fast-forward trunk onto `origin/trunk` (fails if trunk diverges — reconcile manually)
 2. For each branch, check if parent moved since last sync (`syncedOnto` metadata)
-3. If parent unchanged → skip (no push needed)
-4. If parent changed → try tree-merge fast path (es-git: `mergeTrees`, creates merge commit, no replay)
-5. If tree-merge conflicts → fall back to rebase with corrected fork-point as `oldBase`
-6. Force-push changed branches, update `syncedOnto` metadata
+3. If parent unchanged or already incorporated → skip (no push needed)
+4. If parent changed → `git merge --no-ff` parent into branch
+5. Plain-push changed branches, update `syncedOnto` metadata
+
+No rebases. No force-pushes. History only grows forward.
 
 After mid-stack changes, sync only the branches above a specific point:
 
@@ -170,22 +171,25 @@ stacked checkout feat-auth
 stacked sync --from feat-auth    # syncs only children of feat-auth
 ```
 
-**Note:** `sync` requires a clean working tree — commit or stash before running (except with `--dry-run`). On rebase conflict (fallback path), the rebase is left in progress so you can resolve it:
+**Note:** `sync` requires a clean working tree — commit or stash before running (except with `--dry-run`). On conflict, the merge is left in progress so you can resolve it:
 
 ```sh
 # On conflict:
-git rebase --continue    # after resolving conflicts
-stacked sync --from <parent-branch>    # resume syncing remaining branches
+# edit conflicted files, then:
+git add <resolved-files>
+stacked sync --continue    # finalizes merge and resumes remaining branches
+# or bail out:
+stacked sync --abort
 ```
 
 ## Amending
 
-Amend the current commit and auto-rebase child branches:
+Amend the current commit and auto-merge into child branches:
 
 ```sh
-stacked amend                     # amend + rebase children
+stacked amend                     # amend + merge into children
 stacked amend --edit              # open editor for commit message
-stacked amend --from feat-auth    # start rebasing from a specific branch
+stacked amend --from feat-auth    # start syncing from a specific branch
 stacked amend --json              # structured output
 ```
 
@@ -199,12 +203,11 @@ stacked submit --draft                                # create as draft PRs
 stacked submit --title "Add auth" --body "OAuth2"     # with title and body
 stacked submit --title "Auth,Validation,Tests"        # per-branch titles (comma-delimited)
 stacked submit --only                                 # process only the current branch
-stacked submit --no-force                             # disable force-push
 stacked submit --dry-run                              # show what would happen
 stacked submit --json                                 # structured JSON output
 ```
 
-Force-push (with lease) is the default because stacked branches are always rebased. Use `--no-force` if you haven't rebased.
+`submit` plain-pushes (no force). Because sync never rewrites history, every push fast-forwards.
 
 Each PR targets its parent branch (not trunk), preserving the stack structure on GitHub. PRs include auto-generated stack metadata showing position and navigation links. The metadata is refreshed on every `submit`.
 
@@ -242,7 +245,7 @@ stacked clean --json       # structured JSON output
 stacked clean --yes        # skip confirmation prompt
 ```
 
-`clean` also deletes the corresponding remote branches. `list` shows merge status per branch (`[merged]`, `[closed]`, `[#N]` for open PRs). After cleaning, run `stacked sync` to rebase remaining branches.
+`clean` also deletes the corresponding remote branches. `list` shows merge status per branch (`[merged]`, `[closed]`, `[#N]` for open PRs). After cleaning, run `stacked sync` to re-parent remaining branches via merges.
 
 ## Deleting
 
@@ -254,7 +257,7 @@ stacked delete feat-auth-ui --dry-run      # show what would happen
 stacked delete feat-auth-ui --json         # structured JSON output
 ```
 
-Deleting a mid-stack branch with `--force` warns about potentially lost commits and recommends running `stacked sync` to rebase child branches onto the new parent.
+Deleting a mid-stack branch with `--force` warns about potentially lost commits and recommends running `stacked sync` to merge the new parent into child branches.
 
 ## Stack Management
 
@@ -273,7 +276,7 @@ stacked split feat-b
 stacked split feat-b --dry-run    # preview the split
 ```
 
-After reordering, run `stacked sync` to rebase branches in new order.
+After reordering, run `stacked sync` to merge the new parents into children.
 
 ## Doctor
 
@@ -349,7 +352,7 @@ stacked status
 # 4. Need to fix something mid-stack
 stacked checkout feat-auth
 # ... fix, commit ...
-stacked sync --from feat-auth  # rebase children
+stacked sync --from feat-auth  # merge into children
 
 # 5. Sync with latest main
 stacked sync
@@ -368,13 +371,13 @@ stacked down  # go to previous branch
 ## Gotchas
 
 - `stacked sync` requires a clean working tree — commit or stash first (except `--dry-run`)
-- `stacked sync` uses tree-merge by default (es-git); falls back to rebase on conflict or CLI backend
+- `stacked sync` fast-forwards trunk onto `origin/<trunk>` — if trunk has diverged, sync aborts so you can reconcile manually
 - `stacked sync` skips branches whose parent hasn't moved since last sync
-- `stacked sync` leaves rebase in progress on conflict (fallback path) — resolve with `git rebase --continue`, then resume with `stacked sync --from <parent>`
-- `syncedOnto` metadata may become stale if branches are rebased outside `stacked` — first sync after that falls back to `merge-base`
-- `stacked submit` force-pushes by default (use `--no-force` to disable)
+- `stacked sync` leaves the merge in progress on conflict — resolve, `git add`, then `stacked sync --continue` (or `--abort`)
+- `syncedOnto` metadata may become stale if branches are manipulated outside `stacked` — doctor clears stale entries; first sync re-establishes from `merge-base`
+- `stacked submit` plain-pushes (no force). Since sync only merges, history always fast-forwards
 - `stacked submit` and `stacked clean` require `gh` CLI authenticated (`gh auth login`)
-- PRs target parent branches, not trunk — this is intentional for stacked review
+- PRs target parent branches, not trunk — intentional for stacked review. GitHub dedupes commits against the parent PR so reviewers see only each child's diff
 - PRs include auto-generated stack metadata (position, navigation links)
 - Trunk is auto-detected (`origin/HEAD` first, then `main` > `master` > `develop`) — use `stacked trunk <name>` only when detection is wrong
 - Forked branches (one parent, multiple children) are not supported — `detect` reports them but skips
