@@ -1,10 +1,9 @@
 # Font
-font-family = Martian Mono
-font-family = JetBrainsMono Nerd Font
-font-style = "Light"
-font-thicken = true
-font-size = 22
-adjust-cell-height = 35%
+font-family = Martian Mono VF
+font-variation=wght=500
+font-variation=wdth=90
+font-size = 20
+adjust-cell-height = 50%
 
 # Window
 macos-titlebar-style = tabs

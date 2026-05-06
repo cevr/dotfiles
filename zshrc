@@ -180,3 +180,9 @@ alias bx='bunx'
 alias rm='trash'  # brew install trash - sends to macOS Trash instead of permanent delete
 alias mv='mv -i'
 alias cp='cp -i'
+
+# The next line updates PATH for the Google Cloud SDK.
+if [ -f '/Users/cvr/Downloads/google-cloud-sdk/path.zsh.inc' ]; then . '/Users/cvr/Downloads/google-cloud-sdk/path.zsh.inc'; fi
+
+# The next line enables shell command completion for gcloud.
+if [ -f '/Users/cvr/Downloads/google-cloud-sdk/completion.zsh.inc' ]; then . '/Users/cvr/Downloads/google-cloud-sdk/completion.zsh.inc'; fi

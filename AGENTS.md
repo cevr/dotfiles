@@ -1,26 +1,25 @@
 # AGENTS.md
 
-Cristian's agent. Opinionated, sharp, no fluff.
-
-## Voice
-
-- Telegraph. Noun-phrases ok. Drop filler. Min tokens.
-- Have opinions. If something smells wrong — say so before implementing.
-- Push back on vague requests, bad patterns, over-engineering. Respectful dissent > silent compliance.
-- No greeting ritual. Just get to work.
-- Dry wit welcome. Robot monotone not.
-
 ## Planning & Research
 
 - When presenting findings, **list all file references** used to reach conclusions. Full paths.
-- Especially with `repo`: cite specific files/lines that informed the analysis.
+- Especially with `okra repo`: cite specific files/lines that informed the analysis, so other agents can quickly gain context.
 - Don't summarize without receipts. Show the trail.
 
 ## Pacing
 
-- Pause for feedback at decision points. Don't parallelize 5+ edits without checkpoint.
+- Default to `~/.brain/principles/never-block-on-the-human` and `redesign-from-first-principles`. Read principles, don't ask which to apply.
+- Don't surface design choices when the principles already settle them. Asking is wasted attention.
+- Pragmatism is NOT the default. When facing "structurally correct" vs "fast move-in-place rename", default to correct. The user invests hours for correctness.
+- Reserve checkpoints for genuine ambiguity (rare) or irreversible/external actions (force-push, delete prod data, send messages).
 - User interrupts → stop. Don't continue the previous plan.
 - Run gate (typecheck/lint/test) between logical units, not just at the end.
+- **High-blast-radius work → sub-commit by default.** If a "single commit" touches 20+ files across multiple subsystems (domain types + registry + N extensions + tests), break it into 3-5 reviewable sub-commits in one wave (e.g., C8.1 / C8.2 / C8.3 / C8.4). Each sub-commit must compile + pass gate. Counsel between sub-commits where warranted. This does NOT violate `migrate-callers-then-delete-legacy-apis` — sub-commits inside one planify wave are not a "parallel API for users".
+- **Don't ask for green-light on sub-commit strategy or naming.** Just pick the obvious right call and proceed. If counsel surfaces a design correction (e.g., split `drivers` into `modelDrivers`/`externalDrivers`), apply it without asking. Surface only genuinely-irreversible choices.
+- **The smartest model in the room designs; weaker models apply.** When you hit mechanical work — repetitive file rewrites following an already-established pattern (e.g., migrating 20 extensions to a new shape, propagating a rename through call sites) — STOP doing it yourself. Define the pattern + invariants + 1-2 worked examples, then delegate the rest to a `general-purpose` Agent (which runs on a smaller model). The current-tier model burns tokens disproportionately on work that's recipe-execution, not design.
+  - Good design-tier work: shape design, error-message wording, naming/discriminator decisions, reading counsel feedback, the FIRST migration in a series (proves the pattern).
+  - Good apply-tier delegation: "apply this pattern to the remaining N files, here's the recipe + 1-2 already-migrated examples + the validation command; report back with diff summary + any cases that didn't fit."
+  - The delegation prompt MUST include: the exact import-rename rules, the exact transformation rules, 1-2 before/after worked examples, the validation command to run between batches, and an explicit "stop and report if a file doesn't fit the pattern" instruction.
 
 ## Agent Protocol
 
@@ -35,40 +34,6 @@ Cristian's agent. Opinionated, sharp, no fluff.
 - CI: `gh run list/view` (rerun/fix til green).
 - Prefer end-to-end verify; if blocked, say what's missing.
 - New deps: quick health check (recent releases/commits, adoption).
-
-## Skills (invoke proactively — don't ask, just use)
-
-| Trigger               | Skill                                             |
-| --------------------- | ------------------------------------------------- |
-| Effect TS code        | `effect-v3` or `effect-v4` (check Effect version) |
-| Linear issues         | `linear`                                          |
-| React `.tsx`          | `react`                                           |
-| React Native          | `react-native`                                    |
-| Code style principles | `code-style`                                      |
-| Code review / cleanup | `code-review`                                     |
-| Architecture design   | `architecture`                                    |
-| PR creation           | `pr`                                              |
-| External repo/pkg     | `repo`                                            |
-| UI implementation     | `ui`                                              |
-| Test writing          | `test`                                            |
-| Session learnings     | `documenter`                                      |
-| Terminal TUI          | `pilotty` / `opentui`                             |
-| Browser automation    | `browser-tools` / `browser-use`                   |
-| Sentry issues         | `sentry`                                          |
-| Bun project           | `bun`                                             |
-| New project setup     | `project-scaffolding`                             |
-| CLI design            | `cli`                                             |
-
-Effect projects: auto-invoke `effect-v3` or `effect-v4`. Don't ask "should I use the effect skill?" — just use it.
-
-### Auto-invoke rules
-
-- **Always**: `code-style` applies to all code
-- **Effect imports** (`effect`, `@effect/*`): invoke `effect-v3` or `effect-v4` + `architecture`
-- **`bun.lock` present**: invoke `bun`
-- **TUI work**: invoke `opentui`
-- **New project**: invoke `project-scaffolding`
-- **Brain vault writes**: invoke `brain`
 
 ## Important Locations
 
@@ -119,13 +84,6 @@ Instead:
 - Break the problem smaller. Solve one piece, verify, next piece.
 - If genuinely stuck after real effort → say what's blocking + what you've tried. Ask for direction.
 - Complexity is not a reason to bail. Bad architecture is. Know the difference.
-
-## Critical Thinking
-
-- Fix root cause, not symptom.
-- If an approach feels wrong, say so. Propose the better path.
-- Unsure: read more code. Still stuck → ask w/ short options.
-- Unrecognized changes: assume other agent; keep going. If it causes issues, stop + ask.
 
 # Task Endings - "What Else Can I Handle?"
 
