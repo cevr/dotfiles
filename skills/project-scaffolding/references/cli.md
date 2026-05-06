@@ -1,6 +1,6 @@
 # CLI Project Setup
 
-Step-by-step guide for scaffolding a single-package Effect CLI tool. Based on `@cvr/stacked`.
+Step-by-step guide for scaffolding a single-package Effect CLI tool. Based on `@cvr/stacked` and `gent` patterns.
 
 ## Directory Structure
 
@@ -23,23 +23,20 @@ project-name/
 ├── scripts/
 │   └── build.ts             — Bun.build compile script
 ├── bin/                     — compiled binary output (gitignored)
-├── skills/                  — project-specific skill (optional)
-│   └── project-name/
-│       └── SKILL.md
 ├── .changeset/
 │   └── config.json          — changeset config (if publishing)
 ├── .github/
 │   └── workflows/
 │       └── release.yml      — GitHub Actions release (if publishing)
 ├── package.json
-├── tsconfig.json            — base TS config (minimal, TS6 defaults)
-├── tsconfig.lsp.json        — Effect LSP plugin (strict, all errors)
-├── tsconfig.lsp.test.json   — Effect LSP plugin (relaxed for tests)
+├── tsconfig.json            — single TS config (Effect plugin + per-file overrides for tests)
 ├── .oxlintrc.json
 ├── lefthook.yml
 ├── .gitignore
 └── README.md
 ```
+
+No more `tsconfig.lsp.json` / `tsconfig.lsp.test.json` split — Effect diagnostics live in the `@effect/language-service` plugin in the single `tsconfig.json`, and test relaxation goes through plugin `overrides`.
 
 ## Step 1: Initialize
 
@@ -59,21 +56,23 @@ bun add effect @effect/platform-bun
 
 # Dev tooling
 bun add -D typescript @typescript/native-preview @types/bun \
-  @effect/language-service oxlint oxfmt lefthook concurrently effect-bun-test
+  @effect/tsgo oxlint oxlint-tsgolint oxfmt lefthook concurrently effect-bun-test
 
 # If publishing to npm
 bun add -D @changesets/cli @changesets/changelog-github
 ```
 
+`@effect/tsgo` ships the `effect-tsgo` CLI used by the `prepare` script to patch the `tsgo` binary in `@typescript/native-preview`.
+
 ## Step 3: Configure
 
 Copy configs from SKILL.md §Tooling Stack:
-- `tsconfig.json` — base config (minimal, TS6 defaults)
-- `tsconfig.lsp.json` — Effect LSP plugin (strict, all errors)
-- `tsconfig.lsp.test.json` — Effect LSP plugin (relaxed for tests)
-- `.oxlintrc.json` — standard rules
+- `tsconfig.json` — single config with `@effect/language-service` plugin + `overrides` for tests
+- `.oxlintrc.json` — standard rules, type-aware enabled
 - `lefthook.yml` — pre-commit hooks
-- `package.json` scripts — dev, build, gate, lint:ox, lint:effect, etc.
+- `package.json` scripts — dev, build, gate, lint, fmt, prepare (with `effect-tsgo patch`)
+
+After install, run `bun run prepare` (or just `bun install` again — the `prepare` lifecycle script triggers automatically) to patch the tsgo binary.
 
 ## Step 4: Project Structure
 
@@ -210,6 +209,8 @@ console.log(`Symlinked to: ${linkPath}`)
 
 ## Step 5: Testing
 
+Tests go under `tests/`. The `tsconfig.json` `plugins[].overrides` block (see SKILL.md) already relaxes `strictEffectProvide` for `tests/**` and `*.test.ts`. Add more rules to that override block as needed — don't fork the tsconfig.
+
 ### Test Helper (`tests/helpers/test-cli.ts`)
 
 ```typescript
@@ -288,7 +289,6 @@ export const expectCall = (
 ### Test File
 
 ```typescript
-// @effect-diagnostics effect/strictEffectProvide:off
 import { describe, it, expect } from "effect-bun-test"
 import { Effect } from "effect"
 import { MyService } from "../../src/services/MyService.js"
@@ -308,6 +308,8 @@ describe("subcommand-a", () => {
   )
 })
 ```
+
+`strictEffectProvide` is off in tests via the `overrides` block — no per-file `// @effect-diagnostics` directive needed.
 
 ## Step 6: .gitignore
 
@@ -330,13 +332,12 @@ If publishing to npm, follow SKILL.md §Publishing for:
 ## Checklist
 
 - [ ] `bun init` + `"type": "module"`
-- [ ] Install deps (effect, platform-bun, dev tooling incl. `@typescript/native-preview`)
-- [ ] `tsconfig.json` (base, minimal TS6)
-- [ ] `tsconfig.lsp.json` (Effect diagnostics, all errors)
-- [ ] `tsconfig.lsp.test.json` (relaxed for tests)
-- [ ] `.oxlintrc.json`
+- [ ] Install deps (effect, platform-bun, dev tooling incl. `@effect/tsgo` + `@typescript/native-preview`)
+- [ ] `tsconfig.json` with `@effect/language-service` plugin (full `diagnosticSeverity` + `overrides` for tests)
+- [ ] `.oxlintrc.json` with `options.typeAware: true`
 - [ ] `lefthook.yml`
-- [ ] `package.json` scripts (dev, build, gate, lint:ox, lint:effect, prepare)
+- [ ] `package.json` scripts (dev, build, gate, lint, fmt, prepare with `effect-tsgo patch`)
+- [ ] `bun install` runs `prepare` — confirms `effect-tsgo patch` succeeds
 - [ ] `src/main.ts` entry point
 - [ ] `src/commands/index.ts` root command
 - [ ] `src/services/` with `layer` + `layerTest` statics

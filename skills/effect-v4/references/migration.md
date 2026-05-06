@@ -9,7 +9,7 @@ Condensed diff for migrating Effect v3 codebases to v4.
 - Platform-specific packages remain separate (`@effect/platform-bun`, etc.)
 - Remove `@effect/cli` and `@effect/platform` from deps (merged into core)
 - Remove any `@effect/cli` patches from `patchedDependencies`
-- Add `"prepare": "effect-language-service patch && lefthook install"` to scripts
+- Switch from `@effect/language-service` + standalone `tsgo` to `@effect/tsgo` (bundles both). Update `prepare` to `"lefthook install && effect-tsgo patch"`. See `skills/project-scaffolding/references/migration.md` for the full LSP/tsconfig migration.
 
 ## Import Rewrite Table
 

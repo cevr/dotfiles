@@ -577,35 +577,22 @@ rg "Context.Service" $(repo path -q effect-ts/effect-smol)/packages --glob "*.ts
 rg "TaggedErrorClass" $(repo path -q effect-ts/effect-smol)/packages --glob "*.ts" -C 3
 ```
 
-Also useful: `repo fetch effect-ts/language-service` for the Effect LSP plugin source (all diagnostic rules, config options).
+Also useful: `okra repo fetch effect-ts/tsgo` for the Effect language service source (all diagnostic rules, plugin options, `overrides` schema, presets).
 
 ## LSP Diagnostics
 
-The `@effect/language-service` plugin provides diagnostics beyond `tsc`. Use `@effect/language-service@^0.80.0` with v4. Patch TypeScript to get them in CLI:
+For tsconfig setup, scripts, and the full diagnostic severity map, see the **`project-scaffolding` skill** (§Tooling Stack and `references/migration.md`). Quick orientation for v4 work:
 
-```sh
-# Add to package.json scripts
-"prepare": "effect-language-service patch && lefthook install"
-```
-
-Required tsconfig plugin fields for v4:
-
-```jsonc
-"plugins": [{
-  "name": "@effect/language-service",
-  "transform": "@effect/language-service/transform",
-  "namespaceImportPackages": ["effect", "@effect/*"],
-  // ... diagnosticSeverity overrides
-}]
-```
-
-Suppress diagnostics with comments:
-
-```typescript
-// @effect-diagnostics-next-line effect/strictEffectProvide:off   (single line)
-// @effect-diagnostics effect/strictEffectProvide:off              (rest of file)
-// @effect-diagnostics *:off                                       (all diagnostics, rest of file)
-```
+- **Package**: `@effect/tsgo` (bundles tsgo + Effect language service). `@typescript/native-preview` is required alongside it. `effect-tsgo patch` (run from `prepare`) patches the `tsgo` binary.
+- **Plugin name**: `@effect/language-service` (still — it's the plugin id; the package wrapping it is `@effect/tsgo`).
+- **Single tsconfig**: plugin lives in `compilerOptions.plugins[]`. Test relaxation goes through `plugins[].overrides[].include` globs — no separate `tsconfig.test.json`.
+- **Suppression directives** (still valid for one-off cases):
+  ```typescript
+  // @effect-diagnostics-next-line effect/strictEffectProvide:off   (single line)
+  // @effect-diagnostics effect/strictEffectProvide:off              (rest of file)
+  // @effect-diagnostics *:off                                       (all diagnostics, rest of file)
+  ```
+  Prefer `overrides` for whole-file-pattern relaxation; reserve directives for surgical cases.
 
 ## Gotchas
 
@@ -708,9 +695,11 @@ Suppress diagnostics with comments:
 - **Merge duplicate `from 'effect'` imports** — linter flags `import/no-duplicates`
 
 ### LSP
-- **`@effect/language-service@0.80.0+`** — needs `transform` and `namespaceImportPackages`
-- **`ignoreEffectWarningsInTscExitCode: true`** in tsconfig — prevents warnings from failing tsc
-- **`// @effect-diagnostics nodeBuiltinImport:off`** — per-file suppression for scripts using node builtins
+- **Use `@effect/tsgo`** (bundles tsgo + Effect LSP) — see `project-scaffolding` skill for full setup. `@effect/language-service` standalone is the old shape.
+- **`ignoreEffectWarningsInTscExitCode: true`** in plugin options — prevents warnings from failing CI exit code
+- **`overrides[].include` globs > per-file directives** — relax `strictEffectProvide` etc. in `**/*.test.ts` once via plugin overrides instead of `// @effect-diagnostics` headers
+- **`// @effect-diagnostics nodeBuiltinImport:off`** — per-file suppression for scripts using node builtins (one-off cases only)
+- **Migrating an existing project** → `project-scaffolding` skill `references/migration.md`
 
 ### Code Style (rules 8-16)
 - **No try/catch in generators** — use `Effect.try` / `Effect.tryPromise`

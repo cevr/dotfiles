@@ -5,19 +5,21 @@ description: Scaffold new TypeScript projects with Effect, Bun, oxlint, oxfmt, l
 
 # Project Scaffolding
 
-Opinionated project setup for Effect TypeScript on Bun. All configs derived from production projects.
+Opinionated project setup for Effect TypeScript on Bun. All configs derived from production projects (`gent`, `@cvr/stacked`).
 
 ## Navigation
 
 ```
 What are you setting up?
-├─ New CLI tool (single package)       → references/cli.md
-├─ New monorepo (core + clients)       → references/monorepo.md
-├─ Just the tooling configs            → §Tooling Stack
-├─ CI/CD + publishing                  → §Publishing
-├─ Adding to an existing project       → §Tooling Stack (pick what's missing)
-├─ Understanding the conventions       → §Conventions
-└─ TypeScript 6 / tsgo migration       → §TS6 / tsgo
+├─ New CLI tool (single package)         → references/cli.md
+├─ New monorepo (core + clients)         → references/monorepo.md
+├─ Migrate from @effect/language-service → references/migration.md
+├─ Just the tooling configs              → §Tooling Stack
+├─ Copy-paste config files               → templates/
+├─ CI/CD + publishing                    → §Publishing
+├─ Adding to an existing project         → §Tooling Stack (pick what's missing)
+├─ Understanding the conventions         → §Conventions
+└─ TypeScript 6 / tsgo migration         → §TS6 / tsgo
 ```
 
 ## Topic Index
@@ -26,9 +28,11 @@ What are you setting up?
 |-------|----------|--------------|
 | CLI project setup | `references/cli.md` | New single-package CLI tool |
 | Monorepo setup | `references/monorepo.md` | Multi-package project with turbo, workspaces, catalog |
+| Migration to `@effect/tsgo` | `references/migration.md` | Existing project on `@effect/language-service` + `tsconfig.lsp.json` |
+| Templates | `templates/` | Copy-pasteable `tsconfig.json`, `.oxlintrc.json`, `lefthook.yml`, `turbo.json` |
 | Tooling configs | §Tooling Stack | Adding oxlint, oxfmt, lefthook, tsconfig |
 | Publishing | §Publishing | npm publishing, changesets, GitHub Actions |
-| TS6 / tsgo | §TS6 / tsgo | TypeScript 6 defaults, tsgo native compiler |
+| TS6 / tsgo | §TS6 / tsgo | TypeScript 6 defaults, native compiler |
 
 ## Tooling Stack
 
@@ -37,141 +41,171 @@ Every project uses this base. No exceptions.
 | Tool | Purpose | Config |
 |------|---------|--------|
 | **bun** | Runtime, package manager, test runner, bundler | `bun.lock` |
-| **tsgo** | Type checking (`tsgo --noEmit`, native Go compiler) | `tsconfig.json` |
+| **@effect/tsgo** | Bundled tsgo + Effect Language Service (`effect-tsgo` binary, patches `tsgo`) | `tsconfig.json` `plugins` |
+| **@typescript/native-preview** | Native Go TS compiler (`tsgo` binary), required alongside `@effect/tsgo` | — |
+| **typescript** | Editor/LSP fallback, TS6 | — |
 | **oxlint** | Linting (fast, Rust-based) | `.oxlintrc.json` |
+| **oxlint-tsgolint** | Type-aware lint rules via tsgolint | `.oxlintrc.json` `options.typeAware` |
 | **oxfmt** | Formatting (fast, Rust-based) | `.oxfmtrc.json` (optional) |
 | **lefthook** | Git hooks (pre-commit) | `lefthook.yml` |
-| **Effect LSP** | Effect-specific diagnostics via `effect-language-service diagnostics` CLI | `.effect-lsp.json` |
-| **concurrently** | Parallel script runner for `gate` and `lint` | `package.json` scripts |
+| **concurrently** | Parallel script runner for `gate` | `package.json` scripts |
+| **turbo** | Task orchestration (monorepo only) | `turbo.json` |
 
 ### tsconfig.json (base)
 
-Minimal — TS6 defaults handle `strict`, `target`, `module`, `moduleResolution`, `esModuleInterop`.
+Single tsconfig. Effect diagnostics live inside the `@effect/language-service` plugin. Per-file relaxation (e.g., for tests) goes through plugin `overrides` — **no separate `tsconfig.test.json`**.
 
 ```json
 {
   "compilerOptions": {
+    "strict": true,
     "noUncheckedIndexedAccess": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
     "noPropertyAccessFromIndexSignature": true,
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
     "moduleDetection": "force",
     "skipLibCheck": true,
     "types": ["bun"],
-    "noEmit": true
+    "noEmit": true,
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnostics": true,
+        "diagnosticsName": true,
+        "includeSuggestionsInTsc": true,
+        "ignoreEffectSuggestionsInTscExitCode": false,
+        "ignoreEffectWarningsInTscExitCode": false,
+        "ignoreEffectErrorsInTscExitCode": false,
+        "diagnosticSeverity": {
+          "anyUnknownInErrorContext": "error",
+          "asyncFunction": "error",
+          "catchAllToMapError": "error",
+          "catchUnfailableEffect": "error",
+          "classSelfMismatch": "error",
+          "cryptoRandomUUID": "error",
+          "cryptoRandomUUIDInEffect": "error",
+          "deterministicKeys": "error",
+          "duplicatePackage": "error",
+          "effectDoNotation": "error",
+          "effectFnIife": "error",
+          "effectFnImplicitAny": "error",
+          "effectFnOpportunity": "error",
+          "effectGenUsesAdapter": "error",
+          "effectInFailure": "error",
+          "effectInVoidSuccess": "error",
+          "effectMapFlatten": "off",
+          "effectMapVoid": "error",
+          "effectSucceedWithVoid": "error",
+          "extendsNativeError": "error",
+          "floatingEffect": "error",
+          "genericEffectServices": "error",
+          "globalConsole": "error",
+          "globalConsoleInEffect": "error",
+          "globalDate": "error",
+          "globalDateInEffect": "error",
+          "globalErrorInEffectCatch": "error",
+          "globalErrorInEffectFailure": "error",
+          "globalFetch": "error",
+          "globalFetchInEffect": "error",
+          "globalRandom": "error",
+          "globalRandomInEffect": "error",
+          "globalTimers": "error",
+          "globalTimersInEffect": "error",
+          "instanceOfSchema": "error",
+          "layerMergeAllWithDependencies": "error",
+          "lazyPromiseInEffectSync": "error",
+          "leakingRequirements": "error",
+          "missedPipeableOpportunity": "off",
+          "missingEffectContext": "error",
+          "missingEffectError": "error",
+          "missingEffectServiceDependency": "error",
+          "missingLayerContext": "error",
+          "missingReturnYieldStar": "error",
+          "missingStarInYieldEffectGen": "error",
+          "multipleEffectProvide": "error",
+          "nestedEffectGenYield": "error",
+          "newPromise": "error",
+          "nodeBuiltinImport": "error",
+          "nonObjectEffectServiceType": "error",
+          "outdatedApi": "error",
+          "overriddenSchemaConstructor": "error",
+          "preferSchemaOverJson": "error",
+          "processEnv": "error",
+          "processEnvInEffect": "error",
+          "redundantSchemaTagIdentifier": "error",
+          "returnEffectInGen": "error",
+          "runEffectInsideEffect": "error",
+          "schemaStructWithTag": "error",
+          "schemaSyncInEffect": "error",
+          "schemaUnionOfLiterals": "error",
+          "scopeInLayerEffect": "error",
+          "serviceNotAsClass": "error",
+          "strictBooleanExpressions": "off",
+          "strictEffectProvide": "error",
+          "tryCatchInEffectGen": "error",
+          "unknownInEffectCatch": "error",
+          "unnecessaryArrowBlock": "error",
+          "unnecessaryEffectGen": "error",
+          "unnecessaryFailYieldableError": "error",
+          "unnecessaryPipe": "off",
+          "unnecessaryPipeChain": "off"
+        },
+        "keyPatterns": [
+          { "target": "service", "pattern": "default", "skipLeadingPath": ["src/", "packages/"] },
+          { "target": "error", "pattern": "default", "skipLeadingPath": ["src/", "packages/"] }
+        ],
+        "overrides": [
+          {
+            "include": [
+              "**/tests/**/*.ts",
+              "**/tests/**/*.tsx",
+              "**/*.test.ts",
+              "**/*.test.tsx"
+            ],
+            "options": {
+              "diagnosticSeverity": {
+                "strictEffectProvide": "off"
+              }
+            }
+          }
+        ]
+      }
+    ]
   },
   "include": [],
   "exclude": ["node_modules"]
 }
 ```
 
-**Why so minimal:** TS6 defaults `strict: true`, `target: es2025`, `module: es2022`, `moduleResolution: bundler`, `esModuleInterop: true`. No need to repeat them. `types: ["bun"]` required because TS6 defaults `types` to `[]` (no auto-discovery).
+**Why this shape:**
+- `plugins[].overrides[].include` — glob patterns. The plugin merges options for files matching `include`. This is the supported way to relax individual rules in tests/integration code without forking tsconfigs.
+- `keyPatterns` — controls `deterministicKeys` rule. Skip-leading-path values (`src/`, `packages/`) make it ignore those prefixes when computing identifiers.
+- `strict: true`, `target`, `module`, etc. are kept explicit even though TS6 defaults them — survives downgrades and `tsc --showConfig` clarity.
 
-**Monorepo**: add `paths` mapping for workspace packages.
-
-### .effect-lsp.json (Effect diagnostic config)
-
-Standalone config file for `effect-language-service diagnostics` CLI. All rules promoted to **errors** for CI enforcement. Passed via `--lspconfig "$(cat .effect-lsp.json)"`.
-
-**Why a separate file:** The CLI's `--project` flag only controls which files to scan. It does NOT read diagnostic config from tsconfig plugins. The `--lspconfig` flag is required for the diagnostics engine to actually check anything.
-
-```json
-{
-  "diagnostics": true,
-  "diagnosticsName": true,
-  "diagnosticSeverity": {
-    "anyUnknownInErrorContext": "error",
-    "deterministicKeys": "error",
-    "importFromBarrel": "error",
-    "instanceOfSchema": "error",
-    "missedPipeableOpportunity": "off",
-    "missingEffectServiceDependency": "error",
-    "schemaUnionOfLiterals": "error",
-    "strictBooleanExpressions": "off",
-    "strictEffectProvide": "error",
-    "catchAllToMapError": "error",
-    "catchUnfailableEffect": "error",
-    "effectFnOpportunity": "error",
-    "effectMapVoid": "error",
-    "effectSucceedWithVoid": "error",
-    "leakingRequirements": "error",
-    "preferSchemaOverJson": "error",
-    "redundantSchemaTagIdentifier": "error",
-    "returnEffectInGen": "error",
-    "runEffectInsideEffect": "error",
-    "schemaStructWithTag": "error",
-    "schemaSyncInEffect": "error",
-    "tryCatchInEffectGen": "error",
-    "unnecessaryEffectGen": "error",
-    "unnecessaryFailYieldableError": "error",
-    "unnecessaryPipe": "error",
-    "unnecessaryPipeChain": "error",
-    "extendsNativeError": "error",
-    "nodeBuiltinImport": "error",
-    "serviceNotAsClass": "error",
-    "outdatedApi": "error",
-    "globalFetch": "error",
-    "globalFetchInEffect": "error",
-    "globalDate": "error",
-    "globalDateInEffect": "error",
-    "globalConsole": "error",
-    "globalConsoleInEffect": "error",
-    "globalRandom": "error",
-    "globalRandomInEffect": "error",
-    "globalTimers": "error",
-    "globalTimersInEffect": "error",
-    "globalErrorInEffectCatch": "error",
-    "globalErrorInEffectFailure": "error"
-  },
-  "keyPatterns": [
-    {
-      "target": "service",
-      "pattern": "default",
-      "skipLeadingPath": ["src/"]
-    },
-    {
-      "target": "error",
-      "pattern": "default",
-      "skipLeadingPath": ["src/"]
-    }
-  ]
-}
-```
-
-**Monorepo variant**: set `skipLeadingPath: ["packages/"]`.
-
-**Test variant**: create `.effect-lsp.test.json` that relaxes rules for test files:
-
-```json
-{
-  "diagnostics": true,
-  "diagnosticsName": true,
-  "diagnosticSeverity": {
-    "strictEffectProvide": "off",
-    "nodeBuiltinImport": "off",
-    "globalConsole": "off",
-    "globalConsoleInEffect": "off",
-    "globalDate": "off",
-    "globalDateInEffect": "off"
-  }
-}
-```
-
-No separate `tsconfig.lsp.json` needed — the CLI uses `--project tsconfig.json` for file scoping (reads the `include` array) and `--lspconfig` for diagnostic config.
+**Monorepo**: add `paths` mapping for workspace packages alongside the plugin block.
 
 ### .oxlintrc.json
+
+Standard style + correctness rules. Type-aware rules come from `oxlint-tsgolint`. Effect-specific lint lives in `@effect/language-service` (the tsgo plugin) — **don't add a separate Effect oxlint plugin**.
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "options": {
+    "typeAware": true
+  },
   "categories": {
     "correctness": "error",
     "suspicious": "error",
     "perf": "error"
   },
-  "plugins": ["typescript", "import"],
+  "plugins": ["typescript", "import", "node"],
   "rules": {
     "typescript/no-explicit-any": "error",
+    "typescript/no-unsafe-type-assertion": "error",
     "typescript/no-non-null-assertion": "error",
     "typescript/no-extra-non-null-assertion": "error",
     "typescript/no-non-null-asserted-optional-chain": "error",
@@ -179,34 +213,26 @@ No separate `tsconfig.lsp.json` needed — the CLI uses `--project tsconfig.json
       "error",
       { "prefer": "type-imports", "fixStyle": "separate-type-imports" }
     ],
-    "typescript/no-unsafe-type-assertion": "error",
     "import/no-duplicates": "error",
-    "no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }]
+    "node/no-process-env": "error",
+    "no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
+    "no-nested-ternary": "error",
+    "complexity": ["error", 20]
   },
-  "ignorePatterns": ["**/dist/**", "**/node_modules/**", "**/*.d.ts", "**/bin/**", "**/scripts/**"],
-  "overrides": [
-    {
-      "files": ["**/*.test.ts", "**/*.test.tsx", "**/tests/**"],
-      "rules": {
-        "typescript/no-non-null-assertion": "off",
-        "typescript/no-explicit-any": "off",
-        "typescript/no-unsafe-type-assertion": "off"
-      }
-    }
-  ]
+  "ignorePatterns": ["**/dist/**", "**/node_modules/**", "**/*.d.ts", "**/bin/**"]
 }
 ```
 
-**Monorepo additions**: add `"node"` plugin + `"node/no-process-env": "error"` to enforce Config usage.
+`oxlint --type-aware` requires `oxlint-tsgolint` installed as a dev dep — auto-detected, no env var needed.
 
 ### lefthook.yml
 
 ```yaml
 pre-commit:
-  parallel: true
+  parallel: false
   jobs:
-    - name: fmt+lint
-      run: bun run fmt && bun run lint:fix
+    - name: lint+fmt
+      run: bun run lint:fix && bun run fmt
       stage_fixed: true
     - name: typecheck
       run: bun run typecheck
@@ -216,6 +242,8 @@ pre-commit:
       run: bun run test
 ```
 
+Sequential pre-commit: lint+fmt fixes first, then typecheck/build/test gate the commit. Parallel runs trip on each other when lint stages files mid-typecheck.
+
 ### Scripts (single-package)
 
 ```json
@@ -224,18 +252,18 @@ pre-commit:
     "dev": "bun run src/main.ts",
     "build": "bun run scripts/build.ts",
     "typecheck": "tsgo --noEmit",
-    "lint": "concurrently -n ox,effect -c yellow,blue \"oxlint\" \"bun run lint:effect\"",
-    "lint:ox": "oxlint",
-    "lint:effect": "effect-language-service diagnostics --project tsconfig.json --lspconfig \"$(cat .effect-lsp.json)\"",
+    "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "test": "bun test",
     "gate": "concurrently -n type,style,build,test -c blue,yellow,cyan,green \"bun run typecheck\" \"bun run lint && bun run fmt\" \"bun run build\" \"bun run test\"",
-    "prepare": "lefthook install"
+    "prepare": "lefthook install && effect-tsgo patch"
   }
 }
 ```
+
+`prepare` wires both lefthook install and the `effect-tsgo patch` step (the latter patches the `@typescript/native-preview` binary so `tsgo` invokes the Effect language service).
 
 ### Scripts (monorepo root)
 
@@ -243,20 +271,20 @@ pre-commit:
 {
   "scripts": {
     "typecheck": "turbo run typecheck",
-    "lint": "concurrently -n ox,effect -c yellow,blue \"oxlint\" \"turbo run lint\"",
-    "lint:ox": "oxlint",
-    "lint:effect": "turbo run lint",
+    "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "build": "turbo run build",
     "test": "turbo run test",
-    "gate": "concurrently -n type,style,build,test -c blue,yellow,cyan,green \"bun run typecheck\" \"bun run lint && bun run fmt\" \"bun run build\" \"bun run test\"",
+    "gate": "concurrently -n type,style,build -c blue,yellow,cyan \"bun run typecheck\" \"bun run lint && bun run fmt\" \"bun run build\" && bun run test",
     "clean": "rm -rf .turbo */.turbo */*/.turbo",
-    "prepare": "lefthook install"
+    "prepare": "lefthook install && effect-tsgo patch"
   }
 }
 ```
+
+Lint/fmt at root only — oxlint scans the whole tree in one pass. No `turbo run lint` fan-out: Effect diagnostics are typecheck-channel (via the LSP plugin), not lint-channel, so they ride along with `tsgo --noEmit`.
 
 ### Scripts (monorepo leaf package)
 
@@ -264,20 +292,17 @@ pre-commit:
 {
   "scripts": {
     "typecheck": "tsgo --noEmit",
-    "lint": "effect-language-service diagnostics --project tsconfig.json --lspconfig \"$(cat ../../.effect-lsp.json)\"",
     "test": "bun test tests/"
   }
 }
 ```
 
-Each leaf's `lint` runs `effect-language-service diagnostics` against its own tsconfig. Turbo's `lint` task fans these out across packages.
-
 ### Dev Dependencies (base)
 
-Always `bun add -D` with **latest versions** — check npm before installing, never hardcode version pins.
+Always `bun add -D` with **latest versions** — check npm before installing, never hardcode version pins (this list is for grouping, not pinning).
 
 ```
-@effect/language-service
+@effect/tsgo
 @typescript/native-preview
 @types/bun
 concurrently
@@ -285,10 +310,14 @@ effect-bun-test
 lefthook
 oxfmt
 oxlint
+oxlint-tsgolint
 typescript
 ```
 
-`@typescript/native-preview` provides the `tsgo` binary (Go-based TypeScript compiler, orders of magnitude faster than `tsc`). `typescript` is still needed for editor/LSP support.
+- `@effect/tsgo` is the bundled package. It ships the `effect-tsgo` CLI (used by the `prepare` script's `patch` command) and adds the Effect language service plugin to `tsgo`.
+- `@typescript/native-preview` is still required — `effect-tsgo patch` patches its bundled `tsgo` binary in place. Both must be installed.
+- `typescript` is needed for editor LSP fallback and as a peer of various tools.
+- `oxlint-tsgolint` enables `oxlint`'s `typeAware` mode (auto-detected).
 
 ## Publishing
 
@@ -375,34 +404,50 @@ jobs:
 | Package manager | bun (always) |
 | Module system | `"type": "module"` |
 | TypeScript | `noEmit: true` — never compile, bun runs source directly |
-| Type checker | `tsgo --noEmit` — native Go compiler, not `tsc` |
+| Type checker | `tsgo --noEmit` — patched with Effect LSP via `effect-tsgo patch` |
 | Exports | `"exports": { ".": "./src/index.ts" }` — source-first, no build step for local dev |
 | Tests | `bun test` with `effect-bun-test` for Effect integration |
 | Tracing | `Effect.fn("ServiceName.methodName")` on all service methods |
 | Quality gate | `bun run gate` before any commit/PR/ship |
-| Git hooks | lefthook pre-commit runs lint, fmt, typecheck, test |
-| Effect linting | `effect-language-service diagnostics` CLI — config in `.effect-lsp.json`, passed via `--lspconfig` |
-| Lint scripts | `lint:ox` (oxlint) + `lint:effect` (Effect LSP diagnostics) run via `concurrently` |
-| Monorepo orchestration | turbo for multi-package, concurrently for single-package |
+| Git hooks | lefthook pre-commit runs lint+fmt, typecheck, build, test (sequential) |
+| Effect diagnostics | `@effect/tsgo` plugin in `tsconfig.json` — single source, per-file via `plugins[].overrides` |
+| Test relaxation | `plugins[].overrides[].include` glob with `options.diagnosticSeverity` map (no separate test tsconfig) |
+| Lint scripts | Single `oxlint` — type-aware rules via `oxlint-tsgolint`, no env vars needed |
+| Monorepo orchestration | turbo for typecheck/build/test, oxlint at root |
 | Version catalog | `"catalog": {}` in root `package.json` for monorepos — pins shared dep versions |
 
 ## TS6 / tsgo
 
-TypeScript 6 changes many defaults. Combined with `tsgo` (the native Go-based compiler from `@typescript/native-preview`), this simplifies configs significantly.
+TypeScript 6 changes some defaults, but production projects keep options explicit (target, module, moduleResolution) for clarity and downgrade safety. The native compiler (`tsgo`) still requires `noEmit` — it doesn't emit yet.
 
-### What TS6 defaults for you (remove from tsconfig)
+### tsgo via @effect/tsgo
 
-| Option | TS6 Default | Action |
-|--------|-------------|--------|
-| `strict` | `true` | Remove — already on |
-| `target` | `es2025` | Remove — ESNext not needed, es2025 is fine |
-| `module` | `es2022` | Remove — computed from target |
-| `moduleResolution` | `bundler` | Remove — computed from module |
-| `esModuleInterop` | `true` | Remove — always on, can't be `false` |
-| `allowSyntheticDefaultImports` | `true` | Remove — always on |
-| `types` | `[]` | **Must set** — TS6 no longer auto-discovers `@types/*` |
+`@effect/tsgo` is a wrapper that:
+1. Embeds a pinned version of upstream `tsgo` (Microsoft's TypeScript-Go).
+2. Patches it with the Effect language service for Effect-specific diagnostics, quick fixes, refactors.
+3. Provides the `effect-tsgo` CLI for setup/patch/unpatch operations.
 
-### What TS6 deprecates (don't use)
+The `tsgo` binary on disk gets patched in place by `effect-tsgo patch` (run via the `prepare` script). After patching, calling `tsgo --noEmit` runs both standard TS type checking and Effect diagnostics.
+
+**Use `@effect/tsgo` instead of standalone `tsgo`, not alongside it.** Running both produces duplicate diagnostics.
+
+### What `@effect/tsgo setup` does
+
+If starting from scratch on an existing project:
+
+```bash
+npx @effect/tsgo setup
+```
+
+This:
+1. Adds `@effect/tsgo` and `@typescript/native-preview` to devDeps.
+2. Adds the `@effect/language-service` plugin entry to `tsconfig.json`.
+3. Adds `effect-tsgo patch` to the `prepare` script.
+4. Optionally writes `.vscode/settings.json` to enable the native TS server.
+
+For new projects, copy the configs from §Tooling Stack directly.
+
+### TS6 deprecations to avoid
 
 | Deprecated | Replacement |
 |-----------|-------------|
@@ -416,45 +461,46 @@ TypeScript 6 changes many defaults. Combined with `tsgo` (the native Go-based co
 
 ### tsgo vs tsc
 
-`tsgo` is the native Go port of TypeScript. Same type checking, orders of magnitude faster.
-
-| | `tsc` | `tsgo` |
-|-|-------|--------|
+| | `tsc` | `tsgo` (via `@effect/tsgo`) |
+|-|-------|---------------------------|
 | Binary | `node_modules/.bin/tsc` | `node_modules/.bin/tsgo` |
-| Package | `typescript` | `@typescript/native-preview` |
+| Package | `typescript` | `@typescript/native-preview` (patched by `@effect/tsgo`) |
 | Speed | Baseline | ~10x faster |
-| Compatibility | Full | Type-checking + noEmit only (no emit) |
-| Use for | Editor/LSP | `typecheck` script, CI |
-
-Install both: `typescript` for editor, `@typescript/native-preview` for CI/scripts.
+| Compatibility | Full | Type-checking + noEmit only |
+| Effect rules | None | Bundled via patch |
+| Use for | Editor fallback | `typecheck` script, CI |
 
 ## Reference Repos
 
-Use `/repo-explorer` to fetch and explore these when you need implementation details:
+Use `okra repo fetch` to fetch and explore these when you need implementation details:
 
 | Repo | What | Fetch |
 |------|------|-------|
-| `effect-ts/language-service` | Effect LSP plugin — all diagnostic rules, config options, quick fixes | `repo fetch effect-ts/language-service` |
-| `effect-ts/effect-smol` | Effect v4 source — Context.Service, Schema, unstable modules | `repo fetch effect-ts/effect-smol` |
-| `effect-ts/effect` | Effect v3 source — Context.Tag, Schema, platform packages | `repo fetch effect-ts/effect` |
+| `effect-ts/tsgo` | Effect tsgo wrapper — diagnostic list, plugin options, `overrides` schema, presets, setup CLI | `okra repo fetch effect-ts/tsgo` |
+| `effect-ts/effect-smol` | Effect v4 source — Context.Service, Schema, unstable modules | `okra repo fetch effect-ts/effect-smol` |
+| `effect-ts/effect` | Effect v3 source — Context.Tag, Schema, platform packages | `okra repo fetch effect-ts/effect` |
 
-**When to explore:**
-- Adding new diagnostics to `diagnosticSeverity` — check `src/diagnostics.ts` in `language-service` for all rules + defaults
-- Unsure about a v4 API — search `effect-smol/packages/effect/src/`
-- Looking for usage examples — search test files in any of these repos
+**When to explore `effect-ts/tsgo`:**
+- Tuning `diagnosticSeverity` — README has the full diagnostic table with defaults; `_packages/tsgo/src/metadata.json` has the rule metadata.
+- Confirming `overrides` semantics — `internal/effecttest/feature_flags_test.go` has working examples of `include` + `options.diagnosticSeverity` and `options.<ruleSetting>` overrides.
+- Understanding presets (e.g., `effect-native`) — `_packages/tsgo/src/presets.ts`.
+- Looking up plugin options (`keyPatterns`, `pipeableMinArgCount`, etc.) — README `## Plugin Options` section.
 
 ## Gotchas
 
-- **`types: ["bun"]` required** — TS6 defaults `types` to `[]` (no auto-discovery). Without it, `Bun.*` globals are invisible.
-- **No `effect-language-service patch`** — use `effect-language-service diagnostics --project tsconfig.json --lspconfig "$(cat .effect-lsp.json)"` CLI instead. No patching, no `prepare` script dance.
-- **`--lspconfig` is mandatory** — the CLI does NOT read diagnostic config from tsconfig plugins. Without `--lspconfig`, it reports "Checked 0 files" — files are scanned but nothing is actually checked. Always pass `--lspconfig` with the config file contents.
-- **`.effect-lsp.json` for config, `tsconfig.json` for scoping** — diagnostic rules live in `.effect-lsp.json`. The `--project` flag just reads the tsconfig's `include` array to find files. For relaxed test rules, create `.effect-lsp.test.json`.
+- **`effect-tsgo patch` must run after install** — wire it into `prepare` so `bun install` rebuilds the patched binary. Without the patch, `tsgo --noEmit` runs without Effect diagnostics.
+- **Don't add a separate `tsconfig.test.json`** — relax test rules via the plugin's `overrides[].include` array. Keeps a single source of truth and avoids tsconfig fan-out.
+- **`overrides` is plugin-scoped, not tsconfig-scoped** — it lives inside the `@effect/language-service` plugin object's options, not at the tsconfig root. Sibling to `diagnosticSeverity`.
+- **`overrides[].options.diagnosticSeverity` merges, not replaces** — only list rules whose severity changes for matching files.
+- **`types: ["bun"]` required** — TS6 defaults `types` to `[]` in some configs. Without it, `Bun.*` globals are invisible.
+- **`oxlint-tsgolint` must be a devDep for `--type-aware`** — auto-detected by oxlint, no env var. Without it, type-aware rules silently no-op.
+- **Don't add `oxlint-plugin-effect`** — Effect rules live in `@effect/language-service` (typecheck channel), not oxlint. Stacking both produces duplicate diagnostics.
+- **`@effect/tsgo` and `@typescript/native-preview` versions are coupled** — `effect-tsgo patch` validates compatibility. Bump them together; if `patch` errors after an upgrade, update both pkgs.
 - **`repository.url` required for npm provenance** — publish will 422 without it.
 - **`noUncheckedIndexedAccess`** — array/record indexing returns `T | undefined`. Use `??` or guards, not `!`.
 - **Monorepo `paths`** — root `tsconfig.json` maps `@scope/pkg` → `packages/pkg/src/index.ts`. Without this, the editor can't resolve workspace packages.
 - **`catalog:` in peerDependencies** — bun workspace catalog protocol. Only works in monorepo root.
-- **oxfmt defaults are fine** — only create `.oxfmtrc.json` if you need `semi: false` or `singleQuote: true`.
 - **`turbo.json` test cache** — always `"cache": false` for tests. Cached test results hide real failures.
-- **`turbo.json` lsp input** — add `../../.effect-lsp.json` to lint task inputs so diagnostic config changes invalidate cache.
+- **`turbo.json` typecheck inputs** — include `tsconfig.json` and `../../tsconfig.json` so plugin/severity changes invalidate cache.
 - **`downlevelIteration` is a hard error in TS6** — remove it entirely, don't set to `false`.
 - **`baseUrl` deprecated in TS6** — inline the value into `paths` entries instead.
