@@ -602,16 +602,18 @@ rg "Context.Tag" $(repo path -q effect-ts/effect)/packages --glob "*.ts" -C 2
 rg "HttpApiGroup" $(repo path -q effect-ts/effect)/packages --glob "*.ts" -C 3
 ```
 
-Also useful: `repo fetch effect-ts/language-service` for the Effect LSP plugin source (all diagnostic rules, config options).
+Also useful: `repo fetch effect-ts/tsgo` for the Effect LSP plugin source (all diagnostic rules, config options — the upstream README explicitly supports both v3 and v4).
 
 ## LSP Diagnostics
 
-The `@effect/language-service` plugin provides diagnostics beyond `tsc`. Patch TypeScript to get them in CLI:
+Use `@effect/tsgo` (bundles tsgo + the Effect language service plugin). It supports v3 — the diagnostics table in the upstream README marks each rule's v3/v4 compatibility, and v3 codebases get the same plugin-based flow as v4. See `skills/project-scaffolding/SKILL.md` and `skills/project-scaffolding/references/migration.md` for the full setup; the short version:
 
 ```sh
-# Add to package.json scripts
-"prepare": "effect-language-service patch && lefthook install"
+# package.json
+"prepare": "lefthook install && effect-tsgo patch"
 ```
+
+Plus `@effect/tsgo` + `@typescript/native-preview` as devDependencies, single `tsconfig.json` with the `@effect/language-service` plugin in `compilerOptions.plugins[]` (no separate `tsconfig.lsp.json`). Some rules are v4-only (e.g. `outdatedApi`, `cryptoRandomUUID`); set those to `"off"` in `diagnosticSeverity` for v3 projects.
 
 Suppress diagnostics with comments:
 
@@ -620,6 +622,8 @@ Suppress diagnostics with comments:
 // @effect-diagnostics effect/strictEffectProvide:off              (rest of file)
 // @effect-diagnostics *:off                                       (all diagnostics, rest of file)
 ```
+
+For test relaxation, prefer plugin `overrides[].include` in tsconfig over per-file directives.
 
 ## Gotchas
 
