@@ -472,7 +472,7 @@ For new projects, copy the configs from §Tooling Stack directly.
 
 ## Reference Repos
 
-Use `okra repo fetch` to fetch and explore these when you need implementation details:
+Use the `repo` skill (`skills/repo/SKILL.md`) — `okra repo fetch` + `repo path` + `rg`/`ast-grep` workflow — to fetch and explore these when you need implementation details:
 
 | Repo | What | Fetch |
 |------|------|-------|

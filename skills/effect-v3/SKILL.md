@@ -578,7 +578,7 @@ CLI testing → `references/cli-testing.md`
 
 ## Source Code
 
-Use `/repo-explorer` to fetch and explore the Effect v3 codebase:
+Use the `repo` skill (`skills/repo/SKILL.md`) for fetching/searching external sources. To explore the Effect v3 codebase:
 
 ```bash
 repo fetch effect-ts/effect    # fetch/update

@@ -554,7 +554,7 @@ CLI testing → `references/cli-testing.md`
 
 ## Source Code
 
-Use `/repo-explorer` to fetch and explore the Effect v4 codebase:
+Use the `repo` skill (`skills/repo/SKILL.md`) for fetching/searching external sources. To explore the Effect v4 codebase:
 
 ```bash
 repo fetch effect-ts/effect-smol    # fetch/update

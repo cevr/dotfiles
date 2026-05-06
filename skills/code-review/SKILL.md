@@ -75,10 +75,9 @@ Zoom out from lines to modules. Use primer architecture patterns as reference.
 
 ### Verify Against Source
 
-When a pattern looks off or you're unsure about library usage, use repo-explorer to fetch
-the upstream repo and compare against real implementations/examples.
+When a pattern looks off or you're unsure about library usage, use the `repo` skill (`skills/repo/SKILL.md`) to fetch the upstream repo and compare against real implementations/examples.
 
-Use: repo fetch owner/repo (or npm:package@version), then repo path -q owner/repo to grep/read the source.
+Quick form: `okra repo fetch owner/repo` (or `npm:package@version`), then `okra repo path -q owner/repo` to grep/read the source. See the `repo` skill for the full search workflow (`rg`, `ast-grep`, `fd`).
 
 ## Phase 3: Build Review Plan
 
