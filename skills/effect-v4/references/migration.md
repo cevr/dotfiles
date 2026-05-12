@@ -305,17 +305,43 @@ Per-file suppression:
 // Cause.isEmpty(cause) → cause.reasons.length === 0
 ```
 
-### Transactions (NEW)
-```typescript
-import { Effect, TxRef } from "effect"
+### Transactions / STM (v3 STM → v4 Tx*)
+v3's `STM<A, E, R>` monad is gone. Every `Tx*` primitive returns an `Effect`; wrap in `Effect.tx(...)` to commit atomically. `Effect.tx` auto-joins the outer transaction when nested — no separate isolated combinator. `Effect.txRetry` replaces `STM.retry`.
 
+```typescript
+// v3
+import { Effect, STM, TRef } from "effect"
+const ref = yield* STM.commit(TRef.make(0))
+yield* STM.commit(STM.gen(function* () {
+  yield* TRef.update(ref, (n) => n + 1)
+}))
+
+// v4
+import { Effect, TxRef } from "effect"
 const ref = yield* TxRef.make(0)
-yield* Effect.atomic(Effect.gen(function* () {
+yield* Effect.tx(Effect.gen(function* () {
   yield* TxRef.update(ref, (n) => n + 1)
 }))
-// Effect.atomic — composable with parent transactions
-// Effect.transaction — always isolated
 ```
+
+| v3 | v4 |
+|----|----|
+| `STM<A, E, R>` monad | Gone — Tx primitives return `Effect` |
+| `STM.commit(stm)` | Wrap in `Effect.tx(effect)` |
+| `STM.retry` | `Effect.txRetry` |
+| `STM.gen` | Plain `Effect.gen` inside `Effect.tx` |
+| `TRef` | `TxRef` |
+| `TArray` | `TxChunk` (or `TxHashMap` for keyed) |
+| `TMap` | `TxHashMap` |
+| `TSet` | `TxHashSet` |
+| `TQueue` | `TxQueue` (with Open/Closing/Done state) |
+| `TPriorityQueue` | `TxPriorityQueue` |
+| `TPubSub` | `TxPubSub` |
+| `TSemaphore` | `TxSemaphore` |
+| `TReentrantLock` | `TxReentrantLock` |
+| `TDeferred` | `TxDeferred` |
+| `TSubscriptionRef` | `TxSubscriptionRef` |
+| `TRandom` | Removed |
 
 ### Effect Subtyping → Yieldable
 ```typescript

@@ -1,6 +1,6 @@
 ---
 name: effect-v3
-description: Effect v3 patterns for production TypeScript. Use when writing Effect v3 code — services, layers, errors, HttpApi, RPC, CLI, testing, concurrency, streams, config. Covers Context.Tag, Schema.TaggedError, Effect.fn, Layer composition, client wrappers, and CLI testing patterns.
+description: Effect v3 patterns for production TypeScript. Use when writing Effect v3 code — services, layers, errors, HttpApi, RPC, CLI, testing, concurrency, streams, config, STM. Covers Context.Tag, Schema.TaggedError, Effect.fn, Layer composition, client wrappers, CLI testing patterns, and Software Transactional Memory (STM, TRef, TQueue, TMap, …).
 allowed-tools: Bash, Read, Grep, Glob
 ---
 
@@ -21,6 +21,7 @@ What are you working on?
 ├─ RPC                             → references/rpc.md
 ├─ Config / secrets                → references/config.md
 ├─ Concurrency / fibers            → references/concurrency.md
+├─ STM / Transactions (TRef, …)    → references/concurrency.md §STM
 ├─ Streams                         → references/streams.md
 ├─ Testing                         → §Testing + references/cli-testing.md
 ├─ CLI (@effect/cli)               → `primer effect cli`
@@ -36,7 +37,7 @@ What are you working on?
 | HTTP API | `references/http-api.md` | HttpApi, HttpApiGroup, HttpApiEndpoint, HttpApiBuilder |
 | RPC | `references/rpc.md` | Rpc.make, RpcGroup, handlers |
 | CLI testing | `references/cli-testing.md` | SequenceRef, runCli, expectSequence, mock services |
-| Concurrency | `references/concurrency.md` | FiberSet, FiberMap, FiberHandle, Deferred, Semaphore |
+| Concurrency | `references/concurrency.md` | FiberSet, FiberMap, FiberHandle, Deferred, Semaphore, STM + T* primitives |
 | Config | `references/config.md` | Config providers, redacted, nested |
 | Streams | `references/streams.md` | Stream creation, transformation, consumption |
 | Basics | `primer effect basics` | Effect.fn, Effect.gen, pipe |
@@ -645,3 +646,5 @@ For test relaxation, prefer plugin `overrides[].include` in tsconfig over per-fi
 - **No Node/browser builtins** — use Effect platform (`FileSystem`, `HttpClient`, `Path`, `Command`) not `node:fs`/`fetch`/etc.
 - **No plain JS callback escape hatches** — use `Effect.async`/`Stream.async` for event emitters, Node streams, sockets
 - **No `null`/`undefined`** — use `Option` from effect; convert nullish → `Option.fromNullable` at boundaries
+- **STM is a separate monad** — `STM<A, E, R>` is NOT an `Effect`; build with `STM.gen`/combinators and run with `STM.commit(stm)`. Every `T*` op (`TRef.get`, `TQueue.offer`, …) returns `STM`, not `Effect`.
+- **`STM.retry` for condition-wait** — inside `STM.gen`, call `yield* STM.retry` to suspend until any accessed `T*` value changes; cleaner than polling with `Deferred`. v4 renames this to `Effect.txRetry` and folds STM into `Effect.tx`.

@@ -31,11 +31,13 @@ Unchanged from v3.
 
 Unchanged from v3.
 
-## Transactions (NEW in v4)
+## Transactions / STM (NEW in v4)
 
-### TxRef
+v4 replaces v3's separate `STM<A, E, R>` monad with a unified model: every Tx primitive returns a normal `Effect`, and `Effect.tx` marks a block as transactional. Inside the block, reads are tracked, writes are journaled, and the whole block commits atomically or retries.
 
-Transactional references — atomic updates across multiple refs.
+### Effect.tx
+
+`Effect.tx(effect)` runs `effect` as a transaction. **Auto-joins** the outer transaction when nested — there is no separate "isolated transaction" combinator in v4. The journal commits at the outermost `Effect.tx` boundary only.
 
 ```typescript
 import { Effect, TxRef } from "effect"
@@ -44,8 +46,8 @@ const program = Effect.gen(function* () {
   const balance = yield* TxRef.make(100)
   const savings = yield* TxRef.make(0)
 
-  // Atomic transfer — both updates succeed or neither does
-  yield* Effect.atomic(Effect.gen(function* () {
+  // Atomic transfer — both writes commit together, or neither does
+  yield* Effect.tx(Effect.gen(function* () {
     const current = yield* TxRef.get(balance)
     yield* TxRef.set(balance, current - 50)
     yield* TxRef.update(savings, (s) => s + 50)
@@ -56,61 +58,80 @@ const program = Effect.gen(function* () {
 })
 ```
 
-### Effect.atomic vs Effect.transaction
+If any accessed `Tx*` value changes between read and commit, the transaction restarts automatically (optimistic concurrency).
 
-| API | Behavior |
-|-----|----------|
-| `Effect.atomic(effect)` | Composable — joins parent transaction if nested |
-| `Effect.transaction(effect)` | Isolated — always starts fresh transaction |
+### Effect.txRetry
+
+Explicitly retry the current transaction. The fiber suspends until **any** accessed `Tx*` value changes, then re-runs the block. Use this to wait for a condition.
 
 ```typescript
-// Nested atomic — inner composes with outer
-yield* Effect.atomic(Effect.gen(function* () {
-  yield* TxRef.set(ref1, 10)
-  // This inner atomic joins the outer transaction
-  yield* Effect.atomic(Effect.gen(function* () {
-    yield* TxRef.set(ref2, 20)
-  }))
-  // Both ref1 and ref2 commit together
-}))
-
-// Retry within transaction
-yield* Effect.atomic(Effect.gen(function* () {
-  const value = yield* TxRef.get(ref)
-  if (value < 10) yield* Effect.retryTransaction
-  yield* TxRef.set(ref, value - 10)
+// Wait until balance is at least 10, then withdraw
+yield* Effect.tx(Effect.gen(function* () {
+  const value = yield* TxRef.get(balance)
+  if (value < 10) yield* Effect.txRetry          // suspend + re-run on change
+  yield* TxRef.set(balance, value - 10)
 }))
 ```
+
+There is **no** `Effect.atomic`, `Effect.transaction`, or `Effect.retryTransaction` in v4. Only `Effect.tx` and `Effect.txRetry`.
 
 ### TxRef API
 
 ```typescript
-TxRef.make(initialValue)          // Effect<TxRef<A>>
-TxRef.makeUnsafe(initialValue)    // TxRef<A> (sync, outside Effect)
-TxRef.get(ref)                    // Effect<A>
+TxRef.make(initial)               // Effect<TxRef<A>>
+TxRef.makeUnsafe(initial)         // TxRef<A>           (sync, outside Effect)
+TxRef.get(ref)                    // Effect<A>          (transactional)
 TxRef.set(ref, value)             // Effect<void>
 TxRef.update(ref, f)              // Effect<void>
 TxRef.modify(ref, f)              // Effect<B> where f: A => [B, A]
 ```
 
+All `Tx*` operations are plain `Effect`s — they can be used outside `Effect.tx` (each becomes a single-step transaction), but the atomicity guarantees only span what you wrap in `Effect.tx`.
+
 ### Tx Collections
 
 ```typescript
-import { TxChunk, TxHashMap, TxHashSet, TxQueue, TxSemaphore } from "effect"
+import { TxQueue, TxSemaphore, TxHashMap, TxHashSet, TxPubSub, TxSubscriptionRef } from "effect"
 
-// TxQueue — transactional FIFO queue
-const q = yield* TxQueue.make<string>()
-yield* Effect.atomic(Effect.gen(function* () {
+// TxQueue — transactional queue with strategies
+const q = yield* TxQueue.bounded<string>(100)     // bounded(capacity)
+// also: TxQueue.unbounded(), TxQueue.dropping(cap), TxQueue.sliding(cap)
+yield* Effect.tx(Effect.gen(function* () {
   yield* TxQueue.offer(q, "a")
   yield* TxQueue.offer(q, "b")
+  // both visible atomically to other fibers
 }))
+const item = yield* TxQueue.take(q)               // suspends if empty (txRetry)
 
-// TxSemaphore — transactional semaphore
+// TxSemaphore — transactional permits
 const sem = yield* TxSemaphore.make(3)
-yield* Effect.atomic(
-  TxSemaphore.withPermit(sem)(myEffect)
-)
+yield* TxSemaphore.withPermit(sem)(myEffect)      // not curried — direct call
+yield* TxSemaphore.withPermits(sem, 2)(myEffect)
 ```
+
+### Tx Primitive Catalog
+
+| Primitive | Use |
+|-----------|-----|
+| `TxRef` | Transactional cell (one mutable value) |
+| `TxChunk` | Transactional `Chunk<A>` (ordered sequence) |
+| `TxHashMap` | Transactional keyed map |
+| `TxHashSet` | Transactional set |
+| `TxQueue` | Transactional queue (bounded/unbounded/dropping/sliding); has Open/Closing/Done lifecycle |
+| `TxPriorityQueue` | Transactional queue ordered by `Order<A>` |
+| `TxPubSub` | Transactional publish/subscribe; subscribers each receive every message |
+| `TxSubscriptionRef` | `TxRef` that streams committed changes to subscribers |
+| `TxSemaphore` | Transactional permits; `withPermit`/`withPermits`/`tryAcquire` |
+| `TxReentrantLock` | Read/write lock; multiple readers OR one writer; writer can reenter |
+| `TxDeferred` | Write-once cell; readers `txRetry` until set |
+
+### When to reach for Tx vs other primitives
+
+- **One value, one fiber writing**: `Ref` is fine — no transaction needed.
+- **Multiple refs that must agree** (transfer between accounts, swap, multi-field invariant): `TxRef` + `Effect.tx`.
+- **Wait until a condition** (queue non-empty, balance ≥ X, permit available): `Effect.txRetry` inside `Effect.tx` is cleaner than polling with `Deferred`.
+- **Subscribe to changes**: `TxSubscriptionRef` (current value + every commit as a `Stream`).
+- **Read-heavy with rare writes**: `TxReentrantLock` lets readers proceed concurrently.
 
 ## Quick Reference
 
@@ -123,6 +144,18 @@ yield* Effect.atomic(
 | `Semaphore` | Unchanged |
 | `Effect.fork` | → `Effect.forkChild` |
 | `Effect.forkDaemon` | → `Effect.forkDetach` |
-| `TxRef` | NEW — transactional refs |
-| `Effect.atomic` | NEW — composable transactions |
-| `Effect.transaction` | NEW — isolated transactions |
+| `STM<A, E, R>` monad | Removed — Tx primitives return `Effect` |
+| `STM.commit` | Removed — wrap in `Effect.tx` instead |
+| `STM.retry` | → `Effect.txRetry` |
+| `TRef` | → `TxRef` |
+| `TArray` | → `TxChunk` (or `TxHashMap` for keyed) |
+| `TMap` | → `TxHashMap` |
+| `TSet` | → `TxHashSet` |
+| `TQueue` | → `TxQueue` |
+| `TPriorityQueue` | → `TxPriorityQueue` |
+| `TPubSub` | → `TxPubSub` |
+| `TSemaphore` | → `TxSemaphore` |
+| `TReentrantLock` | → `TxReentrantLock` |
+| `TDeferred` | → `TxDeferred` |
+| `TSubscriptionRef` | → `TxSubscriptionRef` |
+| `TRandom` | Removed — use `Random` service with `TxRef`-backed seed if needed |

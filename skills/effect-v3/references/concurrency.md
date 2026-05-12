@@ -141,6 +141,85 @@ yield* Effect.forEach(items, process, {
 })
 ```
 
+## STM / Transactions
+
+Effect v3 ships Software Transactional Memory as a **separate monad** `STM<A, E, R>`. STM expressions are built up purely, then run as an `Effect` via `STM.commit`. Every `T*` primitive (TRef, TQueue, TMap, …) exposes operations that return `STM<...>`, not `Effect<...>`.
+
+```typescript
+import { Effect, STM, TRef } from "effect"
+
+const program = Effect.gen(function* () {
+  // TRef.make returns STM — must be committed or used inside STM.gen
+  const balance = yield* STM.commit(TRef.make(100))
+  const savings = yield* STM.commit(TRef.make(0))
+
+  // Build the transfer as an STM, then commit atomically
+  const transfer = STM.gen(function* () {
+    const current = yield* TRef.get(balance)
+    yield* TRef.set(balance, current - 50)
+    yield* TRef.update(savings, (s) => s + 50)
+  })
+
+  yield* STM.commit(transfer)
+
+  console.log(yield* STM.commit(TRef.get(balance)))   // 50
+  console.log(yield* STM.commit(TRef.get(savings)))   // 50
+})
+```
+
+**Key APIs:**
+
+| API | What it does |
+|-----|--------------|
+| `STM.commit(stm)` | Run an STM as an `Effect` — atomic commit, automatic retry on conflict |
+| `STM.gen(function* () { ... })` | Compose STM operations in generator form |
+| `STM.retry` | Suspend until any accessed `T*` value changes; then re-run the block |
+| `STM.orElse(a, b)` | Try `a`; on retry/failure, run `b` |
+| `STM.orTry(a, () => b)` | Like `orElse` but only on `retry`, not failure |
+| `STM.all([...])` | Run STMs as one atomic block |
+| `STM.check(predicate)` | `retry` when predicate is false (guard) |
+| `STM.fail` / `STM.succeed` / `STM.die` | Same shapes as `Effect.*` but inside STM |
+
+**Retry-as-wait pattern** (the STM idiom for blocking on a condition):
+
+```typescript
+// Wait until balance is at least 10, then withdraw — atomically
+const withdraw10 = STM.gen(function* () {
+  const value = yield* TRef.get(balance)
+  if (value < 10) yield* STM.retry            // suspend until balance changes
+  yield* TRef.set(balance, value - 10)
+})
+
+yield* STM.commit(withdraw10)
+```
+
+**T* primitive catalog (all return `STM<...>`):**
+
+| Primitive | Use |
+|-----------|-----|
+| `TRef` | Transactional cell (one mutable value) |
+| `TArray` | Transactional array (fixed length) |
+| `TMap` | Transactional keyed map |
+| `TSet` | Transactional set |
+| `TQueue` | Transactional FIFO queue (bounded/unbounded/dropping/sliding) |
+| `TPriorityQueue` | Transactional queue ordered by `Order<A>` |
+| `TPubSub` | Transactional publish/subscribe hub |
+| `TSemaphore` | Transactional permits |
+| `TReentrantLock` | Read/write lock; multiple readers OR one writer; writer can reenter |
+| `TDeferred` | Transactional write-once cell |
+| `TSubscriptionRef` | `TRef` that streams committed changes (since 3.10) |
+| `TRandom` | Transactional pseudo-random source |
+
+**When to reach for STM vs other primitives:**
+
+- **One value, one writer**: plain `Ref` is enough — no transaction needed.
+- **Multiple refs that must agree** (transfer, swap, multi-field invariant): `TRef` + `STM.commit`.
+- **Wait until a condition** (queue non-empty, balance ≥ X, permit free): `STM.retry` inside the block — cleaner than polling.
+- **Subscribe to changes**: `TSubscriptionRef`.
+- **Read-heavy with rare writes**: `TReentrantLock`.
+
+**v4 note:** v4 (effect-smol) removes the `STM<A, E, R>` monad entirely. Every primitive returns a regular `Effect`, and `Effect.tx(...)` marks the atomic boundary; `Effect.txRetry` replaces `STM.retry`. The `T*` family is renamed to `Tx*` (e.g. `TRef → TxRef`, `TQueue → TxQueue`). See the `effect-v4` skill if you're migrating.
+
 ## Quick Reference
 
 | Primitive | Key Feature | When to Use |
@@ -152,3 +231,4 @@ yield* Effect.forEach(items, process, {
 | `Semaphore` | Permits | Rate limiting, resource pooling |
 | `Effect.all` | Batch combinator | Run array of effects together |
 | `Effect.forEach` | Map combinator | Transform items concurrently |
+| `STM` + `T*` | Atomic multi-ref updates | Composable transactions, condition-wait via `STM.retry` |

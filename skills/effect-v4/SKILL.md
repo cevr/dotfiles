@@ -1,6 +1,6 @@
 ---
 name: effect-v4
-description: Effect v4 (effect-smol) patterns for production TypeScript. Use when writing Effect v4 code — Context.Service, layers, errors, HttpApi, RPC, CLI, testing, concurrency, streams, config, transactions. Covers v4 API changes from v3 including Schema.TaggedErrorClass, Result, References, TxRef, and unstable module imports.
+description: Effect v4 (effect-smol) patterns for production TypeScript. Use when writing Effect v4 code — Context.Service, layers, errors, HttpApi, RPC, CLI, testing, concurrency, streams, config, transactions/STM. Covers v4 API changes from v3 including Schema.TaggedErrorClass, Result, References, the Tx* family (TxRef, TxQueue, TxHashMap, TxSemaphore, …) with Effect.tx / Effect.txRetry, and unstable module imports.
 allowed-tools: Bash, Read, Grep, Glob
 ---
 
@@ -21,7 +21,7 @@ What are you working on?
 ├─ RPC                             → references/rpc.md
 ├─ Config / secrets                → references/config.md
 ├─ Concurrency / fibers            → references/concurrency.md
-├─ Transactions (TxRef)            → references/concurrency.md §Transactions
+├─ Transactions / STM (Tx*)        → references/concurrency.md §Transactions
 ├─ Streams                         → references/streams.md
 ├─ Testing                         → §Testing + references/cli-testing.md
 ├─ CLI (effect/unstable/cli)       → `primer effect cli` (adapted for v4 imports)
@@ -39,7 +39,7 @@ What are you working on?
 | HTTP API | `references/http-api.md` | HttpApi from effect/unstable/httpapi |
 | RPC | `references/rpc.md` | RPC from effect/unstable/rpc |
 | CLI testing | `references/cli-testing.md` | SequenceRef, runCli, mock services |
-| Concurrency | `references/concurrency.md` | FiberSet, FiberMap, Deferred, Semaphore, TxRef |
+| Concurrency | `references/concurrency.md` | FiberSet, FiberMap, Deferred, Semaphore, Tx* (STM), `Effect.tx`, `Effect.txRetry` |
 | Config | `references/config.md` | Config, Config.schema, Redacted |
 | Streams | `references/streams.md` | Stream (minor v4 changes) |
 | Migration | `references/migration.md` | v3→v4 rename table, import map |
@@ -655,6 +655,14 @@ For tsconfig setup, scripts, and the full diagnostic severity map, see the **`pr
 - **`Runtime<R>` removed** — use `ManagedRuntime` or `Effect.run*With(services)`
 - **`Runtime.runFork/runPromise/runSync` removed** — use `Effect.runForkWith(services)`, `Effect.runPromiseWith(services)`
 - **`Effect.runtime()` → `Effect.services()`** — returns `Context`, not `Runtime`
+
+### Transactions / STM
+- **No `STM<A, E, R>` monad** — v3's separate STM type is gone; every `Tx*` operation returns a regular `Effect`. Wrap a block in `Effect.tx(...)` to make it atomic.
+- **`Effect.tx` auto-joins parent** — nested `Effect.tx` calls do NOT start a new isolated transaction; the journal commits at the outermost boundary only. There is no `Effect.transaction`/`Effect.atomic` variant.
+- **`Effect.txRetry` not `Effect.retryTransaction`** — suspends the fiber until any accessed `Tx*` value changes, then re-runs the block.
+- **v3 `T*` → v4 `Tx*`** — `TRef→TxRef`, `TMap→TxHashMap`, `TSet→TxHashSet`, `TQueue→TxQueue`, `TPubSub→TxPubSub`, `TSemaphore→TxSemaphore`, `TPriorityQueue→TxPriorityQueue`, `TReentrantLock→TxReentrantLock`, `TDeferred→TxDeferred`, `TSubscriptionRef→TxSubscriptionRef`. `TArray` has no direct successor — use `TxChunk` for ordered or `TxHashMap` for keyed. `TRandom` removed.
+- **`STM.commit(stm)` removed** — there's nothing to commit explicitly; just wrap the workflow in `Effect.tx`.
+- **`TxQueue` has a state machine** — `Open | Closing | Done`; use `TxQueue.end`/`TxQueue.shutdown`/`TxQueue.interrupt` to transition. Plain `TxQueue.take` will fail with the cause once `Done`.
 
 ### Stream
 - **`Stream.fromChunk` → `Stream.fromIterable`** or `Stream.fromArray`
