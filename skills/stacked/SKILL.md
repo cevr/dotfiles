@@ -33,31 +33,31 @@ What do you need?
 
 ## Quick Reference
 
-| Command                      | What it does                                                                                |
-| ---------------------------- | ------------------------------------------------------------------------------------------- |
-| `stacked trunk [name]`       | Get/set trunk branch (`--json`)                                                             |
-| `stacked create <name>`      | Create branch on top of current (`--from`, `--json`)                                        |
-| `stacked list [stack]`       | Show stack branches (`--json`)                                                              |
-| `stacked stacks`             | List all stacks in the repo (`--json`)                                                      |
-| `stacked status`             | Show current branch, stack position, working tree state (`--json`)                          |
-| `stacked checkout <name>`    | Switch to branch (falls through to git for non-stacked branches)                            |
-| `stacked up`                 | Move up one branch in the stack                                                             |
-| `stacked down`               | Move down one branch in the stack                                                           |
-| `stacked top`                | Jump to top of stack                                                                        |
-| `stacked bottom`             | Jump to bottom of stack                                                                     |
-| `stacked sync`               | Fetch + sync stack on trunk (`--from`, `--dry-run`, `--continue`, `--abort`, `--json`)      |
-| `stacked detect`             | Detect branch chains and register as stacks (`--dry-run`, `--json`)                         |
-| `stacked clean`              | Remove merged branches + remote branches (`--dry-run`, `--json`)                            |
-| `stacked delete <name>`      | Remove branch from stack + git + remote (`--keep-remote`, `--force`, `--dry-run`, `--json`) |
-| `stacked submit`             | Push + create/update PRs (`--title`, `--body`, `--only`, `--draft`, `--json`)               |
-| `stacked adopt <branch>`     | Add existing git branch into the stack (`--after`, `--json`)                                |
-| `stacked log`                | Show commits grouped by branch (`--json`)                                                   |
-| `stacked amend`              | Amend current commit and merge into children (`--edit`, `--from`, `--json`)                 |
-| `stacked doctor`             | Check stack metadata for issues (`--fix`, `--json`)                                         |
-| `stacked rename <old> <new>` | Rename a stack (`--json`)                                                                   |
-| `stacked reorder <branch>`   | Move a branch within the stack (`--before`, `--after`, `--json`)                            |
-| `stacked split <branch>`     | Split stack at a branch point (`--dry-run`, `--json`)                                       |
-| `stacked init`               | Install the stacked Claude skill to ~/.claude/skills                                        |
+| Command                      | What it does                                                                                               |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `stacked trunk [name]`       | Get/set trunk branch (`--json`)                                                                            |
+| `stacked create <name>`      | Create branch on top of current (`--from`, `--json`)                                                       |
+| `stacked list [stack]`       | Show stack branches (`--json`)                                                                             |
+| `stacked stacks`             | List all stacks in the repo (`--json`)                                                                     |
+| `stacked status`             | Show current branch, stack position, working tree state (`--json`)                                         |
+| `stacked checkout <name>`    | Switch to branch (falls through to git for non-stacked branches)                                           |
+| `stacked up`                 | Move up one branch in the stack                                                                            |
+| `stacked down`               | Move down one branch in the stack                                                                          |
+| `stacked top`                | Jump to top of stack                                                                                       |
+| `stacked bottom`             | Jump to bottom of stack                                                                                    |
+| `stacked sync`               | Fetch + sync stack on trunk (`--from`, `--dry-run`, `--continue`, `--abort`, `--include-merged`, `--json`) |
+| `stacked detect`             | Detect branch chains and register as stacks (`--dry-run`, `--json`)                                        |
+| `stacked clean`              | Remove merged branches + remote branches (`--dry-run`, `--json`)                                           |
+| `stacked delete <name>`      | Remove branch from stack + git + remote (`--keep-remote`, `--force`, `--dry-run`, `--json`)                |
+| `stacked submit`             | Push + create/update PRs (`--title`, `--body`, `--only`, `--draft`, `--json`)                              |
+| `stacked adopt <branch>`     | Add existing git branch into the stack (`--after`, `--json`)                                               |
+| `stacked log`                | Show commits grouped by branch (`--json`)                                                                  |
+| `stacked amend`              | Amend current commit and merge into children (`--edit`, `--from`, `--json`)                                |
+| `stacked doctor`             | Check stack metadata for issues (`--fix`, `--json`)                                                        |
+| `stacked rename <old> <new>` | Rename a stack (`--json`)                                                                                  |
+| `stacked reorder <branch>`   | Move a branch within the stack (`--before`, `--after`, `--json`)                                           |
+| `stacked split <branch>`     | Split stack at a branch point (`--dry-run`, `--json`)                                                      |
+| `stacked init`               | Install the stacked Claude skill to ~/.claude/skills                                                       |
 
 ### Global Flags
 
@@ -116,17 +116,30 @@ stacked log --json        # machine-readable JSON output
 
 ## Status
 
-Quick orientation — shows current branch, working tree state, and stack position:
+Quick orientation — shows current branch, working tree state, stack position, and per-branch state (push state, merged state):
 
 ```sh
 stacked status
 # Branch: feat-auth-ui
 # Working tree: clean
 # Stack: feat-auth (2 of 3)
+#
+#   ✓ feat-auth (merged)        ← merged PR, skipped by sync/submit
+#   ● feat-auth-ui ↑2           ← current, 2 unpushed commits
+#   ○ feat-auth-tests (no remote)
 
 stacked status --json
-# { "branch": "feat-auth-ui", "clean": true, "stack": { "name": "feat-auth", "position": 2, "total": 3 } }
+# Each branch entry includes: name, current, ahead, hasRemote, merged
 ```
+
+Per-branch markers:
+
+- `●` current branch
+- `○` other branches in the stack
+- `✓` merged (PR has merged on GitHub; skipped by sync/submit)
+- `↑N` N unpushed commits
+- `(no remote)` branch never pushed
+- `(merged)` PR has merged
 
 ## Navigation
 
@@ -147,19 +160,23 @@ Fetch latest trunk, fast-forward trunk, then merge each parent into its child bo
 
 ```sh
 stacked sync
-stacked sync --dry-run       # preview sync plan with predicted actions per branch
-stacked sync --continue      # continue after resolving conflicts
-stacked sync --abort         # abort in-progress merge
-stacked sync --json          # structured output: { branches: [{ name, action, base }] }
+stacked sync --dry-run         # preview sync plan with predicted actions per branch
+stacked sync --continue        # continue after resolving conflicts
+stacked sync --abort           # abort in-progress merge
+stacked sync --include-merged  # force-include merged branches (rare)
+stacked sync --json            # structured output: { branches: [{ name, action, base }] }
 ```
 
 **How sync works:**
 
 1. Fetch and fast-forward trunk onto `origin/trunk` (fails if trunk diverges — reconcile manually)
-2. For each branch, check if parent moved since last sync (`syncedOnto` metadata)
-3. If parent unchanged or already incorporated → skip (no push needed)
-4. If parent changed → `git merge --no-ff` parent into branch
-5. Plain-push changed branches, update `syncedOnto` metadata
+2. Query `gh` for each branch's PR state; mark merged PRs in `stacked.json#mergedBranches`
+3. For each non-merged branch, check if parent moved since last sync (`syncedOnto` metadata)
+4. If parent unchanged or already incorporated → skip (no push needed)
+5. If parent changed → `git merge --no-ff` parent into branch
+6. Plain-push changed branches, update `syncedOnto` metadata
+
+Merged branches are skipped entirely — no merge, no push. Children of a merged branch reparent to the next non-merged ancestor (or trunk). Use `--include-merged` to opt back in.
 
 No rebases. No force-pushes. History only grows forward.
 
@@ -210,6 +227,8 @@ stacked submit --json                                 # structured JSON output
 `submit` plain-pushes (no force). Because sync never rewrites history, every push fast-forwards.
 
 Each PR targets its parent branch (not trunk), preserving the stack structure on GitHub. PRs include auto-generated stack metadata showing position and navigation links. The metadata is refreshed on every `submit`.
+
+Merged branches are skipped — `submit` does not push them or mutate their PRs. They still render in the metadata table of sibling PRs (with ✅) for bookkeeping.
 
 **Output:** `submit` prints one line per branch to stdout: `<branch> #<number> <url> <action>`. With `--json`, outputs a structured `{ results: [...] }` array.
 
@@ -373,6 +392,7 @@ stacked down  # go to previous branch
 - `stacked sync` requires a clean working tree — commit or stash first (except `--dry-run`)
 - `stacked sync` fast-forwards trunk onto `origin/<trunk>` — if trunk has diverged, sync aborts so you can reconcile manually
 - `stacked sync` skips branches whose parent hasn't moved since last sync
+- `stacked sync` and `stacked submit` skip branches whose PRs have merged — they stay in `stacked.json` for bookkeeping (and continue rendering in PR metadata tables with ✅), but no merge/push/PR-mutation happens. Children reparent to the next non-merged ancestor. Use `stacked clean` to remove them, or `stacked sync --include-merged` to force them back into the loop
 - `stacked sync` leaves the merge in progress on conflict — resolve, `git add`, then `stacked sync --continue` (or `--abort`)
 - `syncedOnto` metadata may become stale if branches are manipulated outside `stacked` — doctor clears stale entries; first sync re-establishes from `merge-base`
 - `stacked submit` plain-pushes (no force). Since sync only merges, history always fast-forwards

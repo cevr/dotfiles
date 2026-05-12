@@ -157,9 +157,9 @@ cross-references provided before adding your own.
 
 ```yaml
 ---
-created_at: "2026-05-08T14:00:00Z"
-passage: "Daniel 7"
-title: "The Little Horn and the Judgment"
+created_at: '2026-05-08T14:00:00Z'
+passage: 'Daniel 7'
+title: 'The Little Horn and the Judgment'
 ---
 ```
 

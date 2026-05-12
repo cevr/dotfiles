@@ -156,7 +156,7 @@ Word and the Living Word operate together to guide humanity.
 [SN] Optional tangents for Spirit-led expansion:
 • The sanctuary lampstand as a symbol of God's continual presence
 • Early Adventist use of the "path and the light" metaphor (e.g., early
-  Millerite imagery)
+Millerite imagery)
 • Light in the prophetic writings (Isaiah's Servant Songs)
 • Christ as Light in John's Gospel
 • The closing theme in Revelation: no night, for the Lamb is the Light
@@ -181,8 +181,8 @@ keep only the slide body.
 
 ```yaml
 ---
-created_at: "2026-05-08T14:00:00Z"
-title: "The Word of God as Light"
+created_at: '2026-05-08T14:00:00Z'
+title: 'The Word of God as Light'
 ---
 ```
 

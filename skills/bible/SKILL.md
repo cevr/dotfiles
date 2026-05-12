@@ -35,14 +35,14 @@ system prompt, output shape, frontmatter spec, and the export workflow.
 
 ## Topic Index
 
-| File | Output type | Output dir | Filename pattern |
-| --- | --- | --- | --- |
-| `references/messages.md` | Sermon outline | `outputs/messages/` | `YYYY-MM-DD-slug.md` |
-| `references/studies.md` | Topical study | `outputs/studies/` | `YYYY-MM-DD-slug.md` |
-| `references/readings-slides.md` | Slide deck | `outputs/readings/` | `YYYY-MM-DD-slug.md` |
-| `references/readings-study.md` | Chapter study | `outputs/readings/` | `chapter-N.md` |
-| `references/analyze.md` | Structural analysis | `outputs/analyses/` | `YYYY-MM-DD-slug.md` |
-| `references/sabbath-school.md` | SS week outline | `outputs/sabbath-school/` | `YYYY-QX-WY.md` |
+| File                            | Output type         | Output dir                | Filename pattern     |
+| ------------------------------- | ------------------- | ------------------------- | -------------------- |
+| `references/messages.md`        | Sermon outline      | `outputs/messages/`       | `YYYY-MM-DD-slug.md` |
+| `references/studies.md`         | Topical study       | `outputs/studies/`        | `YYYY-MM-DD-slug.md` |
+| `references/readings-slides.md` | Slide deck          | `outputs/readings/`       | `YYYY-MM-DD-slug.md` |
+| `references/readings-study.md`  | Chapter study       | `outputs/readings/`       | `chapter-N.md`       |
+| `references/analyze.md`         | Structural analysis | `outputs/analyses/`       | `YYYY-MM-DD-slug.md` |
+| `references/sabbath-school.md`  | SS week outline     | `outputs/sabbath-school/` | `YYYY-QX-WY.md`      |
 
 `bible` resolves `outputs/` against a build-time-baked CLI root, so commands
 work from any cwd.
@@ -60,18 +60,18 @@ work from any cwd.
 5. **Updates**: edit the file in place, then `bible sync -f <file>` (uses
    `apple_note_id` to update the linked note).
 
-| Step | Command |
-| --- | --- |
-| Fetch verses | `bible verse "<ref>" --json` |
-| Fetch EGW | `bible egw lookup "<refcode>" --json` / `bible egw commentary "<verse>" --json` |
-| Fetch hymn | `bible hymns search "<query>" --json` / `bible hymns get <n> --json` |
-| Fetch Strong's | `bible concordance H1234 --json` |
-| Fetch SS PDFs | `bible sabbath-school fetch -y 2026 -q 2 -w 5 --json` |
-| Write file | `Write` tool to `outputs/<type>/...md` |
-| Initial export | `bible export -f outputs/<type>/<file>.md --folder <type>` |
-| Update note | `bible sync -f outputs/<type>/<file>.md` |
-| List existing | `bible <type> list [--json]` |
-| Delete linked note | `bible <type> delete -f <file>` |
+| Step               | Command                                                                         |
+| ------------------ | ------------------------------------------------------------------------------- |
+| Fetch verses       | `bible verse "<ref>" --json`                                                    |
+| Fetch EGW          | `bible egw lookup "<refcode>" --json` / `bible egw commentary "<verse>" --json` |
+| Fetch hymn         | `bible hymns search "<query>" --json` / `bible hymns get <n> --json`            |
+| Fetch Strong's     | `bible concordance H1234 --json`                                                |
+| Fetch SS PDFs      | `bible sabbath-school fetch -y 2026 -q 2 -w 5 --json`                           |
+| Write file         | `Write` tool to `outputs/<type>/...md`                                          |
+| Initial export     | `bible export -f outputs/<type>/<file>.md --folder <type>`                      |
+| Update note        | `bible sync -f outputs/<type>/<file>.md`                                        |
+| List existing      | `bible <type> list [--json]`                                                    |
+| Delete linked note | `bible <type> delete -f <file>`                                                 |
 
 ## Apple Notes idempotency contract
 
@@ -80,9 +80,9 @@ what makes export/sync idempotent:
 
 ```yaml
 ---
-created_at: "2026-05-08T14:00:00Z"
-topic: "Choose Ye This Day"
-apple_note_id: "x-coredata://.../ICNote/p1234"   # ← written by `bible export`
+created_at: '2026-05-08T14:00:00Z'
+topic: 'Choose Ye This Day'
+apple_note_id: 'x-coredata://.../ICNote/p1234' # ← written by `bible export`
 ---
 ```
 

@@ -12,12 +12,12 @@ fetches the PDFs and generates the outline directly.
 
 ## Quarter / week calculation
 
-| Quarter | Months | Weeks |
-| --- | --- | --- |
-| Q1 | Jan – Mar | 1–13 |
-| Q2 | Apr – Jun | 1–13 |
-| Q3 | Jul – Sep | 1–13 |
-| Q4 | Oct – Dec | 1–13 |
+| Quarter | Months    | Weeks |
+| ------- | --------- | ----- |
+| Q1      | Jan – Mar | 1–13  |
+| Q2      | Apr – Jun | 1–13  |
+| Q3      | Jul – Sep | 1–13  |
+| Q4      | Oct – Dec | 1–13  |
 
 Each quarter starts on the first Saturday of its first month. To find the
 current week: count Sabbaths from the quarter start.
@@ -125,23 +125,23 @@ to the week's lesson:
 
 Markers (same as `references/studies.md`):
 
-| Marker | Use |
-| --- | --- |
-| `[→]` | Transition |
-| `[TANGENT]` | Optional deep-dive |
-| `[DYK🔎]` | Word study, historical context |
-| `[Q]` | Anticipated question + answer |
-| `[ILL]` | Christ's parable method |
+| Marker      | Use                            |
+| ----------- | ------------------------------ |
+| `[→]`       | Transition                     |
+| `[TANGENT]` | Optional deep-dive             |
+| `[DYK🔎]`   | Word study, historical context |
+| `[Q]`       | Anticipated question + answer  |
+| `[ILL]`     | Christ's parable method        |
 
 ## Frontmatter
 
 ```yaml
 ---
-created_at: "2026-05-08T14:00:00Z"
+created_at: '2026-05-08T14:00:00Z'
 year: 2026
 quarter: 2
 week: 5
-title: "[Lesson title]"
+title: '[Lesson title]'
 ---
 ```
 

@@ -289,9 +289,9 @@ the soul, who must journey through seven trials symbolizing...
 
 ```yaml
 ---
-created_at: "2026-05-08T14:00:00Z"
+created_at: '2026-05-08T14:00:00Z'
 chapter: 82
-title: "Penalty for Transgression"
+title: 'Penalty for Transgression'
 ---
 ```
 

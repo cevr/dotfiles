@@ -335,8 +335,8 @@ God's law was always loving instruction, not arbitrary restriction.
 
 ```yaml
 ---
-created_at: "2026-05-08T14:00:00Z"
-topic: "The Sanctuary"
+created_at: '2026-05-08T14:00:00Z'
+topic: 'The Sanctuary'
 ---
 ```
 
