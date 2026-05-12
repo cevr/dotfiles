@@ -229,7 +229,7 @@ Standard style + correctness rules. Type-aware rules come from `oxlint-tsgolint`
 
 ```yaml
 pre-commit:
-  parallel: false
+  parallel: true
   jobs:
     - name: lint+fmt
       run: bun run lint:fix && bun run fmt
@@ -242,7 +242,7 @@ pre-commit:
       run: bun run test
 ```
 
-Sequential pre-commit: lint+fmt fixes first, then typecheck/build/test gate the commit. Parallel runs trip on each other when lint stages files mid-typecheck.
+Parallel pre-commit with a single combined lint+fmt job: lint runs first (may rewrite source) then fmt formats the result. Keeping lint+fmt as one chained job eliminates the staging race that bites when they're split into separate parallel jobs (one job stages files mid-typecheck on the other). `fmt` not `fmt:check` — we want stage-fixed formatting on commit, not a check failure.
 
 ### Scripts (single-package)
 
@@ -409,7 +409,7 @@ jobs:
 | Tests | `bun test` with `effect-bun-test` for Effect integration |
 | Tracing | `Effect.fn("ServiceName.methodName")` on all service methods |
 | Quality gate | `bun run gate` before any commit/PR/ship |
-| Git hooks | lefthook pre-commit runs lint+fmt, typecheck, build, test (sequential) |
+| Git hooks | lefthook pre-commit runs lint+fmt (single chained job), typecheck, build, test in parallel |
 | Effect diagnostics | `@effect/tsgo` plugin in `tsconfig.json` — single source, per-file via `plugins[].overrides` |
 | Test relaxation | `plugins[].overrides[].include` glob with `options.diagnosticSeverity` map (no separate test tsconfig) |
 | Lint scripts | Single `oxlint` — type-aware rules via `oxlint-tsgolint`, no env vars needed |
