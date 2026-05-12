@@ -1,7 +1,7 @@
 # Font
 font-family = Martian Mono VF
-font-variation=wght=500
-font-variation=wdth=90
+font-variation=wght=450
+font-variation=wdth=85
 font-size = 20
 adjust-cell-height = 50%
 
