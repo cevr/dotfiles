@@ -12,16 +12,12 @@ Default to Bun over Node.js for all runtime, tooling, and testing.
 
 ## Reference
 
-Run `primer bun` for the full guide, or drill into topics:
+When Bun behavior or API shape is unclear, read upstream source/docs with
+`okra repo`:
 
 ```bash
-primer bun              # Overview + quick reference
-primer bun runtime      # Bun.file, Bun.$, env
-primer bun serve        # Bun.serve(), routes, WebSockets
-primer bun data         # SQLite, Redis, Postgres
-primer bun testing      # bun test
-primer bun frontend     # HTML imports, bundling, HMR
-primer bun gotchas      # Node compat gaps
+okra repo fetch oven-sh/bun
+okra repo path -q oven-sh/bun
 ```
 
 ## Quick Rules

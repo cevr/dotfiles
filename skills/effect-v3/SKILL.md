@@ -12,11 +12,11 @@ Production patterns for Effect TypeScript v3 codebases.
 
 ```
 What are you working on?
-├─ New to Effect / basics         → `primer effect basics`
+├─ New to Effect / basics         → §Core Rules + `okra repo fetch effect-ts/effect`
 ├─ Defining a service             → §Services + references/services.md
 ├─ Wrapping a 3rd-party SDK       → references/client-wrapper.md
-├─ Data modeling / Schema          → `primer effect data-modeling`
-├─ Error handling                  → §Errors + `primer effect errors`
+├─ Data modeling / Schema          → §Data Modeling + `okra repo fetch effect-ts/effect`
+├─ Error handling                  → §Errors + `okra repo fetch effect-ts/effect`
 ├─ HTTP API (server)               → references/http-api.md
 ├─ RPC                             → references/rpc.md
 ├─ Config / secrets                → references/config.md
@@ -24,7 +24,7 @@ What are you working on?
 ├─ STM / Transactions (TRef, …)    → references/concurrency.md §STM
 ├─ Streams                         → references/streams.md
 ├─ Testing                         → §Testing + references/cli-testing.md
-├─ CLI (@effect/cli)               → `primer effect cli`
+├─ CLI (@effect/cli)               → `okra repo fetch effect-ts/effect` and search CLI packages/examples
 └─ Something else                  → §Source Code (search Effect repo)
 ```
 
@@ -40,18 +40,18 @@ What are you working on?
 | Concurrency | `references/concurrency.md` | FiberSet, FiberMap, FiberHandle, Deferred, Semaphore, STM + T* primitives |
 | Config | `references/config.md` | Config providers, redacted, nested |
 | Streams | `references/streams.md` | Stream creation, transformation, consumption |
-| Basics | `primer effect basics` | Effect.fn, Effect.gen, pipe |
-| Data modeling | `primer effect data-modeling` | Schema.Class, branded types, variants |
-| Errors | `primer effect errors` | Schema.TaggedError, catchTag, defects |
-| Testing | `primer effect testing` | @effect/vitest, test layers, TestClock |
-| CLI | `primer effect cli` | @effect/cli commands, options, args |
+| Basics | §Core Rules + `okra repo fetch effect-ts/effect` | Effect.fn, Effect.gen, pipe |
+| Data modeling | §Data Modeling + `okra repo fetch effect-ts/effect` | Schema.Class, branded types, variants |
+| Errors | §Errors + `okra repo fetch effect-ts/effect` | Schema.TaggedError, catchTag, defects |
+| Testing | §Testing + `okra repo fetch effect-ts/effect` | @effect/vitest, test layers, TestClock |
+| CLI | `okra repo fetch effect-ts/effect` and search CLI packages/examples | @effect/cli commands, options, args |
 
 ## Pre-Implementation (mandatory)
 
 Before writing Effect code:
 
 1. **Read types** — find relevant Context.Tags, TaggedErrors, Schema classes
-2. **Run primer** — `primer effect <topic>` for the pattern you need
+2. **Read source when needed** — `okra repo fetch effect-ts/effect`, then `okra repo path -q effect-ts/effect` and search for the relevant package, API, or example
 3. **Read sibling code** — match existing patterns in the codebase
 4. **Only then implement**
 
@@ -533,7 +533,7 @@ export class Unauthorized extends Schema.TaggedError<Unauthorized>()(
 ) {}
 ```
 
-Full patterns → `primer effect errors`
+Full patterns → `okra repo fetch effect-ts/effect`, then search Schema.TaggedError and catchTag usage in the cached source.
 
 ## Data Modeling (quick ref)
 
@@ -551,7 +551,7 @@ export class User extends Schema.Class<User>("User")({
 }) {}
 ```
 
-Full patterns → `primer effect data-modeling`
+Full patterns → `okra repo fetch effect-ts/effect`, then search Schema.Class and branded type usage in the cached source.
 
 ## Testing (quick ref)
 

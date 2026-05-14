@@ -26,20 +26,20 @@ Read every changed file in full. Skim is not review.
 
 ## Pre-Review: Load Context
 
-Before auditing, load domain knowledge via primers.
+Before auditing, load domain knowledge via local skills and upstream source.
 
-**Always run:**
+**Always read:**
 
-- primer code-style (style principles are the review criteria)
-- primer architecture (structural patterns, boundaries, error strategy)
+- code-style skill (style principles are the review criteria)
+- architecture skill (structural patterns, boundaries, error strategy)
 
 **Based on what's in scope:**
 
-| Detected | Run |
-|----------|-----|
-| Effect imports (effect, @effect/*) | primer effect + relevant subtopics |
-| .tsx / React files | primer react (when primer exists) |
-| bun.lock present | primer bun |
+| Detected | Read |
+|----------|------|
+| Effect imports (effect, @effect/*) | effect-v3/effect-v4 skill, then `okra repo fetch effect-ts/effect` and `okra repo path -q effect-ts/effect` when upstream source/examples matter |
+| .tsx / React files | react skill; use `okra repo fetch facebook/react` and `okra repo path -q facebook/react` when React internals/examples matter |
+| bun.lock present | bun skill; use `okra repo fetch oven-sh/bun` and `okra repo path -q oven-sh/bun` when Bun source/docs matter |
 
 ## Phase 1: Slop Detection
 
@@ -60,14 +60,14 @@ AI-generated cruft that humans wouldn't write.
 
 ## Phase 2: Structural Review
 
-Zoom out from lines to modules. Use primer architecture patterns as reference.
+Zoom out from lines to modules. Use architecture skill patterns as reference.
 
 | Concern | Question |
 |---------|----------|
 | Abstractions | Right level? Too many layers? Would a future reader understand why? |
 | Duplication | Same logic in 2+ places? |
-| Error handling | Typed and handled? Or swallowed / generic catch? (see primer architecture errors) |
-| Boundaries | Internal details leaking through exports? (see primer architecture boundaries) |
+| Error handling | Typed and handled? Or swallowed / generic catch? (see architecture skill errors) |
+| Boundaries | Internal details leaking through exports? (see architecture skill boundaries) |
 | API misuse | Using a library wrong? Invoke repo-explorer to check upstream source/examples |
 | Naming | Names match current behavior (not 3 iterations ago)? |
 | Dead exports | Public API nothing uses? |

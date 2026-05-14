@@ -12,7 +12,7 @@ Production patterns for Effect TypeScript v4 (effect-smol) codebases.
 
 ```
 What are you working on?
-├─ New to Effect / basics         → `primer effect basics` (concepts same as v3)
+├─ New to Effect / basics         → §Core Rules + `okra repo fetch effect-ts/effect`
 ├─ Defining a service             → §Services + references/services.md
 ├─ Wrapping a 3rd-party SDK       → references/client-wrapper.md
 ├─ Data modeling / Schema          → references/schema.md
@@ -24,7 +24,7 @@ What are you working on?
 ├─ Transactions / STM (Tx*)        → references/concurrency.md §Transactions
 ├─ Streams                         → references/streams.md
 ├─ Testing                         → §Testing + references/cli-testing.md
-├─ CLI (effect/unstable/cli)       → `primer effect cli` (adapted for v4 imports)
+├─ CLI (effect/unstable/cli)       → `okra repo fetch effect-ts/effect` and search `packages/effect/src/internal/cli`
 ├─ Migrating from v3               → references/migration.md
 └─ Something else                  → §Source Code (search effect-smol repo)
 ```
