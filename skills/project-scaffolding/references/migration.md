@@ -19,22 +19,21 @@ npx @effect/tsgo setup
 | `@effect/language-service` (npm) | `@effect/tsgo` (bundles tsgo + LSP) |
 | `effect-language-service patch` in `prepare` | `effect-tsgo patch` in `prepare` |
 | `tsconfig.json` (base) + `tsconfig.lsp.json` (Effect plugin) + `tsconfig.lsp.test.json` (relaxed) | Single `tsconfig.json` with plugin + `overrides` for tests |
-| `tsgolint-effect` (Go binary) for type-aware Effect rules | (none — Effect rules now live in the `@effect/language-service` plugin embedded in `@effect/tsgo`) |
-| `oxlint-plugin-effect` (66 AST rules) | (none — replaced by Effect plugin diagnostics) |
-| `OXLINT_TSGOLINT_PATH=./node_modules/.bin/tsgolint-effect oxlint` | `oxlint` (auto-detects `oxlint-tsgolint`) |
-| `tsgolint-effect` (binary) | `oxlint-tsgolint` (npm package) |
-| Separate `lint:effect` turbo task | Effect rules ride along with `tsgo --noEmit` (typecheck channel); drop the task |
+| `tsgolint-effect` (Go binary) for type-aware Effect rules | (none — type-aware Effect rules now live in the `@effect/language-service` plugin embedded in `@effect/tsgo`) |
+| Missing or legacy `oxlint-plugin-effect` wiring | Current `oxlint-plugin-effect` package loaded with `jsPlugins: ["oxlint-plugin-effect/plugin"]` |
+| `OXLINT_TSGOLINT_PATH=./node_modules/.bin/tsgolint-effect oxlint` | `oxlint` |
+| Separate `lint:effect` turbo task | Type-aware Effect rules ride along with `tsgo --noEmit`; AST/style Effect rules run in oxlint |
 | `// @effect-diagnostics effect/strictEffectProvide:off` directive at top of test files | `plugins[].overrides[].include: ["**/*.test.ts", ...]` once in tsconfig |
 | `.effect-lsp.json` (brief intermediate config) | (deleted — config returns to tsconfig plugin block) |
 
 ## Step 1: Update dependencies
 
 ```bash
-bun remove @effect/language-service tsgolint-effect oxlint-plugin-effect
-bun add -D @effect/tsgo @typescript/native-preview oxlint-tsgolint
+bun remove @effect/language-service tsgolint-effect oxlint-tsgolint
+bun add -D @effect/tsgo @typescript/native-preview oxlint-plugin-effect
 ```
 
-`@typescript/native-preview` may already be installed — keep it. `@effect/tsgo` patches its bundled `tsgo` binary in place.
+`@typescript/native-preview` may already be installed — keep it. `@effect/tsgo` patches its bundled `tsgo` binary in place. Keep `oxlint-plugin-effect`; it is now the source of fast AST/style Effect rules.
 
 ## Step 2: Update `prepare` script
 
@@ -136,7 +135,7 @@ If your `package.json` had separate `lint:ox` / `lint:effect`:
  }
 ```
 
-`oxlint` auto-detects `oxlint-tsgolint` for `--type-aware` mode (controlled by `options.typeAware: true` in `.oxlintrc.json`) — no env var. Effect-specific diagnostics no longer come from oxlint at all; they ride along with `tsgo --noEmit`.
+Plain `oxlint` loads `oxlint-plugin-effect/plugin` from `.oxlintrc.json`. Type-aware Effect diagnostics ride along with `tsgo --noEmit`; AST/style Effect guidelines remain in oxlint.
 
 If you had a per-package `lint` script running `effect-language-service diagnostics --project tsconfig.json`, delete it. The diagnostics now happen during `typecheck`.
 
@@ -165,19 +164,22 @@ Add `globalDependencies: ["tsconfig.json"]` at the turbo root so root-tsconfig c
 
 ```diff
  {
-   "options": { "typeAware": true },
--  "plugins": ["typescript", "import", "node"],
--  "jsPlugins": ["oxlint-plugin-effect"],
-   "rules": {
--    "effect/floatingEffect": "error",
--    "effect/missingEffectError": "error",
--    // ... 70+ effect/* rules
-+    // typescript / import / node rules only — Effect rules moved to the tsgo plugin
-   }
- }
+  "plugins": ["typescript", "import", "node"],
+-  "jsPlugins": ["old-effect-plugin-path"],
++  "jsPlugins": ["oxlint-plugin-effect/plugin"],
+  "rules": {
++    "effect/noSpread": "error",
++    "effect/noSchemaStruct": "error",
++    "effect/noMakeUnsafe": "error",
++    "effect/noHandRolledTaggedUnion": "error",
++    "effect/noDynamicImports": "error",
++    "effect/noPromiseControlFlowInTests": "error",
++    "effect/noSleepInTests": "error"
+  }
+}
 ```
 
-Keep TypeScript / import / node rules. Drop every `effect/*` rule and the `oxlint-plugin-effect` plugin entry — those diagnostics now come from the Effect language service plugin embedded in `@effect/tsgo`, surfaced via `tsgo --noEmit`.
+Keep TypeScript / import / node rules. Replace legacy Effect plugin paths and old `effect/*` names with the current `oxlint-plugin-effect` rule set from `templates/.oxlintrc.json`. Do not add `options.typeAware` unless the project intentionally installs a compatible type-aware oxlint bridge; `@effect/tsgo` is the default type-aware Effect channel.
 
 ## Step 7: Update lefthook.yml
 
@@ -211,7 +213,7 @@ Sequential is preferred — parallel jobs trip on each other when lint stages fi
 rm -rf node_modules
 bun install                  # triggers prepare → effect-tsgo patch
 bun run typecheck            # should report Effect diagnostics inline
-bun run lint                 # should run oxlint with type-aware rules
+bun run lint                 # should run oxlint and load oxlint-plugin-effect
 bun run gate                 # full pass
 ```
 
@@ -222,6 +224,6 @@ If `tsgo --noEmit` passes without surfacing any Effect diagnostics on code that 
 - **`overrides` block at the wrong level** — it lives **inside the plugin object**, sibling to `diagnosticSeverity`. Putting it at `compilerOptions` root is silently ignored.
 - **`overrides[].options` not `overrides[].compilerOptions`** — the inner key is `options`, mirroring the plugin's top-level option shape (`diagnosticSeverity`, `pipeableMinArgCount`, etc. all valid here).
 - **Forgot to delete old `tsconfig.lsp.json`** — leaf packages still extending it inherit a stale config. Grep: `rg '"extends".*tsconfig\.lsp' .`
-- **Forgot to drop `effect/*` rules from `.oxlintrc.json`** — oxlint will fail to find the plugin and error out.
+- **Forgot to install `oxlint-plugin-effect`** — oxlint will fail to load `oxlint-plugin-effect/plugin`.
 - **`@typescript/native-preview` and `@effect/tsgo` version skew** — `effect-tsgo patch` errors if pinned versions don't match. Bump them together; `latest` for both is fine for personal projects.
-- **Stacking `oxlint-plugin-effect` and `@effect/tsgo`** — produces duplicate diagnostics. Pick one (use `@effect/tsgo`).
+- **Using old rule names** — the current package uses names like `effect/noSchemaStruct`, not older language-service diagnostic names like `effect/missingEffectError`.

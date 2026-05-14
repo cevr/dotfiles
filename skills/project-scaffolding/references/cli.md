@@ -56,7 +56,7 @@ bun add effect @effect/platform-bun
 
 # Dev tooling
 bun add -D typescript @typescript/native-preview @types/bun \
-  @effect/tsgo oxlint oxlint-tsgolint oxfmt lefthook concurrently effect-bun-test
+  @effect/tsgo oxlint oxlint-plugin-effect oxfmt lefthook concurrently effect-bun-test
 
 # If publishing to npm
 bun add -D @changesets/cli @changesets/changelog-github
@@ -68,7 +68,7 @@ bun add -D @changesets/cli @changesets/changelog-github
 
 Copy configs from SKILL.md §Tooling Stack:
 - `tsconfig.json` — single config with `@effect/language-service` plugin + `overrides` for tests
-- `.oxlintrc.json` — standard rules, type-aware enabled
+- `.oxlintrc.json` — standard rules + `oxlint-plugin-effect` via `jsPlugins`
 - `lefthook.yml` — pre-commit hooks
 - `package.json` scripts — dev, build, gate, lint, fmt, prepare (with `effect-tsgo patch`)
 
@@ -332,9 +332,9 @@ If publishing to npm, follow SKILL.md §Publishing for:
 ## Checklist
 
 - [ ] `bun init` + `"type": "module"`
-- [ ] Install deps (effect, platform-bun, dev tooling incl. `@effect/tsgo` + `@typescript/native-preview`)
+- [ ] Install deps (effect, platform-bun, dev tooling incl. `@effect/tsgo`, `@typescript/native-preview`, `oxlint-plugin-effect`)
 - [ ] `tsconfig.json` with `@effect/language-service` plugin (full `diagnosticSeverity` + `overrides` for tests)
-- [ ] `.oxlintrc.json` with `options.typeAware: true`
+- [ ] `.oxlintrc.json` with `jsPlugins: ["oxlint-plugin-effect/plugin"]` and the Effect guideline rules
 - [ ] `lefthook.yml`
 - [ ] `package.json` scripts (dev, build, gate, lint, fmt, prepare with `effect-tsgo patch`)
 - [ ] `bun install` runs `prepare` — confirms `effect-tsgo patch` succeeds

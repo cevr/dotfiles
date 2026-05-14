@@ -29,7 +29,7 @@ project-name/
 ├── package.json             — root: workspaces, catalog, devDeps
 ├── tsconfig.json            — root: single config with @effect/language-service plugin + paths
 ├── turbo.json               — task orchestration
-├── .oxlintrc.json           — shared lint config
+├── .oxlintrc.json           — shared lint config with oxlint-plugin-effect rules
 ├── .oxfmtrc.json            — shared format config (optional)
 ├── lefthook.yml             — git hooks
 └── .gitignore
@@ -75,13 +75,13 @@ mkdir -p packages/core/src packages/cli/src
     "lefthook": "latest",
     "oxfmt": "latest",
     "oxlint": "latest",
-    "oxlint-tsgolint": "latest",
+    "oxlint-plugin-effect": "latest",
     "turbo": "latest",
     "typescript": "latest"
   },
   "catalog": {
-    "effect": "4.0.0-beta.59",
-    "@effect/platform-bun": "4.0.0-beta.59"
+    "effect": "4.0.0-beta.66",
+    "@effect/platform-bun": "4.0.0-beta.66"
   }
 }
 ```
@@ -91,17 +91,18 @@ Key points:
 - `"catalog"` — pins shared dependency versions; leaf packages reference with `"catalog:"`.
 - `effect` in devDeps as `catalog:` — available for root-level tests.
 - Lint/fmt run at root only (not per-package via turbo) — oxlint scans the whole tree in one pass.
-- Effect diagnostics ride along with `tsgo --noEmit` (typecheck channel), so there's no separate `lint:effect` script.
+- Type-aware Effect diagnostics ride along with `tsgo --noEmit` (typecheck channel), so there's no separate `lint:effect` script.
+- Fast AST/style Effect guidelines run in `oxlint` through `oxlint-plugin-effect/plugin`.
 - `prepare` wires lefthook install + `effect-tsgo patch` — re-runs on every `bun install`.
 
 ### Lint strategy
 
 | Script | Scope | What |
 |--------|-------|------|
-| `lint` | Root | `oxlint` — runs on entire tree, type-aware via `oxlint-tsgolint` |
+| `lint` | Root | `oxlint` — runs on entire tree with built-in rules plus `oxlint-plugin-effect` |
 | `typecheck` | Root → leaf | `turbo run typecheck` — fans out, each leaf runs `tsgo --noEmit` (Effect diagnostics included) |
 
-No `lint:effect` / per-package `lint` script — Effect rules come from the tsgo plugin during `typecheck`.
+No `lint:effect` / per-package `lint` script. Use one root `oxlint` pass for AST rules, and let the tsgo plugin handle type-aware diagnostics during `typecheck`.
 
 ## Step 3: Root tsconfig.json
 
@@ -360,7 +361,7 @@ Rules:
 - [ ] Root `package.json` with `workspaces`, `catalog`, `gate` script, `prepare: lefthook install && effect-tsgo patch`
 - [ ] Root `tsconfig.json` with `@effect/language-service` plugin (full `diagnosticSeverity` + `overrides` for tests + `paths` for all packages)
 - [ ] `turbo.json` with `globalDependencies: ["tsconfig.json"]` and `dependsOn` for typecheck/build
-- [ ] `.oxlintrc.json` with `options.typeAware: true` and `node/no-process-env`
+- [ ] `.oxlintrc.json` with `jsPlugins: ["oxlint-plugin-effect/plugin"]`, Effect guideline rules, and `node/no-process-env`
 - [ ] `lefthook.yml`
 - [ ] Core package: `peerDependencies`, `exports`, extends root `tsconfig.json`
 - [ ] CLI package: `workspace:*` dep on core, platform-bun

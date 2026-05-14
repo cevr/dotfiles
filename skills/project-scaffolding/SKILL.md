@@ -1,6 +1,6 @@
 ---
 name: project-scaffolding
-description: Scaffold new TypeScript projects with Effect, Bun, oxlint, oxfmt, lefthook, and changesets. Use when starting a new project, setting up a monorepo, configuring tooling, adding CI/CD, or when asked to "scaffold", "bootstrap", "init", "set up a project", "create a new project", or "new repo". Covers CLI apps, monorepos with core/cli/web splits, and npm publishing.
+description: Scaffold new TypeScript projects with Effect, Bun, oxlint, oxlint-plugin-effect, oxfmt, lefthook, and changesets. Use when starting a new project, setting up a monorepo, configuring tooling, adding CI/CD, Effect lint guidelines, or when asked to "scaffold", "bootstrap", "init", "set up a project", "create a new project", or "new repo". Covers CLI apps, monorepos with core/cli/web splits, and npm publishing.
 ---
 
 # Project Scaffolding
@@ -45,7 +45,7 @@ Every project uses this base. No exceptions.
 | **@typescript/native-preview** | Native Go TS compiler (`tsgo` binary), required alongside `@effect/tsgo` | — |
 | **typescript** | Editor/LSP fallback, TS6 | — |
 | **oxlint** | Linting (fast, Rust-based) | `.oxlintrc.json` |
-| **oxlint-tsgolint** | Type-aware lint rules via tsgolint | `.oxlintrc.json` `options.typeAware` |
+| **oxlint-plugin-effect** | Effect AST/style guidelines for oxlint (`effect/*` rules) | `.oxlintrc.json` `jsPlugins` |
 | **oxfmt** | Formatting (fast, Rust-based) | `.oxfmtrc.json` (optional) |
 | **lefthook** | Git hooks (pre-commit) | `lefthook.yml` |
 | **concurrently** | Parallel script runner for `gate` | `package.json` scripts |
@@ -189,20 +189,20 @@ Single tsconfig. Effect diagnostics live inside the `@effect/language-service` p
 
 ### .oxlintrc.json
 
-Standard style + correctness rules. Type-aware rules come from `oxlint-tsgolint`. Effect-specific lint lives in `@effect/language-service` (the tsgo plugin) — **don't add a separate Effect oxlint plugin**.
+Standard style + correctness rules. Effect-specific lint is split by layer:
+- `@effect/tsgo` owns type-aware Effect diagnostics during `typecheck`.
+- `oxlint-plugin-effect` owns fast AST/style guidelines during `lint` (`effect/*` rules like `noSpread`, `noSchemaStruct`, `noMakeUnsafe`, `noDynamicImports`, and test-control-flow bans).
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
-  "options": {
-    "typeAware": true
-  },
   "categories": {
     "correctness": "error",
     "suspicious": "error",
     "perf": "error"
   },
   "plugins": ["typescript", "import", "node"],
+  "jsPlugins": ["oxlint-plugin-effect/plugin"],
   "rules": {
     "typescript/no-explicit-any": "error",
     "typescript/no-unsafe-type-assertion": "error",
@@ -216,14 +216,22 @@ Standard style + correctness rules. Type-aware rules come from `oxlint-tsgolint`
     "import/no-duplicates": "error",
     "node/no-process-env": "error",
     "no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
+    "no-underscore-dangle": "off",
     "no-nested-ternary": "error",
-    "complexity": ["error", 20]
+    "complexity": ["error", 20],
+    "effect/noSpread": "error",
+    "effect/noSchemaStruct": "error",
+    "effect/noMakeUnsafe": "error",
+    "effect/noHandRolledTaggedUnion": "error",
+    "effect/noDynamicImports": "error",
+    "effect/noPromiseControlFlowInTests": "error",
+    "effect/noSleepInTests": "error"
   },
   "ignorePatterns": ["**/dist/**", "**/node_modules/**", "**/*.d.ts", "**/bin/**"]
 }
 ```
 
-`oxlint --type-aware` requires `oxlint-tsgolint` installed as a dev dep — auto-detected, no env var needed.
+Use `templates/.oxlintrc.json` for the full Effect rule list. Keep rule names explicit in JSON configs; oxlint does not load exported preset objects from package code.
 
 ### lefthook.yml
 
@@ -284,7 +292,7 @@ Parallel pre-commit with a single combined lint+fmt job: lint runs first (may re
 }
 ```
 
-Lint/fmt at root only — oxlint scans the whole tree in one pass. No `turbo run lint` fan-out: Effect diagnostics are typecheck-channel (via the LSP plugin), not lint-channel, so they ride along with `tsgo --noEmit`.
+Lint/fmt at root only — oxlint scans the whole tree in one pass. No `turbo run lint` fan-out: `oxlint-plugin-effect` handles fast AST rules in the root lint pass, and type-aware Effect diagnostics ride along with `tsgo --noEmit`.
 
 ### Scripts (monorepo leaf package)
 
@@ -310,14 +318,14 @@ effect-bun-test
 lefthook
 oxfmt
 oxlint
-oxlint-tsgolint
+oxlint-plugin-effect
 typescript
 ```
 
 - `@effect/tsgo` is the bundled package. It ships the `effect-tsgo` CLI (used by the `prepare` script's `patch` command) and adds the Effect language service plugin to `tsgo`.
 - `@typescript/native-preview` is still required — `effect-tsgo patch` patches its bundled `tsgo` binary in place. Both must be installed.
 - `typescript` is needed for editor LSP fallback and as a peer of various tools.
-- `oxlint-tsgolint` enables `oxlint`'s `typeAware` mode (auto-detected).
+- `oxlint-plugin-effect` provides the `effect/*` oxlint rules used for Effect style and project guidelines. Configure it with `jsPlugins: ["oxlint-plugin-effect/plugin"]`.
 
 ## Publishing
 
@@ -410,9 +418,9 @@ jobs:
 | Tracing | `Effect.fn("ServiceName.methodName")` on all service methods |
 | Quality gate | `bun run gate` before any commit/PR/ship |
 | Git hooks | lefthook pre-commit runs lint+fmt (single chained job), typecheck, build, test in parallel |
-| Effect diagnostics | `@effect/tsgo` plugin in `tsconfig.json` — single source, per-file via `plugins[].overrides` |
+| Effect diagnostics | `@effect/tsgo` plugin in `tsconfig.json` for type-aware diagnostics; `oxlint-plugin-effect` in `.oxlintrc.json` for AST/style guidelines |
 | Test relaxation | `plugins[].overrides[].include` glob with `options.diagnosticSeverity` map (no separate test tsconfig) |
-| Lint scripts | Single `oxlint` — type-aware rules via `oxlint-tsgolint`, no env vars needed |
+| Lint scripts | Single `oxlint` at root with `oxlint-plugin-effect/plugin` loaded through `jsPlugins` |
 | Monorepo orchestration | turbo for typecheck/build/test, oxlint at root |
 | Version catalog | `"catalog": {}` in root `package.json` for monorepos — pins shared dep versions |
 
@@ -493,8 +501,8 @@ Use the `repo` skill (`skills/repo/SKILL.md`) — `okra repo fetch` + `repo path
 - **`overrides` is plugin-scoped, not tsconfig-scoped** — it lives inside the `@effect/language-service` plugin object's options, not at the tsconfig root. Sibling to `diagnosticSeverity`.
 - **`overrides[].options.diagnosticSeverity` merges, not replaces** — only list rules whose severity changes for matching files.
 - **`types: ["bun"]` required** — TS6 defaults `types` to `[]` in some configs. Without it, `Bun.*` globals are invisible.
-- **`oxlint-tsgolint` must be a devDep for `--type-aware`** — auto-detected by oxlint, no env var. Without it, type-aware rules silently no-op.
-- **Don't add `oxlint-plugin-effect`** — Effect rules live in `@effect/language-service` (typecheck channel), not oxlint. Stacking both produces duplicate diagnostics.
+- **`oxlint-plugin-effect` must be a devDep when `.oxlintrc.json` lists `jsPlugins: ["oxlint-plugin-effect/plugin"]`** — otherwise `oxlint` cannot load the `effect/*` rules.
+- **Do not use legacy `tsgolint-effect` or env-var lint wiring** — the current shape is plain `oxlint` plus `oxlint-plugin-effect` for AST rules and `tsgo --noEmit` for type-aware Effect diagnostics.
 - **`@effect/tsgo` and `@typescript/native-preview` versions are coupled** — `effect-tsgo patch` validates compatibility. Bump them together; if `patch` errors after an upgrade, update both pkgs.
 - **`repository.url` required for npm provenance** — publish will 422 without it.
 - **`noUncheckedIndexedAccess`** — array/record indexing returns `T | undefined`. Use `??` or guards, not `!`.
