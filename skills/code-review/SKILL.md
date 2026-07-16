@@ -37,7 +37,7 @@ Before auditing, load domain knowledge via local skills and upstream source.
 
 | Detected | Read |
 |----------|------|
-| Effect imports (effect, @effect/*) | effect-v3/effect-v4 skill, then `okra repo fetch effect-ts/effect` and `okra repo path -q effect-ts/effect` when upstream source/examples matter |
+| Effect imports (`effect`, `@effect/*`) | `effect` skill, then `okra repo fetch effect-ts/effect` and the returned checkout path when upstream source or examples matter |
 | .tsx / React files | react skill; use `okra repo fetch facebook/react` and `okra repo path -q facebook/react` when React internals/examples matter |
 | bun.lock present | bun skill; use `okra repo fetch oven-sh/bun` and `okra repo path -q oven-sh/bun` when Bun source/docs matter |
 

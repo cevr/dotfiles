@@ -1,0 +1,4 @@
+interface:
+  display_name: "Effect"
+  short_description: "Production TypeScript patterns for Effect v4"
+  default_prompt: "Use $effect to implement this Effect v4 workflow with project-pinned APIs and explicit layers."

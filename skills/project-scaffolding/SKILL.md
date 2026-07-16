@@ -485,8 +485,7 @@ Use the `repo` skill (`skills/repo/SKILL.md`) — `okra repo fetch` + `repo path
 | Repo | What | Fetch |
 |------|------|-------|
 | `effect-ts/tsgo` | Effect tsgo wrapper — diagnostic list, plugin options, `overrides` schema, presets, setup CLI | `okra repo fetch effect-ts/tsgo` |
-| `effect-ts/effect-smol` | Effect v4 source — Context.Service, Schema, unstable modules | `okra repo fetch effect-ts/effect-smol` |
-| `effect-ts/effect` | Effect v3 source — Context.Tag, Schema, platform packages | `okra repo fetch effect-ts/effect` |
+| `effect-ts/effect` | Effect v4 source — Context.Service, Schema, unstable modules | `okra repo fetch effect-ts/effect` |
 
 **When to explore `effect-ts/tsgo`:**
 - Tuning `diagnosticSeverity` — README has the full diagnostic table with defaults; `_packages/tsgo/src/metadata.json` has the rule metadata.

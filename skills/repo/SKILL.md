@@ -47,7 +47,7 @@ What do you need?
 okra repo fetch vercel/next.js
 
 # Compose with shell
-cd $(okra repo fetch effect-ts/effect-smol)
+cd $(okra repo fetch effect-ts/effect)
 
 # Force re-clone
 okra repo fetch -f owner/repo
@@ -137,10 +137,10 @@ okra repo clean --all -y
 
 ```bash
 # 1. Fetch
-okra repo fetch effect-ts/effect-smol
+okra repo fetch effect-ts/effect
 
 # 2. Get path
-REPO=$(okra repo path effect-ts/effect-smol)
+REPO=$(okra repo path effect-ts/effect)
 
 # 3. Explore
 Read file_path="$REPO/package.json"
