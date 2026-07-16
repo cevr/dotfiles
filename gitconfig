@@ -25,6 +25,7 @@
 [core]
 	excludesfile = /Users/cvr/.gitignore_global
 	pager = delta
+	ignorecase = false
 [interactive]
 	diffFilter = delta --color-only
 [delta]

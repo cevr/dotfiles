@@ -186,3 +186,6 @@ if [ -f '/Users/cvr/Downloads/google-cloud-sdk/path.zsh.inc' ]; then . '/Users/c
 
 # The next line enables shell command completion for gcloud.
 if [ -f '/Users/cvr/Downloads/google-cloud-sdk/completion.zsh.inc' ]; then . '/Users/cvr/Downloads/google-cloud-sdk/completion.zsh.inc'; fi
+
+# Second Claude Code account (separate config/session)
+alias claude2='CLAUDE_CONFIG_DIR=~/.claude2 /Users/cvr/.local/bin/claude'
