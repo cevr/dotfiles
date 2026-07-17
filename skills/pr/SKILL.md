@@ -9,7 +9,7 @@ Create pull requests with consistent formatting and automatic context extraction
 
 ## Usage
 
-```
+```text
 /pr                    # Auto-generate title from commits
 /pr "feat: add X"      # Specify title directly
 ```
@@ -131,17 +131,6 @@ Closes: BITE-1234
 - Use HEREDOC for body to preserve formatting
 - Return PR URL when done
 
-## Bite Contributors (Active - Last 3 Months)
+## Reviewers and Assignees
 
-Quick reference for reviewers/assignees:
-
-| Name | GitHub |
-|------|--------|
-| Cristian | cevr |
-| Antwan Daher | antwandaher |
-| Stas Nikiforov | stasnikiforov |
-| James Goudie | JamesGGoudie |
-| Andrew Goupil | AndrewGoupil |
-| Derek Wang | Derek-X-Wang |
-| Quinn | QuinnNCH |
-| Tianyun Shan | nuynait |
+Use handles explicitly requested by the user. Otherwise resolve current collaborators from live GitHub data; do not rely on a static contributor roster.

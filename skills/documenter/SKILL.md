@@ -59,7 +59,7 @@ Benefits:
 
 Agents navigate documentation hierarchies efficiently. Create discoverable resource trees:
 
-```
+```text
 docs/
 ├── TYPESCRIPT.md    → references TESTING.md
 ├── TESTING.md       → references test runners
