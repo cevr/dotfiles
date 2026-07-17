@@ -165,7 +165,7 @@ Subtle `1px` outline with low opacity on images. Creates consistent depth alongs
 
 ## Hit Area Extension
 
-When visible element < 40px, extend with pseudo-element. Never let hit areas of adjacent interactive elements overlap.
+When a visible control is smaller than 24px on desktop or 44px on touch, extend its hit area with a pseudo-element. Never let adjacent hit areas overlap.
 
 ```css
 .small-control {
@@ -177,13 +177,13 @@ When visible element < 40px, extend with pseudo-element. Never let hit areas of 
   position: absolute;
   top: 50%; left: 50%;
   transform: translate(-50%, -50%);
-  width: 40px; height: 40px;
+  width: 44px; height: 44px;
 }
 ```
 
 ```tsx
 // Tailwind
-<button className="relative size-5 after:absolute after:top-1/2 after:left-1/2 after:size-10 after:-translate-1/2">
+<button className="relative size-5 after:absolute after:top-1/2 after:left-1/2 after:size-11 after:-translate-1/2">
   <CheckIcon />
 </button>
 ```
@@ -200,5 +200,5 @@ If the extended area would overlap another interactive element, shrink the pseud
 | Icon looks off-center in button | Icon-side padding = text-side - 2px |
 | Hard borders on varied backgrounds | Layered `box-shadow` with transparency |
 | Images lack depth consistency | `outline: 1px solid rgba(0,0,0,0.1)` inset |
-| Small controls hard to tap | Pseudo-element extending to 40×40px |
+| Small controls hard to tap | 24px minimum; prefer 44px on touch |
 | Play button triangle off-center | `margin-left: 2px` on SVG |

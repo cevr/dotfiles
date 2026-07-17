@@ -398,23 +398,34 @@ el1.style.height = '100px';
 el2.style.height = '100px';
 ```
 
-**Cache repeated function results** — module-level Map for expensive calls:
+**Cache repeated function results** — bound module-level caches and evict old entries:
 
 ```tsx
 // BAD: slugify() called 100+ times for same project names
 projects.map(p => <Card key={p.id} slug={slugify(p.name)} />);
 
-// GOOD: cache at module level
+// GOOD: bounded module-level LRU cache
+const MAX_SLUG_CACHE_ENTRIES = 100;
 const slugCache = new Map<string, string>();
 function cachedSlugify(text: string): string {
-  let result = slugCache.get(text);
-  if (result === undefined) {
-    result = slugify(text);
-    slugCache.set(text, result);
+  const cached = slugCache.get(text);
+  if (cached !== undefined) {
+    slugCache.delete(text);
+    slugCache.set(text, cached);
+    return cached;
   }
+
+  const result = slugify(text);
+  if (slugCache.size >= MAX_SLUG_CACHE_ENTRIES) {
+    const oldest = slugCache.keys().next().value;
+    if (oldest !== undefined) slugCache.delete(oldest);
+  }
+  slugCache.set(text, result);
   return result;
 }
 ```
+
+Prefer a component/provider-owned cache with cleanup when entries belong to one UI lifetime. Use a process-wide cache only when its size and eviction policy are explicit.
 
 **Cache localStorage/sessionStorage reads** — synchronous I/O is expensive:
 
@@ -433,7 +444,11 @@ function setLocal(key: string, value: string) {
   storageCache.set(key, value);
 }
 // Invalidate on cross-tab changes
-window.addEventListener('storage', (e) => { if (e.key) storageCache.delete(e.key); });
+window.addEventListener('storage', (e) => {
+  if (e.storageArea !== localStorage) return;
+  if (e.key === null) storageCache.clear();
+  else storageCache.delete(e.key);
+});
 ```
 
 **Combine multiple iterations** — multiple `.filter()` calls = multiple passes:
@@ -475,10 +490,13 @@ function hasChanges(current: string[], original: string[]) {
 // BAD: O(n log n) to find one value
 const latest = [...projects].sort((a, b) => b.updatedAt - a.updatedAt)[0];
 
-// GOOD: O(n) single pass
-let latest = projects[0];
-for (let i = 1; i < projects.length; i++) {
-  if (projects[i].updatedAt > latest.updatedAt) latest = projects[i];
+// GOOD: O(n) single pass, including the empty case
+function findLatestProject(projects: ReadonlyArray<Project>): Project | undefined {
+  let latest: Project | undefined;
+  for (const project of projects) {
+    if (latest === undefined || project.updatedAt > latest.updatedAt) latest = project;
+  }
+  return latest;
 }
 ```
 

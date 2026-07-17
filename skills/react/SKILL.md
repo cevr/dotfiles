@@ -65,7 +65,7 @@ What are you working on?
 - Barrel files pull everything — use direct imports
 - `.toSorted()` not `.sort()` on prop arrays
 - `suppressHydrationWarning` for dates/random IDs; inline script for theme
-- Cache repeated function results in module-level Maps, not hooks
+- Cache repeated function results only in bounded or lifecycle-owned Maps
 - Cache `localStorage`/`sessionStorage` reads — synchronous I/O is expensive
 - Combine multiple `.filter()` into a single loop
 - Check `.length` before expensive array comparisons — O(1) bail-out

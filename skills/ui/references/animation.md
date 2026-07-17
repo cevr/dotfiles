@@ -196,8 +196,10 @@ Start from `scale(0.95)` + `opacity: 0`, not `scale(0)`. Elements should always 
 GPU/CPU rendering handoff causes 1px shifts at animation start/end.
 
 ```css
-.element { will-change: transform; }
+.element[data-animating="true"] { will-change: transform; }
 ```
+
+Remove the attribute when the transition or animation finishes; permanent `will-change` keeps compositor resources allocated.
 
 ### Hover Flicker
 
@@ -260,7 +262,7 @@ Keep blur under 20px (expensive, especially Safari).
 
 ### Touch Hit Areas
 
-44px minimum (Apple + WCAG):
+Use at least 24×24px on desktop and prefer 44×44px for touch targets. This utility implements the mobile target:
 
 ```css
 @utility touch-hitbox {
@@ -395,7 +397,7 @@ Split content into semantic chunks. Stagger ~100ms. Combine `opacity`, `blur`, `
 Exit should be softer than enter. Small fixed `translateY`, shorter duration.
 
 ```tsx
-<motion.div exit={{ opacity: 0, y: -12, filter: "blur(4px)", transition: { duration: 0.15, ease: "easeIn" } }}>
+<motion.div exit={{ opacity: 0, y: -12, filter: "blur(4px)", transition: { duration: 0.15, ease: "easeOut" } }}>
   {content}
 </motion.div>
 ```
@@ -426,10 +428,10 @@ Exit should be softer than enter. Small fixed `translateY`, shorter duration.
 | ------------------------------- | ----------------------------------------------- |
 | Buttons feel dead               | `scale: 0.96` on `:active`                      |
 | Element appears from nowhere    | Start from `scale(0.95)`, not `scale(0)`        |
-| Shaky/jittery                   | `will-change: transform`                        |
+| Shaky/jittery                   | `will-change: transform` while active           |
 | Hover causes flicker            | Animate child, not parent                       |
 | Popover scales from wrong point | `transform-origin` to trigger location          |
 | Sequential tooltips slow        | Skip delay/animation after first                |
-| Small buttons hard to tap       | 44px min hit area (pseudo-element)              |
+| Small buttons hard to tap       | 24px minimum; prefer 44px on touch              |
 | Something still feels off       | Subtle blur (under 20px)                        |
 | Hover triggers on mobile        | `@media (hover: hover) and (pointer: fine)`     |
