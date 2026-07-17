@@ -49,7 +49,7 @@ function* runAgent(input: string): Generator<AgentEvent> {
 ## Effect-Based Agent Loop
 
 ```typescript
-import { Effect, Stream } from "effect"
+import { Context, Effect, Layer, Stream } from "effect"
 
 // Agent service yields event stream
 export class AgentService extends Context.Service<

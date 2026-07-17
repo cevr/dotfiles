@@ -18,7 +18,7 @@ Effect-first patterns for TypeScript application architecture.
 
 1. **Schema is source of truth** — types, validation, serialization from Effect Schema
 2. **Services are interfaces, layers are implementations** — Context.Service + Layer
-3. **Errors are types** — TaggedError with typed error channel
+3. **Errors are types** — Schema.TaggedErrorClass with typed error channel
 4. **Config fails fast** — invalid config = startup failure
 5. **Branded strings everywhere** — monotonic IDs (ULID/KSUID), no integer IDs
 6. **Server is single source of truth** — clients are thin presentation adapters
@@ -63,7 +63,7 @@ What are you doing?
 | Project structure | `references/structure.md`    | Package layout, monorepo patterns         |
 | Module boundaries | `references/boundaries.md`   | Import rules, isolation, barrel files     |
 | Services & DI     | `references/services.md`     | Context.Service, Layer, test factories, lazy |
-| Error handling    | `references/errors.md`       | TaggedError, catchTag, retry, recovery    |
+| Error handling    | `references/errors.md`       | TaggedErrorClass, catchTag, retry, recovery |
 | Configuration     | `references/config.md`       | Effect Config.*, redacted secrets         |
 | Domain modeling   | `references/domain.md`       | Schema.Class, branded types, unions       |
 | API design        | `references/api.md`          | HttpApi, endpoints, middleware, OpenAPI   |
@@ -118,7 +118,7 @@ Modeling a type?
 ├─ Constrained value            → Schema with refinements
 ├─ Serializable data            → Schema.Class
 ├─ Union of states              → Schema.Union (tagged)
-└─ Error type                   → Schema.TaggedError
+└─ Error type                   → Schema.TaggedErrorClass
 
 API endpoint?
 ├─ Single endpoint              → HttpApiEndpoint.*

@@ -76,7 +76,7 @@ export class ConfigService extends Context.Service<
   static layer = Layer.effect(
     ConfigService,
     Effect.gen(function* () {
-      const fs = yield* FileSystem
+      const fs = yield* FileSystem.FileSystem
       let cached: AppConfig | null = null
 
       const loadConfig = () =>
@@ -92,7 +92,7 @@ export class ConfigService extends Context.Service<
           const merged = mergeConfigs(remote, user, project)
 
           // Validate
-          const validated = yield* S.decodeUnknown(AppConfigSchema)(merged)
+          const validated = yield* S.decodeUnknownEffect(AppConfigSchema)(merged)
 
           cached = validated
           return validated
@@ -323,9 +323,12 @@ const applyEnvOverrides = (config: AppConfig): Effect.Effect<AppConfig> =>
 ## Config Watch (Hot Reload)
 
 ```typescript
-const watchConfig = () =>
+import { Config as EffectConfig, Effect, FileSystem, Layer, Stream } from "effect"
+import { BusService, Events } from "../bus"
+
+export const ConfigWatchLayer = Layer.effectDiscard(
   Effect.gen(function* () {
-    const fs = yield* FileSystem
+    const fs = yield* FileSystem.FileSystem
     const config = yield* ConfigService
     const bus = yield* BusService
     const cwd = yield* EffectConfig.string("PWD")
@@ -341,10 +344,13 @@ const watchConfig = () =>
         })
       ),
       Stream.runDrain,
-      Effect.forkChild
+      Effect.forkScoped
     )
   })
+)
 ```
+
+The watcher is owned by the layer scope: it stays alive while the application layer is allocated and is interrupted during layer teardown.
 
 ## Key Benefits
 

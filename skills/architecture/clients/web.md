@@ -118,13 +118,14 @@ function LoadingScreen() {
 
 ```typescript
 // apps/web/src/context/api.tsx
-import { createContext, useContext, type JSX } from "solid-js"
-import { Effect, Layer, ManagedRuntime } from "effect"
-import { FetchHttpClient, HttpApiClient } from "effect/unstable/http"
+import { createContext, onCleanup, useContext, type JSX } from "solid-js"
+import { Effect, ManagedRuntime } from "effect"
+import { FetchHttpClient } from "effect/unstable/http"
+import { HttpApiClient } from "effect/unstable/httpapi"
 import { AppApi } from "@my-app/api"
 
 interface ApiContextValue {
-  client: Effect.Effect.Success<ReturnType<typeof HttpApiClient.make<typeof AppApi>>>
+  client: HttpApiClient.ForApi<typeof AppApi>
   runEffect: <A, E>(effect: Effect.Effect<A, E, never>) => Promise<A>
 }
 
@@ -133,15 +134,14 @@ const ApiContext = createContext<ApiContextValue>()
 export function ApiProvider(props: { baseUrl: string; children: JSX.Element }) {
   // Create runtime with HTTP client layer
   const runtime = ManagedRuntime.make(FetchHttpClient.layer)
+  onCleanup(() => void runtime.dispose())
 
   const runEffect = <A, E>(effect: Effect.Effect<A, E, never>) =>
     runtime.runPromise(effect)
 
   // Create API client
-  const client = Effect.runSync(
-    HttpApiClient.make(AppApi, { baseUrl: props.baseUrl }).pipe(
-      Effect.provide(FetchHttpClient.layer)
-    )
+  const client = runtime.runSync(
+    HttpApiClient.make(AppApi, { baseUrl: props.baseUrl })
   )
 
   return (

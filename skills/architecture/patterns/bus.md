@@ -88,7 +88,15 @@ export namespace Events {
 
 ```typescript
 // packages/core/src/bus/index.ts
-import { Context, Effect, Layer, PubSub, Queue, Schema as S } from "effect"
+import {
+  Context,
+  Effect,
+  Layer,
+  PubSub,
+  Schema as S,
+  Scope,
+  Stream,
+} from "effect"
 import type { BusEvent } from "./bus-event"
 
 export { BusEvent } from "./bus-event"
@@ -110,10 +118,8 @@ export class BusService extends Context.Service<
     readonly subscribe: <D extends BusEvent.Definition>(
       def: D,
       handler: (payload: EventPayload<D>) => Effect.Effect<void>
-    ) => Effect.Effect<void>
-    readonly subscribeAll: (
-      handler: (payload: EventPayload<BusEvent.Definition>) => Effect.Effect<void>
-    ) => Effect.Effect<void>
+    ) => Effect.Effect<void, never, Scope.Scope>
+    readonly all: () => Stream.Stream<EventPayload<BusEvent.Definition>>
   }
 >()("BusService") {
   static layer = Layer.effect(
@@ -131,7 +137,7 @@ export class BusService extends Context.Service<
               timestamp: new Date(),
             }
 
-            // Publish to PubSub for subscribeAll
+            // Publish to the all-events stream
             yield* PubSub.publish(pubsub, payload)
 
             // Notify specific subscribers
@@ -159,17 +165,7 @@ export class BusService extends Context.Service<
             )
           }),
 
-        subscribeAll: (handler) =>
-          Effect.gen(function* () {
-            const queue = yield* PubSub.subscribe(pubsub)
-
-            yield* Effect.forever(
-              Effect.gen(function* () {
-                const event = yield* Queue.take(queue)
-                yield* handler(event)
-              })
-            ).pipe(Effect.forkChild)
-          }),
+        all: () => Stream.fromPubSub(pubsub),
       })
     })
   )
@@ -179,7 +175,7 @@ export class BusService extends Context.Service<
     BusService.of({
       publish: () => Effect.void,
       subscribe: () => Effect.void,
-      subscribeAll: () => Effect.void,
+      all: () => Stream.empty,
     })
   )
 }
@@ -244,20 +240,14 @@ export const EventsGroupLive = HttpApiBuilder.group(
       const bus = yield* BusService
 
       return handlers.handle("subscribe", () =>
-        Effect.gen(function* () {
-          const events = yield* Stream.async<EventPayload>((emit) => {
-            bus.subscribeAll((event) =>
-              Effect.sync(() => emit.single(event))
-            )
-          })
-
-          return HttpServerResponse.stream(
-            events.pipe(
-              Stream.map((e) => `data: ${JSON.stringify(e)}\n\n`)
+        Effect.succeed(
+          HttpServerResponse.stream(
+            bus.all().pipe(
+              Stream.map((event) => `data: ${JSON.stringify(event)}\n\n`)
             ),
             { contentType: "text/event-stream" }
           )
-        })
+        )
       )
     })
 )

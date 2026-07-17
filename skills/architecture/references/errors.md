@@ -15,7 +15,7 @@ Error type?
 Recovery strategy?
 ├─ Handle specific error        → Effect.catchTag
 ├─ Handle all expected          → Effect.catch
-├─ Handle including defects     → Effect.catchAllCause
+├─ Handle including defects     → Effect.catchCause
 ├─ Fallback value               → Effect.orElse
 ├─ Retry on failure             → Effect.retry with Schedule
 └─ Map error to different type  → Effect.mapError
@@ -159,11 +159,11 @@ const program = riskyOperation().pipe(
 )
 ```
 
-#### catchAllCause - Handle Everything (Including Defects)
+#### catchCause - Handle Everything (Including Defects)
 
 ```typescript
 const program = riskyOperation().pipe(
-  Effect.catchAllCause((cause) => {
+  Effect.catchCause((cause) => {
     // cause contains full error information including defects
     const squashed = Cause.squash(cause)
     logger.error("Operation failed", { error: squashed })

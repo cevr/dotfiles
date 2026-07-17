@@ -76,33 +76,28 @@ function MainLayout() {
 
 ```typescript
 // apps/tui/src/context/api.tsx
-import { createContext, useContext, type JSX } from "solid-js"
-import { Effect, Layer, ManagedRuntime } from "effect"
-import { FetchHttpClient, HttpApiClient } from "effect/unstable/http"
+import { createContext, onCleanup, useContext, type JSX } from "solid-js"
+import { Effect, ManagedRuntime } from "effect"
+import { FetchHttpClient } from "effect/unstable/http"
+import { HttpApiClient } from "effect/unstable/httpapi"
 import { AppApi } from "@my-app/api"
 
 interface ApiContextValue {
-  client: HttpApiClient.Client<typeof AppApi>
+  client: HttpApiClient.ForApi<typeof AppApi>
   runEffect: <A, E>(effect: Effect.Effect<A, E, never>) => Promise<A>
 }
 
 const ApiContext = createContext<ApiContextValue>()
 
 export function ApiProvider(props: { baseUrl: string; children: JSX.Element }) {
-  const ClientLive = Layer.effect(
-    HttpApiClient.Client<typeof AppApi>,
-    HttpApiClient.make(AppApi, { baseUrl: props.baseUrl })
-  ).pipe(Layer.provide(FetchHttpClient.layer))
-
-  const runtime = ManagedRuntime.make(ClientLive)
+  const runtime = ManagedRuntime.make(FetchHttpClient.layer)
+  onCleanup(() => void runtime.dispose())
 
   const runEffect = <A, E>(effect: Effect.Effect<A, E, never>) =>
     runtime.runPromise(effect)
 
-  const client = Effect.runSync(
-    Effect.gen(function* () {
-      return yield* HttpApiClient.make(AppApi, { baseUrl: props.baseUrl })
-    }).pipe(Effect.provide(FetchHttpClient.layer))
+  const client = runtime.runSync(
+    HttpApiClient.make(AppApi, { baseUrl: props.baseUrl })
   )
 
   return (

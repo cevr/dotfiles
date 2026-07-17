@@ -237,7 +237,8 @@ export function createDiscordHandler(
 ```typescript
 // apps/bot/src/handler.ts
 import { Effect } from "effect"
-import { HttpApiClient, FetchHttpClient } from "effect/unstable/http"
+import { FetchHttpClient } from "effect/unstable/http"
+import { HttpApiClient } from "effect/unstable/httpapi"
 import { AppApi } from "@my-app/api"
 import type { BotMessage, BotResponse } from "./bot"
 

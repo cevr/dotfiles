@@ -72,15 +72,15 @@ export const AuthMiddlewareLayer = Layer.effect(
             )
           }
 
-          const user = yield* auth.verifyToken(tokenValue).pipe(
+          const payload = yield* auth.verifyToken(tokenValue).pipe(
             Effect.catch(() =>
               Effect.fail(new Unauthorized({ message: "Invalid token" }))
             )
           )
 
           return AuthContext.of({
-            userId: user.id,
-            roles: user.roles,
+            userId: payload.userId,
+            roles: payload.roles,
           })
         }),
     }

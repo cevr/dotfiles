@@ -9,7 +9,7 @@ Common mistakes and anti-patterns in Effect architecture.
 | Missing service           | "Service not found" at runtime | Check Layer.provide order         |
 | Circular layer deps       | Stack overflow, hang           | Extract shared deps               |
 | Generator without yield\* | Value is Effect, not result    | Use yield\* not yield             |
-| Catching defects          | Silent failures                | Use Effect.catch, or catchAllCause with defect re-throw |
+| Catching defects          | Silent failures                | Use Effect.catch, or catchCause with defect re-throw |
 | Forgetting to run         | Nothing happens                | Add Effect.runPromise             |
 | Config at wrong time      | Undefined config values        | Read config in Layer.effect       |
 | Mixing sync/async         | Type errors                    | Use Effect.sync vs Effect.promise |
@@ -142,12 +142,12 @@ Bugs disappear, no errors logged.
 
 ### Cause
 
-Using `catchAllCause` without re-throwing defects:
+Using `catchCause` without re-throwing defects:
 
 ```typescript
 // Bad - swallows bugs
 const program = riskyOperation().pipe(
-  Effect.catchAllCause(
+  Effect.catchCause(
     (cause) => Effect.succeed(fallbackValue), // Bug silently ignored
   ),
 )
@@ -163,7 +163,7 @@ const program = riskyOperation().pipe(Effect.catch((error) => Effect.succeed(fal
 
 // Or handle defects explicitly
 const program = riskyOperation().pipe(
-  Effect.catchAllCause((cause) => {
+  Effect.catchCause((cause) => {
     if (Cause.isFailure(cause)) {
       return Effect.succeed(fallbackValue)
     }

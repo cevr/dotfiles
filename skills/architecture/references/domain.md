@@ -361,6 +361,6 @@ const findUser = (id: UserId) =>
 
 ## See Also
 
-- `errors.md` - domain errors (TaggedError)
+- `errors.md` - domain errors (Schema.TaggedErrorClass)
 - `api.md` - using schemas in API definitions
 - `boundaries.md` - where schemas live

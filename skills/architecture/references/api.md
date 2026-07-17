@@ -134,7 +134,14 @@ class Api extends HttpApi.make("api")
 ### 5. Handler Implementation
 
 ```typescript
+import { Effect, Layer } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
+import { AuthService, UserRepo, UserService } from "@my-app/core"
+
+const AuthServiceLive = AuthService.layer.pipe(
+  Layer.provide(UserService.layer),
+  Layer.provide(UserRepo.layer)
+)
 
 const UsersApiLive = HttpApiBuilder.group(Api, "users", (handlers) =>
   Effect.gen(function* () {
@@ -152,7 +159,7 @@ const UsersApiLive = HttpApiBuilder.group(Api, "users", (handlers) =>
       )
       .handle("delete", ({ path }) => repo.delete(path.id))
   }),
-).pipe(Layer.provide([UserRepo.layer, AuthService.layer]))
+).pipe(Layer.provide([UserRepo.layer, AuthServiceLive]))
 ```
 
 ### 6. Middleware Definition
