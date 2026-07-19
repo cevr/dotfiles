@@ -183,6 +183,8 @@ function isEmail(s: string): boolean {
 
 `Promise.all` for independent operations:
 
+This example is for non-Effect code. In Effect-native packages, the Effect styleguide takes precedence: use `Effect.all` and do not introduce `async`, `await`, or Promise control flow.
+
 ```ts
 // BAD: Sequential, 3 round trips
 const user = await fetchUser(id);

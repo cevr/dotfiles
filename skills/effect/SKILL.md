@@ -27,10 +27,13 @@ Read only the branch references that match the task.
 - Streams, event sources, async iterables, queues/pubsubs, pagination, backpressure, or stream consumers: read [STREAMS.md](references/STREAMS.md).
 - Outgoing HTTP calls, Effect HttpClient, status handling, or HTTP rate limiting: read [HTTP_CLIENTS.md](references/HTTP_CLIENTS.md).
 - Effect tests, time, sleeps, concurrency synchronization, or fakes: read [TESTING.md](references/TESTING.md).
+- Effect-native style, lint ownership, runtime builtin replacement, or agent review: read [STYLEGUIDE.md](references/STYLEGUIDE.md).
 
 If a task spans several branches, read all matching files before editing.
 
 ## Core Defaults
+
+- Apply the strict Effect-native policy in [STYLEGUIDE.md](references/STYLEGUIDE.md) to application packages; isolate unmatched host capabilities in named platform adapters.
 
 - Compose workflows with `Effect.gen(function* () { ... })`.
 - Define public service methods and non-trivial internal service methods with `Effect.fn("Domain.operation")`.

@@ -10,6 +10,8 @@ allowed-tools: Bash, Read, Grep, Glob
 
 Default to Bun over Node.js for all runtime, tooling, and testing.
 
+In Effect-native packages, prefer Effect platform services in application code. Use Bun APIs only in named platform adapters or tooling where the Effect styleguide permits them.
+
 ## Reference
 
 When Bun behavior or API shape is unclear, read upstream source/docs with
