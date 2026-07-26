@@ -220,6 +220,10 @@ Topic slugs are kebab-case doctrinal topics (`great-controversy`,
 `sanctuary`, `law-and-gospel`, `second-coming`, `state-of-the-dead`, …).
 Reuse an existing topic dir before minting a new one (`ls outputs/teachings`).
 
+Series members prefix the filename with the series number so they sort and
+track: `reading-102-origin-history-destiny-of-satan.md` (matching the
+`series`/`chapter` frontmatter).
+
 Legacy files in `outputs/{messages,studies,readings,analyses}/` stay where
 they are (the Sure Word site reads `outputs/studies/`; note IDs are live).
 New and regenerated documents go in the teachings tree.
