@@ -81,74 +81,57 @@ PDF hands you.
 
 ## [Lesson Title]
 
-**Memory Verse:** "[verse text]" (Book X:Y)
+**Memory Verse:** — _Book X:Y._ "[verse text]"
 
-**[Thesis — 2-3 bold sentences: the week's burden compressed.]**
+**[Burden — ONE bold sentence: the week compressed.]**
 
----
+## MAP
 
-## Sabbath Afternoon — Introduction
+1. Sabbath — [phrase] — [anchor ref]
+2. Sunday — [phrase] — [anchor ref]
+   ... (one line per day)
+8. Appeal
 
-- **theme** — telegraphic statement
-- "key verse text" (Book X:Y)
-- [DYK🔎] historical / linguistic context
-
----
-
-## Sunday — [Subtopic]
-
-- **point** — brief
-  - "inline verse" (Book X:Y)
-  - supporting detail
-- [→] transition
-
-[SOP] "Verbatim EGW punchline." — REFCODE
-
-[Q] **anticipated objection / question**
-→ concise answer with scripture
+[Q] index: [objection]? →[day] · [objection]? →[day]
 
 ---
 
-## Monday — [Subtopic]
+## 1. Sabbath Afternoon — [Anchor Ref]
 
-(... same shape; [PIONEER: name] witnesses wherever a pioneer carries the
-day's point ...)
+> [Day burden — ≤2 lines.]
 
----
+- _Ref._ "anchor verse quoted in full" — gloss
+- chain: Ref (gloss) → Ref (gloss) → Ref (gloss)
 
-## Friday — Further Thought
-
-- EGW citation from EGW Notes PDF
-  - "EGW quote..." (BookCode page.para)
-- [TANGENT] optional deep-dive
+[SOP REFCODE] "punchline ≤30 words" — why this quote
 
 ---
 
-## Discussion Questions
+## 2. Sunday — [Subtopic] — [Anchor Ref]
 
-1. ...
-2. ...
-3. ...
+(... same shape; [WB] board moves where a day has a shape;
+[PIONEER Name, REFCODE] wherever a pioneer carries the day's point ...)
 
 ---
 
-## Appeal
+## 7. Friday — Further Thought — [Anchor Ref]
+
+- EGW Notes PDF citations as [SOP REFCODE] lines
+- [TANGENT] hop-chain: Ref (gloss) → Ref (gloss) → Ref (gloss)
+
+---
+
+## 8. Appeal
 
 - the week's central truth pressed home — decision language
-- **"closing scripture"** (Book X:Y)
+- _Ref._ "closing scripture"
 ```
 
-Markers (same table as `references/teachings.md`):
-
-| Marker            | Use                                     |
-| ----------------- | --------------------------------------- |
-| `[→]`             | Transition / connection                 |
-| `[SOP]`           | EGW witness — verbatim quote `— REFCODE`|
-| `[PIONEER: name]` | Pioneer witness — verbatim, named       |
-| `[TANGENT]`       | Optional deep-dive                      |
-| `[DYK🔎]`         | Word study, historical context          |
-| `[Q]`             | Anticipated question + answer           |
-| `[ILL]`           | Christ's parable method                 |
+Line grammar and marker set are `references/teachings.md`'s — ref-first
+verse bullets with em-dash glosses, `[WB]`, `[SOP REFCODE]`,
+`[PIONEER Name, REFCODE]`, `[Q]`/`[RQ]`, `[Aside]`, `[TANGENT]` hop-chains,
+one-line `[→]`, contrasts as tables, one-screen sections, self-contained
+days.
 
 ## Frontmatter
 
