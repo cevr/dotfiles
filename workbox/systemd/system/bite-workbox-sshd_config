@@ -1,0 +1,17 @@
+Port 2222
+ListenAddress __TAILSCALE_IPV4__
+Protocol 2
+HostKey /etc/ssh/bite-workbox-ssh-host-ed25519-key
+PidFile /run/bite-workbox-sshd.pid
+AuthorizedKeysFile .ssh/authorized_keys
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+AllowUsers exedev
+UsePAM yes
+AllowTcpForwarding yes
+GatewayPorts no
+X11Forwarding no
+PermitUserEnvironment no
+Subsystem sftp internal-sftp
+LogLevel VERBOSE

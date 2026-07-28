@@ -1,0 +1,10 @@
+[Unit]
+Description=Verify the Bite workbox every six hours
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

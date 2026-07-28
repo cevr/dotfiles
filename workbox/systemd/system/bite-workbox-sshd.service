@@ -1,0 +1,16 @@
+[Unit]
+Description=Bite workbox SSH service for Tailscale
+Wants=network-online.target tailscaled.service
+After=network-online.target tailscaled.service
+
+[Service]
+RuntimeDirectory=sshd
+RuntimeDirectoryMode=0755
+ExecStart=/usr/sbin/sshd -D -e -f /etc/ssh/bite-workbox-sshd_config
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

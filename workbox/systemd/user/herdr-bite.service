@@ -1,0 +1,15 @@
+[Unit]
+Description=Herdr Bite workspace server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HERDR_SESSION=bite
+ExecStart=%h/.local/bin/herdr server
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

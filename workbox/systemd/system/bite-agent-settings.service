@@ -1,0 +1,10 @@
+[Unit]
+Description=Apply synchronized Bite agent settings
+After=syncthing@exedev.service
+
+[Service]
+Type=oneshot
+User=exedev
+Environment=HOME=/home/exedev
+Environment=PATH=/home/exedev/.local/bin:/home/exedev/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/exedev/.local/bin/apply-agent-settings

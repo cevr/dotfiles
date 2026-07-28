@@ -1,0 +1,7 @@
+[Unit]
+Description=Check Bite workbox package updates
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/check-updates
+SuccessExitStatus=1

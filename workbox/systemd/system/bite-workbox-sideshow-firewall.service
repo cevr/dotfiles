@@ -1,0 +1,13 @@
+[Unit]
+Description=Restrict Sideshow to exe.dev and local access
+Before=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/usr/sbin/nft delete table inet bite_workbox_sideshow
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/bite-workbox-sideshow.nft
+ExecStop=-/usr/sbin/nft delete table inet bite_workbox_sideshow
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up Bite workbox state each day
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

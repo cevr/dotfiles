@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch synchronized Bite agent settings
+
+[Path]
+PathChanged=/home/exedev/.config/bite-workbox/settings-source/claude
+PathChanged=/home/exedev/.config/bite-workbox/settings-source/codex
+Unit=bite-agent-settings.service
+
+[Install]
+WantedBy=multi-user.target

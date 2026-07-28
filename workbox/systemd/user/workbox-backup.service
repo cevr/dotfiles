@@ -1,0 +1,6 @@
+[Unit]
+Description=Create a safe Bite workbox state snapshot
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/backup-state
