@@ -7,6 +7,7 @@ My personal dotfiles.
 | File | Description |
 |------|-------------|
 | `zshrc` | Zsh configuration |
+| `workbox/` | Reproducible Bite workbox configuration and services |
 | `gitconfig` | Git configuration |
 | `gitignore_global` | Global gitignore |
 | `ghostty/config` | Ghostty terminal config |
@@ -25,6 +26,12 @@ ln -sf $(pwd)/gitconfig ~/.gitconfig
 ln -sf $(pwd)/gitignore_global ~/.gitignore_global
 ln -sf $(pwd)/ghostty/config ~/Library/Application\ Support/com.mitchellh.ghostty/config
 ln -sf $(pwd)/atuin.toml ~/.config/atuin/config.toml
+```
+
+### Bite workbox
+
+```bash
+~/Developer/personal/dotfiles/workbox/bootstrap.sh
 ```
 
 ## Brew packages
