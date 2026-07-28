@@ -1,0 +1,126 @@
+#!/bin/sh
+
+set -eu
+umask 077
+
+backup_config_file=${WORKBOX_BACKUP_CONFIG:-"$HOME/.config/bite-workbox/backup.env"}
+
+if [ ! -r "$backup_config_file" ]; then
+  printf 'backup-state: configuration file is missing: %s\n' "$backup_config_file" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1090
+. "$backup_config_file"
+
+: "${AWS_PROFILE:?backup-state: AWS_PROFILE is required}"
+: "${AWS_REGION:?backup-state: AWS_REGION is required}"
+: "${WORKBOX_BACKUP_BUCKET:?backup-state: WORKBOX_BACKUP_BUCKET is required}"
+
+working_root=$(mktemp -d "${TMPDIR:-/tmp}/workbox-backup.XXXXXX")
+snapshot_root="$working_root/snapshot"
+sqlite_backup_root="$snapshot_root/sqlite"
+archive_root="$snapshot_root/archives"
+
+cleanup() {
+  case "$working_root" in
+    "${TMPDIR:-/tmp}"/workbox-backup.*)
+      /bin/rm -rf -- "$working_root"
+      ;;
+  esac
+}
+trap cleanup EXIT HUP INT TERM
+
+mkdir -p "$sqlite_backup_root" "$archive_root"
+
+backup_sqlite() {
+  source_file=$1
+  target_name=$2
+
+  [ -f "$source_file" ] || return 0
+
+  temporary_file="$sqlite_backup_root/$target_name.tmp"
+  sqlite3 "$source_file" ".timeout 5000" ".backup '$temporary_file'"
+  mv "$temporary_file" "$sqlite_backup_root/$target_name"
+}
+
+backup_sqlite "$HOME/.sideshow/sideshow.db" sideshow.db
+backup_sqlite "$HOME/.codex/logs_2.sqlite" codex-logs.sqlite
+backup_sqlite "$HOME/.codex/state_5.sqlite" codex-state.sqlite
+backup_sqlite "$HOME/.codex/goals_1.sqlite" codex-goals.sqlite
+backup_sqlite "$HOME/.codex/memories_1.sqlite" codex-memories.sqlite
+
+archive_paths() {
+  target_file=$1
+  shift
+
+  existing_paths=
+  for relative_path in "$@"; do
+    if [ -e "$HOME/$relative_path" ]; then
+      existing_paths="$existing_paths $relative_path"
+    fi
+  done
+
+  if [ -n "$existing_paths" ]; then
+    # The paths are fixed internal values. Word splitting supplies each path to tar.
+    # shellcheck disable=SC2086
+    tar -czf "$target_file" --exclude='*.sock' -C "$HOME" $existing_paths
+  else
+    tar -czf "$target_file" --files-from /dev/null
+  fi
+}
+
+archive_paths "$archive_root/claude-sessions.tar.gz.tmp" .claude/sessions
+mv "$archive_root/claude-sessions.tar.gz.tmp" "$archive_root/claude-sessions.tar.gz"
+
+archive_paths "$archive_root/herdr-state.tar.gz.tmp" \
+  .config/herdr \
+  .local/state/herdr
+mv "$archive_root/herdr-state.tar.gz.tmp" "$archive_root/herdr-state.tar.gz"
+
+if [ -f "$HOME/.zsh_history" ]; then
+  install -m 600 "$HOME/.zsh_history" "$snapshot_root/zsh_history"
+fi
+
+date -u +'%Y-%m-%dT%H:%M:%SZ' > "$snapshot_root/completed-at"
+
+timestamp=$(date -u +'%Y-%m-%dT%H-%M-%SZ')
+year_month_day=$(date -u +'%Y/%m/%d')
+backup_archive="$working_root/workbox-$timestamp.tar.gz"
+downloaded_archive="$working_root/downloaded-workbox-$timestamp.tar.gz"
+object_key="snapshots/$year_month_day/workbox-$timestamp.tar.gz"
+
+tar -czf "$backup_archive" -C "$working_root" snapshot
+backup_sha256=$(sha256sum "$backup_archive" | awk '{print $1}')
+
+aws sts get-caller-identity \
+  --profile "$AWS_PROFILE" \
+  --region "$AWS_REGION" >/dev/null
+
+aws s3api put-object \
+  --bucket "$WORKBOX_BACKUP_BUCKET" \
+  --key "$object_key" \
+  --body "$backup_archive" \
+  --server-side-encryption AES256 \
+  --metadata "sha256=$backup_sha256" \
+  --profile "$AWS_PROFILE" \
+  --region "$AWS_REGION" >/dev/null
+
+aws s3api get-object \
+  --bucket "$WORKBOX_BACKUP_BUCKET" \
+  --key "$object_key" \
+  --profile "$AWS_PROFILE" \
+  --region "$AWS_REGION" \
+  "$downloaded_archive" >/dev/null
+
+downloaded_sha256=$(sha256sum "$downloaded_archive" | awk '{print $1}')
+if [ "$downloaded_sha256" != "$backup_sha256" ]; then
+  printf 'backup-state: S3 restore checksum failed for s3://%s/%s\n' \
+    "$WORKBOX_BACKUP_BUCKET" \
+    "$object_key" >&2
+  exit 1
+fi
+
+tar -tzf "$downloaded_archive" >/dev/null
+
+printf 's3://%s/%s\n' "$WORKBOX_BACKUP_BUCKET" "$object_key"

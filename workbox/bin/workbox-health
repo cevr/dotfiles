@@ -1,0 +1,115 @@
+#!/bin/sh
+
+set -u
+
+export PATH="$HOME/.local/bin:$HOME/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+failures=0
+
+check() {
+  label=$1
+  shift
+
+  if "$@" >/dev/null 2>&1; then
+    printf 'PASS  %s\n' "$label"
+  else
+    printf 'FAIL  %s\n' "$label"
+    failures=$((failures + 1))
+  fi
+}
+
+check_system_service() {
+  service_name=$1
+
+  check "$service_name enabled" systemctl is-enabled --quiet "$service_name"
+  check "$service_name active" systemctl is-active --quiet "$service_name"
+}
+
+check_user_service() {
+  service_name=$1
+
+  check "$service_name enabled" systemctl --user is-enabled --quiet "$service_name"
+  check "$service_name active" systemctl --user is-active --quiet "$service_name"
+}
+
+check_system_service tailscaled.service
+check_system_service bite-workbox-sshd.service
+check_system_service bite-workbox-sideshow-firewall.service
+check_system_service bite-agent-settings.path
+check_system_service syncthing@exedev.service
+check_system_service mongod.service
+check_system_service redis-server.service
+check_user_service sideshow.service
+check_user_service workbox-backup.timer
+check_user_service workbox-health.timer
+check_user_service workbox-update-report.timer
+
+# shellcheck disable=SC2016
+check "Tailscale address" sh -c 'test -n "$(tailscale ip -4 | head -1)"'
+# shellcheck disable=SC2016
+check "Tailscale SSH port" sh -c 'tailscale_ipv4=$(tailscale ip -4 | head -1); ss -ltn "sport = :2222" | grep -q "$tailscale_ipv4:2222"'
+check "Sideshow HTTP" curl --fail --silent --max-time 3 http://127.0.0.1:8228/
+check "Sideshow firewall" sudo -n nft list table inet bite_workbox_sideshow
+# shellcheck disable=SC2016
+check "Syncthing folders" sh -c '
+  syncthing_gui_json=$(syncthing cli config gui dump-json)
+  syncthing_api_key=$(printf "%s" "$syncthing_gui_json" | jq -r .apiKey)
+  syncthing_gui_address=$(printf "%s" "$syncthing_gui_json" | jq -r .address)
+  for folder_id in bite-dotfiles bite-env bite-aws bite-claude-settings bite-codex-settings; do
+    curl -fsS -H "X-API-Key: $syncthing_api_key" \
+      "http://$syncthing_gui_address/rest/db/status?folder=$folder_id" |
+      jq -e ".state == \"idle\" and .needFiles == 0 and .errors == 0" >/dev/null ||
+      exit 1
+  done
+'
+
+check "MongoDB replica set" sh -c 'mongosh --quiet --eval "db.hello().isWritablePrimary" | grep -qx true'
+check "Redis" sh -c 'redis-cli ping | grep -qx PONG'
+check "GitHub CLI login" gh auth status --hostname github.com
+check "AWS read-only login" aws sts get-caller-identity --profile bite-readonly
+check "Grafana login" env GRAFANA_CLI_DISABLE_KEYRING=1 mati-grafana auth status --agent
+
+check "Bite repository" test -d "$HOME/Developer/work/bite/.git"
+check "Bite environment link" test -L "$HOME/Developer/work/bite/.env"
+check "Workbox zshenv" test -L "$HOME/.zshenv"
+check "Workbox zshrc" test -L "$HOME/.zshrc"
+check "Claude settings" test -r "$HOME/.claude/settings.json"
+check "Codex settings" test -r "$HOME/.codex/config.toml"
+check "Sideshow MCP" grep -q '^\[mcp_servers\.sideshow\]$' "$HOME/.codex/config.toml"
+check "Claude Herdr hook" test -x "$HOME/.claude/hooks/herdr-agent-state.sh"
+check "Codex Herdr hook" test -x "$HOME/.codex/herdr-agent-state.sh"
+check "Shared Claude skills" test -L "$HOME/.claude/skills"
+check "Shared agent skills" test -L "$HOME/.agents/skills"
+check "Herdr Bite session state" sh -c 'herdr session list | grep -q "^bite[[:space:]]"'
+check "Herdr config" herdr config check
+check "Herdr Hunk plugin" sh -c \
+  'HERDR_SESSION=bite herdr plugin action list --plugin cvr.herdr-hunk | grep -q "\"action_id\":\"send\""'
+
+check "Bun" bun --version
+check "Linear CLI" linear --version
+check "Sentry CLI" sentry --version
+check "Okra CLI" okra --version
+check "Codex CLI" codex --version
+check "Claude CLI" claude --version
+check "Hunk CLI" hunk --version
+check "Sideshow CLI" sideshow --version
+check "S3 backup login" aws sts get-caller-identity --profile bite-dev
+check "S3 backup bucket" aws s3api head-bucket --bucket bite-workbox-backups-251766048541 --profile bite-dev
+check "Swap" sh -c 'swapon --show --noheadings | grep -q .'
+# shellcheck disable=SC2016
+check "Disk space" sh -c '[ "$(df --output=pcent / | tail -1 | tr -dc 0-9)" -lt 85 ]'
+
+if [ -f /var/run/reboot-required ]; then
+  printf 'WARN  Reboot required'
+  if [ -r /var/run/reboot-required.pkgs ]; then
+    printf ': %s' "$(tr '\n' ' ' < /var/run/reboot-required.pkgs | sed 's/[[:space:]]*$//')"
+  fi
+  printf '\n'
+fi
+
+if [ "$failures" -ne 0 ]; then
+  printf '\n%d health checks failed.\n' "$failures"
+  exit 1
+fi
+
+printf '\nAll workbox health checks passed.\n'

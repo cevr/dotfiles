@@ -1,0 +1,30 @@
+#!/bin/sh
+
+set -eu
+
+workbox_config_dir=${WORKBOX_CONFIG_DIR:-"$HOME/.config/bite-workbox"}
+updates_found=0
+
+printf 'Ubuntu updates:\n'
+apt list --upgradable 2>/dev/null | sed '1d' || true
+
+printf '\nBun tool updates:\n'
+while IFS= read -r package; do
+  [ -n "$package" ] || continue
+
+  package_name=${package%@*}
+  case "$package" in
+    @*)
+      package_name=$(printf '%s' "$package" | sed 's/@[^@]*$//')
+      ;;
+  esac
+  installed_version=${package##*@}
+  latest_version=$(npm view "$package_name" version)
+
+  if [ "$installed_version" != "$latest_version" ]; then
+    printf '%s %s -> %s\n' "$package_name" "$installed_version" "$latest_version"
+    updates_found=1
+  fi
+done < "$workbox_config_dir/bun-tools.txt"
+
+exit "$updates_found"
