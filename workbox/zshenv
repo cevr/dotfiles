@@ -1,0 +1,14 @@
+export BUN_INSTALL="$HOME/.bun"
+
+if [[ -S "/run/user/$(id -u)/bus" ]]; then
+  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+fi
+
+typeset -U path PATH
+path=(
+  "$HOME/.local/bin"
+  "$BUN_INSTALL/bin"
+  $path
+)
+export PATH

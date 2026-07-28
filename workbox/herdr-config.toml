@@ -1,0 +1,16 @@
+onboarding = false
+
+[theme]
+name = "rose-pine"
+
+[[keys.command]]
+key = "prefix+h"
+type = "plugin_action"
+command = "cvr.herdr-hunk.open"
+description = "open Hunk review"
+
+[[keys.command]]
+key = "prefix+s"
+type = "plugin_action"
+command = "cvr.herdr-hunk.send"
+description = "send Hunk notes"

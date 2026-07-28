@@ -176,6 +176,16 @@ alias br='bun run'
 alias bd='bun dev'
 alias bx='bunx'
 
+# Bite workbox
+workbox-sideshow() {
+  open https://bite-cristian.exe.xyz:8228/
+}
+
+workbox() {
+  workbox-sideshow || return
+  herdr --remote bite-workbox --session bite
+}
+
 # Safety nets
 alias rm='trash'  # brew install trash - sends to macOS Trash instead of permanent delete
 alias mv='mv -i'

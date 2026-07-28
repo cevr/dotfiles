@@ -1,0 +1,21 @@
+#!/bin/sh
+
+set -eu
+
+workbox_config_dir=${WORKBOX_CONFIG_DIR:-"$HOME/.config/bite-workbox"}
+bun_binary="$HOME/.bun/bin/bun"
+
+export PATH="$HOME/.bun/bin:$PATH"
+
+while IFS= read -r package; do
+  [ -n "$package" ] || continue
+  "$bun_binary" add --global "$package"
+done < "$workbox_config_dir/bun-tools.txt"
+
+okra_package="$HOME/.bun/install/global/node_modules/@cvr/okra"
+if [ -d "$okra_package" ]; then
+  (
+    cd "$okra_package"
+    "$bun_binary" run scripts/build.ts
+  )
+fi

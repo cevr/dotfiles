@@ -1,0 +1,14 @@
+#!/bin/sh
+
+set -eu
+
+workbox_config_dir=${WORKBOX_CONFIG_DIR:-"$HOME/.config/bite-workbox"}
+
+while IFS=' ' read -r source ref; do
+  [ -n "$source" ] || continue
+  if [ -n "$ref" ]; then
+    herdr plugin install "$source" --ref "$ref" --yes
+  else
+    herdr plugin install "$source" --yes
+  fi
+done < "$workbox_config_dir/herdr-plugins.txt"

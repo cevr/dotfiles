@@ -1,0 +1,70 @@
+#!/bin/sh
+
+set -eu
+umask 077
+
+settings_source="$HOME/.config/bite-workbox/settings-source"
+claude_source="$settings_source/claude"
+codex_source="$settings_source/codex"
+
+mkdir -p "$HOME/.claude" "$HOME/.codex"
+
+claude_settings_file=$(mktemp)
+codex_config_file=$(mktemp)
+trap 'rm -f "$claude_settings_file" "$codex_config_file"' EXIT HUP INT TERM
+
+jq '
+  walk(
+    if type == "string" then
+      gsub("/Users/cvr"; "/home/exedev")
+    else
+      .
+    end
+  ) |
+  del(
+    .hooks.Notification,
+    .hooks.SessionStart,
+    .hooks.Stop
+  ) |
+  .enabledPlugins["sideshow@sideshow"] = true |
+  .extraKnownMarketplaces.sideshow = {
+    source: {
+      source: "github",
+      repo: "modem-dev/sideshow"
+    }
+  } |
+  .pluginConfigs["sideshow@sideshow"].options.sideshowUrl = "http://localhost:8228"
+' "$claude_source/settings.json" > "$claude_settings_file"
+
+install -m 600 "$claude_settings_file" "$HOME/.claude/settings.json"
+install -m 600 "$claude_source/settings.local.json" "$HOME/.claude/settings.local.json"
+install -m 755 "$claude_source/statusline-git.sh" "$HOME/.claude/statusline-git.sh"
+
+awk '
+  BEGIN {
+    table_started = 0
+    keep_table = 1
+  }
+  /^\[/ {
+    table_started = 1
+    keep_table = $0 ~ /^\[features\]$/ || $0 ~ /^\[tui\]$/ || $0 ~ /^\[tui\.model_availability_nux\]$/ || $0 ~ /^\[notice\]$/ || $0 ~ /^\[plugins\./
+  }
+  !table_started || keep_table {
+    print
+  }
+' "$codex_source/config.toml" > "$codex_config_file"
+
+cat >> "$codex_config_file" <<'EOF'
+
+[mcp_servers.sideshow]
+url = "http://localhost:8228/mcp"
+required = true
+
+[projects."/home/exedev/Developer/work/bite"]
+trust_level = "trusted"
+EOF
+
+install -m 600 "$codex_config_file" "$HOME/.codex/config.toml"
+
+"$HOME/.local/bin/herdr" integration install claude
+"$HOME/.local/bin/herdr" integration install codex

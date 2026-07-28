@@ -1,0 +1,44 @@
+#!/bin/sh
+
+set -eu
+
+usage() {
+  printf 'usage: workbox-port <port> [--json]\n' >&2
+  exit 2
+}
+
+[ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage
+
+port=$1
+format=text
+
+if [ "$#" -eq 2 ]; then
+  [ "$2" = "--json" ] || usage
+  format=json
+fi
+
+case "$port" in
+  ''|*[!0-9]*)
+    printf 'workbox-port: port must be a number\n' >&2
+    exit 2
+    ;;
+esac
+
+if [ "$port" -lt 3000 ] || [ "$port" -gt 9999 ]; then
+  printf 'workbox-port: exe.dev forwards ports from 3000 through 9999\n' >&2
+  exit 2
+fi
+
+if ! curl --fail --silent --max-time 2 "http://127.0.0.1:$port/" >/dev/null; then
+  printf 'workbox-port: no HTTP server answered on localhost:%s\n' "$port" >&2
+  exit 1
+fi
+
+hostname=$(hostname -f)
+url="https://$hostname:$port/"
+
+if [ "$format" = json ]; then
+  printf '{"port":%s,"url":"%s"}\n' "$port" "$url"
+else
+  printf '%s\n' "$url"
+fi
