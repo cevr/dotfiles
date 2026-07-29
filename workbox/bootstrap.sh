@@ -135,6 +135,7 @@ sudo systemctl enable --now \
   bite-workbox-sideshow-firewall.service \
   bite-workbox-sshd.service
 systemctl --user enable --now \
+  cleanup-mosh-servers.timer \
   sideshow.service \
   workbox-backup.timer \
   workbox-health.timer \

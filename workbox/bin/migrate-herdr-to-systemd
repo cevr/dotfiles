@@ -89,6 +89,11 @@ if [ "${1:-}" = service ]; then
       "$handoff_token"
   fi
 
+  if server_is_running; then
+    printf 'migrate-herdr-to-systemd: Herdr server is already running\n' >&2
+    exit 75
+  fi
+
   exec "$HOME/.local/bin/herdr" server
 fi
 

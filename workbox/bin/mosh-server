@@ -1,0 +1,8 @@
+#!/bin/sh
+
+set -eu
+
+MOSH_SERVER_SIGNAL_TMOUT=${MOSH_SERVER_SIGNAL_TMOUT:-900}
+export MOSH_SERVER_SIGNAL_TMOUT
+
+exec /usr/bin/mosh-server "$@"

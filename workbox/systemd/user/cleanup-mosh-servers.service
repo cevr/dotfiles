@@ -1,0 +1,6 @@
+[Unit]
+Description=Remove disconnected Mosh servers
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/cleanup-mosh-servers

@@ -47,6 +47,17 @@ noncurrent snapshot objects after 14 days.
 - `check-updates` reports Ubuntu and Bun tool updates.
 - `install-bun-tools` restores the pinned Bun CLI versions.
 - `migrate-herdr-to-systemd` moves a live Herdr session under its user service.
+- `cleanup-mosh-servers` removes disconnected Mosh servers.
+
+The Herdr service keeps running when the kernel kills a pane process for excess
+memory use. It does not restart when another Herdr server already owns the
+session. Systemd stops repeated unknown start failures after three attempts in
+60 seconds.
+
+The Mosh server wrapper gives each new server a 15-minute signal timeout. The
+cleanup timer sends the Mosh stale-session signal every 15 minutes. Connected
+servers ignore the signal. Disconnected servers exit. The cleanup skips legacy
+servers that do not have the signal timeout.
 
 Preview the Herdr migration:
 

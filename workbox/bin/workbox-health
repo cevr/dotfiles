@@ -42,6 +42,12 @@ check_system_service redis-server.service
 check "herdr-bite.service enabled" test -L \
   "$HOME/.config/systemd/user/default.target.wants/herdr-bite.service"
 check "herdr-bite.service active" systemctl --user is-active --quiet herdr-bite.service
+check "herdr-bite.service keeps running after pane OOM" \
+  test "$(systemctl --user show herdr-bite.service -p OOMPolicy --value)" = continue
+check "herdr-bite.service prevents duplicate restart" sh -c '
+  systemctl --user show herdr-bite.service -p RestartPreventExitStatus --value |
+    grep -qw 75
+'
 # shellcheck disable=SC2016
 check "herdr-bite.service owns Herdr" sh -c '
   main_pid=$(systemctl --user show herdr-bite.service -p MainPID --value)
@@ -49,6 +55,7 @@ check "herdr-bite.service owns Herdr" sh -c '
     grep -q "/herdr-bite.service" "/proc/$main_pid/cgroup"
 '
 check_user_service sideshow.service
+check_user_service cleanup-mosh-servers.timer
 check_user_service workbox-backup.timer
 check_user_service workbox-health.timer
 check_user_service workbox-update-report.timer
