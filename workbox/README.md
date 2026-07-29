@@ -46,3 +46,16 @@ noncurrent snapshot objects after 14 days.
 - `backup-state` creates and verifies an S3 state snapshot.
 - `check-updates` reports Ubuntu and Bun tool updates.
 - `install-bun-tools` restores the pinned Bun CLI versions.
+- `migrate-herdr-to-systemd` moves a live Herdr session under its user service.
+
+Preview the Herdr migration:
+
+```sh
+migrate-herdr-to-systemd --dry-run
+```
+
+Run the migration:
+
+```sh
+migrate-herdr-to-systemd
+```

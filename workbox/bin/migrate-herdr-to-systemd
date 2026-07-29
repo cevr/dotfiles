@@ -1,0 +1,234 @@
+#!/bin/sh
+
+set -eu
+umask 077
+
+session=${HERDR_SESSION:-bite}
+unit="herdr-$session.service"
+user_unit_dir="$HOME/.config/systemd/user"
+unit_file="$user_unit_dir/$unit"
+runtime_dir=${XDG_RUNTIME_DIR:-"/run/user/$(id -u)"}
+handoff_request="$runtime_dir/herdr-$session-handoff"
+dry_run=0
+
+usage() {
+  cat <<EOF
+Usage: migrate-herdr-to-systemd [--dry-run]
+
+Move the live Herdr $session session under $unit without stopping its panes.
+
+Options:
+  --dry-run  Show the required action without changing the service.
+  -h, --help Show this help.
+
+Examples:
+  migrate-herdr-to-systemd --dry-run
+  migrate-herdr-to-systemd
+EOF
+}
+
+fail() {
+  printf 'migrate-herdr-to-systemd: %s\n' "$1" >&2
+  exit 1
+}
+
+check_command() {
+  command -v "$1" >/dev/null 2>&1 ||
+    fail "required command is missing: $1"
+}
+
+service_owns_server() {
+  main_pid=$(systemctl --user show "$unit" -p MainPID --value 2>/dev/null || true)
+  case "$main_pid" in
+    '' | 0) return 1 ;;
+  esac
+
+  grep -q "/$unit" "/proc/$main_pid/cgroup" 2>/dev/null
+}
+
+server_is_running() {
+  HERDR_SESSION="$session" herdr status server 2>/dev/null |
+    grep -q '^status: running$'
+}
+
+snapshot_identity() {
+  jq -S '
+    .result.snapshot
+    | {
+        agent_sessions: [
+          .agents[]
+          | select(.agent_session != null)
+          | .agent_session
+          | [.agent, .kind, .source, .value]
+        ] | sort,
+        panes: [.panes[].pane_id] | sort,
+        tabs: [.tabs[].tab_id] | sort,
+        workspaces: [.workspaces[].workspace_id] | sort
+      }
+  ' "$1"
+}
+
+case "$session" in
+  *[!A-Za-z0-9._-]* | '') fail "HERDR_SESSION contains an invalid session name" ;;
+esac
+
+if [ "${1:-}" = service ]; then
+  [ "$#" -eq 1 ] ||
+    fail "the systemd service supplied invalid arguments"
+
+  if [ -f "$handoff_request" ]; then
+    [ "$(wc -l < "$handoff_request")" -eq 2 ] ||
+      fail "the Herdr handoff request is invalid"
+    handoff_socket=$(sed -n '1p' "$handoff_request")
+    handoff_token=$(sed -n '2p' "$handoff_request")
+    rm -f "$handoff_request"
+    exec "$HOME/.local/bin/herdr" \
+      server \
+      --handoff-import \
+      "$handoff_socket" \
+      "$handoff_token"
+  fi
+
+  exec "$HOME/.local/bin/herdr" server
+fi
+
+if [ "${1:-}" = server ] && [ "${2:-}" = --handoff-import ]; then
+  [ "$#" -eq 4 ] ||
+    fail "Herdr supplied an invalid handoff request"
+
+  case "$3" in
+    "$HOME"/.config/herdr/*/herdr-handoff-*.sock | \
+      "$HOME"/.config/herdr/herdr-handoff-*.sock)
+      ;;
+    *)
+      fail "Herdr supplied an invalid handoff socket"
+      ;;
+  esac
+  case "$4" in
+    *[!A-Za-z0-9._-]* | '') fail "Herdr supplied an invalid handoff token" ;;
+  esac
+
+  handoff_temp="$handoff_request.$$"
+  printf '%s\n%s\n' "$3" "$4" > "$handoff_temp"
+  mv "$handoff_temp" "$handoff_request"
+  systemctl --user start "$unit"
+  exit 0
+fi
+
+case "${1:-}" in
+  '')
+    ;;
+  --dry-run)
+    dry_run=1
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+[ "$#" -le 1 ] || {
+  usage >&2
+  exit 2
+}
+
+[ "$(uname -s)" = Linux ] ||
+  fail "this command requires Linux"
+
+for command in cmp grep herdr jq sed systemctl; do
+  check_command "$command"
+done
+
+[ -f "$unit_file" ] ||
+  fail "unit file is missing: $unit_file"
+
+if service_owns_server; then
+  if [ "$dry_run" -eq 1 ]; then
+    printf 'status=already-managed\nunit=%s\nsession=%s\n' "$unit" "$session"
+    exit 0
+  fi
+
+  systemctl --user enable "$unit" >/dev/null
+  printf 'status=already-managed\nunit=%s\nsession=%s\n' "$unit" "$session"
+  exit 0
+fi
+
+if ! server_is_running; then
+  if [ "$dry_run" -eq 1 ]; then
+    printf 'status=would-start\nunit=%s\nsession=%s\n' "$unit" "$session"
+    exit 0
+  fi
+
+  systemctl --user enable --now "$unit"
+  service_owns_server ||
+    fail "$unit started without ownership of the Herdr server"
+  printf 'status=started\nunit=%s\nsession=%s\n' "$unit" "$session"
+  exit 0
+fi
+
+if [ "$dry_run" -eq 1 ]; then
+  printf 'status=would-migrate\nunit=%s\nsession=%s\n' "$unit" "$session"
+  exit 0
+fi
+
+migration_dir=$(mktemp -d "$runtime_dir/herdr-systemd-migration.XXXXXX")
+before_snapshot="$migration_dir/before.json"
+after_snapshot="$migration_dir/after.json"
+
+cleanup() {
+  exit_code=$?
+  trap - EXIT HUP INT TERM
+  rm -f "$handoff_request" "$handoff_request".*
+  rm -rf "$migration_dir"
+  exit "$exit_code"
+}
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
+
+HERDR_SESSION="$session" herdr api snapshot > "$before_snapshot"
+
+systemctl --user stop "$unit" 2>/dev/null || true
+systemctl --user daemon-reload
+systemctl --user enable "$unit" >/dev/null
+
+server_version=$(
+  HERDR_SESSION="$session" herdr status server |
+    sed -n 's/^version: //p'
+)
+server_protocol=$(
+  HERDR_SESSION="$session" herdr status server |
+    sed -n 's/^protocol: //p'
+)
+
+[ -n "$server_version" ] ||
+  fail "Herdr did not report its server version"
+[ -n "$server_protocol" ] ||
+  fail "Herdr did not report its server protocol"
+
+HERDR_SESSION="$session" herdr server live-handoff \
+  --import-exe "$0" \
+  --expected-protocol "$server_protocol" \
+  --expected-version "$server_version"
+
+attempt=0
+while ! service_owns_server; do
+  attempt=$((attempt + 1))
+  [ "$attempt" -lt 15 ] ||
+    fail "$unit did not take ownership of the Herdr server"
+  sleep 1
+done
+
+HERDR_SESSION="$session" herdr api snapshot > "$after_snapshot"
+snapshot_identity "$before_snapshot" > "$migration_dir/before-identity.json"
+snapshot_identity "$after_snapshot" > "$migration_dir/after-identity.json"
+
+cmp -s \
+  "$migration_dir/before-identity.json" \
+  "$migration_dir/after-identity.json" ||
+  fail "Herdr changed a workspace, pane, or agent session during the handoff"
+
+printf 'status=migrated\nunit=%s\nsession=%s\n' "$unit" "$session"

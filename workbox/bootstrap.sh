@@ -135,11 +135,11 @@ sudo systemctl enable --now \
   bite-workbox-sideshow-firewall.service \
   bite-workbox-sshd.service
 systemctl --user enable --now \
-  herdr-bite.service \
   sideshow.service \
   workbox-backup.timer \
   workbox-health.timer \
   workbox-update-report.timer
+"$local_bin_dir/migrate-herdr-to-systemd"
 systemctl --user restart sideshow.service
 
 if [ -d "$HOME/.config/bite-workbox/settings-source" ]; then

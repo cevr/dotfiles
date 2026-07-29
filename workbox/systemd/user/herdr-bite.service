@@ -8,7 +8,7 @@ StartLimitIntervalSec=0
 Type=simple
 Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HERDR_SESSION=bite
-ExecStart=%h/.local/bin/herdr server
+ExecStart=%h/.local/bin/migrate-herdr-to-systemd service
 OOMPolicy=stop
 Restart=always
 RestartSec=5
