@@ -1,6 +1,7 @@
 @cvr/linear@0.4.0
 @cvr/okra@0.6.2
 @cvr/sentry@0.1.1
+@cvr/stacked@0.10.0
 @openai/codex@0.145.0
 hunkdiff@0.17.6
 sideshow@0.12.0
