@@ -168,18 +168,25 @@ Add `globalDependencies: ["tsconfig.json"]` at the turbo root so root-tsconfig c
 -  "jsPlugins": ["old-effect-plugin-path"],
 +  "jsPlugins": ["oxlint-plugin-effect/plugin"],
   "rules": {
-+    "effect/noSpread": "error",
-+    "effect/noSchemaStruct": "error",
-+    "effect/noMakeUnsafe": "error",
-+    "effect/noHandRolledTaggedUnion": "error",
++    "effect/noAsyncFunction": "error",
 +    "effect/noDynamicImports": "error",
-+    "effect/noPromiseControlFlowInTests": "error",
-+    "effect/noSleepInTests": "error"
++    "effect/noEffectBind": "error",
++    "effect/noEffectDo": "error",
++    "effect/noGlobals": "error",
++    "effect/noNewError": "error",
++    "effect/noNewPromise": "error",
++    "effect/noNodeBuiltinImport": "error",
++    "effect/noTernary": "error",
++    "effect/noTestLifecycleHooks": "error",
++    "effect/noThrowStatement": "error",
++    "effect/noTryCatch": "error"
   }
 }
 ```
 
-Keep TypeScript / import / node rules. Replace legacy Effect plugin paths and old `effect/*` names with the current `oxlint-plugin-effect` rule set from `templates/.oxlintrc.json`. Do not add `options.typeAware` unless the project intentionally installs a compatible type-aware oxlint bridge; `@effect/tsgo` is the default type-aware Effect channel.
+Keep TypeScript / import / node rules. Replace legacy Effect plugin paths and old `effect/*` names with the 12-rule `recommended` set above (`oxlint-plugin-effect` >=0.4.0 deleted the old rule namespace — stale names fail config resolution). Do not add escape-hatch overrides for `noGlobals` / `noNodeBuiltinImport` — route runtime access through `@effect/platform-bun` services or custom service layers instead (see SKILL.md §Runtime Access). Do not add `options.typeAware` unless the project intentionally installs a compatible type-aware oxlint bridge; `@effect/tsgo` is the default type-aware Effect channel.
+
+Then flip the 19 tsgo diagnostics the preset duplicates to `"off"` in `tsconfig.json` (see SKILL.md §Effect Lint Layering) — otherwise every violation reports twice.
 
 ## Step 7: Update lefthook.yml
 
@@ -226,4 +233,4 @@ If `tsgo --noEmit` passes without surfacing any Effect diagnostics on code that 
 - **Forgot to delete old `tsconfig.lsp.json`** — leaf packages still extending it inherit a stale config. Grep: `rg '"extends".*tsconfig\.lsp' .`
 - **Forgot to install `oxlint-plugin-effect`** — oxlint will fail to load `oxlint-plugin-effect/plugin`.
 - **`@typescript/native-preview` and `@effect/tsgo` version skew** — `effect-tsgo patch` errors if pinned versions don't match. Bump them together; `latest` for both is fine for personal projects.
-- **Using old rule names** — the current package uses names like `effect/noSchemaStruct`, not older language-service diagnostic names like `effect/missingEffectError`.
+- **Using old rule names** — the current package (>=0.4.0) ships only the 12 `recommended` rules (`effect/noTryCatch`, `effect/noAsyncFunction`, ...). Pre-0.4 names like `effect/noSchemaStruct` and language-service diagnostic names like `effect/missingEffectError` both fail config resolution.

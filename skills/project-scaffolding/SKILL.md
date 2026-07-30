@@ -29,7 +29,7 @@ What are you setting up?
 | CLI project setup | `references/cli.md` | New single-package CLI tool |
 | Monorepo setup | `references/monorepo.md` | Multi-package project with turbo, workspaces, catalog |
 | Migration to `@effect/tsgo` | `references/migration.md` | Existing project on `@effect/language-service` + `tsconfig.lsp.json` |
-| Templates | `templates/` | Copy-pasteable `tsconfig.json`, `.oxlintrc.json`, `lefthook.yml`, `turbo.json` |
+| Templates | `templates/` | Copy-pasteable `tsconfig.json`, `.oxlintrc.json`, `lefthook.yml`, `turbo.json`, `release.yml`, `ci.yml` |
 | Tooling configs | §Tooling Stack | Adding oxlint, oxfmt, lefthook, tsconfig |
 | Publishing | §Publishing | npm publishing, changesets, GitHub Actions |
 | TS6 / tsgo | §TS6 / tsgo | TypeScript 6 defaults, native compiler |
@@ -81,12 +81,14 @@ Single tsconfig. Effect diagnostics live inside the `@effect/language-service` p
         "ignoreEffectErrorsInTscExitCode": false,
         "diagnosticSeverity": {
           "anyUnknownInErrorContext": "error",
-          "asyncFunction": "error",
+          "asyncFunction": "off",
           "catchAllToMapError": "error",
+          "catchToIgnore": "error",
+          "catchToOrElseSucceed": "error",
           "catchUnfailableEffect": "error",
           "classSelfMismatch": "error",
-          "cryptoRandomUUID": "error",
-          "cryptoRandomUUIDInEffect": "error",
+          "cryptoRandomUUID": "off",
+          "cryptoRandomUUIDInEffect": "off",
           "deterministicKeys": "error",
           "duplicatePackage": "error",
           "effectDoNotation": "error",
@@ -100,22 +102,24 @@ Single tsconfig. Effect diagnostics live inside the `@effect/language-service` p
           "effectMapVoid": "error",
           "effectSucceedWithVoid": "error",
           "extendsNativeError": "error",
+          "flatMapToMap": "error",
           "floatingEffect": "error",
           "genericEffectServices": "error",
-          "globalConsole": "error",
-          "globalConsoleInEffect": "error",
-          "globalDate": "error",
-          "globalDateInEffect": "error",
+          "globalConsole": "off",
+          "globalConsoleInEffect": "off",
+          "globalDate": "off",
+          "globalDateInEffect": "off",
           "globalErrorInEffectCatch": "error",
           "globalErrorInEffectFailure": "error",
-          "globalFetch": "error",
-          "globalFetchInEffect": "error",
-          "globalRandom": "error",
-          "globalRandomInEffect": "error",
-          "globalTimers": "error",
-          "globalTimersInEffect": "error",
+          "globalFetch": "off",
+          "globalFetchInEffect": "off",
+          "globalRandom": "off",
+          "globalRandomInEffect": "off",
+          "globalTimers": "off",
+          "globalTimersInEffect": "off",
           "instanceOfSchema": "error",
           "layerMergeAllWithDependencies": "error",
+          "lazyEffect": "error",
           "lazyPromiseInEffectSync": "error",
           "leakingRequirements": "error",
           "missedPipeableOpportunity": "off",
@@ -123,21 +127,28 @@ Single tsconfig. Effect diagnostics live inside the `@effect/language-service` p
           "missingEffectError": "error",
           "missingEffectServiceDependency": "error",
           "missingLayerContext": "error",
+          "missingPipeableSignature": "error",
           "missingReturnYieldStar": "error",
           "missingStarInYieldEffectGen": "error",
+          "multipleCatchTag": "error",
           "multipleEffectProvide": "error",
           "nestedEffectGenYield": "error",
-          "newPromise": "error",
-          "nodeBuiltinImport": "error",
+          "newPromise": "off",
+          "newSchemaClass": "error",
+          "nodeBuiltinImport": "off",
           "nonObjectEffectServiceType": "error",
           "outdatedApi": "error",
           "overriddenSchemaConstructor": "error",
-          "preferSchemaOverJson": "error",
-          "processEnv": "error",
-          "processEnvInEffect": "error",
+          "preferSchemaOverJson": "off",
+          "processEnv": "off",
+          "processEnvInEffect": "off",
+          "redundantMapError": "error",
+          "redundantOrDie": "error",
           "redundantSchemaTagIdentifier": "error",
           "returnEffectInGen": "error",
           "runEffectInsideEffect": "error",
+          "schemaNumber": "error",
+          "schemaOpaqueInstanceMember": "error",
           "schemaStructWithTag": "error",
           "schemaSyncInEffect": "error",
           "schemaUnionOfLiterals": "error",
@@ -145,13 +156,16 @@ Single tsconfig. Effect diagnostics live inside the `@effect/language-service` p
           "serviceNotAsClass": "error",
           "strictBooleanExpressions": "off",
           "strictEffectProvide": "error",
-          "tryCatchInEffectGen": "error",
+          "syncToSucceed": "error",
+          "tryCatchInEffectGen": "off",
           "unknownInEffectCatch": "error",
           "unnecessaryArrowBlock": "error",
           "unnecessaryEffectGen": "error",
           "unnecessaryFailYieldableError": "error",
           "unnecessaryPipe": "off",
-          "unnecessaryPipeChain": "off"
+          "unnecessaryPipeChain": "off",
+          "unnecessaryTypeofType": "error",
+          "unsafeEffectTypeAssertion": "error"
         },
         "keyPatterns": [
           { "target": "service", "pattern": "default", "skipLeadingPath": ["src/", "packages/"] },
@@ -181,7 +195,9 @@ Single tsconfig. Effect diagnostics live inside the `@effect/language-service` p
 ```
 
 **Why this shape:**
+- The `"off"` entries are not disabled checks — they are diagnostics owned by `oxlint-plugin-effect` (see §Effect Lint Layering). Turning them off in tsgo prevents every violation from being reported twice.
 - `plugins[].overrides[].include` — glob patterns. The plugin merges options for files matching `include`. This is the supported way to relax individual rules in tests/integration code without forking tsconfigs.
+- `plugins[].overrides[]` also accepts `exclude` globs alongside `include` and `options`.
 - `keyPatterns` — controls `deterministicKeys` rule. Skip-leading-path values (`src/`, `packages/`) make it ignore those prefixes when computing identifiers.
 - `strict: true`, `target`, `module`, etc. are kept explicit even though TS6 defaults them — survives downgrades and `tsc --showConfig` clarity.
 
@@ -189,9 +205,9 @@ Single tsconfig. Effect diagnostics live inside the `@effect/language-service` p
 
 ### .oxlintrc.json
 
-Standard style + correctness rules. Effect-specific lint is split by layer:
+Standard style + correctness rules. Effect-specific lint is split by layer (see §Effect Lint Layering):
 - `@effect/tsgo` owns type-aware Effect diagnostics during `typecheck`.
-- `oxlint-plugin-effect` owns fast AST/style guidelines during `lint` (`effect/*` rules like `noSpread`, `noSchemaStruct`, `noMakeUnsafe`, `noDynamicImports`, and test-control-flow bans).
+- `oxlint-plugin-effect` owns unconditional AST/syntax rules during `lint`. Since 0.4.0 the plugin ships ONE preset — `recommended` — with exactly 12 rules, all `error`. The old rule namespace (`noSpread`, `noSchemaStruct`, `noMakeUnsafe`, `noHandRolledTaggedUnion`, ...) was deleted; those names now fail config resolution.
 
 ```json
 {
@@ -219,25 +235,52 @@ Standard style + correctness rules. Effect-specific lint is split by layer:
     "no-underscore-dangle": "off",
     "no-nested-ternary": "error",
     "complexity": ["error", 20],
-    "effect/noSpread": "error",
-    "effect/noSchemaStruct": "error",
-    "effect/noMakeUnsafe": "error",
-    "effect/noHandRolledTaggedUnion": "error",
+    "effect/noAsyncFunction": "error",
     "effect/noDynamicImports": "error",
-    "effect/noPromiseControlFlowInTests": "error",
-    "effect/noSleepInTests": "error"
+    "effect/noEffectBind": "error",
+    "effect/noEffectDo": "error",
+    "effect/noGlobals": "error",
+    "effect/noNewError": "error",
+    "effect/noNewPromise": "error",
+    "effect/noNodeBuiltinImport": "error",
+    "effect/noTernary": "error",
+    "effect/noTestLifecycleHooks": "error",
+    "effect/noThrowStatement": "error",
+    "effect/noTryCatch": "error"
   },
-  "ignorePatterns": ["**/dist/**", "**/node_modules/**", "**/*.d.ts", "**/bin/**"]
+  "ignorePatterns": ["**/dist/**", "**/node_modules/**", "**/*.d.ts", "**/bin/**", "**/scripts/**"]
 }
 ```
 
-Use `templates/.oxlintrc.json` for the full Effect rule list. Keep rule names explicit in JSON configs; oxlint does not load exported preset objects from package code.
+Use `templates/.oxlintrc.json` for the full config with overrides. Keep rule names explicit in JSON configs; oxlint does not load exported preset objects from package code (TS/JS configs can `import { recommended } from "oxlint-plugin-effect/presets/recommended"`).
+
+**Config filename is `.oxlintrc.json`** — not `oxlint.json`. **JS plugins load through `jsPlugins`** — `"plugins": ["effect"]` silently loads nothing (`plugins` is oxlint's built-in plugin list); the correct wiring is `"jsPlugins": ["oxlint-plugin-effect/plugin"]`.
+
+### Effect Lint Layering
+
+The ownership contract between the two Effect lint channels:
+
+| Channel | Owns | Examples |
+|---------|------|----------|
+| `oxlint-plugin-effect` (lint) | Unconditional syntax — bans that need no type info | async/await, try/catch, throw, `new Promise`, `new Error`, ternary, dynamic import, `Effect.Do`/`bind`, globals, node builtin imports, test lifecycle hooks |
+| `@effect/tsgo` (typecheck) | Type-aware semantics | `floatingEffect`, `runEffectInsideEffect`, `strictEffectProvide`, `extendsNativeError`, `unsafeEffectTypeAssertion`, `leakingRequirements`, `missingEffectContext`/`Error`, `missingLayerContext` |
+
+The seam is the 19-diagnostic off-list in `templates/tsconfig.json` (`asyncFunction`, `cryptoRandomUUID`, `cryptoRandomUUIDInEffect`, `globalConsole`, `globalConsoleInEffect`, `globalDate`, `globalDateInEffect`, `globalFetch`, `globalFetchInEffect`, `globalRandom`, `globalRandomInEffect`, `globalTimers`, `globalTimersInEffect`, `newPromise`, `nodeBuiltinImport`, `preferSchemaOverJson`, `processEnv`, `processEnvInEffect`, `tryCatchInEffectGen`). These are duplicated by the oxlint preset; leaving them on in tsgo double-reports every violation. If a project drops `oxlint-plugin-effect`, flip them back to `error`.
+
+### Runtime Access — No Lint Escape Hatches
+
+`effect/noGlobals` and `effect/noNodeBuiltinImport` stay at `error` everywhere. There is no `src/platform/**` override directory and no per-file rule disabling. Code that needs the runtime reaches it through Effect:
+
+- **Built-in platform services first**: `@effect/platform-bun` (`BunServices.layer`) provides `FileSystem`, `Path`, `ChildProcessSpawner`, `HttpClient`, terminal, sockets; core `effect` provides `Clock`, `Random`, `Console`, `Config`. Acquire them with `yield*` inside `Effect.gen` — never touch `process`, `fetch`, `Date`, or `node:*` directly.
+- **Custom services otherwise**: when no built-in exists, define a `Context.Service` with the shape interface, then ship runtime-specific implementation layers (`layerBun`, `layerNode`) that wrap the primitive. The layer file is still lint-clean because the primitive arrives through the platform services or the service constructor, not through globals.
+
+If a rule fires, the fix is to route the access through a service — not to widen the lint config.
 
 ### lefthook.yml
 
 ```yaml
 pre-commit:
-  parallel: true
+  parallel: false
   jobs:
     - name: lint+fmt
       run: bun run lint:fix && bun run fmt
@@ -250,7 +293,9 @@ pre-commit:
       run: bun run test
 ```
 
-Parallel pre-commit with a single combined lint+fmt job: lint runs first (may rewrite source) then fmt formats the result. Keeping lint+fmt as one chained job eliminates the staging race that bites when they're split into separate parallel jobs (one job stages files mid-typecheck on the other). `fmt` not `fmt:check` — we want stage-fixed formatting on commit, not a check failure.
+Sequential (`parallel: false`) pre-commit with a single combined lint+fmt job: lint runs first (may rewrite source) then fmt formats the result. Sequential ordering eliminates the staging race — with parallel jobs, lint+fmt stages files while typecheck reads them mid-flight. `fmt` not `fmt:check` — we want stage-fixed formatting on commit, not a check failure.
+
+Alternative for repos whose `gate` already covers all lanes: a single job `run: bun run gate` with `parallel: true` at the hook level — simpler, and no staging race because there is only one job.
 
 ### Scripts (single-package)
 
@@ -327,6 +372,16 @@ typescript
 - `typescript` is needed for editor LSP fallback and as a peer of various tools.
 - `oxlint-plugin-effect` provides the `effect/*` oxlint rules used for Effect style and project guidelines. Configure it with `jsPlugins: ["oxlint-plugin-effect/plugin"]`.
 
+### Runtime Dependencies (Effect v4)
+
+**`bun add effect` installs v3.** The npm `latest` dist-tag points at Effect 3.x; v4 lives on the `beta` tag. Every Effect-4 project must install explicitly:
+
+```bash
+bun add effect@beta @effect/platform-bun@beta
+```
+
+and pin the resolved version exactly (no caret) in `package.json` — e.g. `"effect": "4.0.0-beta.102"` — so a re-install cannot silently drift across beta releases.
+
 ## Publishing
 
 For public npm packages. Skip for private projects.
@@ -365,43 +420,17 @@ Add to `package.json`:
 }
 ```
 
-### GitHub Actions (release.yml)
+### GitHub Actions
 
-```yaml
-name: Release
+Copy `templates/release.yml` and `templates/ci.yml` **verbatim** — they are byte-identical copies of proven, shipping workflows (`effect-oxlint` release, `effect-machine` CI). Do not hand-edit the changesets flow; it is exactly what publishes today.
 
-on:
-  push:
-    branches:
-      - main
+`templates/release.yml` highlights:
+- `env: LEFTHOOK: 0` on the release job — without it, `bun install` runs `prepare` → `lefthook install` in CI.
+- `sudo npm install -g npm@latest` — required for npm OIDC trusted publishing.
+- `NPM_TOKEN: ""` — empty on purpose; OIDC provenance replaces the token.
+- `changesets/action@v1` with `publish: bun run release` / `version: bun run version`.
 
-concurrency: ${{ github.workflow }}-${{ github.ref }}
-
-jobs:
-  release:
-    name: Release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-      - name: Update npm for OIDC support
-        run: sudo npm install -g npm@latest
-      - run: bun install
-      - name: Create Release Pull Request or Publish
-        uses: changesets/action@v1
-        with:
-          publish: bun run release
-          version: bun run version
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ""
-```
+`templates/ci.yml` runs typecheck, lint, fmt, and test on push/PR to main. Swap the `Format` step to `bun run fmt:check` if CI should fail on unformatted code instead of formatting in place.
 
 **Important**: `repository.url` in `package.json` must match the GitHub repo — npm provenance verification requires it.
 
@@ -417,7 +446,7 @@ jobs:
 | Tests | `bun test` with `effect-bun-test` for Effect integration |
 | Tracing | `Effect.fn("ServiceName.methodName")` on all service methods |
 | Quality gate | `bun run gate` before any commit/PR/ship |
-| Git hooks | lefthook pre-commit runs lint+fmt (single chained job), typecheck, build, test in parallel |
+| Git hooks | lefthook pre-commit runs lint+fmt (single chained job), typecheck, build, test sequentially (`parallel: false`) |
 | Effect diagnostics | `@effect/tsgo` plugin in `tsconfig.json` for type-aware diagnostics; `oxlint-plugin-effect` in `.oxlintrc.json` for AST/style guidelines |
 | Test relaxation | `plugins[].overrides[].include` glob with `options.diagnosticSeverity` map (no separate test tsconfig) |
 | Lint scripts | Single `oxlint` at root with `oxlint-plugin-effect/plugin` loaded through `jsPlugins` |
@@ -436,6 +465,8 @@ TypeScript 6 changes some defaults, but production projects keep options explici
 3. Provides the `effect-tsgo` CLI for setup/patch/unpatch operations.
 
 The `tsgo` binary on disk gets patched in place by `effect-tsgo patch` (run via the `prepare` script). After patching, calling `tsgo --noEmit` runs both standard TS type checking and Effect diagnostics.
+
+`effect-tsgo` subcommands: `patch`, `unpatch`, `get-exe-path`, `diagnostics`, `setup`, `config`. `config` is an interactive severity picker that regenerates the `diagnosticSeverity` map from the installed schema — use it after bumping `@effect/tsgo` to pick up newly added diagnostics instead of diffing by hand.
 
 **Use `@effect/tsgo` instead of standalone `tsgo`, not alongside it.** Running both produces duplicate diagnostics.
 
@@ -501,6 +532,10 @@ Use the `repo` skill (`skills/repo/SKILL.md`) — `okra repo fetch` + `repo path
 - **`overrides[].options.diagnosticSeverity` merges, not replaces** — only list rules whose severity changes for matching files.
 - **`types: ["bun"]` required** — TS6 defaults `types` to `[]` in some configs. Without it, `Bun.*` globals are invisible.
 - **`oxlint-plugin-effect` must be a devDep when `.oxlintrc.json` lists `jsPlugins: ["oxlint-plugin-effect/plugin"]`** — otherwise `oxlint` cannot load the `effect/*` rules.
+- **`"plugins": ["effect"]` loads nothing** — `plugins` is oxlint's built-in plugin list; JS plugins go in `jsPlugins`. The misconfiguration is silent: oxlint runs fine with zero `effect/*` rules active. Check the rule count in `oxlint`'s summary line.
+- **`bun add effect` installs v3** — the `latest` dist-tag is Effect 3.x. Use `effect@beta` + `@effect/platform-bun@beta` and pin exact versions for v4 projects.
+- **`oxlint-plugin-effect` >=0.4.0 has one 12-rule `recommended` preset** — pre-0.4 rule names (`noSpread`, `noSchemaStruct`, `noMakeUnsafe`, ...) were deleted and fail config resolution. Bump the dep and rewrite the rules block together.
+- **`diagnosticSeverity` drifts as `@effect/tsgo` adds diagnostics** — after bumping, diff your map against `node_modules/@effect/tsgo/schema.json` (definition `effectLanguageServicePluginDiagnosticSeverityDefinition`) or run `effect-tsgo config`.
 - **Do not use legacy `tsgolint-effect` or env-var lint wiring** — the current shape is plain `oxlint` plus `oxlint-plugin-effect` for AST rules and `tsgo --noEmit` for type-aware Effect diagnostics.
 - **`@effect/tsgo` and `@typescript/native-preview` versions are coupled** — `effect-tsgo patch` validates compatibility. Bump them together; if `patch` errors after an upgrade, update both pkgs.
 - **`repository.url` required for npm provenance** — publish will 422 without it.
