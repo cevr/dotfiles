@@ -56,7 +56,7 @@ bun add effect @effect/platform-bun
 
 # Dev tooling
 bun add -D typescript @typescript/native-preview @types/bun \
-  @effect/tsgo oxlint oxlint-plugin-effect oxfmt lefthook concurrently effect-bun-test
+  @effect/tsgo@^0.24.3 oxlint oxlint-plugin-effect oxfmt lefthook concurrently effect-bun-test
 
 # If publishing to npm
 bun add -D @changesets/cli @changesets/changelog-github
@@ -95,9 +95,10 @@ const cli = CliApp.run(command, { name: "project-name", version: "0.1.0" }).pipe
   Effect.provide(BunCommandExecutor.layer),
 )
 
-// @effect-diagnostics-next-line effect/strictEffectProvide:off
 BunRuntime.runMain(cli.pipe(Effect.provide(AppLayer)))
 ```
+
+No suppression comment here. This entry-point shape is what `strictEffectProvide` flags, but that rule is `"off"` in the canonical `diagnosticSeverity` map (see SKILL.md §strictEffectProvide) — and `@effect-diagnostics` comments do not work anyway.
 
 ### Commands (`src/commands/index.ts`)
 
@@ -209,7 +210,7 @@ console.log(`Symlinked to: ${linkPath}`)
 
 ## Step 5: Testing
 
-Tests go under `tests/`. The `tsconfig.json` `plugins[].overrides` block (see SKILL.md) already relaxes `strictEffectProvide` for `tests/**` and `*.test.ts`. Add more rules to that override block as needed — don't fork the tsconfig.
+Tests go under `tests/`. They need no special diagnostic handling out of the box — `overrides` ships empty and `strictEffectProvide` is `"off"` globally. If a rule genuinely needs relaxing for test paths only, add an `overrides` entry in `tsconfig.json` — don't fork the tsconfig, and don't reach for `@effect-diagnostics` comments (they are inert).
 
 ### Test Helper (`tests/helpers/test-cli.ts`)
 
@@ -309,7 +310,7 @@ describe("subcommand-a", () => {
 })
 ```
 
-`strictEffectProvide` is off in tests via the `overrides` block — no per-file `// @effect-diagnostics` directive needed.
+`strictEffectProvide` is `"off"` globally in `diagnosticSeverity`, so this `Effect.provide` needs nothing. Per-file `// @effect-diagnostics` directives would not help regardless — they are non-functional.
 
 ## Step 6: .gitignore
 

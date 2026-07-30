@@ -66,7 +66,7 @@ mkdir -p packages/core/src packages/cli/src
     "prepare": "lefthook install && effect-tsgo patch"
   },
   "devDependencies": {
-    "@effect/tsgo": "latest",
+    "@effect/tsgo": "^0.24.3",
     "@typescript/native-preview": "latest",
     "@types/bun": "latest",
     "concurrently": "latest",
@@ -140,29 +140,13 @@ Single file. The Effect plugin lives here, including the `overrides` block that 
           "missingLayerContext": "error",
           "missingReturnYieldStar": "error",
           "missingStarInYieldEffectGen": "error",
-          "strictEffectProvide": "error"
+          "strictEffectProvide": "off"
         },
         "keyPatterns": [
           { "target": "service", "pattern": "default", "skipLeadingPath": ["packages/"] },
           { "target": "error", "pattern": "default", "skipLeadingPath": ["packages/"] }
         ],
-        "overrides": [
-          {
-            "include": [
-              "**/tests/**/*.ts",
-              "**/tests/**/*.tsx",
-              "**/*.test.ts",
-              "**/*.test.tsx",
-              "apps/*/integration/**/*.ts",
-              "apps/*/integration/**/*.tsx"
-            ],
-            "options": {
-              "diagnosticSeverity": {
-                "strictEffectProvide": "off"
-              }
-            }
-          }
-        ]
+        "overrides": []
       }
     ],
     "paths": {
@@ -181,7 +165,7 @@ Key differences from single-package:
 - `paths` — maps `@scope/pkg` → source for editor resolution (sibling to `plugins`, both inside `compilerOptions`).
 - `"include": []` — root tsconfig is for editor/LSP only; leaf tsconfigs handle compilation by extending this one.
 - `keyPatterns.skipLeadingPath: ["packages/"]` — `deterministicKeys` rule strips the `packages/<name>/` prefix when computing identifiers.
-- `overrides` patterns include `apps/*/integration/**` for integration tests living under `apps/`.
+- `overrides` starts empty. If a monorepo later needs a genuinely path-scoped relaxation, that is where it goes — and integration tests under `apps/` need their own glob (`apps/*/integration/**`) since `**/tests/**` won't match them. Do not add an override for `strictEffectProvide`; it is `"off"` globally (see SKILL.md §strictEffectProvide).
 
 **Add every new package to `paths`.** Without it, the editor can't resolve workspace imports.
 
