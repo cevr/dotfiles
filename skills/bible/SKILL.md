@@ -10,10 +10,12 @@ description: >
   `references/source-material.md` documents the CLI command surface. Use when
   the user asks for new preaching/teaching content, when revising existing
   files, when working with the SDA pioneer corpus, or when fetching raw
-  source data (verses, EGW, hymns, Strong's, commentary, SS PDFs). Triggers
-  on: sermon, message, study, reading, teaching, Sabbath School, structural
-  analysis, chiasm, EGW study/reference, bible verse, Strong's number, hymn
-  lookup, commentary on a verse, sabbath school PDF, "generate a
+  source data (verses, EGW, hymns, Strong's, commentary, SS PDFs), or when
+  building a Keynote deck from a teaching document
+  (`references/decks.md`). Triggers on: sermon, message, study, reading,
+  teaching, Sabbath School, structural analysis, chiasm, EGW
+  study/reference, bible verse, Strong's number, hymn lookup, commentary on
+  a verse, sabbath school PDF, deck, slides, Keynote, "generate a
   message/study/reading on X", "revise this file", "export to notes".
 ---
 
@@ -28,6 +30,8 @@ not output type) and keep an Apple-Notes copy in sync via the `bible` CLI.
 What is the user asking for?
 ├─ Any teaching document — message, study, reading,
 │  analysis (one format; `kind` is just a tag)     → references/teachings.md
+├─ Keynote deck for a teaching document
+│  (paintings + verses, full-bleed/split rhythm)   → references/decks.md
 └─ Sabbath School week outline (PDF-driven medium) → references/sabbath-school.md
 ```
 
@@ -43,10 +47,11 @@ historic pioneer Adventism, not modern Adventism.
 
 ## Topic Index
 
-| File                           | Output               | Output dir                        | Filename pattern |
-| ------------------------------ | -------------------- | --------------------------------- | ---------------- |
-| `references/teachings.md`      | Teaching document    | `outputs/teachings/<topic-slug>/` | `<slug>.md`      |
-| `references/sabbath-school.md` | SS week outline      | `outputs/sabbath-school/`         | `YYYY-QX-WY.md`  |
+| File                           | Output            | Output dir                        | Filename pattern  |
+| ------------------------------ | ----------------- | --------------------------------- | ----------------- |
+| `references/teachings.md`      | Teaching document | `outputs/teachings/<topic-slug>/` | `<slug>.md`       |
+| `references/decks.md`          | Keynote deck      | `outputs/decks/<slug>/`           | `<Deck Name>.key` |
+| `references/sabbath-school.md` | SS week outline   | `outputs/sabbath-school/`         | `YYYY-QX-WY.md`   |
 
 Not an output type, but used by both:
 `references/source-material.md` — the `bible` CLI command surface for pulling
