@@ -1,0 +1,4 @@
+interface:
+  display_name: "Track Work Hours"
+  short_description: "Log and review payroll hours in Google Sheets"
+  default_prompt: "Use $track-work-hours to log or review my work hours."

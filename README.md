@@ -12,6 +12,7 @@ My personal dotfiles.
 | `gitignore_global` | Global gitignore |
 | `ghostty/config` | Ghostty terminal config |
 | `atuin.toml` | Atuin shell history config |
+| `skills/track-work-hours` | `hours` command and agent skill for payroll tracking |
 
 ## Installation
 
@@ -26,6 +27,8 @@ ln -sf $(pwd)/gitconfig ~/.gitconfig
 ln -sf $(pwd)/gitignore_global ~/.gitignore_global
 ln -sf $(pwd)/ghostty/config ~/Library/Application\ Support/com.mitchellh.ghostty/config
 ln -sf $(pwd)/atuin.toml ~/.config/atuin/config.toml
+mkdir -p ~/.local/bin
+ln -sf $(pwd)/skills/track-work-hours/scripts/hours ~/.local/bin/hours
 ```
 
 ### Bite workbox
@@ -41,5 +44,5 @@ ln -sf $(pwd)/atuin.toml ~/.config/atuin/config.toml
 brew bundle
 
 # Or manually:
-brew install aws-vault fzf fd eza zsh-completions trash lazygit bat git-delta ripgrep
+brew install aws-vault fzf fd eza zsh-completions trash lazygit bat git-delta ripgrep gogcli jq
 ```

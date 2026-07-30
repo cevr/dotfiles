@@ -32,4 +32,8 @@ ln -sf "$DOTFILES_DIR/pure" ~/.zsh/pure
 mkdir -p ~/.config/lazygit
 ln -sf "$DOTFILES_DIR/lazygit.yml" ~/.config/lazygit/config.yml
 
+# Personal commands
+mkdir -p ~/.local/bin
+ln -sf "$DOTFILES_DIR/skills/track-work-hours/scripts/hours" ~/.local/bin/hours
+
 echo "Done! Run 'source ~/.zshrc' to reload."

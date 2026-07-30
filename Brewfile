@@ -66,6 +66,10 @@ brew "gh"
 brew "git"
 # Syntax-highlighting pager for git and diff output
 brew "git-delta"
+# Google Workspace command-line tool
+brew "gogcli"
+# Command-line JSON processor
+brew "jq"
 # Simple terminal UI for git commands
 brew "lazygit"
 # Linux virtual machines

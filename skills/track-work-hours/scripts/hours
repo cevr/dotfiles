@@ -1,0 +1,618 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+readonly HOURS_VERSION='1.1.0'
+readonly DEFAULT_SPREADSHEET_ID='1ZbuSVmdpdb5Io0YpDgqvqvN1GeQgPo_pWG543dvvAy4'
+readonly DEFAULT_GOOGLE_ACCOUNT='cristian@getbite.com'
+readonly DAILY_LOG_RANGE="'Daily Hours Log'!A2:F170"
+readonly PERIOD_RANGE="'Cristian Hours Tracking'!A2:F12"
+readonly SHEET_URL='https://docs.google.com/spreadsheets/d/1ZbuSVmdpdb5Io0YpDgqvqvN1GeQgPo_pWG543dvvAy4/edit?gid=1898123686#gid=1898123686'
+
+SPREADSHEET_ID="${HOURS_SPREADSHEET_ID:-$DEFAULT_SPREADSHEET_ID}"
+GOOGLE_ACCOUNT="${HOURS_GOOGLE_ACCOUNT:-${GOG_ACCOUNT:-$DEFAULT_GOOGLE_ACCOUNT}}"
+GOG_ERROR_FILE=''
+
+show_help() {
+  cat <<'EOF'
+hours - Log work hours in the Bite payroll spreadsheet
+
+EXAMPLES
+  hours 7.5
+  hours 7.5 --notes "Release work"
+  hours 6 --date 2026-08-07 --notes "Short Friday"
+  hours 8 --date 2026-08-07 --replace --dry-run
+  hours show
+  hours show --date 2026-08-07 --json
+  hours clear --date 2026-08-07 --dry-run
+  hours sheet
+
+USAGE
+  hours <hours> [OPTIONS]
+  hours show [OPTIONS]
+  hours clear [OPTIONS]
+  hours sheet
+
+OPTIONS
+  --date <YYYY-MM-DD>  Select a date [default: today]
+  --notes <text>       Set the optional notes cell
+  --replace            Replace an existing value
+  --dry-run            Show the planned write
+  --json               Print JSON
+  -h, --help           Show this help
+  -V, --version        Show the version
+
+ENVIRONMENT
+  HOURS_GOOGLE_ACCOUNT  Google account [default: cristian@getbite.com]
+  HOURS_SPREADSHEET_ID  Google spreadsheet ID
+  GOG_ACCOUNT           Fallback Google account
+
+EXIT CODES
+  0  Success
+  1  Google API or data error
+  2  Invalid command or input
+  3  Missing dependency
+EOF
+}
+
+fail() {
+  local message="$1"
+  local fix="${2:-}"
+  local exit_code="${3:-1}"
+
+  printf 'Error: %s\n' "$message" >&2
+  if [[ -n "$fix" ]]; then
+    printf '\nFix: %s\n' "$fix" >&2
+  fi
+  exit "$exit_code"
+}
+
+require_command() {
+  local command_name="$1"
+  local install_command="$2"
+
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    fail "Missing required command: $command_name" "Run: $install_command" 3
+  fi
+}
+
+cleanup() {
+  if [[ -n "$GOG_ERROR_FILE" && -f "$GOG_ERROR_FILE" ]]; then
+    command rm -f "$GOG_ERROR_FILE"
+  fi
+}
+
+run_gog() {
+  local output
+  : >"$GOG_ERROR_FILE"
+
+  if ! output="$(gog "$@" 2>"$GOG_ERROR_FILE")"; then
+    local error_message
+    error_message="$(<"$GOG_ERROR_FILE")"
+    if [[ "$error_message" == *'invalid_grant'* || "$error_message" == *'insufficientPermissions'* ]]; then
+      fail 'Google authorization failed.' \
+        'Run: gog auth add cristian@getbite.com --services sheets,drive,calendar --force-consent'
+    fi
+    if [[ "$error_message" == *'keyring connection timed out'* ]]; then
+      fail 'macOS Keychain access needs approval.' \
+        'Run gog auth list in your terminal. Select Always Allow in the macOS prompt.'
+    fi
+    fail 'Google Sheets request failed.' "${error_message:-Run the command again.}"
+  fi
+
+  if [[ -s "$GOG_ERROR_FILE" ]]; then
+    cat "$GOG_ERROR_FILE" >&2
+  fi
+  printf '%s\n' "$output"
+}
+
+format_sheet_date() {
+  local iso_date="$1"
+  local formatted_date=''
+
+  if formatted_date="$(date -j -f '%Y-%m-%d' "$iso_date" '+%m/%d/%Y' 2>/dev/null)"; then
+    printf '%s\n' "$formatted_date"
+    return
+  fi
+
+  if formatted_date="$(date -d "$iso_date" '+%m/%d/%Y' 2>/dev/null)"; then
+    printf '%s\n' "$formatted_date"
+    return
+  fi
+
+  fail "Invalid date: $iso_date" 'Use YYYY-MM-DD.' 2
+}
+
+normalize_hours() {
+  local input_hours="$1"
+  local normalized_hours=''
+
+  if ! normalized_hours="$(
+    jq -en --arg value "$input_hours" \
+      '($value | tonumber) as $hours | select($hours >= 0 and $hours <= 24) | $hours'
+  )"; then
+    fail "Invalid hours: $input_hours" 'Use a number from 0 through 24.' 2
+  fi
+
+  printf '%s\n' "$normalized_hours"
+}
+
+get_range() {
+  local range="$1"
+  run_gog sheets get "$SPREADSHEET_ID" "$range" \
+    --account "$GOOGLE_ACCOUNT" \
+    --json \
+    --no-input
+}
+
+find_daily_row() {
+  local daily_log_json="$1"
+  local sheet_date="$2"
+
+  jq -ce --arg sheet_date "$sheet_date" '
+    first(
+      .values
+      | to_entries[]
+      | select((.value[0] // "") == $sheet_date)
+      | {
+          row: (.key + 2),
+          sheet_date: (.value[0] // ""),
+          weekday: (.value[1] // ""),
+          day_type: (.value[2] // ""),
+          period: (.value[3] // ""),
+          hours: (.value[4] // ""),
+          notes: (.value[5] // "")
+        }
+    ) // empty
+  ' <<<"$daily_log_json"
+}
+
+find_period() {
+  local periods_json="$1"
+  local period_number="$2"
+
+  jq -ce --arg period_number "$period_number" '
+    first(
+      .values[]
+      | select((.[0] // "" | tostring) == $period_number)
+      | {
+          number: (.[0] // ""),
+          start: (.[1] // ""),
+          cutoff: (.[2] // ""),
+          payday: (.[3] // ""),
+          total_hours: (.[4] // "")
+        }
+    ) // empty
+  ' <<<"$periods_json"
+}
+
+print_status() {
+  local iso_date="$1"
+  local row_json="$2"
+  local period_json="$3"
+  local json_output="$4"
+
+  local status_json
+  status_json="$(
+    jq -cn \
+      --arg date "$iso_date" \
+      --argjson day "$row_json" \
+      --argjson period "${period_json:-null}" \
+      --arg sheet_url "$SHEET_URL" \
+      '{
+        status: "ok",
+        date: $date,
+        row: $day.row,
+        weekday: $day.weekday,
+        day_type: $day.day_type,
+        hours: (if $day.hours == "" then null else ($day.hours | tonumber) end),
+        notes: (if $day.notes == "" then null else $day.notes end),
+        tracking_period: $period,
+        sheet_url: $sheet_url
+      }'
+  )"
+
+  if [[ "$json_output" == 'true' ]]; then
+    jq . <<<"$status_json"
+    return
+  fi
+
+  local hours_value
+  hours_value="$(jq -r '.hours // "not entered"' <<<"$status_json")"
+  printf '%s (%s)\n' "$iso_date" "$(jq -r '.weekday' <<<"$status_json")"
+  printf 'Hours: %s\n' "$hours_value"
+
+  local notes_value
+  notes_value="$(jq -r '.notes // empty' <<<"$status_json")"
+  if [[ -n "$notes_value" ]]; then
+    printf 'Notes: %s\n' "$notes_value"
+  fi
+
+  if [[ "$(jq -r '.tracking_period != null' <<<"$status_json")" == 'true' ]]; then
+    printf 'Tracking period: %s\n' "$(jq -r '.tracking_period.number' <<<"$status_json")"
+    printf 'Period: %s to %s\n' \
+      "$(jq -r '.tracking_period.start' <<<"$status_json")" \
+      "$(jq -r '.tracking_period.cutoff' <<<"$status_json")"
+    printf 'Payday: %s\n' "$(jq -r '.tracking_period.payday' <<<"$status_json")"
+    printf 'Period total: %s hours\n' "$(jq -r '.tracking_period.total_hours' <<<"$status_json")"
+  fi
+}
+
+show_status() {
+  local iso_date="$1"
+  local json_output="$2"
+  local sheet_date
+  sheet_date="$(format_sheet_date "$iso_date")"
+
+  local daily_log_json
+  daily_log_json="$(get_range "$DAILY_LOG_RANGE")"
+
+  local row_json
+  if ! row_json="$(find_daily_row "$daily_log_json" "$sheet_date")" || [[ -z "$row_json" ]]; then
+    fail "Date is outside the workbook: $iso_date" 'Use a date from 2026-07-16 through 2026-12-31.' 2
+  fi
+
+  local period_number
+  period_number="$(jq -r '.period' <<<"$row_json")"
+
+  local period_json=''
+  if [[ -n "$period_number" ]]; then
+    local periods_json
+    periods_json="$(get_range "$PERIOD_RANGE")"
+    period_json="$(find_period "$periods_json" "$period_number")"
+  fi
+
+  print_status "$iso_date" "$row_json" "$period_json" "$json_output"
+}
+
+log_hours() {
+  local input_hours="$1"
+  local iso_date="$2"
+  local notes="$3"
+  local notes_set="$4"
+  local replace="$5"
+  local dry_run="$6"
+  local json_output="$7"
+
+  local hours
+  hours="$(normalize_hours "$input_hours")"
+
+  local sheet_date
+  sheet_date="$(format_sheet_date "$iso_date")"
+
+  local daily_log_json
+  daily_log_json="$(get_range "$DAILY_LOG_RANGE")"
+
+  local row_json
+  if ! row_json="$(find_daily_row "$daily_log_json" "$sheet_date")" || [[ -z "$row_json" ]]; then
+    fail "Date is outside the workbook: $iso_date" 'Use a date from 2026-07-16 through 2026-12-31.' 2
+  fi
+
+  local row_number existing_hours existing_notes desired_notes
+  row_number="$(jq -r '.row' <<<"$row_json")"
+  existing_hours="$(jq -r '.hours' <<<"$row_json")"
+  existing_notes="$(jq -r '.notes' <<<"$row_json")"
+  desired_notes="$existing_notes"
+  if [[ "$notes_set" == 'true' ]]; then
+    desired_notes="$notes"
+  fi
+
+  local same_hours='false'
+  if [[ -n "$existing_hours" ]]; then
+    same_hours="$(
+      jq -nr --arg existing "$existing_hours" --argjson desired "$hours" \
+        '($existing | tonumber) == $desired'
+    )"
+  fi
+
+  local same_notes='true'
+  if [[ "$notes_set" == 'true' && "$existing_notes" != "$desired_notes" ]]; then
+    same_notes='false'
+  fi
+
+  if [[ "$same_hours" == 'true' && "$same_notes" == 'true' ]]; then
+    local unchanged_json
+    unchanged_json="$(
+      jq -cn \
+        --arg date "$iso_date" \
+        --argjson row "$row_number" \
+        --argjson hours "$hours" \
+        --arg notes "$desired_notes" \
+        --arg sheet_url "$SHEET_URL" \
+        '{
+          status: "unchanged",
+          date: $date,
+          row: $row,
+          hours: $hours,
+          notes: (if $notes == "" then null else $notes end),
+          sheet_url: $sheet_url
+        }'
+    )"
+    if [[ "$json_output" == 'true' ]]; then
+      jq . <<<"$unchanged_json"
+    else
+      printf '%s already has %s hours.\n' "$iso_date" "$hours"
+    fi
+    return
+  fi
+
+  local has_existing_value='false'
+  if [[ -n "$existing_hours" ]]; then
+    has_existing_value='true'
+  fi
+  if [[ "$notes_set" == 'true' && -n "$existing_notes" && "$same_notes" == 'false' ]]; then
+    has_existing_value='true'
+  fi
+
+  if [[ "$has_existing_value" == 'true' && "$replace" != 'true' ]]; then
+    fail "$iso_date already has saved data." \
+      "Review it with: hours show --date $iso_date. Add --replace to replace it."
+  fi
+
+  local target_range values_json
+  if [[ "$notes_set" == 'true' ]]; then
+    target_range="'Daily Hours Log'!E${row_number}:F${row_number}"
+    values_json="$(jq -cn --argjson hours "$hours" --arg notes "$desired_notes" '[[$hours, $notes]]')"
+  else
+    target_range="'Daily Hours Log'!E${row_number}"
+    values_json="$(jq -cn --argjson hours "$hours" '[[$hours]]')"
+  fi
+
+  local planned_status='updated'
+  if [[ "$dry_run" == 'true' ]]; then
+    planned_status='dry-run'
+  fi
+
+  local result_json
+  result_json="$(
+    jq -cn \
+      --arg status "$planned_status" \
+      --arg date "$iso_date" \
+      --argjson row "$row_number" \
+      --arg range "$target_range" \
+      --argjson hours "$hours" \
+      --arg notes "$desired_notes" \
+      --arg sheet_url "$SHEET_URL" \
+      '{
+        status: $status,
+        date: $date,
+        row: $row,
+        range: $range,
+        hours: $hours,
+        notes: (if $notes == "" then null else $notes end),
+        sheet_url: $sheet_url
+      }'
+  )"
+
+  if [[ "$dry_run" == 'true' ]]; then
+    if [[ "$json_output" == 'true' ]]; then
+      jq . <<<"$result_json"
+    else
+      printf 'Would set %s to %s hours.\n' "$iso_date" "$hours"
+      printf 'Range: %s\n' "$target_range"
+    fi
+    return
+  fi
+
+  run_gog sheets update "$SPREADSHEET_ID" "$target_range" \
+    --account "$GOOGLE_ACCOUNT" \
+    --values-json "$values_json" \
+    --input USER_ENTERED \
+    --json \
+    --no-input >/dev/null
+
+  local verified_json
+  verified_json="$(get_range "'Daily Hours Log'!A${row_number}:F${row_number}")"
+  local verified_hours verified_notes verified_hours_match
+  verified_hours="$(jq -r '.values[0][4] // ""' <<<"$verified_json")"
+  verified_notes="$(jq -r '.values[0][5] // ""' <<<"$verified_json")"
+  verified_hours_match="$(
+    jq -nr --arg verified "$verified_hours" --argjson expected "$hours" \
+      'try (($verified | tonumber) == $expected) catch false'
+  )"
+  if [[ "$verified_hours_match" != 'true' ]]; then
+    fail 'Google accepted the update, but verification failed.' "Open: $SHEET_URL"
+  fi
+  if [[ "$notes_set" == 'true' && "$verified_notes" != "$desired_notes" ]]; then
+    fail 'Google accepted the update, but note verification failed.' "Open: $SHEET_URL"
+  fi
+
+  if [[ "$json_output" == 'true' ]]; then
+    jq . <<<"$result_json"
+  else
+    printf 'Saved %s hours for %s.\n' "$hours" "$iso_date"
+    printf 'Sheet: %s\n' "$SHEET_URL"
+  fi
+}
+
+clear_hours() {
+  local iso_date="$1"
+  local dry_run="$2"
+  local json_output="$3"
+  local sheet_date
+  sheet_date="$(format_sheet_date "$iso_date")"
+
+  local daily_log_json
+  daily_log_json="$(get_range "$DAILY_LOG_RANGE")"
+
+  local row_json
+  if ! row_json="$(find_daily_row "$daily_log_json" "$sheet_date")" || [[ -z "$row_json" ]]; then
+    fail "Date is outside the workbook: $iso_date" 'Use a date from 2026-07-16 through 2026-12-31.' 2
+  fi
+
+  local row_number existing_hours existing_notes
+  row_number="$(jq -r '.row' <<<"$row_json")"
+  existing_hours="$(jq -r '.hours' <<<"$row_json")"
+  existing_notes="$(jq -r '.notes' <<<"$row_json")"
+
+  local target_range
+  target_range="'Daily Hours Log'!E${row_number}:F${row_number}"
+
+  local status='cleared'
+  if [[ -z "$existing_hours" && -z "$existing_notes" ]]; then
+    status='unchanged'
+  elif [[ "$dry_run" == 'true' ]]; then
+    status='dry-run'
+  fi
+
+  local result_json
+  result_json="$(
+    jq -cn \
+      --arg status "$status" \
+      --arg date "$iso_date" \
+      --argjson row "$row_number" \
+      --arg range "$target_range" \
+      --arg previous_hours "$existing_hours" \
+      --arg previous_notes "$existing_notes" \
+      --arg sheet_url "$SHEET_URL" \
+      '{
+        status: $status,
+        date: $date,
+        row: $row,
+        range: $range,
+        previous_hours: (if $previous_hours == "" then null else ($previous_hours | tonumber) end),
+        previous_notes: (if $previous_notes == "" then null else $previous_notes end),
+        sheet_url: $sheet_url
+      }'
+  )"
+
+  if [[ "$status" == 'unchanged' || "$dry_run" == 'true' ]]; then
+    if [[ "$json_output" == 'true' ]]; then
+      jq . <<<"$result_json"
+    elif [[ "$status" == 'unchanged' ]]; then
+      printf '%s is already empty.\n' "$iso_date"
+    else
+      printf 'Would clear hours and notes for %s.\n' "$iso_date"
+      printf 'Range: %s\n' "$target_range"
+    fi
+    return
+  fi
+
+  run_gog sheets clear "$SPREADSHEET_ID" "$target_range" \
+    --account "$GOOGLE_ACCOUNT" \
+    --json \
+    --no-input >/dev/null
+
+  local verified_json verified_hours verified_notes
+  verified_json="$(get_range "'Daily Hours Log'!A${row_number}:F${row_number}")"
+  verified_hours="$(jq -r '.values[0][4] // ""' <<<"$verified_json")"
+  verified_notes="$(jq -r '.values[0][5] // ""' <<<"$verified_json")"
+  if [[ -n "$verified_hours" || -n "$verified_notes" ]]; then
+    fail 'Google accepted the clear request, but verification failed.' "Open: $SHEET_URL"
+  fi
+
+  if [[ "$json_output" == 'true' ]]; then
+    jq . <<<"$result_json"
+  else
+    printf 'Cleared hours and notes for %s.\n' "$iso_date"
+    printf 'Sheet: %s\n' "$SHEET_URL"
+  fi
+}
+
+main() {
+  require_command gog 'brew install gogcli'
+  require_command jq 'brew install jq'
+
+  GOG_ERROR_FILE="$(mktemp -t hours-gog.XXXXXX)"
+  trap cleanup EXIT
+
+  if [[ $# -eq 0 ]]; then
+    show_help
+    return
+  fi
+
+  local command_name='log'
+  local input_hours=''
+  case "$1" in
+    show | clear | sheet | help)
+      command_name="$1"
+      shift
+      ;;
+    -h | --help)
+      show_help
+      return
+      ;;
+    -V | --version)
+      printf 'hours %s\n' "$HOURS_VERSION"
+      return
+      ;;
+    *)
+      input_hours="$1"
+      shift
+      ;;
+  esac
+
+  if [[ "$command_name" == 'help' ]]; then
+    show_help
+    return
+  fi
+
+  if [[ "$command_name" == 'sheet' ]]; then
+    if [[ $# -ne 0 ]]; then
+      fail 'The sheet command does not accept options.' 'Run: hours sheet' 2
+    fi
+    printf '%s\n' "$SHEET_URL"
+    return
+  fi
+
+  local iso_date
+  iso_date="$(date '+%Y-%m-%d')"
+  local notes=''
+  local notes_set='false'
+  local replace='false'
+  local dry_run='false'
+  local json_output='false'
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --date)
+        [[ $# -ge 2 ]] || fail 'Missing value for --date.' 'Use --date YYYY-MM-DD.' 2
+        iso_date="$2"
+        shift 2
+        ;;
+      --notes)
+        [[ "$command_name" == 'log' ]] || fail '--notes is valid only when logging hours.' 'Run: hours --help' 2
+        [[ $# -ge 2 ]] || fail 'Missing value for --notes.' 'Use --notes "your note".' 2
+        notes="$2"
+        notes_set='true'
+        shift 2
+        ;;
+      --replace)
+        [[ "$command_name" == 'log' ]] || fail '--replace is valid only when logging hours.' 'Run: hours --help' 2
+        replace='true'
+        shift
+        ;;
+      --dry-run)
+        [[ "$command_name" == 'log' || "$command_name" == 'clear' ]] \
+          || fail '--dry-run is valid only when logging or clearing hours.' 'Run: hours --help' 2
+        dry_run='true'
+        shift
+        ;;
+      --json)
+        json_output='true'
+        shift
+        ;;
+      -h | --help)
+        show_help
+        return
+        ;;
+      *)
+        fail "Unknown option: $1" 'Run: hours --help' 2
+        ;;
+    esac
+  done
+
+  if [[ "$command_name" == 'show' ]]; then
+    show_status "$iso_date" "$json_output"
+    return
+  fi
+
+  if [[ "$command_name" == 'clear' ]]; then
+    clear_hours "$iso_date" "$dry_run" "$json_output"
+    return
+  fi
+
+  log_hours "$input_hours" "$iso_date" "$notes" "$notes_set" "$replace" "$dry_run" "$json_output"
+}
+
+main "$@"
