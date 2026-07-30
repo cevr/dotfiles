@@ -140,6 +140,7 @@ Single file. The Effect plugin lives here, including the `overrides` block that 
           "missingLayerContext": "error",
           "missingReturnYieldStar": "error",
           "missingStarInYieldEffectGen": "error",
+          "missingPipeableSignature": "off",
           "strictEffectProvide": "off"
         },
         "keyPatterns": [

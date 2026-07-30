@@ -127,7 +127,7 @@ Single tsconfig. Effect diagnostics live inside the `@effect/language-service` p
           "missingEffectError": "error",
           "missingEffectServiceDependency": "error",
           "missingLayerContext": "error",
-          "missingPipeableSignature": "error",
+          "missingPipeableSignature": "off",
           "missingReturnYieldStar": "error",
           "missingStarInYieldEffectGen": "error",
           "multipleCatchTag": "error",
@@ -183,6 +183,7 @@ Single tsconfig. Effect diagnostics live inside the `@effect/language-service` p
 **Why this shape:**
 - Most `"off"` entries are not disabled checks — they are diagnostics owned by `oxlint-plugin-effect` (see §Effect Lint Layering). Turning them off here prevents every violation from being reported twice.
 - **`strictEffectProvide` is `"off"` for a different reason — see §strictEffectProvide below.** It is not a duplicate of an oxlint rule; it is structurally unsatisfiable.
+- **`missingPipeableSignature` is `"off"` because it encodes an API-shape decision, not lint hygiene.** It is a `"group": "style"` rule whose upstream `defaultSeverity` is already `"off"`. Satisfying it means adding dual data-first/pipeable overloads to every exported function — a per-library design choice. A repo that deliberately adopts pipeable APIs can flip it back to `"error"` locally.
 - `overrides` starts empty. Add entries only when a real need appears; do not pre-populate a tests-only relaxation.
 - `plugins[].overrides[].include` — glob patterns. The plugin merges options for files matching `include`. This is the supported way to relax individual rules in tests/integration code without forking tsconfigs.
 - `plugins[].overrides[]` also accepts `exclude` globs alongside `include` and `options`.
