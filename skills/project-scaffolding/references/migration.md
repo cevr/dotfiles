@@ -22,7 +22,7 @@ npx @effect/tsgo setup
 | `tsgolint-effect` (Go binary) for type-aware Effect rules | (none — type-aware Effect rules now live in the `@effect/language-service` plugin embedded in `@effect/tsgo`) |
 | Missing or legacy `oxlint-plugin-effect` wiring | Current `oxlint-plugin-effect` package loaded with `jsPlugins: ["oxlint-plugin-effect/plugin"]` |
 | `OXLINT_TSGOLINT_PATH=./node_modules/.bin/tsgolint-effect oxlint` | `oxlint` |
-| Separate `lint:effect` turbo task | Type-aware Effect rules ride along with `tsgo --noEmit`; AST/style Effect rules run in oxlint |
+| Separate `lint:effect` turbo task | Type-aware Effect rules ride along with `tsc --noEmit`; AST/style Effect rules run in oxlint |
 | `// @effect-diagnostics effect/strictEffectProvide:off` directive at top of test files | `plugins[].overrides[].include: ["**/*.test.ts", ...]` once in tsconfig |
 | `.effect-lsp.json` (brief intermediate config) | (deleted — config returns to tsconfig plugin block) |
 
@@ -135,9 +135,28 @@ If your `package.json` had separate `lint:ox` / `lint:effect`:
  }
 ```
 
-Plain `oxlint` loads `oxlint-plugin-effect/plugin` from `.oxlintrc.json`. Type-aware Effect diagnostics ride along with `tsgo --noEmit`; AST/style Effect guidelines remain in oxlint.
+Plain `oxlint` loads `oxlint-plugin-effect/plugin` from `.oxlintrc.json`. Type-aware Effect diagnostics ride along with `tsc --noEmit`; AST/style Effect guidelines remain in oxlint.
 
 If you had a per-package `lint` script running `effect-language-service diagnostics --project tsconfig.json`, delete it. The diagnostics now happen during `typecheck`.
+
+### Flip `typecheck` from `tsgo` to `tsc`
+
+If any `typecheck` script calls `tsgo`, change it — at the root and in **every** leaf package:
+
+```diff
+-    "typecheck": "tsgo --noEmit",
++    "typecheck": "tsc --noEmit",
+```
+
+`effect-tsgo patch` only patches the `tsc` binary. The `tsgo` bin from `@typescript/native-preview` is never patched, so a `tsgo --noEmit` script exits 0 while reporting **zero** Effect diagnostics. Sweep for stragglers:
+
+```bash
+rg '"typecheck".*tsgo' .
+```
+
+**Expect newly revealed diagnostics.** A repo that has been typechecking via `tsgo` has never once run the Effect rules, so the first `tsc --noEmit` can surface a large backlog (`floatingEffect`, `leakingRequirements`, `missingEffectContext`, ...). That is the migration working, not a regression. Fix the findings or stage them by temporarily lowering specific rules to `"warning"` in `diagnosticSeverity` — do not go back to `tsgo`.
+
+Keep `@typescript/native-preview` in devDeps; the editor's `tsgo` LSP binary comes from it.
 
 ### Update turbo.json
 
@@ -224,7 +243,7 @@ bun run lint                 # should run oxlint and load oxlint-plugin-effect
 bun run gate                 # full pass
 ```
 
-If `tsgo --noEmit` passes without surfacing any Effect diagnostics on code that previously failed, the patch didn't apply — re-run `bun run prepare` and check that `effect-tsgo patch` exits 0.
+If `tsc --noEmit` passes without surfacing any Effect diagnostics on code that previously failed, either the patch didn't apply or the script still calls `tsgo`. Check both: confirm `effect-tsgo patch` exits 0 after `bun run prepare`, and confirm no `typecheck` script invokes `tsgo` (`rg '"typecheck".*tsgo' .`).
 
 ## Common migration pitfalls
 

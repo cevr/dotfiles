@@ -62,7 +62,7 @@ bun add -D typescript @typescript/native-preview @types/bun \
 bun add -D @changesets/cli @changesets/changelog-github
 ```
 
-`@effect/tsgo` ships the `effect-tsgo` CLI used by the `prepare` script to patch the `tsgo` binary in `@typescript/native-preview`.
+`@effect/tsgo` ships the `effect-tsgo` CLI used by the `prepare` script to patch the TypeScript `tsc` binary. `@typescript/native-preview` is installed for the editor's `tsgo` LSP binary only — `patch` never touches it, so `typecheck` must call `tsc --noEmit`.
 
 ## Step 3: Configure
 
@@ -72,7 +72,7 @@ Copy configs from SKILL.md §Tooling Stack:
 - `lefthook.yml` — pre-commit hooks
 - `package.json` scripts — dev, build, gate, lint, fmt, prepare (with `effect-tsgo patch`)
 
-After install, run `bun run prepare` (or just `bun install` again — the `prepare` lifecycle script triggers automatically) to patch the tsgo binary.
+After install, run `bun run prepare` (or just `bun install` again — the `prepare` lifecycle script triggers automatically) to patch the TypeScript `tsc` binary.
 
 ## Step 4: Project Structure
 

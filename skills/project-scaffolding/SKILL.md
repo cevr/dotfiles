@@ -41,9 +41,9 @@ Every project uses this base. No exceptions.
 | Tool | Purpose | Config |
 |------|---------|--------|
 | **bun** | Runtime, package manager, test runner, bundler | `bun.lock` |
-| **@effect/tsgo** | Bundled tsgo + Effect Language Service (`effect-tsgo` binary, patches `tsgo`) | `tsconfig.json` `plugins` |
-| **@typescript/native-preview** | Native Go TS compiler (`tsgo` binary), required alongside `@effect/tsgo` | — |
-| **typescript** | Editor/LSP fallback, TS6 | — |
+| **@effect/tsgo** | Effect Language Service bundle (`effect-tsgo` binary, patches the `tsc` binary of `typescript`) | `tsconfig.json` `plugins` |
+| **@typescript/native-preview** | Editor `tsgo` LSP binary — **not** the typecheck channel, never patched | — |
+| **typescript** | Owns the `tsc` binary that `effect-tsgo patch` patches — this is the typecheck channel | — |
 | **oxlint** | Linting (fast, Rust-based) | `.oxlintrc.json` |
 | **oxlint-plugin-effect** | Effect AST/style guidelines for oxlint (`effect/*` rules) | `.oxlintrc.json` `jsPlugins` |
 | **oxfmt** | Formatting (fast, Rust-based) | `.oxfmtrc.json` (optional) |
@@ -304,7 +304,7 @@ Alternative for repos whose `gate` already covers all lanes: a single job `run: 
   "scripts": {
     "dev": "bun run src/main.ts",
     "build": "bun run scripts/build.ts",
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "fmt": "oxfmt",
@@ -316,7 +316,7 @@ Alternative for repos whose `gate` already covers all lanes: a single job `run: 
 }
 ```
 
-`prepare` wires both lefthook install and the `effect-tsgo patch` step (the latter patches the `@typescript/native-preview` binary so `tsgo` invokes the Effect language service).
+`prepare` wires both lefthook install and the `effect-tsgo patch` step. `patch` targets the `tsc` binary of the `typescript` package — so the `typecheck` script must call `tsc --noEmit`, never `tsgo --noEmit`. See §tsgo vs tsc.
 
 ### Scripts (monorepo root)
 
@@ -337,14 +337,14 @@ Alternative for repos whose `gate` already covers all lanes: a single job `run: 
 }
 ```
 
-Lint/fmt at root only — oxlint scans the whole tree in one pass. No `turbo run lint` fan-out: `oxlint-plugin-effect` handles fast AST rules in the root lint pass, and type-aware Effect diagnostics ride along with `tsgo --noEmit`.
+Lint/fmt at root only — oxlint scans the whole tree in one pass. No `turbo run lint` fan-out: `oxlint-plugin-effect` handles fast AST rules in the root lint pass, and type-aware Effect diagnostics ride along with `tsc --noEmit`.
 
 ### Scripts (monorepo leaf package)
 
 ```json
 {
   "scripts": {
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "bun test tests/"
   }
 }
@@ -367,9 +367,9 @@ oxlint-plugin-effect
 typescript
 ```
 
-- `@effect/tsgo` is the bundled package. It ships the `effect-tsgo` CLI (used by the `prepare` script's `patch` command) and adds the Effect language service plugin to `tsgo`.
-- `@typescript/native-preview` is still required — `effect-tsgo patch` patches its bundled `tsgo` binary in place. Both must be installed.
-- `typescript` is needed for editor LSP fallback and as a peer of various tools.
+- `@effect/tsgo` ships the `effect-tsgo` CLI (used by the `prepare` script's `patch` command). `patch` rewrites the `tsc` binary of the `typescript` package in place so `tsc` emits Effect diagnostics.
+- `typescript` is the typecheck channel. Under `typescript@7`, `tsc` already resolves to the native Go compiler, so `tsc --noEmit` is both patched and fast.
+- `@typescript/native-preview` stays installed for the editor's `tsgo` LSP binary. **`effect-tsgo patch` never touches it** — do not point any script at `tsgo`.
 - `oxlint-plugin-effect` provides the `effect/*` oxlint rules used for Effect style and project guidelines. Configure it with `jsPlugins: ["oxlint-plugin-effect/plugin"]`.
 
 ### Runtime Dependencies (Effect v4)
@@ -441,7 +441,7 @@ Copy `templates/release.yml` and `templates/ci.yml` **verbatim** — they are by
 | Package manager | bun (always) |
 | Module system | `"type": "module"` |
 | TypeScript | `noEmit: true` — never compile, bun runs source directly |
-| Type checker | `tsgo --noEmit` — patched with Effect LSP via `effect-tsgo patch` |
+| Type checker | `tsc --noEmit` — the `tsc` binary is what `effect-tsgo patch` patches. Never `tsgo --noEmit`. |
 | Exports | `"exports": { ".": "./src/index.ts" }` — source-first, no build step for local dev |
 | Tests | `bun test` with `effect-bun-test` for Effect integration |
 | Tracing | `Effect.fn("ServiceName.methodName")` on all service methods |
@@ -455,20 +455,29 @@ Copy `templates/release.yml` and `templates/ci.yml` **verbatim** — they are by
 
 ## TS6 / tsgo
 
-TypeScript 6 changes some defaults, but production projects keep options explicit (target, module, moduleResolution) for clarity and downgrade safety. The native compiler (`tsgo`) still requires `noEmit` — it doesn't emit yet.
+TypeScript 6 changes some defaults, but production projects keep options explicit (target, module, moduleResolution) for clarity and downgrade safety. The native compiler still requires `noEmit` — it doesn't emit yet.
 
-### tsgo via @effect/tsgo
+### What `effect-tsgo patch` actually patches
 
-`@effect/tsgo` is a wrapper that:
-1. Embeds a pinned version of upstream `tsgo` (Microsoft's TypeScript-Go).
-2. Patches it with the Effect language service for Effect-specific diagnostics, quick fixes, refactors.
-3. Provides the `effect-tsgo` CLI for setup/patch/unpatch operations.
+`@effect/tsgo` ships the `effect-tsgo` CLI. Its `patch` command rewrites a compiler binary in place so the binary loads the Effect language service and reports Effect diagnostics.
 
-The `tsgo` binary on disk gets patched in place by `effect-tsgo patch` (run via the `prepare` script). After patching, calling `tsgo --noEmit` runs both standard TS type checking and Effect diagnostics.
+**`patch` only targets the `tsc` binary.** In the `@effect/tsgo` dist source, the patch target list is:
+
+```
+defaultTypescriptPackageNames = ["typescript", "@typescript/native"]
+```
+
+...and the platform package it resolves ships `lib/tsc`. So the patched artifact is always `tsc`.
+
+**The `tsgo` binary is never patched.** Note what is *absent* from that list: `@typescript/native-preview`, the package that actually provides `tsgo`. `effect-tsgo patch` never touches it. A script that calls `tsgo --noEmit` type-checks normally and silently reports **zero** Effect diagnostics — no error, no warning, just missing findings.
+
+Empirically confirmed in a migrated repo: `bun x tsgo --noEmit` printed nothing, while `bun x tsc --noEmit` surfaced real `effect(...)` diagnostics including a deliberately planted error.
+
+There is also no speed argument for `tsgo`. Under `typescript@7`, `tsc` already resolves to the native Go compiler, so `tsc --noEmit` is the fast path *and* the patched path.
 
 `effect-tsgo` subcommands: `patch`, `unpatch`, `get-exe-path`, `diagnostics`, `setup`, `config`. `config` is an interactive severity picker that regenerates the `diagnosticSeverity` map from the installed schema — use it after bumping `@effect/tsgo` to pick up newly added diagnostics instead of diffing by hand.
 
-**Use `@effect/tsgo` instead of standalone `tsgo`, not alongside it.** Running both produces duplicate diagnostics.
+Keep `@typescript/native-preview` installed — the editor's `tsgo` LSP binary comes from it. Just never route a `typecheck` script through it.
 
 ### What `@effect/tsgo setup` does
 
@@ -500,14 +509,18 @@ For new projects, copy the configs from §Tooling Stack directly.
 
 ### tsgo vs tsc
 
-| | `tsc` | `tsgo` (via `@effect/tsgo`) |
-|-|-------|---------------------------|
+**Always `tsc`. Never `tsgo`.**
+
+| | `tsc` | `tsgo` |
+|-|-------|--------|
 | Binary | `node_modules/.bin/tsc` | `node_modules/.bin/tsgo` |
-| Package | `typescript` | `@typescript/native-preview` (patched by `@effect/tsgo`) |
-| Speed | Baseline | ~10x faster |
-| Compatibility | Full | Type-checking + noEmit only |
-| Effect rules | None | Bundled via patch |
-| Use for | Editor fallback | `typecheck` script, CI |
+| Package | `typescript` | `@typescript/native-preview` |
+| Patched by `effect-tsgo patch` | **Yes** — it is the patch target | **No** — not in `defaultTypescriptPackageNames` |
+| Effect diagnostics | **All of them** | **None** — silently reports zero |
+| Speed | Native Go compiler under `typescript@7` | Native Go compiler |
+| Use for | `typecheck` script, CI, hooks | Editor LSP only |
+
+Under `typescript@7` both binaries are the same native Go compiler, so `tsgo` buys no speed. It only costs you every Effect diagnostic.
 
 ## Reference Repos
 
@@ -526,7 +539,9 @@ Use the `repo` skill (`skills/repo/SKILL.md`) — `okra repo fetch` + `repo path
 
 ## Gotchas
 
-- **`effect-tsgo patch` must run after install** — wire it into `prepare` so `bun install` rebuilds the patched binary. Without the patch, `tsgo --noEmit` runs without Effect diagnostics.
+- **Typecheck scripts MUST call `tsc --noEmit`, never `tsgo --noEmit`** — `effect-tsgo patch` only patches the `tsc` binary (`defaultTypescriptPackageNames = ["typescript", "@typescript/native"]`, and the platform package ships `lib/tsc`). The `tsgo` bin comes from `@typescript/native-preview` and is never patched, so `tsgo --noEmit` silently reports **zero** Effect diagnostics — it exits 0 on code full of violations. Keep `@typescript/native-preview` installed for the editor LSP, but never route a script through it. Under `typescript@7` `tsc` is already the native Go compiler, so there is no speed cost.
+- **`effect-tsgo patch` must run after install** — wire it into `prepare` so `bun install` rebuilds the patched binary. Without the patch, `tsc --noEmit` runs without Effect diagnostics.
+- **`tsdown` must be >=0.22.14 under `typescript@7`** — older `rolldown-plugin-dts` crashes with `ts.sys.useCaseSensitiveFileNames` (TS7 removed `ts.sys`). 0.22.14 works but prints a harmless `TypeScript 7.0 ... experimental` warning.
 - **Don't add a separate `tsconfig.test.json`** — relax test rules via the plugin's `overrides[].include` array. Keeps a single source of truth and avoids tsconfig fan-out.
 - **`overrides` is plugin-scoped, not tsconfig-scoped** — it lives inside the `@effect/language-service` plugin object's options, not at the tsconfig root. Sibling to `diagnosticSeverity`.
 - **`overrides[].options.diagnosticSeverity` merges, not replaces** — only list rules whose severity changes for matching files.
@@ -536,7 +551,7 @@ Use the `repo` skill (`skills/repo/SKILL.md`) — `okra repo fetch` + `repo path
 - **`bun add effect` installs v3** — the `latest` dist-tag is Effect 3.x. Use `effect@beta` + `@effect/platform-bun@beta` and pin exact versions for v4 projects.
 - **`oxlint-plugin-effect` >=0.4.0 has one 12-rule `recommended` preset** — pre-0.4 rule names (`noSpread`, `noSchemaStruct`, `noMakeUnsafe`, ...) were deleted and fail config resolution. Bump the dep and rewrite the rules block together.
 - **`diagnosticSeverity` drifts as `@effect/tsgo` adds diagnostics** — after bumping, diff your map against `node_modules/@effect/tsgo/schema.json` (definition `effectLanguageServicePluginDiagnosticSeverityDefinition`) or run `effect-tsgo config`.
-- **Do not use legacy `tsgolint-effect` or env-var lint wiring** — the current shape is plain `oxlint` plus `oxlint-plugin-effect` for AST rules and `tsgo --noEmit` for type-aware Effect diagnostics.
+- **Do not use legacy `tsgolint-effect` or env-var lint wiring** — the current shape is plain `oxlint` plus `oxlint-plugin-effect` for AST rules and `tsc --noEmit` for type-aware Effect diagnostics.
 - **`@effect/tsgo` and `@typescript/native-preview` versions are coupled** — `effect-tsgo patch` validates compatibility. Bump them together; if `patch` errors after an upgrade, update both pkgs.
 - **`repository.url` required for npm provenance** — publish will 422 without it.
 - **`noUncheckedIndexedAccess`** — array/record indexing returns `T | undefined`. Use `??` or guards, not `!`.

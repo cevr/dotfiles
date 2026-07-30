@@ -91,7 +91,7 @@ Key points:
 - `"catalog"` — pins shared dependency versions; leaf packages reference with `"catalog:"`. Pin the Effect v4 beta exactly — the npm `latest` dist-tag is still v3, so `bun add effect` without `@beta` installs the wrong major.
 - `effect` in devDeps as `catalog:` — available for root-level tests.
 - Lint/fmt run at root only (not per-package via turbo) — oxlint scans the whole tree in one pass.
-- Type-aware Effect diagnostics ride along with `tsgo --noEmit` (typecheck channel), so there's no separate `lint:effect` script.
+- Type-aware Effect diagnostics ride along with `tsc --noEmit` (typecheck channel), so there's no separate `lint:effect` script. Never `tsgo --noEmit` — that binary is unpatched and reports zero Effect diagnostics (see SKILL.md §tsgo vs tsc).
 - Fast AST/style Effect guidelines run in `oxlint` through `oxlint-plugin-effect/plugin`.
 - `prepare` wires lefthook install + `effect-tsgo patch` — re-runs on every `bun install`.
 
@@ -100,9 +100,9 @@ Key points:
 | Script | Scope | What |
 |--------|-------|------|
 | `lint` | Root | `oxlint` — runs on entire tree with built-in rules plus `oxlint-plugin-effect` |
-| `typecheck` | Root → leaf | `turbo run typecheck` — fans out, each leaf runs `tsgo --noEmit` (Effect diagnostics included) |
+| `typecheck` | Root → leaf | `turbo run typecheck` — fans out, each leaf runs `tsc --noEmit` (Effect diagnostics included) |
 
-No `lint:effect` / per-package `lint` script. Use one root `oxlint` pass for AST rules, and let the tsgo plugin handle type-aware diagnostics during `typecheck`.
+No `lint:effect` / per-package `lint` script. Use one root `oxlint` pass for AST rules, and let the patched `tsc` handle type-aware diagnostics during `typecheck`.
 
 ## Step 3: Root tsconfig.json
 
@@ -248,7 +248,7 @@ Key differences from single-package:
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "bun test tests/"
   },
   "peerDependencies": {
@@ -260,7 +260,7 @@ Key differences from single-package:
 Key patterns:
 - `"exports": { ".": "./src/index.ts" }` — source-first, no build step for dev.
 - `"peerDependencies"` with `"catalog:"` — version comes from root catalog.
-- `typecheck` uses `tsgo` — patched with Effect LSP via `effect-tsgo patch` (run by root `prepare`).
+- `typecheck` uses `tsc` — the binary `effect-tsgo patch` patches (run by root `prepare`). Do not substitute `tsgo`; it is never patched.
 - No per-package `lint` script — oxlint runs at root.
 - No devDeps — inherited from root workspace.
 
@@ -292,7 +292,7 @@ Key patterns:
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "dev": "bun run src/main.ts",
     "build": "bun run scripts/build.ts",
     "test": "bun test tests/"
@@ -353,7 +353,7 @@ Rules:
 2. Add `"@scope/new-pkg": ["packages/new-pkg/src/index.ts"]` to root `tsconfig.json` `paths`.
 3. If it depends on another workspace package: `"@scope/core": "workspace:*"` in deps.
 4. If it needs effect: `"effect": "catalog:"` in peerDeps.
-5. Add `"typecheck": "tsgo --noEmit"` to its scripts (no `lint` — handled at root).
+5. Add `"typecheck": "tsc --noEmit"` to its scripts (no `lint` — handled at root).
 6. Run `bun install` to link.
 
 ## Checklist
@@ -365,7 +365,7 @@ Rules:
 - [ ] `lefthook.yml`
 - [ ] Core package: `peerDependencies`, `exports`, extends root `tsconfig.json`
 - [ ] CLI package: `workspace:*` dep on core, platform-bun
-- [ ] Each leaf has `"typecheck": "tsgo --noEmit"` (no per-package lint)
+- [ ] Each leaf has `"typecheck": "tsc --noEmit"` (no per-package lint) — no leaf script invokes `tsgo`
 - [ ] `.gitignore` includes `.turbo/`
 - [ ] `bun install` runs `prepare` and `effect-tsgo patch` succeeds
 - [ ] `bun run gate` passes
