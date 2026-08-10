@@ -48,6 +48,17 @@ Gather context first. Then send a tight prompt.
 - Include constraints that matter
 - Ask for receipts, not vibes
 
+For code review, ask Counsel to find slop in the code under review. Include these checks:
+
+- Find code that does not enforce the contract. Check redundant guards, one-call helpers, type widening, casts, and manual schema checks.
+- Find code that duplicates a primitive from the runtime, framework, or standard library.
+- List each package that the user owns. Give its local source path.
+- For each downstream workaround, read the owned package source. Name the missing primitive. Recommend the upstream change when that package is the correct abstraction boundary.
+- If the upstream source is not available, report this limit. Do not guess.
+- Report the smallest correct design for the code under review. Do not preserve an implemented workaround only because it exists.
+
+Use these checks with the review prompt. Do not replace them with a short summary.
+
 Good: `Review src/auth/ for regression risk after the token refresh refactor. Ground every claim in file paths.`
 Good: `Help me understand how the scheduler reconciles missed runs. Read src/schedule/ and explain the flow.`
 Good: `Brainstorm 3 approaches for migrating the store from JSON files to SQLite. Pros/cons for each.`
