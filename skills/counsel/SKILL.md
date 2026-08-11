@@ -50,6 +50,8 @@ Gather context first. Then send a tight prompt.
 
 For code review, ask Counsel to find slop in the code under review. Include these checks:
 
+- Tell Counsel that it can inspect the cached source for `Effect-TS/effect`, `PrimeIntellect-ai/prime-agent`, and `anomalyco/opencode`. Resolve each available cache with `okra repo path <owner/repo>` and include the full paths in the prompt.
+
 - Find code that does not enforce the contract. Check redundant guards, one-call helpers, type widening, casts, and manual schema checks.
 - Find code that duplicates a primitive from the runtime, framework, or standard library.
 - List each package that the user owns. Give its local source path.
