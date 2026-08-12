@@ -31,7 +31,6 @@ keybind = global:super+grave_accent=toggle_quick_terminal
 
 # Keybinds
 keybind = super+backspace=text:\x15
-keybind = shift+enter=text:\x1b\r
 
 # Theme (Nord-ish)
 theme = Rose Pine
