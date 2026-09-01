@@ -1,0 +1,4 @@
+interface:
+  display_name: "Counsel Review"
+  short_description: "Run an independent correctness and anti-slop review"
+  default_prompt: "Review this change for correctness, regression risk, minimality, and slop. Use exact source receipts."
