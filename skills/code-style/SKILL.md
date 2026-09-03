@@ -221,7 +221,7 @@ Barrel files cause 200-800ms import overhead and defeat tree-shaking. Common off
 Before applying style, detect and invoke relevant skills:
 - **Effect files**: Files importing from `effect` or `@effect/*` → invoke `effect` skill
 - **React/Solid files**: `.tsx` files → invoke `react` skill
-- **Bun projects**: `bun.lock` present → invoke `bun` skill. Prefer Bun APIs over Node.
+- **Bun projects**: `bun.lock` present → prefer Bun APIs over Node.
 
 ## Scope Detection
 

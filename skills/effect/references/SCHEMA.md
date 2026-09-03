@@ -83,6 +83,14 @@ const Removed = Schema.Struct({ type: Schema.tag("removed"), id: UserId })
 const Event = Schema.Union([Added, Removed]).pipe(Schema.toTaggedUnion("type"))
 ```
 
+After decoding, use `Predicate` or `Match` for normal tagged-value control flow. Do not use either tool to validate unknown input. See [TAGGED_VALUES.md](TAGGED_VALUES.md).
+
+## Durable formats
+
+Treat persisted and wire-visible schemas as versioned contracts. Add a new schema version and upcast at the decode boundary when a change is incompatible. Do not reinterpret historical data with a cast or silently change the meaning of an existing field.
+
+Preserve the wire distinction between absent, `undefined`, and `null` values. Use `Schema.optionalKey`, `Schema.optional`, and `Schema.NullOr` according to the actual contract.
+
 ## Typed failures
 
 ```ts

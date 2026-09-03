@@ -17,17 +17,28 @@ pull, then generate, citing the actual data.
 | Text-search the Bible                 | `bible verse "<query>" --json [--limit N]`            |
 | Strong's lookup (definition + verses) | `bible concordance H<n> --json [--limit N]`           |
 | Search Strong's by English word       | `bible concordance <word> --json [--limit N]`         |
-| **Find an EGW reference (FTS)**       | `bible egw search "<query>" --json`                   |
+| **Find an EGW reference (hybrid)**    | `bible egw search "<query>" --json`                   |
+| Search pioneers too / only            | `bible egw search "<q>" --scope all\|pioneer --json`  |
 | Find an EGW reference (whole corpus)  | `bible egw search "<query>" --remote --json`          |
 | EGW lookup by refcode                 | `bible egw lookup "<CODE n.n>" --json`                |
 | EGW commentary on a verse             | `bible egw commentary "<book ch:vv>" --json`          |
 | EGW catalog (remote)                  | `bible egw catalog --search "<term>" --json`          |
 | List installed EGW books              | `bible egw books --json`                              |
 | Download an EGW/pioneer book          | `bible egw download <CODE>` / `--id <ID>`             |
+| Expand corpus for one subject         | `bible egw study "<subject>" --pioneers`              |
 | Hymn full text                        | `bible hymns get <number> --json`                     |
 | Hymn search                           | `bible hymns search "<query>" --json [--limit N]`     |
 | Hymn categories                       | `bible hymns categories`                              |
 | Sabbath School PDFs                   | `bible sabbath-school fetch -y 2026 -q 2 -w 5 --json` |
+| Study pane for a verse                | `bible study verse "<ref>" --json`                    |
+| Strong's study (entry + occurrences)  | `bible study strongs H8548 --json [--limit N]`        |
+| Select-to-lookup (topics/strongs/…)   | `bible wiki lookup "<text>" [--context "<ref>"] --json` |
+| List / filter wiki topic pages        | `bible wiki topics [--query <q>] --json`              |
+| One wiki topic page                   | `bible wiki topic <slug> --json`                      |
+| Hot phrases in arbitrary text         | `bible wiki matches "<text>" --json`                  |
+| Topics corpus status / update         | `bible topics status\|update --json`                  |
+| Warm search daemon control            | `bible egw daemon [--stop] [--idle-minutes N]`        |
+| Install/refresh `~/.bible` corpora    | `bible init [--force]`                                |
 
 ## Typical agent flow
 
@@ -93,6 +104,18 @@ bible egw download DAR                             # or: --id <BOOK_ID>
 bible egw search "little horn" --book DAR --json   # now searchable locally
 ```
 
+For a broad subject search, use the historic-pioneer preset. The command ranks
+remote results, downloads only missing pioneer works, and then searches the
+expanded local corpus:
+
+```bash
+bible egw study "seven last plagues" --pioneers --dry-run
+bible egw study "seven last plagues" --pioneers
+```
+
+The preset includes Millerite and early Adventist authors and periodicals. It
+excludes modern secondary works. Use `--dry-run` before a large download.
+
 ## Command details
 
 ### `bible verse <ref|query> [--json] [--limit N]`
@@ -146,12 +169,32 @@ Strong's is **auxiliary confirmation** of a meaning already plain from the text
 (see the Hermeneutic & Sources stance in `SKILL.md`) — never the route to a
 non-obvious reading.
 
-### `bible egw search <query> [--remote] [--limit N] [--book CODE] [--lang en] [--json]`
+### `bible egw search <query> [--remote] [--limit N] [--book CODE] [--scope egw|pioneer|all] [--lang en] [--json]`
 
-The find-references command. Local FTS5 by default; `--remote` hits the EGW API
-(whole corpus). `--book` scopes local search to a single book code (e.g.
-`--book DA`). `--limit` defaults to `20`. `--lang` only applies to `--remote`.
-Avoid bare commas/operators in the query — they hit the FTS5 parser literally.
+The find-references command. Local search is now **hybrid**: an FTS5 lexical
+leg plus a vector "meaning" leg (EmbeddingGemma over the whole installed
+corpus), fused with RRF. Multi-word natural queries route hybrid; one-word,
+quoted, and refcode-looking queries stay lexical. `--scope` widens beyond EGW:
+`pioneer` (Miller, Smith, Andrews, …) or `all` (default `egw`). `--remote`
+hits the EGW API instead (whole remote corpus; `--lang` applies only there).
+`--book` scopes local search to one book code (e.g. `--book DA`). `--limit`
+defaults to `20`. Avoid bare commas/operators in the query — the FTS5 parser
+takes them literally.
+
+`--json` shape: `route` (`hybrid|lexical|…`), `scope`, `topics` (pinned wiki
+topic pages whose titles match the query — presented above the ranking, never
+fused into it), `paragraphs[]` with `refcode`, `bookCode`, `snippet`, `score`,
+and per-leg provenance as `lexicalRank`/`vectorRank` Options (both Some =
+found by both legs), and `vector` — the meaning leg's own report:
+`{_tag: 'ran', scanned}` or a typed absence (`index`/`embedder`/`fingerprint`)
+meaning the search silently degraded to text-only. Check it before claiming
+semantic coverage.
+
+**Warm daemon**: the first vector search pays ~10 s of model load; searches
+auto-spawn a detached daemon (unix socket at `~/.bible/search-daemon.sock`)
+that keeps the model + index resident, so subsequent searches answer in
+~0.2–1.3 s. Transparent — results are byte-identical. `BIBLE_SEARCH_DAEMON=off`
+opts out; see `bible egw daemon` below.
 
 ### `bible egw lookup <ref> [--json]`
 
@@ -214,6 +257,63 @@ becomes searchable via `bible egw search`. The remote catalog matches on
 **title**, not code — single-token codes (e.g. `DAR`) may not round-trip; if a
 code doesn't resolve, find the `book_id` via `catalog --search "<title>"` and
 download by `--id`.
+
+### `bible egw daemon [--stop] [--idle-minutes N]`
+
+Runs the warm search daemon in the foreground (searches normally spawn it for
+you — you rarely run this by hand). `--stop` asks the running daemon to exit;
+`--idle-minutes` sets the self-retirement window (default 15). A daemon built
+against a different embedding-model fingerprint is retired automatically by
+the next search.
+
+### `bible study verse <ref> [--json]`
+
+The study pane for one verse, as one JSON document: the KJV text (translator
+italics marked `‹…›`), per-word Strong's data, cross-references (OpenBible +
+TSKe), margin notes, and EGW commentary keys. This is the same `StudyService`
+the desktop's contextual pane renders — one call replaces separate
+`verse`/`concordance`/`commentary` pulls when you're studying a single verse.
+
+### `bible study strongs <number> [--limit N] [--json]`
+
+One Strong's entry (lemma, transliteration, definition) plus its concordance
+occurrences. `--limit` caps the occurrence list.
+
+### `bible wiki topics [--query <q>] [--json]` / `bible wiki topic <slug> [--json]`
+
+The wiki topic-page layer. `topics` lists pages (authored + catalog-derived;
+`--query` filters by title/slug); `topic` renders one page — thesis, sections
+composed live from the installed corpora, and edges to related topics. Slugs
+look like `close-of-probation` or `naves-topical-bible.aaron`.
+
+### `bible wiki matches <text> [--json]`
+
+Runs the hot-phrase matcher (the same Aho-Corasick dictionary the reading
+views highlight) over arbitrary text and reports which topic phrases occur
+where. Useful for asking "what would light up in this paragraph?"
+
+### `bible wiki lookup <text> [--context "<verse ref>"] [--json]`
+
+Select-to-lookup: give it a selected word/phrase (optionally the one-verse
+context it came from) and it resolves all five groups the combined panel
+shows — topics, Strong's, verses, EGW, and commentary — in one call.
+
+### `bible topics status` / `bible topics update [--json]`
+
+The topics corpus lifecycle. `status` reports the installed generation,
+the compiled release pin, and the update manifest; `update` installs the
+newest acceptable generation. Note: an **empty** topics artifact (all cores
+still draft) is refused by design — `installed (none)` with a completed
+build is the honest state, not an error.
+
+### `bible init [--force]`
+
+Installs/refreshes the `~/.bible` corpora through the verified File Corpus
+lifecycle: `bible.db` (KJV + Strong's + cross-refs + topics), `topics.db`,
+and `vectors.bvi` (the pinned `vectors-v1` release — 961K-paragraph int8
+meaning index). Model weights for the vector leg live at `~/.bible/models`
+(override with `BIBLE_MODEL_CACHE`); without them, search degrades to
+text-only and says so in the `vector` report.
 
 ### `bible hymns get <number> [--json]`
 

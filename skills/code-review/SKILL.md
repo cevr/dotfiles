@@ -39,7 +39,7 @@ Before auditing, load domain knowledge via local skills and upstream source.
 |----------|------|
 | Effect imports (`effect`, `@effect/*`) | `effect` skill, then `okra repo fetch effect-ts/effect` and the returned checkout path when upstream source or examples matter |
 | .tsx / React files | react skill; use `okra repo fetch facebook/react` and `okra repo path -q facebook/react` when React internals/examples matter |
-| bun.lock present | bun skill; use `okra repo fetch oven-sh/bun` and `okra repo path -q oven-sh/bun` when Bun source/docs matter |
+| bun.lock present | Use `okra repo fetch oven-sh/bun` and `okra repo path -q oven-sh/bun` when Bun source/docs matter |
 
 ## Phase 1: Slop Detection
 

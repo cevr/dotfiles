@@ -1,4 +1,4 @@
 interface:
   display_name: "Effect"
-  short_description: "Production TypeScript patterns for Effect v4"
-  default_prompt: "Use $effect to implement this Effect v4 workflow with project-pinned APIs and explicit layers."
+  short_description: "Design and build production Effect v4 programs"
+  default_prompt: "Use $effect to design or implement this Effect v4 program with deep modules, project-pinned APIs, explicit layers, and owned resources."

@@ -2,6 +2,8 @@
 
 Treat a service as a deep module: its interface expresses domain operations, while its layer owns construction, resources, config, and adapters.
 
+The caller passes domain values that it already holds. The service environment supplies runtime-varying capabilities. The facade or composition root owns internal layer construction. See [PROGRAM_DESIGN.md](PROGRAM_DESIGN.md).
+
 ## Canonical service
 
 ```ts
@@ -32,6 +34,7 @@ class Users extends Context.Service<Users, {
 - Yield dependencies inside the layer or operation and let requirements remain in the Effect type.
 - Return `Service.of(...)` so implementation drift is checked against the interface.
 - Keep layers at composition roots; providing a dependency deep inside business logic hides the real graph.
+- Do not expose internal clients, layers, scopes, or runtime wiring through the public domain interface.
 
 ## Layer selection
 
@@ -81,5 +84,6 @@ Map provider failures at the adapter boundary without discarding status, code, r
 - In Effect v4, construct scoped services with `Layer.effect(Service, effect)`: it removes the `Scope` requirement from the layer output. There is no `Layer.scoped(...)` constructor.
 - Acquire resources with scoped effects inside that owning layer and register release there.
 - Start background fibers with `Effect.forkScoped`; the layer's scope owns their lifetime.
+- Bound concurrency for inputs that can grow without a fixed limit.
 - Use `ManagedRuntime` only at a non-Effect host boundary that repeatedly runs Effect programs.
 - Use `Context.Reference` for ambient policy with a truthful default, such as log level. Model credentials, persistence, transports, and authority as required services.

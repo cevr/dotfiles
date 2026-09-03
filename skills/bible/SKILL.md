@@ -198,11 +198,19 @@ You rarely start with the exact refcode. **Search to find it, then look it up to
 quote it** — never recall EGW from memory:
 
 ```bash
-bible egw search "investigative judgment" --json     # 1. find the refcode (local FTS5)
-bible egw search "1844" --remote --json              #    --remote = whole ~17K-para corpus
+bible egw search "investigative judgment" --json     # 1. find the refcode (hybrid: FTS + meaning)
+bible egw search "wrath of nations" --scope all --json  #  include pioneer books in the sweep
+bible egw search "1844" --remote --json              #    --remote = the whole remote corpus
 bible egw lookup "GC 423.1" --json                   # 2. quote the exact paragraph text
 bible egw commentary "daniel 8:14" --json            #    verse-keyed commentary
 ```
+
+Local search is **hybrid** — a lexical FTS leg plus a semantic "meaning" leg
+over the whole installed corpus — so natural-language queries find paragraphs
+that share no keywords with the query. The first semantic search pays ~10 s of
+model load once; a warm daemon answers the rest in ~1 s. The `--json` result's
+`vector` field says whether the meaning leg ran; if it reports an absence, the
+answer was text-only.
 
 For pioneer voices not in the local DB (Miller, Smith, Andrews, …), find the
 book with `bible egw catalog --search "<title>"`, `bible egw download <CODE>`,
@@ -219,6 +227,8 @@ before pulling source material.
 | Fetch EGW          | `bible egw lookup "<refcode>" --json` / `bible egw commentary "<verse>" --json` |
 | Fetch hymn         | `bible hymns search "<query>" --json` / `bible hymns get <n> --json`            |
 | Fetch Strong's     | `bible concordance H1234 --json`                                                |
+| Study one verse    | `bible study verse "<ref>" --json` (text + Strong's + cross-refs + margin)      |
+| Look up a phrase   | `bible wiki lookup "<text>" [--context "<ref>"] --json`                         |
 | Fetch SS PDFs      | `bible sabbath-school fetch -y 2026 -q 2 -w 5 --json`                           |
 | Write file         | `Write` tool to `outputs/teachings/<topic-slug>/<slug>.md`                      |
 | Initial export     | `bible export -f outputs/teachings/<topic>/<slug>.md --folder "<Topic>"`        |

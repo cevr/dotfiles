@@ -1,6 +1,6 @@
 ---
 name: effect
-description: Opinionated guide for building production TypeScript applications with Effect v4. Use when implementing Effect workflows, services, layers, schemas, configuration, schedules, caches, streams, HTTP clients, or tests.
+description: Opinionated guide for designing, building, and reviewing production TypeScript applications with Effect v4. Use for deep modules, Effect workflows, services, layers, schemas, tagged data, configuration, schedules, caches, streams, HTTP clients, resources, concurrency, or tests.
 ---
 
 # Effect
@@ -20,7 +20,9 @@ Check these before guessing:
 Read only the branch references that match the task.
 
 - Data models, schemas, brands, variants, optional keys, or decoders: read [SCHEMA.md](references/SCHEMA.md).
+- Public interfaces, deep modules, capability seams, resource ownership, error boundaries, or concurrency ownership: read [PROGRAM_DESIGN.md](references/PROGRAM_DESIGN.md).
 - Services, module surfaces, layers, runtime wiring, errors, `Effect.fn`, or test services: read [SERVICES_LAYERS.md](references/SERVICES_LAYERS.md).
+- Normal tagged values, `Predicate`, `Match`, tag guards, or exhaustive dispatch: read [TAGGED_VALUES.md](references/TAGGED_VALUES.md).
 - Runtime config, env variables, `ConfigProvider`, or `layerConfig`: read [CONFIG.md](references/CONFIG.md).
 - Retry, repeat, polling, backoff, jitter, rate-limit-aware policies, or pass loops: read [SCHEDULING.md](references/SCHEDULING.md).
 - Memoization, per-key TTL caches, deduplicating concurrent lookups, or request batching: read [CACHING.md](references/CACHING.md).
@@ -35,6 +37,8 @@ If a task spans several branches, read all matching files before editing.
 
 - Apply the strict Effect-native policy in [STYLEGUIDE.md](references/STYLEGUIDE.md) to application packages; isolate unmatched host capabilities in named platform adapters.
 
+- Design deep modules. Keep public interfaces small and domain-shaped. Hide wiring, parsing, lifecycle, policy, and provider details behind the module that owns them.
+- Keep expected failures in `E`, dependencies in `R`, and acquired resources in an owning scope. Do not convert these channels into ordinary parameters or data to compose later.
 - Compose workflows with `Effect.gen(function* () { ... })`.
 - Define public service methods and non-trivial internal service methods with `Effect.fn("Domain.operation")`.
 - Use `Effect.fnUntraced` only for internal helpers where stack-frame/span metadata is intentionally unnecessary.
@@ -47,6 +51,7 @@ If a task spans several branches, read all matching files before editing.
 - Use `Stream` for effectful sources that emit many values over time and need pull, backpressure, interruption, or transformation.
 - Prefer Effect HTTP client modules for outgoing HTTP in Effect applications when their typed errors, layers, and client transforms are useful.
 - Prefer Effect-aware tests, explicit layers, and deterministic synchronization over sleeps.
+- Test through public Effect interfaces. Replace true external boundaries with layers. Do not patch modules or spy on implementation details.
 - Prefer decoders and `schema.makeEffect(...)` at untrusted boundaries; reserve throwing `schema.make(...)` for trusted construction, and never use casts to skip validation.
 
 ## Quick Selection Guide
@@ -54,6 +59,9 @@ If a task spans several branches, read all matching files before editing.
 - Ordinary object record: `Schema.Struct(...)` plus same-name `interface`.
 - Scalar ID/value object: constrained branded schema.
 - Internal workflow decision or state: `Data.TaggedEnum<...>` plus `Data.taggedEnum<...>()` constructors and exhaustive `$match`.
+- Reusable guard for a trusted tagged value: `Predicate.isTagged(...)`.
+- Complete transformation of a trusted closed tagged union: `Match.type<T>()` plus `Match.tagsExhaustive(...)`.
+- Recovery from a tagged Effect failure: `Effect.catchTag(...)` or `Effect.catchTags(...)`, not `Match`.
 - Reusable boundary-crossing tagged variant: `Schema.TaggedStruct(...)` plus same-name `interface`.
 - Boundary-crossing tagged union: `Schema.TaggedUnion(...)` with `.cases`, `.guards`, and `.match`.
 - External/custom discriminator such as `type`: `Schema.Struct({ type: Schema.tag("variant"), ... })` plus `Schema.toTaggedUnion("type")` when union helpers are needed.
@@ -79,8 +87,11 @@ If a task spans several branches, read all matching files before editing.
 
 - Keep HTTP handlers thin: decode input, read context, call services, map typed errors to transport responses.
 - Keep business rules in services or domain functions, not transport handlers.
+- Let facades and provisioners build runtime-specific layer graphs. Do not make callers construct internal clients, layers, or scopes.
 - Wrap HTTP clients, SDKs, CLIs, and external integrations in named effects at adapter boundaries.
+- Classify a throwing or untrusted external failure once at its adapter boundary.
 - Decode persisted rows with Schema or SQL-specific helpers when values are not trivially trusted.
+- Acquire resources and start supervised background work in the layer or scope that owns their lifetime.
 - Keep provider/network calls outside authoritative database transactions.
 - Catch or retry only when the current boundary has a truthful response.
 - Retry only when the operation has proven idempotency.
@@ -92,9 +103,11 @@ If a task spans several branches, read all matching files before editing.
 - Do not introduce `Schema.Class` or `Schema.TaggedClass` as default app data-modeling patterns.
 - Do not hand-roll `_tag` error classes when `Schema.TaggedErrorClass` fits.
 - Do not use cause-level recovery when typed-error recovery is enough.
+- Do not pass errors, services, layers, scopes, or effects as ordinary data only to compose them later.
 - Do not use `Layer.mergeAll(...)` or `provideMerge(...)` as blind make-it-compile tools.
 - Do not hide required application authority, credentials, persistence, transports, or external services behind `Context.Reference` defaults.
 - Do not add arbitrary `Effect.sleep(...)` to tests when a deterministic synchronization primitive is available.
+- Do not use module mocks or method spies when a service layer is the truthful test seam.
 - Do not hand-roll Map/TTL/prune caches or in-flight dedupe when `effect/Cache` fits.
 
 ## Compatibility
@@ -104,3 +117,5 @@ Requires Effect v4. Examples were reviewed against `effect@4.0.0-beta.98` and up
 ## License
 
 MIT.
+
+Program-design guidance is adapted from HumanLayer Fold's MIT-licensed `effect-program-design` skill at commit `3b1f144abd829cb027ab30d32b3f227301201ef6`.

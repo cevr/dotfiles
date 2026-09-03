@@ -46,6 +46,12 @@ Real sleeps create timing guesses. A synchronization primitive proves the state 
 
 Build fakes from service interfaces with explicit initial state and failure controls. Record domain-level calls when order matters. Assert the smallest observable sequence that proves behavior; avoid assertions on private helper calls.
 
+Make a fake fail when the program calls an unexpected operation. Do not use `vi.mock`, `vi.spyOn`, module patching, or method replacement when a service layer is the real seam. Improve the module boundary when a true external dependency cannot be replaced with a layer.
+
+Use real ephemeral infrastructure when the behavior depends on storage constraints, transactions, locking, or persistence semantics.
+
+Assert the returned value or typed error. Also assert the relevant external state when the contract changes it. Examples include persisted records, emitted events, files, recorded fake requests, and resource release.
+
 For CLI workflows, execute the real command parser and handler with explicit arguments, provide fake filesystem/network/terminal services, and assert exit plus externally visible effects. This proves wiring that unit-testing command handlers alone misses.
 
 ## Failure assertions
