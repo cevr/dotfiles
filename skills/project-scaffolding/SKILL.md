@@ -378,7 +378,7 @@ For public npm packages. Skip for private projects.
 ### Changesets
 
 ```bash
-bun add -D @changesets/cli @changesets/changelog-github
+bun add -D @changesets/cli@^3 @changesets/changelog-github@^1
 ```
 
 `.changeset/config.json`:
@@ -416,8 +416,8 @@ Copy `templates/release.yml` and `templates/ci.yml` **verbatim** — they are by
 `templates/release.yml` highlights:
 - `env: LEFTHOOK: 0` on the release job — without it, `bun install` runs `prepare` → `lefthook install` in CI.
 - `sudo npm install -g npm@latest` — required for npm OIDC trusted publishing.
-- `NPM_TOKEN: ""` — empty on purpose; OIDC provenance replaces the token.
-- `changesets/action@v1` with `publish: bun run release` / `version: bun run version`.
+- No `NPM_TOKEN`: npm OIDC trusted publishing replaces the token. `changesets/action@v2` uses `github.token` by default, so the workflow sets no `GITHUB_TOKEN` env either.
+- `changesets/action@v2` with `publish-script: bun run release` / `version-script: bun run version`. v2 requires `@changesets/cli` v3: it reads published tags from the CLI's `CHANGESETS_OUTPUT` file, then pushes the tags and creates GitHub releases. Do not pair `@changesets/cli` v3 with `changesets/action@v1`. v1 parses `New tag:` log lines that v3 no longer prints, so npm publishes succeed silently with no tags or releases.
 
 `templates/ci.yml` runs typecheck, lint, fmt, and test on push/PR to main. Swap the `Format` step to `bun run fmt:check` if CI should fail on unformatted code instead of formatting in place.
 

@@ -59,7 +59,7 @@ bun add -D typescript @typescript/native-preview @types/bun \
   @effect/tsgo@^0.24.3 oxlint oxlint-plugin-effect oxfmt lefthook concurrently effect-bun-test
 
 # If publishing to npm
-bun add -D @changesets/cli @changesets/changelog-github
+bun add -D @changesets/cli@^3 @changesets/changelog-github@^1
 ```
 
 `@effect/tsgo` ships the `effect-tsgo` CLI used by the `prepare` script to patch the TypeScript `tsc` binary. `@typescript/native-preview` is installed for the editor's `tsgo` LSP binary only — `patch` never touches it, so `typecheck` must call `tsc --noEmit`.
