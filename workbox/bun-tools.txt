@@ -4,4 +4,5 @@
 @cvr/stacked@0.10.0
 @openai/codex@0.145.0
 hunkdiff@0.17.6
+rift-snapshot@0.0.10
 sideshow@0.12.0

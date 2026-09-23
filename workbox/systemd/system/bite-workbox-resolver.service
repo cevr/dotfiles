@@ -1,0 +1,13 @@
+[Unit]
+Description=Install the workbox systemd-resolved stub link
+Requires=systemd-resolved.service
+After=systemd-resolved.service
+Before=tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ln -sfn ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

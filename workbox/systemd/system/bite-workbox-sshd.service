@@ -4,6 +4,12 @@ Wants=network-online.target tailscaled.service
 After=network-online.target tailscaled.service
 
 [Service]
+Slice=bite.slice
+MemoryAccounting=yes
+MemoryMin=32M
+MemoryLow=64M
+MemorySwapMax=0
+OOMScoreAdjust=-900
 RuntimeDirectory=sshd
 RuntimeDirectoryMode=0755
 ExecStart=/usr/sbin/sshd -D -e -f /etc/ssh/bite-workbox-sshd_config

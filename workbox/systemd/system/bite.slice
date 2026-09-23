@@ -1,0 +1,11 @@
+[Unit]
+Description=Protected Bite remote access services
+
+[Slice]
+MemoryAccounting=yes
+MemoryMin=256M
+MemoryLow=512M
+MemorySwapMax=0
+
+[Install]
+WantedBy=slices.target

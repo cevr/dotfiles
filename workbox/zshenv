@@ -1,4 +1,7 @@
 export BUN_INSTALL="$HOME/.bun"
+export TURBO_CACHE=local:rw
+export TURBO_CACHE_DIR=/workspaces/.cache/turbo
+export TURBO_CONCURRENCY=2
 
 if [[ -S "/run/user/$(id -u)/bus" ]]; then
   export XDG_RUNTIME_DIR="/run/user/$(id -u)"

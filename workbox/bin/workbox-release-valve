@@ -1,0 +1,283 @@
+#!/bin/sh
+
+set -eu
+
+mode=preview
+
+usage() {
+  printf 'usage: %s [--apply | --dry-run]\n' "$0"
+  printf '\n'
+  printf 'Find and stop runaway Bite development workload groups.\n'
+  printf 'The default mode only prints the planned action.\n'
+}
+
+case "${1:-}" in
+  '') ;;
+  --apply) mode=apply ;;
+  --dry-run) ;;
+  --help|-h)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+if [ "$#" -gt 1 ]; then
+  usage >&2
+  exit 2
+fi
+
+if [ "$(uname -s)" != Linux ] || [ ! -r /proc/loadavg ]; then
+  printf 'workbox-release-valve: this command requires Linux procfs\n' >&2
+  exit 1
+fi
+
+working_dir=$(mktemp -d "${TMPDIR:-/tmp}/workbox-release-valve.XXXXXX")
+processes_file="$working_dir/processes"
+candidate_groups_file="$working_dir/candidate-groups"
+protected_groups_file="$working_dir/protected-groups"
+target_groups_file="$working_dir/target-groups"
+
+cleanup() {
+  case "$working_dir" in
+    "${TMPDIR:-/tmp}"/workbox-release-valve.*)
+      /bin/rm -rf -- "$working_dir"
+      ;;
+  esac
+}
+trap cleanup EXIT HUP INT TERM
+
+snapshot_processes() {
+  ps -e -o pid=,ppid=,pgid=,comm=,rss=,args= > "$processes_file"
+}
+
+is_bite_worktree() {
+  case "$1" in
+    "$HOME/Developer/work/bite"|"$HOME/Developer/work/bite/"*|\
+      "$HOME/Developer/work/bite-worktrees/"*|/workspaces/bite|/workspaces/bite/*|\
+      /workspaces/.rifts/*|/tmp/*/repo|/tmp/*/repo/*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+find_candidate_groups() {
+  : > "$candidate_groups_file"
+  user_systemd_pids=$(awk '
+    $4 == "systemd" {
+      line=$0
+      if (line ~ /systemd --user/)
+        printf " %s ", $1
+    }
+  ' "$processes_file")
+
+  while read -r pid ppid pgid command _rss_kib arguments; do
+    case "$command" in
+      bun|bun.exe|tsc)
+        printf '%s\n' "$pgid" >> "$candidate_groups_file"
+        continue
+        ;;
+    esac
+
+    case "$arguments" in
+      *'/packages/cli/bin/bite test --daemon'*)
+        printf '%s\n' "$pgid" >> "$candidate_groups_file"
+        continue
+        ;;
+    esac
+
+    [ "$command" = MainThread ] || continue
+    case "$user_systemd_pids" in
+      *" $ppid "*) ;;
+      *) continue ;;
+    esac
+
+    process_cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
+    is_bite_worktree "$process_cwd" || continue
+
+    case "$arguments" in
+      *' --consumer '*|*'watch_bite_logs_collection'*|\
+        *'node --enable-source-maps dist/index.js'*|\
+        *'node --enable-source-maps server/dist/index.js'*|\
+        *'/packages/pinata/'*' src/server.ts'*)
+        printf '%s\n' "$pgid" >> "$candidate_groups_file"
+        ;;
+    esac
+  done < "$processes_file"
+
+  sort -nu -o "$candidate_groups_file" "$candidate_groups_file"
+}
+
+find_protected_groups() {
+  awk '
+    {
+      line=$0
+      if ($4 == "systemd" ||
+          line ~ /codex/ ||
+          line ~ /herdr/ ||
+          line ~ /sideshow/ ||
+          line ~ /tailscaled/ ||
+          line ~ /sshd/ ||
+          line ~ /systemd-resolved/ ||
+          line ~ /mongod/ ||
+          line ~ /redis-server/ ||
+          line ~ /syncthing/)
+        print $3
+    }
+  ' "$processes_file" | sort -nu > "$protected_groups_file"
+
+  ps -o pgid= -p $$ | tr -d ' ' >> "$protected_groups_file"
+  sort -nu -o "$protected_groups_file" "$protected_groups_file"
+}
+
+select_target_groups() {
+  : > "$target_groups_file"
+
+  awk -v targets="$target_groups_file" '
+    FILENAME == ARGV[1] {protected[$1]=1; next}
+    $1 in protected {
+      printf "skip_group=%s reason=protected_process\n", $1
+      next
+    }
+    {print $1 > targets}
+  ' "$protected_groups_file" "$candidate_groups_file"
+}
+
+print_pressure() {
+  load_average=$(awk '{print $1 "," $2 "," $3}' /proc/loadavg)
+  memory_available_kib=$(awk '$1 == "MemAvailable:" {print $2}' /proc/meminfo)
+  swap_total_kib=$(awk '$1 == "SwapTotal:" {print $2}' /proc/meminfo)
+  swap_free_kib=$(awk '$1 == "SwapFree:" {print $2}' /proc/meminfo)
+  swap_used_kib=$((swap_total_kib - swap_free_kib))
+  memory_pressure=$(awk '/^some / {print $2; exit}' /proc/pressure/memory)
+  cpu_pressure=$(awk '/^some / {print $2; exit}' /proc/pressure/cpu)
+
+  printf 'load=%s\n' "$load_average"
+  printf 'memory_available_mib=%d\n' "$((memory_available_kib / 1024))"
+  printf 'swap_used_mib=%d\n' "$((swap_used_kib / 1024))"
+  printf 'memory_pressure_%s\n' "$memory_pressure"
+  printf 'cpu_pressure_%s\n' "$cpu_pressure"
+}
+
+print_target_groups() {
+  awk '
+    FILENAME == ARGV[1] {groups[$1]=1; next}
+    $3 in groups {
+      processes[$3]++
+      rss_kib[$3]+=$5
+    }
+    END {
+      for (group in groups)
+        printf "target_group=%s processes=%d rss_mib=%d\n", group, processes[group]+0, rss_kib[group]/1024
+    }
+  ' "$target_groups_file" "$processes_file" | sort -t= -k2,2n
+}
+
+group_member_pids() {
+  groups_file=$1
+  current_processes_file=$2
+
+  awk '
+    FILENAME == ARGV[1] {groups[$1]=1; next}
+    $3 in groups {print $1}
+  ' "$groups_file" "$current_processes_file" | sort -nu
+}
+
+stop_target_groups() {
+  grace_seconds=${WORKBOX_RELEASE_VALVE_GRACE_SECONDS:-5}
+  case "$grace_seconds" in
+    ''|*[!0-9]*)
+      printf 'workbox-release-valve: WORKBOX_RELEASE_VALVE_GRACE_SECONDS must be a nonnegative integer\n' >&2
+      exit 2
+      ;;
+  esac
+
+  target_pids=$(group_member_pids "$target_groups_file" "$processes_file")
+  if [ -n "$target_pids" ]; then
+    # The values come from the numeric PID column in ps.
+    # shellcheck disable=SC2086
+    /bin/kill -TERM $target_pids 2>/dev/null || true
+  fi
+
+  sleep "$grace_seconds"
+  snapshot_processes
+  remaining_pids=$(group_member_pids "$target_groups_file" "$processes_file")
+  if [ -n "$remaining_pids" ]; then
+    # The values come from the numeric PID column in ps.
+    # shellcheck disable=SC2086
+    /bin/kill -KILL $remaining_pids 2>/dev/null || true
+  fi
+
+  sleep 1
+  snapshot_processes
+  final_processes=$(group_member_pids "$target_groups_file" "$processes_file")
+  if [ -n "$final_processes" ]; then
+    printf 'workbox-release-valve: some target processes did not stop: %s\n' \
+      "$(printf '%s' "$final_processes" | tr '\n' ' ')" >&2
+    return 1
+  fi
+}
+
+snapshot_processes
+find_candidate_groups
+find_protected_groups
+
+printf 'mode=%s\n' "$mode"
+print_pressure
+select_target_groups
+print_target_groups
+target_group_count=$(awk 'NF {n++} END {print n+0}' "$target_groups_file")
+printf 'target_groups=%d\n' "$target_group_count"
+
+if [ "$mode" = preview ]; then
+  if [ "$target_group_count" -gt 0 ]; then
+    printf 'next=workbox-release-valve --apply\n'
+  fi
+  exit 0
+fi
+
+if [ "$target_group_count" -eq 0 ]; then
+  printf 'stopped_groups=0\n'
+  exit 0
+fi
+
+max_passes=${WORKBOX_RELEASE_VALVE_MAX_PASSES:-4}
+case "$max_passes" in
+  ''|*[!0-9]*|0)
+    printf 'workbox-release-valve: WORKBOX_RELEASE_VALVE_MAX_PASSES must be a positive integer\n' >&2
+    exit 2
+    ;;
+esac
+
+pass=1
+stopped_group_count=0
+while [ "$target_group_count" -gt 0 ] && [ "$pass" -le "$max_passes" ]; do
+  printf 'stop_pass=%d target_groups=%d\n' "$pass" "$target_group_count"
+  stop_target_groups
+  stopped_group_count=$((stopped_group_count + target_group_count))
+
+  find_candidate_groups
+  find_protected_groups
+  select_target_groups
+  target_group_count=$(awk 'NF {n++} END {print n+0}' "$target_groups_file")
+  if [ "$target_group_count" -gt 0 ]; then
+    print_target_groups
+  fi
+  pass=$((pass + 1))
+done
+
+if [ "$target_group_count" -gt 0 ]; then
+  printf 'workbox-release-valve: %d workload groups remain after %d passes\n' \
+    "$target_group_count" \
+    "$max_passes" >&2
+  exit 1
+fi
+
+printf 'stopped_groups=%d\n' "$stopped_group_count"
+print_pressure

@@ -1,0 +1,76 @@
+#!/bin/sh
+
+set -eu
+
+repository=${BITE_REPOSITORY:-/workspaces/bite}
+if [ ! -f "$repository/package.json" ]; then
+  repository="$HOME/Developer/work/bite"
+fi
+
+node_version=$(jq -er '.engines.node' "$repository/package.json")
+case "$node_version" in
+  ''|*[!0-9.]*|.*|*.)
+    printf 'install-node: engines.node must contain one exact version\n' >&2
+    exit 1
+    ;;
+esac
+
+install_root="$HOME/.local/share/node/v$node_version"
+local_bin="$HOME/.local/bin"
+archive="node-v$node_version-linux-x64.tar.xz"
+download_root="https://nodejs.org/dist/v$node_version"
+
+check_state() {
+  test -x "$install_root/bin/node"
+  test "$("$install_root/bin/node" --version)" = "v$node_version"
+  test "$(readlink "$local_bin/node")" = "$install_root/bin/node"
+}
+
+if [ "${1:-}" = --check ]; then
+  check_state
+  printf 'Node %s checks passed.\n' "$node_version"
+  exit 0
+fi
+
+if [ "$#" -ne 0 ]; then
+  printf 'usage: %s [--check]\n' "$0" >&2
+  exit 2
+fi
+
+if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
+  printf 'install-node: this command requires Linux x64\n' >&2
+  exit 1
+fi
+
+if [ ! -x "$install_root/bin/node" ]; then
+  temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/install-node.XXXXXX")
+  cleanup() {
+    case "$temporary_dir" in
+      "${TMPDIR:-/tmp}"/install-node.*) /bin/rm -rf -- "$temporary_dir" ;;
+    esac
+  }
+  trap cleanup EXIT HUP INT TERM
+
+  curl --fail --silent --show-error --location \
+    "$download_root/SHASUMS256.txt" -o "$temporary_dir/SHASUMS256.txt"
+  curl --fail --silent --show-error --location \
+    "$download_root/$archive" -o "$temporary_dir/$archive"
+  expected_hash=$(awk -v archive="$archive" '$2 == archive {print $1}' "$temporary_dir/SHASUMS256.txt")
+  test -n "$expected_hash" || {
+    printf 'install-node: release checksum is missing for %s\n' "$archive" >&2
+    exit 1
+  }
+  printf '%s  %s\n' "$expected_hash" "$temporary_dir/$archive" | sha256sum --check --status
+
+  mkdir -p "$temporary_dir/install" "$(dirname "$install_root")"
+  tar -xJf "$temporary_dir/$archive" --strip-components=1 -C "$temporary_dir/install"
+  mv "$temporary_dir/install" "$install_root"
+fi
+
+mkdir -p "$local_bin"
+for executable in node npm npx corepack; do
+  ln -sfn "$install_root/bin/$executable" "$local_bin/$executable"
+done
+
+check_state
+printf 'Node %s is installed.\n' "$node_version"

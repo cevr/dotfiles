@@ -32,13 +32,44 @@ check_user_service() {
   check "$service_name active" systemctl --user is-active --quiet "$service_name"
 }
 
+check_memory_protection() {
+  protection_label=$1
+  protected_service=$2
+  protected_memory_min=$3
+  protected_memory_low=$4
+  protected_oom_score_adjust=$5
+
+  check "$protection_label protected slice" test \
+    "$(systemctl show "$protected_service" -p Slice --value)" = bite.slice
+  check "$protection_label hard memory floor" test \
+    "$(systemctl show "$protected_service" -p MemoryMin --value)" -eq "$protected_memory_min"
+  check "$protection_label soft memory floor" test \
+    "$(systemctl show "$protected_service" -p MemoryLow --value)" -eq "$protected_memory_low"
+  check "$protection_label kept out of swap" test \
+    "$(systemctl show "$protected_service" -p MemorySwapMax --value)" -eq 0
+  check "$protection_label OOM protection" test \
+    "$(systemctl show "$protected_service" -p OOMScoreAdjust --value)" -eq "$protected_oom_score_adjust"
+}
+
 check_system_service tailscaled.service
+check_system_service systemd-resolved.service
 check_system_service bite-workbox-sshd.service
 check_system_service bite-workbox-sideshow-firewall.service
 check_system_service bite-agent-settings.path
 check_system_service syncthing@exedev.service
 check_system_service mongod.service
 check_system_service redis-server.service
+check "bite.slice enabled" systemctl is-enabled --quiet bite.slice
+check "bite.slice active" systemctl is-active --quiet bite.slice
+check "Access hard memory floor" test \
+  "$(systemctl show bite.slice -p MemoryMin --value)" -eq 268435456
+check "Access soft memory floor" test \
+  "$(systemctl show bite.slice -p MemoryLow --value)" -eq 536870912
+check "Access slice kept out of swap" test \
+  "$(systemctl show bite.slice -p MemorySwapMax --value)" -eq 0
+check_memory_protection Tailscale tailscaled.service 134217728 268435456 -900
+check_memory_protection Resolver systemd-resolved.service 33554432 67108864 -800
+check_memory_protection "Tailscale SSH" bite-workbox-sshd.service 33554432 67108864 -900
 check "herdr-bite.service enabled" test -L \
   "$HOME/.config/systemd/user/default.target.wants/herdr-bite.service"
 check "herdr-bite.service active" systemctl --user is-active --quiet herdr-bite.service
@@ -60,6 +91,27 @@ check_user_service workbox-backup.timer
 check_user_service workbox-health.timer
 check_user_service workbox-update-report.timer
 
+# shellcheck disable=SC2016
+check "Resolver stub link" sh -c '
+  test "$(readlink /etc/resolv.conf)" = ../run/systemd/resolve/stub-resolv.conf
+'
+check "Resolver primary DNS" grep -qx 'DNS=1.1.1.1' /etc/systemd/resolved.conf.d/workbox.conf
+check "Resolver fallback DNS" grep -qx 'FallbackDNS=1.0.0.1' /etc/systemd/resolved.conf.d/workbox.conf
+check "Public DNS" getent ahostsv4 github.com
+check "Public HTTPS" curl --fail --silent --max-time 5 https://github.com/
+# shellcheck disable=SC2016
+check "Tailscale running" sh -c '
+  tailscale status --json | jq -e ".BackendState == \"Running\"" >/dev/null
+'
+# shellcheck disable=SC2016
+check "Tailscale automatic restarts" sh -c '
+  test "$(systemctl show tailscaled.service -p NRestarts --value)" -eq 0
+'
+# shellcheck disable=SC2016
+check "Tailscale MagicDNS" sh -c '
+  tailscale_dns_name=$(tailscale status --json | jq -er .Self.DNSName) &&
+    getent ahostsv4 "$tailscale_dns_name" | grep -q .
+'
 # shellcheck disable=SC2016
 check "Tailscale address" sh -c 'test -n "$(tailscale ip -4 | head -1)"'
 # shellcheck disable=SC2016
@@ -87,6 +139,10 @@ check "Grafana login" env GRAFANA_CLI_DISABLE_KEYRING=1 mati-grafana auth status
 
 check "Bite repository" test -d "$HOME/Developer/work/bite/.git"
 check "Bite environment link" test -L "$HOME/Developer/work/bite/.env"
+check "Rift workspace storage" workbox-rift-storage --check
+check "Bite Rift source" bite-rift check
+check "Rift workspace command" rift --help
+check "Shared Turbo cache" test -w /workspaces/.cache/turbo
 check "Workbox zshenv" test -L "$HOME/.zshenv"
 check "Workbox zshrc" test -L "$HOME/.zshrc"
 check "Claude settings" test -r "$HOME/.claude/settings.json"
@@ -95,6 +151,7 @@ check "Sideshow MCP" grep -q '^\[mcp_servers\.sideshow\]$' "$HOME/.codex/config.
 check "Claude Herdr hook" test -x "$HOME/.claude/hooks/herdr-agent-state.sh"
 check "Codex Herdr hook" test -x "$HOME/.codex/herdr-agent-state.sh"
 check "Shared Claude skills" test -L "$HOME/.claude/skills"
+check "Shared agent instructions" test -L "$HOME/.agents/AGENTS.md"
 check "Shared agent skills" test -L "$HOME/.agents/skills"
 check "Herdr Bite session state" sh -c 'herdr session list | grep -q "^bite[[:space:]]"'
 check "Herdr config" herdr config check
@@ -102,6 +159,7 @@ check "Herdr Hunk plugin" sh -c \
   'HERDR_SESSION=bite herdr plugin action list --plugin cvr.herdr-hunk | grep -q "\"action_id\":\"send\""'
 
 check "Bun" bun --version
+check "Pinned Node" install-node --check
 check "Linear CLI" linear --version
 check "Sentry CLI" sentry --version
 check "Okra CLI" okra --version

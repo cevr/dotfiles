@@ -1,0 +1,95 @@
+#!/bin/sh
+
+set -eu
+
+image_path=${WORKBOX_RIFT_IMAGE:-/var/lib/bite-workspaces.btrfs}
+mount_path=${WORKBOX_RIFT_MOUNT:-/workspaces}
+image_size=${WORKBOX_RIFT_IMAGE_SIZE:-60G}
+fstab_options=loop,noatime,compress=zstd:3,space_cache=v2,discard=async
+
+usage() {
+  printf 'usage: %s [--apply | --check]\n' "$0"
+  printf '\n'
+  printf 'Create or check the dedicated Btrfs Rift workspace file system.\n'
+}
+
+check_state() {
+  test -f "$image_path"
+  test "$(findmnt -n -o FSTYPE --target "$mount_path")" = btrfs
+  findmnt -n -o OPTIONS --target "$mount_path" | grep -q 'compress=zstd:3'
+  test -d "$mount_path/bite"
+  test -d "$mount_path/.rifts"
+  test -d "$mount_path/.cache/turbo"
+  test -w "$mount_path"
+  grep -Fqx "$image_path $mount_path btrfs $fstab_options 0 0" /etc/fstab
+}
+
+case "${1:---check}" in
+  --check)
+    check_state
+    printf 'Rift workspace storage checks passed.\n'
+    exit 0
+    ;;
+  --apply) ;;
+  --help|-h)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+if [ "$(uname -s)" != Linux ]; then
+  printf 'workbox-rift-storage: this command requires Linux\n' >&2
+  exit 1
+fi
+
+for command_name in btrfs findmnt mkfs.btrfs; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    printf 'workbox-rift-storage: required command is missing: %s\n' "$command_name" >&2
+    exit 1
+  }
+done
+
+if findmnt --mountpoint "$mount_path" >/dev/null 2>&1; then
+  current_type=$(findmnt -n -o FSTYPE --mountpoint "$mount_path")
+  if [ "$current_type" != btrfs ]; then
+    printf 'workbox-rift-storage: %s is mounted as %s\n' "$mount_path" "$current_type" >&2
+    exit 1
+  fi
+else
+  if [ -e "$mount_path" ] && [ -n "$(find "$mount_path" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    printf 'workbox-rift-storage: mount path is not empty: %s\n' "$mount_path" >&2
+    exit 1
+  fi
+
+  if [ ! -e "$image_path" ]; then
+    sudo install -d -m 0755 "$(dirname "$image_path")"
+    sudo fallocate -l "$image_size" "$image_path"
+    sudo chmod 0600 "$image_path"
+    sudo mkfs.btrfs -f -K -L bite-workspaces "$image_path" >/dev/null
+  elif ! sudo blkid -p -s TYPE -o value "$image_path" | grep -qx btrfs; then
+    printf 'workbox-rift-storage: image is not a Btrfs file system: %s\n' "$image_path" >&2
+    exit 1
+  fi
+
+  sudo install -d -m 0755 "$mount_path"
+  fstab_line="$image_path $mount_path btrfs $fstab_options 0 0"
+  if ! grep -Fqx "$fstab_line" /etc/fstab; then
+    printf '%s\n' "$fstab_line" | sudo tee -a /etc/fstab >/dev/null
+  fi
+  sudo mount "$mount_path"
+fi
+
+sudo chown "$USER:$(id -gn)" "$mount_path"
+mkdir -p "$mount_path/.rifts" "$mount_path/.cache/turbo"
+chmod 0700 "$mount_path/.rifts" "$mount_path/.cache" "$mount_path/.cache/turbo"
+
+if [ ! -d "$mount_path/bite" ]; then
+  mkdir "$mount_path/bite"
+fi
+
+check_state
+printf 'Rift workspace storage is ready at %s.\n' "$mount_path"

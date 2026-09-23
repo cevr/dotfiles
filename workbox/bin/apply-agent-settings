@@ -62,6 +62,12 @@ required = true
 
 [projects."/home/exedev/Developer/work/bite"]
 trust_level = "trusted"
+
+[projects."/workspaces/bite"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts"]
+trust_level = "trusted"
 EOF
 
 install -m 600 "$codex_config_file" "$HOME/.codex/config.toml"

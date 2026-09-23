@@ -1,0 +1,236 @@
+#!/bin/sh
+
+set -eu
+
+source_path=${BITE_RIFT_SOURCE:-/workspaces/bite}
+rift_root=${BITE_RIFT_ROOT:-/workspaces/.rifts}
+turbo_cache=${TURBO_CACHE_DIR:-/workspaces/.cache/turbo}
+main_branch=${BITE_RIFT_MAIN_BRANCH:-master}
+
+usage() {
+  printf \
+    'usage: %s init [repository] | create <branch> | refresh | list | remove [path] | check\n' \
+    "$0"
+}
+
+require_source() {
+  test -d "$source_path/.git" || {
+    printf 'bite-rift: source repository is not ready: %s\n' "$source_path" >&2
+    exit 1
+  }
+  test -f "$source_path/.rift" || {
+    printf 'bite-rift: Rift is not initialized at %s\n' "$source_path" >&2
+    exit 1
+  }
+}
+
+workspace_name() {
+  printf '%s' "$1" |
+    tr '/[:space:]' '--' |
+    tr -cd '[:alnum:]._-' |
+    sed 's/^-*//; s/-*$//'
+}
+
+fetch_remote_branch() {
+  branch=$1
+  if git -C "$source_path" ls-remote --exit-code --heads origin \
+    "refs/heads/$branch" >/dev/null; then
+    git -C "$source_path" fetch --no-tags origin \
+      "+refs/heads/$branch:refs/remotes/origin/$branch"
+    return
+  else
+    status=$?
+  fi
+
+  if [ "$status" -ne 2 ]; then
+    exit "$status"
+  fi
+}
+
+find_gh_stack_metadata() {
+  branch=$1
+  caller_git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null || true)
+  if [ -z "$caller_git_dir" ] || [ ! -f "$caller_git_dir/gh-stack" ]; then
+    return 1
+  fi
+
+  caller_origin=$(git remote get-url origin 2>/dev/null || true)
+  source_origin=$(git -C "$source_path" remote get-url origin)
+  if [ "$caller_origin" != "$source_origin" ]; then
+    return 1
+  fi
+
+  if ! jq empty "$caller_git_dir/gh-stack" >/dev/null 2>&1; then
+    printf 'bite-rift: invalid gh stack metadata: %s\n' \
+      "$caller_git_dir/gh-stack" >&2
+    return 2
+  fi
+
+  jq -e --arg branch "$branch" \
+    'any(.stacks[]?; .trunk.branch == $branch or any(.branches[]?; .branch == $branch))' \
+    "$caller_git_dir/gh-stack" >/dev/null || return 1
+  printf '%s\n' "$caller_git_dir/gh-stack"
+}
+
+import_gh_stack_metadata() {
+  metadata=${1:-}
+  workspace=$2
+  if [ -z "$metadata" ]; then
+    return
+  fi
+
+  workspace_git_dir=$(git -C "$workspace" rev-parse --absolute-git-dir)
+  cp -p "$metadata" "$workspace_git_dir/gh-stack"
+  printf 'Imported gh stack metadata from %s.\n' "$metadata" >&2
+}
+
+create_workspace() {
+  branch=${1:-}
+  if [ -z "$branch" ]; then
+    usage >&2
+    exit 2
+  fi
+  require_source
+
+  name=$(workspace_name "$branch")
+  if [ -z "$name" ]; then
+    printf 'bite-rift: branch does not make a valid workspace name\n' >&2
+    exit 2
+  fi
+
+  fetch_remote_branch "$branch"
+  if gh_stack_metadata=$(find_gh_stack_metadata "$branch"); then
+    :
+  else
+    status=$?
+    if [ "$status" -ne 1 ]; then
+      exit "$status"
+    fi
+    gh_stack_metadata=
+  fi
+  source_lock_hash=$(git -C "$source_path" hash-object bun.lock 2>/dev/null || true)
+  workspace=$(rift create "$source_path" --into "$rift_root" --copy-all --name "$name")
+  if git -C "$workspace" show-ref --verify --quiet "refs/heads/$branch"; then
+    git -C "$workspace" switch "$branch"
+    if git -C "$workspace" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+      git -C "$workspace" merge --ff-only "origin/$branch"
+    fi
+  elif git -C "$workspace" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    git -C "$workspace" switch --track -c "$branch" "origin/$branch"
+  else
+    git -C "$workspace" switch -c "$branch"
+  fi
+  import_gh_stack_metadata "$gh_stack_metadata" "$workspace"
+
+  workspace_lock_hash=$(git -C "$workspace" hash-object bun.lock 2>/dev/null || true)
+  if [ "$workspace_lock_hash" != "$source_lock_hash" ]; then
+    (cd "$workspace" && bun install --frozen-lockfile)
+  fi
+  printf '%s\n' "$workspace"
+}
+
+initialize_source() {
+  test "$(findmnt -n -o FSTYPE --target "$(dirname "$source_path")")" = btrfs || {
+    printf 'bite-rift: Btrfs workspace storage is not ready\n' >&2
+    exit 1
+  }
+  if [ -d "$source_path/.git" ]; then
+    printf 'bite-rift: source repository already exists: %s\n' "$source_path" >&2
+    exit 1
+  fi
+  if [ -n "$(find "$source_path" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    printf 'bite-rift: source path is not empty: %s\n' "$source_path" >&2
+    exit 1
+  fi
+
+  repository=${1:-}
+  if [ -z "$repository" ]; then
+    repository=$(git -C "$HOME/Developer/work/bite" remote get-url origin)
+  fi
+
+  git clone --branch "$main_branch" "$repository" "$source_path"
+  ln -sfn "$HOME/.config/bite-workbox/bite-env/.env" "$source_path/.env"
+  rift init --here "$source_path"
+  refresh_source
+}
+
+refresh_source() {
+  require_source
+  if [ -n "$(git -C "$source_path" status --porcelain)" ]; then
+    printf 'bite-rift: source repository has changes: %s\n' "$source_path" >&2
+    exit 1
+  fi
+
+  git -C "$source_path" fetch --prune origin
+  git -C "$source_path" switch "$main_branch"
+  git -C "$source_path" merge --ff-only "origin/$main_branch"
+  (
+    cd "$source_path"
+    TURBO_CACHE=local:rw TURBO_CACHE_DIR="$turbo_cache" bun install --frozen-lockfile
+    TURBO_CACHE=local:rw TURBO_CACHE_DIR="$turbo_cache" bun run compile
+  )
+  printf 'Bite Rift source is warm at %s.\n' "$source_path"
+}
+
+check_state() {
+  require_source
+  test "$(findmnt -n -o FSTYPE --target "$source_path")" = btrfs
+  test -d "$rift_root"
+  test -d "$turbo_cache"
+  test -w "$rift_root"
+  test -w "$turbo_cache"
+  printf 'Bite Rift checks passed.\n'
+}
+
+case "${1:-}" in
+  init)
+    [ "$#" -le 2 ] || {
+      usage >&2
+      exit 2
+    }
+    initialize_source "${2:-}"
+    ;;
+  create)
+    [ "$#" -eq 2 ] || {
+      usage >&2
+      exit 2
+    }
+    create_workspace "$2"
+    ;;
+  refresh)
+    [ "$#" -eq 1 ] || {
+      usage >&2
+      exit 2
+    }
+    refresh_source
+    ;;
+  list)
+    [ "$#" -eq 1 ] || {
+      usage >&2
+      exit 2
+    }
+    require_source
+    rift list "$source_path"
+    ;;
+  remove)
+    [ "$#" -le 2 ] || {
+      usage >&2
+      exit 2
+    }
+    rift remove "${2:-$PWD}"
+    ;;
+  check)
+    [ "$#" -eq 1 ] || {
+      usage >&2
+      exit 2
+    }
+    check_state
+    ;;
+  --help|-h)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
