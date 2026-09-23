@@ -1,10 +1,5 @@
 # AGENTS.md
 
-## Reporting
-
-- Report only in ASD-STE100 Simplified Technical English: short sentences, active voice, one instruction per sentence, approved vocabulary.
-- When presenting findings, list all file references (full paths) that informed conclusions. Don't summarize without receipts.
-
 ## Pacing
 
 - Default to `~/Developer/personal/dotfiles/principles/never-block-on-the-human.md` and `~/Developer/personal/dotfiles/principles/redesign-from-first-principles.md`. Read principles, don't ask which to apply.
