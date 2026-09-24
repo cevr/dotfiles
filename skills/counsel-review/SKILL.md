@@ -1,6 +1,6 @@
 ---
 name: counsel-review
-description: Run an independent, read-only Counsel review of a change, pull request, stack checkpoint, performance change, or API design. Use when the user asks for a Counsel review, anti-slop review, correctness review, minimality review, or final independent review before merge or release. Do not use for hands-on cleanup. Use code-review for cleanup.
+description: Run an independent, read-only Counsel review of a change, pull request, stack checkpoint, performance change, API design, or test suite. Use when the user asks for a Counsel review, anti-slop review, correctness review, minimality review, test audit, or final independent review before merge or release. Do not use for hands-on cleanup. Use code-review for cleanup.
 ---
 
 # Counsel Review
@@ -9,7 +9,7 @@ Use the opposite local coding agent as an independent reviewer. Check the review
 
 Do not edit files during the review.
 
-Read `../counsel/SKILL.md` before you call Counsel. Read [references/review-contract.md](references/review-contract.md) before you prepare the review packet.
+Read `../counsel/SKILL.md` before you call Counsel. Read [references/review-contract.md](references/review-contract.md) before you prepare the review packet. Read [references/test-audit.md](references/test-audit.md) when the change adds or changes tests, and in `tests` mode.
 
 ## Set the review mode
 
@@ -19,12 +19,15 @@ Select one mode.
 - Use `stack` for a sequence of dependent branches. Review from the base branch to the top branch.
 - Use `design` for a public API or architecture decision. Use one complete review request.
 - Use `performance` for a performance change. Include matched before-and-after evidence.
+- Use `tests` for an audit of existing tests. Look for low-value, duplicate, or implementation-coupled tests and the test-only production seams they keep alive. Scope the audit to one owner module or package.
 
 ## Do your review first
 
 Read the exact diff and each changed file in full. Read the call sites and the owner modules. Reproduce or inspect the reported behavior when this is possible.
 
 Do not use Counsel as a substitute for source inspection or tests. Counsel must challenge a grounded candidate, not invent the task context.
+
+Apply the authoring gate in the test audit reference to each new or changed test. In `tests` mode, hunt for the junk patterns. Collect the candidate evidence for each test that you plan to call deletable. Prefer a few high-confidence candidates over a large speculative list.
 
 For Effect code, read `../effect/SKILL.md`. Inspect the current Effect source. Do not depend on old API knowledge.
 
@@ -44,6 +47,7 @@ Include all applicable items:
 - The product and compatibility invariants.
 - The relevant source paths and cached dependency paths.
 - The full path of [references/review-contract.md](references/review-contract.md).
+- The full path of [references/test-audit.md](references/test-audit.md) when tests are in scope.
 - The candidate design and rejected alternatives.
 - The test results and runtime evidence.
 - The resource and performance limits.
@@ -78,7 +82,7 @@ Check the following areas:
 - Lifecycle, cleanup, interruption, and hidden effects.
 - Race conditions, ordering, rollback, and offline behavior.
 - Data integrity, wire compatibility, and public API compatibility.
-- The proof quality of tests and benchmarks.
+- The proof quality of tests and benchmarks, and the test audit authoring gate.
 - Minimality and each slop class in the review contract.
 
 Do not use a finding quota. Do not expand the work into unrelated cleanup. Separate pre-existing issues from issues in the reviewed change.
@@ -115,6 +119,7 @@ For each accepted finding, give:
 - The violated invariant.
 - The smallest correct repair.
 - The correct owner.
+- For a test deletion or move, the complete candidate evidence from the test audit reference.
 
 Also report the review round count, the proof status, and the Counsel output path.
 

@@ -106,18 +106,7 @@ Check the current Effect source before you name a replacement.
 
 ## Test slop
 
-Tests must prove observed contracts.
-
-Report these patterns:
-
-- A test asserts implementation details instead of user-visible or service-visible behavior.
-- A test uses mocks, spies, module patches, or module-patching fake timers when an in-memory service can prove the contract.
-- A test changes its meaning to accept a regression.
-- A cast creates an invalid domain fixture.
-- Duplicate tests add no new state, boundary, or failure proof.
-- A test passes but does not exercise the changed mode or branch.
-
-Use deterministic clocks and in-memory services when the architecture provides them.
+Tests must prove observed contracts. Apply [test-audit.md](test-audit.md) to each test that the change adds or changes. It defines the authoring gate, the junk patterns, and the retention bar.
 
 ## Performance review
 
