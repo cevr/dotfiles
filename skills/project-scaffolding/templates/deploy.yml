@@ -35,7 +35,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
-      - run: bunx alchemy provider check-env
+      # Name the stack's providers: without --provider it checks every provider Alchemy knows.
+      - run: bunx alchemy provider check-env --provider Cloudflare --provider Railway
       - run: bunx alchemy deploy alchemy.run.ts --stage "$STAGE" --yes
 
   cleanup:
