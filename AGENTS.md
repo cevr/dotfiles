@@ -13,6 +13,7 @@
 - Contact: Cristian (@cevr, seeve.c@gmail.com)
 - Workspace: `~/Developer` — `personal/`, `work/`. Dotfiles: `~/Developer/personal/dotfiles`. Skills: `~/.claude/skills` (symlinked from dotfiles/skills).
 - Guardrail: `trash` aliased to `rm`; use for deletes.
+- Devbox: the exe devbox `bite-cristian` IS the Bite workbox. Herdr machine `Workbox` (session `bite`) = SSH alias `bite-workbox` (Tailscale, port 2222) = host `bite-cristian`. Use `herdr --machine Workbox …`; never add another herdr machine for it.
 - Principles: `~/Developer/personal/dotfiles/principles/` — read before architectural decisions or code review.
 
 ## Conventions
