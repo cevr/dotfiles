@@ -51,12 +51,12 @@ Set `"type": "module"` in `package.json`.
 ## Step 2: Install Dependencies
 
 ```bash
-# Runtime
-bun add effect @effect/platform-bun
+# Runtime: v4 is on the rc tag; pin the resolved version exactly
+bun add effect@rc @effect/platform-bun@rc
 
 # Dev tooling
 bun add -D typescript @typescript/native-preview @types/bun \
-  @effect/tsgo@^0.24.3 oxlint oxlint-plugin-effect oxfmt lefthook concurrently effect-bun-test
+  @effect/tsgo@^0.46.1 oxlint oxlint-plugin-effect oxfmt lefthook concurrently effect-bun-test
 
 # If publishing to npm
 bun add -D @changesets/cli@^3 @changesets/changelog-github@^1
@@ -79,23 +79,20 @@ After install, run `bun run prepare` (or just `bun install` again — the `prepa
 ### Entry Point (`src/main.ts`)
 
 ```typescript
-import { BunRuntime, BunCommandExecutor } from "@effect/platform-bun"
+import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
+import { Command } from "effect/unstable/cli"
+import { version } from "../package.json" with { type: "json" }
 import { command } from "./commands/index.js"
-import { CliApp } from "effect/unstable/cli"
 // ... import service layers
 
-const AppLayer = Layer.mergeAll(
+const MainLayer = Layer.mergeAll(
   ServiceA.layer,
   ServiceB.layer,
-  // ...
+  BunServices.layer, // FileSystem, Path, ChildProcessSpawner, Stdio, Terminal
 )
 
-const cli = CliApp.run(command, { name: "project-name", version: "0.1.0" }).pipe(
-  Effect.provide(BunCommandExecutor.layer),
-)
-
-BunRuntime.runMain(cli.pipe(Effect.provide(AppLayer)))
+Command.run(command, { version }).pipe(Effect.provide(MainLayer), BunRuntime.runMain)
 ```
 
 No suppression comment here. This entry-point shape is what `strictEffectProvide` flags, but that rule is `"off"` in the canonical `diagnosticSeverity` map (see SKILL.md §strictEffectProvide) — and `@effect-diagnostics` comments do not work anyway.
@@ -123,8 +120,9 @@ import { Argument, Command, Flag } from "effect/unstable/cli"
 import { Console, Effect } from "effect"
 import { MyService } from "../services/MyService.js"
 
-const nameArg = Argument.string("name")
-const forceFlag = Flag.boolean("force").pipe(Flag.withAlias("f"))
+const nameArg = Argument.String("name")
+// v4 flags are required unless given a default
+const forceFlag = Flag.Boolean("force").pipe(Flag.withAlias("f"), Flag.withDefault(false))
 
 export const subcommandA = Command.make("do-thing", { name: nameArg, force: forceFlag }).pipe(
   Command.withDescription("Does the thing"),
@@ -169,11 +167,19 @@ export class MyService extends Context.Service<
 ```typescript
 import { Schema } from "effect"
 
-export class MyError extends Schema.TaggedErrorClass<MyError>()(
+export class MyError extends Schema.TaggedError<MyError>()(
   "MyError",
-  { message: Schema.String },
-) {}
+  { name: Schema.String },
+) {
+  override get message() {
+    return `Could not do the thing for ${this.name}`
+  }
+}
+
+// construct with MyError.make({ name }), not `new` (tsgo newSchemaClass)
 ```
+
+Expected failures surface to the user through `CliError.UserError` at the command boundary (`Effect.catchTags` → `CliError.UserError.make({ cause, userMessage })`), so they print a message instead of a stack trace.
 
 ### Build Script (`scripts/build.ts`)
 
@@ -319,6 +325,7 @@ node_modules/
 bin/
 .turbo/
 *.tsbuildinfo
+.alchemy/   # if deployed with Alchemy (SKILL.md §Deploy)
 ```
 
 ## Step 7: Publishing (optional)

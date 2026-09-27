@@ -10,7 +10,9 @@
     "moduleResolution": "bundler",
     "moduleDetection": "force",
     "skipLibCheck": true,
-    "types": ["bun"],
+    "types": [
+      "bun"
+    ],
     "noEmit": true,
     "plugins": [
       {
@@ -22,9 +24,19 @@
         "ignoreEffectWarningsInTscExitCode": false,
         "ignoreEffectErrorsInTscExitCode": false,
         "diagnosticSeverity": {
+          "abortControllerInEffect": "off",
+          "acquireReleaseDisposable": "error",
+          "allOfMapToForEach": "error",
           "anyUnknownInErrorContext": "error",
           "asyncFunction": "off",
+          "catchAllTagDispatchToCatchTag": "error",
           "catchAllToMapError": "error",
+          "catchChainToFirstSuccessOf": "error",
+          "catchConditionalRefailToCatchIf": "error",
+          "catchDieToOrDie": "error",
+          "catchIfTagToCatchTag": "error",
+          "catchRefailToTapError": "error",
+          "catchTagToCatchReason": "error",
           "catchToIgnore": "error",
           "catchToOrElseSucceed": "error",
           "catchUnfailableEffect": "error",
@@ -44,8 +56,11 @@
           "effectMapVoid": "error",
           "effectSucceedWithVoid": "error",
           "extendsNativeError": "error",
+          "flatMapConditionalToFilterOrFail": "error",
+          "flatMapIgnoredParamToAndThen": "error",
           "flatMapToMap": "error",
           "floatingEffect": "error",
+          "floatingEffectInVitest": "error",
           "genericEffectServices": "error",
           "globalConsole": "off",
           "globalConsoleInEffect": "off",
@@ -64,6 +79,9 @@
           "lazyEffect": "error",
           "lazyPromiseInEffectSync": "error",
           "leakingRequirements": "error",
+          "mapSomeToAsSome": "error",
+          "matchEffectToMapBoth": "error",
+          "matchEffectToMatch": "error",
           "missedPipeableOpportunity": "off",
           "missingEffectContext": "error",
           "missingEffectError": "error",
@@ -79,19 +97,32 @@
           "newSchemaClass": "error",
           "nodeBuiltinImport": "off",
           "nonObjectEffectServiceType": "error",
+          "obsoleteMatchImport": "error",
+          "obsoleteSchemaImport": "error",
+          "optionMatchToFromOption": "error",
           "outdatedApi": "error",
           "overriddenSchemaConstructor": "error",
           "preferSchemaOverJson": "off",
+          "preferSchemaTypeProperty": "off",
+          "preferSucceedSomeOrNone": "error",
+          "preferTypedSchemaDecoder": "error",
+          "preferUnsafeConstructor": "error",
           "processEnv": "off",
           "processEnvInEffect": "off",
+          "promiseInEffectSuccess": "error",
+          "provideLayerSucceedToProvideService": "error",
+          "raceFirstWithSleepToTimeout": "error",
           "redundantMapError": "error",
           "redundantOrDie": "error",
           "redundantSchemaTagIdentifier": "error",
           "returnEffectInGen": "error",
           "runEffectInsideEffect": "error",
+          "runOfExitToRunExit": "error",
+          "schemaLiteralNonFinite": "error",
           "schemaNumber": "error",
           "schemaOpaqueInstanceMember": "error",
           "schemaStructWithTag": "error",
+          "schemaSync": "off",
           "schemaSyncInEffect": "error",
           "schemaUnionOfLiterals": "error",
           "scopeInLayerEffect": "error",
@@ -99,6 +130,7 @@
           "strictBooleanExpressions": "off",
           "strictEffectProvide": "off",
           "syncToSucceed": "error",
+          "timeoutCatchTagToTimeoutOrElse": "error",
           "tryCatchInEffectGen": "off",
           "unknownInEffectCatch": "error",
           "unnecessaryArrowBlock": "error",
@@ -113,12 +145,16 @@
           {
             "target": "service",
             "pattern": "default",
-            "skipLeadingPath": ["packages/"]
+            "skipLeadingPath": [
+              "packages/"
+            ]
           },
           {
             "target": "error",
             "pattern": "default",
-            "skipLeadingPath": ["packages/"]
+            "skipLeadingPath": [
+              "packages/"
+            ]
           }
         ],
         "overrides": []
@@ -126,5 +162,7 @@
     ]
   },
   "include": [],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules"
+  ]
 }

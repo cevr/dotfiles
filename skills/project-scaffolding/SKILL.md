@@ -1,6 +1,6 @@
 ---
 name: project-scaffolding
-description: Scaffold new TypeScript projects with Effect, Bun, oxlint, oxlint-plugin-effect, oxfmt, lefthook, and changesets. Use when starting a new project, setting up a monorepo, configuring tooling, adding CI/CD, Effect lint guidelines, or when asked to "scaffold", "bootstrap", "init", "set up a project", "create a new project", or "new repo". Covers CLI apps, monorepos with core/cli/web splits, and npm publishing.
+description: Scaffold new TypeScript projects with Effect, Bun, oxlint, oxlint-plugin-effect, oxfmt, lefthook, changesets, and Alchemy deploys. Use when starting a new project, setting up a monorepo, configuring tooling, adding CI/CD, Effect lint guidelines, or when asked to "scaffold", "bootstrap", "init", "set up a project", "create a new project", or "new repo". Covers CLI apps, monorepos with core/cli/web splits, deploying with Alchemy, and npm publishing.
 ---
 
 # Project Scaffolding
@@ -16,6 +16,7 @@ What are you setting up?
 ├─ Migrate from @effect/language-service → references/migration.md
 ├─ Just the tooling configs              → §Tooling Stack
 ├─ Copy-paste config files               → templates/
+├─ Deploying it (servers, domains, DNS)  → §Deploy (Alchemy), then the alchemy skill
 ├─ CI/CD + publishing                    → §Publishing
 ├─ Adding to an existing project         → §Tooling Stack (pick what's missing)
 ├─ Understanding the conventions         → §Conventions
@@ -31,6 +32,7 @@ What are you setting up?
 | Migration to `@effect/tsgo` | `references/migration.md` | Existing project on `@effect/language-service` + `tsconfig.lsp.json` |
 | Templates | `templates/` | Copy-pasteable `tsconfig.json`, `.oxlintrc.json`, `lefthook.yml`, `turbo.json`, `release.yml`, `ci.yml` |
 | Tooling configs | §Tooling Stack | Adding oxlint, oxfmt, lefthook, tsconfig |
+| Deploy | §Deploy (Alchemy) + the `alchemy` skill | Anything that runs somewhere other than the user's machine |
 | Publishing | §Publishing | npm publishing, changesets, GitHub Actions |
 | TS6 / tsgo | §TS6 / tsgo | TypeScript 6 defaults, native compiler |
 
@@ -55,130 +57,33 @@ Every project uses this base. No exceptions.
 
 Single tsconfig. Effect diagnostics live inside the `@effect/language-service` plugin. Per-file relaxation (e.g., for tests) goes through plugin `overrides` — **no separate `tsconfig.test.json`**.
 
-```json
+Copy `templates/tsconfig.json`. It is the source of truth for the full `diagnosticSeverity` map (116 keys, current for `@effect/tsgo` 0.46.x). Its shape:
+
+```jsonc
 {
   "compilerOptions": {
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "noFallthroughCasesInSwitch": true,
-    "noImplicitOverride": true,
-    "noPropertyAccessFromIndexSignature": true,
-    "target": "ESNext",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "moduleDetection": "force",
-    "skipLibCheck": true,
-    "types": ["bun"],
-    "noEmit": true,
-    "plugins": [
-      {
-        "name": "@effect/language-service",
-        "diagnostics": true,
-        "diagnosticsName": true,
-        "includeSuggestionsInTsc": true,
-        "ignoreEffectSuggestionsInTscExitCode": false,
-        "ignoreEffectWarningsInTscExitCode": false,
-        "ignoreEffectErrorsInTscExitCode": false,
-        "diagnosticSeverity": {
-          "anyUnknownInErrorContext": "error",
-          "asyncFunction": "off",
-          "catchAllToMapError": "error",
-          "catchToIgnore": "error",
-          "catchToOrElseSucceed": "error",
-          "catchUnfailableEffect": "error",
-          "classSelfMismatch": "error",
-          "cryptoRandomUUID": "off",
-          "cryptoRandomUUIDInEffect": "off",
-          "deterministicKeys": "error",
-          "duplicatePackage": "error",
-          "effectDoNotation": "error",
-          "effectFnIife": "error",
-          "effectFnImplicitAny": "error",
-          "effectFnOpportunity": "error",
-          "effectGenUsesAdapter": "error",
-          "effectInFailure": "error",
-          "effectInVoidSuccess": "error",
-          "effectMapFlatten": "off",
-          "effectMapVoid": "error",
-          "effectSucceedWithVoid": "error",
-          "extendsNativeError": "error",
-          "flatMapToMap": "error",
-          "floatingEffect": "error",
-          "genericEffectServices": "error",
-          "globalConsole": "off",
-          "globalConsoleInEffect": "off",
-          "globalDate": "off",
-          "globalDateInEffect": "off",
-          "globalErrorInEffectCatch": "error",
-          "globalErrorInEffectFailure": "error",
-          "globalFetch": "off",
-          "globalFetchInEffect": "off",
-          "globalRandom": "off",
-          "globalRandomInEffect": "off",
-          "globalTimers": "off",
-          "globalTimersInEffect": "off",
-          "instanceOfSchema": "error",
-          "layerMergeAllWithDependencies": "error",
-          "lazyEffect": "error",
-          "lazyPromiseInEffectSync": "error",
-          "leakingRequirements": "error",
-          "missedPipeableOpportunity": "off",
-          "missingEffectContext": "error",
-          "missingEffectError": "error",
-          "missingEffectServiceDependency": "error",
-          "missingLayerContext": "error",
-          "missingPipeableSignature": "off",
-          "missingReturnYieldStar": "error",
-          "missingStarInYieldEffectGen": "error",
-          "multipleCatchTag": "error",
-          "multipleEffectProvide": "error",
-          "nestedEffectGenYield": "error",
-          "newPromise": "off",
-          "newSchemaClass": "error",
-          "nodeBuiltinImport": "off",
-          "nonObjectEffectServiceType": "error",
-          "outdatedApi": "error",
-          "overriddenSchemaConstructor": "error",
-          "preferSchemaOverJson": "off",
-          "processEnv": "off",
-          "processEnvInEffect": "off",
-          "redundantMapError": "error",
-          "redundantOrDie": "error",
-          "redundantSchemaTagIdentifier": "error",
-          "returnEffectInGen": "error",
-          "runEffectInsideEffect": "error",
-          "schemaNumber": "error",
-          "schemaOpaqueInstanceMember": "error",
-          "schemaStructWithTag": "error",
-          "schemaSyncInEffect": "error",
-          "schemaUnionOfLiterals": "error",
-          "scopeInLayerEffect": "error",
-          "serviceNotAsClass": "error",
-          "strictBooleanExpressions": "off",
-          "strictEffectProvide": "off",
-          "syncToSucceed": "error",
-          "tryCatchInEffectGen": "off",
-          "unknownInEffectCatch": "error",
-          "unnecessaryArrowBlock": "error",
-          "unnecessaryEffectGen": "error",
-          "unnecessaryFailYieldableError": "error",
-          "unnecessaryPipe": "off",
-          "unnecessaryPipeChain": "off",
-          "unnecessaryTypeofType": "error",
-          "unsafeEffectTypeAssertion": "error"
-        },
-        "keyPatterns": [
-          { "target": "service", "pattern": "default", "skipLeadingPath": ["src/", "packages/"] },
-          { "target": "error", "pattern": "default", "skipLeadingPath": ["src/", "packages/"] }
-        ],
-        "overrides": []
-      }
-    ]
+    "strict": true, "noUncheckedIndexedAccess": true, "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true, "noPropertyAccessFromIndexSignature": true,
+    "target": "ESNext", "module": "ESNext", "moduleResolution": "bundler", "moduleDetection": "force",
+    "skipLibCheck": true, "types": ["bun"], "noEmit": true,
+    "plugins": [{
+      "name": "@effect/language-service",
+      "diagnostics": true, "diagnosticsName": true, "includeSuggestionsInTsc": true,
+      "ignoreEffectSuggestionsInTscExitCode": false, "ignoreEffectWarningsInTscExitCode": false, "ignoreEffectErrorsInTscExitCode": false,
+      "diagnosticSeverity": { /* every diagnostic, explicit; see the template */ },
+      "keyPatterns": [
+        { "target": "service", "pattern": "default", "skipLeadingPath": ["src/", "packages/"] },
+        { "target": "error", "pattern": "default", "skipLeadingPath": ["src/", "packages/"] }
+      ],
+      "overrides": []
+    }]
   },
   "include": [],
   "exclude": ["node_modules"]
 }
 ```
+
+After bumping `@effect/tsgo`, diff the map against `node_modules/@effect/tsgo/schema.json` (or run `effect-tsgo config`) and set each new diagnostic to `"error"` unless it belongs to an off group below.
 
 **Why this shape:**
 - Most `"off"` entries are not disabled checks — they are diagnostics owned by `oxlint-plugin-effect` (see §Effect Lint Layering). Turning them off here prevents every violation from being reported twice.
@@ -196,52 +101,34 @@ Single tsconfig. Effect diagnostics live inside the `@effect/language-service` p
 
 Standard style + correctness rules. Effect-specific lint is split by layer (see §Effect Lint Layering):
 - `@effect/tsgo` owns type-aware Effect diagnostics during `typecheck`.
-- `oxlint-plugin-effect` owns unconditional AST/syntax rules during `lint`. Since 0.4.0 the plugin ships ONE preset — `recommended` — with exactly 12 rules, all `error`. The old rule namespace (`noSpread`, `noSchemaStruct`, `noMakeUnsafe`, `noHandRolledTaggedUnion`, ...) was deleted; those names now fail config resolution.
+- `oxlint-plugin-effect` owns unconditional AST/syntax rules during `lint`. The plugin ships ONE preset, `recommended`. At 0.12.x it holds 42 `effect/*` rules plus core `complexity`, all `error`, including complexity budgets (`maxCognitiveComplexity`, `maxHalsteadDifficulty`) and style bans (`noAs`, `noNullish`, `noTernary`, `noObjectParameters`, `requireNamedEffectFn`). The pre-0.4 rule namespace (`noSpread`, `noSchemaStruct`, `noMakeUnsafe`, `noHandRolledTaggedUnion`, ...) was deleted; those names now fail config resolution.
 
-```json
+Copy `templates/.oxlintrc.json`. It holds the base TypeScript, import, and node rules, the full `recommended` preset spelled out, and the test overrides. Its skeleton:
+
+```jsonc
 {
-  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
-  "categories": {
-    "correctness": "error",
-    "suspicious": "error",
-    "perf": "error"
-  },
+  "categories": { "correctness": "error", "suspicious": "error", "perf": "error" },
   "plugins": ["typescript", "import", "node"],
   "jsPlugins": ["oxlint-plugin-effect/plugin"],
   "rules": {
     "typescript/no-explicit-any": "error",
-    "typescript/no-unsafe-type-assertion": "error",
-    "typescript/no-non-null-assertion": "error",
-    "typescript/no-extra-non-null-assertion": "error",
-    "typescript/no-non-null-asserted-optional-chain": "error",
-    "typescript/consistent-type-imports": [
-      "error",
-      { "prefer": "type-imports", "fixStyle": "separate-type-imports" }
-    ],
-    "import/no-duplicates": "error",
-    "node/no-process-env": "error",
-    "no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
-    "no-underscore-dangle": "off",
-    "no-nested-ternary": "error",
-    "complexity": ["error", 20],
-    "effect/noAsyncFunction": "error",
-    "effect/noDynamicImports": "error",
-    "effect/noEffectBind": "error",
-    "effect/noEffectDo": "error",
-    "effect/noGlobals": "error",
-    "effect/noNewError": "error",
-    "effect/noNewPromise": "error",
-    "effect/noNodeBuiltinImport": "error",
-    "effect/noTernary": "error",
-    "effect/noTestLifecycleHooks": "error",
-    "effect/noThrowStatement": "error",
-    "effect/noTryCatch": "error"
+    // ...base rules...
+    "complexity": ["error", { "max": 21 }],
+    "effect/maxCognitiveComplexity": ["error", { "max": 21 }],
+    "effect/noAs": "error",
+    // ...the rest of the 42 effect/* rules from the recommended preset...
   },
-  "ignorePatterns": ["**/dist/**", "**/node_modules/**", "**/*.d.ts", "**/bin/**", "**/scripts/**"]
+  "ignorePatterns": ["**/dist/**", "**/node_modules/**", "**/*.d.ts", "**/bin/**", "**/scripts/**", "**/.alchemy/**"]
 }
 ```
 
-Use `templates/.oxlintrc.json` for the full config with overrides. Keep rule names explicit in JSON configs; oxlint does not load exported preset objects from package code (TS/JS configs can `import { recommended } from "oxlint-plugin-effect/presets/recommended"`).
+After bumping `oxlint-plugin-effect`, regenerate the `effect/*` block from the preset instead of editing it by hand:
+
+```bash
+bun -e 'const {recommended:r}=await import("oxlint-plugin-effect/presets/recommended");console.log(JSON.stringify(r.rules??r,null,2))'
+```
+
+Keep rule names explicit in JSON configs; oxlint does not load exported preset objects from package code (TS/JS configs can `import { recommended } from "oxlint-plugin-effect/presets/recommended"`).
 
 **Config filename is `.oxlintrc.json`** — not `oxlint.json`. **JS plugins load through `jsPlugins`** — `"plugins": ["effect"]` silently loads nothing (`plugins` is oxlint's built-in plugin list); the correct wiring is `"jsPlugins": ["oxlint-plugin-effect/plugin"]`.
 
@@ -254,7 +141,7 @@ The ownership contract between the two Effect lint channels:
 | `oxlint-plugin-effect` (lint) | Unconditional syntax — bans that need no type info | async/await, try/catch, throw, `new Promise`, `new Error`, ternary, dynamic import, `Effect.Do`/`bind`, globals, node builtin imports, test lifecycle hooks |
 | `@effect/tsgo` (typecheck) | Type-aware semantics | `floatingEffect`, `runEffectInsideEffect`, `strictEffectProvide`, `extendsNativeError`, `unsafeEffectTypeAssertion`, `leakingRequirements`, `missingEffectContext`/`Error`, `missingLayerContext` |
 
-The seam is the 19-diagnostic off-list in `templates/tsconfig.json` (`asyncFunction`, `cryptoRandomUUID`, `cryptoRandomUUIDInEffect`, `globalConsole`, `globalConsoleInEffect`, `globalDate`, `globalDateInEffect`, `globalFetch`, `globalFetchInEffect`, `globalRandom`, `globalRandomInEffect`, `globalTimers`, `globalTimersInEffect`, `newPromise`, `nodeBuiltinImport`, `preferSchemaOverJson`, `processEnv`, `processEnvInEffect`, `tryCatchInEffectGen`). These are duplicated by the oxlint preset; leaving them on in tsgo double-reports every violation. If a project drops `oxlint-plugin-effect`, flip them back to `error`.
+The seam is the lint-owned group of the off-list in `templates/tsconfig.json`: `abortControllerInEffect`, `asyncFunction`, `cryptoRandomUUID`, `cryptoRandomUUIDInEffect`, `globalConsole`, `globalConsoleInEffect`, `globalDate`, `globalDateInEffect`, `globalFetch`, `globalFetchInEffect`, `globalRandom`, `globalRandomInEffect`, `globalTimers`, `globalTimersInEffect`, `newPromise`, `nodeBuiltinImport`, `preferSchemaOverJson`, `processEnv`, `processEnvInEffect`, and `tryCatchInEffectGen`. The oxlint preset duplicates these, so leaving them on in tsgo double-reports every violation. The other off entries are style or API-shape choices (`missingPipeableSignature`, `missedPipeableOpportunity`, `effectMapFlatten`, `unnecessaryPipe`, `unnecessaryPipeChain`, `strictBooleanExpressions`, `preferSchemaTypeProperty`, `schemaSync`) or structurally unsatisfiable (`strictEffectProvide`). If a project drops `oxlint-plugin-effect`, flip them back to `error`.
 
 ### Runtime Access — No Lint Escape Hatches
 
@@ -341,10 +228,10 @@ Lint/fmt at root only — oxlint scans the whole tree in one pass. No `turbo run
 
 ### Dev Dependencies (base)
 
-Always `bun add -D` with **latest versions** — check npm before installing, never hardcode version pins (this list is for grouping, not pinning). **One exception: `@effect/tsgo` is pinned `^0.24.3`** — see below.
+Always `bun add -D` with **latest versions** — check npm before installing, never hardcode version pins (this list is for grouping, not pinning). **One exception: `@effect/tsgo` gets a caret on its current minor (`^0.46.1` today)**, since a 0.x minor can move the patch target. See below.
 
 ```
-@effect/tsgo@^0.24.3
+@effect/tsgo@^0.46.1
 @typescript/native-preview
 @types/bun
 concurrently
@@ -356,20 +243,39 @@ oxlint-plugin-effect
 typescript
 ```
 
-- `@effect/tsgo` ships the `effect-tsgo` CLI (used by the `prepare` script's `patch` command). At `^0.24.3` — the pinned range — `patch` rewrites the `tsc` binary of the `typescript` package in place so `tsc` emits Effect diagnostics. **Pin it.** 0.13.x patched a different binary (`tsgo`), so an unpinned install can silently move the patch target out from under the `typecheck` script.
+- `@effect/tsgo` ships the `effect-tsgo` CLI (used by the `prepare` script's `patch` command). From 0.24 through the current 0.46.x, `patch` rewrites the `tsc` binary of the `typescript` package in place so `tsc` emits Effect diagnostics. **Pin it to one minor.** 0.13.x patched a different binary (`tsgo`), so an unpinned install can silently move the patch target out from under the `typecheck` script.
 - `typescript` is the typecheck channel. Under `typescript@7`, `tsc` already resolves to the native Go compiler, so `tsc --noEmit` is both patched and fast.
 - `@typescript/native-preview` stays installed for the editor's `tsgo` LSP binary. **`effect-tsgo patch` never touches it** — do not point any script at `tsgo`.
 - `oxlint-plugin-effect` provides the `effect/*` oxlint rules used for Effect style and project guidelines. Configure it with `jsPlugins: ["oxlint-plugin-effect/plugin"]`.
 
 ### Runtime Dependencies (Effect v4)
 
-**`bun add effect` installs v3.** The npm `latest` dist-tag points at Effect 3.x; v4 lives on the `beta` tag. Every Effect-4 project must install explicitly:
+**`bun add effect` installs v3.** The npm `latest` dist-tag points at Effect 3.x; v4 lives on the `rc` tag (the `beta` tag is frozen at an older 4.0.0-beta). Every Effect-4 project must install explicitly:
 
 ```bash
-bun add effect@beta @effect/platform-bun@beta
+bun add effect@rc @effect/platform-bun@rc
 ```
 
-and pin the resolved version exactly (no caret) in `package.json` — e.g. `"effect": "4.0.0-beta.102"` — so a re-install cannot silently drift across beta releases.
+and pin the resolved version exactly (no caret) in `package.json` — e.g. `"effect": "4.0.0-rc.117"`, so a re-install cannot drift across releases. Keep every `@effect/*` package on that exact version.
+
+## Deploy (Alchemy)
+
+Infrastructure is code in the same repo: an Alchemy stack (`alchemy.run.ts`) deploys the app and owns its domains, DNS, databases, and secrets. Load the **`alchemy` skill** for the API. This section covers only the scaffold wiring.
+
+| File | Add |
+|------|-----|
+| `package.json` | devDeps `alchemy` (exact beta pin) and `@effect/platform-node` at the exact Effect version (a peer of Alchemy's Cloudflare provider). Scripts: `"plan": "alchemy plan alchemy.run.ts --stage prod"`, `"deploy": "alchemy deploy alchemy.run.ts --stage prod"`. |
+| `alchemy.run.ts` | The composition root at the repo root: Stack name, merged providers, `Alchemy.localState()`, and outputs. Runtimes and resources live in `src/` (or `infra/` for deploy-only helpers). |
+| `tsconfig.json` | Add `alchemy.run.ts` and `infra/**/*.ts` to `include`. Add a plugin override `{ "include": ["alchemy.run.ts"], "options": { "diagnosticSeverity": { "anyUnknownInErrorContext": "off" } } }` only if provider types trip it. |
+| `.oxlintrc.json` | `**/.alchemy/**` in `ignorePatterns` (already in the template). |
+| `.gitignore` | `.alchemy/` (local state; keep it on disk) and any generated build context such as `.deploy/`. |
+| `package.json` `prepare` | `(test -d .git && lefthook install \|\| true) && effect-tsgo patch`, so installs inside a Docker build or a CI checkout without hooks still work. |
+
+Where app code lives:
+
+- An Effect HTTP app deploys as a Runtime (`Railway.Service` or `Cloudflare.Worker` with `main: import.meta.url`) whose `fetch` is `HttpRouter.toHttpEffect(Routes)`. Routes, services, and errors stay Alchemy-free, so the CLI, the local `bun --watch` server, and the tests reuse them unchanged.
+- Credentials come from the Alchemy profile (`bunx alchemy profile edit --add <Provider>`, run by the user because it is interactive), never from committed files. CI uses provider env vars and remote state.
+- The gate does not deploy. `bun run plan` is the pre-deploy check, and `bun run deploy` is a user-approved step.
 
 ## Publishing
 
@@ -457,7 +363,7 @@ TypeScript 6 changes some defaults, but production projects keep options explici
 | 0.13.x | `@typescript/native-preview/.../lib/tsgo` | `tsgo.original*` |
 | >=0.24 | the `typescript` package's `tsc` binary | — |
 
-**Pin `^0.24.3` and call `tsc --noEmit`.** At >=0.24 the dist source's patch target list is:
+**Pin the current minor (`^0.46.1`) and call `tsc --noEmit`.** At >=0.24 the dist source's patch target list is:
 
 ```
 defaultTypescriptPackageNames = ["typescript", "@typescript/native"]
@@ -465,9 +371,9 @@ defaultTypescriptPackageNames = ["typescript", "@typescript/native"]
 
 ...and the platform package it resolves ships `lib/tsc`. Note what is *absent*: `@typescript/native-preview`, the package that provides `tsgo`. At >=0.24 `patch` never touches it, so a script calling `tsgo --noEmit` type-checks normally and silently reports **zero** Effect diagnostics — no error, no warning, just missing findings.
 
-Empirically confirmed on 0.24.3: `bun x tsgo --noEmit` printed nothing, while `bun x tsc --noEmit` surfaced real `effect(...)` diagnostics including a deliberately planted error.
+Empirically confirmed on 0.24.3, and still true on 0.46.1: `bun x tsgo --noEmit` printed nothing, while `bun x tsc --noEmit` surfaced real `effect(...)` diagnostics including a deliberately planted error.
 
-**Never infer the binary — read it.** `effect-tsgo patch` prints the exact path it patched. That output line is authoritative for the installed version; the `typecheck` script must invoke that binary. If you inherit a repo on <0.24, bump to `^0.24.3` first, re-run `patch`, then set the script from what it printed.
+**Never infer the binary — read it.** `effect-tsgo patch` prints the exact path it patched. That output line is authoritative for the installed version; the `typecheck` script must invoke that binary. If you inherit a repo on <0.24, bump to the current minor first, re-run `patch`, then set the script from what it printed.
 
 There is also no speed argument for `tsgo`. Under `typescript@7`, `tsc` already resolves to the native Go compiler, so `tsc --noEmit` is the fast path *and* the patched path.
 
@@ -489,7 +395,7 @@ This:
 3. Adds `effect-tsgo patch` to the `prepare` script.
 4. Optionally writes `.vscode/settings.json` to enable the native TS server.
 
-For new projects, copy the configs from §Tooling Stack directly. Then pin `"@effect/tsgo": "^0.24.3"` — `setup` may install an older major whose patch target is `tsgo`, not `tsc`.
+For new projects, copy the configs from §Tooling Stack directly. Then pin `"@effect/tsgo": "^0.46.1"` — `setup` may install an older major whose patch target is `tsgo`, not `tsc`.
 
 ### strictEffectProvide
 
@@ -509,7 +415,7 @@ Because it is off globally, a tests-only `overrides` entry for it is redundant �
 
 ### `@effect-diagnostics` comments do not work
 
-**Suppression comments are non-functional under the patched 0.24.3 `tsc` binary.** Both forms were tested and neither suppresses anything in the typecheck gate:
+**Suppression comments are non-functional under the patched `tsc` binary (verified on 0.24.3).** Both forms were tested and neither suppresses anything in the typecheck gate:
 
 ```typescript
 // @effect-diagnostics effect/someRule:off            // file-level — no effect
@@ -569,9 +475,9 @@ Use the `repo` skill (`skills/repo/SKILL.md`) — `okra repo fetch` + `repo path
 ## Gotchas
 
 - **Typecheck scripts MUST call `tsc --noEmit`, never `tsgo --noEmit`** — at `@effect/tsgo` >=0.24, `patch` only patches the `tsc` binary (`defaultTypescriptPackageNames = ["typescript", "@typescript/native"]`, and the platform package ships `lib/tsc`). The `tsgo` bin comes from `@typescript/native-preview` and is never patched, so `tsgo --noEmit` silently reports **zero** Effect diagnostics — it exits 0 on code full of violations. Keep `@typescript/native-preview` installed for the editor LSP, but never route a script through it. Under `typescript@7` `tsc` is already the native Go compiler, so there is no speed cost.
-- **The patch target changed across `@effect/tsgo` majors — pin `^0.24.3`** — 0.13.x patched `@typescript/native-preview/.../lib/tsgo` (leaving `tsgo.original*` backups), >=0.24 patches `tsc`. So "which binary do I call?" has no version-independent answer. On any repo below 0.24: bump first, re-run `effect-tsgo patch`, and read its output line — it names the exact binary it patched, and that is the binary `typecheck` must invoke. Stale `tsgo.original*` files are a fingerprint of an un-migrated 0.13 install.
+- **The patch target changed across `@effect/tsgo` majors — pin one minor (`^0.46.1`)** — 0.13.x patched `@typescript/native-preview/.../lib/tsgo` (leaving `tsgo.original*` backups), >=0.24 patches `tsc`. So "which binary do I call?" has no version-independent answer. On any repo below 0.24: bump first, re-run `effect-tsgo patch`, and read its output line — it names the exact binary it patched, and that is the binary `typecheck` must invoke. Stale `tsgo.original*` files are a fingerprint of an un-migrated 0.13 install.
 - **`strictEffectProvide` must be `"off"`** — the rule has no entry-point detection, so it fires unavoidably on every real entry point (`Effect.provide` + `BunRuntime.runMain` is verified unsatisfiable). Its upstream `defaultSeverity` is already `"off"`, and with `ignoreEffectWarningsInTscExitCode: false` leaving it on makes `typecheck` permanently red. `multipleEffectProvide` still catches genuine chained-provide misuse. A tests-only override for it is redundant once it is off globally.
-- **`@effect-diagnostics` suppression comments are non-functional** — verified under the patched 0.24.3 `tsc`: neither the file-level nor the `-next-line` form suppresses any rule in the typecheck gate. They are silently ignored. Use the `diagnosticSeverity` map, or (rarely, with user approval) a file-scoped `overrides` entry. Delete dead `@effect-diagnostics` comments when migrating older repos.
+- **`@effect-diagnostics` suppression comments are non-functional** — verified under the patched `tsc` (0.24.3): neither the file-level nor the `-next-line` form suppresses any rule in the typecheck gate. They are silently ignored. Use the `diagnosticSeverity` map, or (rarely, with user approval) a file-scoped `overrides` entry. Delete dead `@effect-diagnostics` comments when migrating older repos.
 - **`effect-tsgo patch` must run after install** — wire it into `prepare` so `bun install` rebuilds the patched binary. Without the patch, `tsc --noEmit` runs without Effect diagnostics.
 - **`tsdown` must be >=0.22.14 under `typescript@7`** — older `rolldown-plugin-dts` crashes with `ts.sys.useCaseSensitiveFileNames` (TS7 removed `ts.sys`). 0.22.14 works but prints a harmless `TypeScript 7.0 ... experimental` warning.
 - **Don't add a separate `tsconfig.test.json`** — relax test rules via the plugin's `overrides[].include` array. Keeps a single source of truth and avoids tsconfig fan-out.
@@ -580,8 +486,8 @@ Use the `repo` skill (`skills/repo/SKILL.md`) — `okra repo fetch` + `repo path
 - **`types: ["bun"]` required** — TS6 defaults `types` to `[]` in some configs. Without it, `Bun.*` globals are invisible.
 - **`oxlint-plugin-effect` must be a devDep when `.oxlintrc.json` lists `jsPlugins: ["oxlint-plugin-effect/plugin"]`** — otherwise `oxlint` cannot load the `effect/*` rules.
 - **`"plugins": ["effect"]` loads nothing** — `plugins` is oxlint's built-in plugin list; JS plugins go in `jsPlugins`. The misconfiguration is silent: oxlint runs fine with zero `effect/*` rules active. Check the rule count in `oxlint`'s summary line.
-- **`bun add effect` installs v3** — the `latest` dist-tag is Effect 3.x. Use `effect@beta` + `@effect/platform-bun@beta` and pin exact versions for v4 projects.
-- **`oxlint-plugin-effect` >=0.4.0 has one 12-rule `recommended` preset** — pre-0.4 rule names (`noSpread`, `noSchemaStruct`, `noMakeUnsafe`, ...) were deleted and fail config resolution. Bump the dep and rewrite the rules block together.
+- **`bun add effect` installs v3** — the `latest` dist-tag is Effect 3.x. Use `effect@rc` + `@effect/platform-bun@rc` and pin exact versions for v4 projects.
+- **`oxlint-plugin-effect` has one `recommended` preset (42 `effect/*` rules at 0.12.x)** — pre-0.4 rule names (`noSpread`, `noSchemaStruct`, `noMakeUnsafe`, ...) were deleted and fail config resolution. Bump the dep and rewrite the rules block together.
 - **`diagnosticSeverity` drifts as `@effect/tsgo` adds diagnostics** — after bumping, diff your map against `node_modules/@effect/tsgo/schema.json` (definition `effectLanguageServicePluginDiagnosticSeverityDefinition`) or run `effect-tsgo config`.
 - **Do not use legacy `tsgolint-effect` or env-var lint wiring** — the current shape is plain `oxlint` plus `oxlint-plugin-effect` for AST rules and `tsc --noEmit` for type-aware Effect diagnostics.
 - **`@effect/tsgo` and `@typescript/native-preview` versions are coupled** — `effect-tsgo patch` validates compatibility. Bump them together; if `patch` errors after an upgrade, update both pkgs.

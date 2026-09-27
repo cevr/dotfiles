@@ -66,7 +66,7 @@ mkdir -p packages/core/src packages/cli/src
     "prepare": "lefthook install && effect-tsgo patch"
   },
   "devDependencies": {
-    "@effect/tsgo": "^0.24.3",
+    "@effect/tsgo": "^0.46.1",
     "@typescript/native-preview": "latest",
     "@types/bun": "latest",
     "concurrently": "latest",
@@ -80,15 +80,15 @@ mkdir -p packages/core/src packages/cli/src
     "typescript": "latest"
   },
   "catalog": {
-    "effect": "4.0.0-beta.102",
-    "@effect/platform-bun": "4.0.0-beta.102"
+    "effect": "4.0.0-rc.117",
+    "@effect/platform-bun": "4.0.0-rc.117"
   }
 }
 ```
 
 Key points:
 - `"private": true` — root is never published.
-- `"catalog"` — pins shared dependency versions; leaf packages reference with `"catalog:"`. Pin the Effect v4 beta exactly — the npm `latest` dist-tag is still v3, so `bun add effect` without `@beta` installs the wrong major.
+- `"catalog"` — pins shared dependency versions; leaf packages reference with `"catalog:"`. Pin the Effect v4 rc exactly: the npm `latest` dist-tag is still v3, so `bun add effect` without `@rc` installs the wrong major.
 - `effect` in devDeps as `catalog:` — available for root-level tests.
 - Lint/fmt run at root only (not per-package via turbo) — oxlint scans the whole tree in one pass.
 - Type-aware Effect diagnostics ride along with `tsc --noEmit` (typecheck channel), so there's no separate `lint:effect` script. Never `tsgo --noEmit` — that binary is unpatched and reports zero Effect diagnostics (see SKILL.md §tsgo vs tsc).
