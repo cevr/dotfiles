@@ -30,6 +30,7 @@ Read only the branch references that match the task.
 - Outgoing HTTP calls, Effect HttpClient, status handling, or HTTP rate limiting: read [HTTP_CLIENTS.md](references/HTTP_CLIENTS.md).
 - Effect tests, time, sleeps, concurrency synchronization, or fakes: read [TESTING.md](references/TESTING.md).
 - Effect-native style, lint ownership, runtime builtin replacement, or agent review: read [STYLEGUIDE.md](references/STYLEGUIDE.md).
+- Deploying the app, or cloud resources the app uses (databases, buckets, queues, secrets, domains): load the `alchemy` skill. Its `references/app-code.md` covers Runtimes, Bindings, and Layers that own infrastructure.
 
 If a task spans several branches, read all matching files before editing.
 
@@ -45,8 +46,9 @@ If a task spans several branches, read all matching files before editing.
 - Prefer `Context.Service` for application services when the codebase has not standardized on another current service-tag style.
 - Build real service implementations with `Layer.effect(Service, Effect.gen(...))` and return `Service.of({ ... })`.
 - Model records with `Schema.Struct(...)` plus a same-name `interface`.
-- Model typed Effect errors with `Schema.TaggedErrorClass`.
+- Model typed Effect errors with `Schema.TaggedError`.
 - Read runtime config through `Config`, not direct `process.env` access in application logic.
+- Declare infrastructure with Alchemy. Cloud resources reach the app as Bindings, or as Layers that own their resources behind the same `Context.Service` tags the local entry satisfies with local Layers. Domain services, routes, and errors stay Alchemy-free.
 - Use `Schedule` for retry, repeat, polling, pacing, and backoff policies.
 - Use `Stream` for effectful sources that emit many values over time and need pull, backpressure, interruption, or transformation.
 - Prefer Effect HTTP client modules for outgoing HTTP in Effect applications when their typed errors, layers, and client transforms are useful.
@@ -65,7 +67,7 @@ If a task spans several branches, read all matching files before editing.
 - Reusable boundary-crossing tagged variant: `Schema.TaggedStruct(...)` plus same-name `interface`.
 - Boundary-crossing tagged union: `Schema.TaggedUnion(...)` with `.cases`, `.guards`, and `.match`.
 - External/custom discriminator such as `type`: `Schema.Struct({ type: Schema.tag("variant"), ... })` plus `Schema.toTaggedUnion("type")` when union helpers are needed.
-- Expected typed failure: `Schema.TaggedErrorClass`.
+- Expected typed failure: `Schema.TaggedError`.
 - Unknown boundary payload: `Schema.decodeUnknownEffect(...)`.
 - Service boundary: `Context.Service<Service, Interface>()(...)` plus `Layer.effect(...)` plus `Service.of(...)`.
 - Public or non-trivial internal service method: `Effect.fn("Domain.operation")`.
@@ -101,7 +103,7 @@ If a task spans several branches, read all matching files before editing.
 
 - Do not use `as any`, non-null assertions, or unchecked casts to silence Effect typing problems.
 - Do not introduce `Schema.Class` or `Schema.TaggedClass` as default app data-modeling patterns.
-- Do not hand-roll `_tag` error classes when `Schema.TaggedErrorClass` fits.
+- Do not hand-roll `_tag` error classes when `Schema.TaggedError` fits.
 - Do not use cause-level recovery when typed-error recovery is enough.
 - Do not pass errors, services, layers, scopes, or effects as ordinary data only to compose them later.
 - Do not use `Layer.mergeAll(...)` or `provideMerge(...)` as blind make-it-compile tools.
@@ -112,7 +114,7 @@ If a task spans several branches, read all matching files before editing.
 
 ## Compatibility
 
-Requires Effect v4. Examples were reviewed against `effect@4.0.0-beta.98` and upstream commit `80ea8cb9222ca73f564c8267ab2f82966fea027a` on 2026-07-16; recheck source for another project-pinned version.
+Requires Effect v4. Examples were reviewed against `effect@4.0.0-rc.117` on 2026-09-27; recheck source for another project-pinned version. Pin v4 exactly (for example `effect@4.0.0-rc.117`, from the `rc` dist-tag); `effect@latest` is still v3.
 
 ## License
 

@@ -8,9 +8,9 @@
 import { Config, Context, Effect, Layer, Redacted } from "effect"
 
 const AppConfigValue = Config.all({
-  port: Config.number("PORT").pipe(Config.withDefault(3000)),
-  apiKey: Config.redacted("API_KEY"),
-  timeoutMs: Config.number("TIMEOUT_MS").pipe(Config.withDefault(5_000))
+  port: Config.Number("PORT").pipe(Config.withDefault(3000)),
+  apiKey: Config.Redacted("API_KEY"),
+  timeoutMs: Config.Number("TIMEOUT_MS").pipe(Config.withDefault(5_000))
 })
 
 class AppConfig extends Context.Service<AppConfig, {

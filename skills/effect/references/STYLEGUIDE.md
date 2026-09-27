@@ -13,19 +13,19 @@ Use this policy in Effect-native application packages. Platform adapters, genera
 
 In Effect-native code:
 
-- Do not use async functions or await. Wrap Promise-returning APIs with Effect.promise or Effect.tryPromise, and callback APIs with Effect.async.
+- Do not use async functions or await. Wrap Promise-returning APIs with Effect.promise or Effect.tryPromise, and callback APIs with Effect.callback.
 - Do not use try, catch, or finally blocks. Capture synchronous failures with Effect.try, Promise failures with Effect.tryPromise, and cleanup with Effect.ensuring, Effect.acquireUseRelease, or Scope.
 - Do not throw. Expected failures belong in the typed error channel.
 - Do not construct or use global Promise APIs. Compose concurrency with Effect.
-- Do not use ternary expressions. Use an ordinary if, Match, Option.match, or Either.match according to the data model.
-- Ordinary if statements, switch statements, spread syntax, Effect.as, Option.as, Effect.never, and Effect.async are valid.
-- Runtime.runFork and equivalent runners are valid only at application or runtime integration boundaries. Type-aware diagnostics own detection of nested execution inside an Effect.
+- Do not use ternary expressions. Use an ordinary if, Match, Option.match, or Result.match according to the data model.
+- Ordinary if statements, switch statements, spread syntax, Effect.as, Option.as, Effect.never, and Effect.callback are valid.
+- Effect.runFork and equivalent runners are valid only at application or runtime integration boundaries. Type-aware diagnostics own detection of nested execution inside an Effect.
 
 ## Failures and Defects
 
 Expected failure and defects are different contracts:
 
-- Model expected failures with the project-standard Schema tagged-error constructor (`Schema.TaggedErrorClass` in v4 or `Schema.TaggedError` in v3).
+- Model expected failures with the project-standard Schema tagged-error constructor (`Schema.TaggedError` in both v4 and v3).
 - Never throw an expected error.
 - Native Error construction is permitted only as the direct argument of an explicit defect constructor: Effect.die(new Error(...)), Cause.die(new Error(...)), or Exit.die(new Error(...)).
 - Constructing an Error earlier, returning it from a callback, or placing it in Effect.fail is not an explicit defect boundary.

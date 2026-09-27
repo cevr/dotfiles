@@ -16,7 +16,7 @@ it.effect("returns the saved user", () =>
 )
 ```
 
-Use `it.scoped` when the test acquires scoped resources. Provide the smallest complete layer graph that represents the scenario.
+`it.effect` provides a `Scope`, so scoped resources acquired in the test are released when it ends. Provide the smallest complete layer graph that represents the scenario.
 
 ## Time
 

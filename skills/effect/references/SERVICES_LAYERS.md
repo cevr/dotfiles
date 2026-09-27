@@ -19,7 +19,7 @@ class Users extends Context.Service<Users, {
 
       const find = Effect.fn("Users.find")(function*(id: string) {
         return yield* db.findUser(id).pipe(
-          Effect.flatMap(Effect.fromOption(() => new UserNotFound({ id })))
+          Effect.flatMap(Effect.fromOption(() => UserNotFound.make({ id })))
         )
       })
 
@@ -56,7 +56,7 @@ static layerTest = (users: ReadonlyMap<string, User>) =>
   Layer.succeed(Users, Users.of({
     find: Effect.fn("Users.find")(function*(id) {
       const user = users.get(id)
-      if (user === undefined) return yield* new UserNotFound({ id })
+      if (user === undefined) return yield* UserNotFound.make({ id })
       return user
     })
   }))
@@ -87,3 +87,4 @@ Map provider failures at the adapter boundary without discarding status, code, r
 - Bound concurrency for inputs that can grow without a fixed limit.
 - Use `ManagedRuntime` only at a non-Effect host boundary that repeatedly runs Effect programs.
 - Use `Context.Reference` for ambient policy with a truthful default, such as log level. Model credentials, persistence, transports, and authority as required services.
+- A Layer can own cloud infrastructure: under Alchemy, `Layer.effect(Jobs, …)` may declare a Resource and bind it, so providing the Layer adds the resource to the deploy. The handler still sees only `Jobs`, and tests provide a local Layer for the same tag. See the `alchemy` skill, `references/app-code.md` §Layers That Own Infrastructure.

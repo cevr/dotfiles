@@ -7,8 +7,11 @@ Use schemas as executable domain boundaries: the same definition owns the runtim
 ```ts
 import { Schema } from "effect"
 
+export const UserId = Schema.String.check(Schema.isMinLength(1)).pipe(Schema.brand("UserId"))
+export type UserId = typeof UserId.Type
+
 export const User = Schema.Struct({
-  id: Schema.String.pipe(Schema.brand("UserId")),
+  id: UserId,
   name: Schema.NonEmptyString,
   nickname: Schema.optionalKey(Schema.String)
 })
@@ -16,8 +19,8 @@ export interface User extends Schema.Schema.Type<typeof User> {}
 
 const decodeUser = Schema.decodeUnknownEffect(User)
 const user = yield* decodeUser(input)
-const trusted = User.make({ id: "u_1", name: "Ada" })
-const validated = yield* User.makeEffect({ id: "u_1", name: "Ada" })
+const trusted = User.make({ id: UserId.make("u_1"), name: "Ada" })
+const validated = yield* User.makeEffect({ id: UserId.make("u_1"), name: "Ada" })
 ```
 
 - Decode unknown or persisted external values effectfully.
@@ -94,7 +97,7 @@ Preserve the wire distinction between absent, `undefined`, and `null` values. Us
 ## Typed failures
 
 ```ts
-export class UserNotFound extends Schema.TaggedErrorClass<UserNotFound>()(
+export class UserNotFound extends Schema.TaggedError<UserNotFound>()(
   "UserNotFound",
   { id: UserId }
 ) {}
