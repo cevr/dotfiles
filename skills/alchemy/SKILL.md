@@ -39,7 +39,7 @@ bun add -D alchemy @effect/platform-node@<effect version>   # plus a provider SD
 
 - Pin `alchemy` exactly (`2.0.0-beta.79`, not `^`). Check `npm view alchemy dist-tags`: `latest` is the newest beta, and `next` can be older.
 - Alchemy's peers are `effect`, `@effect/platform-bun`, and `@effect/platform-node` at `>=4.0.0-rc.115`. Keep all three on the project's exact Effect version. `alchemy/Cloudflare` loads `@effect/platform-node` even under Bun.
-- When infra is deploy-only, keep it in `devDependencies`. It moves to `dependencies` once app code imports `alchemy/*` bindings, because the runtime bundle needs them.
+- `devDependencies` is fine even when app code imports `alchemy/*`: the Runtime bundle inlines everything `main` imports, and nothing installs at runtime unless `build.install` asks for it.
 
 `package.json` scripts:
 
@@ -99,8 +99,8 @@ Keep `alchemy.run.ts` as wiring. Put each Resource, Runtime, or resource-owning 
 
 | You need | Shape |
 |----------|-------|
-| An Effect HTTP server on Railway | An Effect-native `Railway.Service` class with `main: import.meta.url` that returns `{ fetch }` (app-code.md) |
-| A server that must keep its own Dockerfile (Bun APIs, a native toolchain) | `Railway.Service` with `context` + `dockerfilePath` (railway.md §Dockerfile) |
+| An Effect HTTP server on Railway | An Effect-native `Railway.Service` class with `main: import.meta.url` that returns `{ fetch: HttpRouter.toHttpEffect(Routes) }`, with no Dockerfile (app-code.md) |
+| A server that must keep its own Dockerfile (Bun-only APIs, a native toolchain) | `Railway.Service` with `context` + `dockerfilePath` (railway.md §Dockerfile) |
 | An edge function | `Cloudflare.Worker` with `main: import.meta.url` (cloudflare.md) |
 | A database, cache, or bucket used by app code | The Resource plus a Binding in the Runtime's constructor, never a hand-wired env var (app-code.md §Bindings) |
 | A DNS record for a non-Cloudflare host | An adopted and retained `Cloudflare.Zone.Zone` plus `Cloudflare.DNS.Record` (cloudflare.md §DNS) |

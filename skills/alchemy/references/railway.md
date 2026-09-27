@@ -33,7 +33,7 @@ Pick one:
 
 | Source | Props | When |
 |--------|-------|------|
-| Effect-native | `main: import.meta.url` + the constructor Effect | The default for Effect servers. Alchemy bundles the file and generates a Dockerfile (`FROM node:26-slim`, `ENTRYPOINT node /app/index.mjs`), and the upload is skipped when the hash is unchanged. `build: { install: ["pg"] }` for CJS or native packages, and `image` for another base (it must run the bundle). |
+| Effect-native | `main: import.meta.url` + the constructor Effect | The default for Effect servers (ytt.cvr.im runs this way: a code change deploys in about 30 s). Alchemy bundles the file and generates a Dockerfile (`FROM node:26-slim`, `ENTRYPOINT node /app/index.mjs`), and the upload is skipped when the hash is unchanged. `build: { install: ["pg"] }` for CJS or native packages, and `image` for another base (it must run the bundle). |
 | Dockerfile context | `context: <dir>`, `dockerfilePath: "Dockerfile"` | The runtime needs Bun APIs, a native toolchain, or an unbundled source tree. |
 | Image | `image: "org/name:tag"` | A prebuilt public image. |
 | GitHub | `repo`, `branch`, `rootDirectory`, `buildCommand`, `startCommand` | Railway builds from the repo (requires a GitHub connection). |
@@ -42,7 +42,7 @@ Common props: `port` (written to `PORT`, default 3000), `region` (`us-east4`, `u
 
 ### Dockerfile context
 
-Alchemy tars the context the way `railway up` does, but it walks every file before applying ignore files (limits: 32 MiB and 10k entries). Generate a minimal context on every plan instead of pointing at the repo root:
+Reach for this only when the Effect-native source cannot work. Alchemy tars the context the way `railway up` does, but it walks every file before applying ignore files (limits: 32 MiB and 10k entries). Generate a minimal context on every plan instead of pointing at the repo root:
 
 ```typescript
 // infra/context.ts
@@ -68,6 +68,8 @@ yield* Service("Server", { project, context, dockerfilePath: "Dockerfile", port:
 In the Dockerfile, strip the `prepare` script before `bun install --production --frozen-lockfile`, because lefthook and `effect-tsgo patch` are absent from the image. Copy the manifests first so the install layer caches, which keeps builds inside Alchemy's roughly 50s wait.
 
 ## Custom Domain on a Cloudflare Zone
+
+Declare this only in `prod` (`const { stage } = yield* Alchemy.Stack`). A test or preview stage that repeats it collides on the hostname and the DNS records.
 
 Railway asks for two records: a CNAME to a per-domain edge host, and a TXT `_railway-verify.<domain>`. `CustomDomain` does not expose the CNAME target, so read it back from Railway's GraphQL API (`@distilled.cloud/railway`) inside `Output.mapEffect`:
 

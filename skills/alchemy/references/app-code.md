@@ -60,27 +60,32 @@ export default class Api extends Service<Api>()(
 
 ## Serving an HttpRouter or HttpApi from `fetch`
 
-`fetch` is an `HttpEffect`: `Effect<HttpServerResponse, HttpServerError | HttpBodyError, HttpServerRequest | Scope | …>`. Turn a router Layer into one with `HttpRouter.toHttpEffect`, which builds the Layer once at boot:
+`fetch` is an `HttpEffect`: `Effect<HttpServerResponse, HttpServerError | HttpBodyError, HttpServerRequest | Scope | …>`. Turn the app's router Layer into one with `HttpRouter.toHttpEffect`, which builds the Layer once at boot. This is ytt.cvr.im's deployed server (`src/deploy/Server.ts`):
 
 ```typescript
-import { HttpRouter } from "effect/unstable/http";
+const AppLive = YouTubeTranscript.layer.pipe(Layer.provide(FetchHttpClient.layer));
 
-export default class Api extends Service<Api>()(
-  "Api",
-  { project: Site, main: import.meta.url, port: 3000, healthcheck: "/health" },
+export default class YttServer extends Service<YttServer>()(
+  "YttServer",
+  Alchemy.Stack.useSync(({ stage }) => ({
+    project: YttProject, name: "ytt", main: import.meta.url, port: 8080,
+    publicDomain: stage !== "prod", // prod is served by a custom domain; tests need the generated URL
+    healthcheck: "/health",
+  })),
   Effect.gen(function* () {
-    const fetch = yield* HttpRouter.toHttpEffect(
-      Routes.pipe(Layer.provide(AppLive)), // the same Routes the local server uses
-    );
-    return { fetch };
-  }).pipe(Effect.provide(FetchHttpClient.layer)),
+    const transcripts = yield* YouTubeTranscript;           // built once per instance
+    const handler = yield* HttpRouter.toHttpEffect(Routes); // the same Routes the local server uses
+    return { fetch: handler.pipe(Effect.provideService(YouTubeTranscript, transcripts)) };
+  }).pipe(Effect.provide(AppLive)),
 ) {}
 ```
 
+- **Route handlers' services are per-request requirements.** `toHttpEffect(Routes.pipe(Layer.provide(AppLive)))` still leaves them in the handler's `R`, and the typecheck rejects it. Build the services in the constructor and `Effect.provideService` them onto the handler, or `Effect.provide(context)` for several.
 - Routes must map domain errors to responses before they reach `fetch` (a `catchTags` → status map per route). The error channel only admits HTTP server errors.
 - For HttpApi: `HttpRouter.toHttpEffect(HttpApiBuilder.layer(Api).pipe(Layer.provide(GroupLive)))`.
-- The host supplies the HTTP server itself: Bun or Node on containers, workerd on Workers. `BunHttpServer.layer` is not provided here.
-- The Railway `main` image runs `node` (`node:26-slim`). Keep runtime code off `Bun.*` and `@effect/platform-bun`-only services, or pass `image` with a Bun base.
+- The host supplies the HTTP server itself: Bun or Node on containers, workerd on Workers. The local entry keeps `HttpRouter.serve(Routes)` plus `BunHttpServer.layerConfig` for `bun --watch`.
+- The Railway `main` image runs `node` (`node:26-slim`). Keep runtime code on Effect's portable modules (`FetchHttpClient`, `effect/*`), away from `Bun.*` and Bun-only layers, or pass `image` with a Bun base.
+- Stage-dependent props: pass `Alchemy.Stack.useSync(({ stage }) => props)` as the props argument. It works for the class form and for module-scope resources such as the Project.
 
 ## Bindings
 
@@ -153,18 +158,25 @@ When the app also runs as a CLI or a local `bun --watch` server, keep domain ser
 ## Testing
 
 - Keep unit and route tests on local Layers (`HttpRouter.serve` + `BunHttpServer.layerTest`). They need no Alchemy.
-- For integration tests against a real deploy, use `Test.make` from `alchemy/Test/Bun`. It deploys once per file into `test_$USER`, and each test drives the output URL:
+- For a deploy test, use `Test.make` from `alchemy/Test/Bun`. It deploys into `test_$USER`, so make the stack stage-aware: non-prod stages get their own project and a public URL, and skip custom domains and DNS. Tie deploy and destroy to the test's scope with `acquireRelease`. `oxlint-plugin-effect` bans `beforeAll`/`afterAll`, and a scope also destroys the stage on failure:
 
 ```typescript
 import * as Test from "alchemy/Test/Bun";
-const { test, beforeAll, afterAll, deploy, destroy } = Test.make({ providers, state: Alchemy.localState() });
-const stack = beforeAll(deploy(Stack), { timeout: 600_000 });
-afterAll.skipIf(!process.env.CI)(destroy(Stack));
+import Stack, { providers } from "../alchemy.run.js"; // export the providers Layer from the stack file
+
+const { test, deploy, destroy } = Test.make({ providers, state: Alchemy.localState() });
+const deployed = Effect.acquireRelease(deploy(Stack), () => destroy(Stack).pipe(Effect.orDie));
+
 test("health", Effect.gen(function* () {
-  const { url } = yield* stack;
-  const res = yield* Test.getWhenReady(`${url}/health`); // retries 404/5xx while the edge converges
-  expect(res.status).toBe(200);
-}));
+  const { url } = yield* deployed;
+  const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
+  const res = yield* client.get(`${url}/health`).pipe(
+    Effect.retry({ schedule: Schedule.exponential("1 second"), times: 8 }), // a fresh host 404s briefly
+  );
+  expect(yield* res.text).toBe("ok");
+}).pipe(Effect.scoped), { timeout: 600_000 });
 ```
 
-- `Test.make({ dev: true })` runs against the local emulators (workerd, Docker) and needs no cloud credentials.
+- `HttpClient` is in scope in harness tests. `Test.getWhenReady` exists, but its error type is `unknown`, which trips tsgo's `anyUnknownInErrorContext`.
+- Name the file outside Bun's test pattern (`tests/deploy.integration.ts`) and run it from a script (`"test:deploy": "bun test ./tests/deploy.integration.ts"`), so the gate never deploys. On Railway it takes about a minute: 40 s to deploy and 15 s to destroy.
+- `Test.make({ dev: true })` runs against the local emulators (workerd, Docker) and needs no cloud credentials. Railway has no emulator.
