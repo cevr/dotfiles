@@ -135,6 +135,7 @@ A green typecheck and a clean plan only prove the stack is well formed. What pro
 - **`Config` read only inside `fetch` is never bound.** Resolve it in the constructor and close over the value.
 - **Railway Services wait about 50s for the build.** Keep the image small and the install layer cached. A slow build fails the deploy even when Railway finishes later.
 - **Local build contexts are walked in full before ignore files apply** (limits: 32 MiB and 10k entries). Point `context` at a generated directory with only the files the image needs, never at a repo root with `node_modules`.
+- **A Runtime's bundle hash depends on the machine that builds it.** A bundle built on a Mac and one built on the Linux CI runner hash differently. After a deploy from one, `plan` on the other shows the Runtime as `update` with no code change, and deploying redeploys the same code. So one place owns each stage: CI owns `prod`, and local work goes to throwaway stages. An unexpected Runtime `update` in a local `plan` after a CI deploy is this, not drift. See operations.md §CI.
 - **Losing `.alchemy/` means the next deploy creates everything again.** Recover by adopting (`--adopt`) instead.
 
 ## Compatibility
