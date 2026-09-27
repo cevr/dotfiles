@@ -54,6 +54,18 @@ linear issue view BITE-123 --children --comments --relations --json
 
 Use the returned `branchName`; do not invent a branch name from the title.
 
+### Download attachments
+
+Files attached to an issue are Markdown links to `https://uploads.linear.app/...`, which need the Linear credential. Never fetch them with `curl`; use the CLI:
+
+```bash
+linear issue files BITE-123 --json
+linear issue files BITE-123 --download --output-dir ./files --json
+linear file download https://uploads.linear.app/... --output-dir ./files --json
+```
+
+`issue files` scans the description and every comment and returns `name`, `url`, and `source` (`description` or the comment ID). With `--download`, each file is saved under its Markdown name, and the output lists `path`, `bytes`, and `contentType`. The CLI accepts only `uploads.linear.app` URLs, and it does not send the token to a redirect target. An existing file stops the run unless you pass `--overwrite`.
+
 ## Mutations
 
 ### Start work
