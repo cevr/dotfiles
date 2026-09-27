@@ -47,7 +47,7 @@ check_mode() {
   test -L "$HOME/.zshrc"
   systemctl --user is-active --quiet sideshow.service
   systemctl --user is-active --quiet herdr-bite.service
-  systemctl --user is-active --quiet cleanup-rifts.timer
+  systemctl --user is-active --quiet workrift-prune.timer
   systemctl --user is-active --quiet workbox-backup.timer
   systemctl --user is-active --quiet workbox-health.timer
   systemctl --user is-active --quiet workbox-update-report.timer
@@ -204,7 +204,7 @@ sudo systemctl enable --now \
 sudo systemctl restart bite-workbox-sshd.service
 systemctl --user enable --now \
   cleanup-mosh-servers.timer \
-  cleanup-rifts.timer \
+  workrift-prune.timer \
   sideshow.service \
   workbox-backup.timer \
   workbox-health.timer \

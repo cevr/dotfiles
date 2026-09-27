@@ -1,5 +1,5 @@
 [Unit]
-Description=Archive and remove idle Bite rifts each day
+Description=Archive and remove idle Rift workspaces each day
 
 [Timer]
 OnCalendar=*-*-* 03:30:00

@@ -1,0 +1,489 @@
+#!/bin/sh
+
+# Branch workspaces on top of Rift.
+#
+# Each repository has one clean warm source: a Rift root that holds installed
+# dependencies and compiled output and never carries feature work. `create`
+# snapshots that source with --copy-all and checks out a branch inside the copy,
+# so every workspace starts warm. Rift itself owns snapshots, the registry, the
+# trash and the per-repository .rift.toml hooks; this script adds the Git
+# branch workflow around them.
+#
+# Per-repository settings live in the source's Git config:
+#   workrift.main     default branch (default: origin HEAD)
+#   workrift.install  dependency install (default: from the lock file)
+#   workrift.warm     refresh step after the install (default: none)
+
+set -eu
+
+registry="${RIFT_REGISTRY:-${XDG_DATA_HOME:-$HOME/.local/share}/rift/rift.sqlite}"
+workrift_root="${WORKRIFT_ROOT:-/workspaces}"
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/workrift"
+keep_file="${WORKRIFT_KEEP_FILE:-$config_dir/keep}"
+archive_root="${WORKRIFT_ARCHIVE:-$HOME/rift-archive}"
+prune_idle_minutes=2880
+archive_retention_days=30
+
+usage() {
+  cat <<'EOF'
+usage: workrift <command>
+
+  init <repository> [path]    clone a repository as a warm Rift source
+  create <branch>             create a workspace for a branch from the warm source
+  refresh                     update the warm source from its default branch
+  list                        list the warm source's workspaces
+  remove [--with-children] [path]
+                              move a workspace to the Rift trash
+  prune [--dry-run]           archive and remove workspaces idle for two days
+  sources                     list warm sources
+  check                       check the warm source
+
+The warm source is WORKRIFT_SOURCE, else the Rift root of the current
+directory, else the warm source with the same origin as the current checkout.
+EOF
+}
+
+fail() {
+  printf 'workrift: %s\n' "$*" >&2
+  exit 1
+}
+
+sql() {
+  sqlite3 -readonly -separator '	' "$registry" "$1"
+}
+
+sql_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/''/g")"
+}
+
+# Compare remotes by host and path, so SSH and HTTPS URLs of one repository match.
+normalized_origin() {
+  git -C "$1" remote get-url origin 2>/dev/null |
+    sed -E 's#^[a-z+]+://##; s#^[^@/]+@##; s#:#/#; s#\.git$##; s#/+$##'
+}
+
+registered_sources() {
+  sql 'select path from rift where parent_id is null order by path;'
+}
+
+resolve_source() {
+  if [ -n "${WORKRIFT_SOURCE:-}" ]; then
+    printf '%s\n' "$WORKRIFT_SOURCE"
+    return
+  fi
+
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'run inside a Git checkout or set WORKRIFT_SOURCE'
+  if [ -f "$top/.rift" ]; then
+    root=$(rift ancestors "$top" | tail -n 1)
+    printf '%s\n' "${root:-$top}"
+    return
+  fi
+
+  origin=$(normalized_origin "$top")
+  [ -n "$origin" ] || fail "no origin remote in $top"
+  matches=$(registered_sources | while IFS= read -r candidate; do
+    if [ -d "$candidate" ] && [ "$(normalized_origin "$candidate")" = "$origin" ]; then
+      printf '%s\n' "$candidate"
+    fi
+  done)
+  case "$(printf '%s' "$matches" | grep -c .)" in
+    1) printf '%s\n' "$matches" ;;
+    0) fail "no warm source for $origin; run workrift init" ;;
+    *) fail "several warm sources for $origin; set WORKRIFT_SOURCE: $(printf '%s' "$matches" | tr '\n' ' ')" ;;
+  esac
+}
+
+require_source() {
+  test -d "$1/.git" || fail "not a Git repository: $1"
+  test -f "$1/.rift" || fail "not a Rift source: $1"
+}
+
+main_branch() {
+  configured=$(git -C "$1" config --get workrift.main || true)
+  if [ -n "$configured" ]; then
+    printf '%s\n' "$configured"
+    return
+  fi
+  head=$(git -C "$1" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  if [ -z "$head" ]; then
+    git -C "$1" remote set-head origin --auto >/dev/null
+    head=$(git -C "$1" symbolic-ref --short refs/remotes/origin/HEAD)
+  fi
+  printf '%s\n' "${head#origin/}"
+}
+
+lock_files='bun.lock bun.lockb pnpm-lock.yaml yarn.lock package-lock.json'
+
+lock_fingerprint() {
+  for lock_file in $lock_files; do
+    if [ -f "$1/$lock_file" ]; then
+      printf '%s %s\n' "$lock_file" "$(git -C "$1" hash-object "$lock_file")"
+    fi
+  done
+}
+
+install_dependencies() {
+  command=$(git -C "$1" config --get workrift.install || true)
+  if [ -z "$command" ]; then
+    if [ -f "$1/bun.lock" ] || [ -f "$1/bun.lockb" ]; then
+      command='bun install --frozen-lockfile'
+    elif [ -f "$1/pnpm-lock.yaml" ]; then
+      command='pnpm install --frozen-lockfile'
+    elif [ -f "$1/yarn.lock" ]; then
+      command='yarn install --immutable'
+    elif [ -f "$1/package-lock.json" ]; then
+      command='npm ci'
+    else
+      return 0
+    fi
+  fi
+  (cd "$1" && sh -c "$command")
+}
+
+workspace_name() {
+  printf '%s' "$1" |
+    tr '/[:space:]' '--' |
+    tr -cd '[:alnum:]._-' |
+    sed 's/^-*//; s/-*$//'
+}
+
+fetch_branch() {
+  source_path=$1
+  branch=$2
+  if git -C "$source_path" ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null; then
+    git -C "$source_path" fetch --no-tags origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+  else
+    status=$?
+    # ls-remote exits 2 when the branch does not exist; anything else is a real failure.
+    [ "$status" -eq 2 ] || exit "$status"
+  fi
+}
+
+# `gh stack` keeps its metadata in .git/gh-stack of the checkout that made the
+# stack. Carry it over when the command runs from that checkout.
+find_gh_stack_metadata() {
+  source_path=$1
+  branch=$2
+  caller_git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null || true)
+  if [ -z "$caller_git_dir" ] || [ ! -f "$caller_git_dir/gh-stack" ]; then
+    return 1
+  fi
+  if [ "$(git remote get-url origin 2>/dev/null || true)" != "$(git -C "$source_path" remote get-url origin)" ]; then
+    return 1
+  fi
+  jq empty "$caller_git_dir/gh-stack" >/dev/null 2>&1 || {
+    printf 'workrift: invalid gh stack metadata: %s\n' "$caller_git_dir/gh-stack" >&2
+    return 2
+  }
+  jq -e --arg branch "$branch" \
+    'any(.stacks[]?; .trunk.branch == $branch or any(.branches[]?; .branch == $branch))' \
+    "$caller_git_dir/gh-stack" >/dev/null || return 1
+  printf '%s\n' "$caller_git_dir/gh-stack"
+}
+
+create_workspace() {
+  branch=$1
+  source_path=$(resolve_source)
+  require_source "$source_path"
+  name=$(workspace_name "$branch")
+  [ -n "$name" ] || fail 'branch does not make a valid workspace name'
+
+  main=$(main_branch "$source_path")
+  fetch_branch "$source_path" "$branch"
+  # The source's HEAD lags the default branch until the next refresh, so new
+  # branches start from a freshly fetched remote default branch instead.
+  git -C "$source_path" fetch --no-tags origin "+refs/heads/$main:refs/remotes/origin/$main"
+
+  if gh_stack_metadata=$(find_gh_stack_metadata "$source_path" "$branch"); then
+    :
+  else
+    status=$?
+    [ "$status" -eq 1 ] || exit "$status"
+    gh_stack_metadata=
+  fi
+
+  source_locks=$(lock_fingerprint "$source_path")
+  workspace=$(rift create "$source_path" --copy-all --name "$name")
+  if git -C "$workspace" show-ref --verify --quiet "refs/heads/$branch"; then
+    git -C "$workspace" switch "$branch"
+    if git -C "$workspace" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+      git -C "$workspace" merge --ff-only "origin/$branch"
+    fi
+  elif git -C "$workspace" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    git -C "$workspace" switch --track -c "$branch" "origin/$branch"
+  else
+    # --no-track so the first push sets the branch's own upstream, not the default branch.
+    git -C "$workspace" switch --no-track -c "$branch" "origin/$main"
+  fi
+
+  if [ -n "$gh_stack_metadata" ]; then
+    cp -p "$gh_stack_metadata" "$(git -C "$workspace" rev-parse --absolute-git-dir)/gh-stack"
+    printf 'Imported gh stack metadata from %s.\n' "$gh_stack_metadata" >&2
+  fi
+
+  if [ "$(lock_fingerprint "$workspace")" != "$source_locks" ]; then
+    install_dependencies "$workspace" >&2
+  fi
+  printf '%s\n' "$workspace"
+}
+
+initialize_source() {
+  repository=$1
+  source_path=${2:-$workrift_root/$(basename "$repository" .git)}
+  if [ -e "$source_path" ] && [ -n "$(find "$source_path" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+    fail "path is not empty: $source_path"
+  fi
+  git clone "$repository" "$source_path"
+  rift init --here "$source_path"
+  refresh_source "$source_path"
+}
+
+refresh_source() {
+  source_path=${1:-$(resolve_source)}
+  require_source "$source_path"
+  [ -z "$(git -C "$source_path" status --porcelain)" ] || fail "source has changes: $source_path"
+
+  main=$(main_branch "$source_path")
+  git -C "$source_path" fetch --prune origin
+  git -C "$source_path" switch "$main"
+  git -C "$source_path" merge --ff-only "origin/$main"
+  install_dependencies "$source_path"
+  warm=$(git -C "$source_path" config --get workrift.warm || true)
+  if [ -n "$warm" ]; then
+    (cd "$source_path" && sh -c "$warm")
+  fi
+  printf 'Warm source is ready at %s.\n' "$source_path"
+}
+
+remove_workspace() {
+  with_children=false
+  if [ "${1:-}" = "--with-children" ]; then
+    with_children=true
+    shift
+  fi
+  target=${1:-$PWD}
+  children=$(rift list "$target")
+  # `rift remove` trashes the whole subtree, so a child workspace that someone
+  # still uses would go with it.
+  if [ -n "$children" ] && [ "$with_children" = false ]; then
+    fail "$target has child workspaces; pass --with-children to trash them too: $(printf '%s' "$children" | tr '\n' ' ')"
+  fi
+  rift remove "$target"
+}
+
+is_active() {
+  for process_cwd in /proc/[0-9]*/cwd; do
+    cwd=$(readlink "$process_cwd" 2>/dev/null || true)
+    case "$cwd/" in
+      "$1/"*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+is_recent() {
+  find "$1" -xdev \( -name node_modules -o -name .turbo -o -name .trash \) -prune \
+    -o -mmin "-$prune_idle_minutes" -print -quit 2>/dev/null | grep -q .
+}
+
+is_pinned() {
+  test -f "$keep_file" && grep -qxF "$1" "$keep_file"
+}
+
+# Keep every commit that exists only in the workspace: local branches, backup
+# refs and stashes as a bundle, uncommitted changes as a patch, and untracked
+# files as a tarball.
+archive_workspace() {
+  rift_path=$1
+  name=$2
+  target=$3
+  work_dir=$4
+
+  {
+    printf 'path=%s\n' "$rift_path"
+    printf 'branch=%s\n' "$(git -C "$rift_path" symbolic-ref --short -q HEAD || printf DETACHED)"
+    printf 'head=%s\n' "$(git -C "$rift_path" rev-parse HEAD)"
+    git -C "$rift_path" for-each-ref --format='%(refname) %(objectname)' refs/heads refs/backup refs/stash
+  } >"$target/$name.meta"
+
+  # The default branch is never rewritten, so its commits are safe bundle
+  # prerequisites. Other remote-tracking refs are not: upstream may already have
+  # deleted the branch they point to.
+  base=
+  main=$(main_branch "$rift_path" 2>/dev/null || true)
+  if [ -n "$main" ] && git -C "$rift_path" rev-parse -q --verify "origin/$main" >/dev/null; then
+    base=origin/$main
+  fi
+  if git -C "$rift_path" bundle create "$target/$name.bundle" --branches \
+    --glob='refs/backup/*' --glob='refs/stash' ${base:+--not "$base"} \
+    >/dev/null 2>"$work_dir/bundle.log"; then
+    # `git bundle verify` reports success on stderr.
+    git -C "$rift_path" bundle verify "$target/$name.bundle" >/dev/null 2>"$work_dir/verify.log" || {
+      printf 'failed to verify archive: %s: %s\n' "$rift_path" "$(head -1 "$work_dir/verify.log")" >&2
+      return 1
+    }
+  elif ! grep -q 'empty bundle' "$work_dir/bundle.log"; then
+    printf 'failed to archive: %s: %s\n' "$rift_path" "$(head -1 "$work_dir/bundle.log")" >&2
+    return 1
+  fi
+
+  if [ -n "$(git -C "$rift_path" status --porcelain --untracked-files=no)" ]; then
+    git -C "$rift_path" diff HEAD --binary >"$target/$name.patch"
+  fi
+  if [ -n "$(git -C "$rift_path" ls-files --others --exclude-standard)" ]; then
+    (cd "$rift_path" && git ls-files --others --exclude-standard -z |
+      tar --null -T - -czf "$target/$name.untracked.tgz")
+  fi
+}
+
+# Archive and remove workspaces that nobody has touched for two days. A
+# workspace is kept when it is missing, pinned in the keep file, in use by a
+# process, or recently modified, and so is every ancestor of a kept workspace,
+# because removing an ancestor trashes its whole subtree. Removal goes deepest
+# first, so each removal is a leaf. Each run first empties the previous run's
+# trash, so a removed workspace stays restorable from .trash for one day and
+# from the archive for 30 days.
+prune_workspaces() {
+  dry_run=false
+  if [ "${1:-}" = "--dry-run" ]; then
+    dry_run=true
+  elif [ "$#" -ne 0 ]; then
+    usage >&2
+    exit 2
+  fi
+
+  work_dir=$(mktemp -d)
+  trap 'rm -rf "$work_dir"' EXIT
+
+  sql "
+    with recursive tree(id, parent_id, depth, path) as (
+      select id, parent_id, 0, path from rift where parent_id is null
+      union all
+      select rift.id, rift.parent_id, tree.depth + 1, rift.path
+      from rift join tree on rift.parent_id = tree.id
+    )
+    select id, parent_id, depth, path from tree where depth > 0;
+  " >"$work_dir/rifts.tsv"
+  if [ ! -s "$work_dir/rifts.tsv" ]; then
+    printf 'no workspaces registered\n'
+    return 0
+  fi
+
+  : >"$work_dir/kept.txt"
+  : >"$work_dir/stale.tsv"
+  while IFS='	' read -r id parent_id depth rift_path; do
+    if [ ! -d "$rift_path" ]; then
+      printf 'skip missing: %s\n' "$rift_path"
+      printf '%s\n' "$id" >>"$work_dir/kept.txt"
+    elif is_pinned "$rift_path"; then
+      printf 'skip pinned: %s\n' "$rift_path"
+      printf '%s\n' "$id" >>"$work_dir/kept.txt"
+    elif is_active "$rift_path"; then
+      printf 'skip active: %s\n' "$rift_path"
+      printf '%s\n' "$id" >>"$work_dir/kept.txt"
+    elif is_recent "$rift_path"; then
+      printf 'skip recent: %s\n' "$rift_path"
+      printf '%s\n' "$id" >>"$work_dir/kept.txt"
+    else
+      printf '%s\t%s\t%s\t%s\n' "$id" "$parent_id" "$depth" "$rift_path" >>"$work_dir/stale.tsv"
+    fi
+  done <"$work_dir/rifts.tsv"
+
+  while read -r kept_id; do
+    sql "
+      with recursive up(id, parent_id) as (
+        select id, parent_id from rift where id = $(sql_quote "$kept_id")
+        union all
+        select rift.id, rift.parent_id from rift join up on rift.id = up.parent_id
+      )
+      select id from up where id != $(sql_quote "$kept_id");
+    "
+  done <"$work_dir/kept.txt" | sort -u >"$work_dir/protected.txt"
+
+  if [ "$dry_run" = false ]; then
+    rift gc
+    find "$archive_root" -mindepth 1 -maxdepth 1 -type d -mtime "+$archive_retention_days" \
+      -exec rm -rf {} + 2>/dev/null || true
+  fi
+
+  target="$archive_root/$(date -u +%Y-%m-%d)"
+  failures=0
+  sort -t '	' -k3,3nr "$work_dir/stale.tsv" >"$work_dir/stale-sorted.tsv"
+  while IFS='	' read -r id parent_id depth rift_path; do
+    children=$(sql "select path from rift where parent_id = $(sql_quote "$id");" | tr '\n' ' ')
+    if grep -qxF "$id" "$work_dir/protected.txt"; then
+      printf 'skip parent of kept workspaces: %s (children: %s)\n' "$rift_path" "$children"
+      continue
+    fi
+    if [ "$dry_run" = true ]; then
+      printf 'would remove: %s%s\n' "$rift_path" "${children:+ (children: $children)}"
+      continue
+    fi
+
+    mkdir -p "$target"
+    name=$(printf '%s' "$rift_path" | sed 's#^.*/\.rifts/##' | tr '/' '_')
+    if ! archive_workspace "$rift_path" "$name" "$target" "$work_dir"; then
+      failures=$((failures + 1))
+      continue
+    fi
+    if rift remove "$rift_path" >"$work_dir/remove.log" 2>&1; then
+      printf 'removed: %s (archive: %s/%s.*)\n' "$rift_path" "$target" "$name"
+    else
+      printf 'failed to remove: %s: %s\n' "$rift_path" "$(tail -1 "$work_dir/remove.log")" >&2
+      failures=$((failures + 1))
+    fi
+  done <"$work_dir/stale-sorted.tsv"
+
+  test "$failures" -eq 0
+}
+
+check_source() {
+  source_path=$(resolve_source)
+  require_source "$source_path"
+  test -w "$source_path"
+  main_branch "$source_path" >/dev/null
+  printf 'Warm source checks passed: %s\n' "$source_path"
+}
+
+command=${1:-}
+[ "$#" -gt 0 ] && shift
+case "$command" in
+  init)
+    [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }
+    initialize_source "$@"
+    ;;
+  create)
+    [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+    create_workspace "$1"
+    ;;
+  refresh)
+    [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+    refresh_source
+    ;;
+  list)
+    [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+    rift list "$(resolve_source)"
+    ;;
+  remove)
+    [ "$#" -le 2 ] || { usage >&2; exit 2; }
+    remove_workspace "$@"
+    ;;
+  prune)
+    prune_workspaces "$@"
+    ;;
+  sources)
+    [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+    registered_sources
+    ;;
+  check)
+    [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+    check_source
+    ;;
+  --help | -h)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

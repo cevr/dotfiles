@@ -1,8 +1,0 @@
-[Unit]
-Description=Archive and remove Bite rifts idle for two days
-
-[Service]
-Type=oneshot
-Nice=10
-IOSchedulingClass=idle
-ExecStart=%h/.local/bin/cleanup-rifts
