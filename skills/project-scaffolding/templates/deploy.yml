@@ -1,0 +1,52 @@
+# Alchemy deploys: `prod` on main, a `pr-<n>` preview per pull request,
+# and a teardown when the pull request closes.
+# Needs `state: Cloudflare.state()` in alchemy.run.ts (a runner has no disk
+# between runs) and a stack that skips custom domains and DNS off `prod`.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+concurrency:
+  group: deploy-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || 'prod' }}
+  cancel-in-progress: false
+
+env:
+  LEFTHOOK: 0
+  STAGE: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || 'prod' }}
+  # Provider credentials. Profiles are never read when CI=true.
+  RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+  # App secrets: one line per Config.Redacted("KEY") in a Runtime constructor.
+  # API_KEY: ${{ secrets.API_KEY }}
+
+jobs:
+  deploy:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'pull_request' && 'preview' || 'production' }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bunx alchemy provider check-env
+      - run: bunx alchemy deploy alchemy.run.ts --stage "$STAGE" --yes
+
+  cleanup:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    environment: preview
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Destroy the preview stage
+        run: |
+          case "$STAGE" in pr-*) ;; *) echo "refusing to destroy $STAGE"; exit 1 ;; esac
+          bunx alchemy destroy alchemy.run.ts --stage "$STAGE" --yes

@@ -17,6 +17,7 @@ What are you setting up?
 ├─ Just the tooling configs              → §Tooling Stack
 ├─ Copy-paste config files               → templates/
 ├─ Deploying it (servers, domains, DNS)  → §Deploy (Alchemy), then the alchemy skill
+├─ Deploying from GitHub Actions         → references/deploy-ci.md
 ├─ CI/CD + publishing                    → §Publishing
 ├─ Adding to an existing project         → §Tooling Stack (pick what's missing)
 ├─ Understanding the conventions         → §Conventions
@@ -30,9 +31,10 @@ What are you setting up?
 | CLI project setup | `references/cli.md` | New single-package CLI tool |
 | Monorepo setup | `references/monorepo.md` | Multi-package project with turbo, workspaces, catalog |
 | Migration to `@effect/tsgo` | `references/migration.md` | Existing project on `@effect/language-service` + `tsconfig.lsp.json` |
-| Templates | `templates/` | Copy-pasteable `tsconfig.json`, `.oxlintrc.json`, `lefthook.yml`, `turbo.json`, `release.yml`, `ci.yml` |
+| Templates | `templates/` | Copy-pasteable `tsconfig.json`, `.oxlintrc.json`, `lefthook.yml`, `turbo.json`, `release.yml`, `ci.yml`, `deploy.yml` |
 | Tooling configs | §Tooling Stack | Adding oxlint, oxfmt, lefthook, tsconfig |
 | Deploy | §Deploy (Alchemy) + the `alchemy` skill | Anything that runs somewhere other than the user's machine |
+| Deploy in CI | `references/deploy-ci.md` + `templates/deploy.yml` | GitHub Actions deploys, previews, secrets and variables |
 | Publishing | §Publishing | npm publishing, changesets, GitHub Actions |
 | TS6 / tsgo | §TS6 / tsgo | TypeScript 6 defaults, native compiler |
 
@@ -274,8 +276,13 @@ Infrastructure is code in the same repo: an Alchemy stack (`alchemy.run.ts`) dep
 Where app code lives:
 
 - An Effect HTTP app deploys as a Runtime (`Railway.Service` or `Cloudflare.Worker` with `main: import.meta.url`) whose `fetch` is `HttpRouter.toHttpEffect(Routes)`. Routes, services, and errors stay Alchemy-free, so the CLI, the local `bun --watch` server, and the tests reuse them unchanged.
-- Credentials come from the Alchemy profile (`bunx alchemy profile edit --add <Provider>`, run by the user because it is interactive), never from committed files. CI uses provider env vars and remote state.
-- The gate does not deploy. `bun run plan` is the pre-deploy check, and `bun run deploy` is a user-approved step.
+- Credentials come from the Alchemy profile (`bunx alchemy profile edit --add <Provider>`, run by the user because it is interactive), never from committed files. CI uses provider env vars and remote state (§Deploy in CI).
+- The gate does not deploy. `bun run plan` is the pre-deploy check, and `bun run deploy` to `prod` is a user-approved step.
+- Add `"test:deploy": "bun test ./tests/deploy.integration.ts"` with a `Test.make` smoke test from the start. Agents deploy throwaway stages to check their changes against real infrastructure; see the `alchemy` skill, §Test on Real Infrastructure.
+
+### Deploy in CI
+
+Copy `templates/deploy.yml`: `prod` on main, a `pr-<n>` preview per pull request, and teardown on close. Read `references/deploy-ci.md` before the first CI deploy. It covers switching to `Cloudflare.state()`, the bootstrap, the GitHub environments, and which values are secrets and which are variables.
 
 ## Publishing
 
