@@ -95,7 +95,7 @@ const MainLayer = Layer.mergeAll(
 Command.run(command, { version }).pipe(Effect.provide(MainLayer), BunRuntime.runMain)
 ```
 
-No suppression comment here. This entry-point shape is what `strictEffectProvide` flags, but that rule is `"off"` in the canonical `diagnosticSeverity` map (see SKILL.md §strictEffectProvide) — and `@effect-diagnostics` comments do not work anyway.
+No suppression comment here. This entry-point shape is what `strictEffectProvide` flags, but that rule is `"off"` in the canonical `diagnosticSeverity` map (see tsgo.md §strictEffectProvide) — and `@effect-diagnostics` comments do not work anyway.
 
 ### Commands (`src/commands/index.ts`)
 

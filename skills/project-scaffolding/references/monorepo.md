@@ -91,7 +91,7 @@ Key points:
 - `"catalog"` — pins shared dependency versions; leaf packages reference with `"catalog:"`. Pin the Effect v4 rc exactly: the npm `latest` dist-tag is still v3, so `bun add effect` without `@rc` installs the wrong major.
 - `effect` in devDeps as `catalog:` — available for root-level tests.
 - Lint/fmt run at root only (not per-package via turbo) — oxlint scans the whole tree in one pass.
-- Type-aware Effect diagnostics ride along with `tsc --noEmit` (typecheck channel), so there's no separate `lint:effect` script. Never `tsgo --noEmit` — that binary is unpatched and reports zero Effect diagnostics (see SKILL.md §tsgo vs tsc).
+- Type-aware Effect diagnostics ride along with `tsc --noEmit` (typecheck channel), so there's no separate `lint:effect` script. Never `tsgo --noEmit` — that binary is unpatched and reports zero Effect diagnostics (see tsgo.md §tsgo vs tsc).
 - Fast AST/style Effect guidelines run in `oxlint` through `oxlint-plugin-effect/plugin`.
 - `prepare` wires lefthook install + `effect-tsgo patch` — re-runs on every `bun install`.
 
@@ -166,7 +166,7 @@ Key differences from single-package:
 - `paths` — maps `@scope/pkg` → source for editor resolution (sibling to `plugins`, both inside `compilerOptions`).
 - `"include": []` — root tsconfig is for editor/LSP only; leaf tsconfigs handle compilation by extending this one.
 - `keyPatterns.skipLeadingPath: ["packages/"]` — `deterministicKeys` rule strips the `packages/<name>/` prefix when computing identifiers.
-- `overrides` starts empty. If a monorepo later needs a genuinely path-scoped relaxation, that is where it goes — and integration tests under `apps/` need their own glob (`apps/*/integration/**`) since `**/tests/**` won't match them. Do not add an override for `strictEffectProvide`; it is `"off"` globally (see SKILL.md §strictEffectProvide).
+- `overrides` starts empty. If a monorepo later needs a genuinely path-scoped relaxation, that is where it goes — and integration tests under `apps/` need their own glob (`apps/*/integration/**`) since `**/tests/**` won't match them. Do not add an override for `strictEffectProvide`; it is `"off"` globally (see tsgo.md §strictEffectProvide).
 
 **Add every new package to `paths`.** Without it, the editor can't resolve workspace imports.
 

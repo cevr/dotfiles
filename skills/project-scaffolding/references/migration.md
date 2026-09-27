@@ -69,7 +69,7 @@ Move all the Effect plugin settings into the single `tsconfig.json` at `compiler
       {
         "name": "@effect/language-service",
         "diagnosticSeverity": {
-          "strictEffectProvide": "off", // always off — see SKILL.md §strictEffectProvide
+          "strictEffectProvide": "off", // always off — see tsgo.md §strictEffectProvide
           // ... rest of the rules
         },
         "overrides": [
@@ -124,7 +124,7 @@ rg "@effect-diagnostics" --files-with-matches | xargs gsed -i '/@effect-diagnost
 
 Then re-run `typecheck`. Anything that surfaces was never actually suppressed — it was reported all along, or the rule is `"off"` in `diagnosticSeverity` and the comment was redundant. Fix findings via the `diagnosticSeverity` map or, rarely and with user approval, a file-scoped `overrides` entry.
 
-Note that `strictEffectProvide` specifically is now `"off"` globally (see SKILL.md §strictEffectProvide), so test-file relaxations for it are unnecessary.
+Note that `strictEffectProvide` specifically is now `"off"` globally (see tsgo.md §strictEffectProvide), so test-file relaxations for it are unnecessary.
 
 ## Step 5: Simplify lint scripts
 
