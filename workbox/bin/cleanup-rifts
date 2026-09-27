@@ -1,0 +1,188 @@
+#!/bin/sh
+
+# Remove Bite rifts that nobody has touched for two days.
+#
+# `rift remove` also removes every child rift (the registry cascades on parent_id), so this
+# script never removes a rift that still has a kept descendant, and it removes children
+# before their parents. Before each removal it archives the work that exists only in the rift:
+# local branches, backup refs and stashes as a git bundle, uncommitted changes as a patch,
+# and untracked files as a tarball. Each run first empties the previous run's trash, so a
+# removed rift stays restorable from .trash for one day and from the archive for 30 days.
+
+set -eu
+
+registry="${RIFT_REGISTRY:-$HOME/.local/share/rift/rift.sqlite}"
+source_path="${BITE_RIFT_SOURCE:-/workspaces/bite}"
+keep_file="${BITE_RIFT_KEEP_FILE:-$HOME/.config/bite-workbox/rift-keep}"
+archive_root="${BITE_RIFT_ARCHIVE:-$HOME/rift-archive}"
+inactive_minutes=2880
+archive_retention_days=30
+dry_run=false
+
+if [ "${1:-}" = "--dry-run" ]; then
+  dry_run=true
+elif [ "$#" -ne 0 ]; then
+  printf 'usage: %s [--dry-run]\n' "$0" >&2
+  exit 2
+fi
+
+work_dir=$(mktemp -d)
+trap 'rm -rf "$work_dir"' EXIT
+
+is_active() {
+  rift_path=$1
+
+  for process_cwd in /proc/[0-9]*/cwd; do
+    cwd=$(readlink "$process_cwd" 2>/dev/null || true)
+    case "$cwd/" in
+      "$rift_path/"*) return 0 ;;
+    esac
+  done
+
+  return 1
+}
+
+is_recent() {
+  find "$1" -xdev \( -name node_modules -o -name .turbo -o -name .trash \) -prune \
+    -o -mmin "-$inactive_minutes" -print -quit 2>/dev/null | grep -q .
+}
+
+is_pinned() {
+  test -f "$keep_file" && grep -qxF "$1" "$keep_file"
+}
+
+archive_rift() {
+  rift_path=$1
+  name=$2
+  target=$3
+
+  {
+    printf 'path=%s\n' "$rift_path"
+    printf 'branch=%s\n' "$(git -C "$rift_path" symbolic-ref --short -q HEAD || printf DETACHED)"
+    printf 'head=%s\n' "$(git -C "$rift_path" rev-parse HEAD)"
+    git -C "$rift_path" for-each-ref --format='%(refname) %(objectname)' \
+      refs/heads refs/backup refs/stash
+  } >"$target/$name.meta"
+
+  # Master is never rewritten, so its commits are safe bundle prerequisites. Remote-tracking
+  # refs are not: upstream may already have deleted the branch they point to.
+  base=
+  for candidate in origin/master origin/main; do
+    if git -C "$rift_path" rev-parse -q --verify "$candidate" >/dev/null; then
+      base=$candidate
+      break
+    fi
+  done
+  if git -C "$rift_path" bundle create "$target/$name.bundle" --branches \
+    --glob='refs/backup/*' --glob='refs/stash' ${base:+--not "$base"} \
+    >/dev/null 2>"$work_dir/bundle.log"; then
+    # `git bundle verify` reports success on stderr.
+    git -C "$rift_path" bundle verify "$target/$name.bundle" >/dev/null 2>"$work_dir/verify.log" || {
+      printf 'failed to verify archive: %s: %s\n' "$rift_path" "$(head -1 "$work_dir/verify.log")" >&2
+      return 1
+    }
+  elif ! grep -q 'empty bundle' "$work_dir/bundle.log"; then
+    printf 'failed to archive: %s: %s\n' "$rift_path" "$(head -1 "$work_dir/bundle.log")" >&2
+    return 1
+  fi
+
+  if [ -n "$(git -C "$rift_path" status --porcelain --untracked-files=no)" ]; then
+    git -C "$rift_path" diff HEAD --binary >"$target/$name.patch"
+  fi
+
+  if [ -n "$(git -C "$rift_path" ls-files --others --exclude-standard)" ]; then
+    (cd "$rift_path" && git ls-files --others --exclude-standard -z |
+      tar --null -T - -czf "$target/$name.untracked.tgz")
+  fi
+}
+
+# One row per registered rift below the source: id, parent id, depth, path.
+sqlite3 -readonly -separator '	' "$registry" "
+  with recursive tree(id, parent_id, depth, path) as (
+    select id, parent_id, 0, path from rift where path = '$source_path'
+    union all
+    select rift.id, rift.parent_id, tree.depth + 1, rift.path
+    from rift join tree on rift.parent_id = tree.id
+  )
+  select id, parent_id, depth, path from tree where depth > 0;
+" >"$work_dir/rifts.tsv"
+
+if [ ! -s "$work_dir/rifts.tsv" ]; then
+  printf 'no rifts registered below %s\n' "$source_path"
+  exit 0
+fi
+
+# Classify every rift. A rift is kept when it is missing, pinned, in use, or recently touched.
+: >"$work_dir/kept.txt"
+: >"$work_dir/stale.tsv"
+while IFS='	' read -r id parent_id depth rift_path; do
+  if [ ! -d "$rift_path" ]; then
+    printf 'skip missing: %s\n' "$rift_path"
+    printf '%s\n' "$id" >>"$work_dir/kept.txt"
+  elif is_pinned "$rift_path"; then
+    printf 'skip pinned: %s\n' "$rift_path"
+    printf '%s\n' "$id" >>"$work_dir/kept.txt"
+  elif is_active "$rift_path"; then
+    printf 'skip active: %s\n' "$rift_path"
+    printf '%s\n' "$id" >>"$work_dir/kept.txt"
+  elif is_recent "$rift_path"; then
+    printf 'skip recent: %s\n' "$rift_path"
+    printf '%s\n' "$id" >>"$work_dir/kept.txt"
+  else
+    printf '%s\t%s\t%s\t%s\n' "$id" "$parent_id" "$depth" "$rift_path" >>"$work_dir/stale.tsv"
+  fi
+done <"$work_dir/rifts.tsv"
+
+# Keep every ancestor of a kept rift, because removing it would take the kept rift along.
+while read -r kept_id; do
+  sqlite3 -readonly "$registry" "
+    with recursive up(id, parent_id) as (
+      select id, parent_id from rift where id = '$kept_id'
+      union all
+      select rift.id, rift.parent_id from rift join up on rift.id = up.parent_id
+    )
+    select id from up where id != '$kept_id';
+  "
+done <"$work_dir/kept.txt" | sort -u >"$work_dir/protected.txt"
+
+if [ "$dry_run" = false ]; then
+  rift gc
+  find "$archive_root" -mindepth 1 -maxdepth 1 -type d -mtime "+$archive_retention_days" \
+    -exec rm -rf {} + 2>/dev/null || true
+fi
+
+target="$archive_root/$(date -u +%Y-%m-%d)"
+failures=0
+
+# Deepest first, so each removal is a leaf and nothing cascades.
+sort -t '	' -k3,3nr "$work_dir/stale.tsv" | (
+  while IFS='	' read -r id parent_id depth rift_path; do
+    if grep -qxF "$id" "$work_dir/protected.txt"; then
+      children=$(sqlite3 -readonly "$registry" "select path from rift where parent_id = '$id';" | tr '\n' ' ')
+      printf 'skip parent of kept rifts: %s (children: %s)\n' "$rift_path" "$children"
+      continue
+    fi
+
+    children=$(sqlite3 -readonly "$registry" "select path from rift where parent_id = '$id';" | tr '\n' ' ')
+    if [ "$dry_run" = true ]; then
+      printf 'would remove: %s%s\n' "$rift_path" "${children:+ (children: $children)}"
+      continue
+    fi
+
+    mkdir -p "$target"
+    name=$(printf '%s' "${rift_path#/workspaces/.rifts/}" | tr '/' '_')
+    if ! archive_rift "$rift_path" "$name" "$target"; then
+      failures=$((failures + 1))
+      continue
+    fi
+
+    if rift remove "$rift_path" >"$work_dir/remove.log" 2>&1; then
+      printf 'removed: %s (archive: %s/%s.*)\n' "$rift_path" "$target" "$name"
+    else
+      printf 'failed to remove: %s: %s\n' "$rift_path" "$(tail -1 "$work_dir/remove.log")" >&2
+      failures=$((failures + 1))
+    fi
+  done
+
+  test "$failures" -eq 0
+)
