@@ -83,6 +83,7 @@ If a task spans several branches, read all matching files before editing.
 - HTTP request in an Effect application: prefer Effect `HttpClient` plus request/response schema decoding.
 - HTTP transient retry: `HttpClient.retryTransient(...)`.
 - Time-sensitive test: `TestClock`, not real sleeping.
+- Test fixture setup and teardown: a Layer, or `Effect.acquireRelease` in a scoped test, never `beforeAll`/`afterAll`/`beforeEach`/`afterEach`.
 - Concurrent/background test synchronization: `Deferred`, `Queue`, `Latch`, `Ref`, or explicit test hooks.
 
 ## Boundary Rules
@@ -109,7 +110,7 @@ If a task spans several branches, read all matching files before editing.
 - Do not use `Layer.mergeAll(...)` or `provideMerge(...)` as blind make-it-compile tools.
 - Do not hide required application authority, credentials, persistence, transports, or external services behind `Context.Reference` defaults.
 - Do not add arbitrary `Effect.sleep(...)` to tests when a deterministic synchronization primitive is available.
-- Do not use module mocks or method spies when a service layer is the truthful test seam.
+- Do not use module mocks (`mock.module`, `vi.mock`), method spies, or global test hooks (`beforeAll`, `afterAll`, `beforeEach`, `afterEach`). Fixtures are Layers and scoped `acquireRelease` effects; see [TESTING.md](references/TESTING.md) §Fixtures and lifecycle.
 - Do not hand-roll Map/TTL/prune caches or in-flight dedupe when `effect/Cache` fits.
 
 ## Compatibility
