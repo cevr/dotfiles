@@ -1,6 +1,6 @@
 ---
 name: alchemy
-description: Alchemy v2, Effect-native infrastructure as code (`alchemy.run.ts` stacks) with Infrastructure as Effects on top. Use when deploying or provisioning infrastructure (Railway, Cloudflare, AWS, DNS, custom domains), writing or reviewing `alchemy.run.ts`, binding cloud resources into Effect application code, or running `alchemy` deploys, profiles, stages, state, or CI.
+description: Alchemy v2, Effect-native infrastructure as code (`alchemy.run.ts` stacks) with Infrastructure as Effects on top. Use when deploying or provisioning infrastructure (Railway, Cloudflare, AWS, DNS, custom domains), writing or reviewing `alchemy.run.ts`, binding cloud resources into Effect application code, running `alchemy` deploys, profiles, stages, state, or CI, or testing a deploy against real infrastructure.
 ---
 
 # Alchemy
@@ -14,6 +14,7 @@ What are you doing?
 ├─ Adding Alchemy to a repo              → §Setup
 ├─ Writing alchemy.run.ts                → §Stack Anatomy, then the platform reference
 ├─ Putting app code on a Runtime         → references/app-code.md
+├─ Checking that a deploy really works    → §Test on Real Infrastructure, then app-code.md §Testing
 ├─ Railway service / domain / database   → references/railway.md
 ├─ Cloudflare Worker / DNS / zone / state → references/cloudflare.md
 ├─ Deploying, profiles, stages, CI, state → references/operations.md
@@ -34,10 +35,12 @@ Beta APIs move. Check the installed `node_modules/alchemy/src` for the pinned ve
 ## Setup
 
 ```bash
-bun add -D alchemy @effect/platform-node@<effect version>   # plus a provider SDK when you call its API directly, e.g. @distilled.cloud/railway
+npm view alchemy dist-tags            # take `latest`; `next` can be older
+bun add -D -E alchemy@<latest> @effect/platform-node@<effect version>   # plus a provider SDK when you call its API directly, e.g. @distilled.cloud/railway
 ```
 
-- Pin `alchemy` exactly (`2.0.0-beta.79`, not `^`). Check `npm view alchemy dist-tags`: `latest` is the newest beta, and `next` can be older.
+- **Start from the newest release.** Look up `latest` every time you add Alchemy, and never pin a version from memory or from this skill. Pin it exactly (no `^`), because betas break between releases.
+- **In an existing repo, compare the pinned version with `latest` first.** If the repo is behind, say so, and read the newer source (`okra repo fetch npm:alchemy@<latest>`) before working around a bug or a missing API; the fix may already have shipped. Upgrade as its own commit, and run `alchemy plan` after it to confirm the plan shows no changes.
 - Alchemy's peers are `effect`, `@effect/platform-bun`, and `@effect/platform-node` at `>=4.0.0-rc.115`. Keep all three on the project's exact Effect version. `alchemy/Cloudflare` loads `@effect/platform-node` even under Bun.
 - `devDependencies` is fine even when app code imports `alchemy/*`: the Runtime bundle inlines everything `main` imports, and nothing installs at runtime unless `build.install` asks for it.
 
@@ -106,15 +109,34 @@ Keep `alchemy.run.ts` as wiring. Put each Resource, Runtime, or resource-owning 
 | A DNS record for a non-Cloudflare host | An adopted and retained `Cloudflare.Zone.Zone` plus `Cloudflare.DNS.Record` (cloudflare.md §DNS) |
 | A secret from `.env` | `yield* Config.Redacted("KEY")` in the constructor (app-code.md §Config) |
 
+## Test on Real Infrastructure
+
+A green typecheck and a clean plan only prove the stack is well formed. What proves it works is a real deploy: the bundle boots on the host's runtime, the health check passes, bindings resolve, and third parties answer from the host's IPs. So **hill-climb against real infrastructure**: deploy a throwaway stage, probe it, change one thing, and redeploy until the probes pass. Then destroy the stage.
+
+- **Stages are the sandbox.** Every non-prod stage (`test_$USER`, `dev_$USER`, `agent-<topic>`) gets its own physical names, and with a stage-aware stack its own project, generated URL, and no custom domain or DNS. An agent may create, redeploy, and destroy these stages without asking. `prod` stays a user-approved deploy.
+- **The loop:**
+  1. `alchemy plan --stage <s>`
+  2. `alchemy deploy --stage <s> --yes`
+  3. Probe the outputs: `curl` the URL, run a real request, and read the host's logs (`railway logs` / `alchemy logs`).
+  4. Fix the cause and redeploy. An update in place takes about 30 s on Railway.
+  5. `alchemy destroy --stage <s> --yes`
+- **Keep the loop as a test.** A `Test.make` file (app-code.md §Testing) that deploys, asserts, and destroys in one scope becomes the repeatable check behind `bun run test:deploy`. Run it before handing off infrastructure or Runtime changes, and after upgrading Alchemy or Effect. Add an assertion for each failure you hit, such as a bot wall, a missing binding, or a slow cold start.
+- **Reproduce production problems on a stage first.** Deploy the same commit to a throwaway stage, reproduce the problem there, and fix it there. Then promote the fix to `prod`.
+- **Clean up.** Destroy each stage you created before handing off. `alchemy state list` shows leftover stages.
+
 ## Gotchas
 
 - **Import subpaths when a barrel drags in peers.** `alchemy/Railway` re-exports `Website`, which needs the optional `@alchemy.run/frontend-frameworks` peer. Import from `alchemy/Railway/Service`, `/Project`, `/CustomDomain`, and `/Providers` instead.
 - **`Output.mapEffect` needs `E = never`.** Finish lookups with `Effect.orDie`, and die with a descriptive error when a value is missing, since that failure stops the plan.
 - **Environment credentials beat the profile.** When every variable a provider needs is set (`RAILWAY_API_TOKEN`, or `CLOUDFLARE_API_TOKEN`+`CLOUDFLARE_ACCOUNT_ID`), including through `.env`, that provider ignores the profile. Remove the variables to use OAuth.
-- **Agents get plain mode, which never prompts.** It prints the plan and exits 1 with "Pass --yes". Run `alchemy deploy --stage <s> --yes` only after you have read `alchemy plan` output.
+- **Agents get plain mode, which never prompts.** It prints the plan and exits 1 with "Pass --yes". Read the `alchemy plan` output, then run `alchemy deploy --stage <s> --yes`. That is routine on a throwaway stage, and needs the user's approval on `prod`.
 - **Profile login is interactive.** An agent cannot complete `alchemy profile edit --add <Provider>`. Ask the user to run it with `! bunx alchemy profile edit --add Cloudflare`.
 - **Cloudflare OAuth "Basic" scopes cannot write DNS.** Pick All Scopes, or Custom with `zone.read`, `dns.read`, `dns.write`, `memberships.read`, plus what else the stack touches.
 - **`Config` read only inside `fetch` is never bound.** Resolve it in the constructor and close over the value.
 - **Railway Services wait about 50s for the build.** Keep the image small and the install layer cached. A slow build fails the deploy even when Railway finishes later.
 - **Local build contexts are walked in full before ignore files apply** (limits: 32 MiB and 10k entries). Point `context` at a generated directory with only the files the image needs, never at a repo root with `node_modules`.
 - **Losing `.alchemy/` means the next deploy creates everything again.** Recover by adopting (`--adopt`) instead.
+
+## Compatibility
+
+Verified against `alchemy@2.0.0-beta.79` and `effect@4.0.0-rc.117` on 2026-09-27 (ytt.cvr.im on Railway). For a newer release, recheck against its source.

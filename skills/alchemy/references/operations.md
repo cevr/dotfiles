@@ -63,18 +63,14 @@ Policies are decorations, so a plan shows no diff for them, but they are persist
 
 ## CI
 
-```yaml
-- run: bun install --frozen-lockfile
-  env: { LEFTHOOK: 0 }
-- run: bun alchemy provider check-env
-- run: bun alchemy deploy --stage ${{ env.STAGE }} --yes
-  env:
-    RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
-    CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-    CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-```
+The workflow template and the list of GitHub secrets and variables are in the project-scaffolding skill (`templates/deploy.yml`, `references/deploy-ci.md`). The runtime rules:
 
-- CI needs remote state. `localState` on a runner forgets everything between runs.
+- **`CI=true` means env-only credentials.** GitHub Actions sets it. Profiles are never read, and each provider resolves from its env contract: `RAILWAY_API_TOKEN` (an account token), and `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`. Run `alchemy provider check-env` first; it exits 1 and names each missing variable.
+- **CI needs remote state.** `localState()` on a runner forgets everything between runs. Use `Cloudflare.state()` (from `alchemy/Cloudflare`): a Worker plus Durable Object in your account that stores state encrypted with a key in the account's Secrets Store. In CI it derives the store's URL and bearer token from the Cloudflare API token. So the token needs the Workers and Secrets Store permissions even when the stack deploys only to Railway.
+- **Bootstrap the store once from a laptop** with `alchemy provider cloudflare bootstrap`. If the store is missing or out of date, a CI run fails, unless it passes `--yes`, which deploys or upgrades the store itself.
+- **Move a stack to remote state before CI deploys it.** Switching `state:` does not migrate anything: the first deploy against an empty store adopts (`--adopt`) or tries to create everything again. Switch once locally with `alchemy deploy --adopt`, then let CI take over.
+- **App secrets travel as env.** Every `Config.Redacted("KEY")` in a Runtime constructor is read from the deployer's environment. Map each one from a GitHub secret into the deploy step's `env`. A missing one fails the plan.
+- **Deploy each stage one run at a time.** Use a `concurrency` group per stage, with `cancel-in-progress: false`, so a cancelled run never leaves an apply half done.
 - Stage: `pr-<n>` on pull requests, `prod` on main. A cleanup job runs `destroy --stage pr-<n> --yes`, guarded against `prod`.
 - Credentials as code: a separate `stacks/github.ts` mints scoped tokens (`Cloudflare.ApiToken.AccountApiToken`, `AWS.IAM.Role` for OIDC) and writes them with `GitHub.Secret` or `GitHub.Variable`. Deploy it once with `--profile admin`.
 - Use `GitHub.Comment` with a stable logical ID to post preview URLs that update in place.
