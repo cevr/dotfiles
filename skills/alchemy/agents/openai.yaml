@@ -1,0 +1,4 @@
+interface:
+  display_name: "Alchemy"
+  short_description: "Deploy Effect apps and their infrastructure with Alchemy v2"
+  default_prompt: "Use $alchemy to declare this infrastructure in alchemy.run.ts and bind it into the Effect app code."
