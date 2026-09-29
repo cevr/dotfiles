@@ -1,5 +1,5 @@
 ---
-name: test
+name: writing-tests
 description: Write meaningful tests that validate user-facing behavior. Use when writing tests, improving test coverage, or when asked to "write tests", "add tests", or "test this". Focuses on real workflows over implementation details.
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash, Task
 ---
