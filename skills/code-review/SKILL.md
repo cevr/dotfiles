@@ -9,8 +9,7 @@ allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Skill
 
 # Code Review
 
-Systematic audit and cleanup. Not a style guide -- use code-style skill for that.
-This is the fresh eyes pass that catches what slipped through.
+Systematic audit and cleanup. This is the fresh eyes pass that catches what slipped through.
 
 ## Scope Detection
 
@@ -28,16 +27,13 @@ Read every changed file in full. Skim is not review.
 
 Before auditing, load domain knowledge via local skills and upstream source.
 
-**Always read:**
-
-- code-style skill (style principles are the review criteria)
-- architecture skill (structural patterns, boundaries, error strategy)
+**Always read:** the repo's `AGENTS.md` and lint config. A rule that lint or typecheck already enforces is not a review finding; run the gate instead.
 
 **Based on what's in scope:**
 
 | Detected | Read |
 |----------|------|
-| Effect imports (`effect`, `@effect/*`) | `effect` skill, then `okra repo fetch effect-ts/effect` and the returned checkout path when upstream source or examples matter |
+| Effect imports (`effect`, `@effect/*`) | `effect` skill (its `references/ARCHITECTURE.md` for the structural pass), then `okra repo fetch effect-ts/effect` and the returned checkout path when upstream source or examples matter |
 | .tsx / React files | react skill; use `okra repo fetch facebook/react` and `okra repo path -q facebook/react` when React internals/examples matter |
 | bun.lock present | Use `okra repo fetch oven-sh/bun` and `okra repo path -q oven-sh/bun` when Bun source/docs matter |
 
@@ -60,14 +56,14 @@ AI-generated cruft that humans wouldn't write.
 
 ## Phase 2: Structural Review
 
-Zoom out from lines to modules. Use architecture skill patterns as reference.
+Zoom out from lines to modules. For Effect code, check the braids table in the `effect` skill's `references/ARCHITECTURE.md`.
 
 | Concern | Question |
 |---------|----------|
 | Abstractions | Right level? Too many layers? Would a future reader understand why? |
 | Duplication | Same logic in 2+ places? |
-| Error handling | Typed and handled? Or swallowed / generic catch? (see architecture skill errors) |
-| Boundaries | Internal details leaking through exports? (see architecture skill boundaries) |
+| Error handling | Typed and handled? Or swallowed / generic catch? |
+| Boundaries | Internal details leaking through exports? Imports against the dependency direction? |
 | API misuse | Using a library wrong? Invoke repo-explorer to check upstream source/examples |
 | Naming | Names match current behavior (not 3 iterations ago)? |
 | Dead exports | Public API nothing uses? |
@@ -101,6 +97,8 @@ Group findings by phase:
 1. **Slop** -- AI artifacts (from Phase 1 checklist)
 2. **Structural** -- architecture/boundary issues (from Phase 2)
 3. **Ambiguous** -- things that could go either way
+
+When a finding is a pattern that will recur, propose the lint rule or type that makes it fail, not only the one-off fix.
 
 ### Ask Before Acting
 

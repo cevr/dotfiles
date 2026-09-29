@@ -2,7 +2,7 @@
 
 Step-by-step guide for scaffolding a multi-package Effect monorepo with Turbo. Based on `gent` and `bible-tools`.
 
-For service architecture, adapter patterns, and core/client splits, see the `architecture` skill.
+For package roles, contracts projected onto several surfaces, and core/client splits, read the `effect` skill's `references/ARCHITECTURE.md`.
 
 ## Directory Structure
 
@@ -66,7 +66,7 @@ mkdir -p packages/core/src packages/cli/src
     "prepare": "lefthook install && effect-tsgo patch"
   },
   "devDependencies": {
-    "@effect/tsgo": "^0.46.1",
+    "@effect/tsgo": "0.46.1",
     "@typescript/native-preview": "latest",
     "@types/bun": "latest",
     "concurrently": "latest",

@@ -1,6 +1,6 @@
 ---
 name: effect
-description: Opinionated guide for designing, building, and reviewing production TypeScript applications with Effect v4. Use for deep modules, Effect workflows, services, layers, schemas, tagged data, configuration, schedules, caches, streams, HTTP clients, resources, concurrency, or tests.
+description: Opinionated guide for designing, building, and reviewing production TypeScript applications with Effect v4. Use for application architecture (package layout, contracts projected to CLI/HTTP/MCP/RPC, composition roots, replaceable infrastructure units, import boundaries), deep modules, Effect workflows, services, layers, schemas, tagged data, configuration, schedules, caches, streams, HTTP clients, resources, concurrency, or tests.
 ---
 
 # Effect
@@ -9,17 +9,21 @@ Use current Effect v4 APIs and the production defaults in this skill. Establishe
 
 ## Source Rule
 
-Check these before guessing:
+Check these before guessing, in order:
 
 - the nearest `AGENTS.md` and any project-local Effect practices doc
-- the project-pinned `effect` package source and version
-- current upstream Effect source when the installed package does not answer the question
+- `node_modules/effect/AGENTS.md`, shipped inside the installed package and matched to its version; `node_modules/effect/ai-docs/` holds its runnable examples
+- the installed `effect` package source (`node_modules/effect/src`)
+- current upstream Effect source (`okra repo fetch effect-ts/effect`) when the installed package does not answer the question
+
+This skill holds project policy. When it disagrees with the installed package about an API, the package wins; fix this skill.
 
 ## Branch Chooser
 
 Read only the branch references that match the task.
 
 - Data models, schemas, brands, variants, optional keys, or decoders: read [SCHEMA.md](references/SCHEMA.md).
+- Package layout, public actions exposed on several surfaces, composition roots, units that own infrastructure, client/server split, or import boundaries: read [ARCHITECTURE.md](references/ARCHITECTURE.md).
 - Public interfaces, deep modules, capability seams, resource ownership, error boundaries, or concurrency ownership: read [PROGRAM_DESIGN.md](references/PROGRAM_DESIGN.md).
 - Services, module surfaces, layers, runtime wiring, errors, `Effect.fn`, or test services: read [SERVICES_LAYERS.md](references/SERVICES_LAYERS.md).
 - Normal tagged values, `Predicate`, `Match`, tag guards, or exhaustive dispatch: read [TAGGED_VALUES.md](references/TAGGED_VALUES.md).
