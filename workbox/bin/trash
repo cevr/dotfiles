@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Moves files to the home trash, including files on other volumes.
+#
+# trash-put follows the freedesktop Trash spec: a file on another volume goes to
+# `<volume top>/.Trash-<uid>`. Every Rift is its own btrfs subvolume, so a delete
+# inside a Rift left `.Trash-1000/` in the repository root, where Git sees it.
+# trash-put refuses to cross volumes even with --trash-dir, so this script moves
+# such files into the home trash itself. It writes the same `.trashinfo` records,
+# so trash-list, trash-restore, and trash-empty still work.
+set -euo pipefail
+
+trash_dir="${XDG_DATA_HOME:-$HOME/.local/share}/Trash"
+mkdir -p "$trash_dir/files" "$trash_dir/info"
+trash_device="$(stat -c %d "$trash_dir")"
+
+force=0
+interactive=0
+trash_put_options=()
+paths=()
+while (($# > 0)); do
+  case "$1" in
+    --)
+      shift
+      paths+=("$@")
+      break
+      ;;
+    --force) force=1; trash_put_options+=("$1") ;;
+    --interactive) interactive=1; trash_put_options+=("$1") ;;
+    --recursive | --directory | --verbose) trash_put_options+=("$1") ;;
+    -[rRdfiv]*)
+      [[ "$1" == *f* ]] && force=1
+      [[ "$1" == *i* ]] && interactive=1
+      trash_put_options+=("$1")
+      ;;
+    -*)
+      exec trash-put "$@"
+      ;;
+    *) paths+=("$1") ;;
+  esac
+  shift
+done
+
+url_encode() {
+  python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$1"
+}
+
+# The info file is created first and exclusively: it reserves the name in files/.
+reserve_trash_name() {
+  local base="$1" encoded_path="$2" name="$1" attempt=1
+  local deletion_date
+  deletion_date="$(date +%Y-%m-%dT%H:%M:%S)"
+  until (
+    set -o noclobber
+    printf '[Trash Info]\nPath=%s\nDeletionDate=%s\n' "$encoded_path" "$deletion_date" \
+      >"$trash_dir/info/$name.trashinfo"
+  ) 2>/dev/null; do
+    if ((attempt > 1000)); then
+      echo "trash: cannot reserve a trash name for $base" >&2
+      return 1
+    fi
+    name="${base}_${attempt}"
+    attempt=$((attempt + 1))
+  done
+  printf '%s\n' "$name"
+}
+
+status=0
+for path in "${paths[@]}"; do
+  if [[ ! -e "$path" && ! -L "$path" ]]; then
+    if ((force == 0)); then
+      echo "trash: cannot trash non existent '$path'" >&2
+      status=1
+    fi
+    continue
+  fi
+
+  if [[ "$(stat -c %d -- "$path")" == "$trash_device" ]]; then
+    trash-put "${trash_put_options[@]}" -- "$path" || status=1
+    continue
+  fi
+
+  if ((interactive == 1)); then
+    read -r -p "trash: trash '$path'? " answer
+    [[ "$answer" == [yY]* ]] || continue
+  fi
+
+  absolute_path="$(realpath -s -- "$path")"
+  if ! name="$(reserve_trash_name "$(basename -- "$absolute_path")" "$(url_encode "$absolute_path")")"; then
+    status=1
+    continue
+  fi
+  # Crossing volumes makes mv copy and then delete, which takes longer for large trees.
+  if ! mv -- "$path" "$trash_dir/files/$name"; then
+    # Drops the reservation this run just wrote; nothing was moved.
+    rm -f -- "$trash_dir/info/$name.trashinfo"
+    status=1
+  fi
+done
+exit "$status"
