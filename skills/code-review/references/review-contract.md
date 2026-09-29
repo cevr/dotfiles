@@ -1,6 +1,6 @@
-# Counsel Review Contract
+# Review Contract
 
-Use this contract to define correctness, minimality, and slop. Apply the rules to the changed scope. Do not force a rule when the repository has a stronger local contract.
+Use this contract to define correctness, minimality, and slop, for your own pass and for the Counsel pass. Apply the rules to the changed scope. Do not force a rule when the repository has a stronger local contract.
 
 ## Correctness
 
@@ -87,6 +87,19 @@ Report code that handles impossible states or hides broken invariants.
 - Cyclomatic complexity above the repository limit. Use 25 when no stronger limit exists.
 
 Do not remove a guard that protects a real external boundary or race.
+
+## Agent artifact slop
+
+Report leftovers from the iterations that produced the change:
+
+- Narration comments (`// Now we...`, `// This function handles...`).
+- Commented-out code, TODO or FIXME placeholders, and debug logging.
+- New code that diverges from the surrounding conventions.
+- A reimplementation of a helper the codebase already has.
+- Names that describe an earlier iteration instead of the current behavior.
+- Exports that nothing imports.
+
+When the same slop recurs, propose the lint rule or type that makes it fail, not only the local fix.
 
 ## Effect slop
 

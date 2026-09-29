@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Review"
+  short_description: "Review a change, then optionally clean it up"
+  default_prompt: "Review this change for correctness, regression risk, minimality, slop, and test value. Validate every finding with exact source receipts."

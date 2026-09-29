@@ -1,4 +1,4 @@
 interface:
   display_name: "Counsel Review"
-  short_description: "Run an independent correctness and anti-slop review"
-  default_prompt: "Review this change for correctness, regression risk, minimality, and slop. Use exact source receipts."
+  short_description: "Independent review from the other model family"
+  default_prompt: "Get an independent Counsel review of this change using the code-review criteria. Validate every finding with exact source receipts."

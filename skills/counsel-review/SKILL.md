@@ -1,126 +1,54 @@
 ---
 name: counsel-review
-description: Run an independent, read-only Counsel review of a change, pull request, stack checkpoint, performance change, API design, or test suite. Use when the user asks for a Counsel review, anti-slop review, correctness review, minimality review, test audit, or final independent review before merge or release. Do not use for hands-on cleanup. Use code-review for cleanup.
+description: Get an independent review of a change from the other model family through Counsel, using the code-review criteria, and validate every claim against the source. Use for "counsel review", a second-model or cross-model review, an adversarial or final review before merge or release, a stack checkpoint, an API design gate, or a test audit the other model should challenge. Read-only.
 ---
 
 # Counsel Review
 
-Use the opposite local coding agent as an independent reviewer. Check the review against the source before you accept a finding.
+The other model family reviews the change against the same criteria as `code-review`. You ground the packet first and validate every claim after. Read-only: edit nothing during the review.
 
-Do not edit files during the review.
+Read `../code-review/SKILL.md` and `../counsel/SKILL.md` first. The criteria live in `../code-review/references/review-contract.md` and `../code-review/references/test-audit.md`.
 
-Read `../counsel/SKILL.md` before you call Counsel. Read [references/review-contract.md](references/review-contract.md) before you prepare the review packet. Read [references/test-audit.md](references/test-audit.md) when the change adds or changes tests, and in `tests` mode.
+## 1. Ground the packet
 
-## Set the review mode
+Run `code-review` Phases 1–3 (scope and mode, context, your review) in report outcome. Counsel challenges a grounded candidate; it does not do discovery.
 
-Select one mode.
+## 2. Send the packet
 
-- Use `diff` for a branch, pull request, or uncommitted change.
-- Use `stack` for a sequence of dependent branches. Review from the base branch to the top branch.
-- Use `design` for a public API or architecture decision. Use one complete review request.
-- Use `performance` for a performance change. Include matched before-and-after evidence.
-- Use `tests` for an audit of existing tests. Look for low-value, duplicate, or implementation-coupled tests and the test-only production seams they keep alive. Scope the audit to one owner module or package.
+Include every applicable item:
 
-## Do your review first
+- Repo path, exact base and head revisions, the diff or changed files.
+- The user request or ticket contract, acceptance checks, non-goals, product and compatibility invariants.
+- Relevant source paths and cached dependency paths.
+- Full paths of `review-contract.md`, and `test-audit.md` when tests are in scope.
+- Your candidate findings with evidence; for `design`, the candidate and rejected alternatives.
+- Test results, runtime evidence, and resource limits.
+- The owner of each change.
+- Round two only: accepted findings, repairs, final diff, new proof.
 
-Read the exact diff and each changed file in full. Read the call sites and the owner modules. Reproduce or inspect the reported behavior when this is possible.
-
-Do not use Counsel as a substitute for source inspection or tests. Counsel must challenge a grounded candidate, not invent the task context.
-
-Apply the authoring gate in the test audit reference to each new or changed test. In `tests` mode, hunt for the junk patterns. Collect the candidate evidence for each test that you plan to call deletable. Prefer a few high-confidence candidates over a large speculative list.
-
-For Effect code, read `../effect/SKILL.md`. Inspect the current Effect source. Do not depend on old API knowledge.
-
-For an owned dependency, inspect its source. Assign the repair for a valid gap to the lowest owner. Do not approve a downstream workaround only because it already exists. An owned package is in the same workspace or under the user's control.
-
-## Build one complete context packet
-
-Give Counsel enough information to make an independent decision.
-
-Include all applicable items:
-
-- The repository path.
-- The exact base and head revisions.
-- The exact diff or changed files.
-- The user request or ticket contract.
-- The acceptance checks and non-goals.
-- The product and compatibility invariants.
-- The relevant source paths and cached dependency paths.
-- The full path of [references/review-contract.md](references/review-contract.md).
-- The full path of [references/test-audit.md](references/test-audit.md) when tests are in scope.
-- The candidate design and rejected alternatives.
-- The test results and runtime evidence.
-- The resource and performance limits.
-- The owning package or branch for each change.
-- The prior finding and repair evidence for round two.
-
-State that the review is read-only. Ask Counsel to use full paths and line numbers. Ask Counsel to report no blocker when it finds no blocker.
-
-## Request the review
-
-Write the packet to a unique temporary prompt file when the packet is long. Run:
+Tell it: the review is read-only; attack each candidate and hunt for missed blockers; cite full paths and line numbers; say "no blocker" when there is none.
 
 ```bash
 prompt_path="$(mktemp -t counsel-review)"
-# Write the complete context packet to "$prompt_path".
+# write the packet to "$prompt_path"
 okra counsel --deep -f "$prompt_path"
 ```
 
-Use the correct `--from` value for the active agent. Read the output path from standard output. Read the target output file, `claude.md` or `codex.md`. Read the target error file when the command fails.
+Read the output file named on stdout (`claude.md` or `codex.md`), and its `.stderr` on failure. Set no short time limit.
 
-Give Counsel enough time to finish. Do not set an artificial short limit.
+## 3. Validate
 
-## Validate every finding
+Open every cited file and follow the control flow. Reject a claim the source does not support. Each accepted finding passes the review contract's finding test.
 
-Open every cited file. Check the cited lines and the full control flow. Reject a finding when the source does not support it.
+## 4. Rounds
 
-Check the following areas:
+At most two per checkpoint (a branch, a PR, or one stack entry).
 
-- The explicit contract and product behavior.
-- Type, error, requirement, and scope preservation.
-- Boundary decoding and domain modeling.
-- Lifecycle, cleanup, interruption, and hidden effects.
-- Race conditions, ordering, rollback, and offline behavior.
-- Data integrity, wire compatibility, and public API compatibility.
-- The proof quality of tests and benchmarks, and the test audit authoring gate.
-- Minimality and each slop class in the review contract.
+- Round one reviews the full packet.
+- If the user asked for fixes, end the read-only review, apply accepted repairs (`code-review` Phases 5–6), then send round two: accepted findings, repairs, final diff, and new proof, marked as the final round.
+- A `design` gate uses one round unless round one finds a concrete blocker and the user permits a fix before the gate closes.
+- No third round unless the user changes the limit.
 
-Do not use a finding quota. Do not expand the work into unrelated cleanup. Separate pre-existing issues from issues in the reviewed change.
+## 5. Report
 
-## Control the review rounds
-
-Use a maximum of two Counsel rounds for one checkpoint.
-
-A checkpoint is one reviewed unit. It can be a branch, a pull request, or one entry in a stack. This two-round workflow is the bounded exception to the one-shot rule in the Counsel skill.
-
-Round one reviews the full packet. Round two reviews only the accepted findings, the repairs, the final diff, and the new proof. Tell Counsel that round two is the final allowed round.
-
-If the user requested implementation, end the read-only review before you apply accepted repairs. Then start round two. If the user requested only a review, report the findings and stop.
-
-Use one complete round for a design gate. Use a second round only when the first round identifies a concrete blocker and the user permits implementation before the gate closes.
-
-Do not start a third round unless the user explicitly changes the limit.
-
-## Report the result
-
-Lead with the verdict. Use these groups:
-
-1. `Blockers`: A correctness or contract failure that must stop merge or release.
-2. `Major`: A likely defect, ownership error, or costly slop issue.
-3. `Minor`: A local slop issue with a small and clear repair.
-4. `Optional`: A valid improvement that is outside the minimum correct change.
-5. `Rejected findings`: A Counsel claim that the source does not support.
-
-For each accepted finding, give:
-
-- The severity.
-- The slop or correctness class.
-- The full file path and line number.
-- The violated invariant.
-- The smallest correct repair.
-- The correct owner.
-- For a test deletion or move, the complete candidate evidence from the test audit reference.
-
-Also report the review round count, the proof status, and the Counsel output path.
-
-If the result has no blocker, say this clearly. Do not convert optional cleanup into a merge condition.
+Use the `code-review` Phase 4 report: verdict first, then `Blockers`, `Major`, `Minor`, `Optional`, and `Rejected findings`, with Counsel's unsupported claims listed under `Rejected findings`. Add the round count and the Counsel output path.

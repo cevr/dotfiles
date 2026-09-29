@@ -1,149 +1,98 @@
 ---
 name: code-review
 description: >
-  Systematic code audit and cleanup after implementation rounds. Detects slop,
-  dead code, structural issues — then fixes them. Use for "review", "clean up",
-  "deslop", or "look over" requests.
+  Review a change yourself for correctness, minimality, slop, and test value, then
+  optionally clean it up. Use for "review", "deslop", "clean up", "look over", stack
+  checkpoints, API design review, performance review, or a test audit. For a second
+  model family's review, use counsel-review, which runs these same criteria.
 allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Skill
 ---
 
 # Code Review
 
-Systematic audit and cleanup. This is the fresh eyes pass that catches what slipped through.
+A grounded same-model review against one set of criteria, validated against the source. Cleanup happens only when the user asked for it. `counsel-review` sends the same review to the other model family.
 
-## Scope Detection
+## Navigation
 
-In priority order:
+```
+What was asked?
+├─ Review, report only               → Phases 1–4
+├─ Review and fix ("deslop", "clean up") → Phases 1–6
+├─ Test audit                        → mode `tests`, references/test-audit.md
+└─ Second model family's opinion     → counsel-review skill
+```
 
-1. **User-specified** -- files/directories/areas passed explicitly
-2. **Branch diff** -- git diff --name-only main...HEAD
-3. **Staged** -- git diff --cached --name-only
-4. **Working** -- git diff --name-only
-5. **Broad** -- if "review the codebase", ask to narrow first
+| Reference | When to read |
+| --- | --- |
+| [references/review-contract.md](references/review-contract.md) | Always. The criteria for correctness, minimality, each slop class, performance evidence, and the finding test |
+| [references/test-audit.md](references/test-audit.md) | The change adds or changes tests, or mode is `tests` |
 
-Read every changed file in full. Skim is not review.
+## Phase 1: Scope and mode
 
-## Pre-Review: Load Context
+Scope, in priority order:
 
-Before auditing, load domain knowledge via local skills and upstream source.
+1. User-specified files, directories, PR, or branch.
+2. Branch diff: `git diff --name-only main...HEAD`.
+3. Staged, then working-tree changes.
+4. "Review the codebase": ask to narrow to one owner module first.
 
-**Always read:** the repo's `AGENTS.md` and lint config. A rule that lint or typecheck already enforces is not a review finding; run the gate instead.
+Mode:
 
-**Based on what's in scope:**
+| Mode | Use for |
+| --- | --- |
+| `diff` | A branch, pull request, or uncommitted change |
+| `stack` | Dependent branches; review each checkpoint from its base |
+| `design` | A public API or architecture decision |
+| `performance` | A performance change; requires matched before-and-after evidence |
+| `tests` | Existing tests in one owner module: low-value, duplicate, or implementation-coupled tests and the test-only seams they keep alive |
 
-| Detected | Read |
-|----------|------|
-| Effect imports (`effect`, `@effect/*`) | `effect` skill (its `references/ARCHITECTURE.md` for the structural pass), then `okra repo fetch effect-ts/effect` and the returned checkout path when upstream source or examples matter |
-| .tsx / React files | react skill; use `okra repo fetch facebook/react` and `okra repo path -q facebook/react` when React internals/examples matter |
-| bun.lock present | Use `okra repo fetch oven-sh/bun` and `okra repo path -q oven-sh/bun` when Bun source/docs matter |
+Outcome is **report** (read-only; edit nothing) unless the user asked for fixes.
 
-## Phase 1: Slop Detection
+## Phase 2: Load context
 
-AI-generated cruft that humans wouldn't write.
+- The repo's `AGENTS.md` and lint config. A rule that lint or typecheck already enforces is not a finding; run the gate.
+- Effect code: the `effect` skill, its `references/ARCHITECTURE.md` braids table, and the installed Effect source. Do not rely on remembered APIs.
+- React files: the `react` skill.
+- An owned dependency (same workspace or under the user's control): read its source. Assign a repair to the lowest owner; do not approve a downstream workaround because it exists.
+- External library usage that looks off: `okra repo fetch <owner/repo>`, then `okra repo path -q <owner/repo>` (see the `repo` skill).
 
-| Signal | Look for |
-|--------|----------|
-| Narration comments | // Now we need to..., // This function handles... |
-| Redundant comments | Comments restating what the code already says |
-| Commented-out code | Dead code from iterations. Delete it; git remembers |
-| TODO/FIXME remnants | Placeholders that should've been resolved |
-| Over-defensive code | Null checks on non-nullable, try/catch on infallible ops |
-| Type shortcuts | any, as unknown as X, non-null assertions, @ts-ignore |
-| Console.log debris | Debug logging left in |
-| Inconsistent patterns | New code diverging from surrounding conventions |
-| Redundant reimplementation | Rebuilding something the codebase already has a util for |
-| Import disorder | Mixed styles, barrel imports where direct exist nearby |
+## Phase 3: Your review
 
-## Phase 2: Structural Review
+Read the exact diff and every changed file in full. Read call sites and owner modules. Reproduce or inspect the behavior when you can.
 
-Zoom out from lines to modules. For Effect code, check the braids table in the `effect` skill's `references/ARCHITECTURE.md`.
+Apply the review contract to the changed scope. Apply the test-audit authoring gate to every new or changed test; in `tests` mode, hunt the junk patterns and collect candidate evidence for each deletion. Prefer a few high-confidence findings over a speculative list.
 
-| Concern | Question |
-|---------|----------|
-| Abstractions | Right level? Too many layers? Would a future reader understand why? |
-| Duplication | Same logic in 2+ places? |
-| Error handling | Typed and handled? Or swallowed / generic catch? |
-| Boundaries | Internal details leaking through exports? Imports against the dependency direction? |
-| API misuse | Using a library wrong? Invoke repo-explorer to check upstream source/examples |
-| Naming | Names match current behavior (not 3 iterations ago)? |
-| Dead exports | Public API nothing uses? |
-| Test gaps | New behavior without coverage? Flag it -- test skill writes them |
+Each candidate must pass the contract's finding test. Keep the evidence: file, line, invariant, reachable case.
 
-### Verify Against Source
+## Phase 4: Validate and report
 
-When a pattern looks off or you're unsure about library usage, use the `repo` skill (`skills/repo/SKILL.md`) to fetch the upstream repo and compare against real implementations/examples.
+Re-open every cited file and follow the control flow before you keep a finding. Drop a candidate the source does not support. Separate pre-existing issues from issues in the reviewed change. No finding quota; no expansion into unrelated cleanup.
 
-Quick form: `okra repo fetch owner/repo` (or `npm:package@version`), then `okra repo path -q owner/repo` to grep/read the source. See the `repo` skill for the full search workflow (`rg`, `ast-grep`, `fd`).
+Lead with the verdict, then group:
 
-## Phase 3: Build Review Plan
+1. `Blockers`: correctness or contract failure that must stop merge or release.
+2. `Major`: likely defect, ownership error, or costly slop.
+3. `Minor`: local slop with a small, clear repair.
+4. `Optional`: valid improvement outside the minimum correct change.
+5. `Rejected findings`: candidates you dropped, and why, when the user will expect them.
 
-Don't fix yet. Produce a plan with findings, evidence, and proposed changes.
+Each accepted finding gives: severity, class, file and line, violated invariant, smallest correct repair, owner, and for a test deletion or move the full candidate evidence from the test audit. Also report the proof status (gate and tests run).
 
-### Finding Format
+When there is no blocker, say so plainly. Optional cleanup is never a merge condition.
 
-Every finding must cite evidence:
+In **report** outcome, stop here.
 
-    ### [Category]: [Brief description]
+## Phase 5: Fix
 
-    **Files**: src/services/auth.ts:45, src/routes/login.tsx:12
-    **Evidence**: [What you observed -- quote the code or pattern]
-    **Source reference**: [If comparing against upstream: path to cached source]
-    **Proposed fix**: [What to change]
-    **Risk**: none | low | needs-discussion
+Order: delete → simplify → unify → rename.
 
-### Categories
+- Fix what the review accepted; no drive-by refactors.
+- Read what you delete; grep for usages before removing anything that looks dead.
+- When a fix would change observable behavior and intent is unclear, ask before applying it.
+- For a recurring pattern, add the lint rule or type that makes it fail.
 
-Group findings by phase:
-1. **Slop** -- AI artifacts (from Phase 1 checklist)
-2. **Structural** -- architecture/boundary issues (from Phase 2)
-3. **Ambiguous** -- things that could go either way
+## Phase 6: Verify
 
-When a finding is a pattern that will recur, propose the lint rule or type that makes it fail, not only the one-off fix.
+Run the full gate (typecheck, lint, tests). Fix failures caused by the cleanup; do not revert to green.
 
-### Ask Before Acting
-
-For any finding where:
-- Intent is unclear (was this deliberate?)
-- Multiple valid fixes exist
-- Removing could change behavior
-- Structural rework is needed
-
-Use AskUserQuestion to clarify. Don't guess. Don't silently skip.
-
-**Leave no ambiguity.** If the plan has open questions, ask them all before proceeding.
-
-## Phase 4: Execute
-
-After plan approval:
-
-**Order**: delete -> simplify -> unify -> rename
-
-1. **Delete** -- dead code, comments, unused imports, console.logs
-2. **Simplify** -- collapse over-defensive checks, remove unnecessary wrappers
-3. **Unify** -- align patterns with surrounding code
-4. **Rename** -- fix names that drifted from their purpose
-
-**Rules**:
-- No feature regression. Read what you're deleting before deleting.
-- No drive-by refactors. Fix what the review surfaced, not what you wish code looked like.
-- Unsure if dead? Grep for usages before removing.
-
-## Phase 5: Verify
-
-Run full gate:
-
-1. **Typecheck** -- tsc --noEmit or project-specific
-2. **Lint** -- project lint command with auto-fix
-3. **Test** -- full suite, confirm no regressions
-
-All must pass. Fix failures from cleanup -- don't revert.
-
-## Output
-
-    ## Review Summary
-
-    **Scope**: [files reviewed, how scope was determined]
-    **Findings**: [count by category]
-    **Fixed**: [what was changed]
-    **Flagged**: [deferred items, if any]
-    **References**: [file paths that informed conclusions]
+Report scope, findings by group, what was fixed, what was deferred, and the files that informed each conclusion.

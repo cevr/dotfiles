@@ -30,6 +30,10 @@ If uncovered code is not worth testing (boilerplate, unreachable error branches,
 
 6. **Commit**: Use message format `test(<scope>): <describe user behavior tested>`
 
+## Authoring gate
+
+Before keeping a new test, answer the four questions in `../code-review/references/test-audit.md` §Authoring gate: what it protects, what regression fails it, why existing coverage misses that, and whether it needs a production seam no production caller needs. A bug regression test must fail on the pre-fix code. Avoid its junk patterns.
+
 ## Test Quality Checklist
 
 - [ ] Tests user-visible behavior, not implementation details
