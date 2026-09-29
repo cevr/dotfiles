@@ -23,7 +23,8 @@ class UsersApi extends Context.Service<UsersApi, {
     Effect.gen(function*() {
       const base = yield* HttpClient.HttpClient
       const client = base.pipe(
-        HttpClient.mapRequest(HttpClientRequest.prependUrl("https://api.example.com"))
+        HttpClient.mapRequest(HttpClientRequest.prependUrl("https://api.example.com")),
+        HttpClient.filterStatusOk
       )
 
       const get = Effect.fn("UsersApi.get")(function*(id: string) {
@@ -52,7 +53,7 @@ Construct and transform the client once in the layer. Expose domain operations r
 ## Retry
 
 ```ts
-const client = base.pipe(
+const idempotentClient = base.pipe(
   HttpClient.retryTransient({
     times: 4,
     schedule: Schedule.exponential("100 millis").pipe(Schedule.jittered)
@@ -60,7 +61,7 @@ const client = base.pipe(
 )
 ```
 
-`HttpClient.retryTransient` can handle transient transport errors and responses such as rate limits. Keep it bounded, honor provider retry metadata when possible, and apply it only to idempotent requests. For a non-idempotent endpoint, use a provider-supported idempotency key or keep retries disabled.
+`HttpClient.retryTransient` can handle transient transport errors and responses such as rate limits. Keep it bounded, honor provider retry metadata when possible, and apply it only to a client used for idempotent requests. Keep it off a shared client that also sends writes; send non-idempotent operations through the base client unless the provider supports an idempotency key.
 
 ## Boundary errors
 
