@@ -1,8 +1,8 @@
 #!/bin/sh
 # Weekly skills report. Lists skill folders that neither okra nor .own-skills
 # tracks, skills whose source has changed, and skills okra could not check.
-# Uses `okra skills update --dry-run`, which writes nothing. Exits 1 when it
-# finds anything.
+# Uses `okra skills update --dry-run --json`, which writes nothing. Exits 1
+# when it finds anything, 2 when okra fails.
 
 set -eu
 
@@ -23,18 +23,21 @@ for dir in "$skills_dir"/*/; do
 done
 
 printf '\nSkill updates:\n'
-outdated=$(SKILLS_DIR="$skills_dir" okra skills update --dry-run </dev/null 2>"$log") || {
+report=$(SKILLS_DIR="$skills_dir" okra skills update --dry-run --json </dev/null 2>"$log") || {
   cat "$log"
   exit 2
 }
 # A local source compares against its checkout, so a stale checkout shows here too.
-for name in $outdated; do
-  printf '%s: source differs (%s)\n' "$name" "$(jq -r --arg name "$name" '.skills[$name].source' "$lock")"
-  findings=1
-done
-# okra keeps a skill it cannot check and prints "Failed to update <name>: <reason>".
-if grep -q 'Failed to update' "$log"; then
-  sed -n 's/^ *Failed to update //p' "$log"
+# okra keeps a skill it cannot check and reports it under failed.
+lines=$(printf '%s\n' "$report" | jq -r '
+  (.outdated[] | "\(.name): source differs (\(.source))"),
+  (.failed[] | "\(.name): \(.reason)")
+') || {
+  cat "$log"
+  exit 2
+}
+if [ -n "$lines" ]; then
+  printf '%s\n' "$lines"
   findings=1
 fi
 
