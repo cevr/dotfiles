@@ -27,4 +27,13 @@ while IFS= read -r package; do
   fi
 done < "$workbox_config_dir/bun-tools.txt"
 
+printf '\n'
+skills_status=0
+"$(dirname "$0")/check-skills" || skills_status=$?
+case "$skills_status" in
+  0) ;;
+  1) updates_found=1 ;;
+  *) exit "$skills_status" ;;
+esac
+
 exit "$updates_found"

@@ -1,0 +1,43 @@
+#!/bin/sh
+# Weekly skills report. Lists skill folders that neither okra nor .own-skills
+# tracks, and the skills `okra skills update` would change. Runs the update on
+# a copy, so the dotfiles tree is never touched. Exits 1 when it finds anything.
+
+set -eu
+
+skills_dir=${SKILLS_DIR:-"$HOME/Developer/personal/dotfiles/skills"}
+lock="$skills_dir/.skill-lock.json"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+findings=0
+
+printf 'Untracked skills:\n'
+for dir in "$skills_dir"/*/; do
+  name=$(basename "$dir")
+  [ -f "$dir/SKILL.md" ] || continue
+  jq -e --arg name "$name" '.skills | has($name)' "$lock" >/dev/null && continue
+  grep -qx "$name" "$skills_dir/.own-skills" && continue
+  printf '%s: add it with okra skills add, or list it in .own-skills\n' "$name"
+  findings=1
+done
+
+printf '\nSkill updates:\n'
+mkdir "$work/skills"
+cp -R "$skills_dir/." "$work/skills/"
+# The lock records local sources with the Mac home directory.
+sed "s#\"local:/Users/[^/]*/#\"local:$HOME/#g" "$lock" > "$work/skills/.skill-lock.json"
+SKILLS_DIR="$work/skills" okra skills update </dev/null >"$work/update.log" 2>&1 || {
+  cat "$work/update.log"
+  exit 2
+}
+for name in $(jq -r '.skills | keys[]' "$lock"); do
+  if [ ! -d "$work/skills/$name" ]; then
+    printf '%s: source unavailable on this machine\n' "$name"
+  elif ! diff -rq "$skills_dir/$name" "$work/skills/$name" >/dev/null; then
+    # A local source compares against its checkout, so a stale checkout shows here too.
+    printf '%s: source differs (%s)\n' "$name" "$(jq -r --arg name "$name" '.skills[$name].source' "$work/skills/.skill-lock.json")"
+    findings=1
+  fi
+done
+
+exit "$findings"

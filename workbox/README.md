@@ -61,7 +61,9 @@ noncurrent snapshot objects after 14 days.
 - `workrift prune [--dry-run]` archives and removes workspaces idle for two days.
 - `workbox-port <port>` prints the private exe.dev URL for a running HTTP server.
 - `backup-state` creates and verifies an S3 state snapshot.
-- `check-updates` reports Ubuntu and Bun tool updates.
+- `check-updates` reports Ubuntu, Bun tool, and skill updates.
+- `check-skills` lists skills okra would update and skill folders nothing tracks.
+  Your own skills go in `skills/.own-skills`.
 - `install-bun-tools` restores the pinned Bun CLI versions.
 - `install-node` installs the exact Node version from `package.json`.
 - `migrate-herdr-to-systemd` moves a live Herdr session under its user service.
