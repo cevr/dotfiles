@@ -50,12 +50,15 @@ noncurrent snapshot objects after 14 days.
 - `workbox-release-valve` previews runaway Bite development workload groups.
   Use `workbox-release-valve --apply` to stop the reported groups.
 - `workbox-rift-storage` creates or checks the Btrfs workspace file system.
-- `bite-rift init` creates and warms the clean Bite Rift source.
-- `bite-rift create <branch>` fetches an existing remote branch and creates a
-  complete isolated workspace.
-- `bite-rift refresh` updates and warms the clean source from `origin/master`.
-- `bite-rift list` lists active workspaces.
-- `bite-rift remove [path]` moves a workspace to the Rift trash.
+- `workrift init <repository> [path]` clones a repository as a warm Rift source.
+- `workrift create <branch>` creates a complete isolated workspace from the warm
+  source. It checks out the remote branch when one exists, and otherwise starts
+  a new branch from the freshly fetched remote default branch.
+- `workrift refresh` updates and warms the source from its default branch.
+- `workrift list` lists the source's workspaces; `workrift sources` lists sources.
+- `workrift remove [--with-children] [path]` moves a workspace to the Rift trash.
+  It refuses a workspace with child workspaces unless you pass `--with-children`.
+- `workrift prune [--dry-run]` archives and removes workspaces idle for two days.
 - `workbox-port <port>` prints the private exe.dev URL for a running HTTP server.
 - `backup-state` creates and verifies an S3 state snapshot.
 - `check-updates` reports Ubuntu and Bun tool updates.
@@ -76,11 +79,28 @@ The root file system stays on ext4. The workspace file system uses Btrfs inside
 `/var/lib/bite-workspaces.btrfs`. Its fixed size prevents Rift data from using
 all system storage. The image mounts through `/etc/fstab` at `/workspaces`.
 
-`/workspaces/bite` is a clean warm source. Do not use it for feature work.
-`bite-rift create` uses a writable Btrfs snapshot with dependencies and compiled
-outputs. It then creates or selects the requested Git branch. When the command
-runs from a matching stacked checkout, it also imports `.git/gh-stack`. Run
-`gh stack checkout <PR>` in the Rift when imported metadata needs a refresh.
+Each repository has one clean warm source, such as `/workspaces/bite`. Do not
+use a warm source for feature work. `workrift` finds the source from the current
+directory: the Rift root of a workspace, or the source with the same `origin` as
+a normal checkout. Set `WORKRIFT_SOURCE` to choose one explicitly.
+
+`workrift create` uses a writable Btrfs snapshot with dependencies and compiled
+outputs. It then creates or selects the requested Git branch, and runs the
+install only when the branch's lock file differs from the source. When the
+command runs from a matching stacked checkout, it also imports `.git/gh-stack`.
+Run `gh stack checkout <PR>` in the Rift when imported metadata needs a refresh.
+New workspaces go to `.rifts/<source>/<branch>` next to the source.
+
+A source's Git config holds its settings: `workrift.main` (default branch),
+`workrift.install` (default: from the lock file) and `workrift.warm` (a step
+after the install on refresh). Bootstrap sets the Bite warm step to
+`bun run compile` and links its `.env`. Per-repository create and remove hooks
+belong in Rift's own `.rift.toml` in the source.
+
+The `workrift-prune.timer` runs `workrift prune` each day at 03:30. It keeps
+pinned, in-use and recently modified workspaces and every ancestor of a kept
+workspace, and archives the rest to `~/rift-archive/<date>` for 30 days before
+it removes them. Pin a workspace by adding its path to `~/.config/workrift/keep`.
 
 All Rift workspaces use the local cache at `/workspaces/.cache/turbo`.
 `TURBO_CACHE=local:rw` disables remote cache reads and writes. Turbo uses two

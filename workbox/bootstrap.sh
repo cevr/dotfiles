@@ -7,6 +7,7 @@ workbox_dir=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
 system_dir="$workbox_dir/systemd/system"
 resolved_config="$workbox_dir/systemd/resolved.conf.d/workbox.conf"
 user_unit_dir="$HOME/.config/systemd/user"
+bite_source=/workspaces/bite
 local_bin_dir="$HOME/.local/bin"
 
 if [ "$(uname -s)" = Linux ] && [ -S "/run/user/$(id -u)/bus" ]; then
@@ -36,7 +37,7 @@ check_memory_protection() {
 }
 
 check_mode() {
-  for command in bite-rift btrfs bun curl git herdr hunk jq mongosh node redis-cli rift sideshow sqlite3 syncthing tailscale workbox-release-valve workbox-rift-storage zsh; do
+  for command in btrfs bun curl git herdr hunk jq mongosh node redis-cli rift sideshow sqlite3 syncthing tailscale workbox-release-valve workbox-rift-storage workrift zsh; do
     check_command "$command"
   done
 
@@ -69,7 +70,7 @@ check_mode() {
   test "$(readlink /etc/resolv.conf)" = ../run/systemd/resolve/stub-resolv.conf
   cmp -s "$resolved_config" /etc/systemd/resolved.conf.d/workbox.conf
   "$local_bin_dir/workbox-rift-storage" --check
-  "$local_bin_dir/bite-rift" check
+  WORKRIFT_SOURCE="$bite_source" "$local_bin_dir/workrift" check
   "$local_bin_dir/install-node" --check
   swapon --show --noheadings | grep -q .
 
@@ -126,6 +127,14 @@ install -m 600 "$workbox_dir/backup.env" "$HOME/.config/bite-workbox/backup.env"
 "$local_bin_dir/install-herdr-plugins"
 "$local_bin_dir/workbox-rift-storage" --apply
 "$local_bin_dir/install-node"
+
+# `workrift init <repository> /workspaces/bite` creates the Bite warm source; rerun
+# bootstrap afterwards to give it the environment file and its warm step.
+if [ -f "$bite_source/.rift" ]; then
+  ln -sfn "$HOME/.config/bite-workbox/bite-env/.env" "$bite_source/.env"
+  git -C "$bite_source" config workrift.warm \
+    'TURBO_CACHE=local:rw TURBO_CACHE_DIR=/workspaces/.cache/turbo bun run compile'
+fi
 
 for unit in "$workbox_dir"/systemd/user/*; do
   install -m 644 "$unit" "$user_unit_dir/$(basename "$unit")"

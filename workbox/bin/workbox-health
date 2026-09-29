@@ -140,7 +140,7 @@ check "Grafana login" env GRAFANA_CLI_DISABLE_KEYRING=1 mati-grafana auth status
 check "Bite repository" test -d "$HOME/Developer/work/bite/.git"
 check "Bite environment link" test -L "$HOME/Developer/work/bite/.env"
 check "Rift workspace storage" workbox-rift-storage --check
-check "Bite Rift source" bite-rift check
+check "Bite warm source" env WORKRIFT_SOURCE=/workspaces/bite workrift check
 check "Rift workspace command" rift --help
 check "Shared Turbo cache" test -w /workspaces/.cache/turbo
 check "Workbox zshenv" test -L "$HOME/.zshenv"

@@ -32,9 +32,9 @@
 - Create a Rift from the warm source with `rift create --name <name> --copy-all .` to keep installed packages and generated output. The positional argument is the source path, not a branch name. Create the branch inside the Rift afterwards.
 - Run the package install only when the lock file changes.
 - Remove a Rift when its isolated work is complete.
-- On the Bite workbox, use `bite-rift create <branch>` and `bite-rift remove`.
-- Run `bite-rift create` from the old checkout to import its `gh stack` metadata.
-- On the Bite workbox, refresh `/workspaces/bite` with `bite-rift refresh`.
+- On the workbox, use `workrift create <branch>` and `workrift remove`. Run them inside the repository; `workrift` finds its warm source.
+- Run `workrift create` from the old checkout to import its `gh stack` metadata.
+- Refresh a warm source with `workrift refresh`.
 
 ## Visual progress
 
