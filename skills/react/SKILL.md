@@ -1,6 +1,6 @@
 ---
 name: react
-description: React best practices for state management, composition patterns, state modeling (discriminated unions, reducers, state machines), async patterns (use, useTransition, useOptimistic, Suspense), performance optimization, and avoiding common pitfalls. Use when writing React components, managing state, handling async operations, or structuring component hierarchies.
+description: React best practices for state management, state modeling (discriminated unions, reducers, state machines), async patterns (use, useTransition, useOptimistic, Suspense), performance optimization, and avoiding common pitfalls. Use when writing React components, managing state, handling async operations, or structuring component hierarchies.
 allowed-tools: Read, Grep, Glob, Edit, Write
 ---
 
@@ -10,7 +10,7 @@ allowed-tools: Read, Grep, Glob, Edit, Write
 
 ```
 What are you working on?
-├─ Too many boolean props / component API     → references/composition.md
+├─ Too many boolean props / component API     → composition-patterns skill
 ├─ State modeling / booleans / state machines  → references/state-modeling.md
 ├─ State management / where to put state      → references/state.md
 ├─ Async / loading / optimistic / Suspense    → references/async.md
@@ -23,7 +23,7 @@ What are you working on?
 
 | Topic | File | When to Read |
 |-------|------|--------------|
-| Composition | `references/composition.md` | Boolean prop explosion, compound components, render props, providers, React 19 |
+| Composition | `composition-patterns` skill | Boolean prop explosion, compound components, render props, providers, React 19 |
 | State modeling | `references/state-modeling.md` | Discriminated unions, useReducer, transition guards, state machines |
 | State management | `references/state.md` | useEffect abuse, unnecessary state, URL state, colocation, functional setState |
 | Async patterns | `references/async.md` | use(), useTransition, useOptimistic, Suspense, caching, waterfalls |
