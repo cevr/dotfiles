@@ -1,14 +1,15 @@
 #!/bin/sh
 # Weekly skills report. Lists skill folders that neither okra nor .own-skills
-# tracks, and the skills `okra skills update` would change. Runs the update on
-# a copy, so the dotfiles tree is never touched. Exits 1 when it finds anything.
+# tracks, skills whose source has changed, and skills okra could not check.
+# Uses `okra skills update --dry-run`, which writes nothing. Exits 1 when it
+# finds anything.
 
 set -eu
 
 skills_dir=${SKILLS_DIR:-"$HOME/Developer/personal/dotfiles/skills"}
 lock="$skills_dir/.skill-lock.json"
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT HUP INT TERM
+log=$(mktemp)
+trap 'rm -f "$log"' EXIT HUP INT TERM
 findings=0
 
 printf 'Untracked skills:\n'
@@ -22,23 +23,19 @@ for dir in "$skills_dir"/*/; do
 done
 
 printf '\nSkill updates:\n'
-mkdir "$work/skills"
-cp -R "$skills_dir/." "$work/skills/"
-SKILLS_DIR="$work/skills" okra skills update </dev/null >"$work/update.log" 2>&1 || {
-  cat "$work/update.log"
+outdated=$(SKILLS_DIR="$skills_dir" okra skills update --dry-run </dev/null 2>"$log") || {
+  cat "$log"
   exit 2
 }
-# okra keeps a skill it cannot update and prints "Failed to update <name>: <reason>".
-if grep -q 'Failed to update' "$work/update.log"; then
-  sed -n 's/^ *Failed to update //p' "$work/update.log"
+# A local source compares against its checkout, so a stale checkout shows here too.
+for name in $outdated; do
+  printf '%s: source differs (%s)\n' "$name" "$(jq -r --arg name "$name" '.skills[$name].source' "$lock")"
+  findings=1
+done
+# okra keeps a skill it cannot check and prints "Failed to update <name>: <reason>".
+if grep -q 'Failed to update' "$log"; then
+  sed -n 's/^ *Failed to update //p' "$log"
   findings=1
 fi
-for name in $(jq -r '.skills | keys[]' "$lock"); do
-  if ! diff -rq "$skills_dir/$name" "$work/skills/$name" >/dev/null; then
-    # A local source compares against its checkout, so a stale checkout shows here too.
-    printf '%s: source differs (%s)\n' "$name" "$(jq -r --arg name "$name" '.skills[$name].source' "$lock")"
-    findings=1
-  fi
-done
 
 exit "$findings"
