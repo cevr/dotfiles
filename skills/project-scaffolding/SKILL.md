@@ -21,6 +21,7 @@ What are you setting up?
 ├─ CI/CD + publishing                    → §Publishing
 ├─ Adding to an existing project         → §Tooling Stack (pick what's missing)
 ├─ Understanding the conventions         → §Conventions
+├─ AGENTS.md, hook-bypass block, import boundaries → references/agent-fence.md
 └─ TypeScript 6 / tsgo migration         → references/tsgo.md
 ```
 
@@ -37,6 +38,7 @@ What are you setting up?
 | Deploy in CI | `references/deploy-ci.md` + `templates/deploy.yml` | GitHub Actions deploys, previews, secrets and variables |
 | Publishing | §Publishing | npm publishing, changesets, GitHub Actions |
 | TS6 / tsgo | `references/tsgo.md` | TypeScript 6 defaults, native compiler |
+| Agent fence | `references/agent-fence.md` + `templates/block-hook-bypass.ts` | `AGENTS.md` skeleton, blocking hook bypass, import-boundary lint, suppression debt, exact pins |
 
 ## Tooling Stack
 
@@ -230,10 +232,10 @@ Lint/fmt at root only — oxlint scans the whole tree in one pass. No `turbo run
 
 ### Dev Dependencies (base)
 
-Always `bun add -D` with **latest versions** — check npm before installing, never hardcode version pins (this list is for grouping, not pinning). **One exception: `@effect/tsgo` gets a caret on its current minor (`^0.46.1` today)**, since a 0.x minor can move the patch target. See below.
+Install the **latest version** of each, pinned exactly: `bun add -D -E <pkg>`. Check npm first; this list is for grouping, not for version numbers. Exact pins keep agents, CI, and a cold clone on the same code, and a bump is its own commit that runs the gate. See `references/agent-fence.md` §Pins.
 
 ```
-@effect/tsgo@^0.46.1
+@effect/tsgo
 @typescript/native-preview
 @types/bun
 concurrently
@@ -245,7 +247,7 @@ oxlint-plugin-effect
 typescript
 ```
 
-- `@effect/tsgo` ships the `effect-tsgo` CLI (used by the `prepare` script's `patch` command). From 0.24 through the current 0.46.x, `patch` rewrites the `tsc` binary of the `typescript` package in place so `tsc` emits Effect diagnostics. **Pin it to one minor.** 0.13.x patched a different binary (`tsgo`), so an unpinned install can silently move the patch target out from under the `typecheck` script.
+- `@effect/tsgo` ships the `effect-tsgo` CLI (used by the `prepare` script's `patch` command). From 0.24 through the current 0.46.x, `patch` rewrites the `tsc` binary of the `typescript` package in place so `tsc` emits Effect diagnostics. **Pin it exactly.** 0.13.x patched a different binary (`tsgo`), so an unpinned install can silently move the patch target out from under the `typecheck` script.
 - `typescript` is the typecheck channel. Under `typescript@7`, `tsc` already resolves to the native Go compiler, so `tsc --noEmit` is both patched and fast.
 - `@typescript/native-preview` stays installed for the editor's `tsgo` LSP binary. **`effect-tsgo patch` never touches it** — do not point any script at `tsgo`.
 - `oxlint-plugin-effect` provides the `effect/*` oxlint rules used for Effect style and project guidelines. Configure it with `jsPlugins: ["oxlint-plugin-effect/plugin"]`.
@@ -357,7 +359,7 @@ Copy `templates/release.yml` and `templates/ci.yml` **verbatim** — they are by
 
 ## TS6 / tsgo
 
-The typecheck script is always `tsc --noEmit`, never `tsgo`: `effect-tsgo patch` patches only `tsc`. Read `references/tsgo.md` for what the patch touches, `@effect/tsgo setup`, why `strictEffectProvide` is off, why `@effect-diagnostics` comments fail, and TS6 deprecations.
+The typecheck script is always `tsc --noEmit`, never `tsgo`: `effect-tsgo patch` patches only `tsc`. Read `references/tsgo.md` for what the patch touches, `@effect/tsgo setup`, why `strictEffectProvide` is off, how `@effect-diagnostics` suppression comments work, and TS6 deprecations.
 
 ## Reference Repos
 
@@ -377,9 +379,9 @@ Use the `repo` skill (`skills/repo/SKILL.md`) — `okra repo fetch` + `repo path
 ## Gotchas
 
 - **Typecheck scripts MUST call `tsc --noEmit`, never `tsgo --noEmit`** — at `@effect/tsgo` >=0.24, `patch` only patches the `tsc` binary (`defaultTypescriptPackageNames = ["typescript", "@typescript/native"]`, and the platform package ships `lib/tsc`). The `tsgo` bin comes from `@typescript/native-preview` and is never patched, so `tsgo --noEmit` silently reports **zero** Effect diagnostics — it exits 0 on code full of violations. Keep `@typescript/native-preview` installed for the editor LSP, but never route a script through it. Under `typescript@7` `tsc` is already the native Go compiler, so there is no speed cost.
-- **The patch target changed across `@effect/tsgo` majors — pin one minor (`^0.46.1`)** — 0.13.x patched `@typescript/native-preview/.../lib/tsgo` (leaving `tsgo.original*` backups), >=0.24 patches `tsc`. So "which binary do I call?" has no version-independent answer. On any repo below 0.24: bump first, re-run `effect-tsgo patch`, and read its output line — it names the exact binary it patched, and that is the binary `typecheck` must invoke. Stale `tsgo.original*` files are a fingerprint of an un-migrated 0.13 install.
+- **The patch target changed across `@effect/tsgo` majors — pin it exactly** — 0.13.x patched `@typescript/native-preview/.../lib/tsgo` (leaving `tsgo.original*` backups), >=0.24 patches `tsc`. So "which binary do I call?" has no version-independent answer. On any repo below 0.24: bump first, re-run `effect-tsgo patch`, and read its output line — it names the exact binary it patched, and that is the binary `typecheck` must invoke. Stale `tsgo.original*` files are a fingerprint of an un-migrated 0.13 install.
 - **`strictEffectProvide` must be `"off"`** — the rule has no entry-point detection, so it fires unavoidably on every real entry point (`Effect.provide` + `BunRuntime.runMain` is verified unsatisfiable). Its upstream `defaultSeverity` is already `"off"`, and with `ignoreEffectWarningsInTscExitCode: false` leaving it on makes `typecheck` permanently red. `multipleEffectProvide` still catches genuine chained-provide misuse. A tests-only override for it is redundant once it is off globally.
-- **`@effect-diagnostics` suppression comments are non-functional** — verified under the patched `tsc` (0.24.3): neither the file-level nor the `-next-line` form suppresses any rule in the typecheck gate. They are silently ignored. Use the `diagnosticSeverity` map, or (rarely, with user approval) a file-scoped `overrides` entry. Delete dead `@effect-diagnostics` comments when migrating older repos.
+- **`@effect-diagnostics` comments need bare rule names** — `// @effect-diagnostics-next-line asyncFunction:off -- <reason>` works under the patched `tsc`; the `effect/asyncFunction:off` form is silently ignored (verified on 0.46.1). Use a next-line comment with a reason for one real boundary, a plugin `overrides` entry for a class of files, and the `diagnosticSeverity` map for project-wide policy. See `references/tsgo.md`.
 - **`effect-tsgo patch` must run after install** — wire it into `prepare` so `bun install` rebuilds the patched binary. Without the patch, `tsc --noEmit` runs without Effect diagnostics.
 - **`tsdown` must be >=0.22.14 under `typescript@7`** — older `rolldown-plugin-dts` crashes with `ts.sys.useCaseSensitiveFileNames` (TS7 removed `ts.sys`). 0.22.14 works but prints a harmless `TypeScript 7.0 ... experimental` warning.
 - **Don't add a separate `tsconfig.test.json`** — relax test rules via the plugin's `overrides[].include` array. Keeps a single source of truth and avoids tsconfig fan-out.

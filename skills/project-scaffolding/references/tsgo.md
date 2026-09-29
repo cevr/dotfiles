@@ -1,6 +1,6 @@
 # TS6 / tsgo
 
-How the typecheck channel works: what `effect-tsgo patch` patches, `@effect/tsgo setup`, why `strictEffectProvide` is off, why `@effect-diagnostics` comments fail, TS6 deprecations, and `tsc` versus `tsgo`.
+How the typecheck channel works: what `effect-tsgo patch` patches, `@effect/tsgo setup`, why `strictEffectProvide` is off, how `@effect-diagnostics` suppression comments work, TS6 deprecations, and `tsc` versus `tsgo`.
 
 TypeScript 6 changes some defaults, but production projects keep options explicit (target, module, moduleResolution) for clarity and downgrade safety. The native compiler still requires `noEmit` — it doesn't emit yet.
 
@@ -15,7 +15,7 @@ TypeScript 6 changes some defaults, but production projects keep options explici
 | 0.13.x | `@typescript/native-preview/.../lib/tsgo` | `tsgo.original*` |
 | >=0.24 | the `typescript` package's `tsc` binary | — |
 
-**Pin the current minor (`^0.46.1`) and call `tsc --noEmit`.** At >=0.24 the dist source's patch target list is:
+**Pin it exactly (`0.46.1` today) and call `tsc --noEmit`.** At >=0.24 the dist source's patch target list is:
 
 ```
 defaultTypescriptPackageNames = ["typescript", "@typescript/native"]
@@ -47,7 +47,7 @@ This:
 3. Adds `effect-tsgo patch` to the `prepare` script.
 4. Optionally writes `.vscode/settings.json` to enable the native TS server.
 
-For new projects, copy the configs from §Tooling Stack directly. Then pin `"@effect/tsgo": "^0.46.1"` — `setup` may install an older major whose patch target is `tsgo`, not `tsc`.
+For new projects, copy the configs from §Tooling Stack directly. Then pin `"@effect/tsgo": "0.46.1"` exactly — `setup` may install an older major whose patch target is `tsgo`, not `tsc`.
 
 ## strictEffectProvide
 
@@ -65,22 +65,26 @@ Turning it off costs nothing real: genuine chained-provide misuse is still caugh
 
 Because it is off globally, a tests-only `overrides` entry for it is redundant — remove any you find.
 
-## `@effect-diagnostics` comments do not work
+## `@effect-diagnostics` comments: bare rule names only
 
-**Suppression comments are non-functional under the patched `tsc` binary (verified on 0.24.3).** Both forms were tested and neither suppresses anything in the typecheck gate:
+Suppression comments work under the patched `tsc` when the rule name is bare. The `effect/` prefix silently disables the comment. Verified on `@effect/tsgo` 0.46.1:
 
 ```typescript
-// @effect-diagnostics effect/someRule:off            // file-level — no effect
-// @effect-diagnostics-next-line effect/someRule:off  // next-line — no effect
+// @effect-diagnostics-next-line asyncFunction:off -- SDK exposes only a Promise API  // works
+// @effect-diagnostics asyncFunction:off                                             // works (file-level)
+// @effect-diagnostics-next-line effect/asyncFunction:off                            // ignored, rule still fires
 ```
 
-They are silently ignored: the diagnostic still fires and still fails the gate.
+The earlier "comments never work" finding came from the prefixed form.
 
-The only sanctioned suppression mechanisms are:
-1. The `diagnosticSeverity` map in `tsconfig.json` — the default answer.
-2. A file-scoped `plugins[].overrides[]` entry — rare, and requires user approval since it relaxes a rule for whole paths.
+Choose the narrowest mechanism that fits:
 
-Never write guidance or code that leans on a suppression comment. Existing repos may carry dead `@effect-diagnostics` comments from older versions — they are inert and should be deleted during migration.
+1. Fix the code: route the access through a service or adapter.
+2. `// @effect-diagnostics-next-line <rule>:off -- <reason>` for one real boundary. The reason is required.
+3. A file-scoped `plugins[].overrides[]` entry, only for a whole class of files such as a projection boundary or process-spawning tests.
+4. The `diagnosticSeverity` map, only for project-wide policy.
+
+Keep suppressions countable: `rg -c "@effect-diagnostics"` is the debt count, and it should only go down.
 
 ## TS6 deprecations to avoid
 

@@ -52,14 +52,14 @@ Set `"type": "module"` in `package.json`.
 
 ```bash
 # Runtime: v4 is on the rc tag; pin the resolved version exactly
-bun add effect@rc @effect/platform-bun@rc
+bun add -E effect@rc @effect/platform-bun@rc
 
 # Dev tooling
-bun add -D typescript @typescript/native-preview @types/bun \
-  @effect/tsgo@^0.46.1 oxlint oxlint-plugin-effect oxfmt lefthook concurrently effect-bun-test
+bun add -D -E typescript @typescript/native-preview @types/bun \
+  @effect/tsgo oxlint oxlint-plugin-effect oxfmt lefthook concurrently effect-bun-test
 
 # If publishing to npm
-bun add -D @changesets/cli@^3 @changesets/changelog-github@^1
+bun add -D -E @changesets/cli@^3 @changesets/changelog-github@^1
 ```
 
 `@effect/tsgo` ships the `effect-tsgo` CLI used by the `prepare` script to patch the TypeScript `tsc` binary. `@typescript/native-preview` is installed for the editor's `tsgo` LSP binary only — `patch` never touches it, so `typecheck` must call `tsc --noEmit`.
@@ -95,7 +95,7 @@ const MainLayer = Layer.mergeAll(
 Command.run(command, { version }).pipe(Effect.provide(MainLayer), BunRuntime.runMain)
 ```
 
-No suppression comment here. This entry-point shape is what `strictEffectProvide` flags, but that rule is `"off"` in the canonical `diagnosticSeverity` map (see tsgo.md §strictEffectProvide) — and `@effect-diagnostics` comments do not work anyway.
+No suppression comment here. This entry-point shape is what `strictEffectProvide` flags, but that rule is `"off"` in the canonical `diagnosticSeverity` map (see tsgo.md §strictEffectProvide).
 
 ### Commands (`src/commands/index.ts`)
 
@@ -216,7 +216,7 @@ console.log(`Symlinked to: ${linkPath}`)
 
 ## Step 5: Testing
 
-Tests go under `tests/`. They need no special diagnostic handling out of the box — `overrides` ships empty and `strictEffectProvide` is `"off"` globally. If a rule genuinely needs relaxing for test paths only, add an `overrides` entry in `tsconfig.json` — don't fork the tsconfig, and don't reach for `@effect-diagnostics` comments (they are inert).
+Tests go under `tests/`. They need no special diagnostic handling out of the box — `overrides` ships empty and `strictEffectProvide` is `"off"` globally. If a rule genuinely needs relaxing for test paths only, add an `overrides` entry in `tsconfig.json` — don't fork the tsconfig. For a single line, use `// @effect-diagnostics-next-line <rule>:off -- <reason>` with a bare rule name.
 
 ### Test Helper (`tests/helpers/test-cli.ts`)
 
@@ -316,7 +316,7 @@ describe("subcommand-a", () => {
 })
 ```
 
-`strictEffectProvide` is `"off"` globally in `diagnosticSeverity`, so this `Effect.provide` needs nothing. Per-file `// @effect-diagnostics` directives would not help regardless — they are non-functional.
+`strictEffectProvide` is `"off"` globally in `diagnosticSeverity`, so this `Effect.provide` needs nothing.
 
 ## Step 6: .gitignore
 

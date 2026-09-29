@@ -23,18 +23,18 @@ npx @effect/tsgo setup
 | Missing or legacy `oxlint-plugin-effect` wiring | Current `oxlint-plugin-effect` package loaded with `jsPlugins: ["oxlint-plugin-effect/plugin"]` |
 | `OXLINT_TSGOLINT_PATH=./node_modules/.bin/tsgolint-effect oxlint` | `oxlint` |
 | Separate `lint:effect` turbo task | Type-aware Effect rules ride along with `tsc --noEmit`; AST/style Effect rules run in oxlint |
-| `// @effect-diagnostics effect/strictEffectProvide:off` directive at top of test files | Deleted — the directives are non-functional, and `strictEffectProvide` is `"off"` globally |
-| `@effect/tsgo` unpinned / 0.13.x (patches the `tsgo` binary) | `@effect/tsgo` pinned `^0.46.1` (patches `tsc`) — `typecheck` calls `tsc --noEmit` |
+| `// @effect-diagnostics effect/<rule>:off` directives | Prefixed form is inert: delete it when the rule is `"off"` or the code can be fixed, otherwise rewrite to `<rule>:off -- <reason>` |
+| `@effect/tsgo` unpinned / 0.13.x (patches the `tsgo` binary) | `@effect/tsgo` pinned exactly (patches `tsc`) — `typecheck` calls `tsc --noEmit` |
 | `.effect-lsp.json` (brief intermediate config) | (deleted — config returns to tsconfig plugin block) |
 
 ## Step 1: Update dependencies
 
 ```bash
 bun remove @effect/language-service tsgolint-effect oxlint-tsgolint
-bun add -D @effect/tsgo@^0.46.1 @typescript/native-preview oxlint-plugin-effect
+bun add -D -E @effect/tsgo @typescript/native-preview oxlint-plugin-effect
 ```
 
-**Pin `@effect/tsgo` to its current minor (`^0.46.1`), not `latest` or an inherited older pin.** The patch target changed across majors: 0.13.x patched the `tsgo` binary inside `@typescript/native-preview` (leaving `tsgo.original*` backups), while >=0.24 patches the `typescript` package's `tsc` binary. A repo left on 0.13.x with a `tsc`-based typecheck script — or on 0.24 with a `tsgo`-based one — silently reports zero Effect diagnostics.
+**Pin `@effect/tsgo` exactly to the current release, not an inherited older pin.** The patch target changed across majors: 0.13.x patched the `tsgo` binary inside `@typescript/native-preview` (leaving `tsgo.original*` backups), while >=0.24 patches the `typescript` package's `tsc` binary. A repo left on 0.13.x with a `tsc`-based typecheck script — or on 0.24 with a `tsgo`-based one — silently reports zero Effect diagnostics.
 
 `@typescript/native-preview` may already be installed — keep it; it supplies the editor's `tsgo` LSP binary. At >=0.24 `effect-tsgo patch` does not touch it. Keep `oxlint-plugin-effect`; it is now the source of fast AST/style Effect rules.
 
@@ -112,19 +112,22 @@ Each leaf package's `tsconfig.json` extends the root:
 
 `tests` can be added to `include` now — the root `overrides` block applies to test files automatically.
 
-## Step 4: Delete all `// @effect-diagnostics` directives
+## Step 4: Repair `// @effect-diagnostics` directives
 
-**They are non-functional.** Verified under the patched 0.24.3 `tsc`: neither the file-level nor the `-next-line` form suppresses any rule in the typecheck gate. Every such comment in an existing repo is dead weight that misleads the next reader into thinking a rule is handled.
+Older repos wrote the rule with an `effect/` prefix (`effect/strictEffectProvide:off`). That form is silently ignored, so every prefixed directive is dead weight. Bare names work (see tsgo.md §`@effect-diagnostics` comments).
 
-Remove all of them, not just the `strictEffectProvide` ones:
+List them:
 
 ```bash
-rg "@effect-diagnostics" --files-with-matches | xargs gsed -i '/@effect-diagnostics/d'
+rg -n "@effect-diagnostics"
 ```
 
-Then re-run `typecheck`. Anything that surfaces was never actually suppressed — it was reported all along, or the rule is `"off"` in `diagnosticSeverity` and the comment was redundant. Fix findings via the `diagnosticSeverity` map or, rarely and with user approval, a file-scoped `overrides` entry.
+For each one:
 
-Note that `strictEffectProvide` specifically is now `"off"` globally (see tsgo.md §strictEffectProvide), so test-file relaxations for it are unnecessary.
+- Delete it when the rule is `"off"` in `diagnosticSeverity` (for example `strictEffectProvide`) or when the code can be fixed instead.
+- Otherwise rewrite it to the bare form with a reason: `// @effect-diagnostics-next-line <rule>:off -- <reason>`.
+
+Then re-run `typecheck`. A diagnostic that surfaces after a deletion was reported all along.
 
 ## Step 5: Simplify lint scripts
 
@@ -260,6 +263,6 @@ If `tsc --noEmit` passes without surfacing any Effect diagnostics on code that p
 - **`overrides[].options` not `overrides[].compilerOptions`** — the inner key is `options`, mirroring the plugin's top-level option shape (`diagnosticSeverity`, `pipeableMinArgCount`, etc. all valid here).
 - **Forgot to delete old `tsconfig.lsp.json`** — leaf packages still extending it inherit a stale config. Grep: `rg '"extends".*tsconfig\.lsp' .`
 - **Forgot to install `oxlint-plugin-effect`** — oxlint will fail to load `oxlint-plugin-effect/plugin`.
-- **`@typescript/native-preview` and `@effect/tsgo` version skew** — `effect-tsgo patch` errors if pinned versions don't match. Bump them together. Pin `@effect/tsgo` to one minor rather than `latest`, so a future major cannot silently move the patch target again.
+- **`@typescript/native-preview` and `@effect/tsgo` version skew** — `effect-tsgo patch` errors if pinned versions don't match. Bump them together. Pin `@effect/tsgo` exactly, so an install cannot silently move the patch target again.
 - **Migrating a 0.13.x repo without bumping first** — on 0.13.x the patched binary is `tsgo`, not `tsc`. Flipping the script to `tsc --noEmit` before bumping swaps one silent-zero-diagnostics setup for another. Bump, re-patch, read the patch output, then set the script.
 - **Using old rule names** — the current package (>=0.4.0) ships only the 12 `recommended` rules (`effect/noTryCatch`, `effect/noAsyncFunction`, ...). Pre-0.4 names like `effect/noSchemaStruct` and language-service diagnostic names like `effect/missingEffectError` both fail config resolution.
