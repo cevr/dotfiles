@@ -24,18 +24,19 @@ done
 printf '\nSkill updates:\n'
 mkdir "$work/skills"
 cp -R "$skills_dir/." "$work/skills/"
-# The lock records local sources with the Mac home directory.
-sed "s#\"local:/Users/[^/]*/#\"local:$HOME/#g" "$lock" > "$work/skills/.skill-lock.json"
 SKILLS_DIR="$work/skills" okra skills update </dev/null >"$work/update.log" 2>&1 || {
   cat "$work/update.log"
   exit 2
 }
+# okra keeps a skill it cannot update and prints "Failed to update <name>: <reason>".
+if grep -q 'Failed to update' "$work/update.log"; then
+  sed -n 's/^ *Failed to update //p' "$work/update.log"
+  findings=1
+fi
 for name in $(jq -r '.skills | keys[]' "$lock"); do
-  if [ ! -d "$work/skills/$name" ]; then
-    printf '%s: source unavailable on this machine\n' "$name"
-  elif ! diff -rq "$skills_dir/$name" "$work/skills/$name" >/dev/null; then
+  if ! diff -rq "$skills_dir/$name" "$work/skills/$name" >/dev/null; then
     # A local source compares against its checkout, so a stale checkout shows here too.
-    printf '%s: source differs (%s)\n' "$name" "$(jq -r --arg name "$name" '.skills[$name].source' "$work/skills/.skill-lock.json")"
+    printf '%s: source differs (%s)\n' "$name" "$(jq -r --arg name "$name" '.skills[$name].source' "$lock")"
     findings=1
   fi
 done
