@@ -54,6 +54,8 @@ noncurrent snapshot objects after 14 days.
 - `workrift create <branch>` creates a complete isolated workspace from the warm
   source. It checks out the remote branch when one exists, and otherwise starts
   a new branch from the freshly fetched remote default branch.
+- `workrift deps` installs dependencies in the current checkout when its lock
+  file changed since the last install.
 - `workrift refresh` updates and warms the source from its default branch.
 - `workrift list` lists the source's workspaces; `workrift sources` lists sources.
 - `workrift remove [--with-children] [path]` moves a workspace to the Rift trash.
@@ -88,10 +90,18 @@ a normal checkout. Set `WORKRIFT_SOURCE` to choose one explicitly.
 
 `workrift create` uses a writable Btrfs snapshot with dependencies and compiled
 outputs. It then creates or selects the requested Git branch, and runs the
-install only when the branch's lock file differs from the source. When the
+install only when the branch's lock file differs from the last install. When the
 command runs from a matching stacked checkout, it also imports `.git/gh-stack`.
 Run `gh stack checkout <PR>` in the Rift when imported metadata needs a refresh.
 New workspaces go to `.rifts/<source>/<branch>` next to the source.
+
+A branch change inside a workspace can also change the lock file. For a
+repository with `lefthook.yml`, `workrift` writes an untracked
+`lefthook-local.yml` in the source that runs `workrift deps` after checkout,
+merge and rewrite. `.git/info/exclude` hides the file, and `--copy-all` copies
+it into every workspace. `git reset --hard` runs no hook, so run `workrift deps`
+by hand after it. The last installed lock fingerprint is in
+`.git/workrift-installed-locks`.
 
 A source's Git config holds its settings: `workrift.main` (default branch),
 `workrift.install` (default: from the lock file) and `workrift.warm` (a step

@@ -9,6 +9,11 @@
 # trash and the per-repository .rift.toml hooks; this script adds the Git
 # branch workflow around them.
 #
+# A branch change inside a workspace can change the lock file without going
+# through workrift. For repositories that use lefthook, the source gets an
+# untracked lefthook-local.yml that runs `workrift deps` after checkout, merge
+# and rewrite, and --copy-all carries it into every workspace.
+#
 # Per-repository settings live in the source's Git config:
 #   workrift.main     default branch (default: origin HEAD)
 #   workrift.install  dependency install (default: from the lock file)
@@ -30,6 +35,7 @@ usage: workrift <command>
 
   init <repository> [path]    clone a repository as a warm Rift source
   create <branch>             create a workspace for a branch from the warm source
+  deps                        install dependencies if the lock file changed since the last install
   refresh                     update the warm source from its default branch
   list                        list the warm source's workspaces
   remove [--with-children] [path]
@@ -138,6 +144,46 @@ install_dependencies() {
     fi
   fi
   (cd "$1" && sh -c "$command")
+  lock_fingerprint "$1" >"$(installed_locks_file "$1")"
+}
+
+# The fingerprint of the last install lives in the Git directory, so --copy-all
+# carries it into each workspace together with the installed dependencies.
+installed_locks_file() {
+  git -C "$1" rev-parse --path-format=absolute --git-path workrift-installed-locks
+}
+
+sync_dependencies() {
+  locks_file=$(installed_locks_file "$1")
+  if [ -f "$locks_file" ] && [ "$(lock_fingerprint "$1")" = "$(cat "$locks_file")" ]; then
+    return 0
+  fi
+  install_dependencies "$1"
+}
+
+dependency_hook_marker='# Managed by workrift: keep dependencies in step with the lock file.'
+
+# lefthook merges lefthook-local.yml into the tracked lefthook.yml, and the
+# repository's prepare script regenerates .git/hooks from the merged config.
+install_dependency_hooks() {
+  [ -f "$1/lefthook.yml" ] || return 0
+  local_config="$1/lefthook-local.yml"
+  if [ -e "$local_config" ] && ! grep -qxF "$dependency_hook_marker" "$local_config"; then
+    printf 'workrift: %s is not managed by workrift; dependency hooks not installed\n' "$local_config" >&2
+    return 0
+  fi
+  {
+    printf '%s\n' "$dependency_hook_marker"
+    for hook in post-checkout post-merge post-rewrite; do
+      printf '%s:\n  jobs:\n    - name: workrift deps\n      run: workrift deps\n' "$hook"
+    done
+  } >"$local_config"
+  exclude_file=$(git -C "$1" rev-parse --path-format=absolute --git-path info/exclude)
+  mkdir -p "$(dirname "$exclude_file")"
+  grep -qxF '/lefthook-local.yml' "$exclude_file" 2>/dev/null || printf '/lefthook-local.yml\n' >>"$exclude_file"
+  if [ -x "$1/node_modules/.bin/lefthook" ]; then
+    (cd "$1" && node_modules/.bin/lefthook install >/dev/null)
+  fi
 }
 
 workspace_name() {
@@ -202,18 +248,19 @@ create_workspace() {
     gh_stack_metadata=
   fi
 
-  source_locks=$(lock_fingerprint "$source_path")
+  install_dependency_hooks "$source_path"
   workspace=$(rift create "$source_path" --copy-all --name "$name")
+  # Git hooks print to stdout, and stdout carries only the workspace path.
   if git -C "$workspace" show-ref --verify --quiet "refs/heads/$branch"; then
-    git -C "$workspace" switch "$branch"
+    git -C "$workspace" switch "$branch" >&2
     if git -C "$workspace" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-      git -C "$workspace" merge --ff-only "origin/$branch"
+      git -C "$workspace" merge --ff-only "origin/$branch" >&2
     fi
   elif git -C "$workspace" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-    git -C "$workspace" switch --track -c "$branch" "origin/$branch"
+    git -C "$workspace" switch --track -c "$branch" "origin/$branch" >&2
   else
     # --no-track so the first push sets the branch's own upstream, not the default branch.
-    git -C "$workspace" switch --no-track -c "$branch" "origin/$main"
+    git -C "$workspace" switch --no-track -c "$branch" "origin/$main" >&2
   fi
 
   if [ -n "$gh_stack_metadata" ]; then
@@ -221,9 +268,7 @@ create_workspace() {
     printf 'Imported gh stack metadata from %s.\n' "$gh_stack_metadata" >&2
   fi
 
-  if [ "$(lock_fingerprint "$workspace")" != "$source_locks" ]; then
-    install_dependencies "$workspace" >&2
-  fi
+  sync_dependencies "$workspace" >&2
   printf '%s\n' "$workspace"
 }
 
@@ -248,6 +293,7 @@ refresh_source() {
   git -C "$source_path" switch "$main"
   git -C "$source_path" merge --ff-only "origin/$main"
   install_dependencies "$source_path"
+  install_dependency_hooks "$source_path"
   warm=$(git -C "$source_path" config --get workrift.warm || true)
   if [ -n "$warm" ]; then
     (cd "$source_path" && sh -c "$warm")
@@ -455,6 +501,11 @@ case "$command" in
   create)
     [ "$#" -eq 1 ] || { usage >&2; exit 2; }
     create_workspace "$1"
+    ;;
+  deps)
+    [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'run inside a Git checkout'
+    sync_dependencies "$top"
     ;;
   refresh)
     [ "$#" -eq 0 ] || { usage >&2; exit 2; }
