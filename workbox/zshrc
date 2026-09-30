@@ -24,3 +24,6 @@ alias bx='bunx'
 alias reload='source ~/.zshrc'
 
 PROMPT='%F{cyan}%n@%m%f:%F{blue}%~%f %# '
+
+# Second Claude Code account (separate config/session)
+alias claude2='CLAUDE_CONFIG_DIR=~/.claude2 $HOME/.local/bin/claude'
