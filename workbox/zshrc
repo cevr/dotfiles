@@ -27,3 +27,6 @@ PROMPT='%F{cyan}%n@%m%f:%F{blue}%~%f %# '
 
 # Second Claude Code account (separate config/session)
 alias claude2='CLAUDE_CONFIG_DIR=~/.claude2 $HOME/.local/bin/claude'
+
+# bun completions
+[ -s "/home/exedev/.bun/_bun" ] && source "/home/exedev/.bun/_bun"
