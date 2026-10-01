@@ -24,7 +24,7 @@ The lens has four sources:
 - If the user named a direction (a module, a subsystem, a pain point), take it, and skip the inference below.
 - Otherwise, walk back a good stretch of the commit history (`git log --oneline`) to find the codebase's hot spots, the files and areas that keep coming up, and let those paths pull your attention first. If the changes are scattered with no clear hot spot, widen the net.
 
-Read `NORTH_STAR.md`, `PRIOR_ARTS.md`, `CONTEXT.md` and any ADRs in the area you're touching first. A north star, prior art or owner direction the user names in the prompt counts as if written there; step 4 writes it down.
+Read `NORTH_STAR.md`, `PRIOR_ARTS.md`, `CONTEXT.md` and any ADRs in the area you're touching first. When `NORTH_STAR.md` or `PRIOR_ARTS.md` is missing, establish it first by [ESTABLISHING.md](ESTABLISHING.md): candidates judged against no north star rank by taste. A north star, prior art or owner direction the user names in the prompt counts as if written there; step 4 writes it down.
 
 Then spawn sub-agents in one message: one to walk the codebase, and one per prior art in `PRIOR_ARTS.md` whose "Compare with" paths overlap the scope, reading the paths in "Read it for" and skipping what "Settled" already answers. The codebase walker doesn't follow rigid heuristics; it explores organically and notes where it experiences friction:
 
@@ -78,4 +78,4 @@ Side effects happen inline as decisions crystallize; call the Skill tool with "d
 
 ### 4. Project files
 
-Before you finish, bring `NORTH_STAR.md` and `PRIOR_ARTS.md` up to date with the session: north stars and prior arts the user named, comparisons the prior-art agents settled (into Settled), and questions they left open (into To survey). Create either file from its format when it doesn't exist, drafting the north stars from the user's direction, `AGENTS.md`/`CLAUDE.md`, the README and the ADRs. Done when both files exist and say everything the session decided.
+Before you finish, bring `NORTH_STAR.md` and `PRIOR_ARTS.md` up to date with the session: north stars and prior arts the user named, comparisons the prior-art agents settled (into Settled), and questions they left open (into To survey). Done when both files say everything the session decided.

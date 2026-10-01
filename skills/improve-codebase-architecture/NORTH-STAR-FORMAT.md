@@ -57,6 +57,8 @@ A sweep re-proposes a row only with a new receipt. A row leaves when its subject
 
 ## Rules
 
+A repo without the file establishes it by [ESTABLISHING.md](ESTABLISHING.md).
+
 - **North stars are observable.** Each has a _holds when_ a reader can check in code and a _breaks when_ a sweep can point at with a file:line. "Clean", "maintainable" and "simple" are not north stars; name what makes them true here.
 - **Three to nine north stars.** More than nine means some are tiebreaks or owner rules.
 - **Every tiebreak names a winner and a loser**, plus what the loser's candidates look like when rejected. Date owner tiebreaks.
@@ -64,4 +66,5 @@ A sweep re-proposes a row only with a new receipt. A row leaves when its subject
 - **Sweeps are project-specific only.** The architecture sweep, the package review, prior art and guardrails run everywhere and are not listed. A sweep row names the north star it measures and a method; a method longer than three lines lives in its own repo doc, linked from the row. A sweep that compares against other products takes its references from `PRIOR_ARTS.md`.
 - **Live check names a drive and a state view.** The drive shows what rendered; the state view (a status command, an inspector, a database copy) shows what happened. A project with no state view says so, and building one is a candidate.
 - **Rejected rows carry their reason in one line**: the north star or owner rule the candidate breaks, or the receipt that sank it, with the ledger that decided it. A reason that needs a paragraph is an ADR (`docs/adr/`), and the row links it.
+- **Drafted rows say so.** A north star, tiebreak or owner rule the owner has not stated carries `(drafted <date>)` after it; the owner's confirmation removes the marker.
 - **Write in today's tense.** Each line describes the project as it is and the rule as it stands; history lives in the ledgers.

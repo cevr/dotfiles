@@ -35,7 +35,7 @@ An **area** is a set of directories that change together (a package, or a layer 
 
 ## Steps
 
-0. **Project files.** Read `NORTH_STAR.md` and `PRIOR_ARTS.md`. Direction in the user's prompt (north stars, prior arts, a new sweep, an owner rule) goes into them now, dated. When either file is missing, draft it from its format, the user's prompt, `AGENTS.md`/`CLAUDE.md`, the README, `CONTEXT.md`, the ADRs and earlier ledgers, and commit it. Done when both files exist and carry this run's direction.
+0. **Project files.** When either file is missing, establish it by `~/.claude/skills/improve-codebase-architecture/ESTABLISHING.md`, its autonomous branch. Then read both. Direction in the user's prompt (north stars, prior arts, a new sweep, an owner rule) goes into them now, dated. Done when both files exist, carry this run's direction, and each drafted north star is an owner question on the ledger.
 
 1. **Open the ledger.** Copy the section layout of the newest `plans/architecture-loop-*.md`, or [`ledger-template.md`](ledger-template.md) when none exists. Record the HEAD hash and the baseline: source lines and files per package, by a `git ls-files` pathspec of source extensions that excludes tests and fixtures. Write the command on the ledger so every pass counts the same way; use `':(glob)…'` pathspecs, since a plain `*` crosses `/`. Done when the ledger exists with a baseline.
 
