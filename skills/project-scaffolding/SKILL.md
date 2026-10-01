@@ -5,7 +5,7 @@ description: Scaffold new TypeScript projects with Effect, Bun, oxlint, oxlint-p
 
 # Project Scaffolding
 
-Opinionated project setup for Effect TypeScript on Bun. All configs derived from production projects (`gent`, `@cvr/stacked`).
+Opinionated project setup for Effect TypeScript on Bun. All configs derived from `gent`, a production project.
 
 ## Navigation
 
@@ -350,6 +350,7 @@ Copy `templates/release.yml` and `templates/ci.yml` **verbatim** — they are by
 | Tests | `bun test` with `effect-bun-test` for Effect integration |
 | Tracing | `Effect.fn("ServiceName.methodName")` on all service methods |
 | Quality gate | `bun run gate` before any commit/PR/ship |
+| Stacked PRs | GitHub stacked pull requests through `gh stack` (https://docs.github.com/en/pull-requests/how-tos/stacked-pull-requests); load the `gh-stack` skill |
 | Git hooks | lefthook pre-commit runs lint+fmt (single chained job), typecheck, build, test sequentially (`parallel: false`) |
 | Effect diagnostics | `@effect/tsgo` plugin in `tsconfig.json` for type-aware diagnostics; `oxlint-plugin-effect` in `.oxlintrc.json` for AST/style guidelines |
 | Test relaxation | `plugins[].overrides[].include` glob with `options.diagnosticSeverity` map (no separate test tsconfig) |

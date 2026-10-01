@@ -1,6 +1,6 @@
 # CLI Project Setup
 
-Step-by-step guide for scaffolding a single-package Effect CLI tool. Based on `@cvr/stacked` and `gent` patterns.
+Step-by-step guide for scaffolding a single-package Effect CLI tool. Based on `gent` patterns.
 
 ## Directory Structure
 
