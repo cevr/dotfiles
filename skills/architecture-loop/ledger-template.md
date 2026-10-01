@@ -20,12 +20,12 @@ Goal: <the run's goal, in the user's words>
 | Idea | Source (slug, path) | North star | Verdict (adopt / rejected: reason) |
 | ---- | ------------------- | ---------- | ---------------------------------- |
 
-## Project passes
+## Project sweeps
 
-One row per pass per loop pass, as `NORTH_STAR.md` → Passes defines it (a measurement, a matrix row, a baseline).
+One row per sweep per pass, as `NORTH_STAR.md` → Sweeps defines it (a measurement, a matrix row, a baseline).
 
-| Pass | Loop pass | Result | Done when met? |
-| ---- | --------- | ------ | -------------- |
+| Sweep | Pass | Result | Done when met? |
+| ----- | ---- | ------ | -------------- |
 
 ## Owner questions
 
@@ -71,7 +71,7 @@ Live check: `<what was driven, and what the state view showed>`
 
 - Unswept directories: `<none>`
 - Largest sweep finding: `<lines of value>`
-- Project passes: `<each meets its done when>`
+- Project sweeps: `<each meets its done when>`
 - To survey: `<empty>`
 - Open Carried rows: `<none>`
-- Structural change named by the loop reader: `<none>`
+- Structural change left after reading every report: `<none>`

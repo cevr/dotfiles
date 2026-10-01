@@ -62,7 +62,7 @@ End the report with a **Top recommendation** section: which candidate you'd tack
 
 See [HTML-REPORT.md](HTML-REPORT.md) for the full HTML scaffold, diagram patterns, and styling guidance.
 
-Do NOT propose interfaces yet. After the report is up, ask the user: "Which of these would you like to explore?"
+The report stops at the problem and the direction; interfaces take shape in the grilling loop. After the report is up, ask the user: "Which of these would you like to explore?"
 
 ### 3. Grilling loop
 

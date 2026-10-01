@@ -1,6 +1,6 @@
 # NORTH_STAR.md Format
 
-`NORTH_STAR.md` sits at the repo root and states what good means for this project: the qualities every candidate serves, the owner's standing rules, the passes that test them, and the candidates already rejected. `improve-codebase-architecture` reads it; `architecture-loop` reads it in every sweep, apply and counsel prompt.
+`NORTH_STAR.md` sits at the repo root and states what good means for this project: the qualities every candidate serves, the owner's standing rules, the sweeps that test them, and the candidates already rejected. `improve-codebase-architecture` reads it; `architecture-loop` reads it in every sweep, apply and counsel prompt.
 
 ## Structure
 
@@ -29,11 +29,11 @@ Propose nothing against these.
 - No persisted-format change unless it is additive and optional.
 - A live run uses `--debug` with its data directory under the scratch directory.
 
-## Passes
+## Sweeps
 
-Run every loop pass beside the standard passes (architecture areas, package review, prior art, guardrails).
+Run every loop pass beside the standard sweeps (architecture areas, package review, prior art, guardrails).
 
-| Pass       | Serves           | Scope                    | Method                                   | Done when                                           |
+| Sweep      | Serves           | Scope                    | Method                                   | Done when                                           |
 | ---------- | ---------------- | ------------------------ | ---------------------------------------- | --------------------------------------------------- |
 | efficiency | Lean core        | what the harness sends   | [docs/architecture/efficiency.md](...)   | no measured saving left that it can change directly |
 | ui         | Consistent UI    | the rendered TUI         | [docs/architecture/ui.md](...)           | a matrix row per checklist moment, gent × each reference |
@@ -61,7 +61,7 @@ A sweep re-proposes a row only with a new receipt. A row leaves when its subject
 - **Three to nine north stars.** More than nine means some are tiebreaks or owner rules.
 - **Every tiebreak names a winner and a loser**, plus what the loser's candidates look like when rejected. Date owner tiebreaks.
 - **Owner rules are product direction**, the decisions a sweep may not reopen: a stored format, a UX rule, a capability kept on purpose, a run that may cost money. Project safety (a live binary, the owner's data, paid runs) goes here too. Date a rule when it comes from a session.
-- **Passes are project-specific only.** The architecture sweep, the package review, prior art and guardrails run everywhere and are not listed. A pass row names the north star it measures and a method; a method longer than three lines lives in its own repo doc, linked from the row. A pass that compares against other products takes its references from `PRIOR_ARTS.md`.
+- **Sweeps are project-specific only.** The architecture sweep, the package review, prior art and guardrails run everywhere and are not listed. A sweep row names the north star it measures and a method; a method longer than three lines lives in its own repo doc, linked from the row. A sweep that compares against other products takes its references from `PRIOR_ARTS.md`.
 - **Live check names a drive and a state view.** The drive shows what rendered; the state view (a status command, an inspector, a database copy) shows what happened. A project with no state view says so, and building one is a candidate.
 - **Rejected rows carry their reason in one line**: the north star or owner rule the candidate breaks, or the receipt that sank it, with the ledger that decided it. A reason that needs a paragraph is an ADR (`docs/adr/`), and the row links it.
 - **Write in today's tense.** Each line describes the project as it is and the rule as it stands; history lives in the ledgers.

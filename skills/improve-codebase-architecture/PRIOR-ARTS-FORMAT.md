@@ -11,14 +11,14 @@ Repos come from the `repo` skill: `okra repo fetch <slug>`, then `okra repo path
 
 ## Repos
 
-| Slug           | Branch | Pass         | Read it for                                                        | Compare with                         |
+| Slug           | Branch | Sweep        | Read it for                                                        | Compare with                         |
 | -------------- | ------ | ------------ | ------------------------------------------------------------------ | ------------------------------------ |
 | `sst/opencode` | `v2`   | architecture | Effect-based runner: `packages/core/src/session/runner/step.ts`     | `packages/core/src/runtime/turn.ts`  |
 | `vercel-labs/fx` | default | ui        | inline output that keeps scrollback; settle-then-capture pty tests | `apps/tui`                           |
 
 ## Other sources
 
-| Source                                         | Pass       | Read it for                         |
+| Source                                         | Sweep      | Read it for                         |
 | ---------------------------------------------- | ---------- | ----------------------------------- |
 | https://cursor.com/blog/harness (2026-09)      | efficiency | per-task cost layers, cache layout  |
 
@@ -35,7 +35,7 @@ Repos come from the `repo` skill: `okra repo fetch <slug>`, then `okra repo path
 ## Rules
 
 - **One row per source, paths inside it.** "Read it for" names the files or concepts worth reading, with paths inside the repo, so a sweep opens them directly. "Compare with" names this repo's paths.
-- **Pass ties a source to a pass** from `NORTH_STAR.md`, or to a standard one: `architecture`, `review`, `guardrails`. A source used by several passes lists them comma-separated.
+- **Sweep ties a source to a sweep** from `NORTH_STAR.md`, or to a standard one: `architecture`, `review`, `guardrails`. A source used by several sweeps lists them comma-separated.
 - **Settled lines are verdicts.** Each says adopted (with where it lives here) or rejected (with the north star it fails, in bold). A sweep reads this list first and reopens a line only with a new receipt.
-- **To survey holds open questions only.** A survey answers each one by moving it into Settled. When To survey is empty, the prior-art step of a loop pass is done.
+- **To survey holds open questions only.** A survey answers each one by moving it into Settled. When To survey is empty, the loop's prior-art step is done.
 - **No size conclusions across repos.** Line counts compare different scopes; a comparison is about shape, seams and behavior.

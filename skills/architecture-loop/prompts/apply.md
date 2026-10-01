@@ -15,12 +15,13 @@ Commit plan: <one numbered item per commit, with its subject. Order: compiler-ad
 Work rules:
 - Bugs are red first: the test fails on the unfixed code, quoted. Prove each fix with a probe: `/bin/cp <file> <pass dir>/<name>.snap`, break the fix, see the test go red, `/bin/cp` back, `cmp`.
 - Reductions use the deletion test: delete the code, and let typecheck and tests name the real consumers. Caller-count greps cover every source root.
-- A change that breaks a north star stops: report it, and leave it unworked-around.
+- A change that would break a north star stops at the report: name the north star and move to the next item.
 - Stored and wire formats stay as they are; an additive optional field is acceptable, named in the reply.
 - A dependency edit that the permission check denies stops that item; report it.
 - New code goes into its concern's existing file; a split into fragment files is a finding, not a fix.
 - Comments describe today's behavior.
 - Decide by the principles in ~/Developer/personal/dotfiles/principles/ and write "decided by <principle>"; the batch runs without check-ins.
+- A defect class this batch fixes for the second time gets its check, placed by `~/.claude/skills/architecture-loop/guardrails.md`.
 - Gate: typecheck, lint, focused tests, then the full gate into a log with its exit line (`<gate command> > <pass dir>/gate-<batch>.log 2>&1; echo "GATE EXIT $?" >> <same log>`) before each commit. A test that fails once under load and passes on one retry is a flake: retry once, name it, keep its assertions.
 - Every commit passes the hook, without bypass flags or env overrides. When a change cannot pass it in steps, order the steps so each passes, or make it one commit.
 - Commits: Conventional Commits, one logical unit each, staged by exact path. A public API change carries its changeset and README update. No push, no workspace creation or removal, no ledger edits.
