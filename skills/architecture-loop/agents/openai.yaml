@@ -1,0 +1,5 @@
+interface:
+  display_name: "Architecture Loop"
+  short_description: "Run architecture passes until polish only"
+policy:
+  allow_implicit_invocation: false
