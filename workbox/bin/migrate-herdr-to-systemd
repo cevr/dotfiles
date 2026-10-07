@@ -206,7 +206,7 @@ server_version=$(
 )
 server_protocol=$(
   HERDR_SESSION="$session" herdr status server |
-    sed -n 's/^protocol: //p'
+    sed -n 's/^\(private_\)\{0,1\}protocol: //p'
 )
 
 [ -n "$server_version" ] ||
