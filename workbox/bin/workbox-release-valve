@@ -115,9 +115,13 @@ find_candidate_groups() {
 }
 
 find_protected_groups() {
+  # Codex runs each command in its own group behind bwrap and
+  # codex-linux-sandbox. Those groups are workloads, not Codex itself.
   awk '
     {
       line=$0
+      if ($4 == "bwrap" || $4 ~ /^codex-linux-san/)
+        next
       if ($4 == "systemd" ||
           line ~ /codex/ ||
           line ~ /herdr/ ||
@@ -163,6 +167,22 @@ print_pressure() {
   printf 'swap_used_mib=%d\n' "$((swap_used_kib / 1024))"
   printf 'memory_pressure_%s\n' "$memory_pressure"
   printf 'cpu_pressure_%s\n' "$cpu_pressure"
+  print_shared_memory
+}
+
+# /dev/shm is RAM that cannot be swapped out, and no process owns its
+# files. A build cache there starves the box without showing up in ps.
+print_shared_memory() {
+  [ -d /dev/shm ] || return 0
+
+  df -Pk /dev/shm | awk 'NR == 2 {
+    printf "shm_used_mib=%d\n", $3 / 1024
+    printf "shm_size_mib=%d\n", $2 / 1024
+  }'
+  du -sk /dev/shm/* /dev/shm/.[!.]* 2>/dev/null |
+    sort -nr |
+    head -n 5 |
+    awk -F '\t' '$1 >= 1024 {printf "shm_entry=%s size_mib=%d\n", $2, $1 / 1024}'
 }
 
 print_target_groups() {
