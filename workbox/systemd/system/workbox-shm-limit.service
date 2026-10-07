@@ -1,0 +1,11 @@
+[Unit]
+Description=Cap /dev/shm so files there cannot fill memory
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/mount -o remount,size=8G /dev/shm
+
+[Install]
+WantedBy=multi-user.target

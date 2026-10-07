@@ -22,7 +22,9 @@ pinned Bun tools, the Hunk Herdr plugin, Sideshow, agent settings, S3 backups,
 health checks, update checks, security updates, the Tailscale SSH service, and
 swap protection. It configures `systemd-resolved` with public fallback servers.
 It protects Tailscale, the DNS resolver, and the Tailscale SSH service from
-workload memory pressure. It also keeps the Bite Herdr server active after a VM
+workload memory pressure. It caps user sessions, which hold Herdr and every
+agent, at 52 GB of memory and 1 GB of swap. It caps `/dev/shm` at 8 GB because
+no process owns its files and the kernel cannot reclaim them. It also keeps the Bite Herdr server active after a VM
 restart. It mounts a fixed 60 GB Btrfs workspace file system at `/workspaces`.
 It uses `/workspaces/.cache/turbo` as a local Turbo cache.
 
@@ -48,7 +50,9 @@ noncurrent snapshot objects after 14 days.
 - `workbox-health` checks the full remote workflow. Its network checks cover the
   resolver, public DNS, public HTTPS, Tailscale MagicDNS, and daemon restarts.
 - `workbox-release-valve` previews runaway Bite development workload groups.
-  Use `workbox-release-valve --apply` to stop the reported groups.
+  Use `workbox-release-valve --apply` to stop the reported groups. It also
+  reports `/dev/shm` usage and its largest entries, which hold RAM that no
+  process owns; the valve never deletes them.
 - `workbox-rift-storage` creates or checks the Btrfs workspace file system.
 - `workrift init <repository> [path]` clones a repository as a warm Rift source.
 - `workrift create <branch>` creates a complete isolated workspace from the warm
