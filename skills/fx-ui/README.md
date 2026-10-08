@@ -21,7 +21,9 @@ All colors use Claude's default tokens.
 
 Click an activity marker to inspect that call, or run `/fx-tool` to choose from
 rendered activity. `/fx-tool <tool-id>` opens a known call directly. Switch
-sections with Tab/Enter; Next/Previous page large output; Copy section copies
+sections with Tab/Enter. If the pane does not have keyboard focus, press
+Ctrl+X, then Tab to focus it using Claude's native pane controls.
+Next/Previous page large output; Copy section copies
 its complete source. Escape closes the pane. Click footer `details` or run
 `/fx-status` for session and Git figures.
 
