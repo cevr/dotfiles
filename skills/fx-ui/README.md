@@ -8,25 +8,33 @@ and changes terminal presentation:
 - Bold user prompts with fx/Gent's `┃` rail, on the terminal's own background.
 - Assistant replies without the opening bullet, with native markdown, links,
   tables and syntax highlighting.
-- Muted tool groups (`● 5 tool calls · 3 read · 2 command`), with explicit failures and interruptions.
-- File-path rows for standalone reads, writes and edits; successful text bodies
-  and diffs stay collapsed. Writes show the saved line count.
-- Plain working verbs and compact turn durations.
-- A muted composer footer: model, account/folder, Git branch and changed-file
-  count, context, session cost, and available usage windows. Native input and
-  permission controls stay live above it.
+- Compact shell, search, file and agent activity with working-directory-relative
+  paths and actual diff counts.
+- A separate per-call inspection pane with output, diff, arguments and captured
+  result; large outputs and the activity chooser are paged.
+- Plain working verbs, shared transcript alignment and compact turn durations.
+- A quiet composer footer: model and context beneath Claude's native controls.
+  Account, folder, Git, cost and quotas are available on demand.
 
-Run `/fx-details` to toggle all tool rows between compact and full native
-arguments/output, or `/fx-details on` and `/fx-details off` to choose explicitly.
-The mode lasts for the session. Claude's mod API does not expose the Ctrl+O
-detail state on standalone tool rows, so use `/fx-details on` to inspect them;
-Ctrl+O still opens Claude's transcript view.
+See [DESIGN.md](DESIGN.md) for the visual system distilled from fx's source.
+All colors use Claude's default tokens.
 
-Errors, interruptions, staged changes, user-modified writes, paginated reads,
-nontext read results, other standalone tools, permission dialogs, sender
-labels, and remote surfaces keep their native rendering. The input editor and
-startup logo have no render hook in this API. This mod never changes prompts,
-tool execution, permissions, or stored conversation content.
+Click an activity row to inspect that call, or run `/fx-tool` to choose from
+rendered activity. `/fx-tool <tool-id>` opens a known call directly. Switch
+sections with Tab/Enter; Next/Previous page large output; Copy section copies
+its complete source. Escape closes the pane. Click footer `details` or run
+`/fx-status` for session and Git figures.
+
+Run `/fx-details [on|off]` to toggle full native tool rows. Claude's mod API does
+not expose Ctrl+O detail state on standalone tool rows; Ctrl+O retains Claude's
+transcript behavior, while `/fx-tool` and `/fx-details` provide explicit mod
+inspection controls.
+
+Errors, interruptions, staged changes, user-modified writes, incomplete and
+nontext reads, background commands and safety hints retain native detail.
+Permission dialogs, sender labels and remote surfaces remain native. The input
+editor and startup logo have no render hook. The mod does not change tool
+execution, permissions or stored conversation content.
 
 ## Install
 
@@ -42,11 +50,10 @@ It also removes the legacy `statusline-git.sh` command from settings, saving
 that setting in `.fx-ui-statusline.json`. Shared settings symlinks and custom
 statusline commands are preserved. The legacy script remains available.
 
-Usage figures come from Claude's native session API; no credential lookup or
-background HTTP polling is needed. Unavailable readings are omitted, and
-context stays unknown until Claude has a reading. Git metadata refreshes on
-footer redraws, cached for two seconds. Narrow terminals split identity and
-usage into two rows, truncating only a row that still does not fit.
+Usage figures come from Claude's native session API. Missing context readings
+stay unknown. Git runs only when status inspection is requested, with a short
+timeout; failure leaves the session figures available. Footer text truncates at
+narrow widths using the native renderer.
 
 To restore the legacy statusline, disable `fx-ui` and run:
 

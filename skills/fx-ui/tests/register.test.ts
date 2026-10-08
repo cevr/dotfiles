@@ -2,7 +2,8 @@ import { describe, expect, test } from "claude-code/testing";
 import type { ToolGroupCall } from "claude-code";
 
 describe("register", () => {
-  test("a write that leaves the content unchanged is identified as a no-op", async ($) => {
+  test("a write that leaves the content unchanged is identified as a no-op", async ($, on) => {
+    on("session.cwd", () => ({ value: "/" }));
     const row = await $.ui.mount({
       plugin: "fx-ui",
       surface: "terminal",
@@ -23,9 +24,10 @@ describe("register", () => {
         isInterrupted: false,
       },
     });
-    expect((await row.find({ type: "Text" }))?.text).toBe("● No changes to /work/app.ts");
+    expect((await row.find({ type: "Button" }))?.props.label).toBe("● No changes to /work/app.ts");
   });
-  test("prompts keep multiline text and replies keep rich markdown without a bullet", async ($) => {
+  test("prompts keep multiline text and replies keep rich markdown without a bullet", async ($, on) => {
+    on("session.cwd", () => ({ value: "/" }));
     const prompt = await $.ui.mount({
       plugin: "fx-ui",
       surface: "terminal",
@@ -50,6 +52,7 @@ describe("register", () => {
   });
 
   test("collapsed activity reports failures and interruptions; expanded groups delegate to the engine", async ($, on) => {
+    on("session.cwd", () => ({ value: "/" }));
     const native = { type: "engine", ref: 0 } as const;
     on("ui.render", () => native);
     const calls: ToolGroupCall[] = [
@@ -99,6 +102,7 @@ describe("register", () => {
   });
 
   test("standalone reads and writes use compact file rows instead of native tool chrome", async ($, on) => {
+    on("session.cwd", () => ({ value: "/" }));
     on("ui.render", () => ({ type: "engine", ref: 0 }));
     for (const tool of ["Read", "Write", "Edit"] as const) {
       const row = await $.ui.mount({
@@ -114,13 +118,14 @@ describe("register", () => {
           isInterrupted: false,
         },
       });
-      expect((await row.findAll({ type: "Text" })).map((node) => node.text).join("")).toBe(
+      expect((await row.findAll({ type: "Button" })).map((node) => node.props.label).join("")).toBe(
         `● ${tool === "Write" ? "Wrote" : tool === "Edit" ? "Edited" : "Read"} /work/app.ts`,
       );
     }
   });
 
   test("file output collapses and detail mode restores native headers and results", async ($, on) => {
+    on("session.cwd", () => ({ value: "/" }));
     const native = { type: "engine", ref: 0 } as const;
     on("ui.render", () => native);
     const output = {
@@ -151,8 +156,8 @@ describe("register", () => {
       component: "ToolResult",
       props: { tool_use_id: "write", tool: "Write", output, isErrored: false },
     });
-    expect((await row.findAll({ type: "Text" })).map((node) => node.text).join("")).toBe(
-      "● Wrote /work/app.ts · 1 line",
+    expect((await row.findAll({ type: "Button" })).map((node) => node.props.label).join("")).toBe(
+      "● Wrote /work/app.ts +1 −0",
     );
     expect(await result.drawn()).toEqual({ type: "Box", props: {}, children: [] });
     const command = {
@@ -167,10 +172,11 @@ describe("register", () => {
     expect(await result.drawn()).toEqual(native);
     await $.command.run({ ...command, args: "off" });
     await row.redraw(props);
-    expect(await row.findAll({ type: "Text" })).toHaveLength(1);
+    expect(await row.findAll({ type: "Button" })).toHaveLength(1);
   });
 
-  test("file groups show paths and running file calls keep a working marker", async ($) => {
+  test("file groups show paths and running file calls keep a working marker", async ($, on) => {
+    on("session.cwd", () => ({ value: "/" }));
     const calls = ["/work/a.ts", "/work/b.ts"].map((file_path) => ({
       tool: "Read",
       input: { file_path },
@@ -187,6 +193,8 @@ describe("register", () => {
     expect((await group.findAll({ type: "Text" })).map((node) => node.text)).toEqual([
       "● ",
       "2 tool calls · 2 read",
+    ]);
+    expect((await group.findAll({ type: "Button" })).map((node) => node.props.label)).toEqual([
       "├ Read /work/a.ts",
       "└ Read /work/b.ts",
     ]);
@@ -203,10 +211,11 @@ describe("register", () => {
         isInterrupted: false,
       },
     });
-    expect((await running.find({ type: "Text" }))?.text).toBe("⋯ Write /work/a.ts");
+    expect((await running.find({ type: "Button" }))?.props.label).toBe("⋯ Write /work/a.ts");
   });
 
   test("errors, staged changes, partial reads and nontext results retain native details", async ($, on) => {
+    on("session.cwd", () => ({ value: "/" }));
     const native = { type: "engine", ref: 0 } as const;
     on("ui.render", () => native);
     for (const props of [
@@ -252,6 +261,7 @@ describe("register", () => {
   });
 
   test("sender framing, long replies and other surfaces stay with the native renderer", async ($, on) => {
+    on("session.cwd", () => ({ value: "/" }));
     const native = { type: "engine", ref: 0 } as const;
     on("ui.render", () => native);
     for (const surface of ["terminal", "mobile", "desktop", "vscode"] as const) {
@@ -287,6 +297,7 @@ describe("register", () => {
   });
 
   test("working state keeps native timing and overrides, and the completed turn shows its duration", async ($, on) => {
+    on("session.cwd", () => ({ value: "/" }));
     on("ui.render", { component: "Spinner" }, (_$, e) => ({
       type: "Text",
       children: [e.props.message ?? e.props.word, e.props.suffix],
