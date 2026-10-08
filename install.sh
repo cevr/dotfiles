@@ -46,6 +46,9 @@ if command -v herdr >/dev/null 2>&1; then
   done < "$DOTFILES_DIR/workbox/herdr-plugins.txt"
 fi
 
+# Claude terminal mod (both accounts)
+"$DOTFILES_DIR/skills/fx-ui/install.sh"
+
 # Personal commands
 mkdir -p ~/.local/bin
 ln -sf "$DOTFILES_DIR/skills/track-work-hours/scripts/hours" ~/.local/bin/hours

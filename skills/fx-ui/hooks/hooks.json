@@ -1,0 +1,4 @@
+{
+  "description": "fx-inspired terminal rendering",
+  "modules": ["./register.ts"]
+}

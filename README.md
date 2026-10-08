@@ -12,6 +12,7 @@ My personal dotfiles.
 | `gitignore_global` | Global gitignore |
 | `ghostty/config` | Ghostty terminal config |
 | `atuin.toml` | Atuin shell history config |
+| `skills/fx-ui` | fx/Gent-inspired Claude Code terminal mod, shared by both accounts |
 | `skills/track-work-hours` | `hours` command and agent skill for payroll tracking |
 
 ## Installation
@@ -36,6 +37,16 @@ ln -sf $(pwd)/skills/track-work-hours/scripts/hours ~/.local/bin/hours
 ```bash
 ~/Developer/personal/dotfiles/workbox/bootstrap.sh
 ```
+
+### Claude terminal mod
+
+```bash
+~/Developer/personal/dotfiles/skills/fx-ui/install.sh
+```
+
+`fx-ui` auto-loads from the shared skills directory in new Claude sessions. The
+macOS installer and workbox bootstrap install it for both Claude accounts. See
+[the mod README](skills/fx-ui/README.md) for previewing, disabling and validation.
 
 ## Brew packages
 

@@ -1,0 +1,8 @@
+{
+  "name": "fx-ui",
+  "version": "0.1.0",
+  "description": "A restrained fx-inspired terminal transcript for Claude Code.",
+  "author": {
+    "name": "Cristian"
+  }
+}

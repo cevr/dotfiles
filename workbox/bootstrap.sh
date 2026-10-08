@@ -120,6 +120,7 @@ ln -sfn "$HOME/.claude/CLAUDE.md" "$HOME/.claude2/CLAUDE.md"
 ln -sfn "$HOME/.claude/settings.json" "$HOME/.claude2/settings.json"
 ln -sfn "$HOME/.claude/skills" "$HOME/.claude2/skills"
 ln -sfn "$HOME/.claude/statusline-git.sh" "$HOME/.claude2/statusline-git.sh"
+"$workbox_dir/../skills/fx-ui/install.sh"
 sudo chsh -s /usr/bin/zsh "$USER"
 
 for script in "$workbox_dir"/bin/*; do
