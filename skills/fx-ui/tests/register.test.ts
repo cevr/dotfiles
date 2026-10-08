@@ -2,6 +2,29 @@ import { describe, expect, test } from "claude-code/testing";
 import type { ToolGroupCall } from "claude-code";
 
 describe("register", () => {
+  test("a write that leaves the content unchanged is identified as a no-op", async ($) => {
+    const row = await $.ui.mount({
+      plugin: "fx-ui",
+      surface: "terminal",
+      component: "ToolUse",
+      props: {
+        tool_use_id: "unchanged",
+        tool: "Write",
+        input: { file_path: "/work/app.ts" },
+        output: {
+          type: "update",
+          filePath: "/work/app.ts",
+          content: "const n = 1\n",
+          originalFile: "const n = 1\n",
+          structuredPatch: [],
+        },
+        isRunning: false,
+        isErrored: false,
+        isInterrupted: false,
+      },
+    });
+    expect((await row.find({ type: "Text" }))?.text).toBe("● No changes to /work/app.ts");
+  });
   test("prompts keep multiline text and replies keep rich markdown without a bullet", async ($) => {
     const prompt = await $.ui.mount({
       plugin: "fx-ui",

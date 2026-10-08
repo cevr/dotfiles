@@ -62,6 +62,14 @@ function fileRow(call: ToolGroupCall): string | undefined {
   if (
     call.tool === "Write" &&
     !call.isRunning &&
+    result?.type === "update" &&
+    typeof result.content === "string" &&
+    result.originalFile === result.content
+  )
+    return `No changes to ${input.file_path}`;
+  if (
+    call.tool === "Write" &&
+    !call.isRunning &&
     !call.isErrored &&
     !call.isInterrupted &&
     typeof result?.content === "string"
