@@ -56,9 +56,10 @@ claude plugin validate ~/Developer/personal/dotfiles/skills/fx-ui
 claude plugin test ~/Developer/personal/dotfiles/skills/fx-ui
 ```
 
-Claude generates `.claude-plugin/types/` from the installed engine when it
-loads the plugin. Those declarations are ignored by Git. After loading, use an
-installed TypeScript compiler to check the hooks and tests:
+Claude generates `.claude-plugin/types/` from the installed engine when the
+plugin is loaded explicitly with `--plugin-dir` (the preview command above).
+Those declarations are ignored by Git. After that preview, use an installed
+TypeScript compiler to check the hooks and tests:
 
 ```sh
 tsc -p ~/Developer/personal/dotfiles/skills/fx-ui/tsconfig.json
