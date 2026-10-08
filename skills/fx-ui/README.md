@@ -8,10 +8,19 @@ and changes terminal presentation:
 - Bold user prompts with fx/Gent's `┃` rail, on the terminal's own background.
 - Assistant replies without the opening bullet, with native markdown, links,
   tables and syntax highlighting.
-- Muted tool groups (`● Read 3 · Shell 2`), with explicit failures and interruptions.
+- Muted tool groups (`● 5 tool calls · 3 read · 2 command`), with explicit failures and interruptions.
+- File-path rows for standalone reads, writes and edits; successful text bodies
+  and diffs stay collapsed. Writes show the saved line count.
 - Plain working verbs and compact turn durations.
 
-Standalone tools, expanded tool groups (`ctrl+o`), permission dialogs, sender
+Run `/fx-details` to toggle all tool rows between compact and full native
+arguments/output, or `/fx-details on` and `/fx-details off` to choose explicitly.
+The mode lasts for the session. Claude's mod API does not expose the Ctrl+O
+detail state on standalone tool rows, so use `/fx-details on` to inspect them;
+Ctrl+O still opens Claude's transcript view.
+
+Errors, interruptions, staged changes, user-modified writes, paginated reads,
+nontext read results, other standalone tools, permission dialogs, sender
 labels, and remote surfaces keep their native rendering. The input editor and
 startup logo have no render hook in this API. This mod never changes prompts,
 tool execution, permissions, or stored conversation content.
@@ -62,7 +71,7 @@ Those declarations are ignored by Git. After that preview, use an installed
 TypeScript compiler to check the hooks and tests:
 
 ```sh
-tsc -p ~/Developer/personal/dotfiles/skills/fx-ui/tsconfig.json
+tsc --noEmit -p ~/Developer/personal/dotfiles/skills/fx-ui/tsconfig.json
 ```
 
 Markdown leaves have a 10,000-character limit in the mod API. Longer replies

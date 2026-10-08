@@ -11,12 +11,12 @@ const box = (
 ): RenderElement => ({ type: "Box", props, children });
 
 const labels = new Map<string, string>([
-  ["Bash", "Shell"],
-  ["Read", "Read"],
-  ["Grep", "Search"],
-  ["Glob", "Find"],
-  ["Edit", "Edit"],
-  ["Write", "Write"],
+  ["Bash", "command"],
+  ["Read", "read"],
+  ["Grep", "search"],
+  ["Glob", "list"],
+  ["Edit", "edit"],
+  ["Write", "write"],
 ]);
 
 function activity(calls: readonly ToolGroupCall[]): string {
@@ -25,7 +25,7 @@ function activity(calls: readonly ToolGroupCall[]): string {
     const label = labels.get(call.tool) ?? call.tool;
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
-  return [...counts].map(([label, count]) => `${label} ${count}`).join(" · ");
+  return [...counts].map(([label, count]) => `${count} ${label}`).join(" · ");
 }
 
 function duration(ms: number): string {
@@ -33,7 +33,71 @@ function duration(ms: number): string {
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
+const fileTools = new Set(["Read", "Write", "Edit"]);
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+}
+
+function compactOutput(tool: string, output: unknown): boolean {
+  const result = record(output);
+  if (!result || result.staged || result.userModified) return false;
+  if (tool === "Read") {
+    const file = record(result.file);
+    return (
+      result.type === "text" && typeof file?.filePath === "string" && !file.truncatedByTokenCap
+    );
+  }
+  return (tool === "Write" || tool === "Edit") && typeof result.filePath === "string";
+}
+
+function fileRow(call: ToolGroupCall): string | undefined {
+  if (call.isErrored || call.isInterrupted) return undefined;
+  if (!fileTools.has(call.tool) || !call.input || typeof call.input !== "object") return undefined;
+  const input = call.input as Record<string, unknown>;
+  if (typeof input.file_path !== "string" || input.file_path.length > 9000) return undefined;
+  const verb = call.tool === "Write" ? "Wrote" : call.tool === "Edit" ? "Edited" : "Read";
+  let count = "";
+  const result = record(call.output);
+  if (
+    call.tool === "Write" &&
+    !call.isRunning &&
+    !call.isErrored &&
+    !call.isInterrupted &&
+    typeof result?.content === "string"
+  ) {
+    const lines =
+      result.content === ""
+        ? 0
+        : result.content.split("\n").length - Number(result.content.endsWith("\n"));
+    count = ` · ${lines} ${lines === 1 ? "line" : "lines"}`;
+  }
+  return `${call.isRunning ? call.tool : verb} ${input.file_path}${count}`;
+}
+
 export function register(on: On) {
+  let details = false;
+  on("session.start", async ($, e, next) => {
+    await $.command.register({
+      name: "fx-details",
+      description: "Toggle full tool arguments and output",
+      argumentHint: "[on|off]",
+      immediate: true,
+    });
+    return next(e);
+  });
+  on("command.run", { command: "fx-details" }, ($, e) => {
+    const mode = e.args.trim();
+    if (mode && mode !== "on" && mode !== "off") return { text: "Usage: /fx-details [on|off]" };
+    details = mode ? mode === "on" : !details;
+    $.ui.invalidate("ui.render");
+    return {
+      text: details
+        ? "Full tool details · /fx-details off for compact rows"
+        : "Compact tool rows · /fx-details on for full details",
+    };
+  });
+
   on("ui.render", { surface: "terminal", component: "UserMessage" }, (_$, e, next) => {
     // Other people's messages keep their sender labels and native framing.
     if (
@@ -68,23 +132,67 @@ export function register(on: On) {
   });
 
   on("ui.render", { surface: "terminal", component: "ToolGroup" }, (_$, e, next) => {
-    // ctrl+o owns disclosure, including each tool's full arguments and output.
-    if (e.props.isExpanded || e.props.calls.length === 0) return next(e);
+    if (
+      details ||
+      e.props.isExpanded ||
+      e.props.calls.length === 0 ||
+      e.props.calls.some(
+        (call) =>
+          fileTools.has(call.tool) &&
+          call.output !== undefined &&
+          !compactOutput(call.tool, call.output),
+      )
+    )
+      return next(e);
     const calls = e.props.calls;
     const failed = calls.filter((call) => call.isErrored && !call.isInterrupted).length;
     const stopped = calls.filter((call) => call.isInterrupted).length;
     const running = calls.some((call) => call.isRunning);
+    const summary = box([
+      text(`${running ? "⋯" : failed ? "✕" : stopped ? "■" : "●"} `, {
+        color: failed ? "error" : "inactive",
+      }),
+      text(`${calls.length} tool ${calls.length === 1 ? "call" : "calls"} · ${activity(calls)}`, {
+        dimColor: true,
+      }),
+      ...(failed ? [text(` · ${failed} failed`, { color: "error" })] : []),
+      ...(stopped ? [text(` · ${stopped} interrupted`, { dimColor: true })] : []),
+    ]);
+    const files = calls.flatMap((call) => {
+      const row = fileRow(call);
+      return row ? [row] : [];
+    });
     return box(
       [
-        text(`${running ? "⋯" : failed ? "✕" : stopped ? "■" : "●"} `, {
-          color: failed ? "error" : "inactive",
-        }),
-        text(activity(calls), { dimColor: true }),
-        ...(failed ? [text(` · ${failed} failed`, { color: "error" })] : []),
-        ...(stopped ? [text(` · ${stopped} interrupted`, { dimColor: true })] : []),
+        summary,
+        ...files.map((row, i) =>
+          text(`${i === files.length - 1 ? "└" : "├"} ${row}`, { dimColor: true }),
+        ),
       ],
-      { marginLeft: 2 },
+      { flexDirection: "column", marginLeft: 2 },
     );
+  });
+
+  on("ui.render", { surface: "terminal", component: "ToolUse" }, (_$, e, next) => {
+    // The API exposes no standalone detail flag; /fx-details restores native rows.
+    if (
+      details ||
+      e.props.isErrored ||
+      e.props.isInterrupted ||
+      (e.props.output !== undefined && !compactOutput(e.props.tool, e.props.output))
+    )
+      return next(e);
+    const row = fileRow(e.props);
+    if (!row) return next(e);
+    return box([text(`${e.props.isRunning ? "⋯" : "●"} ${row}`, { dimColor: true })], {
+      marginLeft: 2,
+    });
+  });
+
+  on("ui.render", { surface: "terminal", component: "ToolResult" }, (_$, e, next) => {
+    if (details || e.props.isErrored || !compactOutput(e.props.tool, e.props.output))
+      return next(e);
+    return box([]);
   });
 
   on("ui.render", { surface: "terminal", component: "Spinner" }, (_$, e, next) => {
