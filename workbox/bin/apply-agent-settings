@@ -40,6 +40,11 @@ install -m 600 "$claude_settings_file" "$HOME/.claude/settings.json"
 install -m 600 "$claude_source/settings.local.json" "$HOME/.claude/settings.local.json"
 install -m 755 "$claude_source/statusline-git.sh" "$HOME/.claude/statusline-git.sh"
 
+# Reapply the composer migration after importing the legacy Mac settings.
+if [ -x "$HOME/.claude/skills/fx-ui/install.sh" ]; then
+  "$HOME/.claude/skills/fx-ui/install.sh"
+fi
+
 awk '
   BEGIN {
     table_started = 0

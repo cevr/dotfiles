@@ -12,6 +12,9 @@ and changes terminal presentation:
 - File-path rows for standalone reads, writes and edits; successful text bodies
   and diffs stay collapsed. Writes show the saved line count.
 - Plain working verbs and compact turn durations.
+- A muted composer footer: model, account/folder, Git branch and changed-file
+  count, context, session cost, and available usage windows. Native input and
+  permission controls stay live above it.
 
 Run `/fx-details` to toggle all tool rows between compact and full native
 arguments/output, or `/fx-details on` and `/fx-details off` to choose explicitly.
@@ -35,6 +38,21 @@ The installer exposes the plugin in both `~/.claude/skills` and
 `~/.claude2/skills`, preserving other skills. If those directories already point
 to dotfiles, nothing needs linking. Start a new Claude session; the mod loads as
 `fx-ui@skills-dir`. `install.sh` and `workbox/bootstrap.sh` include this step.
+It also removes the legacy `statusline-git.sh` command from settings, saving
+that setting in `.fx-ui-statusline.json`. Shared settings symlinks and custom
+statusline commands are preserved. The legacy script remains available.
+
+Usage figures come from Claude's native session API; no credential lookup or
+background HTTP polling is needed. Unavailable readings are omitted, and
+context stays unknown until Claude has a reading. Git metadata refreshes on
+footer redraws, cached for two seconds. Narrow terminals split identity and
+usage into two rows, truncating only a row that still does not fit.
+
+To restore the legacy statusline, disable `fx-ui` and run:
+
+```sh
+~/Developer/personal/dotfiles/skills/fx-ui/install.sh --restore-statusline
+```
 
 Preview an isolated session before installing:
 
@@ -63,6 +81,7 @@ An account without function hooks keeps Claude's native UI.
 ```sh
 claude plugin validate ~/Developer/personal/dotfiles/skills/fx-ui
 claude plugin test ~/Developer/personal/dotfiles/skills/fx-ui
+sh ~/Developer/personal/dotfiles/skills/fx-ui/tests/install.test.sh
 ```
 
 Claude generates `.claude-plugin/types/` from the installed engine when the

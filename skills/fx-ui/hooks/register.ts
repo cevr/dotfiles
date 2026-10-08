@@ -1,4 +1,5 @@
 import type { On, RenderElement, RenderNode, ToolGroupCall } from "claude-code";
+import { register as registerComposer } from "./composer";
 
 const text = (
   value: string,
@@ -84,6 +85,7 @@ function fileRow(call: ToolGroupCall): string | undefined {
 }
 
 export function register(on: On) {
+  registerComposer(on);
   let details = false;
   on("session.start", async ($, e, next) => {
     await $.command.register({
