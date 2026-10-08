@@ -16,13 +16,14 @@ success bodies should not consume more attention than the answer.
 
 A tool row answers what happened, to what, and with what useful result:
 `Read src/app.ts`, `Ran bun test · 12 lines`, `Edited src/app.ts +3 −1`.
-Paths become relative only inside the session's working directory. Counts come
+Activity summaries occupy one row, with native end truncation at the available
+width; the complete source remains in inspection. Paths become relative only inside the session's working directory. Counts come
 from captured results. An unchanged write says so. A running action has a
 working marker and an unfinished verb. Failure and interruption are explicit.
 
 ## Disclosure without losing the thread
 
-Compact is the reading view. Activating a tool row opens one call in a separate
+Compact is the reading view. Activating a tool marker opens one call in a separate
 inspection pane: its file or output, diff where available, arguments and captured
 result. `/fx-tool` offers a keyboard-accessible chooser of rendered activity.
 Large histories and output are paged, while Copy section copies the complete

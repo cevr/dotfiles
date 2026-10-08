@@ -67,18 +67,28 @@ export function registerInspector(on: On, inspector: Inspector) {
         ...inspector.choices
           .slice(inspector.page * 20, (inspector.page + 1) * 20)
           .map((choice, i) =>
-            Button({
-              key: `choice-${i}`,
-              label: choice.label,
-              plain: true,
-              dimColor: true,
-              ...(i === 0 ? { autoFocus: true } : {}),
-              onPress: async () => {
-                await inspector.prepare(choice.load);
-                await $.ui.open(inspectPane);
-                $.ui.invalidate("ui.render");
-              },
-            }),
+            box(
+              [
+                Button({
+                  key: `choice-${i}`,
+                  label: choice.label,
+                  children: [text("› ")],
+                  plain: true,
+                  dimColor: true,
+                  ...(i === 0 ? { autoFocus: true } : {}),
+                  onPress: async () => {
+                    await inspector.prepare(choice.load);
+                    await $.ui.open(inspectPane);
+                    $.ui.invalidate("ui.render");
+                  },
+                }),
+                box([text(choice.label, { dimColor: true, wrap: "truncate-end" })], {
+                  flexGrow: 1,
+                  flexShrink: 1,
+                }),
+              ],
+              { width: e.props.bodyColumns },
+            ),
           ),
         box(
           [

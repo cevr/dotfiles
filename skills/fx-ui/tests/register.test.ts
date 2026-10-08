@@ -84,7 +84,9 @@ describe("register", () => {
       component: "ToolGroup",
       props: { calls, isActive: false, isExpanded: false },
     });
-    const rows = await group.findAll({ type: "Text" });
+    const rows = (await group.findAll({ type: "Text" })).filter(
+      (node) => node.props.wrap !== "truncate-end",
+    );
     expect(rows.map((node) => node.text).join("")).toBe(
       "✕ 3 tool calls · 1 constructor · 2 command · 1 failed · 1 interrupted",
     );
@@ -96,9 +98,12 @@ describe("register", () => {
       isActive: true,
       isExpanded: false,
     });
-    expect((await group.findAll({ type: "Text" })).map((node) => node.text).join("")).toBe(
-      "⋯ 1 tool call · 1 constructor",
-    );
+    expect(
+      (await group.findAll({ type: "Text" }))
+        .filter((node) => node.props.wrap !== "truncate-end")
+        .map((node) => node.text)
+        .join(""),
+    ).toBe("⋯ 1 tool call · 1 constructor");
   });
 
   test("standalone reads and writes use compact file rows instead of native tool chrome", async ($, on) => {
@@ -190,7 +195,7 @@ describe("register", () => {
       component: "ToolGroup",
       props: { calls, isActive: false, isExpanded: false },
     });
-    expect((await group.findAll({ type: "Text" })).map((node) => node.text)).toEqual([
+    expect((await group.findAll({ type: "Text" })).slice(0, 2).map((node) => node.text)).toEqual([
       "● ",
       "2 tool calls · 2 read",
     ]);

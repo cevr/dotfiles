@@ -56,19 +56,14 @@ export function registerTools(on: On, inspector: Inspector) {
   ) {
     calls.set(id, { call, cwd });
     const activity = describeActivity(call, cwd);
-    if (!activity)
-      return {
-        key: `tool-${id}`,
-        label: `${prefix ?? "●"} ${call.tool}`,
-        plain: true as const,
-        dimColor: true,
-        onPress: open,
-      };
     const marker =
       prefix ?? (call.isRunning ? "⋯" : call.isInterrupted ? "■" : call.isErrored ? "✕" : "●");
+    const label = `${marker} ${activity?.label ?? call.tool}`;
     return {
       key: `tool-${id}`,
-      label: `${marker} ${activity.label}`,
+      label,
+      marker,
+      description: activity?.label ?? call.tool,
       plain: true as const,
       dimColor: !call.isErrored,
       onPress: open,
@@ -88,17 +83,23 @@ export function registerTools(on: On, inspector: Inspector) {
     )
       return next(e);
     const { Button } = $.ui.resolve(e);
+    const { marker, description, ...control } = row(e.props.tool_use_id, e.props, cwd, async () => {
+      await inspector.prepare(() => document(e.props.tool_use_id));
+      await $.ui.open(inspectPane);
+      $.ui.invalidate("ui.render");
+    });
     return box(
       [
-        Button(
-          row(e.props.tool_use_id, e.props, cwd, async () => {
-            await inspector.prepare(() => document(e.props.tool_use_id));
-            await $.ui.open(inspectPane);
-            $.ui.invalidate("ui.render");
-          }),
-        ),
+        Button({ ...control, children: [text(`${marker} `, { wrap: "truncate-end" })] }),
+        box([text(description, { dimColor: true, wrap: "truncate-end" })], {
+          flexGrow: 1,
+          flexShrink: 1,
+        }),
       ],
-      { marginLeft: transcriptIndent },
+      {
+        marginLeft: transcriptIndent,
+        width: Math.max(1, (e.viewport?.columns ?? 80) - transcriptIndent),
+      },
     );
   });
 
@@ -141,18 +142,26 @@ export function registerTools(on: On, inspector: Inspector) {
         summary,
         ...e.props.calls.map((call, i) => {
           const id = call.tool_use_id ?? `${e.requestId}-${i}`;
-          return Button(
-            row(
-              id,
-              call,
-              cwd,
-              async () => {
-                await inspector.prepare(() => document(id));
-                await $.ui.open(inspectPane);
-                $.ui.invalidate("ui.render");
-              },
-              i === e.props.calls.length - 1 ? "└" : "├",
-            ),
+          const { marker, description, ...control } = row(
+            id,
+            call,
+            cwd,
+            async () => {
+              await inspector.prepare(() => document(id));
+              await $.ui.open(inspectPane);
+              $.ui.invalidate("ui.render");
+            },
+            i === e.props.calls.length - 1 ? "└" : "├",
+          );
+          return box(
+            [
+              Button({ ...control, children: [text(`${marker} `, { wrap: "truncate-end" })] }),
+              box([text(description, { dimColor: !call.isErrored, wrap: "truncate-end" })], {
+                flexGrow: 1,
+                flexShrink: 1,
+              }),
+            ],
+            { width: Math.max(1, (e.viewport?.columns ?? 80) - transcriptIndent) },
           );
         }),
       ],

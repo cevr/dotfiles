@@ -19,7 +19,7 @@ and changes terminal presentation:
 See [DESIGN.md](DESIGN.md) for the visual system distilled from fx's source.
 All colors use Claude's default tokens.
 
-Click an activity row to inspect that call, or run `/fx-tool` to choose from
+Click an activity marker to inspect that call, or run `/fx-tool` to choose from
 rendered activity. `/fx-tool <tool-id>` opens a known call directly. Switch
 sections with Tab/Enter; Next/Previous page large output; Copy section copies
 its complete source. Escape closes the pane. Click footer `details` or run
