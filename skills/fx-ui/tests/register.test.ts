@@ -31,7 +31,7 @@ describe("register", () => {
     on("ui.render", () => native);
     const calls: ToolGroupCall[] = [
       {
-        tool: "Read",
+        tool: "constructor",
         input: { file_path: "/work/app.ts" },
         isRunning: false,
         isErrored: false,
@@ -60,7 +60,7 @@ describe("register", () => {
     });
     const rows = await group.findAll({ type: "Text" });
     expect(rows.map((node) => node.text).join("")).toBe(
-      "✕ Read 1 · Shell 2 · 1 failed · 1 interrupted",
+      "✕ constructor 1 · Shell 2 · 1 failed · 1 interrupted",
     );
     expect(rows.find((node) => node.text.includes("failed"))?.props.color).toBe("error");
     await group.redraw({ calls, isActive: false, isExpanded: true });
@@ -71,7 +71,7 @@ describe("register", () => {
       isExpanded: false,
     });
     expect((await group.findAll({ type: "Text" })).map((node) => node.text).join("")).toBe(
-      "⋯ Read 1",
+      "⋯ constructor 1",
     );
   });
 

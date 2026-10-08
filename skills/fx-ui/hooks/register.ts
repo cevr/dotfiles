@@ -10,19 +10,19 @@ const box = (
   props: Record<string, string | number | boolean> = {},
 ): RenderElement => ({ type: "Box", props, children });
 
-const labels: Record<string, string> = {
-  Bash: "Shell",
-  Read: "Read",
-  Grep: "Search",
-  Glob: "Find",
-  Edit: "Edit",
-  Write: "Write",
-};
+const labels = new Map<string, string>([
+  ["Bash", "Shell"],
+  ["Read", "Read"],
+  ["Grep", "Search"],
+  ["Glob", "Find"],
+  ["Edit", "Edit"],
+  ["Write", "Write"],
+]);
 
 function activity(calls: readonly ToolGroupCall[]): string {
   const counts = new Map<string, number>();
   for (const call of calls) {
-    const label = labels[call.tool] ?? call.tool;
+    const label = labels.get(call.tool) ?? call.tool;
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
   return [...counts].map(([label, count]) => `${label} ${count}`).join(" · ");
