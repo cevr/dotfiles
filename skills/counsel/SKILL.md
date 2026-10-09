@@ -69,9 +69,13 @@ Each run writes a directory under `/tmp/counsel/<slug>/`:
 prompt.md
 claude.md or codex.md
 claude.stderr or codex.stderr
+events.jsonl
+manifest.json
 ```
 
-Read order: stdout payload → `<target>.md` → `<target>.stderr` if error/timeout.
+`manifest.json` records the run: `status`, `model`, `failure`, `exitCode`, and `durationMs`. `model` is the model that answered: after a Codex fallback it names the fallback model, and for Claude it names the concrete model behind the alias (e.g. `claude-opus-5-5`).
+
+Read order: stdout payload → `<target>.md` → `manifest.json` and `<target>.stderr` if error/timeout.
 
 ## Architecture
 
@@ -92,6 +96,7 @@ src/counsel/
 
 - Fails if it cannot infer Claude vs Codex and `--from` is missing
 - Writes files; does not stream the other model's answer back into active chat
+- Exits 1 and prints `<target> failed: <reason>` on stderr when the other agent does not answer (usage limit, API error, no answer), even when that agent exits 0; the `.md` file is then empty
 - Claude: `--deep` uses Fable with max effort; standard uses the `opus` alias (latest Opus) with medium effort
-- Codex: standard uses GPT-6 Sol at medium effort; `--deep` uses GPT-6 Sol at max effort
+- Codex: standard uses the newest GPT Sol that the Codex account can use (models.dev release order, filtered by the Codex CLI model list, with a fallback to an older Sol on rejection) at medium effort; `--deep` uses the same model at max effort
 - Claude invocation includes `--tools` and `--allowedTools` restricted to read-only tools

@@ -7,19 +7,17 @@ description: Generate images from text prompts with GPT Image 2.5 Flare or Sunbu
 
 Generate images with GPT Image 2.5. The ChatGPT subscription remains the default.
 
-- **Codex subscription:** `--model gpt-5.5` selects the main Responses model. Its image tool uses `gpt-image-2.5-flare` by default. Use `--image-model gpt-image-2.5-sunburst` to select Sunburst. Authentication comes from `codex login`.
+- **Codex subscription:** `--model` selects the main Responses model; the default is the newest GPT Sol the Codex account can use. The Codex backend always uses its own image model (`gpt-image-2-codex`) at a quality it chooses, so this route cannot select Flare or Sunburst. Authentication comes from `codex login`.
 - **OpenAI Images API:** `--model gpt-image-2.5-flare` or `--model gpt-image-2.5-sunburst` selects the paid API. This route needs an OpenAI API key. Use Flare for fast generation. Use Sunburst for precise edits.
-
-`--image-model` selects the subscription tool. It cannot be combined with an API image model in `--model`.
 
 ## Quick reference
 
 ```bash
-# ChatGPT subscription: Flare is the default image tool
+# ChatGPT subscription (the Codex backend picks the image model)
 okra image "a single ripe okra pod on white" -o okra.png
 
-# ChatGPT subscription: select Sunburst
-okra image "an illustrated botanical label" --image-model gpt-image-2.5-sunburst -o label.png
+# Paid API: Sunburst for precise edits
+okra image "an illustrated botanical label" --model gpt-image-2.5-sunburst -o label.png
 
 # Paid API: Flare with the new quality setting and a custom size
 okra image "a landscape at dawn" --model gpt-image-2.5-flare \
@@ -45,20 +43,19 @@ The last command writes `logo-1.png`, `logo-2.png`, and `logo-3.png`.
 
 ## Flags
 
-| Flag            | Default               | Use                                                                                               |
-| --------------- | --------------------- | ------------------------------------------------------------------------------------------------- |
-| `--out`, `-o`   | `<prompt-slug>.png`   | Output path.                                                                                      |
-| `--model`       | `gpt-5.5`             | Main Codex model, or a direct API image model.                                                    |
-| `--image-model` | `gpt-image-2.5-flare` | Codex image tool: Flare or Sunburst.                                                              |
-| `--size`        | `auto`                | Image dimensions, such as `1024x1024` or `1536x864`.                                              |
-| `--format`      | `png`                 | `png`, `webp`, or `jpeg`.                                                                         |
-| `--quality`     | API model default     | API only: `auto`, `low`, `medium`, `high`, `xhigh`, or `max`. The last two require GPT Image 2.5. |
-| `--background`  | API model default     | API only: `auto`, `transparent`, or `opaque`. Use PNG or WebP for transparency.                   |
-| `--n`           | `1`                   | API only: number of output images.                                                                |
-| `--ref`         | none                  | Repeatable input path. Codex: reference image. API: source image to edit.                         |
-| `--edit`        | off                   | Explicit API edit request. Requires `--ref`.                                                      |
-| `--mask`        | none                  | API edit mask. Requires `--ref`.                                                                  |
-| `--fidelity`    | omitted               | Legacy `gpt-image-1` and `gpt-image-1.5` edits only: `high` or `low`. Omit for GPT Image 2.5.     |
+| Flag           | Default               | Use                                                                                               |
+| -------------- | --------------------- | ------------------------------------------------------------------------------------------------- |
+| `--out`, `-o`  | `<prompt-slug>.png`   | Output path.                                                                                      |
+| `--model`      | newest usable GPT Sol | Main Codex model, or a direct API image model.                                                    |
+| `--size`       | `auto`                | Image dimensions, such as `1024x1024` or `1536x864`. Exact on the API route; see the note below.  |
+| `--format`     | `png`                 | `png`, `webp`, or `jpeg`.                                                                         |
+| `--quality`    | API model default     | API only: `auto`, `low`, `medium`, `high`, `xhigh`, or `max`. The last two require GPT Image 2.5. |
+| `--background` | API model default     | API only: `auto`, `transparent`, or `opaque`. Use PNG or WebP for transparency.                   |
+| `--n`          | `1`                   | API only: number of output images.                                                                |
+| `--ref`        | none                  | Repeatable input path. Codex: reference image. API: source image to edit.                         |
+| `--edit`       | off                   | Explicit API edit request. Requires `--ref`.                                                      |
+| `--mask`       | none                  | API edit mask. Requires `--ref`.                                                                  |
+| `--fidelity`   | omitted               | Legacy `gpt-image-1` and `gpt-image-1.5` edits only: `high` or `low`. Omit for GPT Image 2.5.     |
 
 `--quality`, `--background`, and `--n` apply only to the API route. The subscription route prints a note and ignores these flags. It returns one image.
 
@@ -92,7 +89,7 @@ The environment value takes priority over the stored key. Stored keys use `~/.ok
 
 - `AUTH_MISSING`: run `codex login`, or set the API key for the selected route.
 - `AUTH_EXPIRED`: the server rejected the credentials. Sign in again or replace the API key.
-- `INVALID_INPUT`: check the model and flags. API edit controls need a source image. `--image-model` requires the subscription route.
+- `INVALID_INPUT`: check the model and flags. API edit controls need a source image.
 - `GENERATION_FAILED`: the server rejected the request or returned an invalid response.
 - `NO_IMAGE`: the response contains no image.
 - `DECODE_FAILED`: the response contains invalid base64 data.
@@ -100,6 +97,8 @@ The environment value takes priority over the stored key. Stored keys use `~/.ok
 ## Transport notes
 
 The subscription route sends `store: false`, streams the response, and includes the installed Codex version. `CodexStreamPatch` handles the server's `generating` image status before the Effect adapter decodes the stream.
+
+On the Codex route the backend replaces the tool's `size` with `auto` and lets the model choose. Okra states the requested size in the prompt, which gives exact portrait and landscape sizes (`1024x1536`, `1536x1024`), but a square comes back as `1254x1254`. Okra prints a note on stderr when the result differs from `--size`. Use an API image model for an exact size.
 
 The API route decodes all base64 image results. Okra extends the upstream request and response schemas for GPT Image 2.5 quality values and custom response sizes.
 
