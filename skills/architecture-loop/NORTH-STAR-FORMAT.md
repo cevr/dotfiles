@@ -1,6 +1,6 @@
 # NORTH_STAR.md Format
 
-`NORTH_STAR.md` sits at the repo root and states what good means for this project: the qualities every candidate serves, the owner's standing rules, the sweeps that test them, and the candidates already rejected. `improve-codebase-architecture` reads it; `architecture-loop` reads it in every sweep, apply and counsel prompt.
+`NORTH_STAR.md` sits at the repo root and states what good means for this project: the qualities every candidate serves, the owner's standing rules, the sweeps that test them, and the candidates already rejected. `architecture-loop` reads it in a single pass, and in every sweep, apply and counsel prompt of the loop.
 
 ## Structure
 

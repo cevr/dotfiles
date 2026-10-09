@@ -1,6 +1,6 @@
 # PRIOR_ARTS.md Format
 
-`PRIOR_ARTS.md` sits at the repo root and lists what this project compares itself against: other codebases, products and write-ups, what to read in each, and the comparisons already settled. `improve-codebase-architecture` and `architecture-loop` read it before surveying, so a settled question is never surveyed twice.
+`PRIOR_ARTS.md` sits at the repo root and lists what this project compares itself against: other codebases, products and write-ups, what to read in each, and the comparisons already settled. `architecture-loop` reads it before surveying, in a single pass and in the loop,, so a settled question is never surveyed twice.
 
 Repos come from the `repo` skill: `okra repo fetch <slug>`, then `okra repo path <slug>`. `okra repo list` prints hundreds of kilobytes; use `path`. When a cached repo is on the wrong branch, `git fetch origin <branch>` and read `origin/<branch>`.
 

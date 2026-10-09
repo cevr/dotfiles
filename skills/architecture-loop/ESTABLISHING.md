@@ -39,7 +39,7 @@ Done when every row was read, and every north star has at least one source or a 
 
 ## 4. Confirm
 
-- **With the user present** (`improve-codebase-architecture`): show the north stars table, the tiebreaks and the sources, then call the Skill tool with "grilling", limited to what changes the files: a north star that is wrong, one that is missing, each tiebreak. Write the answers in and remove their `(drafted …)` markers.
-- **Autonomous** (`architecture-loop`): write each drafted north star and tiebreak as an owner question on the ledger, and carry on. A drafted north star guides sweeps; a change that removes behavior and that only a drafted north star justifies waits for the owner's answer.
+- **With the user present** (a single pass): show the north stars table, the tiebreaks and the sources, then call the Skill tool with "grilling", limited to what changes the files: a north star that is wrong, one that is missing, each tiebreak. Write the answers in and remove their `(drafted …)` markers.
+- **Autonomous** (the loop): write each drafted north star and tiebreak as an owner question on the ledger, and carry on. A drafted north star guides sweeps; a change that removes behavior and that only a drafted north star justifies waits for the owner's answer.
 
 Commit both files on their own (`docs: establish north stars and prior arts`), with the evidence receipts in the commit body, so the files stay in today's tense and the reasons stay findable.

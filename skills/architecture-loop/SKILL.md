@@ -1,17 +1,19 @@
 ---
 name: architecture-loop
-description: Run architecture passes until one finds polish only — sweep against the project's NORTH_STAR.md and PRIOR_ARTS.md, review code and tests, apply in isolated workspaces, counsel, live-check.
+description: improve-codebase-architecture judged against the project's NORTH_STAR.md and PRIOR_ARTS.md — one pass with the user picking and grilling, or autonomous passes until one finds polish only (sweep, review code and tests, apply in isolated workspaces, counsel, live-check).
 disable-model-invocation: true
 ---
 
 # Architecture loop
 
-A **pass** is: coverage audit → read-only sweeps → triage into batches → per batch: apply in its own workspace, one counsel round, merge → live check. Passes repeat until the close rule holds. Within a pass, each **sweep** is one read-only lens over the code. This is `improve-codebase-architecture` run autonomously: the same lens, no grilling, every finding applied or rejected with a receipt.
+This skill is a superset of `improve-codebase-architecture`: the same lens, judged against the project's north stars and prior arts. It runs one of two ways — a [single pass with the user](#single-pass-with-the-user), who picks and grills, or the autonomous loop below, where every finding is applied or rejected with a receipt.
+
+In the loop, a **pass** is: coverage audit → read-only sweeps → triage into batches → per batch: apply in its own workspace, one counsel round, merge → live check. Passes repeat until the close rule holds. Within a pass, each **sweep** is one read-only lens over the code.
 
 The project says what good is; this skill says how to loop:
 
-- **`NORTH_STAR.md`** (repo root): north stars, tiebreaks, owner rules, project passes, live check, rejected candidates. Format: `~/.claude/skills/improve-codebase-architecture/NORTH-STAR-FORMAT.md`.
-- **`PRIOR_ARTS.md`** (repo root): what to compare against, by pass, and the comparisons already settled. Format: `~/.claude/skills/improve-codebase-architecture/PRIOR-ARTS-FORMAT.md`.
+- **`NORTH_STAR.md`** (repo root): north stars, tiebreaks, owner rules, project passes, live check, rejected candidates. Format: [`NORTH-STAR-FORMAT.md`](NORTH-STAR-FORMAT.md).
+- **`PRIOR_ARTS.md`** (repo root): what to compare against, by pass, and the comparisons already settled. Format: [`PRIOR-ARTS-FORMAT.md`](PRIOR-ARTS-FORMAT.md).
 - **The ledger**, `plans/architecture-loop-<date>.md`: the single source of truth for what is done, rejected, carried and open. Layout: [`ledger-template.md`](ledger-template.md).
 - **Pass files** (briefs, reports, logs, counsel prompts) live in `~/.cache/architecture-loop/<repo>/pass<N>/`.
 
@@ -20,6 +22,17 @@ Call the Skill tool with "codebase-design" once at the start; its glossary is th
 **Autonomy.** Decide by the principles in `~/Developer/personal/dotfiles/principles/` and write "decided by <principle>" on the ledger row. Every finding is applied or rejected with a receipt; the loop asks nothing. Five things stay with the owner, written as owner questions on the ledger while the loop carries on with the rest: a persisted or wire format change that is not additive, a north-star conflict no tiebreak settles, a run that costs money beyond what the owner rules allow, publishing or deploying, and pushing (only when asked).
 
 **Safety.** [`safety.md`](safety.md) is the one copy of the safety rules. Every prompt the loop writes starts by sending the agent to read it, and `NORTH_STAR.md`'s owner rules, in full before any action.
+
+## Single pass with the user
+
+When the user wants to choose rather than hand off, read `~/.claude/skills/improve-codebase-architecture/SKILL.md` (it is user-invoked only, so read it rather than calling it) and follow its process with these additions; everything else runs as written there.
+
+- **Lens.** Besides `codebase-design`, the glossary and ADRs: `NORTH_STAR.md` (north stars, tiebreaks, owner rules, Rejected) and `PRIOR_ARTS.md` (comparisons, Settled). Read both first. When either is missing, establish it by [`ESTABLISHING.md`](ESTABLISHING.md), its with-the-user branch: candidates judged against no north star rank by taste. A north star, prior art or owner direction named in the prompt counts as written there; the last step writes it down.
+- **Explore.** Spawn in one message the codebase walker and one agent per prior art whose "Compare with" paths overlap the scope, reading its "Read it for" paths and skipping what Settled answers. The walker also asks: where does the code break a north star, by its own "breaks when" column? A prior-art agent reports where the other codebase carries the same behavior with fewer concepts, and the seam it put there.
+- **Report.** Each card adds **North star** (the one it serves, by its `NORTH_STAR.md` name; also a tag in the badge row) and **Prior art** (the codebase and path that already has the after shape, when one does). When Sideshow answers (`curl -sf -m 2 http://localhost:8228`), publish the report there as an html post; otherwise open it. The report stops at the problem and the direction; interfaces take shape in the grilling.
+- **Settled decisions.** A candidate that trades one north star for another, contradicts an ADR, or reopens a `NORTH_STAR.md` → Rejected row is surfaced only when the friction warrants revisiting, with a warning callout (_"reopens Rejected: …, because…"_). A candidate against an owner rule is never listed.
+- **Grilling** also covers which north star the candidate serves and which it strains. A load-bearing rejection becomes a `NORTH_STAR.md` → Rejected row (an ADR, linked, when it needs more than a line), instead of an offered ADR. A settled tiebreak or stated standing rule goes into `NORTH_STAR.md`, dated.
+- **Project files.** Before finishing, bring both files up to date: north stars and prior arts the user named, comparisons the prior-art agents settled (into Settled), questions they left open (into To survey). Done when both files say everything the session decided.
 
 ## Sweeps
 
@@ -35,7 +48,7 @@ An **area** is a set of directories that change together (a package, or a layer 
 
 ## Steps
 
-0. **Project files.** When either file is missing, establish it by `~/.claude/skills/improve-codebase-architecture/ESTABLISHING.md`, its autonomous branch. Then read both. Direction in the user's prompt (north stars, prior arts, a new sweep, an owner rule) goes into them now, dated. Done when both files exist, carry this run's direction, and each drafted north star is an owner question on the ledger.
+0. **Project files.** When either file is missing, establish it by [`ESTABLISHING.md`](ESTABLISHING.md), its autonomous branch. Then read both. Direction in the user's prompt (north stars, prior arts, a new sweep, an owner rule) goes into them now, dated. Done when both files exist, carry this run's direction, and each drafted north star is an owner question on the ledger.
 
 1. **Open the ledger.** Copy the section layout of the newest `plans/architecture-loop-*.md`, or [`ledger-template.md`](ledger-template.md) when none exists. Record the HEAD hash and the baseline: source lines and files per package, by a `git ls-files` pathspec of source extensions that excludes tests and fixtures. Write the command on the ledger so every pass counts the same way; use `':(glob)…'` pathspecs, since a plain `*` crosses `/`. Done when the ledger exists with a baseline.
 
@@ -59,7 +72,7 @@ An **area** is a set of directories that change together (a package, or a layer 
 
 ## Close rule
 
-Close when one pass holds all of these: no unswept directory; the architecture sweeps and package reviews report polish only (under about 5 lines of value each); every project sweep meets its "done when"; `PRIOR_ARTS.md` → To survey is empty; no `Carried` row is open; and reading the pass's reports end to end, you can name no structural change left. A pass that finds a guard blind spot is never the last: close the blind spot with a check placed by [`guardrails.md`](guardrails.md), run it, and sweep what it reveals. Then write the HTML report from `~/.claude/skills/improve-codebase-architecture/HTML-REPORT.md` (one card per structural change the loop made, before and after) and the final message, ending with the ledger path.
+Close when one pass holds all of these: no unswept directory; the architecture sweeps and package reviews report polish only (under about 5 lines of value each); every project sweep meets its "done when"; `PRIOR_ARTS.md` → To survey is empty; no `Carried` row is open; and reading the pass's reports end to end, you can name no structural change left. A pass that finds a guard blind spot is never the last: close the blind spot with a check placed by [`guardrails.md`](guardrails.md), run it, and sweep what it reveals. Then write the HTML report from `~/.claude/skills/improve-codebase-architecture/HTML-REPORT.md` with the card additions under [single pass](#single-pass-with-the-user) (one card per structural change the loop made, before and after) and the final message, ending with the ledger path.
 
 ## What pays late
 
