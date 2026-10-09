@@ -1,8 +1,9 @@
 onboarding = false
 
 [theme]
-name = "rose-pine"
+name = "catppuccin"
 
+auto_switch = false
 [[keys.command]]
 key = "prefix+h"
 type = "plugin_action"
@@ -14,3 +15,6 @@ key = "prefix+s"
 type = "plugin_action"
 command = "cvr.herdr-hunk.send"
 description = "send Hunk notes"
+
+[ui.sound]
+enabled = false
