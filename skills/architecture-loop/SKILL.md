@@ -25,7 +25,7 @@ Call the Skill tool with "codebase-design" once at the start; its glossary is th
 
 ## Single pass with the user
 
-When the user wants to choose rather than hand off, read `~/.claude/skills/improve-codebase-architecture/SKILL.md` (it is user-invoked only, so read it rather than calling it) and follow its process with these additions; everything else runs as written there.
+When the user wants to choose rather than hand off, read [`improve-codebase-architecture`](../improve-codebase-architecture/SKILL.md) (it is user-invoked only, so read it rather than calling it) and follow its process with these additions; everything else runs as written there.
 
 - **Lens.** Besides `codebase-design`, the glossary and ADRs: `NORTH_STAR.md` (north stars, tiebreaks, owner rules, Rejected) and `PRIOR_ARTS.md` (comparisons, Settled). Read both first. When either is missing, establish it by [`ESTABLISHING.md`](ESTABLISHING.md), its with-the-user branch: candidates judged against no north star rank by taste. A north star, prior art or owner direction named in the prompt counts as written there; the last step writes it down.
 - **Explore.** Spawn in one message the codebase walker and one agent per prior art whose "Compare with" paths overlap the scope, reading its "Read it for" paths and skipping what Settled answers. The walker also asks: where does the code break a north star, by its own "breaks when" column? A prior-art agent reports where the other codebase carries the same behavior with fewer concepts, and the seam it put there.
@@ -72,7 +72,7 @@ An **area** is a set of directories that change together (a package, or a layer 
 
 ## Close rule
 
-Close when one pass holds all of these: no unswept directory; the architecture sweeps and package reviews report polish only (under about 5 lines of value each); every project sweep meets its "done when"; `PRIOR_ARTS.md` → To survey is empty; no `Carried` row is open; and reading the pass's reports end to end, you can name no structural change left. A pass that finds a guard blind spot is never the last: close the blind spot with a check placed by [`guardrails.md`](guardrails.md), run it, and sweep what it reveals. Then write the HTML report from `~/.claude/skills/improve-codebase-architecture/HTML-REPORT.md` with the card additions under [single pass](#single-pass-with-the-user) (one card per structural change the loop made, before and after) and the final message, ending with the ledger path.
+Close when one pass holds all of these: no unswept directory; the architecture sweeps and package reviews report polish only (under about 5 lines of value each); every project sweep meets its "done when"; `PRIOR_ARTS.md` → To survey is empty; no `Carried` row is open; and reading the pass's reports end to end, you can name no structural change left. A pass that finds a guard blind spot is never the last: close the blind spot with a check placed by [`guardrails.md`](guardrails.md), run it, and sweep what it reveals. Then write the HTML report from [`improve-codebase-architecture`'s HTML-REPORT.md](../improve-codebase-architecture/HTML-REPORT.md) with the card additions under [single pass](#single-pass-with-the-user) (one card per structural change the loop made, before and after) and the final message, ending with the ledger path.
 
 ## What pays late
 
