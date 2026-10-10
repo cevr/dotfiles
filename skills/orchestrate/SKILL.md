@@ -17,6 +17,12 @@ Agents hand off by `herdr agent prompt`, along the chain implementor → reviewe
 
 The rules every track agent follows are in [`protocol.md`](protocol.md). Read it once now, so your specs and decisions match it.
 
+The **orchestrate mod** (`~/Developer/personal/dotfiles/claude/mods/orchestrate`, loaded by the shared `settings.json`) runs beside you and every Claude track agent, at no model cost:
+
+- **Guard.** It refuses polling and any handoff that is malformed, misrouted, or names a missing file. The refusal names the fix.
+- **Watchdog.** It sends you `[watchdog]` messages.
+- **`/tracks`.** This command opens a pane with each track's round, whose turn it is and its agents' states. The status line keeps the summary.
+
 ## Why tracks, not subagents
 
 Evidence from the gent, effra, bible-tools and effect-frame loops (2026-09 and 2026-10):
@@ -104,7 +110,7 @@ Done when the implementor is working and `plan.md` names its track. Open every u
 
 ## 4. On a message
 
-Messages arrive as new turns, prefixed `[<track>]`. Handle one at a time.
+Messages arrive as new turns, prefixed `[<track>]` from agents or `[watchdog]` from the mod. Handle one at a time.
 
 ### accepted
 
@@ -142,7 +148,16 @@ Close the old track.
 
 - **Wait.** End your turn and let messages wake you. No loops, no `agent wait`, no reading panes to check progress.
 - **Use the idle time.** Spec the next units while you wait.
-- **Stall check.** Do this only when the user asks for status, or when every running track is idle with no message for its last round. Run one `herdr agent list`. An implementor and a reviewer that are both idle mean a dropped message. Read the last 40 lines of each, then re-send the one missing message. A `blocked` agent is at a dialog: read it and ask the user.
+- **Stall check.** Run it on a `[watchdog]` message. The mod sends one when:
+  - a track sits quiet for 10 minutes while the next step is an agent's;
+  - an agent sits at a dialog;
+  - the agent whose turn it is has gone;
+  - a final file exists that no message reported.
+
+  Run it also when the user asks for status (`/tracks` answers that without a model call). The message names the step and the unit folder:
+  - **A dropped message.** Read the last 40 lines of the agent whose turn it is, then send the one missing message for it.
+  - **A dialog.** Read it, and ask the user.
+  - **An unreported final file.** Handle it as if its message had arrived.
 - **After your own compaction.** Re-read this file, `protocol.md` and `plan.md`, and run `herdr agent list`, before any other action.
 - **Pause.** On a pause, or when the user stops the run, run `track down` on every track you opened, so no orphan agent burns tokens.
 

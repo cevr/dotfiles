@@ -34,6 +34,8 @@ A message is one line that points at a file. It never carries the content itself
 
 The orchestrator's messages start with `orch:` (a decision, a merge request, a re-plan); act on them as the spec's next step.
 
+In a Claude pane, the orchestrate mod enforces this section: it refuses a polling command and a handoff that is malformed, misrouted or names a missing file, and the refusal says what to fix.
+
 If `agent prompt` fails with `agent_blocked`, the target is waiting on a dialog. Write `blocked.md` with the target, the dialog, and the exact message you could not send, then send the orchestrator the blocked message and end your turn. The orchestrator delivers your message once the dialog is cleared.
 
 ## Rounds

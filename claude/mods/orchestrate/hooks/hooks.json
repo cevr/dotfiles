@@ -1,0 +1,4 @@
+{
+  "description": "orchestrate protocol guard, watchdog and tracks pane",
+  "modules": ["./register.tsx"]
+}
