@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
+  },
+  "plugins": ["typescript", "import", "node"],
+  "extends": ["./node_modules/oxlint-plugin-effect/presets/recommended.json"],
+  "rules": {
+    "typescript/no-explicit-any": "error",
+    "effect/noPositionalLogArguments": "error",
+    "effect/noRunPromise": "error"
+  },
+  "ignorePatterns": ["**/dist/**", "**/node_modules/**", "**/*.d.ts", "**/bin/**", "**/scripts/**"]
+}
