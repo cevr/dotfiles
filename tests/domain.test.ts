@@ -138,10 +138,21 @@ describe("passing", () => {
   })
 
   test("a unit's agent names fit herdr's 32 characters", () => {
-    expect(Result.isSuccess(Decide.canOpen(run, "deck-b"))).toBe(true)
-    expect(Result.isFailure(Decide.canOpen(run, "src"))).toBe(true)
-    expect(Result.isFailure(Decide.canOpen(run, "a-very-long-unit-name-indeed"))).toBe(true)
-    expect(Result.isFailure(Decide.canOpen(run, "Bad"))).toBe(true)
+    expect(Result.isSuccess(Decide.canOpen(run, "deck-b", "/work/deck-b"))).toBe(true)
+    expect(Result.isFailure(Decide.canOpen(run, "src", "/work/src2"))).toBe(true)
+    expect(Result.isFailure(Decide.canOpen(run, "a-very-long-unit-name-indeed", "/work/x"))).toBe(
+      true,
+    )
+    expect(Result.isFailure(Decide.canOpen(run, "Bad", "/work/bad"))).toBe(true)
+  })
+
+  test("each open track has its own workspace", () => {
+    const shared = Decide.canOpen(run, "deck-b", "/work/src")
+    const reason = Result.match(shared, {
+      onSuccess: () => "",
+      onFailure: (error) => error.message,
+    })
+    expect(reason).toContain("own workspace")
   })
 })
 

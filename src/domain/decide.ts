@@ -31,8 +31,11 @@ export type Opening = {
   readonly maxFailures: number
 }
 
-/** Checks a unit name before any agent starts for it. */
-export const canOpen = (run: Run, unit: string): Result.Result<void, Refused> => {
+/**
+ * Checks a unit before any agent starts for it. One workspace per track: two
+ * implementors in one tree commit each other's work.
+ */
+export const canOpen = (run: Run, unit: string, cwd: string): Result.Result<void, Refused> => {
   if (!UNIT.test(unit)) return refuse(`unit "${unit}" must match ${UNIT.source}`)
   if (`${run.name}-${unit}-impl`.length > NAME_LIMIT)
     return refuse(
@@ -40,11 +43,16 @@ export const canOpen = (run: Run, unit: string): Result.Result<void, Refused> =>
     )
   if (Option.exists(Option.fromUndefinedOr(run.tracks.get(unit)), isOpen))
     return refuse(`track ${run.name}-${unit} is already open`)
+  for (const track of openTracks(run))
+    if (track.cwd === cwd)
+      return refuse(
+        `track ${track.name} already works in ${cwd}: give each track its own workspace`,
+      )
   return Result.void
 }
 
 export const open = (run: Run, opening: Opening): Result.Result<Event, Refused> =>
-  Result.map(canOpen(run, opening.unit), () => Event.cases.TrackOpened.make(opening))
+  Result.map(canOpen(run, opening.unit, opening.cwd), () => Event.cases.TrackOpened.make(opening))
 
 /** The holder's seat passes the baton: what it hands on depends on its role. */
 export type Pass = {

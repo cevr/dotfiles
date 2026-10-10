@@ -202,10 +202,10 @@ export class Baton extends Context.Service<Baton, BatonService>()("baton/src/Bat
 
       const open = Effect.fn("Baton.open")(function* (opening: Opening) {
         const run = yield* orchestrating
-        yield* fromResult(Decide.canOpen(run, opening.unit))
+        const cwd = path.resolve(opening.cwd)
+        yield* fromResult(Decide.canOpen(run, opening.unit, cwd))
         const spec = path.join(State.unitDir(run, opening.unit), "spec.md")
         yield* exists(spec, "write the unit's spec first")
-        const cwd = path.resolve(opening.cwd)
         yield* exists(cwd, "pass the track's working directory")
         const name = State.trackName(run.name, opening.unit)
         const ours = yield* dirConfig("CLAUDE_CONFIG_DIR", ".claude").pipe(
