@@ -13,7 +13,7 @@ A **track** is one herdr tab per unit, holding one long-lived agent per role:
 - **reviewer**: Codex `gpt-6.1-sol`, high effort. A different model family, read-only, and by default it also verifies.
 - **verifier**: Codex. A third pane, only when the spec calls for one.
 
-**`baton`** (`~/Developer/personal/baton`, on `PATH`) runs the relay. One agent holds the baton at a time. Each step ends with `baton pass <file>`, which appends the step to an event log (SQLite, one file per machine). Baton then works out whose turn is next and delivers that agent a one-line message through herdr. The state, the routing and the record all come from that log. Nobody polls, you included. `baton --help` lists the commands.
+**`baton`** (`~/Developer/personal/dotfiles/baton`, on `PATH`) runs the relay. One agent holds the baton at a time. Each step ends with `baton pass <file>`, which appends the step to an event log (SQLite, one file per machine). Baton then works out whose turn is next and delivers that agent a one-line message through herdr. The state, the routing and the record all come from that log. Nobody polls, you included. `baton --help` lists the commands.
 
 The rules every track agent follows are in [`protocol.md`](protocol.md). Read it once now, so your specs and decisions match it.
 
@@ -40,7 +40,7 @@ Subagents still fit read-only work that finishes in one run with no long waits: 
 
 ## 0. Preconditions
 
-1. **Inside herdr, with baton.** Run `test "${HERDR_ENV:-}" = 1 && command -v baton`. If herdr is missing, say the orchestrator must run inside a herdr pane, and stop. If baton is missing, run `bun install && bun run build` in `~/Developer/personal/baton`.
+1. **Inside herdr, with baton.** Run `test "${HERDR_ENV:-}" = 1 && command -v baton`. If herdr is missing, say the orchestrator must run inside a herdr pane, and stop. If baton is missing, run `bun install && bun run build` in `~/Developer/personal/dotfiles/baton`.
 2. **Same server as the work.** Baton's log and herdr's agent names are both per machine. For work on the workbox, the orchestrator itself runs there. Start a Claude pane with `herdr --machine Workbox agent start …`, then hand it the plan.
 3. **Start the run.** Pick a short run slug (`[a-z][a-z0-9]{0,7}`), then run `baton run start <run>`. It names your pane `<run>-orch` and prints the **run dir**, where the unit folders live. After a compaction, `baton whoami` prints them again.
 

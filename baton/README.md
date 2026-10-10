@@ -6,7 +6,7 @@ Each run keeps one append-only log in SQLite. Every view of a run is a fold of t
 
     { view, messages } = fold(log)
 
-baton is the runtime of the [orchestrate skill](https://github.com/cevr/dotfiles/tree/main/skills/orchestrate).
+baton is the runtime of the [orchestrate skill](../skills/orchestrate/SKILL.md), which lives beside it in dotfiles.
 
 ## Commands
 
@@ -33,4 +33,4 @@ The log lives at `$BATON_DB`, else `$XDG_STATE_HOME/baton/baton.db`, else `~/.lo
 - `src/Baton.ts`: each command as read, decide, append, deliver.
 - `src/commands/`: the CLI.
 
-`bun run gate` runs typecheck, lint, format, build and tests. The build links `~/.bun/bin/baton`.
+`bun run gate` runs typecheck, lint, format, build and tests, and the dotfiles pre-commit hook runs them on any commit that touches `baton/`. The build links `~/.bun/bin/baton`.

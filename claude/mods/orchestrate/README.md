@@ -1,6 +1,6 @@
 # orchestrate mod
 
-The in-session half of the [`orchestrate` skill](../../../skills/orchestrate/SKILL.md). [baton](../../../../baton) holds each run's state as an event log, and this mod reads it. It acts in a Claude session that `baton whoami` places in a live run, as the orchestrator or a track seat. In any other session it stays out of the way. It spends no model tokens.
+The in-session half of the [`orchestrate` skill](../../../skills/orchestrate/SKILL.md). [baton](../../../baton) holds each run's state as an event log, and this mod reads it. It acts in a Claude session that `baton whoami` places in a live run, as the orchestrator or a track seat. In any other session it stays out of the way. It spends no model tokens.
 
 - **Guard** (`tool.call` on Bash). In a baton seat it refuses:
   - a commit that skips the hook (`--no-verify`, `LEFTHOOK=0`);

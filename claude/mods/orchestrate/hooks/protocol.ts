@@ -1,5 +1,5 @@
 // What the mod reads from baton, and the commands a baton seat may not run.
-// baton (~/Developer/personal/baton) owns the protocol; these are pure
+// baton (~/Developer/personal/dotfiles/baton) owns the protocol; these are pure
 // functions over its JSON so the hooks stay thin.
 
 /** One line of `baton whoami --json`: this pane's place in a live run. */

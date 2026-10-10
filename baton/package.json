@@ -20,7 +20,7 @@
     "fmt:check": "oxfmt --check",
     "test": "bun test",
     "gate": "concurrently -n type,style,build,test -c blue,yellow,cyan,green \"bun run typecheck\" \"bun run lint && bun run fmt:check\" \"bun run build\" \"bun run test\"",
-    "prepare": "(test -d .git && lefthook install || true) && effect-tsgo patch"
+    "prepare": "(cd .. && test -d .git && ./baton/node_modules/.bin/lefthook install || true) && effect-tsgo patch"
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.2",
