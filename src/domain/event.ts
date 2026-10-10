@@ -25,6 +25,8 @@ export type Stall = typeof Stall.Type
 export const Event = Schema.TaggedUnion({
   /** An orchestrator took the run: the first start, or a new session resuming it. */
   RunStarted: { root: Schema.String, orchestrator: Agent },
+  /** The orchestrator finished the run: its tracks are closed and its panes free. */
+  RunEnded: {},
   /** A track's agents started; the implementor holds the baton, with the spec. */
   TrackOpened: {
     unit: Schema.String,

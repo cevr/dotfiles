@@ -3,7 +3,7 @@
 import { Option, Result, Schema } from "effect"
 import { Event, ReviewVerdict, VerifyVerdict } from "./event.js"
 import type { Agent, Role } from "./event.js"
-import { agentOf, isOpen } from "./state.js"
+import { agentOf, isOpen, openTracks } from "./state.js"
 import type { Run, Seat, Track } from "./state.js"
 
 /** A command the run's state does not allow; `reason` says what would. */
@@ -138,3 +138,28 @@ export const redeliver = (run: Run, ref: number): Result.Result<Event, Refused> 
     return refuse(`message #${ref} has not failed`)
   return Result.succeed(Event.cases.RedeliveryRequested.make({ ref }))
 }
+
+/** Run names stay short and dash-free: they lead every agent name. */
+const RUN = /^[a-z][a-z0-9]{0,7}$/
+
+/** An orchestrator takes a run: a new one, or a live one it resumes. */
+export const start = (
+  name: string,
+  existing: Option.Option<Run>,
+  root: string,
+  orchestrator: Agent,
+): Result.Result<Event, Refused> => {
+  if (!RUN.test(name)) return refuse(`run "${name}" must match ${RUN.source}`)
+  if (Option.exists(existing, (run) => Option.isSome(run.ended)))
+    return refuse(`run ${name} has ended; start another name`)
+  const kept = Option.match(existing, { onNone: () => root, onSome: (run) => run.root })
+  return Result.succeed(Event.cases.RunStarted.make({ root: kept, orchestrator }))
+}
+
+/** Ends a run, closing what it left open. */
+export const end = (run: Run): ReadonlyArray<Event> => [
+  ...openTracks(run).map((track) =>
+    Event.cases.TrackClosed.make({ unit: track.unit, merged: Option.none() }),
+  ),
+  Event.cases.RunEnded.make({}),
+]

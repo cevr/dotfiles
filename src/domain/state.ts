@@ -76,6 +76,7 @@ export type Run = {
   readonly blockedSince: ReadonlyMap<string, number>
   /** `unit:step:stall` for each stall already reported. */
   readonly alerts: ReadonlySet<string>
+  readonly ended: Option.Option<number>
   readonly seq: number
 }
 
@@ -116,6 +117,7 @@ export const project = (name: string, entries: ReadonlyArray<Entry>): Option.Opt
       observedAt: Option.none(),
       blockedSince: new Map(),
       alerts: new Set(),
+      ended: Option.none(),
       seq: 0,
     }
     for (const entry of entries) fold(run, entry)
@@ -133,6 +135,7 @@ type Draft = {
   observedAt: Option.Option<number>
   blockedSince: Map<string, number>
   alerts: Set<string>
+  ended: Option.Option<number>
   seq: number
 }
 
@@ -188,6 +191,9 @@ const fold = (run: Draft, entry: Entry): void => {
     RunStarted: (event) => {
       run.root = event.root
       run.orchestrator = event.orchestrator
+    },
+    RunEnded: () => {
+      run.ended = Option.some(at)
     },
     TrackOpened: (event) => {
       const track: Track = {
@@ -329,6 +335,8 @@ const holderName = (track: Track): string => {
 const alertKey = (unit: string, step: number, stall: Stall): string => `${unit}:${step}:${stall}`
 
 export const isOpen = (track: Track): boolean => Option.isNone(track.closed)
+
+export const isLive = (run: Run): boolean => Option.isNone(run.ended)
 
 export const openTracks = (run: Run): ReadonlyArray<Track> =>
   [...run.tracks.values()].filter(isOpen)
