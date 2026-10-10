@@ -7,3 +7,30 @@ Each run keeps one append-only log in SQLite. Every view of a run is a fold of t
     { view, messages } = fold(log)
 
 baton is the runtime of the [orchestrate skill](https://github.com/cevr/dotfiles/tree/main/skills/orchestrate).
+
+## Commands
+
+Run each command in a herdr pane. The pane decides who is asking: the run's orchestrator, or a seat on one of its tracks.
+
+| Who          | Command                                                                               | Does                                                                                                                                                         |
+| ------------ | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| orchestrator | `baton run start <run>`                                                               | names this pane `<run>-orch` and prints the run dir                                                                                                          |
+| orchestrator | `baton open <unit> --cwd <dir> [--verifier] [--max-failures N] [--claude-config DIR]` | opens a tab with the implementor (Claude) and reviewer (Codex), and optionally a verifier, then hands the implementor the spec at `<run dir>/<unit>/spec.md` |
+| orchestrator | `baton tell <unit> <impl\|rev\|ver> <text>`                                           | sends a worker a line; that worker then holds the baton                                                                                                      |
+| orchestrator | `baton close <unit> [--merged <commit>]` / `baton run end`                            | closes a track's tab, or every track and the run                                                                                                             |
+| orchestrator | `baton redeliver <ref>`                                                               | resends a message that failed                                                                                                                                |
+| worker       | `baton pass <file> [--verdict …]`                                                     | ends the step; baton routes it by role and verdict                                                                                                           |
+| worker       | `baton ask <note>`                                                                    | hands the orchestrator a question                                                                                                                            |
+| anyone       | `baton status [--json]`, `baton whoami [--json]`                                      | the live runs, or this pane's place                                                                                                                          |
+| watchdog     | `baton tick`, `baton watch [--every 60]`                                              | records agent states, reports stalls once per step, retries owed messages                                                                                    |
+
+The log lives at `$BATON_DB`, else `$XDG_STATE_HOME/baton/baton.db`, else `~/.local/state/baton/baton.db`. Run dirs default to `~/.cache/baton/<run>`.
+
+## Layout
+
+- `src/domain/`: the events, the pure fold (`state.ts`) and the pure decisions (`decide.ts`). Test this layer first.
+- `src/services/`: the journal (SQLite), herdr and the shell.
+- `src/Baton.ts`: each command as read, decide, append, deliver.
+- `src/commands/`: the CLI.
+
+`bun run gate` runs typecheck, lint, format, build and tests. The build links `~/.bun/bin/baton`.
