@@ -53,7 +53,7 @@ ln -sfn "$DOTFILES_DIR/claude/settings.json" ~/.claude2/settings.json
 "$DOTFILES_DIR/claude/install-herdr-hook.sh"
 
 # Claude terminal mod (both accounts)
-"$DOTFILES_DIR/skills/fx-ui/install.sh"
+"$DOTFILES_DIR/claude/mods/fx-ui/install.sh"
 
 # Personal commands
 mkdir -p ~/.local/bin

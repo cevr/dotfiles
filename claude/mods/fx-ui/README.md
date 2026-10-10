@@ -40,46 +40,40 @@ execution, permissions or stored conversation content.
 
 ## Install
 
+The shared `claude/settings.json` loads the mod for both accounts on every
+machine: its `env.CLAUDE_CODE_PLUGIN_DIRS` names this folder, and the session
+watches it, so a saved edit reloads. Start a new Claude session.
+
 ```sh
-~/Developer/personal/dotfiles/skills/fx-ui/install.sh
+~/Developer/personal/dotfiles/claude/mods/fx-ui/install.sh
 ```
 
-The installer exposes the plugin in both `~/.claude/skills` and
-`~/.claude2/skills`, preserving other skills. If those directories already point
-to dotfiles, nothing needs linking. Start a new Claude session; the mod loads as
-`fx-ui@skills-dir`. `install.sh` and `workbox/bootstrap.sh` include this step.
-It also removes the legacy `statusline-git.sh` command from settings, saving
-that setting in `.fx-ui-statusline.json`. Shared settings symlinks and custom
-statusline commands are preserved. The legacy script remains available.
+The installer (run by the root `install.sh` and `workbox/bootstrap.sh`) removes
+the legacy `statusline-git.sh` command from settings, saving that setting in
+`.fx-ui-statusline.json`. Shared settings symlinks and custom statusline
+commands are preserved. The legacy script remains available.
 
 Usage figures come from Claude's native session API. Missing context readings
 stay unknown. Git runs only when status inspection is requested, with a short
 timeout; failure leaves the session figures available. Footer text truncates at
 narrow widths using the native renderer.
 
-To restore the legacy statusline, disable `fx-ui` and run:
+To restore the legacy statusline, remove this folder from
+`CLAUDE_CODE_PLUGIN_DIRS` in `claude/settings.json` and run:
 
 ```sh
-~/Developer/personal/dotfiles/skills/fx-ui/install.sh --restore-statusline
+~/Developer/personal/dotfiles/claude/mods/fx-ui/install.sh --restore-statusline
 ```
 
-Preview an isolated session before installing:
+Preview an isolated session:
 
 ```sh
-claude --plugin-dir ~/Developer/personal/dotfiles/skills/fx-ui
+claude --plugin-dir ~/Developer/personal/dotfiles/claude/mods/fx-ui
 ```
 
 To preview a saved conversation without editing the original, add
 `--resume <session-id> --fork-session`. For the second account, prefix the
 command with `CLAUDE_CONFIG_DIR="$HOME/.claude2"`.
-
-Disable or enable for either account:
-
-```sh
-claude plugin disable fx-ui@skills-dir
-claude plugin enable fx-ui@skills-dir
-CLAUDE_CONFIG_DIR="$HOME/.claude2" claude plugin disable fx-ui@skills-dir
-```
 
 ## Compatibility and checks
 
@@ -88,9 +82,9 @@ hooks must be available on the account, and the API may change with updates.
 An account without function hooks keeps Claude's native UI.
 
 ```sh
-claude plugin validate ~/Developer/personal/dotfiles/skills/fx-ui
-claude plugin test ~/Developer/personal/dotfiles/skills/fx-ui
-sh ~/Developer/personal/dotfiles/skills/fx-ui/tests/install.test.sh
+claude plugin validate ~/Developer/personal/dotfiles/claude/mods/fx-ui
+claude plugin test ~/Developer/personal/dotfiles/claude/mods/fx-ui
+sh ~/Developer/personal/dotfiles/claude/mods/fx-ui/tests/install.test.sh
 ```
 
 Claude generates `.claude-plugin/types/` from the installed engine when the
@@ -99,7 +93,7 @@ Those declarations are ignored by Git. After that preview, use an installed
 TypeScript compiler to check the hooks and tests:
 
 ```sh
-tsc --noEmit -p ~/Developer/personal/dotfiles/skills/fx-ui/tsconfig.json
+tsc --noEmit -p ~/Developer/personal/dotfiles/claude/mods/fx-ui/tsconfig.json
 ```
 
 Markdown leaves have a 10,000-character limit in the mod API. Longer replies
