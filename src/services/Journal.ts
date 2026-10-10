@@ -83,7 +83,7 @@ export class Journal extends Context.Service<Journal, JournalService>()(
         const rows = yield* sql`SELECT run FROM events GROUP BY run ORDER BY MAX(seq) DESC`
         const decoded = yield* decodeRunRows(rows)
         return decoded.map((row) => row.run)
-      }).pipe(fail)
+      }).pipe(fail, Effect.withSpan("Journal.runs"))
 
       const append = Effect.fn("Journal.append")(function* (run: string, at: number, event: Event) {
         const payload = yield* encodeEvent(event)

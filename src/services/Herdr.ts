@@ -108,7 +108,7 @@ export class Herdr extends Context.Service<Herdr, HerdrService>()("baton/src/ser
             status: agent.agent_status,
           })),
         )
-      })
+      }).pipe(Effect.withSpan("Herdr.agents"))
 
       const name = Effect.fn("Herdr.name")(function* (target: string, agent: string) {
         yield* herdr(["agent", "rename", target, agent])
