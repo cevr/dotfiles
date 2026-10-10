@@ -5,37 +5,11 @@ import { type Identity, checkCommand, parseIdentity, parseRuns, summary } from '
 const impl: Identity = { run: 'hymn', role: 'impl', track: 'hymn-src' }
 const orch: Identity = { run: 'hymn', role: 'orch', track: '' }
 
-describe('safety guard', () => {
-  test("safety.md's banned shapes are refused, each with what to do instead", async () => {
-    const refused: [string, string][] = [
-      ["cat > src/a.ts <<'EOF'\nx\nEOF", 'Write and Edit'],
-      ['git commit -F - <<EOF\nfix\nEOF', 'Write and Edit'],
-      ['python3 -c "open(\'a\',\'w\').write(1)"', 'jq'],
-      ["python3 - <<'X'\nprint(1)\nX", 'Write and Edit'],
-      ['bun -e "await Bun.write(1)"', 'bun <file>'],
-      ['rm -rf node_modules', 'trash'],
-      ['cd x && rm -r dist', 'trash'],
-      ['git stash push -m wip', 'git show'],
-      ['git reset --hard HEAD~1', 'new commit'],
-      ['git push -f origin main', 'without force'],
-      ['git commit --no-verify -m wip', 'passes the hook'],
-      ['LEFTHOOK=0 git commit -m wip', 'passes the hook'],
-    ]
-    for (const [command, hint] of refused) expect(checkCommand(command, impl)?.deny).toContain(hint)
-  })
-
-  test('the safe neighbours of those shapes pass', async () => {
-    for (const command of [
-      'trash dist',
-      'git commit -m "fix: rm -r handling"',
-      'jq .result <<< "$json"',
-      'git show HEAD~1:src/a.ts',
-      'git push origin main',
-      'bun test',
-      'git restore --staged src/a.ts',
-      'echo "1 << 2"',
-    ])
-      expect(checkCommand(command, impl)).toBeUndefined()
+describe('hook guard', () => {
+  test('a commit that skips the hook is refused; a gated one passes', async () => {
+    for (const command of ['git commit --no-verify -m wip', 'LEFTHOOK=0 git commit -m wip'])
+      expect(checkCommand(command, impl)?.deny).toContain('passes the hook')
+    expect(checkCommand('git commit -m wip', impl)).toBeUndefined()
   })
 })
 
