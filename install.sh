@@ -46,6 +46,12 @@ if command -v herdr >/dev/null 2>&1; then
   done < "$DOTFILES_DIR/workbox/herdr-plugins.txt"
 fi
 
+# Claude settings (both accounts share the one in dotfiles)
+mkdir -p ~/.claude ~/.claude2 ~/.config
+ln -sfn "$DOTFILES_DIR/claude/settings.json" ~/.claude/settings.json
+ln -sfn "$DOTFILES_DIR/claude/settings.json" ~/.claude2/settings.json
+"$DOTFILES_DIR/claude/install-herdr-hook.sh"
+
 # Claude terminal mod (both accounts)
 "$DOTFILES_DIR/skills/fx-ui/install.sh"
 

@@ -7,36 +7,16 @@ settings_source="$HOME/.config/bite-workbox/settings-source"
 claude_source="$settings_source/claude"
 codex_source="$settings_source/codex"
 
-mkdir -p "$HOME/.claude" "$HOME/.codex"
+mkdir -p "$HOME/.claude" "$HOME/.claude2" "$HOME/.codex"
 
-claude_settings_file=$(mktemp)
 codex_config_file=$(mktemp)
-trap 'rm -f "$claude_settings_file" "$codex_config_file"' EXIT HUP INT TERM
+trap 'rm -f "$codex_config_file"' EXIT HUP INT TERM
 
-jq '
-  walk(
-    if type == "string" then
-      gsub("/Users/cvr"; "/home/exedev")
-    else
-      .
-    end
-  ) |
-  del(
-    .hooks.Notification,
-    .hooks.SessionStart,
-    .hooks.Stop
-  ) |
-  .enabledPlugins["sideshow@sideshow"] = true |
-  .extraKnownMarketplaces.sideshow = {
-    source: {
-      source: "github",
-      repo: "modem-dev/sideshow"
-    }
-  } |
-  .pluginConfigs["sideshow@sideshow"].options.sideshowUrl = "http://localhost:8228"
-' "$claude_source/settings.json" > "$claude_settings_file"
-
-install -m 600 "$claude_settings_file" "$HOME/.claude/settings.json"
+# Both accounts share settings.json from dotfiles (synced by the bite-dotfiles
+# folder); machine-local secrets live in ~/.config/secrets.env.
+dotfiles_dir="$HOME/Developer/personal/dotfiles"
+ln -sfn "$dotfiles_dir/claude/settings.json" "$HOME/.claude/settings.json"
+ln -sfn "$dotfiles_dir/claude/settings.json" "$HOME/.claude2/settings.json"
 install -m 600 "$claude_source/settings.local.json" "$HOME/.claude/settings.local.json"
 install -m 755 "$claude_source/statusline-git.sh" "$HOME/.claude/statusline-git.sh"
 
@@ -77,5 +57,5 @@ EOF
 
 install -m 600 "$codex_config_file" "$HOME/.codex/config.toml"
 
-"$HOME/.local/bin/herdr" integration install claude
+"$dotfiles_dir/claude/install-herdr-hook.sh"
 "$HOME/.local/bin/herdr" integration install codex

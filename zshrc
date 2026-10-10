@@ -3,6 +3,9 @@
 # ===========================================
 fpath+=("$(brew --prefix)/share/zsh/site-functions" $HOME/.zsh/pure)
 
+# Machine-local secrets (GRAFANA_TOKEN, …): never committed; agents inherit them.
+[ -f "$HOME/.config/secrets.env" ] && . "$HOME/.config/secrets.env"
+
 # ===========================================
 # OH-MY-ZSH
 # ===========================================

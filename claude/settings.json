@@ -1,0 +1,198 @@
+{
+  "alwaysThinkingEnabled": false,
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "effortLevel": "high",
+  "enabledPlugins": {
+    "codex@openai-codex": true,
+    "sideshow@sideshow": true
+  },
+  "env": {
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-5-5",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5-5",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "350000",
+    "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1",
+    "CLAUDE_CODE_NO_FLICKER": "1",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "opus"
+  },
+  "extraKnownMarketplaces": {
+    "claude-code-warp": {
+      "source": {
+        "repo": "warpdotdev/claude-code-warp",
+        "source": "github"
+      }
+    },
+    "cloudflare": {
+      "source": {
+        "repo": "cloudflare/skills",
+        "source": "github"
+      }
+    },
+    "openai-codex": {
+      "source": {
+        "repo": "openai/codex-plugin-cc",
+        "source": "github"
+      }
+    },
+    "sideshow": {
+      "source": {
+        "repo": "modem-dev/sideshow",
+        "source": "github"
+      }
+    }
+  },
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "async": false,
+            "command": "if command -v moshi-hook >/dev/null 2>&1; then moshi-hook claude-hook; fi",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "if command -v moshi-hook >/dev/null 2>&1; then moshi-hook claude-hook; fi",
+            "type": "command"
+          }
+        ],
+        "matcher": "AskUserQuestion"
+      },
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "if command -v moshi-hook >/dev/null 2>&1; then moshi-hook claude-hook; fi",
+            "type": "command"
+          }
+        ],
+        "matcher": "ExitPlanMode"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "if command -v moshi-hook >/dev/null 2>&1; then moshi-hook claude-hook; fi",
+            "type": "command"
+          }
+        ],
+        "matcher": "AskUserQuestion"
+      },
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "if command -v moshi-hook >/dev/null 2>&1; then moshi-hook claude-hook; fi",
+            "type": "command"
+          }
+        ],
+        "matcher": "ExitPlanMode"
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "if command -v moshi-hook >/dev/null 2>&1; then moshi-hook claude-hook; fi",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "if command -v moshi-hook >/dev/null 2>&1; then moshi-hook claude-hook; fi",
+            "type": "command"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "command": "bash \"$HOME/.claude/hooks/herdr-agent-state.sh\" session",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "^(startup|resume|clear|compact|fork)$"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "if command -v moshi-hook >/dev/null 2>&1; then moshi-hook claude-hook; fi",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "if command -v moshi-hook >/dev/null 2>&1; then moshi-hook claude-hook; fi",
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  },
+  "modelSettings": {
+    "claude-fable-5-1": {
+      "effortLevel": "medium"
+    },
+    "claude-opus-5-5": {
+      "effortLevel": "high"
+    }
+  },
+  "permissions": {
+    "allow": [
+      "Read(~/Developer/personal/.better-coding-agents/resources/effect/**)",
+      "WebFetch(domain:conform.guide)",
+      "WebFetch(domain:effect.website)",
+      "WebFetch(domain:base-ui.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:trpc.io)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:zod.dev)",
+      "Skill(effect)",
+      "Skill(repo-explorer)",
+      "WebFetch(domain:anthropic.com)",
+      "Skill(react)",
+      "Skill(cleanup)"
+    ],
+    "ask": [],
+    "defaultMode": "auto",
+    "deny": []
+  },
+  "pluginConfigs": {
+    "sideshow@sideshow": {
+      "options": {
+        "sideshowUrl": "http://localhost:8228"
+      }
+    }
+  },
+  "showThinkingSummaries": true,
+  "skipAutoPermissionPrompt": true,
+  "skipDangerousModePermissionPrompt": true,
+  "skipWorkflowUsageWarning": true,
+  "subagentPromptCacheTtl": "1h",
+  "theme": "auto"
+}
