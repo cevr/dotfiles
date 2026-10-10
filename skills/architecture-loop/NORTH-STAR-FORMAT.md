@@ -28,6 +28,7 @@ Propose nothing against these.
 - Children wake, never block.
 - No persisted-format change unless it is additive and optional.
 - A live run uses `--debug` with its data directory under the scratch directory.
+- Push: main after each merge, when its gate is green (owner, 2026-10-07).
 
 ## Sweeps
 
@@ -62,8 +63,8 @@ A repo without the file establishes it by [ESTABLISHING.md](ESTABLISHING.md).
 - **North stars are observable.** Each has a _holds when_ a reader can check in code and a _breaks when_ a sweep can point at with a file:line. "Clean", "maintainable" and "simple" are not north stars; name what makes them true here.
 - **Three to nine north stars.** More than nine means some are tiebreaks or owner rules.
 - **Every tiebreak names a winner and a loser**, plus what the loser's candidates look like when rejected. Date owner tiebreaks.
-- **Owner rules are product direction**, the decisions a sweep may not reopen: a stored format, a UX rule, a capability kept on purpose, a run that may cost money. Project safety (a live binary, the owner's data, paid runs) goes here too. Date a rule when it comes from a session.
-- **Sweeps are project-specific only.** The architecture sweep, the package review, prior art and guardrails run everywhere and are not listed. A sweep row names the north star it measures and a method; a method longer than three lines lives in its own repo doc, linked from the row. A sweep that compares against other products takes its references from `PRIOR_ARTS.md`.
+- **Owner rules are product direction**, the decisions a sweep may not reopen: a stored format, a UX rule, a capability kept on purpose, a run that may cost money. Project safety (a live binary, the owner's data, paid runs) goes here too. Date a rule when it comes from a session. One rule starts with `Push:` and says what the loop may push, and when. With none, the loop pushes nothing.
+- **Sweeps are project-specific only.** The architecture sweep, the package review, prior art and guardrails run everywhere and are not listed. A sweep row names the north star it measures and a method; a method longer than three lines lives in its own repo doc, linked from the row. A sweep that compares against other products takes its references from `PRIOR_ART.md`.
 - **Live check names a drive and a state view.** The drive shows what rendered; the state view (a status command, an inspector, a database copy) shows what happened. A project with no state view says so, and building one is a candidate.
 - **Rejected rows carry their reason in one line**: the north star or owner rule the candidate breaks, or the receipt that sank it, with the ledger that decided it. A reason that needs a paragraph is an ADR (`docs/adr/`), and the row links it.
 - **Drafted rows say so.** A north star, tiebreak or owner rule the owner has not stated carries `(drafted <date>)` after it; the owner's confirmation removes the marker.

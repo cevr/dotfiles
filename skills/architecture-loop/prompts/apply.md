@@ -26,7 +26,7 @@ Work rules:
 - Every commit passes the hook, without bypass flags or env overrides. When a change cannot pass it in steps, order the steps so each passes, or make it one commit.
 - Commits: Conventional Commits, one logical unit each, staged by exact path. A public API change carries its changeset and README update. No push, no workspace creation or removal, no ledger edits.
 - Before the report: merge main into the workspace, resolve conflicts there keeping both sides' edits, run the gate into a log and read `GATE EXIT`.
-- Finish in one run: no timers or monitors left behind. A finding that does not fit its description: stop and report.
+- Finish in one run: no timers, monitors or sub-agents. A finding that does not fit its description: stop and report.
 
 Report (final message): commits (hash + subject), `git diff --stat <base>..HEAD | tail -1`, per-item result with file:line receipts, a probe table, flake names, the last `GATE EXIT`, decisions for the orchestrator (fixes in files this batch did not own), and the abilities the batch changed with the live-check steps that show them.
 ```

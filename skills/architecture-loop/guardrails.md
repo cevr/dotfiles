@@ -14,4 +14,6 @@ A defect class found twice gets a check, built in the batch that fixes the secon
 | A merge that took one side's file whole                         | A merge audit after every merge (redo git's merge of the two parents; print each line a parent added that the merge dropped).                                                      |
 | A doc naming what the code no longer has                        | A docs test over the READMEs and project skills.                                                                                                                                    |
 
+Checks cover code and its UI. Content (prose, theology, a film's script) is guided by the project's skills and reviewed by people, never linted.
+
 Hooks stay fast: pre-commit checks staged files only and finishes in seconds. A slow check goes into the gate and CI, never into pre-commit or pre-push.

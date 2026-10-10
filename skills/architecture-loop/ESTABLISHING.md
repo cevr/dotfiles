@@ -1,6 +1,6 @@
-# Establishing NORTH_STAR.md and PRIOR_ARTS.md
+# Establishing NORTH_STAR.md and PRIOR_ART.md
 
-For a repo that has neither file, or only one. North stars are product direction: the owner holds them, and the agent drafts them from evidence for the owner to confirm. Prior arts are research: the agent finds and reads them. Formats: [NORTH-STAR-FORMAT.md](NORTH-STAR-FORMAT.md), [PRIOR-ARTS-FORMAT.md](PRIOR-ARTS-FORMAT.md).
+For a repo that has neither file, or only one. North stars are product direction: the owner holds them, and the agent drafts them from evidence for the owner to confirm. Prior arts are research: the agent finds and reads them. Formats: [NORTH-STAR-FORMAT.md](NORTH-STAR-FORMAT.md), [PRIOR-ART-FORMAT.md](PRIOR-ART-FORMAT.md).
 
 ## 1. Gather evidence
 

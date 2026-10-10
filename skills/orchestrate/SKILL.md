@@ -27,9 +27,9 @@ The **orchestrate mod** (`~/Developer/personal/dotfiles/claude/mods/orchestrate`
 
 Evidence from the gent, effra, bible-tools and effect-frame loops (2026-09 and 2026-10):
 
-- **Cache lifetime.** A top-level session (a herdr pane) caches for 1 hour. An Agent-tool subagent caches for 5 minutes unless `subagentPromptCacheTtl: "1h"` is set in settings, which is true on the workbox and not on the laptop. Subagents that waited on a gate, a counsel round or a peer rewrote 160–190k tokens after each long gap. In effra that was 75% of all cache writes. Root sessions survived 111 of 112 such gaps warm.
-- **Cache reads.** Cache reads are the biggest cost: 62–83% of weighted spend. Workers ran 200+ turns at 150–195k tokens each. The lever is a smaller context per worker:
-  - one unit per track;
+- **Cache lifetime.** A top-level session (a herdr pane) caches for 1 hour. An Agent-tool subagent caches for 5 minutes, unless the shared `settings.json` sets `subagentPromptCacheTtl: "1h"`, as it now does. Before that, subagents that waited on a gate, a counsel round or a peer rewrote 160–190k tokens after each long gap. That was 71–75% of subagent cache writes in effra. Root sessions survived 111 of 112 such gaps warm.
+- **Cache reads.** Cache reads are the biggest cost: 62–83% of weighted spend. In bible-tools, apply subagents read 7.4B tokens, 93% of the run. One batch ran 2,924 turns through 15 compactions. Even with a 1-hour cache, the lever is a smaller context per worker:
+  - one unit per track, about one concern; an implementor that compacts twice is holding too much, so split the unit;
   - delta rounds;
   - messages that carry paths, not content;
   - gate output kept in logs, not in context;
@@ -55,15 +55,16 @@ Done when `baton whoami` says you are `orch` of `<run>`.
    - Units with no dependency and no shared files can run at the same time.
 3. **Defaults.** Decide by `~/Developer/personal/dotfiles/principles/`, and ask only what the plan cannot settle. These apply unless the user says otherwise:
    - **Run to the end.**
-   - **At most 3 tracks at once.** Each track runs the gate. In effra, seven gates queued for an hour on one machine, so a slow gate is the first thing to fix before adding tracks.
+   - **At most 3 tracks at once, and fewer when the gate cannot take them.** Each track runs the gate. Time it once before the first wave. While a gate waits in the queue longer than twice its own run, open no new track, and make gate speed the next unit; it preempts the others. In effra, eight lanes queued on the gate lock for up to 39 minutes at a load of 19–36, and the gate-speed lane, opened last, cut the gate from 446 s to under a minute.
    - **You decide small, reversible open points**, and record each one.
-   - **Reserved for the user:** push, deploy, publish, paid runs, non-additive changes to stored or wire formats, and anything irreversible.
+   - **Owner questions never wait in a dialog.** Put the question in Owner questions with your recommendation, and tell the user in one short message. Then end your turn, and keep the other tracks running.
+   - **Reserved for the user:** push (unless the repo's `NORTH_STAR.md` has a `Push:` owner rule, or its `AGENTS.md` grants it), deploy, publish, paid runs, non-additive changes to stored or wire formats, and anything irreversible.
    - **You may merge locally.**
-4. **Plan file.** Write `plan.md` in the run dir. It is the single source of truth for the plan, and you re-read it after every compaction. Each track's own state lives in baton's log.
+4. **Plan file.** Write `plan.md` in the run dir. It is the single source of truth for the plan, and you re-read it after every compaction. Each track's own state lives in baton's log. Its first line holds the user's goal word for word, so a new session (after a limit, or on the other account or machine) resumes from `plan.md` and `baton status` alone. The handoff is that, never a file in `/tmp`.
 
 ```markdown
-# <run> — <goal in the user's words>
-Mode: to the end · Tracks at once: 3 · Reserved: <list> · Repo: <path> · Base: <main hash>
+# <run> — <goal, word for word as the user gave it>
+Mode: to the end · Tracks at once: 3 · Gate: <seconds> · Reserved: <list> · Repo: <path> · Base: <main hash>
 
 | Unit | Depends on | Track | Workspace | Status | Result |
 | ---- | ---------- | ----- | --------- | ------ | ------ |
@@ -114,10 +115,11 @@ Baton's messages arrive as new turns, prefixed `[<track>]`, `[watchdog]` or `[ba
 2. **Integrate.**
    - The branch must contain today's main (`git merge-base --is-ancestor main <branch>`), so main only fast-forwards to the exact tree that was reviewed. If it does not, merge nothing and run `baton tell <unit> impl "merge main into your branch, gate, and send the next round"`. That round is a merge round ([Rounds](protocol.md#rounds)).
    - Run the gate in the unit's workspace at the branch head, the exact tree main will become, into `<run dir>/merge-<unit>.log`, and read its exit line. Red: merge nothing, and send the implementor the log as a merge round.
-   - Green: in the main checkout, `git merge --ff-only <branch>`.
+   - Green: in the main checkout, `git merge --ff-only <branch>`. That is the whole of your part. A track's work reaches main only as its reviewed head. A fix you would make yourself goes to the implementor as a round.
+   - Push only as the Reserved default allows. After a push, read `gh run list --branch main --limit 1` once CI finishes; a red CI is a new unit.
 3. **Record and close.**
    - Write `merged <hash>` into the unit's row in `plan.md`, with decisions, follow-ups from `state.md`, and anything for "Review later".
-   - Run `baton close <unit> --merged <hash>`, then remove the workspace by its full path.
+   - Run `baton close <unit> --merged <hash>`. Then delete the branch and remove the workspace by its full path. Effra kept 111 branches, 21 worktrees and 22 rifts (6.3 GB) after runs that skipped this.
 4. **Next.** Open each unit whose dependencies are now all merged, up to the limit (step 3). If a result changes what a later unit needs, update that unit's spec first.
 
 ### asks
@@ -160,7 +162,7 @@ Close the old track (`baton close <unit>`).
 
   `baton status` (or `/tracks`) answers the user's status questions without a model call.
 - **After your own compaction.** Re-read this file, `protocol.md` and `plan.md`, and run `baton status`, before any other action.
-- **Pause.** On a pause, or when the user stops the run, run `baton close <unit>` for every open track, so no orphan agent burns tokens. `baton run end` closes them all and ends the run.
+- **Pause.** On a pause, or when the user stops the run, run `baton close <unit>` for every open track, so no orphan agent burns tokens. `baton run end` closes them all and ends the run. Write where each unit stands into `plan.md`. If a `/goal` is set, tell the user to clear it: its check-ins keep waking you, and only the user can stop them.
 
 ## 6. Close
 

@@ -25,7 +25,7 @@ Protocol: `~/.claude/skills/orchestrate/protocol.md` (read it in full first).
 <Objective, runnable, written before any code: the commands, and the result that means done. Prefer a test that is red now and must go green, a parity or golden diff, a live drive with its expected state, a benchmark against its baseline. "Looks right" is not a check.>
 
 ## Gate
-<The full gate command; where the log goes (`<run dir>/<unit>/gate-N.log`).>
+<The repo's full gate command, its guards included (a dead-exports or boundary check that only CI or main runs is still the gate); where the log goes (`<run dir>/<unit>/gate-N.log`).>
 
 ## Risks
 <What could go wrong in this unit and what the reviewer should attack hardest: invariants a refactor must keep, formats that must still decode, traps earlier units found.>
