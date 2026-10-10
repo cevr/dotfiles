@@ -1,4 +1,6 @@
 {
-  "description": "orchestrate protocol guard, watchdog and tracks pane",
-  "modules": ["./register.tsx"]
+  "description": "baton seat guard, watchdog tick and tracks pane",
+  "modules": [
+    "./register.tsx"
+  ]
 }

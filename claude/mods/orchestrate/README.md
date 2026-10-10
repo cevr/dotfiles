@@ -1,22 +1,14 @@
 # orchestrate mod
 
-The runtime half of the [`orchestrate` skill](../../../skills/orchestrate/SKILL.md). It acts in Claude sessions whose herdr agent name marks them as orchestrate agents: `<run>-orch`, or `<run>-<unit>-impl|rev|ver`. In every other session it stays out of the way. It spends no model tokens: everything below runs in the mod. Only a real stall becomes a prompt.
+The in-session half of the [`orchestrate` skill](../../../skills/orchestrate/SKILL.md). [baton](../../../../baton) holds each run's state as an event log, and this mod reads it. It acts in a Claude session that `baton whoami` places in a live run, as the orchestrator or a track seat. In any other session it stays out of the way. It spends no model tokens.
 
-- **Guard** (`tool.call` on Bash). It refuses these commands:
-  - `herdr agent wait`;
-  - `agent prompt --wait|--until`;
-  - `sleep` of 10 seconds or more;
-  - `until`/`while … sleep` loops.
+- **Guard** (`tool.call` on Bash). In a baton seat it refuses:
+  - polling: `herdr agent wait`, a `sleep` of 10 seconds or more, and `until`/`while … sleep` loops;
+  - a hand-written `herdr agent prompt` to one of the run's agents. The refusal names the command to use instead: `baton pass` or `baton ask` for a worker, `baton tell` for the orchestrator.
+- **Watchdog** (orchestrator only). Every minute it runs `baton tick`. Baton records herdr's agent states, alerts the orchestrator once per stalled step, and retries owed messages.
+- **`/tracks`** opens a pane from `baton status --json`. The status line keeps the summary (`hymn: 2 tracks · 1 for you`).
 
-  For workers, it also refuses a handoff that is not one of `protocol.md`'s messages, goes to the wrong agent, or names a file that does not exist.
-- **Watchdog** (orchestrator only). Every minute it runs `herdr agent list` and reads `~/.cache/orchestrate/*/<run>/<unit>/`, then works out whose turn each track is from the round files' verdict lines. It sends the orchestrator one `[watchdog]` prompt per step when:
-  - a track sits quiet for 10 minutes while the next step is an agent's;
-  - an agent sits at a dialog for 2 minutes;
-  - the agent whose turn it is has gone;
-  - an accepted, stuck or blocked file exists that no message reported within 3 minutes.
-- **`/tracks`** opens a pane with each track's round, step, next actor and agent states. The status line keeps the summary (`hymn: 2 tracks · 1 for you`).
-
-The protocol logic is pure, in `hooks/protocol.ts`; `hooks/register.tsx` wires it to the engine.
+`hooks/protocol.ts` holds the pure parts: baton's JSON, the guard and the summary. `hooks/register.tsx` wires them to the engine.
 
 ## Checks
 

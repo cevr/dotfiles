@@ -13,15 +13,15 @@ A **track** is one herdr tab per unit, holding one long-lived agent per role:
 - **reviewer**: Codex `gpt-6.1-sol`, high effort. A different model family, read-only, and by default it also verifies.
 - **verifier**: Codex. A third pane, only when the spec calls for one.
 
-Agents hand off by `herdr agent prompt`, along the chain implementor → reviewer → (verifier) → orchestrator. Each message wakes the next agent. Nobody polls, you included.
+**`baton`** (`~/Developer/personal/baton`, on `PATH`) runs the relay. One agent holds the baton at a time. Each step ends with `baton pass <file>`, which appends the step to an event log (SQLite, one file per machine). Baton then works out whose turn is next and delivers that agent a one-line message through herdr. The state, the routing and the record all come from that log. Nobody polls, you included. `baton --help` lists the commands.
 
 The rules every track agent follows are in [`protocol.md`](protocol.md). Read it once now, so your specs and decisions match it.
 
 The **orchestrate mod** (`~/Developer/personal/dotfiles/claude/mods/orchestrate`, loaded by the shared `settings.json`) runs beside you and every Claude track agent, at no model cost:
 
-- **Guard.** It refuses polling and any handoff that is malformed, misrouted, or names a missing file. The refusal names the fix.
-- **Watchdog.** It sends you `[watchdog]` messages.
-- **`/tracks`.** This command opens a pane with each track's round, whose turn it is and its agents' states. The status line keeps the summary.
+- **Guard.** It refuses polling, and refuses a hand-written `herdr agent prompt` to a track agent. The refusal names the `baton` command to use instead.
+- **Watchdog.** In your session it runs `baton tick` every minute. Baton then sends you `[watchdog]` messages when a track stalls.
+- **`/tracks`.** This command opens a pane from `baton status`. The status line keeps the summary.
 
 ## Why tracks, not subagents
 
@@ -40,11 +40,11 @@ Subagents still fit read-only work that finishes in one run with no long waits: 
 
 ## 0. Preconditions
 
-1. **Inside herdr.** Run `test "${HERDR_ENV:-}" = 1`. If it fails, say the orchestrator must run inside a herdr pane, and stop.
-2. **Same server as the work.** Agent names resolve per herdr server, and workers message you by name. For work on the workbox, the orchestrator itself runs there. Start a Claude pane with `herdr --machine Workbox agent start …`, then hand it the plan.
-3. **Name yourself.** Pick a short run slug (`[a-z][a-z0-9]{0,7}`), then run `herdr agent rename "$HERDR_PANE_ID" <run>-orch`.
+1. **Inside herdr, with baton.** Run `test "${HERDR_ENV:-}" = 1 && command -v baton`. If herdr is missing, say the orchestrator must run inside a herdr pane, and stop. If baton is missing, run `bun install && bun run build` in `~/Developer/personal/baton`.
+2. **Same server as the work.** Baton's log and herdr's agent names are both per machine. For work on the workbox, the orchestrator itself runs there. Start a Claude pane with `herdr --machine Workbox agent start …`, then hand it the plan.
+3. **Start the run.** Pick a short run slug (`[a-z][a-z0-9]{0,7}`), then run `baton run start <run>`. It names your pane `<run>-orch` and prints the **run dir**, where the unit folders live. After a compaction, `baton whoami` prints them again.
 
-Done when your pane carries the name `<run>-orch`.
+Done when `baton whoami` says you are `orch` of `<run>`.
 
 ## 1. Plan
 
@@ -59,7 +59,7 @@ Done when your pane carries the name `<run>-orch`.
    - **You decide small, reversible open points**, and record each one.
    - **Reserved for the user:** push, deploy, publish, paid runs, non-additive changes to stored or wire formats, and anything irreversible.
    - **You may merge locally.**
-4. **Run dir.** Create `~/.cache/orchestrate/<repo>/<run>/` and write `plan.md` there. It is the single source of truth, and you re-read it after every compaction:
+4. **Plan file.** Write `plan.md` in the run dir. It is the single source of truth for the plan, and you re-read it after every compaction. Each track's own state lives in baton's log.
 
 ```markdown
 # <run> — <goal in the user's words>
@@ -92,55 +92,55 @@ Done when the spec's Owns, Do not touch, Acceptance check and Gate sections are 
 2. **Open:**
 
    ```sh
-   ~/.claude/skills/orchestrate/scripts/track up <run>-<unit> --cwd <workspace> [--verifier] [--claude-config ~/.claude2]
+   baton open <unit> --cwd <workspace> [--verifier] [--max-failures 3] [--claude-config ~/.claude2]
    ```
 
-   - **Account.** The implementor's Claude account comes from `CLAUDE_CONFIG_DIR`: `~/.claude` is `claude` and `~/.claude2` is `claude2`. The script uses yours unless `--claude-config` names the other one. Spread tracks across both accounts when usage limits bind. Personal repos use the account the user names.
+   This opens a tab named `<run>-<unit>` and starts the agents in it. It then hands the implementor the baton, with a message pointing at the spec.
+
+   - **Account.** The implementor's Claude account comes from `CLAUDE_CONFIG_DIR`: `~/.claude` is `claude` and `~/.claude2` is `claude2`. Baton uses yours unless `--claude-config` names the other one. Spread tracks across both accounts when usage limits bind. Personal repos use the account the user names.
    - **Models.** `--impl-model`, `--impl-effort`, `--rev-model` and `--rev-effort` override the defaults. Raise the effort only where a fault is expensive.
-3. **Read the JSON.** A `status` other than `ready` means the agent stopped at a startup dialog, such as folder trust or login. Read it with `herdr agent read <name> --source visible --lines 30` and ask the user. Never answer a trust or permission dialog yourself.
-4. **Kick off the implementor only.** The reviewer and the verifier learn the protocol from the request file when round 1 arrives:
+3. **Read the JSON.** A `started` other than `ready` means the agent stopped at a startup dialog, such as folder trust or login. Read it with `herdr agent read <name> --source visible --lines 30` and ask the user. Never answer a trust or permission dialog yourself. Once the user clears it, `baton status` shows whether the kickoff is still owed, and `baton redeliver <ref>` sends it.
+4. **Record.** Write the track, the workspace and `running r1` into `plan.md`.
 
-   ```sh
-   herdr agent prompt <run>-<unit>-impl "You are the implementor of track <run>-<unit>. Read ~/.claude/skills/orchestrate/protocol.md and <run dir>/<unit>/spec.md in full, then start."
-   ```
-
-5. **Record.** Write the track, the workspace and `running r1` into `plan.md`.
-
-Done when the implementor is working and `plan.md` names its track. Open every unit whose dependencies are merged, up to the track limit. Then end your turn.
+Done when `baton status` shows the track with the baton at the implementor, and `plan.md` names it. Open every unit whose dependencies are merged, up to the track limit. Then end your turn.
 
 ## 4. On a message
 
-Messages arrive as new turns, prefixed `[<track>]` from agents or `[watchdog]` from the mod. Handle one at a time.
+Baton's messages arrive as new turns, prefixed `[<track>]`, `[watchdog]` or `[baton]`. Handle one at a time. The baton is yours until you act: a `baton tell` or `baton close` hands it on.
 
 ### accepted
 
 1. **Check the claims.** Read the accepting file's verdict and receipts and `git diff --stat`. Then check, against the code, the claims behind the spec's Risks section. Workers report their mistakes in the same confident words as their results. Read files, not transcripts.
 2. **Integrate.**
-   - The branch must contain today's main (`git merge-base --is-ancestor main <branch>`), so main only fast-forwards to the exact tree that was reviewed. If it does not, merge nothing and message the implementor: `orch: [<track>] merge main into your branch, gate, and send the next round`. That round is a merge round ([Rounds](protocol.md#rounds)).
+   - The branch must contain today's main (`git merge-base --is-ancestor main <branch>`), so main only fast-forwards to the exact tree that was reviewed. If it does not, merge nothing and run `baton tell <unit> impl "merge main into your branch, gate, and send the next round"`. That round is a merge round ([Rounds](protocol.md#rounds)).
    - Run the gate in the unit's workspace at the branch head, the exact tree main will become, into `<run dir>/merge-<unit>.log`, and read its exit line. Red: merge nothing, and send the implementor the log as a merge round.
    - Green: in the main checkout, `git merge --ff-only <branch>`.
 3. **Record and close.**
    - Write `merged <hash>` into the unit's row in `plan.md`, with decisions, follow-ups from `state.md`, and anything for "Review later".
-   - Run `track down <track>`, then remove the workspace by its full path.
+   - Run `baton close <unit> --merged <hash>`, then remove the workspace by its full path.
 4. **Next.** Open each unit whose dependencies are now all merged, up to the limit (step 3). If a result changes what a later unit needs, update that unit's spec first.
 
-### blocked
+### asks
 
-Read `blocked.md`. If it holds a message an agent could not deliver because its target sat at a dialog, read the dialog (`herdr agent read <target> --source visible --lines 30`), ask the user to clear it, then deliver the held message to its target yourself.
+A worker ran `baton ask`, and the message names its `blocked.md`. Read it.
 
-- If the point is small and reversible, decide it by principle, record it in Decisions, and reply to the implementor with `orch: [<track>] decision: … ; continue`.
+- If the point is small and reversible, decide it by principle, record it in Decisions, and answer with `baton tell <unit> <role> "decision: …; continue"`.
 - Otherwise put it in Owner questions with your recommendation, and tell the user in one short message. Other tracks keep running.
+
+### could not deliver
+
+A `[baton]` message says a message could not reach its agent, usually because the agent sits at a dialog. Read the dialog (`herdr agent read <agent> --source visible --lines 30`) and ask the user to clear it. Then run the `baton redeliver <ref>` the message names.
 
 ### stuck
 
-The track's third failed round (a Blocker or Major, or a verify FAIL). Never run another round in the same contexts. Re-plan, by one of these:
+The track hit its failure cap (a Blocker or Major, or a verify fail), or a worker passed `stuck`. Never run another round in the same contexts. Re-plan, by one of these:
 
 - sharpen the spec;
 - split the unit;
 - make the contested decision yourself;
 - open a fresh track with the old findings as data.
 
-Close the old track.
+Close the old track (`baton close <unit>`).
 
 **Scope.** Scope never grows inside a running track. New work becomes a new unit in `plan.md`; it never goes into a message to a working agent.
 
@@ -148,18 +148,19 @@ Close the old track.
 
 - **Wait.** End your turn and let messages wake you. No loops, no `agent wait`, no reading panes to check progress.
 - **Use the idle time.** Spec the next units while you wait.
-- **Stall check.** Run it on a `[watchdog]` message. The mod sends one when:
-  - a track sits quiet for 10 minutes while the next step is an agent's;
-  - an agent sits at a dialog;
-  - the agent whose turn it is has gone;
-  - a final file exists that no message reported.
+- **Stall check.** Run it on a `[watchdog]` message. Baton sends one, once per step, when the agent holding the baton:
+  - has gone;
+  - sits at a dialog for 2 minutes;
+  - has been quiet, with nothing in flight to it, for 10 minutes.
 
-  Run it also when the user asks for status (`/tracks` answers that without a model call). The message names the step and the unit folder:
-  - **A dropped message.** Read the last 40 lines of the agent whose turn it is, then send the one missing message for it.
+  The message names the holder, the step and the unit folder. Read the last 40 lines of the holder:
   - **A dialog.** Read it, and ask the user.
-  - **An unreported final file.** Handle it as if its message had arrived.
-- **After your own compaction.** Re-read this file, `protocol.md` and `plan.md`, and run `herdr agent list`, before any other action.
-- **Pause.** On a pause, or when the user stops the run, run `track down` on every track you opened, so no orphan agent burns tokens.
+  - **An agent that finished its step but did not pass.** Tell it to pass: `baton tell <unit> <role> "pass your <file> with baton pass"`.
+  - **A gone agent.** Re-plan the unit as for stuck.
+
+  `baton status` (or `/tracks`) answers the user's status questions without a model call.
+- **After your own compaction.** Re-read this file, `protocol.md` and `plan.md`, and run `baton status`, before any other action.
+- **Pause.** On a pause, or when the user stops the run, run `baton close <unit>` for every open track, so no orphan agent burns tokens. `baton run end` closes them all and ends the run.
 
 ## 6. Close
 
@@ -175,4 +176,4 @@ The end report covers:
 - the Review later list;
 - the `plan.md` path.
 
-Close every track and workspace you opened.
+Close every workspace you opened, then run `baton run end`.

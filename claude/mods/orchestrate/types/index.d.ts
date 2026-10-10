@@ -1,10 +1,12 @@
 export type TrackView = {
   track: string
+  unit: string
+  step: string
+  holder: string
   round: number
-  label: string
-  next: 'impl' | 'rev' | 'ver' | 'orch'
-  workers: Partial<Record<'impl' | 'rev' | 'ver', 'idle' | 'working' | 'blocked' | 'done' | 'unknown'>>
-  stall?: string
+  failures: number
+  since: number
+  agents: { role: string; name: string; status: string }[]
 }
 
 declare module 'claude-code' {

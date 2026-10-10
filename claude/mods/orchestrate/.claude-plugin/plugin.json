@@ -1,7 +1,9 @@
 {
   "name": "orchestrate",
-  "version": "0.1.0",
-  "description": "Enforces the orchestrate track protocol and watches herdr tracks for stalls at zero model tokens.",
-  "author": { "name": "Cristian" },
+  "version": "0.2.0",
+  "description": "Guards baton seats, ticks the baton watchdog and shows the tracks, at zero model tokens.",
+  "author": {
+    "name": "Cristian"
+  },
   "types": "./types/index.d.ts"
 }
