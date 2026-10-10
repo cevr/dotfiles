@@ -1,0 +1,42 @@
+{
+  "name": "baton",
+  "version": "0.0.0",
+  "private": true,
+  "description": "An event-sourced relay for herdr agent tracks: whoever holds the baton works next",
+  "bin": {
+    "baton": "./bin/baton"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/main.ts",
+    "build": "bun run scripts/build.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --report-unused-disable-directives-severity=error",
+    "lint:fix": "oxlint --report-unused-disable-directives-severity=error --fix",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "test": "bun test",
+    "gate": "concurrently -n type,style,build,test -c blue,yellow,cyan,green \"bun run typecheck\" \"bun run lint && bun run fmt:check\" \"bun run build\" \"bun run test\"",
+    "prepare": "(test -d .git && lefthook install || true) && effect-tsgo patch"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "4.0.2",
+    "@effect/sql-sqlite-bun": "4.0.2",
+    "effect": "4.0.2"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "0.51.1",
+    "@types/bun": "1.4.2",
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
+    "concurrently": "10.0.6",
+    "effect-bun-test": "0.4.0",
+    "lefthook": "2.2.1",
+    "oxfmt": "0.72.0",
+    "oxlint": "1.87.0",
+    "oxlint-plugin-effect": "0.28.0",
+    "typescript": "7.0.2"
+  }
+}
