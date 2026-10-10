@@ -12,7 +12,13 @@ export class HerdrError extends Schema.TaggedError<HerdrError>()("HerdrError", {
   detail: Schema.String,
 }) {
   override get message(): string {
-    return `herdr: ${this.code}: ${this.detail}`
+    return `herdr: ${this.reason}`
+  }
+
+  /** The code and herdr's own words: what a log or a person needs to act on. */
+  get reason(): string {
+    if (this.detail === "") return this.code
+    return `${this.code}: ${this.detail}`
   }
 }
 
@@ -27,7 +33,7 @@ export type Seating = {
 
 export type Opened = {
   readonly tab: string
-  /** Each seat's agent, and `ready` or herdr's error code from starting it. */
+  /** Each seat's agent, and `ready` or herdr's reason it did not start. */
   readonly seats: ReadonlyArray<Agent & { readonly started: string }>
 }
 
@@ -80,16 +86,20 @@ export class Herdr extends Context.Service<Herdr, HerdrService>()("baton/src/ser
     Herdr,
     Effect.gen(function* () {
       const shell = yield* Shell
-      /** Runs herdr; a non-zero exit becomes its error code. */
+      /** Runs herdr; a non-zero exit becomes the error it printed, on stderr. */
       const herdr = Effect.fn("Herdr.run")(function* (args: ReadonlyArray<string>) {
         const ran = yield* shell.run("herdr", args)
         if (ran.exitCode === 0) return ran.stdout
-        const failure = Option.map(decodeFailure(ran.stdout), ({ error }) => ({
+        const printed = Option.orElse(decodeFailure(ran.stderr), () => decodeFailure(ran.stdout))
+        const failure = Option.map(printed, ({ error }) => ({
           code: error.code,
           detail: error.message,
         }))
         return yield* HerdrError.make(
-          Option.getOrElse(failure, () => ({ code: "failed", detail: ran.stderr.trim() })),
+          Option.getOrElse(failure, () => ({
+            code: `exit_${ran.exitCode}`,
+            detail: `${ran.stderr}${ran.stdout}`.trim(),
+          })),
         ).pipe(Effect.fail)
       })
 
@@ -191,7 +201,7 @@ export class Herdr extends Context.Service<Herdr, HerdrService>()("baton/src/ser
             ...seating.args,
           ]).pipe(
             Effect.as("ready"),
-            Effect.catchTag("HerdrError", (error) => Effect.succeed(error.code)),
+            Effect.catchTag("HerdrError", (error) => Effect.succeed(error.reason)),
             Effect.map((started) => ({ name: seating.name, pane: target, started })),
           )
         })

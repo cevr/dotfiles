@@ -30,6 +30,7 @@ export const RunView = Schema.Struct({
       to: Schema.String,
       state: Schema.String,
       failure: Schema.String,
+      failures: Schema.Int,
     }),
   ),
 })
@@ -90,6 +91,7 @@ export const runView = (run: Run): RunView => ({
         to: message.to.name,
         state: message.delivery.state,
         failure: Option.getOrElse(message.delivery.failure, () => ""),
+        failures: message.failures,
       },
     ]
   }),
@@ -121,8 +123,15 @@ export const runText = (view: RunView, now: number): string => {
     const agents = track.agents.map((agent) => `${agent.role} ${agent.status}`).join(" · ")
     return `  ${track.track.padEnd(width)}  r${track.round}  ${track.step} → ${track.holder}  ${minutes(now - track.since)}  (${agents})`
   })
-  const owed = view.undelivered.map((message) =>
-    `  #${message.ref} to ${message.to}: ${message.state} ${message.failure}`.trimEnd(),
+  const owed = view.undelivered.map(
+    (message) => `  #${message.ref} to ${message.to}: ${message.state}${failureText(message)}`,
   )
   return [head, ...rows, ...owed].join("\n")
+}
+
+/** How often a message failed, and herdr's reason for the last failure. */
+const failureText = (message: RunView["undelivered"][number]): string => {
+  if (message.failures === 0) return ""
+  if (message.failure === "") return ` (${message.failures} failed)`
+  return ` (${message.failures} failed): ${message.failure}`
 }

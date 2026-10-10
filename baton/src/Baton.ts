@@ -45,7 +45,7 @@ export interface BatonService {
   readonly tell: (unit: string, to: Role, text: string) => Effect.Effect<Track, Failure>
   readonly close: (unit: string, merged: Option.Option<string>) => Effect.Effect<Track, Failure>
   readonly redeliver: (ref: number) => Effect.Effect<Run, Failure>
-  /** One watchdog pass over every live run: observe herdr, report stalls, deliver. */
+  /** One watchdog pass over every live run: observe herdr, resend, report stalls, deliver. */
   readonly tick: Effect.Effect<ReadonlyArray<Run>, Failure>
   readonly status: Effect.Effect<ReadonlyArray<Run>, Failure>
   readonly whoami: Effect.Effect<Option.Option<Identity>, Failure>
@@ -131,7 +131,7 @@ export class Baton extends Context.Service<Baton, BatonService>()("baton/src/Bat
               const failure = yield* herdr.prompt(message.to.name, message.text).pipe(
                 Effect.as(Option.none<string>()),
                 Effect.catchTags({
-                  HerdrError: (error) => Effect.succeedSome(error.code),
+                  HerdrError: (error) => Effect.succeedSome(error.reason),
                   ShellError: (error) => Effect.succeedSome(error.message),
                 }),
               )
@@ -358,6 +358,11 @@ export class Baton extends Context.Service<Baton, BatonService>()("baton/src/Bat
             if (sameStatuses(current.statuses, statuses)) return Result.succeed([])
             return Result.succeed([Event.cases.AgentsObserved.make({ statuses })])
           })
+          yield* write(run.name, (current) =>
+            Result.succeed(
+              State.resendable(current).map((ref) => Event.cases.RedeliveryRequested.make({ ref })),
+            ),
+          )
           yield* write(run.name, (current, now) =>
             Result.succeed(
               State.stalls(current, now).map((found) => Event.cases.StallDetected.make(found)),

@@ -52,6 +52,8 @@ export type DeliveryState = "pending" | "sending" | "delivered" | "failed"
 export type Delivery = {
   readonly state: DeliveryState
   readonly at: number
+  /** The log entry that set this state: orders it against herdr's reports. */
+  readonly seq: number
   readonly failure: Option.Option<string>
 }
 
@@ -62,6 +64,8 @@ export type Message = {
   readonly to: Agent
   readonly text: string
   readonly delivery: Delivery
+  /** How many attempts to send it have failed. */
+  readonly failures: number
 }
 
 export type Run = {
@@ -73,6 +77,8 @@ export type Run = {
   /** herdr's last record of the run's agents; an agent it lacks is gone. */
   readonly statuses: ReadonlyMap<string, AgentStatus>
   readonly observedAt: Option.Option<number>
+  /** The log entry of herdr's last report. */
+  readonly observedSeq: Option.Option<number>
   readonly blockedSince: ReadonlyMap<string, number>
   /** `unit:step:stall` for each stall already reported. */
   readonly alerts: ReadonlySet<string>
@@ -84,6 +90,8 @@ export const STALL_QUIET_MS = 10 * 60_000
 export const STALL_DIALOG_MS = 2 * 60_000
 /** A delivery that started and never finished (a crash) is retried after this. */
 export const DELIVERY_RETRY_MS = 2 * 60_000
+/** How often baton resends a failed message by itself before leaving it to the orchestrator. */
+export const RESENDS = 3
 
 export const ROLES: ReadonlyArray<Role> = ["impl", "rev", "ver"]
 
@@ -115,6 +123,7 @@ export const project = (name: string, entries: ReadonlyArray<Entry>): Option.Opt
       messages: new Map(),
       statuses: new Map(),
       observedAt: Option.none(),
+      observedSeq: Option.none(),
       blockedSince: new Map(),
       alerts: new Set(),
       ended: Option.none(),
@@ -133,6 +142,7 @@ type Draft = {
   messages: Map<number, Message>
   statuses: Map<string, AgentStatus>
   observedAt: Option.Option<number>
+  observedSeq: Option.Option<number>
   blockedSince: Map<string, number>
   alerts: Set<string>
   ended: Option.Option<number>
@@ -144,8 +154,8 @@ const fold = (run: Draft, entry: Entry): void => {
   const at = entry.at
   const seq = entry.seq
   const send = (to: Agent, unit: Option.Option<string>, text: string): void => {
-    const delivery: Delivery = { state: "pending", at, failure: Option.none() }
-    run.messages.set(seq, { ref: seq, unit, to, text, delivery })
+    const delivery: Delivery = { state: "pending", at, seq, failure: Option.none() }
+    run.messages.set(seq, { ref: seq, unit, to, text, delivery, failures: 0 })
   }
   const tag = (unit: string): string => `[${trackName(run.name, unit)}]`
   const toOrch = (unit: string, text: string): void =>
@@ -185,6 +195,51 @@ const fold = (run: Draft, entry: Entry): void => {
   const accepted = (track: Track, how: string, file: string): Track => {
     toOrch(track.unit, `${tag(track.unit)} ${how} at round ${track.rounds}: ${file}`)
     return step(track, "accepted", "orch")
+  }
+
+  /**
+   * Records how a send ended. The orchestrator hears of a worker's failed
+   * message when it first fails, when baton stops resending it, and when a
+   * resend lands; never of its own.
+   */
+  const finish = (message: Message, failure: Option.Option<string>): void => {
+    const to = message.to.name
+    const toWorker = to !== run.orchestrator.name
+    if (Option.isNone(failure)) {
+      run.messages.set(message.ref, {
+        ...message,
+        delivery: delivery("delivered", entry, Option.none()),
+      })
+      if (toWorker && message.failures > 0)
+        send(
+          run.orchestrator,
+          message.unit,
+          `[baton] #${message.ref} reached ${to} after ${attempts(message.failures)} failed`,
+        )
+      return
+    }
+    const failures = message.failures + 1
+    run.messages.set(message.ref, {
+      ...message,
+      delivery: delivery("failed", entry, failure),
+      failures,
+    })
+    if (!toWorker) return
+    const lead = `[baton] could not deliver #${message.ref} to ${to}: ${failure.value}.`
+    if (failures === 1)
+      send(
+        run.orchestrator,
+        message.unit,
+        `${lead} baton sends it again when herdr next reports ${to} idle; ` +
+          `to send it sooner: baton redeliver ${message.ref}`,
+      )
+    else if (failures > RESENDS)
+      send(
+        run.orchestrator,
+        message.unit,
+        `${lead} ${attempts(failures)} failed, and baton has stopped resending it; ` +
+          `once ${to} can take it: baton redeliver ${message.ref}`,
+      )
   }
 
   Event.match(entry.event, {
@@ -260,7 +315,7 @@ const fold = (run: Draft, entry: Entry): void => {
         ...track,
         closed: Option.some({ at, merged: event.merged }),
       })),
-    AgentsObserved: (event) => observe(run, at, new Map(Object.entries(event.statuses))),
+    AgentsObserved: (event) => observe(run, at, seq, new Map(Object.entries(event.statuses))),
     StallDetected: (event) => {
       run.alerts.add(alertKey(event.unit, event.step, event.stall))
       for (const track of Option.toArray(Option.fromUndefinedOr(run.tracks.get(event.unit))))
@@ -271,39 +326,35 @@ const fold = (run: Draft, entry: Entry): void => {
             `Unit folder: ${unitDir(run, event.unit)}`,
         )
     },
-    DeliveryStarted: (event) => mark(run, event.ref, delivery("sending", at, Option.none())),
-    RedeliveryRequested: (event) => mark(run, event.ref, delivery("pending", at, Option.none())),
+    DeliveryStarted: (event) => mark(run, event.ref, delivery("sending", entry, Option.none())),
+    RedeliveryRequested: (event) => mark(run, event.ref, delivery("pending", entry, Option.none())),
     DeliveryFinished: (event) => {
-      if (Option.isNone(event.failure))
-        return mark(run, event.ref, delivery("delivered", at, Option.none()))
-      mark(run, event.ref, delivery("failed", at, event.failure))
-      // The orchestrator hears of every failed message but its own.
       for (const message of Option.toArray(Option.fromUndefinedOr(run.messages.get(event.ref))))
-        if (message.to.name !== run.orchestrator.name)
-          send(
-            run.orchestrator,
-            message.unit,
-            `[baton] could not deliver #${message.ref} to ${message.to.name}: ${event.failure.value}. ` +
-              `Once it can take it: baton redeliver ${message.ref}`,
-          )
+        finish(message, event.failure)
     },
   })
 }
 
-const delivery = (state: DeliveryState, at: number, failure: Option.Option<string>): Delivery => ({
-  state,
-  at,
-  failure,
-})
+const attempts = (count: number): string => {
+  if (count === 1) return "1 attempt"
+  return `${count} attempts`
+}
+
+const delivery = (
+  state: DeliveryState,
+  entry: Entry,
+  failure: Option.Option<string>,
+): Delivery => ({ state, at: entry.at, seq: entry.seq, failure })
 
 const mark = (run: Draft, ref: number, next: Delivery): void => {
   for (const message of Option.toArray(Option.fromUndefinedOr(run.messages.get(ref))))
     run.messages.set(ref, { ...message, delivery: next })
 }
 
-const observe = (run: Draft, at: number, statuses: Map<string, AgentStatus>): void => {
+const observe = (run: Draft, at: number, seq: number, statuses: Map<string, AgentStatus>): void => {
   run.statuses = statuses
   run.observedAt = Option.some(at)
+  run.observedSeq = Option.some(seq)
   for (const name of [...run.blockedSince.keys()])
     if (statuses.get(name) !== "blocked") run.blockedSince.delete(name)
   for (const [name, status] of statuses)
@@ -368,6 +419,24 @@ export const deliverable = (run: Run, now: number): ReadonlyArray<Message> =>
     if (message.delivery.state === "pending") return true
     return message.delivery.state === "sending" && now - message.delivery.at >= DELIVERY_RETRY_MS
   })
+
+/**
+ * Failed messages to send again now: herdr has reported the recipient idle,
+ * ready for a prompt, since the last attempt failed. Each failure waits for a
+ * newer report, so a resend that fails again is not retried in a loop.
+ */
+export const resendable = (run: Run): ReadonlyArray<number> =>
+  [...run.messages.values()].flatMap((message) => {
+    const { delivery: last } = message
+    if (last.state !== "failed" || message.failures > RESENDS) return []
+    if (!toLiveAgent(run, message)) return []
+    if (!Option.exists(run.observedSeq, (seq) => seq > last.seq)) return []
+    if (!ready(Option.fromUndefinedOr(run.statuses.get(message.to.name)))) return []
+    return [message.ref]
+  })
+
+const ready = (status: Option.Option<AgentStatus>): boolean =>
+  Option.exists(status, (found) => found === "idle" || found === "done")
 
 /** A closed track's workers get nothing more; the orchestrator gets everything. */
 const toLiveAgent = (run: Run, message: Message): boolean => {

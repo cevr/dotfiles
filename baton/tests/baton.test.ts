@@ -103,8 +103,34 @@ describe("a track", () => {
         expect((yield* w.prompts).map((prompt) => prompt.agent)).toEqual([
           "hymn-orch",
           "hymn-src-impl",
+          "hymn-orch",
         ])
       }).pipe(Effect.provide(world)),
+  )
+
+  it.scoped("the watchdog resends a failed message once its agent is idle", () =>
+    Effect.gen(function* () {
+      const baton = yield* Baton
+      const w = yield* World
+      yield* w.blocked(["hymn-src-impl"])
+      yield* w.statuses({ "hymn-orch": "idle", "hymn-src-impl": "blocked", "hymn-src-rev": "idle" })
+      const unit = yield* openTrack
+      yield* baton.tick
+      yield* w.blocked([])
+      yield* w.statuses({ "hymn-orch": "idle", "hymn-src-impl": "idle", "hymn-src-rev": "idle" })
+      yield* baton.tick
+      const sent = yield* w.prompts
+      expect(sent.map((prompt) => prompt.agent)).toEqual([
+        "hymn-orch",
+        "hymn-src-impl",
+        "hymn-orch",
+      ])
+      expect(sent[0]?.text).toContain("agent_blocked: hymn-src-impl is at a dialog")
+      expect(sent[1]?.text).toBe(
+        `[hymn-src] you hold the baton: build round 1 from ${unit}/spec.md`,
+      )
+      expect(sent[2]?.text).toContain("reached hymn-src-impl after 1 attempt failed")
+    }).pipe(Effect.provide(world)),
   )
 
   it.scoped("the watchdog reports a quiet track once, from the log alone", () =>

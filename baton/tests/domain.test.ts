@@ -49,6 +49,10 @@ const track = (run: Run): State.Track =>
   Option.getOrThrow(Option.fromUndefinedOr(run.tracks.get("src")))
 const holderAfter = (...events: ReadonlyArray<Event>): string =>
   track(runOf(log(started, ...events))).step.holder
+const delivered = (ref: number) => [
+  Event.cases.DeliveryStarted.make({ ref }),
+  Event.cases.DeliveryFinished.make({ ref, failure: Option.none() }),
+]
 const lastMessage = (run: Run): State.Message =>
   Option.getOrThrow(Arr.last([...run.messages.values()]))
 
@@ -200,6 +204,63 @@ describe("delivery", () => {
     expect(State.deliverable(retried, 10 * MIN).map((m) => m.ref)).toContain(2)
   })
 
+  const fail = (ref: number, why = "agent_blocked: at a dialog") => [
+    Event.cases.DeliveryStarted.make({ ref }),
+    Event.cases.DeliveryFinished.make({ ref, failure: Option.some(why) }),
+  ]
+  const seen = (status: "idle" | "blocked") =>
+    Event.cases.AgentsObserved.make({
+      statuses: { [orch.name]: "idle", [impl.name]: status, [rev.name]: "idle" },
+    })
+  const toOrch = (run: Run): ReadonlyArray<string> =>
+    [...run.messages.values()].flatMap((m) =>
+      Option.toArray(Option.liftPredicate(m.text, () => m.to.name === orch.name)),
+    )
+
+  test("a failed message is resent once herdr reports its recipient idle", () => {
+    const failed = [started, opened(false), ...fail(2)] as const
+    expect(State.resendable(runOf(log(...failed)))).toEqual([])
+    expect(State.resendable(runOf(log(...failed, seen("blocked"))))).toEqual([])
+    expect(State.resendable(runOf(log(...failed, seen("blocked"), seen("idle"))))).toEqual([2])
+    const resent = [
+      ...failed,
+      seen("idle"),
+      Event.cases.RedeliveryRequested.make({ ref: 2 }),
+      ...fail(2),
+    ]
+    expect(State.resendable(runOf(log(...resent)))).toEqual([])
+    expect(State.resendable(runOf(log(...resent, seen("blocked"), seen("idle"))))).toEqual([2])
+  })
+
+  test("the orchestrator hears the reason, the landing, and when baton gives up", () => {
+    const failed = runOf(log(started, opened(false), ...fail(2)))
+    expect(toOrch(failed)).toEqual([
+      "[baton] could not deliver #2 to hymn-src-impl: agent_blocked: at a dialog. " +
+        "baton sends it again when herdr next reports hymn-src-impl idle; " +
+        "to send it sooner: baton redeliver 2",
+    ])
+    const landed = runOf(
+      log(
+        started,
+        opened(false),
+        ...fail(2),
+        Event.cases.RedeliveryRequested.make({ ref: 2 }),
+        ...delivered(2),
+      ),
+    )
+    expect(toOrch(landed).at(-1)).toBe("[baton] #2 reached hymn-src-impl after 1 attempt failed")
+    const again = [Event.cases.RedeliveryRequested.make({ ref: 2 }), ...fail(2)]
+    const exhausted = runOf(
+      log(started, opened(false), ...fail(2), ...again, ...again, ...again, seen("idle")),
+    )
+    expect(Option.getOrThrow(Option.fromUndefinedOr(exhausted.messages.get(2))).failures).toBe(
+      State.RESENDS + 1,
+    )
+    expect(State.resendable(exhausted)).toEqual([])
+    expect(toOrch(exhausted)).toHaveLength(2)
+    expect(toOrch(exhausted)[1]).toContain("4 attempts failed, and baton has stopped resending it")
+  })
+
   test("a closed track's workers get nothing more", () => {
     const closed = runOf(
       log(
@@ -215,10 +276,6 @@ describe("delivery", () => {
 describe("stalls", () => {
   const observed = (statuses: Record<string, "idle" | "working" | "blocked">) =>
     Event.cases.AgentsObserved.make({ statuses: { [orch.name]: "idle", ...statuses } })
-  const delivered = (ref: number) => [
-    Event.cases.DeliveryStarted.make({ ref }),
-    Event.cases.DeliveryFinished.make({ ref, failure: Option.none() }),
-  ]
 
   test("a quiet track stalls after 10 minutes, and is reported once per step", () => {
     const quiet = log(started, opened(false), ...delivered(2), [

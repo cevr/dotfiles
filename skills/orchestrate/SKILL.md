@@ -100,7 +100,7 @@ Done when the spec's Owns, Do not touch, Acceptance check and Gate sections are 
 
    - **Account.** The implementor's Claude account comes from `CLAUDE_CONFIG_DIR`: `~/.claude` is `claude` and `~/.claude2` is `claude2`. Baton uses yours unless `--claude-config` names the other one. Spread tracks across both accounts when usage limits bind. Personal repos use the account the user names.
    - **Models.** `--impl-model`, `--impl-effort`, `--rev-model` and `--rev-effort` override the defaults. Raise the effort only where a fault is expensive.
-3. **Read the JSON.** A `started` other than `ready` means the agent stopped at a startup dialog, such as folder trust or login. Read it with `herdr agent read <name> --source visible --lines 30` and ask the user. Never answer a trust or permission dialog yourself. Once the user clears it, `baton status` shows whether the kickoff is still owed, and `baton redeliver <ref>` sends it.
+3. **Read the JSON.** A `started` other than `ready` means the agent stopped at a startup dialog, such as folder trust or login. Read it with `herdr agent read <name> --source visible --lines 30` and ask the user. Never answer a trust or permission dialog yourself. Once the user clears it, baton sends the kickoff by itself the next time herdr reports the agent idle.
 4. **Record.** Write the track, the workspace and `running r1` into `plan.md`.
 
 Done when `baton status` shows the track with the baton at the implementor, and `plan.md` names it. Open every unit whose dependencies are merged, up to the track limit. Then end your turn.
@@ -131,7 +131,7 @@ A worker ran `baton ask`, and the message names its `blocked.md`. Read it.
 
 ### could not deliver
 
-A `[baton]` message says a message could not reach its agent, usually because the agent sits at a dialog. Read the dialog (`herdr agent read <agent> --source visible --lines 30`) and ask the user to clear it. Then run the `baton redeliver <ref>` the message names.
+A `[baton]` message says a message could not reach its agent, with herdr's reason. Usually the agent sits at a dialog: read it (`herdr agent read <agent> --source visible --lines 30`) and ask the user to clear it. baton resends the message by itself once herdr reports the agent idle, and tells you when it lands. Run the `baton redeliver <ref>` the message names only when baton says it has stopped resending.
 
 ### stuck
 

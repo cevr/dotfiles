@@ -55,7 +55,7 @@ export const Event = Schema.TaggedUnion({
   DeliveryStarted: { ref: Schema.Int },
   /** That message reached its agent, or failed with herdr's reason. */
   DeliveryFinished: { ref: Schema.Int, failure: Schema.OptionFromOptionalKey(Schema.String) },
-  /** Send a failed message again, once its recipient can take it. */
+  /** Send a failed message again: the orchestrator asked, or herdr reported its recipient idle. */
   RedeliveryRequested: { ref: Schema.Int },
 })
 export type Event = typeof Event.Type
