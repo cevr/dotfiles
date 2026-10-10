@@ -59,7 +59,7 @@ noncurrent snapshot objects after 14 days.
   source. It checks out the remote branch when one exists, and otherwise starts
   a new branch from the freshly fetched remote default branch.
 - `workrift deps` installs dependencies in the current checkout when its lock
-  file changed since the last install.
+  file or a dependency patch in `patches/` changed since the last install.
 - `workrift refresh` updates and warms the source from its default branch.
 - `workrift list` lists the source's workspaces; `workrift sources` lists sources.
 - `workrift remove [--with-children] [path]` moves a workspace to the Rift trash.
@@ -108,8 +108,10 @@ by hand after it. The last installed lock fingerprint is in
 `.git/workrift-installed-locks`.
 
 A source's Git config holds its settings: `workrift.main` (default branch),
-`workrift.install` (default: from the lock file) and `workrift.warm` (a step
-after the install on refresh). Bootstrap sets the Bite warm step to
+`workrift.install` (default: from the lock file) and `workrift.warm` (a build
+step after the install). `refresh` runs it in the source. `create` runs it in the
+new workspace, because the copied build output matches the source's commit, not
+the branch; a failed step only prints a warning. Bootstrap sets the Bite warm step to
 `bun run compile` and links its `.env`. Per-repository create and remove hooks
 belong in Rift's own `.rift.toml` in the source.
 

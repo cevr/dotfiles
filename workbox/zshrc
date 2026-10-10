@@ -30,3 +30,6 @@ alias claude2='CLAUDE_CONFIG_DIR=~/.claude2 $HOME/.local/bin/claude'
 
 # bun completions
 [ -s "/home/exedev/.bun/_bun" ] && source "/home/exedev/.bun/_bun"
+
+# Interactive tools (machine-local configuration)
+[ -r "$HOME/.config/zsh/interactive-tools.zsh" ] && source "$HOME/.config/zsh/interactive-tools.zsh"

@@ -21,4 +21,4 @@ Read these in full before the first file:
 
 ## Report
 
-`<pass dir>/review-<package>.md`: a slop table (id, slop class, file:line or sites, repair), a test table (id, file, verdict keep/delete/merge/move/rename, evidence), a gap list, the slowest tests, and the files read. Ids are `R<N>-<package>-<k>`. Triage folds them into the package's batch; a pure test cleanup may be its own batch.
+`<pass dir>/review-<package>.md`: a slop table (id, class P1/P2/P3, slop class, file:line or sites, repair), a test table (id, file, verdict keep/delete/merge/move/rename, evidence), a gap list, the slowest tests, and the files read. Ids are `R<N>-<package>-<k>`. Triage folds them into the package's batch; a pure test cleanup may be its own batch.

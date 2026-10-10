@@ -17,7 +17,8 @@
 # Per-repository settings live in the source's Git config:
 #   workrift.main     default branch (default: origin HEAD)
 #   workrift.install  dependency install (default: from the lock file)
-#   workrift.warm     refresh step after the install (default: none)
+#   workrift.warm     build step after the install, run by refresh and create
+#                     (default: none)
 
 set -eu
 
@@ -120,11 +121,17 @@ main_branch() {
 
 lock_files='bun.lock bun.lockb pnpm-lock.yaml yarn.lock package-lock.json'
 
+# A dependency patch (bun and pnpm keep them in patches/) can change while the
+# lock file stays the same, and the install applies it, so it counts too.
 lock_fingerprint() {
   for lock_file in $lock_files; do
     if [ -f "$1/$lock_file" ]; then
       printf '%s %s\n' "$lock_file" "$(git -C "$1" hash-object "$lock_file")"
     fi
+  done
+  for patch_file in "$1"/patches/*.patch; do
+    [ -f "$patch_file" ] || continue
+    printf '%s %s\n' "patches/${patch_file##*/}" "$(git -C "$1" hash-object "$patch_file")"
   done
 }
 
@@ -159,6 +166,14 @@ sync_dependencies() {
     return 0
   fi
   install_dependencies "$1"
+}
+
+warm_command() {
+  git -C "$1" config --get workrift.warm || true
+}
+
+run_warm() {
+  (cd "$1" && sh -c "$2")
 }
 
 dependency_hook_marker='# Managed by workrift: keep dependencies in step with the lock file.'
@@ -269,6 +284,12 @@ create_workspace() {
   fi
 
   sync_dependencies "$workspace" >&2
+  # The copied build output matches the source's commit, not the branch. A warm
+  # step that shares its cache with the source rebuilds only what differs.
+  warm=$(warm_command "$source_path")
+  if [ -n "$warm" ] && ! run_warm "$workspace" "$warm" >&2; then
+    printf 'workrift: warm step failed in %s; build output may be stale\n' "$workspace" >&2
+  fi
   printf '%s\n' "$workspace"
 }
 
@@ -294,9 +315,9 @@ refresh_source() {
   git -C "$source_path" merge --ff-only "origin/$main"
   install_dependencies "$source_path"
   install_dependency_hooks "$source_path"
-  warm=$(git -C "$source_path" config --get workrift.warm || true)
+  warm=$(warm_command "$source_path")
   if [ -n "$warm" ]; then
-    (cd "$source_path" && sh -c "$warm")
+    run_warm "$source_path" "$warm"
   fi
   printf 'Warm source is ready at %s.\n' "$source_path"
 }

@@ -19,7 +19,7 @@ The project says what good is; this skill says how to loop:
 
 Call the Skill tool with "codebase-design" once at the start; its glossary is the vocabulary of every prompt.
 
-**Autonomy.** Decide by the principles in `~/Developer/personal/dotfiles/principles/` and write "decided by <principle>" on the ledger row. Every finding is applied or rejected with a receipt; the loop asks nothing. Six things stay with the owner:
+**Autonomy.** Never block on the human ([`never-block-on-the-human.md`](../../principles/never-block-on-the-human.md)): the owner supervises after the fact, and a decision can be reversed later. Decide by the principles in `~/Developer/personal/dotfiles/principles/` and write "decided by <principle>" on the ledger row. Every finding is applied or rejected with a receipt; the loop asks nothing. Six things stay with the owner:
 - a persisted or wire format change that is not additive;
 - a north-star conflict no tiebreak settles;
 - removing a user-visible feature or a dependency that no north star names;

@@ -7,6 +7,8 @@ Fill the slots into `<pass dir>/sweep-brief.md`. Each sweep agent (architecture 
 
 Read `~/.claude/skills/architecture-loop/safety.md` and `<repo>/NORTH_STAR.md` → Owner rules in full before any action, and follow them.
 
+Never stop to ask the owner, and never end your work waiting for an answer. When a question comes up, read the principles in `~/Developer/personal/dotfiles/principles/` that bear on it, decide by them and `NORTH_STAR.md`, write "decided by <principle>" in your report, and go on. Report only the owner classes in the architecture-loop skill's Autonomy as owner questions, each with your recommendation, and keep working on the rest.
+
 Repo: <repo path>, branch main, HEAD <hash>. Edit, commit and create nothing in the repo; write only your report. Start only what your sweep's method names.
 
 Read first: AGENTS.md (or CLAUDE.md), CONTEXT.md, NORTH_STAR.md (whole: north stars, tiebreaks, owner rules, rejected), PRIOR_ART.md (the sources for your sweep, and Settled), and from <ledger path> its Decisions, Rejected, Owner questions, open Carried rows and the last pass's section; grep it for anything older. A done or rejected item returns only with a new receipt. Prior-art repos are at `okra repo path <slug>`.
