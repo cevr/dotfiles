@@ -9,6 +9,7 @@ const opening = {
   unit: "src",
   verifier: false,
   maxFailures: 3,
+  claudeConfig: Option.none(),
   implModel: "opus",
   implEffort: "medium",
   revModel: "gpt-6.1-sol",

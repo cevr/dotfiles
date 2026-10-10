@@ -26,6 +26,8 @@ export type Opening = {
   readonly cwd: string
   readonly verifier: boolean
   readonly maxFailures: number
+  /** The implementor's Claude account; this pane's when none. */
+  readonly claudeConfig: Option.Option<string>
   readonly implModel: string
   readonly implEffort: string
   readonly revModel: string
@@ -206,9 +208,13 @@ export class Baton extends Context.Service<Baton, BatonService>()("baton/src/Bat
         const cwd = path.resolve(opening.cwd)
         yield* exists(cwd, "pass the track's working directory")
         const name = State.trackName(run.name, opening.unit)
-        const claude = yield* dirConfig("CLAUDE_CONFIG_DIR", ".claude").pipe(
+        const ours = yield* dirConfig("CLAUDE_CONFIG_DIR", ".claude").pipe(
           Effect.orElseSucceed(() => ".claude"),
         )
+        const claude = Option.match(opening.claudeConfig, {
+          onNone: () => ours,
+          onSome: (dir) => path.resolve(dir),
+        })
         const codex = (model: string, effort: string) => [
           "-m",
           model,

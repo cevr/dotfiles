@@ -54,6 +54,10 @@ const open = Command.make("open", {
   cwd: Flag.String("cwd").pipe(Flag.withDescription("The track's checkout: a rift or worktree")),
   verifier: Flag.Boolean("verifier").pipe(Flag.withDefault(false)),
   maxFailures: Flag.Int("max-failures").pipe(Flag.withDefault(3)),
+  claudeConfig: Flag.String("claude-config").pipe(
+    Flag.withDescription("The implementor's Claude account, e.g. ~/.claude2; default this pane's"),
+    Flag.optional,
+  ),
   implModel: Flag.String("impl-model").pipe(Flag.withDefault("opus")),
   implEffort: Flag.String("impl-effort").pipe(Flag.withDefault("medium")),
   revModel: Flag.String("rev-model").pipe(Flag.withDefault("gpt-6.1-sol")),
