@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Open or close one orchestrate track: a herdr tab whose panes host the
+# unit's implementor (Claude), reviewer (Codex) and optional verifier (Codex).
+#
+#   track up <track> --cwd DIR [--workspace ID] [--verifier]
+#            [--claude-config DIR] [--impl-model M] [--impl-effort E]
+#            [--rev-model M] [--rev-effort E]
+#   track down <track> [--workspace ID]
+#
+# <track> is `<run>-<unit>`; agents are named <track>-impl, <track>-rev,
+# <track>-ver, so <track> stays within 27 characters of [a-z0-9-].
+# `up` prints one JSON object: the tab, and each agent's name, pane and
+# status (`ready`, or the herdr error code such as `agent_not_ready`).
+set -euo pipefail
+
+die() { printf 'track: %s\n' "$*" >&2; exit 2; }
+
+[ "${HERDR_ENV:-}" = 1 ] || die "not inside a herdr pane (HERDR_ENV != 1)"
+command -v jq >/dev/null || die "jq is required"
+
+cmd=${1:-}; track=${2:-}
+[ -n "$cmd" ] && [ -n "$track" ] || die "usage: track up|down <track> [options]"
+shift 2
+[[ "$track" =~ ^[a-z][a-z0-9-]{0,26}$ ]] || die "track must match [a-z][a-z0-9-]{0,26}: $track"
+
+workspace=${HERDR_WORKSPACE_ID:-}
+cwd="" verifier=0
+claude_config=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+impl_model=opus impl_effort=medium
+rev_model=gpt-6.1-sol rev_effort=high
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --workspace) workspace=$2; shift 2 ;;
+    --cwd) cwd=$2; shift 2 ;;
+    --verifier) verifier=1; shift ;;
+    --claude-config) claude_config=$2; shift 2 ;;
+    --impl-model) impl_model=$2; shift 2 ;;
+    --impl-effort) impl_effort=$2; shift 2 ;;
+    --rev-model) rev_model=$2; shift 2 ;;
+    --rev-effort) rev_effort=$2; shift 2 ;;
+    *) die "unknown option: $1" ;;
+  esac
+done
+[ -n "$workspace" ] || die "no workspace: pass --workspace"
+
+tab_of() {
+  herdr tab list --workspace "$workspace" \
+    | jq -r --arg l "$1" '.result.tabs[] | select(.label == $l) | .tab_id' | head -1
+}
+
+case $cmd in
+  up)
+    [ -n "$cwd" ] || die "--cwd is required"
+    [ -d "$cwd" ] || die "no such directory: $cwd"
+    cwd=$(cd "$cwd" && pwd)
+    [ -z "$(tab_of "$track")" ] || die "tab $track already exists in $workspace"
+
+    created=$(herdr tab create --workspace "$workspace" --cwd "$cwd" --label "$track" \
+      --env "CLAUDE_CONFIG_DIR=$claude_config" --no-focus)
+    tab=$(jq -r '.result.tab.tab_id' <<<"$created")
+    # A failure past this point closes the half-built tab, so `up` can be retried.
+    trap 'herdr tab close "$tab" >/dev/null 2>&1; die "up failed; closed $tab"' ERR
+    impl=$(jq -r '.result.root_pane.pane_id' <<<"$created")
+    rev=$(herdr pane split "$impl" --direction right --cwd "$cwd" --no-focus | jq -r '.result.pane.pane_id')
+    ver=null
+    if [ "$verifier" = 1 ]; then
+      ver=$(herdr pane split "$rev" --direction down --cwd "$cwd" --no-focus | jq -r '.result.pane.pane_id')
+    fi
+
+    # A start that lands on a startup dialog (folder trust, login) leaves the
+    # agent `blocked`; report it rather than answer the dialog.
+    start() {
+      local name=$1 kind=$2 pane=$3; shift 3
+      if out=$(herdr agent start "$name" --kind "$kind" --pane "$pane" --timeout 90000 -- "$@" 2>&1); then
+        status=ready
+      else
+        status=$(jq -r '.error.code // "failed"' <<<"$out" 2>/dev/null || echo failed)
+      fi
+      jq -nc --arg n "$name" --arg p "$pane" --arg s "$status" '{name:$n,pane:$p,status:$s}'
+    }
+
+    i=$(start "$track-impl" claude "$impl" --model "$impl_model" --effort "$impl_effort")
+    r=$(start "$track-rev" codex "$rev" -m "$rev_model" -c "model_reasoning_effort=\"$rev_effort\"")
+    v=null
+    [ "$ver" = null ] || v=$(start "$track-ver" codex "$ver" -m "$rev_model" -c "model_reasoning_effort=\"$rev_effort\"")
+
+    trap - ERR
+    jq -nc --arg t "$track" --arg tab "$tab" --arg cwd "$cwd" \
+      --argjson impl "$i" --argjson rev "$r" --argjson ver "$v" \
+      '{track:$t,tab:$tab,cwd:$cwd,impl:$impl,rev:$rev,ver:$ver}'
+    ;;
+  down)
+    tab=$(tab_of "$track")
+    [ -n "$tab" ] || die "no tab labelled $track in $workspace"
+    herdr tab close "$tab" >/dev/null
+    printf '{"track":"%s","closed":"%s"}\n' "$track" "$tab"
+    ;;
+  *) die "unknown command: $cmd (up|down)" ;;
+esac

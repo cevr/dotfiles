@@ -1,0 +1,5 @@
+interface:
+  display_name: "Orchestrate"
+  short_description: "Run units through herdr implementor/reviewer tracks"
+policy:
+  allow_implicit_invocation: true
