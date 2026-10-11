@@ -6,7 +6,7 @@ The planner fills one copy per unit into `<run dir>/<unit>/spec.md`, and the orc
 # <unit> — spec (orchestrator-owned; agents do not edit it)
 
 Run `<run>` · unit dir `<run dir>/<unit>` · failure cap 3
-Machine: plan → implement → review (okra counsel, the other model family) → verify (fresh Claude) → decide.
+Machine: plan → implement → review (okra counsel, the other model family) → verify (fresh agent, clean checkout) → decide.
 Protocol: `~/.claude/skills/orchestrate/protocol.md` (read it in full first).
 
 ## Goal
