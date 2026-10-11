@@ -53,6 +53,7 @@ When the user wants to choose rather than hand off, read [`improve-codebase-arch
 | architecture   | every pass                                    | one per area               | [`prompts/sweep.md`](prompts/sweep.md)                    |
 | review         | every pass                                    | one per workspace package  | [`review.md`](review.md): slop and test value             |
 | guardrails     | every pass                                    | one                        | `prompts/sweep.md`, guardrail focus; [`guardrails.md`](guardrails.md) |
+| ui guidance    | every pass, in a repo with a UI               | one                        | [`ui-guidance.md`](ui-guidance.md) → For each role, Sweep |
 | prior art      | first pass, then while To survey has rows     | one per source             | step 3                                                    |
 | project sweeps | every pass, one per row of `NORTH_STAR.md` → Sweeps | one each             | the row's method                                          |
 

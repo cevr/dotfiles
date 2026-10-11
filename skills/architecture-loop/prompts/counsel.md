@@ -11,6 +11,8 @@ Read-only review of commits `<base>..HEAD` on `<workspace path>` (<one line: wha
 
 <One numbered question per risky commit, naming the invariant that could break: behavior a refactor claims to preserve, a scope or subscription that must still close, a message that must apply once and in order, a persisted row that must still decode, a guard that could now report live code as dead, a type that got wider so a wrong program compiles, a test that passes for the wrong reason, a north star a commit quietly broke.>
 
+<For a UI batch, one more question: "Do the changed lines follow `~/.claude/skills/architecture-loop/ui-guidance.md`? Name each violation the change adds, with file:line.">
+
 Real defects only. Per question: OK, or the defect with file:line, a concrete failure (input or event order → wrong output), severity, reproduced yes/no. End with the list of files you read.
 ```
 

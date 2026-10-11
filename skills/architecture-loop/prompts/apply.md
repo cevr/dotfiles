@@ -22,6 +22,7 @@ Work rules:
 - A dependency edit that the permission check denies stops that item; report it.
 - New code goes into its concern's existing file; a split into fragment files is a finding, not a fix.
 - Comments describe today's behavior.
+- UI changes follow `~/.claude/skills/architecture-loop/ui-guidance.md` (shadcn, Graphical, composition and state guidance, mapped onto the repo's framework), on the lines you change only.
 - Decide by the principles in ~/Developer/personal/dotfiles/principles/ and write "decided by <principle>"; the batch runs without check-ins.
 - A defect class this batch fixes for the second time gets its check, placed by `~/.claude/skills/architecture-loop/guardrails.md`.
 - Gate: typecheck, lint, focused tests, then the full gate into a log with its exit line (`<gate command> > <pass dir>/gate-<batch>.log 2>&1; echo "GATE EXIT $?" >> <same log>`) before each commit. A test that fails once under load and passes on one retry is a flake: retry once, name it, keep its assertions.
