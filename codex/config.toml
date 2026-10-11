@@ -13,12 +13,6 @@ model_supports_reasoning_summaries=true
 personality = "friendly"
 approval_policy = "never"
 plan_mode_reasoning_effort = "xhigh"
-developer_instructions = """
-Use gpt-6.1-sol with high reasoning for orchestration, code review, and ordinary subagents.
-Reserve gpt-6-luna with max reasoning for repetitive mechanical changes that follow an established pattern.
-Pass the model and reasoning effort explicitly when spawning a subagent.
-Use a scoped handoff instead of a full-history fork when the tool requires this to select a different model.
-"""
 
 # The Mac Codex app's turn-ended notifier; does nothing where it is absent (the workbox).
 notify = ["/bin/sh", "-c", 'b="$HOME/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient"; [ -x "$b" ] || exit 0; exec "$b" turn-ended "$1"', "codex-notify"]

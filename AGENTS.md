@@ -8,12 +8,6 @@
 - High-blast-radius work (20+ files across subsystems): split into 3-5 reviewable sub-commits, each compiling + passing gate. Don't ask for approval on strategy or naming.
 - Mechanical repetitive work (propagating an established pattern across many files): delegate to a `general-purpose` agent. Prompt must include the transformation rules, 1-2 worked examples, the validation command, and "stop and report if a file doesn't fit."
 
-## Codex models
-
-- Use `gpt-6.1-sol` with high reasoning for orchestration, code review, and ordinary subagents.
-- Reserve `gpt-6-luna` with max reasoning for repetitive mechanical changes following an established pattern.
-- Pass these model and reasoning settings explicitly when spawning subagents; use a scoped handoff when changing a running agent's model.
-
 ## Environment
 
 - Contact: Cristian (@cevr, seeve.c@gmail.com)
