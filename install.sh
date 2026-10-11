@@ -52,6 +52,10 @@ ln -sfn "$DOTFILES_DIR/claude/settings.json" ~/.claude/settings.json
 ln -sfn "$DOTFILES_DIR/claude/settings.json" ~/.claude2/settings.json
 "$DOTFILES_DIR/claude/install-herdr-hook.sh"
 
+# Codex config (shared with the workbox; it writes through the link)
+mkdir -p ~/.codex
+ln -sfn "$DOTFILES_DIR/codex/config.toml" ~/.codex/config.toml
+
 # Claude terminal mod (both accounts)
 "$DOTFILES_DIR/claude/mods/fx-ui/install.sh"
 

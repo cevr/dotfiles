@@ -1,0 +1,395 @@
+# Shared Codex config: ~/.codex/config.toml on the laptop and the workbox links here.
+# Codex writes through the link (project trust, hook hashes), so expect those edits in git.
+# Machine-only settings live in /etc/codex/config.toml (the workbox's Sideshow MCP; see
+# workbox/bin/apply-agent-settings). Entries for the other machine's paths are inert.
+
+context_management = { experimental_mode = true }
+model = "gpt-6.1-sol"
+review_model = "gpt-6.1-sol"
+model_reasoning_effort = "high"
+sandbox_mode = "danger-full-access"
+model_reasoning_summary="detailed"
+model_supports_reasoning_summaries=true
+personality = "friendly"
+approval_policy = "never"
+plan_mode_reasoning_effort = "xhigh"
+developer_instructions = """
+Use gpt-6.1-sol with high reasoning for orchestration, code review, and ordinary subagents.
+Reserve gpt-6-luna with max reasoning for repetitive mechanical changes that follow an established pattern.
+Pass the model and reasoning effort explicitly when spawning a subagent.
+Use a scoped handoff instead of a full-history fork when the tool requires this to select a different model.
+"""
+
+# The Mac Codex app's turn-ended notifier; does nothing where it is absent (the workbox).
+notify = ["/bin/sh", "-c", 'b="$HOME/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient"; [ -x "$b" ] || exit 0; exec "$b" turn-ended "$1"', "codex-notify"]
+service_tier = "default"
+
+[agents]
+default_subagent_model = "gpt-6.1-sol"
+default_subagent_reasoning_effort = "high"
+max_threads = 12
+
+[projects."/Users/cvr/Developer/work/bite"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/gent"]
+trust_level = "trusted"
+
+
+[projects."/Users/cvr/Developer/personal/bible-tools"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/effect-machine"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/work/bite-3"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/work/bite-2"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/effect-lint"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/stacked"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Downloads"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/effect-encore"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/pi"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/paulo-suzanne"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/detox"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/effect-oxlint"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/dotfiles"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/gyc"]
+trust_level = "trusted"
+
+[projects."/private/tmp/claude-501/-Users-cvr-Developer-work-bite-3/784ac933-370a-4847-af6b-98393d883bde/scratchpad/plans/garcon-vitrine"]
+trust_level = "trusted"
+
+[projects."/private/tmp/claude-501/-Users-cvr-Developer-work-bite-3/784ac933-370a-4847-af6b-98393d883bde/scratchpad/worktrees"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/okra"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/korean"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/budget"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/linear"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/work/custom-css"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/github-prs"]
+trust_level = "trusted"
+
+[projects."/"]
+trust_level = "trusted"
+
+[projects."/Users/cvr"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/ad/charts"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/effect-wide-event"]
+trust_level = "trusted"
+
+[projects."/Users/cvr/Developer/personal/.rifts/effect-frame/hydrate-infer"]
+trust_level = "trusted"
+
+[features]
+hooks = true
+steer = true
+js_repl = true
+multi_agent = true
+prevent_idle_sleep = true
+memories = true
+terminal_resize_reflow = true
+goals = true
+
+[tui]
+theme = "nord"
+status_line = ["project-root", "git-branch", "model-with-reasoning"]
+screen_reader_detection_done = true
+
+[tui.model_availability_nux]
+"gpt-5.5" = 4
+"gpt-5.6-sol" = 4
+gpt-6-astra = 4
+"gpt-6.1-sol" = 4
+
+[notice]
+hide_rate_limit_model_nudge = true
+
+[plugins."github@openai-curated"]
+enabled = true
+
+[plugins."documents@openai-primary-runtime"]
+enabled = true
+
+[plugins."spreadsheets@openai-primary-runtime"]
+enabled = true
+
+[plugins."presentations@openai-primary-runtime"]
+enabled = true
+
+[plugins."codex-app-tools@openai-bundled"]
+enabled = true
+
+[plugins."browser@openai-bundled"]
+enabled = true
+
+[plugins."unified-computer-use@openai-bundled"]
+enabled = true
+
+[plugins."code-review@openai-bundled"]
+enabled = true
+
+[plugins."visualize@openai-bundled"]
+enabled = true
+
+[plugins."computer-use@openai-bundled"]
+enabled = true
+
+[plugins."pdf@openai-primary-runtime"]
+enabled = true
+
+[plugins."template-creator@openai-primary-runtime"]
+enabled = true
+
+[marketplaces.openai-bundled]
+source_type = "local"
+source = "/Users/cvr/.codex/.tmp/bundled-marketplaces/openai-bundled"
+
+[marketplaces.openai-primary-runtime]
+source_type = "local"
+source = "/Users/cvr/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
+
+[hooks.state]
+
+[hooks.state."/Users/cvr/.codex/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:32c80cd33fbfcfc4ae4f2feca77149fe3334b1113c6598676f753fd942500de2"
+
+[hooks.state."/Users/cvr/.codex/hooks.json:permission_request:0:0"]
+trusted_hash = "sha256:fcec2a18f441c5694bc9469cf13d7014e823c57ab420e02d63a8bf7ebdfcc72b"
+
+[hooks.state."/Users/cvr/.codex/hooks.json:session_start:1:0"]
+trusted_hash = "sha256:496ada73c564b00ee9b40e52b540fa2836bfb555c7fcd2365ce4e5d49cc9926d"
+
+[hooks.state."/Users/cvr/.codex/hooks.json:user_prompt_submit:0:0"]
+trusted_hash = "sha256:78297874884298bf02ef5d48433f2bb34166de580ee027e9e85d564cdf23fe63"
+
+[hooks.state."/Users/cvr/.codex/hooks.json:stop:0:0"]
+trusted_hash = "sha256:a0550731637177c048527d803117304a1b3d0f9e4f2580a9fba31d53bfe4cb8f"
+
+[desktop]
+appearanceLightCodeThemeId = "raycast"
+appearanceDarkCodeThemeId = "rose-pine"
+codeFontSize = 16
+usePointerCursors = true
+followUpQueueMode = "steer"
+preventSleepWhileRunning = true
+keepRemoteControlAwakeWhilePluggedIn = true
+git-branch-prefix = "cvr/"
+conversationDetailMode = "STEPS_COMMANDS"
+
+[desktop.appearanceLightChromeTheme]
+accent = "#ff6363"
+contrast = 45
+ink = "#030303"
+opaqueWindows = false
+surface = "#ffffff"
+
+[desktop.appearanceLightChromeTheme.fonts]
+code = '"Jetbrains Mono"'
+ui = "Inter"
+
+[desktop.appearanceLightChromeTheme.semanticColors]
+diffAdded = "#006b4f"
+diffRemoved = "#b12424"
+skill = "#9a1b6e"
+
+[desktop.appearanceDarkChromeTheme]
+accent = "#ea9a97"
+contrast = 31
+ink = "#e0def4"
+opaqueWindows = true
+surface = "#232136"
+
+[desktop.appearanceDarkChromeTheme.fonts]
+code = '"Martian Mono"'
+ui = "Martian Mono"
+
+[desktop.appearanceDarkChromeTheme.semanticColors]
+diffAdded = "#9ccfd8"
+diffRemoved = "#908caa"
+skill = "#c4a7e7"
+
+[desktop.open-in-target-preferences]
+global = "zed"
+
+[desktop.open-in-target-preferences.perPath]
+"/Users/cvr/Developer/personal/gent" = "zed"
+
+[mcp_servers.node_repl]
+args = []
+command = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl"
+startup_timeout_sec = 120
+
+[mcp_servers.node_repl.env]
+NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "1000"
+NODE_REPL_NODE_MODULE_DIRS = "/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
+NODE_REPL_NODE_PATH = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
+NODE_REPL_TRUSTED_CODE_PATHS = "/Users/cvr/.codex:/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
+CODEX_HOME = "/Users/cvr/.codex"
+BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab,mcpapps"
+BROWSER_USE_TINYSKY_ENABLED = "1"
+NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = ""
+NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = ""
+NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE = ""
+BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
+BROWSER_USE_CODEX_APP_VERSION = "26.930.41038"
+NODE_REPL_TRUSTED_SERVICES = '{"browser":"/Users/cvr/.codex/plugins/cache/openai-bundled/browser/26.930.41038/scripts/browser-service.mjs","sky":"@oai/sky/service"}'
+SKY_CUA_SERVICE_PATH = "/Users/cvr/.codex/computer-use/Codex Computer Use.app"
+CODEX_CLI_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+
+# From the workbox
+[projects."/home/exedev/Developer/work/bite"]
+trust_level = "trusted"
+
+[projects."/workspaces/bite"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts"]
+trust_level = "trusted"
+
+[projects."/home/exedev/Developer/personal/.rifts/effra/production-foundations"]
+trust_level = "trusted"
+
+[projects."/home/exedev/Developer/personal/effra"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/sync-lr-master-replay-20261008"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/lr-unit2-validation-20261008"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/sync-orchestration-20261008"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-fixture-acceptance"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-measurement-core"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-served-screens"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-cover-response"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-menu-live-state"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-menu-fixture-completion"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-item-fixture-completion"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-upsell-readiness"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-presentation-acceptance"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-constraint-fixture"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-final-acceptance"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-collector-controls"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-feedback-guards"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/sync-diagnostics-bureau-20261009"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/sync-diagnostics-mcp-20261009"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/sync-diagnostics-file-cli-20261009"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-cover-gate-followup"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-measurement-gate-followup"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-occurrence-guards"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/sync-u2-recovery-20261009"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/sync-u4-coordinator-20261009"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/sync-vitrine-diagnostics-20261009"]
+trust_level = "trusted"
+
+[projects."/home/exedev/Developer/personal/effect-oxlint"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bible-tools/p5-hydrate"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bible-tools/p5-lint-bindings"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bible-tools/p5-easel"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/vperf2-measport"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/perf-vitrine-logs"]
+trust_level = "trusted"
+
+[projects."/workspaces/.rifts/bite/vperf2-inspector"]
+trust_level = "trusted"
+
+[hooks.state."/home/exedev/.codex/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:0eb299befa737444ddc49b5ea25174ae48112447103046ce8730a7b4ae3f7438"
+
+[plugins."browser-use@openai-bundled"]
+enabled = true

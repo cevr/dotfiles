@@ -5,12 +5,8 @@ umask 077
 
 settings_source="$HOME/.config/bite-workbox/settings-source"
 claude_source="$settings_source/claude"
-codex_source="$settings_source/codex"
 
 mkdir -p "$HOME/.claude" "$HOME/.claude2" "$HOME/.codex"
-
-codex_config_file=$(mktemp)
-trap 'rm -f "$codex_config_file"' EXIT HUP INT TERM
 
 # Both accounts share settings.json from dotfiles (synced by the bite-dotfiles
 # folder); machine-local secrets live in ~/.config/secrets.env.
@@ -23,37 +19,22 @@ install -m 755 "$claude_source/statusline-git.sh" "$HOME/.claude/statusline-git.
 # Reapply the composer migration after importing the legacy Mac settings.
 "$dotfiles_dir/claude/mods/fx-ui/install.sh"
 
-awk '
-  BEGIN {
-    table_started = 0
-    keep_table = 1
-  }
-  /^\[/ {
-    table_started = 1
-    keep_table = $0 ~ /^\[features\]$/ || $0 ~ /^\[tui\]$/ || $0 ~ /^\[tui\.model_availability_nux\]$/ || $0 ~ /^\[notice\]$/ || $0 ~ /^\[plugins\./
-  }
-  !table_started || keep_table {
-    print
-  }
-' "$codex_source/config.toml" > "$codex_config_file"
-
-cat >> "$codex_config_file" <<'EOF'
-
+# Codex shares config.toml from dotfiles too, and writes through the link. The
+# workbox-only part is the system layer: Sideshow, and the Mac app's node_repl
+# server switched off (its command exists only on the Mac). Layers merge key by key.
+ln -sfn "$dotfiles_dir/codex/config.toml" "$HOME/.codex/config.toml"
+codex_system_config=$(mktemp)
+trap 'rm -f "$codex_system_config"' EXIT HUP INT TERM
+cat > "$codex_system_config" <<'EOF'
+# Written by apply-agent-settings; the shared config is ~/.codex/config.toml.
 [mcp_servers.sideshow]
 url = "http://localhost:8228/mcp"
 required = true
 
-[projects."/home/exedev/Developer/work/bite"]
-trust_level = "trusted"
-
-[projects."/workspaces/bite"]
-trust_level = "trusted"
-
-[projects."/workspaces/.rifts"]
-trust_level = "trusted"
+[mcp_servers.node_repl]
+enabled = false
 EOF
-
-install -m 600 "$codex_config_file" "$HOME/.codex/config.toml"
+sudo -n install -D -m 644 "$codex_system_config" /etc/codex/config.toml
 
 "$dotfiles_dir/claude/install-herdr-hook.sh"
 "$HOME/.local/bin/herdr" integration install codex

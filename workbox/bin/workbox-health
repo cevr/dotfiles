@@ -146,8 +146,8 @@ check "Shared Turbo cache" test -w /workspaces/.cache/turbo
 check "Workbox zshenv" test -L "$HOME/.zshenv"
 check "Workbox zshrc" test -L "$HOME/.zshrc"
 check "Claude settings" test -r "$HOME/.claude/settings.json"
-check "Codex settings" test -r "$HOME/.codex/config.toml"
-check "Sideshow MCP" grep -q '^\[mcp_servers\.sideshow\]$' "$HOME/.codex/config.toml"
+check "Codex settings" test -L "$HOME/.codex/config.toml"
+check "Sideshow MCP" grep -q '^\[mcp_servers\.sideshow\]$' /etc/codex/config.toml
 check "Claude Herdr hook" test -x "$HOME/.claude/hooks/herdr-agent-state.sh"
 check "Codex Herdr hook" test -x "$HOME/.codex/herdr-agent-state.sh"
 check "Shared Claude skills" test -L "$HOME/.claude/skills"
