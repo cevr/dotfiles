@@ -1,6 +1,6 @@
 # Counsel prompt
 
-This is what the batch's reviewer reads: in a track, these questions go into the spec's Risks; outside herdr, run it through the `counsel-review` skill, on the batch's workspace. A fresh read-only agent gets the same prompt when the other model is unreachable, and the ledger row says so. Write the prompt to `<pass dir>/counsel-<batch>.md`.
+This is what the batch's reviewer reads: these questions go into the spec's Risks, and the unit's reviewer runs them through the `counsel-review` skill, on the batch's workspace. A fresh read-only agent gets the same prompt when the other model is unreachable, and the ledger row says so. Write the prompt to `<pass dir>/counsel-<batch>.md`.
 
 ```
 Read `~/.claude/skills/architecture-loop/safety.md` and `<workspace>/NORTH_STAR.md` → Owner rules in full before any action, and follow them.

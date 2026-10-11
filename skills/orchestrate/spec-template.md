@@ -1,16 +1,16 @@
 # Unit spec template
 
-The orchestrator fills one copy per unit into `<run dir>/<unit>/spec.md` before the track opens. The spec is the planner's output. The implementor builds against it, the reviewer judges against it, and the verifier runs its acceptance check. Write it for a capable reader with no context, and keep it to what this unit needs: the shared rules live in `protocol.md`.
+The planner fills one copy per unit into `<run dir>/<unit>/spec.md`, and the orchestrator approves it before the unit is implemented. The spec is the planner's output. The implementor builds against it, the reviewer judges against it, and the verifier runs its acceptance check. Write it for a capable reader with no context, and keep it to what this unit needs: the shared rules live in `protocol.md`.
 
 ```markdown
 # <unit> — spec (orchestrator-owned; agents do not edit it)
 
-Run `<run>` · track `<run>-<unit>` · run dir `<run dir>`
-Agents: implementor `<track>-impl`, reviewer `<track>-rev`[, verifier `<track>-ver`], orchestrator `<run>-orch`.
+Run `<run>` · unit dir `<run dir>/<unit>` · failure cap 3
+Machine: plan → implement → review (okra counsel, the other model family) → verify (fresh Claude) → decide.
 Protocol: `~/.claude/skills/orchestrate/protocol.md` (read it in full first).
 
 ## Goal
-<One paragraph: the result, in the user's words where they gave any. What is already done, what other tracks are doing.>
+<One paragraph: the result, in the user's words where they gave any. What is already done, what other units are doing.>
 
 ## Workspace
 <Rift or worktree path>, branch `<branch>`, base `<main hash>`. Project rules: <AGENTS.md / CLAUDE.md / NORTH_STAR.md paths>.
@@ -19,7 +19,7 @@ Protocol: `~/.claude/skills/orchestrate/protocol.md` (read it in full first).
 <The files and directories this unit may change. Everything else is read-only; a fix needed elsewhere is a follow-up in state.md.>
 
 ## Do not touch
-<Files that running tracks own; shared counters (migration numbers, ports, sequence ids) and who holds them.>
+<Files that running units own; shared counters (migration numbers, ports, sequence ids) and who holds them.>
 
 ## Acceptance check
 <Objective, runnable, written before any code: the commands, and the result that means done. Prefer a test that is red now and must go green, a parity or golden diff, a live drive with its expected state, a benchmark against its baseline. "Looks right" is not a check.>

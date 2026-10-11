@@ -29,9 +29,9 @@ Call the Skill tool with "codebase-design" once at the start; its glossary is th
 
 Each becomes an owner question on the ledger, with your recommendation, and the user gets one short message. The loop carries on with everything else. A dialog that waits for an answer stalls every batch behind it: in one film run, five finished batches waited five hours on a single question.
 
-**Owner direction.** Direction the owner gives mid-run goes into `NORTH_STAR.md` → Owner rules in the same turn, dated, and every later brief carries it. Direction left in a pass file, or in memory (which is per machine and per account), had to be given three times. The loop's state lives on the ledger and in baton's log. A feature the owner asks for mid-run is its own plan, not a batch of this loop.
+**Owner direction.** Direction the owner gives mid-run goes into `NORTH_STAR.md` → Owner rules in the same turn, dated, and every later brief carries it. Direction left in a pass file, or in memory (which is per machine and per account), had to be given three times. The loop's state lives on the ledger and in the run's unit folders. A feature the owner asks for mid-run is its own plan, not a batch of this loop.
 
-**Pause.** On a pause, close every track (`baton run end`), or stop every agent you launched. Then write on the ledger where the pass stands. If a `/goal` is set, tell the user to clear it: its check-ins keep resuming the loop, and only the user can stop them.
+**Pause.** On a pause, stop every agent you launched. Then write on the ledger where the pass stands. If a `/goal` is set, tell the user to clear it: its check-ins keep resuming the loop, and only the user can stop them.
 
 **Safety.** [`safety.md`](safety.md) is the one copy of the safety rules. Every prompt the loop writes starts by sending the agent to read it, and `NORTH_STAR.md`'s owner rules, in full before any action.
 
@@ -72,7 +72,7 @@ An **area** is a set of directories that change together (a package, or a layer 
 
 5. **Triage.** Group findings into batches by the files they touch. Every report's P3s and "not worth a pass" lines go to the batch that owns their file; that batch fixes each or rejects it with a reason. Write the pass section of the ledger: verdict, decisions, the triage table (batch, workspace, items), and the open `Carried` rows of the last pass, each in a batch or carried on. Done when every finding is in a batch or rejected with a receipt.
 
-6. **Apply and counsel, as tracks.** Run the loop as the [`orchestrate`](../orchestrate/SKILL.md) orchestrator: `baton run start` once, then one track per batch. Apply workers wait on gates and on review, so they belong in top-level panes with a 1-hour cache, not subagents.
+6. **Apply, review and verify, as orchestrate units.** Run the loop as the [`orchestrate`](../orchestrate/SKILL.md) orchestrator, one unit per batch, through its machine: plan, implement, review, verify, decide. The batch's apply agent is the unit's implementor, kept across rounds.
    - **Workspace.** Each batch gets its own workspace from main on branch `p<N>-<batch>`, as `AGENTS.md` says. On a filesystem without reflinks (ext4), where Rift cannot clone, use a git worktree. Setup beyond install (a build, a linked git-ignored file, a shared lock for a heavy test) belongs in the project's `AGENTS.md`; a missing step found here goes there.
    - **Spec.** Fill each batch's spec from [`spec-template.md`](../orchestrate/spec-template.md). The apply prompt ([`prompts/apply.md`](prompts/apply.md)) supplies it:
      - its slots go to Goal, Workspace, Owns and Decided;
@@ -81,30 +81,28 @@ An **area** is a set of directories that change together (a package, or a layer 
      - the counsel questions ([`prompts/counsel.md`](prompts/counsel.md)) go to Risks.
 
      The Gate is the repo's full gate, guards included. Hymn tracks were accepted on a narrower gate, then failed `dead-exports` on main.
-   - **Counsel.** The track's reviewer is the counsel round: Codex, from another model family. It reviews every fixup round's delta until it accepts, or until the failure cap (3) sends the batch back to you as stuck.
+   - **Counsel.** The unit's reviewer is the counsel round through the `counsel-review` skill: the other model family, fresh each round. It reviews every fixup round's delta until it accepts, or until the failure cap (3) sends the batch back to you as stuck. When the other model is unreachable, a fresh read-only agent reviews, and its ledger row says it was the same model family.
    - **Size.** A batch is one concern, about 10 items. An implementor that compacts twice is holding too much: split the batch. In bible-tools, apply agents were 93% of all cache reads, and 124 of 288 hit the compaction window.
-   - **Parallelism.** At most 3 tracks at once, fewer when the gate cannot take them. Time the gate once before the first wave. While a gate waits in the queue longer than twice its own run, open no new track and make gate speed the next batch. Seven or eight parallel gates drove the workbox to a load of 540–830 and turned every e2e into a flake. A batch that needs another's files starts from main after that one merges.
+   - **Parallelism.** At most 3 units at once, fewer when the gate cannot take them. Time the gate once before the first wave. While a gate waits in the queue longer than twice its own run, start no new unit and make gate speed the next batch. Seven or eight parallel gates drove the workbox to a load of 540–830 and turned every e2e into a flake. A batch that needs another's files starts from main after that one merges.
 
-   Done per batch when its track is accepted.
+   Done per batch when its unit passes verification.
 
-7. **Outside herdr.** Launch one apply agent per batch from [`prompts/apply.md`](prompts/apply.md), then counsel from [`prompts/counsel.md`](prompts/counsel.md) through the `counsel-review` skill, with the rounds, size and parallelism of step 6. When the other model is unreachable, a fresh read-only agent reviews, and its ledger row says it was the same model family. Done when every defect has a commit or a written rejection.
-
-8. **Merge.** Integrate as orchestrate's [accepted](../orchestrate/SKILL.md#accepted) step says:
+7. **Merge.** Integrate as orchestrate's [pass](../orchestrate/SKILL.md#pass) step says:
    1. The branch contains today's main. If it does not, the implementor merges main in as a merge round. Conflicts are resolved by keeping both sides' edits, never one side's file whole, and then the merge audit in [`guardrails.md`](guardrails.md) runs over that merge.
    2. Run the gate at the branch head.
-   3. `git merge --ff-only` it from the main checkout. Never commit a track's work yourself.
+   3. `git merge --ff-only` it from the main checkout. Never commit a unit's work yourself.
    4. If the Push line allows it, push. Once CI finishes, read `gh run list --branch main --limit 1`. A red CI is the next batch: in gent, CI had failed on every run for twelve passes while the local gate stayed green.
    5. Write the batch's ledger row: `done <hash> … <hash>, merged <hash>`, decisions, the reviewer and its rounds, open items, and the report's "decisions for the orchestrator" as `Carried` rows.
-   6. Run `baton close <batch> --merged <hash>`.
+   6. Stop the batch's agents.
    7. Delete the branch, and remove the workspace by its full path.
 
    Done when the gate on main is green, the row is written, and the branch and the workspace are gone.
 
-9. **Live check.** After each merge, or a small group of merges, run `NORTH_STAR.md` → Live check over every ability the batches changed (each apply report names them): the drive shows what rendered, the state view shows what happened. A defect found here becomes a live-fix batch (step 6). Done when the state matches the intent, the ledger has a live-check row, and every process the check started is stopped.
+8. **Live check.** After each merge, or a small group of merges, run `NORTH_STAR.md` → Live check over every ability the batches changed (each apply report names them): the drive shows what rendered, the state view shows what happened. A defect found here becomes a live-fix batch (step 6). Done when the state matches the intent, the ledger has a live-check row, and every process the check started is stopped.
 
-10. **Project files and docs.** Add re-proposable rejections to `NORTH_STAR.md` → Rejected and drop rows whose subject left the tree; move settled comparisons into `PRIOR_ART.md` → Settled; update the READMEs, `CONTEXT.md` and project skills wherever the pass changed an API, a workflow or a decision. Done when each describes the code as it is.
+9. **Project files and docs.** Add re-proposable rejections to `NORTH_STAR.md` → Rejected and drop rows whose subject left the tree; move settled comparisons into `PRIOR_ART.md` → Settled; update the READMEs, `CONTEXT.md` and project skills wherever the pass changed an API, a workflow or a decision. Done when each describes the code as it is.
 
-11. **Count.** Re-run the baseline command. The pass verdict carries lines and files per package against the baseline and against the last pass.
+10. **Count.** Re-run the baseline command. The pass verdict carries lines and files per package against the baseline and against the last pass.
     - A pass whose net count grows names why: a bug fix with its test, a guard, or a north star that asks for the code.
     - Two growing passes in a row, with no north star asking for growth, become an owner question about scope.
     - A gent run whose goal was fewer concepts grew from 70k to 131k source lines, because no pass counted.
