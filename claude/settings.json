@@ -194,6 +194,5 @@
   "skipAutoPermissionPrompt": true,
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
-  "subagentPromptCacheTtl": "1h",
   "theme": "auto"
 }
