@@ -135,8 +135,6 @@ install -m 644 "$workbox_dir/hunk-config.toml" "$HOME/.config/hunk/config.toml"
 install -m 600 "$workbox_dir/backup.env" "$HOME/.config/bite-workbox/backup.env"
 
 "$local_bin_dir/install-bun-tools"
-# baton, the orchestrate relay, builds from dotfiles and links itself into $BUN_INSTALL/bin.
-(cd "$workbox_dir/../baton" && bun install --frozen-lockfile && bun run build)
 "$local_bin_dir/install-herdr-plugins"
 "$local_bin_dir/workbox-rift-storage" --apply
 "$local_bin_dir/install-node"

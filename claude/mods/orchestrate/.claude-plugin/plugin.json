@@ -1,9 +1,0 @@
-{
-  "name": "orchestrate",
-  "version": "0.2.0",
-  "description": "Guards baton seats, ticks the baton watchdog and shows the tracks, at zero model tokens.",
-  "author": {
-    "name": "Cristian"
-  },
-  "types": "./types/index.d.ts"
-}
