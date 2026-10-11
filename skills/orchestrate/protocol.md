@@ -61,7 +61,7 @@ You are the sole writer. You work in the spec's workspace (a Rift or worktree on
 
 You are read-only on the deliverables. Write only into the unit dir. You are fresh each round: the findings of earlier rounds are files, and you read them.
 
-1. **Review through Counsel.** Follow the `counsel-review` skill on the round: ground the packet yourself, send it with `okra counsel --deep -f <packet>` (it reaches the other model family), and validate every claim it returns against the source. The packet carries the request, the spec, the base and head commits, the earlier rounds' findings and the fix report.
+1. **Review through Counsel.** Follow the `counsel-review` skill on the round: ground the packet yourself, send it with `okra counsel -f <packet>`, adding `--deep` when you are Claude and leaving it off when you are Codex (it reaches the other model family), and validate every claim it returns against the source. The packet carries the request, the spec, the base and head commits, the earlier rounds' findings and the fix report.
 2. **Criteria.** `~/.claude/skills/code-review/references/review-contract.md`, and `test-audit.md` beside it when tests changed, plus the spec's own criteria. Attack the change: look for reasons it is wrong, not reasons it is fine.
 3. **Round 2 onward is a delta review.** Check every line of the fix report against the code. Then review the commits added since the last round, plus whatever they touch.
 4. **Findings.** Write `round-N-findings.md`:
