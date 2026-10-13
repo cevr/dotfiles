@@ -25,8 +25,9 @@ alias reload='source ~/.zshrc'
 
 PROMPT='%F{cyan}%n@%m%f:%F{blue}%~%f %# '
 
-# Second Claude Code account (separate config/session)
-alias claude2='CLAUDE_CONFIG_DIR=~/.claude2 $HOME/.local/bin/claude'
+# Claude Code through the machine-local TeamClaude proxy
+alias claude='teamclaude run --'
+alias claude2='CLAUDE_CONFIG_DIR="$HOME/.claude2" teamclaude run --'
 
 # bun completions
 [ -s "/home/exedev/.bun/_bun" ] && source "/home/exedev/.bun/_bun"
