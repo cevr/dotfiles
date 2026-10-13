@@ -32,18 +32,24 @@ A round **fails** on `changes` or `fail`. At the failure cap (3 unless the spec 
 
 **A class seen twice gets its property now.** When a round's Blocker, Major or verify defect is another trigger of an earlier round's class (the findings say `repeat of rN <id>`, or you see it), the next round's message names the class and makes a generated property or model test that owns it the round's first deliverable: red on the unfixed code for every earlier instance, each kept as a fixed case, before any case fix. Do not wait for the cap: talk1b and sheet each spent a round fixing triggers after the reviewer had named the class.
 
+The same message states, in one sentence, the premise every earlier fix assumed ([attack-the-premise](~/Developer/personal/dotfiles/principles/attack-the-premise.md)). The implementor either keeps the premise and lets the property prove it for every trigger, or replaces it. Another trigger fix on the same premise is not a round: sheet failed r1 to R1 on fixes that all assumed "the sheet's state can be read from scroll and layout observers".
+
+**A dead worker gives no verdict.** A worker that ends on a usage or rate limit or without its hand-back line, or a reviewer whose counsel run exited non-zero or wrote an empty file, decided nothing. Set the unit's State to `stuck(quota)`: the round neither passes nor fails, and no re-plan follows. When the limit allows, rerun that step with a fresh agent (an implementor resumes from `state.md` and the branch). A dead reviewer or verifier never counts as `accepted` or `pass`: on 10-07, 46 counsel reviewers died on quota in one day, silently.
+
 ## Roles on each host
 
 | Role | Claude Code orchestrator | Codex orchestrator | Context |
 | --- | --- | --- | --- |
 | planner | `Agent`, `run_in_background: true`, `model: "opus"`, `effort: "high"` | `spawn_agent` with `model: gpt-6.1-sol`, `reasoning_effort: high` | fresh per unit |
-| implementor | `Agent`, `run_in_background: true`, `model: "opus"`, `effort: "medium"`; later rounds by `SendMessage` to the same agent | `spawn_agent` with the newest luna (today `gpt-6-luna`), `reasoning_effort: max`; later rounds by `send_input` to the same agent (`followup_task` under `multi_agent_v2`) | **one per unit, kept across rounds** |
+| implementor | `Agent`, `run_in_background: true`, `model: "opus"`, `effort: "medium"`; round 2 by `SendMessage` to the same agent | `spawn_agent` with the newest luna (today `gpt-6-luna`), `reasoning_effort: max`; round 2 by `send_input` to the same agent (`followup_task` under `multi_agent_v2`) | **kept for round 2 only; fresh from round 3 or after its first compaction** |
 | reviewer | a background agent that runs the `counsel-review` skill: `okra counsel --deep` reaches Codex | `spawn_agent` with `model: gpt-6.1-sol`, `reasoning_effort: max`, running the `counsel-review` skill: `okra counsel` without `--deep` reaches Claude | fresh per round |
 | verifier | `Agent`, `run_in_background: true`, `model: "sonnet"`, `effort: "medium"` | `spawn_agent` with the newest luna (today `gpt-6-luna`), `reasoning_effort: medium` | fresh per round |
 
 - **Families.** Every role runs on the host's own family, and the review alone crosses over: the reviewer agent sends its packet through `okra counsel`, which routes to the opposite agent, and validates what comes back. From Claude Code it runs `--deep` (Codex on the newest sol at `max`); from Codex it runs without `--deep` (Claude on Opus at `medium`). The verifier's independence comes from its fresh context, the clean checkout and the pre-written check.
-- **Why the implementor is kept.** Its context, and its prompt cache, carry from round to round, so a fix round is a delta. The reviewer and verifier are fresh each round, so they never anchor on what they said before. The findings carry forward as files.
+- **Fresh implementor.** Round 2 goes to the same implementor while it has not compacted: its context and prompt cache make the fix round a delta. From round 3, or once `agent-cost.ts` shows a compaction, stop it and start a fresh one with consolidated scope: the spec, every `round-*-findings.md` and `round-*-verify.md`, `state.md`, the branch, and the unit's Decisions lines. Past one compaction the kept context is mostly stale and every turn rereads it: rive-core held 5 compactions over 1,403 turns at about 190k context a turn (266M cache-read), while talk1b's fresh R1 was accepted in one round.
+- **Fresh reviewers and verifiers.** They start fresh each round, so they never anchor on what they said before. The findings carry forward as files.
 - **Waiting.** Claude Code: background agents and background shell commands wake you when they finish. Codex (`[features] multi_agent = true`, `[agents] max_threads = 12`): a subagent's final status reaches you as a notification. Call `wait_agent` only when nothing else can move. Nobody polls: no sleep loops, and no reading a worker's transcript to check progress.
+- **Messages are files** ([`protocol.md`](protocol.md), Messages). You talk to a worker only through the host's agent messages, naming file paths; a terminal pane is never a transport.
 - **Cache.** Subagent caches last 5 minutes. A gap longer than that rewrites the context once. Keep each worker small: one concern per unit, delta rounds, messages that carry paths and not content, gate output in logs, and stop a unit's agents when it closes.
 
 ## 0. Start the run
@@ -82,7 +88,7 @@ Host: <claude|codex> · Units at once: 3 · Gate: <seconds> · Reserved: <list> 
 ## Review later     (points the user wants batched, e.g. visual polish)
 ```
 
-`State` is the machine state (`plan`, `implement`, `review`, `verify`, `decide`, `merged <hash>`, `blocked`, `stuck`, `dropped`). `Agents` holds the implementor's agent id, so a fix round reaches the same agent.
+`State` is the machine state (`plan`, `implement`, `review`, `verify`, `decide`, `merged <hash>`, `blocked`, `stuck`, `stuck(quota)`, `dropped`). `Agents` holds the current implementor's agent id, so round 2 reaches the same agent.
 
 Done when every unit has a row with its dependencies, and `plan.md` lists the reserved actions.
 
@@ -91,10 +97,10 @@ Done when every unit has a row with its dependencies, and `plan.md` lists the re
 Every transition appends one line to `<run dir>/<unit>/log.md`: the time from `date -u +%FT%RZ`, `from → to`, the round, and the file that caused it. Then update the unit's row in `plan.md`.
 
 1. **plan.** Make the unit's workspace from the warm source as `AGENTS.md` says (`rift create`; on the workbox, `workrift create <branch>`), on branch `<run>/<unit>`. Then start the planner: give it [`spec-template.md`](spec-template.md), the unit's goal and dependencies, the workspace, and `protocol.md`'s Planner section. When it ends, read `spec.md`. The Owns, Do not touch, Acceptance check and Gate sections must be concrete enough for a reader with no context. Edit them until they are.
-2. **implement.** Start the implementor with one message: the paths of `protocol.md` and `spec.md`, its role, and the round number. For a fix round, send the same agent the paths of the last findings or verify report.
+2. **implement.** Start the implementor with one message: the paths of `protocol.md` and `spec.md`, its role, and the round number. At each hand-back, read its compactions with `bun ~/.claude/skills/orchestrate/scripts/agent-cost.ts <agent id>`. For round 2, send the same agent the paths of the last findings or verify report. From round 3, or after its compaction, start a fresh implementor ([Fresh implementor](#roles-on-each-host)) whose message also names every findings and verify file, `state.md` and the branch.
 3. **review.** When the implementor ends, check that `round-N-request.md` exists with a head commit. Start a fresh reviewer: it runs the `counsel-review` skill on the request and writes `round-N-findings.md` (`protocol.md`, Reviewer).
 4. **verify.** On `accepted`, start a fresh verifier on the round's request (`protocol.md`, Verifier).
-5. **Route.** On `changes`, `fail` or `stuck`, follow [The machine](#the-machine). On `pass`, go to step 3, Decide.
+5. **Route.** On `changes`, `fail` or `stuck`, follow [The machine](#the-machine); a `stuck` whose reason is quota, or a worker that died, is `stuck(quota)` there. On `pass`, go to step 3, Decide.
 
 **Scope.** Scope never grows inside a running unit. New work, a host defect included, becomes a new unit in `plan.md`, never a message to a working agent. A message that must change a running unit's goal states the invariant that must hold ("a frame's pixels never depend on frames drawn before it") and the evidence, never the mechanism; the implementor picks the mechanism, and the reviewer judges it. In p5, a mechanism sent by message (an author-declared `fresh` timeline) was built, then deleted by the next round as purity resting on authoring nothing checks.
 
@@ -108,7 +114,7 @@ Every transition appends one line to `<run dir>/<unit>/log.md`: the time from `d
    - Run the gate in the unit's workspace at the branch head into `<run dir>/merge-<unit>.log`, and read its exit line. Red: merge nothing, and send the implementor the log as a merge round.
    - Green: in the main checkout, `git merge --ff-only <branch>`. A fix you would make yourself goes to the implementor as a round.
    - Push only as the Reserved default allows. After a push, read `gh run list --branch main --limit 1` once CI finishes; a red CI is a new unit.
-3. **Record and close.** Write `merged <hash>` into the unit's row, with decisions, follow-ups from `state.md`, and anything for Review later. Stop the unit's agents (Codex: `close_agent`). Delete the branch and remove the workspace by its full path.
+3. **Record and close.** Write `merged <hash>` into the unit's row, with decisions, follow-ups from `state.md`, and anything for Review later. A helper the unit's workers built that a later round or unit would rebuild (a browser driver, a rerun script, a seed root) is a follow-up unit that moves it into the repo's scripts or its `verify-<app>` skill ([build-the-lever](~/Developer/personal/dotfiles/principles/build-the-lever.md)). Stop the unit's agents (Codex: `close_agent`). Delete the branch and remove the workspace by its full path.
 4. **Next.** Start each unit whose dependencies are now all merged, up to the limit. If a result changes what a later unit needs, update that unit's spec first.
 
 ### asks
@@ -122,7 +128,7 @@ A worker ended with `blocked`, and its final message names its `blocked.md`. Rea
 
 Re-plan, by one of these:
 
-- sharpen the spec;
+- sharpen the spec, starting from the written premise;
 - split the unit;
 - make the contested decision yourself;
 - start a fresh implementor with the old findings as data and a property or model test that owns the repeated class, red on every earlier counterexample. The property is part of the re-plan's acceptance check, never "if cheap": sheet's optional one compared the code with itself, and two more rounds failed on its class.

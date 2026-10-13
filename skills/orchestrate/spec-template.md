@@ -19,10 +19,10 @@ Protocol: `~/.claude/skills/orchestrate/protocol.md` (read it in full first).
 <The files and directories this unit may change. Everything else is read-only; a fix needed elsewhere is a follow-up in state.md.>
 
 ## Do not touch
-<Files that running units own; shared counters (migration numbers, lab and debug (CDP) ports, sequence ids) and who holds them.>
+<Files that running units own; shared resources (migration numbers, lab and debug (CDP) ports, sequence ids, a branch stack, the e2e lock) and the one unit that owns each.>
 
 ## Acceptance check
-<Objective, runnable, written before any code: the commands, and the result that means done. Prefer a test that is red now and must go green, a parity or golden diff, a live drive with its expected state, a benchmark against its baseline. "Looks right" is not a check.>
+<Objective, runnable, written before any code: the commands, and the result that means done. Prefer a test that is red now and must go green, a parity or golden diff, a live drive with its expected state, a benchmark against its baseline. "Looks right" is not a check. When the repo has a `verify-<app>` skill, name its feature and sub-feature ids, plus any rows this unit adds to its map.>
 
 ## Gate
 <The repo's full gate command, its guards included (a dead-exports or boundary check that only CI or main runs is still the gate); where the log goes (`<run dir>/<unit>/gate-N.log`).>
