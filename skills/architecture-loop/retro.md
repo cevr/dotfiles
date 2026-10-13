@@ -1,6 +1,6 @@
 # Retro
 
-Every pass ends with a retro of that pass (step 11), and the loop's close ends with one over every pass. A sweep looks at the code. A retro looks at how the loop produced it: what went wrong, what cost the most, and which tooling to add, change or remove so the next pass takes less work and fewer tokens for the same accepted change.
+Every pass ends with a retro of that pass (step 11), and the loop's close ends with one over every pass. A sweep looks at the code. A retro looks at how the loop produced it: what went wrong, what cost the most, and which tooling and skills to add, change or remove so the next pass takes less work and fewer tokens for the same accepted change. That includes the project's own skills, so each of its domains is quicker to navigate, understand and improve.
 
 Read [`retro`](../retro/SKILL.md) first. It is user-invoked only, so read it rather than calling it. Its categories apply here: navigation, automated checks, coding standards, steering files, tool economy, no-ops and information access. This file adds the loop's own evidence and where each fix lands.
 
@@ -25,6 +25,12 @@ Answer each with a number or a file.
 5. **Checks.** Which review or verify finding could a lint rule, a type or a test have caught? Place each check by [`guardrails.md`](guardrails.md).
 6. **Host.** What broke on the host that the loop should have caught first? For example, in p5 the test Chrome played audio through the owner's speakers until the owner asked about it.
 7. **Remove.** Which step, rule, prompt line or file changed no outcome this pass? A rule that changed no outcome is a candidate for removal. The test: could the loop have accepted the same units without it?
+8. **Project skills.** List the project's domains and goals: its north stars, its packages and apps, and what the owner works on (in bible-tools, the film engine and its looks, the lab, the UI kit, EGW search, the CLI, the studies). For each domain the pass touched, answer three things:
+   - **Navigate.** Which files did agents explore again and again before they could act? Grep the transcripts for the same paths read by several agents, or by one agent after each compaction. A skill holding that map (where things live, which seam owns what, the commands that prove a change) is a candidate.
+   - **Understand.** Which rule did an agent break because no skill said it? Which owner direction lived only in a message? Which domain fact did several agents rediscover: a runtime quirk, a host fact, an art rule?
+   - **Stale.** Does a project skill now say what the code or the owner no longer means? In p5, the film skill still said "one hand design, a mitten with a thumb" after the owner chose circle hands. A stale skill steers every later agent wrong.
+
+   Each answer becomes an edit to an existing project skill, or a new one when no skill covers the domain. A domain with no skill that agents worked in all pass is a finding by itself.
 
 ## Report and actions
 
@@ -39,6 +45,7 @@ Where an action lands:
 
 - **This skill, `orchestrate`, or the loop's prompts.** The orchestrator edits them now, in `~/Developer/personal/dotfiles/skills/` (owned skills are edited at their source), and commits there. It pushes only if the owner rules allow it.
 - **The project's tooling, guards or `AGENTS.md`.** A batch of the next pass, triaged first.
+- **The project's skills.** These are in the repo (`.claude/skills/<name>/`, or `skills/<name>/` when they are installed elsewhere through okra). A correction to a stale line, or a short map or rule from the evidence, the orchestrator commits now on main, after the docs guard passes. A new skill, or a rewrite, is a batch of the next pass, written by the `writing-for-agents` guide and checked by its first user. A skill installed through okra is reinstalled after the edit (`okra` remove, then add), and never hand-edited in the install dir.
 - **An owner rule, or a question of scope.** `NORTH_STAR.md`, or an owner question.
 - **Rejected.** Give the reason.
 

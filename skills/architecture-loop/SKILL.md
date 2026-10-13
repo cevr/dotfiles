@@ -112,7 +112,7 @@ An **area** is a set of directories that change together (a package, or a layer 
 
     Done when the pass row has its counts and, if it grew, its reason.
 
-11. **Retro.** Run [`retro.md`](retro.md) over the pass: rounds, lost work, cost per accepted unit, hand work, checks a finding asked for, host breakages, and what to remove. Edits to this skill, `orchestrate` and the prompts land now; project tooling and guards become the next pass's first batches. Done when `<pass dir>/retro.md` exists, every candidate has a destination, and the pass section has its `Retro:` line.
+11. **Retro.** Run [`retro.md`](retro.md) over the pass: rounds, lost work, cost per accepted unit, hand work, checks a finding asked for, host breakages, what to remove, and the project's skills per domain (a map where agents re-explored, a rule they rediscovered, a stale line). Edits to this skill, `orchestrate`, the prompts and small project-skill corrections land now; project tooling and guards become the next pass's first batches. Done when `<pass dir>/retro.md` exists, every candidate has a destination, and the pass section has its `Retro:` line.
 
 ## Close rule
 
