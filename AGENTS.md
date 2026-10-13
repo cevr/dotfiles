@@ -18,7 +18,7 @@
 
 ## Conventions
 
-- Conventional Commits. Push only when the user asks.
+- Conventional Commits. Push after the gate is green; pushing is reversible, so it needs no ask. Deploys, publishes and force-pushes to shared branches still ask.
 - Bun preferred; pnpm fallback for legacy.
 - Run full gate (lint/typecheck/tests) between logical units and before handoff. CI red: fix til green.
 - New deps: quick health check (recent releases, adoption).
@@ -47,4 +47,5 @@
 
 ## Task Endings
 
-- After a big task, end with a "Let me take more off your plate" section: 3 next actions doable now + 3 automations to set up.
+- Before ending a turn, do the next actions that are reversible and in scope, then report them as done. Don't hand the user a list of things you could do.
+- After a big task, end with a short "Needs you" section: only the decisions that are genuinely the user's (preference, irreversible or external actions), plus up to 3 automations worth setting up.

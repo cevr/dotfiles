@@ -98,6 +98,16 @@
           }
         ],
         "matcher": "ExitPlanMode"
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"$HOME/Developer/personal/dotfiles/claude/hooks/guard-destructive.ts\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SessionEnd": [
