@@ -34,7 +34,7 @@ One row per sweep per pass, as `NORTH_STAR.md` → Sweeps defines it (a measurem
 
 ## Pass <N>
 
-Reports: `~/.cache/architecture-loop/<repo>/pass<N>/`
+Reports: `tmp/architecture-loop/pass<N>/` in the run checkout (git-ignored)
 
 Verdict: <one line>
 
