@@ -4,7 +4,10 @@ cli
 code-review
 counsel-review
 create-pr
+create-verification-skill
 effect
+maintain-verification-skill
+orchestrate
 project-scaffolding
 react
 track-work-hours
