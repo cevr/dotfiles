@@ -12,6 +12,14 @@ The user has asked for a **retrospective**. You are suggesting improvements to t
 
 2. Read the primary sources for the session the user specifies. This may mean searching through session logs on this machine. If the user doesn't specify a session, default to the current one.
 
+   For a retro across sessions (repeated directions, corrections, quota deaths, the costliest agents), run the miner first and read its `digest.md` instead of whole transcripts:
+
+   ```
+   bun ~/.claude/skills/retro/scripts/mine-sessions.ts --since 30d [--project bible-tools] --out <scratch dir>
+   ```
+
+   It reads every `~/.claude*/projects` and `~/.codex/sessions`, redacts secret-looking strings by default, and writes `digest.md` (totals, the costliest transcripts, the owner's messages repeated across sessions), `messages.jsonl` and `sessions.jsonl`. A message repeated across sessions is a direction to check against the skills and principles: if nothing encodes it, it is a candidate. Run it on each machine the work ran on.
+
 3. Look for candidates for improvement in these categories.
 
 - **Navigation**: how easy was it for the agent to find the right files? Are there hidden dependencies between files? Would a **navigation pointer** make it easier? _Use when_ the session took a long time to find a piece of information.

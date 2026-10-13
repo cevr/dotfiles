@@ -11,7 +11,7 @@ The loop records evidence while it runs, so the retro reads it instead of rebuil
 - the pass section of the ledger, and each unit's `log.md`, which holds the round trail and the costs;
 - the `round-*-findings.md` and `round-*-verify.md` files, which say what each failing round caught;
 - the gate and e2e logs: their run times, queue waits and flakes;
-- the owner's messages during the pass. A direction given twice, an interruption, or a breakage the owner noticed before the loop did each counts as a finding.
+- the owner's messages during the pass, from `retro/scripts/mine-sessions.ts --since <pass start>` (see [`retro`](../retro/SKILL.md) step 2). A direction given twice, an interruption, or a breakage the owner noticed before the loop did each counts as a finding.
 - the orchestrator's own session (`~/.claude*/projects/<repo>/*.jsonl`), read with grep for compactions, refusals and repeated commands, never read whole.
 
 ## Questions
