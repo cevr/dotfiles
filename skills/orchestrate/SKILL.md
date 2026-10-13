@@ -48,7 +48,7 @@ A round **fails** on `changes` or `fail`. At the failure cap (3 unless the spec 
 
 ## 0. Start the run
 
-1. **Run dir.** Pick a run slug (`[a-z][a-z0-9]{0,7}`). The run dir is `~/.cache/orchestrate/<run>/`, with one folder per unit.
+1. **Run dir.** Pick a run slug (`[a-z][a-z0-9]{0,7}`). The run dir is scratch: `tmp/orchestrate/<run>/` in the checkout that holds the run's main (git-ignored, gone when that checkout is), with one folder per unit. Nothing durable lives there: the plan file is a docs file in the project (step 4), and what a later run needs goes on the project's ledger. No `~/.cache` run dirs.
 2. **Same machine as the work.** For work on the workbox, the orchestrator runs on the workbox.
 3. **Host check.** On a host this run has not used (a new run, or a run moved to another machine), run the base, alone, with no unit started: the gate, the e2e, and every browser suite CI runs; make one workspace and take the e2e lock with the tools `AGENTS.md` names. During the e2e, check that no test browser holds the audio output (`pmset -g assertions | grep audio-out` on macOS) or shows a window. Every red leg and every missing tool, browser binary or OS permission goes into one host unit's spec, written whole before it starts. Other units start once it merges; until then a unit carries its fixes only by merging its branch, never by cherry-picks. On the laptop move, six host defects reached the host unit one message at a time, and the owner heard the test browser's audio before the loop did.
 
@@ -67,7 +67,7 @@ Done when the run dir exists, you know which host column you use, and the host c
    - **Owner questions never wait in a dialog.** Put the question in Owner questions with your recommendation, and tell the user in one short message. Then end your turn, and keep the other units running.
    - **Reserved for the user:** push (unless the repo's `NORTH_STAR.md` has a `Push:` owner rule, or its `AGENTS.md` grants it), deploy, publish, paid runs, non-additive changes to stored or wire formats, and anything irreversible.
    - **You may merge locally.**
-4. **Plan file.** Write `<run dir>/plan.md`. It is the single source of truth, and you re-read it after every compaction. Move a closed section (a finished table, an earlier host's table) into `<run dir>/plan-archive.md`, so `plan.md` holds only the live table, Decisions and Owner questions. Its first line holds the user's goal word for word, so a new session resumes from `plan.md` and the unit folders alone.
+4. **Plan file.** Write the plan as a docs file in the project, beside its plans or ledger (in bible-tools, `apps/animations/plans/<run>-run.md`), and link it as `<run dir>/plan.md` so workers find it there. Commit it with each merge. It is the single source of truth, and you re-read it after every compaction. Move a closed section (a finished table, an earlier host's table) into a `<run>-run-archive.md` beside it, so `plan.md` holds only the live table, Decisions and Owner questions. Its first line holds the user's goal word for word, so a new session resumes from `plan.md` and the unit folders alone.
 
 ```markdown
 # <run> — <goal, word for word as the user gave it>

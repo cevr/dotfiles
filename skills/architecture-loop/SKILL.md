@@ -15,7 +15,7 @@ The project says what good is; this skill says how to loop:
 - **`NORTH_STAR.md`** (repo root): north stars, tiebreaks, owner rules, project passes, live check, rejected candidates. Format: [`NORTH-STAR-FORMAT.md`](NORTH-STAR-FORMAT.md).
 - **`PRIOR_ART.md`** (repo root): what to compare against, by pass, and the comparisons already settled. Format: [`PRIOR-ART-FORMAT.md`](PRIOR-ART-FORMAT.md).
 - **The ledger**, `plans/architecture-loop-<date>.md`: the single source of truth for what is done, rejected, carried and open. Layout: [`ledger-template.md`](ledger-template.md).
-- **Pass files** (briefs, reports, logs, counsel prompts) live in `~/.cache/architecture-loop/<repo>/pass<N>/`. They are scratch and stay on the machine that ran them. Anything a later pass or a session on the other machine needs goes on the ledger.
+- **Pass files** (briefs, reports, logs, counsel prompts) live in `tmp/architecture-loop/pass<N>/` in the checkout that holds the run's main (git-ignored). They are scratch and stay on the machine that ran them. Anything a later pass or a session on the other machine needs goes on the ledger.
 
 Call the Skill tool with "codebase-design" once at the start; its glossary is the vocabulary of every prompt.
 
