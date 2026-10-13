@@ -6,6 +6,7 @@ DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "Installing dotfiles from $DOTFILES_DIR"
 
 # Create symlinks
+ln -sfn "$DOTFILES_DIR/zshenv" ~/.zshenv
 ln -sf "$DOTFILES_DIR/zshrc" ~/.zshrc
 ln -sf "$DOTFILES_DIR/gitconfig" ~/.gitconfig
 ln -sf "$DOTFILES_DIR/gitignore_global" ~/.gitignore_global
@@ -46,17 +47,16 @@ if command -v herdr >/dev/null 2>&1; then
   done < "$DOTFILES_DIR/workbox/herdr-plugins.txt"
 fi
 
-# Claude settings (both accounts share the one in dotfiles)
-mkdir -p ~/.claude ~/.claude2 ~/.config
+# Claude settings (TeamClaude manages the account pool)
+mkdir -p ~/.claude ~/.config
 ln -sfn "$DOTFILES_DIR/claude/settings.json" ~/.claude/settings.json
-ln -sfn "$DOTFILES_DIR/claude/settings.json" ~/.claude2/settings.json
 "$DOTFILES_DIR/claude/install-herdr-hook.sh"
 
 # Codex config (shared with the workbox; it writes through the link)
 mkdir -p ~/.codex
 ln -sfn "$DOTFILES_DIR/codex/config.toml" ~/.codex/config.toml
 
-# Claude terminal mod (both accounts)
+# Claude terminal mod
 "$DOTFILES_DIR/claude/mods/fx-ui/install.sh"
 
 # Personal commands

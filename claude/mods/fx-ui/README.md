@@ -40,7 +40,7 @@ execution, permissions or stored conversation content.
 
 ## Install
 
-The shared `claude/settings.json` loads the mod for both accounts on every
+The shared `claude/settings.json` loads the mod for the Claude profile on every
 machine: its `env.CLAUDE_CODE_PLUGIN_DIRS` names this folder, and the session
 watches it, so a saved edit reloads. Start a new Claude session.
 
@@ -72,8 +72,7 @@ claude --plugin-dir ~/Developer/personal/dotfiles/claude/mods/fx-ui
 ```
 
 To preview a saved conversation without editing the original, add
-`--resume <session-id> --fork-session`. For the second account, prefix the
-command with `CLAUDE_CONFIG_DIR="$HOME/.claude2"`.
+`--resume <session-id> --fork-session`.
 
 ## Compatibility and checks
 

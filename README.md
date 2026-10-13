@@ -7,12 +7,13 @@ My personal dotfiles.
 | File | Description |
 |------|-------------|
 | `zshrc` | Zsh configuration |
+| `zshenv` | Laptop PATH setup, including the Claude launcher |
 | `workbox/` | Reproducible Bite workbox configuration and services |
 | `gitconfig` | Git configuration |
 | `gitignore_global` | Global gitignore |
 | `ghostty/config` | Ghostty terminal config |
 | `atuin.toml` | Atuin shell history config |
-| `claude/` | Claude Code config shared by both accounts on every machine: settings and mods |
+| `claude/` | TeamClaude launcher and shared Claude Code settings and mods |
 | `skills/track-work-hours` | `hours` command and agent skill for payroll tracking |
 
 ## Installation
@@ -23,6 +24,7 @@ git clone git@github.com:cevr/dotfiles.git ~/Developer/personal/dotfiles
 cd ~/Developer/personal/dotfiles
 
 # Symlink (run install.sh or manually)
+ln -sf $(pwd)/zshenv ~/.zshenv
 ln -sf $(pwd)/zshrc ~/.zshrc
 ln -sf $(pwd)/gitconfig ~/.gitconfig
 ln -sf $(pwd)/gitignore_global ~/.gitignore_global
@@ -40,10 +42,10 @@ ln -sf $(pwd)/skills/track-work-hours/scripts/hours ~/.local/bin/hours
 
 ### Claude
 
-[`claude/`](claude/README.md) holds the Claude Code config both accounts
-(`~/.claude`, `~/.claude2`) share on the laptop and the workbox: `settings.json`
-(symlinked by `install.sh` and the workbox bootstrap) and the mods under
-`claude/mods/`, which `settings.json` loads.
+[`claude/`](claude/README.md) provides the `claude` executable shim for
+TeamClaude on the laptop and workbox. Claude Code uses one profile (`~/.claude`)
+with shared `settings.json` (symlinked by `install.sh` and the workbox bootstrap)
+and the mods under `claude/mods/`, which `settings.json` loads.
 
 ## Brew packages
 

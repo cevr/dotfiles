@@ -109,19 +109,15 @@ sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
   unattended-upgrades \
   zsh
 
-mkdir -p "$local_bin_dir" "$user_unit_dir" "$HOME/.agents" "$HOME/.claude2"
+mkdir -p "$local_bin_dir" "$user_unit_dir" "$HOME/.agents"
 mkdir -p "$HOME/.config/bite-workbox/patches" "$HOME/.config/herdr" "$HOME/.config/hunk"
 
 ln -sfn "$workbox_dir/zshenv" "$HOME/.zshenv"
 ln -sfn "$workbox_dir/zshrc" "$HOME/.zshrc"
 ln -sfn "$workbox_dir/../AGENTS.md" "$HOME/.agents/AGENTS.md"
 ln -sfn "$workbox_dir/../skills" "$HOME/.agents/skills"
-ln -sfn "$HOME/.claude/CLAUDE.md" "$HOME/.claude2/CLAUDE.md"
 mkdir -p "$HOME/.claude"
 ln -sfn "$workbox_dir/../claude/settings.json" "$HOME/.claude/settings.json"
-ln -sfn "$workbox_dir/../claude/settings.json" "$HOME/.claude2/settings.json"
-ln -sfn "$HOME/.claude/skills" "$HOME/.claude2/skills"
-ln -sfn "$HOME/.claude/statusline-git.sh" "$HOME/.claude2/statusline-git.sh"
 "$workbox_dir/../claude/mods/fx-ui/install.sh"
 sudo chsh -s /usr/bin/zsh "$USER"
 

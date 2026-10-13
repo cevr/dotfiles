@@ -1,18 +1,21 @@
 # claude
 
-Claude Code config shared by both accounts (`~/.claude`, `~/.claude2`) on the laptop and the workbox. Edit it here; every new session on either machine picks it up.
+Claude Code uses one profile (`~/.claude`) on each machine. TeamClaude manages the account pool. Settings and mods are shared by the laptop and workbox; every new session picks up edits here.
 
 | Path | What it is |
 | --- | --- |
-| `settings.json` | The one user `settings.json`. `install.sh` (laptop) and `workbox/bootstrap.sh` / `apply-agent-settings` (workbox) symlink both accounts' `settings.json` to it. |
+| `bin/claude` | Executable shim that launches Claude Code through the machine-local TeamClaude proxy. |
+| `settings.json` | The one user `settings.json`. `install.sh` (laptop) and `workbox/bootstrap.sh` / `apply-agent-settings` (workbox) symlink `~/.claude/settings.json` to it. |
 | `mods/` | Mods (function-hook plugins). `settings.json` → `env.CLAUDE_CODE_PLUGIN_DIRS` lists each folder, `:`-separated with `~` paths, so they load on both machines with no install step; sessions watch the folders, so a saved edit reloads. |
 | `install-herdr-hook.sh` | Installs herdr's Claude hook script into `~/.claude/hooks` without letting herdr edit the shared `settings.json`, which already registers the hook. |
 
 ## Launching Claude
 
-On the laptop and workbox, `claude` runs `teamclaude run --`; `claude2` does the same with `CLAUDE_CONFIG_DIR="$HOME/.claude2"` to keep its separate sessions. Arguments pass through to Claude Code unchanged. Each machine uses its own TeamClaude service and account pool. If its proxy is unavailable, the launch fails instead of silently bypassing it.
+On the laptop and workbox, shell startup puts `claude/bin` first on `PATH`, so `claude` runs `teamclaude run --` in interactive shells and subprocesses. Arguments, input, output and exit status pass through unchanged. Each machine uses its own TeamClaude service and account pool. If its proxy is unavailable, the launch fails instead of silently bypassing it.
 
-New shells pick up the aliases automatically. Run `source ~/.zshrc` in an existing shell to load them.
+The native Claude Code binary stays at `~/.local/bin/claude`, where its updater manages it. The shim puts that directory first for TeamClaude's child process, avoiding recursion. Keep the shim in `claude/bin`; do not replace the native binary with it.
+
+New shells pick up the launcher automatically. Run `source ~/.zshrc` in an existing shell to load it and clear the retired `claude2` alias. Old second-profile sessions and credentials remain in `~/.claude2`.
 
 ## Rules for `settings.json`
 

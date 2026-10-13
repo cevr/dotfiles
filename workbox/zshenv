@@ -10,6 +10,7 @@ fi
 
 typeset -U path PATH
 path=(
+  "$HOME/Developer/personal/dotfiles/claude/bin"
   "$HOME/.local/bin"
   "$BUN_INSTALL/bin"
   $path

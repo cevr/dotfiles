@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+# Keep the updater-managed binary in place. TeamClaude spawns `claude` by name,
+# so its child must find that binary before this shim.
+native_claude="$HOME/.local/bin/claude"
+if [ ! -x "$native_claude" ] || [ "$native_claude" -ef "$0" ]; then
+  printf 'claude: install the native Claude Code binary at %s first.\n' "$native_claude" >&2
+  exit 127
+fi
+
+export PATH="$HOME/.local/bin:$PATH"
+exec teamclaude run -- "$@"

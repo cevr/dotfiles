@@ -204,6 +204,8 @@ if [ -f '/Users/cvr/Downloads/google-cloud-sdk/path.zsh.inc' ]; then . '/Users/c
 # The next line enables shell command completion for gcloud.
 if [ -f '/Users/cvr/Downloads/google-cloud-sdk/completion.zsh.inc' ]; then . '/Users/cvr/Downloads/google-cloud-sdk/completion.zsh.inc'; fi
 
-# Claude Code through the machine-local TeamClaude proxy
-alias claude='teamclaude run --'
-alias claude2='CLAUDE_CONFIG_DIR="$HOME/.claude2" teamclaude run --'
+# Claude Code uses the executable TeamClaude shim, including in subprocesses.
+unalias claude claude2 2>/dev/null || :
+typeset -U path PATH
+path=("$HOME/Developer/personal/dotfiles/claude/bin" $path)
+export PATH

@@ -6,13 +6,12 @@ umask 077
 settings_source="$HOME/.config/bite-workbox/settings-source"
 claude_source="$settings_source/claude"
 
-mkdir -p "$HOME/.claude" "$HOME/.claude2" "$HOME/.codex"
+mkdir -p "$HOME/.claude" "$HOME/.codex"
 
-# Both accounts share settings.json from dotfiles (synced by the bite-dotfiles
-# folder); machine-local secrets live in ~/.config/secrets.env.
+# Claude shares settings.json from dotfiles (synced by the bite-dotfiles folder);
+# machine-local secrets live in ~/.config/secrets.env.
 dotfiles_dir="$HOME/Developer/personal/dotfiles"
 ln -sfn "$dotfiles_dir/claude/settings.json" "$HOME/.claude/settings.json"
-ln -sfn "$dotfiles_dir/claude/settings.json" "$HOME/.claude2/settings.json"
 install -m 600 "$claude_source/settings.local.json" "$HOME/.claude/settings.local.json"
 install -m 755 "$claude_source/statusline-git.sh" "$HOME/.claude/statusline-git.sh"
 

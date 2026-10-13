@@ -25,12 +25,14 @@ alias reload='source ~/.zshrc'
 
 PROMPT='%F{cyan}%n@%m%f:%F{blue}%~%f %# '
 
-# Claude Code through the machine-local TeamClaude proxy
-alias claude='teamclaude run --'
-alias claude2='CLAUDE_CONFIG_DIR="$HOME/.claude2" teamclaude run --'
-
 # bun completions
 [ -s "/home/exedev/.bun/_bun" ] && source "/home/exedev/.bun/_bun"
 
 # Interactive tools (machine-local configuration)
 [ -r "$HOME/.config/zsh/interactive-tools.zsh" ] && source "$HOME/.config/zsh/interactive-tools.zsh"
+
+# Claude Code uses the executable TeamClaude shim, including in subprocesses.
+unalias claude claude2 2>/dev/null || :
+typeset -U path PATH
+path=("$HOME/Developer/personal/dotfiles/claude/bin" $path)
+export PATH
