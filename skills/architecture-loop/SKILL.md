@@ -1,6 +1,6 @@
 ---
 name: architecture-loop
-description: improve-codebase-architecture judged against the project's NORTH_STAR.md and PRIOR_ART.md — one pass with the user picking and grilling, or autonomous passes until one finds polish only (sweep, review code and tests, apply in isolated workspaces, counsel, live-check).
+description: improve-codebase-architecture judged against the project's NORTH_STAR.md and PRIOR_ART.md — one pass with the user picking and grilling, or autonomous passes until one finds polish only (sweep, review code and tests, apply in isolated workspaces, counsel, live-check, retro).
 disable-model-invocation: true
 ---
 
@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 This skill is a superset of `improve-codebase-architecture`: the same lens, judged against the project's north stars and prior arts. It runs one of two ways — a [single pass with the user](#single-pass-with-the-user), who picks and grills, or the autonomous loop below, where every finding is applied or rejected with a receipt.
 
-In the loop, a **pass** is: coverage audit → read-only sweeps → triage into batches → per batch: a [track](../orchestrate/SKILL.md) (an implementor in the batch's own workspace, a reviewer from another model family, rounds until accepted) → merge → live check → count. Passes repeat until the close rule holds. Within a pass, each **sweep** is one read-only lens over the code.
+In the loop, a **pass** is: coverage audit → read-only sweeps → triage into batches → per batch: a [track](../orchestrate/SKILL.md) (an implementor in the batch's own workspace, a reviewer from another model family, rounds until accepted) → merge → live check → count → [retro](retro.md). Passes repeat until the close rule holds. Within a pass, each **sweep** is one read-only lens over the code.
 
 The project says what good is; this skill says how to loop:
 
@@ -86,6 +86,8 @@ An **area** is a set of directories that change together (a package, or a layer 
    - **Size.** A batch is one concern, about 10 items. An implementor that compacts twice is holding too much: split the batch. In bible-tools, apply agents were 93% of all cache reads, and 124 of 288 hit the compaction window.
    - **Parallelism.** At most 3 units at once, fewer when the gate cannot take them. Time the gate once before the first wave. While a gate waits in the queue longer than twice its own run, start no new unit and make gate speed the next batch. Seven or eight parallel gates drove the workbox to a load of 540–830 and turned every e2e into a flake. A batch that needs another's files starts from main after that one merges.
 
+   - **Cost.** At each hand-back, write the agent's tokens, tool uses and wall time, from its task notification, into the unit's `log.md`. The retro (step 11) reads them there instead of rebuilding them.
+
    Done per batch when its unit passes verification.
 
 7. **Merge.** Integrate as orchestrate's [pass](../orchestrate/SKILL.md#pass) step says:
@@ -110,11 +112,13 @@ An **area** is a set of directories that change together (a package, or a layer 
 
     Done when the pass row has its counts and, if it grew, its reason.
 
+11. **Retro.** Run [`retro.md`](retro.md) over the pass: rounds, lost work, cost per accepted unit, hand work, checks a finding asked for, host breakages, and what to remove. Edits to this skill, `orchestrate` and the prompts land now; project tooling and guards become the next pass's first batches. Done when `<pass dir>/retro.md` exists, every candidate has a destination, and the pass section has its `Retro:` line.
+
 ## Close rule
 
 Close when one pass holds all of these: no unswept directory; the architecture sweeps and package reviews report polish only (under about 5 lines of value each); every project sweep meets its "done when"; `PRIOR_ART.md` → To survey is empty; no `Carried` row is open; and reading the pass's reports end to end, you can name no structural change left. A pass that finds a guard blind spot is never the last: close the blind spot with a check placed by [`guardrails.md`](guardrails.md), run it, and sweep what it reveals.
 
-A loop that does not converge stops being a loop. A class of finding that returns in three passes in a row becomes an owner question about scope, not one more batch: gent's bash guard drew 85 commits over passes 8–19 before the owner made it opt-in. So does a pass made mostly of the last pass's regressions. Then write the HTML report from [`improve-codebase-architecture`'s HTML-REPORT.md](../improve-codebase-architecture/HTML-REPORT.md) with the card additions under [single pass](#single-pass-with-the-user) (one card per structural change the loop made, before and after) and the final message, ending with the ledger path.
+A loop that does not converge stops being a loop. A class of finding that returns in three passes in a row becomes an owner question about scope, not one more batch: gent's bash guard drew 85 commits over passes 8–19 before the owner made it opt-in. So does a pass made mostly of the last pass's regressions. Then run a retro over every pass's `retro.md` (did each applied action save what it promised?), and write the HTML report from [`improve-codebase-architecture`'s HTML-REPORT.md](../improve-codebase-architecture/HTML-REPORT.md) with the card additions under [single pass](#single-pass-with-the-user) (one card per structural change the loop made, before and after) and the final message, ending with the ledger path.
 
 ## What pays late
 

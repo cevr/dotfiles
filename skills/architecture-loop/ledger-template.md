@@ -67,6 +67,8 @@ Merges: `<batch>: done <hash> … <hash>, merged <hash>, GATE EXIT 0`
 
 Live check: `<what was driven, and what the state view showed>`
 
+Retro: `<pass dir>/retro.md`; applied `<skill edits, hashes>`; carried `<actions for the next pass>`; checked `<last pass's actions: saved / reverted>`
+
 ## Close
 
 - Unswept directories: `<none>`
