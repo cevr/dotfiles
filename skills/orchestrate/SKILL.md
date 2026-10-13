@@ -30,6 +30,8 @@ plan ──▶ implement ──▶ review ──accepted──▶ verify ──p
 
 A round **fails** on `changes` or `fail`. At the failure cap (3 unless the spec says otherwise), or on `stuck`, the unit goes to **decide** as stuck: you re-plan it. You never run another round in the same contexts.
 
+**A class seen twice gets its property now.** When a round's Blocker, Major or verify defect is another trigger of an earlier round's class (the findings say `repeat of rN <id>`, or you see it), the next round's message names the class and makes a generated property or model test that owns it the round's first deliverable: red on the unfixed code for every earlier instance, each kept as a fixed case, before any case fix. Do not wait for the cap: talk1b and sheet each spent a round fixing triggers after the reviewer had named the class.
+
 ## Roles on each host
 
 | Role | Claude Code orchestrator | Codex orchestrator | Context |
@@ -48,23 +50,24 @@ A round **fails** on `changes` or `fail`. At the failure cap (3 unless the spec 
 
 1. **Run dir.** Pick a run slug (`[a-z][a-z0-9]{0,7}`). The run dir is `~/.cache/orchestrate/<run>/`, with one folder per unit.
 2. **Same machine as the work.** For work on the workbox, the orchestrator runs on the workbox.
+3. **Host check.** On a host this run has not used (a new run, or a run moved to another machine), run the base, alone, with no unit started: the gate, the e2e, and every browser suite CI runs; make one workspace and take the e2e lock with the tools `AGENTS.md` names. During the e2e, check that no test browser holds the audio output (`pmset -g assertions | grep audio-out` on macOS) or shows a window. Every red leg and every missing tool, browser binary or OS permission goes into one host unit's spec, written whole before it starts. Other units start once it merges; until then a unit carries its fixes only by merging its branch, never by cherry-picks. On the laptop move, six host defects reached the host unit one message at a time, and the owner heard the test browser's audio before the loop did.
 
-Done when the run dir exists and you know which host column of the table you use.
+Done when the run dir exists, you know which host column you use, and the host check is green or its host unit is planned.
 
 ## 1. Plan
 
 1. **Read first.** Read the task, the repo's `AGENTS.md` or `CLAUDE.md`, and `NORTH_STAR.md`, before asking anything.
-2. **Units.** Split the work into units. A unit is one reviewable result: one branch, one PR, one batch.
+2. **Units.** Split the work into units. A unit is one reviewable result: one branch, one PR, one batch. A unit that builds on a seam another planned unit replaces depends on that unit; it never starts on the old seam.
    - Give each unit a slug of up to 12 characters, and list the units it depends on: their code, their decisions or their files.
    - Order the units topologically. Units with no dependency and no shared files can run at the same time.
 3. **Defaults.** Decide by `~/Developer/personal/dotfiles/principles/`, and ask only what the plan cannot settle. These apply unless the user says otherwise:
    - **Run to the end.**
-   - **At most 3 units at once, and fewer when the gate cannot take them.** Each implementor and verifier runs the gate. Time it once before the first wave. While a gate waits longer than twice its own run, start no new unit, and make gate speed the next unit.
+   - **At most 3 heavy agents at once, and fewer when the gate cannot take them.** A heavy agent runs a gate or a browser: every implementor and verifier, and a reviewer that runs probes. Time the gate once before the first wave. Before starting a heavy agent, read the load (`sysctl -n vm.loadavg` or `uptime`), and start none while it is above the core count. While a gate waits longer than twice its own run, start no new unit, and make gate speed the next unit.
    - **You decide small, reversible open points**, and record each one.
    - **Owner questions never wait in a dialog.** Put the question in Owner questions with your recommendation, and tell the user in one short message. Then end your turn, and keep the other units running.
    - **Reserved for the user:** push (unless the repo's `NORTH_STAR.md` has a `Push:` owner rule, or its `AGENTS.md` grants it), deploy, publish, paid runs, non-additive changes to stored or wire formats, and anything irreversible.
    - **You may merge locally.**
-4. **Plan file.** Write `<run dir>/plan.md`. It is the single source of truth, and you re-read it after every compaction. Its first line holds the user's goal word for word, so a new session resumes from `plan.md` and the unit folders alone.
+4. **Plan file.** Write `<run dir>/plan.md`. It is the single source of truth, and you re-read it after every compaction. Move a closed section (a finished table, an earlier host's table) into `<run dir>/plan-archive.md`, so `plan.md` holds only the live table, Decisions and Owner questions. Its first line holds the user's goal word for word, so a new session resumes from `plan.md` and the unit folders alone.
 
 ```markdown
 # <run> — <goal, word for word as the user gave it>
@@ -85,7 +88,7 @@ Done when every unit has a row with its dependencies, and `plan.md` lists the re
 
 ## 2. Run a unit
 
-Every transition appends one line to `<run dir>/<unit>/log.md`: the time, `from → to`, the round, and the file that caused it. Then update the unit's row in `plan.md`.
+Every transition appends one line to `<run dir>/<unit>/log.md`: the time from `date -u +%FT%RZ`, `from → to`, the round, and the file that caused it. Then update the unit's row in `plan.md`.
 
 1. **plan.** Make the unit's workspace from the warm source as `AGENTS.md` says (`rift create`; on the workbox, `workrift create <branch>`), on branch `<run>/<unit>`. Then start the planner: give it [`spec-template.md`](spec-template.md), the unit's goal and dependencies, the workspace, and `protocol.md`'s Planner section. When it ends, read `spec.md`. The Owns, Do not touch, Acceptance check and Gate sections must be concrete enough for a reader with no context. Edit them until they are.
 2. **implement.** Start the implementor with one message: the paths of `protocol.md` and `spec.md`, its role, and the round number. For a fix round, send the same agent the paths of the last findings or verify report.
@@ -93,7 +96,7 @@ Every transition appends one line to `<run dir>/<unit>/log.md`: the time, `from 
 4. **verify.** On `accepted`, start a fresh verifier on the round's request (`protocol.md`, Verifier).
 5. **Route.** On `changes`, `fail` or `stuck`, follow [The machine](#the-machine). On `pass`, go to step 3, Decide.
 
-**Scope.** Scope never grows inside a running unit. New work becomes a new unit in `plan.md`, never a message to a working agent.
+**Scope.** Scope never grows inside a running unit. New work, a host defect included, becomes a new unit in `plan.md`, never a message to a working agent. A message that must change a running unit's goal states the invariant that must hold ("a frame's pixels never depend on frames drawn before it") and the evidence, never the mechanism; the implementor picks the mechanism, and the reviewer judges it. In p5, a mechanism sent by message (an author-declared `fresh` timeline) was built, then deleted by the next round as purity resting on authoring nothing checks.
 
 ## 3. Decide
 
@@ -122,7 +125,7 @@ Re-plan, by one of these:
 - sharpen the spec;
 - split the unit;
 - make the contested decision yourself;
-- start a fresh implementor with the old findings as data.
+- start a fresh implementor with the old findings as data and a property or model test that owns the repeated class, red on every earlier counterexample. The property is part of the re-plan's acceptance check, never "if cheap": sheet's optional one compared the code with itself, and two more rounds failed on its class.
 
 Stop the old implementor.
 
@@ -130,6 +133,7 @@ Stop the old implementor.
 
 - **Wait.** End your turn and let workers wake you. Spec the next units while you wait.
 - **After your own compaction.** Re-read this file, `protocol.md` and `plan.md` before any other action.
+- **Host move.** When the run moves host, rewrite the run's shared rules file for the new host in place; never keep an override file that every agent maps by hand.
 - **Pause.** On a pause, or when the user stops the run, stop every running worker, so no orphan agent burns tokens. Write where each unit stands into `plan.md`.
 
 ## 5. Close

@@ -24,7 +24,6 @@ Work rules:
 - Comments describe today's behavior.
 - UI changes follow `~/.claude/skills/architecture-loop/ui-guidance.md` (shadcn, Graphical, composition and state guidance, mapped onto the repo's framework), on the lines you change only.
 - Decide by the principles in ~/Developer/personal/dotfiles/principles/ and write "decided by <principle>"; the batch runs without check-ins.
-- A defect class this batch fixes for the second time gets its check, placed by `~/.claude/skills/architecture-loop/guardrails.md`.
 - Gate: typecheck, lint, focused tests, then the full gate into a log with its exit line (`<gate command> > <pass dir>/gate-<batch>.log 2>&1; echo "GATE EXIT $?" >> <same log>`) before each commit. A test that fails once under load and passes on one retry is a flake: retry once, name it, keep its assertions.
 - Every commit passes the hook, without bypass flags or env overrides. When a change cannot pass it in steps, order the steps so each passes, or make it one commit.
 - Commits: Conventional Commits, one logical unit each, staged by exact path. A public API change carries its changeset and README update. No push, no workspace creation or removal, no ledger edits.

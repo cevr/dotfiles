@@ -19,7 +19,7 @@ Protocol: `~/.claude/skills/orchestrate/protocol.md` (read it in full first).
 <The files and directories this unit may change. Everything else is read-only; a fix needed elsewhere is a follow-up in state.md.>
 
 ## Do not touch
-<Files that running units own; shared counters (migration numbers, ports, sequence ids) and who holds them.>
+<Files that running units own; shared counters (migration numbers, lab and debug (CDP) ports, sequence ids) and who holds them.>
 
 ## Acceptance check
 <Objective, runnable, written before any code: the commands, and the result that means done. Prefer a test that is red now and must go green, a parity or golden diff, a live drive with its expected state, a benchmark against its baseline. "Looks right" is not a check.>
