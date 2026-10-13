@@ -9,6 +9,8 @@
 - [[principles/experience-first]]
 - [[principles/exhaust-the-design-space]]
 - [[principles/chase-y-not-x]]
+- [[principles/attack-the-premise]]
+- [[principles/build-the-lever]]
 
 ## Architecture
 
@@ -30,6 +32,7 @@
 ## Verification
 
 - [[principles/prove-it-works]]
+- [[principles/explain-the-number]]
 - [[principles/test-through-public-interfaces]]
 - [[principles/fix-root-causes]]
 
