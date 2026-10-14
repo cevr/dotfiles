@@ -2,6 +2,26 @@
 
 Build the smallest complete interface that serves the task: useful product content, a clear title, and the actions people need. Each visible element adds information, enables an action, or provides necessary context. Empty space needs no filler copy or decoration. Correct tokens alone do not make a clear interface. Applies to new routes, custom markup, composed components, and revisions to existing screens.
 
+## Principles Behind the Rules
+
+The rules in this file and across the skill serve Apple's eight design principles (*Principles of Great Design*, WWDC 2026). Use these as the names you reason with:
+
+1. **Purpose.** Make with intention; decide what *not* to build. Every feature asks for the user's time, attention and trust; spend that budget only where it pays off.
+2. **Agency.** Keep people in control: offer choices, don't force a single path. Back it with forgiveness: easy undo for slips, and a confirmation dialog only for genuinely destructive, irreversible actions (use sparingly; overusing it trains people to click through).
+3. **Responsibility.** Act in the user's interest. Privacy: ask at the right moment, only for what's needed, transparently. Safety: anticipate misuse and harm, especially with AI (an allergy-aware recipe app must not suggest a harmful ingredient). Add previews, confirmations and disclaimers; cut a feature whose risk outweighs its value.
+4. **Familiarity.** Build on what people already know. Use metaphors that are neither too literal nor too abstract (a trash can means delete), and honor their physics. Be consistent: things that look the same must behave the same and live in the same place (close is always top-left on macOS), so people can predict what happens next. Only break a familiar pattern if you can prove it's better, then test it; don't assume.
+5. **Flexibility.** Design for different contexts, devices and the full range of abilities. Adapt to the platform (iPhone means quick touch; desktop means deep workflows with precise pointer control) and to the situation. Design inclusively (age, language, expertise, accessibility). When no single layout fits everyone, let people personalize: rearrange controls, hide what they don't use.
+6. **Simplicity, not minimalism.** Strip the unnecessary so the core purpose shines; burying everything in one place looks minimal but isn't simple. Be concise (plain language, no jargon, fewer steps) and clear (use hierarchy, through order, spacing and contrast, so the most important thing is the most obvious). Every element earns its place; sometimes *adding* context simplifies (a video scrubber that shows time remaining). Show the common path first, advanced options one level deeper.
+7. **Craft.** Uncompromising attention to detail builds trust: beautiful typography, colors that adapt to light and dark, clear iconography, and responsive animations that give immediate, natural feedback. Nothing is random; every spacing, timing and alignment value is a deliberate choice you can defend. Jittery scroll, misaligned icons and layouts that break on rotation read as carelessness. Craft needs iteration and longevity: keep evolving the design as features and hardware change.
+8. **Delight.** The result of getting the other seven right, not confetti tacked on top. Decide the emotion you want people to feel (calm, confident, excited) and reinforce it in every decision.
+
+Tactical rules that serve these:
+
+- **Feedback comes in four kinds:** status, completion, warning, error. Confirm meaningful actions, expose ongoing status, warn before problems, validate inline (not on submit).
+- **Wayfinding.** Every screen should answer: Where am I? Where can I go? What's there? How do I get out? Never trap the user.
+- **Grouping and mapping.** Proximity implies relationship; place a control near what it affects and arrange controls to mirror what they change. If you need a label to explain a control, the mapping is weak.
+- **Direct, specific labels beat safe generic ones.** Name nav items for their contents ("Progress", "Library"), not vague umbrellas ("Home"). Specificity creates predictability.
+
 ## Start With What the App Already Provides
 
 Inspect surrounding navigation, breadcrumbs, actions, and layout before adding page content. If the breadcrumb already provides the return route, another back row adds nothing. Keep extra navigation only when it has a distinct purpose or serves a different responsive context.
@@ -43,3 +63,20 @@ Read-only values (fixed dates, computed totals) render as metadata. Values the u
 ## Finish by Removing What Adds Nothing
 
 Review the normal page, its empty states, and its expanded states. For each eyebrow, subtitle, badge, explanation, and footer line, name the distinct information or action it contributes; remove it when there is none. Remove repeated navigation, labels, facts, captions, and style variations when meaning and usability survive. Keep requested content, essential qualifications, accessible structure, useful metadata, and the cues needed to act. A title without supporting copy is a complete design choice.
+
+## Building Components People Love
+
+These principles come from building Sonner (13M+ weekly npm downloads) and apply to any component:
+
+1. **Developer experience is key.** No hooks, no context, no complex setup. Insert `<Toaster />` once, call `toast()` from anywhere. The less friction to adopt, the more people will use it.
+2. **Good defaults matter more than options.** Ship beautiful out of the box. Most users never customize. The default easing, timing and visual design should be excellent.
+3. **Naming creates identity.** "Sonner" (French for "to ring") feels more elegant than "react-toast". Sacrifice discoverability for memorability when appropriate.
+4. **Handle edge cases invisibly.** Pause toast timers when the tab is hidden. Fill gaps between stacked toasts with pseudo-elements to maintain hover state. Capture pointer events during drag. Users never notice these, and that is exactly right.
+5. **Use transitions, not keyframes, for dynamic UI.** Toasts are added rapidly. Keyframes restart from zero on interruption; transitions retarget smoothly ([motion](motion/index.md)).
+6. **Build a great documentation site.** Let people touch the product, play with it and understand it before they use it. Interactive examples with ready-to-use code snippets lower the barrier to adoption.
+
+## Process
+
+- **Prototype interactively.** An interactive demo is worth "a million static designs." You discover the interface by building and playing with it, and a working prototype sets a concrete bar that prevents a mediocre final implementation.
+- **Design interaction and visuals together.** "You shouldn't be able to tell where one ends and the other begins." Motion is not a layer added after the pixels.
+- **Test with real people in real context**, and review motion with fresh eyes: play it in slow motion and frame by frame to catch what's invisible at full speed ([debugging](motion/index.md#debugging)).

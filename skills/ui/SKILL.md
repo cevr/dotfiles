@@ -77,7 +77,7 @@ When there is no system to follow and the task is to choose one:
 
 | Domain | Read when |
 | --- | --- |
-| [Interface judgment](references/interface-judgment.md) | Composing any screen: hierarchy, copy that earns its place, where each fact lives |
+| [Interface judgment](references/interface-judgment.md) | Composing any screen: design principles, hierarchy, copy that earns its place, where each fact lives; designing a reusable component |
 | [Theming](references/theming.md) | Any styling in a project with tokens, a theme, or a component library; portals; state treatments |
 | [Design system](references/design-system.md) | Applying a brand spec or `DESIGN.md`; building a design system page |
 | [Motion](references/motion/index.md) | Whether and how to animate: purpose, easing, duration, springs, enter/exit, reduced motion |
