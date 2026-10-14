@@ -268,7 +268,7 @@ useEffect(() => { setMounted(true); }, []);
 // <div data-mounted={mounted}>
 ```
 
-When toasts stack and the list reflows, the opacity change has to work against the height change. There's no formula for that pair: adjust until it feels right, then check it again the next day. For the Sonner library itself, see [Sonner](../libraries/sonner.md).
+When toasts stack and the list reflows, the opacity change has to work against the height change. There's no formula for that pair: adjust until it feels right, then check it again the next day. For the Sonner library itself, see [Sonner](../sonner.md).
 
 ## Accordion / collapse
 

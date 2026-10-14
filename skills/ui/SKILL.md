@@ -43,7 +43,7 @@ Accessibility requirements outrank polish everywhere: a polish finding never out
 - **shadcn/ui**: in a project with `components.json`, the `shadcn` skill owns component APIs, composition, and CLI. Customize through theme variables and `cva` variants; call-site `className` is for layout. A library left in default styling means the theme was never applied.
 - **Animation**: CSS transitions first; `motion/react` when a gesture, layout animation, or spring needs it. → [motion](references/motion/index.md)
 - **Icons**: the project's icon library; `currentColor`; icon-only buttons need an accessible name. → [icons](references/icons.md)
-- **Libraries**: before hand-rolling a toast, command menu, OTP input, virtualizer, or drag and drop, check [libraries](references/libraries/index.md).
+- **Components**: before hand-rolling any component (toast, command menu, OTP input, chart, empty state), defer to the `shadcn` skill: the project's installed components first, then `shadcn search` across registries.
 
 ### Data Attributes for Conditional Styles
 
@@ -94,7 +94,7 @@ When there is no system to follow and the task is to choose one:
 | [Accessibility](references/accessibility/index.md) | Keyboard, focus, ARIA, forms, screen readers, hit areas, motion and zoom |
 | [Writing](references/writing/index.md) | Labels, buttons, errors, empty states, confirmations, voice |
 | [Mobile web](references/mobile-web.md) | Making a web app feel native on phones: hover latching, tap highlight, viewport height, input zoom, safe areas |
-| [Libraries](references/libraries/index.md) | Picking a library for a frontend task; [Sonner](references/libraries/sonner.md) toasts |
+| [Sonner](references/sonner.md) | Toast API, styling, and troubleshooting once shadcn has installed Sonner; exact props in [sonner-api.md](references/sonner-api.md) |
 | [Creative patterns](references/creative-patterns.md) | Exploratory UI: navigation, layout, cards, scroll, galleries, micro-interactions |
 
 ## Verify

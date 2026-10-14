@@ -80,7 +80,7 @@ CSS animations beat JS under load: they can run off the main thread, while `requ
 
 With a motion library, import from `"motion/react"` when `motion` is installed, or `"framer-motion"` when that is. Where both exist, follow the imports the component or its nearest peers already use.
 
-If the task needs a *component* rather than an animation (a toast, a drawer, a command menu, a dropdown), stop and pick one from [libraries](../libraries/index.md). Hand-rolling those is how you end up with a `<div>` dropdown and no focus management.
+If the task needs a *component* rather than an animation (a toast, a drawer, a command menu, a dropdown), stop and get it from shadcn (the `shadcn` skill: installed components, then registry search). Hand-rolling those is how you end up with a `<div>` dropdown and no focus management.
 
 ## 4. Pick the properties
 

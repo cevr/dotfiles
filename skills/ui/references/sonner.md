@@ -1,6 +1,6 @@
 # Sonner
 
-[Sonner](https://sonner.emilkowal.ski) is the toast library on the [curated list](index.md). When a task involves Sonner (wiring it up, rendering toasts, styling them, or fixing them) answer from this file first. Full prop tables for `<Toaster />` and `toast()` live in [sonner-api.md](sonner-api.md); read it when you need an exact prop name, type, or default.
+[Sonner](https://sonner.emilkowal.ski) is the toast behind shadcn's `sonner` component, used in Radix and React Aria projects; Base UI projects use shadcn's `toast` instead, and the `shadcn` skill decides which. Install it through shadcn, then use this file for the toast API itself. When a task involves Sonner (wiring it up, rendering toasts, styling them, or fixing them) answer from this file first. Full prop tables for `<Toaster />` and `toast()` live in [sonner-api.md](sonner-api.md); read it when you need an exact prop name, type, or default.
 
 ## Setup
 
@@ -43,7 +43,7 @@ toast.success('Uploaded', { id });
 
 **Close callbacks** — `onDismiss` fires on close button or swipe; `onAutoClose` fires on timeout. They are separate; there is no single "closed" callback.
 
-**Timing and announcements** — the default `duration` is `4000`. A toast carrying an action (such as Undo) or an error stays until dismissed (`duration: Infinity`), and one that must time out gets at least 5 seconds; the rules are in [motion and zoom](../accessibility/motion-and-zoom.md#autoplay-and-timed-ui). Never move focus to a toast ([screen readers](../accessibility/screen-readers.md#live-regions)). Toast copy patterns are in [writing patterns](../writing/patterns.md#status-copy).
+**Timing and announcements** — the default `duration` is `4000`. A toast carrying an action (such as Undo) or an error stays until dismissed (`duration: Infinity`), and one that must time out gets at least 5 seconds; the rules are in [motion and zoom](accessibility/motion-and-zoom.md#autoplay-and-timed-ui). Never move focus to a toast ([screen readers](accessibility/screen-readers.md#live-regions)). Toast copy patterns are in [writing patterns](writing/patterns.md#status-copy).
 
 ## Styling — the escalation ladder
 
