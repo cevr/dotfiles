@@ -1,204 +1,215 @@
-# Surfaces Reference
+# Surfaces
 
-Concentric radii, optical alignment, shadow systems, and image outlines. Load when building cards, buttons, containers, or reviewing surface-level polish.
+Visual polish for surfaces, with the exact value each detail takes: concentric radius, optical alignment, shadow rings, image outlines, hover on hover-capable pointers and scroll containment in overlays. It applies once the underlying interaction is sound, and a polish finding never outranks a broken interaction.
 
-Based on [jakubkrehel/make-interfaces-feel-better](https://github.com/jakubkrehel/make-interfaces-feel-better).
+## Exact values, optional polish
 
----
+The values here, in [icons](icons.md) and in [motion](motion/index.md) are exact, not ranges to approximate. `cubic-bezier(0.2, 0, 0, 1)` is not `cubic-bezier(0.4, 0, 0.2, 1)`, and `0.96` is not `0.95`. The optical nudges and the concentric padding cutoff are the exceptions. They are starting points, judged by eye.
 
-## Concentric Border Radius
+Keep the project's component library, tokens and density, and match its motion language wherever no rule gives a value. A deliberate and consistent project convention, such as a style with no shadows, is a preference and not a finding. The same detail done two ways within the project is a finding.
 
-Outer radius = inner radius + padding. Mismatched radii on nested elements is the #1 thing that makes interfaces feel off.
+Text wrapping, font rendering, tabular numbers and text spacing belong to [typography](typography/index.md). Hit areas, keyboard support, ARIA and the reduced-motion requirement belong to [accessibility](accessibility/index.md). Grouping, section spacing, breakpoints and spatial RTL belong to [layout](layout/index.md), except directional icon mirroring, which is in [icons](icons.md#icons-in-rtl). Color tokens and contrast measurement belong to [color](color/index.md). Animation, transitions and their exact values belong to [motion](motion/index.md).
+
+## Concentric border radius
+
+Where nested surfaces share a visible, even inset, the outer radius is the inner radius plus the padding plus any border width. Past `24px` of padding, or where the padding is deliberately asymmetric, treat the layers as separate surfaces and keep each one's radius token.
 
 ```
-outerRadius = innerRadius + padding
+outerRadius = innerRadius + padding + borderWidth
 ```
 
 ```css
-/* Good — concentric */
-.card { border-radius: 20px; padding: 8px; }       /* 12 + 8 = 20 */
-.card-inner { border-radius: 12px; }
+/* Good: concentric radii */
+.card {
+  border-radius: 20px; /* 12 + 8 */
+  padding: 8px;
+}
+.card-inner {
+  border-radius: 12px;
+}
 
-/* Bad — same radius on both */
-.card { border-radius: 12px; padding: 8px; }
-.card-inner { border-radius: 12px; }
+/* Bad: same radius on both */
+.card {
+  border-radius: 12px;
+  padding: 8px;
+}
+.card-inner {
+  border-radius: 12px;
+}
 ```
 
 ```tsx
-// Tailwind — outer radius accounts for padding
-<div className="rounded-2xl p-2">         {/* 16px radius, 8px padding */}
-  <div className="rounded-lg">            {/* 8px radius = 16 - 8 ✓ */}
+// Good: outer radius accounts for padding
+<div className="rounded-2xl p-2">       {/* 16px radius, 8px padding */}
+  <div className="rounded-lg">          {/* 8px radius = 16 - 8 */}
     ...
   </div>
 </div>
 
-// Bad — same radius
+// Bad: same radius on both
 <div className="rounded-xl p-2">
-  <div className="rounded-xl">            {/* looks off */}
+  <div className="rounded-xl">
     ...
   </div>
 </div>
 ```
 
-**Caveat:** If padding > ~24px, treat layers as independent surfaces — strict concentric math no longer matters at that distance.
+## Optical alignment
 
----
+Where geometric centering looks off, nudge by eye. Give a button `2px` less padding on its icon side, shift a play triangle toward its point and fix asymmetric glyphs in the SVG itself.
 
-## Optical Alignment
+### Buttons with text and an icon
 
-When geometric centering looks off, align optically.
-
-### Buttons with Text + Icon
-
-Icon side gets less padding. Rule of thumb: `icon-side padding = text-side padding - 2px`.
+Start the icon side at `2px` less padding than the text side, then judge by eye.
 
 ```css
-/* Good — less padding on icon side */
-.button-with-icon { padding-left: 16px; padding-right: 14px; }
+/* Good: less padding on the trailing icon side */
+.button-with-icon {
+  padding-inline-start: 16px;
+  padding-inline-end: 14px;
+}
 
-/* Bad — equal padding, icon looks pushed out */
-.button-with-icon { padding: 0 16px; }
+/* Bad: equal padding pushes the icon visually outward */
+.button-with-icon {
+  padding-inline: 16px;
+}
 ```
 
 ```tsx
 // Tailwind
-<button className="pl-4 pr-3.5 flex items-center gap-2">
+<button className="ps-4 pe-3.5 flex items-center gap-2">
   <span>Continue</span>
   <ArrowRightIcon />
 </button>
 ```
 
-### Play Button Triangles
+### Play button triangles
 
-Triangles' geometric center ≠ visual center. Shift right ~2px:
+A triangle's geometric center sits left of its visual center, so shift it toward its point:
 
 ```css
-.play-button svg { margin-left: 2px; }
+.play-button svg {
+  transform: translateX(2px); /* physical on purpose: playback icons never mirror */
+}
 ```
 
-### Asymmetric Icons (Stars, Arrows, Carets)
+### Asymmetric icons
 
-Best fix: adjust the SVG `viewBox`/path directly. Fallback: nudge with `margin`/`padding`.
+Stars, arrows and carets carry uneven visual weight. Fix the `viewBox` or path in the SVG, so the component needs no extra offset. Where the asset cannot change, nudge its wrapper:
 
 ```tsx
-// Best — fix in SVG
-// Fallback
-<span className="ml-px"><StarIcon /></span>
+<span className="translate-x-px">
+  <StarIcon />
+</span>
 ```
 
----
+## Shadows for elevation, borders for structure
 
-## Shadows Over Borders
+Where a border exists only to create depth, replace it with layered transparent `box-shadow` values. Keep borders on dividers, separators, table cells and selected states. Keep them on form inputs too, whose boundary needs 3:1 non-text contrast under [accessibility](accessibility/forms.md). Focus rings belong to [accessibility](accessibility/focus-and-keyboard.md) as well.
 
-For **cards, buttons, containers** that use borders for depth — replace with layered `box-shadow`. Shadows use transparency, adapt to any background. Solid borders break on varied/image backgrounds.
+Forced-colors mode removes every `box-shadow`. Keep `border: 1px solid transparent` under a shadow ring so that mode still draws an edge.
 
-**Do NOT replace:** dividers (`border-b/t`), table cell boundaries, layout separators. Those stay as borders.
+### Shadow recipes
 
-### Light Mode — 3-Layer System
+#### Light mode
+
+Three layers. The first acts as a 1px ring, the second adds lift and the third ambient depth:
 
 ```css
 :root {
   --shadow-border:
-    0px 0px 0px 1px rgba(0, 0, 0, 0.06),      /* 1px ring */
-    0px 1px 2px -1px rgba(0, 0, 0, 0.06),      /* subtle lift */
-    0px 2px 4px 0px rgba(0, 0, 0, 0.04);       /* ambient depth */
+    0px 0px 0px 1px oklch(0 0 0 / 0.06),
+    0px 1px 2px -1px oklch(0 0 0 / 0.06),
+    0px 2px 4px 0px oklch(0 0 0 / 0.04);
   --shadow-border-hover:
-    0px 0px 0px 1px rgba(0, 0, 0, 0.08),
-    0px 1px 2px -1px rgba(0, 0, 0, 0.08),
-    0px 2px 4px 0px rgba(0, 0, 0, 0.06);
+    0px 0px 0px 1px oklch(0 0 0 / 0.08),
+    0px 1px 2px -1px oklch(0 0 0 / 0.08),
+    0px 2px 4px 0px oklch(0 0 0 / 0.06);
 }
 ```
 
-### Dark Mode — Single Ring
+#### Dark mode
 
-Layered depth shadows invisible on dark backgrounds. Simplify:
+Depth shadows vanish on dark backgrounds, so dark mode keeps one white ring:
 
 ```css
---shadow-border: 0 0 0 1px rgba(255, 255, 255, 0.08);
---shadow-border-hover: 0 0 0 1px rgba(255, 255, 255, 0.13);
+/* Redefine under the project's dark selector */
+--shadow-border: 0 0 0 1px oklch(1 0 0 / 0.08);
+--shadow-border-hover: 0 0 0 1px oklch(1 0 0 / 0.13);
 ```
 
-### Usage with Hover Transition
+#### Usage
 
 ```css
 .card {
+  border: 1px solid transparent; /* forced-colors mode drops box-shadow and paints this border */
   box-shadow: var(--shadow-border);
   transition-property: box-shadow;
   transition-duration: 150ms;
   transition-timing-function: ease-out;
 }
-.card:hover { box-shadow: var(--shadow-border-hover); }
+
+.card:hover {
+  box-shadow: var(--shadow-border-hover);
+}
 ```
 
-### When to Use
+The transparent border keeps the box the same size as the border it replaces. Gate the `:hover` rule as in [mobile web](mobile-web.md#1-hover-state-stuck-after-tap).
 
-| Shadows | Borders |
-|---------|---------|
-| Cards, containers with depth | Dividers between list items |
-| Buttons with bordered styles | Table cell boundaries |
-| Elevated elements (dropdowns, modals) | Form input outlines (accessibility) |
-| Elements on varied backgrounds | Hairline separators in dense UI |
-| Hover/focus states for lift |  |
+## Image outlines
 
----
-
-## Image Outlines
-
-Subtle `1px` outline with low opacity on images. Creates consistent depth alongside bordered/shadowed elements.
+Give content images a `1px` outline inset by `1px`. Use `oklch(0 0 0 / 0.1)` in light mode and `oklch(1 0 0 / 0.1)` in dark. Never use a palette near-black, a tinted neutral or the accent color, because the tint shows as a colored fringe on the image edge. Skip transparent artwork such as logos and illustrations.
 
 ```css
-/* Light */ img { outline: 1px solid rgba(0, 0, 0, 0.1); outline-offset: -1px; }
-/* Dark */  img { outline: 1px solid rgba(255, 255, 255, 0.1); outline-offset: -1px; }
+:root {
+  --image-outline: oklch(0 0 0 / 0.1);
+}
+/* Redefine under the project's dark selector */
+--image-outline: oklch(1 0 0 / 0.1);
+
+.content-image {
+  outline: 1px solid var(--image-outline);
+  outline-offset: -1px;
+}
 ```
 
 ```tsx
-// Tailwind
 <img
   className="outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
-  src={src} alt={alt}
+  src={src}
+  alt={alt}
 />
 ```
 
-**Why outline, not border?** `outline` doesn't affect layout — no added width/height. `outline-offset: -1px` keeps it inset.
+Never `outline-slate-*`, `outline-zinc-*`, `outline-neutral-*` or a palette near-black such as `#111827`.
 
----
+Use `outline` rather than `border` because it never changes the image's size. At `outline-offset: -1px` it sits just inside the edge and follows the corner radius.
 
-## Hit Area Extension
+## Touch: hover, tap highlight, overlay scroll
 
-When a visible control is smaller than 24px on desktop or 44px on touch, extend its hit area with a pseudo-element. Never let adjacent hit areas overlap.
+Hover-only styling sits behind the hover-capable pointer query, the default tap highlight is cleared where a control draws its own pressed state, and scrollable overlays contain their overscroll. The query and recipes live in [mobile web](mobile-web.md#1-hover-state-stuck-after-tap) ([tap flash](mobile-web.md#2-grayblue-flash-on-tap), [overscroll](mobile-web.md#6-pull-to-refresh-hijacks-scroll)).
 
-```css
-.small-control {
-  position: relative;
-  width: 20px; height: 20px;
-}
-.small-control::after {
-  content: "";
-  position: absolute;
-  top: 50%; left: 50%;
-  transform: translate(-50%, -50%);
-  width: 44px; height: 44px;
-}
-```
+## Before you finish
 
-```tsx
-// Tailwind
-<button className="relative size-5 after:absolute after:top-1/2 after:left-1/2 after:size-11 after:-translate-1/2">
-  <CheckIcon />
-</button>
-```
+| Detection | Fix |
+| --- | --- |
+| Padded parent and child with the same `rounded-*` or `border-radius` | Add the padding to the outer radius |
+| `box-shadow: 0 0 0 1px` ring with no `border` beside it | `border: 1px solid transparent` |
+| `outline-slate-*`, `outline-zinc-*` or a hex outline color on `img` | `outline-black/10` and `dark:outline-white/10` |
 
-If the extended area would overlap another interactive element, shrink the pseudo-element — but keep it as large as possible without collision.
+Touch checks (hover query, tap highlight, overscroll) are in [mobile web](mobile-web.md#never-ship). Icon checks are in [icons](icons.md#before-you-finish). Motion checks are in [motion](motion/index.md).
 
----
+## Reporting
 
-## Quick Reference
+**Severity.** `HIGH` breaks an interaction, as a hover state stuck on touch does. Two of the [cross-discipline review](../workflows/review.md)'s escalation triggers land in this polish domain and are `HIGH` on sight. One is motion that ignores `prefers-reduced-motion`, and the other is a state change carried by motion alone; both are judged under [motion](motion/index.md). `MEDIUM` is a visible inconsistency in surfaces, icons or motion. `LOW` is isolated polish.
 
-| Problem | Fix |
-|---------|-----|
-| Nested rounded elements look off | `outerRadius = innerRadius + padding` |
-| Icon looks off-center in button | Icon-side padding = text-side - 2px |
-| Hard borders on varied backgrounds | Layered `box-shadow` with transparency |
-| Images lack depth consistency | `outline: 1px solid rgba(0,0,0,0.1)` inset |
-| Small controls hard to tap | 24px minimum; prefer 44px on touch |
-| Play button triangle off-center | `margin-left: 2px` on SVG |
+**Verification.** Without a browser, read every state the component defines from the code, such as hover, pressed, selected, loading and empty. With one, walk each state. Report every check you could not run as `Not verified`.
+
+**Format.** Group findings under the principle each violates, ordered by severity, one row per root cause listing every location it appears in:
+
+| Severity | Location | Before | After | Why |
+| --- | --- | --- | --- | --- |
+
+`Location` is `path/to/file:line`. `Why` names the principle and the user impact.
+
+End with `Block` when any `HIGH` remains, `Approve` otherwise, leaving the rest in the table as work to do. Never `Approve` coverage you did not inspect. With nothing to report, state "No actionable UI-polish findings" and report verification.

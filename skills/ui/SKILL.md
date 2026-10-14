@@ -1,424 +1,106 @@
 ---
 name: ui
-description: Build accessible, performant, distinctive UIs. Use when implementing web interfaces, components, reviewing UI code, or working with animations/motion/easing/transitions. Includes references for animation (easing, springs, icon animations, enter/exit choreography), surfaces (concentric radii, optical alignment, shadows, image outlines), and creative patterns.
-allowed-tools: Read, Grep, Glob, Edit, Write
+description: Build, review, and polish web interfaces. Use for any frontend UI work — new screens, components, theming and design tokens, design systems from a spec, motion and animation, accessibility, typography, color, layout, interface copy, mobile web — and for reviewing UI code, building from Figma or a design image, stress-testing a component with worst-case data, rendering every state, exploring variants, or explaining how a site or effect was built.
 ---
 
-# UI Skill
+# UI
 
-## How to use
+One skill for interface work. This file holds the conventions every task needs and routes to the domain references and workflows; read only what the task reaches.
 
-- `/ui` – Apply constraints to UI work in this conversation
-- `/ui <file>` – Review file against constraints; output:
-  - Violation (exact line/snippet)
-  - Why it matters (1 sentence)
-  - Concrete fix (code-level)
+## Modes
 
----
+| Invocation | Does | Read |
+| --- | --- | --- |
+| `/ui` or any UI task | Build or edit UI under these rules | This file, then the references the task touches |
+| `/ui review [file\|component\|branch\|PR]` | Cross-discipline review: accessibility, layout, writing, typography, color, surfaces, motion | [workflows/review.md](workflows/review.md) |
+| `/ui motion-review [target]` | Strict review of animation code | [workflows/motion-review.md](workflows/motion-review.md) |
+| `/ui motion-audit` | Codebase-wide motion audit into prioritized, self-contained plans | [workflows/motion-audit.md](workflows/motion-audit.md) |
+| `/ui motion-opportunities` | Find what should animate and what shouldn't | [workflows/motion-opportunities.md](workflows/motion-opportunities.md) |
+| `/ui build-design <figma\|image>` | Build UI that matches a design, using project tokens and components | [workflows/build-design.md](workflows/build-design.md) |
+| `/ui stress-test <component>` | Render worst-case data and every reachable scenario; report what broke | [workflows/stress-test.md](workflows/stress-test.md) |
+| `/ui states <component>` | Render every state on a throwaway page with a switcher | [workflows/states.md](workflows/states.md) |
+| `/ui variants <component>` | Build several genuinely different versions and pick one | [workflows/variants.md](workflows/variants.md) |
+| `/ui explain <url\|image>` | Explain how a site, effect, or animation was built | [workflows/explain.md](workflows/explain.md) |
 
-## Philosophy
+## Precedence
 
-- **Taste over defaults** – Every choice intentional; no auto-pilot
-- **Avoid AI slop** – No Inter/Roboto/Arial, no purple-on-white gradients, no cookie-cutter layouts
-- **Context-appropriate** – Match aesthetic to purpose/audience; no one-size-fits-all
-- **Bold direction** – Commit to an extreme (brutalist, maximalist, minimal, editorial, etc.) and execute with precision
+1. **The project's system wins.** A `GUI.md`, `DESIGN.md`, brand spec, or established theme and component library decides values; the Graphical skills own projects with a `GUI.md`. Match the project's fonts, tokens, density, and motion language. A deliberate, consistent project convention is a preference, not a finding.
+2. **Domain references** decide where the project is silent: exact values for motion, surfaces, type, color, layout, accessibility, copy.
+3. **Aesthetic direction** below applies only when choosing a new direction with no system to follow.
 
----
+Accessibility requirements outrank polish everywhere: a polish finding never outranks a broken interaction.
+
+## Before Building
+
+- Locate the theme, mode mechanism, shared components, and a nearby example before choosing any style. Finish with the existing vocabulary; name a gap instead of inventing a value. → [theming](references/theming.md)
+- Build the smallest complete interface: a clear title, useful content, the needed actions. Every eyebrow, subtitle, badge, and helper line must carry information or enable an action. → [interface judgment](references/interface-judgment.md)
 
 ## Stack
 
-- **CSS**: Tailwind defaults; extend sparingly
-- **Class logic**: `cn` utility (clsx + tailwind-merge)
-- **Animation**: `motion/react` for JS-driven; CSS for simple transitions
-- **Primitives**: Radix / Base UI / React Aria – never mix systems
-- **Icons**: Lucide, Heroicons, or project-specific; icon-only buttons need `aria-label`
+- **CSS**: Tailwind defaults; extend through theme tokens, sparingly. Prefer tokens over arbitrary values (`w-[347px]`); an arbitrary value is a structural decision (grid track, max-width) or a gap to name.
+- **Class logic**: `cn` (clsx + tailwind-merge). Name custom type utilities `type-*`; tailwind-merge treats unknown `text-*` as colors.
+- **Primitives**: one system per project — Radix, Base UI, or React Aria. Never mix.
+- **shadcn/ui**: in a project with `components.json`, the `shadcn` skill owns component APIs, composition, and CLI. Customize through theme variables and `cva` variants; call-site `className` is for layout. A library left in default styling means the theme was never applied.
+- **Animation**: CSS transitions first; `motion/react` when a gesture, layout animation, or spring needs it. → [motion](references/motion/index.md)
+- **Icons**: the project's icon library; `currentColor`; icon-only buttons need an accessible name. → [icons](references/icons.md)
+- **Libraries**: before hand-rolling a toast, command menu, OTP input, virtualizer, or drag and drop, check [libraries](references/libraries/index.md).
 
-### Tailwind Data Attribute Styling
+### Data Attributes for Conditional Styles
 
-Use data attributes for conditional styling instead of `classnames` object syntax. Data attributes have higher specificity, making style precedence predictable.
+Style state through data attributes rather than `cn` object syntax: a base style plus an attribute override is order-independent.
 
 ```tsx
-// BAD: cn/clsx object - order-dependent, verbose
-<div className={cn({
-  'bg-blue-500': !isActive,
-  'bg-red-500': isActive,
-})} />
+// order-dependent, verbose
+<div className={cn({ 'bg-blue-500': !isActive, 'bg-red-500': isActive })} />
 
-// GOOD: data attributes - base style + conditional override
-<div
-  className="bg-blue-500 data-[active]:bg-red-500"
-  data-active={isActive ? '' : undefined}
-/>
+// base style + conditional override
+<div className="bg-blue-500 data-[active]:bg-red-500" data-active={isActive ? '' : undefined} />
 ```
 
-**Caveat with `group`:** `group-data-*` selectors affect all descendants. Use unique attribute names if children have the same states as parents.
-
----
-
-## Interactions
-
-### Keyboard
-
-- **MUST**: Full keyboard support per [WAI-ARIA APG](https://www.w3.org/WAI/ARIA/apg/patterns/)
-- **MUST**: Visible focus rings (`:focus-visible`); group with `:focus-within`
-- **MUST**: Manage focus (trap, move, return) per APG patterns
-- **MUST**: Focusable elements in sequential lists navigable with ↑↓ arrow keys
-- **SHOULD**: Sequential list items deletable with ⌘/Ctrl+Backspace
-
-### Targets & Input
-
-- **MUST**: Hit target ≥24px (mobile ≥44px); expand hit area if visual <24px
-- **MUST**: Mobile `<input>` font-size ≥16px (prevents iOS zoom)
-- **MUST**: `touch-action: manipulation` to prevent double-tap zoom
-- **NEVER**: Disable browser zoom
-
-### Forms
-
-- **MUST**: Input prefix/suffix icons absolutely positioned with padding; clicking them focuses input
-- **MUST**: Hydration-safe inputs (no lost focus/value)
-- **MUST**: Loading buttons show spinner + keep original label
-- **MUST**: Enter submits text input; ⌘/Ctrl+Enter submits `<textarea>`
-- **MUST**: Keep submit enabled until request starts; then disable + spinner + idempotency key
-- **MUST**: Accept free text and validate after; allow submitting incomplete forms
-- **MUST**: Errors inline next to fields; on submit, focus first error
-- **MUST**: `autocomplete` + meaningful `name`; correct `type` and `inputmode`
-- **MUST**: Warn on unsaved changes before navigation
-- **MUST**: Compatible with password managers & 2FA; allow pasting one-time codes
-- **MUST**: Trim values; handle trailing spaces
-- **MUST**: No dead zones on checkboxes/radios; label+control share one hit target
-- **SHOULD**: Disable spellcheck for emails/codes/usernames
-- **SHOULD**: Placeholders show example pattern (e.g., `+1 (123) 456-7890`)
-- **NEVER**: Block paste in `<input>/<textarea>`
-
-### State & Navigation
-
-- **MUST**: URL reflects state (filters/tabs/pagination). Prefer [nuqs](https://nuqs.dev)
-- **MUST**: Back/Forward restores scroll
-- **MUST**: Links use `<a>/<Link>`; Cmd/Ctrl/middle-click works
-- **MUST**: `AlertDialog` for destructive actions; or provide Undo window
-
-### Feedback
-
-- **MUST**: Toggles take effect immediately; no confirmation
-- **MUST**: Polite `aria-live` for toasts/inline validation
-- **SHOULD**: Optimistic UI; reconcile on response; rollback + error on failure
-- **SHOULD**: Ellipsis (`…`) for options opening follow-ups ("Rename…") and loading ("Saving…")
-- **SHOULD**: Display feedback relative to trigger (inline checkmark, not toast)
-
-### Touch/Drag/Scroll
-
-- **MUST**: Generous targets; clear affordances
-- **MUST**: Delay first tooltip in group; subsequent peers no delay
-- **MUST**: `overscroll-behavior: contain` in modals/drawers
-- **MUST**: During drag: disable text selection; `inert` on dragged elements
-- **MUST**: Interactive elements disable `user-select` for inner content
-- **MUST**: Decorative elements disable `pointer-events`
-- **MUST**: Hover states use `@media (hover: hover)` to avoid flash on touch
-- **MUST**: `muted` + `playsinline` on `<video>` for iOS auto-play
-- **MUST**: Disable native `touch-action` for custom pan/zoom gestures
-- **MUST**: Replace iOS tap highlight (`-webkit-tap-highlight-color: transparent`) with appropriate alternative
-- **MUST**: Nested menus use prediction cone to prevent accidental closure
-
-### Autofocus
-
-- **SHOULD**: Autofocus on desktop with single primary input; rarely on mobile (avoids layout shift)
-
----
-
-## Animation
-
-### Core Rules
-
-- **NEVER**: Add animation unless explicitly requested or it clarifies cause/effect
-- **MUST**: Honor `prefers-reduced-motion` (provide reduced variant)
-- **MUST**: Animations interruptible and input-driven (avoid autoplay)
-- **MUST**: Correct `transform-origin` (motion starts where it "physically" should)
-- **MUST**: Theme switching should not trigger transitions
-- **MUST**: Looping animations pause when off-screen
-- **SHOULD**: Duration ≤200ms for interactions to feel immediate
-- **SHOULD**: Animation values proportional to trigger size (scale from ~0.96, not 0→1; never scale(0))
-- **SHOULD**: `initial={false}` on `AnimatePresence` for elements in default state — skip enter animation on first render
-- **SHOULD**: Frequent/low-novelty actions avoid extraneous animations
-- **SHOULD**: `scroll-behavior: smooth` for in-page anchors with appropriate offset
-
-### Performance Tiers
-
-| Tier | Properties | Notes |
-|------|------------|-------|
-| S | `transform`, `opacity` | Compositor-only; no layout/paint |
-| A | `filter`, `clip-path` | Compositor with caveats |
-| B | `background-color`, `box-shadow` | Paint only; no layout |
-| F | `width`, `height`, `top`, `left`, `padding`, `margin` | Triggers layout; avoid |
-
-- **MUST**: Animate only S/A tier props; avoid F tier
-- **SHOULD**: Use `motion/react` over manual CSS for complex animations (auto-optimizes)
-- **NEVER**: Animate large blur/backdrop surfaces
-- **NEVER**: Use `will-change` outside active animations
-
-### Motion Choreography
-
-- **SHOULD**: Spring physics for interactive elements: `type: "spring", stiffness: 100, damping: 20` — no linear easing
-- **MUST**: Continuous animations (magnetic hover, cursor tracking) use `useMotionValue`/`useTransform` — never `useState` for per-frame updates
-- **SHOULD**: Staggered entrances via `staggerChildren` or CSS `animation-delay` cascade; parent+children must share same client component tree
-- **SHOULD**: Layout transitions via `layout`/`layoutId` for reorder, resize, shared-element animation
-- **SHOULD**: Glassmorphism done right: `backdrop-blur` + `border-white/10` + `shadow-[inset_0_1px_0_rgba(255,255,255,0.1)]` — not just blur alone
-
----
-
-## Layout
-
-- **MUST**: Use `h-dvh` (not `h-screen`) for full-height layouts
-- **MUST**: Respect safe areas (`env(safe-area-inset-*)`)
-- **MUST**: Avoid unwanted scrollbars; fix overflows
-- **MUST**: Deliberate alignment to grid/baseline/edges
-- **MUST**: Verify mobile, laptop, ultra-wide (simulate at 50% zoom)
-- **MUST**: Use `size-*` for square elements (not `w-* h-*`)
-- **SHOULD**: Optical alignment; ±1px when perception beats geometry
-- **SHOULD**: Balance icon/text lockups (stroke/weight/size/spacing/color)
-- **NEVER**: Use arbitrary Tailwind values (`w-[347px]`); prefer design tokens
+`group-data-*` matches every descendant; give nested groups distinct attribute names when children share the parent's states.
 
 ### Z-Index Scale
 
-Use fixed scale; no arbitrary values:
+Fixed tiers for app chrome: `z-0` base, `z-10` raised (cards, dropdown anchors), `z-20` sticky headers. Overlay components (dialog, popover, tooltip, toast) own their stacking; leave their `z-index` alone.
 
-```
-z-0    base
-z-10   raised (cards, dropdowns)
-z-20   sticky headers
-z-30   overlays/backdrops
-z-40   modals/dialogs
-z-50   tooltips/popovers
-```
+## Aesthetic Direction
 
----
+When there is no system to follow and the task is to choose one:
 
-## Typography
-
-### Body Text
-
-- **MUST**: Body text 15–25px; fine-tune per font (visual size varies at same px)
-- **MUST**: `line-height: 1.20–1.45` (unitless); narrower columns tighter, wider columns looser
-- **MUST**: Line length 45–90 characters; constrain with `max-width` on content containers
-- **MUST**: `-webkit-text-size-adjust: 100%` to prevent iOS landscape resizing
-- **SHOULD**: `-webkit-font-smoothing: antialiased`
-- **SHOULD**: `text-rendering: optimizeLegibility`
-- **SHOULD**: Dark gray body text over pure black on screens (projected light makes #000 harsh)
-- **SHOULD**: CSS `clamp()` for fluid sizing
-- **SHOULD**: Subset fonts; avoid weights below 400
-
-### Headings
-
-- **MUST**: `text-balance` for headings; `text-pretty` for body
-- **MUST**: Limit to 2–3 heading levels max
-- **MUST**: Minimal size increase from body (try +1–2px, not 2x)
-- **MUST**: Font weight should not change on hover/selected (prevents layout shift)
-- **SHOULD**: Bold headings, not italic (more contrast, easier to read)
-- **SHOULD**: Medium headings: font weight 500–600
-- **SHOULD**: Don't center headings (left-aligned is almost always correct)
-- **SHOULD**: Suppress hyphenation in headings
-- **NEVER**: Underline headings
-
-### Emphasis & Formatting
-
-- **MUST**: Bold and italic are mutually exclusive — never combine
-- **MUST**: Sans-serif: skip italic, use bold only (sans italic is too subtle)
-- **MUST**: Use sparingly — if everything is emphasized, nothing is
-- **MUST**: All-caps only for <1 line (labels, short headings); always add `letter-spacing: 0.05em–0.12em`
-- **MUST**: Prefer `text-transform: uppercase` over typing in caps
-- **MUST**: Always enable kerning (`font-feature-settings: "kern"`)
-- **MUST**: Reserve color for clickable elements — colored non-link text confuses users
-- **NEVER**: Underline text (except hyperlinks)
-- **NEVER**: Bold or italicize entire paragraphs
-
-### Punctuation & Special Characters
-
-- **MUST**: Use ellipsis character `…` (not `...`); no extra space before it
-- **MUST**: Curly quotes `“` `”` `‘` `’` — never straight quotes in rendered UI text
-- **MUST**: Curly apostrophes pointing downward (`'`); watch word-initial (`'70s`, `rock 'n' roll`)
-- **MUST**: Non-breaking spaces: `10&nbsp;MB`, `⌘&nbsp;+&nbsp;K`, brand names
-- **MUST**: En dash `–` for ranges (1–10, pages 3–5); em dash `—` for sentence breaks
-- **MUST**: One space after punctuation, never two
-- **MUST**: `tabular-nums` for data/comparisons
-- **SHOULD**: Avoid widows/orphans
-- **NEVER**: Approximate dashes with `--` or `---`; use proper `–` / `—`
-
-### Spacing & Paragraphs
-
-- **MUST**: Paragraph spacing via `margin` (50–100% of body size), not extra line breaks
-- **SHOULD**: First-line indent OR paragraph spacing — never both
-- **SHOULD**: `text-indent` for first-line indents (1–4x body size), not spaces/tabs
-
----
-
-## Content & Accessibility
-
-- **MUST**: `<title>` matches current context
-- **MUST**: Skeletons mirror final content (avoid CLS)
-- **MUST**: Design empty/sparse/dense/error states
-- **MUST**: No dead ends; always offer next step/recovery
-- **MUST**: Empty states must offer one clear action
-- **MUST**: Redundant status cues (not color-only); icons have text labels
-- **MUST**: `scroll-margin-top` on headings; "Skip to content" link; hierarchical `<h1–h6>`
-- **MUST**: Resilient to user-generated content (short/avg/very long)
-- **MUST**: Locale-aware dates/times/numbers/currency (`Intl.DateTimeFormat`, `Intl.NumberFormat` — never hardcoded formats)
-- **MUST**: Accurate `aria-label`; decorative elements `aria-hidden`
-- **MUST**: Prefer native semantics (`button`, `a`, `label`, `table`) before ARIA
-- **MUST**: Images use `<img>` (screen readers, right-click copy)
-- **MUST**: HTML illustrations have explicit `aria-label`
-- **MUST**: Gradient text unset gradient on `::selection`
-- **SHOULD**: Inline help first; tooltips last resort
-- **SHOULD**: Tooltips triggered by hover should not contain interactive content
-- **SHOULD**: SVG favicon with `<style>` for `prefers-color-scheme`
-- **NEVER**: Disabled buttons with tooltips (not in tab order)
-
----
-
-## Performance
-
-- **MUST**: Track and minimize re-renders (React DevTools/React Scan)
-- **MUST**: Profile with CPU/network throttling
-- **MUST**: Batch layout reads/writes; avoid unnecessary reflows
-- **MUST**: Mutations (`POST/PATCH/DELETE`) target <500ms
-- **MUST**: Virtualize large lists (e.g., `virtua`)
-- **MUST**: Preload only above-the-fold images; lazy-load the rest
-- **MUST**: Prevent CLS from images (explicit dimensions or reserved space)
-- **MUST**: On iOS, limit auto-playing videos; pause/unmount off-screen videos
-- **SHOULD**: Test iOS Low Power Mode and macOS Safari
-- **SHOULD**: Measure without extensions that skew runtime
-- **SHOULD**: Prefer uncontrolled inputs; make controlled loops cheap
-- **SHOULD**: Bypass React render cycle with refs for real-time DOM commits
-- **SHOULD**: Detect and adapt to hardware/network capabilities ([react-adaptive-hooks](https://github.com/GoogleChromeLabs/react-adaptive-hooks))
-- **NEVER**: Large `blur()` values on `filter`/`backdrop-filter`
-- **NEVER**: Scale/blur filled rectangles (causes banding); use radial gradients
-- **MUST**: Grain/noise texture filters: fixed pseudo-element only, `pointer-events-none`, never on scrolling containers
-- **MUST**: Perpetual/infinite animations: isolate in own memoized leaf component — never re-render parent
-
----
-
-## Dark Mode & Theming
-
-- **MUST**: `color-scheme: dark` on `<html>` for dark themes (fixes scrollbar, native inputs, system dialogs)
-- **MUST**: `<meta name="theme-color">` matches page background; update on theme switch
-- **MUST**: Native `<select>`: set explicit `background-color` and `color` (Windows dark mode renders broken defaults)
-- **MUST**: Theme switching should not trigger transitions (disable transitions during switch, re-enable after paint)
-- **MUST**: Inputs with `value` need `onChange` (or `defaultValue` for uncontrolled) — prevents hydration mismatch
-- **SHOULD**: Guard date/time rendering against hydration mismatch (server vs client locale); use `suppressHydrationWarning` only where truly needed
-- **SHOULD**: Detect language via `Accept-Language` / `navigator.languages`, not IP geolocation
-
----
-
-## Copy & Microcopy
-
-- **MUST**: Active voice: "Install the CLI" not "The CLI will be installed"
-- **MUST**: Specific button labels: "Save API Key" not "Continue"
-- **MUST**: Error messages follow the 5-part anatomy (see below)
-
-### Error Message Anatomy
-
-Every error message should include, in order:
-
-| # | Element | Purpose | Example |
-|---|---------|---------|---------|
-| 1 | **Title** | Say what happened — clear, specific | "Unable to connect your account" |
-| 2 | **Reassurance** | Confirm what did work | "Your changes were saved, but…" |
-| 3 | **Cause** | Say why — technical cause in plain language | "…we could not connect due to a technical issue on our end." |
-| 4 | **Escape hatch** | Give a way out if stuck | "If the issue keeps happening, contact Customer Care." |
-| 5 | **Action** | Help them fix it — actionable next step | `[ Try Again ]` button |
-
-- Skip reassurance (#2) only when nothing succeeded
-- Primary action (#5) should always be present; secondary dismiss is optional
-- Never blame the user; own the failure ("we could not" not "you failed to")
-- **MUST**: Loading states end with `…`: "Saving…", "Loading…"
-- **SHOULD**: Title Case for headings/buttons (Chicago style)
-- **SHOULD**: Numerals for counts: "8 deployments" not "eight"
-- **SHOULD**: Second person; avoid first person
-- **SHOULD**: `&` over "and" where space-constrained
-- **SHOULD**: Ellipsis (`…`) for options opening follow-ups: "Rename…"
-
----
-
-## Design
-
-- **MUST**: Meet contrast – prefer [APCA](https://apcacontrast.com/) over WCAG 2
-- **MUST**: Increase contrast on `:hover/:active/:focus`
-- **MUST**: Accessible charts (color-blind-friendly palettes)
-- **MUST**: Auth redirects happen server-side (no URL jank)
-- **SHOULD**: Layered shadows (ambient + direct)
-- **SHOULD**: Crisp edges via semi-transparent borders + shadows
-- **MUST**: Nested radii concentric: `outerRadius = innerRadius + padding` (when padding ≤ ~24px)
-- **SHOULD**: Hue consistency: tint borders/shadows/text toward bg hue
-- **SHOULD**: Subtle `1px` inset outline on images (`outline-black/10 dark:outline-white/10`) for consistent depth
-- **SHOULD**: Match browser UI to page background
-- **SHOULD**: Avoid gradient banding (use masks when needed)
-- **SHOULD**: Style `::selection`
-- **SHOULD**: Rules/borders: 0.5–1pt single solid lines only; try whitespace first before adding lines
-- **SHOULD**: Minimize table grid lines — let data be prominent, not the lines
-- **NEVER**: Add gratuitous gradients; use only when purposeful
-
----
-
-## Anti-Slop Aesthetics
-
-### Typography
-
-- **NEVER**: Default to Inter/Roboto/Arial — these signal "template"
-- **SHOULD**: Reach for distinctive sans: Geist, Outfit, Satoshi, Cabinet Grotesk, General Sans, Plus Jakarta Sans
-- **NEVER**: Serif fonts in dashboard/software UIs — serif is for editorial/marketing only
-
-### Color
-
-- **MUST**: Max 1 accent color per surface; saturation <80%
-- **NEVER**: AI purple (#7C3AED and friends), neon gradients, rainbow accent combos
-- **MUST**: Stick to one palette — don't mix warm and cool accents
-
-### Layout
-
-- **NEVER**: Centered hero section when content is high-variance (dashboards, feeds, tools)
-- **NEVER**: Generic 3-column equal card rows — force asymmetric, split, zigzag, or bento alternatives
-- **SHOULD**: Break symmetry intentionally — offset grids, varied card sizes, editorial whitespace
-
-### Content Realism
-
-- **NEVER**: Generic placeholder names — no John Doe, Jane Smith, Acme Corp, Nexus AI
-- **NEVER**: Fake round numbers ($99.99, 1,000 users, 99.9% uptime) — use organic-looking data
-- **NEVER**: AI filler words in UI copy: Elevate, Seamless, Unleash, Supercharge, Empower, Cutting-edge
-- **MUST**: Use `picsum.photos` or inline SVG placeholders — never broken Unsplash `source.unsplash.com` links
-- **MUST**: No emojis in UI code unless explicitly part of the design spec
-
-### Component Libraries
-
-- **NEVER**: Ship shadcn/ui components in default state — always customize radii, colors, shadows, and spacing to match the project's design language
-
----
-
-## Anti-Patterns (flag these in review)
-
-- `user-scalable=no` or `maximum-scale=1` — disables zoom
-- `onPaste` + `preventDefault` — blocks paste
-- `transition: all` — list properties explicitly
-- `outline-none` / `outline: none` without `:focus-visible` replacement
-- `<div>` / `<span>` with `onClick` — should be `<button>` or `<a>`
-- Images without `width`/`height` — causes CLS
-- Large arrays `.map()` without virtualization
-- Form inputs without `<label>` or `aria-label`
-- Icon buttons without `aria-label`
-- Hardcoded date/number formats — use `Intl.*`
-- `autoFocus` without clear justification
-- Arbitrary Tailwind values (`w-[347px]`) — prefer design tokens
-
----
+- **Commit to a direction** that fits the audience (editorial, minimal, brutalist, dense tool) and execute it precisely. Every choice deliberate.
+- **Type**: pick a face for the direction rather than defaulting to Inter, Roboto, or Arial; candidates include Geist, Outfit, Satoshi, Cabinet Grotesk, General Sans, Plus Jakarta Sans. Serif belongs to editorial and marketing, not dashboards. In an existing project, never propose a new typeface unless asked.
+- **Color**: one accent per surface, saturation under 80%, one temperature (warm or cool) across accents. Avoid the generic AI palette: violet `#7C3AED` and its neighbors, neon gradients, rainbow accent sets. Gradients only when they carry meaning.
+- **Layout**: high-variance content (dashboards, feeds, tools) gets no centered hero. Replace rows of three equal cards with asymmetric, split, or bento arrangements; break symmetry on purpose.
+- **Content realism**: real-sounding names and organic numbers, never John Doe, Acme Corp, $99.99, or 99.9% uptime. No filler verbs (Elevate, Seamless, Unleash, Supercharge, Empower, Cutting-edge). Placeholders from `picsum.photos` or inline SVG, never `source.unsplash.com`. No emoji in UI unless the design calls for it.
 
 ## Reference
 
-| File | When to Load |
-|------|-------------|
-| `references/animation.md` | Implementing or reviewing animations — easing curves, timing, springs, icon animations, enter/exit choreography |
-| `references/surfaces.md` | Building cards, buttons, containers — concentric radii, optical alignment, shadow systems, image outlines |
-| `references/creative-patterns.md` | Building distinctive/exploratory UI — navigation, layout, card, scroll, gallery, typography, micro-interactions |
+| Domain | Read when |
+| --- | --- |
+| [Interface judgment](references/interface-judgment.md) | Composing any screen: hierarchy, copy that earns its place, where each fact lives |
+| [Theming](references/theming.md) | Any styling in a project with tokens, a theme, or a component library; portals; state treatments |
+| [Design system](references/design-system.md) | Applying a brand spec or `DESIGN.md`; building a design system page |
+| [Motion](references/motion/index.md) | Whether and how to animate: purpose, easing, duration, springs, enter/exit, reduced motion |
+| [Motion recipes](references/motion/recipes.md) | Implementing a known pattern: press, popover, toast, stagger, icon swap, drawer |
+| [Motion standards](references/motion/standards.md) | The craft bar motion is reviewed against |
+| [Motion performance](references/motion/performance.md) | Jank, dropped frames, `will-change`, CSS vs WAAPI vs JS |
+| [Gestures and fluid motion](references/motion/gestures.md) | Drag, swipe, sheets, momentum, springs, materials and depth |
+| [Motion vocabulary](references/motion/vocabulary.md) | Naming an effect someone describes |
+| [Surfaces](references/surfaces.md) | Cards, buttons, containers: concentric radii, optical alignment, shadows vs borders, image outlines |
+| [Icons](references/icons.md) | Icon stroke, size, state, RTL |
+| [Color](references/color/index.md) | Palettes, ramps, semantic tokens, contrast, dark mode |
+| [Typography](references/typography/index.md) | Type scale, spacing, fonts, OpenType, wrapping, punctuation |
+| [Layout](references/layout/index.md) | Grouping, alignment, reading order, responsive structure, RTL, translation room |
+| [Accessibility](references/accessibility/index.md) | Keyboard, focus, ARIA, forms, screen readers, hit areas, motion and zoom |
+| [Writing](references/writing/index.md) | Labels, buttons, errors, empty states, confirmations, voice |
+| [Mobile web](references/mobile-web.md) | Making a web app feel native on phones: hover latching, tap highlight, viewport height, input zoom, safe areas |
+| [Libraries](references/libraries/index.md) | Picking a library for a frontend task; [Sonner](references/libraries/sonner.md) toasts |
+| [Creative patterns](references/creative-patterns.md) | Exploratory UI: navigation, layout, cards, scroll, galleries, micro-interactions |
 
-Distilled from:
-- [Vercel Web Interface Guidelines](https://github.com/vercel-labs/web-interface-guidelines)
-- [Butterick's Practical Typography](https://practicaltypography.com/)
-- [raunofreiberg/interfaces](https://github.com/raunofreiberg/interfaces)
-- [ui-skills.com](https://ui-skills.com)
-- [jakubkrehel/make-interfaces-feel-better](https://github.com/jakubkrehel/make-interfaces-feel-better)
+## Verify
+
+Report separately what was type-checked, what was exercised in tests, and what was seen rendered. Source inspection cannot establish rendered contrast, motion feel, or visual fidelity; render the change in each mode and state it touches, at mobile and desktop widths, including portalled surfaces. Say which checks you could not run.
+
+---
+
+Merged from Emil Kowalski's [skills](https://github.com/emilkowalski/skills) and Jakub Krehel's [skills](https://github.com/jakubkrehel/skills) (both MIT), the shadcn/ui skill's design guidance, Graphical's GUI guide, [Vercel's Web Interface Guidelines](https://github.com/vercel-labs/web-interface-guidelines), [Butterick's Practical Typography](https://practicaltypography.com/), [raunofreiberg/interfaces](https://github.com/raunofreiberg/interfaces), and [ui-skills.com](https://ui-skills.com).
