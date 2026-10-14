@@ -59,7 +59,7 @@ Use the theme's duration and easing tokens; controls and small popovers use the 
 
 - Native `<select>` gets an explicit `background-color` and `color`; Windows dark mode renders broken defaults.
 - An SVG favicon with a `<style>` block answering `prefers-color-scheme` stays visible on dark and light browser chrome.
-- Locale and mode values that differ between server and client cause hydration mismatches. An input with `value` needs `onChange` (otherwise use `defaultValue`), language comes from `Accept-Language` / `navigator.languages` (never IP geolocation), and auth redirects happen on the server so the URL never flashes.
+- Locale and mode values that differ between server and client cause hydration mismatches. A React input with `value` needs `onChange` (otherwise use `defaultValue`); in Solid, bind `value` and update through `onInput`. Language comes from `Accept-Language` / `navigator.languages` (never IP geolocation), and auth redirects happen on the server so the URL never flashes.
 
 ## Troubleshooting
 

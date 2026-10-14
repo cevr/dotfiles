@@ -1,5 +1,7 @@
 # Sonner
 
+React only. Solid projects use the primitive package's toast ([solid.md](solid.md#10-toasts)).
+
 [Sonner](https://sonner.emilkowal.ski) is the toast behind shadcn's `sonner` component, used in Radix and React Aria projects; Base UI projects use shadcn's `toast` instead, and the `shadcn` skill decides which. Install it through shadcn, then use this file for the toast API itself. When a task involves Sonner (wiring it up, rendering toasts, styling them, or fixing them) answer from this file first. Full prop tables for `<Toaster />` and `toast()` live in [sonner-api.md](sonner-api.md); read it when you need an exact prop name, type, or default.
 
 ## Setup

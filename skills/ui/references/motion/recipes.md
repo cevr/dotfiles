@@ -6,6 +6,8 @@ Curves are the `--ease-out`, `--ease-in-out` and `--ease-drawer` tokens defined 
 
 Every recipe that moves, scales or blurs ships with the [reduced-motion fallback](#reduced-motion-fallback). Drag-driven recipes (drag to dismiss, sheets with momentum) live in [gestures.md](gestures.md#drag-to-dismiss).
 
+Code is React with `motion/react`. In a Solid project the CSS recipes apply as written, and [solid.md](../solid.md#5-motion) maps each `motion/react` idiom (`AnimatePresence`, `initial={false}`, `whileTap`, `MotionConfig`, `useInView`, `useEffect`) to Solid 2.
+
 ## Interruptible state: transitions, not keyframes
 
 | | CSS transitions | CSS keyframe animations |
@@ -127,7 +129,7 @@ Scales out of its trigger, not out of thin air.
 
 ```css
 .popover {
-  transform-origin: var(--transform-origin); /* Base UI supplies this */
+  transform-origin: var(--transform-origin); /* Base UI React supplies this; @bible/ui does not (solid.md) */
   transition:
     opacity 200ms var(--ease-out),
     transform 200ms var(--ease-out);
@@ -261,7 +263,7 @@ Add drag and it becomes a gesture problem; see [drag to dismiss](gestures.md#dra
 
 - `ease` rather than `ease-out`, slightly slower than typical UI: Sonner reads as elegant partly because its motion is tuned to the component's personality rather than to the generic UI budget.
 - A toast exits through the edge it entered, which is what makes swipe-to-dismiss feel obvious.
-- If `@starting-style` isn't available, fall back to the mount flag:
+- If `@starting-style` isn't available, fall back to the mount flag (in Solid, set it in `onSettled`):
 
 ```jsx
 useEffect(() => { setMounted(true); }, []);
@@ -586,7 +588,7 @@ Marketing surfaces only. Don't do this to functional UI a user visits daily.
 }
 ```
 
-Trigger with `IntersectionObserver`, or Motion's `useInView` with `{ once: true, margin: "-100px" }`. Fire it once: re-animating on every scroll-by is an interface fighting its reader.
+Trigger with `IntersectionObserver`, or Motion's `useInView` (React) or `inView` (vanilla) with a `-100px` margin. Fire it once: re-animating on every scroll-by is an interface fighting its reader.
 
 ## Masking a crossfade that won't settle
 

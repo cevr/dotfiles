@@ -1,6 +1,6 @@
 # Creative Pattern Catalog
 
-Searchable catalog of high-end UI patterns. Use as inspiration and implementation reference when building distinctive interfaces.
+Searchable catalog of high-end UI patterns. Use as inspiration and implementation reference when building distinctive interfaces. Implementation hints name `motion/react` APIs; in Solid, map them through [solid.md](solid.md#5-motion).
 
 ---
 

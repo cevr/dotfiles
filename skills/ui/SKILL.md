@@ -1,11 +1,17 @@
 ---
 name: ui
-description: Build, review, and polish web interfaces. Use for any frontend UI work — new screens, components, theming and design tokens, design systems from a spec, motion and animation, accessibility, typography, color, layout, interface copy, mobile web — and for reviewing UI code, building from Figma or a design image, stress-testing a component with worst-case data, rendering every state, exploring variants, or explaining how a site or effect was built.
+description: Build, review, and polish web interfaces in JS/TS projects (React or Solid). Use for any frontend UI work — new screens, components, theming and design tokens, design systems from a spec, motion and animation, accessibility, typography, color, layout, interface copy, mobile web — and for reviewing UI code, building from Figma or a design image, stress-testing a component with worst-case data, rendering every state, exploring variants, or explaining how a site or effect was built.
 ---
 
 # UI
 
-One skill for interface work. This file holds the conventions every task needs and routes to the domain references and workflows; read only what the task reaches.
+One skill for web interface work. This file holds the conventions every task needs and routes to the domain references and workflows; read only what the task reaches.
+
+**Framework.** Rules are framework-neutral; code examples are React. Check `package.json` first:
+
+- `react`: examples apply as written.
+- `solid-js`: read [solid.md](references/solid.md) before writing code. It maps every React idiom here (components, `className`, refs and effects, AnimatePresence and `motion/react`, re-render advice, optimistic state, portals) to Solid 2.
+- Native Apple UI (SwiftUI, UIKit, AppKit) is out of scope; use `write-swift`. The design principles in [interface judgment](references/interface-judgment.md) still hold there.
 
 ## Modes
 
@@ -39,11 +45,12 @@ Accessibility requirements outrank polish everywhere: a polish finding never out
 
 - **CSS**: Tailwind defaults; extend through theme tokens, sparingly. Prefer tokens over arbitrary values (`w-[347px]`); an arbitrary value is a structural decision (grid track, max-width) or a gap to name.
 - **Class logic**: `cn` (clsx + tailwind-merge). Name custom type utilities `type-*`; tailwind-merge treats unknown `text-*` as colors.
-- **Primitives**: one system per project — Radix, Base UI, or React Aria. Never mix.
-- **shadcn/ui**: in a project with `components.json`, the `shadcn` skill owns component APIs, composition, and CLI. Customize through theme variables and `cva` variants; call-site `className` is for layout. A library left in default styling means the theme was never applied.
-- **Animation**: CSS transitions first; `motion/react` when a gesture, layout animation, or spring needs it. → [motion](references/motion/index.md)
+- **Primitives**: one system per project, never mixed. React: Radix, Base UI, or React Aria. Solid: the project's primitive package (e.g. `@bible/ui`, Base UI ported to Solid 2).
+- **shadcn/ui** (React): in a project with `components.json`, the `shadcn` skill owns component APIs, composition, and CLI. Customize through theme variables and `cva` variants; call-site `className` is for layout. A library left in default styling means the theme was never applied.
+- **Animation**: CSS transitions first. Then `motion/react` (React) or WAAPI / Motion's `animate()` (Solid) when a gesture, layout animation, or spring needs it. → [motion](references/motion/index.md)
 - **Icons**: the project's icon library; `currentColor`; icon-only buttons need an accessible name. → [icons](references/icons.md)
-- **Components**: before hand-rolling any component (toast, command menu, OTP input, chart, empty state), defer to the `shadcn` skill: the project's installed components first, then `shadcn search` across registries.
+- **Components**: before hand-rolling any component (toast, command menu, OTP input, chart, empty state), use what the project has. React: defer to the `shadcn` skill, installed components first, then `shadcn search` across registries. Solid: the project's primitive package first; [solid.md](references/solid.md) covers what to do when it lacks one.
+- **Component APIs**: compound components, explicit variants over boolean props, children over render props, and shared state through context. The `composition-patterns` skill holds those rules with React examples; [solid.md](references/solid.md) translates them to Solid 2.
 
 ### Data Attributes for Conditional Styles
 
@@ -56,6 +63,8 @@ Style state through data attributes rather than `cn` object syntax: a base style
 // base style + conditional override
 <div className="bg-blue-500 data-[active]:bg-red-500" data-active={isActive ? '' : undefined} />
 ```
+
+In Solid, `data-active={active()}` does the same, since `false` removes the attribute; that is also why boolean `aria-*` attributes need `"true"`/`"false"` strings ([solid.md](references/solid.md#3-classes-attributes-styling)).
 
 `group-data-*` matches every descendant; give nested groups distinct attribute names when children share the parent's states.
 
@@ -94,7 +103,8 @@ When there is no system to follow and the task is to choose one:
 | [Accessibility](references/accessibility/index.md) | Keyboard, focus, ARIA, forms, screen readers, hit areas, motion and zoom |
 | [Writing](references/writing/index.md) | Labels, buttons, errors, empty states, confirmations, voice |
 | [Mobile web](references/mobile-web.md) | Making a web app feel native on phones: hover latching, tap highlight, viewport height, input zoom, safe areas |
-| [Sonner](references/sonner.md) | Toast API, styling, and troubleshooting once shadcn has installed Sonner; exact props in [sonner-api.md](references/sonner-api.md) |
+| [Solid](references/solid.md) | Any code in a Solid project: React-to-Solid 2 mapping for components, styling, refs, motion, async state, portals, composition |
+| [Sonner](references/sonner.md) | React toasts: API, styling, and troubleshooting once shadcn has installed Sonner; exact props in [sonner-api.md](references/sonner-api.md) |
 | [Creative patterns](references/creative-patterns.md) | Exploratory UI: navigation, layout, cards, scroll, galleries, micro-interactions |
 
 ## Verify

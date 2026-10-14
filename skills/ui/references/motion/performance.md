@@ -154,6 +154,8 @@ ref.current.style.transform = `translateY(${nextY}px)`;
 
 Look for state updates inside `requestAnimationFrame`, `pointermove`, `scroll` or drag handlers. Continuous effects such as magnetic hover and cursor tracking belong in motion values (`useMotionValue`, `useTransform`, `useSpring`) for the same reason.
 
+Solid has no re-render, but a per-frame signal write still queues a flush and updates every subscriber. Write the style directly there too ([solid.md](../solid.md#2-reactivity-what-react-performance-advice-means-here)).
+
 ## Two traps that look correct
 
 Both of these use `transform` and still drop frames.
@@ -218,7 +220,7 @@ Framer Motion gives you things CSS can't: real springs, shared layout animations
 
 ## Page-level costs
 
-- A perpetual animation (spinner, marquee, ambient gradient) lives in its own memoized leaf component, so its updates never re-render the tree around it.
+- A perpetual animation (spinner, marquee, ambient gradient) runs in CSS where it can. In React, a JS-driven one lives in its own memoized leaf component, so its updates never re-render the tree around it.
 - Never scale or blur a large filled rectangle; paint the glow or vignette with a radial gradient.
 - Grain or noise texture is a `position: fixed`, `pointer-events: none` pseudo-element on the page, never on a scrolling container.
 - Mutations (POST/PATCH/DELETE) target under 500ms; past that, show optimistic state or progress.
@@ -244,7 +246,7 @@ Work down this list. It's ordered by how often each one is the cause:
 
 1. **Which properties animate?** Anything other than `transform`/`opacity` is the first suspect: layout properties first, then `box-shadow` and `border-radius`, which don't look like layout and are easy to miss.
 2. **Does the jank coincide with the page being busy?** Navigation, fetching, hydration, a long task. Move the animation to CSS or WAAPI.
-3. **Is React re-rendering per frame?** State updates in rAF, pointer or scroll handlers.
+3. **Is the framework doing work per frame?** React state updates, or Solid signal writes with many subscribers, in rAF, pointer or scroll handlers.
 4. **Does it get worse as content grows?** An inherited CSS variable, or too many nodes animating at once.
 5. **Is a CSS variable animated at all?** Directly, or through Motion's `x`/`y`/`scale`.
 6. **Any animated `blur()` above 20px?**

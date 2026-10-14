@@ -78,9 +78,9 @@ Walk down; stop at the first that fits.
 
 CSS animations beat JS under load: they can run off the main thread, while `requestAnimationFrame`-based animation drops frames while the browser loads, scripts or paints. Use CSS for predetermined motion and JS for dynamic, interruptible motion. The thread model and the exceptions are in [performance.md](performance.md#where-it-runs).
 
-With a motion library, import from `"motion/react"` when `motion` is installed, or `"framer-motion"` when that is. Where both exist, follow the imports the component or its nearest peers already use.
+With a motion library in React, import from `"motion/react"` when `motion` is installed, or `"framer-motion"` when that is. Where both exist, follow the imports the component or its nearest peers already use. Solid uses the framework-agnostic `motion` exports ([solid.md](../solid.md#5-motion)).
 
-If the task needs a *component* rather than an animation (a toast, a drawer, a command menu, a dropdown), stop and get it from shadcn (the `shadcn` skill: installed components, then registry search). Hand-rolling those is how you end up with a `<div>` dropdown and no focus management.
+If the task needs a *component* rather than an animation (a toast, a drawer, a command menu, a dropdown), stop and get it from the project's components: in React the `shadcn` skill (installed components, then registry search), in Solid the primitive package. Hand-rolling those is how you end up with a `<div>` dropdown and no focus management.
 
 ## 4. Pick the properties
 
@@ -208,7 +208,7 @@ Springs maintain velocity when interrupted; CSS keyframes restart from zero. Tha
 - **Exits are shorter and smaller than enters.** Exit content with `opacity`, `4px` of blur and a fixed `-12px` `translateY` over `150ms` with `ease-out`, never the full container height. Remove the element instantly where motion adds no information ([recipes](recipes.md#exits)).
 - **Surfaces that travel exit the way they entered.** Slide fully out only where the path carries meaning: a drawer or sheet closing, a toast swiped away, a card returning to its list, a side panel. Those leave along the edge they came from. A toast that slides in from the bottom leaves through the bottom; in-from-right and out-the-bottom feels disconnected. Symmetric paths are what make swipe-to-dismiss feel obvious.
 - **Asymmetric timing where the user is deciding.** Slow where the user is deciding, fast where the system responds. A hold-to-confirm press fills over `2s linear`; the release snaps back in `200ms ease-out`.
-- **Skip state animations on first render.** Set `initial={false}` on an `AnimatePresence` that wraps a state swap (icon swaps, toggles, tabs, segmented controls), so the default state does not animate in on mount. Never set it around an intentional entrance such as a staggered hero ([recipe](recipes.md#skip-animation-on-page-load)).
+- **Skip state animations on first render.** In React, set `initial={false}` on an `AnimatePresence` that wraps a state swap (icon swaps, toggles, tabs, segmented controls), so the default state does not animate in on mount. Never set it around an intentional entrance such as a staggered hero ([recipe](recipes.md#skip-animation-on-page-load)). In Solid, keep both states mounted and let CSS swap them, so nothing animates at mount ([solid.md](../solid.md#5-motion)).
 - **The opacity + height pair in entering and exiting lists has no formula.** When items enter and exit a list (like Family's drawer), the opacity change must work with the height animation. It is trial and error; adjust until it feels right.
 
 ## 10. Component principles

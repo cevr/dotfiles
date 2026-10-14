@@ -39,7 +39,7 @@ Flag these on sight, hard. Each row is also the self-check before handing off an
 | Animated `box-shadow` | `filter: drop-shadow(…)` |
 | Motion `x`/`y`/`scale` props on motion that plays while the page is busy | The full `transform` string |
 | `setProperty('--x', …)` on a parent driving child transforms | Set `transform` on the element directly |
-| `setState` inside rAF, pointer, scroll or drag handlers | `ref.current.style` or a motion value |
+| `setState` (React) or a widely read signal write (Solid) inside rAF, pointer, scroll or drag handlers | A direct style write or a motion value |
 | Animated `blur()` above `20px` | Under `20px`; `2`–`5px` for a crossfade |
 | A press scale (`:active`, `active:scale-95`, `scale-90`, `whileTap`) other than `0.96` | `0.96` |
 | `:active` scale with no `:disabled` exclusion | `enabled:active:` or `:not(:disabled):active` |
@@ -50,7 +50,7 @@ Flag these on sight, hard. Each row is also the self-check before handing off an
 | Ungated `:hover` motion (plain CSS, or Tailwind 3 `hover:`) | `@media (hover: hover) and (pointer: fine)` |
 | Color transitions plus a theme toggle with no `disableTransitionOnChange` or override | The [theme-switch suppression recipe](recipes.md#suppress-transitions-on-theme-switch) |
 | `will-change: all`, or `will-change` on an element that never animates | Name the animated property or delete it |
-| `AnimatePresence` around a state swap with no `initial={false}`, or `initial={false}` around an intentional entrance | `initial={false}` on state swaps only |
+| React: `AnimatePresence` around a state swap with no `initial={false}`, or `initial={false}` around an intentional entrance | `initial={false}` on state swaps only |
 | State change carried by motion alone | Add a static cue: color, icon or label |
 | Symmetric enter/exit timing on a press-and-release or hold interaction | Slow the deliberate phase, snap the response (hold: `2s linear`, release: `200ms ease-out`) |
 | Exit as long or as large as the enter | Subtle exit: `150ms`, `-12px`, `4px` blur, `ease-out` |
