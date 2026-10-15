@@ -7,7 +7,7 @@ Read `~/.claude/skills/architecture-loop/safety.md` and `<workspace>/NORTH_STAR.
 
 Never stop to ask the owner, and never end your work waiting for an answer. When a question comes up, read the principles in `~/Developer/personal/dotfiles/principles/` that bear on it, decide by them and `NORTH_STAR.md`, write "decided by <principle>" in your report, and go on. Report only the owner classes in the architecture-loop skill's Autonomy as owner questions, each with your recommendation, and keep working on the rest.
 
-Pass-<N> apply batch `p<N>-<batch>`. Workspace <workspace path> (branch p<N>-<batch>, base main <hash>). Read AGENTS.md (or CLAUDE.md), CONTEXT.md and NORTH_STAR.md there first. The main checkout <main checkout> stays untouched. Apply <item ids> from <report paths>; re-verify each receipt in the source first, since line numbers move. Reject a finding that does not hold, and say why.
+Pass-<N> apply batch `p<N>-<batch>`. Workspace <workspace path> (branch p<N>-<batch>, base main <hash>). Read AGENTS.md (or CLAUDE.md), GLOSSARY.md (or CONTEXT.md) and NORTH_STAR.md there first. The main checkout <main checkout> stays untouched. Apply <item ids> from <report paths>; re-verify each receipt in the source first, since line numbers move. Reject a finding that does not hold, and say why.
 
 <Decisions the orchestrator already made, with their principle.>
 <Files other batches own: report a fix there as a decision for the orchestrator; leave the file unedited.>

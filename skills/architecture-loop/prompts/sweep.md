@@ -11,7 +11,7 @@ Never stop to ask the owner, and never end your work waiting for an answer. When
 
 Repo: <repo path>, branch main, HEAD <hash>. Edit, commit and create nothing in the repo; write only your report. Start only what your sweep's method names.
 
-Read first: AGENTS.md (or CLAUDE.md), CONTEXT.md, NORTH_STAR.md (whole: north stars, tiebreaks, owner rules, rejected), PRIOR_ART.md (the sources for your sweep, and Settled), and from <ledger path> its Decisions, Rejected, Owner questions, open Carried rows and the last pass's section; grep it for anything older. A done or rejected item returns only with a new receipt. Prior-art repos are at `okra repo path <slug>`.
+Read first: AGENTS.md (or CLAUDE.md), GLOSSARY.md (or CONTEXT.md), NORTH_STAR.md (whole: north stars, tiebreaks, owner rules, rejected), PRIOR_ART.md (the sources for your sweep, and Settled), and from <ledger path> its Decisions, Rejected, Owner questions, open Carried rows and the last pass's section; grep it for anything older. A done or rejected item returns only with a new receipt. Prior-art repos are at `okra repo path <slug>`.
 
 Goal: <the run's goal from the user, e.g. fewer concepts, less code, fewer files, every valuable feature kept>. Each candidate names the north star it serves, by its name in NORTH_STAR.md. A candidate that trades one north star for another, with no tiebreak that settles it, is an owner question, not a change. Owner questions are only the classes the architecture-loop skill reserves for the owner. Every other candidate carries a proposed decision and the principle (`~/Developer/personal/dotfiles/principles/`) behind it.
 
@@ -19,7 +19,7 @@ Pass <N-1> changed <`git diff --stat <prev base>..HEAD | tail -1`>. Weigh every 
 
 In flight, do not report: <batch: items>. Known open, report only with new evidence: <the ledger's open items, known flakes>. Carried, open (copied from the ledger's open `Carried` rows; confirm or close each with a receipt): <decision: files>. New evidence from live checks: <questions>.
 
-Vocabulary, used exactly: module, interface, depth, seam, adapter, leverage, locality, deletion test. A candidate is: a shallow module, a pass-through, one concept with two owners, a one-adapter seam with no guard, a single-caller export, dead code, a guard gap, a comment that tells history, a public export no test uses as its subject, or any code a north star's "breaks when" column describes.
+Vocabulary, used exactly: module, interface, depth, seam, adapter, leverage, locality, deletion test. A candidate is: a shallow module, a pass-through, one concept with two owners, a one-adapter seam with no guard, a single-caller export, dead code, a guard gap, a comment that tells history, a public export no test uses as its subject, any red flag in `~/.claude/skills/architecture-loop/agent-lens.md` (the architecture sweeps read it in full), or any code a north star's "breaks when" column describes.
 
 Find, with receipts:
 - Bugs: a concrete input or state that gives a wrong result, with file:line and the failure scenario, verified by reading the path end to end. When cheap, run a focused test or a scratch script under <pass dir>.
