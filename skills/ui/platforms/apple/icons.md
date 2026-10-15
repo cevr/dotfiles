@@ -54,7 +54,7 @@ Symbol effects are the platform's icon animation; they follow the [motion rules]
 | Ongoing activity until a condition ends | `.symbolEffect(.pulse, isActive: isWorking)`, `.variableColor`, `.rotate`, `.breathe` |
 | Drawing a symbol in or out (iOS 26+) | `.drawOn`, `.drawOff` |
 
-HIG: apply symbol animations judiciously, each with a clear purpose. A tab selection swaps instantly. `.symbolEffectsRemoved()` turns effects off for a subtree. Whether every effect honors Reduce Motion on its own is unverified; check with it on.
+HIG: apply symbol animations judiciously, each with a clear purpose. A tab selection swaps instantly. `.symbolEffectsRemoved()` turns effects off for a subtree. Symbol effects ignore Reduce Motion: with it on, bounce, pulse, variable color, rotate, breathe, wiggle, scale and replace all still animate (iOS 27), so gate them on `accessibilityReduceMotion`.
 
 ## RTL
 

@@ -24,7 +24,7 @@ Rule: [native controls first](../../references/accessibility/index.md#native-con
 | Grouping | `.accessibilityElement(children: .combine)` merges a row into one element; `.contain` keeps children but groups them; `.ignore` replaces them with your own label |
 | Headings | `.accessibilityAddTraits(.isHeader)`; `.accessibilityHeading(.h2)` for levels |
 | Window or screen title | `.navigationTitle(_:)`; on macOS the window title follows it |
-| Disabled | `.disabled(true)`: VoiceOver still reaches the control and reads it as dimmed, so the reason can sit in its hint or beside it (unverified wording) |
+| Disabled | `.disabled(true)` keeps the control an accessibility element and adds the `.notEnabled` trait, so the reason can sit in its hint or beside it |
 | Custom navigation | `.accessibilityRotor(_:entries:)` for a list of landmarks, errors or matches |
 
 Avoid `.onTapGesture` for anything that acts: it carries no button trait, no keyboard activation and no Voice Control name. Use `Button` with a custom `ButtonStyle`.
@@ -73,7 +73,7 @@ Rule: [forms](../../references/accessibility/forms.md).
 | Spelling and case | `.textInputAutocapitalization(.never)`, `.autocorrectionDisabled()` |
 | Return key | `.submitLabel(.send)`, `.search`, `.done`, `.next` |
 
-[Errors](../../references/accessibility/forms.md#error-messaging): SwiftUI has no invalid trait. Render the error `Text` under the field, attach it to the field with `.accessibilityHint(error)` so VoiceOver reads it with the field (unverified as the best carrier; `.accessibilityCustomContent` is the alternative), and on submit move `@FocusState` and `@AccessibilityFocusState` to the first invalid field.
+[Errors](../../references/accessibility/forms.md#error-messaging): SwiftUI has no invalid trait. Render the error `Text` under the field, attach it to the field with `.accessibilityHint(error)`, which lands on the field's own accessibility element so VoiceOver reads it with the field (`.accessibilityCustomContent` lands there too and is the alternative), and on submit move `@FocusState` and `@AccessibilityFocusState` to the first invalid field.
 
 ## Screen readers
 
@@ -103,7 +103,7 @@ Button(action: markDone) {
 .accessibilityLabel("Mark done")
 ```
 
-`.contentShape` is what makes padding and transparent pixels hit-testable; without it only drawn pixels respond. A decorative layer over controls takes `.allowsHitTesting(false)` and `.accessibilityHidden(true)`. A drag or swipe needs [a single-pointer alternative](../../references/accessibility/hit-areas.md#gestures-and-dragging): a visible button, or `.accessibilityAction(named: "Move up") { … }`. `List` `.swipeActions` appear as VoiceOver actions (unverified on every OS version).
+`.contentShape` is what makes padding and transparent pixels hit-testable; without it only drawn pixels respond. A decorative layer over controls takes `.allowsHitTesting(false)` and `.accessibilityHidden(true)`. A drag or swipe needs [a single-pointer alternative](../../references/accessibility/hit-areas.md#gestures-and-dragging): a visible button, or `.accessibilityAction(named: "Move up") { … }`. `List` `.swipeActions` appear as VoiceOver actions: custom actions on the row (checked on iOS 27; unverified on earlier versions).
 
 ## Motion and zoom
 

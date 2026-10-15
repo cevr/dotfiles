@@ -60,7 +60,7 @@ Box(
 )
 ```
 
-- `Modifier.dropShadow(shape, Shadow(radius, spread, offset, color, alpha))` and `Modifier.innerShadow` draw CSS-like shadows without a graphics layer, including spread. `Shadow.radius` is a blur radius, but its rendering is not guaranteed to match CSS pixel for pixel; match by eye (unverified).
+- `Modifier.dropShadow(shape, Shadow(radius, spread, offset, color, alpha))` and `Modifier.innerShadow` draw CSS-like shadows without a graphics layer, including spread. `Shadow.radius` goes to Android's `BlurMaskFilter`, which renders a Gaussian of σ ≈ 0.57 × radius where CSS uses σ = blur ÷ 2: for a CSS blur `b`, start at `radius ≈ 0.88b`.
 - `Modifier.shadow(elevation, shape, clip, ambientColor, spotColor)` is the elevation shadow; it clips by default when elevation is above zero.
 - `Modifier.border(width, color, shape)` draws inside the bounds, so the ring keeps the size. In dark theme, drop the depth layers and keep a white ring at `0.08`.
 - Keep the ring even where shadows render: a shadow-only edge disappears for low-vision users and on dark or busy backgrounds.

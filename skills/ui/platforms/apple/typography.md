@@ -43,7 +43,7 @@ Leave tracking alone on SF. The system font tracks itself at every size: `-0.43p
 | [Underlines](../../references/typography/index.md#underlines-from-the-font) | `.underline(pattern: .dot, color: .secondary)` | `.underlineStyle` attribute |
 | Start alignment | `.multilineTextAlignment(.leading)` (mirrors in RTL) | `.natural` alignment |
 | [Wrap deliberately](../../references/typography/index.md#wrap-deliberately) | No balance or orphan control on `Text`; `.fixedSize(horizontal: true, vertical: false)` keeps a label on one line | `NSParagraphStyle.lineBreakStrategy = .pushOut` keeps a lone word off the last line |
-| Hyphenation | Through an `AttributedString` paragraph style (unverified for `Text`) | `NSParagraphStyle.usesDefaultHyphenation` (iOS 15+) |
+| Hyphenation | None: `Text` ignores an `AttributedString` paragraph style's hyphenation; wrap a `UILabel` | `NSParagraphStyle.usesDefaultHyphenation` (iOS 15+) |
 | [Measure](../../references/typography/index.md#cap-the-measure) | `.frame(maxWidth: 640)` on the text column | `readableContentGuide` |
 | [Selectable text](../../references/typography/index.md#keep-useful-text-selectable) | `.textSelection(.enabled)`; `Text` is not selectable by default | `UITextView` with `isSelectable = true`, `isEditable = false` |
 | [Language and bidi](../../references/typography/index.md#language-and-bidi-behavior) | `\.locale` and `\.layoutDirection` environment; `.typesettingLanguage(_:)` for script-correct line height | `semanticContentAttribute` |

@@ -6,7 +6,7 @@ SwiftUI implementation of [layout](../../references/layout/index.md), with UIKit
 
 | Neutral value | Apple value | Notes |
 | --- | --- | --- |
-| Layout margin `16pt` | The system margin: `.padding()` with no length, `.scenePadding()`, `List`/`Form` row insets, UIKit `directionalLayoutMargins` | SwiftUI picks a "platform-specific default amount" for the platform and presentation context. On iPhone it renders as `16pt` (unverified per context). Pass an explicit length only for a deliberate design value. |
+| Layout margin `16pt` | The system margin: `.padding()` with no length, `.scenePadding()`, `List`/`Form` row insets, UIKit `directionalLayoutMargins` | SwiftUI picks a "platform-specific default amount" for the platform and presentation context. On iPhone it measures `16pt` at the root, in a sheet and inside a `List` row, as do `.scenePadding()`, the `List`/`Form` row insets and UIKit's layout margins (portrait). Pass an explicit length only for a deliberate design value. |
 | Breakpoint widths | Size classes: `horizontalSizeClass` / `verticalSizeClass`, `.compact` or `.regular` | HIG: decide by size class, never by device type or orientation, and consider every combination. |
 | Sidebar or tabs at a width | `NavigationSplitView` (collapses to a stack in compact width); `TabView` with `.tabViewStyle(.sidebarAdaptable)` (iOS 18+) | Keep functionality the same as the size class changes; change how much of it is visible. |
 | Controls inside safe area | The safe area is applied by default; only backgrounds opt out | |
@@ -69,8 +69,8 @@ var body: some View {
 
 ## Mirroring for RTL
 
-- `HStack`, `Alignment.leading` and `.padding(.leading)` mirror automatically. Hand-placed geometry (`.position`, `.offset(x:)`, `Path`, `Canvas`, `GeometryReader` math) is in absolute coordinates: check it under `.environment(\.layoutDirection, .rightToLeft)` in a preview (exact mirroring of `.offset` unverified).
-- `.flipsForRightToLeftLayoutDirection(true)` mirrors a custom image or shape whose meaning is directional. `.layoutDirectionBehavior(.fixed)` (iOS 17+) keeps a subtree in LTR, such as a media scrubber; `.mirrors` opts a shape in.
+- `HStack`, `Alignment.leading` and `.padding(.leading)` mirror automatically. So do `.offset(x:)`, `.position` and `Path` shapes: under RTL each lands at the mirrored point. `Canvas` drawing does not mirror. Check hand-placed geometry under `.environment(\.layoutDirection, .rightToLeft)` in a preview.
+- `.flipsForRightToLeftLayoutDirection(true)` mirrors a custom image or shape whose meaning is directional. `.layoutDirectionBehavior(.fixed)` (iOS 17+) keeps a subtree or shape in LTR, such as a media scrubber; shapes mirror without it.
 - Progress-like controls (`Slider`, `ProgressView`, `Gauge`) mirror on their own. Directional icon rules are in [Apple icons](icons.md#rtl).
 
 ## Peeking carousel

@@ -85,7 +85,7 @@ panel.transition(reduceMotion
 | Reduce Transparency | `@Environment(\.accessibilityReduceTransparency)` | `UIAccessibility.isReduceTransparencyEnabled`; `NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency` |
 | Increase Contrast | `@Environment(\.colorSchemeContrast) == .increased` | |
 
-Custom `withAnimation` and `.transition` code runs unchanged under Reduce Motion; branch it on the setting as in the popover above. System presentations adapt on their own; system materials under Reduce Transparency likely do too (unverified), while a custom translucent surface needs its own branch.
+Custom `withAnimation` and `.transition` code runs unchanged under Reduce Motion; branch it on the setting as in the popover above. System presentations adapt on their own; under Reduce Transparency system materials turn opaque and `.glassEffect()` nearly so, while a custom translucent surface stays translucent and needs its own branch.
 
 ## Gestures
 
@@ -119,7 +119,7 @@ Materials: `.background(.regularMaterial)` and its thinner and thicker siblings;
 
 - **Render-only modifiers** (`.offset`, `.scaleEffect`, `.rotationEffect`, `.opacity`, `.visualEffect`) change how a view draws, not its frame. `.frame`, `.padding` and alignment changes re-run layout every frame.
 - **Per-frame values**: animate with `withAnimation` or drive frames with `TimelineView(.animation)`, never with a `Timer` writing `@State`, which re-evaluates `body` on every tick. Keep a continuously animating view in a small leaf view.
-- **Where it runs**: UIKit and Core Animation animations, once committed, are rendered by the system's render server, so a busy main thread doesn't stall them. SwiftUI evaluates its animations in the app each frame, so a busy main thread hitches them (unverified as a general rule).
+- **Where it runs**: UIKit and Core Animation animations, once committed, are rendered by the system's render server, so a busy main thread doesn't stall them. SwiftUI hands simple `.offset`, `.scaleEffect` and `.frame` animations to Core Animation too; they ran through a 3s main-thread block (iOS 27). An animation that needs per-frame app code, such as a custom `Animatable` shape, stalls with the main thread, and so does the rest of its transaction.
 - **Shadows**: an animated `.shadow` re-renders every frame; in UIKit set `layer.shadowPath` so the shadow skips the offscreen pass.
 - **Rasterization hint, last**: `.drawingGroup()` flattens complex vector content into one offscreen render, the counterpart of the web's `will-change`; add it only once a recording shows the cost. `.geometryGroup()` (iOS 17) stops a parent's animated geometry from desyncing its children.
 - **Record**: Instruments' Animation Hitches and SwiftUI templates; `CADisplayLink` is the display-synced clock for hand-rolled per-frame work.

@@ -6,8 +6,8 @@ Jetpack Compose implementation of [layout](../../references/layout/index.md). Th
 
 | Neutral value | Material 3 value | Notes |
 | --- | --- | --- |
-| Spacing steps | Multiples of `4dp` (unverified against the live M3 spacing page) | Text in `sp`, everything else in `dp` |
-| Layout margin `16pt` | `16dp` compact; `24dp` medium; `24dp` expanded (compact and expanded unverified) | |
+| Spacing steps | An `8dp` scale (`space100` = `8dp`); the tokens are 0, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 32, 36, 40, 48, 56, 64 and `72dp` | Text in `sp`, everything else in `dp` |
+| Layout margin `16pt` | `16dp` compact; `24dp` medium; `24dp` expanded | |
 | Space between panes | `24dp` | The pane scaffolds' default spacer from expanded width up |
 | Breakpoints from content | Window size classes, by width: compact `<600dp`, medium `600–839dp`, expanded `840–1199dp`, large `1200–1599dp`, extra-large `≥1600dp`; by height: compact `<480dp`, medium `480–899dp`, expanded `≥900dp` | Classes describe the window, not the device: split screen, freeform windows and folding change them at runtime. Never write `isTablet` logic. |
 | Hit-target clearance | `48×48dp` minimum target, owned by [accessibility](../../references/accessibility/hit-areas.md#target-sizes) | |
@@ -93,7 +93,7 @@ BoxWithConstraints {
 }
 ```
 
-`SnapPosition.Start` snapping to the content-padding edge is unverified. Material 3's `HorizontalMultiBrowseCarousel` and `HorizontalUncontainedCarousel` are the system carousels when the design allows them.
+`SnapPosition.Start` snaps each item's start to the content-padding edge, `24dp` in from the row's edge. Material 3's `HorizontalMultiBrowseCarousel` and `HorizontalUncontainedCarousel` are the system carousels when the design allows them.
 
 ## Before you finish
 

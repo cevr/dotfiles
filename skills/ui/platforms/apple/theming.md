@@ -98,7 +98,7 @@ Applies [overlays carry the theme](../../references/theming.md#overlays-carry-th
 
 | Surface | Environment |
 | --- | --- |
-| `sheet`, `fullScreenCover`, `popover`, `alert`, `confirmationDialog`, `inspector` | Inherit the presenting view's environment, custom `@Entry` values included (unverified for every OS version; check on the oldest deployment target) |
+| `sheet`, `fullScreenCover`, `popover`, `alert`, `confirmationDialog`, `inspector` | Inherit the presenting view's environment, custom `@Entry` values included (checked for each on iOS 27; unverified on earlier versions, so check on the oldest deployment target) |
 | A new scene or window (`WindowGroup`, `Window`, `openWindow`) | Starts from the scene's root: apply the theme modifiers in each scene's root view |
 | `UIHostingController`, `NSHostingController`, `UIHostingConfiguration` | Start a new SwiftUI root that inherits only system traits: re-apply `.environment(\.theme, …)`, `.tint`, and the scheme |
 | UIKit or AppKit views inside SwiftUI | Read the trait collection or `effectiveAppearance`, not the SwiftUI environment |

@@ -118,7 +118,7 @@ Android specifics for [design systems from a spec](../../references/design-syste
 
 The design system page is a **preview gallery**: `@Preview` functions, one per foundation (color pairs, type specimen, shapes and elevation) and per component, each a grid of variants × states. `@PreviewLightDark`, `@PreviewFontScale`, `@PreviewDynamicColors`, and `@PreviewScreenSizes` cover every mode, the largest font scale, wallpaper colors, and widths with one annotation each.
 
-Pin states through parameters the component already has: `enabled = false`, `isError = true`, `selected = true`, a loading flag. Pressed, focused, and hovered come from an `InteractionSource` and need the preview's interactive mode or a device (unverified whether a pre-seeded `InteractionSource` renders in a static preview).
+Pin states through parameters the component already has: `enabled = false`, `isError = true`, `selected = true`, a loading flag. Pressed, focused, and hovered come from an `InteractionSource` and need the preview's interactive mode or a device: a pre-seeded `InteractionSource` renders at rest in a static preview.
 
 ## Interface Judgment
 

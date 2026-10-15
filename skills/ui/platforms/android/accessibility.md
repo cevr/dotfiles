@@ -8,7 +8,7 @@ Jetpack Compose implementation of [accessibility](../../references/accessibility
 | --- | --- | --- |
 | [Target size](../../references/accessibility/hit-areas.md#target-sizes), web 44/40 heuristic | 48×48 dp | Material's minimum; Material components reserve it when interactive. |
 | [200% text resize](../../references/accessibility/motion-and-zoom.md#zoom-and-reflow) | Font scale up to 200% (Android 14+), applied non-linearly | Large text grows less than small text, so `sp` values stop adding up: 4sp + 20sp may not equal 24sp. |
-| [Escape closes](../../references/accessibility/focus-and-keyboard.md#keyboard-patterns) | Back (system back gesture, TalkBack's back gesture, a keyboard's Escape) | Material dialogs and sheets dismiss on Back. Escape mapping to Back on hardware keyboards is unverified per device. |
+| [Escape closes](../../references/accessibility/focus-and-keyboard.md#keyboard-patterns) | Back (system back gesture, TalkBack's back gesture, a keyboard's Escape) | Material dialogs and sheets dismiss on Back. Escape is not Back: Compose `Dialog` and `AlertDialog` dismiss on it, but `ModalBottomSheet` (Material 3 1.4) and `BackHandler` ignore it. |
 | [Reduced motion](../../references/accessibility/motion-and-zoom.md#reduced-motion) | "Remove animations", which sets the animator duration scale to 0 | There is no separate reduce-motion flag. |
 | [Timed messages](../../references/accessibility/motion-and-zoom.md#autoplay-and-timed-ui) | The user's "Time to take action" setting | `SnackbarHost` stretches Short (4 s) and Long (10 s) through `AccessibilityManager.calculateRecommendedTimeoutMillis`. |
 
@@ -26,7 +26,7 @@ Rule: [native controls first](../../references/accessibility/index.md#native-con
 | Grouping | `clickable`/`toggleable` merge their children; `Modifier.semantics(mergeDescendants = true) {}` for a non-clickable row; `clearAndSetSemantics { contentDescription = … }` replaces the children |
 | Headings | `Modifier.semantics { heading() }` |
 | Window or pane title | `Activity.setTitle`, `Modifier.semantics { paneTitle = "Share sheet" }` on a pane that appears |
-| Disabled | `enabled = false` sets `disabled()`; TalkBack still reaches the control (unverified wording of its announcement), so the reason can sit beside it |
+| Disabled | `enabled = false` sets `disabled()`: the node stays in the accessibility tree with `isEnabled = false`, so the reason can sit beside it |
 | Custom actions | `customActions = listOf(CustomAccessibilityAction("Archive") { archive(); true })` |
 | Collections | `LazyColumn` and `LazyRow` expose `collectionInfo`; a custom list sets `collectionInfo` and `collectionItemInfo` |
 
@@ -60,7 +60,7 @@ Rule: [forms](../../references/accessibility/forms.md).
 | --- | --- |
 | [Label](../../references/accessibility/forms.md#labels) | `OutlinedTextField(label = { Text("Email") })`; `placeholder` is not the label |
 | Checkbox and text share a target | `Row(Modifier.toggleable(value = checked, role = Role.Checkbox, onValueChange = { … })) { Checkbox(checked, onCheckedChange = null); Text("Send me updates") }` |
-| [Error](../../references/accessibility/forms.md#error-messaging) | `isError = true` and `supportingText = { Text(error) }`. Material sets a generic error description ("Invalid input"); pass the real message with `Modifier.semantics { error(message) }` on the field (that the caller's value wins over the default is unverified). Focus the first invalid field with its `FocusRequester` |
+| [Error](../../references/accessibility/forms.md#error-messaging) | `isError = true` and `supportingText = { Text(error) }`. Material sets a generic error description ("Invalid input"); pass the real message with `Modifier.semantics { error(message) }` on the field; it replaces the default in `AccessibilityNodeInfo.error`. Focus the first invalid field with its `FocusRequester` |
 | Content type | `Modifier.semantics { contentType = ContentType.EmailAddress }`: `Username`, `Password`, `NewUsername`, `NewPassword`, `PersonFullName`, `PhoneNumber`, `PostalAddress`, `PostalCode`, `CreditCardNumber`, `CreditCardExpirationDate`, `CreditCardSecurityCode`, `SmsOtpCode`; combine with `+` |
 | Keyboard | `KeyboardOptions(keyboardType = KeyboardType.Email)`; `Uri`, `Phone`, `NumberPassword` (PINs, codes), `Decimal` (money), `Number` (quantities) |
 | Spelling and case | `KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false)` |
@@ -106,7 +106,7 @@ val reduceMotion = Settings.Global.getFloat(
 val enter = if (reduceMotion) fadeIn() else slideInVertically() + fadeIn()
 ```
 
-- Gate infinite and hand-driven animations (`rememberInfiniteTransition`, frame loops, Lottie) on the same flag (unverified whether infinite transitions stop at scale 0).
+- Gate hand-driven animations (frame loops, Lottie) on the same flag. `rememberInfiniteTransition` stops on its own at scale 0, holding its end values.
 - Text in `sp`, including line height; never `sp` for padding or fixed heights. Convert with `TypedValue.applyDimension` / `deriveDimension`; `fontScale` is informational now that scaling is non-linear.
 - Reflow at large font scale with `FlowRow`, a row-to-column switch, or wrapping text; never a fixed height on a text container.
 - Contrast: the system contrast setting (`UiModeManager.getContrast()`, API 34) and medium/high-contrast color schemes belong to [color](../../references/color/index.md).

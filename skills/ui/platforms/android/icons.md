@@ -21,7 +21,7 @@ Material Symbols and Jetpack Compose implementation of [icons](../../references/
 | `GRAD` | `-50`–`200` (`-25`, `0`, `200` in the picker) | `0` | `-25` to cut glare for light icons on dark backgrounds; positive for emphasis without changing size |
 | `opsz` | `20`–`48` | `24` (Google's docs list both `24` and `48`) | Match the rendered size in `dp` |
 
-A downloaded vector bakes its axis values in, so each state is its own drawable: download the outline (`FILL 0`) and filled (`FILL 1`) pair at the same `wght`, `GRAD` and `opsz`. The Material Symbols variable font can set axes at runtime through `FontVariation.Settings` on a `Text` glyph (unverified for icon ligatures in Compose); drawables are the default.
+A downloaded vector bakes its axis values in, so each state is its own drawable: download the outline (`FILL 0`) and filled (`FILL 1`) pair at the same `wght`, `GRAD` and `opsz`. The Material Symbols variable font can set axes at runtime through `FontVariation.Settings` on a `Text` glyph, ligatures included (`Text("home")` with `FILL 1` draws the filled icon); drawables are the default.
 
 ## Color and state
 
@@ -59,7 +59,7 @@ The label names the destination, so the icon's `contentDescription` is `null`. A
 
 - Vector drawables: set `android:autoMirrored="true"` on directional icons. Compose's `painterResource` honors it and flips the icon in `LayoutDirection.Rtl`.
 - `ImageVector.Builder(autoMirror = true)` does the same for a code-built vector.
-- On the legacy `Icons` library, use `Icons.AutoMirrored.Filled.ArrowBack` and the other `AutoMirrored` icons in place of the non-mirrored directional ones (deprecation of the non-mirrored set unverified).
+- On the legacy `Icons` library, use `Icons.AutoMirrored.Filled.ArrowBack` and the other `AutoMirrored` icons in place of the non-mirrored directional ones, which are deprecated.
 - One mechanism per icon: no `Modifier.scale(scaleX = -1f, …)` on an auto-mirrored icon.
 - Playback drawables stay without `autoMirrored`.
 

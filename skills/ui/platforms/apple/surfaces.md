@@ -33,7 +33,7 @@ VStack { Thumbnail().clipShape(ContainerRelativeShape()) }
 
 ## Shadows and rings
 
-SwiftUI's `.shadow(color:radius:x:y:)` has no spread, so the `1pt` ring is a stroke, not a shadow. Its `radius` is not the CSS blur; start at half the CSS blur value and match by eye (unverified).
+SwiftUI's `.shadow(color:radius:x:y:)` has no spread, so the `1pt` ring is a stroke, not a shadow. Its `radius` is the Gaussian's standard deviation, while a CSS blur is twice that: use half the CSS blur value.
 
 ```swift
 struct RingedCard<Content: View>: View {
@@ -52,7 +52,7 @@ struct RingedCard<Content: View>: View {
 }
 ```
 
-- Put shadows on the background shape, not on the content view: `.shadow` on a stack shadows every child glyph separately. Chained `.shadow` modifiers each shadow everything below them, including the earlier shadow, so keep the stack short (compounding unverified).
+- Put shadows on the background shape, not on the content view: `.shadow` on a stack shadows every child glyph separately. Chained `.shadow` modifiers each shadow everything below them, including the earlier shadow, so keep the stack short.
 - Dark mode drops the depth layers and keeps the ring as white at `0.08` (`.primary` resolves to white in dark mode).
 - `.strokeBorder` draws inside the shape, so the ring never changes the view's size.
 - Increase Contrast: read `colorSchemeContrast` and raise the ring to a visible border, the platform's equivalent of the transparent border under the shadow ring. The `0.5` above stands in for the project's border token.
@@ -70,7 +70,7 @@ The rules for translucency, weight and legibility are in [materials and depth](.
 | Tinted or pressable glass | `Glass.regular.tint(_:)`, `.interactive()` |
 | Several glass elements that blend and morph | Wrap them in `GlassEffectContainer`; `.glassEffectID(_:in:)` and `.glassEffectUnion(id:namespace:)` |
 | Glass buttons | `.buttonStyle(.glass)`, `.glassProminent` |
-| UIKit / AppKit | `UIVisualEffectView` / `NSVisualEffectView` for materials; Liquid Glass views exist in both (names unverified) |
+| UIKit / AppKit | `UIVisualEffectView` / `NSVisualEffectView` for materials; Liquid Glass is a `UIVisualEffectView` with `UIGlassEffect` (`UIGlassContainerEffect` to group) in UIKit, and `NSGlassEffectView` (`NSGlassEffectContainerView` to group) in AppKit |
 
 HIG for Liquid Glass: it is the layer for controls and navigation that floats above content; never use it in the content layer (standard materials go there), use it sparingly, and use `.clear` only over visually rich backgrounds. System bars, sheets, popovers and toolbars adopt it on their own, so a custom bar background usually fights the system. Reduce Transparency and Increase Contrast change both glass and materials automatically; render with them on.
 

@@ -58,19 +58,19 @@ fun AppTheme(darkTheme: Boolean = isSystemInDarkTheme(), dynamicColor: Boolean =
 ## Appearances
 
 - **Light and dark.** `isSystemInDarkTheme()` picks the scheme once, in the theme; that is the one [switching mechanism](../../references/color/palette-generation.md#one-switching-mechanism). A user override passes a stored preference as `darkTheme`. Components read `colorScheme` and never branch on the system setting themselves.
-- **Contrast.** Android 14 (API 34) adds a user contrast setting. `UiModeManager.getContrast()` returns `-1` to `1`, `0` being the default; `addContrastChangeListener` reports changes. Its docs say an app needs it only for rendering outside the Material pipeline. On API 34+, `dynamicLightColorScheme` reads the system's own scheme, which follows the setting (unverified). A static brand scheme does not: the Theme Builder exports medium- and high-contrast light and dark schemes, and the theme picks one by level:
+- **Contrast.** Android 14 (API 34) adds a user contrast setting. `UiModeManager.getContrast()` returns `-1` to `1`, `0` being the default; `addContrastChangeListener` reports changes. Its docs say an app needs it only for rendering outside the Material pipeline. On API 34+, `dynamicLightColorScheme` reads the system's `system_*_light` colors, which follow the setting. A static brand scheme does not: the Theme Builder exports medium- and high-contrast light and dark schemes, and the theme picks one by level:
 
 ```kotlin
 val contrast = if (Build.VERSION.SDK_INT >= 34)
     context.getSystemService(UiModeManager::class.java).contrast else 0f
-val scheme = when {  // scheme names as exported by the Theme Builder (unverified)
+val scheme = when {  // contrast scheme names as exported by the Theme Builder
     contrast >= 1f -> if (darkTheme) highContrastDarkColorScheme else highContrastLightColorScheme
     contrast >= 0.5f -> if (darkTheme) mediumContrastDarkColorScheme else mediumContrastLightColorScheme
     else -> if (darkTheme) DarkColors else LightColors
 }
 ```
 
-The `0.5` and `1` thresholds follow material-color-utilities' medium and high contrast levels (unverified). Each appearance gets its own contrast variant, as the neutral [increased contrast](../../references/color/color-usage.md#light-dark-and-increased-contrast) rule requires.
+The `0.5` and `1` thresholds are material-color-utilities' medium and high contrast levels. Each appearance gets its own contrast variant, as the neutral [increased contrast](../../references/color/color-usage.md#light-dark-and-increased-contrast) rule requires.
 
 ## Formats and gamut
 
