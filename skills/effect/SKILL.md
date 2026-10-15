@@ -14,7 +14,7 @@ Check these before guessing, in order:
 - the nearest `AGENTS.md` and any project-local Effect practices doc
 - `node_modules/effect/AGENTS.md`, shipped inside the installed package and matched to its version; `node_modules/effect/ai-docs/` holds its runnable examples
 - the installed `effect` package source (`node_modules/effect/src`)
-- current upstream Effect source (`okra repo fetch effect-ts/effect`) when the installed package does not answer the question
+- current upstream Effect source when the installed package does not answer the question: `okra repo fetch effect-ts/effect` when `command -v okra` succeeds; without okra, the installed package is the source
 
 This skill holds project policy. When it disagrees with the installed package about an API, the package wins; fix this skill.
 

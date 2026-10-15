@@ -2,7 +2,7 @@
 
 Use this reference to lay out an application: its packages, its public actions, the surfaces that expose them, the units that own infrastructure, and the rules that keep the layout from eroding. [PROGRAM_DESIGN.md](PROGRAM_DESIGN.md) covers a single module's seam; this file covers how modules fit together.
 
-The reference implementation is `joelhooks/rat-stack` (`okra repo fetch joelhooks/rat-stack`). Read `packages/capability/src` there before building a contract kit, and adopt its code only after reading it at the pinned Effect version.
+The reference implementation is `joelhooks/rat-stack` (`okra repo fetch joelhooks/rat-stack`, or `git clone --depth 1 https://github.com/joelhooks/rat-stack` without okra). Read `packages/capability/src` there before building a contract kit, and adopt its code only after reading it at the pinned Effect version.
 
 ## Contents
 

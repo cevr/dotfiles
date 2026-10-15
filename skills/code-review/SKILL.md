@@ -59,7 +59,7 @@ Outcome is **report** (read-only; edit nothing) unless the user asked for fixes.
 - Effect code: the `effect` skill, its `references/ARCHITECTURE.md` braids table, and the installed Effect source. Do not rely on remembered APIs.
 - React files: the `react` skill.
 - An owned dependency (same workspace or under the user's control): read its source. Assign a repair to the lowest owner; do not approve a downstream workaround because it exists.
-- External library usage that looks off: `okra repo fetch <owner/repo>`, then `okra repo path -q <owner/repo>` (see the `repo` skill).
+- External library usage that looks off: the installed source in `node_modules/<package>`. For upstream source, when `command -v okra` succeeds: `okra repo fetch <owner/repo>`, then `okra repo path -q <owner/repo>` (see the `repo` skill).
 
 ## Phase 3: Your review
 

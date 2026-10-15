@@ -11,6 +11,8 @@ A PR someone else asked you to review runs `code-review`'s Requested review inst
 
 Read `../code-review/SKILL.md` and `../counsel/SKILL.md` first. The criteria live in `../code-review/references/review-contract.md` and `../code-review/references/test-audit.md`.
 
+Counsel needs the `okra` CLI. Run `command -v okra` first. When it prints nothing, tell the user plainly that the cross-model review is unavailable because okra is not installed, run `code-review` in this session instead, and label the report a single-model review.
+
 ## 1. Ground the packet
 
 Run `code-review` Phases 1–3 (scope and mode, context, your review) in report outcome. Counsel challenges a grounded candidate; it does not do discovery.
