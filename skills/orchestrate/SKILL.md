@@ -68,6 +68,8 @@ Done when the run dir exists, you know which host column you use, and the host c
 2. **Units.** Split the work into units. A unit is one reviewable result: one branch, one PR, one batch. A unit that builds on a seam another planned unit replaces depends on that unit; it never starts on the old seam.
    - Give each unit a slug of up to 12 characters, and list the units it depends on: their code, their decisions or their files.
    - Order the units topologically. Units with no dependency and no shared files can run at the same time.
+   - **One agent per deliverable.** A unit with two deliverables is two units. An owner-feature or prototype agent hands back at each publish or owner ask, and its next step goes to a fresh agent briefed from `log.md` and the branch. In p5, 36 of 86 agents compacted twice or more and held 77% of the spend (scriptdesk then codefollow in one agent: 22 compactions).
+   - **The owner's ask is the Done line.** The spec quotes the ask word for word, and its acceptance check is that ask, not what the unit grew into.
 3. **Defaults.** Decide by `~/Developer/personal/dotfiles/principles/`, and ask only what the plan cannot settle. These apply unless the user says otherwise:
    - **Run to the end.**
    - **At most 3 heavy agents at once, and fewer when the gate cannot take them.** A heavy agent runs a gate or a browser: every implementor and verifier, and a reviewer that runs probes. Time the gate once before the first wave. Before starting a heavy agent, read the load (`sysctl -n vm.loadavg` or `uptime`), and start none while it is above the core count. While a gate waits longer than twice its own run, start no new unit, and make gate speed the next unit.
@@ -75,6 +77,7 @@ Done when the run dir exists, you know which host column you use, and the host c
    - **Owner questions never wait in a dialog.** Put the question in Owner questions with your recommendation, and tell the user in one short message. Then end your turn, and keep the other units running.
    - **Reserved for the user:** deploy, publish, paid runs, force-push to a shared branch, non-additive changes to stored or wire formats, and anything irreversible. Push is not reserved: the owner's global `AGENTS.md` (2026-10-13) pushes after the merge gate is green.
    - **You may merge locally.**
+   - **Carried tooling first.** A carried tooling unit that pays back inside this run (a flake triage script, a meter fix) takes the next free slot before a new feature unit, unless the user orders otherwise. p5's `e2echeck` was carried all pass and never built, while units logged 31 hand reruns.
 4. **Plan file.** Write the plan as a docs file in the project, beside its plans or ledger (in bible-tools, `apps/animations/plans/<run>-run.md`), and link it as `<run dir>/plan.md` so workers find it there. Commit it with each merge. It is the single source of truth, and you re-read it after every compaction. Move a closed section (a finished table, an earlier host's table) into a `<run>-run-archive.md` beside it, so `plan.md` holds only the live table, Decisions and Owner questions. Its first line holds the user's goal word for word, so a new session resumes from `plan.md` and the unit folders alone.
 
 ```markdown
@@ -104,7 +107,7 @@ Every transition appends one line to `<run dir>/<unit>/log.md`: the time from `d
 4. **verify.** On `accepted`, start a fresh verifier on the round's request (`protocol.md`, Verifier).
 5. **Route.** On `changes`, `fail` or `stuck`, follow [The machine](#the-machine); a `stuck` whose reason is quota, or a worker that died, is `stuck(quota)` there. On `pass`, go to step 3, Decide.
 
-**Scope.** Scope never grows inside a running unit. New work, a host defect included, becomes a new unit in `plan.md`, never a message to a working agent. A message that must change a running unit's goal states the invariant that must hold ("a frame's pixels never depend on frames drawn before it") and the evidence, never the mechanism; the implementor picks the mechanism, and the reviewer judges it. In p5, a mechanism sent by message (an author-declared `fresh` timeline) was built, then deleted by the next round as purity resting on authoring nothing checks.
+**Scope.** Scope never grows inside a running unit. New work, a host defect included, becomes a new unit in `plan.md`, never a message to a working agent. A message that must change a running unit's goal states the invariant that must hold ("a frame's pixels never depend on frames drawn before it") and the evidence, never the mechanism; the implementor picks the mechanism, and the reviewer judges it. A rule or skill change reaches a running unit only at its next round boundary, in one message: rbfscript took four rule changes mid-review, and each reopened the words. In p5, a mechanism sent by message (an author-declared `fresh` timeline) was built, then deleted by the next round as purity resting on authoring nothing checks.
 
 ## 3. Decide
 
@@ -132,14 +135,17 @@ Re-plan, by one of these:
 
 - sharpen the spec, starting from the written premise;
 - split the unit;
+- narrow it to the owner's ask, and log the rest as known limits;
 - make the contested decision yourself;
-- start a fresh implementor with the old findings as data and a property or model test that owns the repeated class, red on every earlier counterexample. The property is part of the re-plan's acceptance check, never "if cheap": sheet's optional one compared the code with itself, and two more rounds failed on its class.
+- start a fresh implementor with the old findings as data and a property or model test that owns the repeated class, red on every earlier counterexample. The property ranges over the rule's whole domain as the rule is written (every paint, direction and value the rule names; every input path and modality), not the space around the last counterexample: papercut's shading rule failed three times after its property. The property is part of the re-plan's acceptance check, never "if cheap": sheet's optional one compared the code with itself, and two more rounds failed on its class.
 
 Stop the old implementor.
 
 ## 4. Between messages
 
-- **Wait.** End your turn and let workers wake you. Spec the next units while you wait.
+- **Wait.** End your turn and let workers wake you. Spec the next units while you wait. To wait on an outside event (the owner's answer, a lab change), run one background Bash until-loop that exits on the event, and re-arm it only after an event; a recurring 30-minute Monitor pinged the owner 12 times, 7 of them empty.
+- **Stop finished agents.** TaskStop an agent at its final hand-back.
+- **Owner direction** goes, the same turn, into the file that owns it: `NORTH_STAR.md` for scope and standing rules, the project's skill for craft and voice, `AGENTS.md` for the stack. Memory alone does not count: in p5 the owner re-pointed 14 times.
 - **After your own compaction.** Re-read this file, `protocol.md` and `plan.md` before any other action.
 - **Host move.** When the run moves host, rewrite the run's shared rules file for the new host in place; never keep an override file that every agent maps by hand.
 - **Pause.** On a pause, or when the user stops the run, stop every running worker, so no orphan agent burns tokens. Write where each unit stands into `plan.md`.

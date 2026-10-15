@@ -29,10 +29,9 @@ if (matches.length === 0) {
 const stats = await Promise.all(matches.map(async (f) => ({ f, m: (await Bun.file(f).stat()).mtimeMs })));
 const file = stats.sort((a, b) => b.m - a.m)[0]!.f;
 
-let turns = 0;
-let read = 0;
-let create = 0;
-let out = 0;
+// One message is written as several transcript lines (a text block, a tool
+// call), each carrying its usage; keep each message id's largest counts once.
+const usage = new Map<string, Record<string, number>>();
 let compactions = 0;
 let first: string | undefined;
 let last: string | undefined;
@@ -43,7 +42,7 @@ for (const line of (await Bun.file(file).text()).split('\n')) {
     type?: string;
     subtype?: string;
     timestamp?: string;
-    message?: { usage?: Record<string, number> };
+    message?: { id?: string; usage?: Record<string, number> };
   };
   try {
     d = JSON.parse(line);
@@ -56,13 +55,23 @@ for (const line of (await Bun.file(file).text()).split('\n')) {
   }
   if (d.type === 'system' && d.subtype === 'compact_boundary') compactions++;
   if (d.type === 'assistant') {
+    const key = d.message?.id ?? `line-${usage.size}`;
+    const had = usage.get(key) ?? {};
     const u = d.message?.usage ?? {};
-    turns++;
-    read += u.cache_read_input_tokens ?? 0;
-    create += u.cache_creation_input_tokens ?? 0;
-    out += u.output_tokens ?? 0;
+    const max = (k: string) => Math.max(had[k] ?? 0, u[k] ?? 0);
+    usage.set(key, {
+      cache_read_input_tokens: max('cache_read_input_tokens'),
+      cache_creation_input_tokens: max('cache_creation_input_tokens'),
+      output_tokens: max('output_tokens'),
+    });
   }
 }
+
+const sum = (k: string) => [...usage.values()].reduce((n, u) => n + (u[k] ?? 0), 0);
+const turns = usage.size;
+const read = sum('cache_read_input_tokens');
+const create = sum('cache_creation_input_tokens');
+const out = sum('output_tokens');
 
 const m = (n: number) => `${(n / 1e6).toFixed(1)}M`;
 const minutes = first && last ? Math.round((Date.parse(last) - Date.parse(first)) / 60000) : 0;
