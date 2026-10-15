@@ -1,6 +1,6 @@
 ---
 name: create-pr
-description: Commit, push, and create a pull request with a focused summary, the smallest useful change-shape diagram, visual evidence, and call-flow review guides.
+description: Commit, push, and create a pull request with a focused summary, the smallest useful change-shape diagram, proof that the change works (video, screenshots, red-on-base runs), and call-flow review guides.
 user-invocable: true
 ---
 
@@ -15,7 +15,7 @@ Create the pull request
 ├─ Inspect and publish the branch       → Steps
 ├─ Choose the smallest reviewer view   → Evidence selection
 ├─ Explain runtime or state flow        → Change-shape evidence
-├─ Show a user-visible change           → Visual evidence
+├─ Prove the change works               → Proof
 └─ Confirm the remote result            → Final verification
 ```
 
@@ -26,14 +26,15 @@ Create the pull request
 3. Run `git diff` to understand the task changes.
 4. Run `git log` to see the commit message style.
 5. Run the repository quality gate.
-6. Stage only the task changes.
-7. Commit with a concise Conventional Commit message.
-8. Push the branch to the remote with `-u`.
-9. Create the pull request with `gh pr create`, ready for review (no `--draft`).
-10. Select the smallest reviewer view that explains each important change.
-11. Add change-shape evidence when the change affects runtime flow, state, ownership, or module boundaries.
-12. Add visual evidence when the change affects a visible interface.
-13. Apply each requested person to each requested assignee and reviewer role.
+6. Gather the proof (§Proof). Without it, stop here: no PR opens.
+7. Stage only the task changes.
+8. Commit with a concise Conventional Commit message.
+9. Push the branch to the remote with `-u`.
+10. Create the pull request with `gh pr create`, ready for review (no `--draft`).
+11. Select the smallest reviewer view that explains each important change.
+12. Add change-shape evidence when the change affects runtime flow, state, ownership, or module boundaries.
+13. Embed the proof in the PR body (§Proof).
+14. Apply each requested person to each requested assignee and reviewer role.
 
 ## PR Body Format
 
@@ -53,6 +54,10 @@ Create the pull request
 ## Tradeoffs
 
 [Optional. Only the rejected alternatives a reviewer would otherwise ask about]
+
+## Proof
+
+[Required. The video, screenshots or red-on-base runs from §Proof, each under the claim it proves. Then **Unproven:** anything that could not be proven here, or "none".]
 
 ## Merge Danger
 
@@ -89,7 +94,7 @@ Pick the smallest view that makes the important change clear. Use several views 
 | How do several processes or services interact? | Mermaid sequence or flow diagram |
 | What changed inside a known shape? | Focused `diff` block |
 | Is most of the target shape new? | One complete, copyable block |
-| What does the user now see? | Screenshot or before-and-after images |
+| What does the user now see? | Video of the journey plus before-and-after screenshots (§Proof) |
 
 Apply these rules:
 
@@ -204,21 +209,27 @@ Show new and removed states, events, guards, actions, and context assignments. U
 
 Skip change-shape evidence for text-only or configuration-only changes with no meaningful runtime, state, ownership, or module-boundary change.
 
-## Visual Evidence
+## Proof
 
-For each user-visible change:
+A PR proves, beyond doubt, that the change does what it claims, on the head commit, in the running product. Proof comes before `gh pr create`. A change with no proof does not get a PR: go get the proof.
 
-1. Run the changed interface in a representative state.
-2. Capture at least one clear screenshot for each distinct changed state.
-3. Use before-and-after images when the old state gives useful context.
-4. Reuse screenshots already produced during implementation when they show the final code.
-5. Upload images to a stable location that pull request viewers can access.
-6. Embed the images in the PR body below the approach.
-7. Verify that every image renders from the live PR body.
+| Change | Proof |
+| --- | --- |
+| Anything a user sees or does | A video of the real journey on the head commit, plus a screenshot of each changed state, before and after. Drive it through the repo's `verify-<app>` skill where one exists. |
+| Behavior with no screen (API, job, CLI, library) | The real run's output: the request and response, the command and its exit code, the rows written. Plus a check that is red on the base commit and green on head. |
+| A bug fix | The failing run on base, and the same run passing on head. |
+| Performance | The measured numbers, base and head, from the same harness and host. |
+| Docs, config or refactor with no behavior change | The gate, and for a refactor, the unchanged results of the checks that cover the moved code. |
 
-Do not use a local or temporary file path in the PR body. Do not add screenshots to the product branch unless the repository has that convention. Use a dedicated PR asset branch when GitHub attachment upload is not available. Keep asset files out of the product diff.
+Rules:
 
-Skip visual evidence when the change has no visible output.
+- **The real product.** Proof comes from the running app or a real execution, never from a mock or a test that only exercises the mock.
+- **Every changed path.** Each user-visible state, entry point and branch the change touches has its own proof. A proof of one convenient path does not cover the others.
+- **Head commit.** Capture after the last code change. Recapture when a later commit changes behavior.
+- **Hosting.** Upload media where every PR viewer can open it: GitHub attachments where available, else a dedicated PR asset branch (keep assets out of the product diff). Embed screenshots inline and link each video. Never a local or temporary path.
+- **Live check.** Open the posted PR body and confirm every image renders and every video link plays.
+
+When a piece of proof is genuinely impossible on this machine (a payment terminal, a printer, a production-only integration), name it under **Unproven** in the PR body with what was tried and what the reviewer must check, and say so in the report. Everything that can be proven here is proven first.
 
 ## Final Verification
 
