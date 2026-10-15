@@ -187,7 +187,8 @@
       "Skill(repo-explorer)",
       "WebFetch(domain:anthropic.com)",
       "Skill(react)",
-      "Skill(cleanup)"
+      "Skill(cleanup)",
+      "mcp__cua"
     ],
     "ask": [],
     "defaultMode": "auto",
