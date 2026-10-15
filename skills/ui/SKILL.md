@@ -1,11 +1,11 @@
 ---
 name: ui
-description: Build, review, and polish user interfaces on web (React, Solid), Apple (SwiftUI, UIKit, AppKit), and Android (Jetpack Compose). Use for any UI work — new screens, components, theming and design tokens, design systems from a spec, motion and animation, accessibility, typography, color, layout, interface copy — and for reviewing UI code, building from Figma or a design image, stress-testing a component with worst-case data, rendering every state, exploring variants, or explaining how an interface or effect was built.
+description: Build, review, and polish user interfaces in any stack — web (React, Solid), Apple (SwiftUI, UIKit, AppKit), Android (Compose), or anything else that draws a UI. Use for any UI work — new screens, components, theming and design tokens, design systems from a spec, motion and animation, accessibility, typography, color, layout, interface copy — and for reviewing UI code, building from Figma or a design image, stress-testing a component with worst-case data, rendering every state, exploring variants, or explaining how an interface or effect was built.
 ---
 
 # UI
 
-One skill for interface work on any platform. `references/` holds what is true everywhere: judgment, values, and rules per domain. `platforms/` holds how each platform implements them. Read this file, then the platform index, then only the references the task reaches.
+One skill for interface work in any stack. `references/` holds what is true everywhere: judgment, values, and rules per domain, with short platform-specific notes labelled inline (**Web:**). `platforms/` holds the longer implementation material per platform. Read this file, then the platform index, then only the references the task reaches.
 
 ## Platform
 
@@ -16,6 +16,7 @@ Identify the platform first and read its index:
 | `package.json` with a UI framework (React, Solid) | Web | [web](platforms/web/index.md) |
 | An Xcode project or `Package.swift` with SwiftUI, UIKit, or AppKit | Apple | [apple](platforms/apple/index.md) |
 | `build.gradle(.kts)` with Compose or Android views | Android | [android](platforms/android/index.md) |
+| Anything else (Flutter, Qt, GTK, a terminal UI, a game UI) | Other | No index: apply the references directly, and translate their labelled web notes through the platform file closest to the stack. The platform's own guidelines take the platform-convention slot in [precedence](#precedence). |
 
 A domain reference states the rule and its values; the platform's file for that domain (`platforms/<platform>/<domain>.md`, listed in its index) gives the APIs and code. Sizes are in points: CSS `px`, Apple `pt`, Android `dp`. Durations are in milliseconds.
 
@@ -67,7 +68,7 @@ When there is no system to follow and the task is to choose one:
 | [Theming](references/theming.md) | Any styling in a project with tokens, a theme, or a component library; overlays; state treatments |
 | [Design system](references/design-system.md) | Applying a brand spec or `DESIGN.md`; building a design system page |
 | [Motion](references/motion/index.md) | Whether and how to animate: purpose, easing, duration, springs, enter/exit, reduced motion |
-| [Motion recipes](references/motion/recipes.md) | Implementing a known pattern: press, popover, toast, stagger, icon swap, drawer |
+| [Motion recipes](platforms/web/motion-recipes.md) | Implementing a known pattern: press, popover, toast, stagger, icon swap, drawer |
 | [Motion standards](references/motion/standards.md) | The craft bar motion is reviewed against |
 | [Motion performance](references/motion/performance.md) | Jank, dropped frames, what to animate, where animation runs |
 | [Gestures and fluid motion](references/motion/gestures.md) | Drag, swipe, sheets, momentum, springs, materials and depth |
