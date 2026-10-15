@@ -6,6 +6,8 @@ disable-model-invocation: true
 
 The user has asked for a **retrospective**. You are suggesting improvements to the coding agent's **environment** to improve future runs.
 
+A retro asked for mid-run is **queued**: finish the work in flight to its next commit or hand-back, then start the retro.
+
 ## Steps
 
 1. Call the Skill tool with `writing-for-agents` for the writing style guide.
@@ -18,7 +20,7 @@ The user has asked for a **retrospective**. You are suggesting improvements to t
    bun ~/.claude/skills/retro/scripts/mine-sessions.ts --since 30d [--project bible-tools] --out <scratch dir>
    ```
 
-   It reads every `~/.claude*/projects` and `~/.codex/sessions`, redacts secret-looking strings by default, and writes `digest.md` (totals, the costliest transcripts, the owner's messages repeated across sessions), `messages.jsonl` and `sessions.jsonl`. A message repeated across sessions is a direction to check against the skills and principles: if nothing encodes it, it is a candidate. Run it on each machine the work ran on.
+   It reads every `~/.claude*/projects` and `~/.codex/sessions`, redacts secret-looking strings by default, and writes `digest.md` (totals, the costliest transcripts, skills used, the owner's messages repeated across sessions), `messages.jsonl` and `sessions.jsonl`. Turns another agent wrote (orchestrator, advisor, hand-back, lock receipt) are kind `peer`, counted per session and kept out of the owner's counts. Skills used counts Claude `Skill` calls, `SKILL.md` reads in Claude and Codex, and `$skill` mentions. A message repeated across sessions is a direction to check against the skills and principles: if nothing encodes it, it is a candidate. Run it on each machine the work ran on.
 
 3. Look for candidates for improvement in these categories.
 
@@ -30,7 +32,16 @@ The user has asked for a **retrospective**. You are suggesting improvements to t
 - **No-ops**: look for instructions in steering files that don't modify the agent's behavior. _Use when_ the steering files are large and unwieldy.
 - **Information access**: look for opportunities to increase the agent's access to information. Teeing dev server logs, readonly access to third-party services. _Use when_ a crucial piece of information was not available to the agent.
 
-4. Present these candidates to the user, in order of severity.
+4. Group the mistakes into **classes**. A class counts once it has happened twice; a correction of a rule that is written down but enforced by nothing counts as a repeat. Fix each class at the highest level that works, and say why each higher level did not:
+   1. **Architecture**: one owner per piece of state, one supported way per task, internals the wrong import cannot reach.
+   2. **Types**: the bad state cannot be written.
+   3. **Lint or CI check** whose error names the file, type or function to use instead.
+   4. **Test** of the behavior.
+   5. **Docs or rules**, only for judgement calls.
+
+   Every proposed check proves itself red on a real past mistake (the commit or diff that made it).
+
+5. Present these candidates to the user, in order of severity, each with its evidence. Skill, `AGENTS.md` and principle edits land once the owner picks them.
 
 ## Reference
 

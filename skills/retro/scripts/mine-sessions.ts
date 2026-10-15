@@ -13,12 +13,20 @@
 //
 // Reads every ~/.claude*/projects (both accounts) and ~/.codex/sessions.
 // Writes:
-//   messages.jsonl  one line per owner message, slash command, interrupt or
-//                   limit error: {src, project, session, ts, kind, text}
+//   messages.jsonl  one line per owner message, slash command, interrupt,
+//                   limit error or peer message: {src, project, session, ts, kind, text}
 //   sessions.jsonl  one line per transcript: tokens, compactions, skills,
-//                   slash commands, agent spawns, files read 4+ times
+//                   slash commands, agent spawns, peer messages, files read 4+ times
 //   digest.md       totals, the costliest sessions, and the owner's repeated
 //                   messages ranked by how many sessions repeat them
+//
+// A `peer` message is a user turn another agent wrote (an orchestrator, an
+// advisor, a subagent hand-back, a lock or gate receipt, a PR watcher). It is
+// counted per session and kept out of owner counts and repeated groups.
+// Skills count Claude `Skill` calls, plus once per session per skill: a Claude
+// `Read` or Codex command naming `skills/<name>/SKILL.md`, and a `$<name>` or
+// `/<name>` token in an owner message when <name> is a dir in ~/.claude/skills.
+// Skills and slash commands are detected on the full text, before clipping.
 
 import { Glob } from 'bun';
 import { createReadStream, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
@@ -64,7 +72,7 @@ const clean = (text: string, n = 300) => {
   return t.replace(/\s+/g, ' ').trim().slice(0, n);
 };
 
-type Kind = 'msg' | 'slash' | 'interrupt' | 'limit';
+type Kind = 'msg' | 'slash' | 'interrupt' | 'limit' | 'peer';
 type Message = { src: string; project: string; session: string; ts?: string; kind: Kind; text: string };
 type Session = {
   src: string;
@@ -75,6 +83,7 @@ type Session = {
   first?: string;
   last?: string;
   human: number;
+  peer: number;
   interrupts: number;
   compactions: number;
   limits: number;
@@ -104,6 +113,7 @@ const newSession = (src: string, proj: string, session: string, sub: boolean, by
   sub,
   bytes,
   human: 0,
+  peer: 0,
   interrupts: 0,
   compactions: 0,
   limits: 0,
@@ -116,20 +126,58 @@ const newSession = (src: string, proj: string, session: string, sub: boolean, by
   rereads: {},
 });
 
-// Turns that are not the owner typing: harness wrappers, notifications, relays.
+// Turns that are not the owner typing: harness wrappers and notifications.
 const WRAPPED = [
   '<local-command',
   '<system-reminder',
   '<task-notification',
   '<bash-',
   '<user-prompt-submit-hook',
-  '<cross-session-message',
-  '<teammate-message',
   '<agent-notification',
   '<monitor',
   'Caveat:',
   'This session is being continued',
 ];
+
+// Turns another agent wrote: orchestrator and advisor messages, subagent
+// hand-backs, cross-session relays, PR watchers, and lock or gate receipts.
+const PEER = new RegExp(
+  [
+    String.raw`^<(?:cross-session-message|teammate-message)`,
+    String.raw`^\[(?:Advisor|Subagent hand-back|Orchestrator|Peer)\b`,
+    String.raw`^Another Claude session sent a message`,
+    String.raw`^Delegated task node:`,
+    String.raw`reached a terminal state`,
+    String.raw`^Act as the [\w -]*sub-agent`,
+    String.raw`^Update on pull request #\d+`,
+    String.raw`^(?:Peer|Advisor|Root)\b[\w /-]{0,30}\b(?:context|update|note|release|direct)`,
+    String.raw`^From [\w-]+ \(?w\d+:p\w+`,
+    // lock and gate receipts
+    String.raw`released the lock|\block (?:is )?released|\bslot (?:is )?released`,
+    String.raw`\b(?:READY|RELEASED?)\b`,
+    String.raw`^Round \d+ ready:`,
+  ].join('|'),
+);
+
+const skillDirs = new Set(
+  (() => {
+    try {
+      return readdirSync(join(home, '.claude', 'skills'), { withFileTypes: true })
+        .filter((d) => (d.isDirectory() || d.isSymbolicLink()) && !d.name.startsWith('.'))
+        .map((d) => d.name);
+    } catch {
+      return [];
+    }
+  })(),
+);
+const SKILL_PATH = /skills\/([\w-]+)\/SKILL\.md/g;
+const skillReads = (text: string) => [...text.matchAll(SKILL_PATH)].map((m) => m[1]!);
+const skillMentions = (text: string) =>
+  [...text.matchAll(/(?:^|\s)[$/]([a-z][\w-]*)/g)].map((m) => m[1]!).filter((n) => skillDirs.has(n));
+// Read- and mention-based use counts once per session, unless a Skill call already counted it.
+const settle = (st: Session, used: Set<string>) => {
+  for (const name of used) st.skills[name] ??= 1;
+};
 
 const listFiles = (dir: string, pattern: string) => {
   try {
@@ -167,6 +215,7 @@ async function claude(store: string) {
     }
     const seen = new Set<string>();
     const reads: Record<string, number> = {};
+    const used = new Set<string>();
     for await (const line of lines(file)) {
       if (line === '') continue;
       let e: any;
@@ -204,7 +253,11 @@ async function claude(store: string) {
           if (b?.type !== 'tool_use') continue;
           if (b.name === 'Skill') bump(st.skills, String(b.input?.skill));
           else if (b.name === 'Agent' || b.name === 'Task') st.agents++;
-          else if (b.name === 'Read') bump(reads, String(b.input?.file_path));
+          else if (b.name === 'Read') {
+            const path = String(b.input?.file_path);
+            bump(reads, path);
+            for (const name of skillReads(path)) used.add(name);
+          }
         }
         continue;
       }
@@ -233,11 +286,16 @@ async function claude(store: string) {
       } else if (text.startsWith('[Request interrupted')) {
         st.interrupts++;
         messages.push({ src, project: proj, session: st.session, ts, kind: 'interrupt', text: '' });
+      } else if (PEER.test(text)) {
+        st.peer++;
+        messages.push({ src, project: proj, session: st.session, ts, kind: 'peer', text: clean(text) });
       } else if (!WRAPPED.some((w) => text.startsWith(w))) {
         st.human++;
+        for (const name of skillMentions(text)) used.add(name);
         messages.push({ src, project: proj, session: st.session, ts, kind: 'msg', text: clean(text) });
       }
     }
+    settle(st, used);
     st.rereads = Object.fromEntries(Object.entries(reads).filter(([, n]) => n >= 4));
   }
 }
@@ -257,9 +315,32 @@ async function codex() {
     let total: any;
     const pending: Message[] = [];
     const seen = new Set<string>();
+    const used = new Set<string>();
     for await (const line of lines(file)) {
       // Most lines are tool traffic; parse only the kinds this digest reads.
-      if (!/"(session_meta|user_message|user|token_count|compacted|error|stream_error|turn_aborted)"/.test(line.slice(0, 400)))
+      const head = line.slice(0, 400);
+      if (/"(custom_tool_call|function_call|item_completed)"/.test(head)) {
+        if (!line.includes('SKILL.md')) continue;
+        let e: any;
+        try {
+          e = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const p = e.payload ?? {};
+        // The call's own text, never its output: a listing or a grep result names skills it did not use.
+        const text =
+          p.type === 'custom_tool_call'
+            ? p.input
+            : p.type === 'function_call'
+              ? p.arguments
+              : p.item?.type === 'CommandExecution'
+                ? p.item.command
+                : undefined;
+        for (const name of skillReads(String(text ?? ''))) used.add(name);
+        continue;
+      }
+      if (!/"(session_meta|user_message|user|token_count|compacted|error|stream_error|turn_aborted)"/.test(head))
         continue;
       let e: any;
       try {
@@ -297,15 +378,23 @@ async function codex() {
                 .map((b: any) => b.text)
                 .join('\n')
         ).trim();
-        if (!text || text.startsWith('<') || text.startsWith('# AGENTS.md') || seen.has(text.slice(0, 200))) continue;
+        if (!text || text.startsWith('# AGENTS.md') || seen.has(text.slice(0, 200))) continue;
         seen.add(text.slice(0, 200));
         // `okra counsel` and other exec runs are prompts a program wrote, not the owner.
         if (exec) continue;
+        if (PEER.test(text)) {
+          st.peer++;
+          pending.push({ src: 'codex', project: '', session: st.session, ts, kind: 'peer', text: clean(text) });
+          continue;
+        }
+        if (text.startsWith('<')) continue;
         st.human++;
+        for (const name of skillMentions(text)) used.add(name);
         pending.push({ src: 'codex', project: '', session: st.session, ts, kind: 'msg', text: clean(text) });
       }
     }
     if (project && !st.project.includes(project)) continue;
+    settle(st, used);
     if (total) {
       st.cacheRead = total.cached_input_tokens ?? 0;
       st.output = total.output_tokens ?? 0;
@@ -350,20 +439,29 @@ const repeated = [...groups.values()]
   .slice(0, 60);
 
 const M = (n: number) => `${(n / 1e6).toFixed(1)}M`;
-const bySrc = new Map<string, { n: number; sub: number; human: number; read: number; compactions: number; limits: number; skipped: number }>();
+const bySrc = new Map<
+  string,
+  { n: number; sub: number; human: number; peer: number; read: number; compactions: number; limits: number; skipped: number }
+>();
 for (const s of sessions) {
-  const t = bySrc.get(s.src) ?? { n: 0, sub: 0, human: 0, read: 0, compactions: 0, limits: 0, skipped: 0 };
+  const t = bySrc.get(s.src) ?? { n: 0, sub: 0, human: 0, peer: 0, read: 0, compactions: 0, limits: 0, skipped: 0 };
   t.n++;
   if (s.sub) t.sub++;
   t.human += s.human;
+  t.peer += s.peer;
   t.read += s.cacheRead;
   t.compactions += s.compactions;
   t.limits += s.limits;
   if (s.skipped) t.skipped++;
   bySrc.set(s.src, t);
 }
-const skills: Record<string, number> = {};
-for (const s of sessions) for (const [k, n] of Object.entries(s.skills)) skills[k] = (skills[k] ?? 0) + n;
+const skills: Record<string, { uses: number; sessions: number }> = {};
+for (const s of sessions)
+  for (const [k, n] of Object.entries(s.skills)) {
+    const t = (skills[k] ??= { uses: 0, sessions: 0 });
+    t.uses += n;
+    t.sessions++;
+  }
 const costly = [...sessions].sort((a, b) => b.cacheRead - a.cacheRead).slice(0, 15);
 
 const digest = [
@@ -373,10 +471,11 @@ const digest = [
   ``,
   `## Totals`,
   ``,
-  `| Source | Transcripts | Subagent | Owner msgs | Cache-read | Compactions | Limit errors | Skipped (size) |`,
-  `| --- | --- | --- | --- | --- | --- | --- | --- |`,
+  `| Source | Transcripts | Subagent | Owner msgs | Peer msgs | Cache-read | Compactions | Limit errors | Skipped (size) |`,
+  `| --- | --- | --- | --- | --- | --- | --- | --- | --- |`,
   ...[...bySrc].map(
-    ([src, t]) => `| ${src} | ${t.n} | ${t.sub} | ${t.human} | ${M(t.read)} | ${t.compactions} | ${t.limits} | ${t.skipped} |`,
+    ([src, t]) =>
+      `| ${src} | ${t.n} | ${t.sub} | ${t.human} | ${t.peer} | ${M(t.read)} | ${t.compactions} | ${t.limits} | ${t.skipped} |`,
   ),
   ``,
   `## Costliest transcripts`,
@@ -387,11 +486,13 @@ const digest = [
     (s) => `| ${s.src} | ${s.project} | ${s.session} | ${s.sub ? 'y' : ''} | ${M(s.cacheRead)} | ${s.compactions} | ${s.agents} |`,
   ),
   ``,
-  `## Skills loaded`,
+  `## Skills used`,
+  ``,
+  `Uses, then sessions. Claude Skill calls count each call; a SKILL.md read or a $/slash mention counts once per session.`,
   ``,
   Object.entries(skills)
-    .sort((a, b) => b[1] - a[1])
-    .map(([k, n]) => `${k} ${n}`)
+    .sort((a, b) => b[1].sessions - a[1].sessions || b[1].uses - a[1].uses)
+    .map(([k, t]) => `${k} ${t.uses}/${t.sessions}`)
     .join(', ') || 'none',
   ``,
   `## Repeated owner messages (2+ sessions)`,
