@@ -7,6 +7,8 @@ description: Get an independent review of a change from the other model family t
 
 The other model family reviews the change against the same criteria as `code-review`. You ground the packet first and validate every claim after. Read-only: edit nothing during the review.
 
+A PR someone else asked you to review runs `code-review`'s Requested review instead, in this session.
+
 Read `../code-review/SKILL.md` and `../counsel/SKILL.md` first. The criteria live in `../code-review/references/review-contract.md` and `../code-review/references/test-audit.md`.
 
 ## 1. Ground the packet
@@ -51,4 +53,11 @@ At most two per checkpoint (a branch, a PR, or one stack entry).
 
 ## 5. Report
 
-Use the `code-review` Phase 4 report: verdict first, then `Blockers`, `Major`, `Minor`, `Optional`, and `Rejected findings`, with Counsel's unsupported claims listed under `Rejected findings`. Add the round count and the Counsel output path.
+Lead with the verdict and the safety fact (`code-review` Phase 4). Then sort every claim, yours and Counsel's, into four buckets. Each item keeps its severity and names the model that raised it (`claude`, `codex`, or `both`):
+
+- **Act on**: accepted Blockers and Major.
+- **Consider**: accepted Minor and Optional.
+- **Noted**: true, and needs no change in this checkpoint (pre-existing, out of scope).
+- **Dismissed**: claims the source does not support, each with the reason.
+
+Then the `Spec` section, the round count and the Counsel output path.

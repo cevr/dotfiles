@@ -29,7 +29,7 @@ Create the pull request
 6. Stage only the task changes.
 7. Commit with a concise Conventional Commit message.
 8. Push the branch to the remote with `-u`.
-9. Create the pull request with `gh pr create`.
+9. Create the pull request with `gh pr create`, ready for review (no `--draft`).
 10. Select the smallest reviewer view that explains each important change.
 11. Add change-shape evidence when the change affects runtime flow, state, ownership, or module boundaries.
 12. Add visual evidence when the change affects a visible interface.
@@ -46,6 +46,19 @@ Create the pull request
 
 [High-level concept of the solution - not a list of file changes]
 
+## Scope
+
+[1-3 items: what it covers, and what it deliberately leaves out (a follow-up, a known gap)]
+
+## Tradeoffs
+
+[Optional. Only the rejected alternatives a reviewer would otherwise ask about]
+
+## Merge Danger
+
+**Door:** [one-way or two-way], [why]
+**Blast radius:** [one word], [who or what it touches, and why that is safe or risky]
+
 ## Review Guide
 
 [Optional. Add only the smallest diagrams or shape diffs needed to understand the important change.]
@@ -59,6 +72,8 @@ Create the pull request
 - Do NOT include "Generated with Claude Code" or similar footers
 - Keep the PR description concise and focused on intent and approach
 - Omit the review guide when prose already makes the change clear
+- Omit Tradeoffs when there was no real choice
+- Merge Danger: a two-way door rolls back cheaply; a one-way door does not (a destructive migration, a published or stored format, deleted data, an external send)
 - Use HEREDOC for the PR body to preserve formatting
 
 ## Evidence Selection
