@@ -17,7 +17,7 @@ Apple frames design as serving four human needs: **safety/predictability, unders
 The moment lag appears, the feeling of directness "falls off a cliff." Response is the foundation everything else is built on.
 
 - **Respond on pointer-down, not on release.** Highlight a button the instant it's pressed with `:active` ([press recipe](recipes.md#button-press)). Waiting for `click` or touch-up to show feedback feels dead.
-- **Be vigilant about every latency.** Audit debounces, artificial timers, transition waits and the ~300ms tap delay ([mobile web](../mobile-web.md)). Anything on the input path that isn't essential is a regression.
+- **Be vigilant about every latency.** Audit debounces, artificial timers, transition waits and the ~300ms tap delay ([mobile web](../../platforms/web/mobile.md)). Anything on the input path that isn't essential is a regression.
 - **Feedback must be continuous *during* the interaction, not just at the end.** For a drag, slider or drawer, update the UI 1:1 with the pointer the whole way through. Never animate only when the gesture completes.
 
 ## Direct manipulation: 1:1 tracking
@@ -179,7 +179,7 @@ The gesture recipe that puts the sections above together. Springs, not durations
 element.style.transform = `translateY(${distance}px)`;
 ```
 
-Test it on a real device: emulation cannot reproduce how a flick or a rubber-band feels ([mobile web](../mobile-web.md)).
+Test it on a real device: emulation cannot reproduce how a flick or a rubber-band feels ([mobile web](../../platforms/web/mobile.md)).
 
 ## Gesture design details: the feel checklist
 

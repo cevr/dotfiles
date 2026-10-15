@@ -90,7 +90,7 @@ iOS Safari zooms the whole page when an input's text is smaller than `16px`. Two
 - Size the input up on mobile (`text-base sm:text-sm`). Changes how it looks on small screens.
 - Keep `font-size: 16px` and render the intended size with `transform: scale()`. Identical at every viewport, more code to maintain.
 
-Both recipes, plus placeholder and caret styling, are in [details-and-accessibility.md](details-and-accessibility.md#forms-and-editable-text). Other phone-specific fixes are in [mobile web](../mobile-web.md).
+Both recipes, plus placeholder and caret styling, are in [details-and-accessibility.md](details-and-accessibility.md#forms-and-editable-text). Other phone-specific fixes are in [mobile web](../../platforms/web/mobile.md).
 
 ## Size floors
 
@@ -118,7 +118,7 @@ Build drop caps, gradient text, outlines and text shadows in CSS so the text sta
 
 Keep text selectable by default. `::selection` can carry brand into the reading experience, as long as the selected combination stays legible. [Styling other ranges](details-and-accessibility.md#selection) such as search matches is in the reference.
 
-`user-select: none` belongs on a draggable or gesture-driven surface where accidental selection interferes, and on touch controls where a long-press would select the label instead of pressing it ([mobile web](../mobile-web.md#8-long-press-selects-button-text)). Never across the interface, and never on content text.
+`user-select: none` belongs on a draggable or gesture-driven surface where accidental selection interferes, and on touch controls where a long-press would select the label instead of pressing it ([mobile web](../../platforms/web/mobile.md#8-long-press-selects-button-text)). Never across the interface, and never on content text.
 
 Gradient text (`background-clip: text`) unsets the gradient in `::selection`, or the selection renders invisible.
 

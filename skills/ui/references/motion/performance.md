@@ -154,7 +154,7 @@ ref.current.style.transform = `translateY(${nextY}px)`;
 
 Look for state updates inside `requestAnimationFrame`, `pointermove`, `scroll` or drag handlers. Continuous effects such as magnetic hover and cursor tracking belong in motion values (`useMotionValue`, `useTransform`, `useSpring`) for the same reason.
 
-Solid has no re-render, but a per-frame signal write still queues a flush and updates every subscriber. Write the style directly there too ([solid.md](../solid.md#2-reactivity-what-react-performance-advice-means-here)).
+Solid has no re-render, but a per-frame signal write still queues a flush and updates every subscriber. Write the style directly there too ([solid.md](../../platforms/web/solid.md#2-reactivity-what-react-performance-advice-means-here)).
 
 ## Two traps that look correct
 

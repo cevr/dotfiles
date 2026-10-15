@@ -4,7 +4,7 @@ Review and fix semantics, keyboard and focus behavior, accessible names, forms, 
 
 Reviewing means two walks. Keyboard-only, where every flow completes without a mouse. Then screen-reader, where every control announces a name, a role and its state. When unsure, take the platform default over a custom rebuild, and remove ARIA rather than add it.
 
-Contrast measurement and color fixes belong to [color](../color/index.md). Text sizing, iOS input zoom and language metadata belong to [typography](../typography/index.md). Spacing between targets and spatial RTL belong to [layout](../layout/index.md). Label, error and alt-text wording belong to [writing](../writing/index.md). Animation recipes belong to [motion recipes](../motion/recipes.md). Hover gating, tap highlight and scroll containment belong to [mobile web](../mobile-web.md).
+Contrast measurement and color fixes belong to [color](../color/index.md). Text sizing, iOS input zoom and language metadata belong to [typography](../typography/index.md). Spacing between targets and spatial RTL belong to [layout](../layout/index.md). Label, error and alt-text wording belong to [writing](../writing/index.md). Animation recipes belong to [motion recipes](../motion/recipes.md). Hover gating, tap highlight and scroll containment belong to [mobile web](../../platforms/web/mobile.md).
 
 ## Criteria, not conventions
 

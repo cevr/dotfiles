@@ -45,7 +45,7 @@ toast.success('Uploaded', { id });
 
 **Close callbacks** — `onDismiss` fires on close button or swipe; `onAutoClose` fires on timeout. They are separate; there is no single "closed" callback.
 
-**Timing and announcements** — the default `duration` is `4000`. A toast carrying an action (such as Undo) or an error stays until dismissed (`duration: Infinity`), and one that must time out gets at least 5 seconds; the rules are in [motion and zoom](accessibility/motion-and-zoom.md#autoplay-and-timed-ui). Never move focus to a toast ([screen readers](accessibility/screen-readers.md#live-regions)). Toast copy patterns are in [writing patterns](writing/patterns.md#status-copy).
+**Timing and announcements** — the default `duration` is `4000`. A toast carrying an action (such as Undo) or an error stays until dismissed (`duration: Infinity`), and one that must time out gets at least 5 seconds; the rules are in [motion and zoom](../../references/accessibility/motion-and-zoom.md#autoplay-and-timed-ui). Never move focus to a toast ([screen readers](../../references/accessibility/screen-readers.md#live-regions)). Toast copy patterns are in [writing patterns](../../references/writing/patterns.md#status-copy).
 
 ## Styling — the escalation ladder
 

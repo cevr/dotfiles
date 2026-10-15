@@ -4,7 +4,7 @@ Set grouping, alignment, spacing and responsive structure, then stress-test that
 
 Write every fix in the project's styling system. The numbers below apply only where the project has no spacing scale or density system; otherwise use its tokens. A finding needs a failure you can show, such as a clip, an overlap, a broken mirror or a misread group. A value that differs from these starting points is not one.
 
-Hit areas and focus behavior belong to [accessibility](../accessibility/hit-areas.md) and its [focus rules](../accessibility/focus-and-keyboard.md). Radius and shadows belong to [surfaces](../surfaces.md), animation to [motion](../motion/index.md) and directional icon mirroring to [icons](../icons.md#icons-in-rtl). Line length, text spacing and truncation mechanics belong to [typography](../typography/index.md). The words themselves belong to [writing](../writing/index.md). Phone-specific viewport, safe-area and touch fixes are in [mobile web](../mobile-web.md).
+Hit areas and focus behavior belong to [accessibility](../accessibility/hit-areas.md) and its [focus rules](../accessibility/focus-and-keyboard.md). Radius and shadows belong to [surfaces](../surfaces.md), animation to [motion](../motion/index.md) and directional icon mirroring to [icons](../icons.md#icons-in-rtl). Line length, text spacing and truncation mechanics belong to [typography](../typography/index.md). The words themselves belong to [writing](../writing/index.md). Phone-specific viewport, safe-area and touch fixes are in [mobile web](../../platforms/web/mobile.md).
 
 ## Group with space, not lines
 

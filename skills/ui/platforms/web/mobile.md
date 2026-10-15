@@ -1,6 +1,6 @@
 # Mobile web
 
-Make a web app feel native on a phone: take an app that feels like a website and remove, one by one, the tells that give it away. These rules are about the platform layer (viewport, touch, scroll, safe areas, the browser chrome) where a handful of lines decide whether the app feels installed or embedded. Designing motion is in [motion](motion/index.md), reviewing it is in [motion standards](motion/standards.md), and React Native is out of scope.
+Make a web app feel native on a phone: take an app that feels like a website and remove, one by one, the tells that give it away. These rules are about the platform layer (viewport, touch, scroll, safe areas, the browser chrome) where a handful of lines decide whether the app feels installed or embedded. Designing motion is in [motion](../../references/motion/index.md), reviewing it is in [motion standards](../../references/motion/standards.md), and React Native is out of scope.
 
 A desktop browser with the device toolbar on is not a phone. Most "the app feels janky on mobile" reports are not animation problems: they're a 300ms tap delay, a gray flash on tap, or a hover state that won't let go. The user's phone is the source of truth. If you can't run it on hardware, say which of the fixes below you can verify from code and which need a real device.
 
@@ -14,7 +14,7 @@ Two failure modes, and the first is worse:
 1. **Every fix ships with the reason.** Each fix below has a *why*. Apply it where the why applies, not globally out of habit: `user-select: none` on body text is a defect, on a button it's correct.
 2. **Media queries over device sniffing.** `(hover: hover)`, `(pointer: fine)`, `env()`, `dvh`: the platform tells you what it can do. Never branch on user agent strings or screen width to guess at touch.
 3. **Touch and mouse are not exclusive.** iPads with trackpads, laptops with touchscreens, phones with a mouse. Write for both at once; gate by capability, not by device.
-4. **Never disable zoom.** `user-scalable=no` and `maximum-scale=1` are accessibility failures ([zoom and reflow](accessibility/motion-and-zoom.md#zoom-and-reflow)). Fix the input font size instead, which is what was causing the zoom.
+4. **Never disable zoom.** `user-scalable=no` and `maximum-scale=1` are accessibility failures ([zoom and reflow](../../references/accessibility/motion-and-zoom.md#zoom-and-reflow)). Fix the input font size instead, which is what was causing the zoom.
 5. **Test on hardware before calling it done.** Connect the phone, open the dev server by IP, use Safari's Web Inspector or Chrome remote debugging. Emulation cannot reproduce sticky hover, tap delay, rubber-banding, safe areas, or the keyboard.
 
 ## The symptom table
@@ -79,13 +79,13 @@ Set it once, globally. Then make sure every tappable element has its own `:activ
 .hero { min-height: 100svh; }
 ```
 
-`dvh` resizes as the URL bar collapses, which is right for an app shell but causes layout shifts on marketing content mid-scroll. `svh` is stable and never overflows, which is right for a hero. `lvh` is the old `vh`; you almost never want it. Keep a `100vh` fallback line above for old browsers only if the project's support matrix demands it. Modal height caps and keeping actions out of clipped areas are in [layout](layout/spacing-and-adaptivity.md#plan-for-growth-and-clipping).
+`dvh` resizes as the URL bar collapses, which is right for an app shell but causes layout shifts on marketing content mid-scroll. `svh` is stable and never overflows, which is right for a hero. `lvh` is the old `vh`; you almost never want it. Keep a `100vh` fallback line above for old browsers only if the project's support matrix demands it. Modal height caps and keeping actions out of clipped areas are in [layout](../../references/layout/spacing-and-adaptivity.md#plan-for-growth-and-clipping).
 
 ### 4. Page zooms into the input
 
 iOS Safari zooms the page when focus lands on an input whose font size is under 16px, and it does not zoom back out on blur. The user is left looking at a cropped, drifted layout. This is the reason people reach for `maximum-scale=1`, which is the wrong fix (Rule 4).
 
-Hold inputs at `16px` (`1rem` at the default root size). The two ways to do that while keeping a smaller design size, sizing up on small screens or keeping `16px` and scaling the text down, are in [typography](typography/details-and-accessibility.md#ios-input-zoom). Where the design's smaller input text should switch on capability rather than viewport width, gate the `16px` by pointer:
+Hold inputs at `16px` (`1rem` at the default root size). The two ways to do that while keeping a smaller design size, sizing up on small screens or keeping `16px` and scaling the text down, are in [typography](../../references/typography/details-and-accessibility.md#ios-input-zoom). Where the design's smaller input text should switch on capability rather than viewport width, gate the `16px` by pointer:
 
 ```css
 @media (pointer: coarse) {
@@ -93,7 +93,7 @@ Hold inputs at `16px` (`1rem` at the default root size). The two ways to do that
 }
 ```
 
-The keyboard each field summons (`type`, `inputmode`, `autocapitalize`, `autocorrect`, `enterkeyhint`) is in [forms](accessibility/forms.md#autocomplete-and-input-types).
+The keyboard each field summons (`type`, `inputmode`, `autocapitalize`, `autocorrect`, `enterkeyhint`) is in [forms](../../references/accessibility/forms.md#autocomplete-and-input-types).
 
 ### 5. Tap feels laggy
 
@@ -119,7 +119,7 @@ button, a, [role="button"], .tappable {
 }
 ```
 
-The press values (`0.96`, `150ms`, `ease-out`, no scale when disabled) are owned by [motion](motion/index.md). If the codebase has motion tokens, use them; don't fork a new curve.
+The press values (`0.96`, `150ms`, `ease-out`, no scale when disabled) are owned by [motion](../../references/motion/index.md). If the codebase has motion tokens, use them; don't fork a new curve.
 
 ### 6. Pull-to-refresh hijacks scroll
 
@@ -162,7 +162,7 @@ By default the browser letterboxes your page inside the safe area, leaving the n
 }
 ```
 
-`viewport-fit=cover` lets the page under the notch; `env(safe-area-inset-*)` gives you the insets to pad back out. Without the meta tag the `env()` values are all `0px`. Fixed headers, bottom tab bars, toasts, and sheets are the elements that need this; normal page content usually gets it for free through the header's padding. Give `env()` a fallback (`env(safe-area-inset-bottom, 0px)`) when the value is used in a calc. Which elements bleed and which stay inside the insets, and the RTL handling of the left and right insets, are in [layout](layout/spacing-and-adaptivity.md#content-bleeds-controls-float).
+`viewport-fit=cover` lets the page under the notch; `env(safe-area-inset-*)` gives you the insets to pad back out. Without the meta tag the `env()` values are all `0px`. Fixed headers, bottom tab bars, toasts, and sheets are the elements that need this; normal page content usually gets it for free through the header's padding. Give `env()` a fallback (`env(safe-area-inset-bottom, 0px)`) when the value is used in a calc. Which elements bleed and which stay inside the insets, and the RTL handling of the left and right insets, are in [layout](../../references/layout/spacing-and-adaptivity.md#content-bleeds-controls-float).
 
 ### 8. Long-press selects button text
 
@@ -176,7 +176,7 @@ button, [role="button"], .tab, .chip, .drag-handle {
 }
 ```
 
-Never put `user-select: none` on `body`. Users copy addresses, error messages, and order numbers; that is content. Keeping content selectable is in [typography](typography/index.md).
+Never put `user-select: none` on `body`. Users copy addresses, error messages, and order numbers; that is content. Keeping content selectable is in [typography](../../references/typography/index.md).
 
 ### 9. Carousel scrolls vertically
 
@@ -198,7 +198,7 @@ The values name what the *browser* may still do. `pan-y` on a horizontal carouse
 
 If the carousel is native scroll rather than a JS gesture, prefer `scroll-snap-type: x mandatory` on the track and `scroll-snap-align: start` on slides: the browser's own physics beat a hand-rolled spring, and `touch-action` becomes unnecessary.
 
-Every drag or swipe still needs a single-pointer alternative ([hit areas](accessibility/hit-areas.md#gestures-and-dragging)). Building the gesture itself is in [gestures](motion/gestures.md).
+Every drag or swipe still needs a single-pointer alternative ([hit areas](../../references/accessibility/hit-areas.md#gestures-and-dragging)). Building the gesture itself is in [gestures](../../references/motion/gestures.md).
 
 ### 10. Status bar color doesn't match
 
@@ -210,7 +210,7 @@ The status bar and the browser chrome take their color from `theme-color`. One v
 <meta name="color-scheme" content="light dark" />
 ```
 
-Match the value to the color at the very top of your page: the header background, not the brand color. In Next.js set it through the `viewport` export (`themeColor: [{ media, color }]`). If the app switches theme with a class rather than the OS setting, update the tag from JavaScript on toggle. For an installed PWA, `apple-mobile-web-app-status-bar-style` and the manifest's `theme_color`/`background_color` are the same decision. Theme switching itself is in [theming](theming.md).
+Match the value to the color at the very top of your page: the header background, not the brand color. In Next.js set it through the `viewport` export (`themeColor: [{ media, color }]`). If the app switches theme with a class rather than the OS setting, update the tag from JavaScript on toggle. For an installed PWA, `apple-mobile-web-app-status-bar-style` and the manifest's `theme_color`/`background_color` are the same decision. Theme switching itself is in [theming](../../references/theming.md).
 
 ### 11. Right in Chrome, wrong on phone
 

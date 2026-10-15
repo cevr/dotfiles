@@ -90,4 +90,4 @@ Keep pointer events on any layer the user is meant to hit: a modal scrim that di
 
 - Every drag needs a single-pointer alternative under 2.5.7, such as move-up and move-down buttons on a sortable row, or a menu on a kanban card.
 - Every multipoint or path-based gesture, such as a pinch or a swipe, needs a single-pointer alternative under 2.5.1.
-- A surface implementing its own pan, zoom or drag gestures claims those axes with `touch-action`, scoped to that surface. The values and their scoping rule are in [mobile web](../mobile-web.md#9-carousel-scrolls-vertically).
+- A surface implementing its own pan, zoom or drag gestures claims those axes with `touch-action`, scoped to that surface. The values and their scoping rule are in [mobile web](../../platforms/web/mobile.md#9-carousel-scrolls-vertically).

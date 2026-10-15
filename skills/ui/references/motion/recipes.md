@@ -6,7 +6,7 @@ Curves are the `--ease-out`, `--ease-in-out` and `--ease-drawer` tokens defined 
 
 Every recipe that moves, scales or blurs ships with the [reduced-motion fallback](#reduced-motion-fallback). Drag-driven recipes (drag to dismiss, sheets with momentum) live in [gestures.md](gestures.md#drag-to-dismiss).
 
-Code is React with `motion/react`. In a Solid project the CSS recipes apply as written, and [solid.md](../solid.md#5-motion) maps each `motion/react` idiom (`AnimatePresence`, `initial={false}`, `whileTap`, `MotionConfig`, `useInView`, `useEffect`) to Solid 2.
+Code is React with `motion/react`. In a Solid project the CSS recipes apply as written, and [solid.md](../../platforms/web/solid.md#5-motion) maps each `motion/react` idiom (`AnimatePresence`, `initial={false}`, `whileTap`, `MotionConfig`, `useInView`, `useEffect`) to Solid 2.
 
 ## Interruptible state: transitions, not keyframes
 
@@ -270,7 +270,7 @@ useEffect(() => { setMounted(true); }, []);
 // <div data-mounted={mounted}>
 ```
 
-When toasts stack and the list reflows, the opacity change has to work against the height change. There's no formula for that pair: adjust until it feels right, then check it again the next day. For the Sonner library itself, see [Sonner](../sonner.md).
+When toasts stack and the list reflows, the opacity change has to work against the height change. There's no formula for that pair: adjust until it feels right, then check it again the next day. For the Sonner library itself, see [Sonner](../../platforms/web/sonner.md).
 
 ## Accordion / collapse
 

@@ -206,4 +206,4 @@ Breaks land in [layout](../../references/layout/index.md).
 | Reduced motion | Motion that ignores the preference, or a state change carried by motion alone |
 | A touch device | Hover-only actions (the ••• that appears on hover) are unreachable |
 
-Dark-mode breaks land in [color](../../references/color/index.md); zoom and motion land in [accessibility](../../references/accessibility/motion-and-zoom.md); touch breaks land in [mobile web](../../references/mobile-web.md) and, for hit areas, [accessibility](../../references/accessibility/hit-areas.md).
+Dark-mode breaks land in [color](../../references/color/index.md); zoom and motion land in [accessibility](../../references/accessibility/motion-and-zoom.md); touch breaks land in [mobile web](../../platforms/web/mobile.md) and, for hit areas, [accessibility](../../references/accessibility/hit-areas.md).

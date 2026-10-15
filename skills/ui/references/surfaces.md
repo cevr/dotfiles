@@ -154,7 +154,7 @@ Depth shadows vanish on dark backgrounds, so dark mode keeps one white ring:
 }
 ```
 
-The transparent border keeps the box the same size as the border it replaces. Gate the `:hover` rule as in [mobile web](mobile-web.md#1-hover-state-stuck-after-tap).
+The transparent border keeps the box the same size as the border it replaces. Gate the `:hover` rule as in [mobile web](../platforms/web/mobile.md#1-hover-state-stuck-after-tap).
 
 ## Image outlines
 
@@ -187,7 +187,7 @@ Use `outline` rather than `border` because it never changes the image's size. At
 
 ## Touch: hover, tap highlight, overlay scroll
 
-Hover-only styling sits behind the hover-capable pointer query, the default tap highlight is cleared where a control draws its own pressed state, and scrollable overlays contain their overscroll. The query and recipes live in [mobile web](mobile-web.md#1-hover-state-stuck-after-tap) ([tap flash](mobile-web.md#2-grayblue-flash-on-tap), [overscroll](mobile-web.md#6-pull-to-refresh-hijacks-scroll)).
+Hover-only styling sits behind the hover-capable pointer query, the default tap highlight is cleared where a control draws its own pressed state, and scrollable overlays contain their overscroll. The query and recipes live in [mobile web](../platforms/web/mobile.md#1-hover-state-stuck-after-tap) ([tap flash](../platforms/web/mobile.md#2-grayblue-flash-on-tap), [overscroll](../platforms/web/mobile.md#6-pull-to-refresh-hijacks-scroll)).
 
 ## Before you finish
 
@@ -197,7 +197,7 @@ Hover-only styling sits behind the hover-capable pointer query, the default tap 
 | `box-shadow: 0 0 0 1px` ring with no `border` beside it | `border: 1px solid transparent` |
 | `outline-slate-*`, `outline-zinc-*` or a hex outline color on `img` | `outline-black/10` and `dark:outline-white/10` |
 
-Touch checks (hover query, tap highlight, overscroll) are in [mobile web](mobile-web.md#never-ship). Icon checks are in [icons](icons.md#before-you-finish). Motion checks are in [motion](motion/index.md).
+Touch checks (hover query, tap highlight, overscroll) are in [mobile web](../platforms/web/mobile.md#never-ship). Icon checks are in [icons](icons.md#before-you-finish). Motion checks are in [motion](motion/index.md).
 
 ## Reporting
 

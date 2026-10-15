@@ -54,7 +54,7 @@ Icons use `currentColor` and take hover, selected and disabled states from CSS c
 </button>
 ```
 
-In plain CSS, gate the `:hover` rule behind `@media (hover: hover) and (pointer: fine)` as in [mobile web](mobile-web.md#1-hover-state-stuck-after-tap).
+In plain CSS, gate the `:hover` rule behind `@media (hover: hover) and (pointer: fine)` as in [mobile web](../platforms/web/mobile.md#1-hover-state-stuck-after-tap).
 
 ## Outline default, fill active
 
