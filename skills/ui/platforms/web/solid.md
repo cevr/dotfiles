@@ -307,6 +307,72 @@ function Input() {
 }
 ```
 
+### Composing behaviour (mixins)
+
+Remix 3 composes behaviour with a `mix` prop: an array of mixins on one element, each patching props (server-rendered) and hooking DOM lifecycle (browser-only). Solid 2 has no `mix` prop; the same split works with what it has. A behaviour is a **prop mixin**: a function returning props, with getters for live values. Its `ref` key holds a **ref factory** for any work that only the DOM can do. Ref factories replace `use:` directives.
+
+| The behaviour needs | Put it in | Why |
+| --- | --- | --- |
+| `role`, ARIA, `tabindex`, `data-*` state, `class`, `style` | prop mixin | A spread renders these into the SSR markup. A ref callback sets them only at hydration. |
+| click, key and pointer handlers | prop mixin `onX` | They are delegated, and `mergeProps` runs every handler. |
+| listener options, `document`/`window` listeners, observers, focus, measuring, animation | ref factory | Runs only in the DOM, never on the server. |
+
+```tsx
+import { createSignal, onSettled } from "solid-js";
+import type { JSX } from "@solidjs/web";
+import { mergeProps, type PropsInput } from "@bible/ui/merge-props"; // src/merge-props; add the "./merge-props" export with its first consumer
+
+type Mixin<T extends Element = HTMLElement> = Omit<JSX.HTMLAttributes<T>, 'ref' | 'style'> & {
+  ref?: RefFactory<T> | Array<RefFactory<T> | undefined>; // JSX.Ref<T> admits T: invariant
+  style?: JSX.CSSProperties | string; // without `false`, so it spreads onto @bible/ui parts
+  [data: `data-${string}`]: string | undefined;
+};
+type RefFactory<T extends Element = HTMLElement> = (el: T) => void;
+
+const mix = <T extends Element = HTMLElement>(...m: Array<Mixin<T> | false | null | undefined>) =>
+  mergeProps(...(m as Array<PropsInput>)) as Mixin<T>;
+
+// Factory body: owned, and also run on the server. The callback: unowned and browser-only.
+function onElement<T extends Element>(setup: (el: T) => void | (() => void)): RefFactory<T> {
+  let el: T | undefined;
+  onSettled(() => (el ? setup(el) : undefined)); // connected and attributed; returns cleanup
+  return (next) => void (el = next);
+}
+
+function hoverable(): Mixin {
+  const [hovered, setHovered] = createSignal(false);
+  return {
+    get 'data-hovered'() { return hovered() ? '' : undefined; },
+    onPointerEnter: () => setHovered(true),
+    onPointerLeave: () => setHovered(false),
+  };
+}
+
+// pressable(), observeSize() and report are further mixins / ref factories built the same way.
+function Card(props: { ref?: JSX.Ref<HTMLDivElement>; onOpen: () => void }) {
+  const behaviour = mix<HTMLDivElement>(pressable({ onPress: props.onOpen }), hoverable(), { class: 'card' });
+  return <div {...behaviour} ref={[observeSize(report), props.ref]} />;
+}
+```
+
+| Rule | Reason |
+| --- | --- |
+| Build prop mixins in the component body and spread the result. Never write `{...mix(a(), b())}` inline. | The compiler wraps an inline call in an accessor that reruns whenever a getter it reads changes. Each rerun rebuilds the mixins, so their signals reset. |
+| Call ref factories inline in `ref={[...]}`. | The array is evaluated once, untracked, under the element's owner. |
+| Keep factory bodies free of DOM access. Keep the returned callback to `el => (node = el)`, and do DOM work in `onSettled`. | SSR evaluates `ref={[...]}` factories but never calls their callbacks. The callback runs before the element is connected. Under a spread, it also runs before the element's attributes are set. |
+| Put mixins left to right, with the caller's props last. | Rightmost attribute wins. Handlers run rightmost first, and `event.preventBaseUIHandler()` stops the ones to its left. Every `class` is kept, `style` objects merge, and every ref is called. |
+| Don't create a mixin with a ref factory before its element exists, for example above a `<Show>`. | `onSettled` fires once and finds no element. |
+| Never cast a component ref: `<Card ref={x as T}>`. | The rc.11 compiler silently drops the prop. Casting on a DOM element is fine. |
+| Expect a native listener (`listen`) to run before a delegated `onX`. | Calling `stopPropagation()` in the native listener silences the delegated handlers. |
+
+| Remix 3 | Solid 2 |
+| --- | --- |
+| `mix={[a(), b()]}` | `{...m}` with `m = mix(a(), b())`, plus `ref={[c(), d()]}` |
+| render returning `<handle.element {...props} x />` | a prop mixin, or a props getter `(merged) => props` in `mergeProps` |
+| `on(type, h)` / `css({...})` / `attrs(defaults)` | `onX` / `class` / a mixin to the left of the caller's props |
+| `insert` / `remove` / `handle.signal` | `onSettled` and its returned cleanup |
+| `beforeRemove` + `persistNode` (deferred exit) | none in Solid 2 core (unverified for libraries) |
+
 ## 10. Toasts
 
 Sonner is React-only. In Solid use `@bible/ui/toast`, or port its parts into the project's primitive package.
