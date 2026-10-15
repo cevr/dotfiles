@@ -1,6 +1,8 @@
 # Interface Judgment
 
-Build the smallest complete interface that serves the task: useful product content, a clear title, and the actions people need. Each visible element adds information, enables an action, or provides necessary context. Empty space needs no filler copy or decoration. Correct tokens alone do not make a clear interface. Applies to new routes, custom markup, composed components, and revisions to existing screens.
+Build the smallest complete interface that serves the task: useful product content, a clear title, and the actions people need. Each visible element adds information, enables an action, or provides necessary context. Empty space needs no filler copy or decoration. Correct tokens alone do not make a clear interface. Applies to new screens, custom views, composed components, and revisions to existing screens.
+
+Implementation: [Apple](../platforms/apple/theming.md#interface-judgment) · [Android](../platforms/android/theming.md#interface-judgment); web notes are inline.
 
 ## Principles Behind the Rules
 
@@ -24,7 +26,7 @@ Tactical rules that serve these:
 
 ## Start With What the App Already Provides
 
-Inspect surrounding navigation, breadcrumbs, actions, and layout before adding page content. If the breadcrumb already provides the return route, another back row adds nothing. Keep extra navigation only when it has a distinct purpose or serves a different responsive context.
+Inspect surrounding navigation, breadcrumbs, toolbars, actions, and layout before adding page content. If the breadcrumb or back button already provides the return route, another back row adds nothing. Keep extra navigation only when it has a distinct purpose or serves a different responsive context.
 
 A specific product title is a sufficient start. Add metadata only when it helps users understand or act on the content, using information the app actually knows. "Nephew's bookshelf" can stand alone above its books, filters, and an Add a Book action. A title does not come with a subtitle, category label, status badge, or introduction by default. Put a requested summary in the content, not a second version under the title.
 
@@ -32,7 +34,7 @@ A specific product title is a sufficient start. Add metadata only when it helps 
 
 Omit invented eyebrows (small labels above headings), taglines, sentimental subtitles, motivational empty-state prose, header/footer slogans, and decorative icon-and-text badges. Supporting copy earns its place only by supplying product context the title, content, or controls don't already give. An ordinary app screen is not a marketing hero unless that is the request. Personality comes from the theme and real content, not extra prose.
 
-Explain only what changes the user's understanding, decision, or next action. Omit workflow narration and implementation commentary ("Saved on this browser · No account needed") from routine chrome. Surface a storage limit or technical detail at the relevant decision, and only when it has a concrete consequence. A friendly phrase does not need an icon, pill, or status dot; reserve those cues for real categories, actions, or state.
+Explain only what changes the user's understanding, decision, or next action. Omit workflow narration and implementation commentary ("Saved on this device · No account needed") from routine chrome. Surface a storage limit or technical detail at the relevant decision, and only when it has a concrete consequence. A friendly phrase does not need an icon, pill, or status dot; reserve those cues for real categories, actions, or state.
 
 Empty states: say what is missing when it isn't already clear, and give the next useful action. Skip the slogan, the paraphrase of the section title, and the explanation of what the button label already says. One action at the point of need; repeat it only when placement or a different responsive context makes it useful. Keep required labels, validation, accessibility, and instructions that prevent a real mistake.
 
@@ -54,7 +56,7 @@ Regular paragraph text by default. Emphasize a phrase only when it materially he
 
 Set prose in a readable column and align related headings, paragraphs, and data regions to a shared grid. Short copy can end before the right edge. A wide chart or table can sit below narrower prose when the relationship is clear. Choose container and text widths together; an unexplained narrow text column inside a much wider bordered or filled box reads as a mistake. Never justify text, add filler, or enlarge type to fill a box. Reflow on narrow screens while keeping type and controls readable.
 
-Wrapping text inherits `text-wrap: pretty` from the shared typography scope. When a line break looks wrong, shorten the copy or fix the width; manual `<br>` and non-breaking-space patches only repair one viewport.
+When a line break looks wrong, shorten the copy or fix the width; a manual line break or non-breaking space repairs only one width. **Web:** wrapping text inherits `text-wrap: pretty` from the shared typography scope; a manual `<br>` or `&nbsp;` repairs only one viewport.
 
 ## Keep Visual Cues Consistent With Behavior
 
@@ -66,13 +68,13 @@ Review the normal page, its empty states, and its expanded states. For each eyeb
 
 ## Building Components People Love
 
-These principles come from building Sonner (13M+ weekly npm downloads) and apply to any component:
+These principles come from building Sonner, a web toast library (13M+ weekly npm downloads); each Sonner detail below is the worked example, and the principle applies to any component on any platform:
 
-1. **Developer experience is key.** No hooks, no context, no complex setup. Insert `<Toaster />` once, call `toast()` from anywhere. The less friction to adopt, the more people will use it.
+1. **Developer experience is key.** Adoption takes one line and no setup: Sonner needs `<Toaster />` once and `toast()` from anywhere, with no hooks or context. The less friction to adopt, the more people will use it.
 2. **Good defaults matter more than options.** Ship beautiful out of the box. Most users never customize. The default easing, timing and visual design should be excellent.
 3. **Naming creates identity.** "Sonner" (French for "to ring") feels more elegant than "react-toast". Sacrifice discoverability for memorability when appropriate.
-4. **Handle edge cases invisibly.** Pause toast timers when the tab is hidden. Fill gaps between stacked toasts with pseudo-elements to maintain hover state. Capture pointer events during drag. Users never notice these, and that is exactly right.
-5. **Use transitions, not keyframes, for dynamic UI.** Toasts are added rapidly. Keyframes restart from zero on interruption; transitions retarget smoothly ([motion](motion/index.md)).
+4. **Handle edge cases invisibly.** Pause timers while the app or tab is hidden. Keep the hover region continuous across the gaps between stacked items (Sonner fills them with pseudo-elements). Keep tracking a drag after the pointer leaves the element (Sonner captures pointer events). Users never notice these, and that is exactly right.
+5. **Interruptible animation for dynamic UI.** Toasts are added rapidly. An animation on a fixed timeline restarts from zero when interrupted; one that retargets from the current value stays smooth (on the web, transitions rather than keyframes: [interruption](motion/index.md#8-interruption)).
 6. **Build a great documentation site.** Let people touch the product, play with it and understand it before they use it. Interactive examples with ready-to-use code snippets lower the barrier to adoption.
 
 ## Process

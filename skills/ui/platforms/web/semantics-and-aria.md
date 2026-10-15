@@ -1,6 +1,6 @@
 # Semantics and ARIA
 
-Native elements first, landmarks, accessible names and the ARIA rules that keep custom widgets honest.
+HTML element choice, landmarks, accessible names and the ARIA rules that keep custom widgets honest. The platform-neutral rules (role, name and state; native controls first; Label in Name; disabled means unavailable) are in [accessibility](../../references/accessibility/index.md); the rest of the web implementation is in [accessibility.md](accessibility.md).
 
 ## The rules of ARIA
 
@@ -36,7 +36,7 @@ Where a native element is truly impossible, the full polyfill is `role="button"`
 - `<header>`, `<nav>`, `<aside>` and `<footer>` map to landmarks screen-reader users jump between.
 - Multiple landmarks of the same type need distinguishing labels: `<nav aria-label="Primary">`, `<nav aria-label="Breadcrumbs">`.
 - Headings are structure, not styling. Style a heading level with CSS instead of picking the tag by size.
-- `<title>` matches the current context, most specific first: `Billing · Settings · Acme` (2.4.2).
+- `<title>` carries the [window title](../../references/accessibility/index.md#structure-is-navigation).
 
 ## Accessible names
 
@@ -44,7 +44,7 @@ Name precedence: `aria-labelledby` > `aria-label` > native label (`<label>`, tex
 
 - Prefer visible text or `aria-labelledby` over `aria-label`, which is invisible, drifts out of sync with the UI and is handled inconsistently by translation tools.
 - Icon-only buttons always need a name: `<button aria-label="Close">` with the icon `aria-hidden="true"`.
-- WCAG 2.5.3 Label in Name: a button showing "Send" with `aria-label="Submit message"` breaks voice control users who say "click Send".
+- An `aria-label` starts with the visible text ([Label in Name](../../references/accessibility/index.md#accessible-names)).
 
 ```tsx
 // Good: name from visible text, icon hidden
@@ -58,7 +58,7 @@ Name precedence: `aria-labelledby` > `aria-label` > native label (`<label>`, tex
 </button>
 ```
 
-Keep brand names and code tokens out of auto-translation with `translate="no"`. The `lang` and `dir` metadata around them belong to [typography](../typography/index.md).
+Keep brand names and code tokens out of auto-translation with `translate="no"`. The `lang` and `dir` metadata around them belong to [typography](../../references/typography/index.md).
 
 ## Common ARIA mistakes
 
@@ -73,9 +73,8 @@ Keep brand names and code tokens out of auto-translation with `translate="no"`. 
 
 Native `disabled` supplies the platform's complete disabled behavior. It removes the control from the tab order, suppresses activation, applies `:disabled` and excludes form controls from submission. `aria-disabled="true"` only announces the state, changing neither focusability, nor behavior, nor styling.
 
-- Never disable submit to gate validation. Validate on submit instead ([forms.md](forms.md)).
+- Never disable submit to gate validation. Validate on submit instead ([errors that announce](../../references/accessibility/index.md#errors-that-announce)).
 - A natively `disabled` control suppresses pointer events and leaves the tab order, so a tooltip on it never opens for keyboard or touch users. Put the reason in visible text beside the control, or switch to `aria-disabled="true"`, which keeps it focusable and hoverable.
 - Use `aria-disabled="true"` where keeping a control discoverable in the tab order is intentional, or where a custom control cannot use native `disabled`.
 - With `aria-disabled="true"`, block pointer and keyboard activation in the handler and prevent form submission where applicable. Add explicit styling, including forced-colors support, and explain nearby why the action is unavailable.
 - Never set both `disabled` and `aria-disabled` on the same element.
-- Disabled controls are exempt from contrast minimums.

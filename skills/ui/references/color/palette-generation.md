@@ -2,6 +2,8 @@
 
 Producing the values once the structure is decided. For which ramps to build and what each step is for, see [palette-structure.md](palette-structure.md).
 
+Implementation: [web](../../platforms/web/color.md#appearance-switching) · [Apple](../../platforms/apple/color.md#appearances) · [Android](../../platforms/android/color.md#the-material-scheme-wins)
+
 ## Start from the brand color
 
 A brand color arrives as one value, usually a hex. Two decisions come before any ramp exists:
@@ -25,7 +27,7 @@ Properties of the finished ramp, checkable against any output in any notation:
 
 ## Use a color library
 
-Never compute these by hand or by eye. `culori`, `colorjs.io` and `chroma.js` all convert between notations, measure perceived lightness and interpolate perceptually. Read the brand color in whatever format it arrives, do the math in a perceptual space and emit the project's notation:
+Never compute these by hand or by eye. Run a color library once at design time, whatever the target platform: `culori`, `colorjs.io` and `chroma.js` (JavaScript) all convert between notations, measure perceived lightness and interpolate perceptually. Read the brand color in whatever format it arrives, do the math in a perceptual space and emit the project's notation:
 
 ```js
 import { formatHex, interpolate, samples } from 'culori'
@@ -41,21 +43,9 @@ The output format is the project's choice. For a ramp the interpolation space is
 
 For comparison, Tailwind's blue ramp has the finer light end the generated one lacks:
 
-```css
-:root {
-  --blue-50: #eff6ff;
-  --blue-100: #dbeafe;
-  --blue-200: #bfdbfe;
-  --blue-300: #93c5fd;
-  --blue-400: #60a5fa;
-  --blue-500: #3b82f6;
-  --blue-600: #2563eb;
-  --blue-700: #1d4ed8;
-  --blue-800: #1e40af;
-  --blue-900: #1e3a8a;
-  --blue-950: #172554;
-}
-```
+| Step | `50` | `100` | `200` | `300` | `400` | `500` | `600` | `700` | `800` | `900` | `950` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Blue | `#eff6ff` | `#dbeafe` | `#bfdbfe` | `#93c5fd` | `#60a5fa` | `#3b82f6` | `#2563eb` | `#1d4ed8` | `#1e40af` | `#1e3a8a` | `#172554` |
 
 ## Several hues at once
 
@@ -72,17 +62,10 @@ A dark palette is not the light one reversed. Reversal is the starting point, no
 
 Swap the semantic roles first, then tune the values:
 
-```css
-:root {
-  --color-bg-page: var(--neutral-50);
-  --color-text-primary: var(--neutral-950);
-}
-
-.dark {
-  --color-bg-page: var(--neutral-950);
-  --color-text-primary: var(--neutral-50);
-}
-```
+| Role | Light | Dark |
+| --- | --- | --- |
+| Page background | `neutral-50` | `neutral-950` |
+| Primary text | `neutral-950` | `neutral-50` |
 
 Three things almost always need hand-tuning after the swap:
 
@@ -90,19 +73,6 @@ Three things almost always need hand-tuning after the swap:
 - **The dark end needs more separation.** Steps distinguishable as pale backgrounds collapse into each other as dark surfaces.
 - **Contrast does not survive the mirror.** APCA scores mirrored pairs differently, so recheck every pair in both appearances ([contrast.md](contrast.md)).
 
-### Choosing the switching mechanism
+### One switching mechanism
 
-Use one mechanism throughout:
-
-- **`prefers-color-scheme` alone** is correct with no theme toggle. Nothing to persist, nothing to hydrate.
-- **A `.dark` class** is required as soon as users can override the system setting. The media query then sets only the initial value.
-- **`light-dark()`** collapses both values into one declaration. It needs `color-scheme: light dark` and reads that property rather than a class, so a class-based toggle must set `color-scheme` too.
-
-```css
-:root {
-  color-scheme: light dark;
-  --color-bg: light-dark(#ffffff, #172554);
-}
-```
-
-A media query setting some tokens and a class setting others gives a half-themed interface the moment a user overrides their system preference.
+Switch every color between appearances through one mechanism, whichever the platform offers. Tokens switched by two mechanisms give a half-themed interface the moment a user overrides the system preference. The mechanisms are in [web](../../platforms/web/color.md#appearance-switching), [Apple](../../platforms/apple/color.md#appearances) and [Android](../../platforms/android/color.md#appearances).

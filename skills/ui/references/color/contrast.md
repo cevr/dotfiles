@@ -4,6 +4,8 @@ Contrast is measured between a **foreground color**, meaning text, an icon or a 
 
 [Accessibility](../accessibility/index.md) decides which requirement applies to a pair. The thresholds below are what a measured pair is reported against. Where neither the accessibility reference nor the project names a standard, report the WCAG 2 result and add the APCA value.
 
+Implementation: [web](../../platforms/web/color.md) · [Apple](../../platforms/apple/color.md#measuring-contrast) · [Android](../../platforms/android/color.md#measuring-contrast)
+
 ## WCAG 2 thresholds
 
 WCAG 2 is the standard formal conformance claims are made against.
@@ -11,7 +13,7 @@ WCAG 2 is the standard formal conformance claims are made against.
 | Content type | AA | AAA |
 | --- | --- | --- |
 | Text | 4.5:1 | 7:1 |
-| Large text, at least `24px` or `18.67px` bold | 3:1 | 4.5:1 |
+| Large text, at least `24pt` or `18.67pt` bold (WCAG's 18 and 14 print points) | 3:1 | 4.5:1 |
 | UI components and graphical objects | 3:1 | n/a |
 
 Disabled or inactive controls and logos are exempt.
@@ -24,7 +26,7 @@ Lc, Lightness Contrast, is APCA's measure of perceived contrast. These levels si
 | --- | --- |
 | Body text, columns or blocks of text | Lc 75, preferred Lc 90 |
 | Non-body text such as labels and headlines | Lc 60 |
-| Large text, at least `36px` regular or `24px` bold | Lc 45 |
+| Large text, at least `36pt` regular or `24pt` bold | Lc 45 |
 | Fine-detail or outline icons | Lc 45 |
 | Solid icons and UI components | Lc 30 |
 | Non-text that only has to be discernible, such as dividers | Lc 15 |
@@ -39,15 +41,10 @@ Lc is signed. Positive means dark text on a light background, negative means lig
 
 Move the foreground away from the background in perceived lightness, holding hue and saturation, then remeasure. Keeping hue fixed is what stops a contrast fix becoming a palette change.
 
-```css
-/* Failing: text too close to its background in lightness (Lc ≈ 50) */
-color: #7d93b0;
-background: #eef2f7;
-
-/* Fixed: darker text, same hue (Lc ≈ 88) */
-color: #2b3a4f;
-background: #eef2f7;
-```
+| Pair | Text | Background | Lc |
+| --- | --- | --- | --- |
+| Failing: text too close to its background in lightness | `#7d93b0` | `#eef2f7` | ≈ 50 |
+| Fixed: darker text, same hue | `#2b3a4f` | `#eef2f7` | ≈ 88 |
 
 Two constraints on the fix:
 
@@ -65,6 +62,6 @@ WCAG 2's neutral crossover is near 56% OKLCH lightness. At `oklch(65% 0 0)`, bla
 ## What to check
 
 - **Every pair, in every appearance.** APCA scores mirrored pairs differently, so a pair passing in light mode can fail in dark.
-- **Translucent surfaces.** A color on a `backdrop-filter` header or an overlay shifts with whatever scrolls behind it. Test against the lightest and darkest content it can sit over, or make the surface opaque enough that the shift cannot break the pair.
-- **Computed colors.** `color-mix()`, relative color syntax and opacity modifiers resolve at render time; measure the rendered result, not the declaration.
+- **Translucent surfaces.** A color on a blurred translucent header (**Web:** `backdrop-filter`; Apple materials and Liquid Glass) or an overlay shifts with whatever scrolls behind it. Test against the lightest and darkest content it can sit over, or make the surface opaque enough that the shift cannot break the pair.
+- **Computed colors.** Mixes, relative adjustments and opacity resolve at render time; measure the rendered result, not the declaration.
 - **Text over images.** There is no single background color. Measure the worst region, or guarantee one with a scrim.

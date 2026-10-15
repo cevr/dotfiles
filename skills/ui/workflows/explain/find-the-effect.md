@@ -1,6 +1,6 @@
 # Finding the layers behind an effect
 
-Part of [explain](../explain.md). Search by property signature, not by guessing the element. You rarely know the markup, but you always know which CSS properties could produce what you see.
+Part of [explain](../explain.md), for a website; a native app's effects are read from pixels per [native-app.md](native-app.md). Search by property signature, not by guessing the element. You rarely know the markup, but you always know which CSS properties could produce what you see.
 
 ## Three things that cost you the answer
 

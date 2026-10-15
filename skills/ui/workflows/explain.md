@@ -1,6 +1,6 @@
 # Explain
 
-Explain how something on the web was built, from a live URL or a screenshot. `explain how the gradient on example.com was built` finds the layers producing that gradient and explains what each one contributes.
+Explain how an interface was built: a website from a live URL, or a native app from a screenshot, a screen recording or the running app. `explain how the gradient on example.com was built` finds the layers producing that gradient and explains what each one contributes.
 
 It explains rather than judges. There is no verdict, because how someone else built their interface is not a finding. Reviewing against a standard is [review](review.md), and exploring alternatives for your own is [variants](variants.md). Name what you find in the vocabulary of the reference that owns it, such as [typography](../references/typography/index.md) for type or [color](../references/color/index.md) for palette.
 
@@ -9,15 +9,16 @@ It explains rather than judges. There is no verdict, because how someone else bu
 | The question | What you produce | Method |
 | --- | --- | --- |
 | How was this **site** built? | The frontend: framework and rendering strategy, styling system, component library, tokens, the type, spacing and color systems, motion, breakpoints, how fonts and images are served | [read-the-system.md](explain/read-the-system.md) |
+| How was this **app** built? | The system components it uses, its type, spacing and color systems and its motion, reconstructed from what it shows | [native-app.md](explain/native-app.md) |
 | How was **this** built? | The layer stack behind one effect, in paint order, with the technique on each layer | [find-the-effect.md](explain/find-the-effect.md) |
 
 Given a named thing, scope to it. A type scale and a token dump are not a longer answer to "how is the gradient built". Pull in a neighbour only where the effect cannot be explained without it, and say why.
 
-Either question can be asked of a screenshot instead of a URL. See **From a screenshot, it is a reconstruction**.
+Either question can be asked of a screenshot instead of a URL. See **From a screenshot, it is a reconstruction**. A native app is always that case: see **From a native app, it is a reconstruction too**.
 
 ## What you can actually read
 
-How you reach the page decides what you may claim. Say which route you used.
+How you reach a website decides what you may claim. Say which route you used. Everything in this section is the web; a native app has no page to reach.
 
 | | A scriptable browser | Fetched HTML and CSS |
 | --- | --- | --- |
@@ -61,9 +62,13 @@ A stack fingerprint is an inference, so give the evidence with it. `/_next/stati
 
 Without the page there is no code to read. You are proposing how it could be built to look like that, not explaining how it was built, so say so in the answer. Where the page is live, ask for the URL, since one command replaces the whole estimate. [from-an-image.md](explain/from-an-image.md) holds what an image can and cannot tell you and the method for reading one.
 
+## From a native app, it is a reconstruction too
+
+A compiled app has no source to read: no stylesheet, no DOM and no script to run against it. What you can work from is a screenshot, a screen recording and, on a device you control, the accessibility hierarchy. Point sizes are derivable when the device is known, motion is measurable frame by frame from a recording, and a system component is recognisable by its tells. The framework, the API behind an effect, token names and spring parameters are not recoverable at all. [native-app.md](explain/native-app.md) holds what each input gives and the method for each.
+
 ## Find the layers, not the element
 
-A visual effect is rarely one declaration. It is a stack, such as an element oversized past its container, a low-alpha multi-stop gradient, a large `filter: blur()` and a `backdrop-filter` layer above.
+A visual effect is rarely one declaration. It is a stack, such as an element oversized past its container, a low-alpha multi-stop gradient, a large `filter: blur()` and a `backdrop-filter` layer above. In a native app the stack is the same idea, read from pixels rather than declarations: a material behind content, a gradient, a shadow, each named as an inference.
 
 Report the stack in paint order with the declaration doing the work on each layer. The `linear-gradient()` alone explains little when the blur and the oversize produce most of what the reader sees. [find-the-effect.md](explain/find-the-effect.md) holds the search recipes and the three things that otherwise cost you the answer.
 
@@ -83,7 +88,7 @@ Do not end with code that rebuilds the effect. Anything assembled from compiled 
 
 Close on the recipe in words: the layers, their order and the one or two values doing the perceptual work.
 
-Then name what would not survive being copied. A pre-rendered raster shadow, a licensed typeface, a brand hue and a blur radius tuned to an unseen width all stay behind. Also name what you could not read at all. A cross-origin stylesheet, a `canvas` or a WebGL shader is an honest stopping point.
+Then name what would not survive being copied. A pre-rendered raster shadow, a licensed typeface, a brand hue and a blur radius tuned to an unseen width all stay behind. Also name what you could not read at all. A cross-origin stylesheet, a `canvas`, a WebGL shader or a compiled native app is an honest stopping point.
 
 ## Before you finish
 

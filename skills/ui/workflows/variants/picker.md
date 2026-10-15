@@ -23,3 +23,5 @@ The picker is the [state switcher](../states/switcher.md) with its names changed
 | "The component", at its production width | "The piece", at its production width |
 
 The 644px width and the `876px` container query in the switcher's CSS are examples there too: put the piece's production width in `max-width` and the grid column, and set the query to 232px plus it.
+
+On Apple and Android, build the switcher's **On Apple and Android** section with the same renames: `__variant` for the launch argument and intent extra, previews named for directions such as `#Preview("Density · Quiet")` or `@Preview(name = "Quiet", group = "Density")`, and each preview rendering the containing screen rather than the piece alone.

@@ -58,14 +58,16 @@ Exclude these and name what you excluded in the scope block. They are machine-au
 
 | Category | Patterns |
 | --- | --- |
-| Lockfiles | `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, `bun.lockb`, `Cargo.lock`, `composer.lock`, `Gemfile.lock`, `poetry.lock`, `uv.lock` |
-| Snapshots and fixtures | `__snapshots__/`, `*.snap`, `*.approved.*`, `test-results/`, `playwright-report/` |
-| Generated output | `dist/`, `build/`, `out/`, `.next/`, `.turbo/`, `.svelte-kit/`, `coverage/`, `storybook-static/`, `*.min.js`, `*.min.css`, `*.map` |
+| Lockfiles | `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, `bun.lockb`, `Cargo.lock`, `composer.lock`, `Gemfile.lock`, `poetry.lock`, `uv.lock`, `Package.resolved`, `Podfile.lock`, `Cartfile.resolved`, `gradle.lockfile` |
+| Snapshots and fixtures | `__snapshots__/`, `__Snapshots__/`, `*.snap`, `*.approved.*`, `test-results/`, `playwright-report/`, Paparazzi and Roborazzi snapshot directories, `src/screenshotTest*/reference/` |
+| Generated output | `dist/`, `build/`, `out/`, `.next/`, `.turbo/`, `.svelte-kit/`, `coverage/`, `storybook-static/`, `*.min.js`, `*.min.css`, `*.map`, `DerivedData/`, `.build/`, `.gradle/`, `xcuserdata/`, `*.xcuserstate` |
 | Generated sources | `*.gen.ts`, `*.generated.*`, `*.d.ts` emitted by a build, GraphQL and Prisma client output |
 | Vendored code | `vendor/`, `third_party/`, `node_modules/` |
-| Binaries and media | `*.png`, `*.jpg`, `*.webp`, `*.avif`, `*.woff2`, `*.mp4`, `*.pdf` |
+| Binaries and media | `*.png`, `*.jpg`, `*.webp`, `*.avif`, `*.heic`, `*.woff2`, `*.ttf`, `*.otf`, `*.mp4`, `*.pdf` |
 
-Two exceptions stay in scope. A **font file** added or swapped is a [typography](../../references/typography/index.md) change. An **image** added to a component is a [surfaces](../../references/surfaces.md) and [accessibility](../../references/accessibility/index.md) change, through its outline and its `alt` text. Review the code that references them, not the bytes.
+Two exceptions stay in scope. A **font file** added or swapped is a [typography](../../references/typography/index.md) change. An **image** added to a component is a [surfaces](../../references/surfaces.md) and [accessibility](../../references/accessibility/index.md) change, through its outline and its text alternative (`alt`, `accessibilityLabel`, `contentDescription`). Review the code that references them, not the bytes.
+
+Theme resources are source, never generated output, though they look machine-authored: an asset-catalog color set (`*.colorset/Contents.json`), Android `res/values*/colors.xml`, `themes.xml` and `dimens.xml`, and a String Catalog (`*.xcstrings`) or `strings.xml`. Review them as [color](../../references/color/index.md), [theming](../../references/theming.md) and [writing](../../references/writing/index.md) changes.
 
 Apply the exclusions as pathspecs so the file count in the scope block is the reviewed count:
 
@@ -81,11 +83,11 @@ Use the project's own resolver where one exists, otherwise import paths.
 
 `git grep` searches the working tree by default. Pass the reviewed ref after the pattern, or on a pull request you search a different revision and miss importers the change itself added. Results come back as `<rev>:path/to/file`; read them with `git show`, never the working-tree copy. Pass `-e` when the pattern starts with a dash, such as a `--color-*` token, or git parses it as an option.
 
-For a changed token or theme value, search the token name rather than the file, since consumers reference the name and never import it.
+For a changed token or theme value, search the token name rather than the file, since consumers reference the name and never import it: a CSS variable or utility on the web, an asset-catalog color by its name or generated symbol on Apple, an `R.color` resource or `MaterialTheme` role on Android.
 
 Order the consumers by a rule you can evaluate, so the cutoff is reproducible instead of a guess:
 
-1. **Route and layout entry points first**, whatever the framework treats as a rendered surface: `app/**/page.*`, `app/**/layout.*`, `pages/**`, `routes/**`, `src/views/**`, `*.astro` pages. Everything else only appears inside one.
+1. **Route and layout entry points first**, whatever the framework treats as a rendered surface: `app/**/page.*`, `app/**/layout.*`, `pages/**`, `routes/**`, `src/views/**`, `*.astro` pages on the web; the `@main` `App` and its scenes, `.navigationDestination` targets and view controllers on Apple; activities, fragments and `NavHost` destinations on Android. Everything else only appears inside one.
 2. **Then by importer count**, since a component pulled in by twenty files carries more of the change than one pulled in by two.
 3. **Break ties by proximity**, same package or feature directory first.
 

@@ -15,15 +15,15 @@ A Figma URL carries the file key after `/design/` or `/file/` and the node in `n
 | `get_variable_defs` | The variables the node uses, with their names and values | Mapping design variables onto project tokens |
 | `get_metadata` | The layer tree with ids and sizes, no styling | Large pages, to find which child nodes to read |
 
-Request the screenshot in the same `get_design_context` call. The code it returns is a reference, by default React with Tailwind and raw values. Translate it through **Map the design onto the project** and never paste it.
+Request the screenshot in the same `get_design_context` call. The code it returns is a reference, by default React with Tailwind and raw values. Translate it through **Map the design onto the project** and never paste it. On Apple and Android it is a hint only: take values from the variables and layer properties, structure from auto layout and component instances, and build with the platform's stacks, system controls and theme. Dev Mode's generated SwiftUI or Compose snippets, where a plugin offers them, are hints of the same kind.
 
 A design context flagged as sparse is a summary, not values. Read the visible children it names, in parallel, and build from those answers.
 
 ## What to trust
 
-- **Variable names over raw values.** A fill bound to `gray/600` maps to the project's `gray-600` even where the hex drifted. A raw hex with no variable goes through the mapping table.
+- **Variable names over raw values.** A fill bound to `gray/600` maps to the project's `gray-600` even where the hex drifted: a CSS token on the web, an asset-catalog color set on Apple, a `MaterialTheme.colorScheme` role or color resource on Android. A raw hex with no variable goes through the mapping table.
 - **Code Connect over name matching.** A node with a Code Connect mapping names the exact component and props. Use that component unless it cannot express the design, and report the case where it cannot.
 - **Auto layout over absolute positions.** Gap and padding on an auto layout frame are the spacing intent. Absolute x and y on a free-floating layer are where someone dropped it.
-- **Downloaded assets over Figma URLs.** Asset URLs from the server expire. Save each asset into the project the way the design context says, and leave no Figma URL in code.
+- **Downloaded assets over Figma URLs.** Asset URLs from the server expire. Save each asset into the project the way the design context says (an asset catalog on Apple, `res/drawable` or a vector drawable on Android; an icon that matches an SF Symbol or Material Symbol is that symbol), and leave no Figma URL in code.
 
 The screenshot is the target you compare against. It is never an asset in the build.

@@ -1,6 +1,8 @@
 # Copy patterns
 
-Templates for destructive flows and status copy, and recipes for plurals and locale formatting.
+Templates for destructive flows and status copy, and the rules for plurals and locale formatting.
+
+Implementation: [web](../../platforms/web/writing.md) · [Apple](../../platforms/apple/writing.md) · [Android](../../platforms/android/writing.md)
 
 ## Destructive flows
 
@@ -12,7 +14,7 @@ Templates for destructive flows and status copy, and recipes for plurals and loc
 | Affects other people | Body names who: "The 8 members of Design lose access." |
 | Account, workspace or repository | Field label: "Type 'acme-web' to confirm". The button stays disabled until it matches |
 
-An undo toast carries an action, so how long it stays on screen is set by [accessibility](../accessibility/motion-and-zoom.md#autoplay-and-timed-ui). Building one with Sonner is in [Sonner](../../platforms/web/sonner.md).
+An undo toast carries an action, so how long it stays on screen is set by [accessibility](../accessibility/motion-and-zoom.md#autoplay-and-timed-ui). **Web:** building one with Sonner is in [Sonner](../../platforms/web/sonner.md).
 
 ## Status copy
 
@@ -28,29 +30,27 @@ Keep the in-progress and done strings parallel, so "Saving changes…" resolves 
 
 ## Plurals and placeholders
 
-Write one message per sentence in ICU MessageFormat, which most i18n libraries read. The variable sits inside the sentence and the translator moves it:
+Write one message per sentence. The variable sits inside the sentence, so the translator can move it:
 
-```text
-inbox.count = {count, plural,
-  =0 {No new messages}
-  one {# new message}
-  other {# new messages}
-}
-invite.sent = {name} invited you to {project}
-```
+| Key | English |
+| --- | --- |
+| `invite.sent` | `{name} invited you to {project}` |
+| `inbox.count`, exactly 0 | No new messages |
+| `inbox.count`, category `one` | `{count}` new message |
+| `inbox.count`, category `other` | `{count}` new messages |
 
-`=0` matches the number zero exactly. `one` and `other` are plural categories, and a translator adds `few` or `many` where the language needs them. Without a library, pick the category with `new Intl.PluralRules(locale).select(count)`.
+Plural categories come from CLDR: `zero`, `one`, `two`, `few`, `many`, `other`. English uses `one` and `other`; a translator adds `few` or `many` where the language needs them, and Chinese uses only `other`. A category is grammar, not a number: `one` can cover 21 in Russian, and English never selects `zero`. An exact-number message such as "No new messages" is a separate sentence, written as an exact match where the format has one, otherwise chosen in code.
 
 ## Locale formatting
 
-Never hand-build a number, date or list. Pass the user's locale to `Intl`:
+Never hand-build a number, date or list. Pass the user's locale to the platform's formatter:
 
-| Value | Call | `en-US` output |
-| --- | --- | --- |
-| Currency | `new Intl.NumberFormat(locale, { style: "currency", currency: "EUR" })` | `€4,320.00` |
-| Unit | `new Intl.NumberFormat(locale, { style: "unit", unit: "megabyte" })` | `12 MB` |
-| Date | `new Intl.DateTimeFormat(locale, { dateStyle: "medium" })` | `Jun 30, 2026` |
-| Relative time | `new Intl.RelativeTimeFormat(locale, { numeric: "auto" }).format(-1, "day")` | `yesterday` |
-| List | `new Intl.ListFormat(locale, { type: "conjunction" })` | `Ana, Ben, and Cy` |
+| Value | `en-US` output |
+| --- | --- |
+| Currency (EUR) | `€4,320.00` |
+| Unit (12 megabytes) | `12 MB` |
+| Date, medium style | `Jun 30, 2026` |
+| Relative time, one day back, named | `yesterday` |
+| List, conjunction | `Ana, Ben, and Cy` |
 
-`Intl.ListFormat` follows each locale's own comma and conjunction rules, so never join names with `", "` and `" and "` by hand.
+A list formatter follows each locale's own comma and conjunction rules, so never join names with `", "` and `" and "` by hand.

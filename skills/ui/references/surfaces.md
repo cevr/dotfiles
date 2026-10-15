@@ -1,209 +1,74 @@
 # Surfaces
 
-Visual polish for surfaces, with the exact value each detail takes: concentric radius, optical alignment, shadow rings, image outlines, hover on hover-capable pointers and scroll containment in overlays. It applies once the underlying interaction is sound, and a polish finding never outranks a broken interaction.
+Visual polish for surfaces, with the exact value each detail takes: concentric radius, optical alignment, shadows and rings, image outlines. It applies once the underlying interaction is sound, and a polish finding never outranks a broken interaction.
+
+Implementation: [web](../platforms/web/surfaces.md) · [Apple](../platforms/apple/surfaces.md) · [Android](../platforms/android/surfaces.md)
 
 ## Exact values, optional polish
 
 The values here, in [icons](icons.md) and in [motion](motion/index.md) are exact, not ranges to approximate. `cubic-bezier(0.2, 0, 0, 1)` is not `cubic-bezier(0.4, 0, 0.2, 1)`, and `0.96` is not `0.95`. The optical nudges and the concentric padding cutoff are the exceptions. They are starting points, judged by eye.
 
-Keep the project's component library, tokens and density, and match its motion language wherever no rule gives a value. A deliberate and consistent project convention, such as a style with no shadows, is a preference and not a finding. The same detail done two ways within the project is a finding.
+Keep the project's component library, tokens and density, and match its motion language wherever no rule gives a value. A deliberate and consistent project convention, such as a style with no shadows, is a preference and not a finding. The same detail done two ways within the project is a finding. Platform conventions, such as Apple's continuous corners and materials or Material 3's shape scale and tonal elevation, come before the values here; each platform file says where.
 
-Text wrapping, font rendering, tabular numbers and text spacing belong to [typography](typography/index.md). Hit areas, keyboard support, ARIA and the reduced-motion requirement belong to [accessibility](accessibility/index.md). Grouping, section spacing, breakpoints and spatial RTL belong to [layout](layout/index.md), except directional icon mirroring, which is in [icons](icons.md#icons-in-rtl). Color tokens and contrast measurement belong to [color](color/index.md). Animation, transitions and their exact values belong to [motion](motion/index.md).
+Text wrapping, font rendering, tabular numbers and text spacing belong to [typography](typography/index.md). Hit areas, keyboard support, semantics and the reduced-motion requirement belong to [accessibility](accessibility/index.md). Grouping, section spacing, breakpoints and spatial RTL belong to [layout](layout/index.md), except directional icon mirroring, which is in [icons](icons.md#icons-in-rtl). Color tokens and contrast measurement belong to [color](color/index.md). Animation, transitions and their exact values belong to [motion](motion/index.md); translucent materials and depth belong to [gestures and fluid motion](motion/gestures.md#materials-and-depth-translucency-conveys-hierarchy).
 
 ## Concentric border radius
 
-Where nested surfaces share a visible, even inset, the outer radius is the inner radius plus the padding plus any border width. Past `24px` of padding, or where the padding is deliberately asymmetric, treat the layers as separate surfaces and keep each one's radius token.
+Where nested surfaces share a visible, even inset, the outer radius is the inner radius plus the padding plus any border width. Past `24pt` of padding, or where the padding is deliberately asymmetric, treat the layers as separate surfaces and keep each one's radius token.
 
 ```
 outerRadius = innerRadius + padding + borderWidth
 ```
 
-```css
-/* Good: concentric radii */
-.card {
-  border-radius: 20px; /* 12 + 8 */
-  padding: 8px;
-}
-.card-inner {
-  border-radius: 12px;
-}
-
-/* Bad: same radius on both */
-.card {
-  border-radius: 12px;
-  padding: 8px;
-}
-.card-inner {
-  border-radius: 12px;
-}
-```
-
-```tsx
-// Good: outer radius accounts for padding
-<div className="rounded-2xl p-2">       {/* 16px radius, 8px padding */}
-  <div className="rounded-lg">          {/* 8px radius = 16 - 8 */}
-    ...
-  </div>
-</div>
-
-// Bad: same radius on both
-<div className="rounded-xl p-2">
-  <div className="rounded-xl">
-    ...
-  </div>
-</div>
-```
+A `12pt` inner radius inside `8pt` of padding takes a `20pt` outer radius. The same radius on both layers is the failure: the gap between the corners swells at each corner. Where the outer radius is fixed by the system (a device corner, a sheet, a window), derive the inner one: `innerRadius = outerRadius − padding`.
 
 ## Optical alignment
 
-Where geometric centering looks off, nudge by eye. Give a button `2px` less padding on its icon side, shift a play triangle toward its point and fix asymmetric glyphs in the SVG itself.
+Where geometric centering looks off, nudge by eye. Give a button `2pt` less padding on its icon side, shift a play triangle toward its point and fix asymmetric glyphs in the asset itself.
 
 ### Buttons with text and an icon
 
-Start the icon side at `2px` less padding than the text side, then judge by eye.
-
-```css
-/* Good: less padding on the trailing icon side */
-.button-with-icon {
-  padding-inline-start: 16px;
-  padding-inline-end: 14px;
-}
-
-/* Bad: equal padding pushes the icon visually outward */
-.button-with-icon {
-  padding-inline: 16px;
-}
-```
-
-```tsx
-// Tailwind
-<button className="ps-4 pe-3.5 flex items-center gap-2">
-  <span>Continue</span>
-  <ArrowRightIcon />
-</button>
-```
+Start the icon side at `2pt` less padding than the text side, such as `16pt` on the text side and `14pt` on the icon side, then judge by eye. Equal padding pushes the icon visually outward.
 
 ### Play button triangles
 
-A triangle's geometric center sits left of its visual center, so shift it toward its point:
-
-```css
-.play-button svg {
-  transform: translateX(2px); /* physical on purpose: playback icons never mirror */
-}
-```
+A triangle's geometric center sits behind its visual center, so shift it `2pt` toward its point. The offset is physical on purpose: playback icons never mirror.
 
 ### Asymmetric icons
 
-Stars, arrows and carets carry uneven visual weight. Fix the `viewBox` or path in the SVG, so the component needs no extra offset. Where the asset cannot change, nudge its wrapper:
-
-```tsx
-<span className="translate-x-px">
-  <StarIcon />
-</span>
-```
+Stars, arrows and carets carry uneven visual weight. Fix the drawing's bounds or path in the asset, so the component needs no extra offset. Where the asset cannot change, nudge its wrapper by `1pt`.
 
 ## Shadows for elevation, borders for structure
 
-Where a border exists only to create depth, replace it with layered transparent `box-shadow` values. Keep borders on dividers, separators, table cells and selected states. Keep them on form inputs too, whose boundary needs 3:1 non-text contrast under [accessibility](accessibility/forms.md). Focus rings belong to [accessibility](accessibility/focus-and-keyboard.md) as well.
+Where a border exists only to create depth, replace it with a layered transparent shadow. Keep borders on dividers, separators, table cells and selected states. Keep them on form inputs too, whose boundary needs 3:1 non-text contrast under [accessibility](accessibility/forms.md). Focus rings belong to [accessibility](accessibility/focus-and-keyboard.md) as well.
 
-Forced-colors mode removes every `box-shadow`. Keep `border: 1px solid transparent` under a shadow ring so that mode still draws an edge.
+Where a shadow alone draws a surface's edge, the high-contrast modes still need an edge: keep a transparent border the same width under the shadow ring, which those modes paint, or switch to a visible border when the platform reports increased contrast. The transparent border also keeps the box the same size as the border it replaces.
 
 ### Shadow recipes
 
-#### Light mode
+Values in `pt`; `x`, `y`, `blur`, `spread`, then the color as black or white at an alpha. The blur is the CSS blur radius; other platforms' blur parameters are not the same unit, so match the rendered result by eye.
 
-Three layers. The first acts as a 1px ring, the second adds lift and the third ambient depth:
+**Light mode** has three layers. The first acts as a `1pt` ring, the second adds lift and the third ambient depth:
 
-```css
-:root {
-  --shadow-border:
-    0px 0px 0px 1px oklch(0 0 0 / 0.06),
-    0px 1px 2px -1px oklch(0 0 0 / 0.06),
-    0px 2px 4px 0px oklch(0 0 0 / 0.04);
-  --shadow-border-hover:
-    0px 0px 0px 1px oklch(0 0 0 / 0.08),
-    0px 1px 2px -1px oklch(0 0 0 / 0.08),
-    0px 2px 4px 0px oklch(0 0 0 / 0.06);
-}
-```
+| Layer | Rest | Hover |
+| --- | --- | --- |
+| Ring | `0 0 0 1` black `0.06` | black `0.08` |
+| Lift | `0 1 2 -1` black `0.06` | black `0.08` |
+| Ambient | `0 2 4 0` black `0.04` | black `0.06` |
 
-#### Dark mode
+**Dark mode** keeps one white ring, because depth shadows vanish on dark backgrounds: `0 0 0 1` white `0.08` at rest, white `0.13` on hover.
 
-Depth shadows vanish on dark backgrounds, so dark mode keeps one white ring:
-
-```css
-/* Redefine under the project's dark selector */
---shadow-border: 0 0 0 1px oklch(1 0 0 / 0.08);
---shadow-border-hover: 0 0 0 1px oklch(1 0 0 / 0.13);
-```
-
-#### Usage
-
-```css
-.card {
-  border: 1px solid transparent; /* forced-colors mode drops box-shadow and paints this border */
-  box-shadow: var(--shadow-border);
-  transition-property: box-shadow;
-  transition-duration: 150ms;
-  transition-timing-function: ease-out;
-}
-
-.card:hover {
-  box-shadow: var(--shadow-border-hover);
-}
-```
-
-The transparent border keeps the box the same size as the border it replaces. Gate the `:hover` rule as in [mobile web](../platforms/web/mobile.md#1-hover-state-stuck-after-tap).
+The rest-to-hover change transitions over `150ms` `ease-out`, and only on pointers that can hover.
 
 ## Image outlines
 
-Give content images a `1px` outline inset by `1px`. Use `oklch(0 0 0 / 0.1)` in light mode and `oklch(1 0 0 / 0.1)` in dark. Never use a palette near-black, a tinted neutral or the accent color, because the tint shows as a colored fringe on the image edge. Skip transparent artwork such as logos and illustrations.
-
-```css
-:root {
-  --image-outline: oklch(0 0 0 / 0.1);
-}
-/* Redefine under the project's dark selector */
---image-outline: oklch(1 0 0 / 0.1);
-
-.content-image {
-  outline: 1px solid var(--image-outline);
-  outline-offset: -1px;
-}
-```
-
-```tsx
-<img
-  className="outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
-  src={src}
-  alt={alt}
-/>
-```
-
-Never `outline-slate-*`, `outline-zinc-*`, `outline-neutral-*` or a palette near-black such as `#111827`.
-
-Use `outline` rather than `border` because it never changes the image's size. At `outline-offset: -1px` it sits just inside the edge and follows the corner radius.
-
-## Touch: hover, tap highlight, overlay scroll
-
-Hover-only styling sits behind the hover-capable pointer query, the default tap highlight is cleared where a control draws its own pressed state, and scrollable overlays contain their overscroll. The query and recipes live in [mobile web](../platforms/web/mobile.md#1-hover-state-stuck-after-tap) ([tap flash](../platforms/web/mobile.md#2-grayblue-flash-on-tap), [overscroll](../platforms/web/mobile.md#6-pull-to-refresh-hijacks-scroll)).
-
-## Before you finish
-
-| Detection | Fix |
-| --- | --- |
-| Padded parent and child with the same `rounded-*` or `border-radius` | Add the padding to the outer radius |
-| `box-shadow: 0 0 0 1px` ring with no `border` beside it | `border: 1px solid transparent` |
-| `outline-slate-*`, `outline-zinc-*` or a hex outline color on `img` | `outline-black/10` and `dark:outline-white/10` |
-
-Touch checks (hover query, tap highlight, overscroll) are in [mobile web](../platforms/web/mobile.md#never-ship). Icon checks are in [icons](icons.md#before-you-finish). Motion checks are in [motion](motion/index.md).
+Give content images a `1pt` outline drawn just inside the edge, so it never changes the image's size and follows its corner radius. Use black at `0.1` alpha in light mode and white at `0.1` in dark. Never use a palette near-black, a tinted neutral or the accent color, because the tint shows as a colored fringe on the image edge. Skip transparent artwork such as logos and illustrations.
 
 ## Reporting
 
-**Severity.** `HIGH` breaks an interaction, as a hover state stuck on touch does. Two of the [cross-discipline review](../workflows/review.md)'s escalation triggers land in this polish domain and are `HIGH` on sight. One is motion that ignores `prefers-reduced-motion`, and the other is a state change carried by motion alone; both are judged under [motion](motion/index.md). `MEDIUM` is a visible inconsistency in surfaces, icons or motion. `LOW` is isolated polish.
+**Severity.** `HIGH` breaks an interaction, as a hover state stuck after a tap does. Two of the [cross-discipline review](../workflows/review.md)'s escalation triggers land in this polish domain and are `HIGH` on sight. One is motion that ignores the reduce-motion setting, and the other is a state change carried by motion alone; both are judged under [motion](motion/index.md). `MEDIUM` is a visible inconsistency in surfaces, icons or motion. `LOW` is isolated polish.
 
-**Verification.** Without a browser, read every state the component defines from the code, such as hover, pressed, selected, loading and empty. With one, walk each state. Report every check you could not run as `Not verified`.
+**Verification.** Without rendering, read every state the component defines from the code, such as hover, pressed, selected, loading and empty. With rendering, walk each state in light and dark and with increased contrast. Report every check you could not run as `Not verified`.
 
 **Format.** Group findings under the principle each violates, ordered by severity, one row per root cause listing every location it appears in:
 
@@ -213,3 +78,5 @@ Touch checks (hover query, tap highlight, overscroll) are in [mobile web](../pla
 `Location` is `path/to/file:line`. `Why` names the principle and the user impact.
 
 End with `Block` when any `HIGH` remains, `Approve` otherwise, leaving the rest in the table as work to do. Never `Approve` coverage you did not inspect. With nothing to report, state "No actionable UI-polish findings" and report verification.
+
+Detection patterns to check before finishing are in each platform file: [web](../platforms/web/surfaces.md#before-you-finish) · [Apple](../platforms/apple/surfaces.md#before-you-finish) · [Android](../platforms/android/surfaces.md#before-you-finish). Icon checks are in [icons](icons.md#before-you-finish). Motion checks are in [motion](motion/index.md).

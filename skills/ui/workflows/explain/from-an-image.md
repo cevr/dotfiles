@@ -12,9 +12,9 @@ The [explain](../explain.md) method for a screenshot, where the answer is a reco
 
 You do not know the capture's scale. A screenshot may be at 1×, 2× or browser zoom, so a measured 30px could be 15px of type or 30. Never report a `px` size or spacing from an image alone.
 
-One exception. Where the image contains text you can identify as body copy, assume `16px` and express everything as a multiple of it. Say you did, since the assumption may be wrong.
+One exception. Where the image contains text you can identify as body copy, assume the platform's body size and express everything as a multiple of it: `16px` on the web, 17pt for iOS's `.body` style, 16sp for Material's `bodyLarge`. Say you did, since the assumption may be wrong. A device screenshot from a known device converts exactly; [native-app.md](native-app.md#sizes-when-the-device-is-known) has how.
 
-You cannot even be sure an effect is CSS. A gradient may be a flat image, a `canvas` or a shader.
+You cannot even be sure an effect is CSS, or in a native app which API drew it. A gradient may be a flat image, a `canvas` or a shader.
 
 ## Colors, which are the reliable part
 

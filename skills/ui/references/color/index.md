@@ -6,11 +6,15 @@ Never report a contrast value you did not measure, and never estimate a color yo
 
 Whether a pair is required to pass belongs to [accessibility](../accessibility/index.md). Surfaces, shadows and icon color belong to [surfaces](../surfaces.md) and [icons](../icons.md). Wiring tokens into an existing theme or component library is in [theming](../theming.md).
 
+Implementation: [web](../../platforms/web/color.md) · [Apple](../../platforms/apple/color.md) · [Android](../../platforms/android/color.md)
+
+Platform color systems are the platform convention: Apple's semantic system colors and Material 3's `ColorScheme` roles come before a hand-built palette, and their role names win on their platform ([Apple](../../platforms/apple/color.md#system-colors-first), [Android](../../platforms/android/color.md#the-material-scheme-wins)).
+
 ## Match the project's color system
 
-Reuse the project's tokens and notation. A consistent hex system beats hex with `oklch()` scattered through it.
+Reuse the project's tokens and notation. A consistent hex system beats hex with OKLCH values scattered through it.
 
-For a new system, `oklch()` is the best default, because its numbers behave the way the ramp rules below describe. Everywhere else, a color library produces the same ramp in the project's own notation ([color-formats.md](color-formats.md)).
+For a new system, build in OKLCH, because its numbers behave the way the ramp rules below describe. Everywhere else, a color library produces the same ramp in the project's own notation ([color-formats.md](color-formats.md)).
 
 ## A system is ramps, not colors
 
@@ -22,7 +26,7 @@ A ramp is not a gradient to pick from by eye. Each step exists because a role ne
 
 ## Name primitives by hue, semantics by role
 
-Primitives name a value (`--blue-600`) and are never applied in a component. Semantic tokens name a job (`--color-text-secondary`), point at a primitive and are the only tier components reference. That seam is what lets a theme repoint colors without touching components ([token-naming.md](token-naming.md)).
+Primitives name a value (`blue-600`) and are never applied in a component. Semantic tokens name a job (`color-text-secondary`), point at a primitive and are the only tier components reference. That seam is what lets a theme repoint colors without touching components ([token-naming.md](token-naming.md)).
 
 ## Use a token only in its role
 
@@ -48,40 +52,41 @@ Measure a foreground against the background it actually renders on, not the page
 
 ## Pick a gradient's interpolation space
 
-The space is a look, not a correctness setting. Default to `in oklab`, and reach for `in oklch` when a two-hue gradient goes gray in the middle ([color-usage.md](color-usage.md)).
+The space is a look, not a correctness setting. Default to Oklab, and reach for OKLCH when a two-hue gradient goes gray in the middle ([color-usage.md](color-usage.md#gradients)).
 
 ## Reference files
 
 | File | Read when |
 | --- | --- |
 | [palette-structure.md](palette-structure.md) | Deciding which ramps exist, mapping steps to roles (Tailwind and Radix), choosing neutrals and status hues, or inventorying an existing palette before restructuring it |
-| [palette-generation.md](palette-generation.md) | Turning a brand color into a ramp, checking a ramp's properties, matching several hues, deriving dark mode or choosing the theme-switching mechanism |
-| [color-formats.md](color-formats.md) | Choosing a notation, converting values, handling sRGB versus P3 gamut, or using `color-mix()`, relative color syntax and `light-dark()` |
+| [palette-generation.md](palette-generation.md) | Turning a brand color into a ramp, checking a ramp's properties, matching several hues or deriving dark mode |
+| [color-formats.md](color-formats.md) | Choosing a color space, converting values, handling sRGB versus P3 gamut, or measuring colors resolved at render time |
 | [contrast.md](contrast.md) | Measuring a pair against WCAG 2 or APCA thresholds, fixing a failing pair on request or picking text polarity |
 | [color-usage.md](color-usage.md) | Applying meaning and emphasis, building gradients, handling cultural color meaning, or adding increased-contrast variants |
-| [token-naming.md](token-naming.md) | Naming primitives and semantic tokens, completing the role inventory, or declaring tokens in Tailwind v4 `@theme` |
+| [token-naming.md](token-naming.md) | Naming primitives and semantic tokens, or completing the role inventory |
 
 ## Before you finish
 
+Each platform file adds the API-level patterns for these.
+
 | Pattern | Fix |
 | --- | --- |
-| A hex, `rgb(` or `oklch(` literal in a component file where a token exists | Reuse or add the role token, in the project's notation |
-| One `oklch(` value in a codebase otherwise written in hex | Write it in the established notation unless a migration is in scope |
-| `var(--blue-600)` or `bg-blue-600` in a component file | Point a semantic token at the primitive and use that |
-| A semantic name containing a hue or a component, as in `--color-blue-button` or `--color-sidebar-gray` | Rename it for its role: `--color-accent-solid`, `--color-bg-surface` |
-| `--color-primary` and `--color-text-primary` both defined | Rename the brand token `accent` |
-| A `border` or `separator` token inside `color:`, or a `text` token inside `background:` | Add a token for the missing role |
-| `hsl(` ramp values that differ only in lightness | Rebuild in OKLCH with a constant hue |
+| A color literal in a component where a token exists | Reuse or add the role token, in the project's notation |
+| A primitive (`blue-600`) applied directly in a component | Point a semantic token at the primitive and use that |
+| A semantic name containing a hue or a component, as in `color-blue-button` or `color-sidebar-gray` | Rename it for its role: `color-accent-solid`, `color-bg-surface` |
+| `primary` meaning both the brand and the most prominent text | Rename the brand token `accent`, unless the platform fixes the word |
+| A border or separator token used as text color, or a text token used as a background | Add a token for the missing role |
+| Ramp values that differ only in HSL lightness | Rebuild in OKLCH with a constant hue |
 | `50`–`200` stepping as far apart in OKLCH `L` as mid-ramp steps do | Tighten the light end to about `0.04`–`0.05` per step |
 | One chroma or saturation number copied across every hue's ramp | Use the same proportion of each hue's own maximum |
 | A status hue within `15°` of the accent hue | Move it at least `15°` away, or give the destructive action a distinct treatment |
 | Dark tokens equal to the light ramp in reverse step order | Lower the accent's chroma, widen the dark end and remeasure every pair |
-| Color tokens set under both `prefers-color-scheme` and a `.dark` class | Pick one switching mechanism and use it throughout |
+| Appearance switched by two mechanisms | Pick one and use it throughout |
 | A contrast fix that changes hue and leaves lightness | Change lightness, the channel contrast responds to |
-| `prefers-contrast: more` overriding a color for both appearances in one block | Give each appearance its own increased-contrast value |
-| Text on a color with alpha, such as `/50`, `rgba(` or `color-mix(` with `transparent` | Measure the rendered result, or use a solid token |
-| `text-white` on a Tailwind `500` fill | Measure it; white on most `500` hues fails 4.5:1, so move the fill to `600` |
-| `oklch()` chroma beyond sRGB with no sRGB value declared before it | Declare the sRGB value first, then the vivid one inside `@media (color-gamut: p3)` |
+| One increased-contrast value shared by light and dark | Give each appearance its own increased-contrast value |
+| Text on a color with alpha | Measure the rendered result, or use a solid token |
+| White text on a mid-ramp (`500`) fill | Measure it; white on most `500` hues fails 4.5:1, so move the fill to `600` |
+| A vivid P3 color with no sRGB base | Declare the sRGB value as the base and the vivid one only where P3 renders |
 
 ## Reporting
 
@@ -89,7 +94,7 @@ The space is a look, not a correctness setting. Default to `in oklab`, and reach
 
 Three symptoms are `HIGH` on sight whatever the surface, matching the [cross-discipline review](../../workflows/review.md)'s escalation triggers. They are body or control text whose rendered pair fails its required ratio, state or meaning carried by color alone and a semantic color used against its meaning.
 
-**Verification.** Without a browser: token values, the gamut of every declared color, both theme blocks present and contrast computed from the declared token pair. With one: the background actually rendered behind the text, including opacity and any image beneath it, measured in both light and dark. Report every check you could not run as `Not verified`.
+**Verification.** Without a render: token values, the gamut of every declared color, every appearance's values present and contrast computed from the declared token pair. With one (a browser, a preview, a simulator or emulator): the background actually rendered behind the text, including opacity and any image beneath it, measured in both light and dark. Report every check you could not run as `Not verified`.
 
 **Format.** Group findings under the principle each violates, ordered by severity, one row per root cause listing every location it appears in:
 

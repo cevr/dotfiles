@@ -29,7 +29,7 @@ Feed it from [Text values](#text-values). Breaks land in [typography](../../refe
 | Emoji, alone and mixed into text | Line-height jumps, broken vertical centering, truncation splitting a character |
 | RTL text | Direction handling, punctuation landing on the wrong side |
 | Mixed-direction text | An LTR product name inside an RTL sentence, and the reverse |
-| A `dir="rtl"` wrapper, where the product ships an RTL locale | Icons, chevrons, padding, and the order of trailing actions |
+| A right-to-left wrapper, where the product ships an RTL locale: `dir="rtl"`, `.environment(\.layoutDirection, .rightToLeft)`, `CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl)` | Icons, chevrons, padding, and the order of trailing actions |
 | Diacritics and tall scripts | Clipped ascenders and descenders in tight line boxes |
 | Numbers where columns align | Proportional figures wobbling in tables and timers |
 
@@ -49,24 +49,24 @@ The values for both text axes, grouped by what kind of text the component render
 | `Jo` | Two letters; leaves the name column mostly empty, and naive initials give `J` |
 | `J` | One letter; single-character initials, very short click target if the name is the link |
 | `Ólafur Darri Ólafsson` | Leading accented capital; uppercase/sort logic, initials `ÓÓ` |
-| `Đặng Thị Ngọc Hân` | Stacked Vietnamese diacritics; clipped by tight `line-height` + `overflow: hidden` |
+| `Đặng Thị Ngọc Hân` | Stacked Vietnamese diacritics; clipped by a tight line box that clips (`line-height` + `overflow: hidden`, a fixed text height) |
 | `王秀英` | CJK, no spaces; "first + last word" initials logic finds one word, and CJK breaks anywhere |
-| `نور الهدى عبد الرحمن` | RTL; punctuation and icons land on the wrong side without `dir="auto"` |
+| `نور الهدى عبد الرحمن` | RTL; punctuation and icons land on the wrong side without direction detection (`dir="auto"` on the web; native text detects it unless alignment is forced to left) |
 | `Seán O'Brien-Ó Súilleabháin` | Apostrophe and accents; escaping, initials, search |
 | `María José de la Cruz y Fernández` | Lowercase particles; initials `Md` or `MF`, sorting by "last name" |
 | `dana` | All lowercase; initials should still be uppercase |
-| `🦊 Fox` | Emoji first; `.charAt(0)` returns half a surrogate pair (`�`) |
-| `👩🏽‍💻 Priya` | ZWJ emoji sequence; `.length` is 7+, slicing breaks it into pieces |
+| `🦊 Fox` | Emoji first; `.charAt(0)` and Kotlin's `name[0]` return half a surrogate pair (`�`); Swift's `name.first` is whole |
+| `👩🏽‍💻 Priya` | ZWJ emoji sequence; JS and Kotlin `.length` is 7+, slicing breaks it into pieces; Swift's `count` is 1 |
 | `  Sam   Lee ` | Leading, trailing, and repeated spaces; initials from empty words, odd gaps |
 | *(missing)* | No name at all, only an email; the UI must fall back to something |
 
 ### Emails, URLs, identifiers
 
-Unbreakable strings: they have no spaces, so the browser has nowhere to wrap them.
+Unbreakable strings: they have no spaces, so the text engine has no word boundary to wrap at.
 
 | Value | Breaks |
 | --- | --- |
-| `bartholomew.fitzgerald@northwind-industries-holdings.example.com` | The classic. Pushes every sibling off the row without `overflow-wrap: anywhere` |
+| `bartholomew.fitzgerald@northwind-industries-holdings.example.com` | The classic. Pushes every sibling off the row where nothing lets it break |
 | `a@b.co` | Shortest realistic; layout that assumed a long email looks empty |
 | `first.last+billing-notifications@example.com` | Plus-addressing; validation that rejects `+`, display that truncates the meaningful part |
 | `ops@sub.department.region.example.co.uk` | Many subdomains, two-part TLD; "domain" extraction logic |
@@ -107,7 +107,7 @@ Unbreakable strings: they have no spaces, so the browser has nowhere to wrap the
 | `142%` / `-3%` | Progress bars and meters past their bounds |
 | `null` / `undefined` / `NaN` | Rendered literally |
 | `1.284` in `de-DE` vs `1,284` in `en-US` | Locale formatting; hardcoded separators are wrong for half the world |
-| A value that changes live (`99` → `100`) | Width jump and jitter without `tabular-nums` |
+| A value that changes live (`99` → `100`) | Width jump and jitter without tabular figures |
 
 Figure alignment, width and formatting land in [typography](../../references/typography/index.md); plural wording such as "1 members" lands in [writing](../../references/writing/index.md); a bar or badge with no room lands in [layout](../../references/layout/index.md).
 
@@ -146,7 +146,7 @@ Zero-item breaks land in [writing](../../references/writing/index.md) for the em
 | `2025-12-31T23:30:00-08:00` | Shows as a different day in UTC and the user's timezone |
 | Very long duration (`1,284 hours`) | Duration formatting that never rolls up to days |
 
-Use `Intl.RelativeTimeFormat` and `Intl.DateTimeFormat`, not hand-built strings. Breaks land in [writing](../../references/writing/index.md).
+Format with the platform's relative-time and date formatters, never hand-built strings ([locale formatting](../../references/writing/patterns.md#locale-formatting); APIs: [web](../../platforms/web/writing.md#locale-formatting) · [Apple](../../platforms/apple/writing.md#locale-formatting) · [Android](../../platforms/android/writing.md#locale-formatting)). **Web:** `Intl.RelativeTimeFormat` and `Intl.DateTimeFormat`. Breaks land in [writing](../../references/writing/index.md).
 
 ## Images and media
 
@@ -156,12 +156,12 @@ Use `Intl.RelativeTimeFormat` and `Intl.DateTimeFormat`, not hand-built strings.
 | --- | --- |
 | Avatar URL that 404s | Broken-image icon instead of the initials fallback |
 | No avatar at all | The fallback itself: initials, color, size parity with real avatars |
-| 4000×200 panorama as avatar or cover | Distortion without `object-fit: cover` |
+| 4000×200 panorama as avatar or cover | Distortion without cover scaling (`object-fit: cover`, `.scaledToFill()`, `ContentScale.Crop`) |
 | 200×4000 tall image | Same, other axis; can also blow out a card's height |
 | Transparent PNG logo, dark logo on dark mode | Invisible on the background |
-| Slow-loading image | Layout shift without fixed dimensions or `aspect-ratio` |
+| Slow-loading image | Layout shift without fixed dimensions or an aspect ratio (`aspect-ratio`, `.aspectRatio`, `Modifier.aspectRatio`) |
 
-Breaks land in [surfaces](../../references/surfaces.md); a missing or wrong `alt` lands in [accessibility](../../references/accessibility/index.md).
+Breaks land in [surfaces](../../references/surfaces.md); a missing or wrong text alternative (`alt`, `accessibilityLabel`, `contentDescription`) lands in [accessibility](../../references/accessibility/index.md).
 
 ## State
 
@@ -177,33 +177,34 @@ Breaks land in [surfaces](../../references/surfaces.md); a missing or wrong `alt
 | No permission | Disabled actions; does the row still lay out the same? |
 | The current user in the list | "You" labels, actions that shouldn't apply to yourself |
 
-Focus and hover are the user's to try while they view the page. Invite them to tab through the instances in the report rather than simulating focus in the harness.
+Focus and hover are the user's to try while they view the harness. Invite them to step through the instances with a keyboard in the report rather than simulating focus in the harness.
 
 Breaks land in [accessibility](../../references/accessibility/index.md); an error message that names no recovery lands in [writing](../../references/writing/index.md); purely visual state polish lands in [surfaces](../../references/surfaces.md).
 
 ## Container
 
-**Cue: always.** Everything renders inside something, and the component does not choose its container's width. Each width is a fixed container on the page, never a viewport to resize.
+**Cue: always.** Everything renders inside something, and the component does not choose its container's width. Each width is a fixed container on the harness ([per platform](../harness.md#where-it-lives)), never a viewport or window to resize.
 
 | Scenario | What it catches |
 | --- | --- |
 | The component's real container width | The baseline: a sidebar list is not a full-page list |
-| A 320px container | Clipping, horizontal scroll, controls escaping the box; every overflow above, at once |
-| A narrow sidebar, 280px | Components designed full-width, reused in a sidebar column |
+| A 320 container | Clipping, horizontal scroll, controls escaping the box; every overflow above, at once |
+| A narrow sidebar, 280 | Components designed full-width, reused in a sidebar column |
 | Squeezed by a flex or grid sibling | Min-content blowout, the component refusing to shrink |
-| A very wide container, 2560px | Unbounded measure, lines too long to read, stretched controls, content pinned to opposite edges or stranded on one side |
+| A very wide container, 2560 (web and desktop; on a phone or tablet, the widest supported window) | Unbounded measure, lines too long to read, stretched controls, content pinned to opposite edges or stranded on one side |
 
 Breaks land in [layout](../../references/layout/index.md).
 
 ## Environment
 
-**Cue: the project supports the mode.** These are viewing modes, not page content, so the page renders nothing for them. Name them in the report for the user to toggle while viewing. Simulating one on the page, such as re-declaring dark tokens under a class, observes a different component.
+**Cue: the project supports the mode.** These are viewing modes, not content. On the web the harness renders nothing for them: name them in the report for the user to toggle while viewing, since simulating one on the page, such as re-declaring dark tokens under a class, observes a different component. On Apple and Android a preview override sets the same environment value the system does, so render the baseline and the worst-case mix once more under each mode, per [Viewing modes](../harness.md#viewing-modes), and name the rest for the user.
 
-| Mode | Breaks |
-| --- | --- |
-| OS dark mode, where a dark theme exists | Hardcoded colors, invisible borders and logos |
-| Browser zoom 200% / large text setting | Fixed heights that clip growing text |
-| Reduced motion | Motion that ignores the preference, or a state change carried by motion alone |
-| A touch device | Hover-only actions (the ••• that appears on hover) are unreachable |
+| Mode | Web | Apple | Android | Breaks |
+| --- | --- | --- | --- | --- |
+| Dark, where a dark theme exists | OS dark mode | Dark appearance | Dark theme | Hardcoded colors, invisible borders and logos |
+| Largest text | Browser zoom 200%, large text setting | The largest accessibility Dynamic Type size, Bold Text | Font size at its largest (200%), Bold text | Fixed heights that clip growing text |
+| Higher contrast | `prefers-contrast` | Increase Contrast, Reduce Transparency | High-contrast text | Hairlines and low-contrast tokens vanishing, translucent surfaces turning muddy |
+| Reduced motion | `prefers-reduced-motion` | Reduce Motion | Remove animations | Motion that ignores the preference, or a state change carried by motion alone |
+| The other input | A touch device | A pointer and hardware keyboard (iPad, Mac) | A hardware keyboard, Switch Access | Hover-only actions (the ••• that appears on hover) unreachable by touch; touch-only gestures unreachable by keyboard |
 
-Dark-mode breaks land in [color](../../references/color/index.md); zoom and motion land in [accessibility](../../references/accessibility/motion-and-zoom.md); touch breaks land in [mobile web](../../platforms/web/mobile.md) and, for hit areas, [accessibility](../../references/accessibility/hit-areas.md).
+Dark-mode and contrast breaks land in [color](../../references/color/index.md); text size and motion land in [accessibility](../../references/accessibility/motion-and-zoom.md); touch breaks on the web land in [mobile web](../../platforms/web/mobile.md) and, for hit areas, [accessibility](../../references/accessibility/hit-areas.md); keyboard reach lands in [accessibility](../../references/accessibility/focus-and-keyboard.md).

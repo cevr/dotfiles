@@ -1,8 +1,10 @@
 # Motion
 
-Whether to animate, what for, and with which ingredients: frequency, purpose, tool, properties, easing, duration, springs, interruption, enter and exit, component principles, reduced motion and debugging. The build sequence below is the order the decisions are made in. Each step gates the next, so a curve is never chosen before the motion has earned the right to exist.
+Whether to animate, what for, and with which ingredients: frequency, purpose, tool, properties, easing, duration, springs, interruption, enter and exit, component principles and their exact pattern values, reduced motion and debugging. The build sequence below is the order the decisions are made in. Each step gates the next, so a curve is never chosen before the motion has earned the right to exist.
 
-Read this file before writing or changing any animation. The sub-files at the end hold copy-paste recipes, the review bar, performance diagnosis, gestures and the glossary.
+Read this file before writing or changing any animation. Values are in points (CSS `px`, Apple `pt`, Android `dp`) and milliseconds; curves are cubic-bezier control points `(x1, y1, x2, y2)`; springs are a duration and a bounce ([springs](#7-springs)). The sub-files at the end hold the review bar, performance diagnosis, gestures and the glossary.
+
+Implementation: [web](../../platforms/web/motion.md) · [Apple](../../platforms/apple/motion.md) · [Android](../../platforms/android/motion.md)
 
 ## Why the craft matters
 
@@ -19,16 +21,16 @@ Read this file before writing or changing any animation. The sub-files at the en
 ## Hard rules
 
 1. **Run the sequence in order.** Steps 1 and 2 gate everything. Don't reach for a curve before you know whether it animates at all.
-2. **Values are exact, not ranges to approximate.** Every curve, duration and spring config comes from the tables below or from [recipes.md](recipes.md). `cubic-bezier(0.2, 0, 0, 1)` is not `cubic-bezier(0.4, 0, 0.2, 1)`, and `0.96` is not `0.95`. Never invent a curve because it looks familiar.
-3. **Extend the codebase's tokens, don't fork them.** If `--ease-out` or a duration scale already exists, use it. Adding a parallel system is a defect. Match the project's motion language wherever no rule here gives a value. A deliberate and consistent project convention is a preference, not a finding. The same detail done two ways within the project is a finding.
+2. **Values are exact, not ranges to approximate.** Every curve, duration and spring config comes from the tables below and the [pattern values](#pattern-values). `cubic-bezier(0.2, 0, 0, 1)` is not `cubic-bezier(0.4, 0, 0.2, 1)`, and `0.96` is not `0.95`. Never invent a curve because it looks familiar.
+3. **Extend the codebase's tokens, don't fork them.** If an easing token, a duration scale or a shared animation constant already exists, use it. Adding a parallel system is a defect. Match the project's motion language wherever no rule here gives a value. A deliberate and consistent project convention is a preference, not a finding. The same detail done two ways within the project is a finding.
 4. **Reduced motion and hover gating ship with the animation**, not as a follow-up.
-5. **Cheapest tool that works.** Don't install a motion library for a fade.
+5. **Cheapest tool that works.** Don't add a motion library for a fade.
 6. **Motion is never the only feedback channel.** Every animated state change also leaves a static cue in the form of a color, icon or label.
 
 Two failure modes, and the first is worse:
 
 1. **Animating something that shouldn't animate.** The gate below exists to produce zero lines of code sometimes. That's a success, not a dodge.
-2. **Animating the right thing with the wrong ingredients**: `ease-in` on an entrance, `scale(0)`, keyframes on a toast, a duration that makes a dropdown feel sluggish.
+2. **Animating the right thing with the wrong ingredients**: `ease-in` on an entrance, an entrance from scale `0`, a fixed-timeline animation on a toast, a duration that makes a dropdown feel sluggish.
 
 Never present motion options as a menu. Make the call, state the reasoning in one line, write the code.
 
@@ -39,7 +41,7 @@ Ask how often a user will see it.
 | Frequency | Decision |
 | --- | --- |
 | 100+ times/day (keyboard shortcuts, command palette toggle, core navigation, focus jumps) | **No animation. Ever.** Stop here. |
-| Tens of times/day (hover effects, row hovers, list navigation, tab switches, frequent toggles, keystroke feedback) | Instant feedback, or a transition of `150ms` or less on `opacity` or `background-color` only. Nothing expressive. |
+| Tens of times/day (hover effects, row hovers, list navigation, tab switches, frequent toggles, keystroke feedback) | Instant feedback, or a transition of `150ms` or less on opacity or background color only. Nothing expressive. |
 | Occasional (modals, drawers, toasts, settings) | Standard animation |
 | Rare / first-time (onboarding, a view's first load, empty states, success, celebration) | The delight budget lives here. Expressive motion such as a staged entrance belongs only at this tier. |
 
@@ -66,31 +68,28 @@ Also check **function**: data the user is reading or acting on should not move f
 
 ## 3. Pick the tool, cheapest that works
 
-Walk down; stop at the first that fits.
+Walk down; stop at the first that fits. Each platform file names its tool for every rung.
 
 | Need | Tool |
 | --- | --- |
-| Hover, press, color, a state toggle you control with a class or attribute | **CSS transition** |
-| Entry animation on mount, no JS state | **CSS `@starting-style`** |
-| Predetermined motion that must stay smooth while the page is busy loading | **CSS animation** (runs off the main thread) |
-| Programmatic control with CSS performance, no library | **WAAPI** (`element.animate()`) |
-| Springs, layout animations, exit animations for unmounted components, gesture-driven values | **Motion** (`motion.dev`) |
+| Hover, press, color, a state toggle | The platform's declarative state transition, which retargets from the current value |
+| An element entering or leaving | The platform's enter and exit transition |
+| Predetermined motion that must stay smooth while the app is busy loading | A driver that runs off the main thread, where the platform has one |
+| Programmatic control (start, stop, sequence) | The platform's imperative animation API |
+| Springs with velocity, layout and shared-element animation, gesture-driven values | A physics- and gesture-aware animation API or library |
 
-CSS animations beat JS under load: they can run off the main thread, while `requestAnimationFrame`-based animation drops frames while the browser loads, scripts or paints. Use CSS for predetermined motion and JS for dynamic, interruptible motion. The thread model and the exceptions are in [performance.md](performance.md#where-it-runs).
+Predetermined motion goes to the cheapest declarative driver; dynamic, interruptible motion goes to code. Main-thread animation drops frames while the app loads, scripts or lays out ([performance](performance.md#where-it-runs)).
 
-With a motion library in React, import from `"motion/react"` when `motion` is installed, or `"framer-motion"` when that is. Where both exist, follow the imports the component or its nearest peers already use. Solid uses the framework-agnostic `motion` exports ([solid.md](../../platforms/web/solid.md#5-motion)).
-
-If the task needs a *component* rather than an animation (a toast, a drawer, a command menu, a dropdown), stop and get it from the project's components: in React the `shadcn` skill (installed components, then registry search), in Solid the primitive package. Hand-rolling those is how you end up with a `<div>` dropdown and no focus management.
+If the task needs a *component* rather than an animation (a toast, a drawer, a command menu, a dropdown), stop and get it from the project's components or the platform's system components. Hand-rolling those is how you end up with a dropdown that has no focus management.
 
 ## 4. Pick the properties
 
-- **`transform` and `opacity` by default.** They skip layout and paint and run on the GPU. `width`, `height`, `margin`, `padding`, `top` and `left` trigger all three rendering steps. `clip-path` is the sanctioned extra (see [clip-path](#clip-path-for-animation)), `filter: blur()` is fine under `20px`, and `height` is tolerated only for accordions, where there is no transform equivalent. The full cost tiers and cheaper swaps are in [performance.md](performance.md#what-you-animate).
-- **Never `transition: all`.** Name the exact properties, as in `transition-property: scale, opacity`. `all` animates whatever changes next, including layout properties and theme colors nobody meant to animate.
-- **Never `scale(0)`.** Nothing in the real world disappears and reappears completely, and an element growing from `scale(0)` looks like it came out of nowhere. Surfaces start from `scale(0.9)` or higher, combined with `opacity: 0` (the recipes use `0.95` to `0.97`). Even a barely-visible initial scale makes the entrance feel natural, like a balloon that has a visible shape even when deflated. The one smaller start is an icon in a cross-fade, which runs from `0.25` together with blur and opacity ([Icon cross-fade](recipes.md#icon-cross-fade)).
-- **`transform-origin` at the trigger** for popovers, dropdowns, menus and tooltips: `var(--transform-origin)` in Base UI. **Modals are exempt**; they are not anchored to a trigger, so they stay centered.
-- **Percentages in `translate()`** are relative to the element's own size. Prefer them over hardcoded pixels ([transforms](#css-transforms)).
-- **Motion's `x`/`y`/`scale` shorthands** run on the main thread. Keep them by default and switch to the full `transform` string when the animation must survive a busy main thread ([performance.md](performance.md#where-it-runs)).
-- **Never drive a child's transform from a CSS variable on the parent.** It recalculates styles for every child. Set `transform` on the element directly ([performance.md](performance.md#two-traps-that-look-correct)).
+- **Transform (translation, scale, rotation) and opacity by default.** They skip layout and redraw. Size, padding, margins and position in the layout flow re-run layout on every frame. A clip is the sanctioned extra ([clip reveals](#clip-reveals)), blur is fine under `20pt`, and height is tolerated only for accordions, where there is no transform equivalent. The full cost tiers and cheaper swaps are in [performance](performance.md#what-you-animate).
+- **Name the properties that animate.** An animation scoped to "whatever changes" animates layout and theme colors nobody meant to animate. **Web:** never `transition: all`; write `transition-property: scale, opacity`.
+- **Never scale from `0`.** Nothing in the real world disappears and reappears completely, and an element growing from scale `0` looks like it came out of nowhere. Surfaces start from `0.9` or higher, combined with opacity `0` (the [pattern values](#pattern-values) use `0.95` to `0.97`). Even a barely-visible initial scale makes the entrance feel natural, like a balloon that has a visible shape even when deflated. The one smaller start is an icon in a cross-fade, which runs from `0.25` together with blur and opacity ([icon cross-fade](#icons-cross-fade-on-infrequent-swaps)).
+- **Anchor the scale at the trigger** for popovers, dropdowns, menus and tooltips: the transform origin sits where the trigger is. **Modals are exempt**; they are not anchored to a trigger, so they stay centered.
+- **Move by the element's own size**, not hardcoded points: a hidden drawer sits one full own-height below its open position, whatever that height is. It adapts to content and is less error-prone.
+- **Write per-frame values to the rendered element**, never through the UI framework's state or an inherited variable that every descendant re-reads ([performance](performance.md#keep-per-frame-values-out-of-ui-state)).
 
 ## 5. Easing
 
@@ -98,23 +97,26 @@ In decision order:
 
 | Situation | Easing |
 | --- | --- |
-| Entering or exiting | `ease-out` (starts fast, feels responsive) |
-| Moving or morphing on screen | `ease-in-out` (natural acceleration and deceleration) |
-| Hover or color change | `ease` |
-| Constant motion (marquee, progress bar, hold-to-confirm fill) | `linear` |
-| Default | `ease-out` |
+| Entering or exiting | ease-out (starts fast, feels responsive) |
+| Moving or morphing on screen | ease-in-out (natural acceleration and deceleration) |
+| Hover or color change | ease |
+| Constant motion (marquee, progress bar, hold-to-confirm fill) | linear |
+| Default | ease-out |
 
-**Never `ease-in` on UI.** It starts slow, delaying the exact moment the user is watching. A dropdown with `ease-in` at 300ms *feels* slower than `ease-out` at the same 300ms. The reversed path of a transition also exits with `ease-out`; never mirror an entrance into an `ease-in` exit.
+**Never `ease-in` on UI.** It starts slow, delaying the exact moment the user is watching. A dropdown with `ease-in` at 300ms *feels* slower than `ease-out` at the same 300ms. The reversed path of a transition also exits with ease-out; never mirror an entrance into an ease-in exit.
 
-**Built-in CSS easings are too weak for component motion.** They lack the punch that makes animations feel intentional. Popovers, modals, drawers and on-screen movement take these curves:
+**Built-in keyword curves are too weak for component motion.** They lack the punch that makes animations feel intentional. Popovers, modals, drawers and on-screen movement take the strong curves:
 
-```css
---ease-out: cubic-bezier(0.23, 1, 0.32, 1);        /* strong ease-out for UI */
---ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);    /* strong ease-in-out for on-screen movement */
---ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);     /* iOS-like drawer curve (from Ionic Framework) */
-```
+| Curve | Control points | Use |
+| --- | --- | --- |
+| **strong ease-out** | `(0.23, 1, 0.32, 1)` | Component open and close, UI enters and exits |
+| **strong ease-in-out** | `(0.77, 0, 0.175, 1)` | On-screen movement |
+| **drawer** | `(0.32, 0.72, 0, 1)` | iOS-like drawer curve (from Ionic Framework) |
+| **icon** | `(0.2, 0, 0, 1)` | The non-spring icon cross-fade |
+| keyword ease-out | `(0, 0, 0.58, 1)` | The small patterns that name it |
+| keyword ease | `(0.25, 0.1, 0.25, 1)` | The toast and the crossfade mask |
 
-The small, exact recipes keep the values they were tuned with: press feedback (`150ms ease-out`), staged entrances (`300ms ease-out`), subtle exits (`150ms ease-out`), the high-frequency hover (`100ms ease-out`), the CSS icon cross-fade (`300ms cubic-bezier(0.2, 0, 0, 1)`) and the Sonner-style toast (`400ms ease`). Use them as written.
+The small, exact patterns keep the values they were tuned with: press feedback (`150ms` keyword ease-out), staged entrances (`300ms` keyword ease-out), subtle exits (`150ms` keyword ease-out), the high-frequency hover (`100ms` keyword ease-out), the icon cross-fade (`300ms` icon curve) and the Sonner-style toast (`400ms` keyword ease). Use them as written ([pattern values](#pattern-values)).
 
 Need a curve that isn't here? Take it from [easing.dev](https://easing.dev/) or [easings.co](https://easings.co/), which list stronger custom variants of the standard easings. Don't hand-roll one.
 
@@ -122,8 +124,8 @@ Need a curve that isn't here? Take it from [easing.dev](https://easing.dev/) or 
 
 | Element | Duration |
 | --- | --- |
-| Button press feedback | 100–160ms (the press recipe uses `150ms`) |
-| High-frequency hover or state change (`opacity`, `background-color` only) | `150ms` or less (the row hover uses `100ms`) |
+| Button press feedback | 100–160ms (the press pattern uses `150ms`) |
+| High-frequency hover or state change (opacity, background color only) | `150ms` or less (the row hover uses `100ms`) |
 | Tooltips, small popovers | 125–200ms |
 | Dropdowns, selects | 150–250ms |
 | Modals, drawers | 200–500ms |
@@ -155,164 +157,137 @@ Reach for a spring when the motion is:
 - a gesture the user can interrupt or reverse mid-animation
 - decorative mouse-tracking
 
-**Configuration.** Motion's `bounce` + `duration` form maps closely to Apple's damping ratio + response and is the easier one to reason about:
+**Configuration.** A spring is a **duration** and a **bounce**, Apple's form and the easier one to reason about. The duration is the perceptual duration in seconds (Apple calls it *response*: lower is snappier; the spring settles a little after it). The bounce is overshoot: `0` is critically damped, and the damping ratio is `1 − bounce`.
 
-```js
-{ type: "spring", bounce: 0, duration: 0.4 }    // default: critically damped, no overshoot
-{ type: "spring", bounce: 0.2, duration: 0.4 }  // only after a momentum gesture (a flick, a throw, a drag release)
-{ type: "spring", duration: 0.3, bounce: 0 }    // icon cross-fade
-```
+| Spring | Duration | Bounce | Damping ratio | Stiffness (mass 1) |
+| --- | --- | --- | --- | --- |
+| Default: every state change, entrance, exit | `0.4` | `0` | `1.0` | `247` |
+| Momentum release (a flick, a throw, a drag release) | `0.4` | `0.2` | `0.8` | `247` |
+| Icon cross-fade | `0.3` | `0` | `1.0` | `439` |
 
-**Bounce is `0`** on every state change, entrance, exit and icon swap. Overshoot on a menu that just faded in feels wrong; overshoot on a card you flicked feels right. Only the release of a gesture that carried momentum may bounce, and then subtly (`0.1`–`0.3`, `0.2` by default). Apple's damping/response values per interaction are in [gestures.md](gestures.md#behavior-over-animation-use-springs).
+**Bounce is `0`** on every state change, entrance, exit and icon swap. Overshoot on a menu that just faded in feels wrong; overshoot on a card you flicked feels right. Only the release of a gesture that carried momentum may bounce, and then subtly (`0.1`–`0.3`, `0.2` by default). Apple's values per interaction are in [gestures](gestures.md#behavior-over-animation-use-springs).
 
-The traditional physics form gives more control:
+**Conversion to physics parameters** (unit mass): `stiffness = (2π / duration)²`, `damping = 4π · dampingRatio / duration`. The reverse: `dampingRatio = damping / (2 · √(stiffness · mass))`. So `mass 1, stiffness 100, damping 10` gives `0.5`, a visible bounce, and `damping 20` gives `1`, no overshoot.
 
-```js
-{ type: "spring", mass: 1, stiffness: 100, damping: 10 }
-```
+| Platform | Spring `(duration d, bounce b)` |
+| --- | --- |
+| SwiftUI | `.spring(duration: d, bounce: b)`; UIKit `UIView.animate(springDuration: d, bounce: b, …)` |
+| Compose | `spring(dampingRatio = 1 − b, stiffness = (2π / d)²)`: the default is `spring(dampingRatio = 1f, stiffness = 247f)` |
+| Web (Motion) | `{ type: "spring", bounce: b, duration: d }`; Motion's `duration` measures differently ([web springs](../../platforms/web/motion.md#springs)) |
 
-Its damping ratio is `damping / (2 * Math.sqrt(stiffness * mass))`, so these values give `0.5`, a visible bounce. A ratio of `1` (here, `damping: 20`) settles without overshoot.
+### Spring-based pointer interactions
 
-### Spring-based mouse interactions
+Tying a visual change directly to the pointer position feels artificial because it lacks motion. Feed the pointer value into a spring so the visual follows with momentum instead of updating instantly ([web code](../../platforms/web/motion.md#springs)).
 
-Tying visual changes directly to mouse position feels artificial because it lacks motion. Use `useSpring` from Motion to interpolate value changes with spring-like behavior instead of updating immediately:
-
-```jsx
-import { useSpring } from 'motion/react';
-
-// Without spring: feels artificial, instant
-const rotation = mouseX * 0.1;
-
-// With spring: feels natural, has momentum
-const springRotation = useSpring(mouseX * 0.1, {
-  stiffness: 100,
-  damping: 10,
-});
-```
-
-This works because the animation is **decorative**: it serves no function. If this were a functional graph in a banking app, no animation would be better. Know when decoration helps and when it hinders. Drive per-frame values like these through motion values, never through React state ([performance.md](performance.md#react-dont-animate-through-state)).
+This works because the animation is **decorative**: it serves no function. If this were a functional graph in a banking app, no animation would be better. Know when decoration helps and when it hinders. Drive per-frame values like these through the platform's animated values, never through UI state ([performance](performance.md#keep-per-frame-values-out-of-ui-state)).
 
 ### Interruptibility advantage
 
-Springs maintain velocity when interrupted; CSS keyframes restart from zero. That makes springs ideal for gestures users might change mid-motion. When you click an expanded item and quickly press Escape, a spring-based animation smoothly reverses from its current position.
+Springs maintain velocity when interrupted; fixed-timeline animations restart from zero. That makes springs ideal for gestures users might change mid-motion. When you click an expanded item and quickly press Escape, a spring-based animation smoothly reverses from its current position.
 
 ## 8. Interruption
 
-- **Transitions, not keyframes, for interactive state.** CSS transitions interpolate toward the latest state, so they retarget and reverse mid-flight. Keyframes run a fixed timeline and snap or restart from zero. Use transitions (or a library's springs) for hover, toggle, open and close, and anything a user can fire twice in a second, such as toasts being added. Reserve keyframes for sequences that run once, such as enters and loading. The comparison and code are in [recipes.md](recipes.md#interruptible-state-transitions-not-keyframes).
+- **Retargeting transitions, not fixed timelines, for interactive state.** A transition interpolates toward the latest state, so it retargets and reverses mid-flight. A keyframe timeline runs fixed and snaps or restarts from zero. Use transitions (or springs) for hover, toggle, open and close, and anything a user can fire twice in a second, such as toasts being added. Reserve keyframe timelines for sequences that run once, such as enters and loading. **Web:** CSS transitions, not `@keyframes` ([comparison and code](../../platforms/web/motion-recipes.md#interruptible-state-transitions-not-keyframes)).
 - **Springs for gestures**, because they carry velocity through an interruption.
-- **Never lock out input during a transition**, and always animate from the current on-screen value. Both are covered with the gesture rules in [gestures.md](gestures.md#interruptibility-the-single-most-important-principle).
+- **Never lock out input during a transition**, and always animate from the current on-screen value. Both are covered with the gesture rules in [gestures](gestures.md#interruptibility-the-single-most-important-principle).
 
 ## 9. Enter and exit
 
-- **`@starting-style` animates entry without JavaScript.** It replaces the React pattern of a `useEffect` that sets `mounted: true` after the first render. Use it when browser support allows (Baseline 2024), and fall back to the `data-mounted` attribute pattern otherwise. Elements toggled from `display: none` also need `transition-behavior: allow-discrete` ([recipe](recipes.md#entering-from-display-none)).
-- **Exits are shorter and smaller than enters.** Exit content with `opacity`, `4px` of blur and a fixed `-12px` `translateY` over `150ms` with `ease-out`, never the full container height. Remove the element instantly where motion adds no information ([recipes](recipes.md#exits)).
+- **An entering element animates from a defined starting state** (opacity `0`, a slightly smaller scale or a short offset) that the platform applies before the first frame. **Web:** `@starting-style`, with `transition-behavior: allow-discrete` for elements toggled from `display: none` ([web enter and exit](../../platforms/web/motion.md#enter-and-exit)).
+- **Exits are shorter and smaller than enters.** Exit content with opacity, `4pt` of blur and a fixed `-12pt` vertical offset over `150ms` with keyword ease-out, never the full container height. Remove the element instantly where motion adds no information ([pattern values](#pattern-values)).
 - **Surfaces that travel exit the way they entered.** Slide fully out only where the path carries meaning: a drawer or sheet closing, a toast swiped away, a card returning to its list, a side panel. Those leave along the edge they came from. A toast that slides in from the bottom leaves through the bottom; in-from-right and out-the-bottom feels disconnected. Symmetric paths are what make swipe-to-dismiss feel obvious.
-- **Asymmetric timing where the user is deciding.** Slow where the user is deciding, fast where the system responds. A hold-to-confirm press fills over `2s linear`; the release snaps back in `200ms ease-out`.
-- **Skip state animations on first render.** In React, set `initial={false}` on an `AnimatePresence` that wraps a state swap (icon swaps, toggles, tabs, segmented controls), so the default state does not animate in on mount. Never set it around an intentional entrance such as a staggered hero ([recipe](recipes.md#skip-animation-on-page-load)). In Solid, keep both states mounted and let CSS swap them, so nothing animates at mount ([solid.md](../../platforms/web/solid.md#5-motion)).
+- **Asymmetric timing where the user is deciding.** Slow where the user is deciding, fast where the system responds. A hold-to-confirm press fills over `2s` linear; the release snaps back in `200ms` with strong ease-out.
+- **Skip state animations on first appearance.** A state swap (icon swaps, toggles, tabs, segmented controls) shows its default state without animating in on mount. An intentional entrance such as a staggered hero still plays. **Web (React):** `initial={false}` on the `AnimatePresence` around the swap, never around the entrance; Solid keeps both states mounted ([web enter and exit](../../platforms/web/motion.md#enter-and-exit)).
 - **The opacity + height pair in entering and exiting lists has no formula.** When items enter and exit a list (like Family's drawer), the opacity change must work with the height animation. It is trial and error; adjust until it feels right.
 
 ## 10. Component principles
 
+### Pattern values
+
+The exact values for each known pattern. Implementations under the same names: [web recipes](../../platforms/web/motion-recipes.md) · [Apple](../../platforms/apple/motion.md#patterns) · [Android](../../platforms/android/motion.md#patterns). Every pattern that moves, scales or blurs ships with the [reduced-motion fallback](#reduced-motion-and-pointer-gating).
+
+| Pattern | Animates | From → to | Duration and curve |
+| --- | --- | --- | --- |
+| Button press | scale | `1` → `0.96`; never while disabled | `150ms` keyword ease-out |
+| High-frequency hover (a row) | background color only | | `100ms` keyword ease-out |
+| Dropdown, popover, menu, select | opacity, scale from the trigger | `0`, `0.95` → `1`, `1` | `200ms` strong ease-out |
+| Tooltip | opacity, scale from the trigger | `0`, `0.97` → `1`, `1` | `125ms` strong ease-out; `0ms` once one is open |
+| Modal | opacity, scale from center; the backdrop's opacity with it | `0`, `0.96` → `1`, `1` | `250ms` strong ease-out |
+| Unanchored panel shown from hidden | opacity, vertical offset | `0`, `12pt` → `1`, `0` | enter `300ms`, exit `150ms`, keyword ease-out |
+| Drawer / sheet | vertical offset by its own height | `100%` → `0` | `500ms` drawer curve |
+| Toast | opacity, vertical offset by its own height | `0`, `100%` → `1`, `0` | `400ms` keyword ease |
+| Accordion | height (measured), opacity | | `200ms` strong ease-out |
+| Staged entrance | per chunk: opacity, blur, vertical offset | `0`, `4pt`, `12pt` → `1`, `0`, `0`; chunks `100ms` apart, headline words `80ms` apart | `300ms` keyword ease-out |
+| List or grid stagger | opacity, vertical offset | `0`, `8pt` → `1`, `0`; items `30`–`80ms` apart | `300ms` strong ease-out |
+| Subtle exit | opacity, vertical offset, blur | → `0`, `-12pt`, `4pt` | `150ms` keyword ease-out |
+| Full exit | opacity, horizontal offset by its own width | → `0`, `-100%` | `200ms` keyword ease-out |
+| Icon cross-fade | opacity, scale, blur | `0`, `0.25`, `4pt` ↔ `1`, `1`, `0` | spring `0.3` / bounce `0`, or `300ms` icon curve |
+| Hold to confirm | a fill clipped from the trailing side | hidden → full | press `2s` linear; release `200ms` strong ease-out |
+| Tab indicator with a color transition | the clip on an active-styled copy of the tab list | follows the active tab | `250ms` strong ease-in-out |
+| Scroll reveal (marketing only, once) | a clip from the bottom | hidden → full | `600ms` strong ease-in-out |
+| Crossfade mask | blur, opacity on the changing content | → `2pt`, `0.7` | `200ms` keyword ease |
+| Reduced-motion fallback | opacity only | | `150ms` keyword ease-out (`300ms` with motion allowed) |
+
+`linear` on the hold-to-confirm fill is deliberate: the fill is a progress indicator, and progress shouldn't ease. The toast's keyword ease and slower timing are deliberate too ([cohesion](#cohesion)).
+
 ### Buttons press to 0.96
 
-Any pressable element scales to `0.96` on press, over `150ms` with `ease-out`. It gives instant feedback that the interface is listening. `scale()` scales the label and icons too, which is what makes it read as a physical press. A disabled button never scales. Give the button an opt-out where the motion would distract, through the component's existing variant API or a `static` prop. Recipes for CSS, Tailwind and Motion are in [recipes.md](recipes.md#button-press).
+Any pressable element scales to `0.96` on press, over `150ms` with keyword ease-out. It gives instant feedback that the interface is listening. Scaling the button scales its label and icons too, which is what makes it read as a physical press. A disabled button never scales. Give the button an opt-out where the motion would distract, through the component's existing variant API or a `static` prop.
 
 ### Popovers scale from their trigger
 
-Popovers should scale in from their trigger, not from center. The default `transform-origin: center` is wrong for almost every popover. **Exception: modals**, which keep `transform-origin: center` because they appear centered in the viewport, anchored to no trigger. Whether the user notices the difference individually does not matter. In the aggregate, unseen details become visible ([recipe](recipes.md#dropdown-popover-menu-select)).
+Popovers should scale in from their trigger, not from center. A centered transform origin, the default on most platforms, is wrong for almost every popover. **Exception: modals**, which keep a centered origin because they appear centered in the viewport, anchored to no trigger. Whether the user notices the difference individually does not matter. In the aggregate, unseen details become visible.
 
 ### Tooltips skip the delay on subsequent hovers
 
-Tooltips delay before appearing to prevent accidental activation. Once one tooltip is open, hovering over adjacent tooltips opens them instantly with no animation. This feels faster without defeating the purpose of the initial delay ([recipe](recipes.md#tooltip)).
+Tooltips delay before appearing to prevent accidental activation. Once one tooltip is open, hovering over adjacent tooltips opens them instantly with no animation. This feels faster without defeating the purpose of the initial delay.
 
 ### Blur masks an imperfect crossfade
 
-When a crossfade between two states feels off despite trying different easings and durations, add a subtle `filter: blur(2px)` during the transition. Without blur you see two distinct objects overlapping, the old state and the new. Blur bridges the gap by blending them, so the eye perceives a single smooth transformation instead of two objects swapping. Keep animated blur under `20px`; `2`–`5px` is enough, and heavy blur is expensive, especially in Safari ([recipe](recipes.md#masking-a-crossfade-that-wont-settle)).
+When a crossfade between two states feels off despite trying different easings and durations, add a subtle `2pt` blur during the transition. Without blur you see two distinct objects overlapping, the old state and the new. Blur bridges the gap by blending them, so the eye perceives a single smooth transformation instead of two objects swapping. Keep animated blur under `20pt`; `2`–`5pt` is enough, and heavy blur is expensive, especially in Safari on the web.
 
 ### Icons cross-fade on infrequent swaps
 
-Where an icon swaps on an infrequent state change, such as play to pause or copy to copied, cross-fade it: scale `0.25` to `1`, opacity `0` to `1`, blur `4px` to `0px`. With a motion library use `{ type: "spring", duration: 0.3, bounce: 0 }`. Without one, keep both icons in the DOM and cross-fade over `300ms` with `cubic-bezier(0.2, 0, 0, 1)`. A tab's icon swap and the actions a row reveals on hover are high-frequency and get no animation ([recipes and the which-icons table](recipes.md#icon-cross-fade)).
+Where an icon swaps on an infrequent state change, such as play to pause or copy to copied, cross-fade it: scale `0.25` to `1`, opacity `0` to `1`, blur `4pt` to `0`. With a spring, use duration `0.3`, bounce `0`; without one, keep both icons mounted and cross-fade over `300ms` with the icon curve. Icon weight, color and direction live in [icons](../icons.md).
+
+| Animate | Don't animate |
+| --- | --- |
+| Infrequent state swaps such as play to pause, like to liked or copy to copied | Hover-revealed actions in list rows |
+| Icons in a toolbar that appears on selection | Tab and navigation icon swaps |
+| Loading and success indicators | Decorative or always-visible icons |
 
 ### Stagger occasional group entrances
 
 When several elements enter together on a surface the user sees occasionally, stagger them. A cascade feels more natural than everything appearing at once.
 
-- **A staged entrance** (a view's first load, an empty or success state) splits the content into semantic chunks such as title, description and actions, staggered `100ms` apart. Each chunk enters with opacity, `4px` of blur and `12px` of `translateY` over `300ms` with `ease-out`. A short display headline that should read word by word splits into words, `80ms` apart.
-- **A list or grid** staggers its items `30`–`80ms` apart, each entering with opacity and `8px` of `translateY` over `300ms`. Longer delays make the interface feel slow.
+- **A staged entrance** (a view's first load, an empty or success state) splits the content into semantic chunks such as title, description and actions, staggered `100ms` apart. Each chunk enters with opacity, `4pt` of blur and `12pt` of vertical offset over `300ms` with keyword ease-out. A short display headline that should read word by word splits into words, `80ms` apart.
+- **A list or grid** staggers its items `30`–`80ms` apart, each entering with opacity and `8pt` of vertical offset over `300ms`. Longer delays make the interface feel slow.
 
-Stagger is decorative: never block interaction while it plays, and never stagger routine interactions or a list the user scrolls past all day ([recipes](recipes.md#staged-entrance)).
+Stagger is decorative: never block interaction while it plays, and never stagger routine interactions or a list the user scrolls past all day. The hidden state belongs to the animation, so an item whose animation never runs stays visible.
 
 ### Theme switches suppress transitions
 
-Disable every transition for the theme swap, force a style flush and restore transitions after the next frame. Otherwise every color transition fires at once and the switch smears ([recipe](recipes.md#suppress-transitions-on-theme-switch)).
+Suppress every color transition for the theme swap and restore them once the new theme has rendered. Otherwise every color transition fires at once and the switch smears. **Web:** inject a no-transition style, force a style flush, remove it after the next frame ([recipe](../../platforms/web/motion-recipes.md#suppress-transitions-on-theme-switch)).
 
-## CSS transforms
+## Clip reveals
 
-**`translate()` percentages** are relative to the element's own size. `translateY(100%)` moves an element by its own height, regardless of actual dimensions. This is how Sonner positions toasts and how Vaul hides the drawer before animating it in. Percentages are less error-prone than hardcoded pixels and adapt to content.
+Animating a rectangular clip region reveals content from one side; each inset eats into the element from that side. It is one of the most powerful animation tools on every platform, and clipping stays on the cheap side of the cost tiers on most renderers. What it unlocks, with values in [pattern values](#pattern-values):
 
-```css
-/* Works regardless of drawer height */
-.drawer-hidden {
-  transform: translateY(100%);
-}
+- **Hold to delete**: a colored fill clipped from the trailing side fills to full while the press is held and snaps back on release.
+- **Tabs with perfect color transitions**: duplicate the tab list, style the copy as active, clip the copy so only the active tab shows, and animate the clip. The text and background change in perfect sync because one element is being revealed rather than two colors being interpolated. Timing individual color transitions never achieves this. It suits tab lists switched occasionally; app tabs switched tens of times a day stay high-frequency.
+- **Image reveals on scroll**: hidden from the bottom to fully shown when the element enters the viewport. Marketing surfaces only, and once: re-animating on every scroll-by is an interface fighting its reader.
+- **Comparison sliders**: overlay two images and clip the top one, adjusting the trailing inset from the drag position. No extra elements.
 
-/* Works regardless of toast height */
-.toast-enter {
-  transform: translateY(-100%);
-}
-```
-
-**`scale()` scales children too.** Unlike `width` and `height`, `scale()` also scales an element's children. When a button scales on press, its font size, icons and content scale proportionally. This is a feature, not a bug.
-
-**3D transforms** (`rotateX()`, `rotateY()` with `transform-style: preserve-3d`) create real depth in CSS. Orbiting animations, coin flips and depth effects are possible without JavaScript:
-
-```css
-.wrapper {
-  transform-style: preserve-3d;
-}
-
-@keyframes orbit {
-  from {
-    transform: translate(-50%, -50%) rotateY(0deg) translateZ(72px) rotateY(360deg);
-  }
-  to {
-    transform: translate(-50%, -50%) rotateY(360deg) translateZ(72px) rotateY(0deg);
-  }
-}
-```
-
-**`transform-origin`** is the anchor point every transform executes from. The default is center. Set it to where the trigger lives for origin-aware interactions.
-
-## clip-path for animation
-
-`clip-path` is not just for shapes; it is one of the most powerful animation tools in CSS. `clip-path: inset(top right bottom left)` defines a rectangular clipping region, and each value "eats" into the element from that side:
-
-```css
-/* Fully hidden from right */
-.hidden {
-  clip-path: inset(0 100% 0 0);
-}
-
-/* Fully visible */
-.visible {
-  clip-path: inset(0 0 0 0);
-}
-```
-
-What it unlocks, each with a recipe in [recipes.md](recipes.md):
-
-- **Hold to delete**: a colored overlay clipped with `inset(0 100% 0 0)` fills to `inset(0 0 0 0)` over `2s linear` on `:active` and snaps back in `200ms ease-out` on release ([recipe](recipes.md#hold-to-confirm)).
-- **Tabs with perfect color transitions**: duplicate the tab list, style the copy as active, clip the copy so only the active tab shows, and animate the clip. Timing individual color transitions never achieves this. It suits tab lists switched occasionally; app tabs switched tens of times a day stay high-frequency ([recipe](recipes.md#tab-indicator-with-a-color-transition)).
-- **Image reveals on scroll**: `inset(0 0 100% 0)` (hidden from the bottom) to `inset(0 0 0 0)` when the element enters the viewport ([recipe](recipes.md#scroll-reveal)).
-- **Comparison sliders**: overlay two images and clip the top one with `clip-path: inset(0 50% 0 0)`, adjusting the right inset from the drag position. No extra DOM elements, fully hardware-accelerated where the browser composites `clip-path`.
+**Web:** `clip-path: inset(…)` ([web clip-path](../../platforms/web/motion.md#clip-path)).
 
 ## Reduced motion and pointer gating
 
-Both ship with the animation, every time. The accessibility requirement itself is owned by [motion and zoom](../accessibility/motion-and-zoom.md); the motion side of it is here.
+Both ship with the animation, every time. The accessibility requirement itself is owned by [motion and zoom](../accessibility/motion-and-zoom.md); the motion side of it is here, and each platform file names its reduced-motion setting and how to read it.
 
-**Reduced motion means fewer and gentler animations, not zero.** Animations can cause motion sickness. Run movement, scale and blur only under `prefers-reduced-motion: no-preference`. Under reduced motion, replace them with an opacity cross-fade rather than removing the element instantly. Keep opacity and color transitions that aid comprehension; drop elastic overshoot, slides, springs and parallax. Recipes for CSS, Tailwind and Motion are in [recipes.md](recipes.md#reduced-motion-fallback). In JS, branch transform values:
+**Reduced motion means fewer and gentler animations, not zero.** Animations can cause motion sickness. Run movement, scale and blur only when the user has not asked for reduced motion. Under reduced motion, replace them with an opacity cross-fade rather than removing the element instantly. Keep opacity and color transitions that aid comprehension; drop elastic overshoot, slides, springs and parallax. In code, branch the transform values on the setting:
 
 ```jsx
+// Web (React, Motion)
 const shouldReduceMotion = useReducedMotion();
 const closedX = shouldReduceMotion ? 0 : '-100%';
 ```
@@ -321,37 +296,38 @@ Also, for everyone:
 
 - Avoid full-viewport moving backgrounds and slow looping oscillations (near 0.2 Hz, one cycle per 5s).
 - Make large moving objects semi-transparent while they travel, and fade big surfaces out during a large reposition and back in once settled.
-- Translucent materials have their own preferences (`prefers-reduced-transparency`, `prefers-contrast`), covered in [gestures.md](gestures.md#reduced-transparency-and-contrast).
+- Translucent materials have their own preferences (reduced transparency, increased contrast), covered in [gestures](gestures.md#reduced-transparency-and-contrast).
 
-**Gate hover motion to hover-capable, precise pointers.** Touch devices trigger hover on tap and leave `:hover` latched, which reads as a stuck selected state:
+**Gate hover motion to hover-capable, precise pointers.** Touch devices trigger hover on tap and leave it latched, which reads as a stuck selected state. Press feedback needs no gating, because a press is real on touch.
 
 ```css
+/* Web */
 @media (hover: hover) and (pointer: fine) {
-  .element:hover {
-    transform: scale(1.05);
-  }
+  .element:hover { transform: scale(1.05); }
 }
 ```
 
-Both conditions matter: `(pointer: fine)` rules out styluses and the odd Android device that claims hover support. Tailwind 4's `hover:` variant compiles under `@media (hover: hover)` only (the hover half); Tailwind 3's compiles under no query unless `future.hoverOnlyWhenSupported` is set. Press feedback on `:active` needs no gating, because a press is real on touch. The rest of the touch fixes (tap highlight, tap delay, sticky hover) are in [mobile web](../../platforms/web/mobile.md).
+**Web:** both conditions matter, and Tailwind's `hover:` gates only part of it ([web hover gating](../../platforms/web/motion.md#reduced-motion-and-hover-gating)).
 
 ## Loops and scrolling
 
-- Looping animations pause when off-screen: an `IntersectionObserver` toggles `animation-play-state`, or the loop unmounts.
-- In-page anchors use `scroll-behavior: smooth`, with `scroll-margin-top` clearing any sticky header; drop the smoothing under reduced motion.
-- A staggered parent and its children render in the same client component tree, or the children mount without the parent's orchestration.
+- Looping animations pause when off-screen, or the loop unmounts. **Web:** an `IntersectionObserver` toggles `animation-play-state`.
+- Scrolling to an in-page target animates, lands clear of any sticky header, and jumps instantly under reduced motion. **Web:** `scroll-behavior: smooth` with `scroll-margin-top`.
+- A staggered parent and its children render in the same component tree, or the children mount without the parent's orchestration. **Web (React):** the same client component tree.
 
 ## Cohesion
 
-Match motion to the component's personality and the rest of the product. A playful component can be more generous; a professional dashboard should be crisp and fast. Sonner's animation feels satisfying partly because the whole experience is cohesive: its easing and duration fit the vibe of the library. It is slightly slower than typical UI animation and uses `ease` rather than `ease-out` to feel more elegant. The motion matches the toast design, the page design and the name. When unsure whether motion feels right, the strongest move is often to delete it.
+Match motion to the component's personality and the rest of the product. A playful component can be more generous; a professional dashboard should be crisp and fast. Sonner's animation feels satisfying partly because the whole experience is cohesive: its easing and duration fit the vibe of the library. It is slightly slower than typical UI animation and uses keyword ease rather than ease-out to feel more elegant. The motion matches the toast design, the page design and the name. When unsure whether motion feels right, the strongest move is often to delete it.
 
 Designing a component other developers adopt (defaults, naming, invisible edge cases): see [interface judgment](../interface-judgment.md#building-components-people-love).
 
 ## Debugging
 
-- **Slow motion.** Play the animation at reduced speed to spot issues invisible at full speed: temporarily raise the duration 2–5x, or set playback to 10% in the browser's Animations panel. Look for: colors that show two distinct states overlapping, easing that starts or stops abruptly, the wrong `transform-origin`, and coordinated properties (opacity, transform, color) drifting out of sync.
-- **Frame by frame.** Step through in the Chrome DevTools Animations panel. It reveals timing issues between coordinated properties that you cannot see at full speed.
-- **Real devices for touch.** For drawers and swipe gestures, connect a phone over USB, open the dev server by IP address and use Safari's remote devtools. The Xcode Simulator is an alternative, but real hardware is better for gesture testing ([mobile web](../../platforms/web/mobile.md)).
+Each platform file names its tools for these.
+
+- **Slow motion.** Play the animation at reduced speed to spot issues invisible at full speed: temporarily raise the duration 2–5x, or use the platform's slow-animation setting. Look for: colors that show two distinct states overlapping, easing that starts or stops abruptly, the wrong transform origin, and coordinated properties (opacity, transform, color) drifting out of sync.
+- **Frame by frame.** Step through the animation. It reveals timing issues between coordinated properties that you cannot see at full speed.
+- **Real devices for touch.** Drawers and swipe gestures need real hardware: a simulator or emulator can't reproduce how a flick feels.
 - **Fresh eyes the next day.** You notice imperfections the next day that you missed during development.
 
 ## When you build
@@ -362,16 +338,18 @@ Write the code. Then, in at most a few lines:
 - **The ingredients**: tool, properties, curve, duration or spring config, one line each.
 - **What to feel-check**: if the result depends on feel you can't judge from code (a crossfade, a spring's bounce, the opacity/height balance in an entering list), say so and point at the check from [Debugging](#debugging).
 
-Don't pad this into a report; the code is the deliverable. When the honest answer is "this shouldn't animate", give it. When feel genuinely can't be settled from code, say so instead of guessing at a value. Before finishing, self-check against the [detection checklist](standards.md#detection-checklist): each row is an automatic block in a motion review.
+Don't pad this into a report; the code is the deliverable. When the honest answer is "this shouldn't animate", give it. When feel genuinely can't be settled from code, say so instead of guessing at a value. Before finishing, self-check against the [detection checklist](standards.md#detection-checklist) and your platform's detection rows: each row is an automatic block in a motion review.
 
 ## Files in this domain
 
 | File | Read when |
 | --- | --- |
-| [recipes.md](recipes.md) | Building a known component or effect: button press, dropdown, tooltip, modal, drawer, toast, accordion, staged entrance, list stagger, exits, icon cross-fade, hold-to-confirm, tab indicator, scroll reveal, crossfade blur, theme switch, reduced-motion fallback, WAAPI |
 | [standards.md](standards.md) | Reviewing motion, or checking work before handoff: the ten standards, detection checklist, remedial order, severity and approval criteria |
-| [performance.md](performance.md) | An animation stutters or drops frames; choosing a property; CSS vs WAAPI vs rAF; `will-change`; React per-frame renders |
+| [performance.md](performance.md) | An animation stutters or drops frames; choosing a property; where animation runs; per-frame values |
 | [gestures.md](gestures.md) | Drag, swipe, sheets, momentum, velocity handoff, rubber-banding, Apple-style springs, translucent materials and depth |
 | [vocabulary.md](vocabulary.md) | Someone describes an effect without knowing its name |
+| [Web motion](../../platforms/web/motion.md), [recipes](../../platforms/web/motion-recipes.md), [performance](../../platforms/web/motion-performance.md) | Building motion in CSS, React (`motion/react`) or Solid |
+| [Apple motion](../../platforms/apple/motion.md) | Building motion in SwiftUI, UIKit or AppKit |
+| [Android motion](../../platforms/android/motion.md) | Building motion in Jetpack Compose |
 
 Workflows that apply this domain: [motion review](../../workflows/motion-review.md) for a diff or component, [motion audit](../../workflows/motion-audit.md) for a codebase-wide plan, [motion opportunities](../../workflows/motion-opportunities.md) to find what should and shouldn't animate.

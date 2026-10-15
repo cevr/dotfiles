@@ -1,6 +1,6 @@
 # CSS cheat sheet
 
-One-line lookup for every typography CSS declaration covered by this typography reference, with the Tailwind 4 equivalent. Where no utility exists, the arbitrary-value form is shown. Pick the column that matches the project: the declaration in plain CSS, CSS Modules, styled-components or StyleX codebases, the utility in Tailwind codebases.
+One-line lookup for every typography CSS declaration covered by the [typography](../../references/typography/index.md) reference and [web typography](typography.md), with the Tailwind 4 equivalent. Where no utility exists, the arbitrary-value form is shown. Pick the column that matches the project: the declaration in plain CSS, CSS Modules, styled-components or StyleX codebases, the utility in Tailwind codebases.
 
 ## Font
 

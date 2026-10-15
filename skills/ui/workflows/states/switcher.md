@@ -1,6 +1,6 @@
 # The switcher
 
-The control that switches states in [states](../states.md). It sits beside the thing being judged, so build the spec below and leave it alone.
+The control that switches states in [states](../states.md). It sits beside the thing being judged, so build the spec below and leave it alone. Everything from **Deliberately outside the design system** to the CSS is the web build; Apple and Android follow **On Apple and Android**.
 
 ## Deliberately outside the design system
 
@@ -203,3 +203,16 @@ The list's 6px padding keeps its own scrolling from clipping focus rings. The re
 ```
 
 `all: unset` keeps the project's global button, nav and select styles out. In a framework, keep the class names and the structure and change only the rendering syntax.
+
+## On Apple and Android
+
+The preview tooling is the switcher: it already sits outside the design system, lists every state and shows one at a time.
+
+| | Apple | Android |
+| --- | --- | --- |
+| Previews | One `#Preview` per state, in the order written down. `#Preview` has no group, so prefix the heading: `#Preview("Data · Empty")` | One `@Preview` per state, in the order written down: `@Preview(name = "Empty", group = "Data")` |
+| Debug screen | Reads the active state from the `__state` launch argument through `UserDefaults.standard.string(forKey: "__state")`, so `xcrun simctl launch booted <bundle-id> -__state empty` opens one state | Reads the active state from a `__state` intent extra, so `adb shell am start -n <package>/<debug-activity> --es __state empty` opens one state |
+| Picker on the debug screen | A `Picker` in its default system style, grouped with `Section`s, outside the app's theme modifiers | A `DropdownMenu` of the states, composed outside the app's theme wrapper so it renders in baseline Material, not the product's |
+
+The debug screen keeps the web behavior where it applies: states and groups in the order written down, a control that hides the picker for screenshots and recordings, and the component switching instantly with its scroll position kept. The screen and its entry point compile only in debug builds (`#if DEBUG`; a `src/debug` source set on Android).
+

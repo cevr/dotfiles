@@ -46,25 +46,25 @@ Decoration on functional, information-dense UI hinders. A decorative mouse-track
 
 ## Where to hunt
 
-Sweep for these seams; each is a known class of genuine opportunity. Values come from [recipes](../references/motion/recipes.md).
+Sweep for these seams; each is a known class of genuine opportunity on every platform. The mechanics after each arrow are the web build, from [recipes](../platforms/web/motion-recipes.md). The Apple and Android build of each lives in the platform's motion file. Where a system component already moves (a sheet, a menu, a navigation push, Material's ripple), its seam is closed.
 
 **Feedback gaps**
-- Pressable elements with no `:active` state → `scale: 0.96` on `:not(:disabled):active`, `transition: scale 150ms ease-out` ([recipe](../references/motion/recipes.md#button-press))
-- Destructive actions confirmed with a plain click where a hold-to-confirm fill would prevent slips → `clip-path: inset(0 100% 0 0)` overlay, `2s linear` on press, `200ms ease-out` snap-back on release ([recipe](../references/motion/recipes.md#hold-to-confirm))
+- Pressable elements with no `:active` state → `scale: 0.96` on `:not(:disabled):active`, `transition: scale 150ms ease-out` ([recipe](../platforms/web/motion-recipes.md#button-press))
+- Destructive actions confirmed with a plain click where a hold-to-confirm fill would prevent slips → `clip-path: inset(0 100% 0 0)` overlay, `2s linear` on press, `200ms ease-out` snap-back on release ([recipe](../platforms/web/motion-recipes.md#hold-to-confirm))
 
 **Teleporting state**
 - Content that swaps, appears or vanishes instantly (conditional renders, route content, expanding sections) → fade/scale entrances from `scale(0.95–0.97)` + `opacity: 0`, `ease-out`, never `scale(0)`; `@starting-style` for entry without JS; exits shorter and smaller (`150ms`, `-12px`, `4px` blur)
-- Accordions and collapses that snap open → height + opacity transition ([recipe](../references/motion/recipes.md#accordion--collapse))
+- Accordions and collapses that snap open → height + opacity transition ([recipe](../platforms/web/motion-recipes.md#accordion--collapse))
 - List items added or removed with no bridge (and the list isn't high-frequency) → enter/exit transitions; CSS transitions, not keyframes, so rapid triggers retarget smoothly
-- Icons that swap on an infrequent state change (copy to copied, play to pause) → the [icon cross-fade](../references/motion/recipes.md#icon-cross-fade)
+- Icons that swap on an infrequent state change (copy to copied, play to pause) → the [icon cross-fade](../platforms/web/motion-recipes.md#icon-cross-fade)
 
 **Missing spatial story**
 - Panels, popovers and menus that appear with no connection to their trigger → scale in with `transform-origin` at the trigger (Base UI: `var(--transform-origin)`); modals are exempt and stay centered
 - Dismissable surfaces (toasts, sheets) that exit a different way than they entered → symmetric paths; `translateY(100%)` percentages, not hardcoded pixels
 
 **Group entrances**
-- A view's first load, empty state or success state where sequence communicates hierarchy → staged entrance, semantic chunks `100ms` apart ([recipe](../references/motion/recipes.md#staged-entrance))
-- A grid or list that pops in all at once on a page users see occasionally → `30`–`80ms` stagger ([recipe](../references/motion/recipes.md#list-and-grid-stagger)); decorative, must never block interaction
+- A view's first load, empty state or success state where sequence communicates hierarchy → staged entrance, semantic chunks `100ms` apart ([recipe](../platforms/web/motion-recipes.md#staged-entrance))
+- A grid or list that pops in all at once on a page users see occasionally → `30`–`80ms` stagger ([recipe](../platforms/web/motion-recipes.md#list-and-grid-stagger)); decorative, must never block interaction
 
 **Gesture seams**
 - Draggable or swipeable elements that snap with no physics → springs that carry release velocity (`{ type: "spring", bounce: 0.2, duration: 0.4 }` on a momentum release, `bounce: 0` otherwise), velocity-based dismissal (`Math.abs(distance)/elapsedMs > ~0.11`), rubber-banding at boundaries instead of hard stops ([gestures](../references/motion/gestures.md))
@@ -72,7 +72,16 @@ Sweep for these seams; each is a known class of genuine opportunity. Values come
 **The delight budget**
 - Rare, high-emotion moments rendered flat: first run, empty states, success and completion, celebration. These are the only places a generous stagger or a longer beat is welcome.
 
-Useful sweeps: grep for conditional renders with no transition (`{isOpen &&`, `display: none` toggles), `onClick` handlers on elements with no `:active`/transition styles, `details`/accordion markup, drag handlers, `.map(` renders of entering lists, empty-state and success components.
+Useful sweeps, grep for:
+
+| Seam | Web | Apple | Android |
+| --- | --- | --- | --- |
+| Conditional content with no transition | `{isOpen &&`, `display: none` toggles | `if isOpen {` branches with no `.transition(` or `withAnimation` | `if (expanded) {` branches outside `AnimatedVisibility` or `AnimatedContent` |
+| Press with no feedback | `onClick` on elements with no `:active` or transition styles | `.onTapGesture` on a view, a custom `ButtonStyle` ignoring `configuration.isPressed` | `clickable(indication = null` or `pointerInput` taps with no press state |
+| Collapsing sections | `details`, accordion markup | `DisclosureGroup`, custom expanders | Expand toggles with no `animateContentSize` or `AnimatedVisibility` |
+| Gestures | Drag handlers | `DragGesture` | `draggable`, `pointerInput` drag detection |
+| Entering lists | `.map(` renders | `ForEach` inserts with no transition | `LazyColumn` items with no `Modifier.animateItem()` |
+| Rare moments | Empty-state and success components | The same | The same |
 
 ## Workflow
 
@@ -92,7 +101,7 @@ One row per surviving suggestion, ordered by leverage:
 | 1 | `Toast.tsx:41` | New toasts appear instantly | Preventing a jarring change | Occasional | Enter via `@starting-style`: `opacity: 0; translateY(100%)` → settled, `transition: 400ms ease`, exit through the same edge |
 | 2 | `Button.tsx:18` | No press feedback | Feedback | Tens/day | `:not(:disabled):active { scale: 0.96 }`, `transition: scale 150ms ease-out` |
 
-Every "Suggested motion" cell carries exact values (the curve, the duration, the properties) from the [motion](../references/motion/index.md) references (`--ease-out: cubic-bezier(0.23, 1, 0.32, 1)`, `--ease-in-out: cubic-bezier(0.77, 0, 0.175, 1)`, `--ease-drawer: cubic-bezier(0.32, 0.72, 0, 1)`), never approximated. Animate `transform` and `opacity` only; include reduced-motion handling (gentler, not zero) and `@media (hover: hover) and (pointer: fine)` gating when the suggestion involves hover.
+Every "Suggested motion" cell carries exact values (the curve, the duration, the properties), in the platform's own API, from the [motion](../references/motion/index.md) references and the platform's motion file (`--ease-out: cubic-bezier(0.23, 1, 0.32, 1)`, `--ease-in-out: cubic-bezier(0.77, 0, 0.175, 1)`, `--ease-drawer: cubic-bezier(0.32, 0.72, 0, 1)`), never approximated. Animate transform and opacity only (position, scale, rotation and alpha on Apple and Android); include reduced-motion handling (gentler, not zero) and, when the suggestion involves hover, pointer gating: `@media (hover: hover) and (pointer: fine)` on the web, `.onHover` or `hoverEffect` only where a pointer exists on Apple.
 
 ### Part 2: Rejected candidates (required)
 

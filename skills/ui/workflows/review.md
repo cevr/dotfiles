@@ -16,7 +16,7 @@ For a change, the author is asking "did I make this worse?". Report what the cha
 
 ## 1. Resolve the scope
 
-The whole invocation is the target, so `review pr 482` reviews pull request 482 and `review src/Checkout.tsx` reviews that file.
+The whole invocation is the target, so `review pr 482` reviews pull request 482 and `review src/Checkout.tsx`, `review CheckoutView.swift` or `review CheckoutScreen.kt` reviews that file.
 
 - A request naming a file, component, screen, flow or the repository is a **surface review**.
 - A request naming a branch, pull request, commit range, ref, `working` or `staged` is a **change review**. [Scope resolution](review/scope-resolution.md) holds the accepted targets and how each resolves.
@@ -59,9 +59,9 @@ Where exclusions emptied the scope, name the excluded files in the offer. Never 
 
 ## 2. Recon before judgment
 
-Identify the framework, styling system, component library, design tokens, supported viewports and any preview or test command. Write every fix in the project's own idiom, never as a request to adopt a different stack.
+Identify the platform and framework, styling system, component library, design tokens, supported viewports or devices and size classes, and any preview or test command. Write every fix in the project's own idiom, never as a request to adopt a different stack.
 
-Then read what the project has written about its own interface: `CONTRIBUTING.md`, `CODING_STANDARDS.md`, `AGENTS.md`, `CLAUDE.md`, a design-system doc, Storybook docs and interface ADRs. Name which you found, or that there are none.
+Then read what the project has written about its own interface: `CONTRIBUTING.md`, `CODING_STANDARDS.md`, `AGENTS.md`, `CLAUDE.md`, a design-system doc, Storybook docs, a preview or component catalog and interface ADRs. Name which you found, or that there are none.
 
 A documented convention settles matters of taste but never excuses a trigger or a domain rule violation. What it changes is **where** you report. When a guideline or shared token is the cause, report it once against that source, with the components as its locations.
 
@@ -120,8 +120,8 @@ Read every reference below and complete each domain review before consolidation.
 
 | # | Domain | Reference | Covers |
 | --- | --- | --- | --- |
-| 1 | Accessibility | [accessibility/index.md](../references/accessibility/index.md) | Keyboard and focus, semantics and ARIA, names, forms, announcements, hit areas, motion and zoom |
-| 2 | Layout | [layout/index.md](../references/layout/index.md) | Grouping, alignment, reading order, responsive structure, room for translated text |
+| 1 | Accessibility | [accessibility/index.md](../references/accessibility/index.md) | Keyboard and focus, semantics (ARIA, accessibility traits, semantics properties), names, forms, announcements, hit areas, motion and text size |
+| 2 | Layout | [layout/index.md](../references/layout/index.md) | Grouping, alignment, reading order, responsive and adaptive structure, room for translated text |
 | 3 | Writing | [writing/index.md](../references/writing/index.md) | Labels, errors, empty states, confirmations, voice |
 | 4 | Typography | [typography/index.md](../references/typography/index.md) | Scale, spacing, font features, wrapping, truncation, punctuation |
 | 5 | Color | [color/index.md](../references/color/index.md) | Palette, semantic tokens, contrast |
@@ -156,9 +156,9 @@ Within a severity, rank by how many places the finding reaches and how much one 
 
 - An interactive control with no accessible name.
 - A keyboard-reachable control with no visible focus indicator.
-- A control or path reachable by pointer but not by keyboard.
-- Motion or auto-playing content that ignores `prefers-reduced-motion`.
-- Content or a control clipped, overlapped or unreachable at 320px width or 200% zoom.
+- A control or path reachable by pointer or touch but not by keyboard or switch input.
+- Motion or auto-playing content that ignores the reduced-motion setting.
+- Content or a control clipped, overlapped or unreachable at the narrowest supported width (320pt) or the largest text size: 200% browser zoom, the largest accessibility Dynamic Type size, Android font scale 200%.
 - Body or control text whose rendered contrast pair fails its required ratio.
 - State or meaning carried by color alone.
 - A destructive action with no confirmation, undo or distinct treatment.
@@ -178,11 +178,11 @@ For a change, the cap and the verdict cover `Introduced` and `Regression` findin
 
 Severity says how bad a finding is; this says which fix to propose. When more than one would work, take the earliest that does:
 
-1. **Delete.** A separator that space would carry, an animation on a high-frequency interaction, an ARIA attribute a native element makes redundant, a ramp nothing imports.
-2. **Use the platform.** The native element, the native control or the browser's own focus ring, in place of a custom rebuild.
+1. **Delete.** A separator that space would carry, an animation on a high-frequency interaction, an accessibility attribute a native element or system control makes redundant, a ramp nothing imports.
+2. **Use the platform.** The native element or system control and the platform's own focus treatment (the browser's focus ring, the system focus effect, the Material focus indication), in place of a custom rebuild.
 3. **Reuse what the project has.** An existing token, spacing step or motion curve, before any new value.
 4. **Correct the value.** The wrong easing, radius, gap or contrast pair, using the exact value the owning reference gives.
-5. **Add.** A new token, a wrapper, a media query, an ARIA attribute the platform cannot supply.
+5. **Add.** A new token, a wrapper, a media query or size-class branch, an accessibility attribute the platform cannot supply.
 
 When the code under review adds what **Delete** would fix, that is a finding, and its **After** is the deletion.
 
@@ -192,7 +192,7 @@ One root cause is one finding, with every confirmed location in the same row. Re
 
 ## 9. Verify what can be verified
 
-**Surface review.** Run the safe, relevant checks the project offers. Inspect the rendered interface when runtime behavior or visual judgment matters, and report the exact command or interaction and its result.
+**Surface review.** Run the safe, relevant checks the project offers. Inspect the rendered interface when runtime behavior or visual judgment matters, through the renderer [harness](harness.md#looking-at-it) names for the platform, and report the exact command or interaction and its result.
 
 **Change review.** Rendered verification is opt-in. Mark visual and runtime claims **Not verified** unless the project exposes a cheap preview or the user asks for a rendered review. For `working` and `branch`, the checkout already is the head, so render it in place. For any other target, render an isolated worktree such as `git worktree add /tmp/review-<n> refs/remotes/pr/<n>` and remove it when done.
 
@@ -214,12 +214,12 @@ A change review is read-only including the checkout. `git fetch` writes only to 
 | A coverage row whose evidence cell names no file, component or check | Inspect that domain, or mark it `Not reviewed` with the reason |
 | A domain marked `Clear` although its reference was never read | Mark it `Not reviewed` and name the reference |
 | The same symptom in several rows, one per component | One row against the shared token or component, listing every location |
-| An **After** that adds a wrapper, token or ARIA attribute | Check whether a deletion or the native element fixes it first |
+| An **After** that adds a wrapper, token or accessibility attribute | Check whether a deletion or the native element or system control fixes it first |
 | A fix written in a library or styling system the project does not use | Rewrite it in the project's own idiom |
 | The scope block counts only uncommitted files while `HEAD` is ahead of the merge base | Review the branch range plus the uncommitted changes, with both counts |
 | A report on `HEAD~1..HEAD` the user never chose | State the facts and offer the routes in **With no change, ask rather than invent one** |
 | A changed shared component with no consumer under `Surfaces expanded` | Expand to its consumers and name the ones you skipped |
-| A deleted `aria-label`, `outline` or `prefers-reduced-motion` with no finding and no note | Route it to its owner through [Removed signals](review/removed-signals.md) |
+| A deleted `aria-label`, `outline` or `prefers-reduced-motion`, or its native counterpart (`.accessibilityLabel`, `contentDescription`, a reduce-motion check), with no finding and no note | Route it to its owner through [Removed signals](review/removed-signals.md) |
 | A `Regression` whose removed attribute reappears elsewhere in the diff | Check the [equivalent replacements](review/removed-signals.md#equivalent-replacements) first |
 | A finding on an untouched consumer of a changed token statused `Pre-existing` | The change caused it, so it is `Introduced` or `Regression` |
 | A line outside every hunk statused `Introduced` with no causing change named | Blame it against the reviewed range |

@@ -4,13 +4,22 @@ Write and review interface copy such as labels, errors, empty states and confirm
 
 A deliberate brand voice is not a defect. Raise a departure from plain language only when it creates inconsistency, ambiguity, translation risk or a tone the stakes don't support. Rewording that merely suits your taste is not a finding.
 
-How copy renders, including `text-transform`, truncation and smart punctuation, belongs to [typography](../typography/index.md). Error markup, announcements and the attributes that carry accessible names belong to [accessibility](../accessibility/index.md). Room for translated strings belongs to [layout](../layout/index.md).
+How copy renders, including case transforms, truncation and smart punctuation, belongs to [typography](../typography/index.md). Error markup, announcements and how accessible names attach belong to [accessibility](../accessibility/index.md). Room for translated strings belongs to [layout](../layout/index.md).
+
+Implementation: [web](../../platforms/web/writing.md) · [Apple](../../platforms/apple/writing.md) · [Android](../../platforms/android/writing.md)
 
 ## Inventory the existing strings first
 
 Before writing or reviewing, find where the copy lives and read the copy around the change:
 
-1. Search for the translation call (`t(`, `i18n.`, `<FormattedMessage`, `$t(`) and the locale files it reads, such as `locales/**/*.json`, `messages/*.json`, `*.po` and `*.strings`. Copy may also come from a CMS or the API.
+1. Search for the translation call and the string files it reads. Copy may also come from a CMS or the API.
+
+   | Stack | Translation call | String files |
+   | --- | --- | --- |
+   | Web | `t(`, `i18n.`, `<FormattedMessage`, `$t(` | `locales/**/*.json`, `messages/*.json`, `*.po` |
+   | Apple | `Text("…")`, `String(localized:`, `NSLocalizedString(` | `*.xcstrings`, `*.strings`, `*.stringsdict` |
+   | Android | `stringResource(`, `pluralStringResource(`, `getString(` | `res/values*/strings.xml` |
+
 2. List the noun used for each object and the verb used for each action, as in "project" or "workspace" and "Delete" or "Remove".
 3. Note the case used per element type and any voice or content style guide.
 
@@ -43,13 +52,13 @@ Skip unnecessary gender: "Subscribers can post recipes", not "each subscriber ca
 
 ## Build strings whole
 
-Never assemble a sentence from fragments around a variable (`"You have " + n + " new messages"`), because word order changes per language. Write one message with placeholders, and use the locale's plural rules rather than `n === 1 ? "" : "s"`. Many languages have more than two plural forms. Format numbers, dates and lists through `Intl`. Recipes are in [patterns.md](patterns.md#plurals-and-placeholders).
+Never assemble a sentence from fragments around a variable (`"You have " + n + " new messages"`), because word order changes per language. Write one message with placeholders, and use the locale's plural rules rather than `n === 1 ? "" : "s"`. Many languages have more than two plural forms. Format numbers, dates and lists through the platform's locale formatters, never by hand. The rules are in [patterns.md](patterns.md#plurals-and-placeholders); the APIs are in the platform writing file.
 
 ## Verb-first buttons
 
 A button label starts with a verb naming the action: "Send", "Save draft", "Delete project". Never "OK!" or "Let's go!".
 
-An icon-only button's accessible name follows the same rule. It names the action, "Delete project", never the glyph, "Trash icon". The attribute that carries it is in [accessibility](../accessibility/semantics-and-aria.md#accessible-names).
+An icon-only button's accessible name follows the same rule. It names the action, "Delete project", never the glyph, "Trash icon". How the name attaches is in [accessibility](../accessibility/index.md#accessible-names).
 
 ## Links describe their destination
 
@@ -96,15 +105,10 @@ Templates are in [patterns.md](patterns.md#destructive-flows). The destructive b
 
 An empty state says what this place is and how to fill it, and offers one clear next action:
 
-```html
-<!-- Bad: a shrug -->
-<p>No results.</p>
-
-<!-- Good: orientation plus a next step -->
-<p class="font-medium">No projects yet</p>
-<p class="text-sm text-zinc-500">Projects keep your tasks and files together.</p>
-<button class="mt-4">Create a project</button>
-```
+| | Title | Body | Action |
+| --- | --- | --- | --- |
+| Bad: a shrug | No results. | | |
+| Good: orientation plus a next step | No projects yet | Projects keep your tasks and files together. | Create a project |
 
 A filtered empty state names the query and offers an exit: "No results for 'quarterly'. Clear filters". Never park persistent information in an empty state. It disappears the moment content exists.
 
@@ -126,18 +130,20 @@ A placeholder shows a realistic example in the format the field accepts, `name@e
 
 ## Before you finish
 
+Each platform writing file lists the code patterns to grep for these.
+
 | Detection pattern | Fix |
 | --- | --- |
 | `Click here`, a link reading `here` or two identical `Learn more` links | Name the destination |
 | `Oops`, `Something went wrong` or `!` in an error string | Say what failed and the next step |
-| `" + n + "`, a template literal holding a sentence fragment, or `=== 1 ? "" : "s"` | One ICU message with a plural argument |
-| `>OK<`, `>Yes<` or `>No<` on a dialog button | Verb plus object |
+| A sentence concatenated around a variable, or a hand-written plural suffix | One message with a plural argument |
+| `OK`, `Yes` or `No` on a dialog button | Verb plus object |
 | `Are you sure` | Name the action and the object |
 | `successfully` | Cut it: "Changes saved" |
 | `Please` in a routine instruction | Cut it |
 | A toggle label starting `Don't`, `Disable` or `Hide` | Describe the ON state |
-| `aria-label="Trash"`, `"Close icon"` or `"X"` | Name the action: "Delete project", "Close dialog" |
-| `toLocaleDateString()` with no locale, or a date built from `getMonth()` | `Intl.DateTimeFormat` with the user's locale |
+| An icon-only control named `"Trash"`, `"Close icon"` or `"X"` | Name the action: "Delete project", "Close dialog" |
+| A date, number or list formatted without the user's locale, or assembled from its parts | The platform's locale formatter |
 | `Save Changes` beside `Discard changes` | One case per element type |
 
 ## Reporting
@@ -159,4 +165,4 @@ End with `Block` when any `HIGH` remains, `Approve` otherwise, leaving the rest 
 
 | File | Read when |
 | --- | --- |
-| [patterns.md](patterns.md) | Writing a destructive flow (undo toast, confirmation dialog, type-to-confirm), status copy for in-progress, done, failed, unavailable and partial states, ICU plurals and placeholders, or `Intl` formatting for currency, units, dates, relative time and lists |
+| [patterns.md](patterns.md) | Writing a destructive flow (undo toast, confirmation dialog, type-to-confirm), status copy for in-progress, done, failed, unavailable and partial states, plural categories and placeholders, or locale formatting for currency, units, dates, relative time and lists |

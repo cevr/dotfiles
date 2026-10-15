@@ -1,6 +1,6 @@
 # Motion plan template
 
-Every plan written by the [motion audit](../motion-audit.md) follows this structure. The executor may be a less capable model with zero context and zero taste, so the plan must contain everything, exactly. No references to "the audit above" or "the easing we discussed."
+Every plan written by the [motion audit](../motion-audit.md) follows this structure. The executor may be a less capable model with zero context and zero taste, so the plan must contain everything, exactly. The example blocks are CSS; write the plan's code in the project's platform and idiom. No references to "the audit above" or "the easing we discussed."
 
 ```markdown
 # NNN — <Short imperative title>
@@ -60,14 +60,14 @@ imitate (token names, file placement, prop patterns):
 - **Feel check**: run the UI, trigger <interaction>, and confirm:
   - <observable check, e.g. "the dropdown scales from its trigger, not from center">
   - <e.g. "spamming the toggle never restarts the animation from zero">
-  - In DevTools, set playback to 10% (Animations panel) and confirm <detail>.
-  - Toggle `prefers-reduced-motion` (Rendering panel) and confirm movement is dropped but opacity feedback remains.
+  - Slow it to 10% and confirm <detail> (web: DevTools Animations panel; Apple: Simulator Debug > Slow Animations; Android: Developer options > Animator duration scale 10x).
+  - Turn reduced motion on and confirm movement is dropped but opacity feedback remains (web: `prefers-reduced-motion` in the Rendering panel; Apple: Reduce Motion; Android: Remove animations).
 - **Done when**: <machine- or eye-checkable completion criteria>.
 ```
 
 ## Notes for the plan author
 
 - One plan per finding. If two findings share every file and the same fix pattern (e.g. the same easing token swap across components), they may merge into one plan.
-- Pull every value from [motion](../../references/motion/index.md), [recipes](../../references/motion/recipes.md) and [motion standards](../../references/motion/standards.md). Never approximate from memory.
+- Pull every value from [motion](../../references/motion/index.md) and its [pattern values](../../references/motion/index.md#pattern-values), [motion standards](../../references/motion/standards.md) and the platform's motion file. Never approximate from memory.
 - The feel check is not optional. Motion can be mechanically correct and still feel wrong; give the executor (or the human reviewing the executor's diff) concrete things to watch for in slow motion.
 - After writing plans, create or update `plans/README.md` with: a table of plans (number, title, severity, status), the recommended execution order, and any dependencies between plans.

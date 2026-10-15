@@ -2,6 +2,10 @@
 
 A reverse-lookup glossary: turn a vague description of a motion or effect ("the bouncy thing when a popover opens", "the iOS rubber-band scroll") into the precise term, so the user knows what to ask an AI or a designer for. For naming an effect, not designing or building one; building starts in [motion](index.md).
 
+Terms tagged *(web)* name a CSS or browser feature; the platform files give each platform's equivalent.
+
+Implementation: [web](../../platforms/web/motion.md) · [Apple](../../platforms/apple/motion.md) · [Android](../../platforms/android/motion.md)
+
 ## How to answer
 
 The user describes an effect loosely. Return the matching term(s) in this format:
@@ -64,7 +68,7 @@ Output:
 - **Orchestration** — Deliberately timing multiple animations so they feel like one coordinated motion.
 - **Delay** — Time before an animation starts.
 - **Duration** — How long an animation takes.
-- **Fill mode** — Whether an element keeps its first or last frame's styles before the animation starts or after it ends (e.g. forwards).
+- **Fill mode** *(web)* — Whether an element keeps its first or last frame's styles before the animation starts or after it ends (e.g. forwards).
 - **Stepped animation** — An animation that is divided into discrete steps, like a countdown timer.
 
 ### Movement & Transforms — changing an element's position, size, or angle
@@ -91,7 +95,7 @@ Output:
 - **Scroll-driven animation** — An animation whose progress is tied directly to scroll position.
 - **Parallax** — Background and foreground move at different speeds while scrolling, creating depth.
 - **Page transition** — An animation that plays when navigating from one page or route to another.
-- **View transition** — The browser morphs between two states or pages, connecting shared elements.
+- **View transition** *(web)* — The browser morphs between two states or pages, connecting shared elements.
 
 ### Feedback & Interaction — responding to the user's actions
 - **Hover effect** — Visual change when the cursor moves over an element.
@@ -150,7 +154,7 @@ Output:
 - **Jank** — Visible stutter when the browser drops frames because it can't keep up with the animation.
 - **Dropped frame** — A frame the browser missed its deadline to draw, causing a tiny hitch in motion.
 - **Compositing** — Letting the GPU move or fade an element on its own layer without redoing layout or paint.
-- **will-change** — A CSS hint that an element is about to animate, so the browser can promote it to its own layer ahead of time.
+- **will-change** *(web)* — A CSS hint that an element is about to animate, so the browser can promote it to its own layer ahead of time.
 - **Layout thrashing** — Animating properties like width, height, top, or left that force the browser to recalculate layout every frame, causing jank.
 
 ### Principles to Know — concepts that guide when and how to animate

@@ -1,12 +1,12 @@
-# Motion recipes
+# Web motion recipes
 
-Ready-to-build implementations for the cases that come up most. Start from the recipe, then adapt; don't rebuild from scratch. Every value here is exact. The rules behind them, and when each one is allowed at all, are in [motion](index.md).
+Ready-to-build CSS and React implementations of the [pattern values](../../references/motion/index.md#pattern-values), under the same names. Start from the recipe, then adapt; don't rebuild from scratch. Every value here is exact. The rules behind them, and when each one is allowed at all, are in [motion](../../references/motion/index.md); the rest of the web motion layer is in [web motion](motion.md).
 
-Curves are the `--ease-out`, `--ease-in-out` and `--ease-drawer` tokens defined in [motion easing](index.md#5-easing). Recipes that name a keyword (`ease-out`, `ease`) use it as written.
+Curves are the `--ease-out`, `--ease-in-out` and `--ease-drawer` tokens defined in [web easing tokens](motion.md#easing-tokens). Recipes that name a keyword (`ease-out`, `ease`) use it as written.
 
-Every recipe that moves, scales or blurs ships with the [reduced-motion fallback](#reduced-motion-fallback). Drag-driven recipes (drag to dismiss, sheets with momentum) live in [gestures.md](gestures.md#drag-to-dismiss).
+Every recipe that moves, scales or blurs ships with the [reduced-motion fallback](#reduced-motion-fallback). Drag-driven recipes (drag to dismiss, sheets with momentum) live in [gestures.md](../../references/motion/gestures.md#drag-to-dismiss).
 
-Code is React with `motion/react`. In a Solid project the CSS recipes apply as written, and [solid.md](../../platforms/web/solid.md#5-motion) maps each `motion/react` idiom (`AnimatePresence`, `initial={false}`, `whileTap`, `MotionConfig`, `useInView`, `useEffect`) to Solid 2.
+Code is React with `motion/react`. In a Solid project the CSS recipes apply as written, and [solid.md](solid.md#5-motion) maps each `motion/react` idiom (`AnimatePresence`, `initial={false}`, `whileTap`, `MotionConfig`, `useInView`, `useEffect`) to Solid 2.
 
 ## Interruptible state: transitions, not keyframes
 
@@ -129,7 +129,7 @@ Scales out of its trigger, not out of thin air.
 
 ```css
 .popover {
-  transform-origin: var(--transform-origin); /* Base UI React supplies this; @bible/ui does not (solid.md) */
+  transform-origin: var(--transform-origin); /* Base UI and @bible/ui positioners set this */
   transition:
     opacity 200ms var(--ease-out),
     transform 200ms var(--ease-out);
@@ -242,7 +242,7 @@ These values suit an unanchored panel. A popover anchored to a trigger keeps thi
 
 This is how Vaul hides a drawer before animating it in. A drawer closing is a full exit: it leaves along the edge it came from.
 
-Add drag and it becomes a gesture problem; see [drag to dismiss](gestures.md#drag-to-dismiss).
+Add drag and it becomes a gesture problem; see [drag to dismiss](../../references/motion/gestures.md#drag-to-dismiss).
 
 ## Toast
 
@@ -270,7 +270,7 @@ useEffect(() => { setMounted(true); }, []);
 // <div data-mounted={mounted}>
 ```
 
-When toasts stack and the list reflows, the opacity change has to work against the height change. There's no formula for that pair: adjust until it feels right, then check it again the next day. For the Sonner library itself, see [Sonner](../../platforms/web/sonner.md).
+When toasts stack and the list reflows, the opacity change has to work against the height change. There's no formula for that pair: adjust until it feels right, then check it again the next day. For the Sonner library itself, see [Sonner](sonner.md).
 
 ## Accordion / collapse
 
@@ -465,9 +465,9 @@ Setting it around a first-time entrance skips that entrance entirely. Check the 
 
 ## Icon cross-fade
 
-For an icon that swaps on an infrequent state change. Icon weight, color and direction live in [icons](../icons.md).
+For an icon that swaps on an infrequent state change; which icons qualify is in [icon cross-fade](../../references/motion/index.md#icons-cross-fade-on-infrequent-swaps). Icon weight, color and direction live in [icons](../../references/icons.md).
 
-Check the project's `package.json` and pick the import as in [motion tool choice](index.md#3-pick-the-tool-cheapest-that-works). Where neither `motion` nor `framer-motion` is present, use the CSS cross-fade and never add a dependency just for icon transitions.
+Check the project's `package.json` and pick the import as in [web tools](motion.md#tools). Where neither `motion` nor `framer-motion` is present, use the CSS cross-fade and never add a dependency just for icon transitions.
 
 ### Icon cross-fade with Motion
 
@@ -526,14 +526,6 @@ function IconButton({ isActive, ActiveIcon, InactiveIcon }) {
 
 Tailwind 4's `scale-*` utilities write the `scale` property, so `transition-[...scale]` animates them. Tailwind 3's write `transform`, so name `transform` in the transition instead.
 
-### Which icons animate
-
-| Animate | Don't animate |
-| --- | --- |
-| Infrequent state swaps such as play to pause, like to liked or copy to copied | Hover-revealed actions in list rows |
-| Icons in a toolbar that appears on selection | Tab and navigation icon swaps |
-| Loading and success indicators | Decorative or always-visible icons |
-
 ## Hold to confirm
 
 For destructive actions where a plain click is too easy to fire by accident.
@@ -554,7 +546,7 @@ For destructive actions where a plain click is too easy to fire by accident.
 }
 ```
 
-`linear` is correct here: the fill is a progress indicator, and progress shouldn't ease. Slow where the user is deciding, fast where the system responds.
+`linear` is deliberate ([pattern values](../../references/motion/index.md#pattern-values)).
 
 ## Tab indicator with a color transition
 
@@ -569,13 +561,11 @@ Duplicate the tab list. Style the copy as the active state, with a different bac
 }
 ```
 
-The text and background change together, in perfect sync, because they're one element being revealed rather than two colors being interpolated.
-
-Use it on tab lists switched occasionally, such as a marketing or docs page. App tabs switched tens of times a day are high-frequency: they swap instantly, or transition `opacity` or `background-color` in `150ms` or less ([frequency](index.md#1-should-this-animate-at-all)).
+Why it works and where it belongs (occasionally switched tab lists only) is in [clip reveals](../../references/motion/index.md#clip-reveals).
 
 ## Scroll reveal
 
-Marketing surfaces only. Don't do this to functional UI a user visits daily.
+Marketing surfaces only, once ([clip reveals](../../references/motion/index.md#clip-reveals)).
 
 ```css
 .reveal {
@@ -588,7 +578,7 @@ Marketing surfaces only. Don't do this to functional UI a user visits daily.
 }
 ```
 
-Trigger with `IntersectionObserver`, or Motion's `useInView` (React) or `inView` (vanilla) with a `-100px` margin. Fire it once: re-animating on every scroll-by is an interface fighting its reader.
+Trigger with `IntersectionObserver`, or Motion's `useInView` (React) or `inView` (vanilla) with a `-100px` margin, and stop observing after the first reveal.
 
 ## Masking a crossfade that won't settle
 

@@ -33,7 +33,7 @@ A domain reference states the rule and its values; the platform's file for that 
 | `/ui stress-test <component>` | Render worst-case data and every reachable scenario; report what broke | [workflows/stress-test.md](workflows/stress-test.md) |
 | `/ui states <component>` | Render every state side by side or behind a switcher | [workflows/states.md](workflows/states.md) |
 | `/ui variants <component>` | Build several genuinely different versions and pick one | [workflows/variants.md](workflows/variants.md) |
-| `/ui explain <url\|image\|app>` | Explain how an interface, effect, or animation was built | [workflows/explain.md](workflows/explain.md) |
+| `/ui explain <url\|image\|recording\|app>` | Explain how an interface, effect, or animation was built | [workflows/explain.md](workflows/explain.md) |
 
 ## Precedence
 
@@ -67,13 +67,12 @@ When there is no system to follow and the task is to choose one:
 | [Interface judgment](references/interface-judgment.md) | Composing any screen: design principles, hierarchy, copy that earns its place, where each fact lives; designing a reusable component |
 | [Theming](references/theming.md) | Any styling in a project with tokens, a theme, or a component library; overlays; state treatments |
 | [Design system](references/design-system.md) | Applying a brand spec or `DESIGN.md`; building a design system page |
-| [Motion](references/motion/index.md) | Whether and how to animate: purpose, easing, duration, springs, enter/exit, reduced motion |
-| [Motion recipes](platforms/web/motion-recipes.md) | Implementing a known pattern: press, popover, toast, stagger, icon swap, drawer |
+| [Motion](references/motion/index.md) | Whether and how to animate: purpose, easing, duration, springs, pattern values, enter/exit, reduced motion |
 | [Motion standards](references/motion/standards.md) | The craft bar motion is reviewed against |
-| [Motion performance](references/motion/performance.md) | Jank, dropped frames, what to animate, where animation runs |
+| [Motion performance](references/motion/performance.md) | Jank, dropped frames, what to animate, where animation runs, per-frame values |
 | [Gestures and fluid motion](references/motion/gestures.md) | Drag, swipe, sheets, momentum, springs, materials and depth |
 | [Motion vocabulary](references/motion/vocabulary.md) | Naming an effect someone describes |
-| [Surfaces](references/surfaces.md) | Cards, buttons, containers: concentric radii, optical alignment, shadows vs borders, image outlines |
+| [Surfaces](references/surfaces.md) | Cards, buttons, containers: concentric radii, optical alignment, shadows vs borders, materials, image outlines |
 | [Icons](references/icons.md) | Icon stroke, size, state, RTL |
 | [Color](references/color/index.md) | Palettes, ramps, semantic tokens, contrast, dark mode |
 | [Typography](references/typography/index.md) | Type scale, spacing, fonts, OpenType, wrapping, punctuation |

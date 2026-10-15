@@ -1,99 +1,64 @@
 # Screen readers
 
-Visually hidden content, live regions, toasts, alt text and SVG.
+Visually hidden content, choosing how to announce a change, live regions, hiding from assistive tech, alt text, video and audio.
+
+Implementation: [web](../../platforms/web/accessibility.md#screen-readers) · [Apple](../../platforms/apple/accessibility.md#screen-readers) · [Android](../../platforms/android/accessibility.md#screen-readers)
 
 ## Visually hidden content
 
-The canonical `.sr-only` pattern hides content visually while keeping it in the accessibility tree:
+Context sighted users get from the layout can go to assistive tech without being drawn: "Opens in new tab", a table caption, or an icon-only control's name where a direct label isn't an option. Hide such content visually only. Removing it from layout entirely removes it from assistive tech too.
 
-```css
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  clip-path: inset(50%);
-  white-space: nowrap;
-  border: 0;
-}
-```
-
-Use `1px` boxes, not `0`, because some screen readers skip zero-sized elements. `white-space: nowrap` stops words being read as one run-together string. Never `display: none` or `visibility: hidden`, which remove the content from assistive tech entirely.
-
-Tailwind ships this as `sr-only`. The skip-link recipe is in [focus-and-keyboard.md](focus-and-keyboard.md).
-
-Use it for context sighted users get visually: `<span class="sr-only">Opens in new tab</span>`, table captions or an icon-only control's label where `aria-label` isn't an option.
+**Web:** the `.sr-only` pattern (Tailwind `sr-only`), never `display: none`; the CSS and why each line matters are in the [web file](../../platforms/web/accessibility.md#visually-hidden-content).
 
 ## Choosing how to announce a change
 
 Work down this list and stop at the first match:
 
 1. **Focus moves there anyway**, as with an opened modal or the first invalid field. Nothing extra needed; the focus move is the announcement.
-2. **Tied to a specific control**, such as a field error or character count: `aria-describedby` on the control, announced with the field.
-3. **Non-urgent, not tied to a control**, such as a toast, "Saved", a result count or a loading state: a polite live region, `role="status"`.
-4. **Urgent and not tied to a control**, such as a form-level failure or session expiry: `role="alert"`.
+2. **Tied to a specific control**, such as a field error or character count: a description on the control, announced with the field.
+3. **Non-urgent, not tied to a control**, such as a toast, "Saved", a result count or a loading state: a polite announcement.
+4. **Urgent and not tied to a control**, such as a form-level failure or session expiry: an assertive announcement.
+
+A state change on a control (selected, expanded, on) is the control's own state, read when it changes, not an announcement.
 
 ## Live regions
 
-| Mechanism | Politeness | Use for |
-| --- | --- | --- |
-| `role="status"` (= `aria-live="polite"` + `aria-atomic="true"`) | Waits for a pause | Toasts, "Saved", result counts, loading updates |
-| `role="alert"` (= `aria-live="assertive"` + `aria-atomic="true"`) | Interrupts immediately | Errors and urgent problems only |
+A live region is an area whose changes the screen reader reads without focus moving. Polite waits for a pause in speech; assertive interrupts immediately and is for errors and urgent problems only. Platforms without live regions post an announcement instead, with the same politeness choice.
 
 Rules for reliable announcements:
 
-- For repeated polite updates, keep a stable empty region in the DOM before changing its text. Inserting a new polite region with its content is announced inconsistently.
-- Dynamically inserted `role="alert"` content is usually announced, but behavior varies. Test the target browser and screen-reader combinations.
-- Default to polite. `assertive` interrupts whatever the user was reading.
-- Keep messages short and self-contained. `aria-atomic="true"` re-reads the whole region on change.
+- For repeated polite updates, keep a stable empty region present before changing its text. Inserting a new polite region with its content is announced inconsistently.
+- Dynamically inserted assertive content is usually announced, but behavior varies. Test the target screen readers.
+- Default to polite. Assertive interrupts whatever the user was reading.
+- Keep messages short and self-contained. The whole region is re-read on change.
 - Never move focus to a toast. Announce it and leave focus where the user is working.
 
-```tsx
-// Region rendered from the start, message injected later
-<div role="status" className="sr-only">
-  {statusMessage}
-</div>
-```
+For loading states: mark the updating region busy, announce "Loading…" politely, then announce the outcome ("Loaded, 12 results").
 
-For loading states: set `aria-busy="true"` on the updating region, announce "Loading…" politely, then announce the outcome ("Loaded, 12 results").
+**Web:** `role="status"` and `role="alert"` markup is in the [web file](../../platforms/web/accessibility.md#live-regions).
 
-## aria-hidden
+## Hiding from assistive tech
 
-`aria-hidden="true"` removes an element and its whole subtree from assistive tech. Use it for decorative icons and content duplicated for visual effect. Never put it on or above a focusable element, which creates stops you can Tab to that do not exist for a screen reader. Hiding something interactive means removing it from the tab order too.
+Hide decorative icons and content duplicated for visual effect from assistive tech; hiding removes the element and everything inside it. Never hide a focusable element or its ancestor, which creates stops you can Tab to that do not exist for a screen reader. Hiding something interactive means removing it from keyboard focus too.
+
+**Web:** `aria-hidden="true"`; for an interactive subtree, `inert`.
 
 ## Alt text
 
 Choose by purpose, not by what the image looks like:
 
-| Purpose | Alt | Example |
+| Purpose | Description | Example |
 | --- | --- | --- |
-| Decorative, or redundant with adjacent text | `alt=""` (empty, but present) | Logo next to the company name in text |
-| Informative | Describe the meaning it adds | `alt="Ticket QR code"` |
-| Functional (image is the link/button) | Describe the action or destination | Search icon → `alt="Search"`, not `alt="magnifying glass"` |
-| Image of text | The exact text (better: use real text) | `alt="50% off everything"` |
-| Complex (chart, diagram) | Short summary in `alt`, full data as a table or text nearby | `alt="Revenue by quarter, described below"` |
+| Decorative, or redundant with adjacent text | None: hidden from assistive tech | Logo next to the company name in text |
+| Informative | Describe the meaning it adds | "Ticket QR code" |
+| Functional (image is the link/button) | Describe the action or destination | Search icon → "Search", not "magnifying glass" |
+| Image of text | The exact text (better: use real text) | "50% off everything" |
+| Complex (chart, diagram) | Short summary, full data as a table or text nearby | "Revenue by quarter, described below" |
 
-A missing `alt` is worse than an empty one, because screen readers fall back to reading the file name.
+An image with no description at all is worse than a hidden one, because screen readers fall back to reading the file or asset name.
 
-## SVG
-
-- Decorative SVG: `aria-hidden="true"`. No title needed.
-- Meaningful inline SVG: `role="img"` plus `aria-label="…"`, or a `<title>` as the first child referenced by `aria-labelledby`.
-- Simple cases: `<img src="icon.svg" alt="…">` is the most reliable delivery.
-
-```tsx
-// Decorative icon inside a labeled button
-<button aria-label="Close">
-  <svg aria-hidden="true">…</svg>
-</button>
-
-// Standalone meaningful icon
-<svg role="img" aria-label="Verified account">…</svg>
-```
+**Web:** `alt=""` (empty, but present) for decorative images; SVG labeling is in the [web file](../../platforms/web/accessibility.md#svg).
 
 ## Video and audio
 
-Prerecorded video needs captions (1.2.2), and prerecorded audio needs a transcript (1.2.1). Never autoplay with sound (1.4.2), and always render controls.
+Prerecorded video needs captions (1.2.2), and prerecorded audio needs a transcript (1.2.1). Never autoplay with sound (1.4.2), and always render playback controls.

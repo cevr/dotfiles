@@ -2,92 +2,47 @@
 
 Target sizes, expanding hit areas without changing visual size, collision rules and drag alternatives.
 
+Implementation: [web](../../platforms/web/accessibility.md#hit-areas) · [Apple](../../platforms/apple/accessibility.md#hit-areas) · [Android](../../platforms/android/accessibility.md#hit-areas)
+
 ## Target sizes
 
 | Standard | Minimum |
 | --- | --- |
-| WCAG 2.5.8 (AA) | 24×24px, with exceptions |
-| WCAG 2.5.5 (AAA) | 44×44px |
-| Apple HIG | 44×44pt |
-| Material Design | 48×48dp |
+| WCAG 2.5.8 (AA) | 24×24 pt, with exceptions |
+| WCAG 2.5.5 (AAA) | 44×44 pt |
+| Web heuristic | 44×44 on touch, 40×40 on desktop, where density permits |
+| Apple HIG | 44×44 pt (iOS, iPadOS, watchOS); 28×28 pt on macOS; 60×60 pt on visionOS |
+| Material Design | 48×48 dp |
+
+The 2.5.8 row is the criterion a finding cites. The platform row is what to build to on that platform, and it replaces the web heuristic there.
 
 Before reporting an undersized target, check the spacing, equivalent-control, inline, user-agent and essential exceptions.
 
-Under the spacing exception, an undersized target passes when a 24px circle centered on its bounding box intersects no other target and no other undersized target's circle. In the simple case, 20px targets need a 4px gap.
+Under the spacing exception, an undersized target passes when a 24 pt circle centered on its bounding box intersects no other target and no other undersized target's circle. In the simple case, 20 pt targets need a 4 pt gap.
 
 The visible element can stay small; the hit area is what must be big. Anything that looks clickable must be clickable across its whole visual extent.
 
 ## Expanding the hit area
 
-Where the visible element is smaller, say a 20×20 checkbox, extend the hit area with a pseudo-element. Put it on a wrapping element or the `<button>`, never on the `<input>`, because form controls don't render `::before`/`::after` reliably.
+Where the visible element is smaller, say a 20×20 checkbox, extend the hit area around it without changing its drawn size. Where the element can afford a real box size, give it the minimum size and center the glyph instead: the box is the target, with no extension to maintain.
 
-### CSS example
-
-```css
-/* 20px checkbox with a 44px hit area, on the wrapper around the input */
-.checkbox-control {
-  position: relative;
-  width: 20px;
-  height: 20px;
-}
-
-.checkbox-control::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 50%; /* physical centering: direction-independent */
-  transform: translate(-50%, -50%);
-  width: 44px;
-  height: 44px;
-}
-```
-
-### Tailwind example
-
-```tsx
-<button
-  aria-label="Mark done"
-  className="relative size-5 after:absolute after:top-1/2 after:left-1/2 after:size-11 after:-translate-1/2"
->
-  <CheckIcon aria-hidden="true" />
-</button>
-```
-
-### Layout alternative
-
-Where the element can afford real box size, skip the pseudo-element and let the box be the target:
-
-```css
-.icon-button {
-  min-width: 44px;
-  min-height: 44px;
-  display: inline-grid;
-  place-items: center;
-}
-```
+**Web:** a centered pseudo-element on the wrapper or `<button>`; CSS, Tailwind and the layout alternative are in the [web file](../../platforms/web/accessibility.md#expanding-the-hit-area).
 
 ## Collision rule
 
-Where the extended hit area overlaps another interactive element, shrink the pseudo-element to the largest size that does not collide.
+Where the extended hit area overlaps another interactive element, shrink the extension to the largest size that does not collide.
 
 ## Decorative layers
 
-A decorative layer painted over interactive content absorbs every pointer event its box covers: a gradient scrim, a glow, a blurred sheen, a full-bleed `::after`. The control underneath looks live and does nothing, and no hit-area sizing fixes it.
+A decorative layer painted over interactive content absorbs every pointer event its box covers: a gradient scrim, a glow, a blurred sheen, a full-bleed overlay. The control underneath looks live and does nothing, and no hit-area sizing fixes it.
 
-Give each one `pointer-events: none` (Tailwind `pointer-events-none`) so events reach the control below. A layer that is an element rather than a pseudo-element also gets `aria-hidden="true"`:
+Make each one pass input through to the control below, and hide it from assistive tech. **Web:** `pointer-events: none` (Tailwind `pointer-events-none`), plus `aria-hidden="true"` when the layer is an element rather than a pseudo-element.
 
-```css
-.card-glow {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-```
-
-Keep pointer events on any layer the user is meant to hit: a modal scrim that dismisses on click is a control, not decoration.
+Keep input on any layer the user is meant to hit: a modal scrim that dismisses on tap is a control, not decoration.
 
 ## Gestures and dragging
 
 - Every drag needs a single-pointer alternative under 2.5.7, such as move-up and move-down buttons on a sortable row, or a menu on a kanban card.
 - Every multipoint or path-based gesture, such as a pinch or a swipe, needs a single-pointer alternative under 2.5.1.
-- A surface implementing its own pan, zoom or drag gestures claims those axes with `touch-action`, scoped to that surface. The values and their scoping rule are in [mobile web](../../platforms/web/mobile.md#9-carousel-scrolls-vertically).
+- Assistive tech reaches the alternative as a named action on the element when no visible button fits.
+- **Web:** a surface implementing its own pan, zoom or drag gestures claims those axes with `touch-action`, scoped to that surface. The values and their scoping rule are in [mobile web](../../platforms/web/mobile.md#9-carousel-scrolls-vertically).

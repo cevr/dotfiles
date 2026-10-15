@@ -1,60 +1,29 @@
 # Icons
 
-Icon stroke weight, sizing, state colors, variants and RTL mirroring. The exact-values posture and the ownership boundaries in [surfaces](surfaces.md#exact-values-optional-polish) apply here too. Animated icon swaps are in [motion recipes](motion/recipes.md).
+Icon stroke weight, sizing, state colors, variants and RTL mirroring. The exact-values posture and the ownership boundaries in [surfaces](surfaces.md#exact-values-optional-polish) apply here too. Animated icon swaps are in [motion](motion/index.md#icons-cross-fade-on-infrequent-swaps). Accessible names for icon-only buttons belong to [accessibility](accessibility/index.md).
+
+Implementation: [web](../platforms/web/icons.md) · [Apple](../platforms/apple/icons.md) · [Android](../platforms/android/icons.md)
 
 ## Match icon stroke to text weight
 
-An icon's rendered stroke tracks the weight of the text beside it, from `1.5px` at 400 to `2.5px` at 700.
+An icon's rendered stroke tracks the weight of the text beside it, from `1.5pt` at 400 to `2.5pt` at 700.
 
 | Adjacent text | Rendered stroke width |
 | --- | --- |
-| Regular (400), 14–16px | `1.5px` |
-| Medium or semibold (500–600) | `2px` |
-| Bold (700), or an emphasized standalone icon | `2.5px` |
+| Regular (400), 14–16pt | `1.5pt` |
+| Medium or semibold (500–600) | `2pt` |
+| Bold (700), or an emphasized standalone icon | `2.5pt` |
 
-The widths are rendered pixels. A 24px-grid icon drawn at 16px scales its stroke by 16/24, so `stroke-width="2"` paints about `1.33px`. Use the library's absolute-stroke option, such as Lucide's `absoluteStrokeWidth`, or set `vector-effect: non-scaling-stroke` on the SVG's shapes.
+The widths are rendered points. A 24pt-grid icon drawn at 16pt scales its stroke by 16/24, so a stroke of `2` in the source paints about `1.33pt`; use the icon system's absolute or non-scaling stroke option. Icon systems with weights matched to the system font (SF Symbols, Material Symbols) replace this table: set the icon's weight to the text's weight.
 
-```tsx
-// Good: stroke tuned to the semibold label
-<button className="flex items-center gap-2 font-semibold">
-  <Plus size={16} strokeWidth={2} absoluteStrokeWidth />
-  New project
-</button>
-
-// Bad: 1.5px stroke against a bold label
-<button className="flex items-center gap-2 font-bold">
-  <Plus size={16} strokeWidth={1.5} absoluteStrokeWidth />
-  New project
-</button>
-```
+A `2pt` stroke beside a semibold label is right; a `1.5pt` stroke beside a bold label looks faint.
 
 - **One library per surface.** Never mix icon libraries on one toolbar. Where the library has no stroke variants, keep its native stroke and use size or color for emphasis.
-- **Size inline icons at `1em`–`1.25em`** of the adjacent font size, so the pair scales together.
+- **Size inline icons at 1–1.25×** the adjacent font size, so the pair scales together, including with the user's text size.
 
-## One SVG, recolored per state
+## One glyph, recolored per state
 
-Icons use `currentColor` and take hover, selected and disabled states from CSS color and opacity, never from separate assets. Strip hardcoded fills such as `fill="#666"` to `currentColor` when importing icons.
-
-```html
-<svg fill="none" stroke="currentColor" stroke-width="2">…</svg>
-```
-
-```css
-/* Use the project's color tokens */
-.icon-button { color: var(--icon-muted); }
-.icon-button:hover { color: var(--icon-strong); }
-.icon-button[aria-pressed="true"] { color: var(--icon-active); }
-.icon-button:disabled { opacity: 0.4; }
-```
-
-```html
-<!-- Tailwind, with the project's token names -->
-<button class="text-icon-muted hover:text-icon-strong aria-pressed:text-icon-active disabled:opacity-40">
-  <BookmarkIcon />
-</button>
-```
-
-In plain CSS, gate the `:hover` rule behind `@media (hover: hover) and (pointer: fine)` as in [mobile web](../platforms/web/mobile.md#1-hover-state-stuck-after-tap).
+Icons take the current content color and get hover, selected and disabled states from color and opacity (disabled at `0.4`), never from separate assets. Strip hardcoded fills such as `#666` to the current color when importing icons. Use the project's color tokens for each state.
 
 ## Outline default, fill active
 
@@ -65,53 +34,39 @@ Where an icon set offers outline and filled variants, use them as a state pair, 
 | Outline | Default state in toolbars, list rows and inline text |
 | Fill | Selected or active state, such as the active tab, a toggled bookmark or a liked heart |
 
-```tsx
-// Good: variant communicates state
-<TabIcon variant={isActive ? "solid" : "outline"} />
+Filled everywhere leaves the active tab with no state signal. Some platform containers choose the variant themselves (an iOS tab bar fills; a toolbar outlines); let them.
 
-// Bad: filled everywhere, so the active tab has no state signal
-<TabIcon variant="solid" />
-```
-
-Cross-fade the swap with the contextual icon values in [motion recipes](motion/recipes.md) only where the change is infrequent, such as a bookmark or a like. An active tab swaps instantly.
+Cross-fade the swap with the icon values in [motion](motion/index.md#icons-cross-fade-on-infrequent-swaps) only where the change is infrequent, such as a bookmark or a like. An active tab swaps instantly.
 
 ## Design at render size
 
-- Test every icon at the smallest size it renders, often `16px`. It must stay recognizable there.
+- Test every icon at the smallest size it renders, often `16pt`. It must stay recognizable there.
 - Prefer a simplified glyph for small contexts over scaling down detailed artwork.
-- Where the set ships per-size grids such as `16`, `20` and `24`, use the grid that matches the render size. A 24px drawing scaled to 16px lands off the pixel grid and renders soft.
-- Always SVG, never raster.
+- Where the set ships per-size grids or optical sizes, such as `16`, `20` and `24`, use the one that matches the render size. A 24pt drawing scaled to 16pt lands off the pixel grid and renders soft.
+- Always vector, never raster.
 
 ## Icons in RTL
 
-Under `dir="rtl"`, flip icons whose meaning is tied to reading direction, and leave the rest alone:
+In a right-to-left layout, flip icons whose meaning is tied to reading direction, and leave the rest alone:
 
 | Flip | Don't flip |
 | --- | --- |
 | Back and forward arrows, navigation chevrons | Logos and brand marks |
-| Text-block glyphs for alignment, lists and indent | Checkmarks |
+| Text-block glyphs for alignment, lists and indent | Checkmarks and other universal marks |
 | Speaker and volume waves | Physical objects such as clocks, cups and pencils |
 | Directional glyphs such as "send" | Media playback, which stays LTR by convention |
 
-Use one mechanism per element. Two flips on one icon can compound back to unflipped.
+Use one mechanism per element. Two flips on one icon, such as an auto-mirrored asset inside a manually flipped container, compound back to unflipped.
 
-```css
-[dir="rtl"] .icon-directional {
-  scale: -1 1;
-}
-```
-
-```tsx
-// Tailwind
-<ChevronRightIcon className="rtl:-scale-x-100" />
-```
-
-Analyze composite icons part by part. A badge or slash overlay may keep its position while the base glyph flips. Accessible names for icon-only buttons belong to [accessibility](accessibility/semantics-and-aria.md).
+Analyze composite icons part by part. A badge or slash overlay may keep its position while the base glyph flips. Icons that contain text, such as a signature or rich-text glyph, need a localized version rather than a flip.
 
 ## Before you finish
 
-| Detection | Fix |
+| Check | Look for |
 | --- | --- |
-| `fill="#..."` or `stroke="#..."` inside an icon SVG | `currentColor` |
+| Hardcoded icon color | A fill or stroke literal inside the icon asset, or a fixed tint instead of the current content color |
+| Stroke mismatch | Icon weight lighter or heavier than the adjacent text |
+| Variant misuse | Filled icons in a default state, or no variant change on the selected one |
+| RTL | A directional glyph with no mirroring, or a logo, checkmark or playback icon that mirrors |
 
-Report findings with the severity and format in [surfaces](surfaces.md#reporting).
+The platform detection patterns are in [web](../platforms/web/icons.md#before-you-finish) · [Apple](../platforms/apple/icons.md#before-you-finish) · [Android](../platforms/android/icons.md#before-you-finish). Report findings with the severity and format in [surfaces](surfaces.md#reporting).
