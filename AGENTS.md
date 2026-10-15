@@ -15,6 +15,8 @@
 - Guardrail: `trash` aliased to `rm`; use for deletes.
 - Devbox: the exe devbox `bite-cristian` IS the Bite workbox. Herdr machine `Workbox` (session `bite`) = SSH alias `bite-workbox` (Tailscale, port 2222) = host `bite-cristian`. Use `herdr --machine Workbox …`; never add another herdr machine for it.
 - Principles: `~/Developer/personal/dotfiles/principles/` — read before architectural decisions or code review.
+- Issue tracker: personal repos → GitHub Issues via `gh`; `~/Developer/work` (Bite) → Linear via the `linear` skill.
+- Models: chosen by role, always the newest release, never a pinned version. Codex: newest sol at `high` by default; newest luna at `max` for repetitive, mechanical work.
 
 ## Conventions
 
@@ -22,7 +24,6 @@
 - Bun preferred; pnpm fallback for legacy.
 - Run full gate (lint/typecheck/tests) between logical units and before handoff. CI red: fix til green.
 - New deps: quick health check (recent releases, adoption).
-- When stuck: read more code, break the problem smaller. If truly blocked after real effort, say what's blocking + what you tried.
 
 ## Isolated workspaces
 
@@ -48,6 +49,7 @@
 ## Task Endings
 
 - Before ending a turn, do the next actions that are reversible and in scope, then report them as done. Don't hand the user a list of things you could do.
+- Each claim in the report carries its evidence or a label: measured, inferred, or guess.
 - End every turn with a short **"What I need from you"** section, placed last. Only what is genuinely the user's goes in it: a preference, an irreversible or external action, access you lack. Number it, one concrete action per item: exactly what to do, where (which site, app, file or person), and what to send back. Write "Log into CommBank NetBank and export Jan to Jun 2026 as CSV, then drop it in `inbox/`", not "I need the bank data".
 - Put the quickest or most blocking item first, and say what you'll get on with in the meantime.
 - When nothing is needed, write "Nothing needed from you right now" so the user doesn't have to ask.

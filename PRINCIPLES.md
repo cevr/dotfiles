@@ -18,7 +18,7 @@
 - [[principles/small-interface-deep-implementation]]
 - [[principles/make-operations-idempotent]]
 - [[principles/migrate-callers-then-delete-legacy-apis]]
-- [[principles/serialize-shared-state-mutations]]
+- [[principles/separate-before-serializing-shared-state]]
 - [[principles/derive-dont-sync]]
 - [[principles/composition-over-flags]]
 - [[principles/progressive-disclosure]]
@@ -34,6 +34,7 @@
 - [[principles/prove-it-works]]
 - [[principles/explain-the-number]]
 - [[principles/test-through-public-interfaces]]
+- [[principles/sequence-verifiable-units]]
 - [[principles/fix-root-causes]]
 
 ## Interaction
