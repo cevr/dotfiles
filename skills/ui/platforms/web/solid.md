@@ -108,7 +108,7 @@ Choose the tool in the skill's order: CSS transition, then `@starting-style`, th
 | React / `motion/react` | Solid 2 |
 | --- | --- |
 | `motion.div animate={…}` driven by state | A CSS transition keyed on a `data-*` attribute. |
-| `AnimatePresence` around primitive popups | Nothing to add. `@bible/ui` parts set `data-starting-style`/`data-ending-style` and unmount after `getAnimations()` finish, so the skill's popover, menu, modal, drawer and toast CSS recipes apply verbatim. |
+| `AnimatePresence` around primitive popups | Nothing to add when the primitives set `data-starting-style`/`data-ending-style` and unmount after `getAnimations()` finish, as Base UI ports such as `@bible/ui` do: the skill's popover, menu, modal, drawer and toast CSS recipes then apply verbatim. Otherwise use the conditional-element pattern below. |
 | `AnimatePresence` around your own conditional | An element that may stay in the DOM: `hidden={!open()}` with `transition-behavior: allow-discrete` on `display`. One that must unmount: `createPresence` (below). |
 | `initial={false}` | This is the default for state swaps when both states are in the DOM: nothing animates at mount. `@starting-style` **does** run on first mount, including server-rendered markup on page load, so reserve it for things that mount later. |
 | `mode="popLayout"` (swap without layout shift) | Stack both states in one grid cell (`grid-area: 1/1`) and cross-fade them. |
@@ -235,7 +235,7 @@ export function Sheet(props: ParentProps<{ onDismiss: () => void }>) {
 }
 ```
 
-Before hand-rolling a sheet, check the primitive package. `@bible/ui/drawer` already handles swipe-to-dismiss and exposes `--drawer-swipe-movement-y`.
+Before hand-rolling a sheet, check the primitive package for a drawer. For example, `@bible/ui/drawer` handles swipe-to-dismiss and exposes `--drawer-swipe-movement-y`.
 
 ## 6. Async, optimistic UI, URL state
 
@@ -264,7 +264,7 @@ const post = action(function* (text: string) {
 | React | Solid 2 |
 | --- | --- |
 | `createPortal(node, target)` | `<Portal mount={target}>` from `@solidjs/web` (default `document.body`). Its only props are `mount` and `children`. It inserts children with **no wrapper element**, so a theme class has nowhere to go but the child's own root. It renders nothing on the server and fills in after hydration. |
-| Radix or Base UI `Portal container` | `@bible/ui`'s `X.Portal` renders a `<div>` at the end of `<body>`. Add `inline` to render it where it is written instead: it then inherits the subtree's CSS variables and is included in the server markup. Use it for a `position: fixed` popup under no `transform`, `filter` or `contain`. |
+| Radix or Base UI `Portal container` | `<Portal mount={el}>` from `@solidjs/web` (`document.body` when `mount` is left out). A Base UI port's part portal does the same: `@bible/ui`'s `X.Portal` renders a `<div>` at the end of `<body>`. Add `inline` to render it where it is written instead: it then inherits the subtree's CSS variables and is included in the server markup. Use it for a `position: fixed` popup under no `transform`, `filter` or `contain`. |
 
 Theming follows the skill's rule: put mode and theme variables on `<html>` (or `:root`) so that portalled popups, dialogs and toasts at the end of `<body>` inherit them. If a theme is scoped to a subtree, use `inline`, or repeat its class or `data-theme` on the portal's root element. Context crosses portals because it follows the owner tree; CSS inheritance does not.
 
@@ -317,17 +317,65 @@ Remix 3 composes behaviour with a `mix` prop: an array of mixins on one element,
 | click, key and pointer handlers | prop mixin `onX` | They are delegated, and `mergeProps` runs every handler. |
 | listener options, `document`/`window` listeners, observers, focus, measuring, animation | ref factory | Runs only in the DOM, never on the server. |
 
-`@bible/ui/mix` provides the pieces (`packages/ui/src/mix/mix.ts`; copy it into a project without `@bible/ui`):
+The helpers below need nothing beyond `solid-js` (checked on rc.15: server markup, state across updates, handler order, setup timing). Put them in the project's UI package. If the project already has them, use those: bible-tools' `@bible/ui` has the same set in `packages/ui/src/mix/mix.ts`, with Base UI's `preventBaseUIHandler` on top.
 
-- `Mixin<T>`: the props a mixin gives an element of type `T`, typed by its tag. `ref` takes callbacks only, because `JSX.Ref<T>` also admits a bare `T` and is invariant. `style` leaves out `false`, so a mixin spreads onto `@bible/ui` parts. `data-*` keys are allowed in literals.
-- `mix(...mixins)`: merges by `mergeProps`'s rules and drops falsy entries, so `cond && m()` composes.
-- `onElement(setup)`: a ref factory whose `setup` runs once the render settles, connected and with its attributes set; what `setup` returns runs on dispose.
-- `listen(target, type, handler, options)`: a native listener on the element, its `document` or its `window`, removed on dispose. Use it for options `onX` cannot take, such as `passive: false` or `capture`.
+```ts
+// mix.ts
+import { merge, onSettled } from "solid-js";
+import type { JSX } from "@solidjs/web";
+
+export type RefFactory<T extends Element = HTMLElement> = (el: T) => void;
+export type Mixin<T extends Element = HTMLElement> = Omit<JSX.HTMLAttributes<T>, "ref" | "style"> & {
+  ref?: RefFactory<T> | Array<RefFactory<T> | undefined>; // JSX.Ref<T> also admits a bare T, which makes it invariant
+  style?: JSX.CSSProperties; // objects only, so they merge
+  [data: `data-${string}`]: string | undefined; // JSX attribute types reject data-* keys in literals (solidjs/solid#4082)
+};
+
+// Left to right: the rightmost attribute wins. Every handler, class, style key and ref is kept.
+// Handlers run rightmost first: the caller's before the behaviours it was mixed over.
+export function mix<T extends Element = HTMLElement>(...entries: Array<Mixin<T> | false | null | undefined>): Mixin<T> {
+  const mixins = entries.filter((m): m is Mixin<T> => !!m);
+  const joined: Record<string, unknown> = {
+    get class() { return mixins.map((m) => m.class); },
+    get style() { return Object.assign({}, ...mixins.map((m) => m.style)); },
+    ref: mixins.flatMap((m) => m.ref ?? []),
+  };
+  for (const key of new Set(mixins.flatMap(Object.keys))) {
+    if (!/^on[A-Z]/.test(key)) continue;
+    joined[key] = (event: Event) => {
+      for (let i = mixins.length - 1; i >= 0; i--) {
+        (mixins[i] as Record<string, ((e: Event) => void) | undefined>)[key]?.(event);
+      }
+    };
+  }
+  return merge(...mixins, joined) as Mixin<T>;
+}
+
+// A ref factory: the body is owned and also runs on the server; the callback only keeps the element.
+export function onElement<T extends Element = HTMLElement>(setup: (el: T) => void | (() => void)): RefFactory<T> {
+  let el: T | undefined;
+  onSettled(() => (el ? setup(el) : undefined)); // connected, attributes set; the return value is the cleanup
+  return (next) => void (el = next);
+}
+
+// A native listener while the owner lives, for options `onX` cannot take (passive: false, capture)
+// and for document or window listeners.
+export function listen<K extends keyof DocumentEventMap>(
+  target: "element" | "document" | "window", type: K, handler: (e: DocumentEventMap[K]) => void, options?: AddEventListenerOptions,
+): RefFactory<Element> {
+  return onElement((el) => {
+    const on = target === "element" ? el : target === "document" ? el.ownerDocument : el.ownerDocument.defaultView;
+    const controller = new AbortController();
+    on?.addEventListener(type, handler as EventListener, { ...options, signal: controller.signal });
+    return () => controller.abort();
+  });
+}
+```
 
 ```tsx
 import { createSignal } from "solid-js";
 import type { JSX } from "@solidjs/web";
-import { listen, mix, onElement, type Mixin } from "@bible/ui/mix";
+import { listen, mix, onElement, type Mixin } from "./mix";
 
 function hoverable(): Mixin {
   const [hovered, setHovered] = createSignal(false);
@@ -357,7 +405,7 @@ function Card(props: { ref?: JSX.Ref<HTMLDivElement>; onOpen: () => void }) {
 | Build prop mixins in the component body and spread the result. Never write `{...mix(a(), b())}` inline. | The compiler wraps an inline call in an accessor that reruns whenever a getter it reads changes. Each rerun rebuilds the mixins, so their signals reset. |
 | Call ref factories inline in `ref={[...]}` on an element without a spread. On an element with one, create them in the component body and pass the results. | The array is evaluated once, untracked, under the element's owner. SSR skips `ref` entirely on an element with a spread, so a factory that creates a signal there shifts hydration ids ([solidjs/solid#4081](https://github.com/solidjs/solid/issues/4081)). |
 | Keep factory bodies free of DOM access. Keep the returned callback to `el => (node = el)`, and do DOM work in `onSettled`. | SSR evaluates `ref={[...]}` factories but never calls their callbacks. The callback runs before the element is connected. It also runs before the element's dynamic attributes are set, and a ref forwarded inside a spread (`{...props}`) runs before any of that spread's attributes ([#4080](https://github.com/solidjs/solid/issues/4080)). |
-| Put mixins left to right, with the caller's props last. | Rightmost attribute wins. Handlers run rightmost first, and `event.preventBaseUIHandler()` stops the ones to its left. Every `class` is kept, `style` objects merge, and every ref is called. |
+| Put mixins left to right, with the caller's props last. | Rightmost attribute wins. Handlers run rightmost first, so the caller's runs before a behaviour's; a behaviour the caller may veto checks `event.defaultPrevented` first. Every `class` is kept, `style` objects merge, and every ref is called. |
 | Don't create a mixin with a ref factory before its element exists, for example above a `<Show>`. | `onSettled` fires once and finds no element. |
 | Before rc.15, never cast a component ref: `<Card ref={x as T}>`. | The compiler silently dropped the prop until rc.15 ([#3968](https://github.com/solidjs/solid/issues/3968)). Casting on a DOM element was always fine. |
 | Expect a native listener (`listen`) to run before a delegated `onX`. | Calling `stopPropagation()` in the native listener silences the delegated handlers at and below that element ([#4083](https://github.com/solidjs/solid/issues/4083)). |
@@ -372,9 +420,9 @@ function Card(props: { ref?: JSX.Ref<HTMLDivElement>; onOpen: () => void }) {
 
 ## 10. Toasts
 
-Sonner is React-only. In Solid use `@bible/ui/toast`, or port its parts into the project's primitive package.
+Sonner is React-only. In Solid use the primitive package's toast (`@bible/ui/toast` in bible-tools). Without one, port Base UI's Toast parts into the package; Solid toast libraries still peer-lock to Solid 1.
 
-| Sonner | `@bible/ui/toast` |
+| Sonner | the primitive package's toast (`@bible/ui/toast`) |
 | --- | --- |
 | One `<Toaster />` at the root | One `<Toast.Provider toastManager={manager}>` → `<Toast.Portal>` → `<Toast.Viewport>` → `<For each={Toast.useToastManager().toasts} keyed={(t) => t.id}>` → `<Toast.Root toast={t()}>`. The manager comes from `Toast.createToastManager()` at app scope. |
 | `toast("…")`, `toast.success` | `manager.add({ title, type: "success" })` returns the id. `type` becomes `data-type` on every part. |
