@@ -317,41 +317,38 @@ Remix 3 composes behaviour with a `mix` prop: an array of mixins on one element,
 | click, key and pointer handlers | prop mixin `onX` | They are delegated, and `mergeProps` runs every handler. |
 | listener options, `document`/`window` listeners, observers, focus, measuring, animation | ref factory | Runs only in the DOM, never on the server. |
 
+`@bible/ui/mix` provides the pieces (`packages/ui/src/mix/mix.ts`; copy it into a project without `@bible/ui`):
+
+- `Mixin<T>`: the props a mixin gives an element of type `T`, typed by its tag. `ref` takes callbacks only, because `JSX.Ref<T>` also admits a bare `T` and is invariant. `style` leaves out `false`, so a mixin spreads onto `@bible/ui` parts. `data-*` keys are allowed in literals.
+- `mix(...mixins)`: merges by `mergeProps`'s rules and drops falsy entries, so `cond && m()` composes.
+- `onElement(setup)`: a ref factory whose `setup` runs once the render settles, connected and with its attributes set; what `setup` returns runs on dispose.
+- `listen(target, type, handler, options)`: a native listener on the element, its `document` or its `window`, removed on dispose. Use it for options `onX` cannot take, such as `passive: false` or `capture`.
+
 ```tsx
-import { createSignal, onSettled } from "solid-js";
+import { createSignal } from "solid-js";
 import type { JSX } from "@solidjs/web";
-import { mergeProps, type PropsInput } from "@bible/ui/merge-props"; // src/merge-props; add the "./merge-props" export with its first consumer
-
-type Mixin<T extends Element = HTMLElement> = Omit<JSX.HTMLAttributes<T>, 'ref' | 'style'> & {
-  ref?: RefFactory<T> | Array<RefFactory<T> | undefined>; // JSX.Ref<T> admits T: invariant
-  style?: JSX.CSSProperties | string; // without `false`, so it spreads onto @bible/ui parts
-  [data: `data-${string}`]: string | undefined;
-};
-type RefFactory<T extends Element = HTMLElement> = (el: T) => void;
-
-const mix = <T extends Element = HTMLElement>(...m: Array<Mixin<T> | false | null | undefined>) =>
-  mergeProps(...(m as Array<PropsInput>)) as Mixin<T>;
-
-// Factory body: owned, and also run on the server. The callback: unowned and browser-only.
-function onElement<T extends Element>(setup: (el: T) => void | (() => void)): RefFactory<T> {
-  let el: T | undefined;
-  onSettled(() => (el ? setup(el) : undefined)); // connected and attributed; returns cleanup
-  return (next) => void (el = next);
-}
+import { listen, mix, onElement, type Mixin } from "@bible/ui/mix";
 
 function hoverable(): Mixin {
   const [hovered, setHovered] = createSignal(false);
   return {
-    get 'data-hovered'() { return hovered() ? '' : undefined; },
+    get "data-hovered"() { return hovered() ? "" : undefined; },
     onPointerEnter: () => setHovered(true),
     onPointerLeave: () => setHovered(false),
   };
 }
 
-// pressable(), observeSize() and report are further mixins / ref factories built the same way.
+// pressable() is a prop mixin built the same way.
 function Card(props: { ref?: JSX.Ref<HTMLDivElement>; onOpen: () => void }) {
-  const behaviour = mix<HTMLDivElement>(pressable({ onPress: props.onOpen }), hoverable(), { class: 'card' });
-  return <div {...behaviour} ref={[observeSize(report), props.ref]} />;
+  const behaviour = mix<HTMLDivElement>(pressable({ onPress: props.onOpen }), hoverable(), { class: "card" });
+  // The element has a spread, so its ref factories are made here, not inline in `ref`.
+  const size = onElement<HTMLDivElement>((el) => {
+    const observer = new ResizeObserver(() => report(el.getBoundingClientRect()));
+    observer.observe(el);
+    return () => observer.disconnect();
+  });
+  const escape = listen("document", "keydown", (e) => e.key === "Escape" && close());
+  return <div {...behaviour} ref={[size, escape, props.ref]} />;
 }
 ```
 
@@ -359,7 +356,7 @@ function Card(props: { ref?: JSX.Ref<HTMLDivElement>; onOpen: () => void }) {
 | --- | --- |
 | Build prop mixins in the component body and spread the result. Never write `{...mix(a(), b())}` inline. | The compiler wraps an inline call in an accessor that reruns whenever a getter it reads changes. Each rerun rebuilds the mixins, so their signals reset. |
 | Call ref factories inline in `ref={[...]}` on an element without a spread. On an element with one, create them in the component body and pass the results. | The array is evaluated once, untracked, under the element's owner. SSR skips `ref` entirely on an element with a spread, so a factory that creates a signal there shifts hydration ids ([solidjs/solid#4081](https://github.com/solidjs/solid/issues/4081)). |
-| Keep factory bodies free of DOM access. Keep the returned callback to `el => (node = el)`, and do DOM work in `onSettled`. | SSR evaluates `ref={[...]}` factories but never calls their callbacks. The callback runs before the element is connected. Under a spread, or before a dynamic attribute's effect, it also runs before the element's attributes are set ([#4080](https://github.com/solidjs/solid/issues/4080)). |
+| Keep factory bodies free of DOM access. Keep the returned callback to `el => (node = el)`, and do DOM work in `onSettled`. | SSR evaluates `ref={[...]}` factories but never calls their callbacks. The callback runs before the element is connected. It also runs before the element's dynamic attributes are set, and a ref forwarded inside a spread (`{...props}`) runs before any of that spread's attributes ([#4080](https://github.com/solidjs/solid/issues/4080)). |
 | Put mixins left to right, with the caller's props last. | Rightmost attribute wins. Handlers run rightmost first, and `event.preventBaseUIHandler()` stops the ones to its left. Every `class` is kept, `style` objects merge, and every ref is called. |
 | Don't create a mixin with a ref factory before its element exists, for example above a `<Show>`. | `onSettled` fires once and finds no element. |
 | Before rc.15, never cast a component ref: `<Card ref={x as T}>`. | The compiler silently dropped the prop until rc.15 ([#3968](https://github.com/solidjs/solid/issues/3968)). Casting on a DOM element was always fine. |
