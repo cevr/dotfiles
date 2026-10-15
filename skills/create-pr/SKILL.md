@@ -236,7 +236,7 @@ When a piece of proof is genuinely impossible on this machine (a payment termina
 After all external changes:
 
 1. Re-read the live PR body.
-2. Verify each image URL and rendered image.
+2. Verify each image renders and each video link plays.
 3. Verify assignees and requested reviewers.
 4. Verify numbered review-guide comments.
 5. Verify that each diagram matches the final code and renders on GitHub.
