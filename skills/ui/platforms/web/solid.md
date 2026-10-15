@@ -358,12 +358,12 @@ function Card(props: { ref?: JSX.Ref<HTMLDivElement>; onOpen: () => void }) {
 | Rule | Reason |
 | --- | --- |
 | Build prop mixins in the component body and spread the result. Never write `{...mix(a(), b())}` inline. | The compiler wraps an inline call in an accessor that reruns whenever a getter it reads changes. Each rerun rebuilds the mixins, so their signals reset. |
-| Call ref factories inline in `ref={[...]}`. | The array is evaluated once, untracked, under the element's owner. |
-| Keep factory bodies free of DOM access. Keep the returned callback to `el => (node = el)`, and do DOM work in `onSettled`. | SSR evaluates `ref={[...]}` factories but never calls their callbacks. The callback runs before the element is connected. Under a spread, it also runs before the element's attributes are set. |
+| Call ref factories inline in `ref={[...]}` on an element without a spread. On an element with one, create them in the component body and pass the results. | The array is evaluated once, untracked, under the element's owner. SSR skips `ref` entirely on an element with a spread, so a factory that creates a signal there shifts hydration ids ([solidjs/solid#4081](https://github.com/solidjs/solid/issues/4081)). |
+| Keep factory bodies free of DOM access. Keep the returned callback to `el => (node = el)`, and do DOM work in `onSettled`. | SSR evaluates `ref={[...]}` factories but never calls their callbacks. The callback runs before the element is connected. Under a spread, or before a dynamic attribute's effect, it also runs before the element's attributes are set ([#4080](https://github.com/solidjs/solid/issues/4080)). |
 | Put mixins left to right, with the caller's props last. | Rightmost attribute wins. Handlers run rightmost first, and `event.preventBaseUIHandler()` stops the ones to its left. Every `class` is kept, `style` objects merge, and every ref is called. |
 | Don't create a mixin with a ref factory before its element exists, for example above a `<Show>`. | `onSettled` fires once and finds no element. |
-| Never cast a component ref: `<Card ref={x as T}>`. | The rc.11 compiler silently drops the prop. Casting on a DOM element is fine. |
-| Expect a native listener (`listen`) to run before a delegated `onX`. | Calling `stopPropagation()` in the native listener silences the delegated handlers. |
+| Before rc.15, never cast a component ref: `<Card ref={x as T}>`. | The compiler silently dropped the prop until rc.15 ([#3968](https://github.com/solidjs/solid/issues/3968)). Casting on a DOM element was always fine. |
+| Expect a native listener (`listen`) to run before a delegated `onX`. | Calling `stopPropagation()` in the native listener silences the delegated handlers at and below that element ([#4083](https://github.com/solidjs/solid/issues/4083)). |
 
 | Remix 3 | Solid 2 |
 | --- | --- |
@@ -371,7 +371,7 @@ function Card(props: { ref?: JSX.Ref<HTMLDivElement>; onOpen: () => void }) {
 | render returning `<handle.element {...props} x />` | a prop mixin, or a props getter `(merged) => props` in `mergeProps` |
 | `on(type, h)` / `css({...})` / `attrs(defaults)` | `onX` / `class` / a mixin to the left of the caller's props |
 | `insert` / `remove` / `handle.signal` | `onSettled` and its returned cleanup |
-| `beforeRemove` + `persistNode` (deferred exit) | none in Solid 2 core (unverified for libraries) |
+| `beforeRemove` + `persistNode` (deferred exit) | none in Solid 2 core; `@solid-primitives/presence` and `@solid-primitives/transition-group` have Solid 2 pre-releases (untested here) |
 
 ## 10. Toasts
 
