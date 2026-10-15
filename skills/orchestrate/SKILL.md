@@ -19,16 +19,17 @@ Each unit runs this state machine. You are the router: a worker's final message 
 plan ──▶ implement ──▶ review ──accepted──▶ verify ──pass──▶ decide ──merge──▶ done
             ▲              │                   │               │
             └───changes────┘                   │               ├─replan──▶ plan
-            └──────────────fail────────────────┘               └─drop────▶ done
+            └──────────────fail────────────────┘               ├─rewrite─▶ plan
+                                                                └─drop────▶ done
 ```
 
 - **plan**: the planner writes `spec.md`, with an acceptance check that is red now. You read it and approve or edit it.
 - **implement**: the implementor builds, runs the gate, and writes `round-N-request.md`. From round 2 the request carries a fix report.
 - **review**: a fresh reviewer from the other model family reads the request and the diff, and writes `round-N-findings.md` with `accepted`, `changes` or `stuck`.
 - **verify**: a fresh verifier runs the acceptance check in a clean checkout of the head commit, and writes `round-N-verify.md` with `pass`, `fail` or `stuck`.
-- **decide**: you check the claims, integrate, and merge, re-plan, or drop.
+- **decide**: you check the claims, integrate, and merge, re-plan, rewrite, or drop.
 
-A round **fails** on `changes` or `fail`. At the failure cap (3 unless the spec says otherwise), or on `stuck`, the unit goes to **decide** as stuck: you re-plan it. You never run another round in the same contexts.
+A round **fails** on `changes` or `fail`. At the failure cap (3, `counsel-review`'s round limit), the unit goes to **decide** for a [rewrite](#rewrite). On `stuck`, it goes to **decide** as [stuck](#stuck): you re-plan it. You never run another round in the same contexts.
 
 **A class seen twice gets its property now.** When a round's Blocker, Major or verify defect is another trigger of an earlier round's class (the findings say `repeat of rN <id>`, or you see it), the next round's message names the class and makes a generated property or model test that owns it the round's first deliverable: red on the unfixed code for every earlier instance, each kept as a fixed case, before any case fix. Do not wait for the cap: talk1b and sheet each spent a round fixing triggers after the reviewer had named the class.
 
@@ -133,15 +134,25 @@ A worker ended with `blocked`, and its final message names its `blocked.md`. Rea
 - If the point is small and reversible, decide it by principle, record it in Decisions, and send the same worker the decision.
 - Otherwise put it in Owner questions with your recommendation, and tell the user in one short message. Other units keep running.
 
+### rewrite
+
+The unit failed three rounds. Repair is over: rewrite it.
+
+1. Write the premise every failed repair assumed (`~/Developer/personal/dotfiles/principles/attack-the-premise.md`), and the census of triggers from every round's findings and verify reports.
+2. Rewrite the spec on a new premise, or on the old one kept with proof. Its acceptance check adds a property or model test that owns the repeated class, red on every earlier counterexample. The property ranges over the rule's whole domain as the rule is written (every paint, direction and value the rule names; every input path and modality), not the space around the last counterexample: papercut's shading rule failed three times after its property. The property is part of the acceptance check, never "if cheap": sheet's optional one compared the code with itself, and two more rounds failed on its class.
+3. Start a fresh implementor on a new branch from the base commit. The old branch and findings are data, never a starting point.
+4. Number the rewrite's rounds from 1 again.
+
+A rewrite that fails three rounds goes to the owner with both premises and the census.
+
 ### stuck
 
-Re-plan, by one of these:
+No round can help (a spec that contradicts itself, a missing decision). Re-plan, by one of these:
 
 - sharpen the spec, starting from the written premise;
 - split the unit;
 - narrow it to the owner's ask, and log the rest as known limits;
-- make the contested decision yourself;
-- start a fresh implementor with the old findings as data and a property or model test that owns the repeated class, red on every earlier counterexample. The property ranges over the rule's whole domain as the rule is written (every paint, direction and value the rule names; every input path and modality), not the space around the last counterexample: papercut's shading rule failed three times after its property. The property is part of the re-plan's acceptance check, never "if cheap": sheet's optional one compared the code with itself, and two more rounds failed on its class.
+- make the contested decision yourself.
 
 Stop the old implementor.
 

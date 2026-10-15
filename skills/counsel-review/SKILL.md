@@ -33,7 +33,7 @@ Include every applicable item:
 - Your candidate findings with evidence; for `design`, the candidate and rejected alternatives.
 - Test results, runtime evidence, and resource limits.
 - The owner of each change.
-- Round two only: accepted findings, repairs, final diff, new proof.
+- Rounds two and three: accepted findings, repairs, final diff, new proof.
 
 Tell it: the review is read-only; attack each candidate and hunt for missed blockers; cite full paths and line numbers; say "no blocker" when there is none.
 
@@ -51,12 +51,12 @@ Open every cited file and follow the control flow. Reject a claim the source doe
 
 ## 4. Rounds
 
-At most two per checkpoint (a branch, a PR, or one stack entry).
+At most three per checkpoint (a branch, a PR, or one stack entry).
 
 - Round one reviews the full packet.
-- If the user asked for fixes, end the read-only review, apply accepted repairs (`code-review` Phases 5–6), then send round two: accepted findings, repairs, final diff, and new proof, marked as the final round.
+- If the user asked for fixes, end the read-only review, apply accepted repairs (`code-review` Phases 5–6), then send the next round: accepted findings, repairs, final diff, and new proof. Mark round three as the final round.
 - A `design` gate uses one round unless round one finds a concrete blocker and the user permits a fix before the gate closes.
-- No third round unless the user changes the limit.
+- **Rewrite** when round three still finds a Blocker or Major: three failed repairs mean the design, not the repairs, is wrong. Stop repairing. Write the premise every repair assumed (`~/Developer/personal/dotfiles/principles/attack-the-premise.md`), rewrite the change from the base revision on a new premise, with every round's findings as data, and review the rewrite as a new checkpoint from round one.
 
 ## 5. Report
 

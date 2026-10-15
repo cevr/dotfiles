@@ -35,7 +35,7 @@ The first line of your file states the same verdict. Keep the rest of the final 
 
 ## Rounds
 
-A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the reviewer finds a Blocker or Major (`changes`) or the verifier fails it (`fail`). At the unit's cap (3 unless the spec says otherwise), the orchestrator re-plans the unit. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (the orchestrator asked for main to be merged in) is reviewed and verified like any other, and counts only if it fails.
+A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the reviewer finds a Blocker or Major (`changes`) or the verifier fails it (`fail`). At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (the orchestrator asked for main to be merged in) is reviewed and verified like any other, and counts only if it fails.
 
 ## Planner
 
