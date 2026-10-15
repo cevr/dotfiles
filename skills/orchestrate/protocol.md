@@ -63,6 +63,8 @@ You are the sole writer. You work in the spec's workspace (a Rift or worktree on
 
    From round 2 on, add the **fix report**: every finding of the last round, each `fixed <hash>` or `rejected: <reason>`. Never leave a finding unaccounted for.
 
+**Timebox.** Past the spec's timebox for a round, hand back `blocked` with `state.md` current and what remains.
+
 **Scope.** Work outside the spec does not enter the unit. Write it in `state.md` under "Follow-ups" for the orchestrator.
 
 ## Reviewer
@@ -90,5 +92,5 @@ You prove the unit works, objectively, in a clean environment. The reviewer judg
    ```
 
    Install there if the check needs it. Run the acceptance check exactly as written, and nothing that replaces it, plus the focused tests of the changed files. When it names `verify-<app>` feature ids, launch, doctor and drive by that skill and its feature files rather than writing your own recipe, and doctor again after any surprising result. Keep the evidence (logs, screenshots, diffs) under `<unit dir>/verify-N-evidence/`, outside the checkout. Leave the full gate to the implementor's log, and read that log's exit line. A helper you had to write goes in your report as a follow-up, never into the run dir as private tooling.
-2. **Report.** Write `round-N-verify.md`: `Verdict: PASS` or `Verdict: FAIL` first, then each check with its command, the expected result, the observed result and the evidence path. When a defect is a new trigger of an earlier round's defect, its first line says so: `repeat of r2 D1`.
+2. **Report.** A check that could not run, or ran without a clear result, is inconclusive, and inconclusive is `stuck` with the reason, never `pass`. Write `round-N-verify.md`: `Verdict: PASS`, `Verdict: FAIL` or `Verdict: STUCK` first, then each check with its command, the expected result, the observed result and the evidence path. When a defect is a new trigger of an earlier round's defect, its first line says so: `repeat of r2 D1`.
 3. **Clean up.** Stop every process you started, and remove the checkout with `git -C <workspace> worktree remove --force <unit dir>/verify-N-checkout`.

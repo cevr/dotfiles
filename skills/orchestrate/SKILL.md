@@ -34,18 +34,20 @@ A round **fails** on `changes` or `fail`. At the failure cap (3 unless the spec 
 
 The same message states, in one sentence, the premise every earlier fix assumed ([attack-the-premise](~/Developer/personal/dotfiles/principles/attack-the-premise.md)). The implementor either keeps the premise and lets the property prove it for every trigger, or replaces it. Another trigger fix on the same premise is not a round: sheet failed r1 to R1 on fixes that all assumed "the sheet's state can be read from scroll and layout observers".
 
-**A dead worker gives no verdict.** A worker that ends on a usage or rate limit or without its hand-back line, or a reviewer whose counsel run exited non-zero or wrote an empty file, decided nothing. Set the unit's State to `stuck(quota)`: the round neither passes nor fails, and no re-plan follows. When the limit allows, rerun that step with a fresh agent (an implementor resumes from `state.md` and the branch). A dead reviewer or verifier never counts as `accepted` or `pass`: on 10-07, 46 counsel reviewers died on quota in one day, silently.
+**A dead worker gives no verdict.** A worker that ends on a usage or rate limit or without its hand-back line, or a reviewer whose counsel run exited non-zero or wrote an empty file, decided nothing. Log the unit's state as `stuck(quota)`: the round neither passes nor fails, and no re-plan follows. Rerun that step with a fresh agent by its failure mode (an implementor resumes from `state.md` and the branch): a usage limit reruns as is once it resets; a network or harness error reruns as is; a context overflow reruns on a narrower unit; the same failure twice makes the unit `stuck`. A dead reviewer or verifier never counts as `accepted` or `pass`: on 10-07, 46 counsel reviewers died on quota in one day, silently.
 
 ## Roles on each host
 
 | Role | Claude Code orchestrator | Codex orchestrator | Context |
 | --- | --- | --- | --- |
-| planner | `Agent`, `run_in_background: true`, `model: "opus"`, `effort: "high"` | `spawn_agent` with `model: gpt-6.1-sol`, `reasoning_effort: high` | fresh per unit |
+| planner | `Agent`, `run_in_background: true`, `model: "opus"`, `effort: "high"` | `spawn_agent` with the newest sol (today `gpt-6.1-sol`), `reasoning_effort: high` | fresh per unit |
 | implementor | `Agent`, `run_in_background: true`, `model: "opus"`, `effort: "medium"`; round 2 by `SendMessage` to the same agent | `spawn_agent` with the newest luna (today `gpt-6-luna`), `reasoning_effort: max`; round 2 by `send_input` to the same agent (`followup_task` under `multi_agent_v2`) | **kept for round 2 only; fresh from round 3 or after its first compaction** |
-| reviewer | a background agent, `effort: "max"`, that runs the `counsel-review` skill: `okra counsel --deep` reaches Codex | `spawn_agent` with `model: gpt-6.1-sol`, `reasoning_effort: max`, running the `counsel-review` skill: `okra counsel` without `--deep` reaches Claude | fresh per round |
+| reviewer | a background agent, `effort: "max"`, that runs the `counsel-review` skill: `okra counsel --deep` reaches Codex | `spawn_agent` with the newest sol, `reasoning_effort: max`, running the `counsel-review` skill: `okra counsel` without `--deep` reaches Claude | fresh per round |
 | verifier | `Agent`, `run_in_background: true`, `model: "sonnet"`, `effort: "max"` | `spawn_agent` with the newest luna (today `gpt-6-luna`), `reasoning_effort: medium` | fresh per round |
 
 Rendering and critique run at max reasoning effort (owner, 2026-10-13): a reviewer, a verifier, and any agent that renders or judges renders or looks (a look prototype, a film critique, a stills judge) gets `effort: "max"`.
+
+The table is each role's baseline, and effort moves with the job: raise it a step for the hardest unit, and lower the implementor's a step for routine work (a rename sweep, a docs-only unit). Change effort, never the family.
 
 - **Families.** Every role runs on the host's own family, and the review alone crosses over: the reviewer agent sends its packet through `okra counsel`, which routes to the opposite agent, and validates what comes back. From Claude Code it runs `--deep` (Codex on the newest sol at `max`); from Codex it runs without `--deep` (Claude on Opus at `medium`). The verifier's independence comes from its fresh context, the clean checkout and the pre-written check.
 - **Fresh implementor.** Round 2 goes to the same implementor while it has not compacted: its context and prompt cache make the fix round a delta. From round 3, or once `agent-cost.ts` shows a compaction, stop it and start a fresh one with consolidated scope: the spec, every `round-*-findings.md` and `round-*-verify.md`, `state.md`, the branch, and the unit's Decisions lines. Past one compaction the kept context is mostly stale and every turn rereads it: rive-core held 5 compactions over 1,403 turns at about 190k context a turn (266M cache-read), while talk1b's fresh R1 was accepted in one round.
@@ -70,9 +72,11 @@ Done when the run dir exists, you know which host column you use, and the host c
    - Order the units topologically. Units with no dependency and no shared files can run at the same time.
    - **One agent per deliverable.** A unit with two deliverables is two units. An owner-feature or prototype agent hands back at each publish or owner ask, and its next step goes to a fresh agent briefed from `log.md` and the branch. In p5, 36 of 86 agents compacted twice or more and held 77% of the spend (scriptdesk then codefollow in one agent: 22 compactions).
    - **The owner's ask is the Done line.** The spec quotes the ask word for word, and its acceptance check is that ask, not what the unit grew into.
+   - **From tickets.** Work that arrives as `to-tickets` tickets is already split: each ticket is a unit, its blocking edges are the dependencies, and the ready frontier starts first. Its spec quotes the ticket as the Done line, and the merge names the ticket so the tracker closes it. Before the first wave, one read-only exploration agent reads the code and docs the tickets touch and writes shared notes to `<run dir>/notes/`, outside every workspace; every planner reads them.
 3. **Defaults.** Decide by `~/Developer/personal/dotfiles/principles/`, and ask only what the plan cannot settle. These apply unless the user says otherwise:
    - **Run to the end.**
    - **At most 3 heavy agents at once, and fewer when the gate cannot take them.** A heavy agent runs a gate or a browser: every implementor and verifier, and a reviewer that runs probes. Time the gate once before the first wave. Before starting a heavy agent, read the load (`sysctl -n vm.loadavg` or `uptime`), and start none while it is above the core count. While a gate waits longer than twice its own run, start no new unit, and make gate speed the next unit.
+   - **Pilot first.** The first unit runs alone through verify before the first wave fans out, so a flaw in the spec template, the gate or the verify recipe costs one edit instead of one per unit.
    - **You decide small, reversible open points**, and record each one.
    - **Owner questions never wait in a dialog.** Put the question in Owner questions with your recommendation, and tell the user in one short message. Then end your turn, and keep the other units running.
    - **Reserved for the user:** deploy, publish, paid runs, force-push to a shared branch, non-additive changes to stored or wire formats, and anything irreversible. Push is not reserved: the owner's global `AGENTS.md` (2026-10-13) pushes after the merge gate is green.
@@ -84,8 +88,8 @@ Done when the run dir exists, you know which host column you use, and the host c
 # <run> — <goal, word for word as the user gave it>
 Host: <claude|codex> · Units at once: 3 · Gate: <seconds> · Reserved: <list> · Repo: <path> · Base: <main hash>
 
-| Unit | Depends on | State | Round | Workspace | Agents | Result |
-| ---- | ---------- | ----- | ----- | --------- | ------ | ------ |
+| Unit | Depends on | Workspace | Agents | Result |
+| ---- | ---------- | --------- | ------ | ------ |
 
 ## Decisions        (decision, principle, unit)
 ## Owner questions  (question, unit, recommendation, answer)
@@ -93,13 +97,13 @@ Host: <claude|codex> · Units at once: 3 · Gate: <seconds> · Reserved: <list> 
 ## Review later     (points the user wants batched, e.g. visual polish)
 ```
 
-`State` is the machine state (`plan`, `implement`, `review`, `verify`, `decide`, `merged <hash>`, `blocked`, `stuck`, `stuck(quota)`, `dropped`). `Agents` holds the current implementor's agent id, so round 2 reaches the same agent.
+A unit's **state** is its machine state (`plan`, `implement`, `review`, `verify`, `decide`, `merged <hash>`, `blocked`, `stuck`, `stuck(quota)`, `dropped`), and it lives in the unit's `log.md`, never typed into a table: `bun ~/.claude/skills/orchestrate/scripts/status.ts <run dir>` prints every unit's state, round, time and cause from the logs. `Agents` holds the current implementor's agent id, so round 2 reaches the same agent. `Result` holds `merged <hash>` or `dropped`, so the committed plan keeps the outcome.
 
 Done when every unit has a row with its dependencies, and `plan.md` lists the reserved actions.
 
 ## 2. Run a unit
 
-Every transition appends one line to `<run dir>/<unit>/log.md`: the time from `date -u +%FT%RZ`, `from → to`, the round, and the file that caused it. Then update the unit's row in `plan.md`.
+Every transition appends one line to `<run dir>/<unit>/log.md`: `<time from date -u +%FT%RZ> <from> → <to> r<N> <file that caused it>`. That line is the status; `plan.md` changes only when `Agents` or `Result` does.
 
 1. **plan.** Make the unit's workspace from the warm source as `AGENTS.md` says (`rift create`; on the workbox, `workrift create <branch>`), on branch `<run>/<unit>`. Then start the planner: give it [`spec-template.md`](spec-template.md), the unit's goal and dependencies, the workspace, and `protocol.md`'s Planner section. When it ends, read `spec.md`. The Owns, Do not touch, Acceptance check and Gate sections must be concrete enough for a reader with no context. Edit them until they are.
 2. **implement.** Start the implementor with one message: the paths of `protocol.md` and `spec.md`, its role, and the round number. At each hand-back, read its compactions with `bun ~/.claude/skills/orchestrate/scripts/agent-cost.ts <agent id>`. For round 2, send the same agent the paths of the last findings or verify report. From round 3, or after its compaction, start a fresh implementor ([Fresh implementor](#roles-on-each-host)) whose message also names every findings and verify file, `state.md` and the branch.
@@ -146,7 +150,7 @@ Stop the old implementor.
 - **Wait.** End your turn and let workers wake you. Spec the next units while you wait. To wait on an outside event (the owner's answer, a lab change), run one background Bash until-loop that exits on the event, and re-arm it only after an event; a recurring 30-minute Monitor pinged the owner 12 times, 7 of them empty.
 - **Stop finished agents.** TaskStop an agent at its final hand-back.
 - **Owner direction** goes, the same turn, into the file that owns it: `NORTH_STAR.md` for scope and standing rules, the project's skill for craft and voice, `AGENTS.md` for the stack. Memory alone does not count: in p5 the owner re-pointed 14 times.
-- **After your own compaction.** Re-read this file, `protocol.md` and `plan.md` before any other action.
+- **After your own compaction.** Re-read this file, `protocol.md` and `plan.md`, and run `status.ts`, before any other action.
 - **Host move.** When the run moves host, rewrite the run's shared rules file for the new host in place; never keep an override file that every agent maps by hand.
 - **Pause.** On a pause, or when the user stops the run, stop every running worker, so no orphan agent burns tokens. Write where each unit stands into `plan.md`.
 
@@ -162,6 +166,7 @@ The end report covers:
 - the owner questions, each with a recommendation;
 - the follow-ups;
 - the Review later list;
+- the environment changes that would make the next run go better (a constrained API, a lint rule, a log, data access), and the recurring schedules worth setting up;
 - the `plan.md` path.
 
 Close every workspace you opened.
