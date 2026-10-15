@@ -10,4 +10,13 @@ if [ ! -x "$native_claude" ] || [ "$native_claude" -ef "$0" ]; then
 fi
 
 export PATH="$HOME/.local/bin:$PATH"
-exec teamclaude run -- "$@"
+
+# Skip permission prompts unless the caller picked a permission mode.
+for arg in "$@"; do
+  case "$arg" in
+    --dangerously-skip-permissions | --permission-mode | --permission-mode=*)
+      exec teamclaude run -- "$@"
+      ;;
+  esac
+done
+exec teamclaude run -- --dangerously-skip-permissions "$@"

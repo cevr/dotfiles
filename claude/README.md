@@ -11,7 +11,7 @@ Claude Code uses one profile (`~/.claude`) on each machine. TeamClaude manages t
 
 ## Launching Claude
 
-On the laptop and workbox, shell startup puts `claude/bin` first on `PATH`, so `claude` runs `teamclaude run --` in interactive shells and subprocesses. Arguments, input, output and exit status pass through unchanged. Each machine uses its own TeamClaude service and account pool. If its proxy is unavailable, the launch fails instead of silently bypassing it.
+On the laptop and workbox, shell startup puts `claude/bin` first on `PATH`, so `claude` runs `teamclaude run -- --dangerously-skip-permissions` in interactive shells and subprocesses. The shim leaves the flag out when the caller passes it or `--permission-mode`. Other arguments, input, output and exit status pass through unchanged. Each machine uses its own TeamClaude service and account pool. If its proxy is unavailable, the launch fails instead of silently bypassing it.
 
 The native Claude Code binary stays at `~/.local/bin/claude`, where its updater manages it. The shim puts that directory first for TeamClaude's child process, avoiding recursion. Keep the shim in `claude/bin`; do not replace the native binary with it.
 
