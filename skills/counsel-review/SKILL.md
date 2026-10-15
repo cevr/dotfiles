@@ -11,7 +11,12 @@ A PR someone else asked you to review runs `code-review`'s Requested review inst
 
 Read `../code-review/SKILL.md` and `../counsel/SKILL.md` first. The criteria live in `../code-review/references/review-contract.md` and `../code-review/references/test-audit.md`.
 
-Counsel needs the `okra` CLI. Run `command -v okra` first. When it prints nothing, tell the user plainly that the cross-model review is unavailable because okra is not installed, run `code-review` in this session instead, and label the report a single-model review.
+Counsel needs the `okra` CLI. Run `command -v okra` first. When it prints nothing, send the same packet (§2) another way, first that works:
+
+1. **The other family's CLI directly.** From Claude: `codex exec -s read-only -o "$out" - < "$prompt_path"`. From Codex: `claude -p --permission-mode plan < "$prompt_path" > "$out"`. The review stays cross-model.
+2. **A fresh subagent** with no context from this session, given only the packet and told to run `code-review`. Label the report a same-family review.
+
+Say which path ran in the report.
 
 ## 1. Ground the packet
 
