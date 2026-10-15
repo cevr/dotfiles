@@ -4,6 +4,7 @@
     "commit": "",
     "pr": ""
   },
+  "cleanupPeriodDays": 365,
   "effortLevel": "high",
   "enabledPlugins": {
     "codex@openai-codex": true,
