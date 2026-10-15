@@ -48,4 +48,7 @@
 ## Task Endings
 
 - Before ending a turn, do the next actions that are reversible and in scope, then report them as done. Don't hand the user a list of things you could do.
-- After a big task, end with a short "Needs you" section: only the decisions that are genuinely the user's (preference, irreversible or external actions), plus up to 3 automations worth setting up.
+- End every turn with a short **"What I need from you"** section, placed last. Only what is genuinely the user's goes in it: a preference, an irreversible or external action, access you lack. Number it, one concrete action per item: exactly what to do, where (which site, app, file or person), and what to send back. Write "Log into CommBank NetBank and export Jan to Jun 2026 as CSV, then drop it in `inbox/`", not "I need the bank data".
+- Put the quickest or most blocking item first, and say what you'll get on with in the meantime.
+- When nothing is needed, write "Nothing needed from you right now" so the user doesn't have to ask.
+- After a big task, add the automations worth setting up as items too.
