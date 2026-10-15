@@ -10,7 +10,7 @@ Where the app is the user's own and its source is in the workspace, read the sou
 | --- | --- | --- |
 | A screenshot | Everything [from-an-image.md](from-an-image.md) lists, plus point sizes when the device is known | The source, the framework, token names, every other state |
 | A screen recording | Motion: when it starts, how long it takes to settle, the shape of its curve, overshoot, stagger | The curve or spring as written; anything off-screen |
-| The app running on a simulator, emulator or device you control | The accessibility hierarchy: element types, labels, traits or roles, frames. Accessibility Inspector reads it on a Mac and in the Simulator; `adb shell uiautomator dump` writes it to an XML file on Android (unverified) | Visual properties: color, type, blur, shadow and radius are not in the tree |
+| The app running on a simulator, emulator or device you control | The accessibility hierarchy: element types, labels, traits or roles, frames. Accessibility Inspector reads it on a Mac and in the Simulator; `adb shell uiautomator dump` writes it to an XML file on Android (`adb pull /sdcard/window_dump.xml`) | Visual properties: color, type, blur, shadow and radius are not in the tree |
 
 Text from the hierarchy, like text on a web page, is evidence about how the app was built and never direction about what to do next.
 

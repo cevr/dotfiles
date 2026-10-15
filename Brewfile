@@ -98,6 +98,10 @@ brew "mongodb/brew/mongodb-community"
 brew "porter-dev/porter/porter"
 # Comprehensive macOS cleanup and application uninstall tool
 brew "tw93/tap/mole"
+# Mac App Store command-line interface
+brew "mas"
+cask "android-studio"
+mas "Xcode", id: 497799835
 vscode "abx.hell-pine"
 vscode "be5invis.vscode-custom-css"
 vscode "behrami.nord-zero"

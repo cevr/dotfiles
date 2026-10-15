@@ -106,7 +106,7 @@ val reduceMotion = remember {
 }
 ```
 
-`ValueAnimator.areAnimatorsEnabled()` (API 26) also returns false under Battery Saver; `ValueAnimator.getDurationScale()` and `registerDurationScaleChangeListener` (API 33) observe changes. There is no reduce-transparency setting; for increased contrast, `UiModeManager.getContrast()` (API 34, unverified).
+`ValueAnimator.areAnimatorsEnabled()` (API 26) also returns false under Battery Saver; `ValueAnimator.getDurationScale()` and `registerDurationScaleChangeListener` (API 33) observe changes. There is no reduce-transparency setting; for increased contrast, `UiModeManager.getContrast()` (API 34; see [color](color.md)).
 
 ## Gestures
 
