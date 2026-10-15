@@ -11,6 +11,7 @@ The maintained source for verifying what a Notes user can do. Read this index be
 
 ## Proof and skip reporting
 
+- Each journey records a video, `$EVIDENCE/<feature>/<feature>.webm`.
 - Each step records the action, the URL after it, `ab snapshot` and `ab screenshot` into `$EVIDENCE/<feature>/`.
 - A write is proved by a second view: reopen the note from the list.
 - An unreachable entry point is reported with the command tried and the unmet precondition. It never counts as verified through another path.

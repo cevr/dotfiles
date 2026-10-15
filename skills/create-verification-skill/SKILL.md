@@ -17,7 +17,7 @@ Answer from the code. Ask the owner only what no file shows.
 - **Surface.** What does the user touch: a web page, a CLI, a TUI, a desktop app, an HTTP API?
 - **Run.** The repo's own dev command (`package.json` scripts, `AGENTS.md` or `CLAUDE.md`, the README), with its ports, env, seed data and auth.
 - **Drive.** Existing harnesses first: e2e fixtures, gesture helpers, a debug port. Then the generic driver: `agent-browser` for web and Electron, `pilotty` for a CLI or TUI, `curl` for HTTP.
-- **Observe.** What proof exists: screenshots, ARIA snapshots, terminal transcripts, response bodies, the dev logs (`tmp/logs/latest` in bible-tools), exit codes, rows, the `git diff` of a scratch root.
+- **Observe.** What proof exists: video, screenshots, ARIA snapshots, terminal transcripts, response bodies, the dev logs (`tmp/logs/latest` in bible-tools), exit codes, rows, the `git diff` of a scratch root.
 - **Isolate.** Can two instances run side by side (ports, data dirs, browser profiles, scratch roots)? Which instance is the owner's own and must never be driven?
 - **Hosts.** Which machines run the repo (the laptop, the Workbox), and what differs per host: ports, GPU, a mic or screen permission, the address the owner opens.
 - **Docs guard.** Does a test check docs against code? In bible-tools it is `readDocs` in `packages/film/src/docs.test.ts`.
@@ -55,6 +55,7 @@ Frontmatter: `name: verify-<app>`, and a model-facing `description` that leads w
   Run it before the first drive, and again after any surprising result.
 - **Drive.** The conventions every feature file uses: `agent-browser --session <run>` per run; an ARIA role and accessible name with `--exact` (a name match is a substring by default, so `Cut` also matches "Show cuts"), or a stable `data-*` handle, and never a class or a coordinate; the real user path (clicks, keys, fingers), and never an internal setter, a URL-state write or an API call to reach a state. Then a pointer to `features/README.md`.
 - **Evidence.** Where proof goes: an evidence dir the caller names, outside every checkout (default `tmp/verify/<run>/<feature>/`, git-ignored). What it holds:
+  - a video of each journey, on by default with a flag to skip it: Playwright's `recordVideo` on the context, or the driver's own recorder; `<feature>.webm`, no audio, proved playable (`ffprobe` duration above 0);
   - for each step, the action, the URL after it, an ARIA snapshot and a screenshot;
   - a write proved by a second view: reopen it, read the row, or `git diff` the scratch root;
   - a flaky step as n/n trials with the load;

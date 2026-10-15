@@ -34,7 +34,7 @@ Edit only the skill's own directory and the helper scripts its `SKILL.md` names.
 4. **Reconcile.** Every feature file has a returned summary. Spot-check each cited drift; do not re-prove clean claims. Read `git log` since the skill's last commit for user-facing surfaces the map lacks: a missing feature needs a concrete source path. Merge the recipes into as few app states as you can.
 5. **Live pass.** Required even when the source wave found nothing. You drive, serially, by the skill's own Launch and Drive sections, and you drive every feature at least once. Hold three invariants throughout:
    - **Doctor first.** Run doctor before the first drive, and again after any failed or surprising drive. Where doctor cannot see the problem (a wedged UI on a healthy process), relaunch rather than hope.
-   - **Evidence survives.** Check it at its named path after each cleanup.
+   - **Evidence survives.** Check it, video included, at its named path after each cleanup.
    - **Nothing outlives its use.** Each failed attempt's processes, sessions and scratch roots are cleaned before the next.
 
    A doctor failure caused by the skill's own drift is drift: fix it within scope and retry once. A feature you cannot reach is `verified-unreachable` only with the concrete prerequisite and the route tried; a prerequisite the map omits is drift. Every harness fix is driven live again before it ships. Tear down after the last drive.
