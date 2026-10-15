@@ -109,6 +109,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "mcp__cua__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"$HOME/Developer/personal/dotfiles/claude/hooks/accept-cua.ts\""
+          }
+        ]
       }
     ],
     "SessionEnd": [
@@ -161,6 +170,17 @@
             "async": true,
             "command": "if command -v moshi-hook >/dev/null 2>&1; then moshi-hook claude-hook; fi",
             "type": "command"
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "cua",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"$HOME/Developer/personal/dotfiles/claude/hooks/accept-cua.ts\""
           }
         ]
       }
