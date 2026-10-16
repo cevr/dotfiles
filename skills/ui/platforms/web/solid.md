@@ -328,7 +328,7 @@ export type RefFactory<T extends Element = HTMLElement> = (el: T) => void;
 export type Mixin<T extends Element = HTMLElement> = Omit<JSX.HTMLAttributes<T>, "ref" | "style"> & {
   ref?: RefFactory<T> | Array<RefFactory<T> | undefined>; // JSX.Ref<T> also admits a bare T, which makes it invariant
   style?: JSX.CSSProperties; // objects only, so they merge
-  [data: `data-${string}`]: string | undefined; // JSX attribute types reject data-* keys in literals (solidjs/solid#4082)
+  [data: `data-${string}`]: string | undefined; // through rc.15, props-object types reject data-* keys; fixed after rc.15 (solidjs/solid#4082)
 };
 
 // Left to right: the rightmost attribute wins. Every handler, class, style key and ref is kept.
@@ -389,7 +389,7 @@ function hoverable(): Mixin {
 // pressable() is a prop mixin built the same way.
 function Card(props: { ref?: JSX.Ref<HTMLDivElement>; onOpen: () => void }) {
   const behaviour = mix<HTMLDivElement>(pressable({ onPress: props.onOpen }), hoverable(), { class: "card" });
-  // The element has a spread, so its ref factories are made here, not inline in `ref`.
+  // Through rc.15 the element's spread makes SSR skip `ref`, so its ref factories are made here, not inline.
   const size = onElement<HTMLDivElement>((el) => {
     const observer = new ResizeObserver(() => report(el.getBoundingClientRect()));
     observer.observe(el);
@@ -403,12 +403,12 @@ function Card(props: { ref?: JSX.Ref<HTMLDivElement>; onOpen: () => void }) {
 | Rule | Reason |
 | --- | --- |
 | Build prop mixins in the component body and spread the result. Never write `{...mix(a(), b())}` inline. | The compiler wraps an inline call in an accessor that reruns whenever a getter it reads changes. Each rerun rebuilds the mixins, so their signals reset. |
-| Call ref factories inline in `ref={[...]}` on an element without a spread. On an element with one, create them in the component body and pass the results. | The array is evaluated once, untracked, under the element's owner. SSR skips `ref` entirely on an element with a spread, so a factory that creates a signal there shifts hydration ids ([solidjs/solid#4081](https://github.com/solidjs/solid/issues/4081)). |
-| Keep factory bodies free of DOM access. Keep the returned callback to `el => (node = el)`, and do DOM work in `onSettled`. | SSR evaluates `ref={[...]}` factories but never calls their callbacks. The callback runs before the element is connected. It also runs before the element's dynamic attributes are set, and a ref forwarded inside a spread (`{...props}`) runs before any of that spread's attributes ([#4080](https://github.com/solidjs/solid/issues/4080)). |
+| Call ref factories inline in `ref={[...]}` on an element without a spread. Through rc.15, on an element with one, create them in the component body and pass the results. | The array is evaluated once, untracked, under the element's owner. Through rc.15, SSR skips `ref` entirely on an element with a spread, so a factory that creates a signal there shifts hydration ids ([solidjs/solid#4081](https://github.com/solidjs/solid/issues/4081)). The fix ([#4090](https://github.com/solidjs/solid/pull/4090)) is on `next` and ships in the first release after rc.15. |
+| Keep factory bodies free of DOM access. Keep the returned callback to `el => (node = el)`, and do DOM work in `onSettled`. | SSR evaluates `ref={[...]}` factories but never calls their callbacks. The callback runs before the element is connected. It also runs before the element's dynamic attributes are set, and a ref forwarded inside a spread (`{...props}`) runs before any of that spread's attributes. This order is by design and will not change: a ref passed down through props reaches the child before the child sets up ([#4080](https://github.com/solidjs/solid/issues/4080)). |
 | Put mixins left to right, with the caller's props last. | Rightmost attribute wins. Handlers run rightmost first, so the caller's runs before a behaviour's; a behaviour the caller may veto checks `event.defaultPrevented` first. Every `class` is kept, `style` objects merge, and every ref is called. |
 | Don't create a mixin with a ref factory before its element exists, for example above a `<Show>`. | `onSettled` fires once and finds no element. |
 | Before rc.15, never cast a component ref: `<Card ref={x as T}>`. | The compiler silently dropped the prop until rc.15 ([#3968](https://github.com/solidjs/solid/issues/3968)). Casting on a DOM element was always fine. |
-| Expect a native listener (`listen`) to run before a delegated `onX`. | Calling `stopPropagation()` in the native listener silences the delegated handlers at and below that element ([#4083](https://github.com/solidjs/solid/issues/4083)). |
+| Expect a native listener (`listen`) to run before a delegated `onX`. | Calling `stopPropagation()` in the native listener silences the delegated handlers at and below that element. Delegated handlers run from the root's listener, as in Solid 1, and this is by design ([#4083](https://github.com/solidjs/solid/issues/4083)). |
 
 | Remix 3 | Solid 2 |
 | --- | --- |
