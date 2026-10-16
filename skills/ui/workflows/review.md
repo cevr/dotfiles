@@ -192,7 +192,7 @@ One root cause is one finding, with every confirmed location in the same row. Re
 
 ## 9. Verify what can be verified
 
-**Surface review.** Run the safe, relevant checks the project offers. Inspect the rendered interface when runtime behavior or visual judgment matters, through the renderer [harness](harness.md#looking-at-it) names for the platform, and report the exact command or interaction and its result.
+**Surface review.** Run the safe, relevant checks the project offers. Inspect the rendered interface when runtime behavior or visual judgment matters, through the renderer [harness](harness.md#looking-at-it) names for the platform, judge it by [its passes](harness.md#judging-it), and report the exact command or interaction and its result.
 
 **Change review.** Rendered verification is opt-in. Mark visual and runtime claims **Not verified** unless the project exposes a cheap preview or the user asks for a rendered review. For `working` and `branch`, the checkout already is the head, so render it in place. For any other target, render an isolated worktree such as `git worktree add /tmp/review-<n> refs/remotes/pr/<n>` and remove it when done.
 

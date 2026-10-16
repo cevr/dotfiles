@@ -1,6 +1,6 @@
 # The harness
 
-Where [states](states.md), [stress-test](stress-test.md) and [variants](variants.md) render the real component with fixture data, and how those workflows and [build-design](build-design.md) look at what rendered. Each workflow says what goes on the harness; this file says where it lives on each platform and how to see it.
+Where [states](states.md), [stress-test](stress-test.md) and [variants](variants.md) render the real component with fixture data, and how those workflows and [build-design](build-design.md) look at what rendered. Each workflow says what goes on the harness; this file says where it lives on each platform, how to see it and how to judge it.
 
 ## Where it lives
 
@@ -28,6 +28,30 @@ A native component always has a project, so the harness goes there. Only the web
 Previews render only inside Xcode and Android Studio. From a terminal, the reachable route is a build installed on the simulator or emulator plus the capture command, or the project's existing snapshot tests. Adding a snapshot-testing dependency to see a throwaway harness is out of scope.
 
 With no way to render at hand, say so and hand over what the user opens: the URL on the web, the preview file and the preview names on Apple and Android.
+
+## Judging it
+
+Judge what rendered from the screenshot, not from the code: you wrote the code, so you read your intent into it. Make each pass on its own, at every width you rendered:
+
+1. **One second.** Glance and look away. Say what the screen is for and what to do next. Two answers, or none, means the hierarchy is split ([interface judgment](../references/interface-judgment.md)).
+2. **Squint.** Blur it until text is grey bars, and name the two or three biggest masses. The content the user came for, or the one primary action, is one of them.
+3. **Edges.** Follow the leading edge of each text block down each column and count the distinct positions. Two or three, reused, read as aligned; six read as placed one at a time ([shared edges](../references/layout/grouping-and-alignment.md#align-to-shared-edges)).
+4. **Space.** Call each empty region a rest (it groups on purpose) or a hole (something is missing or misplaced). The gap between groups is at least twice the gap inside one ([layout](../references/layout/index.md)).
+5. **Type.** Count the text sizes on screen against the project's scale. Find any line past the measure and any heading that ends on one word ([typography](../references/typography/index.md)).
+6. **Color.** Say where the accent is and what it means there. It keeps its one meaning and fills one primary action per view; anywhere else it stops meaning "here" ([color usage](../references/color/color-usage.md)).
+7. **Collisions.** Text over text, text cut by its container, a sticky bar over content, anything past the edge.
+8. **Compact width.** Judge the narrow screenshot as a layout of its own: the one-second answer and the primary action survive, not the wide layout stacked.
+
+Write each round in one shape, so rounds compare:
+
+    ROUND n · <screen> · <widths>
+    Seen in one second: …
+    Masses: …
+    Leading edges: n · Text sizes: n
+    Top three problems, most visible first, each with its screenshot, the region and the fix:
+    1. …
+
+Name a problem as a designer tells a colleague: "the filter row starts 12pt right of the table's edge", never "could be more polished". Fix in this order, since a later fix cannot rescue an earlier one: hierarchy, composition, type, color, detail, motion. Fix the top three, render again and judge again. Stop when a round finds nothing a stranger would notice, or after three rounds, and list what remains plainly. A finding from this pass cites its screenshot, and its fix cites the code ([review](review.md#5-require-evidence)).
 
 ## Viewing modes
 
