@@ -86,6 +86,8 @@ brew "python@3.12"
 brew "redis", restart_service: :changed
 # Search tool like grep and The Silver Searcher
 brew "ripgrep"
+# Utility that provides fast incremental file transfer
+brew "rsync"
 # CLI tool that moves files or folder to the trash
 brew "trash"
 # Feature-rich command-line audio/video downloader

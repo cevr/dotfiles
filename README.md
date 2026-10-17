@@ -9,6 +9,7 @@ My personal dotfiles.
 | `zshrc` | Zsh configuration |
 | `zshenv` | Laptop PATH setup, including the Claude launcher |
 | `workbox/` | Reproducible Bite workbox configuration and services |
+| `mac/developer-volume/` | Moves `~/Developer` onto its own APFS volume with no Spotlight and no FSEvents log |
 | `gitconfig` | Git configuration |
 | `gitignore_global` | Global gitignore |
 | `ghostty/config` | Ghostty terminal config |
