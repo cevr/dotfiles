@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 // One line of what an agent spent, read from its transcript: turns, cache-read,
-// cache-create and output tokens, compactions and wall time. A task
-// notification's token count is the agent's final context, not its spend.
+// cache-create and output tokens, compactions, wall time, the first turn's
+// context (the floor every turn pays), the mean context per turn, and the Bash
+// calls that poll. A task notification's token count is the agent's final
+// context, not its spend.
 //
 // Usage: bun agent-cost.ts <agent id> [--projects <dir>]
 //   Finds `<projects>/<repo>/<session>/subagents/agent-<id>.jsonl` under
@@ -33,6 +35,8 @@ const file = stats.sort((a, b) => b.m - a.m)[0]!.f;
 // call), each carrying its usage; keep each message id's largest counts once.
 const usage = new Map<string, Record<string, number>>();
 let compactions = 0;
+let polls = 0;
+const POLL = /sleep [0-9]|until |while true|gh run watch/;
 let first: string | undefined;
 let last: string | undefined;
 
@@ -42,7 +46,11 @@ for (const line of (await Bun.file(file).text()).split('\n')) {
     type?: string;
     subtype?: string;
     timestamp?: string;
-    message?: { id?: string; usage?: Record<string, number> };
+    message?: {
+      id?: string;
+      usage?: Record<string, number>;
+      content?: { type?: string; name?: string; input?: { command?: unknown } }[];
+    };
   };
   try {
     d = JSON.parse(line);
@@ -60,10 +68,14 @@ for (const line of (await Bun.file(file).text()).split('\n')) {
     const u = d.message?.usage ?? {};
     const max = (k: string) => Math.max(had[k] ?? 0, u[k] ?? 0);
     usage.set(key, {
+      input_tokens: max('input_tokens'),
       cache_read_input_tokens: max('cache_read_input_tokens'),
       cache_creation_input_tokens: max('cache_creation_input_tokens'),
       output_tokens: max('output_tokens'),
     });
+    for (const b of d.message?.content ?? []) {
+      if (b.type === 'tool_use' && b.name === 'Bash' && POLL.test(String(b.input?.command ?? ''))) polls++;
+    }
   }
 }
 
@@ -72,9 +84,16 @@ const turns = usage.size;
 const read = sum('cache_read_input_tokens');
 const create = sum('cache_creation_input_tokens');
 const out = sum('output_tokens');
+// A turn's context is everything it sent: fresh input plus cached prefix.
+const contextOf = (u: Record<string, number>) =>
+  (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+const contexts = [...usage.values()].map(contextOf);
+const floor = contexts[0] ?? 0;
+const meanContext = turns ? contexts.reduce((a, b) => a + b, 0) / turns : 0;
 
 const m = (n: number) => `${(n / 1e6).toFixed(1)}M`;
+const k = (n: number) => Math.round(n / 1000);
 const minutes = first && last ? Math.round((Date.parse(last) - Date.parse(first)) / 60000) : 0;
 console.log(
-  `cost ${id}: ${turns} turns, ${m(read)} cache-read, ${m(create)} cache-create, ${Math.round(out / 1000)}k out, ${compactions} compactions, ${minutes} min`,
+  `cost ${id}: ${turns} turns, ${m(read)} cache-read, ${m(create)} cache-create, ${k(out)}k out, ${compactions} compactions, ${minutes} min, floor ${k(floor)}k, ctx ${k(meanContext)}k/turn, polls ${polls}`,
 );

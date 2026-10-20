@@ -7,8 +7,9 @@
 //   Reads `<run dir>/<unit>/log.md`. A transition line holds an ISO time,
 //   `<from> → <to>` (or `->`), the round as `r<N>` or `round <N>`, and the
 //   file that caused it. Other lines (agent-cost receipts) are skipped.
+//   Warns when `<run dir>/plan.md` is over 40 KB.
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 const dir = process.argv[2];
@@ -43,3 +44,8 @@ const rows = readdirSync(dir, { withFileTypes: true })
 console.log('| Unit | State | Round | Since | Cause |');
 console.log('| ---- | ----- | ----- | ----- | ----- |');
 for (const r of rows) console.log(`| ${r.unit} | ${r.state} | ${r.round} | ${r.since} | ${r.cause} |`);
+
+// The root re-reads plan.md after every compaction; a large one costs every re-read.
+const plan = join(dir, 'plan.md');
+const planKb = existsSync(plan) ? statSync(plan).size / 1024 : 0;
+if (planKb > 40) console.log(`\nplan.md: ${Math.round(planKb)} KB; archive closed sections`);
