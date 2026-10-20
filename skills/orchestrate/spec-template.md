@@ -7,6 +7,7 @@ The planner fills one copy per unit into `<run dir>/<unit>/spec.md`, and the orc
 
 Run `<run>` · unit dir `<run dir>/<unit>` · failure cap 3 · timebox <hours per round>
 Machine: plan → implement → review (okra counsel, the other model family) → verify (fresh agent, clean checkout) → decide.
+Review: <standard | deep: why a defect here is costly>.
 Protocol: `~/.claude/skills/orchestrate/protocol.md` (read it in full first).
 
 ## Goal
