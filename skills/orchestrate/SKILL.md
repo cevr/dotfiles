@@ -70,7 +70,7 @@ Done when the run dir exists, you know which host column you use, and the host c
 1. **Read first.** Read the task, the repo's `AGENTS.md` or `CLAUDE.md`, and `NORTH_STAR.md`, before asking anything.
 2. **Units.** Split the work into units. A unit is one reviewable result: one branch, one PR, one batch. A unit that builds on a seam another planned unit replaces depends on that unit; it never starts on the old seam.
    - Give each unit a slug of up to 12 characters, and list the units it depends on: their code, their decisions or their files.
-   - Order the units topologically. Units with no dependency and no shared files can run at the same time.
+   - Order the units topologically. Units with no dependency and no shared files can run at the same time. A dependent unit does not wait for its parent to merge: it stacks on the parent's current head and restacks (`gh stack rebase`) when a parent round lands. Freeze each shared seam's types and paths first, so a restack stays a rebase; only a seam change sends the child back to work. Waiting for final heads made verifyall a months-long chain (owner, 2026-10-20).
    - **One agent per deliverable.** A unit with two deliverables is two units. An owner-feature or prototype agent hands back at each publish or owner ask, and its next step goes to a fresh agent briefed from `log.md` and the branch. In p5, 36 of 86 agents compacted twice or more and held 77% of the spend (scriptdesk then codefollow in one agent: 22 compactions).
    - **The owner's ask is the Done line.** The spec quotes the ask word for word, and its acceptance check is that ask, not what the unit grew into.
    - **From tickets.** Work that arrives as `to-tickets` tickets is already split: each ticket is a unit, its blocking edges are the dependencies, and the ready frontier starts first. Its spec quotes the ticket as the Done line, and the merge names the ticket so the tracker closes it. Before the first wave, one read-only exploration agent reads the code and docs the tickets touch and writes shared notes to `<run dir>/notes/`, outside every workspace; every planner reads them.
@@ -125,7 +125,7 @@ Every transition appends one line to `<run dir>/<unit>/log.md`: `<time from date
    - Green: in the main checkout, `git merge --ff-only <branch>`. A fix you would make yourself goes to the implementor as a round.
    - Push only as the Reserved default allows. After a push, read `gh run list --branch main --limit 1` once CI finishes; a red CI is a new unit.
 3. **Record and close.** Write `merged <hash>` into the unit's row, with decisions, follow-ups from `state.md`, and anything for Review later. A helper the unit's workers built that a later round or unit would rebuild (a browser driver, a rerun script, a seed root) is a follow-up unit that moves it into the repo's scripts or its `verify-<app>` skill ([build-the-lever](~/Developer/personal/dotfiles/principles/build-the-lever.md)). Stop the unit's agents (Codex: `close_agent`). Delete the branch and remove the workspace by its full path.
-4. **Next.** Start each unit whose dependencies are now all merged, up to the limit. If a result changes what a later unit needs, update that unit's spec first.
+4. **Next.** Start each unit whose seams are frozen, stacked on its parents' current heads, up to the limit. Restack its children. If a result changes what a later unit needs, update that unit's spec first.
 
 ### asks
 
