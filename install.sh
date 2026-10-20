@@ -50,6 +50,7 @@ fi
 # Claude settings (TeamClaude manages the account pool)
 mkdir -p ~/.claude ~/.config
 ln -sfn "$DOTFILES_DIR/claude/settings.json" ~/.claude/settings.json
+ln -sfn "$DOTFILES_DIR/agents" ~/.claude/agents
 "$DOTFILES_DIR/claude/install-herdr-hook.sh"
 
 # Codex config (shared with the workbox; it writes through the link)
