@@ -111,6 +111,16 @@
         ]
       },
       {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"$HOME/Developer/personal/dotfiles/claude/hooks/guard-agent.ts\"",
+            "timeout": 15
+          }
+        ]
+      },
+      {
         "matcher": "mcp__cua__.*",
         "hooks": [
           {

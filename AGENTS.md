@@ -6,7 +6,7 @@
 - Pragmatism is NOT the default. Prefer structurally correct over fast move-in-place; the user invests hours for correctness.
 - Reserve checkpoints for genuine ambiguity (rare) or irreversible/external actions.
 - High-blast-radius work (20+ files across subsystems): split into 3-5 reviewable sub-commits, each compiling + passing gate. Don't ask for approval on strategy or naming.
-- Mechanical repetitive work (propagating an established pattern across many files): delegate to a `general-purpose` agent. Prompt must include the transformation rules, 1-2 worked examples, the validation command, and "stop and report if a file doesn't fit."
+- Mechanical repetitive work (propagating an established pattern across many files): delegate to a `worker` agent. Prompt must include the transformation rules, 1-2 worked examples, the validation command, and "stop and report if a file doesn't fit."
 
 ## Environment
 
