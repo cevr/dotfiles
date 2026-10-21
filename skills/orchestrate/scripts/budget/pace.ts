@@ -5,6 +5,10 @@
 //   slowest burn that spends `weeklyTarget` of every account before it resets.
 //   Day hours carry the pace and night hours a `nightWeight` share of it, since
 //   no one is awake at night to answer an agent.
+// - Rolling: quota keeps coming, as each account opens a new week at its reset.
+//   The pace never falls below an even burn of the quota in hand plus the share
+//   of each new week that opens in the next 7 days, so a pool whose accounts
+//   are spent but reset soon keeps working on the accounts left.
 // - Ceilings: never so fast that the pool hits a weekly limit before the next
 //   refill, nor that the accounts with weekly quota pass `fiveHourMax` of their
 //   5-hour windows before those reset.
@@ -36,10 +40,15 @@ export const DEFAULTS: Config = {
 };
 
 const HOUR = 3600e3;
+const WEEK = 7 * 24 * HOUR;
 const STEP = 5 * 60e3;
 
+const formats = new Map<string, Intl.DateTimeFormat>();
+
 function hourIn(at: number, timezone: string): number {
-  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour: 'numeric', hourCycle: 'h23' }).formatToParts(at);
+  let format = formats.get(timezone);
+  if (!format) formats.set(timezone, (format = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour: 'numeric', hourCycle: 'h23' })));
+  const parts = format.formatToParts(at);
   return Number(parts.find((p) => p.type === 'hour')?.value ?? 0);
 }
 
@@ -58,7 +67,7 @@ export function weightedHours(from: number, to: number, c: Config): number {
 }
 
 /** Fractions of one account's week per hour, now. */
-export function weeklyPace(accounts: readonly Account[], now: number, c: Config): { floor: number; ceiling: number } {
+export function weeklyPace(accounts: readonly Account[], now: number, c: Config): { floor: number; rolling: number; ceiling: number } {
   const due = accounts
     .filter((a): a is Account & { reset7d: number } => (a.reset7d ?? 0) > now)
     .sort((a, b) => a.reset7d - b.reset7d);
@@ -72,7 +81,12 @@ export function weeklyPace(accounts: readonly Account[], now: number, c: Config)
     ceiling = Math.min(ceiling, fuel / ((a.reset7d - now) / HOUR));
     fuel += Math.min(1, a.used7d);
   }
-  return { floor, ceiling };
+  const inView = due.reduce(
+    (n, a) => n + Math.max(0, c.weeklyTarget - a.used7d) + (c.weeklyTarget * Math.max(0, now + WEEK - a.reset7d)) / WEEK,
+    0,
+  );
+  const rolling = due.length === 0 ? 0 : (inView / weightedHours(now, now + WEEK, c)) * weight(now, c);
+  return { floor, rolling, ceiling };
 }
 
 /**
@@ -118,12 +132,12 @@ export function calibrate(samples: readonly Sample[]): { k7?: number; k5?: numbe
   return { k7: k7 > 0 ? k7 : undefined, k5: k5 > 0 ? k5 : undefined };
 }
 
-/** The pool's target burn in W/h: the weekly pace, under both ceilings. */
+/** The pool's target burn in W/h: the weekly pace, the higher of the floor and the rolling pace, under both ceilings. */
 export function target(accounts: readonly Account[], now: number, c: Config, k: { k7?: number; k5?: number }) {
   const week = weeklyPace(accounts, now, c);
   const five = fiveHourCeiling(accounts, now, c);
   if (!k.k7) return { week, five, targetWph: undefined };
-  const limits = [week.floor / k.k7, week.ceiling / k.k7];
+  const limits = [Math.max(week.floor, week.rolling) / k.k7, week.ceiling / k.k7];
   if (k.k5) limits.push(five / k.k5);
   return { week, five, targetWph: Math.max(0, Math.min(...limits)) };
 }

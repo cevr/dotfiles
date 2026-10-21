@@ -30,6 +30,19 @@ describe('weeklyPace', () => {
     expect(weeklyPace(accounts, NOON, UTC).ceiling).toBeCloseTo(0.1 / 2);
   });
 
+  test('the rolling pace counts the weeks that open in the next 7 days', () => {
+    // Today's pool: one account just reset, six spent that reset over the week.
+    const accounts = [
+      { used7d: 0.03, reset7d: NOON + 166 * HOUR, used5h: 0 },
+      ...[5, 17, 33, 55, 65, 108].map((h) => ({ used7d: 1, reset7d: NOON + h * HOUR, used5h: 0 })),
+    ];
+    const pace = weeklyPace(accounts, NOON, UTC);
+    const inView = 0.96 + [5, 17, 33, 55, 65, 108].reduce((n, h) => n + (0.99 * (168 - h)) / 168, 0) + (0.99 * 2) / 168;
+    expect(pace.rolling).toBeCloseTo(inView / (7 * (16 + 8 * 0.25)));
+    // The floor sees only the one account in hand, spread over its week.
+    expect(pace.floor).toBeLessThan(pace.rolling / 4);
+  });
+
   test('a spent pool has no floor to keep', () => {
     const accounts = [{ used7d: 1, reset7d: NOON + 5 * HOUR, used5h: 0 }];
     expect(weeklyPace(accounts, NOON, UTC).floor).toBe(0);
@@ -76,6 +89,16 @@ describe('target', () => {
     const accounts = [{ used7d: 0.5, reset7d: NOON + 24 * HOUR, used5h: 0.85, reset5h: NOON + 4 * HOUR }];
     const t = target(accounts, NOON, UTC, { k7: 1e-8, k5: 1e-7 });
     expect(t.targetWph).toBeCloseTo((0.05 / 4) / 1e-7);
+  });
+
+  test('a pool of spent accounts that reset soon keeps the rolling pace, under the ceilings', () => {
+    const accounts = [
+      { used7d: 0.5, reset7d: NOON + 160 * HOUR, used5h: 0 },
+      { used7d: 1, reset7d: NOON + 2 * HOUR, used5h: 0 },
+    ];
+    const t = target(accounts, NOON, UTC, { k7: 1e-8 });
+    expect(t.week.rolling).toBeGreaterThan(t.week.floor);
+    expect(t.targetWph).toBeCloseTo(Math.min(t.week.rolling, t.week.ceiling) / 1e-8);
   });
 });
 
