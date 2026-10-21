@@ -116,7 +116,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"$HOME/Developer/personal/dotfiles/claude/hooks/guard-agent.ts\"",
+            "command": "ORCHESTRATE_CAP=4 bun \"$HOME/Developer/personal/dotfiles/claude/hooks/guard-agent.ts\"",
             "timeout": 15
           }
         ]
