@@ -21,8 +21,9 @@
 //                   messages ranked by how many sessions repeat them
 //
 // A `peer` message is a user turn another agent wrote (an orchestrator, an
-// advisor, a subagent hand-back, a lock or gate receipt, a PR watcher). It is
-// counted per session and kept out of owner counts and repeated groups.
+// advisor, a subagent hand-back, a lock or gate receipt, a tagged notice, a role
+// brief, a PR watcher, or a broadcast: one text in 3+ sessions within 15 min).
+// It is counted per session and kept out of owner counts and repeated groups.
 // Skills count Claude `Skill` calls, plus once per session per skill: a Claude
 // `Read` or Codex command naming `skills/<name>/SKILL.md`, and a `$<name>` or
 // `/<name>` token in an owner message when <name> is a dir in ~/.claude/skills.
@@ -156,8 +157,31 @@ const PEER = new RegExp(
     String.raw`released the lock|\block (?:is )?released|\bslot (?:is )?released`,
     String.raw`\b(?:READY|RELEASED?)\b`,
     String.raw`^Round \d+ ready:`,
+    // tagged notices and briefs one agent sends another
+    String.raw`^\[[A-Z][^\]\n]{2,200}\]`,
+    String.raw`^\[[A-Z][\w ]{2,40};`,
+    String.raw`^Root\b|^(?:Advisor|Peer|Reviewer|Verifier|Implementor|Planner)\b[:,]`,
+    String.raw`^Context handoff \(`,
+    String.raw`^Read (?:and follow )?\S*\/\S+ (?:in full|first)\b`,
+    String.raw`^You are an? [\w -]{0,40}\b(?:reviewer|implementor|implementer|verifier|planner|worker|agent)\b`,
+    String.raw`Reply with nothing`,
+    String.raw`^(?:From|Follow-up from|Restarted by) (?:the )?[\w -]{2,30} (?:session|on the \w+)\b`,
+    String.raw`^(?:Peer completion|Advisor decisions) from\b`,
   ].join('|'),
 );
+
+// A receipt: one agent reporting exact state to another. Three or more of its
+// marks (hashes, UTC times, absolute paths, lock and verdict words) and it is
+// not the owner typing.
+const RECEIPT_MARKS = [
+  /\b[0-9a-f]{7,40}\b[\s\S]*\b[0-9a-f]{7,40}\b/,
+  /\[REDACTED\]/,
+  /\b\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\b|\bUTC\b/,
+  /(?:^|\s)(?:\/tmp|\/home|~)\/[\w.-]+\/\S+/,
+  /\b(?:lock|flock|gate|receipt|released?|sealed|immutable|ACCEPT|REQUEST_CHANGES|finite|staged)\b/,
+  /\b(?:tree|parent|patch|SHA-?256|PID|exits?|verified|retained|frozen|pinned)\b/,
+];
+const isPeer = (text: string) => PEER.test(text) || RECEIPT_MARKS.filter((m) => m.test(text)).length >= 3;
 
 const skillDirs = new Set(
   (() => {
@@ -286,7 +310,7 @@ async function claude(store: string) {
       } else if (text.startsWith('[Request interrupted')) {
         st.interrupts++;
         messages.push({ src, project: proj, session: st.session, ts, kind: 'interrupt', text: '' });
-      } else if (PEER.test(text)) {
+      } else if (isPeer(text)) {
         st.peer++;
         messages.push({ src, project: proj, session: st.session, ts, kind: 'peer', text: clean(text) });
       } else if (!WRAPPED.some((w) => text.startsWith(w))) {
@@ -382,7 +406,7 @@ async function codex() {
         seen.add(text.slice(0, 200));
         // `okra counsel` and other exec runs are prompts a program wrote, not the owner.
         if (exec) continue;
-        if (PEER.test(text)) {
+        if (isPeer(text)) {
           st.peer++;
           pending.push({ src: 'codex', project: '', session: st.session, ts, kind: 'peer', text: clean(text) });
           continue;
@@ -414,10 +438,9 @@ const inWindow = messages.filter((m) => !m.ts || Date.parse(m.ts) >= since);
 messages.length = 0;
 messages.push(...inWindow);
 messages.sort((a, b) => (a.ts ?? '').localeCompare(b.ts ?? ''));
-writeFileSync(join(out, 'messages.jsonl'), messages.map((m) => JSON.stringify(m)).join('\n') + '\n');
-writeFileSync(join(out, 'sessions.jsonl'), sessions.map((s) => JSON.stringify(s)).join('\n') + '\n');
 
-// Repeated directions: group the owner's messages by a normalized key.
+// A broadcast: the same text in 3 or more sessions within 15 minutes. The owner
+// types into one session at a time; an orchestrator fans one notice out.
 const key = (t: string) =>
   t
     .toLowerCase()
@@ -425,6 +448,28 @@ const key = (t: string) =>
     .replace(/\d+/g, '#')
     .replace(/\s+/g, ' ')
     .slice(0, 80);
+const BROADCAST_MS = 15 * 60e3;
+const byKey = new Map<string, Message[]>();
+for (const m of messages) if (m.kind === 'msg' && m.text.length >= 12 && m.ts) byKey.set(key(m.text), [...(byKey.get(key(m.text)) ?? []), m]);
+const bySession = new Map(sessions.map((s) => [s.session, s]));
+for (const group of byKey.values()) {
+  const fanned = group.filter((m) => {
+    const near = group.filter((o) => Math.abs(Date.parse(o.ts!) - Date.parse(m.ts!)) <= BROADCAST_MS);
+    return new Set(near.map((o) => o.session)).size >= 3;
+  });
+  for (const m of fanned) {
+    m.kind = 'peer';
+    const st = bySession.get(m.session);
+    if (st) {
+      st.human--;
+      st.peer++;
+    }
+  }
+}
+writeFileSync(join(out, 'messages.jsonl'), messages.map((m) => JSON.stringify(m)).join('\n') + '\n');
+writeFileSync(join(out, 'sessions.jsonl'), sessions.map((s) => JSON.stringify(s)).join('\n') + '\n');
+
+// Repeated directions: group the owner's messages by the same normalized key.
 const groups = new Map<string, { text: string; count: number; sessions: Set<string> }>();
 for (const m of messages) {
   if (m.kind !== 'msg' || m.text.length < 12) continue;
