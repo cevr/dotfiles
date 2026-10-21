@@ -150,6 +150,25 @@ describe('admit', () => {
     const hymn = [...sessions, { project: 'hymn', kind: 'w:task', sub: true, recentWph: 5 }];
     expect(admit({ ...base, c, project: 'perf', sessions: hymn }).ok).toBe(true);
   });
+  test("a project's first agent is never held by its share", () => {
+    const sessions = [
+      { project: 'gent', kind: 'root', sub: false, recentWph: 50 },
+      { project: 'hymn', kind: 'w:task', sub: true, recentWph: 15 },
+    ];
+    expect(admit({ ...base, sessions }).ok).toBe(true);
+  });
+  test('the cap holds every agent once the pool runs that many', () => {
+    const c = { ...UTC, projectAgents: { gent: 2 } };
+    const sessions = [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 5 }, { project: 'hymn', kind: 'w:task', sub: true, recentWph: 5 }];
+    expect(admit({ ...base, c, sessions, cap: 3 }).ok).toBe(true);
+    expect(admit({ ...base, c, sessions, cap: 2 }).ok).toBe(false);
+    // Two held gent agents not running yet fill a cap of 3 with one running.
+    expect(admit({ ...base, c, project: 'hymn', sessions: sessions.slice(0, 1), cap: 3 }).ok).toBe(false);
+    expect(admit({ ...base, c, project: 'hymn', sessions: sessions.slice(0, 1), cap: 4 }).ok).toBe(true);
+  });
+  test('without a pace only the cap decides', () => {
+    expect(admit({ ...base, targetWph: Infinity, estimateWph: 0, sessions: [], cap: 1 })).toEqual({ ok: true, reason: 'fits: pool 0.0 MW/h of no pace yet' });
+  });
   test('runs one agent per project at night', () => {
     const sessions = [{ project: 'gent', kind: 'w:task', sub: true, recentWph: 5 }];
     expect(admit({ ...base, night: true, sessions }).ok).toBe(false);

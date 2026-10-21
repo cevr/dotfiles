@@ -5,7 +5,7 @@
 // it runs as `orchestrate-worker` instead. A new agent starts only when
 // orchestrate's `budget.ts --admit` says its expected cost fits the pool's pace
 // and its project's share. CLAUDE_FULL_AGENT=1 lets a full agent through;
-// ORCHESTRATE_CAP fixes a count cap instead of the pace.
+// ORCHESTRATE_CAP caps the pool's running agents on top of that.
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -30,19 +30,16 @@ const run = Bun.spawnSync(
   [
     'bun',
     BUDGET,
-    ...(cap
-      ? ['--cap', cap]
-      : [
-          '--admit',
-          '--session',
-          input.session_id ?? '',
-          '--cwd',
-          input.cwd ?? process.cwd(),
-          '--type',
-          lean ? 'orchestrate-worker' : (asked ?? ''),
-          '--description',
-          String(toolInput.description ?? ''),
-        ]),
+    '--admit',
+    ...(cap ? ['--cap', cap] : []),
+    '--session',
+    input.session_id ?? '',
+    '--cwd',
+    input.cwd ?? process.cwd(),
+    '--type',
+    lean ? 'orchestrate-worker' : (asked ?? ''),
+    '--description',
+    String(toolInput.description ?? ''),
   ],
   { timeout: 8e3 },
 );

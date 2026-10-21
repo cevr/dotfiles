@@ -9,11 +9,12 @@
 // ceilings. Each agent kind's cost comes from its own transcripts over 7 days.
 //
 // Usage: bun budget.ts [--rotate] [--cap <n>] [--costs] [--burn [--days <n>]] [--tune]
-//        bun budget.ts --admit --session <id> --cwd <dir> --type <subagent_type> --description <text>
+//        bun budget.ts --admit [--cap <n>] --session <id> --cwd <dir> --type <subagent_type> --description <text>
 //   --rotate  sets teamclaude's account priorities to the weekly reset order,
 //             so the account whose quota expires first serves first. The
 //             status mod runs it every minute.
-//   --cap     fixes the agent cap instead of deriving it from the pace.
+//   --cap     fixes the agent cap instead of deriving it from the pace; with
+//             --admit, no agent starts past it.
 //   --costs   prints each project and agent kind's cost per active hour.
 //   --burn    prints where every host's tokens went (budget/burn.ts): what
 //             the context held, each agent kind's start and mean context,
@@ -186,11 +187,9 @@ if (args.includes('--admit')) {
   const project = projectFor(option('--session'), option('--cwd') ?? process.cwd());
   const kind = kindFor(option('--type'), option('--description'));
   const est = estimate(kinds, project, kind);
-  if (targetWph === undefined || est === undefined) {
-    console.log('admit: no pace or cost history yet; the agent runs');
-    process.exit(0);
-  }
-  const d = admit({ targetWph, sessions, project, estimateWph: est, night, c: config });
+  const cap = option('--cap') === undefined ? undefined : Number(option('--cap'));
+  // Without a pace or cost history only the cap and the held agents decide.
+  const d = admit({ targetWph: targetWph ?? Infinity, sessions, project, estimateWph: est ?? 0, night, c: config, cap });
   console.log(`${d.ok ? 'admit' : 'hold'}: ${d.reason}`);
   process.exit(d.ok ? 0 : 1);
 }

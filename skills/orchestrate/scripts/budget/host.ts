@@ -37,6 +37,8 @@ type FileTally = {
   lastId?: string;
   lastW: number;
   turns: Turn[];
+  // The last reply ended the turn: a subagent that has reported back.
+  done?: boolean;
 };
 type Cache = { files: Record<string, FileTally> };
 
@@ -143,12 +145,12 @@ function appended(file: string, offset: number): { text: string; offset: number 
 
 function tally(file: string, t: FileTally, now: number): void {
   const { text, offset } = appended(file, t.offset);
-  if (offset < t.offset) Object.assign(t, { totalW: 0, activeMs: 0, lastAt: 0, lastId: undefined, lastW: 0, turns: [] });
+  if (offset < t.offset) Object.assign(t, { totalW: 0, activeMs: 0, lastAt: 0, lastId: undefined, lastW: 0, turns: [], done: undefined });
   t.offset = offset;
   for (const line of text.split('\n')) {
     if (t.cwd === undefined && line.includes('"cwd"')) t.cwd = line.match(/"cwd":"([^"]+)"/)?.[1];
     if (!line.includes('"usage"') || !line.includes('"assistant"')) continue;
-    let d: { type?: string; timestamp?: string; message?: { id?: string; usage?: Usage } };
+    let d: { type?: string; timestamp?: string; message?: { id?: string; stop_reason?: string | null; usage?: Usage } };
     try {
       d = JSON.parse(line);
     } catch {
@@ -158,6 +160,7 @@ function tally(file: string, t: FileTally, now: number): void {
     const at = Date.parse(d.timestamp ?? '');
     if (!(at > 0)) continue;
     const w = weightOf(d.message.usage);
+    t.done = d.message.stop_reason === 'end_turn';
     // One message spans several lines; the last line of a message id carries its final usage.
     if (d.message.id !== undefined && d.message.id === t.lastId) {
       t.totalW += w - t.lastW;
@@ -209,7 +212,8 @@ export function hostLoad(now = Date.now()): HostLoad {
   for (const [file, t] of Object.entries(files)) {
     const project = projectFor(sessionOf(file), t.cwd);
     w1h += t.turns.reduce((n, [, w]) => n + w, 0);
-    if (t.lastAt >= now - ACTIVE) {
+    // A subagent that has reported back holds no slot, though it wrote within ACTIVE.
+    if (t.lastAt >= now - ACTIVE && !(t.sub && t.done)) {
       const recent = t.turns.filter(([at]) => at >= now - RECENT).reduce((n, [, w]) => n + w, 0);
       sessions.push({ project, kind: t.kind, sub: t.sub, recentWph: Math.round(recent * (HOUR / RECENT)) });
     }

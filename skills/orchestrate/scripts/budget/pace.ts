@@ -172,14 +172,20 @@ export function admit(input: {
   estimateWph: number;
   night: boolean;
   c: Config;
+  /** The most agents the pool runs at once, whatever the pace. */
+  cap?: number;
 }): Decision {
-  const { targetWph, sessions, project, estimateWph, night, c } = input;
+  const { targetWph, sessions, project, estimateWph, night, c, cap } = input;
   const burn = sessions.reduce((n, s) => n + s.recentWph, 0);
   const mine = sessions.filter((s) => s.project === project);
-  const mw = (n: number) => `${(n / 1e6).toFixed(1)} MW/h`;
+  const mw = (n: number) => (Number.isFinite(n) ? `${(n / 1e6).toFixed(1)} MW/h` : 'no pace yet');
   const running = (p: string) => sessions.filter((s) => s.project === p && s.sub).length;
   if (night && running(project) >= c.nightAgentsPerProject) {
     return { ok: false, reason: `night: ${project} already runs ${c.nightAgentsPerProject} agent(s)` };
+  }
+  const agents = sessions.filter((s) => s.sub).length;
+  if (cap !== undefined && agents >= cap) {
+    return { ok: false, reason: `the pool runs ${agents} of its ${cap} agent(s)` };
   }
   const held = c.projectAgents[project];
   if (held !== undefined) {
@@ -189,16 +195,20 @@ export function admit(input: {
   }
   // Every other project's agent leaves room for the held agents not running yet.
   const free = Object.entries(c.projectAgents).reduce((n, [p, count]) => n + Math.max(0, count - running(p)), 0);
+  if (cap !== undefined && agents + free + 1 > cap) {
+    return { ok: false, reason: `${free} held agent(s) not running yet fill the pool's ${cap} with ${agents} running` };
+  }
   if (burn + (free + 1) * estimateWph > targetWph) {
     const room = free > 0 ? ` with ${free} held agent(s) to start` : '';
     return { ok: false, reason: `pool burns ${mw(burn)}${room}; this agent adds about ${mw(estimateWph)}; the pace is ${mw(targetWph)}` };
   }
-  // A project's share binds only once the pool is 80% of the way to its pace.
+  // A project's share binds only once the pool is 80% of the way to its pace,
+  // and never on its first agent.
   const projects = new Set([...sessions.map((s) => s.project), project]);
   const weightOf = (p: string) => c.projectWeights[p] ?? 1;
   const share = (targetWph * weightOf(project)) / [...projects].reduce((n, p) => n + weightOf(p), 0);
   const ours = mine.reduce((n, s) => n + s.recentWph, 0);
-  if (ours + estimateWph > share && burn + estimateWph > 0.8 * targetWph) {
+  if (running(project) > 0 && ours + estimateWph > share && burn + estimateWph > 0.8 * targetWph) {
     return { ok: false, reason: `${project} burns ${mw(ours)} of its ${mw(share)} share while the pool nears its pace` };
   }
   return { ok: true, reason: `fits: pool ${mw(burn + estimateWph)} of ${mw(targetWph)}` };
