@@ -7,7 +7,7 @@ Claude Code uses one profile (`~/.claude`) on each machine. TeamClaude manages t
 | `bin/claude` | Executable shim that launches Claude Code through the machine-local TeamClaude proxy. |
 | `settings.json` | The one user `settings.json`. `install.sh` (laptop) and `workbox/bootstrap.sh` / `apply-agent-settings` (workbox) symlink `~/.claude/settings.json` to it. |
 | `mods/` | Mods (function-hook plugins). `settings.json` → `env.CLAUDE_CODE_PLUGIN_DIRS` lists each folder, `:`-separated with `~` paths, so they load on both machines with no install step; sessions watch the folders, so a saved edit reloads. |
-| `hooks/guard-agent.ts` | PreToolUse on `Agent`: a `general-purpose`, `claude` or untyped agent runs as the lean `worker` (`agents/worker.md`), and a new agent is refused while orchestrate's `budget.ts` reports the pool at its cap. `CLAUDE_FULL_AGENT=1` lets a full agent through. |
+| `hooks/guard-agent.ts` | PreToolUse on `Agent`: a `general-purpose`, `claude` or untyped agent runs as the lean `orchestrate-worker` (`agents/orchestrate-worker.md`), and a new agent is refused while orchestrate's `budget.ts` reports the pool at its cap. `CLAUDE_FULL_AGENT=1` lets a full agent through. |
 | `install-herdr-hook.sh` | Installs herdr's Claude hook script into `~/.claude/hooks` without letting herdr edit the shared `settings.json`, which already registers the hook. |
 
 ## Launching Claude

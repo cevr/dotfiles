@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 // PreToolUse(Agent): keep subagents lean and inside the account pool's budget.
 // A general-purpose, claude or untyped agent loads every tool and MCP server
-// before its first turn (about 88k tokens against 34k for a lean worker), so
-// it runs as `worker` instead. A new agent is refused while orchestrate's
+// before its first turn (about 88k tokens against 34k for orchestrate-worker), so
+// it runs as `orchestrate-worker` instead. A new agent is refused while orchestrate's
 // budget.ts reports the pool at its cap. CLAUDE_FULL_AGENT=1 lets a full agent
 // through; ORCHESTRATE_CAP sets the cap (budget.ts default, 8).
 
@@ -54,7 +54,7 @@ const type = toolInput.subagent_type as string | undefined;
 if (FULL.has(type) && process.env.CLAUDE_FULL_AGENT !== '1') {
   reply({
     permissionDecision: 'allow',
-    permissionDecisionReason: `guard-agent: ${type ?? 'untyped'} agent runs as worker (lean tools, no MCP servers).`,
-    updatedInput: { ...toolInput, subagent_type: 'worker' },
+    permissionDecisionReason: `guard-agent: ${type ?? 'untyped'} agent runs as orchestrate-worker (lean tools, no MCP servers).`,
+    updatedInput: { ...toolInput, subagent_type: 'orchestrate-worker' },
   });
 }
