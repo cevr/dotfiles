@@ -205,10 +205,10 @@ test('with no rate limit ahead, the outlook leaves the warning line for the prom
   await ui.unmount()
 })
 
-test('only a rate limit less than a day away is near', () => {
+test('only a rate limit less than 6 hours away is near', () => {
   const accounts = parseAccounts(JSON.stringify({ accounts: [account('one', 0.2, 0.9, 2, 0.005)] }))
   const view = outlook(accounts, undefined, NOW)
   expect(isNear({ ...view, limitedAt: NOW + 4 * HOUR }, NOW)).toBe(true)
-  expect(isNear({ ...view, limitedAt: NOW + 6 * 24 * HOUR }, NOW)).toBe(false)
+  expect(isNear({ ...view, limitedAt: NOW + 7 * HOUR }, NOW)).toBe(false)
   expect(isNear({ ...view, limitedAt: undefined }, NOW)).toBe(false)
 })

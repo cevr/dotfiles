@@ -6,7 +6,7 @@ import { compaction, tune } from './compact'
 import { duration, fiveHourPerHour, isNear, outlook, parseAccounts, parseBudget, parseRun, statusLine } from './parse'
 
 // Whether the Claude account pool lasts at the current pace, every minute: a
-// status line (drawn as a warning) while a rate limit is less than a day away,
+// status line (drawn as a warning) while a rate limit is less than 6 hours away,
 // else dim at the end of the hint under the prompt. The accounts, agents and orchestrate runs
 // are in the /pool pane.
 // Each refresh also rotates the accounts into weekly reset order.
