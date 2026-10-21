@@ -30,6 +30,8 @@ Done when each answer names the file or command behind it.
 
 A helper is a script in the repo, run as `bun run <name>` from the package that owns the surface (the repo's own runner where it is not Bun), with a test when it holds logic. A helper in a scratch dir is rebuilt by every verifier, as [build-the-lever](~/Developer/personal/dotfiles/principles/build-the-lever.md) records: sheet's verifiers wrote their own `cdp.ts` three rounds running. A repo script is allowed by the safety classifier where an ad-hoc `/tmp` script is refused, the gate keeps it alive, and the docs guard checks its name.
 
+**Write them on the repo's Effect stack.** Our repos are Effect v4 on Bun (see the **effect** skill), so a helper is an Effect program, not a loose script: `effect/cli` for its commands and flags, `ChildProcessSpawner` and `FileSystem` from the platform for processes and files, `Schema` for the JSON it prints and the data it reads, `Effect.timeout` and `Schedule` for readiness waits, and scoped resources so a launched app is stopped when the drive ends. It imports the repo's own services and test layers (fixtures, seeders, the scripted model) instead of rebuilding them. Every command prints one JSON result on success and exits non-zero with a tagged error on failure, so an agent reads the outcome without parsing logs.
+
 The usual set, minus what the repo already has:
 
 - `verify:seed <dir>`: a scratch root or data dir built from fixtures, so a drive never writes real data;
