@@ -8,7 +8,6 @@
   "cleanupPeriodDays": 365,
   "effortLevel": "high",
   "enabledPlugins": {
-    "codex@openai-codex": true,
     "sideshow@sideshow": true
   },
   "env": {
@@ -30,12 +29,6 @@
     "cloudflare": {
       "source": {
         "repo": "cloudflare/skills",
-        "source": "github"
-      }
-    },
-    "openai-codex": {
-      "source": {
-        "repo": "openai/codex-plugin-cc",
         "source": "github"
       }
     },
@@ -156,16 +149,6 @@
         "hooks": [
           {
             "command": "bash \"$HOME/.claude/hooks/herdr-agent-state.sh\" session",
-            "timeout": 10,
-            "type": "command"
-          }
-        ],
-        "matcher": "^(startup|resume|clear|compact|fork)$"
-      },
-      {
-        "hooks": [
-          {
-            "command": "bun \"$HOME/Developer/personal/dotfiles/claude/hooks/dedupe-session-env.ts\"",
             "timeout": 10,
             "type": "command"
           }
