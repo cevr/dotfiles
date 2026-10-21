@@ -16,3 +16,6 @@ path=(
   $path
 )
 export PATH
+
+# orchestrate budget.ts: the workbox shares this Claude account pool.
+export ORCHESTRATE_HOSTS=bite-workbox

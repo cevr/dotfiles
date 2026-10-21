@@ -2,6 +2,8 @@ export BUN_INSTALL="$HOME/.bun"
 export TURBO_CACHE=local:rw
 export TURBO_CACHE_DIR=/workspaces/.cache/turbo
 export TURBO_CONCURRENCY=2
+# orchestrate budget.ts: the Mac shares this Claude account pool.
+export ORCHESTRATE_HOSTS=cvr@cristians-macbook-pro
 
 if [[ -S "/run/user/$(id -u)/bus" ]]; then
   export XDG_RUNTIME_DIR="/run/user/$(id -u)"
