@@ -94,7 +94,7 @@ An **area** is a set of directories that change together (a package, or a layer 
    1. The branch contains today's main. If it does not, the implementor merges main in as a merge round. Conflicts are resolved by keeping both sides' edits, never one side's file whole, and then the merge audit in [`guardrails.md`](guardrails.md) runs over that merge.
    2. Run the gate at the branch head.
    3. `git merge --ff-only` it from the main checkout. Never commit a unit's work yourself.
-   4. If the Push line allows it, push. Once CI finishes, read `gh run list --branch main --limit 1`. A red CI is the next batch: in gent, CI had failed on every run for twelve passes while the local gate stayed green.
+   4. If the Push line allows it, push, and wait for the pushed commit's CI as orchestrate's pass step says. A red CI is the next batch, and no other batch merges before it.
    5. Write the batch's ledger row: `done <hash> … <hash>, merged <hash>`, decisions, the reviewer and its rounds, open items, and the report's "decisions for the orchestrator" as `Carried` rows.
    6. Stop the batch's agents.
    7. Delete the branch, and remove the workspace by its full path.
@@ -103,7 +103,7 @@ An **area** is a set of directories that change together (a package, or a layer 
 
 8. **Live check.** After each merge, or a small group of merges, run `NORTH_STAR.md` → Live check over every ability the batches changed (each apply report names them): the drive shows what rendered, the state view shows what happened. A defect found here becomes a live-fix batch (step 6). Done when the state matches the intent, the ledger has a live-check row, and every process the check started is stopped.
 
-9. **Project files and docs.** Add re-proposable rejections to `NORTH_STAR.md` → Rejected and drop rows whose subject left the tree; move settled comparisons into `PRIOR_ART.md` → Settled; update the READMEs, `GLOSSARY.md` (`CONTEXT.md` in a repo not yet renamed) and project skills wherever the pass changed an API, a workflow or a decision. Done when each describes the code as it is.
+9. **Project files and docs.** Add re-proposable rejections to `NORTH_STAR.md` → Rejected and drop rows whose subject left the tree; move settled comparisons into `PRIOR_ART.md` → Settled; update the READMEs, `GLOSSARY.md` (`CONTEXT.md` in a repo not yet renamed) and project skills wherever the pass changed an API, a workflow or a decision. A doc that briefs send agents to read in full (`ARCHITECTURE.md`, a project `SKILL.md`, a package README) stays under about 40 KB: split it by area into files behind a short index, and move history and receipts to the ledger. gent's `ARCHITECTURE.md` grew to 355 KB and was read 1,082 times in one run. Done when each describes the code as it is and each full-read doc is within its budget.
 
 10. **Count.** Re-run the baseline command. The pass verdict carries lines and files per package against the baseline and against the last pass.
     - A pass whose net count grows names why: a bug fix with its test, a guard, or a north star that asks for the code.
