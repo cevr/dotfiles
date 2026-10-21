@@ -149,6 +149,8 @@ function tally(file: string, t: FileTally, now: number): void {
   t.offset = offset;
   for (const line of text.split('\n')) {
     if (t.cwd === undefined && line.includes('"cwd"')) t.cwd = line.match(/"cwd":"([^"]+)"/)?.[1];
+    // An agent its owner stopped writes no end_turn; the stop note marks it finished.
+    if (line.includes('"type":"user"') && line.includes('[Request interrupted by user')) t.done = true;
     if (!line.includes('"usage"') || !line.includes('"assistant"')) continue;
     let d: { type?: string; timestamp?: string; message?: { id?: string; stop_reason?: string | null; usage?: Usage } };
     try {

@@ -161,6 +161,16 @@
           }
         ],
         "matcher": "^(startup|resume|clear|compact|fork)$"
+      },
+      {
+        "hooks": [
+          {
+            "command": "bun \"$HOME/Developer/personal/dotfiles/claude/hooks/dedupe-session-env.ts\"",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "^(startup|resume|clear|compact|fork)$"
       }
     ],
     "Stop": [

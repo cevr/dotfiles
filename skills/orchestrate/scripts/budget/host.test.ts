@@ -28,4 +28,14 @@ describe('hostLoad', () => {
     expect(sessions.filter((s) => s.sub)).toHaveLength(1);
     expect(sessions.filter((s) => !s.sub)).toHaveLength(1);
   });
+
+  test('a subagent its owner stopped holds no slot', () => {
+    const stopped = JSON.stringify({
+      type: 'user',
+      timestamp: new Date().toISOString(),
+      message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] },
+    });
+    const { sessions } = load({ 'agent-a': [reply('m1', 'tool_use'), stopped] });
+    expect(sessions.filter((s) => s.sub)).toHaveLength(0);
+  });
 });
