@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { burnOf, hostBurn, report } from './burn.ts';
+import { burnOf, hostBurn, report, simulate, tune, WINDOWS, type FileBurn } from './burn.ts';
 
 const hour = (create: number, read: number, output: number) => ({
   input_tokens: 0,
@@ -66,5 +66,41 @@ describe('hostBurn', () => {
     const h = hostBurn(Date.now(), root, join(root, 'burn.json'));
     expect(h.burns).toHaveLength(1);
     expect(report([h])).toContain('| tool:Bash |');
+  });
+});
+
+describe('simulate', () => {
+  // A 10k start that grows 20k a call; a compaction rebuilds to the start plus a 15k summary.
+  const calls: [number, number][] = Array.from({ length: 5 }, () => [20e3, 1]);
+
+  test('charges each call its read and its growth when the window is never reached', () => {
+    // Contexts 30k, 50k, 70k, 90k, 110k.
+    expect(simulate(10e3, calls, 350e3)).toEqual([0.1 * 350e3 + 100e3, 0, 0]);
+  });
+
+  test('compacts when the next call would pass the window, and counts the calls after', () => {
+    const [w, compactions, after] = simulate(10e3, calls, 60e3);
+    expect([compactions, after]).toEqual([3, 3]);
+    // Two calls to 50k, then three compactions (read 50k or 45k, a 4k summary at 5x, a 25k rebuild), each followed by a call at 45k.
+    expect(w).toBe(3e3 + 20e3 + 5e3 + 20e3 + (5e3 + 20e3 + 25e3) + 2 * (4.5e3 + 20e3 + 25e3) + 3 * (4.5e3 + 20e3));
+  });
+});
+
+describe('tune', () => {
+  // Twenty agents whose replay is cheapest at 160k and at 180k alike, and dearer above.
+  const cost: Record<number, number> = { 100e3: 140, 120e3: 120, 140e3: 110, 160e3: 100, 180e3: 100.5, 200e3: 105, 250e3: 120, 300e3: 130, 350e3: 140 };
+  const agent = (kind: string): FileBurn =>
+    ({ kind, compactions: 1, reread: 0, compactMs: 60e3, windows: Object.fromEntries(WINDOWS.map((w) => [w, [cost[w], 0, 0]])) }) as unknown as FileBurn;
+  const burns = Array.from({ length: 20 }, () => agent('orchestrate-worker'));
+
+  test('picks the largest window within 1% of the cheapest, and skips kinds with few agents', () => {
+    const [worker, ...rest] = tune([...burns, agent('Explore')], 200e3);
+    expect(rest).toEqual([]);
+    expect(worker).toMatchObject({ kind: 'orchestrate-worker', agents: 20, window: 180e3, best: 180e3 });
+    expect(worker.saving).toBeCloseTo(1 - 100.5 / 105);
+  });
+
+  test('stays under the ceiling and names the better window above it', () => {
+    expect(tune(burns, 140e3)[0]).toMatchObject({ window: 140e3, best: 180e3, saving: 0 });
   });
 });

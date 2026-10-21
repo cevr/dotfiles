@@ -8,7 +8,7 @@
 // its weekly reset, more by day than by night, under the weekly and 5-hour
 // ceilings. Each agent kind's cost comes from its own transcripts over 7 days.
 //
-// Usage: bun budget.ts [--rotate] [--cap <n>] [--costs] [--burn [--days <n>]]
+// Usage: bun budget.ts [--rotate] [--cap <n>] [--costs] [--burn [--days <n>]] [--tune]
 //        bun budget.ts --admit --session <id> --cwd <dir> --type <subagent_type> --description <text>
 //   --rotate  sets teamclaude's account priorities to the weekly reset order,
 //             so the account whose quota expires first serves first. The
@@ -18,6 +18,9 @@
 //   --burn    prints where every host's tokens went (budget/burn.ts): what
 //             the context held, each agent kind's start and mean context,
 //             and the levers that would cut the most.
+//   --tune    writes the compaction window each agent kind on this host costs
+//             least at to ~/.cache/orchestrate/compact.json, for the status
+//             mod; exits 3 when the transcripts were only partly read in time.
 //   --admit   decides one new agent (the guard-agent hook): exit 0 to start
 //             it, 1 to hold it, with the reason on stdout.
 // Exits 1 when the active agents reach the cap, 2 when a host is unreachable.
@@ -27,7 +30,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { hostBurn, report, type HostBurn } from './budget/burn.ts';
+import { ceilingOf, hostBurn, report, tune, type HostBurn } from './budget/burn.ts';
 import { hostLoad, kindFor, projectFor, type HostLoad } from './budget/host.ts';
 import {
   admit,
@@ -129,6 +132,19 @@ if (args.includes('--burn')) {
     if (r.status === 'fulfilled') hosts.push(r.value);
     else console.log(`unreachable: ${failure(r.reason)}`);
   console.log(report(hosts));
+  process.exit(0);
+}
+
+if (args.includes('--tune')) {
+  const host = hostBurn(now);
+  if (!host.complete) {
+    console.log(`partial: ${host.burns.length} of ${host.files} transcripts read; run again`);
+    process.exit(3);
+  }
+  const ceiling = ceilingOf();
+  const kinds = tune(host.burns, ceiling);
+  writeJson(join(CACHE, 'compact.json'), { at: now, ceiling, windows: Object.fromEntries(kinds.map((k) => [k.kind, k.window])), kinds });
+  for (const k of kinds) console.log(`${k.kind}: ${k.window / 1e3}k (best ${k.best / 1e3}k), saves ${(100 * k.saving).toFixed(1)}%`);
   process.exit(0);
 }
 

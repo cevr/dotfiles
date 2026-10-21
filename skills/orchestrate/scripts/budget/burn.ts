@@ -7,6 +7,10 @@
 // summary a compaction left. So a 20k-token Bash output that sits through 300
 // calls is charged its write once and its read 300 times: its rent.
 //
+// It also replays each transcript's context growth as if it compacted at each
+// of WINDOWS, so `budget.ts --tune` can pick the window each kind of agent
+// costs least at.
+//
 // `budget.ts --burn` runs this on every host (remote hosts read it from stdin,
 // so it imports nothing but node and bun); each prints one JSON line. Per-file
 // results are cached by size in ~/.cache/orchestrate/burn.json.
@@ -26,7 +30,7 @@ const days = Number(option('--days') ?? 7);
 const deadline = Date.now() + Number(option('--deadline-ms') ?? 120e3);
 const cachePath = join(homedir(), '.cache', 'orchestrate', 'burn.json');
 // Bump when FileBurn or the attribution changes, so cached results are recomputed.
-const VERSION = 1;
+const VERSION = 2;
 // Attachment records the model sees; the rest (prompt_snapshot, environment, hook_success, ...) are local.
 const SENT = new Set(['skill_listing', 'nested_memory', 'instructions', 'invoked_skills', 'hook_additional_context', 'file', 'edited_text_file', 'mcp_instructions_delta', 'deferred_tools_delta', 'agent_listing_delta', 'date', 'queued_command', 'silent_turn_reminder', 'todo_reminder', 'task_reminder', 'plan_mode', 'critical_system_reminder', 'diagnostics', 'selected_lines_in_ide', 'opened_file_in_ide', 'compact_file_reference']);
 
@@ -34,6 +38,11 @@ type Usage = Record<string, number | Record<string, number> | undefined>;
 type Item = { cat: string; label: string; tokens: number; w: number; big?: boolean };
 // A tool result past this many chars is big: the cap (bashOutputMaxChars) would move it to a file.
 const BIG = 8000;
+// The compaction windows the replay tries, in tokens.
+export const WINDOWS = [100e3, 120e3, 140e3, 160e3, 180e3, 200e3, 250e3, 300e3, 350e3];
+// What a compaction leaves past the base prompt, and what its summary costs in output (measured: ~15k postTokens).
+const SUMMARY = 15e3;
+const SUMMARY_OUT = 4e3;
 export type FileBurn = {
   size: number;
   project: string;
@@ -46,6 +55,10 @@ export type FileBurn = {
   ctxSum: number; // Σ context per call, for the mean
   misses: number;
   compactions: number;
+  compactMs: number; // wall time spent compacting
+  reread: number; // tokens of files read again after a compaction that were read before it
+  // At each of WINDOWS: the replay's [W, compactions, calls after a compaction].
+  windows: Record<string, [number, number, number]>;
   tokens: { output: number; thinking: number; rewrite: number; rewrite5m: number };
   big: number; // W of tool results over BIG chars
   top: Item[];
@@ -75,10 +88,12 @@ function projectFor(sessionId: string, cwd: string | undefined): string {
 }
 const sessionOf = (file: string): string =>
   file.includes('/subagents/') ? basename(dirname(dirname(file))) : basename(file, '.jsonl');
+// The status mod runs orchestrate-worker as its own copy, `status:orchestrate-worker`.
 function kindOf(file: string): string {
   if (!file.includes('/subagents/')) return 'root';
   try {
-    return (JSON.parse(readFileSync(file.replace(/\.jsonl$/, '.meta.json'), 'utf8')) as { agentType?: string }).agentType || 'agent';
+    const type = (JSON.parse(readFileSync(file.replace(/\.jsonl$/, '.meta.json'), 'utf8')) as { agentType?: string }).agentType;
+    return type?.replace(/^status:/, '') || 'agent';
   } catch {
     return 'agent';
   }
@@ -107,6 +122,12 @@ function toolLabel(name: string, input: Record<string, unknown>): string {
       return clip(JSON.stringify(input), 50);
   }
 }
+// The file a Read, or a Bash cat/sed/head/tail, reads.
+function fileRead(name: string, input: Record<string, unknown>): string | undefined {
+  if (name === 'Read') return typeof input.file_path === 'string' ? input.file_path : undefined;
+  if (name !== 'Bash') return undefined;
+  return String(input.command ?? '').match(/\b(?:cat|sed -n '[^']*'|head(?: -\S+)*|tail(?: -\S+)*)\s+(\S+)/)?.[1];
+}
 const toolCat = (name: string, input: Record<string, unknown>): string =>
   name === 'Skill' ? `skill:${input.skill}` : name.startsWith('mcp__') ? `mcp:${name.split('__')[1]}` : `tool:${name}`;
 
@@ -121,6 +142,32 @@ function textLength(content: unknown): number {
     else len += JSON.stringify(c).length;
   }
   return len;
+}
+
+/**
+ * Replays a transcript's context growth as if it compacted at `window`: each
+ * call reads the context and writes what it added; a compaction reads the
+ * context once, writes a summary and rebuilds from the base. `calls` holds each
+ * call's growth and write rate, with the transcript's own compactions undone.
+ * Returns [W, compactions, calls after a compaction].
+ */
+export function simulate(start: number, calls: [number, number][], window: number): [number, number, number] {
+  const restart = start + SUMMARY;
+  let ctx = start;
+  let w = 0;
+  let compactions = 0;
+  let after = 0;
+  for (const [growth, rate] of calls) {
+    if (ctx + growth > window && ctx > restart) {
+      w += 0.1 * ctx + 5 * SUMMARY_OUT + rate * restart;
+      ctx = restart;
+      compactions++;
+    }
+    ctx += growth;
+    w += 0.1 * ctx + rate * growth;
+    if (compactions > 0) after++;
+  }
+  return [Math.round(w), compactions, after];
 }
 
 /** One transcript's burn. */
@@ -138,12 +185,20 @@ export function burnOf(file: string, size: number): FileBurn {
     ctxSum: 0,
     misses: 0,
     compactions: 0,
+    compactMs: 0,
+    reread: 0,
+    windows: {},
     tokens: { output: 0, thinking: 0, rewrite: 0, rewrite5m: 0 },
     big: 0,
     top: [],
   };
   let cwd: string | undefined;
-  const tools = new Map<string, { cat: string; label: string }>();
+  const tools = new Map<string, { cat: string; label: string; file?: string }>();
+  // Files read before the last compaction, to count what is read again after it.
+  const readBefore = new Set<string>();
+  const readSince = new Set<string>();
+  // Each call's context growth and write rate, the transcript's compactions undone.
+  const growths: [number, number][] = [];
   // The context as it stands: its items, with tokens; scaled to the measured size at each call.
   let live: Item[] = [];
   // Since the last call: replies with exact token counts, and items with only a char length.
@@ -177,6 +232,8 @@ export function burnOf(file: string, size: number): FileBurn {
     b.w.input += n(u, 'input_tokens');
     b.w.read += 0.1 * read;
     if (live.length === 0 || compacted) {
+      // Undone, a compaction adds nothing: the call after it grows the context by 0.
+      if (live.length > 0) growths.push([0, rate]);
       // A segment starts. The session's first call is its base (system prompt, tools, first
       // prompt); after a compaction, the part beyond that base is the summary and kept turns.
       b.base.push(now);
@@ -194,6 +251,7 @@ export function burnOf(file: string, size: number): FileBurn {
       return;
     }
     const growth = Math.max(0, now - ctx);
+    growths.push([growth, rate]);
     // A cache miss: the call wrote more than it added, so it rewrote what was cached.
     const rewrite = Math.max(0, create - growth);
     if (rewrite > 2000) {
@@ -257,6 +315,9 @@ export function burnOf(file: string, size: number): FileBurn {
     if (d.type === 'system' && d.subtype === 'compact_boundary') {
       // The summary call reads the whole context once; it leaves no assistant line.
       const pre = Number(d.compactMetadata?.preTokens ?? 0);
+      b.compactMs += Number(d.compactMetadata?.durationMs ?? 0);
+      for (const f of readSince) readBefore.add(f);
+      readSince.clear();
       b.w.read += 0.1 * pre;
       b.cats.compaction = (b.cats.compaction ?? 0) + 0.1 * pre;
       compactions++;
@@ -278,7 +339,12 @@ export function burnOf(file: string, size: number): FileBurn {
         for (const part of c) {
           if (part.type === 'tool_result') {
             const t = tools.get(part.tool_use_id) ?? { cat: 'tool:?', label: '' };
-            add(t.cat, t.label, textLength(part.content));
+            const chars = textLength(part.content);
+            add(t.cat, t.label, chars);
+            if (t.file) {
+              if (readBefore.has(t.file)) b.reread += chars / 3;
+              readSince.add(t.file);
+            }
           } else add(d.isMeta ? 'meta' : 'user', 'prompt', textLength([part]));
         }
       continue;
@@ -300,11 +366,13 @@ export function burnOf(file: string, size: number): FileBurn {
     for (const part of m.content ?? [])
       if (part.type === 'tool_use') {
         const input = (part.input ?? {}) as Record<string, unknown>;
-        tools.set(part.id, { cat: toolCat(part.name, input), label: toolLabel(part.name, input) });
+        tools.set(part.id, { cat: toolCat(part.name, input), label: toolLabel(part.name, input), file: fileRead(part.name, input) });
       }
   }
   flush();
   b.compactions = compactions;
+  b.reread = Math.round(b.reread);
+  if (b.base.length > 0) for (const window of WINDOWS) b.windows[window] = simulate(b.base[0], growths, window);
   b.big = Math.round(all.reduce((s, i) => s + (i.big ? i.w : 0), 0));
   b.project = projectFor(sessionOf(file), cwd);
   for (const i of all) b.cats[i.cat] = (b.cats[i.cat] ?? 0) + i.w;
@@ -381,8 +449,67 @@ const kt = (t: number): string => (t >= 1e6 ? `${(t / 1e6).toFixed(1)}M` : `${Ma
 const total = (b: FileBurn): number => b.w.output + b.w.write + b.w.rewrite + b.w.read + b.w.input;
 const median = (xs: number[]): number => [...xs].sort((a, c) => a - c)[Math.floor(xs.length / 2)] ?? 0;
 
+// ── Tuning ──
+
+// A kind with fewer transcripts than this keeps the default window.
+const MIN_AGENTS = 20;
+// Windows within this share of the cheapest count as tied; the largest wins, as it compacts least.
+const TIE = 0.01;
+export const ceilingOf = (env = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW): number => Number(env) || 200e3;
+
+export type Tuned = {
+  kind: string;
+  agents: number;
+  window: number; // the best window, no larger than the ceiling
+  best: number; // the best window of all WINDOWS
+  saving: number; // the share of the replayed W the window saves against the ceiling
+  compactions: [number, number]; // at the ceiling, at the window
+  reread: number; // tokens read again per compaction
+  compactMs: number; // mean wall time of a compaction
+};
+
+/**
+ * The compaction window each kind of agent costs least at. Each compaction
+ * also costs what the agent reads again after it: written once, then read by
+ * every later call, at the kind's measured re-read per compaction.
+ */
+export function tune(burns: FileBurn[], ceiling = ceilingOf()): Tuned[] {
+  const sum = (bs: FileBurn[], f: (b: FileBurn) => number) => bs.reduce((s, b) => s + f(b), 0);
+  const perCompaction = (bs: FileBurn[], f: (b: FileBurn) => number): number | undefined => {
+    const c = sum(bs, (b) => b.compactions);
+    return c > 0 ? sum(bs, f) / c : undefined;
+  };
+  const fleet = perCompaction(burns, (b) => b.reread) ?? 20e3;
+  const kinds = new Map<string, FileBurn[]>();
+  for (const b of burns) if (Object.keys(b.windows).length > 0) kinds.set(b.kind, [...(kinds.get(b.kind) ?? []), b]);
+  const out: Tuned[] = [];
+  for (const [kind, bs] of kinds) {
+    if (bs.length < MIN_AGENTS) continue;
+    const reread = perCompaction(bs, (b) => b.reread) ?? fleet;
+    const at = (window: number) => sum(bs, (b) => b.windows[window]?.[0] ?? 0);
+    const compactionsAt = (window: number) => sum(bs, (b) => b.windows[window]?.[1] ?? 0);
+    const cost = (window: number) => at(window) + reread * (1.25 * compactionsAt(window) + 0.1 * sum(bs, (b) => b.windows[window]?.[2] ?? 0));
+    const least = Math.min(...WINDOWS.map(cost));
+    const best = Math.max(...WINDOWS.filter((w) => cost(w) <= least * (1 + TIE)));
+    const allowed = WINDOWS.filter((w) => w <= ceiling);
+    const now = Math.max(...allowed);
+    const window = Math.max(...allowed.filter((w) => cost(w) <= Math.min(...allowed.map(cost)) * (1 + TIE)));
+    out.push({
+      kind,
+      agents: bs.length,
+      window,
+      best,
+      saving: 1 - cost(window) / cost(now),
+      compactions: [compactionsAt(now), compactionsAt(window)],
+      reread: Math.round(reread),
+      compactMs: Math.round(perCompaction(bs, (b) => b.compactMs) ?? 0),
+    });
+  }
+  return out.sort((a, c) => c.agents - a.agents);
+}
+
 /** The burn of every host, as Markdown. */
-export function report(hosts: HostBurn[]): string {
+export function report(hosts: HostBurn[], ceiling = ceilingOf()): string {
   const all = hosts.flatMap((h) => h.burns);
   const W = all.reduce((s, b) => s + total(b), 0);
   const sum = (f: (b: FileBurn) => number, of = all) => of.reduce((s, b) => s + f(b), 0);
@@ -420,6 +547,11 @@ export function report(hosts: HostBurn[]): string {
     `- Cache misses re-wrote ${kt(t('rewrite'))} tokens (${share(sum((b) => b.w.rewrite), W)} of W); ${share(t('rewrite5m'), t('rewrite'))} of them in 5-minute-TTL calls.`,
     `- ${sum((b) => b.compactions)} compactions; the base prompt each segment starts from costs ${share(cats.get('base') ?? 0, W)} of W.`,
   );
+  out.push('', `### Compaction window (now ${kt(ceiling)})`, '', '| Kind | Agents | Window | Saves | Compactions | Re-read each | Time each |', '| --- | --- | --- | --- | --- | --- | --- |');
+  for (const k of tune(all, ceiling))
+    out.push(
+      `| ${k.kind} | ${k.agents} | ${kt(k.window)}${k.best > ceiling ? ` (best ${kt(k.best)})` : ''} | ${share(k.saving, 1)} | ${k.compactions[0]} → ${k.compactions[1]} | ${kt(k.reread)} | ${Math.round(k.compactMs / 1e3)} s |`,
+    );
   const items = all.flatMap((b) => b.top.map((i) => ({ ...i, project: b.project }))).sort((a, c) => c.w - a.w);
   out.push('', '### Costliest items', '', '| W | Tokens | Held | Project | Item |', '| --- | --- | --- | --- | --- |');
   for (const i of items.slice(0, 15)) out.push(`| ${mw(i.w)} | ${kt(i.tokens)} | ${i.cat} | ${i.project} | ${i.label.replace(/\|/g, '/')} |`);

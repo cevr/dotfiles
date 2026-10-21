@@ -96,8 +96,9 @@ const ROLES: [RegExp, string][] = [
 ];
 
 /** An agent's kind: its type and the role its description names. */
+// The status mod runs orchestrate-worker as its own copy, `status:orchestrate-worker`.
 export const kindFor = (agentType: string | undefined, description: string | undefined): string =>
-  `${agentType || 'agent'}:${ROLES.find(([re]) => re.test(description ?? ''))?.[1] ?? 'task'}`;
+  `${agentType?.replace(/^status:/, '') || 'agent'}:${ROLES.find(([re]) => re.test(description ?? ''))?.[1] ?? 'task'}`;
 
 function kindOf(file: string): { kind: string; sub: boolean } {
   if (!file.includes('/subagents/')) return { kind: 'root', sub: false };
