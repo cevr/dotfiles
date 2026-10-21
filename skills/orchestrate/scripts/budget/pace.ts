@@ -75,14 +75,26 @@ export function weeklyPace(accounts: readonly Account[], now: number, c: Config)
   return { floor, ceiling };
 }
 
-/** Fractions of one account's 5-hour window per hour that keep every account with weekly quota under `fiveHourMax`. */
+/**
+ * Fractions of one account's 5-hour window per hour that keep every account with weekly quota under `fiveHourMax`.
+ * An account out of weekly quota serves again from its weekly reset, when that comes within 5 hours.
+ */
 export function fiveHourCeiling(accounts: readonly Account[], now: number, c: Config): number {
   const open = accounts.filter((a) => a.used7d < 1);
+  const refills = [
+    ...open.filter((a) => (a.reset5h ?? 0) > now).map((a) => ({ at: a.reset5h!, gain: Math.min(c.fiveHourMax, a.used5h) })),
+    ...accounts
+      .filter((a) => a.used7d >= 1 && (a.reset7d ?? 0) > now && a.reset7d! <= now + 5 * HOUR)
+      .flatMap((a) => {
+        const held = (a.reset5h ?? 0) > a.reset7d! ? Math.min(c.fiveHourMax, a.used5h) : 0;
+        return [{ at: a.reset7d!, gain: Math.max(0, c.fiveHourMax - held) }, ...(held > 0 ? [{ at: a.reset5h!, gain: held }] : [])];
+      }),
+  ].sort((a, b) => a.at - b.at);
   let fuel = open.reduce((n, a) => n + Math.max(0, c.fiveHourMax - a.used5h), 0);
   let ceiling = Infinity;
-  for (const a of open.filter((a) => (a.reset5h ?? 0) > now).sort((a, b) => a.reset5h! - b.reset5h!)) {
-    ceiling = Math.min(ceiling, fuel / ((a.reset5h! - now) / HOUR));
-    fuel += Math.min(c.fiveHourMax, a.used5h);
+  for (const r of refills) {
+    ceiling = Math.min(ceiling, fuel / ((r.at - now) / HOUR));
+    fuel += r.gain;
   }
   // After the resets in view, the refilled windows must last a whole window.
   return Math.min(ceiling, fuel / 5);

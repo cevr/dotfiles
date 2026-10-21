@@ -92,6 +92,13 @@ function firstLimit(left: number, restores: Restore[], perHour: number, now: num
   return empty <= now + horizon ? { limitedAt: empty, freeAt: undefined } : undefined
 }
 
+// An account back from a spent week: its 5-hour window opens at the weekly
+// reset, less what the window still holds if it resets later.
+function rejoin(at: number, used5h: number, reset5h: number | undefined, cap: number): Restore[] {
+  const held = reset5h !== undefined && reset5h > at ? Math.min(cap, used5h) : 0
+  return [{ at, gain: Math.max(0, cap - held) }, ...(held > 0 ? [{ at: reset5h!, gain: held }] : [])]
+}
+
 export function outlook(accounts: readonly Account[], fivePerHour: number | undefined, now: number): Outlook {
   const weekPerHour = accounts.reduce((sum, a) => sum + a.weekPerHour, 0)
   const live = accounts.filter(a => a.usedWeek < 1 && a.used5h < 1)
@@ -106,14 +113,19 @@ export function outlook(accounts: readonly Account[], fivePerHour: number | unde
   )
   if (week) limits.push({ window: 'week', ...week })
 
-  // Only an account with weekly quota left can serve a 5-hour window.
+  // Only an account with weekly quota left can serve a 5-hour window; one out
+  // of it serves again from its weekly reset, when that comes within 5 hours.
   const weekly = accounts.filter(a => a.usedWeek < 1)
+  const back = accounts.filter(a => a.usedWeek >= 1 && a.resetWeek && a.resetWeek > now && a.resetWeek <= now + 5 * HOUR)
   const five =
     fivePerHour === undefined
       ? undefined
       : firstLimit(
           weekly.reduce((sum, a) => sum + Math.max(0, 1 - a.used5h), 0),
-          weekly.flatMap(a => (a.reset5h ? [{ at: a.reset5h, gain: Math.min(1, a.used5h) }] : [])),
+          [
+            ...weekly.flatMap(a => (a.reset5h ? [{ at: a.reset5h, gain: Math.min(1, a.used5h) }] : [])),
+            ...back.flatMap(a => rejoin(a.resetWeek!, a.used5h, a.reset5h, 1)),
+          ],
           fivePerHour,
           now,
           5 * HOUR,

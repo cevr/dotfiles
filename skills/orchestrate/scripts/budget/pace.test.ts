@@ -44,6 +44,15 @@ describe('fiveHourCeiling', () => {
     ];
     expect(fiveHourCeiling(accounts, NOON, UTC)).toBeCloseTo((0.9 - 0.6) / 2);
   });
+
+  test('an account whose spent week resets within 5 hours refills the pool', () => {
+    const live = { used7d: 0.5, used5h: 0.6, reset5h: NOON + 4 * HOUR };
+    // 0.3 must last to the weekly reset at 1h; then 0.3 + 0.9 lasts to the 5h reset at 4h.
+    const soon = [live, { used7d: 1, reset7d: NOON + HOUR, used5h: 0 }];
+    expect(fiveHourCeiling(soon, NOON, UTC)).toBeCloseTo(0.3);
+    const late = [live, { used7d: 1, reset7d: NOON + 6 * HOUR, used5h: 0 }];
+    expect(fiveHourCeiling(late, NOON, UTC)).toBeCloseTo(0.3 / 4);
+  });
 });
 
 describe('calibrate', () => {

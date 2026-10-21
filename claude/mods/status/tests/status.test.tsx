@@ -205,6 +205,16 @@ test('with no rate limit ahead, the outlook leaves the warning line for the prom
   await ui.unmount()
 })
 
+test('an account whose spent week resets within 5 hours refills the 5-hour pool', () => {
+  // One account with 0.3 of its 5h window left at 0.9/h runs out in 20m. A
+  // spent account whose week resets at 10m adds a fresh window: 1.3 lasts 1h27m.
+  const fresh = parseAccounts(JSON.stringify({ accounts: [account('one', 0.7, 0.5, 100), account('two', 0, 1, 1 / 6)] }))
+  expect(statusLine(outlook(fresh, 0.9, NOW), NOW)).toBe('rate limit in 1h27m, for 33m (5h) · 1/2 accounts have quota')
+  // A spent week that resets in 6 hours is out of the 5-hour view.
+  const late = parseAccounts(JSON.stringify({ accounts: [account('one', 0.7, 0.5, 100), account('two', 0, 1, 6)] }))
+  expect(statusLine(outlook(late, 0.9, NOW), NOW)).toBe('rate limit in 20m, for 1h40m (5h) · 1/2 accounts have quota')
+})
+
 test('only a rate limit less than 6 hours away is near', () => {
   const accounts = parseAccounts(JSON.stringify({ accounts: [account('one', 0.2, 0.9, 2, 0.005)] }))
   const view = outlook(accounts, undefined, NOW)
