@@ -1,4 +1,5 @@
 alchemy
+architect
 cli
 code-review
 counsel-review
@@ -6,6 +7,7 @@ create-pr
 create-verification-skill
 effect
 handoff
+how
 loop
 maintain-verification-skill
 orchestrate
@@ -14,4 +16,5 @@ react
 retro
 track-work-hours
 ui
+why
 writing-tests
