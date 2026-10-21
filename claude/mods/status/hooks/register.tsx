@@ -1,16 +1,20 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Run, Snapshot } from '../types'
-import { parseBudget, parseRun, statusLine } from './parse'
+import type { Account, Run, Sample, Snapshot } from '../types'
+import { duration, fiveHourPerHour, outlook, parseAccounts, parseBudget, parseRun, statusLine } from './parse'
 
-// The account pool and the orchestrate runs of the session's repo, on the
-// status line every minute, and in full in the /pool pane.
+// Whether the Claude account pool lasts at the current pace, on the status line
+// every minute; the accounts, agents and orchestrate runs in the /pool pane.
 
 const PANE = 'status'
 const EVERY_MS = 60e3
+const SAMPLES_MS = 60 * 60e3
 const SCRIPTS = '"$HOME/.claude/skills/orchestrate/scripts"'
-const snapshot = atom({ plugin: 'status', key: 'snapshot' } as const, { at: 0, runs: [] } as Snapshot)
+const snapshot = atom(
+  { plugin: 'status', key: 'snapshot' } as const,
+  { at: 0, accounts: [], samples: [], runs: [] } as Snapshot,
+)
 
 const sh = (script: string, ...args: string[]) => ['sh', '-c', script, 'sh', ...args]
 
@@ -26,6 +30,25 @@ function refresh($: EngineInterface): Promise<void> {
 
 async function load($: EngineInterface) {
   try {
+    const now = await $.clock.now()
+    const before = await read($, snapshot)
+    const quota = await $.process.run(sh('PATH="$HOME/.bun/bin:$PATH" teamclaude status --json'), {
+      timeoutMs: 10e3,
+    })
+    let accounts: Account[] = []
+    let error: string | undefined
+    try {
+      accounts = quota.exitCode === 0 ? parseAccounts(quota.stdout) : []
+      if (quota.exitCode !== 0) error = 'teamclaude status failed'
+    } catch {
+      error = 'teamclaude status gave no JSON'
+    }
+    const samples: Sample[] = [
+      ...before.samples.filter(sample => sample.at > now - SAMPLES_MS),
+      ...(accounts.length > 0 ? [{ at: now, used5h: accounts.map(a => a.used5h) }] : []),
+    ]
+    const view = accounts.length > 0 ? outlook(accounts, fiveHourPerHour(samples, now), now) : undefined
+
     const budget = await $.process.run(sh(`bun ${SCRIPTS}/budget.ts`), { timeoutMs: 20e3 })
     // A run dir sits in the checkout that holds the run's main: for a git
     // worktree that is the main checkout, found through the common git dir.
@@ -40,26 +63,31 @@ async function load($: EngineInterface) {
         if (status.exitCode === 0) runs.push(parseRun(name, status.stdout))
       }
     }
-    const pool = parseBudget(budget.stdout)
     const next: Snapshot = {
-      at: await $.clock.now(),
-      pool,
+      at: now,
+      accounts,
+      samples,
+      outlook: view,
+      pool: parseBudget(budget.stdout),
       runs,
-      error: pool ? undefined : budget.stderr.trim().split('\n').at(-1) || 'budget.ts gave no total',
+      error,
     }
     await update($, snapshot, () => next)
-    $.ui.status(statusLine(pool, runs))
+    $.ui.status(statusLine(view, now) ?? (error ? `limits unknown: ${error}` : undefined))
   } catch (error) {
     $.ui.log(`status: refresh failed: ${String(error)}`, { to: 'debug' })
   }
 }
+
+const percent = (fraction: number) => `${Math.round(fraction * 100)}%`
+const resetIn = (at: number | undefined, now: number) => (at && at > now ? `resets in ${duration(at - now)}` : '')
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     await $.command.register({
       name: 'pool',
-      description: 'Show the account pool and the orchestrate runs in a pane',
+      description: 'Show the rate-limit outlook, the accounts, agents and orchestrate runs',
     })
     void refresh($)
     $.clock.every(EVERY_MS, () => void refresh($))
@@ -68,24 +96,40 @@ export const register: Register = on => {
 
   on('command.run', { command: 'pool' }, async $ => {
     await refresh($)
-    await $.ui.open({ id: PANE, title: 'Pool and runs' })
-    return { text: 'Pool pane opened.' }
+    await $.ui.open({ id: PANE, title: 'Rate limits' })
+    return { text: 'Rate limits pane opened.' }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
-    const { at, pool, runs, error } = await read($, snapshot)
+    const { at, accounts, outlook: view, pool, runs, error } = await read($, snapshot)
     const time = at ? new Date(at).toISOString().slice(11, 16) + 'Z' : 'not yet'
 
     return (
       <Box flexDirection="column">
-        <Text bold>Pool</Text>
+        <Text bold>{statusLine(view, at) ?? error ?? 'Reading the accounts.'}</Text>
+        {view && (
+          <Text dimColor>
+            Weekly burn {percent(view.weekPerHour)} of one account per hour; 5h burn{' '}
+            {view.fiveHourPerHour === undefined ? 'measured after 10 minutes' : `${percent(view.fiveHourPerHour)} per hour`}.
+          </Text>
+        )}
+        <Text> </Text>
+        <Text bold>Accounts (use of each window)</Text>
+        {accounts.map(account => (
+          <Text dimColor={account.usedWeek >= 1}>
+            {account.label} 5h {percent(account.used5h)} {resetIn(account.reset5h, at)} · week {percent(account.usedWeek)}{' '}
+            {resetIn(account.resetWeek, at)}
+          </Text>
+        ))}
+        <Text> </Text>
+        <Text bold>Agents</Text>
         {pool ? (
           <Text>
-            {pool.agents}/{pool.cap} agents · {pool.megaWeighted} MW in 5 h
+            {pool.agents} running, cap {pool.cap}
           </Text>
         ) : (
-          <Text dimColor>{error ?? 'Reading the pool.'}</Text>
+          <Text dimColor>budget.ts gave no total.</Text>
         )}
         {pool?.hosts.map(host => <Text dimColor>{host}</Text>)}
         <Text> </Text>
