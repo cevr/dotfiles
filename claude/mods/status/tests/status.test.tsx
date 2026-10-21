@@ -104,7 +104,7 @@ test('the status line and the pane show the outlook, accounts and active units',
   on('process.run', (_, e) => {
     const script = e.argv.join(' ')
     if (script.includes('teamclaude status')) return ok(TONIGHT)
-    if (script.includes('budget.ts')) return ok(BUDGET)
+    if (script.includes('budget.ts --rotate')) return ok(BUDGET)
     if (script.includes('rev-parse')) return ok('/repo/.git\n')
     if (script.includes('ls -1d')) return ok('/repo/tmp/orchestrate/hymnapp/\n')
     if (script.includes('status.ts')) return ok(STATUS)

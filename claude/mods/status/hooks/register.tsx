@@ -6,6 +6,7 @@ import { duration, fiveHourPerHour, outlook, parseAccounts, parseBudget, parseRu
 
 // Whether the Claude account pool lasts at the current pace, on the status line
 // every minute; the accounts, agents and orchestrate runs in the /pool pane.
+// Each refresh also rotates the accounts into weekly reset order.
 
 const PANE = 'status'
 const EVERY_MS = 60e3
@@ -49,7 +50,9 @@ async function load($: EngineInterface) {
     ]
     const view = accounts.length > 0 ? outlook(accounts, fiveHourPerHour(samples, now), now) : undefined
 
-    const budget = await $.process.run(sh(`bun ${SCRIPTS}/budget.ts`), { timeoutMs: 20e3 })
+    // --rotate keeps teamclaude's priorities in weekly reset order, so the
+    // account whose quota expires first serves first.
+    const budget = await $.process.run(sh(`bun ${SCRIPTS}/budget.ts --rotate`), { timeoutMs: 20e3 })
     // A run dir sits in the checkout that holds the run's main: for a git
     // worktree that is the main checkout, found through the common git dir.
     const common = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'])

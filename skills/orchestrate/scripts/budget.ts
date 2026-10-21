@@ -13,7 +13,8 @@
 //
 // Usage: bun budget.ts [--cap <n>] [--projects <dir>] [--rotate]
 //   --rotate sets teamclaude's account priorities to the reset order, so the
-//   account whose quota expires first serves first.
+//   account whose quota expires first serves first. The status mod runs it
+//   every minute.
 //   ORCHESTRATE_HOSTS: space- or comma-separated SSH aliases. Each host runs
 //   this file read-only from stdin (`bun run - --host-json`), so it needs only
 //   bun and its own ~/.claude/projects. Codex Counsel runs do not count.
