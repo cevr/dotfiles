@@ -37,7 +37,7 @@
 - Remove a Rift when its isolated work is complete.
 - On the workbox, use `workrift create <branch>` and `workrift remove`. Run them inside the repository; `workrift` finds its warm source.
 - Run `workrift create` from the old checkout to import its `gh stack` metadata.
-- Refresh a warm source with `workrift refresh`.
+- `workrift create` fast-forwards and warms the warm source before it snapshots it. Refresh a warm source by hand with `workrift refresh`.
 
 ## Visual progress
 

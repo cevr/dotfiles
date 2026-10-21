@@ -150,7 +150,8 @@ install_dependencies() {
       return 0
     fi
   fi
-  (cd "$1" && sh -c "$command")
+  # Close the source lock so a daemon the install starts cannot hold it.
+  (cd "$1" && sh -c "$command") 9>&-
   lock_fingerprint "$1" >"$(installed_locks_file "$1")"
 }
 
@@ -173,7 +174,8 @@ warm_command() {
 }
 
 run_warm() {
-  (cd "$1" && sh -c "$2")
+  # A build can leave a daemon running (turbo); it must not inherit the source lock.
+  (cd "$1" && sh -c "$2") 9>&-
 }
 
 dependency_hook_marker='# Managed by workrift: keep dependencies in step with the lock file.'
@@ -264,7 +266,10 @@ create_workspace() {
   fi
 
   install_dependency_hooks "$source_path"
+  lock_source "$source_path"
+  advance_source "$source_path" "$main"
   workspace=$(rift create "$source_path" --copy-all --name "$name")
+  exec 9>&-
   # Git hooks print to stdout, and stdout carries only the workspace path.
   if git -C "$workspace" show-ref --verify --quiet "refs/heads/$branch"; then
     git -C "$workspace" switch "$branch" >&2
@@ -304,9 +309,36 @@ initialize_source() {
   refresh_source "$source_path"
 }
 
+# One writer at a time: a snapshot taken while another command moves the source
+# would copy a half-updated tree. Release with `exec 9>&-`, or at exit.
+lock_source() {
+  exec 9>"$(git -C "$1" rev-parse --path-format=absolute --git-path workrift.lock)"
+  flock 9
+}
+
+# The workspace shares every unchanged block with the source, so a source behind
+# the default branch makes the workspace's branch switch rewrite each file changed
+# since, and those files stop being shared. Fast-forward and warm the source first.
+advance_source() {
+  source_path=$1
+  main=$2
+  [ "$(git -C "$source_path" rev-parse HEAD)" != "$(git -C "$source_path" rev-parse "origin/$main")" ] || return 0
+  [ -z "$(git -C "$source_path" status --porcelain)" ] || fail "source has changes: $source_path"
+  if [ "$(git -C "$source_path" branch --show-current)" != "$main" ]; then
+    git -C "$source_path" switch "$main" >&2
+  fi
+  git -C "$source_path" merge --ff-only "origin/$main" >&2
+  sync_dependencies "$source_path" >&2
+  warm=$(warm_command "$source_path")
+  if [ -n "$warm" ] && ! run_warm "$source_path" "$warm" >&2; then
+    printf 'workrift: warm step failed in %s; build output may be stale\n' "$source_path" >&2
+  fi
+}
+
 refresh_source() {
   source_path=${1:-$(resolve_source)}
   require_source "$source_path"
+  lock_source "$source_path"
   [ -z "$(git -C "$source_path" status --porcelain)" ] || fail "source has changes: $source_path"
 
   main=$(main_branch "$source_path")

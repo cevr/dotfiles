@@ -92,8 +92,12 @@ use a warm source for feature work. `workrift` finds the source from the current
 directory: the Rift root of a workspace, or the source with the same `origin` as
 a normal checkout. Set `WORKRIFT_SOURCE` to choose one explicitly.
 
-`workrift create` uses a writable Btrfs snapshot with dependencies and compiled
-outputs. It then creates or selects the requested Git branch, and runs the
+`workrift create` first fast-forwards the source to the fetched default branch
+and warms it, so the snapshot holds today's tree and the branch switch rewrites
+only the branch's own changes; unchanged files keep sharing blocks with the
+source. A lock on the source's Git directory serializes `create` and `refresh`.
+It then takes a writable Btrfs snapshot with dependencies and compiled
+outputs, and creates or selects the requested Git branch, and runs the
 install only when the branch's lock file differs from the last install. When the
 command runs from a matching stacked checkout, it also imports `.git/gh-stack`.
 Run `gh stack checkout <PR>` in the Rift when imported metadata needs a refresh.
