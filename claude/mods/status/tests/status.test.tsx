@@ -33,7 +33,7 @@ const TONIGHT = JSON.stringify({
 
 const BUDGET = `host-a: 2 agents, 2 roots active in 10 min; 133 MW in 5 h
 host-b: 3 agents, 1 roots active in 10 min; 37 MW in 5 h
-weekly: burn 9.8%/h, 0.8%/h per session; pace 0.5%/h, a weekly limit above 1.3%/h; over pace: a weekly limit comes before the next reset
+weekly: burn 9.8%/h; pace 0.5%/h, weekly ceiling 1.3%/h, 5h ceiling 4.0%/h; over pace: a weekly limit comes before the next reset
 budget: 5/8 agents, 170 MW in 5 h
 `
 
@@ -127,11 +127,36 @@ test('the status line and the pane show the outlook, accounts and active units',
   expect(await ui.find({ type: 'Text', text: /example\.com|seven/ })).toBeUndefined()
   expect((await ui.find({ type: 'Text', text: /running, cap/ }))?.text).toBe('5 running, cap 8')
   expect((await ui.find({ type: 'Text', text: /^Week: / }))?.text).toBe(
-    'Week: burn 9.8%/h, 0.8%/h per session; pace 0.5%/h, a weekly limit above 1.3%/h; over pace: a weekly limit comes before the next reset',
+    'Week: burn 9.8%/h; pace 0.5%/h, weekly ceiling 1.3%/h, 5h ceiling 4.0%/h; over pace: a weekly limit comes before the next reset',
   )
   expect(await ui.find({ type: 'Text', text: /^weekly: / })).toBeUndefined()
   expect((await ui.find({ type: 'Text', text: /^host-a/ }))?.text).toBe('host-a: 2 agents, 2 roots active in 10 min')
   expect((await ui.find({ type: 'Text', text: /census2/ }))?.text).toBe('  census2 implement r3 since 2026-10-20T23:03Z')
   expect(await ui.find({ type: 'Text', text: /android/ })).toBeUndefined()
   await ui.unmount()
+})
+
+test('`/pool project <name>` names the session\'s project', async ($, on) => {
+  const runs: string[] = []
+  on('command.register', () => ({ value: { command: 'pool' } }))
+  on('clock.every', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: NOW }))
+  on('process.run', (_, e) => {
+    const script = e.argv.join(' ')
+    runs.push(script)
+    if (script.includes('label.ts --set')) return ok('hymnal\n')
+    return ran(1, '', 'unexpected')
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  expect(runs.some(script => script.includes('label.ts') && !script.includes('--set'))).toBe(true)
+  const result = await $.command.run({
+    command: 'pool',
+    args: 'project hymnal',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 120 },
+  })
+  expect(result).toMatchObject({ text: "This session's project is hymnal." })
+  expect(runs.find(script => script.includes('--set'))).toContain('hymnal')
 })

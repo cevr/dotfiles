@@ -90,14 +90,24 @@ export const register: Register = on => {
     const started = await next(e)
     await $.command.register({
       name: 'pool',
-      description: 'Show the rate-limit outlook, the accounts, agents and orchestrate runs',
+      description: 'Show the rate-limit outlook, the accounts, agents and orchestrate runs; `project <name>` names this session\'s project',
     })
+    // The budget counts each session's cost against its project, named after
+    // its herdr workspace unless `/pool project <name>` says otherwise.
+    void $.process.run(sh(`PATH="$HOME/.bun/bin:$PATH" bun ${SCRIPTS}/budget/label.ts`), { timeoutMs: 10e3 })
     void refresh($)
     $.clock.every(EVERY_MS, () => void refresh($))
     return started
   })
 
-  on('command.run', { command: 'pool' }, async $ => {
+  on('command.run', { command: 'pool' }, async ($, e) => {
+    const project = e.args.match(/^project\s+(.+)$/)?.[1]?.trim()
+    if (project) {
+      const set = await $.process.run(sh(`PATH="$HOME/.bun/bin:$PATH" bun ${SCRIPTS}/budget/label.ts --set "$1"`, project), {
+        timeoutMs: 10e3,
+      })
+      return { text: set.exitCode === 0 ? `This session's project is ${set.stdout.trim() || project}.` : 'Could not set the project.' }
+    }
     await refresh($)
     await $.ui.open({ id: PANE, title: 'Rate limits' })
     return { text: 'Rate limits pane opened.' }
