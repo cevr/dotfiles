@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { fiveHourPerHour, outlook, parseAccounts, statusLine } from '../hooks/parse'
+import { fiveHourPerHour, isNear, outlook, parseAccounts, statusLine } from '../hooks/parse'
 
 const HOUR = 3600e3
 const NOW = Date.UTC(2026, 9, 21, 3, 30)
@@ -203,4 +203,12 @@ test('with no rate limit ahead, the outlook leaves the warning line for the prom
     '? for shortcuts · no rate limit ahead · 2/2 accounts have quota',
   )
   await ui.unmount()
+})
+
+test('only a rate limit less than a day away is near', () => {
+  const accounts = parseAccounts(JSON.stringify({ accounts: [account('one', 0.2, 0.9, 2, 0.005)] }))
+  const view = outlook(accounts, undefined, NOW)
+  expect(isNear({ ...view, limitedAt: NOW + 4 * HOUR }, NOW)).toBe(true)
+  expect(isNear({ ...view, limitedAt: NOW + 6 * 24 * HOUR }, NOW)).toBe(false)
+  expect(isNear({ ...view, limitedAt: undefined }, NOW)).toBe(false)
 })

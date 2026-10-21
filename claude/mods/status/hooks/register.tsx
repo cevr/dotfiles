@@ -3,11 +3,11 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Account, Run, Sample, Snapshot } from '../types'
 import { compaction, tune } from './compact'
-import { duration, fiveHourPerHour, outlook, parseAccounts, parseBudget, parseRun, statusLine } from './parse'
+import { duration, fiveHourPerHour, isNear, outlook, parseAccounts, parseBudget, parseRun, statusLine } from './parse'
 
 // Whether the Claude account pool lasts at the current pace, every minute: a
-// status line (drawn as a warning) while a rate limit is ahead, else dim at the
-// end of the hint under the prompt. The accounts, agents and orchestrate runs
+// status line (drawn as a warning) while a rate limit is less than a day away,
+// else dim at the end of the hint under the prompt. The accounts, agents and orchestrate runs
 // are in the /pool pane.
 // Each refresh also rotates the accounts into weekly reset order.
 // Each agent kind compacts at the window the burn says it costs least at (compact.ts).
@@ -81,7 +81,7 @@ async function load($: EngineInterface) {
     }
     await update($, snapshot, () => next)
     $.ui.status(
-      view?.limitedAt !== undefined ? statusLine(view, now) : !view && error ? `limits unknown: ${error}` : undefined,
+      isNear(view, now) ? statusLine(view, now) : !view && error ? `limits unknown: ${error}` : undefined,
     )
   } catch (error) {
     $.ui.log(`status: refresh failed: ${String(error)}`, { to: 'debug' })
@@ -124,7 +124,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     const { at, outlook: view } = await read($, snapshot)
-    const calm = view?.limitedAt === undefined ? statusLine(view, at) : undefined
+    const calm = view && !isNear(view, at) ? statusLine(view, at) : undefined
     return next(calm ? { ...e, props: { ...e.props, tail: ` · ${calm}` } } : e)
   })
 

@@ -139,6 +139,13 @@ export function duration(ms: number): string {
 }
 
 // `rate limit in 4h30m, for 11h (weekly) · 1/7 accounts have quota`
+// A rate limit less than a day away is near: the one worth a warning.
+const NEAR = 24 * HOUR
+
+export function isNear(view: Outlook | undefined, now: number): boolean {
+  return view?.limitedAt !== undefined && view.limitedAt - now < NEAR
+}
+
 export function statusLine(view: Outlook | undefined, now: number): string | undefined {
   if (!view || view.total === 0) return undefined
   const accounts = `${view.live}/${view.total} accounts have quota`
