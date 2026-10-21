@@ -4,6 +4,7 @@
     "commit": "",
     "pr": ""
   },
+  "bashOutputMaxChars": 8000,
   "cleanupPeriodDays": 365,
   "effortLevel": "high",
   "enabledPlugins": {
