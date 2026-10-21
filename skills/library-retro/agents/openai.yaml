@@ -1,0 +1,5 @@
+interface:
+  display_name: "Library Retro"
+  short_description: "Improve a library we own from the evidence of its use"
+policy:
+  allow_implicit_invocation: false
