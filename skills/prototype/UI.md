@@ -91,11 +91,21 @@ Behaviour:
 
 Put the switcher in a single shared component so both sub-shapes can reuse it. Locate it wherever shared UI lives in the project.
 
-### 5. Hand it over
+### 5. Drive and measure every variant yourself
 
-Surface the URL (and the `?variant=` keys). The user will flip through whenever they get to it. The interesting feedback is usually **"I want the header from B with the sidebar from C"**, which is the actual design they want.
+Before the owner sees anything, drive each variant the way a user would, with the repo's `verify-<app>` skill when it has one, else `agent-browser` (muted):
 
-### 6. Capture the answer and clean up
+- **Screenshot** each variant at desktop and phone width, in light and dark when the app has both, and in its empty, loading, error and longest-content states.
+- **Measure** what the question is about, the same way for every variant: time to the first useful paint and to interactive, layout shift, horizontal overflow at phone width, the number of steps for the core task, and any console error. Run each measurement at least twice and keep the median.
+- **Check** the accessibility tree (focus order, labels) and keyboard use of the core task.
+
+A variant that fails a check gets fixed or dropped before hand-over; a broken variant wastes the owner's look.
+
+### 6. Hand it over
+
+Publish one comparison: the screenshots side by side, the measurements in one table, and your recommendation with its reason (a graft is a fine recommendation: "B's header with C's sidebar"). Then give the URL and the `?variant=` keys. The owner judges from the comparison and opens the live variants only to feel them.
+
+### 7. Capture the answer and clean up
 
 Once a variant has won, capture the answer (which variant and why), then capture the prototype the way the [SKILL](SKILL.md) describes. Fold the winner into the real code and move the rest onto the throwaway branch, not into main:
 

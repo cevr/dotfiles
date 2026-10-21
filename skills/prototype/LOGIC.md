@@ -49,11 +49,15 @@ Choose scenarios that demonstrate the awkward cases, the ones hard to reason abo
 
 Keep it beautiful but restrained: clean typography, generous spacing, one accent colour. No animations, no gimmicks: nothing that competes with the state and the buttons.
 
-### 4. Hand it over
+### 4. Play every walkthrough yourself
 
-Send them the file, or open it for them. They'll click through the walkthroughs and free-play whenever they get to it; the interesting moments are when they say "wait, that shouldn't be possible" or "huh, I assumed X would be different"; those are the bugs in the _idea_, which is the whole point. If they want new actions or a new scenario, add them. Prototypes evolve.
+Before hand-over, open the file with `agent-browser` and play each guided walkthrough to its end, then free-play the actions in the orders a hurried user would try. Save the state after each step, and list every state that surprised you: an action that should be impossible, a state with no way out, two paths that end in different states for the same intent. Fix a broken walkthrough; keep a surprising state, since it is the finding.
 
-### 5. Capture the answer and the prototype
+### 5. Hand it over
+
+Send them the file, or open it for them, with your list of surprising states first. They'll click through the walkthroughs and free-play whenever they get to it; the interesting moments are when they say "wait, that shouldn't be possible" or "huh, I assumed X would be different"; those are the bugs in the _idea_, which is the whole point. If they want new actions or a new scenario, add them. Prototypes evolve.
+
+### 6. Capture the answer and the prototype
 
 Once the prototype has answered its question, capture the answer, then capture the prototype the way the [SKILL](SKILL.md) describes. The logic-specific mapping: the validated reducer / machine / function set lifts into the real module (the decision, absorbed); the HTML shell rides along to the throwaway branch that keeps the prototype as a primary source, and being one self-contained file, it stays trivially re-runnable there.
 
