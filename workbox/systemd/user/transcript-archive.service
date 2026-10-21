@@ -1,0 +1,9 @@
+[Unit]
+Description=Back up Claude and Codex transcripts to the R2 archive
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+ExecStart=%h/.bun/bin/bun %h/Developer/personal/dotfiles/transcripts/archive.ts push

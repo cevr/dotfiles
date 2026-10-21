@@ -227,6 +227,7 @@ sudo systemctl restart bite-workbox-sshd.service
 systemctl --user enable --now \
   cleanup-mosh-servers.timer \
   cull-transcript-images.timer \
+  transcript-archive.timer \
   workrift-prune.timer \
   sideshow.service \
   workbox-backup.timer \
