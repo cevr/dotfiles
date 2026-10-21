@@ -15,6 +15,15 @@ ln -sf "$DOTFILES_DIR/gitignore_global" ~/.gitignore_global
 mkdir -p ~/Library/Application\ Support/com.mitchellh.ghostty
 ln -sf "$DOTFILES_DIR/ghostty/config" ~/Library/Application\ Support/com.mitchellh.ghostty/config
 
+# Weekly jobs
+mkdir -p ~/Library/LaunchAgents
+for plist in "$DOTFILES_DIR"/mac/launchd/*.plist; do
+  label=$(basename "$plist" .plist)
+  ln -sf "$plist" ~/Library/LaunchAgents/
+  launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/"$label".plist
+done
+
 # Atuin
 mkdir -p ~/.config/atuin
 ln -sf "$DOTFILES_DIR/atuin.toml" ~/.config/atuin/config.toml

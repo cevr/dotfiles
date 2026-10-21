@@ -226,6 +226,7 @@ sudo systemctl enable --now \
 sudo systemctl restart bite-workbox-sshd.service
 systemctl --user enable --now \
   cleanup-mosh-servers.timer \
+  cull-transcript-images.timer \
   workrift-prune.timer \
   sideshow.service \
   workbox-backup.timer \

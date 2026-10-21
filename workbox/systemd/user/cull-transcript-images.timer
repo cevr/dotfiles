@@ -1,0 +1,10 @@
+[Unit]
+Description=Cull transcript images each week
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

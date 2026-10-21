@@ -1,0 +1,8 @@
+[Unit]
+Description=Replace images in Claude and Codex transcripts with a text note
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+ExecStart=%h/.bun/bin/bun %h/Developer/personal/dotfiles/claude/bin/cull-transcript-images
