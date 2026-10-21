@@ -7,8 +7,9 @@ const MINUTE = 60e3
 // units are history.
 const ACTIVE = /^(plan|implement|review|verify|decide|blocked|stuck)/
 
-// budget.ts prints one line per host, then `budget: 5/8 agents, 181 MW in 5 h`.
-// The weighted-token figure stays out: the outlook answers what it hinted at.
+// budget.ts prints one line per host, a `weekly: …` pace line, then
+// `budget: 5/8 agents, 181 MW in 5 h`. The weighted-token figure stays out: the
+// outlook answers what it hinted at.
 export function parseBudget(stdout: string): Pool | undefined {
   const lines = stdout.trim().split('\n').filter(Boolean)
   const total = lines.at(-1)?.match(/^budget: (\d+)\/(\d+) agents/)
@@ -16,7 +17,8 @@ export function parseBudget(stdout: string): Pool | undefined {
   return {
     agents: Number(total[1]),
     cap: Number(total[2]),
-    hosts: lines.slice(0, -1).map(line => line.replace(/;.*$/, '')),
+    hosts: lines.slice(0, -1).filter(line => !line.startsWith('weekly: ')).map(line => line.replace(/;.*$/, '')),
+    pace: lines.find(line => line.startsWith('weekly: '))?.slice('weekly: '.length),
   }
 }
 

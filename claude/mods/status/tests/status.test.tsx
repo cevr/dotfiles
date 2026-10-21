@@ -33,6 +33,7 @@ const TONIGHT = JSON.stringify({
 
 const BUDGET = `host-a: 2 agents, 2 roots active in 10 min; 133 MW in 5 h
 host-b: 3 agents, 1 roots active in 10 min; 37 MW in 5 h
+weekly: burn 9.8%/h; spend 99% at 0.5%/h, a weekly limit above 1.3%/h; over pace: hold new agents
 budget: 5/8 agents, 170 MW in 5 h
 `
 
@@ -125,6 +126,10 @@ test('the status line and the pane show the outlook, accounts and active units',
   expect((await ui.find({ type: 'Text', text: /^A7 / }))?.text).toBe('A7 5h 43% resets in 2h · week 62% resets in 22h36m')
   expect(await ui.find({ type: 'Text', text: /example\.com|seven/ })).toBeUndefined()
   expect((await ui.find({ type: 'Text', text: /running, cap/ }))?.text).toBe('5 running, cap 8')
+  expect((await ui.find({ type: 'Text', text: /^Week: / }))?.text).toBe(
+    'Week: burn 9.8%/h; spend 99% at 0.5%/h, a weekly limit above 1.3%/h; over pace: hold new agents',
+  )
+  expect(await ui.find({ type: 'Text', text: /^weekly: / })).toBeUndefined()
   expect((await ui.find({ type: 'Text', text: /^host-a/ }))?.text).toBe('host-a: 2 agents, 2 roots active in 10 min')
   expect((await ui.find({ type: 'Text', text: /census2/ }))?.text).toBe('  census2 implement r3 since 2026-10-20T23:03Z')
   expect(await ui.find({ type: 'Text', text: /android/ })).toBeUndefined()

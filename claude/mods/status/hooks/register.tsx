@@ -131,6 +131,7 @@ export const register: Register = on => {
         ) : (
           <Text dimColor>budget.ts gave no total.</Text>
         )}
+        {pool?.pace && <Text>Week: {pool.pace}</Text>}
         {pool?.hosts.map(host => <Text dimColor>{host}</Text>)}
         <Text> </Text>
         <Text bold>Orchestrate runs</Text>

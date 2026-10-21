@@ -1,4 +1,4 @@
-export type Pool = { agents: number; cap: number; hosts: string[] }
+export type Pool = { agents: number; cap: number; hosts: string[]; pace?: string }
 export type Unit = { unit: string; state: string; round: number; since: string }
 export type Run = { name: string; units: Unit[] }
 

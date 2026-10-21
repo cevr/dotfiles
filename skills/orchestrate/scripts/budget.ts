@@ -5,7 +5,15 @@
 // when the active agents across all hosts reach the cap, 2 when a host is
 // unreachable.
 //
-// Usage: bun budget.ts [--cap <n>] [--projects <dir>]
+// It also paces the week from `teamclaude status --json` on this host: each
+// account's weekly quota expires at its own reset, so the pool should spend 99%
+// of every account before it resets, and never burn so fast that the pool hits
+// a weekly limit before the next reset refills it. Exits 1 above that ceiling
+// too.
+//
+// Usage: bun budget.ts [--cap <n>] [--projects <dir>] [--rotate]
+//   --rotate sets teamclaude's account priorities to the reset order, so the
+//   account whose quota expires first serves first.
 //   ORCHESTRATE_HOSTS: space- or comma-separated SSH aliases. Each host runs
 //   this file read-only from stdin (`bun run - --host-json`), so it needs only
 //   bun and its own ~/.claude/projects. Codex Counsel runs do not count.
@@ -114,6 +122,69 @@ async function remoteLoad(alias: string): Promise<HostLoad> {
   }
 }
 
+const HOUR = 3600e3;
+const TARGET = 0.99;
+
+// Rates are in weeks of one account per hour; teamclaude forecasts each one.
+type Week = { name: string; priority: number; used: number; resetAt: number; perHour: number };
+
+function weeks(): Week[] | undefined {
+  try {
+    const run = Bun.spawnSync(['teamclaude', 'status', '--json'], { timeout: 5e3 });
+    if (run.exitCode !== 0) return undefined;
+    const accounts: Record<string, any>[] = JSON.parse(run.stdout.toString()).accounts ?? [];
+    return accounts
+      .filter((a) => a.disabled !== true && typeof a.quota?.unified7dReset === 'number')
+      .map((a) => ({
+        name: String(a.name),
+        priority: Number(a.priority ?? 0),
+        used: Math.min(1, Number(a.quota.unified7d ?? 0)),
+        resetAt: a.quota.unified7dReset,
+        perHour: Number(a.quota.forecast?.unified7d?.ratePerHour ?? 0),
+      }));
+  } catch {
+    return undefined;
+  }
+}
+
+function pace(list: Week[], now: number) {
+  const due = list.filter((a) => a.resetAt > now).sort((a, b) => a.resetAt - b.resetAt);
+  const burn = list.reduce((n, a) => n + a.perHour, 0);
+  // Floor: the quota expiring by each reset must be spent by then.
+  let expiring = 0;
+  let floor = 0;
+  // Ceiling: the quota left, plus each earlier reset's refill, must last to each reset.
+  let fuel = due.reduce((n, a) => n + (1 - a.used), 0);
+  let ceiling = Infinity;
+  // Unused: one account serves at a time, soonest reset first, at the current burn.
+  let at = now;
+  let unused = 0;
+  for (const a of due) {
+    const hours = (a.resetAt - now) / HOUR;
+    expiring += Math.max(0, TARGET - a.used);
+    floor = Math.max(floor, expiring / hours);
+    ceiling = Math.min(ceiling, fuel / hours);
+    fuel += a.used;
+    const spent = burn > 0 ? Math.min(1 - a.used, (burn * Math.max(0, a.resetAt - at)) / HOUR) : 0;
+    if (burn > 0) at += (spent / burn) * HOUR;
+    unused += Math.max(0, TARGET - a.used - spent);
+  }
+  return { due, burn, floor, ceiling, unused };
+}
+
+const pct = (n: number): string => `${(n * 100).toFixed(1)}%`;
+const week = weeks();
+const paced = week?.length ? pace(week, Date.now()) : undefined;
+const overPace = paced !== undefined && paced.burn > paced.ceiling;
+
+if (paced && args.includes('--rotate')) {
+  // Spent accounts go last; an account's reset moves it back in the order.
+  const order = [...paced.due.filter((a) => a.used < 1), ...paced.due.filter((a) => a.used >= 1)];
+  order.forEach((a, i) => {
+    if (a.priority !== i) Bun.spawnSync(['teamclaude', 'priority', a.name, String(i)], { stdout: 'ignore' });
+  });
+}
+
 const loads = [localLoad(), ...(await Promise.all(remotes.map(remoteLoad)))];
 const mw = (n: number): string => `${(n / 1e6).toFixed(0)} MW`;
 for (const l of loads) {
@@ -123,6 +194,15 @@ for (const l of loads) {
       : `${l.host}: ${l.agents} agents, ${l.roots} roots active in 10 min; ${mw(l.weighted)} in 5 h`,
   );
 }
+if (paced) {
+  const verdict = overPace
+    ? 'over pace: hold new agents'
+    : paced.burn < paced.floor
+      ? `under pace: ${pct(paced.unused)} of an account's week expires unused`
+      : 'on pace';
+  const ceiling = Number.isFinite(paced.ceiling) ? `, a weekly limit above ${pct(paced.ceiling)}/h` : '';
+  console.log(`weekly: burn ${pct(paced.burn)}/h; spend 99% at ${pct(paced.floor)}/h${ceiling}; ${verdict}`);
+}
 const agents = loads.reduce((n, l) => n + l.agents, 0);
 const weighted = loads.reduce((n, l) => n + l.weighted, 0);
 const unreachable = loads.filter((l) => l.error).length;
@@ -130,4 +210,4 @@ console.log(
   `budget: ${agents}/${cap} agents, ${mw(weighted)} in 5 h${unreachable ? `, ${unreachable} host(s) not counted` : ''}`,
 );
 // An unreachable host's load is unknown, so the count proves nothing below the cap.
-process.exit(agents >= cap ? 1 : unreachable ? 2 : 0);
+process.exit(agents >= cap || overPace ? 1 : unreachable ? 2 : 0);
