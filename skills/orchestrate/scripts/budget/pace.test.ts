@@ -135,6 +135,21 @@ describe('admit', () => {
     const sessions = [{ project: 'gent', kind: 'w:task', sub: true, recentWph: 55 }, { project: 'hymn', kind: 'root', sub: false, recentWph: 0 }];
     expect(admit({ ...base, sessions }).ok).toBe(true);
   });
+  test('a project with held agents runs that many whatever the pace, and no more', () => {
+    const c = { ...UTC, projectAgents: { gent: 1, hymn: 1 } };
+    const busy = [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 200 }];
+    expect(admit({ ...base, c, sessions: busy }).ok).toBe(true);
+    const own = [...busy, { project: 'gent', kind: 'w:task', sub: true, recentWph: 20 }];
+    expect(admit({ ...base, c, sessions: own }).ok).toBe(false);
+  });
+  test('another project leaves room for the held agents not running yet', () => {
+    const c = { ...UTC, projectAgents: { gent: 1, hymn: 1 } };
+    const sessions = [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 45 }];
+    // 45 + 2 held × 20 + 20 passes 100; with hymn's agent running, 50 + 20 + 20 fits.
+    expect(admit({ ...base, c, project: 'perf', sessions }).ok).toBe(false);
+    const hymn = [...sessions, { project: 'hymn', kind: 'w:task', sub: true, recentWph: 5 }];
+    expect(admit({ ...base, c, project: 'perf', sessions: hymn }).ok).toBe(true);
+  });
   test('runs one agent per project at night', () => {
     const sessions = [{ project: 'gent', kind: 'w:task', sub: true, recentWph: 5 }];
     expect(admit({ ...base, night: true, sessions }).ok).toBe(false);

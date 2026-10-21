@@ -26,6 +26,8 @@ export type Config = {
   weeklyTarget: number;
   fiveHourMax: number;
   projectWeights: Record<string, number>;
+  /** Agents held for a project: it runs up to that many whatever the pace, and no more. */
+  projectAgents: Record<string, number>;
 };
 
 export const DEFAULTS: Config = {
@@ -37,6 +39,7 @@ export const DEFAULTS: Config = {
   weeklyTarget: 0.99,
   fiveHourMax: 0.9,
   projectWeights: {},
+  projectAgents: {},
 };
 
 const HOUR = 3600e3;
@@ -174,11 +177,21 @@ export function admit(input: {
   const burn = sessions.reduce((n, s) => n + s.recentWph, 0);
   const mine = sessions.filter((s) => s.project === project);
   const mw = (n: number) => `${(n / 1e6).toFixed(1)} MW/h`;
-  if (night && mine.filter((s) => s.sub).length >= c.nightAgentsPerProject) {
+  const running = (p: string) => sessions.filter((s) => s.project === p && s.sub).length;
+  if (night && running(project) >= c.nightAgentsPerProject) {
     return { ok: false, reason: `night: ${project} already runs ${c.nightAgentsPerProject} agent(s)` };
   }
-  if (burn + estimateWph > targetWph) {
-    return { ok: false, reason: `pool burns ${mw(burn)}; this agent adds about ${mw(estimateWph)}; the pace is ${mw(targetWph)}` };
+  const held = c.projectAgents[project];
+  if (held !== undefined) {
+    return running(project) < held
+      ? { ok: true, reason: `${project} has ${held - running(project)} of its ${held} agent(s) free` }
+      : { ok: false, reason: `${project} runs ${running(project)} of its ${held} agent(s)` };
+  }
+  // Every other project's agent leaves room for the held agents not running yet.
+  const free = Object.entries(c.projectAgents).reduce((n, [p, count]) => n + Math.max(0, count - running(p)), 0);
+  if (burn + (free + 1) * estimateWph > targetWph) {
+    const room = free > 0 ? ` with ${free} held agent(s) to start` : '';
+    return { ok: false, reason: `pool burns ${mw(burn)}${room}; this agent adds about ${mw(estimateWph)}; the pace is ${mw(targetWph)}` };
   }
   // A project's share binds only once the pool is 80% of the way to its pace.
   const projects = new Set([...sessions.map((s) => s.project), project]);
