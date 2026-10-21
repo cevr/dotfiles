@@ -2,11 +2,13 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Account, Run, Sample, Snapshot } from '../types'
+import { compaction, tune } from './compact'
 import { duration, fiveHourPerHour, outlook, parseAccounts, parseBudget, parseRun, statusLine } from './parse'
 
 // Whether the Claude account pool lasts at the current pace, on the status line
 // every minute; the accounts, agents and orchestrate runs in the /pool pane.
 // Each refresh also rotates the accounts into weekly reset order.
+// Each agent kind compacts at the window the burn says it costs least at (compact.ts).
 
 const PANE = 'status'
 const EVERY_MS = 60e3
@@ -86,6 +88,8 @@ const percent = (fraction: number) => `${Math.round(fraction * 100)}%`
 const resetIn = (at: number | undefined, now: number) => (at && at > now ? `resets in ${duration(at - now)}` : '')
 
 export const register: Register = on => {
+  compaction(on)
+
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     await $.command.register({
@@ -97,6 +101,7 @@ export const register: Register = on => {
     void $.process.run(sh(`PATH="$HOME/.bun/bin:$PATH" bun ${SCRIPTS}/budget/label.ts`), { timeoutMs: 10e3 })
     void refresh($)
     $.clock.every(EVERY_MS, () => void refresh($))
+    tune($)
     return started
   })
 

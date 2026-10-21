@@ -1,7 +1,7 @@
 {
   "name": "status",
   "version": "0.1.0",
-  "description": "Whether the Claude account pool lasts at the current pace, on the status line; accounts, agents and orchestrate runs in a /pool pane.",
+  "description": "Whether the Claude account pool lasts at the current pace, on the status line; accounts, agents and orchestrate runs in a /pool pane; each agent kind compacts at its tuned window.",
   "author": { "name": "Cristian" },
   "types": "./types/index.d.ts"
 }
