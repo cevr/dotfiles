@@ -1,0 +1,7 @@
+{
+  "name": "status",
+  "version": "0.1.0",
+  "description": "The account pool and the orchestrate runs on the status line, and in full in a /pool pane.",
+  "author": { "name": "Cristian" },
+  "types": "./types/index.d.ts"
+}
