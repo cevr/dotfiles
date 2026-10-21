@@ -160,3 +160,47 @@ test('`/pool project <name>` names the session\'s project', async ($, on) => {
   expect(result).toMatchObject({ text: "This session's project is hymnal." })
   expect(runs.find(script => script.includes('--set'))).toContain('hymnal')
 })
+
+test('with no rate limit ahead, the outlook leaves the warning line for the prompt hint', async ($, on) => {
+  const lines: (string | undefined)[] = []
+  on('command.register', () => ({ value: { command: 'pool' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', (_, e) => {
+    lines.push(e.text)
+    return { value: undefined }
+  })
+  on('clock.every', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: NOW }))
+  on('process.run', (_, e) => {
+    const script = e.argv.join(' ')
+    if (script.includes('teamclaude status'))
+      return ok(JSON.stringify({ accounts: [account('one', 0.2, 0.9, 2, 0.005), account('two', 0.1, 0.5, 100, 0.005)] }))
+    return ran(1, '', 'unexpected')
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  // Stands for the engine's hint line.
+  on('ui.render', { component: 'PromptHint' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>{`${e.props.hint}${e.props.tail ?? ''}`}</Text>
+  })
+
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.command.run({
+    command: 'pool',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 120 },
+  })
+
+  expect(lines.at(-1)).toBeUndefined()
+  const ui = await $.ui.mount({
+    plugin: 'status',
+    component: 'PromptHint',
+    surface: 'terminal',
+    props: { isDraft: false, isWorking: false, hint: '? for shortcuts' },
+  })
+  expect((await ui.find({ type: 'Text', text: /shortcuts/ }))?.text).toBe(
+    '? for shortcuts · no rate limit ahead · 2/2 accounts have quota',
+  )
+  await ui.unmount()
+})
