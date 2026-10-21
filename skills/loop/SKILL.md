@@ -1,10 +1,10 @@
 ---
-name: architecture-loop
+name: loop
 description: improve-codebase-architecture judged against the project's NORTH_STAR.md and PRIOR_ART.md — one pass with the user picking and grilling, or autonomous passes until one finds polish only (sweep, review code and tests, apply in isolated workspaces, counsel, live-check, retro).
 disable-model-invocation: true
 ---
 
-# Architecture loop
+# Loop
 
 This skill is a superset of `improve-codebase-architecture`: the same lens, judged against the project's north stars and prior arts. It runs one of two ways — a [single pass with the user](#single-pass-with-the-user), who picks and grills, or the autonomous loop below, where every finding is applied or rejected with a receipt.
 
@@ -14,8 +14,8 @@ The project says what good is; this skill says how to loop:
 
 - **`NORTH_STAR.md`** (repo root): north stars, tiebreaks, owner rules, project passes, live check, rejected candidates. Format: [`NORTH-STAR-FORMAT.md`](NORTH-STAR-FORMAT.md).
 - **`PRIOR_ART.md`** (repo root): what to compare against, by pass, and the comparisons already settled. Format: [`PRIOR-ART-FORMAT.md`](PRIOR-ART-FORMAT.md).
-- **The ledger**, `plans/architecture-loop-<date>.md`: the single source of truth for what is done, rejected, carried and open. Layout: [`ledger-template.md`](ledger-template.md).
-- **Pass files** (briefs, reports, logs, counsel prompts) live in `tmp/architecture-loop/pass<N>/` in the checkout that holds the run's main (git-ignored). They are scratch and stay on the machine that ran them. Anything a later pass or a session on the other machine needs goes on the ledger.
+- **The ledger**, `plans/loop-<date>.md`: the single source of truth for what is done, rejected, carried and open. Layout: [`ledger-template.md`](ledger-template.md).
+- **Pass files** (briefs, reports, logs, counsel prompts) live in `tmp/loop/pass<N>/` in the checkout that holds the run's main (git-ignored). They are scratch and stay on the machine that ran them. Anything a later pass or a session on the other machine needs goes on the ledger.
 
 Call the Skill tool with "codebase-design" once at the start; its glossary is the vocabulary of every prompt.
 
@@ -63,7 +63,7 @@ An **area** is a set of directories that change together (a package, or a layer 
 
 0. **Project files.** When either file is missing, establish it by [`ESTABLISHING.md`](ESTABLISHING.md), its autonomous branch. Then read both. Direction in the user's prompt (north stars, prior arts, a new sweep, an owner rule) goes into them now, dated. So do standing rules about this repo found in project memory (`~/.claude*/projects/<repo>/memory/`) or in `AGENTS.md`. Where a rule disagrees with an owner rule, the newer statement wins and the older one is corrected, so `NORTH_STAR.md` is the one place that says what the loop may do. Push authority is the usual case. Done when both files exist, carry this run's direction, and each drafted north star is an owner question on the ledger.
 
-1. **Open the ledger.** First `wc -c` the ledger; over about 100 KB, archive before you add the pass section (below). Copy the section layout of the newest `plans/architecture-loop-*.md`, or [`ledger-template.md`](ledger-template.md) when none exists. Record the HEAD hash and the baseline: source lines and files per package, by a `git ls-files` pathspec of source extensions that excludes tests and fixtures. Write the command on the ledger so every pass counts the same way; use `':(glob)…'` pathspecs, since a plain `*` crosses `/`. Keep each ledger row to one line. When the ledger passes about 100 KB, move closed passes into `plans/archive/`, keeping the baseline, Decisions, Rejected, Owner questions and open `Carried` rows. A ledger that every agent reads in full grew to 643 KB, past what Read accepts. Done when the ledger exists with a baseline.
+1. **Open the ledger.** First `wc -c` the ledger; over about 100 KB, archive before you add the pass section (below). Copy the section layout of the newest `plans/loop-*.md` (`plans/architecture-loop-*.md` in a repo whose ledgers predate the rename), or [`ledger-template.md`](ledger-template.md) when none exists. Record the HEAD hash and the baseline: source lines and files per package, by a `git ls-files` pathspec of source extensions that excludes tests and fixtures. Write the command on the ledger so every pass counts the same way; use `':(glob)…'` pathspecs, since a plain `*` crosses `/`. Keep each ledger row to one line. When the ledger passes about 100 KB, move closed passes into `plans/archive/`, keeping the baseline, Decisions, Rejected, Owner questions and open `Carried` rows. A ledger that every agent reads in full grew to 643 KB, past what Read accepts. Done when the ledger exists with a baseline.
 
 2. **Coverage audit.** List every source directory with its file count (the baseline pathspec, `| xargs -n1 dirname | sort | uniq -c`). Mark each directory no earlier ledger or report names. Those go first. Done when every directory is marked swept-before or unswept.
 

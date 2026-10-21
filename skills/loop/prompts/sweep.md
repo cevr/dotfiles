@@ -1,31 +1,31 @@
 # Sweep brief
 
-Fill the slots into `<pass dir>/sweep-brief.md`. Each sweep agent (architecture area, review package, guardrails, project sweep) gets a short prompt: read `~/.claude/skills/architecture-loop/safety.md` in full and follow it, read the brief, sweep `<area or sweep>` (`<directories>`, `<extra reading: review.md, guardrails.md, or the project sweep's method>`), write the report to `<pass dir>/<area>.md`, reply once with a summary under 300 words, finish in one run with no timers, monitors or sub-agents.
+Fill the slots into `<pass dir>/sweep-brief.md`. Each sweep agent (architecture area, review package, guardrails, project sweep) gets a short prompt: read `~/.claude/skills/loop/safety.md` in full and follow it, read the brief, sweep `<area or sweep>` (`<directories>`, `<extra reading: review.md, guardrails.md, or the project sweep's method>`), write the report to `<pass dir>/<area>.md`, reply once with a summary under 300 words, finish in one run with no timers, monitors or sub-agents.
 
 ```
 # Pass-<N> sweep brief (read-only)
 
-Read `~/.claude/skills/architecture-loop/safety.md` and `<repo>/NORTH_STAR.md` → Owner rules in full before any action, and follow them.
+Read `~/.claude/skills/loop/safety.md` and `<repo>/NORTH_STAR.md` → Owner rules in full before any action, and follow them.
 
-Never stop to ask the owner, and never end your work waiting for an answer. When a question comes up, read the principles in `~/Developer/personal/dotfiles/principles/` that bear on it, decide by them and `NORTH_STAR.md`, write "decided by <principle>" in your report, and go on. Report only the owner classes in the architecture-loop skill's Autonomy as owner questions, each with your recommendation, and keep working on the rest.
+Never stop to ask the owner, and never end your work waiting for an answer. When a question comes up, read the principles in `~/Developer/personal/dotfiles/principles/` that bear on it, decide by them and `NORTH_STAR.md`, write "decided by <principle>" in your report, and go on. Report only the owner classes in the loop skill's Autonomy as owner questions, each with your recommendation, and keep working on the rest.
 
 Repo: <repo path>, branch main, HEAD <hash>. Edit, commit and create nothing in the repo; write only your report. Start only what your sweep's method names.
 
 Read first: AGENTS.md (or CLAUDE.md), GLOSSARY.md (or CONTEXT.md), NORTH_STAR.md (whole: north stars, tiebreaks, owner rules, rejected), PRIOR_ART.md (the sources for your sweep, and Settled), and from <ledger path> its Decisions, Rejected, Owner questions, open Carried rows and the last pass's section; grep it for anything older. A done or rejected item returns only with a new receipt. Prior-art repos are at `okra repo path <slug>`.
 
-Goal: <the run's goal from the user, e.g. fewer concepts, less code, fewer files, every valuable feature kept>. Each candidate names the north star it serves, by its name in NORTH_STAR.md. A candidate that trades one north star for another, with no tiebreak that settles it, is an owner question, not a change. Owner questions are only the classes the architecture-loop skill reserves for the owner. Every other candidate carries a proposed decision and the principle (`~/Developer/personal/dotfiles/principles/`) behind it.
+Goal: <the run's goal from the user, e.g. fewer concepts, less code, fewer files, every valuable feature kept>. Each candidate names the north star it serves, by its name in NORTH_STAR.md. A candidate that trades one north star for another, with no tiebreak that settles it, is an owner question, not a change. Owner questions are only the classes the loop skill reserves for the owner. Every other candidate carries a proposed decision and the principle (`~/Developer/personal/dotfiles/principles/`) behind it.
 
 Pass <N-1> changed <`git diff --stat <prev base>..HEAD | tail -1`>. Weigh every addition by the deletion test. Review these changes hardest for regressions: <per area, the mechanisms each batch added>.
 
 In flight, do not report: <batch: items>. Known open, report only with new evidence: <the ledger's open items, known flakes>. Carried, open (copied from the ledger's open `Carried` rows; confirm or close each with a receipt): <decision: files>. New evidence from live checks: <questions>.
 
-Vocabulary, used exactly: module, interface, depth, seam, adapter, leverage, locality, deletion test. A candidate is: a shallow module, a pass-through, one concept with two owners, a one-adapter seam with no guard, a single-caller export, dead code, a guard gap, a comment that tells history, a public export no test uses as its subject, any red flag in `~/.claude/skills/architecture-loop/agent-lens.md` (the architecture sweeps read it in full), or any code a north star's "breaks when" column describes.
+Vocabulary, used exactly: module, interface, depth, seam, adapter, leverage, locality, deletion test. A candidate is: a shallow module, a pass-through, one concept with two owners, a one-adapter seam with no guard, a single-caller export, dead code, a guard gap, a comment that tells history, a public export no test uses as its subject, any red flag in `~/.claude/skills/loop/agent-lens.md` (the architecture sweeps read it in full), or any code a north star's "breaks when" column describes.
 
 Find, with receipts:
 - Bugs: a concrete input or state that gives a wrong result, with file:line and the failure scenario, verified by reading the path end to end. When cheap, run a focused test or a scratch script under <pass dir>.
 - Reductions: a concept, file, export, option or second path that the deletion test shows is a pass-through or has no product consumer. Caller-count greps cover <every source root>.
 - Structural: a concept that belongs in another module, an idiom a north star names that is bypassed, a shape a prior art carries with fewer concepts.
-- Guardrails (the guardrails agent; any agent that sees one): a defect class that happened twice (git log, the ledgers) and no lint rule, type or test would catch again, with where the check belongs (`~/.claude/skills/architecture-loop/guardrails.md`). For each project lint rule: generic (true of any Effect code; goes upstream to oxlint-plugin-effect) or project-specific.
+- Guardrails (the guardrails agent; any agent that sees one): a defect class that happened twice (git log, the ledgers) and no lint rule, type or test would catch again, with where the check belongs (`~/.claude/skills/loop/guardrails.md`). For each project lint rule: generic (true of any Effect code; goes upstream to oxlint-plugin-effect) or project-specific.
 - Docs that contradict today's code or the owner rules.
 
 Classes:

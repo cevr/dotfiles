@@ -35,7 +35,7 @@ Protocol: `~/.claude/skills/orchestrate/protocol.md` (read it in full first).
 <Choices the orchestrator already made, each with its principle.>
 
 ## Work rules
-<Optional: rules this kind of unit always follows, quoted from a calling skill (e.g. architecture-loop's apply prompt), and anything each round request must carry beyond protocol.md's list.>
+<Optional: rules this kind of unit always follows, quoted from a calling skill (e.g. loop's apply prompt), and anything each round request must carry beyond protocol.md's list.>
 
 ## Reserved
 <Actions only the orchestrator or the user takes: merge, push, deploy, publish, paid calls, non-additive format changes.>

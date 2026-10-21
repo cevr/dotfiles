@@ -1,4 +1,4 @@
-# Architecture loop — <date>
+# Loop — <date>
 
 Goal: <the run's goal, in the user's words>
 
@@ -34,7 +34,7 @@ One row per sweep per pass, as `NORTH_STAR.md` → Sweeps defines it (a measurem
 
 ## Pass <N>
 
-Reports: `tmp/architecture-loop/pass<N>/` in the run checkout (git-ignored)
+Reports: `tmp/loop/pass<N>/` in the run checkout (git-ignored)
 
 Verdict: <one line>
 

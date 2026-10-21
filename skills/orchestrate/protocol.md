@@ -2,7 +2,7 @@
 
 Every worker reads this file in full before its first action. The orchestrator gave you one message: your role, your unit's `spec.md` path, and the round. This file holds the rules shared by every role; the spec holds what is special to the unit.
 
-Read [`~/.claude/skills/architecture-loop/safety.md`](../architecture-loop/safety.md) in full too, and follow it.
+Read [`~/.claude/skills/loop/safety.md`](../loop/safety.md) in full too, and follow it.
 
 Read only what your role needs: implementor (this file, the spec, the run's `common.md`, `NORTH_STAR.md` → Owner rules); reviewer (the same, plus `counsel-review`); verifier (this file, the spec, the request, and the `verify-<app>` skill with the feature files the spec names). A caller's reading list adds files per role, never for all.
 

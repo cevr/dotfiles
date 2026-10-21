@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Create a verification skill
 
-You write `.claude/skills/verify-<app>/` in the repo: the scripted way to launch the real app, drive it the way a user does, and keep proof. Its reader arrives cold, mid-task: an orchestrate verifier, a reviewer's probe, the architecture-loop live check, the `run` skill, or an agent the owner asked "show me it works". Write for that reader, with this repo's real commands and handles. A placeholder left in the output is a defect.
+You write `.claude/skills/verify-<app>/` in the repo: the scripted way to launch the real app, drive it the way a user does, and keep proof. Its reader arrives cold, mid-task: an orchestrate verifier, a reviewer's probe, the loop live check, the `run` skill, or an agent the owner asked "show me it works". Write for that reader, with this repo's real commands and handles. A placeholder left in the output is a defect.
 
 Make one skill per **launch model**, not per page: one dev server that serves many routes is one skill. A repo with a web app, a CLI and a TUI gets one skill per surface, each made when a unit first needs it.
 

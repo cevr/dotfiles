@@ -1,5 +1,4 @@
 alchemy
-architecture-loop
 cli
 code-review
 counsel-review
@@ -7,6 +6,7 @@ create-pr
 create-verification-skill
 effect
 handoff
+loop
 maintain-verification-skill
 orchestrate
 project-scaffolding
