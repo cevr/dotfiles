@@ -3,8 +3,8 @@
 // A general-purpose, claude or untyped agent loads every tool and MCP server
 // before its first turn (about 88k tokens against 34k for orchestrate-worker), so
 // it runs as `orchestrate-worker` instead. A new agent is refused while orchestrate's
-// budget.ts reports the pool at its cap or over its weekly pace. CLAUDE_FULL_AGENT=1 lets a full agent
-// through; ORCHESTRATE_CAP sets the cap (budget.ts default, 8).
+// budget.ts reports the pool at its cap, which follows the weekly quota.
+// CLAUDE_FULL_AGENT=1 lets a full agent through; ORCHESTRATE_CAP fixes the cap.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -34,7 +34,7 @@ function budget(): Budget {
     if (cached.cap === cap && Date.now() - cached.at < CACHE_MS) return cached;
   } catch {}
   const run = Bun.spawnSync(['bun', BUDGET, ...(cap ? ['--cap', cap] : [])], { timeout: 8e3 });
-  // Exit 1 is the cap or the weekly pace; an unreachable host (2) or a timeout lets the agent run.
+  // Exit 1 is the cap; an unreachable host (2) or a timeout lets the agent run.
   const result = { at: Date.now(), cap, over: run.exitCode === 1, text: run.stdout.toString().trim() };
   try {
     writeFileSync(CACHE, JSON.stringify(result));
@@ -46,7 +46,7 @@ const pool = budget();
 if (pool.over) {
   reply({
     permissionDecision: 'deny',
-    permissionDecisionReason: `guard-agent: the Claude pool is at its agent cap or over its weekly pace.\n${pool.text}\nWait for a running agent's notification, or stop a finished one, then start this agent. Over pace, wait for the next weekly reset.`,
+    permissionDecisionReason: `guard-agent: the Claude pool is at its agent cap, which follows the weekly quota.\n${pool.text}\nWait for a running agent's notification, or stop a finished one, then start this agent. With a cap of 0, wait for the next weekly reset.`,
   });
 }
 

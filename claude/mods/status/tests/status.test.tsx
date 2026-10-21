@@ -33,7 +33,7 @@ const TONIGHT = JSON.stringify({
 
 const BUDGET = `host-a: 2 agents, 2 roots active in 10 min; 133 MW in 5 h
 host-b: 3 agents, 1 roots active in 10 min; 37 MW in 5 h
-weekly: burn 9.8%/h; spend 99% at 0.5%/h, a weekly limit above 1.3%/h; over pace: hold new agents
+weekly: burn 9.8%/h, 0.8%/h per session; pace 0.5%/h, a weekly limit above 1.3%/h; over pace: a weekly limit comes before the next reset
 budget: 5/8 agents, 170 MW in 5 h
 `
 
@@ -127,7 +127,7 @@ test('the status line and the pane show the outlook, accounts and active units',
   expect(await ui.find({ type: 'Text', text: /example\.com|seven/ })).toBeUndefined()
   expect((await ui.find({ type: 'Text', text: /running, cap/ }))?.text).toBe('5 running, cap 8')
   expect((await ui.find({ type: 'Text', text: /^Week: / }))?.text).toBe(
-    'Week: burn 9.8%/h; spend 99% at 0.5%/h, a weekly limit above 1.3%/h; over pace: hold new agents',
+    'Week: burn 9.8%/h, 0.8%/h per session; pace 0.5%/h, a weekly limit above 1.3%/h; over pace: a weekly limit comes before the next reset',
   )
   expect(await ui.find({ type: 'Text', text: /^weekly: / })).toBeUndefined()
   expect((await ui.find({ type: 'Text', text: /^host-a/ }))?.text).toBe('host-a: 2 agents, 2 roots active in 10 min')

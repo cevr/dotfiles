@@ -5,13 +5,15 @@
 // when the active agents across all hosts reach the cap, 2 when a host is
 // unreachable.
 //
-// It also paces the week from `teamclaude status --json` on this host: each
-// account's weekly quota expires at its own reset, so the pool should spend 99%
-// of every account before it resets, and never burn so fast that the pool hits
-// a weekly limit before the next reset refills it. Exits 1 above that ceiling
-// too.
+// The cap follows the weekly quota, from `teamclaude status --json` on this
+// host. Each account's weekly quota expires at its own reset, so the pace is
+// the slowest burn that spends 99% of every account before it resets. The cap
+// is the sessions that pace pays for, at the current burn per active session,
+// less the root sessions, which no guard stops. With no burn to measure, the
+// cap is 8.
 //
 // Usage: bun budget.ts [--cap <n>] [--projects <dir>] [--rotate]
+//   --cap fixes the cap instead.
 //   --rotate sets teamclaude's account priorities to the reset order, so the
 //   account whose quota expires first serves first. The status mod runs it
 //   every minute.
@@ -36,7 +38,8 @@ const option = (name: string): string | undefined => {
   return at >= 0 ? args[at + 1] : undefined;
 };
 const projects = option('--projects') ?? join(homedir(), '.claude', 'projects');
-const cap = Number(option('--cap') ?? 8);
+const fixedCap = option('--cap');
+const UNMEASURED_CAP = 8;
 
 function transcripts(dir: string, sinceMs: number, out: string[] = []): string[] {
   let entries;
@@ -176,7 +179,6 @@ function pace(list: Week[], now: number) {
 const pct = (n: number): string => `${(n * 100).toFixed(1)}%`;
 const week = weeks();
 const paced = week?.length ? pace(week, Date.now()) : undefined;
-const overPace = paced !== undefined && paced.burn > paced.ceiling;
 
 if (paced && args.includes('--rotate')) {
   // Spent accounts go last; an account's reset moves it back in the order.
@@ -195,20 +197,32 @@ for (const l of loads) {
       : `${l.host}: ${l.agents} agents, ${l.roots} roots active in 10 min; ${mw(l.weighted)} in 5 h`,
   );
 }
-if (paced) {
-  const verdict = overPace
-    ? 'over pace: hold new agents'
-    : paced.burn < paced.floor
-      ? `under pace: ${pct(paced.unused)} of an account's week expires unused`
-      : 'on pace';
-  const ceiling = Number.isFinite(paced.ceiling) ? `, a weekly limit above ${pct(paced.ceiling)}/h` : '';
-  console.log(`weekly: burn ${pct(paced.burn)}/h; spend 99% at ${pct(paced.floor)}/h${ceiling}; ${verdict}`);
-}
 const agents = loads.reduce((n, l) => n + l.agents, 0);
+const roots = loads.reduce((n, l) => n + l.roots, 0);
+const perSession = paced && paced.burn > 0 && agents + roots > 0 ? paced.burn / (agents + roots) : undefined;
+const cap =
+  fixedCap !== undefined
+    ? Number(fixedCap)
+    : paced && paced.floor <= 0
+      ? 0
+      : paced && perSession
+        ? Math.max(0, Math.floor(paced.floor / perSession) - roots)
+        : UNMEASURED_CAP;
+if (paced) {
+  const verdict =
+    paced.burn > paced.ceiling
+      ? 'over pace: a weekly limit comes before the next reset'
+      : paced.burn > paced.floor
+        ? 'ahead of pace: quota runs out early, then waits for resets'
+        : `under pace: ${pct(paced.unused)} of an account's week expires unused`;
+  const ceiling = Number.isFinite(paced.ceiling) ? `, a weekly limit above ${pct(paced.ceiling)}/h` : '';
+  const each = perSession ? `, ${pct(perSession)}/h per session` : '';
+  console.log(`weekly: burn ${pct(paced.burn)}/h${each}; pace ${pct(paced.floor)}/h${ceiling}; ${verdict}`);
+}
 const weighted = loads.reduce((n, l) => n + l.weighted, 0);
 const unreachable = loads.filter((l) => l.error).length;
 console.log(
   `budget: ${agents}/${cap} agents, ${mw(weighted)} in 5 h${unreachable ? `, ${unreachable} host(s) not counted` : ''}`,
 );
 // An unreachable host's load is unknown, so the count proves nothing below the cap.
-process.exit(agents >= cap || overPace ? 1 : unreachable ? 2 : 0);
+process.exit(agents >= cap ? 1 : unreachable ? 2 : 0);
