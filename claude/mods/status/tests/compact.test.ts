@@ -48,6 +48,8 @@ test('workers run as the copy with the tuned window, and every compaction keeps 
     registered.push(e)
     return { value: { agent: `status:${e.name}` } }
   })
+  // The engine offers every type; a plugin's hook may refuse one.
+  on('agent.offer', () => ({ isOffered: true }))
   on('agent.spawn', (_, e) => {
     spawned.push(e.subagentType)
     return { model: 'opus' }
@@ -78,6 +80,9 @@ test('workers run as the copy with the tuned window, and every compaction keeps 
   await $.agent.spawn({ ...spawn, subagentType: 'orchestrate-worker' })
   await $.agent.spawn({ ...spawn, subagentType: 'Explore' })
   expect(spawned).toEqual(['status:orchestrate-worker', 'Explore'])
+  // Dispatch checks the offer of the name the spawn carries: the copy must be offered.
+  const copy = { agent: 'status:orchestrate-worker', description: 'd', source: 'plugin', provider: { plugin: 'status', tier: 'user' as const } }
+  expect(await $.agent.offer(copy)).toEqual({ isOffered: true })
 
   // 160k of context passes root's 150k window: the session compacts once the turn is over, KEEP in its instructions.
   await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 'u1', reason: 'answer' })

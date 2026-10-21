@@ -88,9 +88,8 @@ export function tune($: EngineInterface) {
 }
 
 export const compaction = (on: On) => {
+  // The copy stays offered: an offer the model is refused is refused at dispatch too, and the spawn names the copy.
   on('agent.spawn', ($, e, next) => next(copied && e.subagentType === WORKER ? { ...e, subagentType: COPY } : e))
-  // The copy stands in for the file agent; the model's listing keeps one line for it.
-  on('agent.offer', { agent: COPY }, () => ({ isOffered: false }))
 
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
