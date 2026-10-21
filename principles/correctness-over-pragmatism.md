@@ -8,7 +8,7 @@ When the road forks between "structurally correct" and "pragmatic shortcut," def
 
 - **No self-interrupts.** Don't stop mid-task to propose "let's just do the simple version." Finish the correct path, or flag the blocker — don't silently downgrade.
 - **No silent shortcuts.** Casting to `any`, commenting out failing code, stubbing with `throw new Error("not implemented")`, adding a guard to mask a crash — these are symptom fixes. See [[fix-root-causes]].
-- **Flag, don't capitulate.** If the correct fix requires significant architectural change, STOP. Surface it: "the root cause is X, fixing it properly requires Y. Want me to plan that, or is there a constraint I'm missing?" Then wait for direction.
+- **Flag, don't capitulate.** When the correct fix needs significant architectural change, make that change: plan it as reviewable units (the **architect** skill for a new shape), land them, and report the root cause and what the fix changed. Hand the choice to the user only when it is irreversible or external, or when two requirements genuinely conflict so that both answers are correct.
 - **Dead-end detection.** If you find yourself adding workaround on top of workaround, you are in a dead end. Back out. Redesign. See [[redesign-from-first-principles]].
 - **Complexity is not a reason to bail.** Bad architecture is. Know the difference. When the work is genuinely hard but the direction is right, keep going. When the direction is wrong, stop and say so.
 

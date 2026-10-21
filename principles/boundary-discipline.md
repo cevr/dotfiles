@@ -14,7 +14,7 @@ Place validation, type narrowing, and error handling at system boundaries. Trust
 Validation and Error Handling:
 
 - Validate config at parse time (the boundary), not inside business logic
-- Store raw data at boundaries — parse lazily at use-site
+- Parse once at the boundary into typed data. When the raw form must be kept (replay, audit), store it beside the parsed value, never in place of it
 - No redundant nil checks deep in call chains if the boundary already validated
 
 Code Organization:
