@@ -8,13 +8,16 @@
 // its weekly reset, more by day than by night, under the weekly and 5-hour
 // ceilings. Each agent kind's cost comes from its own transcripts over 7 days.
 //
-// Usage: bun budget.ts [--rotate] [--cap <n>] [--costs]
+// Usage: bun budget.ts [--rotate] [--cap <n>] [--costs] [--burn [--days <n>]]
 //        bun budget.ts --admit --session <id> --cwd <dir> --type <subagent_type> --description <text>
 //   --rotate  sets teamclaude's account priorities to the weekly reset order,
 //             so the account whose quota expires first serves first. The
 //             status mod runs it every minute.
 //   --cap     fixes the agent cap instead of deriving it from the pace.
 //   --costs   prints each project and agent kind's cost per active hour.
+//   --burn    prints where every host's tokens went (budget/burn.ts): what
+//             the context held, each agent kind's start and mean context,
+//             and the levers that would cut the most.
 //   --admit   decides one new agent (the guard-agent hook): exit 0 to start
 //             it, 1 to hold it, with the reason on stdout.
 // Exits 1 when the active agents reach the cap, 2 when a host is unreachable.
@@ -24,6 +27,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import { hostBurn, report, type HostBurn } from './budget/burn.ts';
 import { hostLoad, kindFor, projectFor, type HostLoad } from './budget/host.ts';
 import {
   admit,
@@ -92,24 +96,40 @@ type Load = HostLoad & { error?: string };
 const HOST_SOURCE = join(import.meta.dir, 'budget', 'host.ts');
 const remotes = (process.env.ORCHESTRATE_HOSTS ?? '').split(/[\s,]+/).filter(Boolean);
 
+// Run one of budget/'s scripts on a remote host, reading it from stdin, and parse its last line.
+async function remote<T>(alias: string, source: string, flags: string): Promise<T> {
+  const proc = Bun.spawn(
+    ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', alias, `PATH="$HOME/.bun/bin:$PATH" bun run - ${flags}`],
+    { stdin: Bun.file(source), stdout: 'pipe', stderr: 'pipe' },
+  );
+  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  if (code !== 0) throw new Error(err.trim().split('\n').pop() || `ssh exit ${code}`);
+  return JSON.parse(out.trim().split('\n').pop() ?? '') as T;
+}
+const failure = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
 // A remote host's load is kept a minute: the guard asks on every Agent call.
 async function remoteLoad(alias: string): Promise<Load> {
   const cached = join(CACHE, `remote-${alias.replace(/[^\w.-]/g, '_')}.json`);
   const hit = readJson<{ at: number; load: Load } | undefined>(cached, undefined);
   if (hit && now - hit.at < MINUTE) return hit.load;
-  const proc = Bun.spawn(
-    ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', alias, 'PATH="$HOME/.bun/bin:$PATH" bun run - --deadline-ms 3000'],
-    { stdin: Bun.file(HOST_SOURCE), stdout: 'pipe', stderr: 'pipe' },
-  );
-  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   try {
-    if (code !== 0) throw new Error(err.trim().split('\n').pop() || `ssh exit ${code}`);
-    const load: Load = { ...(JSON.parse(out.trim().split('\n').pop() ?? '') as HostLoad), host: alias };
+    const load: Load = { ...(await remote<HostLoad>(alias, HOST_SOURCE, '--deadline-ms 3000')), host: alias };
     writeJson(cached, { at: now, load });
     return load;
   } catch (e) {
-    return { host: alias, sessions: [], w1h: 0, kinds: [], complete: false, error: e instanceof Error ? e.message : String(e) };
+    return { host: alias, sessions: [], w1h: 0, kinds: [], complete: false, error: failure(e) };
   }
+}
+
+if (args.includes('--burn')) {
+  const flags = `--days ${Number(option('--days') ?? 7)} --deadline-ms 240000`;
+  const hosts: HostBurn[] = [hostBurn(now)];
+  for (const r of await Promise.allSettled(remotes.map((a) => remote<HostBurn>(a, join(import.meta.dir, 'budget', 'burn.ts'), flags).then((h) => ({ ...h, host: a })))))
+    if (r.status === 'fulfilled') hosts.push(r.value);
+    else console.log(`unreachable: ${failure(r.reason)}`);
+  console.log(report(hosts));
+  process.exit(0);
 }
 
 const week = accounts();

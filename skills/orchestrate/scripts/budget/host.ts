@@ -180,7 +180,14 @@ export function hostLoad(now = Date.now()): HostLoad {
   try {
     cache = JSON.parse(readFileSync(cachePath, 'utf8'));
   } catch {}
-  const live = transcripts(root, now - LOOKBACK);
+  // A session copied under two project folders (a moved repo) counts once: the larger copy.
+  const copies = new Map<string, { file: string; size: number }>();
+  for (const file of transcripts(root, now - LOOKBACK)) {
+    const key = file.slice(root.length).split('/').slice(2).join('/');
+    const size = statSync(file).size;
+    if ((copies.get(key)?.size ?? -1) < size) copies.set(key, { file, size });
+  }
+  const live = [...copies.values()].map((c) => c.file);
   const files: Record<string, FileTally> = {};
   let complete = true;
   // Newest first, so a run cut short by the deadline has the active sessions.
