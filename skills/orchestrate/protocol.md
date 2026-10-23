@@ -33,6 +33,8 @@ The first line of your file states the same verdict. At your second compaction, 
 
 **Shell.** Separate outputs with `echo ----`, since zsh fails on a word that starts with `=`. Run a long command (counsel, an e2e) once with `run_in_background: true` and end your turn or do other work; its completion wakes you, so you never poll it.
 
+**Signals.** Send a signal only to a pid or process group that your own command started and still holds. Never signal `-1`, pid 0 or 1, or a pid you read from elsewhere, in a shell, a test or a probe. `kill -HUP -- -1` reaches every process of the user, and `unshare --user --net` does not stop it: on 2026-10-23 two reviewers' real-host probes each ended every agent session, the multiplexer and the Claude proxy on the workbox. A probe of broadcast-signal behavior runs on a simulated host only.
+
 ## Rounds
 
 A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the reviewer finds a Blocker or Major (`changes`) or the verifier fails it (`fail`). At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (the orchestrator asked for main to be merged in) is reviewed and verified like any other, and counts only if it fails.
