@@ -190,7 +190,7 @@ if (args.includes('--admit')) {
   const kind = kindFor(option('--type'), option('--description'));
   const est = estimate(kinds, project, kind);
   const cap = option('--cap') === undefined ? undefined : Number(option('--cap'));
-  // Without a pace or cost history only the cap and the held agents decide.
+  // Without a pace or cost history only the cap and the project limits decide.
   const d = admit({ targetWph: targetWph ?? Infinity, sessions, project, estimateWph: est ?? 0, night, c: config, cap });
   console.log(`${d.ok ? 'admit' : 'hold'}: ${d.reason}`);
   process.exit(d.ok ? 0 : 1);
@@ -225,14 +225,13 @@ for (const l of loads) {
 const burnWph = sessions.reduce((n, s) => n + s.recentWph, 0);
 const agents = sessions.filter((s) => s.sub).length;
 const typical = estimate(kinds, '', '');
-// Held agents start whatever the pace; the pace's room covers them first.
 const free = reservedFree(sessions, config);
 const cap =
   option('--cap') !== undefined
     ? Number(option('--cap'))
     : targetWph === undefined || !typical
       ? UNMEASURED_CAP
-      : agents + Math.max(free, Math.floor((targetWph - burnWph) / typical));
+      : agents + Math.max(0, Math.floor((targetWph - burnWph) / typical));
 
 if (pace && k.k7) {
   const p = (wph: number) => pct(wph * k.k7!);
@@ -255,7 +254,7 @@ if (limited.length) {
     const { min, max } = limitsOf(config, p);
     return min === max ? `${min}` : `${min}–${Number.isFinite(max) ? max : '∞'}`;
   };
-  console.log(`projects: ${limited.map((p) => `${p} ${running(p)}/${range(p)}`).join(', ')}; ${free} held agent(s) free`);
+  console.log(`projects: ${limited.map((p) => `${p} ${running(p)}/${range(p)}`).join(', ')}; ${free} under their minimum`);
 }
 
 const unreachable = loads.filter((l) => l.error).length;

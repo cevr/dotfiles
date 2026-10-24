@@ -27,8 +27,8 @@ export type Config = {
   fiveHourMax: number;
   projectWeights: Record<string, number>;
   /**
-   * A project's agent limits: it runs `min` whatever the pace, more up to `max` while the pace allows.
-   * A number n holds exactly n: `{ min: n, max: n }`.
+   * A project's agent limits, all within the pace: its first `min` agents come before any project's agent
+   * past its own minimum, and it never runs more than `max`. A number n is `{ min: n, max: n }`.
    */
   projectAgents: Record<string, number | AgentLimits>;
 };
@@ -43,7 +43,7 @@ export function limitsOf(c: Config, project: string): { min: number; max: number
   return { min: l.min ?? 0, max: l.max ?? Infinity };
 }
 
-/** Agents the projects' minimums hold that are not running yet. */
+/** Agents the projects' minimums claim that are not running yet. */
 export function reservedFree(sessions: readonly Session[], c: Config): number {
   const running = (p: string) => sessions.filter((s) => s.project === p && s.sub).length;
   return Object.keys(c.projectAgents).reduce((n, p) => n + Math.max(0, limitsOf(c, p).min - running(p)), 0);
@@ -210,16 +210,19 @@ export function admit(input: {
   if (running(project) >= max) {
     return { ok: false, reason: `${project} runs ${running(project)} of its ${max} agent(s) at most` };
   }
+  // An agent under its project's minimum needs only the pace's room.
   if (running(project) < min) {
-    return { ok: true, reason: `${project} has ${min - running(project)} of its ${min} held agent(s) free` };
+    return burn + estimateWph > targetWph
+      ? { ok: false, reason: `pool burns ${mw(burn)}; ${project}'s agent ${running(project) + 1} of its ${min} minimum adds about ${mw(estimateWph)}; the pace is ${mw(targetWph)}` }
+      : { ok: true, reason: `${project}'s agent ${running(project) + 1} of its ${min} minimum fits: pool ${mw(burn + estimateWph)} of ${mw(targetWph)}` };
   }
-  // An agent past its project's minimum leaves room for the held agents not running yet.
+  // An agent past its project's minimum leaves room for every minimum not running yet.
   const free = reservedFree(sessions, c);
   if (cap !== undefined && agents + free + 1 > cap) {
-    return { ok: false, reason: `${free} held agent(s) not running yet fill the pool's ${cap} with ${agents} running` };
+    return { ok: false, reason: `${free} minimum agent(s) not running yet fill the pool's ${cap} with ${agents} running` };
   }
   if (burn + (free + 1) * estimateWph > targetWph) {
-    const room = free > 0 ? ` with ${free} held agent(s) to start` : '';
+    const room = free > 0 ? ` with ${free} minimum agent(s) to start` : '';
     return { ok: false, reason: `pool burns ${mw(burn)}${room}; this agent adds about ${mw(estimateWph)}; the pace is ${mw(targetWph)}` };
   }
   // A project's share binds only once the pool is 80% of the way to its pace,

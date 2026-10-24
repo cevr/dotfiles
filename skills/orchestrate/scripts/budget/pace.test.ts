@@ -135,20 +135,21 @@ describe('admit', () => {
     const sessions = [{ project: 'gent', kind: 'w:task', sub: true, recentWph: 55 }, { project: 'hymn', kind: 'root', sub: false, recentWph: 0 }];
     expect(admit({ ...base, sessions }).ok).toBe(true);
   });
-  test('a project with held agents runs that many whatever the pace, and no more', () => {
+  test("an agent under its project's minimum waits only for the pace, and no project passes its maximum", () => {
     const c = { ...UTC, projectAgents: { gent: 1, hymn: 1 } };
-    const busy = [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 200 }];
-    expect(admit({ ...base, c, sessions: busy }).ok).toBe(true);
-    const own = [...busy, { project: 'gent', kind: 'w:task', sub: true, recentWph: 20 }];
+    const perf = [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 45 }];
+    // 45 + 20 fits for gent's first agent; perf's second must leave room for both minimums: 45 + 3 × 20 passes 100.
+    expect(admit({ ...base, c, sessions: perf }).ok).toBe(true);
+    expect(admit({ ...base, c, project: 'perf', sessions: perf }).ok).toBe(false);
+    expect(admit({ ...base, c, sessions: [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 90 }] }).ok).toBe(false);
+    const own = [...perf, { project: 'gent', kind: 'w:task', sub: true, recentWph: 20 }];
     expect(admit({ ...base, c, sessions: own }).ok).toBe(false);
   });
-  test('a project runs its minimum whatever the pace, and more up to its maximum while the pace allows', () => {
+  test('a project past its minimum runs more up to its maximum while the pace allows', () => {
     const c = { ...UTC, projectAgents: { gent: { min: 1, max: 3 } } };
-    const busy = [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 200 }];
-    expect(admit({ ...base, c, sessions: busy }).ok).toBe(true);
     const one = { project: 'gent', kind: 'w:task', sub: true, recentWph: 20 };
-    expect(admit({ ...base, c, sessions: [...busy, one] }).ok).toBe(false);
     expect(admit({ ...base, c, sessions: [one] }).ok).toBe(true);
+    expect(admit({ ...base, c, sessions: [one, { project: 'perf', kind: 'w:task', sub: true, recentWph: 70 }] }).ok).toBe(false);
     expect(admit({ ...base, c, sessions: [one, one, one] })).toEqual({ ok: false, reason: 'gent runs 3 of its 3 agent(s) at most' });
   });
   test('a maximum alone holds nothing back from the pace', () => {
