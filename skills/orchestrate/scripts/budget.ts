@@ -25,7 +25,8 @@
 //   --admit   decides one new agent (the guard-agent hook): exit 0 to start
 //             it, 1 to hold it, with the reason on stdout.
 // Exits 1 when the active agents reach the cap, 2 when a host is unreachable.
-// Settings: ~/.config/orchestrate/budget.json overrides budget/pace.ts DEFAULTS.
+// Settings: ~/.config/orchestrate/budget.json overrides budget/pace.ts DEFAULTS. On
+// both hosts it links to orchestrate/budget.json in dotfiles.
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';

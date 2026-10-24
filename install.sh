@@ -62,6 +62,10 @@ ln -sfn "$DOTFILES_DIR/claude/settings.json" ~/.claude/settings.json
 ln -sfn "$DOTFILES_DIR/agents" ~/.claude/agents
 "$DOTFILES_DIR/claude/install-herdr-hook.sh"
 
+# Orchestrate budget settings (shared with the workbox)
+mkdir -p ~/.config/orchestrate
+ln -sfn "$DOTFILES_DIR/orchestrate/budget.json" ~/.config/orchestrate/budget.json
+
 # Codex config (shared with the workbox; it writes through the link)
 mkdir -p ~/.codex
 ln -sfn "$DOTFILES_DIR/codex/config.toml" ~/.codex/config.toml

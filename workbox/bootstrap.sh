@@ -110,7 +110,7 @@ sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
   zsh
 
 mkdir -p "$local_bin_dir" "$user_unit_dir" "$HOME/.agents"
-mkdir -p "$HOME/.config/bite-workbox/patches" "$HOME/.config/herdr" "$HOME/.config/hunk"
+mkdir -p "$HOME/.config/bite-workbox/patches" "$HOME/.config/herdr" "$HOME/.config/hunk" "$HOME/.config/orchestrate"
 
 ln -sfn "$workbox_dir/zshenv" "$HOME/.zshenv"
 ln -sfn "$workbox_dir/zshrc" "$HOME/.zshrc"
@@ -118,6 +118,7 @@ ln -sfn "$workbox_dir/../AGENTS.md" "$HOME/.agents/AGENTS.md"
 ln -sfn "$workbox_dir/../skills" "$HOME/.agents/skills"
 mkdir -p "$HOME/.claude"
 ln -sfn "$workbox_dir/../claude/settings.json" "$HOME/.claude/settings.json"
+ln -sfn "$workbox_dir/../orchestrate/budget.json" "$HOME/.config/orchestrate/budget.json"
 "$workbox_dir/../claude/mods/fx-ui/install.sh"
 sudo chsh -s /usr/bin/zsh "$USER"
 
