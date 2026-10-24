@@ -26,9 +26,28 @@ export type Config = {
   weeklyTarget: number;
   fiveHourMax: number;
   projectWeights: Record<string, number>;
-  /** Agents held for a project: it runs up to that many whatever the pace, and no more. */
-  projectAgents: Record<string, number>;
+  /**
+   * A project's agent limits: it runs `min` whatever the pace, more up to `max` while the pace allows.
+   * A number n holds exactly n: `{ min: n, max: n }`.
+   */
+  projectAgents: Record<string, number | AgentLimits>;
 };
+
+export type AgentLimits = { min?: number; max?: number };
+
+/** A project's limits; without an entry, none. */
+export function limitsOf(c: Config, project: string): { min: number; max: number } {
+  const l = c.projectAgents[project];
+  if (l === undefined) return { min: 0, max: Infinity };
+  if (typeof l === 'number') return { min: l, max: l };
+  return { min: l.min ?? 0, max: l.max ?? Infinity };
+}
+
+/** Agents the projects' minimums hold that are not running yet. */
+export function reservedFree(sessions: readonly Session[], c: Config): number {
+  const running = (p: string) => sessions.filter((s) => s.project === p && s.sub).length;
+  return Object.keys(c.projectAgents).reduce((n, p) => n + Math.max(0, limitsOf(c, p).min - running(p)), 0);
+}
 
 export const DEFAULTS: Config = {
   timezone: 'America/Montreal',
@@ -187,14 +206,15 @@ export function admit(input: {
   if (cap !== undefined && agents >= cap) {
     return { ok: false, reason: `the pool runs ${agents} of its ${cap} agent(s)` };
   }
-  const held = c.projectAgents[project];
-  if (held !== undefined) {
-    return running(project) < held
-      ? { ok: true, reason: `${project} has ${held - running(project)} of its ${held} agent(s) free` }
-      : { ok: false, reason: `${project} runs ${running(project)} of its ${held} agent(s)` };
+  const { min, max } = limitsOf(c, project);
+  if (running(project) >= max) {
+    return { ok: false, reason: `${project} runs ${running(project)} of its ${max} agent(s) at most` };
   }
-  // Every other project's agent leaves room for the held agents not running yet.
-  const free = Object.entries(c.projectAgents).reduce((n, [p, count]) => n + Math.max(0, count - running(p)), 0);
+  if (running(project) < min) {
+    return { ok: true, reason: `${project} has ${min - running(project)} of its ${min} held agent(s) free` };
+  }
+  // An agent past its project's minimum leaves room for the held agents not running yet.
+  const free = reservedFree(sessions, c);
   if (cap !== undefined && agents + free + 1 > cap) {
     return { ok: false, reason: `${free} held agent(s) not running yet fill the pool's ${cap} with ${agents} running` };
   }

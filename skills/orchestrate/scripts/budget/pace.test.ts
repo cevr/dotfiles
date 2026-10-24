@@ -142,6 +142,21 @@ describe('admit', () => {
     const own = [...busy, { project: 'gent', kind: 'w:task', sub: true, recentWph: 20 }];
     expect(admit({ ...base, c, sessions: own }).ok).toBe(false);
   });
+  test('a project runs its minimum whatever the pace, and more up to its maximum while the pace allows', () => {
+    const c = { ...UTC, projectAgents: { gent: { min: 1, max: 3 } } };
+    const busy = [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 200 }];
+    expect(admit({ ...base, c, sessions: busy }).ok).toBe(true);
+    const one = { project: 'gent', kind: 'w:task', sub: true, recentWph: 20 };
+    expect(admit({ ...base, c, sessions: [...busy, one] }).ok).toBe(false);
+    expect(admit({ ...base, c, sessions: [one] }).ok).toBe(true);
+    expect(admit({ ...base, c, sessions: [one, one, one] })).toEqual({ ok: false, reason: 'gent runs 3 of its 3 agent(s) at most' });
+  });
+  test('a maximum alone holds nothing back from the pace', () => {
+    const c = { ...UTC, projectAgents: { gent: { max: 1 } } };
+    expect(admit({ ...base, c, project: 'perf', sessions: [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 55 }] }).ok).toBe(true);
+    expect(admit({ ...base, c, sessions: [] }).ok).toBe(true);
+    expect(admit({ ...base, c, sessions: [{ project: 'gent', kind: 'w:task', sub: true, recentWph: 0 }] }).ok).toBe(false);
+  });
   test('another project leaves room for the held agents not running yet', () => {
     const c = { ...UTC, projectAgents: { gent: 1, hymn: 1 } };
     const sessions = [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 45 }];

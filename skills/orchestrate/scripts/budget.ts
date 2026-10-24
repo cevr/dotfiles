@@ -39,6 +39,8 @@ import {
   DEFAULTS,
   estimate,
   isNight,
+  limitsOf,
+  reservedFree,
   target,
   type Account,
   type Config,
@@ -223,12 +225,14 @@ for (const l of loads) {
 const burnWph = sessions.reduce((n, s) => n + s.recentWph, 0);
 const agents = sessions.filter((s) => s.sub).length;
 const typical = estimate(kinds, '', '');
+// Held agents start whatever the pace; the pace's room covers them first.
+const free = reservedFree(sessions, config);
 const cap =
   option('--cap') !== undefined
     ? Number(option('--cap'))
     : targetWph === undefined || !typical
       ? UNMEASURED_CAP
-      : agents + Math.max(0, Math.floor((targetWph - burnWph) / typical));
+      : agents + Math.max(free, Math.floor((targetWph - burnWph) / typical));
 
 if (pace && k.k7) {
   const p = (wph: number) => pct(wph * k.k7!);
@@ -242,6 +246,16 @@ if (pace && k.k7) {
   console.log(
     `weekly: burn ${p(burnWph)}/h; pace ${p(targetWph ?? 0)}/h${night ? ' (night)' : ''}, weekly ceiling ${pct(pace.week.ceiling)}/h${five}; ${verdict}`,
   );
+}
+
+const limited = Object.keys(config.projectAgents);
+if (limited.length) {
+  const running = (p: string) => sessions.filter((s) => s.project === p && s.sub).length;
+  const range = (p: string) => {
+    const { min, max } = limitsOf(config, p);
+    return min === max ? `${min}` : `${min}–${Number.isFinite(max) ? max : '∞'}`;
+  };
+  console.log(`projects: ${limited.map((p) => `${p} ${running(p)}/${range(p)}`).join(', ')}; ${free} held agent(s) free`);
 }
 
 const unreachable = loads.filter((l) => l.error).length;
