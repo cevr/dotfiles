@@ -1,0 +1,5 @@
+interface:
+  display_name: "Dream"
+  short_description: "Weekly retro across every session, machine and orchestrate run."
+policy:
+  allow_implicit_invocation: false

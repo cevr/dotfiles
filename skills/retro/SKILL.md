@@ -20,7 +20,7 @@ A retro asked for mid-run is **queued**: finish the work in flight to its next c
    bun ~/.claude/skills/retro/scripts/mine-sessions.ts --since 30d [--project bible-tools] --out <scratch dir>
    ```
 
-   It reads every `~/.claude*/projects` and `~/.codex/sessions`, redacts secret-looking strings by default, and writes `digest.md` (totals, the costliest transcripts, skills used, the owner's messages repeated across sessions), `messages.jsonl` and `sessions.jsonl`. Turns another agent wrote (orchestrator, advisor, hand-back, lock receipt) are kind `peer`, counted per session and kept out of the owner's counts. Skills used counts Claude `Skill` calls, `SKILL.md` reads in Claude and Codex, and `$skill` mentions. A message repeated across sessions is a direction to check against the skills and principles: if nothing encodes it, it is a candidate. Run it on each machine the work ran on.
+   It reads every `~/.claude*/projects` and `~/.codex/sessions`, redacts secret-looking strings by default, and writes `digest.md` (totals, the costliest transcripts, skills used, the owner's messages repeated across sessions), `messages.jsonl` and `sessions.jsonl`. Turns another agent wrote (orchestrator, advisor, hand-back, lock receipt) are kind `peer`, counted per session and kept out of the owner's counts. Skills used counts Claude `Skill` calls, `SKILL.md` reads in Claude and Codex, and `$skill` mentions. A message repeated across sessions is a direction to check against the skills and principles: if nothing encodes it, it is a candidate. Run it on each machine the work ran on. For a week of work across every machine and orchestrate run, the owner runs [`dream`](../dream/SKILL.md) instead.
 
 3. Look for candidates for improvement in these categories.
 
