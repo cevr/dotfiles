@@ -30,6 +30,8 @@ The window is the last 7 days unless the owner names another. Work only from mea
 
    It prints the wall-clock share of each state, round 1 against rework, review and verify bounces, rounds per unit, and the longest tails.
 
+   Then, on each machine, run `bun ~/.claude/skills/orchestrate/scripts/models.ts --since <window start>`. It prints, per subagent role and model, the count, the API-priced cost, minutes, output tokens and compaction share. Compare models within a role, never across roles.
+
 4. **Classify every bounce in the longest tails.** Read the Major headings in each tail unit's `round-*-findings.md` and `verify-*.md`, not the whole files. Put each Major in one class:
    - **defect**: a bug a user would hit.
    - **test strength**: the generator, oracle or mutant suite is weaker than the rule.
