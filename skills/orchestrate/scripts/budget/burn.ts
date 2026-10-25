@@ -30,7 +30,7 @@ const days = Number(option('--days') ?? 7);
 const deadline = Date.now() + Number(option('--deadline-ms') ?? 120e3);
 const cachePath = join(homedir(), '.cache', 'orchestrate', 'burn.json');
 // Bump when FileBurn or the attribution changes, so cached results are recomputed.
-const VERSION = 2;
+const VERSION = 3;
 // Attachment records the model sees; the rest (prompt_snapshot, environment, hook_success, ...) are local.
 const SENT = new Set(['skill_listing', 'nested_memory', 'instructions', 'invoked_skills', 'hook_additional_context', 'file', 'edited_text_file', 'mcp_instructions_delta', 'deferred_tools_delta', 'agent_listing_delta', 'date', 'queued_command', 'silent_turn_reminder', 'todo_reminder', 'task_reminder', 'plan_mode', 'critical_system_reminder', 'diagnostics', 'selected_lines_in_ide', 'opened_file_in_ide', 'compact_file_reference']);
 
