@@ -39,7 +39,7 @@ type Item = { cat: string; label: string; tokens: number; w: number; big?: boole
 // A tool result past this many chars is big: the cap (bashOutputMaxChars) would move it to a file.
 const BIG = 8000;
 // The compaction windows the replay tries, in tokens.
-export const WINDOWS = [100e3, 120e3, 140e3, 160e3, 180e3, 200e3, 250e3, 300e3, 350e3];
+export const WINDOWS = [100e3, 120e3, 140e3, 160e3, 180e3, 200e3, 250e3, 300e3, 350e3, 400e3, 500e3];
 // What a compaction leaves past the base prompt, and what its summary costs in output (measured: ~15k postTokens).
 const SUMMARY = 15e3;
 const SUMMARY_OUT = 4e3;
@@ -456,6 +456,12 @@ const MIN_AGENTS = 20;
 // Windows within this share of the cheapest count as tied; the largest wins, as it compacts least.
 const TIE = 0.01;
 export const ceilingOf = (env = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW): number => Number(env) || 200e3;
+// Windows the owner sets, which the tuner reports but never changes. The main
+// session's compaction loses the run's state and holds the owner for about a
+// minute, which the replay's token cost does not count (owner, 2026-10-24: at
+// 400k the week's replay cost 4-5% more tokens across the host and compacted
+// the main session 70% less).
+export const PINNED: Record<string, number> = { root: 400e3 };
 
 export type Tuned = {
   kind: string;
@@ -493,7 +499,7 @@ export function tune(burns: FileBurn[], ceiling = ceilingOf()): Tuned[] {
     const best = Math.max(...WINDOWS.filter((w) => cost(w) <= least * (1 + TIE)));
     const allowed = WINDOWS.filter((w) => w <= ceiling);
     const now = Math.max(...allowed);
-    const window = Math.max(...allowed.filter((w) => cost(w) <= Math.min(...allowed.map(cost)) * (1 + TIE)));
+    const window = PINNED[kind] ?? Math.max(...allowed.filter((w) => cost(w) <= Math.min(...allowed.map(cost)) * (1 + TIE)));
     out.push({
       kind,
       agents: bs.length,

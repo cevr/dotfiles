@@ -8,7 +8,9 @@ import type { EngineInterface, Register } from 'claude-code'
 // - orchestrate-worker runs as this mod's copy of it, which carries the
 //   worker's tuned autoCompactWindow;
 // - the main session compacts between turns once its context passes root's
-//   window, so that compaction never lands in the middle of a step.
+//   window, so that compaction never lands in the middle of a step. Root's
+//   window is the owner's (burn.ts PINNED), below the ceiling, so the
+//   engine's own compaction is only for a turn that overruns it.
 // Every compaction is told to keep the paths of the files that hold the work's
 // state: the agent reads them again rather than losing them.
 

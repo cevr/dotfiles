@@ -88,7 +88,7 @@ describe('simulate', () => {
 
 describe('tune', () => {
   // Twenty agents whose replay is cheapest at 160k and at 180k alike, and dearer above.
-  const cost: Record<number, number> = { 100e3: 140, 120e3: 120, 140e3: 110, 160e3: 100, 180e3: 100.5, 200e3: 105, 250e3: 120, 300e3: 130, 350e3: 140 };
+  const cost: Record<number, number> = { 100e3: 140, 120e3: 120, 140e3: 110, 160e3: 100, 180e3: 100.5, 200e3: 105, 250e3: 120, 300e3: 130, 350e3: 140, 400e3: 150, 500e3: 160 };
   const agent = (kind: string): FileBurn =>
     ({ kind, compactions: 1, reread: 0, compactMs: 60e3, windows: Object.fromEntries(WINDOWS.map((w) => [w, [cost[w], 0, 0]])) }) as unknown as FileBurn;
   const burns = Array.from({ length: 20 }, () => agent('orchestrate-worker'));
@@ -102,5 +102,10 @@ describe('tune', () => {
 
   test('stays under the ceiling and names the better window above it', () => {
     expect(tune(burns, 140e3)[0]).toMatchObject({ window: 140e3, best: 180e3, saving: 0 });
+  });
+
+  test("keeps the owner's window for the main session", () => {
+    const root = Array.from({ length: 20 }, () => agent('root'));
+    expect(tune(root, 450e3)[0]).toMatchObject({ kind: 'root', window: 400e3, best: 180e3 });
   });
 });
