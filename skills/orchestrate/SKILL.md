@@ -20,6 +20,7 @@ plan ──▶ implement ──▶ review ──accepted──▶ verify ──p
             ▲              │                   │               │
             └───changes────┘                   │               ├─replan──▶ plan
             └──────────────fail────────────────┘               ├─rewrite─▶ plan
+                                                                ├─PR──────▶ waiting(pr) ──approved──▶ decide
                                                                 └─drop────▶ done
 ```
 
@@ -111,7 +112,7 @@ Host: <claude|codex> · Units at once: 3 · Gate: <seconds> · Reserved: <list> 
 ## Review later     (points the user wants batched, e.g. visual polish)
 ```
 
-A unit's **state** is its machine state (`plan`, `implement`, `review`, `verify`, `decide`, `merged <hash>`, `blocked`, `stuck`, `stuck(quota)`, `dropped`), and it lives in the unit's `log.md`, never typed into a table: `bun ~/.claude/skills/orchestrate/scripts/status.ts <run dir>` prints every unit's state, round, time and cause from the logs. `Agents` holds the current implementor's agent id, so round 2 reaches the same agent. `Result` holds `merged <hash>` or `dropped`, so the committed plan keeps the outcome.
+A unit's **state** is its machine state (`plan`, `implement`, `review`, `verify`, `decide`, `waiting(pr)`, `merged <hash>`, `blocked`, `stuck`, `stuck(quota)`, `dropped`), and it lives in the unit's `log.md`, never typed into a table: `bun ~/.claude/skills/orchestrate/scripts/status.ts <run dir>` prints every unit's state, round, time and cause from the logs. `Agents` holds the current implementor's agent id, so round 2 reaches the same agent. `Result` holds `merged <hash>` or `dropped`, so the committed plan keeps the outcome.
 
 Done when every unit has a row with its dependencies, and `plan.md` lists the reserved actions.
 
@@ -135,6 +136,7 @@ Every transition appends one line, in plain words under 200 characters, to `<run
 2. **Integrate.**
    - The branch must contain today's main (`git merge-base --is-ancestor main <branch>`), so main only fast-forwards to the exact tree that was reviewed. If it does not, merge nothing: send the implementor a merge round ("merge main into your branch, gate, and write the next request"). It goes through review and verify like any round, and counts only if it fails.
    - Run the gate in the unit's workspace at the branch head into `<run dir>/merge-<unit>.log`, and read its exit line. Off the `deep` path, also run the acceptance check as written into `<run dir>/accept-<unit>.log`. Red: merge nothing, and send the implementor the log as the next round; a red acceptance check counts as a failed round.
+   - **Team approval.** Where main changes only through a PR that a teammate approves (Bite), green opens the PR (`create-pr`), and the unit goes to `waiting(pr)`. It holds no slot: start the next unit. Run one background until-loop on `gh pr view <n> --json reviewDecision,state` that exits when either changes. Approved or merged: back to decide. Changes requested: the comments go to a fresh implementor as the next round. On the workbox, decide held 27% of the week of 2026-10-17, mostly waiting for approvals, and the logs could not tell that wait from work.
    - Green: in the main checkout, `git merge --ff-only <branch>`. A fix you would make yourself goes to the implementor as a round.
    - Push only as the Reserved default allows. After a push, wait for the pushed commit's CI run (`gh run watch` on the run whose head is that commit). Green is that run, not the local gate. While it is red, merge nothing but the unit that fixes it. gent's main stayed red from 2026-09-25 to 2026-10-18 behind a green local gate: 10 of 400 runs passed.
 3. **Record and close.** Write `merged <hash>` into the unit's row, with decisions, follow-ups from `state.md`, and anything for Review later. A spike, sketch or prototype unit's verdict also goes where the next session reads it: a `NORTH_STAR.md` row, a `PRIOR_ART.md` → Settled row, or an ADR. Rive was studied twice in bible-tools because the first verdict lived in a session. A helper the unit's workers built that a later round or unit would rebuild (a browser driver, a rerun script, a seed root) is a follow-up unit that moves it into the repo's scripts or its `verify-<app>` skill ([build-the-lever](~/Developer/personal/dotfiles/principles/build-the-lever.md)). Stop the unit's agents (Codex: `close_agent`). Delete the branch and remove the workspace by its full path.
