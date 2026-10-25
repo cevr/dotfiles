@@ -490,7 +490,7 @@ export function tune(burns: FileBurn[], ceiling = ceilingOf()): Tuned[] {
   for (const b of burns) if (Object.keys(b.windows).length > 0) kinds.set(b.kind, [...(kinds.get(b.kind) ?? []), b]);
   const out: Tuned[] = [];
   for (const [kind, bs] of kinds) {
-    if (bs.length < MIN_AGENTS) continue;
+    if (bs.length < MIN_AGENTS && !PINNED[kind]) continue;
     const reread = perCompaction(bs, (b) => b.reread) ?? fleet;
     const at = (window: number) => sum(bs, (b) => b.windows[window]?.[0] ?? 0);
     const compactionsAt = (window: number) => sum(bs, (b) => b.windows[window]?.[1] ?? 0);

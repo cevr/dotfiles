@@ -104,8 +104,8 @@ describe('tune', () => {
     expect(tune(burns, 140e3)[0]).toMatchObject({ window: 140e3, best: 180e3, saving: 0 });
   });
 
-  test("keeps the owner's window for the main session", () => {
-    const root = Array.from({ length: 20 }, () => agent('root'));
-    expect(tune(root, 450e3)[0]).toMatchObject({ kind: 'root', window: 400e3, best: 180e3 });
+  test("keeps the owner's window for the main session, however few its transcripts", () => {
+    const root = Array.from({ length: 2 }, () => agent('root'));
+    expect(tune(root, 450e3)[0]).toMatchObject({ kind: 'root', agents: 2, window: 400e3, best: 180e3 });
   });
 });
