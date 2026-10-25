@@ -16,12 +16,31 @@ The rules every worker follows are in [`protocol.md`](protocol.md). Read it once
 Each unit runs this state machine. You are the router: a worker's final message wakes you, and you start the next state.
 
 ```
-plan ──▶ implement ──▶ review ──accepted──▶ verify ──pass──▶ decide ──merge──▶ done
-            ▲              │                   │               │
-            └───changes────┘                   │               ├─replan──▶ plan
-            └──────────────fail────────────────┘               ├─rewrite─▶ plan
-                                                                ├─PR──────▶ waiting(pr) ──approved──▶ decide
-                                                                └─drop────▶ done
+       light: you write spec.md, no planner
+    ┌─────────────────────────────────────┐
+    │                                     ▼
+  plan ──planner writes spec.md──▶ implement ──▶ review ──changes──▶ implement
+    ▲                                 ▲            │       (from r3, a test-strength-only finding
+    │                                 │            │        goes to Follow-ups and does not fail)
+    │                                 │         accepted
+    │                                 │       ┌────┴──────────┐
+    │                                 │      deep      light, standard
+    │                                 │       ▼               │
+    │                                 └─fail─ verify          │
+    │                                         │ pass          │
+    │                                         ▼               ▼
+    │                                       decide ◀──────────┘
+    │                                         │
+    ├─────────── replan (stuck) ──────────────┤
+    └─────── rewrite (3 failed rounds) ───────┤  new premise, new branch, rounds from 1
+                                              ├─ red gate, red acceptance, stale main ──▶ implement
+                                              ├─ PR ──▶ waiting(pr) ──approved──▶ decide
+                                              │              └──changes requested──▶ implement
+                                              ├─ merge --ff-only, push, CI green ──▶ done
+                                              └─ drop ──▶ done
+
+  review or verify stuck ──▶ decide, as stuck
+  any step ──limit or dead worker──▶ stuck(quota) ──resume-at timer──▶ same step, fresh agent
 ```
 
 - **plan**: the planner writes `spec.md`, with an acceptance check that is red now. You read it and approve or edit it.
