@@ -17,6 +17,17 @@
 
 export type Account = { used7d: number; reset7d?: number; used5h: number; reset5h?: number };
 
+// When the first account can serve again: now when one has both windows left,
+// else the earliest reset that frees an account. Undefined when no reset is known.
+export function resumeAt(accounts: Account[], now: number): number | undefined {
+  const free = (a: Account) => {
+    const waits = [a.used7d >= 1 ? a.reset7d : now, a.used5h >= 1 ? a.reset5h : now];
+    return waits.some((t) => t === undefined) ? undefined : Math.max(now, ...(waits as number[]));
+  };
+  const times = accounts.map(free).filter((t): t is number => t !== undefined);
+  return times.length ? Math.min(...times) : undefined;
+}
+
 export type Config = {
   timezone: string;
   dayStart: number;

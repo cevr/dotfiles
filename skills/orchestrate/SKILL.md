@@ -48,6 +48,8 @@ The same message states, in one sentence, the premise every earlier fix assumed 
 
 **A dead worker gives no verdict.** A worker that ends on a usage or rate limit or without its hand-back line, or a reviewer whose counsel run exited non-zero or wrote an empty file, decided nothing. Log the unit's state as `stuck(quota)`: the round neither passes nor fails, and no re-plan follows. Rerun that step with a fresh agent by its failure mode (an implementor resumes from `state.md` and the branch): a usage limit reruns as is once it resets; a network or harness error reruns as is; a context overflow reruns on a narrower unit; the same failure twice makes the unit `stuck`. A dead reviewer or verifier never counts as `accepted` or `pass`.
 
+**Resume on your own after a limit** (owner, 2026-10-24). While any step is `stuck(quota)`, keep one background Bash command armed that waits until `bun ~/.claude/skills/orchestrate/scripts/budget.ts --resume-at` prints a time that has passed, then exits. Its exit wakes you, and you rerun every `stuck(quota)` step. Arm it before you end a turn on a limit, so the run never waits for the owner. In the week of 2026-10-17, the owner typed "continue, rate limit is up" 6 times.
+
 ## Roles on each host
 
 | Role | Claude Code orchestrator | Codex orchestrator | Context |

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { admit, calibrate, DEFAULTS, estimate, fiveHourCeiling, target, weeklyPace, weightedHours, type Config } from './pace.ts';
+import { admit, calibrate, DEFAULTS, estimate, fiveHourCeiling, resumeAt, target, weeklyPace, weightedHours, type Config } from './pace.ts';
 
 const HOUR = 3600e3;
 const UTC: Config = { ...DEFAULTS, timezone: 'UTC', dayStart: 8, dayEnd: 24, nightWeight: 0.25 };
@@ -10,6 +10,24 @@ const NOON = Date.UTC(2026, 9, 21, 12);
 describe('weightedHours', () => {
   test('a night hour counts its weight', () => {
     expect(weightedHours(NOON, NOON + 24 * HOUR, UTC)).toBeCloseTo(16 + 8 * 0.25);
+  });
+});
+
+describe('resumeAt', () => {
+  test('an account with both windows left serves now', () => {
+    expect(resumeAt([{ used7d: 1, reset7d: NOON + HOUR, used5h: 0 }, { used7d: 0.5, used5h: 0.9 }], NOON)).toBe(NOON);
+  });
+  test('a spent pool resumes at the earliest reset that frees an account', () => {
+    const pool = [
+      { used7d: 1, reset7d: NOON + 30 * HOUR, used5h: 0 },
+      { used7d: 0.4, reset7d: NOON + 90 * HOUR, used5h: 1, reset5h: NOON + 2 * HOUR },
+      // Its 5-hour window resets first, but its week is still spent.
+      { used7d: 1, reset7d: NOON + 50 * HOUR, used5h: 1, reset5h: NOON + HOUR },
+    ];
+    expect(resumeAt(pool, NOON)).toBe(NOON + 2 * HOUR);
+  });
+  test('no known reset gives no time', () => {
+    expect(resumeAt([{ used7d: 1, used5h: 0 }], NOON)).toBeUndefined();
   });
 });
 

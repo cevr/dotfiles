@@ -9,6 +9,7 @@
 // ceilings. Each agent kind's cost comes from its own transcripts over 7 days.
 //
 // Usage: bun budget.ts [--rotate] [--cap <n>] [--costs] [--burn [--days <n>]] [--tune]
+//        bun budget.ts --resume-at
 //        bun budget.ts --admit [--cap <n>] --session <id> --cwd <dir> --type <subagent_type> --description <text>
 //   --rotate  sets teamclaude's account priorities to the weekly reset order,
 //             so the account whose quota expires first serves first. The
@@ -22,6 +23,8 @@
 //   --tune    writes the compaction window each agent kind on this host costs
 //             least at to ~/.cache/orchestrate/compact.json, for the status
 //             mod; exits 3 when the transcripts were only partly read in time.
+//   --resume-at  prints when the first account can serve again (ISO time; now
+//             when one can serve now), so a quota wait sleeps until then.
 //   --admit   decides one new agent (the guard-agent hook): exit 0 to start
 //             it, 1 to hold it, with the reason on stdout.
 // Exits 1 when the active agents reach the cap, 2 when a host is unreachable.
@@ -42,6 +45,7 @@ import {
   isNight,
   limitsOf,
   reservedFree,
+  resumeAt,
   target,
   type Account,
   type Config,
@@ -153,6 +157,15 @@ if (args.includes('--tune')) {
 }
 
 const week = accounts();
+if (args.includes('--resume-at')) {
+  const at = week && resumeAt(week, now);
+  if (at === undefined) {
+    console.error('no account reset is known: teamclaude status failed or lists no quota');
+    process.exit(2);
+  }
+  console.log(new Date(at).toISOString());
+  process.exit(0);
+}
 const loads: Load[] = [hostLoad(now), ...(await Promise.all(remotes.map(remoteLoad)))];
 const sessions = loads.flatMap((l) => l.sessions);
 const kinds = loads.flatMap((l) => l.kinds);
