@@ -30,7 +30,7 @@ The window is the last 7 days unless the owner names another. Work only from mea
 
    It prints the wall-clock share of each state, round 1 against rework, review and verify bounces, rounds per unit, and the longest tails.
 
-   Then, on each machine, run `bun ~/.claude/skills/orchestrate/scripts/models.ts --since <window start>`. It prints, per subagent role and model, the count, the API-priced cost, minutes, output tokens and compaction share. Compare models within a role, never across roles.
+   Then, on each machine, run `bun ~/.claude/skills/orchestrate/scripts/models.ts --since <window start>`. It reads Claude Code and Codex transcripts, and prints two tables: per role and model, the count, the API-priced cost, minutes, tokens and compaction share; and per orchestrate phase and model, what the phase produced (round-1 accepts, review changes and escapes, verify fails, units merged). Compare models within a phase, never across phases. A model swap is judged on both tables: cost alone does not justify one.
 
 4. **Classify every bounce in the longest tails.** Read the Major headings in each tail unit's `round-*-findings.md` and `verify-*.md`, not the whole files. Put each Major in one class:
    - **defect**: a bug a user would hit.
