@@ -40,6 +40,8 @@ test('a worker takes the role it was given, not the roles its prompt mentions', 
   expect(agent('Read protocol.md. You are the implementor for round 1; the reviewer reads your request.', 'ftb-copy rewrite r1: built-output guard')).toMatchObject({ role: 'implement' });
   expect(agent('Read protocol.md and verify round 3.', 'verifier coldload r3')).toMatchObject({ role: 'verify' });
   expect(agent('Review the findings of the last run', 'look over notes')).toMatchObject({ role: 'review' });
+  const typed = claudeAgent(jsonl([{ type: 'user', message: { content: 'Round 2: the findings are in round-1-findings.md' } }, { type: 'assistant', message: { id: 'm1', model: 'claude-opus-5-5', usage: {}, content: [] } }]), 'a', 's', 'sheet r2', false, 'status:orchestrate-implementor');
+  expect(typed).toMatchObject({ role: 'implement' });
 });
 
 describe('codexAgent', () => {

@@ -30,7 +30,7 @@ const days = Number(option('--days') ?? 7);
 const deadline = Date.now() + Number(option('--deadline-ms') ?? 120e3);
 const cachePath = join(homedir(), '.cache', 'orchestrate', 'burn.json');
 // Bump when FileBurn or the attribution changes, so cached results are recomputed.
-const VERSION = 3;
+const VERSION = 4;
 // Attachment records the model sees; the rest (prompt_snapshot, environment, hook_success, ...) are local.
 const SENT = new Set(['skill_listing', 'nested_memory', 'instructions', 'invoked_skills', 'hook_additional_context', 'file', 'edited_text_file', 'mcp_instructions_delta', 'deferred_tools_delta', 'agent_listing_delta', 'date', 'queued_command', 'silent_turn_reminder', 'todo_reminder', 'task_reminder', 'plan_mode', 'critical_system_reminder', 'diagnostics', 'selected_lines_in_ide', 'opened_file_in_ide', 'compact_file_reference']);
 
@@ -88,12 +88,44 @@ function projectFor(sessionId: string, cwd: string | undefined): string {
 }
 const sessionOf = (file: string): string =>
   file.includes('/subagents/') ? basename(dirname(dirname(file))) : basename(file, '.jsonl');
-// The status mod runs orchestrate-worker as its own copy, `status:orchestrate-worker`.
+/**
+ * An agent's kind: its type, without the status mod's `status:` prefix. An
+ * orchestrate-worker that ran a protocol role before the role agents existed
+ * counts as that role's agent (`orchestrate-<role>`), so each role tunes on its
+ * history from the first day.
+ */
+export function workerKind(type: string | undefined, prompt: string): string {
+  const kind = type?.replace(/^status:/, '') || 'agent';
+  if (kind !== 'orchestrate-worker' || !prompt.includes('protocol.md')) return kind;
+  const role = /\b(planner|implementor|reviewer|verifier)\b/i.exec(prompt)?.[1];
+  return role ? `orchestrate-${role.toLowerCase()}` : kind;
+}
+
+// The first user message of a transcript: an agent's task.
+const firstPrompt = (file: string): string => {
+  const fd = openSync(file, 'r');
+  const head = Buffer.alloc(Math.min(statSync(file).size, 200e3));
+  try {
+    readSync(fd, head, 0, head.length, 0);
+  } finally {
+    closeSync(fd);
+  }
+  for (const line of head.toString('utf8').split('\n')) {
+    try {
+      const d = JSON.parse(line);
+      if (d.type !== 'user') continue;
+      const c = d.message?.content;
+      return typeof c === 'string' ? c : (c ?? []).map((x: { text?: string }) => x?.text ?? '').join(' ');
+    } catch {}
+  }
+  return '';
+};
+
 function kindOf(file: string): string {
   if (!file.includes('/subagents/')) return 'root';
   try {
     const type = (JSON.parse(readFileSync(file.replace(/\.jsonl$/, '.meta.json'), 'utf8')) as { agentType?: string }).agentType;
-    return type?.replace(/^status:/, '') || 'agent';
+    return workerKind(type, type?.endsWith('orchestrate-worker') ? firstPrompt(file) : '');
   } catch {
     return 'agent';
   }

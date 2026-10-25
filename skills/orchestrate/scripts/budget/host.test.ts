@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { kindFor } from './host.ts';
 
 const HOST = join(import.meta.dir, 'host.ts');
 const usage = { input_tokens: 100, output_tokens: 10 };
@@ -38,4 +39,11 @@ describe('hostLoad', () => {
     const { sessions } = load({ 'agent-a': [reply('m1', 'tool_use'), stopped] });
     expect(sessions.filter((s) => s.sub)).toHaveLength(0);
   });
+});
+
+test("a role agent keeps the worker's cost history in its role", () => {
+  expect(kindFor('status:orchestrate-implementor', 'implementor sheet r2')).toBe('orchestrate-worker:implement');
+  expect(kindFor('orchestrate-reviewer', 'anything')).toBe('orchestrate-worker:review');
+  expect(kindFor('status:orchestrate-worker', 'verify coldload r3')).toBe('orchestrate-worker:verify');
+  expect(kindFor(undefined, 'explore the docs')).toBe('agent:explore');
 });

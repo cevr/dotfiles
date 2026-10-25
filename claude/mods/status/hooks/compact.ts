@@ -5,8 +5,9 @@ import type { EngineInterface, Register } from 'claude-code'
 // writes the cheapest for each kind, re-reads after a compaction counted, to
 // compact.json. The settings' CLAUDE_CODE_AUTO_COMPACT_WINDOW stays the
 // ceiling, and the mod only lowers it:
-// - orchestrate-worker runs as this mod's copy of it, which carries the
-//   worker's tuned autoCompactWindow;
+// - orchestrate-worker and each role's agent (orchestrate-planner, ...) run as
+//   this mod's copy, which carries the kind's tuned autoCompactWindow; a role
+//   with too few transcripts to tune takes orchestrate-worker's;
 // - the main session compacts between turns once its context passes root's
 //   window, so that compaction never lands in the middle of a step. Root's
 //   window is the owner's (burn.ts PINNED), below the ceiling, so the
@@ -18,7 +19,7 @@ type On = Parameters<Register>[0]
 
 const HOUR = 3600e3
 const WORKER = 'orchestrate-worker'
-const COPY = `status:${WORKER}`
+export const KINDS = [WORKER, ...['planner', 'implementor', 'reviewer', 'verifier'].map(role => `orchestrate-${role}`)]
 const CACHE = '"$HOME/.cache/orchestrate"'
 export const KEEP =
   'Keep these word for word: the path of every plan, log, notes or state file the work reads or writes; the current step and its next action; each instruction the user gave during the session. Name a file by its path rather than restating its contents: it can be read again.'
@@ -59,19 +60,22 @@ export function parseAgent(text: string): { description: string; tools?: string[
 }
 
 let windows: Record<string, number> = {}
-// Whether the copy of orchestrate-worker carries the tuned window.
-let copied = false
+// The kinds whose copy carries a tuned window.
+let copied = new Set<string>()
 
 async function load($: EngineInterface) {
   const tuned = await $.process.run(sh(`cat ${CACHE}/compact.json`), { timeoutMs: 5e3 })
   windows = tuned.exitCode === 0 ? parseWindows(tuned.stdout) : {}
-  const window = windows[WORKER]
-  const file = window ? await $.process.run(sh(`cat "$HOME/.claude/agents/${WORKER}.md"`), { timeoutMs: 5e3 }) : undefined
-  const agent = file?.exitCode === 0 ? parseAgent(file.stdout) : undefined
-  copied = false
-  if (!window || !agent) return
-  await $.agent.register({ name: WORKER, ...agent, autoCompactWindow: window })
-  copied = true
+  const next = new Set<string>()
+  for (const name of KINDS) {
+    const window = windows[name] ?? windows[WORKER]
+    const file = window ? await $.process.run(sh(`cat "$HOME/.claude/agents/${name}.md"`), { timeoutMs: 5e3 }) : undefined
+    const agent = file?.exitCode === 0 ? parseAgent(file.stdout) : undefined
+    if (!window || !agent) continue
+    await $.agent.register({ name, ...agent, autoCompactWindow: window })
+    next.add(name)
+  }
+  copied = next
 }
 
 async function tuneOnce($: EngineInterface) {
@@ -91,7 +95,7 @@ export function tune($: EngineInterface) {
 
 export const compaction = (on: On) => {
   // The copy stays offered: an offer the model is refused is refused at dispatch too, and the spawn names the copy.
-  on('agent.spawn', ($, e, next) => next(copied && e.subagentType === WORKER ? { ...e, subagentType: COPY } : e))
+  on('agent.spawn', ($, e, next) => next(e.subagentType && copied.has(e.subagentType) ? { ...e, subagentType: `status:${e.subagentType}` } : e))
 
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)

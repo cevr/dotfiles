@@ -9,7 +9,7 @@ tools: Bash, Read, Edit
 ---
 You are a subagent.
 `
-const TUNED = JSON.stringify({ at: 0, ceiling: 200e3, windows: { 'orchestrate-worker': 140e3, root: 150e3, Explore: 50e3 } })
+const TUNED = JSON.stringify({ at: 0, ceiling: 200e3, windows: { 'orchestrate-worker': 140e3, 'orchestrate-reviewer': 160e3, root: 150e3, Explore: 50e3 } })
 
 const ok = (stdout: string) => ({
   value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
@@ -26,10 +26,10 @@ test('reads an agent file and keeps only windows the engine takes', () => {
     tools: ['Bash', 'Read', 'Edit'],
     prompt: 'You are a subagent.',
   })
-  expect(parseWindows(TUNED)).toEqual({ 'orchestrate-worker': 140e3, root: 150e3 })
+  expect(parseWindows(TUNED)).toEqual({ 'orchestrate-worker': 140e3, 'orchestrate-reviewer': 160e3, root: 150e3 })
 })
 
-test('workers run as the copy with the tuned window, and every compaction keeps the state files', async ($, on) => {
+test('workers and roles run as copies with their tuned windows, and every compaction keeps the state files', async ($, on) => {
   const registered: Record<string, unknown>[] = []
   const spawned: string[] = []
   const instructions: (string | undefined)[] = []
@@ -41,7 +41,8 @@ test('workers run as the copy with the tuned window, and every compaction keeps 
   on('process.run', (_, e) => {
     const script = e.argv.join(' ')
     if (script.includes('cat') && script.includes('compact.json')) return ok(TUNED)
-    if (script.includes('orchestrate-worker.md')) return ok(WORKER_FILE)
+    const kind = script.match(/orchestrate-[a-z]+(?=\.md)/)?.[0]
+    if (kind) return ok(WORKER_FILE.replace('orchestrate-worker', kind))
     return failed
   })
   on('agent.register', (_, e) => {
@@ -74,12 +75,17 @@ test('workers run as the copy with the tuned window, and every compaction keeps 
   await settle()
   expect(logs).toEqual([])
   // The mocked clock repeats the hourly check at once; each registration replaces the last.
-  expect(registered.at(-1)).toMatchObject({ name: 'orchestrate-worker', tools: ['Bash', 'Read', 'Edit'], autoCompactWindow: 140e3 })
+  const last = (name: string) => registered.findLast(r => r.name === name)
+  expect(last('orchestrate-worker')).toMatchObject({ tools: ['Bash', 'Read', 'Edit'], autoCompactWindow: 140e3 })
+  // A tuned role keeps its own window; an untuned one takes the worker's.
+  expect(last('orchestrate-reviewer')).toMatchObject({ autoCompactWindow: 160e3 })
+  expect(last('orchestrate-implementor')).toMatchObject({ autoCompactWindow: 140e3 })
 
   const spawn = { tool_use_id: 't1', prompt: 'p', description: 'd', provider: { plugin: 'engine', tier: 'core' as const }, parentModel: 'opus', background: false, fork: false }
   await $.agent.spawn({ ...spawn, subagentType: 'orchestrate-worker' })
+  await $.agent.spawn({ ...spawn, subagentType: 'orchestrate-reviewer' })
   await $.agent.spawn({ ...spawn, subagentType: 'Explore' })
-  expect(spawned).toEqual(['status:orchestrate-worker', 'Explore'])
+  expect(spawned).toEqual(['status:orchestrate-worker', 'status:orchestrate-reviewer', 'Explore'])
   // Dispatch checks the offer of the name the spawn carries: the copy must be offered.
   const copy = { agent: 'status:orchestrate-worker', description: 'd', source: 'plugin', provider: { plugin: 'status', tier: 'user' as const } }
   expect(await $.agent.offer(copy)).toEqual({ isOffered: true })

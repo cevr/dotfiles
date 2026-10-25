@@ -97,10 +97,20 @@ const ROLES: [RegExp, string][] = [
   [/implement|build|fix|write|add|split|port|refactor|migrat/i, 'implement'],
 ];
 
-/** An agent's kind: its type and the role its description names. */
-// The status mod runs orchestrate-worker as its own copy, `status:orchestrate-worker`.
-export const kindFor = (agentType: string | undefined, description: string | undefined): string =>
-  `${agentType?.replace(/^status:/, '') || 'agent'}:${ROLES.find(([re]) => re.test(description ?? ''))?.[1] ?? 'task'}`;
+const ROLE_AGENT: Record<string, string> = { planner: 'plan', implementor: 'implement', reviewer: 'review', verifier: 'verify' };
+
+/**
+ * An agent's kind: its type and the role its description names. A role agent
+ * (`orchestrate-implementor`) is the worker in that role, so it keeps the cost
+ * history orchestrate-worker built in it.
+ */
+// The status mod runs each of them as its own copy, `status:orchestrate-worker`.
+export const kindFor = (agentType: string | undefined, description: string | undefined): string => {
+  const type = agentType?.replace(/^status:/, '') || 'agent';
+  const role = ROLE_AGENT[/^orchestrate-([a-z]+)$/.exec(type)?.[1] ?? ''];
+  if (role) return `orchestrate-worker:${role}`;
+  return `${type}:${ROLES.find(([re]) => re.test(description ?? ''))?.[1] ?? 'task'}`;
+};
 
 function kindOf(file: string): { kind: string; sub: boolean } {
   if (!file.includes('/subagents/')) return { kind: 'root', sub: false };

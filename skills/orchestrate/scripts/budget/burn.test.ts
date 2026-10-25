@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { burnOf, hostBurn, report, simulate, tune, WINDOWS, type FileBurn } from './burn.ts';
+import { burnOf, hostBurn, report, simulate, tune, WINDOWS, workerKind, type FileBurn } from './burn.ts';
 
 const hour = (create: number, read: number, output: number) => ({
   input_tokens: 0,
@@ -108,4 +108,11 @@ describe('tune', () => {
     const root = Array.from({ length: 2 }, () => agent('root'));
     expect(tune(root, 450e3)[0]).toMatchObject({ kind: 'root', agents: 2, window: 400e3, best: 180e3 });
   });
+});
+
+test("a worker that ran a protocol role tunes as that role's agent", () => {
+  expect(workerKind('status:orchestrate-worker', 'Read protocol.md. You are the reviewer of sheet, round 2.')).toBe('orchestrate-reviewer');
+  expect(workerKind('status:orchestrate-worker', 'Survey the docs for the reviewer.')).toBe('orchestrate-worker');
+  expect(workerKind('status:orchestrate-verifier', '')).toBe('orchestrate-verifier');
+  expect(workerKind(undefined, '')).toBe('agent');
 });

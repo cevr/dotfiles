@@ -24,9 +24,10 @@ export type Agent = {
 
 const ROLE: Record<string, string> = { planner: 'plan', implementor: 'implement', reviewer: 'review', verifier: 'verify' };
 
-/** The role an orchestrate worker was given: the description's first word, or the first role its protocol prompt names. */
-export const namedRole = (description: string, prompt: string) => {
-  const word = /^(planner|implementor|reviewer|verifier)\b/i.exec(description.trim())?.[1]
+/** The role an orchestrate worker was given: its role agent, the description's first word, or the first role its protocol prompt names. */
+export const namedRole = (description: string, prompt: string, type = '') => {
+  const word = /orchestrate-(planner|implementor|reviewer|verifier)$/.exec(type)?.[1]
+    ?? /^(planner|implementor|reviewer|verifier)\b/i.exec(description.trim())?.[1]
     ?? (prompt.includes('protocol.md') ? /\b(planner|implementor|reviewer|verifier)\b/i.exec(prompt)?.[1] : undefined);
   return word ? ROLE[word.toLowerCase()] : undefined;
 };
@@ -45,7 +46,7 @@ const lines = (text: string) => text.split('\n').flatMap((l) => { try { return [
 const top = (counts: Map<string, number>) => [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
 
 /** One Claude Code transcript. A message spans several lines; its usage counts once. */
-export function claudeAgent(text: string, id: string, session: string, description = '', main = false): Agent | undefined {
+export function claudeAgent(text: string, id: string, session: string, description = '', main = false, type = ''): Agent | undefined {
   const models = new Map<string, number>();
   const seen = new Set<string>();
   const tokens = zero();
@@ -72,7 +73,7 @@ export function claudeAgent(text: string, id: string, session: string, descripti
   const model = top(models);
   if (!model) return undefined;
   const head = `${description} ${prompt.slice(0, 600)}`.toLowerCase();
-  const role = main ? 'root' : namedRole(description, prompt) ?? roleOf(head);
+  const role = main ? 'root' : namedRole(description, prompt, type) ?? roleOf(head);
   // A reviewer that runs counsel-review hands the review to the other family: its row says so.
   const via = role === 'review' && /counsel/.test(head) ? '+counsel' : '';
   return {
@@ -135,9 +136,9 @@ export function claudeAgents(root: string, since: number): Agent[] {
       for (const f of readdirSync(sdir)) {
         const path = join(sdir, f);
         if (!f.endsWith('.jsonl') || !newer(path, since)) continue;
-        let desc = '';
-        try { desc = JSON.parse(readFileSync(path.replace(/\.jsonl$/, '.meta.json'), 'utf8')).description ?? ''; } catch {}
-        const a = claudeAgent(readFileSync(path, 'utf8'), f.replace(/\.jsonl$/, ''), session, desc);
+        let meta: { description?: string; agentType?: string } = {};
+        try { meta = JSON.parse(readFileSync(path.replace(/\.jsonl$/, '.meta.json'), 'utf8')); } catch {}
+        const a = claudeAgent(readFileSync(path, 'utf8'), f.replace(/\.jsonl$/, ''), session, meta.description ?? '', false, meta.agentType ?? '');
         if (a && a.last >= since) out.push(a);
       }
     }
