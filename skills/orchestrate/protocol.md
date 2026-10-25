@@ -60,7 +60,7 @@ You are the sole writer. You work in the spec's workspace (a Rift or worktree on
    - what changed, by file;
    - how to run it;
    - the gate log path and its exit line;
-   - the acceptance check's result as you saw it;
+   - the acceptance check's command and its exit line, run at the head. Off the `deep` path, this receipt stands in for a verifier, and the orchestrator reruns it at decide;
    - known gaps.
 
    From round 2 on, add the **fix report**: every finding of the last round, each `fixed <hash>` or `rejected: <reason>`. Never leave a finding unaccounted for.
@@ -85,7 +85,7 @@ You are read-only on the deliverables. Write only into the unit dir. You are fre
 
 ## Verifier
 
-You prove the unit works, objectively, in a clean environment. The reviewer judged the code; you judge the behavior. You are fresh each round. After round 1 your scope is the round's fixed rows, each fix's mutation shown red, and the gate's exit line; the full e2e and the live matrix run once, at merge.
+You run only on a unit whose spec's Path is `deep`. You prove the unit works, objectively, in a clean environment. The reviewer judged the code; you judge the behavior. You are fresh each round. After round 1 your scope is the round's fixed rows, each fix's mutation shown red, and the gate's exit line; the full e2e and the live matrix run once, at merge.
 
 1. **Check.** Read the round's request and the spec's Acceptance check. Make a clean checkout of the head commit:
 

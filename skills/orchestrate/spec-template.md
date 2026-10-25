@@ -6,8 +6,8 @@ The planner fills one copy per unit into `<run dir>/<unit>/spec.md`, and the orc
 # <unit> — spec (orchestrator-owned; agents do not edit it)
 
 Run `<run>` · unit dir `<run dir>/<unit>` · failure cap 3 · timebox <hours per round>
-Machine: plan → implement → review (okra counsel, the other model family) → verify (fresh agent, clean checkout) → decide.
-Review: <standard | deep: why a defect here is costly>.
+Machine: plan → implement → review (okra counsel, the other model family) → verify (`deep` only: fresh agent, clean checkout) → decide.
+Path: <light | standard | deep>: <why; for deep, why a defect is costly or why the check is a live drive>.
 Protocol: `~/.claude/skills/orchestrate/protocol.md` (read it in full first).
 
 ## Goal
