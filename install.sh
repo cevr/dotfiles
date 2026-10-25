@@ -77,5 +77,7 @@ ln -sfn "$DOTFILES_DIR/codex/agents" ~/.codex/agents
 # Personal commands
 mkdir -p ~/.local/bin
 ln -sf "$DOTFILES_DIR/skills/track-work-hours/scripts/hours" ~/.local/bin/hours
+# The daemon the codex mod drives Codex threads through.
+ln -sf "$DOTFILES_DIR/claude/mods/codex/bridge/bridge.ts" ~/.local/bin/codex-bridge
 
 echo "Done! Run 'source ~/.zshrc' to reload."

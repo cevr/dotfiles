@@ -23,6 +23,9 @@ install -m 755 "$claude_source/statusline-git.sh" "$HOME/.claude/statusline-git.
 # server switched off (its command exists only on the Mac). Layers merge key by key.
 ln -sfn "$dotfiles_dir/codex/config.toml" "$HOME/.codex/config.toml"
 ln -sfn "$dotfiles_dir/codex/agents" "$HOME/.codex/agents"
+# The daemon the codex mod drives Codex threads through.
+mkdir -p "$HOME/.local/bin"
+ln -sf "$dotfiles_dir/claude/mods/codex/bridge/bridge.ts" "$HOME/.local/bin/codex-bridge"
 codex_system_config=$(mktemp)
 trap 'rm -f "$codex_system_config"' EXIT HUP INT TERM
 cat > "$codex_system_config" <<'EOF'

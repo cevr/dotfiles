@@ -1,0 +1,6 @@
+{
+  "name": "codex",
+  "version": "0.1.0",
+  "description": "Codex threads as workers: start, continue and stop them through codex-bridge, which holds codex app-server open; a finished turn wakes the session.",
+  "author": { "name": "Cristian" }
+}
