@@ -22,7 +22,16 @@ export type Agent = {
   last: number;
 };
 
-// The role comes from the Agent description and the first words of the prompt.
+const ROLE: Record<string, string> = { planner: 'plan', implementor: 'implement', reviewer: 'review', verifier: 'verify' };
+
+/** The role an orchestrate worker was given: the description's first word, or the first role its protocol prompt names. */
+export const namedRole = (description: string, prompt: string) => {
+  const word = /^(planner|implementor|reviewer|verifier)\b/i.exec(description.trim())?.[1]
+    ?? (prompt.includes('protocol.md') ? /\b(planner|implementor|reviewer|verifier)\b/i.exec(prompt)?.[1] : undefined);
+  return word ? ROLE[word.toLowerCase()] : undefined;
+};
+
+// Any other agent's role comes from the Agent description and the first words of the prompt.
 export const roleOf = (head: string) =>
   /\breview|counsel|findings/.test(head) ? 'review'
   : /\bverif/.test(head) ? 'verify'
@@ -63,7 +72,7 @@ export function claudeAgent(text: string, id: string, session: string, descripti
   const model = top(models);
   if (!model) return undefined;
   const head = `${description} ${prompt.slice(0, 600)}`.toLowerCase();
-  const role = main ? 'root' : roleOf(head);
+  const role = main ? 'root' : namedRole(description, prompt) ?? roleOf(head);
   // A reviewer that runs counsel-review hands the review to the other family: its row says so.
   const via = role === 'review' && /counsel/.test(head) ? '+counsel' : '';
   return {
@@ -101,7 +110,7 @@ export function codexAgent(text: string, id: string): Agent | undefined {
   const cached = total.cached_input_tokens ?? 0;
   const tokens = { input: (total.input_tokens ?? 0) - cached, cacheWrite: total.cache_write_input_tokens ?? 0, cacheRead: cached, output: total.output_tokens ?? 0 };
   return {
-    id, harness: 'codex', session, model, effort, role: roleOf(prompt.slice(0, 400).toLowerCase()),
+    id, harness: 'codex', session, model, effort, role: namedRole('', prompt) ?? roleOf(prompt.slice(0, 400).toLowerCase()),
     prompt: prompt.slice(0, 4000), final: final.slice(-600), cwd, min: (last - first) / 60000, tokens, cost: costOf(model, tokens), compacted, last,
   };
 }

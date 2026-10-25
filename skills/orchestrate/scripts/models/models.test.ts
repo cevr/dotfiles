@@ -31,6 +31,17 @@ test('a Claude reviewer that runs counsel-review is labelled as such', () => {
   expect(claudeAgent(text, 'a', 's')).toMatchObject({ role: 'review', model: 'opus-5-5+counsel' });
 });
 
+test('a worker takes the role it was given, not the roles its prompt mentions', () => {
+  const agent = (prompt: string, description = '') =>
+    claudeAgent(jsonl([
+      { type: 'user', message: { content: prompt } },
+      { type: 'assistant', message: { id: 'm1', model: 'claude-opus-5-5', usage: {}, content: [] } },
+    ]), 'a', 's', description);
+  expect(agent('Read protocol.md. You are the implementor for round 1; the reviewer reads your request.', 'ftb-copy rewrite r1: built-output guard')).toMatchObject({ role: 'implement' });
+  expect(agent('Read protocol.md and verify round 3.', 'verifier coldload r3')).toMatchObject({ role: 'verify' });
+  expect(agent('Review the findings of the last run', 'look over notes')).toMatchObject({ role: 'review' });
+});
+
 describe('codexAgent', () => {
   test('takes the last cumulative token count, the turn model and effort, and skips injected messages', () => {
     const count = (input: number, cached: number, output: number) => ({ type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output } } } });
