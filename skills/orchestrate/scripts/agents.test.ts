@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { agentFile, ROLES, stale, type Role } from './agents.ts';
+import { agentFile, codexFile, ROLES, stale, type Role } from './agents.ts';
 
 const protocol = `# Worker protocol
 
@@ -37,6 +37,16 @@ describe('agentFile', () => {
     expect(text).toStartWith('---\nname: orchestrate-reviewer\ndescription: ');
     for (const part of ['## Ending a step', '## Rounds', '## Reviewer\n\nReview it.', '- Write files with Write.']) expect(text).toContain(part);
     for (const part of ['## Planner', '## Implementor', '## Verifier', 'Intro for the orchestrator', 'Every loop agent reads this']) expect(text).not.toContain(part);
+  });
+
+  test('the Codex file carries the same instructions, with the role\'s effort and no pinned model', () => {
+    const text = codexFile('implementor', protocol, safety);
+    expect(text).toContain('name = "orchestrate-implementor"');
+    expect(text).toContain('model_reasoning_effort = "max"');
+    expect(text).not.toMatch(/^model = /m);
+    expect(text).toContain("developer_instructions = '''\nYou are the implementor of one orchestrate unit.");
+    expect(text).toContain('## Implementor\n\nBuild it.');
+    expect(() => codexFile('planner', protocol.replace('Plan it.', "Plan it '''."), safety)).toThrow();
   });
 
   test('fails loudly when protocol.md loses a section a role needs', () => {

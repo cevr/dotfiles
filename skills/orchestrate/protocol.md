@@ -1,6 +1,6 @@
 # Worker protocol
 
-A Claude Code role agent (`orchestrate-planner`, `orchestrate-implementor`, `orchestrate-reviewer`, `orchestrate-verifier`) carries this protocol in its prompt: the sections from Ending a step to Rounds, its own role's section, and the safety rules. `scripts/agents.ts` writes those agents from this file and [`safety.md`](../loop/safety.md); run it after you edit either. Every other worker reads this file in full before its first action.
+A role agent (`orchestrate-planner`, `orchestrate-implementor`, `orchestrate-reviewer`, `orchestrate-verifier`, on Claude Code and on Codex) carries this protocol in its prompt: the sections from Ending a step to Rounds, its own role's section, and the safety rules. `scripts/agents.ts` writes those agents from this file and [`safety.md`](../loop/safety.md); run it after you edit either. Every other worker reads this file in full before its first action.
 
 The orchestrator gave you one message: your role, your unit's `spec.md` path, and the round. This protocol holds the rules shared by every role; the spec holds what is special to the unit.
 

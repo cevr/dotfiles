@@ -69,6 +69,7 @@ ln -sfn "$DOTFILES_DIR/orchestrate/budget.json" ~/.config/orchestrate/budget.jso
 # Codex config (shared with the workbox; it writes through the link)
 mkdir -p ~/.codex
 ln -sfn "$DOTFILES_DIR/codex/config.toml" ~/.codex/config.toml
+ln -sfn "$DOTFILES_DIR/codex/agents" ~/.codex/agents
 
 # Claude terminal mod
 "$DOTFILES_DIR/claude/mods/fx-ui/install.sh"

@@ -22,6 +22,7 @@ install -m 755 "$claude_source/statusline-git.sh" "$HOME/.claude/statusline-git.
 # workbox-only part is the system layer: Sideshow, and the Mac app's node_repl
 # server switched off (its command exists only on the Mac). Layers merge key by key.
 ln -sfn "$dotfiles_dir/codex/config.toml" "$HOME/.codex/config.toml"
+ln -sfn "$dotfiles_dir/codex/agents" "$HOME/.codex/agents"
 codex_system_config=$(mktemp)
 trap 'rm -f "$codex_system_config"' EXIT HUP INT TERM
 cat > "$codex_system_config" <<'EOF'
