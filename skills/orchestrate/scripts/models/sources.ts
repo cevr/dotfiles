@@ -89,7 +89,7 @@ const INJECTED = /^\s*(# AGENTS\.md|<environment_context>|<user_instructions>|<p
 export function codexAgent(text: string, id: string): Agent | undefined {
   const models = new Map<string, number>();
   let first = 0, last = 0, prompt = '', final = '', compacted = false, cwd: string | undefined, effort: string | undefined, session = id;
-  let total: any;
+  let total: any, type = '';
   for (const d of lines(text)) {
     if (d.timestamp) { const t = Date.parse(d.timestamp); first ||= t; last = t; }
     const p = d.payload ?? {};
@@ -105,13 +105,18 @@ export function codexAgent(text: string, id: string): Agent | undefined {
       const t = (p.content ?? []).map((x: any) => x?.text ?? '').join(' ');
       if (!INJECTED.test(t)) prompt += `${t} `;
     }
+    // A role agent (spawn_agent's agent_type, or a codex-bridge thread) opens its developer instructions with its role.
+    if (d.type === 'response_item' && p.type === 'message' && p.role === 'developer' && !type) {
+      const role = /^You are the (planner|implementor|reviewer|verifier) of one orchestrate unit\./.exec(p.content?.[0]?.text ?? '')?.[1];
+      if (role) type = `orchestrate-${role}`;
+    }
   }
   const model = top(models);
   if (!model || !total) return undefined;
   const cached = total.cached_input_tokens ?? 0;
   const tokens = { input: (total.input_tokens ?? 0) - cached, cacheWrite: total.cache_write_input_tokens ?? 0, cacheRead: cached, output: total.output_tokens ?? 0 };
   return {
-    id, harness: 'codex', session, model, effort, role: namedRole('', prompt) ?? roleOf(prompt.slice(0, 400).toLowerCase()),
+    id, harness: 'codex', session, model, effort, role: namedRole('', prompt, type) ?? roleOf(prompt.slice(0, 400).toLowerCase()),
     prompt: prompt.slice(0, 4000), final: final.slice(-600), cwd, min: (last - first) / 60000, tokens, cost: costOf(model, tokens), compacted, last,
   };
 }

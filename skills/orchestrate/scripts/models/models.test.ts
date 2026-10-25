@@ -61,6 +61,16 @@ describe('codexAgent', () => {
     expect(a.tokens).toEqual({ input: 100, cacheWrite: 0, cacheRead: 200, output: 20 });
     expect(a.prompt.trim()).toBe('Review /r/u/round-1-request.md');
   });
+
+  test("a role agent's developer instructions name its role over the prompt's words", () => {
+    const text = jsonl([
+      { type: 'turn_context', payload: { model: 'gpt-6-luna', effort: 'max' } },
+      { type: 'response_item', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'You are the implementor of one orchestrate unit. Your first message names the spec.' }] } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Unit sheet, review findings in round-1-findings.md' }] } },
+      { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 10, output_tokens: 1 } } } },
+    ]);
+    expect(codexAgent(text, 'rollout-y')).toMatchObject({ model: 'gpt-6-luna', role: 'implement' });
+  });
 });
 
 test('a model with no price row has no cost', () => {
