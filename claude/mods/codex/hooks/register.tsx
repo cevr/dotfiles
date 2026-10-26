@@ -11,8 +11,8 @@ import type { Row, Thread, View } from '../types'
 //
 // The work shows the way a subagent's does: each start or send call's row draws
 // its thread's turn live (what runs now, the last steps, the counts and the plan),
-// a band above the prompt lists the threads that run, and /codex opens a pane
-// with every thread of the session.
+// the status line under the prompt sums up the threads that run, and /codex opens
+// a pane with every thread of the session.
 
 const POLL_MS = 5e3
 const VIEW_MS = 2e3
@@ -29,6 +29,7 @@ const rows = atom({ plugin: 'codex', key: 'rows' } as const, {} as Record<string
 let socket: string | undefined
 let delivering = false
 let seen = ''
+let shown: string | undefined
 
 async function ensure($: EngineInterface) {
   const run = await $.process.run(ENSURE, { timeoutMs: 15e3 })
@@ -115,6 +116,8 @@ async function refresh($: EngineInterface) {
     seen = text
     const at = await $.clock.now()
     await update($, view, () => ({ at, threads }))
+    const status = statusLine(threads, at)
+    if (status !== shown) $.ui.status((shown = status))
   } catch (error) {
     $.ui.log(`codex: ${(error as Error).message}`, { to: 'debug' })
   }
@@ -259,6 +262,24 @@ const planLine = (t: Thread) => {
   return `plan ${done}/${plan.length}${now ? `: ${now.step}` : ''}`
 }
 
+const doing = (t: Thread) => Object.values(t.live?.running ?? {}).at(-1) ?? t.live?.steps.at(-1)?.text
+
+/** The line under the prompt while threads run: one thread in full, several in short; undefined when none runs. */
+function statusLine(threads: readonly Thread[], at: number): string | undefined {
+  const running = threads.filter(t => t.status === 'running')
+  const [one] = running
+  if (!one) return undefined
+  if (running.length === 1) {
+    const now = doing(one)
+    return `◆ codex ${one.description} · ${state(one, at)} · ${counts(one)}${now ? ` · ▸ ${now}` : ''}`
+  }
+  const each = running.map(t => {
+    const now = doing(t)
+    return `${t.description} (${clock(at - (t.live?.since ?? at))}${now ? `, ${now}` : ''})`
+  })
+  return `◆ codex ${running.length} running: ${each.join(' · ')} · /codex`
+}
+
 type Ui = ReturnType<EngineInterface['ui']['resolve']>
 
 /** One thread's turn: the head line, the counts, the plan, what runs now and the last `steps` steps. */
@@ -316,30 +337,6 @@ export const register: Register = on => {
       return <ui.Text dimColor>Codex {t.description}: turn {row.turn} ended; the thread is on turn {t.turns} ({state(t, at)}).</ui.Text>
     }
     return <ThreadView ui={ui} t={t} at={at} steps={e.props.isExpanded ? 12 : 3} />
-  })
-
-  // One line for each running thread, above the prompt.
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey) return next(e)
-    const { at, threads } = await read($, view)
-    const running = threads.filter(t => t.status === 'running')
-    if (running.length === 0) return next(e)
-    const { Box, Text } = $.ui.resolve(e)
-    const room = Math.max(1, e.props.maxRows)
-    const shown = running.length > room ? running.slice(0, room - 1) : running
-    return (
-      <Box flexDirection="column">
-        {shown.map(t => {
-          const now = Object.values(t.live?.running ?? {}).at(-1) ?? t.live?.steps.at(-1)?.text
-          return (
-            <Text dimColor wrap="truncate-end">
-              <Text color="cyan">◆</Text> codex {t.description} · {state(t, at)} · {counts(t)}{now ? ` · ${now}` : ''}
-            </Text>
-          )
-        })}
-        {shown.length < running.length && <Text dimColor>  and {running.length - shown.length} more: /codex</Text>}
-      </Box>
-    )
   })
 
   // Every thread of the session, running first, then the latest.

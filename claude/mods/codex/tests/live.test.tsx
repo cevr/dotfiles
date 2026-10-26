@@ -1,7 +1,9 @@
 import { expect, test, type TestBody } from 'claude-code/testing'
 
+import type { Thread } from '../types'
+
 // The bridge, as the mod reaches it: `codex-bridge ensure`, then HTTP on its socket.
-const running = {
+const running: Thread = {
   id: 't1',
   description: 'reviewer sheet r1',
   model: 'gpt-6.1-sol',
@@ -28,13 +30,19 @@ const running = {
   updatedAt: 0,
 }
 
-function bridge(on: Parameters<TestBody>[1], threads: () => unknown[]) {
+// Returns the status lines the mod pinned under the prompt, in order.
+function bridge(on: Parameters<TestBody>[1], threads: () => Thread[]) {
+  const status: (string | undefined)[] = []
+  on('ui.status', (_, e) => {
+    status.push(e.text)
+    return { value: undefined }
+  })
   // The kit types this answer's value as undefined; the runner takes the ProcessRunResult that $.process.run resolves.
   // @ts-expect-error
   on('process.run', () => ({ value: { exitCode: 0, stdout: '{"socket":"/tmp/bridge.sock"}', stderr: '' } }))
   on('http.fetch', (_, e) => {
     const path = new URL(e.url).pathname
-    const body = path === '/start' ? running : path === '/threads' ? threads() : path === '/events' ? [] : null
+    const body = path === '/start' ? running : path === '/send' ? threads()[0] : path === '/threads' ? threads() : path === '/events' ? [] : null
     return { value: { ok: true, status: 200, text: JSON.stringify(body), headers: {} } }
   })
   on('command.register', () => ({ value: { command: 'codex' } }))
@@ -45,11 +53,12 @@ function bridge(on: Parameters<TestBody>[1], threads: () => unknown[]) {
   on('ui.log', () => ({ value: undefined }))
   on('session.id', () => ({ value: 'session-1' }))
   on('session.cwd', () => ({ value: '/' }))
+  return status
 }
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`a start call's row and the band show the thread's live work (${surface})`, async ($, on) => {
-    bridge(on, () => [running])
+  test(`a start call's row and the status line show the thread's live work (${surface})`, async ($, on) => {
+    const status = bridge(on, () => [running])
     await $.session.start({ cwd: '/', surface, isInteractive: true })
     const call = await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r1', prompt: 'review', tool_use_id: 'tu1' })
     expect(JSON.stringify(call)).toContain('Started Codex thread t1')
@@ -67,30 +76,17 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await row.find({ type: 'Text', text: /✗ \$ bun run lint/ })).toBeDefined()
     await row.unmount()
 
-    const band = await $.ui.mount({
-      plugin: 'codex',
-      surface,
-      component: 'AbovePrompt',
-      props: { hasSurvey: false, isWorking: false, maxRows: 3, bodyColumns: 120, scroll: { offset: 0, bodyRows: 3 }, view: {} },
-    })
-    expect((await band.find({ type: 'Text', text: /codex reviewer sheet r1/ }))?.text).toContain('$ bun test')
-    await band.unmount()
+    expect(status.at(-1)).toBe('◆ codex reviewer sheet r1 · running 1m 0s · 4 commands · 1 edit · context 41% · ▸ $ bun test')
   })
 }
 
-test('the band stays empty when no thread runs', async ($, on) => {
-  bridge(on, () => [{ ...running, status: 'idle', live: { ...running.live, running: {} } }])
-  on('ui.render', ($, e) => {
-    const { Text } = $.ui.resolve(e)
-    return <Text>engine</Text>
-  })
+test('the status line clears when no thread runs', async ($, on) => {
+  let threads: Thread[] = [running]
+  const status = bridge(on, () => threads)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  const band = await $.ui.mount({
-    plugin: 'codex',
-    surface: 'terminal',
-    component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking: false, maxRows: 3, bodyColumns: 120, scroll: { offset: 0, bodyRows: 3 }, view: {} },
-  })
-  expect((await band.find({ type: 'Text', text: /engine/ }))?.text).toBe('engine')
-  await band.unmount()
+  await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r1', prompt: 'review', tool_use_id: 'tu1' })
+  expect(status.at(-1)).toContain('◆ codex reviewer sheet r1')
+  threads = [{ ...running, status: 'idle', live: { ...running.live!, running: {} } }]
+  await $.tool.call({ tool: 'mcp__codex__send', thread: 't1', prompt: 'again', tool_use_id: 'tu3' })
+  expect(status.at(-1)).toBeUndefined()
 })
