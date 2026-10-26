@@ -320,7 +320,7 @@ for (const line of sh(['docker', 'system', 'df']).split('\n').slice(1)) {
 const repoPaths = ROOTS.flatMap((root) => checkouts(root, 3, false)).map((c) => c.path);
 const holdsRepo = (dir: string) => repoPaths.some((r) => r === dir || r.startsWith(dir + sep));
 for (const root of ROOTS)
-  for (const group of [root, ...ls(root).filter((e) => e.isDirectory()).map((e) => join(root, e.name))])
+  for (const group of [root, ...ls(root).filter((e) => e.isDirectory()).map((e) => join(root, e.name))].filter((g) => !exists(join(g, '.git'))))
     for (const e of ls(group))
       if (e.isDirectory() && !holdsRepo(join(group, e.name)) && join(group, e.name) !== root)
         add({ tier: 'C', category: 'loose folders', what: `${tilde(join(group, e.name))}: not a checkout`, paths: [join(group, e.name)], idleDays: idleDays(newest(join(group, e.name), 2)), command: 'move to the Trash, item by item', min: GIB });
