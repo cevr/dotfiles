@@ -15,7 +15,7 @@
  *   CLOUDFLARE_ACCOUNT_ID=<account> CLOUDFLARE_API_TOKEN=$(bun -e 'console.log(JSON.parse(require("fs").readFileSync(process.env.HOME + "/Library/Preferences/cloudflare/config/default.json", "utf8")).oauth_token)') bun run deploy
  */
 import * as Alchemy from 'alchemy';
-import * as Cloudflare from 'alchemy/Cloudflare';
+import * as Cloudflare from '@alchemy.run/cloudflare';
 import { Effect } from 'effect';
 
 import { BUCKET } from './bucket.ts';
