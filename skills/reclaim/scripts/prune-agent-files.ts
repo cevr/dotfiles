@@ -3,7 +3,8 @@
 // transcripts and tool-result spills under ~/.claude/projects older than a
 // date, and session scratchpads under /private/tmp/claude-<uid> (/tmp on Linux) nothing wrote
 // to since then. Main session transcripts stay, so every session can still be
-// resumed. A dry run by default; prints one JSON summary line.
+// resumed. What it cannot delete (files another user owns) it skips and counts.
+// A dry run by default; prints one JSON summary line.
 //
 // Usage: bun prune-agent-files.ts --before YYYY-MM-DD [--apply] [--projects <dir>] [--scratch <dir>]
 
@@ -49,15 +50,27 @@ function tally(dir: string, out = { newest: 0, bytes: 0, files: [] as string[] }
 }
 
 const SPILLS = [`${sep}subagents${sep}`, `${sep}tool-results${sep}`];
+// Delete one path; a path it may not delete is kept and named in the summary.
+const failed: string[] = [];
+const remove = (path: string, recursive = false) => {
+  try {
+    rmSync(path, { recursive, force: true });
+    return true;
+  } catch {
+    failed.push(path);
+    return false;
+  }
+};
+
 let files = 0;
 let bytes = 0;
 for (const p of tally(projects).files) {
   if (!SPILLS.some((s) => p.includes(s))) continue;
   const s = lstatSync(p);
   if (s.mtimeMs >= before) continue;
+  if (apply && !remove(p)) continue;
   files++;
   bytes += s.blocks * 512;
-  if (apply) rmSync(p);
 }
 
 let scratchpads = 0;
@@ -67,9 +80,19 @@ for (const user of ls(scratch).filter((e) => e.isDirectory() && /^claude-\d+$/.t
       const dir = join(scratch, user.name, project.name, session.name);
       const t = tally(dir);
       if (t.newest >= before) continue;
+      if (apply && !remove(dir, true)) continue;
       scratchpads++;
       bytes += t.bytes;
-      if (apply) rmSync(dir, { recursive: true, force: true });
     }
 
-console.log(JSON.stringify({ apply, before: new Date(before).toISOString().slice(0, 10), files, scratchpads, freedGB: +(bytes / 1e9).toFixed(2) }));
+console.log(
+  JSON.stringify({
+    apply,
+    before: new Date(before).toISOString().slice(0, 10),
+    files,
+    scratchpads,
+    freedGB: +(bytes / 1e9).toFixed(2),
+    failed: failed.length,
+    ...(failed.length > 0 ? { firstFailed: failed.slice(0, 5) } : {}),
+  }),
+);

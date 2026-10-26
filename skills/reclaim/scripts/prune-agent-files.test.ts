@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -39,6 +39,20 @@ test('deletes subagent transcripts, tool-result spills and idle scratchpads befo
   expect([oldAgent, oldSpill, idlePad].map(existsSync)).toEqual([false, false, false]);
   expect(existsSync(join(root, 'tmp/claude-501/-repo/s1'))).toBe(false);
   expect([session, newAgent, livePad].every(existsSync)).toBe(true);
+});
+
+test('keeps a scratchpad it may not delete, names it, and goes on', () => {
+  root = mkdtempSync(join(tmpdir(), 'prune-'));
+  const locked = file('tmp/claude-501/-repo/s1/scratchpad/locked/notes.md', OLD);
+  const idlePad = file('tmp/claude-501/-repo/s2/scratchpad/notes.md', OLD);
+  chmodSync(dirname(locked), 0o555);
+
+  const summary = prune('--apply');
+  chmodSync(dirname(locked), 0o755);
+
+  expect(summary).toMatchObject({ scratchpads: 1, failed: 1, firstFailed: [join(root, 'tmp/claude-501/-repo/s1')] });
+  expect(existsSync(idlePad)).toBe(false);
+  expect(existsSync(locked)).toBe(true);
 });
 
 test('refuses to run without a date', () => {
