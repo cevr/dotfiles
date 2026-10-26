@@ -19,6 +19,8 @@ Before you run it, look for anything that reads old agent transcripts, such as a
 
 To see what an unexplained large folder holds, use `uvx fdu@latest <dir> --view largest`. To find stale dependency folders, use `uvx fdu@latest <dir> --kind dir --include node_modules --modified-before 30d --long`.
 
+Deleted files that a process still holds open free their space only when that process exits. Old Claude and Codex binaries held by long-running sessions are the usual case. To total them, run `lsof +L1 | awk 'NR>1 && $7 ~ /^[0-9]+$/ {s+=$7} END {print s/2^30 " GiB"}'`. Report the total as "frees when those sessions restart".
+
 Done when every candidate over 1 GiB has a tier and a known owner. Mark an item "unknown" when you cannot say what it is.
 
 ## 2. Ask
