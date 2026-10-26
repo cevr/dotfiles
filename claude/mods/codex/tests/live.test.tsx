@@ -91,6 +91,13 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 }
 
+test('a thread from a bridge with no live record counts from its last update', async ($, on) => {
+  bridge(on, () => [{ ...running, live: undefined, updatedAt: 15e3 }])
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r1', prompt: 'review', tool_use_id: 'tu1' })
+  expect((await footer($, 'terminal'))[1]).toBe('◆ codex reviewer sheet r1 · running 45s · context 41%')
+})
+
 test('the footer is the engine\'s alone when no thread runs', async ($, on) => {
   let threads: Thread[] = [running]
   bridge(on, () => threads)

@@ -249,8 +249,9 @@ const counts = (t: Thread) => {
   if (t.usage?.window) parts.push(`context ${Math.round((100 * t.usage.context) / t.usage.window)}%`)
   return parts.filter(Boolean).join(' · ')
 }
+// A thread from a bridge that keeps no live record started its turn when it was last updated.
 const state = (t: Thread, at: number) =>
-  t.status === 'running' ? `running ${clock(at - (t.live?.since ?? at))}` : t.status === 'idle' ? 'done' : t.status
+  t.status === 'running' ? `running ${clock(at - (t.live?.since ?? t.updatedAt))}` : t.status === 'idle' ? 'done' : t.status
 const planLine = (t: Thread) => {
   const plan = t.live?.plan
   if (!plan?.length) return undefined
