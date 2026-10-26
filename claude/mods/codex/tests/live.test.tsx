@@ -30,12 +30,12 @@ const running: Thread = {
   updatedAt: 0,
 }
 
-// Returns the status lines the mod pinned under the prompt, in order.
 function bridge(on: Parameters<TestBody>[1], threads: () => Thread[]) {
-  const status: (string | undefined)[] = []
-  on('ui.status', (_, e) => {
-    status.push(e.text)
-    return { value: undefined }
+  on('ui.status', () => ({ value: undefined }))
+  // The engine's own footer, beneath the mod.
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine footer</Text>
   })
   // The kit types this answer's value as undefined; the runner takes the ProcessRunResult that $.process.run resolves.
   // @ts-expect-error
@@ -53,12 +53,19 @@ function bridge(on: Parameters<TestBody>[1], threads: () => Thread[]) {
   on('ui.log', () => ({ value: undefined }))
   on('session.id', () => ({ value: 'session-1' }))
   on('session.cwd', () => ({ value: '/' }))
-  return status
+}
+
+const FOOTER = { component: 'PromptHint', props: { isDraft: false, isWorking: false, hint: '' } } as const
+const footer = async ($: Parameters<TestBody>[0], surface: 'terminal' | 'desktop') => {
+  const ui = await $.ui.mount({ plugin: 'codex', surface, ...FOOTER })
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+  await ui.unmount()
+  return texts
 }
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`a start call's row and the status line show the thread's live work (${surface})`, async ($, on) => {
-    const status = bridge(on, () => [running])
+  test(`a start call's row and a footer line show the thread's live work (${surface})`, async ($, on) => {
+    bridge(on, () => [running, { ...running, id: 't2', description: 'implementor queue r2' }])
     await $.session.start({ cwd: '/', surface, isInteractive: true })
     const call = await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r1', prompt: 'review', tool_use_id: 'tu1' })
     expect(JSON.stringify(call)).toContain('Started Codex thread t1')
@@ -76,17 +83,21 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await row.find({ type: 'Text', text: /✗ \$ bun run lint/ })).toBeDefined()
     await row.unmount()
 
-    expect(status.at(-1)).toBe('◆ codex reviewer sheet r1 · running 1m 0s · 4 commands · 1 edit · context 41% · ▸ $ bun test')
+    expect(await footer($, surface)).toEqual([
+      'engine footer',
+      '◆ codex reviewer sheet r1 · running 1m 0s · 4 commands · 1 edit · context 41% · ▸ $ bun test',
+      '◆ codex implementor queue r2 · running 1m 0s · 4 commands · 1 edit · context 41% · ▸ $ bun test',
+    ])
   })
 }
 
-test('the status line clears when no thread runs', async ($, on) => {
+test('the footer is the engine\'s alone when no thread runs', async ($, on) => {
   let threads: Thread[] = [running]
-  const status = bridge(on, () => threads)
+  bridge(on, () => threads)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r1', prompt: 'review', tool_use_id: 'tu1' })
-  expect(status.at(-1)).toContain('◆ codex reviewer sheet r1')
+  expect(await footer($, 'terminal')).toHaveLength(2)
   threads = [{ ...running, status: 'idle', live: { ...running.live!, running: {} } }]
   await $.tool.call({ tool: 'mcp__codex__send', thread: 't1', prompt: 'again', tool_use_id: 'tu3' })
-  expect(status.at(-1)).toBeUndefined()
+  expect(await footer($, 'terminal')).toEqual(['engine footer'])
 })

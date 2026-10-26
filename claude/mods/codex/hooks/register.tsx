@@ -11,8 +11,8 @@ import type { Row, Thread, View } from '../types'
 //
 // The work shows the way a subagent's does: each start or send call's row draws
 // its thread's turn live (what runs now, the last steps, the counts and the plan),
-// the status line under the prompt sums up the threads that run, and /codex opens
-// a pane with every thread of the session.
+// each running thread has its own line in the prompt footer, under the model
+// line, and /codex opens a pane with every thread of the session.
 
 const POLL_MS = 5e3
 const VIEW_MS = 2e3
@@ -29,7 +29,6 @@ const rows = atom({ plugin: 'codex', key: 'rows' } as const, {} as Record<string
 let socket: string | undefined
 let delivering = false
 let seen = ''
-let shown: string | undefined
 
 async function ensure($: EngineInterface) {
   const run = await $.process.run(ENSURE, { timeoutMs: 15e3 })
@@ -116,8 +115,6 @@ async function refresh($: EngineInterface) {
     seen = text
     const at = await $.clock.now()
     await update($, view, () => ({ at, threads }))
-    const status = statusLine(threads, at)
-    if (status !== shown) $.ui.status((shown = status))
   } catch (error) {
     $.ui.log(`codex: ${(error as Error).message}`, { to: 'debug' })
   }
@@ -264,21 +261,12 @@ const planLine = (t: Thread) => {
 
 const doing = (t: Thread) => Object.values(t.live?.running ?? {}).at(-1) ?? t.live?.steps.at(-1)?.text
 
-/** The line under the prompt while threads run: one thread in full, several in short; undefined when none runs. */
-function statusLine(threads: readonly Thread[], at: number): string | undefined {
-  const running = threads.filter(t => t.status === 'running')
-  const [one] = running
-  if (!one) return undefined
-  if (running.length === 1) {
-    const now = doing(one)
-    return `◆ codex ${one.description} · ${state(one, at)} · ${counts(one)}${now ? ` · ▸ ${now}` : ''}`
-  }
-  const each = running.map(t => {
-    const now = doing(t)
-    return `${t.description} (${clock(at - (t.live?.since ?? at))}${now ? `, ${now}` : ''})`
-  })
-  return `◆ codex ${running.length} running: ${each.join(' · ')} · /codex`
+/** A running thread's footer line: its name, clock, counts and what it does now. */
+const footerLine = (t: Thread, at: number) => {
+  const now = doing(t)
+  return `◆ codex ${t.description} · ${state(t, at)} · ${counts(t)}${now ? ` · ▸ ${now}` : ''}`
 }
+const FOOTER_LINES = 6
 
 type Ui = ReturnType<EngineInterface['ui']['resolve']>
 
@@ -311,6 +299,8 @@ export const register: Register = on => {
     await $.command.register({ name: 'codex', description: "Show this session's Codex threads and their live work in a pane" })
     $.clock.every(POLL_MS, () => void deliver($))
     $.clock.every(VIEW_MS, () => void refresh($))
+    // An earlier version pinned a status line; the footer lines replace it.
+    $.ui.status(undefined)
     void refresh($)
     return started
   })
@@ -337,6 +327,25 @@ export const register: Register = on => {
       return <ui.Text dimColor>Codex {t.description}: turn {row.turn} ended; the thread is on turn {t.turns} ({state(t, at)}).</ui.Text>
     }
     return <ThreadView ui={ui} t={t} at={at} steps={e.props.isExpanded ? 12 : 3} />
+  })
+
+  // One line for each running thread, under the footer the engine and other plugins draw.
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    const under = await next(e)
+    const { at, threads } = await read($, view)
+    const running = threads.filter(t => t.status === 'running')
+    if (running.length === 0) return under
+    const { Box, Text } = $.ui.resolve(e)
+    const shown = running.length > FOOTER_LINES ? running.slice(0, FOOTER_LINES - 1) : running
+    return (
+      <Box flexDirection="column">
+        {under}
+        {shown.map(t => (
+          <Text dimColor wrap="truncate-end">{footerLine(t, at)}</Text>
+        ))}
+        {shown.length < running.length && <Text dimColor>◆ codex: {running.length - shown.length} more running · /codex</Text>}
+      </Box>
+    )
   })
 
   // Every thread of the session, running first, then the latest.
