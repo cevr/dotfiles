@@ -161,7 +161,7 @@ test('`/pool project <name>` names the session\'s project', async ($, on) => {
   expect(runs.find(script => script.includes('--set'))).toContain('hymnal')
 })
 
-test('with no rate limit ahead, the outlook leaves the warning line for the prompt hint', async ($, on) => {
+test('with no rate limit near, nothing shows the outlook: the warning line and the prompt hint stay the engine\'s', async ($, on) => {
   const lines: (string | undefined)[] = []
   on('command.register', () => ({ value: { command: 'pool' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -199,9 +199,7 @@ test('with no rate limit ahead, the outlook leaves the warning line for the prom
     surface: 'terminal',
     props: { isDraft: false, isWorking: false, hint: '? for shortcuts' },
   })
-  expect((await ui.find({ type: 'Text', text: /shortcuts/ }))?.text).toBe(
-    '? for shortcuts · no rate limit ahead · 2/2 accounts have quota',
-  )
+  expect((await ui.find({ type: 'Text', text: /shortcuts/ }))?.text).toBe('? for shortcuts')
   await ui.unmount()
 })
 

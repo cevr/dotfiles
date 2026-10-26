@@ -122,12 +122,6 @@ export const register: Register = on => {
     return { text: 'Rate limits pane opened.' }
   })
 
-  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    const { at, outlook: view } = await read($, snapshot)
-    const calm = view && !isNear(view, at) ? statusLine(view, at) : undefined
-    return next(calm ? { ...e, props: { ...e.props, tail: ` · ${calm}` } } : e)
-  })
-
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
     const { at, accounts, outlook: view, pool, runs, error } = await read($, snapshot)
