@@ -5,7 +5,7 @@
 // and each host's load from its transcripts (budget/host.ts, run over SSH on
 // each host in ORCHESTRATE_HOSTS). From those it sets the pool's pace in
 // weighted tokens per hour (budget/pace.ts): spend 99% of every account before
-// its weekly reset, more by day than by night, under the weekly and 5-hour
+// its weekly reset at an even rate, under the weekly and 5-hour
 // ceilings. Each agent kind's cost comes from its own transcripts over 7 days.
 //
 // Usage: bun budget.ts [--rotate] [--cap <n>] [--costs] [--burn [--days <n>]] [--tune]
@@ -46,7 +46,6 @@ import {
   calibrate,
   DEFAULTS,
   estimate,
-  isNight,
   resumeAt,
   target,
   type Account,
@@ -265,7 +264,6 @@ if (args.includes('--wait')) {
 }
 
 const { week, loads, sessions, kinds, k, pace, targetWph } = await pool(MINUTE);
-const night = isNight(now, config);
 
 if (week?.length && args.includes('--rotate')) {
   // Accounts with weekly quota serve in reset order; spent accounts go last.
@@ -322,7 +320,7 @@ if (pace && k.k7) {
         : 'room for more';
   const five = k.k5 ? `, 5h ceiling ${p(pace.five / k.k5)}/h` : '';
   console.log(
-    `weekly: burn ${p(burnWph)}/h; pace ${p(targetWph ?? 0)}/h${night ? ' (night)' : ''}, weekly ceiling ${pct(pace.week.ceiling)}/h${five}; ${verdict}`,
+    `weekly: burn ${p(burnWph)}/h; pace ${p(targetWph ?? 0)}/h, weekly ceiling ${pct(pace.week.ceiling)}/h${five}; ${verdict}`,
   );
 }
 

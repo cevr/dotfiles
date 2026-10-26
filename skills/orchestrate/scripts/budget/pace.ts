@@ -2,9 +2,9 @@
 // fits it. Pure: budget.ts gathers the inputs.
 //
 // - Weekly: each account's quota expires at its own reset, so the pace is the
-//   slowest burn that spends `weeklyTarget` of every account before it resets.
-//   Day hours carry the pace and night hours a `nightWeight` share of it, since
-//   no one is awake at night to answer an agent.
+//   slowest even burn that spends `weeklyTarget` of every account before it
+//   resets. Every hour carries the same pace, so the flow stays steady until
+//   the quota is spent.
 // - Rolling: quota keeps coming, as each account opens a new week at its reset.
 //   The pace never falls below an even burn of the quota in hand plus the share
 //   of each new week that opens in the next 7 days, so a pool whose accounts
@@ -29,50 +29,17 @@ export function resumeAt(accounts: Account[], now: number): number | undefined {
 }
 
 export type Config = {
-  timezone: string;
-  dayStart: number;
-  dayEnd: number;
-  nightWeight: number;
   weeklyTarget: number;
   fiveHourMax: number;
 };
 
 export const DEFAULTS: Config = {
-  timezone: 'America/Montreal',
-  dayStart: 8,
-  dayEnd: 24,
-  nightWeight: 0.25,
   weeklyTarget: 0.99,
   fiveHourMax: 0.9,
 };
 
 const HOUR = 3600e3;
 const WEEK = 7 * 24 * HOUR;
-const STEP = 5 * 60e3;
-
-const formats = new Map<string, Intl.DateTimeFormat>();
-
-function hourIn(at: number, timezone: string): number {
-  let format = formats.get(timezone);
-  if (!format) formats.set(timezone, (format = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour: 'numeric', hourCycle: 'h23' })));
-  const parts = format.formatToParts(at);
-  return Number(parts.find((p) => p.type === 'hour')?.value ?? 0);
-}
-
-export function isNight(at: number, c: Config): boolean {
-  const h = hourIn(at, c.timezone);
-  return h < c.dayStart || h >= c.dayEnd;
-}
-
-export const weight = (at: number, c: Config): number => (isNight(at, c) ? c.nightWeight : 1);
-
-/** Hours from `from` to `to`, a night hour counting `nightWeight`. */
-export function weightedHours(from: number, to: number, c: Config): number {
-  let hours = 0;
-  for (let at = from; at < to; at += STEP) hours += (weight(at, c) * Math.min(STEP, to - at)) / HOUR;
-  return hours;
-}
-
 /** Fractions of one account's week per hour, now. */
 export function weeklyPace(accounts: readonly Account[], now: number, c: Config): { floor: number; rolling: number; ceiling: number } {
   const due = accounts
@@ -84,7 +51,7 @@ export function weeklyPace(accounts: readonly Account[], now: number, c: Config)
   let ceiling = Infinity;
   for (const a of due) {
     expiring += Math.max(0, c.weeklyTarget - a.used7d);
-    floor = Math.max(floor, (expiring / weightedHours(now, a.reset7d, c)) * weight(now, c));
+    floor = Math.max(floor, expiring / ((a.reset7d - now) / HOUR));
     ceiling = Math.min(ceiling, fuel / ((a.reset7d - now) / HOUR));
     fuel += Math.min(1, a.used7d);
   }
@@ -92,7 +59,7 @@ export function weeklyPace(accounts: readonly Account[], now: number, c: Config)
     (n, a) => n + Math.max(0, c.weeklyTarget - a.used7d) + (c.weeklyTarget * Math.max(0, now + WEEK - a.reset7d)) / WEEK,
     0,
   );
-  const rolling = due.length === 0 ? 0 : (inView / weightedHours(now, now + WEEK, c)) * weight(now, c);
+  const rolling = due.length === 0 ? 0 : inView / (WEEK / HOUR);
   return { floor, rolling, ceiling };
 }
 

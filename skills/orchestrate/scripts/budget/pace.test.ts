@@ -1,17 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 
-import { admit, calibrate, DEFAULTS, estimate, fiveHourCeiling, resumeAt, target, weeklyPace, weightedHours, type Config } from './pace.ts';
+import { admit, calibrate, DEFAULTS, estimate, fiveHourCeiling, resumeAt, target, weeklyPace, type Config } from './pace.ts';
 
 const HOUR = 3600e3;
-const UTC: Config = { ...DEFAULTS, timezone: 'UTC', dayStart: 8, dayEnd: 24, nightWeight: 0.25 };
-// 2026-10-21 12:00 UTC, a day hour.
+const UTC: Config = DEFAULTS;
+// 2026-10-21 12:00 UTC.
 const NOON = Date.UTC(2026, 9, 21, 12);
-
-describe('weightedHours', () => {
-  test('a night hour counts its weight', () => {
-    expect(weightedHours(NOON, NOON + 24 * HOUR, UTC)).toBeCloseTo(16 + 8 * 0.25);
-  });
-});
 
 describe('resumeAt', () => {
   test('an account with both windows left serves now', () => {
@@ -32,12 +26,13 @@ describe('resumeAt', () => {
 });
 
 describe('weeklyPace', () => {
-  test('spends the target of an account by its reset, more by day than by night', () => {
+  test('spends the target of an account evenly by its reset, at any hour', () => {
     const accounts = [{ used7d: 0.5, reset7d: NOON + 24 * HOUR, used5h: 0 }];
     const day = weeklyPace(accounts, NOON, UTC);
-    expect(day.floor).toBeCloseTo((0.99 - 0.5) / 18);
-    const night = weeklyPace(accounts, Date.UTC(2026, 9, 22, 2), UTC);
-    expect(night.floor).toBeLessThan(day.floor);
+    expect(day.floor).toBeCloseTo((0.99 - 0.5) / 24);
+    // 02:00, ten hours before the reset: the same even burn over the hours left.
+    const late = weeklyPace(accounts, Date.UTC(2026, 9, 22, 2), UTC);
+    expect(late.floor).toBeCloseTo((0.99 - 0.5) / 10);
   });
 
   test('the ceiling counts each earlier reset as a refill', () => {
@@ -56,7 +51,7 @@ describe('weeklyPace', () => {
     ];
     const pace = weeklyPace(accounts, NOON, UTC);
     const inView = 0.96 + [5, 17, 33, 55, 65, 108].reduce((n, h) => n + (0.99 * (168 - h)) / 168, 0) + (0.99 * 2) / 168;
-    expect(pace.rolling).toBeCloseTo(inView / (7 * (16 + 8 * 0.25)));
+    expect(pace.rolling).toBeCloseTo(inView / (7 * 24));
     // The floor sees only the one account in hand, spread over its week.
     expect(pace.floor).toBeLessThan(pace.rolling / 4);
   });
