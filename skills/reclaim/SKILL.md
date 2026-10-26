@@ -46,6 +46,8 @@ For each approved category, in order:
 3. Run the command the survey printed. Use the tool's own command where there is one, and delete by path only the exact paths listed.
 4. Record `df` again. The difference is what that category freed.
 
+A folder that is a symlink target (`find ~ -maxdepth 4 -type l -lname '*<dir>*'`) is live storage moved off the main disk: empty what is safe inside it, keep the folder. A filesystem in a loop-mounted image file returns freed blocks to the host disk only after a trim: run `sudo fstrim -v <mount>` and measure the host disk after it.
+
 Agent leftovers have their own order:
 
 1. If the user keeps a transcript archive, push it first. After that, a pruned transcript can be restored.
