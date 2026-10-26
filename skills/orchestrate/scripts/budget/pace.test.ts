@@ -135,7 +135,7 @@ describe('estimate', () => {
 });
 
 describe('admit', () => {
-  const base = { targetWph: 100, project: 'gent', estimateWph: 20, night: false, c: UTC };
+  const base = { targetWph: 100, project: 'gent', estimateWph: 20, c: UTC };
   test('starts an agent that fits the pace', () => {
     expect(admit({ ...base, sessions: [{ project: 'gent', kind: 'root', sub: false, recentWph: 30 }] }).ok).toBe(true);
   });
@@ -202,10 +202,5 @@ describe('admit', () => {
   });
   test('without a pace only the cap decides', () => {
     expect(admit({ ...base, targetWph: Infinity, estimateWph: 0, sessions: [], cap: 1 })).toEqual({ ok: true, reason: 'fits: pool 0.0 MW/h of no pace yet' });
-  });
-  test('runs one agent per project at night', () => {
-    const sessions = [{ project: 'gent', kind: 'w:task', sub: true, recentWph: 5 }];
-    expect(admit({ ...base, night: true, sessions }).ok).toBe(false);
-    expect(admit({ ...base, night: true, project: 'hymn', sessions }).ok).toBe(true);
   });
 });

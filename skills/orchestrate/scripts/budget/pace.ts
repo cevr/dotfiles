@@ -33,7 +33,6 @@ export type Config = {
   dayStart: number;
   dayEnd: number;
   nightWeight: number;
-  nightAgentsPerProject: number;
   weeklyTarget: number;
   fiveHourMax: number;
   projectWeights: Record<string, number>;
@@ -65,7 +64,6 @@ export const DEFAULTS: Config = {
   dayStart: 8,
   dayEnd: 24,
   nightWeight: 0.25,
-  nightAgentsPerProject: 1,
   weeklyTarget: 0.99,
   fiveHourMax: 0.9,
   projectWeights: {},
@@ -200,19 +198,15 @@ export function admit(input: {
   sessions: readonly Session[];
   project: string;
   estimateWph: number;
-  night: boolean;
   c: Config;
   /** The most agents the pool runs at once, whatever the pace. */
   cap?: number;
 }): Decision {
-  const { targetWph, sessions, project, estimateWph, night, c, cap } = input;
+  const { targetWph, sessions, project, estimateWph, c, cap } = input;
   const burn = sessions.reduce((n, s) => n + s.recentWph, 0);
   const mine = sessions.filter((s) => s.project === project);
   const mw = (n: number) => (Number.isFinite(n) ? `${(n / 1e6).toFixed(1)} MW/h` : 'no pace yet');
   const running = (p: string) => sessions.filter((s) => s.project === p && s.sub).length;
-  if (night && running(project) >= c.nightAgentsPerProject) {
-    return { ok: false, reason: `night: ${project} already runs ${c.nightAgentsPerProject} agent(s)` };
-  }
   const agents = sessions.filter((s) => s.sub).length;
   if (cap !== undefined && agents >= cap) {
     return { ok: false, reason: `the pool runs ${agents} of its ${cap} agent(s)` };

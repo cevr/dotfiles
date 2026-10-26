@@ -205,7 +205,7 @@ if (args.includes('--admit')) {
   const est = estimate(kinds, project, kind);
   const cap = option('--cap') === undefined ? undefined : Number(option('--cap'));
   // Without a pace or cost history only the cap and the project limits decide.
-  const d = admit({ targetWph: targetWph ?? Infinity, sessions, project, estimateWph: est ?? 0, night, c: config, cap });
+  const d = admit({ targetWph: targetWph ?? Infinity, sessions, project, estimateWph: est ?? 0, c: config, cap });
   console.log(`${d.ok ? 'admit' : 'hold'}: ${d.reason}`);
   process.exit(d.ok ? 0 : 1);
 }
