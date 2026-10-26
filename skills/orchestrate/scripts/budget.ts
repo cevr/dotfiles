@@ -11,6 +11,7 @@
 // Usage: bun budget.ts [--rotate] [--cap <n>] [--costs] [--burn [--days <n>]] [--tune]
 //        bun budget.ts --resume-at
 //        bun budget.ts --admit [--cap <n>] --session <id> --cwd <dir> --type <subagent_type> --description <text>
+//        bun budget.ts --wait <ticket>
 //   --rotate  sets teamclaude's account priorities to the weekly reset order,
 //             so the account whose quota expires first serves first. The
 //             status mod runs it every minute.
@@ -26,19 +27,22 @@
 //   --resume-at  prints when the first account can serve again (ISO time; now
 //             when one can serve now), so a quota wait sleeps until then.
 //   --admit   decides one new agent (the guard-agent hook): exit 0 to start
-//             it, 1 to hold it, with the reason on stdout.
+//             it, 1 to hold it, with the reason on stdout. A held agent waits
+//             in the queue (budget/queue.ts) as a ticket.
+//   --wait    keeps a ticket alive and exits 0 when its turn comes, 3 when it
+//             is gone. The held session runs it as a background command.
 // Exits 1 when the active agents reach the cap, 2 when a host is unreachable.
 // Settings: ~/.config/orchestrate/budget.json overrides budget/pace.ts DEFAULTS. On
 // both hosts it links to orchestrate/budget.json in dotfiles.
 
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { ceilingOf, hostBurn, report, tune, type HostBurn } from './budget/burn.ts';
-import { hostLoad, kindFor, projectFor, type HostLoad } from './budget/host.ts';
+import { hostLoad, kindFor, projectFor, queuePath, type HostLoad } from './budget/host.ts';
 import {
-  admit,
   calibrate,
   DEFAULTS,
   estimate,
@@ -49,6 +53,7 @@ import {
   type Config,
   type Sample,
 } from './budget/pace.ts';
+import { live, order, serve, update } from './budget/queue.ts';
 
 const MINUTE = 60e3;
 const UNMEASURED_CAP = 8;
@@ -117,17 +122,17 @@ async function remote<T>(alias: string, source: string, flags: string): Promise<
 }
 const failure = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-// A remote host's load is kept a minute: the guard asks on every Agent call.
-async function remoteLoad(alias: string): Promise<Load> {
+// A remote host's load is kept `maxAge`: the guard asks on every Agent call, a waiter every 10 s.
+async function remoteLoad(alias: string, now: number, maxAge: number): Promise<Load> {
   const cached = join(CACHE, `remote-${alias.replace(/[^\w.-]/g, '_')}.json`);
   const hit = readJson<{ at: number; load: Load } | undefined>(cached, undefined);
-  if (hit && now - hit.at < MINUTE) return hit.load;
+  if (hit && now - hit.at < maxAge) return hit.load;
   try {
     const load: Load = { ...(await remote<HostLoad>(alias, HOST_SOURCE, '--deadline-ms 3000')), host: alias };
     writeJson(cached, { at: now, load });
     return load;
   } catch (e) {
-    return { host: alias, sessions: [], w1h: 0, kinds: [], complete: false, error: failure(e) };
+    return { host: alias, sessions: [], w1h: 0, kinds: [], complete: false, queue: [], error: failure(e) };
   }
 }
 
@@ -154,8 +159,8 @@ if (args.includes('--tune')) {
   process.exit(0);
 }
 
-const week = accounts();
 if (args.includes('--resume-at')) {
+  const week = accounts();
   const at = week && resumeAt(week, now);
   if (at === undefined) {
     console.error('no account reset is known: teamclaude status failed or lists no quota');
@@ -164,26 +169,102 @@ if (args.includes('--resume-at')) {
   console.log(new Date(at).toISOString());
   process.exit(0);
 }
-const loads: Load[] = [hostLoad(now), ...(await Promise.all(remotes.map(remoteLoad)))];
-const sessions = loads.flatMap((l) => l.sessions);
-const kinds = loads.flatMap((l) => l.kinds);
-const w1h = loads.reduce((n, l) => n + l.w1h, 0);
 
-// ── Calibration ──
+// ── The pool now ──
 
 const samplesPath = join(CACHE, 'samples.json');
-const samples = readJson<Sample[]>(samplesPath, []).filter((s) => s.at > now - 2 * 60 * MINUTE);
-if (week?.length) {
-  samples.push({ at: now, used7d: week.map((a) => a.used7d), used5h: week.map((a) => a.used5h), w1h });
-  writeJson(samplesPath, samples);
-}
-const k = calibrate(samples);
-// Until an hour of samples exists, teamclaude's own weekly forecast stands in.
-const forecast = week?.reduce((n, a) => n + a.perHour, 0) ?? 0;
-if (!k.k7 && forecast > 0 && w1h > 0) k.k7 = forecast / w1h;
 
-const pace = week?.length ? target(week, now, config, k) : undefined;
-const targetWph = pace?.targetWph;
+/** The accounts, every host's load and the pace, with remote loads at most `remoteAge` old. */
+async function pool(remoteAge: number) {
+  const now = Date.now();
+  const week = accounts();
+  const loads: Load[] = [hostLoad(now), ...(await Promise.all(remotes.map((a) => remoteLoad(a, now, remoteAge))))];
+  const sessions = loads.flatMap((l) => l.sessions);
+  const kinds = loads.flatMap((l) => l.kinds);
+  const w1h = loads.reduce((n, l) => n + l.w1h, 0);
+  // Calibration takes a sample a minute, however often a waiter reads the pool,
+  // and only with every host read: one host's tokens against the whole pool's
+  // quota rise would put the pool's burn several times too high.
+  const samples = readJson<Sample[]>(samplesPath, []).filter((s) => s.at > now - 2 * 60 * MINUTE);
+  if (week?.length && !loads.some((l) => l.error) && (samples.at(-1)?.at ?? 0) <= now - MINUTE) {
+    samples.push({ at: now, used7d: week.map((a) => a.used7d), used5h: week.map((a) => a.used5h), w1h });
+    writeJson(samplesPath, samples);
+  }
+  const k = calibrate(samples);
+  // Until an hour of samples exists, teamclaude's own weekly forecast stands in.
+  const forecast = week?.reduce((n, a) => n + a.perHour, 0) ?? 0;
+  if (!k.k7 && forecast > 0 && w1h > 0) k.k7 = forecast / w1h;
+  const pace = week?.length ? target(week, now, config, k) : undefined;
+  // The other hosts' live tickets; this host's are read under the queue's lock.
+  const remoteTickets = loads.slice(1).flatMap((l) => (l.queue ?? []).filter((t) => live(t, now)));
+  return { now, week, loads, sessions, kinds, w1h, k, pace, targetWph: pace?.targetWph, remoteTickets };
+}
+
+// Without a pace, an unmeasured pool admits no more than UNMEASURED_CAP agents.
+const capOf = (targetWph: number | undefined): number | undefined =>
+  option('--cap') !== undefined ? Number(option('--cap')) : targetWph === undefined ? UNMEASURED_CAP : undefined;
+
+// ── Admission ──
+
+if (args.includes('--admit')) {
+  const p = await pool(MINUTE);
+  const session = option('--session') ?? '';
+  const project = projectFor(session, option('--cwd') ?? process.cwd());
+  const description = option('--description') ?? '';
+  const kind = kindFor(option('--type'), description);
+  const estimateWph = estimate(p.kinds, project, kind) ?? 0;
+  const out = update(queuePath, p.now, (mine) => {
+    // The same Agent call again: the session's ticket for this type and description.
+    let ticket = mine.find((t) => t.session === session && t.kind === kind && t.description === description);
+    if (ticket?.granted !== undefined) {
+      ticket.started ??= p.now;
+      return { ok: true, ticket, reason: `ticket ${ticket.id}'s turn came` };
+    }
+    if (!ticket) {
+      ticket = { id: randomUUID().slice(0, 8), session, project, kind, description, estimateWph, host: hostname(), at: p.now, beat: p.now };
+      mine.push(ticket);
+    }
+    ticket.beat = p.now;
+    const d = serve({ ticket, tickets: [...mine, ...p.remoteTickets], sessions: p.sessions, targetWph: p.targetWph ?? Infinity, cap: capOf(p.targetWph) });
+    if (d.ok) ticket.granted = ticket.started = p.now;
+    return { ...d, ticket };
+  });
+  console.log(`${out.ok ? 'admit' : 'hold'}: ${out.reason}`);
+  if (!out.ok) {
+    console.log(
+      `Queued as ticket ${out.ticket.id}. Run \`bun ${import.meta.path} --wait ${out.ticket.id}\` as a background command (run_in_background), and go on with other work. It exits when this agent's turn comes: then call Agent again at once, with the same subagent_type and description. Set no timer and do not poll.`,
+    );
+  }
+  process.exit(out.ok ? 0 : 1);
+}
+
+if (args.includes('--wait')) {
+  const id = option('--wait') ?? '';
+  let said = '';
+  for (;;) {
+    const p = await pool(15e3);
+    const out = update(queuePath, p.now, (mine) => {
+      const ticket = mine.find((t) => t.id === id);
+      if (!ticket || ticket.granted !== undefined) return { ticket };
+      ticket.beat = p.now;
+      const d = serve({ ticket, tickets: [...mine, ...p.remoteTickets], sessions: p.sessions, targetWph: p.targetWph ?? Infinity, cap: capOf(p.targetWph) });
+      if (d.ok) ticket.granted = p.now;
+      return { ticket, reason: d.reason };
+    });
+    if (!out.ticket) {
+      console.log(`ticket ${id} is gone: no waiter kept it alive for 2 minutes, or its grant passed 5 minutes unused. Call Agent again to queue it anew.`);
+      process.exit(3);
+    }
+    if (out.ticket.granted !== undefined) {
+      console.log(`granted: ticket ${id}'s turn came. Call Agent now with the same subagent_type and description ("${out.ticket.description}"). The grant holds 5 minutes.`);
+      process.exit(0);
+    }
+    if (out.reason && out.reason !== said) console.log(`waiting: ${(said = out.reason)}`);
+    await Bun.sleep(10e3);
+  }
+}
+
+const { week, loads, sessions, kinds, k, pace, targetWph } = await pool(MINUTE);
 const night = isNight(now, config);
 
 if (week?.length && args.includes('--rotate')) {
@@ -193,19 +274,6 @@ if (week?.length && args.includes('--rotate')) {
   order.forEach((a, i) => {
     if (a.priority !== i) Bun.spawnSync(['teamclaude', 'priority', a.name, String(i)], { stdout: 'ignore' });
   });
-}
-
-// ── Admission ──
-
-if (args.includes('--admit')) {
-  const project = projectFor(option('--session'), option('--cwd') ?? process.cwd());
-  const kind = kindFor(option('--type'), option('--description'));
-  const est = estimate(kinds, project, kind);
-  const cap = option('--cap') === undefined ? undefined : Number(option('--cap'));
-  // Without a pace or cost history only the cap and the project limits decide.
-  const d = admit({ targetWph: targetWph ?? Infinity, sessions, project, estimateWph: est ?? 0, c: config, cap });
-  console.log(`${d.ok ? 'admit' : 'hold'}: ${d.reason}`);
-  process.exit(d.ok ? 0 : 1);
 }
 
 // ── Report ──
@@ -255,6 +323,14 @@ if (pace && k.k7) {
   const five = k.k5 ? `, 5h ceiling ${p(pace.five / k.k5)}/h` : '';
   console.log(
     `weekly: burn ${p(burnWph)}/h; pace ${p(targetWph ?? 0)}/h${night ? ' (night)' : ''}, weekly ceiling ${pct(pace.week.ceiling)}/h${five}; ${verdict}`,
+  );
+}
+
+const tickets = loads.flatMap((l) => (l.queue ?? []).filter((t) => live(t, now)));
+if (tickets.length) {
+  const waiting = order(tickets, sessions);
+  console.log(
+    `queue: ${waiting.map((t) => `${t.project} ${t.kind} (${t.host})`).join(', ') || 'none waiting'}; ${tickets.length - waiting.length} granted`,
   );
 }
 

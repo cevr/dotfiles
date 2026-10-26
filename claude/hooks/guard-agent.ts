@@ -3,9 +3,10 @@
 // A general-purpose, claude or untyped agent loads every tool and MCP server
 // before its first turn (about 88k tokens against 34k for orchestrate-worker), so
 // it runs as `orchestrate-worker` instead. A new agent starts only when
-// orchestrate's `budget.ts --admit` says its expected cost fits the pool's pace
-// and its project's share. CLAUDE_FULL_AGENT=1 lets a full agent through;
-// ORCHESTRATE_CAP caps the pool's running agents on top of that.
+// orchestrate's `budget.ts --admit` says its turn in the agent queue came and its
+// expected cost fits the pool's pace. A held agent stays queued: the session runs
+// the waiter the reason names in the background, and calls Agent again when it
+// exits. CLAUDE_FULL_AGENT=1 lets a full agent through.
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -25,13 +26,11 @@ const reply = (output: Record<string, unknown>) => {
 
 const asked = toolInput.subagent_type as string | undefined;
 const lean = FULL.has(asked) && process.env.CLAUDE_FULL_AGENT !== '1';
-const cap = process.env.ORCHESTRATE_CAP;
 const run = Bun.spawnSync(
   [
     'bun',
     BUDGET,
     '--admit',
-    ...(cap ? ['--cap', cap] : []),
     '--session',
     input.session_id ?? '',
     '--cwd',
@@ -47,7 +46,7 @@ const run = Bun.spawnSync(
 if (run.exitCode === 1) {
   reply({
     permissionDecision: 'deny',
-    permissionDecisionReason: `guard-agent: the Claude pool's pace holds this agent.\n${run.stdout.toString().trim()}\nWait for a running agent's notification, or stop a finished one, then start this agent.`,
+    permissionDecisionReason: `guard-agent: the Claude pool's pace holds this agent.\n${run.stdout.toString().trim()}`,
   });
 }
 

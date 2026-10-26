@@ -15,7 +15,7 @@
 // A session's project is its label (label.ts, from its herdr workspace), else
 // its orchestrate run, else its repository. A subagent takes its session's.
 
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -24,6 +24,8 @@ const HOUR = 60 * MINUTE;
 const LOOKBACK = 7 * 24 * HOUR;
 const ACTIVE = 10 * MINUTE;
 const RECENT = 30 * MINUTE;
+// A rate needs this much history: one turn of a new agent is not its hour.
+const MIN_SPAN = 5 * MINUTE;
 
 type Turn = [at: number, w: number];
 type FileTally = {
@@ -39,12 +41,32 @@ type FileTally = {
   turns: Turn[];
   // The last reply ended the turn: a subagent that has reported back.
   done?: boolean;
+  // The first turn, when this run read the file from its start: the agent's age.
+  firstAt?: number;
 };
 type Cache = { files: Record<string, FileTally> };
 
-export type Session = { project: string; kind: string; sub: boolean; recentWph: number };
+/** `session` is the root session's id: a subagent's owner, or the root itself. */
+export type Session = { session: string; project: string; kind: string; sub: boolean; recentWph: number };
 export type KindCost = { project: string; kind: string; agents: number; wph: number[] };
-export type HostLoad = { host: string; sessions: Session[]; w1h: number; kinds: KindCost[]; complete: boolean };
+/**
+ * One request in the agent queue (budget/queue.ts). `beat` is the waiter's last
+ * sign of life; `granted` is when its turn came, and `started` when its agent did.
+ */
+export type Ticket = {
+  id: string;
+  session: string;
+  project: string;
+  kind: string;
+  description: string;
+  estimateWph: number;
+  host: string;
+  at: number;
+  beat: number;
+  granted?: number;
+  started?: number;
+};
+export type HostLoad = { host: string; sessions: Session[]; w1h: number; kinds: KindCost[]; complete: boolean; queue: Ticket[] };
 
 const args = process.argv.slice(2);
 const option = (name: string): string | undefined => {
@@ -52,7 +74,7 @@ const option = (name: string): string | undefined => {
   return at >= 0 ? args[at + 1] : undefined;
 };
 const root = option('--projects') ?? join(homedir(), '.claude', 'projects');
-const deadline = Date.now() + Number(option('--deadline-ms') ?? 6000);
+const scanMs = Number(option('--deadline-ms') ?? 6000);
 const cachePath = join(homedir(), '.cache', 'orchestrate', 'host-costs.json');
 
 type Usage = Record<string, number | Record<string, number> | undefined>;
@@ -154,8 +176,9 @@ function appended(file: string, offset: number): { text: string; offset: number 
 }
 
 function tally(file: string, t: FileTally, now: number): void {
+  const fromStart = t.offset === 0;
   const { text, offset } = appended(file, t.offset);
-  if (offset < t.offset) Object.assign(t, { totalW: 0, activeMs: 0, lastAt: 0, lastId: undefined, lastW: 0, turns: [], done: undefined });
+  if (offset < t.offset) Object.assign(t, { totalW: 0, activeMs: 0, lastAt: 0, lastId: undefined, lastW: 0, turns: [], done: undefined, firstAt: undefined });
   t.offset = offset;
   for (const line of text.split('\n')) {
     if (t.cwd === undefined && line.includes('"cwd"')) t.cwd = line.match(/"cwd":"([^"]+)"/)?.[1];
@@ -187,11 +210,22 @@ function tally(file: string, t: FileTally, now: number): void {
     t.lastId = d.message.id;
     t.lastW = w;
     t.turns.push([at, w]);
+    if (fromStart) t.firstAt ??= at;
   }
   t.turns = t.turns.filter(([at]) => at >= now - HOUR);
 }
 
-export function hostLoad(now = Date.now()): HostLoad {
+export const queuePath = join(homedir(), '.cache', 'orchestrate', 'queue.json');
+/** This host's queue as written; budget/queue.ts drops the stale tickets. */
+export function queueOf(): Ticket[] {
+  try {
+    return (JSON.parse(readFileSync(queuePath, 'utf8')) as { tickets?: Ticket[] }).tickets ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export function hostLoad(now = Date.now(), deadline = Date.now() + scanMs): HostLoad {
   let cache: Cache = { files: {} };
   try {
     cache = JSON.parse(readFileSync(cachePath, 'utf8'));
@@ -216,7 +250,10 @@ export function hostLoad(now = Date.now()): HostLoad {
     files[file] = t;
   }
   mkdirSync(dirname(cachePath), { recursive: true });
-  writeFileSync(cachePath, JSON.stringify({ files }));
+  // Several waiters scan at once: a reader never sees half a file.
+  const tmp = `${cachePath}.${process.pid}`;
+  writeFileSync(tmp, JSON.stringify({ files }));
+  renameSync(tmp, cachePath);
 
   const sessions: Session[] = [];
   const kinds = new Map<string, KindCost>();
@@ -226,8 +263,12 @@ export function hostLoad(now = Date.now()): HostLoad {
     w1h += t.turns.reduce((n, [, w]) => n + w, 0);
     // A subagent that has reported back holds no slot, though it wrote within ACTIVE.
     if (t.lastAt >= now - ACTIVE && !(t.sub && t.done)) {
-      const recent = t.turns.filter(([at]) => at >= now - RECENT).reduce((n, [, w]) => n + w, 0);
-      sessions.push({ project, kind: t.kind, sub: t.sub, recentWph: Math.round(recent * (HOUR / RECENT)) });
+      const recent = t.turns.filter(([at]) => at >= now - RECENT);
+      // A subagent younger than the window burns over its own age, not the whole window.
+      const age = t.sub && t.firstAt !== undefined ? now - t.firstAt : RECENT;
+      const span = Math.min(RECENT, Math.max(MIN_SPAN, age));
+      const w = recent.reduce((n, [, x]) => n + x, 0);
+      sessions.push({ session: sessionOf(file), project, kind: t.kind, sub: t.sub, recentWph: Math.round(w * (HOUR / span)) });
     }
     // An agent's cost per active hour, once it has run 5 minutes.
     if (t.sub && t.activeMs >= 5 * MINUTE) {
@@ -238,8 +279,8 @@ export function hostLoad(now = Date.now()): HostLoad {
       kinds.set(key, k);
     }
   }
-  return { host: hostname(), sessions, w1h: Math.round(w1h), kinds: [...kinds.values()], complete };
+  return { host: hostname(), sessions, w1h: Math.round(w1h), kinds: [...kinds.values()], complete, queue: queueOf() };
 }
 
 if (import.meta.main && existsSync(root)) console.log(JSON.stringify(hostLoad()));
-else if (import.meta.main) console.log(JSON.stringify({ host: hostname(), sessions: [], w1h: 0, kinds: [], complete: true }));
+else if (import.meta.main) console.log(JSON.stringify({ host: hostname(), sessions: [], w1h: 0, kinds: [], complete: true, queue: queueOf() }));

@@ -135,35 +135,23 @@ describe('estimate', () => {
 });
 
 describe('admit', () => {
-  const base = { targetWph: 100, project: 'gent', estimateWph: 20, c: UTC };
+  const base = { targetWph: 100, estimateWph: 20, reserved: [] };
+  const root = (recentWph: number) => ({ session: 'r', project: 'gent', kind: 'root', sub: false, recentWph });
+  const sub = (recentWph: number) => ({ session: 'r', project: 'gent', kind: 'w:task', sub: true, recentWph });
   test('starts an agent that fits the pace', () => {
-    expect(admit({ ...base, sessions: [{ project: 'gent', kind: 'root', sub: false, recentWph: 30 }] }).ok).toBe(true);
+    expect(admit({ ...base, sessions: [root(30)] }).ok).toBe(true);
   });
   test('holds an agent that would pass the pace', () => {
-    expect(admit({ ...base, sessions: [{ project: 'hymn', kind: 'root', sub: false, recentWph: 90 }] }).ok).toBe(false);
+    expect(admit({ ...base, sessions: [root(90)] }).ok).toBe(false);
   });
-  test("holds a project over its share once the pool nears the pace", () => {
-    const sessions = [
-      { project: 'gent', kind: 'w:task', sub: true, recentWph: 50 },
-      { project: 'hymn', kind: 'root', sub: false, recentWph: 15 },
-    ];
-    expect(admit({ ...base, sessions }).ok).toBe(false);
+  test('counts a granted agent at its estimate before its burn shows', () => {
+    expect(admit({ ...base, sessions: [root(50)], reserved: [{ estimateWph: 40 }] }).ok).toBe(false);
   });
-  test('lets a project borrow while the pool has room', () => {
-    const sessions = [{ project: 'gent', kind: 'w:task', sub: true, recentWph: 55 }, { project: 'hymn', kind: 'root', sub: false, recentWph: 0 }];
-    expect(admit({ ...base, sessions }).ok).toBe(true);
-  });
-  test("a project's first agent is never held by its share", () => {
-    const sessions = [
-      { project: 'gent', kind: 'root', sub: false, recentWph: 50 },
-      { project: 'hymn', kind: 'w:task', sub: true, recentWph: 15 },
-    ];
-    expect(admit({ ...base, sessions }).ok).toBe(true);
-  });
-  test('the cap holds every agent once the pool runs that many', () => {
-    const sessions = [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 5 }, { project: 'hymn', kind: 'w:task', sub: true, recentWph: 5 }];
+  test('the cap holds every agent once the pool runs that many, granted ones included', () => {
+    const sessions = [sub(5), sub(5)];
     expect(admit({ ...base, sessions, cap: 3 }).ok).toBe(true);
     expect(admit({ ...base, sessions, cap: 2 }).ok).toBe(false);
+    expect(admit({ ...base, sessions, reserved: [{ estimateWph: 0 }], cap: 3 }).ok).toBe(false);
   });
   test('without a pace only the cap decides', () => {
     expect(admit({ ...base, targetWph: Infinity, estimateWph: 0, sessions: [], cap: 1 })).toEqual({ ok: true, reason: 'fits: pool 0.0 MW/h of no pace yet' });

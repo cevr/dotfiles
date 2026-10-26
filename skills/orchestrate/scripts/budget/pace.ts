@@ -35,7 +35,6 @@ export type Config = {
   nightWeight: number;
   weeklyTarget: number;
   fiveHourMax: number;
-  projectWeights: Record<string, number>;
 };
 
 export const DEFAULTS: Config = {
@@ -45,7 +44,6 @@ export const DEFAULTS: Config = {
   nightWeight: 0.25,
   weeklyTarget: 0.99,
   fiveHourMax: 0.9,
-  projectWeights: {},
 };
 
 const HOUR = 3600e3;
@@ -151,7 +149,7 @@ export function target(accounts: readonly Account[], now: number, c: Config, k: 
   return { week, five, targetWph: Math.max(0, Math.min(...limits)) };
 }
 
-export type Session = { project: string; kind: string; sub: boolean; recentWph: number };
+export type Session = { session: string; project: string; kind: string; sub: boolean; recentWph: number };
 export type KindCost = { project: string; kind: string; agents: number; wph: number[] };
 
 const median = (xs: number[]): number | undefined => {
@@ -171,35 +169,28 @@ export function estimate(kinds: readonly KindCost[], project: string, kind: stri
 
 export type Decision = { ok: boolean; reason: string };
 
+/**
+ * Whether one more agent fits the pace. `reserved` are agents whose turn came
+ * but whose burn the transcripts do not show yet. Which agent asks is the
+ * queue's choice (budget/queue.ts), so this sees only the pool.
+ */
 export function admit(input: {
   targetWph: number;
   sessions: readonly Session[];
-  project: string;
+  reserved: readonly { estimateWph: number }[];
   estimateWph: number;
-  c: Config;
   /** The most agents the pool runs at once, whatever the pace. */
   cap?: number;
 }): Decision {
-  const { targetWph, sessions, project, estimateWph, c, cap } = input;
-  const burn = sessions.reduce((n, s) => n + s.recentWph, 0);
-  const mine = sessions.filter((s) => s.project === project);
+  const { targetWph, sessions, reserved, estimateWph, cap } = input;
+  const burn = sessions.reduce((n, s) => n + s.recentWph, 0) + reserved.reduce((n, r) => n + r.estimateWph, 0);
   const mw = (n: number) => (Number.isFinite(n) ? `${(n / 1e6).toFixed(1)} MW/h` : 'no pace yet');
-  const running = (p: string) => sessions.filter((s) => s.project === p && s.sub).length;
-  const agents = sessions.filter((s) => s.sub).length;
+  const agents = sessions.filter((s) => s.sub).length + reserved.length;
   if (cap !== undefined && agents >= cap) {
     return { ok: false, reason: `the pool runs ${agents} of its ${cap} agent(s)` };
   }
   if (burn + estimateWph > targetWph) {
     return { ok: false, reason: `pool burns ${mw(burn)}; this agent adds about ${mw(estimateWph)}; the pace is ${mw(targetWph)}` };
-  }
-  // A project's share binds only once the pool is 80% of the way to its pace,
-  // and never on its first agent.
-  const projects = new Set([...sessions.map((s) => s.project), project]);
-  const weightOf = (p: string) => c.projectWeights[p] ?? 1;
-  const share = (targetWph * weightOf(project)) / [...projects].reduce((n, p) => n + weightOf(p), 0);
-  const ours = mine.reduce((n, s) => n + s.recentWph, 0);
-  if (running(project) > 0 && ours + estimateWph > share && burn + estimateWph > 0.8 * targetWph) {
-    return { ok: false, reason: `${project} burns ${mw(ours)} of its ${mw(share)} share while the pool nears its pace` };
   }
   return { ok: true, reason: `fits: pool ${mw(burn + estimateWph)} of ${mw(targetWph)}` };
 }
