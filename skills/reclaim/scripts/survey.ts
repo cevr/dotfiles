@@ -43,6 +43,9 @@ const KEEP_SINCE = Date.parse(flag('--keep-since', '')) || Infinity;
 const TRANSCRIPT_CUTOFF = Math.min(NOW - TRANSCRIPT_DAYS * DAY, KEEP_SINCE);
 
 const items: Item[] = [];
+// macOS keeps the data volume and /tmp under these names; Linux under / and /tmp.
+const DATA = existsSync('/System/Volumes/Data') ? '/System/Volumes/Data' : '/';
+const TMP = existsSync('/private/tmp') ? '/private/tmp' : '/tmp';
 const home = (p: string) => p.replace(/^~/, HOME);
 const tilde = (p: string) => p.replace(HOME, '~');
 const exists = (p: string) => existsSync(p);
@@ -104,15 +107,15 @@ const CACHES: { what: string; paths: string[]; command: string; busy?: RegExp; n
   { what: 'Bun install cache', paths: ['~/.bun/install/cache', '~/Library/Caches/bun'], command: 'bun pm cache rm', busy: /\bbun (install|add|i)\b/, note: "node_modules are clones of it: df frees less than du says" },
   { what: 'npm cache', paths: ['~/.npm/_cacache'], command: 'npm cache clean --force', busy: /\bnpm (install|ci|i)\b/ },
   { what: 'pnpm store', paths: [pnpmStore || '~/Library/pnpm/store'], command: 'pnpm store prune', busy: /\bpnpm (install|add|i)\b/, note: 'keep PNPM_HOME: global binaries' },
-  { what: 'Yarn cache', paths: ['~/Library/Caches/Yarn'], command: 'yarn cache clean' },
+  { what: 'Yarn cache', paths: ['~/Library/Caches/Yarn', '~/.cache/yarn'], command: 'yarn cache clean' },
   { what: 'uv cache', paths: ['~/.cache/uv'], command: 'uv cache prune', busy: /\buvx? /, note: 'uvx tool environments live here; restart uvx tools after a clean' },
-  { what: 'pip cache', paths: ['~/Library/Caches/pip'], command: 'pip3 cache purge' },
+  { what: 'pip cache', paths: ['~/Library/Caches/pip', '~/.cache/pip'], command: 'pip3 cache purge' },
   { what: 'Homebrew downloads', paths: ['~/Library/Caches/Homebrew'], command: 'brew cleanup --prune=all', busy: /\bbrew / },
   { what: 'Gradle caches', paths: ['~/.gradle/caches'], command: 'rm -rf ~/.gradle/caches', busy: /GradleDaemon/ },
   { what: 'CocoaPods cache', paths: ['~/Library/Caches/CocoaPods'], command: 'pod cache clean --all' },
-  { what: 'Go build cache', paths: ['~/Library/Caches/go-build'], command: 'go clean -cache' },
+  { what: 'Go build cache', paths: ['~/Library/Caches/go-build', '~/.cache/go-build'], command: 'go clean -cache' },
   { what: 'Turborepo local cache', paths: ['~/.cache/turbo'], command: 'rm -rf ~/.cache/turbo', busy: /\bturbo /, note: 'the next gate of each repo misses the cache once' },
-  { what: 'Playwright browsers', paths: ['~/Library/Caches/ms-playwright'], command: 'npx playwright uninstall --all', busy: /playwright/i, note: 'reinstall with npx playwright install' },
+  { what: 'Playwright browsers', paths: ['~/Library/Caches/ms-playwright', '~/.cache/ms-playwright'], command: 'npx playwright uninstall --all', busy: /playwright/i, note: 'reinstall with npx playwright install' },
   { what: 'Puppeteer browsers', paths: ['~/.cache/puppeteer'], command: 'rm -rf ~/.cache/puppeteer' },
   { what: 'node-gyp and electron-builder caches', paths: ['~/Library/Caches/node-gyp', '~/Library/Caches/electron-builder'], command: 'rm -rf <paths>' },
   { what: 'Xcode DerivedData', paths: ['~/Library/Developer/Xcode/DerivedData'], command: 'rm -rf ~/Library/Developer/Xcode/DerivedData', busy: /Xcode\.app\/Contents\/MacOS\/Xcode/ },
@@ -193,7 +196,7 @@ const subagents = agentFiles((p) => p.includes(`${sep}subagents${sep}`), TRANSCR
 add({ tier: 'A', category: 'agent leftovers', what: `Claude subagent transcripts before ${cutoff} (${subagents.paths.length})`, paths: subagents.paths.length ? [home('~/.claude/projects')] : [], bytes: subagents.bytes, command: `${prune} --before ${cutoff} --apply`, note: 'push the transcript archive first, if one is set up' });
 const results = agentFiles((p) => p.includes(`${sep}tool-results${sep}`), TRANSCRIPT_CUTOFF);
 add({ tier: 'A', category: 'agent leftovers', what: `Claude tool-result spills before ${cutoff} (${results.paths.length})`, paths: results.paths.length ? [home('~/.claude/projects')] : [], bytes: results.bytes, command: `${prune} --before ${cutoff} --apply` });
-const scratchRoot = '/private/tmp';
+const scratchRoot = TMP;
 {
   const stale: string[] = [];
   for (const user of ls(scratchRoot).filter((e) => /^claude-\d+$/.test(e.name)))
@@ -274,6 +277,20 @@ for (const root of ROOTS)
     if (idle >= IDLE_DAYS && !busy) add({ tier: 'A', category: 'idle node_modules', what: `${name}: node_modules, project idle ${idle} days`, paths: nodeModules(repo.path), idleDays: idle, command: 'rm -rf <paths> (reinstall with the lockfile)', note: 'a warm source for clones loses its install' });
   }
 
+// ── Temp: tool caches that rebuild, and folders nothing touched lately ──
+const TEMP_CACHES = /^(node-compile-cache|playwright-transform-cache-\d+|bunx-\d+-.+|jiti|v8-compile-cache-\d+)$/;
+const tempCaches = ls(TMP).filter((e) => TEMP_CACHES.test(e.name)).map((e) => join(TMP, e.name));
+add({ tier: 'A', category: 'stale temp', what: `Tool caches in ${TMP} (${tempCaches.length})`, paths: tempCaches, command: 'rm -rf <paths>', note: 'node, playwright and bunx rebuild them' });
+const staleTemp = ls(TMP)
+  .filter((e) => !TEMP_CACHES.test(e.name) && !/^claude-\d+$/.test(e.name) && !e.name.startsWith('.') && !e.isSymbolicLink())
+  .map((e) => join(TMP, e.name))
+  .filter((p) => !inUse(p) && !touchedWithin(p, TRANSCRIPT_DAYS));
+if (staleTemp.length) {
+  const sized = staleTemp.map((p) => ({ p, bytes: du([p]) })).sort((a, b) => b.bytes - a.bytes);
+  add({ tier: 'C', category: 'stale temp', what: `${TMP} entries untouched ${TRANSCRIPT_DAYS}+ days (${staleTemp.length}); largest: ${sized.slice(0, 6).map((s) => `${basename(s.p)} ${(s.bytes / GIB).toFixed(1)}G`).join(', ')}`, paths: staleTemp, bytes: sized.reduce((s, x) => s + x.bytes, 0), command: 'rm -rf <paths>, after asking whoever made them', note: 'agents keep work data in temp: ask before removing' });
+}
+add({ tier: 'C', category: 'trash', what: 'The Trash', paths: ['~/.local/share/Trash', '~/.Trash'].map(home), command: 'empty it, after a separate yes', note: 'a macOS Trash reads empty without Full Disk Access' });
+
 // ── Tier B: costly to get back ──
 const runtimes = sh(['xcrun', 'simctl', 'runtime', 'list']).split('\n').filter((l) => /\(Ready\)/.test(l));
 if (runtimes.length) {
@@ -283,8 +300,21 @@ if (runtimes.length) {
 add({ tier: 'B', category: 'android', what: 'Android SDK', paths: [home('~/Library/Android/sdk')], command: 'Android Studio > SDK Manager', note: 'system images re-download' });
 add({ tier: 'B', category: 'android', what: 'Android emulators (AVDs)', paths: [home('~/.android/avd')], command: 'avdmanager delete avd -n <name>', note: 'emulator data goes' });
 add({ tier: 'B', category: 'ai models', what: 'Local AI models', paths: ['~/.ollama/models', '~/.cache/huggingface', '~/.cache/lm-studio'].map(home), command: 'ollama rm <model> / hf cache rm <id>', note: 'check which model an app uses first' });
-const docker = sh(['docker', 'system', 'df']);
-if (docker) items.push({ tier: 'B', category: 'docker', what: 'Docker images, volumes and build cache', paths: [], bytes: 0, command: 'docker builder prune; docker image prune', note: docker.split('\n').slice(1, 5).join(' | ') });
+// Docker: what it says each kind could give back (RECLAIMABLE), unused by any container.
+const UNITS: Record<string, number> = { B: 1, kB: 1e3, KB: 1e3, MB: 1e6, GB: 1e9, TB: 1e12 };
+const DOCKER: Record<string, { what: string; command: string; note: string }> = {
+  Images: { what: 'Docker images no container uses', command: 'docker image prune -a', note: 'pulled or built again on the next run' },
+  'Build Cache': { what: 'Docker build cache', command: 'docker builder prune -a', note: 'the next image build runs cold' },
+  'Local Volumes': { what: 'Docker volumes no container uses', command: 'docker volume prune', note: 'volumes can hold databases: ask per volume' },
+};
+for (const line of sh(['docker', 'system', 'df']).split('\n').slice(1)) {
+  const kind = Object.keys(DOCKER).find((k) => line.startsWith(k));
+  const reclaim = /([\d.]+)\s*([kKMGT]?B)\s*(\(\d+%\))?\s*$/.exec(line);
+  if (!kind || !reclaim) continue;
+  const bytes = Number(reclaim[1]) * (UNITS[reclaim[2]!] ?? 0);
+  const d = DOCKER[kind]!;
+  if (bytes >= 50 * 1024 ** 2) items.push({ tier: kind === 'Local Volumes' ? 'C' : 'B', category: 'docker', what: d.what, paths: [], bytes, command: d.command, note: d.note });
+}
 
 // ── Tier C: folders beside the checkouts, and big files in the personal folders ──
 const repoPaths = ROOTS.flatMap((root) => checkouts(root, 3, false)).map((c) => c.path);
@@ -299,7 +329,7 @@ for (const file of sh(['find', ...PERSONAL, '-type', 'f', '-size', '+500M']).spl
   add({ tier: 'C', category: 'big files', what: tilde(file), paths: [file], idleDays: idleDays(statSync(file).mtimeMs), command: 'move to the Trash, item by item', note: /\.(dmg|pkg|xip|apk|ipa)$/i.test(file) ? 'an installer: check its app is installed' : undefined });
 
 // ── Report ──
-const df = sh(['df', '-k', '/System/Volumes/Data']).split('\n')[1]?.trim().split(/\s+/) ?? [];
+const df = sh(['df', '-k', DATA]).split('\n')[1]?.trim().split(/\s+/) ?? [];
 const free = Number(df[3] ?? 0) * 1024;
 const size = Number(df[1] ?? 0) * 1024;
 const gib = (n: number) => `${(n / 1024 ** 3).toFixed(1)} GiB`;

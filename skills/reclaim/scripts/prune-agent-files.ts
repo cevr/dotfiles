@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 // Delete what Claude Code leaves behind once its sessions are done: subagent
 // transcripts and tool-result spills under ~/.claude/projects older than a
-// date, and session scratchpads under /private/tmp/claude-<uid> nothing wrote
+// date, and session scratchpads under /private/tmp/claude-<uid> (/tmp on Linux) nothing wrote
 // to since then. Main session transcripts stay, so every session can still be
 // resumed. A dry run by default; prints one JSON summary line.
 //
 // Usage: bun prune-agent-files.ts --before YYYY-MM-DD [--apply] [--projects <dir>] [--scratch <dir>]
 
-import { lstatSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 
@@ -23,7 +23,7 @@ if (Number.isNaN(before)) {
 }
 const apply = args.includes('--apply');
 const projects = flag('--projects', join(homedir(), '.claude', 'projects'))!;
-const scratch = flag('--scratch', '/private/tmp')!;
+const scratch = flag('--scratch', existsSync('/private/tmp') ? '/private/tmp' : '/tmp')!;
 
 const ls = (dir: string) => {
   try {
