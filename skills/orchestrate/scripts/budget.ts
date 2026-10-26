@@ -43,8 +43,6 @@ import {
   DEFAULTS,
   estimate,
   isNight,
-  limitsOf,
-  reservedFree,
   resumeAt,
   target,
   type Account,
@@ -239,7 +237,6 @@ for (const l of loads) {
 const burnWph = sessions.reduce((n, s) => n + s.recentWph, 0);
 const agents = sessions.filter((s) => s.sub).length;
 const typical = estimate(kinds, '', '');
-const free = reservedFree(sessions, config);
 const cap =
   option('--cap') !== undefined
     ? Number(option('--cap'))
@@ -259,16 +256,6 @@ if (pace && k.k7) {
   console.log(
     `weekly: burn ${p(burnWph)}/h; pace ${p(targetWph ?? 0)}/h${night ? ' (night)' : ''}, weekly ceiling ${pct(pace.week.ceiling)}/h${five}; ${verdict}`,
   );
-}
-
-const limited = Object.keys(config.projectAgents);
-if (limited.length) {
-  const running = (p: string) => sessions.filter((s) => s.project === p && s.sub).length;
-  const range = (p: string) => {
-    const { min, max } = limitsOf(config, p);
-    return min === max ? `${min}` : `${min}–${Number.isFinite(max) ? max : '∞'}`;
-  };
-  console.log(`projects: ${limited.map((p) => `${p} ${running(p)}/${range(p)}`).join(', ')}; ${free} under their minimum`);
 }
 
 const unreachable = loads.filter((l) => l.error).length;

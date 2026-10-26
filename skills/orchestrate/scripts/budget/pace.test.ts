@@ -153,37 +153,6 @@ describe('admit', () => {
     const sessions = [{ project: 'gent', kind: 'w:task', sub: true, recentWph: 55 }, { project: 'hymn', kind: 'root', sub: false, recentWph: 0 }];
     expect(admit({ ...base, sessions }).ok).toBe(true);
   });
-  test("an agent under its project's minimum waits only for the pace, and no project passes its maximum", () => {
-    const c = { ...UTC, projectAgents: { gent: 1, hymn: 1 } };
-    const perf = [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 45 }];
-    // 45 + 20 fits for gent's first agent; perf's second must leave room for both minimums: 45 + 3 × 20 passes 100.
-    expect(admit({ ...base, c, sessions: perf }).ok).toBe(true);
-    expect(admit({ ...base, c, project: 'perf', sessions: perf }).ok).toBe(false);
-    expect(admit({ ...base, c, sessions: [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 90 }] }).ok).toBe(false);
-    const own = [...perf, { project: 'gent', kind: 'w:task', sub: true, recentWph: 20 }];
-    expect(admit({ ...base, c, sessions: own }).ok).toBe(false);
-  });
-  test('a project past its minimum runs more up to its maximum while the pace allows', () => {
-    const c = { ...UTC, projectAgents: { gent: { min: 1, max: 3 } } };
-    const one = { project: 'gent', kind: 'w:task', sub: true, recentWph: 20 };
-    expect(admit({ ...base, c, sessions: [one] }).ok).toBe(true);
-    expect(admit({ ...base, c, sessions: [one, { project: 'perf', kind: 'w:task', sub: true, recentWph: 70 }] }).ok).toBe(false);
-    expect(admit({ ...base, c, sessions: [one, one, one] })).toEqual({ ok: false, reason: 'gent runs 3 of its 3 agent(s) at most' });
-  });
-  test('a maximum alone holds nothing back from the pace', () => {
-    const c = { ...UTC, projectAgents: { gent: { max: 1 } } };
-    expect(admit({ ...base, c, project: 'perf', sessions: [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 55 }] }).ok).toBe(true);
-    expect(admit({ ...base, c, sessions: [] }).ok).toBe(true);
-    expect(admit({ ...base, c, sessions: [{ project: 'gent', kind: 'w:task', sub: true, recentWph: 0 }] }).ok).toBe(false);
-  });
-  test('another project leaves room for the held agents not running yet', () => {
-    const c = { ...UTC, projectAgents: { gent: 1, hymn: 1 } };
-    const sessions = [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 45 }];
-    // 45 + 2 held × 20 + 20 passes 100; with hymn's agent running, 50 + 20 + 20 fits.
-    expect(admit({ ...base, c, project: 'perf', sessions }).ok).toBe(false);
-    const hymn = [...sessions, { project: 'hymn', kind: 'w:task', sub: true, recentWph: 5 }];
-    expect(admit({ ...base, c, project: 'perf', sessions: hymn }).ok).toBe(true);
-  });
   test("a project's first agent is never held by its share", () => {
     const sessions = [
       { project: 'gent', kind: 'root', sub: false, recentWph: 50 },
@@ -192,13 +161,9 @@ describe('admit', () => {
     expect(admit({ ...base, sessions }).ok).toBe(true);
   });
   test('the cap holds every agent once the pool runs that many', () => {
-    const c = { ...UTC, projectAgents: { gent: 2 } };
     const sessions = [{ project: 'perf', kind: 'w:task', sub: true, recentWph: 5 }, { project: 'hymn', kind: 'w:task', sub: true, recentWph: 5 }];
-    expect(admit({ ...base, c, sessions, cap: 3 }).ok).toBe(true);
-    expect(admit({ ...base, c, sessions, cap: 2 }).ok).toBe(false);
-    // Two held gent agents not running yet fill a cap of 3 with one running.
-    expect(admit({ ...base, c, project: 'hymn', sessions: sessions.slice(0, 1), cap: 3 }).ok).toBe(false);
-    expect(admit({ ...base, c, project: 'hymn', sessions: sessions.slice(0, 1), cap: 4 }).ok).toBe(true);
+    expect(admit({ ...base, sessions, cap: 3 }).ok).toBe(true);
+    expect(admit({ ...base, sessions, cap: 2 }).ok).toBe(false);
   });
   test('without a pace only the cap decides', () => {
     expect(admit({ ...base, targetWph: Infinity, estimateWph: 0, sessions: [], cap: 1 })).toEqual({ ok: true, reason: 'fits: pool 0.0 MW/h of no pace yet' });
