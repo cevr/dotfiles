@@ -11,10 +11,12 @@ A PR someone else asked you to review runs `code-review`'s Requested review inst
 
 Read `../code-review/SKILL.md` and `../counsel/SKILL.md` first. The criteria live in `../code-review/references/review-contract.md` and `../code-review/references/test-audit.md`.
 
-Counsel needs the `okra` CLI. Run `command -v okra` first. When it prints nothing, send the same packet (§2) another way, first that works:
+Send the packet (§2) the first way that works:
 
-1. **The other family's CLI directly.** From Claude: `codex exec -s read-only -o "$out" - < "$prompt_path"`. From Codex: `claude -p --permission-mode plan < "$prompt_path" > "$out"`. The review stays cross-model.
-2. **A fresh subagent** with no context from this session, given only the packet and told to run `code-review`. Label the report a same-family review.
+1. **The codex mod** (Claude Code, when `mcp__codex__start` is listed). One Codex thread per checkpoint: round one starts it, and rounds two and three go to the same thread with `mcp__codex__send`, so it keeps what it read. The answer arrives as a message when the turn ends: set no timer and do not poll.
+2. **`okra counsel`** (from Codex, or when the mod's tools are missing). Run `command -v okra` first.
+3. **The other family's CLI directly.** From Claude: `codex exec -s read-only -o "$out" - < "$prompt_path"`. From Codex: `claude -p --permission-mode plan < "$prompt_path" > "$out"`. The review stays cross-model.
+4. **A fresh subagent** with no context from this session, given only the packet and told to run `code-review`. Label the report a same-family review.
 
 Say which path ran in the report.
 
@@ -36,6 +38,10 @@ Include every applicable item:
 - Rounds two and three: accepted findings, repairs, final diff, new proof.
 
 Tell it: the review is read-only; attack each candidate and hunt for missed blockers; cite full paths and line numbers; say "no blocker" when there is none.
+
+Through the codex mod: `mcp__codex__start` with `model: "sol"`, `effort: "max"`, `sandbox: "read-only"`, `description: "counsel-review <checkpoint> r1"`, and the packet as the prompt. Pass no `role`. Keep the thread id for rounds two and three.
+
+Through `okra counsel`:
 
 ```bash
 prompt_path="$(mktemp -t counsel-review)"
@@ -67,4 +73,4 @@ Lead with the verdict and the safety fact (`code-review` Phase 4). Then sort eve
 - **Noted**: true, and needs no change in this checkpoint (pre-existing, out of scope).
 - **Dismissed**: claims the source does not support, each with the reason.
 
-Then the `Spec` section, the round count and the Counsel output path.
+Then the `Spec` section, the round count, and the Codex thread id or the Counsel output path.
