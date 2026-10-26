@@ -10,7 +10,7 @@
 //   --roots         code folders to scan for build output, node_modules and worktrees (default ~/Developer)
 //   --keep-since    keep agent transcripts from this date on, whatever their age (a pending model eval)
 
-import { existsSync, lstatSync, readdirSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readlinkSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, sep } from 'node:path';
 
@@ -203,7 +203,7 @@ const scratchRoot = '/private/tmp';
           stale.push(join(scratchRoot, user.name, project.name, session.name));
   add({ tier: 'A', category: 'agent leftovers', what: `Claude scratchpads idle ${TRANSCRIPT_DAYS}+ days (${stale.length})`, paths: stale, command: `${prune} --before ${cutoff} --apply` });
 }
-const cull = join(realpathSync(import.meta.dir), '../../../claude/bin/cull-transcript-images');
+const cull = join(import.meta.dir, 'cull-transcript-images.ts');
 const culled = exists(cull) ? JSON.parse(sh(['bun', cull, '--dry-run']) || '{}') : {};
 if (culled.freedGB > 0.05)
   items.push({ tier: 'A', category: 'agent leftovers', what: `Images and binaries inlined in ${culled.culled} transcripts`, paths: [home('~/.claude/projects'), home('~/.codex/sessions')], bytes: culled.freedGB * 1e9, command: `bun ${cull}` });

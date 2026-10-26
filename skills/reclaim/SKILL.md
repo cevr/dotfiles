@@ -15,7 +15,7 @@ bun ~/.claude/skills/reclaim/scripts/survey.ts [--keep-since YYYY-MM-DD] [--root
 
 It prints free space, then every candidate by tier with its size, idle age, the command that removes it, and `[busy: …]` when a process holds it. Defaults: build output idle 2 days, `node_modules` in projects idle 30 days, agent files older than 7 days.
 
-Before you run it, look for anything that reads old agent transcripts, such as a model eval or a retro due soon, and pass its start date as `--keep-since`. The orchestrate skill's `models.ts` reads the last 7 days of subagent transcripts by default.
+Before you run it, look for anything that reads old agent transcripts, such as a model eval or a retro due soon, and pass its start date as `--keep-since`.
 
 To see what an unexplained large folder holds, use `uvx fdu@latest <dir> --view largest`. To find stale dependency folders, use `uvx fdu@latest <dir> --kind dir --include node_modules --modified-before 30d --long`.
 
@@ -46,8 +46,8 @@ For each approved category, in order:
 
 Agent leftovers have their own order:
 
-1. If a transcript archive exists (the dotfiles `transcripts/archive.ts`), push it first. After that, a pruned transcript can be restored.
-2. Run `cull-transcript-images`. It replaces the base64 images and documents with a note, and it empties the copy of each image that the Read tool keeps for the terminal. It skips transcripts written in the last hour.
+1. If the user keeps a transcript archive, push it first. After that, a pruned transcript can be restored.
+2. Run `bun ~/.claude/skills/reclaim/scripts/cull-transcript-images.ts` (`--dry-run` to count first). It replaces the base64 images and documents with a note, and it empties the copy of each image that the Read tool keeps for the terminal. It skips transcripts written in the last hour.
 3. Run `prune-agent-files.ts --before <date>`, first without and then with `--apply`. It deletes subagent transcripts, tool-result spills and idle scratchpads. Main session transcripts stay, so every session can still be resumed.
 
 User data goes to the Trash, not to deletion: `mv` it into a new folder `~/.Trash/reclaim-<date>/`, keeping its path relative to `~`. Emptying the Trash is a separate question.

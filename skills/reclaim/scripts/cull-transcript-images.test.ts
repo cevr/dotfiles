@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const SCRIPT = join(import.meta.dir, 'cull-transcript-images');
+const SCRIPT = join(import.meta.dir, 'cull-transcript-images.ts');
 const NOTE = '[image removed to save disk]';
 const PIXELS = 'iVBORw0KGgo'.repeat(50);
 const HOUR_AGO = new Date(Date.now() - 2 * 3600e3);
