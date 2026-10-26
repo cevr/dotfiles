@@ -11,12 +11,25 @@
 // HTTP (all JSON): GET /health, POST /start, POST /send, POST /interrupt,
 // GET /threads?owner=, GET /events?owner=, POST /ack, GET /limits.
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 export type Role = 'planner' | 'implementor' | 'reviewer' | 'verifier'
 export type Usage = { tokens: number; input: number; cached: number; output: number; context: number; window: number }
+/**
+ * What a thread's current or last turn does, for the mod's live view: the items
+ * running now by id, the last finished steps, the counts and Codex's plan.
+ */
+export type Live = {
+  since: number
+  running: Record<string, string>
+  steps: { at: number; text: string; failed?: boolean }[]
+  commands: number
+  edits: number
+  tools: number
+  plan?: { step: string; status: string }[]
+}
 export type Thread = {
   id: string
   owner: string
@@ -31,6 +44,7 @@ export type Thread = {
   compactions: number
   final?: string
   usage?: Usage
+  live?: Live
   startedAt: number
   updatedAt: number
 }
@@ -61,6 +75,49 @@ const AGENTS = process.env.CODEX_BRIDGE_AGENTS ?? join(process.env.CODEX_HOME ??
 const CODEX = (process.env.CODEX_BRIDGE_CODEX ?? 'codex app-server').split(' ')
 const FAMILIES = ['luna', 'sol', 'terra', 'astra']
 const KEEP_MS = 14 * 24 * 60 * 60e3
+const STEPS = 12
+
+// `/bin/zsh -lc 'bun test'` is `bun test`.
+const unwrap = (command: string) => /^\S*\b(?:zsh|bash|sh) -l?c '(.*)'$/s.exec(command)?.[1] ?? command
+const short = (text: string, n = 120) => {
+  const one = text.replace(/\s+/g, ' ').trim()
+  return one.length > n ? `${one.slice(0, n - 1)}…` : one
+}
+
+/** One line for a thread item as the live view shows it; undefined for items that are not work. */
+export function describe(item: any): string | undefined {
+  switch (item?.type) {
+    case 'commandExecution':
+      return `$ ${short(unwrap(String(item.command ?? '')))}`
+    case 'fileChange': {
+      const paths = (item.changes ?? []).map((c: { path: string }) => c.path.split('/').pop())
+      return `edit ${short(paths.join(', ') || 'files')}`
+    }
+    case 'mcpToolCall':
+      return `tool ${item.server}.${item.tool}`
+    case 'dynamicToolCall':
+      return `tool ${item.tool}`
+    case 'collabAgentToolCall':
+      return `agent ${item.tool}`
+    case 'webSearch':
+      return `search ${short(String(item.query ?? ''))}`
+    case 'imageView':
+      return `view ${String(item.path ?? '').split('/').pop()}`
+    case 'reasoning':
+      return item.summary?.[0] ? `think: ${short(item.summary[0])}` : 'think'
+    case 'agentMessage':
+      return 'write the answer'
+    case 'plan':
+      return 'plan'
+    case 'contextCompaction':
+      return 'compact the context'
+    default:
+      return undefined
+  }
+}
+
+const failedItem = (item: any) =>
+  item?.status === 'failed' || item?.status === 'declined' || (typeof item?.exitCode === 'number' && item.exitCode !== 0)
 
 /** The newest slug of a family (`luna` → `gpt-6-luna`); a full slug passes through. */
 export function newest(model: string, slugs: readonly string[]): string {
@@ -210,6 +267,11 @@ export class Bridge {
     renameSync(`${this.file}.tmp`, this.file)
   }
 
+  /** True while any thread runs a turn. */
+  busy() {
+    return Object.values(this.state.threads).some(thread => thread.status === 'running')
+  }
+
   private thread(id: string) {
     const thread = this.state.threads[id]
     if (!thread) throw new Error(`no thread ${id}`)
@@ -242,6 +304,7 @@ export class Bridge {
     if (method === 'account/rateLimits/updated') this.lastLimits = params.rateLimits
     const thread = params?.threadId ? this.state.threads[params.threadId] : undefined
     if (!thread) return
+    this.track(thread, method, params)
     if (method === 'item/completed' && params.item?.type === 'agentMessage' && params.item.text?.trim()) thread.final = params.item.text
     if (method === 'item/completed' && params.item?.type === 'contextCompaction') thread.compactions++
     if (method === 'thread/tokenUsage/updated') {
@@ -264,6 +327,27 @@ export class Bridge {
     }
   }
 
+  // The live view's record of the turn; the counts and steps stay after it ends.
+  private track(thread: Thread, method: string, params: any) {
+    const live = thread.live
+    if (!live) return
+    const id = String(params.item?.id ?? '')
+    const text = describe(params.item)
+    if (method === 'item/started' && text) live.running[id] = text
+    if (method === 'item/completed' && text) {
+      delete live.running[id]
+      // The answer and a thought are no steps: they would push the work out of the list.
+      if (params.item.type !== 'agentMessage' && params.item.type !== 'reasoning') {
+        live.steps = [...live.steps, { at: Date.now(), text, ...(failedItem(params.item) && { failed: true }) }].slice(-STEPS)
+      }
+      if (params.item.type === 'commandExecution') live.commands++
+      if (params.item.type === 'fileChange') live.edits++
+      if (/ToolCall$/.test(params.item.type)) live.tools++
+    }
+    if (method === 'turn/plan/updated') live.plan = (params.plan ?? []).map((p: any) => ({ step: String(p.step), status: String(p.status) }))
+    if (method === 'turn/completed') live.running = {}
+  }
+
   private async model(model: string | undefined) {
     if (!model || !FAMILIES.includes(model)) return model
     this.slugs ??= ((await this.server.call('model/list', { includeHidden: false })).data as { model: string }[]).map(m => m.model)
@@ -274,9 +358,11 @@ export class Bridge {
   // answer that names it, before this continuation runs.
   private async turn(thread: Thread, prompt: string) {
     const before = thread.status
+    const live = thread.live
     thread.status = 'running'
     thread.turnId = undefined
     thread.final = undefined
+    thread.live = { since: Date.now(), running: {}, steps: [], commands: 0, edits: 0, tools: 0 }
     try {
       const { turn } = await this.server.call('turn/start', {
         threadId: thread.id,
@@ -285,6 +371,7 @@ export class Bridge {
       if (thread.status === 'running') thread.turnId = turn.id
     } catch (error) {
       thread.status = before
+      thread.live = live
       throw error
     }
     thread.turns++
@@ -438,6 +525,13 @@ async function serve() {
   }
   process.on('SIGTERM', stop)
   process.on('SIGINT', stop)
+  // A daemon whose source changed (a pull) hands over once no turn runs, since
+  // stopping would fail a running turn. The mod's next call starts the new code.
+  const source = () => statSync(import.meta.path).mtimeMs
+  const built = source()
+  setInterval(() => {
+    if (source() !== built && !bridge.busy()) stop()
+  }, 30e3)
 }
 
 async function ensure() {

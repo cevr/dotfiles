@@ -1,6 +1,7 @@
 // A stand-in for `codex app-server` in the bridge's tests: it answers the requests
 // the bridge makes and finishes every turn at once with the reply `done: <prompt>`.
-// A prompt that starts with `hang` keeps its turn running until it is interrupted.
+// A prompt with the word `hang` keeps its turn running until it is interrupted;
+// one that starts with `work` shows work items first (see `work`).
 // Every request it gets is appended to $FAKE_LOG, one JSON line each.
 import { appendFileSync } from 'node:fs'
 
@@ -31,6 +32,18 @@ const complete = (threadId: string, turnId: string, status: string, text?: strin
   })
 }
 
+// A `work` prompt runs a failing command and an edit, and leaves one search running, before it finishes.
+const work = (threadId: string, turnId: string) => {
+  const item = (event: string, item: unknown) => out({ method: `item/${event}`, params: { threadId, turnId, item } })
+  const command = { type: 'commandExecution', id: 'c1', command: "/bin/zsh -lc 'bun test'", status: 'inProgress', exitCode: null }
+  item('started', command)
+  item('completed', { ...command, status: 'completed', exitCode: 1 })
+  item('started', { type: 'fileChange', id: 'f1', changes: [{ path: '/repo/src/a.ts' }], status: 'inProgress' })
+  item('completed', { type: 'fileChange', id: 'f1', changes: [{ path: '/repo/src/a.ts' }], status: 'completed' })
+  item('started', { type: 'webSearch', id: 'w1', query: 'effect deferred' })
+  out({ method: 'turn/plan/updated', params: { threadId, turnId, explanation: null, plan: [{ step: 'fix', status: 'completed' }, { step: 'test', status: 'inProgress' }] } })
+}
+
 let buffer = ''
 const hanging = new Map<string, string>()
 for await (const chunk of Bun.stdin.stream()) {
@@ -52,7 +65,8 @@ for await (const chunk of Bun.stdin.stream()) {
       const turnId = `u${++turns}`
       const text = params.input[0].text as string
       out({ id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } })
-      if (text.startsWith('hang')) hanging.set(params.threadId, turnId)
+      if (text.startsWith('work')) work(params.threadId, turnId)
+      if (/\bhang\b/.test(text)) hanging.set(params.threadId, turnId)
       else complete(params.threadId, turnId, 'completed', `done: ${text}`)
     } else if (method === 'turn/interrupt') {
       out({ id, result: {} })

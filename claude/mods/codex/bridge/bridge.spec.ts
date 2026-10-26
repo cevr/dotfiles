@@ -116,6 +116,25 @@ describe('a thread', () => {
     expect(events.map((e: any) => e.final)).toEqual(['done: build it', 'done: fix round 2'])
   })
 
+  test("keeps a live record of the turn's work for the mod's view", async () => {
+    const { call } = open()
+    const started = await call('POST', '/start', { owner: 'live', description: 'work', prompt: 'work hang', cwd: dir })
+    await settle()
+    const [thread] = (await call('GET', '/threads?owner=live')).body
+    expect(thread.live).toMatchObject({
+      running: { w1: 'search effect deferred' },
+      steps: [{ text: '$ bun test', failed: true }, { text: 'edit a.ts' }],
+      commands: 1,
+      edits: 1,
+      plan: [{ step: 'fix', status: 'completed' }, { step: 'test', status: 'inProgress' }],
+    })
+    await call('POST', '/interrupt', { threadId: started.body.id })
+    await settle()
+    const [ended] = (await call('GET', '/threads?owner=live')).body
+    expect(ended.live.running).toEqual({})
+    expect(ended.live.commands).toBe(1)
+  })
+
   test('refuses a second turn while one runs, and an interrupt finishes it as interrupted', async () => {
     const { call } = open()
     await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'hang on', cwd: dir })
