@@ -111,7 +111,7 @@ describe('a thread', () => {
     expect(sent.body).toMatchObject({ id: 't1', status: 'running', turns: 2 })
     await settle()
     const methods = requests().map(r => r.method)
-    expect(methods.slice(methods.lastIndexOf('initialize'))).toEqual(['initialize', 'thread/resume', 'turn/start'])
+    expect(methods.slice(methods.lastIndexOf('initialize'))).toEqual(['initialize', 'account/rateLimits/read', 'thread/resume', 'turn/start'])
     const events = (await second.call('GET', '/events?owner=s1')).body
     expect(events.map((e: any) => e.final)).toEqual(['done: build it', 'done: fix round 2'])
   })
@@ -170,5 +170,30 @@ describe('a thread', () => {
     const { call } = open()
     expect((await call('GET', '/events?owner=s9')).body.map((e: any) => e.seq)).toEqual([2])
     expect((await call('GET', '/threads?owner=s9')).body.map((t: any) => t.id)).toEqual(['new'])
+  })
+})
+
+describe('the budget', () => {
+  const DAY = 24 * 60 * 60e3
+  // A week 2 days in, 58% used: past the even line (42% with a day's lead).
+  const ahead = () => JSON.stringify({ limitId: 'codex', primary: { usedPercent: 58, windowDurationMins: 7 * 1440, resetsAt: Math.round((Date.now() + 5 * DAY) / 1e3) } })
+  afterEach(() => delete process.env.FAKE_LIMITS)
+
+  test('holds a new thread ahead of an even burn, and lets a started thread take its next turn', async () => {
+    const first = open()
+    await first.call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir })
+    await settle()
+    first.bridge.server.stop()
+
+    process.env.FAKE_LIMITS = ahead()
+    const { call } = open()
+    const refused = await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })
+    expect(refused.status).toBe(400)
+    expect(refused.body.error).toStartWith('The Codex budget holds a new Codex thread: the 7-day window is 58% used')
+    expect(requests().filter(r => r.method === 'thread/start')).toHaveLength(1)
+
+    const sent = await call('POST', '/send', { threadId: 't1', prompt: 'fix round 2' })
+    expect(sent.body).toMatchObject({ id: 't1', status: 'running', turns: 2 })
+    expect((await call('GET', '/budget')).body).toMatchObject({ start: { ok: false }, send: { ok: true } })
   })
 })

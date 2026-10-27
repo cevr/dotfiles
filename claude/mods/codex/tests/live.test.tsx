@@ -1,6 +1,6 @@
 import { expect, test, type TestBody } from 'claude-code/testing'
 
-import type { Thread } from '../types'
+import type { Budget, Thread } from '../types'
 
 // The bridge, as the mod reaches it: `codex-bridge ensure`, then HTTP on its socket.
 const running: Thread = {
@@ -30,7 +30,13 @@ const running: Thread = {
   updatedAt: 0,
 }
 
-function bridge(on: Parameters<TestBody>[1], threads: () => Thread[]) {
+const held: Budget = {
+  start: { ok: false, reason: 'the 7-day window is 58% used; an even burn to 99% by 2026-11-01 12:00Z allows 42% now, and 58% at 2026-10-28 14:24Z', until: 0 },
+  send: { ok: true },
+  summary: 'Codex budget: 7-day window: 58% used; even line 42% now; 99% by 2026-11-01 12:00Z. New threads held; next turns go on.',
+}
+
+function bridge(on: Parameters<TestBody>[1], threads: () => Thread[], budget: Budget = { start: { ok: true }, send: { ok: true }, summary: 'Codex usage unknown; no budget applied.' }) {
   on('ui.status', () => ({ value: undefined }))
   // The engine's own footer, beneath the mod.
   on('ui.render', ($, e) => {
@@ -42,7 +48,7 @@ function bridge(on: Parameters<TestBody>[1], threads: () => Thread[]) {
   on('process.run', () => ({ value: { exitCode: 0, stdout: '{"socket":"/tmp/bridge.sock"}', stderr: '' } }))
   on('http.fetch', (_, e) => {
     const path = new URL(e.url).pathname
-    const body = path === '/start' ? running : path === '/send' ? threads()[0] : path === '/threads' ? threads() : path === '/events' ? [] : null
+    const body = path === '/start' ? running : path === '/send' ? threads()[0] : path === '/threads' ? threads() : path === '/events' ? [] : path === '/budget' ? budget : null
     return { value: { ok: true, status: 200, text: JSON.stringify(body), headers: {} } }
   })
   on('command.register', () => ({ value: { command: 'codex' } }))
@@ -107,4 +113,12 @@ test('the footer is the engine\'s alone when no thread runs', async ($, on) => {
   threads = [{ ...running, status: 'idle', live: { ...running.live!, running: {} } }]
   await $.tool.call({ tool: 'mcp__codex__send', thread: 't1', prompt: 'again', tool_use_id: 'tu3' })
   expect(await footer($, 'terminal')).toEqual(['engine footer'])
+})
+
+test('the threads tool reports the Codex budget and why it holds new threads', async ($, on) => {
+  bridge(on, () => [running], held)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const answer = await $.tool.call({ tool: 'mcp__codex__threads', tool_use_id: 'tu1' })
+  expect(answer).toMatchObject({ result: expect.stringContaining(held.summary) })
+  expect(answer).toMatchObject({ result: expect.stringContaining(`New threads: ${held.start.reason}.`) })
 })

@@ -9,11 +9,14 @@
 //   codex-bridge status          the daemon's threads, as JSON
 //
 // HTTP (all JSON): GET /health, POST /start, POST /send, POST /interrupt,
-// GET /threads?owner=, GET /events?owner=, POST /ack, GET /limits.
+// GET /threads?owner=, GET /events?owner=, POST /ack, GET /limits, GET /budget.
+// A start or send the Codex budget holds (./budget.ts) answers 400 with the reason.
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+
+import { budget, DEFAULTS, refusal, type Config, type Limits } from './budget.ts'
 
 export type Role = 'planner' | 'implementor' | 'reviewer' | 'verifier'
 export type Usage = { tokens: number; input: number; cached: number; output: number; context: number; window: number }
@@ -75,6 +78,9 @@ const AGENTS = process.env.CODEX_BRIDGE_AGENTS ?? join(process.env.CODEX_HOME ??
 const CODEX = (process.env.CODEX_BRIDGE_CODEX ?? 'codex app-server').split(' ')
 const FAMILIES = ['luna', 'sol', 'terra', 'astra']
 const KEEP_MS = 14 * 24 * 60 * 60e3
+// Usage older than this is read again before a budget decision.
+const USAGE_MS = 60e3
+const BUDGET = process.env.CODEX_BRIDGE_BUDGET ?? join(homedir(), '.config/orchestrate/budget.json')
 const STEPS = 12
 
 // `/bin/zsh -lc 'bun test'` is `bun test`.
@@ -241,7 +247,8 @@ class AppServer {
 
 export class Bridge {
   private state: State
-  private lastLimits: unknown
+  private lastLimits: Limits | null = null
+  private limitsAt = 0
   private slugs: string[] | undefined
   readonly server: AppServer
 
@@ -301,7 +308,10 @@ export class Bridge {
   }
 
   notify(method: string, params: any) {
-    if (method === 'account/rateLimits/updated') this.lastLimits = params.rateLimits
+    if (method === 'account/rateLimits/updated') {
+      this.lastLimits = { ...this.lastLimits, ...params.rateLimits }
+      this.limitsAt = Date.now()
+    }
     const thread = params?.threadId ? this.state.threads[params.threadId] : undefined
     if (!thread) return
     this.track(thread, method, params)
@@ -390,6 +400,8 @@ export class Bridge {
     effort?: string
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access'
   }) {
+    const gate = (await this.budget()).start
+    if (!gate.ok) throw new Error(refusal('start', gate))
     const agent = input.role ? roleAgent(input.role) : undefined
     const effort = input.effort ?? agent?.effort
     const started = await this.server.call('thread/start', {
@@ -423,6 +435,8 @@ export class Bridge {
   async send(input: { threadId: string; prompt: string }) {
     const thread = this.thread(input.threadId)
     if (thread.status === 'running') throw new Error(`thread ${thread.id} is running turn ${thread.turnId}; interrupt it first`)
+    const gate = (await this.budget()).send
+    if (!gate.ok) throw new Error(refusal('send', gate))
     await this.server.start()
     if (!this.server.loaded.has(thread.id)) {
       await this.server.call('thread/resume', { threadId: thread.id, excludeTurns: true })
@@ -454,9 +468,29 @@ export class Bridge {
     return { acked: input.seqs.length }
   }
 
-  /** The account's rate-limit windows, as the last turn reported them. */
-  limits() {
-    return this.lastLimits ?? null
+  /** The account's rate-limit windows, read again when older than USAGE_MS; the last known when the read fails. */
+  async limits() {
+    if (Date.now() - this.limitsAt > USAGE_MS) {
+      try {
+        const read = await this.server.call('account/rateLimits/read', null)
+        this.lastLimits = { ...(read.rateLimitsByLimitId?.codex ?? read.rateLimits), ordinaryUsageAllowed: read.ordinaryUsageAllowed }
+      } catch {
+        // Offline or an older Codex: keep what the last turn reported.
+      }
+      this.limitsAt = Date.now()
+    }
+    return this.lastLimits
+  }
+
+  /** Whether a new thread and a next turn fit the account's usage (./budget.ts). */
+  async budget() {
+    let config: Config = DEFAULTS
+    try {
+      config = { ...DEFAULTS, ...JSON.parse(readFileSync(BUDGET, 'utf8')).codex }
+    } catch {
+      // No settings file: the defaults.
+    }
+    return budget(await this.limits(), Date.now(), config)
   }
 }
 
@@ -476,6 +510,7 @@ export function handler(bridge: Bridge) {
         'GET /events': () => bridge.events(owner ?? ''),
         'POST /ack': () => bridge.ack(body),
         'GET /limits': () => bridge.limits(),
+        'GET /budget': () => bridge.budget(),
       }
       const route = routes[`${request.method} ${url.pathname}`]
       if (!route) return Response.json({ error: `no route ${request.method} ${url.pathname}` }, { status: 404 })

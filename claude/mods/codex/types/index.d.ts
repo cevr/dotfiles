@@ -22,8 +22,12 @@ export type Thread = {
   live?: Live
   updatedAt: number
 }
-/** This session's threads as last read from the bridge, and when. */
-export type View = { at: number; threads: Thread[] }
+/** A budget gate (bridge/budget.ts `Gate`): whether a call goes on; when held, why and from when (ms). */
+export type Gate = { ok: boolean; reason?: string; until?: number }
+/** The Codex budget as the bridge decides it (bridge/budget.ts `Budget`). */
+export type Budget = { start: Gate; send: Gate; summary: string }
+/** This session's threads and the Codex budget as last read from the bridge, and when. */
+export type View = { at: number; threads: Thread[]; budget?: Budget }
 /** The thread and turn a start or send call's row shows, by its tool_use_id. */
 export type Row = { thread: string; turn: number }
 

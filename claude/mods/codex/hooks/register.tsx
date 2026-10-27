@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Row, Thread, View } from '../types'
+import type { Budget, Row, Thread, View } from '../types'
 
 // Codex threads as workers, through codex-bridge (../bridge/bridge.ts): one daemon
 // per host that holds `codex app-server` open. The tools start, continue and stop
@@ -13,6 +13,10 @@ import type { Row, Thread, View } from '../types'
 // its thread's turn live (what runs now, the last steps, the counts and the plan),
 // each running thread has its own line in the prompt footer, under the model
 // line, and /codex opens a pane with every thread of the session.
+//
+// The bridge holds a start or a send that does not fit the Codex budget
+// (../bridge/budget.ts), paced on the account's usage; the call is refused with
+// the reason and the time it opens.
 
 const POLL_MS = 5e3
 const VIEW_MS = 2e3
@@ -20,7 +24,6 @@ const FINAL_CHARS = 6000
 const PANE = 'codex'
 const ENSURE = ['sh', '-c', 'PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH" exec codex-bridge ensure']
 
-type Limits = { primary?: { usedPercent: number; windowDurationMins: number; resetsAt?: number } }
 type Event = Omit<Thread, 'final'> & { seq: number; threadId: string; final: string; error?: string; durationMs: number }
 
 const view = atom({ plugin: 'codex', key: 'view' } as const, { at: 0, threads: [] } as View)
@@ -110,11 +113,12 @@ async function refresh($: EngineInterface) {
   try {
     const owner = await $.session.id()
     const threads = await call<Thread[]>($, 'GET', `/threads?owner=${encodeURIComponent(owner)}`)
-    const text = JSON.stringify(threads)
+    const budget = await call<Budget>($, 'GET', '/budget')
+    const text = JSON.stringify([threads, budget])
     if (text === seen && !threads.some(t => t.status === 'running')) return
     seen = text
     const at = await $.clock.now()
-    await update($, view, () => ({ at, threads }))
+    await update($, view, () => ({ at, threads, budget }))
   } catch (error) {
     $.ui.log(`codex: ${(error as Error).message}`, { to: 'debug' })
   }
@@ -138,7 +142,8 @@ const TOOLS = [
       'when the turn ends, its final message arrives as a message from the codex plugin, so never poll. ' +
       'For an orchestrate role pass `role`: the thread then carries that role agent\'s instructions and effort (~/.codex/agents/orchestrate-<role>.toml). ' +
       '`model` takes a slug, or a family (luna, sol, terra, astra) for its newest release; left out, Codex\'s configured default. ' +
-      'The thread runs under the host Codex config (sandbox and approvals included) unless `sandbox` is passed.',
+      'The thread runs under the host Codex config (sandbox and approvals included) unless `sandbox` is passed. ' +
+      'Refused while the Codex budget holds new threads (weekly use ahead of an even burn): the refusal says when it opens.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -157,7 +162,8 @@ const TOOLS = [
     name: 'send',
     description:
       'Runs the next turn on an idle Codex thread, with its context and prompt cache kept (a round 2 fix is a delta). ' +
-      'The answer arrives as a message, like the first turn\'s. Refused while the thread runs a turn.',
+      'The answer arrives as a message, like the first turn\'s. Refused while the thread runs a turn, ' +
+      'and when the Codex budget is spent (it lets a next turn run past the even burn that holds new threads).',
     inputSchema: {
       type: 'object',
       properties: { thread: { type: 'string' }, prompt: { type: 'string' } },
@@ -172,7 +178,7 @@ const TOOLS = [
   {
     name: 'threads',
     description:
-      "This session's Codex threads: status, model and effort, turns, tokens, context fill and compactions; and the Codex plan's usage window.",
+      "This session's Codex threads: status, model and effort, turns, tokens, context fill and compactions; and the Codex budget: each usage window and whether new threads and next turns go on.",
     inputSchema: { type: 'object', properties: {} },
   },
 ] as const
@@ -202,15 +208,12 @@ async function answer($: EngineInterface, name: (typeof TOOLS)[number]['name'], 
     return { text: thread.status === 'running' ? `Interrupting ${thread.id}; its end arrives as a message.` : `${thread.id} is ${thread.status}; nothing to interrupt.` }
   }
   const threads = await call<Thread[]>($, 'GET', `/threads?owner=${encodeURIComponent(owner)}`)
-  const limits = await call<Limits | null>($, 'GET', '/limits')
-  const window = limits?.primary
+  const budget = await call<Budget>($, 'GET', '/budget')
   return {
     text: [
       threads.length === 0 ? 'This session has no Codex threads.' : threads.map(line).join('\n'),
-      window &&
-        `Codex limit: ${window.usedPercent}% of the ${Math.round(window.windowDurationMins / 1440)}-day window used` +
-          (window.resetsAt ? `, resets ${new Date(window.resetsAt * 1e3).toISOString().slice(0, 16)}Z` : '') +
-          '.',
+      budget.summary,
+      !budget.start.ok && `New threads: ${budget.start.reason}.`,
     ]
       .filter(Boolean)
       .join('\n'),
@@ -352,12 +355,14 @@ export const register: Register = on => {
   // Every thread of the session, running first, then the latest.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
-    const { at, threads } = await read($, view)
-    if (threads.length === 0) return <Text dimColor>This session has no Codex threads.</Text>
+    const { at, threads, budget } = await read($, view)
+    const head = budget && <Text dimColor={budget.start.ok} color={budget.start.ok ? undefined : 'yellow'}>{budget.summary}</Text>
+    if (threads.length === 0) return <Box flexDirection="column">{head}<Text dimColor>This session has no Codex threads.</Text></Box>
     const sorted = [...threads].sort((a, b) => Number(b.status === 'running') - Number(a.status === 'running') || b.updatedAt - a.updatedAt)
     const ui = $.ui.resolve(e)
     return (
       <Box flexDirection="column" gap={1}>
+        {head}
         {sorted.slice(0, 6).map(t => (
           <ThreadView ui={ui} t={t} at={at} steps={8} />
         ))}

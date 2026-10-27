@@ -3,6 +3,7 @@
 // A prompt with the word `hang` keeps its turn running until it is interrupted;
 // one that starts with `work` shows work items first (see `work`).
 // Every request it gets is appended to $FAKE_LOG, one JSON line each.
+// It reads the account's usage from $FAKE_LIMITS (a rate-limit snapshot as JSON), when set.
 import { appendFileSync } from 'node:fs'
 
 let threads = 0
@@ -60,6 +61,8 @@ for await (const chunk of Bun.stdin.stream()) {
       out({ id, result: { data: ['gpt-5.6-luna', 'gpt-6-luna', 'gpt-6.1-sol'].map(model => ({ model })) } })
     else if (method === 'thread/start')
       out({ id, result: { thread: { id: `t${++threads}` }, model: params.model ?? 'gpt-6.1-sol', reasoningEffort: params.config?.model_reasoning_effort ?? null } })
+    else if (method === 'account/rateLimits/read' && process.env.FAKE_LIMITS)
+      out({ id, result: { rateLimits: JSON.parse(process.env.FAKE_LIMITS), rateLimitsByLimitId: null, ordinaryUsageAllowed: true } })
     else if (method === 'thread/resume') out({ id, result: { thread: { id: params.threadId } } })
     else if (method === 'turn/start') {
       const turnId = `u${++turns}`
