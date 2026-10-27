@@ -1,5 +1,0 @@
-interface:
-  display_name: "Create Formal Verification Skill"
-  short_description: "Formally verify one key property and generate a skill to recheck it"
-policy:
-  allow_implicit_invocation: false
