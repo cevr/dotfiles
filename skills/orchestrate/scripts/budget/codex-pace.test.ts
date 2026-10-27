@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import type { CodexLoad, HourLoad, Snapshot, ThreadCost } from './codex-host.ts';
-import { admit, estimate, fit, MIN_WINDOWS, target, weekNow, windows, WINDOW } from './codex-pace.ts';
+import { admit, estimate, fit, fitWeek, MIN_CURRENT, MIN_WINDOWS, target, weekNow, windows, WINDOW } from './codex-pace.ts';
 import { DEFAULTS } from './pace.ts';
 
 const HOUR = 3600e3;
@@ -17,24 +17,27 @@ const random = (seed = 1) => () => (seed = (seed * 16807) % 2147483647) / 214748
 /**
  * `days` of hourly tokens, sol every hour and luna in 40% of them, with the
  * week's use as Codex reports it: whole percent, a snapshot each hour, and the
- * week reset early at `resetAt` (it starts again from 0).
+ * week reset early at `resetAt` (it starts again from 0, where each token
+ * costs `after` times as much of the week).
  */
-function history(days: number, resetAt: number, luna?: (h: number) => number) {
+function history(days: number, resetAt: number, luna?: (h: number) => number, after = 1) {
   const next = random();
   const hours: HourLoad[] = [];
   const snapshots: Snapshot[] = [];
   let used = 30;
   let resetsAt = START + 4 * 24 * HOUR;
+  let cost = 1;
   for (let h = 0; h < days * 24; h++) {
     const at = START + h * HOUR;
     if (at === resetAt) {
       used = 0;
       resetsAt = at + WEEK;
+      cost = after;
     }
     const w = { sol: 4e6 + Math.floor(next() * 13) * 1e6, luna: next() < 0.4 ? 40e6 : 0 };
     if (luna) w.luna = luna(h);
     hours.push({ at, w });
-    used += w.sol * K.sol + w.luna * K.luna;
+    used += cost * (w.sol * K.sol + w.luna * K.luna);
     snapshots.push({ at: at + HOUR - 60e3, used: Math.floor(used), resetsAt, windowMinutes: 7 * 1440 });
   }
   return { hours, snapshots };
@@ -54,12 +57,32 @@ describe('fit', () => {
     expect(f.windows.sol).toBeGreaterThanOrEqual(MIN_WINDOWS);
   });
 
-  test('a family with too few windows of its own takes the shared cost', () => {
-    const { hours, snapshots } = history(3, 0, (h) => (h === 30 ? 5e6 : 0));
+  test('a family that dominates too few windows takes the shared cost', () => {
+    // Luna burns every hour, but never 60% of a window's tokens.
+    const { hours, snapshots } = history(3, 0, (h) => (h % 2 ? 6e6 : 0));
     const f = fit(windows(hours, snapshots));
     expect(f.windows.luna).toBe(0);
     expect(f.k.luna).toBe(f.shared!);
-    expect(Math.abs(f.k.sol! / K.sol - 1)).toBeLessThan(0.1);
+    expect(f.windows.sol).toBeGreaterThanOrEqual(MIN_WINDOWS);
+  });
+});
+
+describe('fitWeek', () => {
+  test('fits the current reset period alone once it has enough windows, since a reset can change the cost', () => {
+    const resetAt = START + 51 * HOUR;
+    const { hours, snapshots } = history(5, resetAt, undefined, 2);
+    const resetsAt = snapshots.at(-1)!.resetsAt;
+    const now = fitWeek(windows(hours, snapshots), resetsAt);
+    expect(now.span).toBe('current period');
+    // The first window after the reset starts from the old period's use, so it is skipped.
+    expect(now.sharedWindows).toBe((5 * 24 - 51) / 3 - 1);
+    expect(Math.abs(now.k.sol! / (2 * K.sol) - 1)).toBeLessThan(0.1);
+
+    // A day after the reset the period has too few windows: the 7 days stand in.
+    const early = history(3, resetAt, undefined, 2);
+    const rows = windows(early.hours, early.snapshots);
+    expect(rows.filter((r) => r.at >= resetAt).length).toBeLessThan(MIN_CURRENT);
+    expect(fitWeek(rows, resetsAt)).toMatchObject({ span: '7 days', sharedWindows: rows.length });
   });
 });
 

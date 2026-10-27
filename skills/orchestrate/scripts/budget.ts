@@ -177,12 +177,12 @@ if (args.includes('--codex')) {
   const fitPath = join(CACHE, 'codex-fit.json');
   const whole = loads.every((l) => !l.error && l.complete);
   const kept = readJson<{ at: number; fit: codex.Fit } | undefined>(fitPath, undefined);
+  const week = codex.weekNow(snapshots, now);
   let fit: codex.Fit | undefined;
   if (whole) {
-    fit = codex.fit(codex.windows(loads.flatMap((l) => l.hours), snapshots));
+    fit = codex.fitWeek(codex.windows(loads.flatMap((l) => l.hours), snapshots), week?.resetsAt);
     writeJson(fitPath, { at: now, fit });
   } else if (kept && now - kept.at < 24 * 60 * MINUTE) fit = kept.fit;
-  const week = codex.weekNow(snapshots, now);
   const weeklyTarget = settings.codex?.target ?? config.weeklyTarget;
   const pace = week && codex.target(week, now, { ...config, weeklyTarget });
 
@@ -217,8 +217,10 @@ if (args.includes('--codex')) {
   }
   if (fit) {
     const families = Object.keys(fit.k).sort((a, b) => fit.k[b]! - fit.k[a]!);
-    const backed = (f: string) => (fit.windows[f] ? `${fit.windows[f]} windows` : `shared, ${fit.sharedWindows} windows`);
-    console.log(`cost: 1% of the week ≈ ${families.map((f) => `${mw(1 / fit.k[f]!)} of ${f} (${backed(f)})`).join(' / ')}${whole ? '' : ' (last whole fit)'}`);
+    const backed = (f: string) => (fit.windows[f] ? `${fit.windows[f]} windows` : 'shared');
+    console.log(
+      `cost (${fit.span ?? '7 days'}, ${fit.sharedWindows} windows${whole ? '' : '; the last whole fit'}): 1% of the week ≈ ${families.map((f) => `${mw(1 / fit.k[f]!)} of ${f} (${backed(f)})`).join(' / ')}`,
+    );
   } else console.log('cost: no fit yet');
   if (week && pace) {
     console.log(`week: ${week.used}% used, resets ${when(week.resetsAt)}; pace ${p(pace.pctph)} (even ${p(pace.floor)}, rolling ${p(pace.rolling)}, ceiling ${p(pace.ceiling)})`);

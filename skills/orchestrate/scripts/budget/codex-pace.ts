@@ -4,7 +4,10 @@
 //
 // - Cost: Codex reports only the week's use, in whole percent. One weighted
 //   token (W) of each model family costs k percent of the week, fitted from
-//   every host's tokens against the rise of that use over 3-hour windows.
+//   every host's tokens against the rise of that use over 3-hour windows. An
+//   early reset can change what a percent costs (on 2026-10-27 sol's went
+//   from about 5 MW to 9.5 MW), so the fit takes the current reset period once
+//   it has enough windows, and the last 7 days until then.
 // - Pace: the weekly pace of pace.ts for one account: spend the target by the
 //   reset at an even rate, never below the rolling pace, under the ceiling.
 // - Admission: the threads live now and the last hour of interactive use burn
@@ -17,14 +20,20 @@ import { weeklyPace, type Config } from './pace.ts';
 const HOUR = 3600e3;
 /** The fit's window: long enough that the use rises several whole percent in it. */
 export const WINDOW = 3 * HOUR;
-/** A family's own k needs this many windows where it burns at least SHARE of the tokens. */
+/** A family's own k needs this many windows it dominates: where it burns at least SHARE of the tokens. */
 export const MIN_WINDOWS = 6;
-const SHARE = 0.25;
+const SHARE = 0.6;
+/** The current reset period alone is fitted from this many windows. */
+export const MIN_CURRENT = 8;
 // A reset may come a little off the reported time: windows of one epoch report resets this close.
 const EPOCH_SLACK = HOUR;
 
-/** Percent of the week per W of each family; `windows` backed each; a family with too few has the shared k. */
-export type Fit = { k: Record<string, number>; windows: Record<string, number>; shared?: number; sharedWindows: number };
+/**
+ * Percent of the week per W of each family, and the windows it dominates;
+ * a family with too few has the shared k (`windows` 0). `span` names the
+ * windows fitted, `sharedWindows` how many.
+ */
+export type Fit = { k: Record<string, number>; windows: Record<string, number>; shared?: number; sharedWindows: number; span?: 'current period' | '7 days' };
 
 /** The week's snapshots: the longest window Codex reports, past a day. */
 export function weekly(snapshots: readonly Snapshot[]): Snapshot[] {
@@ -44,7 +53,7 @@ function before(snapshots: readonly Snapshot[], at: number): Snapshot | undefine
   return snapshots[lo - 1];
 }
 
-export type Row = { at: number; rise: number; w: Record<string, number> };
+export type Row = { at: number; resetsAt: number; rise: number; w: Record<string, number> };
 
 /** Every host's tokens in WINDOW steps against the rise of the week's use; a window that spans a reset is skipped. */
 export function windows(hours: readonly HourLoad[], snapshots: readonly Snapshot[]): Row[] {
@@ -62,7 +71,7 @@ export function windows(hours: readonly HourLoad[], snapshots: readonly Snapshot
     const b = before(week, at + WINDOW);
     if (!a || !b || Math.abs(a.resetsAt - b.resetsAt) > EPOCH_SLACK || b.used < a.used) continue;
     if (Object.values(w).every((x) => x <= 0)) continue;
-    rows.push({ at, rise: b.used - a.used, w });
+    rows.push({ at, resetsAt: b.resetsAt, rise: b.used - a.used, w });
   }
   return rows.sort((x, y) => x.at - y.at);
 }
@@ -107,8 +116,8 @@ export function nnls(rows: readonly { rise: number; x: number[] }[], n: number):
 }
 
 /**
- * Each family's k: its own where MIN_WINDOWS windows back it, fitted with the
- * others' tokens at the shared k; else the shared k, one fit over every token.
+ * Each family's k: its own where it dominates MIN_WINDOWS windows, fitted with
+ * the others' tokens at the shared k; else the shared k, one fit over every token.
  */
 export function fit(rows: readonly Row[]): Fit {
   const families = [...new Set(rows.flatMap((r) => Object.keys(r.w)))].sort();
@@ -136,6 +145,12 @@ export function fit(rows: readonly Row[]): Fit {
     }
   }
   return { k, windows: used, shared: shared || undefined, sharedWindows: rows.length };
+}
+
+/** The fit of the current reset period, ending at `resetsAt`, once it has MIN_CURRENT windows; else of every window. */
+export function fitWeek(rows: readonly Row[], resetsAt: number | undefined): Fit {
+  const current = rows.filter((r) => resetsAt !== undefined && Math.abs(r.resetsAt - resetsAt) <= EPOCH_SLACK);
+  return current.length >= MIN_CURRENT ? { ...fit(current), span: 'current period' } : { ...fit(rows), span: '7 days' };
 }
 
 /** The k of a family: its own, else the shared one. */
