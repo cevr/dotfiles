@@ -12,6 +12,7 @@
 //        bun budget.ts --resume-at
 //        bun budget.ts --admit [--cap <n>] --session <id> --cwd <dir> --type <subagent_type> --description <text>
 //        bun budget.ts --wait <ticket>
+//        bun budget.ts --codex [--admit --model <slug|family> [--role <role>]]
 //   --rotate  sets teamclaude's account priorities to the weekly reset order,
 //             so the account whose quota expires first serves first. The
 //             status mod runs it every minute.
@@ -31,6 +32,11 @@
 //             in the queue (budget/queue.ts) as a ticket.
 //   --wait    keeps a ticket alive and exits 0 when its turn comes, 3 when it
 //             is gone. The held session runs it as a background command.
+//   --codex   prints the Codex account's pace instead (budget/codex-pace.ts):
+//             what 1% of its week costs in each model family's tokens, the
+//             burn now, the pace and each family and role's cost. With
+//             --admit it decides one new Codex thread (the codex-bridge asks):
+//             exit 0 to start it, 1 to hold it, 2 when nothing can be measured.
 // Exits 1 when the active agents reach the cap, 2 when a host is unreachable.
 // Settings: ~/.config/orchestrate/budget.json overrides budget/pace.ts DEFAULTS. On
 // both hosts it links to orchestrate/budget.json in dotfiles.
@@ -41,6 +47,8 @@ import { homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { ceilingOf, hostBurn, report, tune, type HostBurn } from './budget/burn.ts';
+import { codexLoad, familyOf, type CodexLoad } from './budget/codex-host.ts';
+import * as codex from './budget/codex-pace.ts';
 import { hostLoad, kindFor, projectFor, queuePath, type HostLoad } from './budget/host.ts';
 import {
   calibrate,
@@ -75,7 +83,8 @@ const writeJson = (path: string, value: unknown) => {
   writeFileSync(path, JSON.stringify(value));
 };
 
-const config: Config = { ...DEFAULTS, ...readJson(join(homedir(), '.config', 'orchestrate', 'budget.json'), {}) };
+const settings = readJson<Partial<Config> & { codex?: { target?: number } }>(join(homedir(), '.config', 'orchestrate', 'budget.json'), {});
+const config: Config = { ...DEFAULTS, ...settings };
 const now = Date.now();
 
 // ── Accounts ──
@@ -121,18 +130,124 @@ async function remote<T>(alias: string, source: string, flags: string): Promise<
 }
 const failure = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-// A remote host's load is kept `maxAge`: the guard asks on every Agent call, a waiter every 10 s.
-async function remoteLoad(alias: string, now: number, maxAge: number): Promise<Load> {
-  const cached = join(CACHE, `remote-${alias.replace(/[^\w.-]/g, '_')}.json`);
-  const hit = readJson<{ at: number; load: Load } | undefined>(cached, undefined);
+// A remote host's result is kept `maxAge` in the file `name`: the guard asks on every Agent call, a waiter every 10 s.
+async function remoteCached<T extends { host: string }>(alias: string, name: string, now: number, maxAge: number, read: () => Promise<T>): Promise<T> {
+  const cached = join(CACHE, `${name}-${alias.replace(/[^\w.-]/g, '_')}.json`);
+  const hit = readJson<{ at: number; load: T } | undefined>(cached, undefined);
   if (hit && now - hit.at < maxAge) return hit.load;
-  try {
-    const load: Load = { ...(await remote<HostLoad>(alias, HOST_SOURCE, '--deadline-ms 3000')), host: alias };
-    writeJson(cached, { at: now, load });
-    return load;
-  } catch (e) {
-    return { host: alias, sessions: [], w1h: 0, kinds: [], complete: false, queue: [], error: failure(e) };
+  const load: T = { ...(await read()), host: alias };
+  writeJson(cached, { at: now, load });
+  return load;
+}
+
+const remoteLoad = (alias: string, now: number, maxAge: number): Promise<Load> =>
+  remoteCached<Load>(alias, 'remote', now, maxAge, () => remote<HostLoad>(alias, HOST_SOURCE, '--deadline-ms 3000')).catch((e) => ({
+    host: alias,
+    sessions: [],
+    w1h: 0,
+    kinds: [],
+    complete: false,
+    queue: [],
+    error: failure(e),
+  }));
+
+// ── Codex ──
+
+if (args.includes('--codex')) {
+  const admitting = args.includes('--admit');
+  // An admission waits on this: the bridge gives it a minute.
+  const deadline = admitting ? 10e3 : 60e3;
+  type Codex = CodexLoad & { error?: string };
+  const source = join(import.meta.dir, 'budget', 'codex-host.ts');
+  const loads: Codex[] = [
+    codexLoad(now, now + deadline),
+    ...(await Promise.all(
+      remotes.map((a) =>
+        remoteCached<Codex>(a, 'remote-codex', now, admitting ? MINUTE : 0, () => remote<CodexLoad>(a, source, `--deadline-ms ${deadline}`)).catch(
+          (e): Codex => ({ host: a, complete: false, hours: [], snapshots: [], threads: [], live: [], w1h: 0, interactive1h: {}, error: failure(e) }),
+        ),
+      ),
+    )),
+  ];
+  const unreachable = loads.filter((l) => l.error);
+  const snapshots = loads.flatMap((l) => l.snapshots);
+  // The fit needs every host's tokens against the account's rise; a fit from
+  // one host would put the cost of a percent far too low. Until all are read,
+  // the last whole fit stands in for a day.
+  const fitPath = join(CACHE, 'codex-fit.json');
+  const whole = loads.every((l) => !l.error && l.complete);
+  const kept = readJson<{ at: number; fit: codex.Fit } | undefined>(fitPath, undefined);
+  let fit: codex.Fit | undefined;
+  if (whole) {
+    fit = codex.fit(codex.windows(loads.flatMap((l) => l.hours), snapshots));
+    writeJson(fitPath, { at: now, fit });
+  } else if (kept && now - kept.at < 24 * 60 * MINUTE) fit = kept.fit;
+  const week = codex.weekNow(snapshots, now);
+  const weeklyTarget = settings.codex?.target ?? config.weeklyTarget;
+  const pace = week && codex.target(week, now, { ...config, weeklyTarget });
+
+  if (admitting) {
+    const family = familyOf(option('--model'));
+    const role = option('--role') ?? 'none';
+    const why = unreachable.length
+      ? `${unreachable.map((l) => `${l.host} unreachable (${l.error})`).join(', ')}, so its threads' burn is unknown`
+      : !pace
+        ? 'no host has seen the week\'s use'
+        : !fit
+          ? 'no fit of the cost of the week is in hand'
+          : undefined;
+    const d = why || !pace || !fit ? undefined : codex.admit({ loads, fit, pctph: pace.pctph, family, role });
+    if (!d) {
+      console.log(`unmeasured: ${why ?? `no ${family} or other thread has run long enough to cost`}`);
+      process.exit(2);
+    }
+    console.log(`${d.ok ? 'admit' : 'hold'}: ${d.reason}`);
+    process.exit(d.ok ? 0 : 1);
   }
+
+  const mw = (n: number): string => `${(n / 1e6).toFixed(1)} MW`;
+  const p = (n: number): string => `${n.toFixed(2)} %/h`;
+  const when = (ms: number): string => new Date(ms).toISOString().slice(0, 16).replace('T', ' ') + 'Z';
+  for (const l of loads) {
+    console.log(
+      l.error
+        ? `${l.host}: unreachable (${l.error})`
+        : `${l.host}: ${l.live.length} threads live in 10 min; ${mw(l.w1h)} in 1 h${l.complete ? '' : ' (scan catching up)'}`,
+    );
+  }
+  if (fit) {
+    const families = Object.keys(fit.k).sort((a, b) => fit.k[b]! - fit.k[a]!);
+    const backed = (f: string) => (fit.windows[f] ? `${fit.windows[f]} windows` : `shared, ${fit.sharedWindows} windows`);
+    console.log(`cost: 1% of the week ≈ ${families.map((f) => `${mw(1 / fit.k[f]!)} of ${f} (${backed(f)})`).join(' / ')}${whole ? '' : ' (last whole fit)'}`);
+  } else console.log('cost: no fit yet');
+  if (week && pace) {
+    console.log(`week: ${week.used}% used, resets ${when(week.resetsAt)}; pace ${p(pace.pctph)} (even ${p(pace.floor)}, rolling ${p(pace.rolling)}, ceiling ${p(pace.ceiling)})`);
+  } else console.log('week: no host has seen its use');
+  if (fit) {
+    const interactive: Record<string, number> = {};
+    for (const l of loads) for (const [f, w] of Object.entries(l.interactive1h)) interactive[f] = (interactive[f] ?? 0) + w;
+    const threads = codex.burn(loads.flatMap((l) => l.live), {}, fit);
+    const all = codex.burn(loads.flatMap((l) => l.live), interactive, fit);
+    console.log(`burn now: ${p(all)} (threads ${p(threads)}, interactive ${p(all - threads)})${pace ? (all > pace.pctph ? '; over pace: new threads hold' : '; room for more') : ''}`);
+  }
+  const threads = loads.flatMap((l) => l.threads);
+  const groups = new Map<string, { family: string; role: string; wph: number[] }>();
+  for (const t of threads) {
+    const g = groups.get(`${t.family}\0${t.role}`) ?? { family: t.family, role: t.role, wph: [] };
+    g.wph.push(...codex.wph([t]));
+    groups.set(`${t.family}\0${t.role}`, g);
+  }
+  const rows = [...groups.values()]
+    .filter((g) => g.wph.length)
+    .map((g) => ({ ...g, mid: [...g.wph].sort((a, b) => a - b)[Math.floor(g.wph.length / 2)]! }))
+    .sort((a, b) => b.mid - a.mid);
+  console.log('| Family | Role | Threads | W/h (median) | Week %/h |');
+  console.log('| --- | --- | --- | --- | --- |');
+  for (const r of rows) {
+    const k = fit && codex.kOf(fit, r.family);
+    console.log(`| ${r.family} | ${r.role} | ${r.wph.length} | ${mw(r.mid)} | ${k ? p(r.mid * k) : '?'} |`);
+  }
+  process.exit(unreachable.length ? 2 : 0);
 }
 
 if (args.includes('--burn')) {
