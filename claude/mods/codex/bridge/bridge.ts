@@ -10,7 +10,10 @@
 //
 // HTTP (all JSON): GET /health, POST /start, POST /send, POST /interrupt,
 // GET /threads?owner=, GET /events?owner=, POST /ack, GET /limits, GET /budget.
-// A start or send the Codex budget holds (./budget.ts) answers 400 with the reason.
+// A start or send the Codex budget holds answers 400 with the reason: the hard
+// gates of ./budget.ts hold both; a new thread also waits for the rate
+// admission (orchestrate's budget.ts --codex --admit), or for the even line of
+// ./budget.ts when the admission cannot measure.
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -73,7 +76,8 @@ export const SOCKET = join(STATE_DIR, 'bridge.sock')
 const STATE = join(STATE_DIR, 'state.json')
 const LOCK = join(STATE_DIR, 'serve.lock')
 const LOG = join(STATE_DIR, 'bridge.log')
-const AGENTS = process.env.CODEX_BRIDGE_AGENTS ?? join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'agents')
+const CODEX_HOME = process.env.CODEX_HOME ?? join(homedir(), '.codex')
+const AGENTS = process.env.CODEX_BRIDGE_AGENTS ?? join(CODEX_HOME, 'agents')
 // The command that speaks the app-server protocol on stdio; a test points it at a fake.
 const CODEX = (process.env.CODEX_BRIDGE_CODEX ?? 'codex app-server').split(' ')
 const FAMILIES = ['luna', 'sol', 'terra', 'astra']
@@ -81,6 +85,8 @@ const KEEP_MS = 14 * 24 * 60 * 60e3
 // Usage older than this is read again before a budget decision.
 const USAGE_MS = 60e3
 const BUDGET = process.env.CODEX_BRIDGE_BUDGET ?? join(homedir(), '.config/orchestrate/budget.json')
+// It reads every host over SSH; past this, the even line decides.
+const ADMIT_MS = 60e3
 const STEPS = 12
 
 // `/bin/zsh -lc 'bun test'` is `bun test`.
@@ -137,6 +143,41 @@ export function newest(model: string, slugs: readonly string[]): string {
     })
   if (!ranked[0]) throw new Error(`no ${model} model in ${slugs.join(', ')}`)
   return ranked[0].slug
+}
+
+const quote = (word: string) => `'${word.replace(/'/g, `'\\''`)}'`
+
+/**
+ * Whether the account's burn has room for one more thread of `model` in `role`:
+ * true or false with budget.ts's line, undefined when it could not tell. The
+ * command runs in the login shell, since a daemon an app started lacks the
+ * shell's environment (ORCHESTRATE_HOSTS); $CODEX_BRIDGE_ADMIT, read per call,
+ * stands in for it in a test.
+ */
+export async function admission(model: string | undefined, role: Role | undefined): Promise<{ ok?: boolean; line: string }> {
+  const command =
+    process.env.CODEX_BRIDGE_ADMIT ?? `${quote(process.execPath)} ${quote(join(homedir(), '.claude/skills/orchestrate/scripts/budget.ts'))} --codex --admit`
+  const args = [...(model ? ['--model', model] : []), '--role', role ?? 'none'].map(quote).join(' ')
+  try {
+    const child = Bun.spawn([process.env.SHELL || '/bin/sh', '-lc', `${command} ${args}`], { stdout: 'pipe', stderr: 'ignore', timeout: ADMIT_MS })
+    const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited])
+    const line = out.trim().split('\n').pop() ?? ''
+    // A missing script exits 1 too: only its own answer holds a thread.
+    if (code === 0 && line.startsWith('admit: ')) return { ok: true, line }
+    if (code === 1 && line.startsWith('hold: ')) return { ok: false, line }
+    return { line: child.signalCode ? `no answer in ${ADMIT_MS / 1e3} s` : line || `exit ${code}` }
+  } catch (error) {
+    return { line: (error as Error).message }
+  }
+}
+
+/** The model Codex runs when none is named. */
+function configured(): string | undefined {
+  try {
+    return (Bun.TOML.parse(readFileSync(join(CODEX_HOME, 'config.toml'), 'utf8')) as { model?: string }).model
+  } catch {
+    return undefined
+  }
 }
 
 /** A role agent's instructions and effort, from the file agents.ts writes for Codex. */
@@ -252,6 +293,8 @@ export class Bridge {
   /** Set when the source changed: no new turn starts, so the daemon can hand over once the running ones end. */
   draining = false
   private slugs: string[] | undefined
+  /** The last rate admission's answer, for GET /budget. */
+  private admitted: { at: number; ok?: boolean; line: string } | undefined
   readonly server: AppServer
 
   constructor(private file = STATE) {
@@ -407,12 +450,19 @@ export class Bridge {
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access'
   }) {
     this.open()
-    const gate = (await this.budget()).start
-    if (!gate.ok) throw new Error(refusal('start', gate))
+    // The hard gates (a spent or short window, a reached limit), then the rate
+    // admission; the even line only when the admission cannot tell.
+    const gates = await this.budget()
+    if (!gates.send.ok) throw new Error(refusal('start', gates.send))
+    const model = await this.model(input.model)
+    const admitted = await admission(model ?? configured(), input.role)
+    this.admitted = { at: Date.now(), ...admitted }
+    if (admitted.ok === false) throw new Error(refusal('start', { ok: false, reason: admitted.line.replace(/^hold: /, '') }))
+    if (admitted.ok === undefined && !gates.start.ok) throw new Error(refusal('start', gates.start))
     const agent = input.role ? roleAgent(input.role) : undefined
     const effort = input.effort ?? agent?.effort
     const started = await this.server.call('thread/start', {
-      model: (await this.model(input.model)) ?? null,
+      model: model ?? null,
       cwd: input.cwd,
       sandbox: input.sandbox ?? null,
       developerInstructions: agent?.instructions ?? null,
@@ -490,7 +540,7 @@ export class Bridge {
     return this.lastLimits
   }
 
-  /** Whether a new thread and a next turn fit the account's usage (./budget.ts). */
+  /** Whether a new thread and a next turn fit the account's usage (./budget.ts), and the last rate admission. */
   async budget() {
     let config: Config = DEFAULTS
     try {
@@ -498,7 +548,7 @@ export class Bridge {
     } catch {
       // No settings file: the defaults.
     }
-    return budget(await this.limits(), Date.now(), config)
+    return { ...budget(await this.limits(), Date.now(), config), admission: this.admitted }
   }
 }
 

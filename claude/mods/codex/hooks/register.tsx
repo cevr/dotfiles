@@ -15,8 +15,9 @@ import type { Budget, Row, Thread, View } from '../types'
 // line, and /codex opens a pane with every thread of the session.
 //
 // The bridge holds a start or a send that does not fit the Codex budget
-// (../bridge/budget.ts), paced on the account's usage; the call is refused with
-// the reason and the time it opens.
+// (../bridge/budget.ts), paced on the account's usage; a start also waits for
+// room in the account's burn (orchestrate's budget.ts --codex --admit). The
+// call is refused with the reason, and the time it opens when one is known.
 
 const POLL_MS = 5e3
 const VIEW_MS = 2e3
@@ -146,7 +147,7 @@ const TOOLS = [
       'For an orchestrate role pass `role`: the thread then carries that role agent\'s instructions and effort (~/.codex/agents/orchestrate-<role>.toml). ' +
       '`model` takes a slug, or a family (luna, sol, terra, astra) for its newest release; left out, Codex\'s configured default. ' +
       'The thread runs under the host Codex config (sandbox and approvals included) unless `sandbox` is passed. ' +
-      'Refused while the Codex budget holds new threads (weekly use ahead of an even burn): the refusal says when it opens.',
+      'Refused while the Codex budget holds new threads (the account\'s burn with this thread past the weekly pace, or, when that cannot be measured, weekly use ahead of an even burn): the refusal says why.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -216,7 +217,9 @@ async function answer($: EngineInterface, name: (typeof TOOLS)[number]['name'], 
     text: [
       threads.length === 0 ? 'This session has no Codex threads.' : threads.map(line).join('\n'),
       budget?.summary ?? 'Codex budget: this bridge predates it; it starts when the bridge hands over to the new source.',
-      budget && !budget.start.ok && `New threads: ${budget.start.reason}.`,
+      // The even line decides only when the rate admission could not tell.
+      budget && !budget.start.ok && budget.admission?.ok === undefined && `New threads: ${budget.start.reason}.`,
+      budget?.admission && `Last start's admission: ${budget.admission.line}`,
     ]
       .filter(Boolean)
       .join('\n'),

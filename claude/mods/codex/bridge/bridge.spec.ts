@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, test } from 'bun:test'
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,8 +8,19 @@ const log = join(dir, 'requests.jsonl')
 const agents = join(dir, 'agents')
 process.env.CODEX_BRIDGE_DIR = dir
 process.env.CODEX_BRIDGE_AGENTS = agents
+// No config.toml: a thread started without a model is admitted without one.
+process.env.CODEX_HOME = dir
 process.env.CODEX_BRIDGE_CODEX = `${process.execPath} ${join(import.meta.dir, 'fake-app-server.ts')}`
 process.env.FAKE_LOG = log
+// A stand-in for budget.ts --codex --admit: it logs its arguments, prints `line` and exits `code`.
+const admitter = (name: string, line: string, code: number) => {
+  const file = join(dir, `admit-${name}.sh`)
+  writeFileSync(file, `echo "$@" >> ${join(dir, 'admit.log')}\necho '${line}'\nexit ${code}\n`)
+  return `sh ${file}`
+}
+// Unless a test says otherwise, the admission cannot measure, so the even line decides.
+const UNMEASURED = admitter('unmeasured', 'unmeasured: no host has seen the week', 2)
+process.env.CODEX_BRIDGE_ADMIT = UNMEASURED
 const { Bridge, handler, newest, roleAgent } = await import('./bridge.ts')
 
 const requests = () =>
@@ -189,9 +200,53 @@ describe('the budget', () => {
   const DAY = 24 * 60 * 60e3
   // A week 2 days in, 58% used: past the even line (42% with a day's lead).
   const ahead = () => JSON.stringify({ limitId: 'codex', primary: { usedPercent: 58, windowDurationMins: 7 * 1440, resetsAt: Math.round((Date.now() + 5 * DAY) / 1e3) } })
-  afterEach(() => delete process.env.FAKE_LIMITS)
+  const spent = () => JSON.stringify({ limitId: 'codex', primary: { usedPercent: 100, windowDurationMins: 7 * 1440, resetsAt: Math.round((Date.now() + DAY) / 1e3) } })
+  const admitted = () => readFileSync(join(dir, 'admit.log'), 'utf8').trim().split('\n')
+  beforeEach(() => rmSync(join(dir, 'admit.log'), { force: true }))
+  afterEach(() => {
+    delete process.env.FAKE_LIMITS
+    process.env.CODEX_BRIDGE_ADMIT = UNMEASURED
+  })
 
-  test('holds a new thread ahead of an even burn, and lets a started thread take its next turn', async () => {
+  test('the rate admission holds a new thread with its reason, for the resolved model and the role', async () => {
+    process.env.CODEX_BRIDGE_ADMIT = admitter('hold', 'hold: codex burns 1.6 %/h; this luna implementor adds about 0.4 %/h; the pace is 1.2 %/h', 1)
+    const { call } = open()
+    const refused = await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir, role: 'implementor', model: 'luna' })
+    expect(refused.status).toBe(400)
+    expect(refused.body.error).toBe(
+      'The Codex budget holds a new Codex thread: codex burns 1.6 %/h; this luna implementor adds about 0.4 %/h; the pace is 1.2 %/h.',
+    )
+    expect(admitted()).toEqual(['--model gpt-6-luna --role implementor'])
+    expect(requests().filter(r => r.method === 'thread/start')).toHaveLength(0)
+    expect((await call('GET', '/budget')).body.admission).toMatchObject({ ok: false, line: 'hold: codex burns 1.6 %/h; this luna implementor adds about 0.4 %/h; the pace is 1.2 %/h' })
+  })
+
+  test('the rate admission starts a thread ahead of the even line, but not past a hard gate', async () => {
+    process.env.CODEX_BRIDGE_ADMIT = admitter('admit', 'admit: fits: codex 0.9 %/h of 1.2 %/h with this sol thread', 0)
+    process.env.FAKE_LIMITS = ahead()
+    const first = open()
+    const started = await first.call('POST', '/start', { owner: 's1', description: 'review it', prompt: 'review it', cwd: dir, model: 'gpt-6.1-sol' })
+    expect(started.status).toBe(200)
+    expect(admitted()).toEqual(['--model gpt-6.1-sol --role none'])
+    await settle()
+    first.bridge.server.stop()
+
+    process.env.FAKE_LIMITS = spent()
+    const { call } = open()
+    const refused = await call('POST', '/start', { owner: 's1', description: 'x', prompt: 'y', cwd: dir })
+    expect(refused.body.error).toStartWith('The Codex budget holds a new Codex thread: the 7-day window is spent')
+    expect(admitted()).toHaveLength(1)
+  })
+
+  test('an admission that does not answer in its own words leaves the even line to decide', async () => {
+    // A missing script exits 1 too.
+    process.env.CODEX_BRIDGE_ADMIT = admitter('missing', 'error: Module not found', 1)
+    const { call } = open()
+    const started = await call('POST', '/start', { owner: 's1', description: 'x', prompt: 'y', cwd: dir })
+    expect(started.status).toBe(200)
+  })
+
+  test('holds a new thread ahead of an even burn when the admission cannot measure, and lets a started thread take its next turn', async () => {
     const first = open()
     await first.call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir })
     await settle()
