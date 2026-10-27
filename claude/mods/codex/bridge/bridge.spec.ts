@@ -147,6 +147,18 @@ describe('a thread', () => {
     expect((await call('GET', '/events?owner=s1')).body).toMatchObject([{ status: 'interrupted' }])
   })
 
+  test('a draining daemon starts no new thread and no next turn', async () => {
+    const { bridge, call } = open()
+    await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir })
+    await settle()
+    bridge.draining = true
+    for (const [path, body] of [['/start', { owner: 's1', description: 'x', prompt: 'y', cwd: dir }], ['/send', { threadId: 't1', prompt: 'again' }]] as const) {
+      const refused = await call('POST', path, body)
+      expect(refused.status).toBe(400)
+      expect(refused.body.error).toStartWith('codex-bridge is updating')
+    }
+  })
+
   test('a turn left running by a stopped daemon reaches its owner as failed', async () => {
     const first = open()
     await first.call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'hang on', cwd: dir })

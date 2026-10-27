@@ -249,6 +249,8 @@ export class Bridge {
   private state: State
   private lastLimits: Limits | null = null
   private limitsAt = 0
+  /** Set when the source changed: no new turn starts, so the daemon can hand over once the running ones end. */
+  draining = false
   private slugs: string[] | undefined
   readonly server: AppServer
 
@@ -272,6 +274,10 @@ export class Bridge {
     mkdirSync(dirname(this.file), { recursive: true })
     writeFileSync(`${this.file}.tmp`, JSON.stringify(this.state))
     renameSync(`${this.file}.tmp`, this.file)
+  }
+
+  private open() {
+    if (this.draining) throw new Error('codex-bridge is updating: it hands over to its new source once the running turns end; try again in a few minutes')
   }
 
   /** True while any thread runs a turn. */
@@ -400,6 +406,7 @@ export class Bridge {
     effort?: string
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access'
   }) {
+    this.open()
     const gate = (await this.budget()).start
     if (!gate.ok) throw new Error(refusal('start', gate))
     const agent = input.role ? roleAgent(input.role) : undefined
@@ -435,6 +442,7 @@ export class Bridge {
   async send(input: { threadId: string; prompt: string }) {
     const thread = this.thread(input.threadId)
     if (thread.status === 'running') throw new Error(`thread ${thread.id} is running turn ${thread.turnId}; interrupt it first`)
+    this.open()
     const gate = (await this.budget()).send
     if (!gate.ok) throw new Error(refusal('send', gate))
     await this.server.start()
@@ -561,11 +569,14 @@ async function serve() {
   process.on('SIGTERM', stop)
   process.on('SIGINT', stop)
   // A daemon whose source changed (a pull) hands over once no turn runs, since
-  // stopping would fail a running turn. The mod's next call starts the new code.
+  // stopping would fail a running turn. Until then it starts no new turn, so a
+  // busy host still drains. The mod's next call starts the new code.
   const source = () => statSync(import.meta.path).mtimeMs
   const built = source()
   setInterval(() => {
-    if (source() !== built && !bridge.busy()) stop()
+    if (source() === built) return
+    bridge.draining = true
+    if (!bridge.busy()) stop()
   }, 30e3)
 }
 
