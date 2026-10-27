@@ -59,6 +59,9 @@ async function call<T>($: EngineInterface, method: 'GET' | 'POST', path: string,
   return value as T
 }
 
+// A bridge from before the budget has no /budget until it hands over to the new source.
+const readBudget = ($: EngineInterface) => call<Budget>($, 'GET', '/budget').catch(() => undefined)
+
 const tokens = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}k`)
 const facts = (t: Thread) =>
   [
@@ -113,7 +116,7 @@ async function refresh($: EngineInterface) {
   try {
     const owner = await $.session.id()
     const threads = await call<Thread[]>($, 'GET', `/threads?owner=${encodeURIComponent(owner)}`)
-    const budget = await call<Budget>($, 'GET', '/budget')
+    const budget = await readBudget($)
     const text = JSON.stringify([threads, budget])
     if (text === seen && !threads.some(t => t.status === 'running')) return
     seen = text
@@ -208,12 +211,12 @@ async function answer($: EngineInterface, name: (typeof TOOLS)[number]['name'], 
     return { text: thread.status === 'running' ? `Interrupting ${thread.id}; its end arrives as a message.` : `${thread.id} is ${thread.status}; nothing to interrupt.` }
   }
   const threads = await call<Thread[]>($, 'GET', `/threads?owner=${encodeURIComponent(owner)}`)
-  const budget = await call<Budget>($, 'GET', '/budget')
+  const budget = await readBudget($)
   return {
     text: [
       threads.length === 0 ? 'This session has no Codex threads.' : threads.map(line).join('\n'),
-      budget.summary,
-      !budget.start.ok && `New threads: ${budget.start.reason}.`,
+      budget?.summary ?? 'Codex budget: this bridge predates it; it starts when the bridge hands over to the new source.',
+      budget && !budget.start.ok && `New threads: ${budget.start.reason}.`,
     ]
       .filter(Boolean)
       .join('\n'),
