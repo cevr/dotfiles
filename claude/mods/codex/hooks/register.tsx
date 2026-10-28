@@ -63,6 +63,11 @@ async function call<T>($: EngineInterface, method: 'GET' | 'POST', path: string,
 // A bridge from before the budget has no /budget until it hands over to the new source.
 const readBudget = ($: EngineInterface) => call<Budget>($, 'GET', '/budget').catch(() => undefined)
 
+/** A thread with a turn running, or latched while the bridge updates. */
+const active = (t: Thread) => t.status === 'running' || t.status === 'queued'
+// A turn latched while the bridge drains for an update; the new bridge starts it.
+const QUEUED = (t: Thread) => (t.status === 'queued' ? 'The bridge is updating: the turn is latched and starts by itself when the new bridge is up. ' : '')
+
 const tokens = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}k`)
 const facts = (t: Thread) =>
   [
@@ -119,7 +124,7 @@ async function refresh($: EngineInterface) {
     const threads = await call<Thread[]>($, 'GET', `/threads?owner=${encodeURIComponent(owner)}`)
     const budget = await readBudget($)
     const text = JSON.stringify([threads, budget])
-    if (text === seen && !threads.some(t => t.status === 'running')) return
+    if (text === seen && !threads.some(active)) return
     seen = text
     const at = await $.clock.now()
     await update($, view, () => ({ at, threads, budget }))
@@ -201,11 +206,11 @@ async function answer($: EngineInterface, name: (typeof TOOLS)[number]['name'], 
       effort: str(e, 'effort'),
       sandbox: str(e, 'sandbox'),
     })
-    return { text: `Started Codex thread ${thread.id} (${facts(thread)}). Its turn's end arrives as a message; do not poll.`, started: thread }
+    return { text: `${thread.status === 'queued' ? 'Queued' : 'Started'} Codex thread ${thread.id} (${facts(thread)}). ${QUEUED(thread)}Its turn's end arrives as a message; do not poll.`, started: thread }
   }
   if (name === 'send') {
     const thread = await call<Thread>($, 'POST', '/send', { threadId: need(e, 'thread'), prompt: need(e, 'prompt') })
-    return { text: `Codex thread ${thread.id} runs turn ${thread.turns}. Its end arrives as a message; do not poll.`, started: thread }
+    return { text: `Codex thread ${thread.id} ${thread.status === 'queued' ? 'queued' : 'runs'} turn ${thread.turns}. ${QUEUED(thread)}Its end arrives as a message; do not poll.`, started: thread }
   }
   if (name === 'interrupt') {
     const thread = await call<Thread>($, 'POST', '/interrupt', { threadId: need(e, 'thread') })
@@ -260,7 +265,13 @@ const counts = (t: Thread) => {
 }
 // A thread from a bridge that keeps no live record started its turn when it was last updated.
 const state = (t: Thread, at: number) =>
-  t.status === 'running' ? `running ${clock(at - (t.live?.since ?? t.updatedAt))}` : t.status === 'idle' ? 'done' : t.status
+  t.status === 'running'
+    ? `running ${clock(at - (t.live?.since ?? t.updatedAt))}`
+    : t.status === 'queued'
+      ? `queued for the bridge update ${clock(at - t.updatedAt)}`
+      : t.status === 'idle'
+        ? 'done'
+        : t.status
 const planLine = (t: Thread) => {
   const plan = t.live?.plan
   if (!plan?.length) return undefined
@@ -343,7 +354,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     const under = await next(e)
     const { at, threads } = await read($, view)
-    const running = threads.filter(t => t.status === 'running')
+    const running = threads.filter(active)
     if (running.length === 0) return under
     const { Box, Text } = $.ui.resolve(e)
     const shown = running.length > FOOTER_LINES ? running.slice(0, FOOTER_LINES - 1) : running
@@ -364,7 +375,7 @@ export const register: Register = on => {
     const { at, threads, budget } = await read($, view)
     const head = budget && <Text dimColor={budget.start.ok} color={budget.start.ok ? undefined : 'yellow'}>{budget.summary}</Text>
     if (threads.length === 0) return <Box flexDirection="column">{head}<Text dimColor>This session has no Codex threads.</Text></Box>
-    const sorted = [...threads].sort((a, b) => Number(b.status === 'running') - Number(a.status === 'running') || b.updatedAt - a.updatedAt)
+    const sorted = [...threads].sort((a, b) => Number(active(b)) - Number(active(a)) || b.updatedAt - a.updatedAt)
     const ui = $.ui.resolve(e)
     return (
       <Box flexDirection="column" gap={1}>

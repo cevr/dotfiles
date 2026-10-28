@@ -158,16 +158,39 @@ describe('a thread', () => {
     expect((await call('GET', '/events?owner=s1')).body).toMatchObject([{ status: 'interrupted' }])
   })
 
-  test('a draining daemon starts no new thread and no next turn', async () => {
+  test('a draining daemon latches new turns, and the next daemon runs them as the same turns', async () => {
+    const first = open()
+    await first.call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir })
+    await settle()
+    first.bridge.draining = true
+    const sent = await first.call('POST', '/send', { threadId: 't1', prompt: 'again' })
+    const started = await first.call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })
+    expect(sent.body).toMatchObject({ id: 't1', status: 'queued', turns: 2 })
+    expect(started.body).toMatchObject({ id: 't2', status: 'queued', turns: 1 })
+    expect(first.bridge.busy()).toBe(false)
+    expect((await first.call('POST', '/send', { threadId: 't1', prompt: 'more' })).body.error).toContain('queued')
+    first.bridge.server.stop()
+
+    const second = open()
+    await second.bridge.runQueued()
+    await settle()
+    const events = (await second.call('GET', '/events?owner=s1')).body
+    expect(events.map((e: any) => e.final)).toEqual(['done: build it', 'done: again', 'done: review it'])
+    expect((await second.call('GET', '/threads?owner=s1')).body).toMatchObject([
+      { id: 't1', status: 'idle', turns: 2 },
+      { id: 't2', status: 'idle', turns: 1 },
+    ])
+  })
+
+  test('an interrupt stops a latched turn before it starts', async () => {
     const { bridge, call } = open()
     await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir })
     await settle()
     bridge.draining = true
-    for (const [path, body] of [['/start', { owner: 's1', description: 'x', prompt: 'y', cwd: dir }], ['/send', { threadId: 't1', prompt: 'again' }]] as const) {
-      const refused = await call('POST', path, body)
-      expect(refused.status).toBe(400)
-      expect(refused.body.error).toStartWith('codex-bridge is updating')
-    }
+    await call('POST', '/send', { threadId: 't1', prompt: 'again' })
+    expect((await call('POST', '/interrupt', { threadId: 't1' })).body).toMatchObject({ status: 'interrupted' })
+    const events = (await call('GET', '/events?owner=s1')).body
+    expect(events.at(-1)).toMatchObject({ status: 'interrupted', error: 'stopped before the bridge update started it' })
   })
 
   test('a turn left running by a stopped daemon reaches its owner as failed', async () => {

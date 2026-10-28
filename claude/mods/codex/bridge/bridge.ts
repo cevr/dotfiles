@@ -44,7 +44,9 @@ export type Thread = {
   cwd: string
   model: string
   effort?: string
-  status: 'running' | 'idle' | 'failed' | 'interrupted'
+  status: 'running' | 'queued' | 'idle' | 'failed' | 'interrupted'
+  /** The prompt of a turn latched while the daemon drained; the next daemon runs it. */
+  queued?: string
   turnId?: string
   turns: number
   compactions: number
@@ -290,7 +292,11 @@ export class Bridge {
   private state: State
   private lastLimits: Limits | null = null
   private limitsAt = 0
-  /** Set when the source changed: no new turn starts, so the daemon can hand over once the running ones end. */
+  /**
+   * Set when the source changed: a new turn is latched (status `queued`) and
+   * not started, so the daemon hands over once the running ones end; the next
+   * daemon runs the latched turns.
+   */
   draining = false
   private slugs: string[] | undefined
   /** The last rate admission's answer, for GET /budget. */
@@ -317,10 +323,6 @@ export class Bridge {
     mkdirSync(dirname(this.file), { recursive: true })
     writeFileSync(`${this.file}.tmp`, JSON.stringify(this.state))
     renameSync(`${this.file}.tmp`, this.file)
-  }
-
-  private open() {
-    if (this.draining) throw new Error('codex-bridge is updating: it hands over to its new source once the running turns end; try again in a few minutes')
   }
 
   /** True while any thread runs a turn. */
@@ -414,8 +416,20 @@ export class Bridge {
   }
 
   // Running before the request: a turn can complete in the same burst as the
-  // answer that names it, before this continuation runs.
-  private async turn(thread: Thread, prompt: string) {
+  // answer that names it, before this continuation runs. A draining daemon
+  // latches the turn instead; `runQueued` on the next daemon starts it, as the
+  // same turn number.
+  private async turn(thread: Thread, prompt: string, count = true) {
+    if (this.draining) {
+      thread.status = 'queued'
+      thread.queued = prompt
+      thread.final = undefined
+      thread.live = undefined
+      thread.turns++
+      thread.updatedAt = Date.now()
+      this.save()
+      return thread
+    }
     const before = thread.status
     const live = thread.live
     thread.status = 'running'
@@ -433,7 +447,7 @@ export class Bridge {
       thread.live = live
       throw error
     }
-    thread.turns++
+    if (count) thread.turns++
     thread.updatedAt = Date.now()
     this.save()
     return thread
@@ -449,7 +463,6 @@ export class Bridge {
     effort?: string
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access'
   }) {
-    this.open()
     // The hard gates (a spent or short window, a reached limit), then the rate
     // admission; the even line only when the admission cannot tell.
     const gates = await this.budget()
@@ -492,19 +505,44 @@ export class Bridge {
   async send(input: { threadId: string; prompt: string }) {
     const thread = this.thread(input.threadId)
     if (thread.status === 'running') throw new Error(`thread ${thread.id} is running turn ${thread.turnId}; interrupt it first`)
-    this.open()
+    if (thread.status === 'queued') throw new Error(`thread ${thread.id} has a turn queued for the bridge update; it starts by itself`)
     const gate = (await this.budget()).send
     if (!gate.ok) throw new Error(refusal('send', gate))
+    if (!this.draining) await this.load(thread)
+    return this.turn(thread, input.prompt)
+  }
+
+  /** A thread an earlier app-server child held is resumed before its turn. */
+  private async load(thread: Thread) {
     await this.server.start()
     if (!this.server.loaded.has(thread.id)) {
       await this.server.call('thread/resume', { threadId: thread.id, excludeTurns: true })
       this.server.loaded.add(thread.id)
     }
-    return this.turn(thread, input.prompt)
+  }
+
+  /** Starts the turns the last daemon latched while it drained; one that fails reaches its owner as failed. */
+  async runQueued() {
+    for (const thread of Object.values(this.state.threads)) {
+      if (thread.status !== 'queued') continue
+      const prompt = thread.queued ?? ''
+      thread.queued = undefined
+      try {
+        await this.load(thread)
+        await this.turn(thread, prompt, false)
+      } catch (error) {
+        this.finish(thread, 'failed', `the queued turn did not start: ${(error as Error).message}`)
+      }
+    }
   }
 
   async interrupt(input: { threadId: string }) {
     const thread = this.thread(input.threadId)
+    if (thread.status === 'queued') {
+      thread.queued = undefined
+      this.finish(thread, 'interrupted', 'stopped before the bridge update started it')
+      return thread
+    }
     if (thread.status !== 'running') return thread
     if (!thread.turnId) throw new Error(`thread ${thread.id} has not started its turn yet`)
     await this.server.call('turn/interrupt', { threadId: thread.id, turnId: thread.turnId })
@@ -610,32 +648,39 @@ async function serve() {
   rmSync(SOCKET, { force: true })
   const bridge = new Bridge()
   Bun.serve({ unix: SOCKET, fetch: handler(bridge) })
-  const stop = () => {
+  void bridge.runQueued()
+  const stop = (handOver = false) => {
     bridge.server.stop()
     rmSync(SOCKET, { force: true })
     rmSync(LOCK, { force: true })
+    if (handOver) daemon()
     process.exit(0)
   }
-  process.on('SIGTERM', stop)
-  process.on('SIGINT', stop)
+  process.on('SIGTERM', () => stop())
+  process.on('SIGINT', () => stop())
   // A daemon whose source changed (a pull) hands over once no turn runs, since
-  // stopping would fail a running turn. Until then it starts no new turn, so a
-  // busy host still drains. The mod's next call starts the new code.
+  // stopping would fail a running turn. Until then it latches each new turn, so
+  // a busy host still drains, and it starts the new code itself, which runs them.
   const source = () => statSync(import.meta.path).mtimeMs
   const built = source()
   setInterval(() => {
     if (source() === built) return
     bridge.draining = true
-    if (!bridge.busy()) stop()
+    if (!bridge.busy()) stop(true)
   }, 30e3)
+}
+
+// A daemon in its own session, so the caller's exit (a mod's one-shot run, a
+// handing-over daemon) never takes it down.
+function daemon() {
+  mkdirSync(STATE_DIR, { recursive: true })
+  const log = openSync(LOG, 'a')
+  spawn(process.execPath, [import.meta.path, 'serve'], { stdio: ['ignore', log, log], detached: true }).unref()
 }
 
 async function ensure() {
   if (!(await healthy())) {
-    mkdirSync(STATE_DIR, { recursive: true })
-    const log = openSync(LOG, 'a')
-    // Its own session, so the caller's exit (a mod's one-shot run) never takes it down.
-    spawn(process.execPath, [import.meta.path, 'serve'], { stdio: ['ignore', log, log], detached: true }).unref()
+    daemon()
     for (let i = 0; i < 50 && !(await healthy()); i++) await Bun.sleep(100)
     if (!(await healthy())) throw new Error(`codex-bridge did not start; see ${LOG}`)
   }
