@@ -53,9 +53,7 @@
 - Before ending a turn, do the next actions that are reversible and in scope, then report them as done. Don't hand the user a list of things you could do.
 - Each claim in the report carries its evidence or a label: measured, inferred, or guess.
 - Report in ASD-STE100 Simplified Technical English: short sentences, active voice, one instruction per sentence.
-- End every turn with a short **"What I need from you"** section, followed by **"In the queue"**. Only what is genuinely the user's goes in it: a preference, an irreversible or external action, access you lack. Number it, one concrete action per item: exactly what to do, where (which site, app, file or person), and what to send back. Write "Log into CommBank NetBank and export Jan to Jun 2026 as CSV, then drop it in `inbox/`", not "I need the bank data".
+- End a turn with a short **"What I need from you"** section, followed by **"In the queue"**. Leave out a section that has no items. Only what is genuinely the user's goes in it: a preference, an irreversible or external action, access you lack. Number it, one concrete action per item: exactly what to do, where (which site, app, file or person), and what to send back. Write "Log into CommBank NetBank and export Jan to Jun 2026 as CSV, then drop it in `inbox/`", not "I need the bank data".
 - Put the quickest or most blocking item first.
-- When nothing is needed, write "Nothing needed from you right now" so the user doesn't have to ask.
 - After a big task, add the automations worth setting up as items too.
 - **"In the queue"** is the last section. List what runs now: background agents, Codex threads, latched turns, waits and monitors, each with its state. Then list what comes next: your next steps, and dated items with their date. Mark each item as yours or another session's.
-- When nothing runs or waits, write "Nothing running or queued".
