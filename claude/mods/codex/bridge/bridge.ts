@@ -10,16 +10,18 @@
 //
 // HTTP (all JSON): GET /health, POST /start, POST /send, POST /interrupt,
 // GET /threads?owner=, GET /events?owner=, POST /ack, GET /limits, GET /budget.
-// A start or send the Codex budget holds answers 400 with the reason: the hard
-// gates of ./budget.ts hold both; a new thread also waits for the rate
-// admission (orchestrate's budget.ts --codex --admit), or for the even line of
-// ./budget.ts when the admission cannot measure.
+// Every turn, a thread's first or a next one, passes the Codex budget: the hard
+// gates of ./budget.ts, then the rate admission (orchestrate's budget.ts
+// --codex --admit), or the even line of ./budget.ts when the admission cannot
+// measure. A turn the budget holds is latched (status `queued`, with why), as is
+// one asked of a daemon draining for an update; the pump starts latched turns,
+// next turns before first ones, oldest first, as the budget makes room.
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { budget, DEFAULTS, refusal, type Config, type Limits } from './budget.ts'
+import { budget, DEFAULTS, type Config, type Limits } from './budget.ts'
 
 export type Role = 'planner' | 'implementor' | 'reviewer' | 'verifier'
 export type Usage = { tokens: number; input: number; cached: number; output: number; context: number; window: number }
@@ -45,8 +47,10 @@ export type Thread = {
   model: string
   effort?: string
   status: 'running' | 'queued' | 'idle' | 'failed' | 'interrupted'
-  /** The prompt of a turn latched while the daemon drained; the next daemon runs it. */
+  /** The prompt of a latched turn, and why and since when it waits. */
   queued?: string
+  held?: string
+  queuedAt?: number
   turnId?: string
   turns: number
   compactions: number
@@ -84,6 +88,10 @@ const AGENTS = process.env.CODEX_BRIDGE_AGENTS ?? join(CODEX_HOME, 'agents')
 const CODEX = (process.env.CODEX_BRIDGE_CODEX ?? 'codex app-server').split(' ')
 const FAMILIES = ['luna', 'sol', 'terra', 'astra']
 const KEEP_MS = 14 * 24 * 60 * 60e3
+// How often latched turns are tried against the budget, and how long a started
+// turn's admitted cost counts before the live burn shows it.
+const PUMP_MS = 2 * 60e3
+const RECENT_MS = 5 * 60e3
 // Usage older than this is read again before a budget decision.
 const USAGE_MS = 60e3
 const BUDGET = process.env.CODEX_BRIDGE_BUDGET ?? join(homedir(), '.config/orchestrate/budget.json')
@@ -156,10 +164,23 @@ const quote = (word: string) => `'${word.replace(/'/g, `'\\''`)}'`
  * shell's environment (ORCHESTRATE_HOSTS); $CODEX_BRIDGE_ADMIT, read per call,
  * stands in for it in a test.
  */
-export async function admission(model: string | undefined, role: Role | undefined): Promise<{ ok?: boolean; line: string }> {
+export async function admission(
+  model: string | undefined,
+  role: Role | undefined,
+  thread?: string,
+  reserve = 0,
+): Promise<{ ok?: boolean; line: string }> {
   const command =
     process.env.CODEX_BRIDGE_ADMIT ?? `${quote(process.execPath)} ${quote(join(homedir(), '.claude/skills/orchestrate/scripts/budget.ts'))} --codex --admit`
-  const args = [...(model ? ['--model', model] : []), '--role', role ?? 'none'].map(quote).join(' ')
+  const args = [
+    ...(model ? ['--model', model] : []),
+    '--role',
+    role ?? 'none',
+    ...(thread ? ['--thread', thread] : []),
+    ...(reserve > 0 ? ['--reserve', reserve.toFixed(2)] : []),
+  ]
+    .map(quote)
+    .join(' ')
   try {
     const child = Bun.spawn([process.env.SHELL || '/bin/sh', '-lc', `${command} ${args}`], { stdout: 'pipe', stderr: 'ignore', timeout: ADMIT_MS })
     const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited])
@@ -173,14 +194,6 @@ export async function admission(model: string | undefined, role: Role | undefine
   }
 }
 
-/** The model Codex runs when none is named. */
-function configured(): string | undefined {
-  try {
-    return (Bun.TOML.parse(readFileSync(join(CODEX_HOME, 'config.toml'), 'utf8')) as { model?: string }).model
-  } catch {
-    return undefined
-  }
-}
 
 /** A role agent's instructions and effort, from the file agents.ts writes for Codex. */
 export function roleAgent(role: Role, dir = AGENTS): { instructions: string; effort?: string } {
@@ -299,6 +312,10 @@ export class Bridge {
    */
   draining = false
   private slugs: string[] | undefined
+  /** Turns this daemon started lately, with their admitted cost (%/h), until the live burn shows them. */
+  private recent: { at: number; pctph: number }[] = []
+  /** Starts and the pump run one at a time, so two turns never take the same room. */
+  private chain: Promise<unknown> = Promise.resolve()
   /** The last rate admission's answer, for GET /budget. */
   private admitted: { at: number; ok?: boolean; line: string } | undefined
   readonly server: AppServer
@@ -420,16 +437,7 @@ export class Bridge {
   // latches the turn instead; `runQueued` on the next daemon starts it, as the
   // same turn number.
   private async turn(thread: Thread, prompt: string, count = true) {
-    if (this.draining) {
-      thread.status = 'queued'
-      thread.queued = prompt
-      thread.final = undefined
-      thread.live = undefined
-      thread.turns++
-      thread.updatedAt = Date.now()
-      this.save()
-      return thread
-    }
+    if (this.draining) return this.latch(thread, prompt, 'the bridge is updating')
     const before = thread.status
     const live = thread.live
     thread.status = 'running'
@@ -453,6 +461,90 @@ export class Bridge {
     return thread
   }
 
+  /** Holds a turn until the pump starts it, as the thread's next turn. */
+  private latch(thread: Thread, prompt: string, why: string) {
+    thread.status = 'queued'
+    thread.queued = prompt
+    thread.held = why
+    thread.queuedAt = Date.now()
+    thread.final = undefined
+    thread.live = undefined
+    thread.turns++
+    thread.updatedAt = Date.now()
+    this.save()
+    return thread
+  }
+
+  private serial<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.chain.then(work, work)
+    this.chain = next.catch(() => undefined)
+    return next
+  }
+
+  /** Why the budget holds one more turn of `thread` now; undefined when it may start. */
+  private async hold(thread: Thread): Promise<string | undefined> {
+    const gates = await this.budget()
+    if (!gates.send.ok) return gates.send.reason
+    const now = Date.now()
+    this.recent = this.recent.filter(r => r.at > now - RECENT_MS)
+    const reserve = this.recent.reduce((n, r) => n + r.pctph, 0)
+    // A latched turn is already counted in `turns`: it continues the thread only past its first.
+    const continues = thread.turns > (thread.status === 'queued' ? 1 : 0)
+    const admitted = await admission(thread.model, thread.role, continues ? thread.id : undefined, reserve)
+    this.admitted = { at: now, ...admitted }
+    if (admitted.ok === false) return admitted.line.replace(/^hold: /, '')
+    if (admitted.ok === undefined && !gates.start.ok) return gates.start.reason
+    const adds = /\(\+([\d.]+) %\/h\)/.exec(admitted.line)?.[1]
+    if (adds) this.recent.push({ at: now, pctph: Number(adds) })
+    return undefined
+  }
+
+  /** A turn now, or latched behind the turns already waiting or the budget. */
+  private enqueue(thread: Thread, prompt: string) {
+    return this.serial(async () => {
+      if (this.draining) return this.latch(thread, prompt, 'the bridge is updating')
+      const waiting = this.queue().length
+      const why = waiting > 0 ? `${waiting} latched turn${waiting === 1 ? '' : 's'} ahead` : await this.hold(thread)
+      if (why) return this.latch(thread, prompt, why)
+      await this.load(thread)
+      return this.turn(thread, prompt)
+    })
+  }
+
+  /** The latched turns in the order they start: next turns before first ones, then the oldest. */
+  private queue() {
+    return Object.values(this.state.threads)
+      .filter(t => t.status === 'queued')
+      .sort((a, b) => Number(a.turns === 1) - Number(b.turns === 1) || (a.queuedAt ?? 0) - (b.queuedAt ?? 0))
+  }
+
+  /** Starts latched turns while the budget has room; the first one it holds waits, with the rest behind it. */
+  pump() {
+    return this.serial(async () => {
+      for (const thread of this.queue()) {
+        if (this.draining) return
+        const why = await this.hold(thread)
+        if (why) {
+          if (why !== thread.held) {
+            thread.held = why
+            this.save()
+          }
+          return
+        }
+        const prompt = thread.queued ?? ''
+        thread.queued = undefined
+        thread.held = undefined
+        thread.queuedAt = undefined
+        try {
+          await this.load(thread)
+          await this.turn(thread, prompt, false)
+        } catch (error) {
+          this.finish(thread, 'failed', `the latched turn did not start: ${(error as Error).message}`)
+        }
+      }
+    })
+  }
+
   async start(input: {
     owner: string
     description: string
@@ -463,15 +555,8 @@ export class Bridge {
     effort?: string
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access'
   }) {
-    // The hard gates (a spent or short window, a reached limit), then the rate
-    // admission; the even line only when the admission cannot tell.
-    const gates = await this.budget()
-    if (!gates.send.ok) throw new Error(refusal('start', gates.send))
+    // The thread exists at once (it costs nothing); its first turn passes the budget like any other.
     const model = await this.model(input.model)
-    const admitted = await admission(model ?? configured(), input.role)
-    this.admitted = { at: Date.now(), ...admitted }
-    if (admitted.ok === false) throw new Error(refusal('start', { ok: false, reason: admitted.line.replace(/^hold: /, '') }))
-    if (admitted.ok === undefined && !gates.start.ok) throw new Error(refusal('start', gates.start))
     const agent = input.role ? roleAgent(input.role) : undefined
     const effort = input.effort ?? agent?.effort
     const started = await this.server.call('thread/start', {
@@ -498,18 +583,15 @@ export class Bridge {
     }
     this.state.threads[thread.id] = thread
     this.server.loaded.add(thread.id)
-    return this.turn(thread, input.prompt)
+    return this.enqueue(thread, input.prompt)
   }
 
   /** The next turn on a thread: the same context and prompt cache, so a fix round is a delta. */
   async send(input: { threadId: string; prompt: string }) {
     const thread = this.thread(input.threadId)
     if (thread.status === 'running') throw new Error(`thread ${thread.id} is running turn ${thread.turnId}; interrupt it first`)
-    if (thread.status === 'queued') throw new Error(`thread ${thread.id} has a turn queued for the bridge update; it starts by itself`)
-    const gate = (await this.budget()).send
-    if (!gate.ok) throw new Error(refusal('send', gate))
-    if (!this.draining) await this.load(thread)
-    return this.turn(thread, input.prompt)
+    if (thread.status === 'queued') throw new Error(`thread ${thread.id} has a latched turn (${thread.held}); it starts by itself`)
+    return this.enqueue(thread, input.prompt)
   }
 
   /** A thread an earlier app-server child held is resumed before its turn. */
@@ -521,26 +603,13 @@ export class Bridge {
     }
   }
 
-  /** Starts the turns the last daemon latched while it drained; one that fails reaches its owner as failed. */
-  async runQueued() {
-    for (const thread of Object.values(this.state.threads)) {
-      if (thread.status !== 'queued') continue
-      const prompt = thread.queued ?? ''
-      thread.queued = undefined
-      try {
-        await this.load(thread)
-        await this.turn(thread, prompt, false)
-      } catch (error) {
-        this.finish(thread, 'failed', `the queued turn did not start: ${(error as Error).message}`)
-      }
-    }
-  }
 
   async interrupt(input: { threadId: string }) {
     const thread = this.thread(input.threadId)
     if (thread.status === 'queued') {
       thread.queued = undefined
-      this.finish(thread, 'interrupted', 'stopped before the bridge update started it')
+      thread.held = undefined
+      this.finish(thread, 'interrupted', 'stopped before it started')
       return thread
     }
     if (thread.status !== 'running') return thread
@@ -648,7 +717,9 @@ async function serve() {
   rmSync(SOCKET, { force: true })
   const bridge = new Bridge()
   Bun.serve({ unix: SOCKET, fetch: handler(bridge) })
-  void bridge.runQueued()
+  // The turns the last daemon latched, then the budget's room, every PUMP_MS.
+  void bridge.pump()
+  setInterval(() => void bridge.pump(), PUMP_MS)
   const stop = (handOver = false) => {
     bridge.server.stop()
     rmSync(SOCKET, { force: true })

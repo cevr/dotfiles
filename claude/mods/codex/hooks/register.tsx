@@ -14,10 +14,9 @@ import type { Budget, Row, Thread, View } from '../types'
 // each running thread has its own line in the prompt footer, under the model
 // line, and /codex opens a pane with every thread of the session.
 //
-// The bridge holds a start or a send that does not fit the Codex budget
-// (../bridge/budget.ts), paced on the account's usage; a start also waits for
-// room in the account's burn (orchestrate's budget.ts --codex --admit). The
-// call is refused with the reason, and the time it opens when one is known.
+// Every turn, a first or a next one, passes the Codex budget in the bridge: a
+// turn the budget holds, or one asked while the bridge updates, is latched and
+// starts by itself when there is room; its end arrives as a message like any.
 
 const POLL_MS = 5e3
 const VIEW_MS = 2e3
@@ -66,7 +65,7 @@ const readBudget = ($: EngineInterface) => call<Budget>($, 'GET', '/budget').cat
 /** A thread with a turn running, or latched while the bridge updates. */
 const active = (t: Thread) => t.status === 'running' || t.status === 'queued'
 // A turn latched while the bridge drains for an update; the new bridge starts it.
-const QUEUED = (t: Thread) => (t.status === 'queued' ? 'The bridge is updating: the turn is latched and starts by itself when the new bridge is up. ' : '')
+const QUEUED = (t: Thread) => (t.status === 'queued' ? `The turn is latched (${t.held ?? 'waiting'}); it starts by itself when there is room. ` : '')
 
 const tokens = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}k`)
 const facts = (t: Thread) =>
@@ -152,7 +151,7 @@ const TOOLS = [
       'For an orchestrate role pass `role`: the thread then carries that role agent\'s instructions and effort (~/.codex/agents/orchestrate-<role>.toml). ' +
       '`model` takes a slug, or a family (luna, sol, terra, astra) for its newest release; left out, Codex\'s configured default. ' +
       'The thread runs under the host Codex config (sandbox and approvals included) unless `sandbox` is passed. ' +
-      'Refused while the Codex budget holds new threads (the account\'s burn with this thread past the weekly pace, or, when that cannot be measured, weekly use ahead of an even burn): the refusal says why.',
+      'When the Codex budget has no room (the account\'s burn with this turn past the weekly pace, or, when that cannot be measured, weekly use ahead of an even burn), the turn is latched and starts by itself later; the answer says why.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -171,8 +170,8 @@ const TOOLS = [
     name: 'send',
     description:
       'Runs the next turn on an idle Codex thread, with its context and prompt cache kept (a round 2 fix is a delta). ' +
-      'The answer arrives as a message, like the first turn\'s. Refused while the thread runs a turn, ' +
-      'and when the Codex budget is spent (it lets a next turn run past the even burn that holds new threads).',
+      'The answer arrives as a message, like the first turn\'s. Refused while the thread runs or has a latched turn. ' +
+      'A next turn passes the same Codex budget as a first one: without room it is latched (ahead of new threads) and starts by itself.',
     inputSchema: {
       type: 'object',
       properties: { thread: { type: 'string' }, prompt: { type: 'string' } },
@@ -224,7 +223,7 @@ async function answer($: EngineInterface, name: (typeof TOOLS)[number]['name'], 
       budget?.summary ?? 'Codex budget: this bridge predates it; it starts when the bridge hands over to the new source.',
       // The even line decides only when the rate admission could not tell.
       budget && !budget.start.ok && budget.admission?.ok === undefined && `New threads: ${budget.start.reason}.`,
-      budget?.admission && `Last start's admission: ${budget.admission.line}`,
+      budget?.admission && `Last admission: ${budget.admission.line}`,
     ]
       .filter(Boolean)
       .join('\n'),
@@ -268,7 +267,7 @@ const state = (t: Thread, at: number) =>
   t.status === 'running'
     ? `running ${clock(at - (t.live?.since ?? t.updatedAt))}`
     : t.status === 'queued'
-      ? `queued for the bridge update ${clock(at - t.updatedAt)}`
+      ? `latched ${clock(at - t.updatedAt)}: ${t.held ?? 'waiting'}`
       : t.status === 'idle'
         ? 'done'
         : t.status

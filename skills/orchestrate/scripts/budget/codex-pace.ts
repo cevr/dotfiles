@@ -204,9 +204,21 @@ export function burn(live: readonly LiveThread[], interactive1h: Record<string, 
 
 export type Decision = { ok: boolean; reason: string };
 
-/** Whether a new thread of `family` in `role` fits the pace; undefined when its cost cannot be measured. */
-export function admit(input: { loads: readonly CodexLoad[]; fit: Fit; pctph: number; family: string; role: string }): Decision | undefined {
-  const { loads, fit: f, pctph, family, role } = input;
+/**
+ * Whether one more turn of `family` in `role` fits the pace; undefined when its cost cannot be measured.
+ * `thread` is the thread a next turn continues: its own live burn is the turn's estimate, not extra.
+ * `reserve` (%/h) is the turns the bridge started that the live burn does not show yet.
+ */
+export function admit(input: {
+  loads: readonly CodexLoad[];
+  fit: Fit;
+  pctph: number;
+  family: string;
+  role: string;
+  thread?: string;
+  reserve?: number;
+}): Decision | undefined {
+  const { loads, fit: f, pctph, family, role, thread, reserve = 0 } = input;
   const k = kOf(f, family);
   const wph = estimate(
     loads.flatMap((l) => l.threads),
@@ -216,14 +228,16 @@ export function admit(input: { loads: readonly CodexLoad[]; fit: Fit; pctph: num
   if (k === undefined || wph === undefined) return undefined;
   const interactive: Record<string, number> = {};
   for (const l of loads) for (const [fam, w] of Object.entries(l.interactive1h)) interactive[fam] = (interactive[fam] ?? 0) + w;
-  const now = burn(
-    loads.flatMap((l) => l.live),
-    interactive,
-    f,
-  );
+  const now =
+    burn(
+      loads.flatMap((l) => l.live).filter((t) => t.id !== thread),
+      interactive,
+      f,
+    ) + reserve;
   const adds = wph * k;
   const p = (n: number) => `${n.toFixed(1)} %/h`;
   const who = `${family} ${role === 'none' ? 'thread' : role}`;
-  if (now + adds > pctph) return { ok: false, reason: `codex burns ${p(now)}; this ${who} adds about ${p(adds)}; the pace is ${p(pctph)}` };
-  return { ok: true, reason: `fits: codex ${p(now + adds)} of ${p(pctph)} with this ${who}` };
+  const burns = `codex burns ${p(now)}${reserve > 0 ? ` (${p(reserve)} of it just started)` : ''}`;
+  if (now + adds > pctph) return { ok: false, reason: `${burns}; this ${who} adds about ${p(adds)}; the pace is ${p(pctph)}` };
+  return { ok: true, reason: `fits: codex ${p(now + adds)} of ${p(pctph)} with this ${who} (+${p(adds)})` };
 }

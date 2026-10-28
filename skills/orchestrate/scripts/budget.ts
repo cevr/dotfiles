@@ -12,7 +12,7 @@
 //        bun budget.ts --resume-at
 //        bun budget.ts --admit [--cap <n>] --session <id> --cwd <dir> --type <subagent_type> --description <text>
 //        bun budget.ts --wait <ticket>
-//        bun budget.ts --codex [--admit --model <slug|family> [--role <role>]]
+//        bun budget.ts --codex [--admit --model <slug|family> [--role <role>] [--thread <id>] [--reserve <%/h>]]
 //   --rotate  sets teamclaude's account priorities to the weekly reset order,
 //             so the account whose quota expires first serves first. The
 //             status mod runs it every minute.
@@ -35,8 +35,10 @@
 //   --codex   prints the Codex account's pace instead (budget/codex-pace.ts):
 //             what 1% of its week costs in each model family's tokens, the
 //             burn now, the pace and each family and role's cost. With
-//             --admit it decides one new Codex thread (the codex-bridge asks):
-//             exit 0 to start it, 1 to hold it, 2 when nothing can be measured.
+//             --admit it decides one Codex turn (the codex-bridge asks before
+//             every turn): exit 0 to start it, 1 to hold it, 2 when nothing
+//             can be measured. --thread names the thread a next turn
+//             continues; --reserve adds the turns just started (%/h).
 // Exits 1 when the active agents reach the cap, 2 when a host is unreachable.
 // Settings: ~/.config/orchestrate/budget.json overrides budget/pace.ts DEFAULTS. On
 // both hosts it links to orchestrate/budget.json in dotfiles.
@@ -196,7 +198,8 @@ if (args.includes('--codex')) {
         : !fit
           ? 'no fit of the cost of the week is in hand'
           : undefined;
-    const d = why || !pace || !fit ? undefined : codex.admit({ loads, fit, pctph: pace.pctph, family, role });
+    const reserve = Number(option('--reserve') ?? 0) || 0;
+    const d = why || !pace || !fit ? undefined : codex.admit({ loads, fit, pctph: pace.pctph, family, role, thread: option('--thread'), reserve });
     if (!d) {
       console.log(`unmeasured: ${why ?? `no ${family} or other thread has run long enough to cost`}`);
       process.exit(2);

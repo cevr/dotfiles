@@ -168,11 +168,11 @@ describe('a thread', () => {
     expect(sent.body).toMatchObject({ id: 't1', status: 'queued', turns: 2 })
     expect(started.body).toMatchObject({ id: 't2', status: 'queued', turns: 1 })
     expect(first.bridge.busy()).toBe(false)
-    expect((await first.call('POST', '/send', { threadId: 't1', prompt: 'more' })).body.error).toContain('queued')
+    expect((await first.call('POST', '/send', { threadId: 't1', prompt: 'more' })).body.error).toContain('has a latched turn (the bridge is updating)')
     first.bridge.server.stop()
 
     const second = open()
-    await second.bridge.runQueued()
+    await second.bridge.pump()
     await settle()
     const events = (await second.call('GET', '/events?owner=s1')).body
     expect(events.map((e: any) => e.final)).toEqual(['done: build it', 'done: again', 'done: review it'])
@@ -190,7 +190,7 @@ describe('a thread', () => {
     await call('POST', '/send', { threadId: 't1', prompt: 'again' })
     expect((await call('POST', '/interrupt', { threadId: 't1' })).body).toMatchObject({ status: 'interrupted' })
     const events = (await call('GET', '/events?owner=s1')).body
-    expect(events.at(-1)).toMatchObject({ status: 'interrupted', error: 'stopped before the bridge update started it' })
+    expect(events.at(-1)).toMatchObject({ status: 'interrupted', error: 'stopped before it started' })
   })
 
   test('a turn left running by a stopped daemon reaches its owner as failed', async () => {
@@ -231,17 +231,41 @@ describe('the budget', () => {
     process.env.CODEX_BRIDGE_ADMIT = UNMEASURED
   })
 
-  test('the rate admission holds a new thread with its reason, for the resolved model and the role', async () => {
+  test('the rate admission latches a new thread\'s turn with its reason, for the resolved model and the role', async () => {
     process.env.CODEX_BRIDGE_ADMIT = admitter('hold', 'hold: codex burns 1.6 %/h; this luna implementor adds about 0.4 %/h; the pace is 1.2 %/h', 1)
     const { call } = open()
-    const refused = await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir, role: 'implementor', model: 'luna' })
-    expect(refused.status).toBe(400)
-    expect(refused.body.error).toBe(
-      'The Codex budget holds a new Codex thread: codex burns 1.6 %/h; this luna implementor adds about 0.4 %/h; the pace is 1.2 %/h.',
-    )
+    const held = await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir, role: 'implementor', model: 'luna' })
+    expect(held.body).toMatchObject({ id: 't1', status: 'queued', turns: 1, held: 'codex burns 1.6 %/h; this luna implementor adds about 0.4 %/h; the pace is 1.2 %/h' })
     expect(admitted()).toEqual(['--model gpt-6-luna --role implementor'])
-    expect(requests().filter(r => r.method === 'thread/start')).toHaveLength(0)
+    expect(requests().filter(r => r.method === 'turn/start')).toHaveLength(0)
     expect((await call('GET', '/budget')).body.admission).toMatchObject({ ok: false, line: 'hold: codex burns 1.6 %/h; this luna implementor adds about 0.4 %/h; the pace is 1.2 %/h' })
+  })
+
+  test('a next turn passes the same admission, as its thread, and the pump starts latched turns as room opens, next turns first', async () => {
+    const { bridge, call } = open()
+    await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir, model: 'gpt-6.1-sol' })
+    await settle()
+
+    process.env.CODEX_BRIDGE_ADMIT = admitter('hold', 'hold: codex burns 4.1 %/h; this sol thread adds about 0.4 %/h; the pace is 0.3 %/h', 1)
+    const fresh = await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir, model: 'gpt-6.1-sol' })
+    const next = await call('POST', '/send', { threadId: 't1', prompt: 'fix round 2' })
+    expect(fresh.body).toMatchObject({ id: 't2', status: 'queued' })
+    expect(next.body).toMatchObject({ id: 't1', status: 'queued', turns: 2, held: '1 latched turn ahead' })
+
+    await bridge.pump()
+    expect(admitted().at(-1)).toBe('--model gpt-6.1-sol --role none --thread t1')
+    expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([
+      { id: 't1', status: 'queued', held: 'codex burns 4.1 %/h; this sol thread adds about 0.4 %/h; the pace is 0.3 %/h' },
+      { id: 't2', status: 'queued' },
+    ])
+
+    // Room for both: the second admission counts the first turn's cost as just started.
+    process.env.CODEX_BRIDGE_ADMIT = admitter('admit', 'admit: fits: codex 0.2 %/h of 0.3 %/h with this sol thread (+0.1 %/h)', 0)
+    await bridge.pump()
+    await settle()
+    expect(admitted().slice(-2)).toEqual(['--model gpt-6.1-sol --role none --thread t1', '--model gpt-6.1-sol --role none --reserve 0.10'])
+    const events = (await call('GET', '/events?owner=s1')).body
+    expect(events.map((e: any) => e.final)).toEqual(['done: build it', 'done: fix round 2', 'done: review it'])
   })
 
   test('the rate admission starts a thread ahead of the even line, but not past a hard gate', async () => {
@@ -256,8 +280,8 @@ describe('the budget', () => {
 
     process.env.FAKE_LIMITS = spent()
     const { call } = open()
-    const refused = await call('POST', '/start', { owner: 's1', description: 'x', prompt: 'y', cwd: dir })
-    expect(refused.body.error).toStartWith('The Codex budget holds a new Codex thread: the 7-day window is spent')
+    const held = await call('POST', '/start', { owner: 's1', description: 'x', prompt: 'y', cwd: dir })
+    expect(held.body).toMatchObject({ status: 'queued', held: expect.stringMatching(/^the 7-day window is spent/) })
     expect(admitted()).toHaveLength(1)
   })
 
@@ -269,7 +293,7 @@ describe('the budget', () => {
     expect(started.status).toBe(200)
   })
 
-  test('holds a new thread ahead of an even burn when the admission cannot measure, and lets a started thread take its next turn', async () => {
+  test('latches a new thread ahead of an even burn when the admission cannot measure', async () => {
     const first = open()
     await first.call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir })
     await settle()
@@ -277,13 +301,9 @@ describe('the budget', () => {
 
     process.env.FAKE_LIMITS = ahead()
     const { call } = open()
-    const refused = await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })
-    expect(refused.status).toBe(400)
-    expect(refused.body.error).toStartWith('The Codex budget holds a new Codex thread: the 7-day window is 58% used')
-    expect(requests().filter(r => r.method === 'thread/start')).toHaveLength(1)
-
-    const sent = await call('POST', '/send', { threadId: 't1', prompt: 'fix round 2' })
-    expect(sent.body).toMatchObject({ id: 't1', status: 'running', turns: 2 })
+    const held = await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })
+    expect(held.body).toMatchObject({ status: 'queued', held: expect.stringMatching(/^the 7-day window is 58% used/) })
+    expect(requests().filter(r => r.method === 'turn/start')).toHaveLength(1)
     expect((await call('GET', '/budget')).body).toMatchObject({ start: { ok: false }, send: { ok: true } })
   })
 })

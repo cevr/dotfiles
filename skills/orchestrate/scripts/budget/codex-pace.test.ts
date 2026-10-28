@@ -155,7 +155,19 @@ describe('admit', () => {
   });
 
   test('starts one that fits', () => {
-    expect(admit({ loads, fit: k, pctph: 2, family: 'sol', role: 'implementor' })).toEqual({ ok: true, reason: 'fits: codex 1.5 %/h of 2.0 %/h with this sol implementor' });
+    expect(admit({ loads, fit: k, pctph: 2, family: 'sol', role: 'implementor' })).toEqual({ ok: true, reason: 'fits: codex 1.5 %/h of 2.0 %/h with this sol implementor (+0.4 %/h)' });
+  });
+
+  test("a next turn does not count its own thread's live burn again", () => {
+    // Without thread a's 1.0 %/h: 0.1 %/h interactive, plus 0.4 %/h for the turn.
+    expect(admit({ loads, fit: k, pctph: 1.2, family: 'sol', role: 'reviewer', thread: 'a' })).toEqual({ ok: true, reason: 'fits: codex 0.5 %/h of 1.2 %/h with this sol reviewer (+0.4 %/h)' });
+  });
+
+  test('counts the turns just started that the live burn does not show yet', () => {
+    expect(admit({ loads, fit: k, pctph: 2, family: 'sol', role: 'implementor', reserve: 0.6 })).toEqual({
+      ok: false,
+      reason: 'codex burns 1.7 %/h (0.6 %/h of it just started); this sol implementor adds about 0.4 %/h; the pace is 2.0 %/h',
+    });
   });
 
   test('cannot tell without a cost', () => {

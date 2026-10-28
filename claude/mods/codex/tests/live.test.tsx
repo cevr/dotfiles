@@ -123,12 +123,12 @@ test('the threads tool reports the Codex budget and why it holds new threads', a
   expect(answer).toMatchObject({ result: expect.stringContaining(`New threads: ${held.start.reason}.`) })
 })
 
-test('a start latched while the bridge updates says so, and its footer line shows it queued', async ($, on) => {
-  const queued: Thread = { ...running, status: 'queued', live: undefined, updatedAt: 50e3 }
+test('a latched start says why it waits, and its footer line shows it latched', async ($, on) => {
+  const queued: Thread = { ...running, status: 'queued', held: 'the bridge is updating', live: undefined, updatedAt: 50e3 }
   bridge(on, () => [queued])
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   const answer = await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r1', prompt: 'review', tool_use_id: 'tu1' })
   expect(answer).toMatchObject({ result: expect.stringContaining('Queued Codex thread t1') })
-  expect(answer).toMatchObject({ result: expect.stringContaining('starts by itself when the new bridge is up') })
-  expect((await footer($, 'terminal'))[1]).toBe('◆ codex reviewer sheet r1 · queued for the bridge update 10s · context 41%')
+  expect(answer).toMatchObject({ result: expect.stringContaining('The turn is latched (the bridge is updating); it starts by itself when there is room.') })
+  expect((await footer($, 'terminal'))[1]).toBe('◆ codex reviewer sheet r1 · latched 10s: the bridge is updating · context 41%')
 })
