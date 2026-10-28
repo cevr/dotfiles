@@ -762,6 +762,37 @@ async function ensure() {
   console.log(JSON.stringify({ socket: SOCKET }))
 }
 
+/** Minutes a latched turn may wait before its role moves to Claude (orchestrate's Families). */
+export const PATIENCE_MIN = 10
+
+/**
+ * Waits for a latched turn of `id` to start: 0 once it left `queued`, 3 when the
+ * bridge knows no such thread, 4 when it is still latched (or the bridge is down) after `minutes`.
+ */
+export async function waitStarted(
+  id: string,
+  minutes = PATIENCE_MIN,
+  read: () => Promise<Array<{ id: string; status: string; held?: string }> | undefined> = async () =>
+    fetch('http://bridge/threads', { unix: SOCKET } as RequestInit).then(r => r.json(), () => undefined),
+  every = 15e3,
+): Promise<{ code: 0 | 3 | 4; line: string }> {
+  const deadline = Date.now() + minutes * 60e3
+  let held = 'the bridge is down'
+  for (;;) {
+    const threads = await read()
+    const thread = threads?.find(t => t.id === id)
+    if (threads && !thread) return { code: 3, line: `codex-bridge has no thread ${id}` }
+    if (thread && thread.status !== 'queued') return { code: 0, line: `started: thread ${id} is ${thread.status}` }
+    if (thread) held = thread.held ?? 'latched'
+    if (Date.now() >= deadline)
+      return {
+        code: 4,
+        line: `still latched after ${minutes} min (${held}): interrupt it with mcp__codex__interrupt and run this role on Claude instead (orchestrate Families)`,
+      }
+    await Bun.sleep(every)
+  }
+}
+
 if (import.meta.main) {
   const command = process.argv[2]
   if (command === 'serve') await serve()
@@ -769,8 +800,13 @@ if (import.meta.main) {
   else if (command === 'status') {
     const response = await fetch('http://bridge/threads', { unix: SOCKET } as RequestInit).catch(() => undefined)
     console.log(response ? JSON.stringify(await response.json(), null, 2) : 'codex-bridge is not running')
+  } else if (command === 'wait' && process.argv[3]) {
+    const at = process.argv.indexOf('--patience')
+    const out = await waitStarted(process.argv[3], at > 0 ? Number(process.argv[at + 1]) : PATIENCE_MIN)
+    console.log(out.line)
+    process.exit(out.code)
   } else {
-    console.error('usage: codex-bridge ensure | serve | status')
+    console.error('usage: codex-bridge ensure | serve | status | wait <thread> [--patience <minutes>]')
     process.exit(2)
   }
 }

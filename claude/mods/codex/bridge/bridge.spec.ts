@@ -21,7 +21,7 @@ const admitter = (name: string, line: string, code: number) => {
 // Unless a test says otherwise, the admission cannot measure, so the even line decides.
 const UNMEASURED = admitter('unmeasured', 'unmeasured: no host has seen the week', 2)
 process.env.CODEX_BRIDGE_ADMIT = UNMEASURED
-const { Bridge, handler, newest, roleAgent } = await import('./bridge.ts')
+const { Bridge, handler, newest, roleAgent, waitStarted } = await import('./bridge.ts')
 
 const requests = () =>
   readFileSync(log, 'utf8')
@@ -306,5 +306,18 @@ describe('the budget', () => {
     expect(held.body).toMatchObject({ status: 'queued', held: expect.stringMatching(/^the 7-day window is 58% used/) })
     expect(requests().filter(r => r.method === 'turn/start')).toHaveLength(1)
     expect((await call('GET', '/budget')).body).toMatchObject({ start: { ok: false }, send: { ok: true } })
+  })
+})
+
+describe('waiting on a latched turn', () => {
+  const reads = (...answers: Array<Array<{ id: string; status: string; held?: string }> | undefined>) => async () => answers.shift() ?? answers.at(-1)
+  test('ends once the turn starts, and gives up on a turn still latched past its patience', async () => {
+    const queued = { id: 't1', status: 'queued', held: 'the pace is 0.3 %/h' }
+    expect(await waitStarted('t1', 1, reads([queued], [{ id: 't1', status: 'running' }]), 1)).toEqual({ code: 0, line: 'started: thread t1 is running' })
+    expect(await waitStarted('t9', 1, reads([queued]), 1)).toMatchObject({ code: 3 })
+    const late = await waitStarted('t1', 0, reads([queued]), 1)
+    expect(late).toMatchObject({ code: 4, line: expect.stringContaining('still latched after 0 min (the pace is 0.3 %/h)') })
+    // A bridge that does not answer counts as latched.
+    expect(await waitStarted('t1', 0, reads(undefined), 1)).toMatchObject({ code: 4, line: expect.stringContaining('(the bridge is down)') })
   })
 })

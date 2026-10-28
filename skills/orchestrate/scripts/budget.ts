@@ -11,7 +11,7 @@
 // Usage: bun budget.ts [--rotate] [--cap <n>] [--costs] [--burn [--days <n>]] [--tune]
 //        bun budget.ts --resume-at
 //        bun budget.ts --admit [--cap <n>] --session <id> --cwd <dir> --type <subagent_type> --description <text>
-//        bun budget.ts --wait <ticket>
+//        bun budget.ts --wait <ticket> [--patience <minutes>]
 //        bun budget.ts --codex [--admit --model <slug|family> [--role <role>] [--thread <id>] [--reserve <%/h>] [--week <used%>,<reset s>,<mins>]]
 //   --rotate  sets teamclaude's account priorities to the weekly reset order,
 //             so the account whose quota expires first serves first. The
@@ -32,6 +32,8 @@
 //             in the queue (budget/queue.ts) as a ticket.
 //   --wait    keeps a ticket alive and exits 0 when its turn comes, 3 when it
 //             is gone. The held session runs it as a background command.
+//             --patience gives up after that many minutes with exit 4, so an
+//             orchestrator can run the role on Codex instead.
 //   --codex   prints the Codex account's pace instead (budget/codex-pace.ts):
 //             what 1% of its week costs in each model family's tokens, the
 //             burn now, the pace and each family and role's cost. With
@@ -364,6 +366,8 @@ if (args.includes('--admit')) {
 
 if (args.includes('--wait')) {
   const id = option('--wait') ?? '';
+  const patience = Number(option('--patience') ?? Infinity);
+  const deadline = Date.now() + patience * MINUTE;
   let said = '';
   for (;;) {
     const p = await pool(15e3);
@@ -384,6 +388,10 @@ if (args.includes('--wait')) {
       process.exit(0);
     }
     if (out.reason && out.reason !== said) console.log(`waiting: ${(said = out.reason)}`);
+    if (Date.now() >= deadline) {
+      console.log(`still held after ${patience} min (${said || 'queued'}): run this role on Codex instead (orchestrate Families). The ticket lapses in 2 minutes.`);
+      process.exit(4);
+    }
     await Bun.sleep(10e3);
   }
 }

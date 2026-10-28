@@ -65,7 +65,7 @@ const readBudget = ($: EngineInterface) => call<Budget>($, 'GET', '/budget').cat
 /** A thread with a turn running, or latched while the bridge updates. */
 const active = (t: Thread) => t.status === 'running' || t.status === 'queued'
 // A turn latched while the bridge drains for an update; the new bridge starts it.
-const QUEUED = (t: Thread) => (t.status === 'queued' ? `The turn is latched (${t.held ?? 'waiting'}); it starts by itself when there is room. ` : '')
+const QUEUED = (t: Thread) => (t.status === 'queued' ? `The turn is latched (${t.held ?? 'waiting'}); it starts by itself when there is room. To move the role to Claude if it waits past 10 minutes, run \`codex-bridge wait ${t.id} --patience 10\` in the background. ` : '')
 
 const tokens = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}k`)
 const facts = (t: Thread) =>
