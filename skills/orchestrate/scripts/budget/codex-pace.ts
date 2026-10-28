@@ -228,19 +228,17 @@ export function admit(input: {
   if (k === undefined || wph === undefined) return undefined;
   const interactive: Record<string, number> = {};
   for (const l of loads) for (const [fam, w] of Object.entries(l.interactive1h)) interactive[fam] = (interactive[fam] ?? 0) + w;
-  const now =
-    burn(
-      loads.flatMap((l) => l.live).filter((t) => t.id !== thread),
-      interactive,
-      f,
-    ) + reserve;
+  const others = loads.flatMap((l) => l.live).filter((t) => t.id !== thread);
+  const now = burn(others, interactive, f) + reserve;
+  // Interactive use is no worker: alone means no other worker thread live and none just started.
+  const alone = reserve === 0 && !others.some((t) => t.role !== 'interactive');
   const adds = wph * k;
   const p = (n: number) => `${n.toFixed(1)} %/h`;
   const who = `${family} ${role === 'none' ? 'thread' : role}`;
   const burns = `codex burns ${p(now)}${reserve > 0 ? ` (${p(reserve)} of it just started)` : ''}`;
-  // A turn is the smallest unit of work: with nothing else burning, one runs even when it alone passes the pace.
+  // A turn is the smallest unit of work: with no other worker live, one runs even when it alone passes the pace.
   if (now + adds > pctph) {
-    if (now === 0) return { ok: true, reason: `fits: this ${who} runs alone, as nothing else burns; the pace is ${p(pctph)} (+${p(adds)})` };
+    if (alone) return { ok: true, reason: `fits: this ${who} runs alone, as no other worker burns; the pace is ${p(pctph)} (+${p(adds)})` };
     return { ok: false, reason: `${burns}; this ${who} adds about ${p(adds)}; the pace is ${p(pctph)}` };
   }
   return { ok: true, reason: `fits: codex ${p(now + adds)} of ${p(pctph)} with this ${who} (+${p(adds)})` };
