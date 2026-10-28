@@ -238,6 +238,10 @@ export function admit(input: {
   const p = (n: number) => `${n.toFixed(1)} %/h`;
   const who = `${family} ${role === 'none' ? 'thread' : role}`;
   const burns = `codex burns ${p(now)}${reserve > 0 ? ` (${p(reserve)} of it just started)` : ''}`;
-  if (now + adds > pctph) return { ok: false, reason: `${burns}; this ${who} adds about ${p(adds)}; the pace is ${p(pctph)}` };
+  // A turn is the smallest unit of work: with nothing else burning, one runs even when it alone passes the pace.
+  if (now + adds > pctph) {
+    if (now === 0) return { ok: true, reason: `fits: this ${who} runs alone, as nothing else burns; the pace is ${p(pctph)} (+${p(adds)})` };
+    return { ok: false, reason: `${burns}; this ${who} adds about ${p(adds)}; the pace is ${p(pctph)}` };
+  }
   return { ok: true, reason: `fits: codex ${p(now + adds)} of ${p(pctph)} with this ${who} (+${p(adds)})` };
 }

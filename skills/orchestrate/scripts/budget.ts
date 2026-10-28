@@ -12,7 +12,7 @@
 //        bun budget.ts --resume-at
 //        bun budget.ts --admit [--cap <n>] --session <id> --cwd <dir> --type <subagent_type> --description <text>
 //        bun budget.ts --wait <ticket>
-//        bun budget.ts --codex [--admit --model <slug|family> [--role <role>] [--thread <id>] [--reserve <%/h>]]
+//        bun budget.ts --codex [--admit --model <slug|family> [--role <role>] [--thread <id>] [--reserve <%/h>] [--week <used%>,<reset s>,<mins>]]
 //   --rotate  sets teamclaude's account priorities to the weekly reset order,
 //             so the account whose quota expires first serves first. The
 //             status mod runs it every minute.
@@ -38,7 +38,10 @@
 //             --admit it decides one Codex turn (the codex-bridge asks before
 //             every turn): exit 0 to start it, 1 to hold it, 2 when nothing
 //             can be measured. --thread names the thread a next turn
-//             continues; --reserve adds the turns just started (%/h).
+//             continues; --reserve adds the turns just started (%/h);
+//             --week is the week as Codex reports it now (percent used,
+//             reset in Unix seconds, window minutes), which the session
+//             files show only once a turn has run since an early reset.
 // Exits 1 when the active agents reach the cap, 2 when a host is unreachable.
 // Settings: ~/.config/orchestrate/budget.json overrides budget/pace.ts DEFAULTS. On
 // both hosts it links to orchestrate/budget.json in dotfiles.
@@ -173,6 +176,8 @@ if (args.includes('--codex')) {
   ];
   const unreachable = loads.filter((l) => l.error);
   const snapshots = loads.flatMap((l) => l.snapshots);
+  const [used, resetsAt, windowMinutes] = (option('--week') ?? '').split(',').map(Number);
+  if (Number.isFinite(used) && resetsAt && windowMinutes) snapshots.push({ at: now, used: used!, resetsAt: resetsAt * 1e3, windowMinutes });
   // The fit needs every host's tokens against the account's rise; a fit from
   // one host would put the cost of a percent far too low. Until all are read,
   // the last whole fit stands in for a day.

@@ -169,7 +169,10 @@ export async function admission(
   role: Role | undefined,
   thread?: string,
   reserve = 0,
+  limits?: Limits | null,
 ): Promise<{ ok?: boolean; line: string }> {
+  // The week as Codex reports it now: the session files miss an early reset until a turn runs after it.
+  const week = [limits?.primary, limits?.secondary].find(w => (w?.windowDurationMins ?? 0) > 1440 && w?.resetsAt)
   const command =
     process.env.CODEX_BRIDGE_ADMIT ?? `${quote(process.execPath)} ${quote(join(homedir(), '.claude/skills/orchestrate/scripts/budget.ts'))} --codex --admit`
   const args = [
@@ -178,6 +181,7 @@ export async function admission(
     role ?? 'none',
     ...(thread ? ['--thread', thread] : []),
     ...(reserve > 0 ? ['--reserve', reserve.toFixed(2)] : []),
+    ...(week ? ['--week', `${week.usedPercent},${week.resetsAt},${week.windowDurationMins}`] : []),
   ]
     .map(quote)
     .join(' ')
@@ -490,7 +494,7 @@ export class Bridge {
     const reserve = this.recent.reduce((n, r) => n + r.pctph, 0)
     // A latched turn is already counted in `turns`: it continues the thread only past its first.
     const continues = thread.turns > (thread.status === 'queued' ? 1 : 0)
-    const admitted = await admission(thread.model, thread.role, continues ? thread.id : undefined, reserve)
+    const admitted = await admission(thread.model, thread.role, continues ? thread.id : undefined, reserve, await this.limits())
     this.admitted = { at: now, ...admitted }
     if (admitted.ok === false) return admitted.line.replace(/^hold: /, '')
     if (admitted.ok === undefined && !gates.start.ok) return gates.start.reason

@@ -170,6 +170,13 @@ describe('admit', () => {
     });
   });
 
+  test('starts a lone turn that alone passes the pace', () => {
+    expect(admit({ loads: [load({}), load({ host: 'box', threads: [] })], fit: k, pctph: 0.3, family: 'sol', role: 'implementor' })).toEqual({
+      ok: true,
+      reason: 'fits: this sol implementor runs alone, as nothing else burns; the pace is 0.3 %/h (+0.4 %/h)',
+    });
+  });
+
   test('cannot tell without a cost', () => {
     expect(admit({ loads, fit: { k: {}, windows: {}, sharedWindows: 0 }, pctph: 2, family: 'sol', role: 'none' })).toBeUndefined();
   });

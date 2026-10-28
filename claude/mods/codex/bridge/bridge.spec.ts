@@ -274,7 +274,8 @@ describe('the budget', () => {
     const first = open()
     const started = await first.call('POST', '/start', { owner: 's1', description: 'review it', prompt: 'review it', cwd: dir, model: 'gpt-6.1-sol' })
     expect(started.status).toBe(200)
-    expect(admitted()).toEqual(['--model gpt-6.1-sol --role none'])
+    // The admission reads the week as Codex reports it now.
+    expect(admitted()).toEqual([expect.stringMatching(/^--model gpt-6\.1-sol --role none --week 58,\d+,10080$/)])
     await settle()
     first.bridge.server.stop()
 
