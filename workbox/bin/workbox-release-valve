@@ -79,14 +79,15 @@ find_candidate_groups() {
 
   while read -r pid ppid pgid command _rss_kib arguments; do
     case "$command" in
-      bun|bun.exe|tsc)
+      bun|bun.exe|tsc|go)
         printf '%s\n' "$pgid" >> "$candidate_groups_file"
         continue
         ;;
     esac
 
+    # Go test and run binaries execute from the build cache.
     case "$arguments" in
-      *'/packages/cli/bin/bite test --daemon'*)
+      *'/packages/cli/bin/bite test --daemon'*|*/go-build[0-9]*/*)
         printf '%s\n' "$pgid" >> "$candidate_groups_file"
         continue
         ;;

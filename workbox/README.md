@@ -75,11 +75,11 @@ noncurrent snapshot objects after 14 days.
 - `migrate-herdr-to-systemd` moves a live Herdr session under its user service.
 - `cleanup-mosh-servers` removes disconnected Mosh servers.
 
-The release valve targets Bite test daemons, Bun and TypeScript compiler groups,
-and detached Bite test workers. Apply mode uses four bounded stop passes. It
-does not stop Codex, Herdr, Sideshow, SSH, Tailscale, MongoDB, Redis, Syncthing,
-or system services. It returns a failure if a protected agent continues to
-start new workload groups.
+The release valve targets Bite test daemons, Bun, TypeScript compiler and Go
+toolchain groups, Go test binaries, and detached Bite test workers. Apply mode
+uses four bounded stop passes. It does not stop Codex, Herdr, Sideshow, SSH,
+Tailscale, MongoDB, Redis, Syncthing, or system services. It returns a failure
+if a protected agent continues to start new workload groups.
 
 ## Rift workspaces
 
