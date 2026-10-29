@@ -117,9 +117,12 @@ find_candidate_groups() {
 find_protected_groups() {
   # Codex runs each command in its own group behind bwrap and
   # codex-linux-sandbox. Those groups are workloads, not Codex itself.
+  # A process is known by its command, executable and script alone: a
+  # Claude shell wrapper exports CODEX_COMPANION_* in its arguments, so
+  # matching the whole line protects every workload Claude starts.
   awk '
     {
-      line=$0
+      line=$4 " " $6 " " $7
       if ($4 == "bwrap" || $4 ~ /^codex-linux-san/)
         next
       if ($4 == "systemd" ||
