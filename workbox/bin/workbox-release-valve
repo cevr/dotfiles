@@ -238,9 +238,15 @@ stop_target_groups() {
     /bin/kill -KILL $remaining_pids 2>/dev/null || true
   fi
 
-  sleep 1
-  snapshot_processes
-  final_processes=$(group_member_pids "$target_groups_file" "$processes_file")
+  # A killed process exits slowly while memory is short.
+  wait_seconds=0
+  while :; do
+    sleep 1
+    snapshot_processes
+    final_processes=$(group_member_pids "$target_groups_file" "$processes_file")
+    wait_seconds=$((wait_seconds + 1))
+    [ -n "$final_processes" ] && [ "$wait_seconds" -lt 10 ] || break
+  done
   if [ -n "$final_processes" ]; then
     printf 'workbox-release-valve: some target processes did not stop: %s\n' \
       "$(printf '%s' "$final_processes" | tr '\n' ' ')" >&2
