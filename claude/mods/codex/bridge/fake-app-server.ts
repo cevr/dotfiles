@@ -3,7 +3,8 @@
 // A prompt with the word `hang` keeps its turn running until it is interrupted;
 // one that starts with `work` shows work items first (see `work`). A prompt with
 // `capacity<N>` fails that turn and the thread's next N-1 ones as Codex does when
-// the model is at capacity.
+// the model is at capacity. A `deaf` prompt hangs too, and refuses the first
+// interrupt of its turn. A `crash` prompt makes the fake exit before it answers.
 // Every request it gets is appended to $FAKE_LOG, one JSON line each.
 // It reads the account's usage from $FAKE_LIMITS (a rate-limit snapshot as JSON), when set.
 import { appendFileSync } from 'node:fs'
@@ -50,6 +51,7 @@ const work = (threadId: string, turnId: string) => {
 let buffer = ''
 const hanging = new Map<string, string>()
 const busy = new Map<string, number>()
+const deaf = new Set<string>()
 for await (const chunk of Bun.stdin.stream()) {
   buffer += new TextDecoder().decode(chunk)
   let at
@@ -70,6 +72,7 @@ for await (const chunk of Bun.stdin.stream()) {
     else if (method === 'turn/start') {
       const turnId = `u${++turns}`
       const text = params.input[0].text as string
+      if (/\bcrash\b/.test(text)) process.exit(1)
       out({ id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } })
       if (text.startsWith('work')) work(params.threadId, turnId)
       const fails = /\bcapacity(\d+)\b/.exec(text)
@@ -77,9 +80,13 @@ for await (const chunk of Bun.stdin.stream()) {
       if (busy.get(params.threadId)) {
         busy.set(params.threadId, busy.get(params.threadId)! - 1)
         complete(params.threadId, turnId, 'failed', undefined, 'Selected model is at capacity. Please try a different model.')
-      } else if (/\bhang\b/.test(text)) hanging.set(params.threadId, turnId)
+      } else if (/\b(hang|deaf)\b/.test(text)) {
+        hanging.set(params.threadId, turnId)
+        if (/\bdeaf\b/.test(text)) deaf.add(turnId)
+      }
       else complete(params.threadId, turnId, 'completed', `done: ${text}`)
-    } else if (method === 'turn/interrupt') {
+    } else if (method === 'turn/interrupt' && deaf.delete(params.turnId)) out({ id, error: { code: -32000, message: 'interrupt refused' } })
+    else if (method === 'turn/interrupt') {
       out({ id, result: {} })
       hanging.delete(params.threadId)
       complete(params.threadId, params.turnId, 'interrupted')

@@ -81,8 +81,14 @@ export type Thread = {
   notBefore?: number
   /** The bridge's resumes since the thread's last turn that its owner heard of. */
   resumes?: number
-  /** The caller asked to stop the running turn (true), or the Sabbath began. */
+  /** An interrupt is on its way: the caller's (true) or the Sabbath's. Cleared when Codex refuses it. */
   interrupting?: boolean | 'sabbath'
+  /**
+   * The Sabbath stopped the running turn. Saved before the interrupt goes out,
+   * so a refused interrupt, a restart or an app-server exit still ends the turn
+   * as the Sabbath's, to resume after it without spending a try.
+   */
+  paused?: 'sabbath'
   turnId?: string
   turns: number
   compactions: number
@@ -130,6 +136,8 @@ const KEEP_MS = 14 * 24 * 60 * 60e3
 // How often latched turns are tried against the budget, and how long a started
 // turn's admitted cost counts before the live burn shows it.
 const PUMP_MS = 2 * 60e3
+// How often the daemon stops running turns once the Sabbath begins, apart from the pump and its admissions.
+const PAUSE_MS = 15e3
 const RECENT_MS = 5 * 60e3
 // Usage older than this is read again before a budget decision.
 const USAGE_MS = 60e3
@@ -334,6 +342,8 @@ export class Bridge {
   /** The policy as last loaded, and the mtimes of its files then. */
   private rules: Policy = boot
   private rulesAt = ''
+  /** The policy load under way, by the stamp it loads. */
+  private loading: { at: string; done: Promise<Policy> } | undefined
   readonly server: AppServer
 
   constructor(
@@ -346,14 +356,20 @@ export class Bridge {
     this.state.events = this.state.events.filter(event => event.at > kept)
     for (const [id, thread] of Object.entries(this.state.threads)) if (thread.updatedAt < kept) delete this.state.threads[id]
     // A turn that was running when the last daemon stopped has no child to finish it.
-    for (const thread of Object.values(this.state.threads)) if (thread.status === 'running') this.finish(thread, 'failed', 'codex-bridge restarted', 0, 'drain-interrupt')
+    for (const thread of Object.values(this.state.threads))
+      if (thread.status === 'running') this.finish(thread, 'failed', 'codex-bridge restarted', 0, this.lost(thread, 'drain-interrupt'))
     this.server = new AppServer(
       (method, params) => this.notify(method, params),
       () => {
         for (const thread of Object.values(this.state.threads))
-          if (thread.status === 'running') this.finish(thread, 'failed', 'codex app-server exited', 0, 'app-server-exit')
+          if (thread.status === 'running') this.finish(thread, 'failed', 'codex app-server exited', 0, this.lost(thread, 'app-server-exit'))
       },
     )
+  }
+
+  /** Why a running turn ended when its child went away: the Sabbath's, when it stopped it or is on now. */
+  private lost(thread: Thread, cause: Cause): Cause {
+    return thread.paused || this.rules.paused(Date.now()) ? 'sabbath' : cause
   }
 
   /** Appends one event to bridge.log, with the thread's unit and round when it names one. */
@@ -382,16 +398,26 @@ export class Bridge {
   async refresh(): Promise<Policy> {
     const at = stamp(policyFiles(this.policy))
     if (at === this.rulesAt) return this.rules
+    // Callers during a load wait for it; a load that a newer one overtook publishes nothing.
+    if (this.loading?.at === at) return this.loading.done
     // The first load is no change: only a reload goes to the log.
     const reload = this.rulesAt !== ''
-    this.rulesAt = at
-    try {
-      this.rules = await import(`${this.policy}?v=${at}`)
-      if (reload) this.record('policy', undefined, { version: at })
-    } catch (error) {
-      this.record('policy', undefined, { version: at, error: (error as Error).message })
-    }
-    return this.rules
+    const done = (async () => {
+      try {
+        const rules: Policy = await import(`${this.policy}?v=${at}`)
+        if (this.loading?.at !== at) return this.rules
+        this.rules = rules
+        if (reload) this.record('policy', undefined, { version: at })
+      } catch (error) {
+        if (this.loading?.at !== at) return this.rules
+        this.record('policy', undefined, { version: at, error: (error as Error).message })
+      }
+      this.rulesAt = at
+      this.loading = undefined
+      return this.rules
+    })()
+    this.loading = { at, done }
+    return done
   }
 
   /** From now on new turns latch, so the daemon hands over once none runs. */
@@ -426,6 +452,7 @@ export class Bridge {
     thread.status = status
     thread.turnId = undefined
     thread.interrupting = undefined
+    thread.paused = undefined
     thread.updatedAt = Date.now()
     this.record('end', thread, { status, cause, error, durationMs })
     const tries = thread.resumes ?? 0
@@ -487,7 +514,7 @@ export class Bridge {
       if (final) thread.final = final.text
       const status = turn.status === 'completed' ? 'idle' : turn.status === 'interrupted' ? 'interrupted' : 'failed'
       const error: string | undefined = turn.error?.message
-      this.finish(thread, status, error, turn.durationMs ?? 0, this.rules.cause(status, error, thread.interrupting))
+      this.finish(thread, status, error, turn.durationMs ?? 0, this.rules.cause(status, error, thread.paused ?? thread.interrupting))
     }
   }
 
@@ -522,14 +549,22 @@ export class Bridge {
   // answer that names it, before this continuation runs. A draining daemon
   // latches the turn instead; `runQueued` on the next daemon starts it, as the
   // same turn number.
+  // The start goes to the log before the request, as the turn it numbers, so an
+  // end in the same burst follows it. The Sabbath is checked here, last, since
+  // an admission or a new thread before it can take past sunset.
   private async turn(thread: Thread, prompt: string, count = true) {
-    if (this.draining) return this.latch(thread, prompt, this.rules.DRAINING)
+    if (this.draining) return this.latch(thread, prompt, this.rules.DRAINING, undefined, count)
+    const pause = this.rules.paused(Date.now())
+    if (pause) return this.latch(thread, prompt, pause.why, pause.opensAt, count)
     const before = thread.status
     const live = thread.live
     thread.status = 'running'
     thread.turnId = undefined
     thread.final = undefined
     thread.live = { since: Date.now(), running: {}, steps: [], commands: 0, edits: 0, tools: 0 }
+    if (count) thread.turns++
+    thread.updatedAt = Date.now()
+    this.record('start', thread)
     try {
       const { turn } = await this.server.call('turn/start', {
         threadId: thread.id,
@@ -537,19 +572,20 @@ export class Bridge {
       })
       if (thread.status === 'running') thread.turnId = turn.id
     } catch (error) {
+      // An app-server exit already ended the turn (and latched its resume): that end stands.
+      if (thread.status !== 'running') return thread
       thread.status = before
       thread.live = live
+      if (count) thread.turns--
+      this.record('start-failed', thread, { error: (error as Error).message })
       throw error
     }
-    if (count) thread.turns++
-    thread.updatedAt = Date.now()
-    this.record('start', thread)
     this.save()
     return thread
   }
 
   /** Holds a turn until the pump starts it, as the thread's next turn. */
-  private latch(thread: Thread, prompt: string, why: string, opensAt?: number) {
+  private latch(thread: Thread, prompt: string, why: string, opensAt?: number, count = true) {
     thread.status = 'queued'
     thread.queued = prompt
     thread.held = why
@@ -558,7 +594,7 @@ export class Bridge {
     thread.notBefore = undefined
     thread.final = undefined
     thread.live = undefined
-    thread.turns++
+    if (count) thread.turns++
     thread.updatedAt = Date.now()
     this.record('latch', thread, { reason: why, opensAt: opensAt && new Date(opensAt).toISOString() })
     this.save()
@@ -609,18 +645,35 @@ export class Bridge {
     )
   }
 
+  /**
+   * During the Sabbath, stops every running turn. It runs from the pump and on
+   * its own timer, so no admission delays it. An interrupt Codex refuses is sent
+   * again on the next call; the turn stays the Sabbath's either way.
+   */
+  async pause(rules: Policy) {
+    const pause = rules.paused(Date.now())
+    if (!pause) return
+    for (const thread of Object.values(this.state.threads)) {
+      if (thread.status !== 'running' || !thread.turnId || thread.interrupting) continue
+      const turnId = thread.turnId
+      thread.interrupting = 'sabbath'
+      if (!thread.paused) this.record('pause', thread, { reason: pause.why })
+      thread.paused = 'sabbath'
+      this.save()
+      try {
+        await this.server.call('turn/interrupt', { threadId: thread.id, turnId })
+      } catch (error) {
+        if (thread.status === 'running' && thread.turnId === turnId) thread.interrupting = undefined
+        this.record('pause-failed', thread, { error: (error as Error).message })
+      }
+    }
+  }
+
   /** Starts each latched turn the budget has room for; a held one waits without holding the rest, until it starves. */
   pump() {
     return this.serial(async () => {
       const rules = await this.refresh()
-      const pause = rules.paused(Date.now())
-      if (pause)
-        for (const thread of Object.values(this.state.threads)) {
-          if (thread.status !== 'running' || !thread.turnId || thread.interrupting) continue
-          thread.interrupting = 'sabbath'
-          this.record('pause', thread, { reason: pause.why })
-          await this.server.call('turn/interrupt', { threadId: thread.id, turnId: thread.turnId }).catch(() => undefined)
-        }
+      await this.pause(rules)
       for (const thread of this.queue(rules)) {
         if (this.draining) return
         const held = await this.hold(rules, thread)
@@ -843,6 +896,7 @@ async function serve() {
   // The turns the last daemon latched, then the budget's room, every PUMP_MS.
   void bridge.pump()
   setInterval(() => void bridge.pump(), PUMP_MS)
+  setInterval(() => void bridge.refresh().then(rules => bridge.pause(rules)), PAUSE_MS)
   const stop = (handOver = false) => {
     if (handOver) bridge.record('handover')
     bridge.server.stop()

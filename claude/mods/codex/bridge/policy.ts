@@ -143,7 +143,8 @@ export const refuses = (hold: Hold | undefined, now: number) => !!hold?.opensAt 
 /** Why a turn ended, from its end as Codex reports it and whether its caller interrupted it. */
 export function cause(status: 'idle' | 'interrupted' | 'failed', error: string | undefined, interrupting: Thread['interrupting']): Cause {
   if (status === 'idle') return 'completed'
-  if (status === 'interrupted' && interrupting === 'sabbath') return 'sabbath'
+  // A turn the Sabbath stopped, however it ended: it resumes after the Sabbath.
+  if (interrupting === 'sabbath') return 'sabbath'
   if (status === 'interrupted' && interrupting) return 'interrupted-by-caller'
   return /at capacity/i.test(error ?? '') ? 'capacity' : 'error'
 }

@@ -195,6 +195,69 @@ describe('a thread', () => {
     }
   })
 
+  test('a refused Sabbath interrupt is sent again, and a restart keeps the turn the Sabbath\'s without spending a try', async () => {
+    const first = open()
+    await first.call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'deaf', cwd: dir })
+    setSystemTime(new Date('2026-10-31T12:00:00Z'))
+    await first.bridge.pump()
+    await settle()
+    // Codex refused the interrupt: the turn still runs, and the next pass asks again.
+    expect((await first.call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'running' }])
+    expect(journal().map(e => e.event)).toContain('pause-failed')
+    await first.bridge.pause(await first.bridge.refresh())
+    expect(requests().filter(r => r.method === 'turn/interrupt')).toHaveLength(2)
+    await settle()
+    expect((await first.call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'queued', held: 'resume after the Sabbath' }])
+  })
+
+  test('a restart while the Sabbath interrupt is unanswered resumes the turn after the Sabbath, its tries kept', async () => {
+    const first = open()
+    await first.call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'deaf', cwd: dir })
+    setSystemTime(new Date('2026-10-31T12:00:00Z'))
+    await first.bridge.pump()
+    await settle()
+    first.bridge.server.stop()
+    const second = open()
+    expect((await second.call('GET', '/events?owner=s1')).body).toEqual([])
+    expect((await second.call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'queued', held: 'resume after the Sabbath', resumes: 0 }])
+  })
+
+  test('an admission that ends after sunset starts no turn: the turn latches for the Sabbath', async () => {
+    // A policy whose admission said yes before sunset.
+    const admitted = join(dir, 'admitted')
+    mkdirSync(admitted, { recursive: true })
+    const policy = join(admitted, 'policy.ts')
+    writeFileSync(policy, `export * from '${join(import.meta.dir, 'policy.ts')}'\nexport const decide = async () => ({})\n`)
+    writeFileSync(join(admitted, 'budget.ts'), `export * from '${join(import.meta.dir, 'budget.ts')}'\n`)
+    const { call } = open(policy)
+    setSystemTime(new Date('2026-10-30T21:45:00Z'))
+    expect((await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir })).body).toMatchObject({
+      status: 'queued',
+      held: expect.stringMatching(/^the Sabbath, until Sat 17:39/),
+    })
+    expect(requests().filter(r => r.method === 'turn/start')).toHaveLength(0)
+  })
+
+  test('an app-server that exits on turn/start leaves the turn latched for its resume, and the start answers with it', async () => {
+    const { bridge, call } = open()
+    const started = await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'crash', cwd: dir })
+    await settle()
+    expect(started.body).toMatchObject({ status: 'queued', held: expect.stringMatching(/^resume 1 of 3/) })
+    expect((await call('GET', '/events?owner=s1')).body).toEqual([])
+    later(1)
+    await bridge.pump()
+    await settle()
+    expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'idle', final: `done: ${resumePrompt('app-server-exit')}` }])
+  })
+
+  test('the log has each turn start before its end, under the same number', async () => {
+    const { call } = open()
+    await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir })
+    await settle()
+    const turns = journal().filter(e => e.event === 'start' || e.event === 'end').map(e => `${e.event} ${e.turn}`)
+    expect(turns).toEqual(['start 1', 'end 1'])
+  })
+
   test('a draining daemon latches new turns, and the next daemon runs them as the same turns', async () => {
     const first = open()
     await first.call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir })
