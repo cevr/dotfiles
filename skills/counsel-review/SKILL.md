@@ -7,7 +7,7 @@ description: Get an independent review of a change from the other model family t
 
 The other model family reviews the change against the same criteria as `code-review`. You ground the packet first and validate every claim after. Read-only: edit nothing during the review.
 
-A PR someone else asked you to review runs `code-review`'s Requested review instead, in this session. A **direct reviewer** (a prompt that says *Review directly*: you are the other family) skips this skill and reviews with `code-review` from Phase 2, on the packet it was given.
+A PR someone else asked you to review runs `code-review`'s Requested review instead, in this session. A **direct reviewer** (a prompt that says *Review directly*: you are the other family) skips §1 and §2: it does the discovery itself by `code-review` Phases 2–3, on the packet it was given, then applies §3 to §5.
 
 Read `../code-review/SKILL.md` and `../counsel/SKILL.md` first. The criteria live in `../code-review/references/review-contract.md` and `../code-review/references/test-audit.md`.
 
@@ -22,7 +22,7 @@ Say which path ran in the report.
 
 ## 1. Ground the packet
 
-For an explicit second opinion (the user asked for one, or a final gate before merge or release), run `code-review` Phases 1–3 (scope and mode, context, your review) in report outcome first: Counsel then challenges a grounded candidate. Otherwise ground only the scope, the contract and the diff, send the packet without candidates, and spend your own reading on validation (§3).
+For an explicit second opinion (the user asked for one, or a final gate before merge or release), run `code-review` Phases 1–3 (scope and mode, context, your review) in report outcome first: Counsel then challenges a grounded candidate. Otherwise (an orchestrate reviewer through Counsel, a stack checkpoint), ground only the scope, the contract and the diff, send the packet without finding candidates (a `design` packet still carries its candidate and the rejected alternatives), and spend your own reading on validation (§3).
 
 ## 2. Send the packet
 

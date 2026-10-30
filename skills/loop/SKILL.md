@@ -69,7 +69,7 @@ An **area** is a set of directories that change together (a package, or a layer 
 
 3. **Prior art.** First pass, and any pass while `PRIOR_ART.md` → To survey has rows. One read-only agent per source to survey, reading only what Settled leaves open. Done when every new idea is a ledger row (adopt, or rejected with the north star it fails) and each answered question moved to Settled.
 
-4. **Sweep.** Fill [`prompts/sweep.md`](prompts/sweep.md) into `<pass dir>/sweep-brief.md`, then launch every sweep of the table above in one message. Done when every area, package and sweep has a report, including those with no findings, and the ledger has each project sweep's row.
+4. **Sweep.** Fill [`prompts/sweep.md`](prompts/sweep.md) into `<pass dir>/sweep-brief.md`, then launch every sweep of the table above for this pass's areas (step 2) in one message. Done when every area, package and sweep of this pass has a report, including those with no findings, and the ledger has each project sweep's row.
 
 5. **Triage.** Group findings into batches by the files they touch. Every report's P3s and "not worth a pass" lines go to the batch that owns their file; that batch fixes each or rejects it with a reason. Write the pass section of the ledger: verdict, decisions, the triage table (batch, workspace, items), and the open `Carried` rows of the last pass, each in a batch or carried on. Done when every finding is in a batch or rejected with a receipt.
 
@@ -82,11 +82,13 @@ An **area** is a set of directories that change together (a package, or a layer 
 
      The Gate is the repo's full gate, guards included. Hymn tracks were accepted on a narrower gate, then failed `dead-exports` on main.
    - **Size.** A batch is one concern, about 10 items. An implementor that compacts within its first round is holding too much: split the batch then. In bible-tools, apply agents were 93% of all cache reads, and 124 of 288 hit the compaction window.
-   - Workspaces, the reviewer's family, rounds, a batch that builds on another's files (it stacks on that branch), parallelism and cost lines are orchestrate's rules; follow them there.
+   - **Workspace.** Each batch's workspace and branch follow orchestrate (`<run>/<unit>`; ledger rows from earlier passes name `p<N>-<batch>`). Setup beyond install (a build, a linked git-ignored file, a shared lock for a heavy test) belongs in the project's `AGENTS.md`; a missing step found here goes there.
+   - **Cost.** At each hand-back, run `bun ~/.claude/skills/orchestrate/scripts/agent-cost.ts <agent id>` and append its line to the unit's `log.md`. A task notification's token count is the agent's final context, not its spend. The retro (step 11) reads these lines instead of rebuilding them.
+   - The reviewer's family, rounds, a batch that builds on another's files (it stacks on that branch) and parallelism are orchestrate's rules; follow them there.
 
    Done per batch when its unit passes verification.
 
-7. **Merge.** Integrate as orchestrate's [pass](../orchestrate/SKILL.md#pass) step says. If the Push line allows it, push; a red CI is the next batch, and no other batch merges before it. Then write the batch's ledger row: `done <hash> … <hash>, merged <hash>`, decisions, the reviewer and its rounds, open items, and the report's "decisions for the orchestrator" as `Carried` rows.
+7. **Merge.** Integrate as orchestrate's [pass](../orchestrate/SKILL.md#pass) step says. A merge of main into a batch's branch keeps both sides' edits, never one side's file whole, and the merge audit in [`guardrails.md`](guardrails.md) runs over it before the gate. If the Push line allows it, push; a red CI is the next batch, and no other batch merges before it. Then write the batch's ledger row: `done <hash> … <hash>, merged <hash>`, decisions, the reviewer and its rounds, open items, and the report's "decisions for the orchestrator" as `Carried` rows.
 
    Done when the gate on main is green, the row is written, and the branch and the workspace are gone.
 
@@ -105,7 +107,7 @@ An **area** is a set of directories that change together (a package, or a layer 
 
 ## Close rule
 
-Close when one pass holds all of these: no unswept directory; the architecture sweeps and package reviews report polish only (under about 5 lines of value each); every project sweep meets its "done when"; `PRIOR_ART.md` → To survey is empty; no `Carried` row is open; and reading the pass's reports end to end, you can name no structural change left. A pass that finds a guard blind spot is never the last: close the blind spot with a check placed by [`guardrails.md`](guardrails.md), run it, and sweep what it reveals.
+Close when one pass holds all of these: no unswept directory; on a pass that swept everything (step 2), the architecture sweeps and package reviews report polish only (under about 5 lines of value each); every project sweep meets its "done when"; `PRIOR_ART.md` → To survey is empty; no `Carried` row is open; and reading the pass's reports end to end, you can name no structural change left. A pass that finds a guard blind spot is never the last: close the blind spot with a check placed by [`guardrails.md`](guardrails.md), run it, and sweep what it reveals.
 
 A loop that does not converge stops being a loop. A class of finding that returns in three passes in a row becomes an owner question about scope, not one more batch: gent's bash guard drew 85 commits over passes 8–19 before the owner made it opt-in. So does a pass made mostly of the last pass's regressions. Then run a retro over every pass's `retro.md` (did each applied action save what it promised?), and write the HTML report from [`improve-codebase-architecture`'s HTML-REPORT.md](../improve-codebase-architecture/HTML-REPORT.md) with the card additions under [single pass](#single-pass-with-the-user) (one card per structural change the loop made, before and after) and the final message, ending with the ledger path.
 
