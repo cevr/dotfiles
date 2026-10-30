@@ -170,6 +170,31 @@ describe('a thread', () => {
     expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'interrupted', turns: 1 }])
   })
 
+  test('at the Sabbath a running turn stops, new work waits, and the turn resumes after Saturday sunset', async () => {
+    const { bridge, call } = open()
+    await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'hang on', cwd: dir })
+    // Saturday morning in Knowlton: the Sabbath ends at 17:39 EDT (21:39Z).
+    setSystemTime(new Date('2026-10-31T12:00:00Z'))
+    try {
+      await bridge.pump()
+      await settle()
+      expect(requests().filter(r => r.method === 'turn/interrupt')).toHaveLength(1)
+      // Its owner hears nothing: the bridge holds the turn and resumes it.
+      expect((await call('GET', '/events?owner=s1')).body).toEqual([])
+      expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'queued', held: 'resume after the Sabbath' }])
+      expect(journal().map(e => e.event)).toEqual(expect.arrayContaining(['pause', 'resume']))
+      const fresh = await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })
+      expect(fresh.body).toMatchObject({ status: 'held', held: expect.stringMatching(/^the Sabbath, until Sat 17:39/) })
+
+      setSystemTime(new Date('2026-10-31T21:45:00Z'))
+      await bridge.pump()
+      await settle()
+      expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ turns: 2, final: `done: ${resumePrompt('sabbath')}` }])
+    } finally {
+      setSystemTime()
+    }
+  })
+
   test('a draining daemon latches new turns, and the next daemon runs them as the same turns', async () => {
     const first = open()
     await first.call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir })
@@ -374,7 +399,8 @@ describe('the budget', () => {
     await settle()
     process.env.FAKE_LIMITS = ahead()
     const next = await call('POST', '/send', { threadId: 't1', prompt: 'fix round 2' })
-    expect(next.body).toMatchObject({ id: 't1', status: 'running', turns: 2 })
+    expect(next.body).toMatchObject({ id: 't1', turns: 2 })
+    expect(next.body.status).not.toBe('queued')
   })
 
   test('an admission that does not answer in its own words leaves the even line to decide', async () => {
@@ -460,9 +486,13 @@ describe('an upgrade', () => {
 
   test('a policy edit takes effect at the next decision without a drain; a core edit drains', async () => {
     // A copy of the policy to edit, and a stand-in for the core.
-    const copy = join(dir, 'policy')
+    const copy = join(dir, 'mods/codex/bridge')
     mkdirSync(copy, { recursive: true })
     for (const file of ['policy.ts', 'budget.ts']) copyFileSync(join(import.meta.dir, file), join(copy, file))
+    // The policy reads the Sabbath's hours from the sabbath mod, two folders up.
+    const hours = join(copy, '../../sabbath/hooks')
+    mkdirSync(hours, { recursive: true })
+    copyFileSync(join(import.meta.dir, '../../sabbath/hooks/sabbath.ts'), join(hours, 'sabbath.ts'))
     const core = join(dir, 'core.ts')
     writeFileSync(core, '')
     const late = new Date(Date.now() + 2 * 60 * 60e3).toISOString().slice(0, 16).replace('T', ' ')

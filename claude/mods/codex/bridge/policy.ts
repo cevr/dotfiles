@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import { local, sabbath } from '../../sabbath/hooks/sabbath.ts'
 import type { Cause, Role, Thread } from './bridge.ts'
 import type * as Budget from './budget.ts'
 
@@ -28,6 +29,7 @@ const ENDED_ON: Partial<Record<Cause, string>> = {
   capacity: 'the model being at capacity',
   'app-server-exit': 'the Codex app-server exiting',
   'drain-interrupt': 'a codex-bridge restart',
+  sabbath: 'the Sabbath',
 }
 
 /** Why a turn waits, and when it should open when that is known. */
@@ -98,7 +100,15 @@ export function gates(limits: Budget.Limits | null, now: number): Budget.Budget 
  * is the cost of the turns just started; a turn that may start comes back
  * with the cost its admission says it adds.
  */
+/** From Friday to Saturday sunset (the sabbath mod's hours) no turn runs: a running one stops, and all wait. */
+export function paused(now: number): Hold | undefined {
+  const s = sabbath(now)
+  return s.on ? { why: `the Sabbath, until ${local(s.end)} (sunset, Knowlton, QC)`, opensAt: s.end } : undefined
+}
+
 export async function decide(thread: Asking, limits: Budget.Limits | null, reserve: number, now: number): Promise<{ hold?: Hold; admitted?: Admitted; adds?: number }> {
+  const pause = paused(now)
+  if (pause) return { hold: pause }
   const g = gates(limits, now)
   if (!g.send.ok) return { hold: { why: g.send.reason!, opensAt: g.send.until } }
   // A latched turn is already counted in `turns`: it continues the thread only past its first.
@@ -131,8 +141,9 @@ export const behind = (first: Thread): Hold => ({ why: `a turn latched past ${PA
 export const refuses = (hold: Hold | undefined, now: number) => !!hold?.opensAt && hold.opensAt > now + PATIENCE_MS
 
 /** Why a turn ended, from its end as Codex reports it and whether its caller interrupted it. */
-export function cause(status: 'idle' | 'interrupted' | 'failed', error: string | undefined, interrupting: boolean): Cause {
+export function cause(status: 'idle' | 'interrupted' | 'failed', error: string | undefined, interrupting: Thread['interrupting']): Cause {
   if (status === 'idle') return 'completed'
+  if (status === 'interrupted' && interrupting === 'sabbath') return 'sabbath'
   if (status === 'interrupted' && interrupting) return 'interrupted-by-caller'
   return /at capacity/i.test(error ?? '') ? 'capacity' : 'error'
 }
@@ -142,7 +153,9 @@ export const resumePrompt = (cause: Cause) =>
   `Your last turn ended on ${ENDED_ON[cause] ?? cause}, not on your work. Continue the same task from where you are. Background jobs started in that turn no longer run; restart any you need.`
 
 /** The resume after a turn that ended on `cause`, `tries` resumes in; undefined to leave the thread to its owner. */
-export function resume(cause: Cause, tries: number): { prompt: string; why: string; waitMs: number } | undefined {
+export function resume(cause: Cause, tries: number, now = Date.now()): { prompt: string; why: string; waitMs: number } | undefined {
+  // After the Sabbath, however many resumes came before.
+  if (cause === 'sabbath') return { prompt: resumePrompt(cause), why: 'resume after the Sabbath', waitMs: Math.max(0, (paused(now)?.opensAt ?? now) - now) }
   if (!ENDED_ON[cause] || tries >= BACKOFF_MIN.length) return undefined
   return {
     prompt: resumePrompt(cause),

@@ -44,7 +44,7 @@ import type { Asking, Hold } from './policy.ts'
 
 export type Role = 'planner' | 'implementor' | 'reviewer' | 'verifier'
 /** Why a turn ended: its work, its caller, or the infrastructure under it (`capacity`, `app-server-exit`, `drain-interrupt`). */
-export type Cause = 'completed' | 'interrupted-by-caller' | 'capacity' | 'app-server-exit' | 'drain-interrupt' | 'error'
+export type Cause = 'completed' | 'interrupted-by-caller' | 'capacity' | 'app-server-exit' | 'drain-interrupt' | 'sabbath' | 'error'
 export type Usage = { tokens: number; input: number; cached: number; output: number; context: number; window: number }
 /**
  * What a thread's current or last turn does, for the mod's live view: the items
@@ -81,8 +81,8 @@ export type Thread = {
   notBefore?: number
   /** The bridge's resumes since the thread's last turn that its owner heard of. */
   resumes?: number
-  /** The caller asked to stop the running turn. */
-  interrupting?: boolean
+  /** The caller asked to stop the running turn (true), or the Sabbath began. */
+  interrupting?: boolean | 'sabbath'
   turnId?: string
   turns: number
   compactions: number
@@ -431,7 +431,7 @@ export class Bridge {
     const tries = thread.resumes ?? 0
     const resume = this.rules.resume(cause, tries)
     if (resume) {
-      thread.resumes = tries + 1
+      thread.resumes = cause === 'sabbath' ? tries : tries + 1
       this.latch(thread, resume.prompt, resume.why)
       thread.notBefore = thread.opensAt = Date.now() + resume.waitMs
       this.record('resume', thread, { cause, try: tries + 1, notBefore: new Date(thread.notBefore).toISOString() })
@@ -487,7 +487,7 @@ export class Bridge {
       if (final) thread.final = final.text
       const status = turn.status === 'completed' ? 'idle' : turn.status === 'interrupted' ? 'interrupted' : 'failed'
       const error: string | undefined = turn.error?.message
-      this.finish(thread, status, error, turn.durationMs ?? 0, this.rules.cause(status, error, !!thread.interrupting))
+      this.finish(thread, status, error, turn.durationMs ?? 0, this.rules.cause(status, error, thread.interrupting))
     }
   }
 
@@ -613,6 +613,14 @@ export class Bridge {
   pump() {
     return this.serial(async () => {
       const rules = await this.refresh()
+      const pause = rules.paused(Date.now())
+      if (pause)
+        for (const thread of Object.values(this.state.threads)) {
+          if (thread.status !== 'running' || !thread.turnId || thread.interrupting) continue
+          thread.interrupting = 'sabbath'
+          this.record('pause', thread, { reason: pause.why })
+          await this.server.call('turn/interrupt', { threadId: thread.id, turnId: thread.turnId }).catch(() => undefined)
+        }
       for (const thread of this.queue(rules)) {
         if (this.draining) return
         const held = await this.hold(rules, thread)
