@@ -52,6 +52,7 @@ export type FileBurn = {
   cats: Record<string, number>; // W by context category (write + read)
   base: number[]; // the first call's context of each segment (session start, after each compaction)
   peak: number;
+  last: number; // the last call's time (ms), 0 when the transcript has none
   ctxSum: number; // Σ context per call, for the mean
   misses: number;
   compactions: number;
@@ -214,6 +215,7 @@ export function burnOf(file: string, size: number): FileBurn {
     cats: {},
     base: [],
     peak: 0,
+    last: 0,
     ctxSum: 0,
     misses: 0,
     compactions: 0,
@@ -344,6 +346,7 @@ export function burnOf(file: string, size: number): FileBurn {
       continue;
     }
     if (cwd === undefined && typeof d.cwd === 'string') cwd = d.cwd;
+    if (typeof d.timestamp === 'string') b.last = Math.max(b.last, Date.parse(d.timestamp) || 0);
     if (d.type === 'system' && d.subtype === 'compact_boundary') {
       // The summary call reads the whole context once; it leaves no assistant line.
       const pre = Number(d.compactMetadata?.preTokens ?? 0);
@@ -494,6 +497,12 @@ export const ceilingOf = (env = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW): nu
 // 400k the week's replay cost 4-5% more tokens across the host and compacted
 // the main session 70% less).
 export const PINNED: Record<string, number> = { root: 400e3 };
+// A worker's window stays at or under this: past it, one agent's context costs
+// more than the tune's replay can see (owner, 2026-10-30).
+export const WORKER_MAX = 200e3;
+// An agent whose context passed its kind's window by this much ran without it:
+// the engine ignored the window (2.1.310 did, for every registered agent).
+const OVERRUN = 1.1;
 
 export type Tuned = {
   kind: string;
@@ -504,6 +513,7 @@ export type Tuned = {
   compactions: [number, number]; // at the ceiling, at the window
   reread: number; // tokens read again per compaction
   compactMs: number; // mean wall time of a compaction
+  overrun: number; // agents active since `since` whose context passed the window by OVERRUN
 };
 
 /**
@@ -511,7 +521,7 @@ export type Tuned = {
  * also costs what the agent reads again after it: written once, then read by
  * every later call, at the kind's measured re-read per compaction.
  */
-export function tune(burns: FileBurn[], ceiling = ceilingOf()): Tuned[] {
+export function tune(burns: FileBurn[], ceiling = ceilingOf(), since = 0): Tuned[] {
   const sum = (bs: FileBurn[], f: (b: FileBurn) => number) => bs.reduce((s, b) => s + f(b), 0);
   const perCompaction = (bs: FileBurn[], f: (b: FileBurn) => number): number | undefined => {
     const c = sum(bs, (b) => b.compactions);
@@ -529,7 +539,7 @@ export function tune(burns: FileBurn[], ceiling = ceilingOf()): Tuned[] {
     const cost = (window: number) => at(window) + reread * (1.25 * compactionsAt(window) + 0.1 * sum(bs, (b) => b.windows[window]?.[2] ?? 0));
     const least = Math.min(...WINDOWS.map(cost));
     const best = Math.max(...WINDOWS.filter((w) => cost(w) <= least * (1 + TIE)));
-    const allowed = WINDOWS.filter((w) => w <= ceiling);
+    const allowed = WINDOWS.filter((w) => w <= (PINNED[kind] ? ceiling : Math.min(ceiling, WORKER_MAX)));
     const now = Math.max(...allowed);
     const window = PINNED[kind] ?? Math.max(...allowed.filter((w) => cost(w) <= Math.min(...allowed.map(cost)) * (1 + TIE)));
     out.push({
@@ -541,6 +551,7 @@ export function tune(burns: FileBurn[], ceiling = ceilingOf()): Tuned[] {
       compactions: [compactionsAt(now), compactionsAt(window)],
       reread: Math.round(reread),
       compactMs: Math.round(perCompaction(bs, (b) => b.compactMs) ?? 0),
+      overrun: bs.filter((b) => b.last >= since && b.peak > OVERRUN * window).length,
     });
   }
   return out.sort((a, c) => c.agents - a.agents);

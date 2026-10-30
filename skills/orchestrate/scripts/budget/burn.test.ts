@@ -104,6 +104,21 @@ describe('tune', () => {
     expect(tune(burns, 140e3)[0]).toMatchObject({ window: 140e3, best: 180e3, saving: 0 });
   });
 
+  test('keeps a worker under 200k, whatever the ceiling', () => {
+    const wide: Record<number, number> = { ...cost, 200e3: 104, 250e3: 101, 300e3: 100 };
+    const roomy = (kind: string): FileBurn =>
+      ({ kind, compactions: 1, reread: 0, compactMs: 60e3, windows: Object.fromEntries(WINDOWS.map((w) => [w, [wide[w], 0, 0]])) }) as unknown as FileBurn;
+    const worker = tune(Array.from({ length: 20 }, () => roomy('orchestrate-worker')), 450e3)[0]!;
+    expect(worker).toMatchObject({ window: 180e3, best: 300e3 });
+  });
+
+  test('counts the recent agents whose context ran past the window', () => {
+    const ran = (peak: number, last: number) => ({ ...agent('orchestrate-worker'), peak, last });
+    const mixed = [...burns.slice(4), ran(416e3, 2000), ran(190e3, 2000), ran(416e3, 500), ran(150e3, 2000)];
+    // 190k is within 10% of the window; the 416k agent at 500 ran before `since`.
+    expect(tune(mixed, 200e3, 1000)[0]).toMatchObject({ window: 180e3, overrun: 1 });
+  });
+
   test("keeps the owner's window for the main session, however few its transcripts", () => {
     const root = Array.from({ length: 2 }, () => agent('root'));
     expect(tune(root, 450e3)[0]).toMatchObject({ kind: 'root', agents: 2, window: 400e3, best: 180e3 });

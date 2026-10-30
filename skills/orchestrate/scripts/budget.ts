@@ -282,9 +282,10 @@ if (args.includes('--tune')) {
     process.exit(3);
   }
   const ceiling = ceilingOf();
-  const kinds = tune(host.burns, ceiling);
+  const kinds = tune(host.burns, ceiling, now - 24 * 60 * MINUTE);
   writeJson(join(CACHE, 'compact.json'), { at: now, ceiling, windows: Object.fromEntries(kinds.map((k) => [k.kind, k.window])), kinds });
-  for (const k of kinds) console.log(`${k.kind}: ${k.window / 1e3}k (best ${k.best / 1e3}k), saves ${(100 * k.saving).toFixed(1)}%`);
+  for (const k of kinds)
+    console.log(`${k.kind}: ${k.window / 1e3}k (best ${k.best / 1e3}k), saves ${(100 * k.saving).toFixed(1)}%${k.overrun ? `; ${k.overrun} agents in the last day ran past it` : ''}`);
   process.exit(0);
 }
 
