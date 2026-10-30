@@ -496,7 +496,12 @@ export const ceilingOf = (env = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW): nu
 // minute, which the replay's token cost does not count (owner, 2026-10-24: at
 // 400k the week's replay cost 4-5% more tokens across the host and compacted
 // the main session 70% less).
-export const PINNED: Record<string, number> = { root: 400e3 };
+//
+// Every orchestrate kind runs at WORKER_MAX (vperf2, 2026-10-30): a worker
+// hands off at its first compaction (protocol.md), so a tuned 120k window,
+// which compacts at about 87k, ended fresh workers before their first edit.
+const ROLES = ['worker', 'planner', 'implementor', 'reviewer', 'verifier'].map((role) => `orchestrate-${role}`);
+export const PINNED: Record<string, number> = { root: 400e3, ...Object.fromEntries(ROLES.map((kind) => [kind, 200e3])) };
 // A worker's window stays at or under this: past it, one agent's context costs
 // more than the tune's replay can see (owner, 2026-10-30).
 export const WORKER_MAX = 200e3;

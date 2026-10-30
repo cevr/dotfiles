@@ -91,12 +91,12 @@ describe('tune', () => {
   const cost: Record<number, number> = { 100e3: 140, 120e3: 120, 140e3: 110, 160e3: 100, 180e3: 100.5, 200e3: 105, 250e3: 120, 300e3: 130, 350e3: 140, 400e3: 150, 500e3: 160 };
   const agent = (kind: string): FileBurn =>
     ({ kind, compactions: 1, reread: 0, compactMs: 60e3, windows: Object.fromEntries(WINDOWS.map((w) => [w, [cost[w], 0, 0]])) }) as unknown as FileBurn;
-  const burns = Array.from({ length: 20 }, () => agent('orchestrate-worker'));
+  const burns = Array.from({ length: 20 }, () => agent('general-purpose'));
 
   test('picks the largest window within 1% of the cheapest, and skips kinds with few agents', () => {
     const [worker, ...rest] = tune([...burns, agent('Explore')], 200e3);
     expect(rest).toEqual([]);
-    expect(worker).toMatchObject({ kind: 'orchestrate-worker', agents: 20, window: 180e3, best: 180e3 });
+    expect(worker).toMatchObject({ kind: 'general-purpose', agents: 20, window: 180e3, best: 180e3 });
     expect(worker.saving).toBeCloseTo(1 - 100.5 / 105);
   });
 
@@ -108,12 +108,12 @@ describe('tune', () => {
     const wide: Record<number, number> = { ...cost, 200e3: 104, 250e3: 101, 300e3: 100 };
     const roomy = (kind: string): FileBurn =>
       ({ kind, compactions: 1, reread: 0, compactMs: 60e3, windows: Object.fromEntries(WINDOWS.map((w) => [w, [wide[w], 0, 0]])) }) as unknown as FileBurn;
-    const worker = tune(Array.from({ length: 20 }, () => roomy('orchestrate-worker')), 450e3)[0]!;
+    const worker = tune(Array.from({ length: 20 }, () => roomy('general-purpose')), 450e3)[0]!;
     expect(worker).toMatchObject({ window: 180e3, best: 300e3 });
   });
 
   test('counts the recent agents whose context ran past the window', () => {
-    const ran = (peak: number, last: number) => ({ ...agent('orchestrate-worker'), peak, last });
+    const ran = (peak: number, last: number) => ({ ...agent('general-purpose'), peak, last });
     const mixed = [...burns.slice(4), ran(416e3, 2000), ran(190e3, 2000), ran(416e3, 500), ran(150e3, 2000)];
     // 190k is within 10% of the window; the 416k agent at 500 ran before `since`.
     expect(tune(mixed, 200e3, 1000)[0]).toMatchObject({ window: 180e3, overrun: 1 });
@@ -122,12 +122,19 @@ describe('tune', () => {
   test('counts the overruns of a kind too small to tune, at the window it runs with', () => {
     const ran = (kind: string, peak: number) => ({ ...agent(kind), peak, last: 2000 });
     const tuned = tune(burns, 200e3, 1000);
-    const worker = tuned.find((t) => t.kind === 'orchestrate-worker')!.window;
+    // No orchestrate-worker ran, so an untuned role runs at the worker cap.
+    const worker = 200e3;
     const few = [ran('orchestrate-implementor', 396e3), ran('orchestrate-implementor', worker), ran('Explore', 230e3), ran('Explore', 210e3)];
     expect(untunedOverruns([...burns, ...few], tuned, 200e3, 1000)).toEqual([
       { kind: 'orchestrate-implementor', window: worker, overrun: 1 },
       { kind: 'Explore', window: 200e3, overrun: 1 },
     ]);
+  });
+
+  test('runs every orchestrate role at 200k, however cheap a smaller window replays', () => {
+    const roles = ['orchestrate-worker', 'orchestrate-implementor', 'orchestrate-verifier'].flatMap((kind) => Array.from({ length: 20 }, () => agent(kind)));
+    for (const t of tune(roles, 200e3)) expect(t).toMatchObject({ window: 200e3 });
+    expect(tune([agent('orchestrate-reviewer')], 200e3)).toMatchObject([{ kind: 'orchestrate-reviewer', window: 200e3 }]);
   });
 
   test("keeps the owner's window for the main session, however few its transcripts", () => {
