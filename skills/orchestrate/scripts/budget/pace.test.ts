@@ -3,7 +3,8 @@ import { describe, expect, test } from 'bun:test';
 import { admit, calibrate, DEFAULTS, estimate, fiveHourCeiling, resumeAt, target, weeklyPace, type Config } from './pace.ts';
 
 const HOUR = 3600e3;
-const UTC: Config = DEFAULTS;
+// Clock hours: these cases check the arithmetic, not the Sabbath.
+const UTC: Config = { ...DEFAULTS, sabbath: false };
 // 2026-10-21 12:00 UTC.
 const NOON = Date.UTC(2026, 9, 21, 12);
 
@@ -152,3 +153,16 @@ describe('admit', () => {
     expect(admit({ ...base, targetWph: Infinity, estimateWph: 0, sessions: [], cap: 1 })).toEqual({ ok: true, reason: 'fits: pool 0.0 MW/h of no pace yet' });
   });
 });
+
+describe('the Sabbath', () => {
+  test('spreads the week over the hours outside it, so each working hour carries more', () => {
+    // Wednesday noon; the account resets the next Wednesday noon, half spent.
+    const accounts = [{ used7d: 0.5, reset7d: NOON + 7 * 24 * HOUR, used5h: 0 }];
+    const clock = weeklyPace(accounts, NOON, UTC);
+    const rest = weeklyPace(accounts, NOON, DEFAULTS);
+    // Friday sunset to Saturday sunset in Knowlton is about 24 hours of the 168.
+    expect(rest.floor / clock.floor).toBeGreaterThan(168 / 145);
+    expect(rest.floor / clock.floor).toBeLessThan(168 / 143);
+  });
+});
+

@@ -14,6 +14,10 @@
 //   5-hour windows before those reset.
 // - Quota fractions turn into W/h through k7 and k5: the rise of the accounts'
 //   weekly and 5-hour use per weighted token over the last hour.
+// - No agent works on the Sabbath (the sabbath mod), so with `sabbath` set the
+//   weekly paces spread the quota over the hours outside it (owner, 2026-10-30).
+
+import { awake } from '../../../../claude/mods/sabbath/hooks/sabbath.ts';
 
 export type Account = { used7d: number; reset7d?: number; used5h: number; reset5h?: number };
 
@@ -31,15 +35,20 @@ export function resumeAt(accounts: Account[], now: number): number | undefined {
 export type Config = {
   weeklyTarget: number;
   fiveHourMax: number;
+  /** The weekly paces count only the hours outside the Sabbath. */
+  sabbath: boolean;
 };
 
 export const DEFAULTS: Config = {
   weeklyTarget: 0.99,
   fiveHourMax: 0.9,
+  sabbath: true,
 };
 
 const HOUR = 3600e3;
 const WEEK = 7 * 24 * HOUR;
+/** The working hours from `now` to `until`. */
+const hours = (now: number, until: number, c: Config) => (c.sabbath ? awake(now, until) : until - now) / HOUR;
 /** Fractions of one account's week per hour, now. */
 export function weeklyPace(accounts: readonly Account[], now: number, c: Config): { floor: number; rolling: number; ceiling: number } {
   const due = accounts
@@ -51,15 +60,15 @@ export function weeklyPace(accounts: readonly Account[], now: number, c: Config)
   let ceiling = Infinity;
   for (const a of due) {
     expiring += Math.max(0, c.weeklyTarget - a.used7d);
-    floor = Math.max(floor, expiring / ((a.reset7d - now) / HOUR));
-    ceiling = Math.min(ceiling, fuel / ((a.reset7d - now) / HOUR));
+    floor = Math.max(floor, expiring / hours(now, a.reset7d, c));
+    ceiling = Math.min(ceiling, fuel / hours(now, a.reset7d, c));
     fuel += Math.min(1, a.used7d);
   }
   const inView = due.reduce(
     (n, a) => n + Math.max(0, c.weeklyTarget - a.used7d) + (c.weeklyTarget * Math.max(0, now + WEEK - a.reset7d)) / WEEK,
     0,
   );
-  const rolling = due.length === 0 ? 0 : inView / (WEEK / HOUR);
+  const rolling = due.length === 0 ? 0 : inView / hours(now, now + WEEK, c);
   return { floor, rolling, ceiling };
 }
 

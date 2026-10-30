@@ -58,6 +58,35 @@ export function sabbath(t: number, place: Place = KNOWLTON): { on: boolean; star
   return { on: false, start: sunset(...next, place), end: sunset(...shift(...next, 1), place) }
 }
 
+/** The time from `from` to `to` (ms) outside every Sabbath: the hours agents work. */
+export function awake(from: number, to: number, place: Place = KNOWLTON): number {
+  let total = 0
+  for (let t = from; t < to; ) {
+    const s = sabbath(t, place)
+    if (s.on) {
+      t = s.end
+      continue
+    }
+    total += Math.min(to, s.start) - t
+    t = s.end
+  }
+  return total
+}
+
+/** When `ms` of time outside every Sabbath has passed since `from`. */
+export function awakeAfter(from: number, ms: number, place: Place = KNOWLTON): number {
+  for (let t = from, left = ms; ; ) {
+    const s = sabbath(t, place)
+    if (s.on) {
+      t = s.end
+      continue
+    }
+    if (left <= s.start - t) return t + left
+    left -= s.start - t
+    t = s.end
+  }
+}
+
 /** A time as the place reads it: `Sat 17:38`. */
 export const local = (t: number, place: Place = KNOWLTON) =>
   new Intl.DateTimeFormat('en-US', { timeZone: place.timeZone, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).format(t)

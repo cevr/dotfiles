@@ -2,7 +2,10 @@ import { describe, expect, test } from 'bun:test';
 
 import type { CodexLoad, HourLoad, Snapshot, ThreadCost } from './codex-host.ts';
 import { admit, estimate, fit, fitWeek, MIN_CURRENT, MIN_WINDOWS, target, weekNow, windows, WINDOW } from './codex-pace.ts';
-import { DEFAULTS } from './pace.ts';
+import { DEFAULTS as SABBATH } from './pace.ts';
+
+// Clock hours: these cases check the arithmetic, not the Sabbath.
+const DEFAULTS = { ...SABBATH, sabbath: false };
 
 const HOUR = 3600e3;
 const WEEK = 7 * 24 * HOUR;

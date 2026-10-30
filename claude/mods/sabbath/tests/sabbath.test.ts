@@ -1,6 +1,6 @@
 import { expect, test, type TestBody } from 'claude-code/testing'
 
-import { local, sabbath, sunset } from '../hooks/sabbath'
+import { awake, awakeAfter, local, sabbath, sunset } from '../hooks/sabbath'
 
 const MONTREAL = { lat: 45.5017, lon: -73.5673 }
 const at = (iso: string) => Date.parse(iso)
@@ -24,6 +24,19 @@ test('the Sabbath runs from Friday sunset to Saturday sunset in Knowlton', () =>
   const after = sabbath(friday.end + 60e3)
   expect(after.on).toBe(false)
   expect(local(after.start)).toBe('Fri 16:31')
+})
+
+test('the hours awake leave out each Sabbath, and awakeAfter inverts them', () => {
+  const friday = sabbath(at('2026-10-30T14:30:00Z'))
+  const week = 7 * 864e5
+  // From Friday morning to the next Friday morning: one Sabbath out.
+  const from = at('2026-10-30T14:30:00Z')
+  expect(awake(from, from + week)).toBe(week - (friday.end - friday.start))
+  // Inside the Sabbath, nothing passes.
+  expect(awake(friday.start + 60e3, friday.end - 60e3)).toBe(0)
+  // Two hours before sunset, three hours awake end one hour past Saturday's sunset.
+  expect(awakeAfter(friday.start - 2 * 3600e3, 3 * 3600e3)).toBe(friday.end + 3600e3)
+  expect(awake(from, awakeAfter(from, 50 * 3600e3))).toBe(50 * 3600e3)
 })
 
 // The codex mod's tool, which this mod's generated types name only once a session loads both.

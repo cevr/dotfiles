@@ -10,7 +10,13 @@
 // - A spent window, or a limit Codex says is reached, holds both until it
 //   resets: past the limit Codex spends paid credits.
 //
+// - With `sabbath` set, the even line runs over the hours outside the Sabbath
+//   (the sabbath mod), when no turn runs: it stands still through it, and
+//   climbs faster around it (owner, 2026-10-30).
+//
 // Settings: the `codex` key of ~/.config/orchestrate/budget.json overrides DEFAULTS.
+
+import { awake, awakeAfter } from '../../sabbath/hooks/sabbath.ts'
 
 export type Window = { usedPercent: number; windowDurationMins?: number | null; resetsAt?: number | null }
 export type Limits = {
@@ -19,8 +25,8 @@ export type Limits = {
   rateLimitReachedType?: string | null
   ordinaryUsageAllowed?: boolean | null
 }
-export type Config = { target: number; leadHours: number; shortMax: number }
-export const DEFAULTS: Config = { target: 0.99, leadHours: 24, shortMax: 0.9 }
+export type Config = { target: number; leadHours: number; shortMax: number; sabbath: boolean }
+export const DEFAULTS: Config = { target: 0.99, leadHours: 24, shortMax: 0.9, sabbath: true }
 
 /** Whether a call may go on; when held, why, and from when it may (ms). */
 export type Gate = { ok: boolean; reason?: string; until?: number }
@@ -64,14 +70,19 @@ export function budget(limits: Limits | null | undefined, now: number, c: Config
     } else if (mins !== undefined && reset !== undefined) {
       const span = mins * MINUTE
       const lead = c.leadHours * 60 * MINUTE
-      const line = Math.min(c.target, (c.target * (span - (reset - now) + lead)) / span)
+      const opened = reset - span
+      // The working time from the window's start to `t`, and the time a working time ends.
+      const worked = (t: number) => (c.sabbath ? awake(opened, t) : t - opened)
+      const at = (ms: number) => (c.sabbath && ms > 0 ? awakeAfter(opened, ms) : opened + ms)
+      const whole = worked(reset)
+      const line = Math.min(c.target, (c.target * (worked(now) + lead)) / whole)
       if (used >= c.target) {
         const reason = `the ${label} is ${pct(used)} used, past the ${pct(c.target)} budget${resetText}`
         start = hold(start, reason, reset)
         send = hold(send, reason, reset)
       } else if (used > line) {
         // The even line reaches this use at `onPace`.
-        const onPace = reset - span + (used * span) / c.target - lead
+        const onPace = at((used * whole) / c.target - lead)
         start = hold(
           start,
           `the ${label} is ${pct(used)} used; an even burn to ${pct(c.target)} by ${when(reset)} allows ${pct(line)} now, and ${pct(used)} at ${when(onPace)}`,
