@@ -7,7 +7,9 @@
 // interrupt of its turn. A `crash` prompt makes the fake exit before it answers.
 // Every request it gets is appended to $FAKE_LOG, one JSON line each.
 // It reads the account's usage from $FAKE_LIMITS (a rate-limit snapshot as JSON), when set.
-import { appendFileSync } from 'node:fs'
+// With $FAKE_ROLLOUTS set, a thread has a rollout (that file's line) only once a turn
+// started on it, a resume without one fails as Codex's does, and thread ids name the process.
+import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 
 let threads = 0
 let turns = 0
@@ -48,6 +50,7 @@ const work = (threadId: string, turnId: string) => {
   out({ method: 'turn/plan/updated', params: { threadId, turnId, explanation: null, plan: [{ step: 'fix', status: 'completed' }, { step: 'test', status: 'inProgress' }] } })
 }
 
+const rollouts = process.env.FAKE_ROLLOUTS
 let buffer = ''
 const hanging = new Map<string, string>()
 const busy = new Map<string, number>()
@@ -65,13 +68,16 @@ for await (const chunk of Bun.stdin.stream()) {
     else if (method === 'model/list')
       out({ id, result: { data: ['gpt-5.6-luna', 'gpt-6-luna', 'gpt-6.1-sol'].map(model => ({ model })) } })
     else if (method === 'thread/start')
-      out({ id, result: { thread: { id: `t${++threads}` }, model: params.model ?? 'gpt-6.1-sol', reasoningEffort: params.config?.model_reasoning_effort ?? null } })
+      out({ id, result: { thread: { id: process.env.FAKE_ROLLOUTS ? `p${process.pid}t${++threads}` : `t${++threads}` }, model: params.model ?? 'gpt-6.1-sol', reasoningEffort: params.config?.model_reasoning_effort ?? null } })
     else if (method === 'account/rateLimits/read' && process.env.FAKE_LIMITS)
       out({ id, result: { rateLimits: JSON.parse(process.env.FAKE_LIMITS), rateLimitsByLimitId: null, ordinaryUsageAllowed: true } })
+    else if (method === 'thread/resume' && rollouts && !(existsSync(rollouts) && readFileSync(rollouts, 'utf8').split('\n').includes(params.threadId)))
+      out({ id, error: { code: -32600, message: `no rollout found for thread id ${params.threadId}` } })
     else if (method === 'thread/resume') out({ id, result: { thread: { id: params.threadId } } })
     else if (method === 'turn/start') {
       const turnId = `u${++turns}`
       const text = params.input[0].text as string
+      if (rollouts) appendFileSync(rollouts, `${params.threadId}\n`)
       if (/\bcrash\b/.test(text)) process.exit(1)
       out({ id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } })
       if (text.startsWith('work')) work(params.threadId, turnId)

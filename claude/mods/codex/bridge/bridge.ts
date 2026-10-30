@@ -60,7 +60,13 @@ export type Live = {
   plan?: { step: string; status: string }[]
 }
 export type Thread = {
+  /** The bridge's id: the app-server's when the thread opened, and the one its owner holds. */
   id: string
+  /** The app-server's id once the bridge opened the thread again (see `load`). */
+  codexId?: string
+  /** A turn reached the app-server, so its rollout holds the thread. */
+  ran?: boolean
+  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access'
   owner: string
   description: string
   role?: Role
@@ -149,6 +155,8 @@ const POLICY = join(import.meta.dir, 'policy.ts')
 const policyFiles = (policy: string) => [policy, join(dirname(policy), 'budget.ts')]
 /** The daemon's core: a change to it drains the daemon. */
 const CORE = [import.meta.path]
+/** The app-server's id of a thread. */
+const codexId = (thread: Thread) => thread.codexId ?? thread.id
 const stamp = (files: readonly string[]) => files.map(f => statSync(f).mtimeMs).join('-')
 
 // `/bin/zsh -lc 'bun test'` is `bun test`.
@@ -496,7 +504,8 @@ export class Bridge {
       this.lastLimits = { ...this.lastLimits, ...params.rateLimits }
       this.limitsAt = Date.now()
     }
-    const thread = params?.threadId ? this.state.threads[params.threadId] : undefined
+    const id = params?.threadId
+    const thread = id ? (this.state.threads[id] ?? Object.values(this.state.threads).find(t => t.codexId === id)) : undefined
     if (!thread) return
     this.track(thread, method, params)
     if (method === 'item/completed' && params.item?.type === 'agentMessage' && params.item.text?.trim()) thread.final = params.item.text
@@ -571,9 +580,10 @@ export class Bridge {
     this.record('start', thread)
     try {
       const { turn } = await this.server.call('turn/start', {
-        threadId: thread.id,
+        threadId: codexId(thread),
         input: [{ type: 'text', text: prompt, text_elements: [] }],
       })
+      thread.ran = true
       if (thread.status === 'running') thread.turnId = turn.id
     } catch (error) {
       // An app-server exit already ended the turn (and latched its resume): that end stands.
@@ -665,7 +675,7 @@ export class Bridge {
       thread.paused = 'sabbath'
       this.save()
       try {
-        await this.server.call('turn/interrupt', { threadId: thread.id, turnId })
+        await this.server.call('turn/interrupt', { threadId: codexId(thread), turnId })
       } catch (error) {
         if (thread.status === 'running' && thread.turnId === turnId) thread.interrupting = undefined
         this.record('pause-failed', thread, { error: (error as Error).message })
@@ -737,18 +747,24 @@ export class Bridge {
     })
   }
 
-  /** A new thread on the app-server, with its first turn still to come. */
-  private async open(input: Parameters<Bridge['start']>[0], model: string | undefined, instructions: string | undefined, effort: string | undefined) {
-    const started = await this.server.call('thread/start', {
-      model: model ?? null,
+  /** A thread on the app-server, as `thread/start` answers. */
+  private create(input: { model?: string; cwd: string; sandbox?: Thread['sandbox']; instructions?: string; effort?: string }) {
+    return this.server.call('thread/start', {
+      model: input.model ?? null,
       cwd: input.cwd,
       sandbox: input.sandbox ?? null,
-      developerInstructions: instructions ?? null,
-      config: effort ? { model_reasoning_effort: effort } : null,
+      developerInstructions: input.instructions ?? null,
+      config: input.effort ? { model_reasoning_effort: input.effort } : null,
       serviceName: 'codex_bridge',
     })
+  }
+
+  /** A new thread on the app-server, with its first turn still to come. */
+  private async open(input: Parameters<Bridge['start']>[0], model: string | undefined, instructions: string | undefined, effort: string | undefined) {
+    const started = await this.create({ model, cwd: input.cwd, sandbox: input.sandbox, instructions, effort })
     const thread: Thread = {
       id: started.thread.id,
+      sandbox: input.sandbox,
       owner: input.owner,
       description: input.description,
       role: input.role,
@@ -776,13 +792,24 @@ export class Bridge {
     return this.enqueue(thread, input.prompt)
   }
 
-  /** A thread an earlier app-server child held is resumed before its turn. */
+  /**
+   * A thread an earlier app-server child held is resumed before its turn. One
+   * whose first turn never reached the app-server has no rollout to resume (a
+   * restart while it was latched): it opens again, under the same bridge id.
+   */
   private async load(thread: Thread) {
     await this.server.start()
-    if (!this.server.loaded.has(thread.id)) {
-      await this.server.call('thread/resume', { threadId: thread.id, excludeTurns: true })
-      this.server.loaded.add(thread.id)
+    if (this.server.loaded.has(codexId(thread))) return
+    try {
+      await this.server.call('thread/resume', { threadId: codexId(thread), excludeTurns: true })
+    } catch (error) {
+      if (thread.ran || !/no rollout found/i.test((error as Error).message)) throw error
+      const agent = thread.role ? roleAgent(thread.role) : undefined
+      const started = await this.create({ model: thread.model, cwd: thread.cwd, sandbox: thread.sandbox, instructions: agent?.instructions, effort: thread.effort })
+      thread.codexId = started.thread.id
+      this.record('reopen', thread, { codexId: thread.codexId })
     }
+    this.server.loaded.add(codexId(thread))
   }
 
 
@@ -799,7 +826,7 @@ export class Bridge {
     if (thread.status !== 'running') return thread
     if (!thread.turnId) throw new Error(`thread ${thread.id} has not started its turn yet`)
     thread.interrupting = true
-    await this.server.call('turn/interrupt', { threadId: thread.id, turnId: thread.turnId })
+    await this.server.call('turn/interrupt', { threadId: codexId(thread), turnId: thread.turnId })
     return thread
   }
 

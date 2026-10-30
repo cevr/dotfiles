@@ -291,6 +291,28 @@ describe('a thread', () => {
     expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'idle', final: `done: ${resumePrompt('app-server-exit')}` }])
   })
 
+  test('a thread latched before its first turn opens again after a restart, under the same id', async () => {
+    process.env.FAKE_ROLLOUTS = join(dir, 'rollouts')
+    try {
+      const first = open()
+      setSystemTime(new Date('2026-10-31T12:00:00Z'))
+      // During the rest a new thread latches: its first turn never reaches the app-server.
+      const started = await first.call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })
+      expect(started.body).toMatchObject({ status: 'queued' })
+      first.bridge.server.stop()
+      await settle()
+      const second = open()
+      setSystemTime(new Date('2026-10-31T22:10:00Z'))
+      await second.bridge.pump()
+      await settle()
+      expect((await second.call('GET', '/threads?owner=s1')).body).toMatchObject([{ id: started.body.id, status: 'idle', final: 'done: review it' }])
+      expect(journal().some(e => e.event === 'reopen')).toBe(true)
+    } finally {
+      delete process.env.FAKE_ROLLOUTS
+      rmSync(join(dir, 'rollouts'), { force: true })
+    }
+  })
+
   test('the log has each turn start before its end, under the same number', async () => {
     const { call } = open()
     await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir })
