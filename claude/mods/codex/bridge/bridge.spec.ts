@@ -170,10 +170,10 @@ describe('a thread', () => {
     expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'interrupted', turns: 1 }])
   })
 
-  test('at the Sabbath a running turn stops, new work waits, and the turn resumes after Saturday sunset', async () => {
+  test('at the Sabbath a running turn stops, new work latches, and both start 30 minutes after Saturday sunset', async () => {
     const { bridge, call } = open()
     await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'hang on', cwd: dir })
-    // Saturday morning in Knowlton: the Sabbath ends at 17:39 EDT (21:39Z).
+    // Saturday morning in Knowlton: the Sabbath ends at 17:39 EDT (21:39Z), and work resumes at 18:09 (22:09Z).
     setSystemTime(new Date('2026-10-31T12:00:00Z'))
     try {
       await bridge.pump()
@@ -183,13 +183,23 @@ describe('a thread', () => {
       expect((await call('GET', '/events?owner=s1')).body).toEqual([])
       expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'queued', held: 'resume after the Sabbath' }])
       expect(journal().map(e => e.event)).toEqual(expect.arrayContaining(['pause', 'resume']))
+      // A new thread latches through the rest instead of moving to Claude, which rests too.
       const fresh = await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })
-      expect(fresh.body).toMatchObject({ status: 'held', held: expect.stringMatching(/^the Sabbath, until Sat 17:39/) })
+      expect(fresh.body).toMatchObject({ status: 'queued', held: expect.stringMatching(/^the Sabbath, until Sat 18:09/) })
 
+      // After sunset, inside the buffer: still held.
       setSystemTime(new Date('2026-10-31T21:45:00Z'))
       await bridge.pump()
       await settle()
-      expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ turns: 2, final: `done: ${resumePrompt('sabbath')}` }])
+      expect(requests().filter(r => r.method === 'turn/start')).toHaveLength(1)
+
+      setSystemTime(new Date('2026-10-31T22:10:00Z'))
+      await bridge.pump()
+      await settle()
+      expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([
+        { turns: 2, final: `done: ${resumePrompt('sabbath')}` },
+        { status: 'idle', turns: 1, final: 'done: review it' },
+      ])
     } finally {
       setSystemTime()
     }
@@ -264,7 +274,7 @@ describe('a thread', () => {
     setSystemTime(new Date('2026-10-30T21:45:00Z'))
     expect((await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir })).body).toMatchObject({
       status: 'queued',
-      held: expect.stringMatching(/^the Sabbath, until Sat 17:39/),
+      held: expect.stringMatching(/^the Sabbath, until Sat 18:09/),
     })
     expect(requests().filter(r => r.method === 'turn/start')).toHaveLength(0)
   })

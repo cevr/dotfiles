@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { local, sabbath } from '../../sabbath/hooks/sabbath.ts'
+import { local, rest } from '../../sabbath/hooks/sabbath.ts'
 import type { Cause, Role, Thread } from './bridge.ts'
 import type * as Budget from './budget.ts'
 
@@ -100,10 +100,13 @@ export function gates(limits: Budget.Limits | null, now: number): Budget.Budget 
  * is the cost of the turns just started; a turn that may start comes back
  * with the cost its admission says it adds.
  */
-/** From Friday to Saturday sunset (the sabbath mod's hours) no turn runs: a running one stops, and all wait. */
+/**
+ * From Friday sunset to 30 minutes after Saturday's (the sabbath mod's rest) no
+ * turn runs: a running one stops, and every turn latches, to start by itself then.
+ */
 export function paused(now: number): Hold | undefined {
-  const s = sabbath(now)
-  return s.on ? { why: `the Sabbath, until ${local(s.end)} (sunset, Knowlton, QC)`, opensAt: s.end } : undefined
+  const s = rest(now)
+  return s.on ? { why: `the Sabbath, until ${local(s.end)} (30 min after sunset, Knowlton, QC)`, opensAt: s.end } : undefined
 }
 
 export async function decide(thread: Asking, limits: Budget.Limits | null, reserve: number, now: number): Promise<{ hold?: Hold; admitted?: Admitted; adds?: number }> {
@@ -137,8 +140,12 @@ export const order = (queued: readonly Thread[], now: number) =>
 /** Why a new turn waits behind a starving latched turn. */
 export const behind = (first: Thread): Hold => ({ why: `a turn latched past ${PATIENCE_MIN} min goes first (${first.held})`, opensAt: first.opensAt })
 
-/** Whether a new thread's first turn opens too late to wait for: then no thread is made, and its role moves to Claude now. */
-export const refuses = (hold: Hold | undefined, now: number) => !!hold?.opensAt && hold.opensAt > now + PATIENCE_MS
+/**
+ * Whether a new thread's first turn opens too late to wait for: then no thread is
+ * made, and its role moves to Claude now. During the Sabbath Claude rests too, so
+ * the thread latches and starts by itself after it.
+ */
+export const refuses = (hold: Hold | undefined, now: number) => !!hold?.opensAt && hold.opensAt > now + PATIENCE_MS && !paused(now)
 
 /** Why a turn ended, from its end as Codex reports it and whether its caller interrupted it. */
 export function cause(status: 'idle' | 'interrupted' | 'failed', error: string | undefined, interrupting: Thread['interrupting']): Cause {

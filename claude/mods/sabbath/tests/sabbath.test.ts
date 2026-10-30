@@ -1,6 +1,6 @@
 import { expect, test, type TestBody } from 'claude-code/testing'
 
-import { awake, awakeAfter, local, sabbath, sunset } from '../hooks/sabbath'
+import { AFTER_MS, awake, awakeAfter, local, rest, sabbath, sunset } from '../hooks/sabbath'
 
 const MONTREAL = { lat: 45.5017, lon: -73.5673 }
 const at = (iso: string) => Date.parse(iso)
@@ -31,11 +31,11 @@ test('the hours awake leave out each Sabbath, and awakeAfter inverts them', () =
   const week = 7 * 864e5
   // From Friday morning to the next Friday morning: one Sabbath out.
   const from = at('2026-10-30T14:30:00Z')
-  expect(awake(from, from + week)).toBe(week - (friday.end - friday.start))
+  expect(awake(from, from + week)).toBe(week - (friday.end + AFTER_MS - friday.start))
   // Inside the Sabbath, nothing passes.
   expect(awake(friday.start + 60e3, friday.end - 60e3)).toBe(0)
-  // Two hours before sunset, three hours awake end one hour past Saturday's sunset.
-  expect(awakeAfter(friday.start - 2 * 3600e3, 3 * 3600e3)).toBe(friday.end + 3600e3)
+  // Two hours before sunset, three hours awake end one hour past the rest's end.
+  expect(awakeAfter(friday.start - 2 * 3600e3, 3 * 3600e3)).toBe(friday.end + AFTER_MS + 3600e3)
   expect(awake(from, awakeAfter(from, 50 * 3600e3))).toBe(50 * 3600e3)
 })
 
@@ -49,35 +49,86 @@ const settle = async () => {
 
 const SPAWN = { tool_use_id: 't1', prompt: 'p', description: 'd', provider: { plugin: 'engine', tier: 'core' as const }, parentModel: 'opus', background: true, fork: false }
 
-const mock = (on: Parameters<TestBody>[1], time: number) => {
+const mock = (on: Parameters<TestBody>[1], time: number | (() => number)) => {
   const status: (string | undefined)[] = []
-  on('clock.now', () => ({ value: time }))
-  on('clock.every', () => ({ value: undefined }))
+  const ticks: (() => void)[] = []
+  const prompts: string[] = []
+  const store = new Map<string, unknown>()
+  on('clock.now', () => ({ value: typeof time === 'number' ? time : time() }))
+  // Each period ends when the test calls its tick.
+  on('clock.every', () => new Promise(resolve => ticks.push(() => resolve({ value: undefined }))))
   on('ui.status', (_, e) => {
     status.push(e.text)
     return { value: undefined }
   })
+  on('ui.log', () => ({ value: undefined }))
+  on('session.id', () => ({ value: 's1' }))
+  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_, e) => {
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on('store.delete', (_, e) => {
+    store.delete(e.key)
+    return { value: undefined }
+  })
+  on('prompt.submit', (_, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('agent.spawn', () => ({ model: 'opus', agentId: 'a1' }))
   on('tool.call', () => ({ result: 'ran' }))
-  return status
+  return { status, ticks, prompts }
 }
 
-test('during the Sabbath no agent work starts, and a running subagent is told to stop', async ($, on) => {
-  const status = mock(on, at('2026-10-31T12:00:00Z'))
+test('the rest runs from Friday sunset to 30 minutes after Saturday sunset', () => {
+  const friday = sabbath(at('2026-10-30T14:30:00Z'))
+  expect(rest(friday.start - 60e3)).toMatchObject({ on: false, start: friday.start, end: friday.end + AFTER_MS })
+  expect(rest(friday.end + 60e3)).toMatchObject({ on: true, end: friday.end + AFTER_MS })
+  expect(local(rest(friday.end).end)).toBe('Sat 18:09')
+  expect(rest(friday.end + AFTER_MS).on).toBe(false)
+})
+
+test('during the Sabbath no agent work starts, a running subagent is told to stop, and Codex turns go to the bridge to latch', async ($, on) => {
+  const { status } = mock(on, at('2026-10-31T12:00:00Z'))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle()
-  expect(status.at(-1)).toBe('Sabbath until Sat 17:39')
+  expect(status.at(-1)).toBe('Sabbath; work resumes Sat 18:09')
 
-  expect(await $.agent.spawn({ ...SPAWN, subagentType: 'orchestrate-implementor' })).toEqual({ deny: expect.stringContaining('Sabbath until Sat 17:39') })
-  expect(await $.tool.call(codexStart)).toEqual({ deny: expect.stringContaining('No Codex turn') })
+  expect(await $.agent.spawn({ ...SPAWN, subagentType: 'orchestrate-implementor' })).toEqual({ deny: expect.stringContaining('resumes at Sat 18:09') })
+  expect(await $.tool.call(codexStart)).toMatchObject({ result: 'ran' })
   expect(await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'a1' })).toEqual({ deny: expect.stringContaining('Stop now') })
   // The main loop still answers the owner.
   expect(await $.tool.call({ tool: 'Bash', command: 'ls' })).toMatchObject({ result: 'ran' })
 })
 
+test('once the rest ends, the session gets one message to resume the work it held', async ($, on) => {
+  let time = at('2026-10-31T12:00:00Z')
+  const { ticks, prompts } = mock(on, () => time)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle()
+  await $.agent.spawn({ ...SPAWN, subagentType: 'orchestrate-implementor', description: 'implementor sheet r2' })
+  await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'a1' })
+  await $.tool.call({ tool: 'Bash', command: 'pwd', agentId: 'a1' })
+  for (const t of ticks.splice(0)) t()
+  await settle()
+  expect(prompts).toEqual([])
+
+  // The session starts again after the rest, as after a restart, and ticks once more.
+  time = at('2026-10-31T22:10:00Z')
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle()
+  for (const t of ticks.splice(0)) t()
+  await settle()
+  expect(prompts).toHaveLength(1)
+  expect(prompts[0]).toContain('The Sabbath rest ended at Sat 18:09')
+  expect(prompts[0]).toContain('implementor sheet r2')
+  expect(prompts[0]!.match(/subagent a1/g)).toHaveLength(1)
+})
+
 test('outside the Sabbath everything runs, and the status line is clear', async ($, on) => {
-  const status = mock(on, at('2026-10-30T14:30:00Z'))
+  const { status } = mock(on, at('2026-10-30T14:30:00Z'))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle()
   expect(status.at(-1)).toBeUndefined()

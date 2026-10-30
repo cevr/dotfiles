@@ -58,11 +58,25 @@ export function sabbath(t: number, place: Place = KNOWLTON): { on: boolean; star
   return { on: false, start: sunset(...next, place), end: sunset(...shift(...next, 1), place) }
 }
 
-/** The time from `from` to `to` (ms) outside every Sabbath: the hours agents work. */
+/** Agent work starts again this long after Saturday's sunset (owner, 2026-10-30). */
+export const AFTER_MS = 30 * 60e3
+
+/**
+ * The rest at `t`: the Sabbath and the AFTER_MS after it, when no agent works.
+ * `end` is when work starts again; off the rest, `start` and `end` are the next one's.
+ */
+export function rest(t: number, place: Place = KNOWLTON): { on: boolean; start: number; end: number } {
+  const last = sabbath(t - AFTER_MS, place)
+  if (t >= last.start && t - AFTER_MS < last.end) return { on: true, start: last.start, end: last.end + AFTER_MS }
+  const s = sabbath(t, place)
+  return { on: s.on, start: s.start, end: s.end + AFTER_MS }
+}
+
+/** The time from `from` to `to` (ms) outside every rest: the hours agents work. */
 export function awake(from: number, to: number, place: Place = KNOWLTON): number {
   let total = 0
   for (let t = from; t < to; ) {
-    const s = sabbath(t, place)
+    const s = rest(t, place)
     if (s.on) {
       t = s.end
       continue
@@ -73,10 +87,10 @@ export function awake(from: number, to: number, place: Place = KNOWLTON): number
   return total
 }
 
-/** When `ms` of time outside every Sabbath has passed since `from`. */
+/** When `ms` of time outside every rest has passed since `from`. */
 export function awakeAfter(from: number, ms: number, place: Place = KNOWLTON): number {
   for (let t = from, left = ms; ; ) {
-    const s = sabbath(t, place)
+    const s = rest(t, place)
     if (s.on) {
       t = s.end
       continue
