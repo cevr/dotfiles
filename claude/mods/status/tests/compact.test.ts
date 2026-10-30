@@ -147,3 +147,44 @@ test('a reload registers the copies before the tune ends, and warns of agents th
   expect(toasts).toEqual([expect.stringContaining('22 orchestrate-implementor past 120k')])
   expect(toasts[0]).not.toContain('Explore')
 })
+
+test('an older cache with a wide worker window registers the copies at the cap, and warns of an untuned role that ran past it', async ($, on) => {
+  const registered: Record<string, unknown>[] = []
+  const toasts: string[] = []
+  const wide = JSON.stringify({
+    at: 0,
+    ceiling: 1e6,
+    windows: { 'orchestrate-worker': 400e3 },
+    kinds: [],
+    untuned: [{ kind: 'orchestrate-verifier', window: 200e3, overrun: 1 }],
+  })
+  on('command.register', () => ({ value: { command: 'pool' } }))
+  on('clock.every', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: 0 }))
+  on('process.run', (_, e) => {
+    const script = e.argv.join(' ')
+    if (script.includes('--tune')) return new Promise(() => {})
+    if (script.includes('cat') && script.includes('compact.json')) return ok(wide)
+    const kind = script.match(/orchestrate-[a-z]+(?=\.md)/)?.[0]
+    if (kind) return ok(WORKER_FILE.replace('orchestrate-worker', kind))
+    return failed
+  })
+  on('agent.register', (_, e) => {
+    registered.push(e)
+    return { value: { agent: `status:${e.name}` } }
+  })
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle()
+  // Two loads (before the tune and the mocked hourly one); each registers all five kinds.
+  expect(new Set(registered.map(r => r.name)).size).toBe(5)
+  for (const r of registered) expect(r).toMatchObject({ autoCompactWindow: 200e3 })
+  expect(toasts).toEqual([expect.stringContaining('1 orchestrate-verifier past 200k')])
+})

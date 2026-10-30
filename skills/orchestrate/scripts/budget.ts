@@ -54,7 +54,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { ceilingOf, hostBurn, report, tune, type HostBurn } from './budget/burn.ts';
+import { ceilingOf, hostBurn, report, tune, untunedOverruns, type HostBurn } from './budget/burn.ts';
 import { codexLoad, familyOf, type CodexLoad } from './budget/codex-host.ts';
 import * as codex from './budget/codex-pace.ts';
 import { hostLoad, kindFor, projectFor, queuePath, type HostLoad } from './budget/host.ts';
@@ -282,10 +282,13 @@ if (args.includes('--tune')) {
     process.exit(3);
   }
   const ceiling = ceilingOf();
-  const kinds = tune(host.burns, ceiling, now - 24 * 60 * MINUTE);
-  writeJson(join(CACHE, 'compact.json'), { at: now, ceiling, windows: Object.fromEntries(kinds.map((k) => [k.kind, k.window])), kinds });
+  const since = now - 24 * 60 * MINUTE;
+  const kinds = tune(host.burns, ceiling, since);
+  const untuned = untunedOverruns(host.burns, kinds, ceiling, since);
+  writeJson(join(CACHE, 'compact.json'), { at: now, ceiling, windows: Object.fromEntries(kinds.map((k) => [k.kind, k.window])), kinds, untuned });
   for (const k of kinds)
     console.log(`${k.kind}: ${k.window / 1e3}k (best ${k.best / 1e3}k), saves ${(100 * k.saving).toFixed(1)}%${k.overrun ? `; ${k.overrun} agents in the last day ran past it` : ''}`);
+  for (const u of untuned) console.log(`${u.kind} (untuned): ${u.overrun} agents in the last day ran past ${u.window / 1e3}k`);
   process.exit(0);
 }
 

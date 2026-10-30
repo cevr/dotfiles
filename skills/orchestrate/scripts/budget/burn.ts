@@ -30,7 +30,7 @@ const days = Number(option('--days') ?? 7);
 const deadline = Date.now() + Number(option('--deadline-ms') ?? 120e3);
 const cachePath = join(homedir(), '.cache', 'orchestrate', 'burn.json');
 // Bump when FileBurn or the attribution changes, so cached results are recomputed.
-const VERSION = 4;
+const VERSION = 5;
 // Attachment records the model sees; the rest (prompt_snapshot, environment, hook_success, ...) are local.
 const SENT = new Set(['skill_listing', 'nested_memory', 'instructions', 'invoked_skills', 'hook_additional_context', 'file', 'edited_text_file', 'mcp_instructions_delta', 'deferred_tools_delta', 'agent_listing_delta', 'date', 'queued_command', 'silent_turn_reminder', 'todo_reminder', 'task_reminder', 'plan_mode', 'critical_system_reminder', 'diagnostics', 'selected_lines_in_ide', 'opened_file_in_ide', 'compact_file_reference']);
 
@@ -501,7 +501,9 @@ export const PINNED: Record<string, number> = { root: 400e3 };
 // more than the tune's replay can see (owner, 2026-10-30).
 export const WORKER_MAX = 200e3;
 // An agent whose context passed its kind's window by this much ran without it:
-// the engine ignored the window (2.1.310 did, for every registered agent).
+// the engine ignored the window (2.1.310 did, for every registered agent). The
+// margin is deliberate: one large tool result can carry a call a little past the
+// window before the next compaction, and that is the window working, not ignored.
 const OVERRUN = 1.1;
 
 export type Tuned = {
@@ -555,6 +557,23 @@ export function tune(burns: FileBurn[], ceiling = ceilingOf(), since = 0): Tuned
     });
   }
   return out.sort((a, c) => c.agents - a.agents);
+}
+
+/**
+ * The overruns of the kinds too small to tune: each runs at the window the
+ * status mod registers for it (orchestrate kinds at the worker's tuned window,
+ * or the worker cap), so an engine that ignores it shows here too.
+ */
+export function untunedOverruns(burns: FileBurn[], tuned: Tuned[], ceiling = ceilingOf(), since = 0): { kind: string; window: number; overrun: number }[] {
+  const done = new Set(tuned.map((t) => t.kind));
+  const worker = tuned.find((t) => t.kind === 'orchestrate-worker')?.window ?? Math.min(ceiling, WORKER_MAX);
+  const kinds = new Map<string, FileBurn[]>();
+  for (const b of burns) if (!done.has(b.kind)) kinds.set(b.kind, [...(kinds.get(b.kind) ?? []), b]);
+  return [...kinds].flatMap(([kind, bs]) => {
+    const window = kind.startsWith('orchestrate-') ? worker : ceiling;
+    const overrun = bs.filter((b) => b.last >= since && b.peak > OVERRUN * window).length;
+    return overrun ? [{ kind, window, overrun }] : [];
+  });
 }
 
 /** The burn of every host, as Markdown. */

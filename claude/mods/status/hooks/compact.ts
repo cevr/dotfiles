@@ -19,6 +19,8 @@ type On = Parameters<Register>[0]
 
 const HOUR = 3600e3
 const WORKER = 'orchestrate-worker'
+// budget/burn.ts WORKER_MAX: the largest window a worker kind is registered with.
+export const WORKER_MAX = 200e3
 export const KINDS = [WORKER, ...['planner', 'implementor', 'reviewer', 'verifier'].map(role => `orchestrate-${role}`)]
 const CACHE = '"$HOME/.cache/orchestrate"'
 export const KEEP =
@@ -38,8 +40,9 @@ const sh = (script: string) => ['sh', '-c', script]
 // compact.json's `kinds` whose agents ran past their window in the last day:
 // the engine ignored it (2.1.310 did, for every registered agent).
 export function overruns(stdout: string): string[] {
-  const kinds = (JSON.parse(stdout) as { kinds?: { kind?: unknown; window?: unknown; overrun?: unknown }[] }).kinds ?? []
-  return kinds.flatMap(k =>
+  type Row = { kind?: unknown; window?: unknown; overrun?: unknown }
+  const tuned = JSON.parse(stdout) as { kinds?: Row[]; untuned?: Row[] }
+  return [...(tuned.kinds ?? []), ...(tuned.untuned ?? [])].flatMap(k =>
     typeof k.overrun === 'number' && k.overrun > 0 && KINDS.includes(String(k.kind)) ? [`${k.overrun} ${k.kind} past ${Number(k.window) / 1e3}k`] : [],
   )
 }
@@ -84,7 +87,9 @@ async function load($: EngineInterface) {
   warned = over
   const next = new Set<string>()
   for (const name of KINDS) {
-    const window = windows[name] ?? windows[WORKER]
+    // A worker never runs past WORKER_MAX, whatever an older cache holds.
+    const tuned = windows[name] ?? windows[WORKER]
+    const window = tuned && Math.min(tuned, WORKER_MAX)
     const file = window ? await $.process.run(sh(`cat "$HOME/.claude/agents/${name}.md"`), { timeoutMs: 5e3 }) : undefined
     const agent = file?.exitCode === 0 ? parseAgent(file.stdout) : undefined
     if (!window || !agent) continue

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { burnOf, hostBurn, report, simulate, tune, WINDOWS, workerKind, type FileBurn } from './burn.ts';
+import { burnOf, hostBurn, report, simulate, tune, untunedOverruns, WINDOWS, workerKind, type FileBurn } from './burn.ts';
 
 const hour = (create: number, read: number, output: number) => ({
   input_tokens: 0,
@@ -117,6 +117,17 @@ describe('tune', () => {
     const mixed = [...burns.slice(4), ran(416e3, 2000), ran(190e3, 2000), ran(416e3, 500), ran(150e3, 2000)];
     // 190k is within 10% of the window; the 416k agent at 500 ran before `since`.
     expect(tune(mixed, 200e3, 1000)[0]).toMatchObject({ window: 180e3, overrun: 1 });
+  });
+
+  test('counts the overruns of a kind too small to tune, at the window it runs with', () => {
+    const ran = (kind: string, peak: number) => ({ ...agent(kind), peak, last: 2000 });
+    const tuned = tune(burns, 200e3, 1000);
+    const worker = tuned.find((t) => t.kind === 'orchestrate-worker')!.window;
+    const few = [ran('orchestrate-implementor', 396e3), ran('orchestrate-implementor', worker), ran('Explore', 230e3), ran('Explore', 210e3)];
+    expect(untunedOverruns([...burns, ...few], tuned, 200e3, 1000)).toEqual([
+      { kind: 'orchestrate-implementor', window: worker, overrun: 1 },
+      { kind: 'Explore', window: 200e3, overrun: 1 },
+    ]);
   });
 
   test("keeps the owner's window for the main session, however few its transcripts", () => {
