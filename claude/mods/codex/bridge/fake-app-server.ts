@@ -1,7 +1,9 @@
 // A stand-in for `codex app-server` in the bridge's tests: it answers the requests
 // the bridge makes and finishes every turn at once with the reply `done: <prompt>`.
 // A prompt with the word `hang` keeps its turn running until it is interrupted;
-// one that starts with `work` shows work items first (see `work`).
+// one that starts with `work` shows work items first (see `work`). A prompt with
+// `capacity<N>` fails that turn and the thread's next N-1 ones as Codex does when
+// the model is at capacity.
 // Every request it gets is appended to $FAKE_LOG, one JSON line each.
 // It reads the account's usage from $FAKE_LIMITS (a rate-limit snapshot as JSON), when set.
 import { appendFileSync } from 'node:fs'
@@ -11,7 +13,7 @@ let turns = 0
 const out = (message: unknown) => process.stdout.write(JSON.stringify(message) + '\n')
 const log = (message: unknown) => process.env.FAKE_LOG && appendFileSync(process.env.FAKE_LOG, JSON.stringify(message) + '\n')
 
-const complete = (threadId: string, turnId: string, status: string, text?: string) => {
+const complete = (threadId: string, turnId: string, status: string, text?: string, error: string | null = null) => {
   const item = { type: 'agentMessage', id: `m${turnId}`, text: text ?? '', phase: 'final_answer' }
   if (text) out({ method: 'item/completed', params: { threadId, turnId, item } })
   out({
@@ -29,7 +31,7 @@ const complete = (threadId: string, turnId: string, status: string, text?: strin
   out({ method: 'account/rateLimits/updated', params: { rateLimits: { limitId: 'codex', primary: { usedPercent: 3 } } } })
   out({
     method: 'turn/completed',
-    params: { threadId, turn: { id: turnId, items: text ? [item] : [], status, error: null, durationMs: 42 } },
+    params: { threadId, turn: { id: turnId, items: text ? [item] : [], status, error: error && { message: error }, durationMs: 42 } },
   })
 }
 
@@ -47,6 +49,7 @@ const work = (threadId: string, turnId: string) => {
 
 let buffer = ''
 const hanging = new Map<string, string>()
+const busy = new Map<string, number>()
 for await (const chunk of Bun.stdin.stream()) {
   buffer += new TextDecoder().decode(chunk)
   let at
@@ -69,7 +72,12 @@ for await (const chunk of Bun.stdin.stream()) {
       const text = params.input[0].text as string
       out({ id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } })
       if (text.startsWith('work')) work(params.threadId, turnId)
-      if (/\bhang\b/.test(text)) hanging.set(params.threadId, turnId)
+      const fails = /\bcapacity(\d+)\b/.exec(text)
+      if (fails) busy.set(params.threadId, Number(fails[1]))
+      if (busy.get(params.threadId)) {
+        busy.set(params.threadId, busy.get(params.threadId)! - 1)
+        complete(params.threadId, turnId, 'failed', undefined, 'Selected model is at capacity. Please try a different model.')
+      } else if (/\bhang\b/.test(text)) hanging.set(params.threadId, turnId)
       else complete(params.threadId, turnId, 'completed', `done: ${text}`)
     } else if (method === 'turn/interrupt') {
       out({ id, result: {} })

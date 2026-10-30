@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeAll, beforeEach, describe, expect, setSystemTime, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -21,7 +21,7 @@ const admitter = (name: string, line: string, code: number) => {
 // Unless a test says otherwise, the admission cannot measure, so the even line decides.
 const UNMEASURED = admitter('unmeasured', 'unmeasured: no host has seen the week', 2)
 process.env.CODEX_BRIDGE_ADMIT = UNMEASURED
-const { Bridge, handler, newest, roleAgent, waitStarted } = await import('./bridge.ts')
+const { Bridge, handler, newest, resumePrompt, roleAgent, waitStarted } = await import('./bridge.ts')
 
 const requests = () =>
   readFileSync(log, 'utf8')
@@ -61,7 +61,10 @@ afterEach(() => {
   rmSync(state, { force: true })
   rmSync(log, { force: true })
   rmSync(join(dir, 'bridge.log'), { force: true })
+  setSystemTime()
 })
+// Moves the bridge's clock on, as a resume's wait passes.
+const later = (minutes: number) => setSystemTime(new Date(Date.now() + minutes * 60e3 + 1e3))
 
 describe('newest', () => {
   const slugs = ['gpt-5.6-luna', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-reserve']
@@ -161,7 +164,9 @@ describe('a thread', () => {
 
     await call('POST', '/interrupt', { threadId: 't1' })
     await settle()
-    expect((await call('GET', '/events?owner=s1')).body).toMatchObject([{ status: 'interrupted' }])
+    expect((await call('GET', '/events?owner=s1')).body).toMatchObject([{ status: 'interrupted', cause: 'interrupted-by-caller' }])
+    // A caller's own interrupt is never resumed.
+    expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'interrupted', turns: 1 }])
   })
 
   test('a draining daemon latches new turns, and the next daemon runs them as the same turns', async () => {
@@ -216,17 +221,66 @@ describe('a thread', () => {
     expect(events.at(-1)).toMatchObject({ status: 'interrupted', error: 'stopped before it started' })
   })
 
-  test('a turn left running by a stopped daemon reaches its owner as failed', async () => {
+  test('a turn the app-server took down is resumed a minute later, and its owner hears only how the resumed turn ended', async () => {
     const first = open()
     await first.call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'hang on', cwd: dir })
     first.bridge.server.stop()
     await settle()
 
     const second = open()
-    const events = (await second.call('GET', '/events?owner=s1')).body
-    expect(events).toHaveLength(1)
-    expect(events[0]).toMatchObject({ status: 'failed', error: 'codex app-server exited' })
-    expect((await second.call('GET', '/threads?owner=s1')).body).toMatchObject([{ id: 't1', status: 'failed' }])
+    expect((await second.call('GET', '/events?owner=s1')).body).toEqual([])
+    expect((await second.call('GET', '/threads?owner=s1')).body).toMatchObject([
+      { id: 't1', status: 'queued', turns: 2, held: 'resume 1 of 3: the last turn ended on the Codex app-server exiting' },
+    ])
+    await second.bridge.pump()
+    expect(requests().filter(r => r.method === 'turn/start')).toHaveLength(1)
+
+    later(1)
+    await second.bridge.pump()
+    await settle()
+    expect((await second.call('GET', '/events?owner=s1')).body).toMatchObject([
+      { status: 'completed', cause: 'completed', resumes: 1, final: `done: ${resumePrompt('app-server-exit')}` },
+    ])
+    expect(journal().map(line => [line.event, line.cause])).toEqual([
+      ['start', undefined],
+      ['end', 'app-server-exit'],
+      ['latch', undefined],
+      ['resume', 'app-server-exit'],
+      ['start', undefined],
+      ['end', 'completed'],
+    ])
+  })
+
+  test('a turn a stopped daemon left running is resumed by the next one', async () => {
+    const thread = { id: 't7', owner: 's1', description: 'reviewer sheet r1', cwd: dir, model: 'gpt-6.1-sol', status: 'running', turns: 1, compactions: 0, startedAt: Date.now(), updatedAt: Date.now() }
+    writeFileSync(state, JSON.stringify({ seq: 0, threads: { t7: thread }, events: [] }))
+    const { bridge, call } = open()
+    expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'queued', held: 'resume 1 of 3: the last turn ended on a codex-bridge restart' }])
+    later(1)
+    await bridge.pump()
+    await settle()
+    expect((await call('GET', '/events?owner=s1')).body).toMatchObject([{ cause: 'completed', resumes: 1, final: `done: ${resumePrompt('drain-interrupt')}` }])
+  })
+
+  test('a turn the model at capacity ended is resumed after 1, 5 and 15 minutes, then reaches its owner with the cause', async () => {
+    const { bridge, call } = open()
+    await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it capacity9', cwd: dir })
+    await settle()
+    for (const [n, wait] of [[1, 1], [2, 5], [3, 15]] as const) {
+      expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'queued', held: `resume ${n} of 3: the last turn ended on the model being at capacity` }])
+      // Not before its wait has passed.
+      later(wait - 0.5)
+      await bridge.pump()
+      expect(requests().filter(r => r.method === 'turn/start')).toHaveLength(n)
+      later(0.5)
+      await bridge.pump()
+      await settle()
+    }
+    expect(requests().filter(r => r.method === 'turn/start').map(r => r.params.input[0].text).slice(1)).toEqual(Array(3).fill(resumePrompt('capacity')))
+    expect((await call('GET', '/events?owner=s1')).body).toMatchObject([
+      { status: 'failed', cause: 'capacity', resumes: 3, error: 'Selected model is at capacity. Please try a different model.' },
+    ])
+    expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'failed', turns: 4 }])
   })
 
   test('events and threads untouched for two weeks are dropped when a daemon starts', async () => {

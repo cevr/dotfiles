@@ -1,4 +1,4 @@
-import { expect, test, type TestBody } from 'claude-code/testing'
+import { expect, mock, test, type TestBody } from 'claude-code/testing'
 
 import type { Budget, Thread } from '../types'
 
@@ -39,7 +39,12 @@ const held: Budget = {
 // What the mod posted to the bridge, newest last.
 const posted: { path: string; body: any }[] = []
 
-function bridge(on: Parameters<TestBody>[1], threads: () => Thread[], budget: Budget = { start: { ok: true }, send: { ok: true }, summary: 'Codex usage unknown; no budget applied.' }) {
+function bridge(
+  on: Parameters<TestBody>[1],
+  threads: () => Thread[],
+  budget: Budget = { start: { ok: true }, send: { ok: true }, summary: 'Codex usage unknown; no budget applied.' },
+  events: object[] = [],
+) {
   on('ui.status', () => ({ value: undefined }))
   // The engine's own footer, beneath the mod.
   on('ui.render', ($, e) => {
@@ -52,14 +57,16 @@ function bridge(on: Parameters<TestBody>[1], threads: () => Thread[], budget: Bu
   on('http.fetch', (_, e) => {
     const path = new URL(e.url).pathname
     if (e.init?.body) posted.push({ path, body: JSON.parse(e.init.body) })
-    const body = path === '/start' ? (threads().find(t => t.status === 'queued') ?? running) : path === '/send' ? threads()[0] : path === '/threads' ? threads() : path === '/events' ? [] : path === '/budget' ? budget : null
+    const body = path === '/start' ? (threads().find(t => t.status === 'queued') ?? running) : path === '/send' ? threads()[0] : path === '/threads' ? threads() : path === '/events' ? events.splice(0) : path === '/ack' ? {} : path === '/budget' ? budget : null
     return { value: { ok: true, status: 200, text: JSON.stringify(body), headers: {} } }
   })
   on('command.register', () => ({ value: { command: 'codex' } }))
   on('tool.register', (_, e) => ({ value: { tool: `mcp__codex__${e.name}` } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('clock.every', () => ({ value: undefined }))
-  on('clock.now', () => ({ value: 60e3 }))
+  if (!events.length) {
+    on('clock.every', () => ({ value: undefined }))
+    on('clock.now', () => ({ value: 60e3 }))
+  }
   on('ui.log', () => ({ value: undefined }))
   on('session.id', () => ({ value: 'session-1' }))
   on('session.cwd', () => ({ value: '/' }))
@@ -142,4 +149,23 @@ test('a start names its orchestrate unit and round to the bridge', async ($, on)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r2', prompt: 'review', unit: 'sheet', round: 2, tool_use_id: 'tu1' })
   expect(posted.findLast(p => p.path === '/start')?.body).toMatchObject({ unit: 'sheet', round: 2, cwd: '/' })
+})
+
+test("a turn's end names its cause in plain words", async ($, on) => {
+  const end = { seq: 1, threadId: 't1', description: 'reviewer sheet r1', model: 'gpt-6.1-sol', final: 'half done', durationMs: 24 * 60e3 }
+  const clock = mock.clock(on)
+  const submitted: string[] = []
+  on('prompt.submit', (_, e) => {
+    submitted.push(e.text)
+    return { text: e.text }
+  })
+  bridge(on, () => [running], undefined, [
+    { ...end, status: 'failed', cause: 'drain-interrupt', resumes: 3, error: 'codex-bridge restarted' },
+    { ...end, seq: 2, status: 'completed', cause: 'completed', resumes: 1 },
+  ])
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.advance(5e3)
+  expect(submitted).toHaveLength(1)
+  expect(submitted[0]).toContain('ended its turn: stopped: codex-bridge restarted (turns have no time limit), not by its work; the bridge resumed it 3 times and gave up; 24 min')
+  expect(submitted[0]).toContain('ended its turn: completed, after the bridge resumed it once: the turns before ended on the infrastructure, not the work; 24 min')
 })

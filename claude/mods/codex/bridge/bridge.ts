@@ -9,7 +9,7 @@
 //   codex-bridge status          the daemon's threads, as JSON
 //
 // bridge.log in the state dir has one JSON line per event: a turn latched, held,
-// started or ended, a drain, a hand-over. A line about a thread carries its
+// started or ended (with its cause), resumed, a drain, a hand-over. A line about a thread carries its
 // orchestrate `unit` and `round`, when its start named them.
 // HTTP (all JSON): GET /health, POST /start, POST /send, POST /interrupt,
 // GET /threads?owner=, GET /events?owner=, POST /ack, GET /limits, GET /budget.
@@ -19,6 +19,10 @@
 // measure. A turn the budget holds is latched (status `queued`, with why), as is
 // one asked of a daemon draining for an update; the pump starts latched turns,
 // next turns before first ones, oldest first, as the budget makes room.
+// A turn that ended for the infrastructure (the model at capacity, the
+// app-server gone, the bridge restarted) is resumed by the bridge itself: one
+// standard next turn after 1, 5 and 15 minutes; its owner hears only the end
+// of the last one.
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -27,6 +31,8 @@ import { dirname, join } from 'node:path'
 import { budget, DEFAULTS, type Config, type Limits } from './budget.ts'
 
 export type Role = 'planner' | 'implementor' | 'reviewer' | 'verifier'
+/** Why a turn ended: its work, its caller, or the infrastructure under it (`capacity`, `app-server-exit`, `drain-interrupt`). */
+export type Cause = 'completed' | 'interrupted-by-caller' | 'capacity' | 'app-server-exit' | 'drain-interrupt' | 'error'
 export type Usage = { tokens: number; input: number; cached: number; output: number; context: number; window: number }
 /**
  * What a thread's current or last turn does, for the mod's live view: the items
@@ -57,6 +63,12 @@ export type Thread = {
   queued?: string
   held?: string
   queuedAt?: number
+  /** A resumed turn waits until then. */
+  notBefore?: number
+  /** The bridge's resumes since the thread's last turn that its owner heard of. */
+  resumes?: number
+  /** The caller asked to stop the running turn. */
+  interrupting?: boolean
   turnId?: string
   turns: number
   compactions: number
@@ -75,7 +87,10 @@ export type Event = {
   model: string
   effort?: string
   status: 'completed' | 'interrupted' | 'failed'
+  cause: Cause
   error?: string
+  /** How many times the bridge resumed the thread before this end. */
+  resumes?: number
   final: string
   durationMs: number
   usage?: Usage
@@ -105,6 +120,17 @@ const BUDGET = process.env.CODEX_BRIDGE_BUDGET ?? join(homedir(), '.config/orche
 // It reads every host over SSH; past this, the even line decides.
 const ADMIT_MS = 60e3
 const STEPS = 12
+// A turn the infrastructure ended is resumed after these waits, then left to its owner.
+const BACKOFF_MIN = [1, 5, 15]
+const RESUMES: Cause[] = ['capacity', 'app-server-exit', 'drain-interrupt']
+const ENDED_ON: Partial<Record<Cause, string>> = {
+  capacity: 'the model being at capacity',
+  'app-server-exit': 'the Codex app-server exiting',
+  'drain-interrupt': 'a codex-bridge restart',
+}
+/** The next turn the bridge sends after a turn the infrastructure ended. */
+export const resumePrompt = (cause: Cause) =>
+  `Your last turn ended on ${ENDED_ON[cause] ?? cause}, not on your work. Continue the same task from where you are. Background jobs started in that turn no longer run; restart any you need.`
 
 // `/bin/zsh -lc 'bun test'` is `bun test`.
 const unwrap = (command: string) => /^\S*\b(?:zsh|bash|sh) -l?c '(.*)'$/s.exec(command)?.[1] ?? command
@@ -338,11 +364,12 @@ export class Bridge {
     this.state.events = this.state.events.filter(event => event.at > kept)
     for (const [id, thread] of Object.entries(this.state.threads)) if (thread.updatedAt < kept) delete this.state.threads[id]
     // A turn that was running when the last daemon stopped has no child to finish it.
-    for (const thread of Object.values(this.state.threads)) if (thread.status === 'running') this.finish(thread, 'failed', 'codex-bridge restarted')
+    for (const thread of Object.values(this.state.threads)) if (thread.status === 'running') this.finish(thread, 'failed', 'codex-bridge restarted', 0, 'drain-interrupt')
     this.server = new AppServer(
       (method, params) => this.notify(method, params),
       () => {
-        for (const thread of Object.values(this.state.threads)) if (thread.status === 'running') this.finish(thread, 'failed', 'codex app-server exited')
+        for (const thread of Object.values(this.state.threads))
+          if (thread.status === 'running') this.finish(thread, 'failed', 'codex app-server exited', 0, 'app-server-exit')
       },
     )
   }
@@ -390,10 +417,28 @@ export class Bridge {
     return thread
   }
 
-  private finish(thread: Thread, status: Exclude<Thread['status'], 'running'>, error?: string, durationMs = 0) {
+  /**
+   * Ends a turn. One the infrastructure ended is resumed, up to BACKOFF_MIN's
+   * tries, and its owner hears nothing yet; any other end is an event for its owner.
+   */
+  private finish(thread: Thread, status: Exclude<Thread['status'], 'running'>, error: string | undefined, durationMs: number, cause: Cause) {
     thread.status = status
     thread.turnId = undefined
+    thread.interrupting = undefined
     thread.updatedAt = Date.now()
+    this.record('end', thread, { status, cause, error, durationMs })
+    const tries = thread.resumes ?? 0
+    if (RESUMES.includes(cause) && tries < BACKOFF_MIN.length) {
+      const wait = BACKOFF_MIN[tries]! * 60e3
+      thread.resumes = tries + 1
+      this.latch(thread, resumePrompt(cause), `resume ${tries + 1} of ${BACKOFF_MIN.length}: the last turn ended on ${ENDED_ON[cause]}`)
+      thread.notBefore = Date.now() + wait
+      this.record('resume', thread, { cause, try: tries + 1, notBefore: new Date(thread.notBefore).toISOString() })
+      this.save()
+      setTimeout(() => void this.pump(), wait + 1e3).unref?.()
+      return
+    }
+    thread.resumes = undefined
     this.state.events.push({
       seq: ++this.state.seq,
       at: thread.updatedAt,
@@ -403,13 +448,14 @@ export class Bridge {
       model: thread.model,
       effort: thread.effort,
       status: status === 'idle' ? 'completed' : status,
+      cause,
       error,
+      ...(tries > 0 && { resumes: tries }),
       final: thread.final ?? '',
       durationMs,
       usage: thread.usage,
       compactions: thread.compactions,
     })
-    this.record('end', thread, { status, error, durationMs })
     this.save()
   }
 
@@ -439,7 +485,10 @@ export class Bridge {
       const final = [...(turn.items ?? [])].reverse().find((item: any) => item.type === 'agentMessage' && item.text?.trim())
       if (final) thread.final = final.text
       const status = turn.status === 'completed' ? 'idle' : turn.status === 'interrupted' ? 'interrupted' : 'failed'
-      this.finish(thread, status, turn.error?.message, turn.durationMs ?? 0)
+      const error: string | undefined = turn.error?.message
+      const cause: Cause =
+        status === 'idle' ? 'completed' : status === 'interrupted' && thread.interrupting ? 'interrupted-by-caller' : /at capacity/i.test(error ?? '') ? 'capacity' : 'error'
+      this.finish(thread, status, error, turn.durationMs ?? 0, cause)
     }
   }
 
@@ -506,6 +555,7 @@ export class Bridge {
     thread.queued = prompt
     thread.held = why
     thread.queuedAt = Date.now()
+    thread.notBefore = undefined
     thread.final = undefined
     thread.live = undefined
     thread.turns++
@@ -551,10 +601,11 @@ export class Bridge {
     })
   }
 
-  /** The latched turns in the order they start: next turns before first ones, then the oldest. */
+  /** The latched turns due now, in the order they start: next turns before first ones, then the oldest. */
   private queue() {
+    const now = Date.now()
     return Object.values(this.state.threads)
-      .filter(t => t.status === 'queued')
+      .filter(t => t.status === 'queued' && (t.notBefore ?? 0) <= now)
       .sort((a, b) => Number(a.turns === 1) - Number(b.turns === 1) || (a.queuedAt ?? 0) - (b.queuedAt ?? 0))
   }
 
@@ -576,11 +627,12 @@ export class Bridge {
         thread.queued = undefined
         thread.held = undefined
         thread.queuedAt = undefined
+        thread.notBefore = undefined
         try {
           await this.load(thread)
           await this.turn(thread, prompt, false)
         } catch (error) {
-          this.finish(thread, 'failed', `the latched turn did not start: ${(error as Error).message}`)
+          this.finish(thread, 'failed', `the latched turn did not start: ${(error as Error).message}`, 0, 'error')
         }
       }
     })
@@ -654,11 +706,13 @@ export class Bridge {
     if (thread.status === 'queued') {
       thread.queued = undefined
       thread.held = undefined
-      this.finish(thread, 'interrupted', 'stopped before it started')
+      thread.notBefore = undefined
+      this.finish(thread, 'interrupted', 'stopped before it started', 0, 'interrupted-by-caller')
       return thread
     }
     if (thread.status !== 'running') return thread
     if (!thread.turnId) throw new Error(`thread ${thread.id} has not started its turn yet`)
+    thread.interrupting = true
     await this.server.call('turn/interrupt', { threadId: thread.id, turnId: thread.turnId })
     return thread
   }

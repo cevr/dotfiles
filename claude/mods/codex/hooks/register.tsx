@@ -17,6 +17,8 @@ import type { Budget, Row, Thread, View } from '../types'
 // Every turn, a first or a next one, passes the Codex budget in the bridge: a
 // turn the budget holds, or one asked while the bridge updates, is latched and
 // starts by itself when there is room; its end arrives as a message like any.
+// A turn the infrastructure ended (the model at capacity, the app-server or the
+// bridge restarting) the bridge resumes by itself; the message names the cause.
 
 const POLL_MS = 5e3
 const VIEW_MS = 2e3
@@ -24,7 +26,7 @@ const FINAL_CHARS = 6000
 const PANE = 'codex'
 const ENSURE = ['sh', '-c', 'PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH" exec codex-bridge ensure']
 
-type Event = Omit<Thread, 'final'> & { seq: number; threadId: string; final: string; error?: string; durationMs: number }
+type Event = Omit<Thread, 'final'> & { seq: number; threadId: string; final: string; error?: string; durationMs: number; cause?: string; resumes?: number }
 
 const view = atom({ plugin: 'codex', key: 'view' } as const, { at: 0, threads: [] } as View)
 const rows = atom({ plugin: 'codex', key: 'rows' } as const, {} as Record<string, Row>)
@@ -80,6 +82,20 @@ const facts = (t: Thread) =>
     .join(', ')
 const line = (t: Thread) => `${t.id} "${t.description}": ${t.status}; ${facts(t)}`
 
+// How a turn ended, by the bridge's cause; a bridge from before causes gives its status.
+const NOT_THE_WORK: Record<string, string> = {
+  capacity: 'failed: the model was at capacity',
+  'app-server-exit': 'stopped: the Codex app-server exited',
+  'drain-interrupt': 'stopped: codex-bridge restarted (turns have no time limit)',
+}
+const ended = (e: Event) => {
+  const resumed = e.resumes && `the bridge resumed it ${e.resumes === 1 ? 'once' : `${e.resumes} times`}`
+  if (e.cause && NOT_THE_WORK[e.cause]) return `${NOT_THE_WORK[e.cause]}, not by its work; ${resumed ? `${resumed} and gave up` : 'the bridge did not resume it'}`
+  const how =
+    e.cause === 'completed' ? 'completed' : e.cause === 'interrupted-by-caller' ? 'interrupted, as asked' : `${e.status}${e.error ? ` (${e.error})` : ''}`
+  return resumed ? `${how}, after ${resumed}: the turns before ended on the infrastructure, not the work` : how
+}
+
 function message(events: Event[], threads: Thread[]) {
   return events
     .map(event => {
@@ -89,7 +105,7 @@ function message(events: Event[], threads: Thread[]) {
           ? `${event.final.slice(0, FINAL_CHARS)}\n[cut at ${FINAL_CHARS} characters]`
           : event.final || '(no final message)'
       return [
-        `Codex thread ${event.threadId} "${event.description}" ended its turn: ${event.status}${event.error ? ` (${event.error})` : ''}, ${Math.round(event.durationMs / 60e3)} min; ${thread ? facts(thread) : event.model}.`,
+        `Codex thread ${event.threadId} "${event.description}" ended its turn: ${ended(event)}; ${Math.round(event.durationMs / 60e3)} min; ${thread ? facts(thread) : event.model}.`,
         `Continue it with mcp__codex__send, or leave it. Final message:`,
         final,
       ].join('\n')
