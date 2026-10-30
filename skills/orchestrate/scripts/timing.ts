@@ -3,6 +3,7 @@
 // Usage: bun timing.ts <run dir>... [--since 2026-10-17] [--json]
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { transitions } from './transition.ts';
 
 const args = process.argv.slice(2);
 const sinceAt = args.indexOf('--since');
@@ -16,8 +17,6 @@ if (!dirs.length) {
   process.exit(2);
 }
 
-// `<time> <from> → <to> r<round> ...`; `stuck(quota)` counts as `stuck`, `merged <sha>` as `merged`.
-const TRANSITION = /^(\d{4}-\d\d-\d\dT\d\d:\d\dZ?)\S*\s+(\S+)\s*(?:→|->)\s*([a-z]+)/;
 type Unit = {
   run: string; unit: string; final: string; total: number; time: Record<string, number>;
   rework: number; rounds: number; reviewBounces: number; verifyBounces: number; outOfOrder: number;
@@ -28,13 +27,7 @@ for (const dir of dirs) {
   for (const d of readdirSync(dir, { withFileTypes: true })) {
     const log = join(dir, d.name, 'log.md');
     if (!d.isDirectory() || !existsSync(log)) continue;
-    const ts: { at: number; from: string; to: string; round: number }[] = [];
-    for (const line of readFileSync(log, 'utf8').split('\n')) {
-      const m = TRANSITION.exec(line);
-      if (!m) continue;
-      const round = / r(\d+)\b/.exec(line.slice(m[1].length));
-      ts.push({ at: Date.parse(m[1].endsWith('Z') ? m[1] : m[1] + 'Z'), from: m[2], to: m[3], round: round ? Number(round[1]) : 0 });
-    }
+    const ts = transitions(readFileSync(log, 'utf8'));
     if (ts.length < 2 || ts[ts.length - 1].at < since) continue;
     const time: Record<string, number> = {};
     let rework = 0, outOfOrder = 0;

@@ -20,11 +20,10 @@ The window is the last 7 days unless the owner names another. Work only from mea
 
    On the workbox, run `git -C ~/Developer/personal/dotfiles pull --ff-only` first. Copy each `digest.md` back. Read the digests, not the transcripts. Record per machine: limit errors, cache-read tokens, compactions, the costliest sessions and agents, the skills used, and the owner's repeated messages.
 
-3. **Time the orchestrate runs.** On each machine, find the run directories touched this week and pass them to the timing script:
+3. **Time the orchestrate runs.** On each machine, pass every run directory touched in the window (under `~/Developer`, `/tmp` and `~/.cache/orchestrate`) to the timing script:
 
    ```
-   find ~/Developer /tmp -maxdepth 7 -name log.md -mtime -7 2>/dev/null | xargs grep -l '→' \
-     | xargs -n1 dirname | xargs -n1 dirname | sort -u \
+   bun ~/.claude/skills/orchestrate/scripts/runs.ts --since <window start> \
      | xargs bun ~/.claude/skills/orchestrate/scripts/timing.ts --since <window start>
    ```
 
