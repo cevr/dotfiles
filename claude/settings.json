@@ -16,7 +16,7 @@
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "450000",
     "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1",
     "CLAUDE_CODE_NO_FLICKER": "1",
-    "CLAUDE_CODE_PLUGIN_DIRS": "~/Developer/personal/dotfiles/claude/mods/fx-ui:~/Developer/personal/dotfiles/claude/mods/status:~/Developer/personal/dotfiles/claude/mods/codex",
+    "CLAUDE_CODE_PLUGIN_DIRS": "~/Developer/personal/dotfiles/claude/mods/fx-ui:~/Developer/personal/dotfiles/claude/mods/status:~/Developer/personal/dotfiles/claude/mods/codex:~/Developer/personal/dotfiles/claude/mods/sabbath",
     "CLAUDE_CODE_SUBAGENT_MODEL": "opus"
   },
   "extraKnownMarketplaces": {

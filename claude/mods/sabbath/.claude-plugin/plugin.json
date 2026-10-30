@@ -1,0 +1,6 @@
+{
+  "name": "sabbath",
+  "version": "0.1.0",
+  "description": "From Friday sunset to Saturday sunset at the owner's location, no subagent, Codex thread or workflow runs.",
+  "author": { "name": "Cristian" }
+}
