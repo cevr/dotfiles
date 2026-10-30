@@ -35,6 +35,15 @@ s=$?; rmdir "$lock"; exit $s`
 
 const sh = (script: string) => ['sh', '-c', script]
 
+// compact.json's `kinds` whose agents ran past their window in the last day:
+// the engine ignored it (2.1.310 did, for every registered agent).
+export function overruns(stdout: string): string[] {
+  const kinds = (JSON.parse(stdout) as { kinds?: { kind?: unknown; window?: unknown; overrun?: unknown }[] }).kinds ?? []
+  return kinds.flatMap(k =>
+    typeof k.overrun === 'number' && k.overrun > 0 && KINDS.includes(String(k.kind)) ? [`${k.overrun} ${k.kind} past ${Number(k.window) / 1e3}k`] : [],
+  )
+}
+
 // compact.json's `windows`: agent kind → tokens, each within the engine's 100k–1M.
 export function parseWindows(stdout: string): Record<string, number> {
   const windows = (JSON.parse(stdout) as { windows?: Record<string, unknown> }).windows ?? {}
@@ -62,10 +71,17 @@ export function parseAgent(text: string): { description: string; tools?: string[
 let windows: Record<string, number> = {}
 // The kinds whose copy carries a tuned window.
 let copied = new Set<string>()
+// The overruns last warned of.
+let warned = ''
 
 async function load($: EngineInterface) {
   const tuned = await $.process.run(sh(`cat ${CACHE}/compact.json`), { timeoutMs: 5e3 })
   windows = tuned.exitCode === 0 ? parseWindows(tuned.stdout) : {}
+  const over = tuned.exitCode === 0 ? overruns(tuned.stdout).join(', ') : ''
+  // Once per finding, not each hour.
+  if (over && over !== warned)
+    $.ui.toast(`Agents ran past their compaction window in the last day (${over}). Update Claude Code and restart this session.`)
+  warned = over
   const next = new Set<string>()
   for (const name of KINDS) {
     const window = windows[name] ?? windows[WORKER]
@@ -80,6 +96,8 @@ async function load($: EngineInterface) {
 
 async function tuneOnce($: EngineInterface) {
   try {
+    // The windows in force first: a reload starts with none, and a tune can take minutes.
+    if (copied.size === 0) await load($)
     await $.process.run(sh(TUNE), { timeoutMs: 600e3 })
     await load($)
   } catch (error) {
