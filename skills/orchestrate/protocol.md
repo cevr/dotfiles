@@ -23,7 +23,7 @@ You run one step of the unit's machine. When it is done, end with a final messag
 | reviewer | `<unit dir>/round-N-findings.md` | `accepted`, `changes` or `stuck` |
 | verifier | `<unit dir>/round-N-verify.md` | `pass`, `fail` or `stuck` |
 
-The first line of your file states the same verdict. At your second compaction, in any role, write what you have to your file and `state.md`, and end `blocked` with the reason `compacted`; a fresh agent continues from the files. Keep the rest of the final message to a few lines: the orchestrator reads files, not transcripts.
+The first line of your file states the same verdict. At your first compaction, in any role, finish the edit at hand, write what you have to your file and `state.md`, and end `blocked` with the reason `compacted`; a fresh agent continues from the files. Past one compaction the kept context is mostly stale, and every turn rereads it. Keep the rest of the final message to a few lines: the orchestrator reads files, not transcripts.
 
 **Questions.** When something blocks you, write `<unit dir>/blocked.md` with what blocks you, what you tried, and the options with your recommendation. End with verdict `blocked` and that path. The orchestrator answers in a message to you.
 

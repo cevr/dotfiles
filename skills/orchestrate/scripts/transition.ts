@@ -1,7 +1,7 @@
 // One unit transition in its log.md: `<time> <from> → <to> r<N> <note>`, written by log.ts.
 // `to` is the state's kind (`stuck(quota)` is `stuck`, `merged <sha>` is `merged`); `state` keeps
 // the qualifier. Other lines (notes, receipts) are not transitions.
-const LINE = /^(\d{4}-\d\d-\d\dT\d\d:\d\dZ?)\S*\s+(\S+)\s*(?:→|->)\s*(([a-z]+)(?:\([a-z]+\))?)/;
+const LINE = /^(\d{4}-\d\d-\d\dT\d\d:\d\dZ?)\S*\s+(\S+)\s*(?:→|->)\s*(([a-z]+(?:-[a-z]+)*)(?:\([a-z]+\))?)/;
 
 export type Transition = { at: number; from: string; to: string; state: string; round: number };
 

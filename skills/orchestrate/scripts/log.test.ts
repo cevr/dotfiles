@@ -56,6 +56,15 @@ test('a rewrite at decide starts its rounds from 1 again', () => {
   expect(bun('log.ts', dir, 'decide', 'implement', 'r1', 'rewrite on a new premise').code).toBe(0);
 });
 
+test('a stale branch goes through integration-check, which the timing names', () => {
+  const dir = unitDir();
+  bun('log.ts', dir, 'new', 'decide', 'r1');
+  expect(bun('log.ts', dir, 'decide', 'integration-check', 'r1', 'main moved; merge with no conflict').code).toBe(0);
+  expect(bun('log.ts', dir, 'integration-check', 'decide', 'r1', 'merge-sheet.log exit 0').code).toBe(0);
+  const [u] = JSON.parse(bun('timing.ts', join(dir, '..'), '--json').out);
+  expect(Object.keys(u.time)).toEqual(['decide', 'integration-check']);
+});
+
 test('a unit too big for a round is stuck(size): logged, timed as stuck, and shown as such', () => {
   const dir = unitDir();
   bun('log.ts', dir, 'new', 'implement', 'r2');

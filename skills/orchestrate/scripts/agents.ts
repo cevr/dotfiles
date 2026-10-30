@@ -23,9 +23,11 @@ export const ROLES = {
 } as const;
 export type Role = keyof typeof ROLES;
 
-// The Codex column of SKILL.md's role table. The model is the spawn's (the newest
-// sol or luna), so no file pins one; an effort in the file wins over the spawn's.
-const CODEX_EFFORT: Record<Role, string> = { planner: 'high', implementor: 'max', reviewer: 'max', verifier: 'medium' };
+// The Codex efforts in SKILL.md's role table. The model is the spawn's (the newest
+// sol or luna), so no file pins one; an effort in the file wins over a Codex spawn's,
+// and a Claude Code orchestrator's mcp__codex__start effort wins over the file's.
+// A reviewer runs at medium; a deep unit's round 1 passes max to its one call.
+const CODEX_EFFORT: Record<Role, string> = { planner: 'high', implementor: 'max', reviewer: 'medium', verifier: 'medium' };
 
 /** protocol.md's `## ` sections by heading. */
 const sections = (text: string) =>

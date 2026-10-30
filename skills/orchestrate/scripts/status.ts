@@ -18,7 +18,7 @@ if (!dir || !existsSync(dir)) {
   process.exit(2);
 }
 
-const STATE = String.raw`merged [0-9a-f]{6,40}|stuck\([a-z]+\)|waiting\(pr\)|[a-z]+`;
+const STATE = String.raw`merged [0-9a-f]{6,40}|stuck\([a-z]+\)|waiting\(pr\)|[a-z]+(?:-[a-z]+)*`;
 const TRANSITION = new RegExp(String.raw`(\S+)\s*(?:→|->)\s*(${STATE})`);
 
 const rows = readdirSync(dir, { withFileTypes: true })

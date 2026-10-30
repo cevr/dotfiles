@@ -55,7 +55,7 @@ const h = (min: number) => (min / 60).toFixed(1);
 const all = sum(units.map((u) => sum(Object.values(u.time))));
 console.log(`units ${units.length}, merged ${units.filter((u) => u.final === 'merged').length}`);
 console.log('state      total-h  share  median-min-per-unit');
-const named = ['plan', 'approved', 'implement', 'review', 'verify', 'decide', 'waiting', 'stuck', 'blocked'];
+const named = ['plan', 'approved', 'implement', 'review', 'verify', 'decide', 'integration-check', 'waiting', 'stuck', 'blocked'];
 for (const s of [...named, 'other']) {
   const of = (u: Unit) => (s === 'other' ? sum(Object.entries(u.time).filter(([k]) => !named.includes(k)).map(([, v]) => v)) : u.time[s] ?? 0);
   const xs = units.map(of);
