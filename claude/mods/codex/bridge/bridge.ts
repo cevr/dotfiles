@@ -8,6 +8,9 @@
 //   codex-bridge serve           run the daemon in the foreground
 //   codex-bridge status          the daemon's threads, as JSON
 //
+// bridge.log in the state dir has one JSON line per event: a turn latched, held,
+// started or ended, a drain, a hand-over. A line about a thread carries its
+// orchestrate `unit` and `round`, when its start named them.
 // HTTP (all JSON): GET /health, POST /start, POST /send, POST /interrupt,
 // GET /threads?owner=, GET /events?owner=, POST /ack, GET /limits, GET /budget.
 // Every turn, a thread's first or a next one, passes the Codex budget: the hard
@@ -17,7 +20,7 @@
 // one asked of a daemon draining for an update; the pump starts latched turns,
 // next turns before first ones, oldest first, as the budget makes room.
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -43,6 +46,9 @@ export type Thread = {
   owner: string
   description: string
   role?: Role
+  /** The orchestrate unit and round the thread works on, when its start named them. */
+  unit?: string
+  round?: number
   cwd: string
   model: string
   effort?: string
@@ -81,7 +87,8 @@ const STATE_DIR = process.env.CODEX_BRIDGE_DIR ?? join(process.env.XDG_STATE_HOM
 export const SOCKET = join(STATE_DIR, 'bridge.sock')
 const STATE = join(STATE_DIR, 'state.json')
 const LOCK = join(STATE_DIR, 'serve.lock')
-const LOG = join(STATE_DIR, 'bridge.log')
+// The daemon's own output (a crash): bridge.log stays one JSON line per event.
+const OUT = join(STATE_DIR, 'bridge.err')
 const CODEX_HOME = process.env.CODEX_HOME ?? join(homedir(), '.codex')
 const AGENTS = process.env.CODEX_BRIDGE_AGENTS ?? join(CODEX_HOME, 'agents')
 // The command that speaks the app-server protocol on stdio; a test points it at a fake.
@@ -340,6 +347,32 @@ export class Bridge {
     )
   }
 
+  /** Appends one event to bridge.log, with the thread's unit and round when it names one. */
+  record(event: string, thread?: Thread, fields: Record<string, unknown> = {}) {
+    const about = thread && {
+      thread: thread.id,
+      owner: thread.owner,
+      unit: thread.unit,
+      round: thread.round,
+      role: thread.role,
+      model: thread.model,
+      turn: thread.turns,
+    }
+    try {
+      mkdirSync(dirname(this.file), { recursive: true })
+      appendFileSync(join(dirname(this.file), 'bridge.log'), JSON.stringify({ at: new Date().toISOString(), event, ...about, ...fields }) + '\n')
+    } catch {
+      // A full disk loses the log line, never the turn.
+    }
+  }
+
+  /** From now on new turns latch, so the daemon hands over once none runs. */
+  drain() {
+    if (this.draining) return
+    this.draining = true
+    this.record('drain')
+  }
+
   private save() {
     mkdirSync(dirname(this.file), { recursive: true })
     writeFileSync(`${this.file}.tmp`, JSON.stringify(this.state))
@@ -376,6 +409,7 @@ export class Bridge {
       usage: thread.usage,
       compactions: thread.compactions,
     })
+    this.record('end', thread, { status, error, durationMs })
     this.save()
   }
 
@@ -461,6 +495,7 @@ export class Bridge {
     }
     if (count) thread.turns++
     thread.updatedAt = Date.now()
+    this.record('start', thread)
     this.save()
     return thread
   }
@@ -475,6 +510,7 @@ export class Bridge {
     thread.live = undefined
     thread.turns++
     thread.updatedAt = Date.now()
+    this.record('latch', thread, { reason: why })
     this.save()
     return thread
   }
@@ -531,6 +567,7 @@ export class Bridge {
         if (why) {
           if (why !== thread.held) {
             thread.held = why
+            this.record('hold', thread, { reason: why })
             this.save()
           }
           return
@@ -555,6 +592,8 @@ export class Bridge {
     prompt: string
     cwd: string
     role?: Role
+    unit?: string
+    round?: number
     model?: string
     effort?: string
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access'
@@ -576,6 +615,8 @@ export class Bridge {
       owner: input.owner,
       description: input.description,
       role: input.role,
+      unit: input.unit,
+      round: input.round,
       cwd: input.cwd,
       model: started.model,
       effort: started.reasoningEffort ?? effort,
@@ -725,6 +766,7 @@ async function serve() {
   void bridge.pump()
   setInterval(() => void bridge.pump(), PUMP_MS)
   const stop = (handOver = false) => {
+    if (handOver) bridge.record('handover')
     bridge.server.stop()
     rmSync(SOCKET, { force: true })
     rmSync(LOCK, { force: true })
@@ -740,7 +782,7 @@ async function serve() {
   const built = source()
   setInterval(() => {
     if (source() === built) return
-    bridge.draining = true
+    bridge.drain()
     if (!bridge.busy()) stop(true)
   }, 30e3)
 }
@@ -749,15 +791,15 @@ async function serve() {
 // handing-over daemon) never takes it down.
 function daemon() {
   mkdirSync(STATE_DIR, { recursive: true })
-  const log = openSync(LOG, 'a')
-  spawn(process.execPath, [import.meta.path, 'serve'], { stdio: ['ignore', log, log], detached: true }).unref()
+  const out = openSync(OUT, 'a')
+  spawn(process.execPath, [import.meta.path, 'serve'], { stdio: ['ignore', out, out], detached: true }).unref()
 }
 
 async function ensure() {
   if (!(await healthy())) {
     daemon()
     for (let i = 0; i < 50 && !(await healthy()); i++) await Bun.sleep(100)
-    if (!(await healthy())) throw new Error(`codex-bridge did not start; see ${LOG}`)
+    if (!(await healthy())) throw new Error(`codex-bridge did not start; see ${OUT}`)
   }
   console.log(JSON.stringify({ socket: SOCKET }))
 }

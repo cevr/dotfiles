@@ -36,6 +36,9 @@ const held: Budget = {
   summary: 'Codex budget: 7-day window: 58% used; even line 42% now; 99% by 2026-11-01 12:00Z. New threads held; next turns go on.',
 }
 
+// What the mod posted to the bridge, newest last.
+const posted: { path: string; body: any }[] = []
+
 function bridge(on: Parameters<TestBody>[1], threads: () => Thread[], budget: Budget = { start: { ok: true }, send: { ok: true }, summary: 'Codex usage unknown; no budget applied.' }) {
   on('ui.status', () => ({ value: undefined }))
   // The engine's own footer, beneath the mod.
@@ -48,6 +51,7 @@ function bridge(on: Parameters<TestBody>[1], threads: () => Thread[], budget: Bu
   on('process.run', () => ({ value: { exitCode: 0, stdout: '{"socket":"/tmp/bridge.sock"}', stderr: '' } }))
   on('http.fetch', (_, e) => {
     const path = new URL(e.url).pathname
+    if (e.init?.body) posted.push({ path, body: JSON.parse(e.init.body) })
     const body = path === '/start' ? (threads().find(t => t.status === 'queued') ?? running) : path === '/send' ? threads()[0] : path === '/threads' ? threads() : path === '/events' ? [] : path === '/budget' ? budget : null
     return { value: { ok: true, status: 200, text: JSON.stringify(body), headers: {} } }
   })
@@ -131,4 +135,11 @@ test('a latched start says why it waits, and its footer line shows it latched', 
   expect(answer).toMatchObject({ result: expect.stringContaining('Queued Codex thread t1') })
   expect(answer).toMatchObject({ result: expect.stringContaining('The turn is latched (the bridge is updating); it starts by itself when there is room.') })
   expect((await footer($, 'terminal'))[1]).toBe('◆ codex reviewer sheet r1 · latched 10s: the bridge is updating · context 41%')
+})
+
+test('a start names its orchestrate unit and round to the bridge', async ($, on) => {
+  bridge(on, () => [running])
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r2', prompt: 'review', unit: 'sheet', round: 2, tool_use_id: 'tu1' })
+  expect(posted.findLast(p => p.path === '/start')?.body).toMatchObject({ unit: 'sheet', round: 2, cwd: '/' })
 })

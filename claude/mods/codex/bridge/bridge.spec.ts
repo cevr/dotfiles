@@ -29,6 +29,11 @@ const requests = () =>
     .filter(Boolean)
     .map(line => JSON.parse(line) as { method: string; params: any })
 const state = join(dir, 'state.json')
+const journal = () =>
+  readFileSync(join(dir, 'bridge.log'), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line) as Record<string, any>)
 const bridges: InstanceType<typeof Bridge>[] = []
 const open = () => {
   const bridge = new Bridge(state)
@@ -55,6 +60,7 @@ afterEach(() => {
   for (const bridge of bridges.splice(0)) bridge.server.stop()
   rmSync(state, { force: true })
   rmSync(log, { force: true })
+  rmSync(join(dir, 'bridge.log'), { force: true })
 })
 
 describe('newest', () => {
@@ -180,6 +186,23 @@ describe('a thread', () => {
       { id: 't1', status: 'idle', turns: 2 },
       { id: 't2', status: 'idle', turns: 1 },
     ])
+  })
+
+  test('logs each turn latched, started and ended, with the unit and round its start named', async () => {
+    const { bridge, call } = open()
+    await call('POST', '/start', { owner: 's1', description: 'implementor sheet r2', prompt: 'build it', cwd: dir, role: 'implementor', unit: 'sheet', round: 2 })
+    await settle()
+    expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ id: 't1', unit: 'sheet', round: 2 }])
+    bridge.drain()
+    await call('POST', '/send', { threadId: 't1', prompt: 'again' })
+    const about = { thread: 't1', owner: 's1', unit: 'sheet', round: 2, role: 'implementor' }
+    expect(journal()).toMatchObject([
+      { event: 'start', turn: 1, ...about },
+      { event: 'end', turn: 1, status: 'idle', durationMs: 42, ...about },
+      { event: 'drain' },
+      { event: 'latch', turn: 2, reason: 'the bridge is updating', ...about },
+    ])
+    expect(journal().every(line => !Number.isNaN(Date.parse(line.at)))).toBe(true)
   })
 
   test('an interrupt stops a latched turn before it starts', async () => {

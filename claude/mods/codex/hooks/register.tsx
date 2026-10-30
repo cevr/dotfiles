@@ -136,6 +136,10 @@ const str = (e: object, key: string) => {
   const value = (e as Record<string, unknown>)[key]
   return typeof value === 'string' && value.trim() ? value : undefined
 }
+const int = (e: object, key: string) => {
+  const value = (e as Record<string, unknown>)[key]
+  return Number.isInteger(value) ? (value as number) : undefined
+}
 const need = (e: object, key: string) => {
   const value = str(e, key)
   if (!value) throw new Error(`${key} is required`)
@@ -158,6 +162,8 @@ const TOOLS = [
         description: { type: 'string', description: 'Starts like the hand-back line: `<role> <unit> r<N>` (`implementor sheet r1`).' },
         prompt: { type: 'string', description: 'The first message: role, spec path and round, for a role thread.' },
         role: { type: 'string', enum: ['planner', 'implementor', 'reviewer', 'verifier'] },
+        unit: { type: 'string', description: 'The orchestrate unit (`sheet`), for the bridge\'s log and the cost of each unit.' },
+        round: { type: 'integer', description: 'The orchestrate round, 1 for r1.' },
         model: { type: 'string' },
         effort: { type: 'string', enum: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'], description: 'Overrides the role\'s effort.' },
         cwd: { type: 'string', description: 'Absolute; the session\'s directory by default.' },
@@ -201,6 +207,8 @@ async function answer($: EngineInterface, name: (typeof TOOLS)[number]['name'], 
       prompt: need(e, 'prompt'),
       cwd: str(e, 'cwd') ?? (await $.session.cwd()),
       role: str(e, 'role'),
+      unit: str(e, 'unit'),
+      round: int(e, 'round'),
       model: str(e, 'model'),
       effort: str(e, 'effort'),
       sandbox: str(e, 'sandbox'),
