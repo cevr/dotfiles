@@ -71,7 +71,7 @@ You are the sole writer. You work in the spec's workspace (a Rift or worktree on
    - the acceptance check's command and its exit line, run at the head. Off the `deep` path, this receipt stands in for a verifier, and the orchestrator reruns it at decide;
    - known gaps.
 
-   From round 2 on, add the **fix report**: every finding of the last round, each `fixed <hash>` or `rejected: <reason>`. Never leave a finding unaccounted for.
+   From round 2 on, add the **fix report**: every finding of the last round, each `fixed <hash>` or `rejected: <reason>`. Never leave a finding unaccounted for. For each Blocker or Major the last findings mark `repeat of`, add the line `repeat <id>: <test> red at <the head that round reviewed>`, naming a test this round adds that fails at that head. `bun ~/.claude/skills/orchestrate/scripts/request.ts <unit dir> <N>` checks the request; hand back once it exits 0.
 
 **Timebox.** Past the spec's timebox for a round, hand back `blocked` with `state.md` current and what remains.
 
