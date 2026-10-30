@@ -8,9 +8,11 @@
 //   codex-bridge serve           run the daemon in the foreground
 //   codex-bridge status          the daemon's threads, as JSON
 //
-// bridge.log in the state dir has one JSON line per event: a turn latched, held,
-// started or ended (with its cause), resumed, a drain, a hand-over. A line about a thread carries its
-// orchestrate `unit` and `round`, when its start named them.
+// bridge.log in the state dir has one JSON line per event: a turn latched,
+// held, refused, started or ended (with its cause), resumed, a drain, a
+// hand-over. A line about a thread carries its orchestrate `unit` and `round`,
+// when its start named them.
+//
 // HTTP (all JSON): GET /health, POST /start, POST /send, POST /interrupt,
 // GET /threads?owner=, GET /events?owner=, POST /ack, GET /limits, GET /budget.
 // Every turn, a thread's first or a next one, passes the Codex budget: the hard
@@ -27,12 +29,18 @@
 // app-server gone, the bridge restarted) is resumed by the bridge itself: one
 // standard next turn after 1, 5 and 15 minutes; its owner hears only the end
 // of the last one.
+//
+// The rules above live in ./policy.ts (with ./budget.ts), which the daemon loads
+// again when they change: an edit there takes effect at the next decision. A
+// change to this file, the core, drains the daemon and hands it over.
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { budget, DEFAULTS, type Config, type Limits } from './budget.ts'
+import type { Limits } from './budget.ts'
+import * as boot from './policy.ts'
+import type { Asking, Hold } from './policy.ts'
 
 export type Role = 'planner' | 'implementor' | 'reviewer' | 'verifier'
 /** Why a turn ended: its work, its caller, or the infrastructure under it (`capacity`, `app-server-exit`, `drain-interrupt`). */
@@ -105,8 +113,7 @@ export type Event = {
 type State = { seq: number; threads: Record<string, Thread>; events: Event[] }
 /** A start the budget would hold past the patience: no thread was made. */
 export type Refused = { status: 'held'; held: string; opensAt: number }
-/** Why a turn waits, and when it should open when that is known. */
-type Hold = { why: string; opensAt?: number }
+type Policy = typeof boot
 
 const STATE_DIR = process.env.CODEX_BRIDGE_DIR ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), '.local/state'), 'codex-bridge')
 export const SOCKET = join(STATE_DIR, 'bridge.sock')
@@ -126,28 +133,15 @@ const PUMP_MS = 2 * 60e3
 const RECENT_MS = 5 * 60e3
 // Usage older than this is read again before a budget decision.
 const USAGE_MS = 60e3
-const BUDGET = process.env.CODEX_BRIDGE_BUDGET ?? join(homedir(), '.config/orchestrate/budget.json')
-// It reads every host over SSH; past this, the even line decides.
-const ADMIT_MS = 60e3
 const STEPS = 12
-/** Minutes a latched turn may wait before its role moves to Claude (orchestrate's Families). */
-export const PATIENCE_MIN = 10
-const PATIENCE_MS = PATIENCE_MIN * 60e3
-/** A latched turn that waited past the patience: it goes first, and holds the turns behind it. */
-const starving = (t: Thread, now: number) => now - Math.max(t.queuedAt ?? now, t.notBefore ?? 0) > PATIENCE_MS
-// An admission's hold line ends with when the turn should open: `; opens about 2026-10-30 14:20Z`.
-const OPENS = /; opens about (\d{4}-\d\d-\d\d) (\d\d:\d\d)Z$/
-// A turn the infrastructure ended is resumed after these waits, then left to its owner.
-const BACKOFF_MIN = [1, 5, 15]
-const RESUMES: Cause[] = ['capacity', 'app-server-exit', 'drain-interrupt']
-const ENDED_ON: Partial<Record<Cause, string>> = {
-  capacity: 'the model being at capacity',
-  'app-server-exit': 'the Codex app-server exiting',
-  'drain-interrupt': 'a codex-bridge restart',
-}
-/** The next turn the bridge sends after a turn the infrastructure ended. */
-export const resumePrompt = (cause: Cause) =>
-  `Your last turn ended on ${ENDED_ON[cause] ?? cause}, not on your work. Continue the same task from where you are. Background jobs started in that turn no longer run; restart any you need.`
+/** Minutes a latched turn may wait before its role moves to Claude; `codex-bridge wait` reads it as it stands at its start. */
+export const PATIENCE_MIN = boot.PATIENCE_MIN
+/** The policy's files: a change to one reloads it, and drains nothing. */
+const POLICY = join(import.meta.dir, 'policy.ts')
+const policyFiles = (policy: string) => [policy, join(dirname(policy), 'budget.ts')]
+/** The daemon's core: a change to it drains the daemon. */
+const CORE = [import.meta.path]
+const stamp = (files: readonly string[]) => files.map(f => statSync(f).mtimeMs).join('-')
 
 // `/bin/zsh -lc 'bun test'` is `bun test`.
 const unwrap = (command: string) => /^\S*\b(?:zsh|bash|sh) -l?c '(.*)'$/s.exec(command)?.[1] ?? command
@@ -204,50 +198,6 @@ export function newest(model: string, slugs: readonly string[]): string {
   if (!ranked[0]) throw new Error(`no ${model} model in ${slugs.join(', ')}`)
   return ranked[0].slug
 }
-
-const quote = (word: string) => `'${word.replace(/'/g, `'\\''`)}'`
-
-/**
- * Whether the account's burn has room for one more thread of `model` in `role`:
- * true or false with budget.ts's line, undefined when it could not tell. The
- * command runs in the login shell, since a daemon an app started lacks the
- * shell's environment (ORCHESTRATE_HOSTS); $CODEX_BRIDGE_ADMIT, read per call,
- * stands in for it in a test.
- */
-export async function admission(
-  model: string | undefined,
-  role: Role | undefined,
-  thread?: string,
-  reserve = 0,
-  limits?: Limits | null,
-): Promise<{ ok?: boolean; line: string }> {
-  // The week as Codex reports it now: the session files miss an early reset until a turn runs after it.
-  const week = [limits?.primary, limits?.secondary].find(w => (w?.windowDurationMins ?? 0) > 1440 && w?.resetsAt)
-  const command =
-    process.env.CODEX_BRIDGE_ADMIT ?? `${quote(process.execPath)} ${quote(join(homedir(), '.claude/skills/orchestrate/scripts/budget.ts'))} --codex --admit`
-  const args = [
-    ...(model ? ['--model', model] : []),
-    '--role',
-    role ?? 'none',
-    ...(thread ? ['--thread', thread] : []),
-    ...(reserve > 0 ? ['--reserve', reserve.toFixed(2)] : []),
-    ...(week ? ['--week', `${week.usedPercent},${week.resetsAt},${week.windowDurationMins}`] : []),
-  ]
-    .map(quote)
-    .join(' ')
-  try {
-    const child = Bun.spawn([process.env.SHELL || '/bin/sh', '-lc', `${command} ${args}`], { stdout: 'pipe', stderr: 'ignore', timeout: ADMIT_MS })
-    const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited])
-    const line = out.trim().split('\n').pop() ?? ''
-    // A missing script exits 1 too: only its own answer holds a thread.
-    if (code === 0 && line.startsWith('admit: ')) return { ok: true, line }
-    if (code === 1 && line.startsWith('hold: ')) return { ok: false, line }
-    return { line: child.signalCode ? `no answer in ${ADMIT_MS / 1e3} s` : line || `exit ${code}` }
-  } catch (error) {
-    return { line: (error as Error).message }
-  }
-}
-
 
 /** The model Codex runs when none is named. */
 function configured(): string | undefined {
@@ -381,9 +331,15 @@ export class Bridge {
   private chain: Promise<unknown> = Promise.resolve()
   /** The last rate admission's answer, for GET /budget. */
   private admitted: { at: number; ok?: boolean; line: string } | undefined
+  /** The policy as last loaded, and the mtimes of its files then. */
+  private rules: Policy = boot
+  private rulesAt = ''
   readonly server: AppServer
 
-  constructor(private file = STATE) {
+  constructor(
+    private file = STATE,
+    private policy = POLICY,
+  ) {
     this.state = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { seq: 0, threads: {}, events: [] }
     // A session that never came back for its events (a `-p` run) leaves them; they go after two weeks.
     const kept = Date.now() - KEEP_MS
@@ -419,6 +375,25 @@ export class Bridge {
     }
   }
 
+  /**
+   * The policy as its files stand: loaded again, under a new version, once
+   * policy.ts or budget.ts changed. One that does not load leaves the last in force.
+   */
+  async refresh(): Promise<Policy> {
+    const at = stamp(policyFiles(this.policy))
+    if (at === this.rulesAt) return this.rules
+    // The first load is no change: only a reload goes to the log.
+    const reload = this.rulesAt !== ''
+    this.rulesAt = at
+    try {
+      this.rules = await import(`${this.policy}?v=${at}`)
+      if (reload) this.record('policy', undefined, { version: at })
+    } catch (error) {
+      this.record('policy', undefined, { version: at, error: (error as Error).message })
+    }
+    return this.rules
+  }
+
   /** From now on new turns latch, so the daemon hands over once none runs. */
   drain() {
     if (this.draining) return
@@ -444,8 +419,8 @@ export class Bridge {
   }
 
   /**
-   * Ends a turn. One the infrastructure ended is resumed, up to BACKOFF_MIN's
-   * tries, and its owner hears nothing yet; any other end is an event for its owner.
+   * Ends a turn. One the infrastructure ended is resumed while the policy
+   * allows, and its owner hears nothing yet; any other end is an event for its owner.
    */
   private finish(thread: Thread, status: Exclude<Thread['status'], 'running'>, error: string | undefined, durationMs: number, cause: Cause) {
     thread.status = status
@@ -454,14 +429,14 @@ export class Bridge {
     thread.updatedAt = Date.now()
     this.record('end', thread, { status, cause, error, durationMs })
     const tries = thread.resumes ?? 0
-    if (RESUMES.includes(cause) && tries < BACKOFF_MIN.length) {
-      const wait = BACKOFF_MIN[tries]! * 60e3
+    const resume = this.rules.resume(cause, tries)
+    if (resume) {
       thread.resumes = tries + 1
-      this.latch(thread, resumePrompt(cause), `resume ${tries + 1} of ${BACKOFF_MIN.length}: the last turn ended on ${ENDED_ON[cause]}`)
-      thread.notBefore = thread.opensAt = Date.now() + wait
+      this.latch(thread, resume.prompt, resume.why)
+      thread.notBefore = thread.opensAt = Date.now() + resume.waitMs
       this.record('resume', thread, { cause, try: tries + 1, notBefore: new Date(thread.notBefore).toISOString() })
       this.save()
-      setTimeout(() => void this.pump(), wait + 1e3).unref?.()
+      setTimeout(() => void this.pump(), resume.waitMs + 1e3).unref?.()
       return
     }
     thread.resumes = undefined
@@ -512,9 +487,7 @@ export class Bridge {
       if (final) thread.final = final.text
       const status = turn.status === 'completed' ? 'idle' : turn.status === 'interrupted' ? 'interrupted' : 'failed'
       const error: string | undefined = turn.error?.message
-      const cause: Cause =
-        status === 'idle' ? 'completed' : status === 'interrupted' && thread.interrupting ? 'interrupted-by-caller' : /at capacity/i.test(error ?? '') ? 'capacity' : 'error'
-      this.finish(thread, status, error, turn.durationMs ?? 0, cause)
+      this.finish(thread, status, error, turn.durationMs ?? 0, this.rules.cause(status, error, !!thread.interrupting))
     }
   }
 
@@ -550,7 +523,7 @@ export class Bridge {
   // latches the turn instead; `runQueued` on the next daemon starts it, as the
   // same turn number.
   private async turn(thread: Thread, prompt: string, count = true) {
-    if (this.draining) return this.latch(thread, prompt, 'the bridge is updating')
+    if (this.draining) return this.latch(thread, prompt, this.rules.DRAINING)
     const before = thread.status
     const live = thread.live
     thread.status = 'running'
@@ -598,64 +571,51 @@ export class Bridge {
     return next
   }
 
-  /** Why the budget holds one more turn of `thread` now, and until when; undefined when it may start. */
-  private async hold(thread: Pick<Thread, 'id' | 'model' | 'role' | 'turns' | 'status'>): Promise<Hold | undefined> {
-    const gates = await this.budget()
-    if (!gates.send.ok) return { why: gates.send.reason!, opensAt: gates.send.until }
+  /** Why the policy holds one more turn of `thread` now, and until when; undefined when it may start. */
+  private async hold(rules: Policy, thread: Asking): Promise<Hold | undefined> {
     const now = Date.now()
     this.recent = this.recent.filter(r => r.at > now - RECENT_MS)
     const reserve = this.recent.reduce((n, r) => n + r.pctph, 0)
-    // A latched turn is already counted in `turns`: it continues the thread only past its first.
-    const continues = thread.turns > (thread.status === 'queued' ? 1 : 0)
-    const admitted = await admission(thread.model, thread.role, continues ? thread.id : undefined, reserve, await this.limits())
-    this.admitted = { at: now, ...admitted }
-    if (admitted.ok === false) {
-      const at = OPENS.exec(admitted.line)
-      return { why: admitted.line.replace(/^hold: /, '').replace(OPENS, ''), opensAt: at ? Date.parse(`${at[1]}T${at[2]}:00Z`) : undefined }
-    }
-    if (admitted.ok === undefined && !gates.start.ok) return { why: gates.start.reason!, opensAt: gates.start.until }
-    const adds = /\(\+([\d.]+) %\/h\)/.exec(admitted.line)?.[1]
-    if (adds) this.recent.push({ at: now, pctph: Number(adds) })
-    return undefined
+    const decided = await rules.decide(thread, await this.limits(), reserve, now)
+    if (decided.admitted) this.admitted = { at: now, ...decided.admitted }
+    if (decided.adds && !decided.hold) this.recent.push({ at: now, pctph: decided.adds })
+    return decided.hold
   }
 
   /** Why a new turn waits: the drain, a starving latched turn, or the budget; undefined when it starts now. */
-  private async wait(thread: Pick<Thread, 'id' | 'model' | 'role' | 'turns' | 'status'>): Promise<Hold | undefined> {
-    if (this.draining) return { why: 'the bridge is updating' }
-    const first = this.queue().find(t => starving(t, Date.now()))
-    if (first) return { why: `a turn latched past ${PATIENCE_MIN} min goes first (${first.held})`, opensAt: first.opensAt }
-    return this.hold(thread)
+  private async wait(rules: Policy, thread: Asking): Promise<Hold | undefined> {
+    if (this.draining) return { why: rules.DRAINING }
+    const first = this.queue(rules).find(t => rules.starving(t, Date.now()))
+    if (first) return rules.behind(first)
+    return this.hold(rules, thread)
   }
 
   /** A turn now, or latched until the budget has room. */
   private enqueue(thread: Thread, prompt: string) {
     return this.serial(async () => {
-      const held = await this.wait(thread)
+      const held = await this.wait(await this.refresh(), thread)
       if (held) return this.latch(thread, prompt, held.why, held.opensAt)
       await this.load(thread)
       return this.turn(thread, prompt)
     })
   }
 
-  /** The latched turns due now, in the order they start: a starving one, then next turns before first ones, then the oldest. */
-  private queue() {
+  /** The latched turns due now, in the policy's order. */
+  private queue(rules: Policy) {
     const now = Date.now()
-    return Object.values(this.state.threads)
-      .filter(t => t.status === 'queued' && (t.notBefore ?? 0) <= now)
-      .sort(
-        (a, b) =>
-          Number(starving(b, now)) - Number(starving(a, now)) ||
-          Number(a.turns === 1) - Number(b.turns === 1) ||
-          (a.queuedAt ?? 0) - (b.queuedAt ?? 0),
-      )
+    return rules.order(
+      Object.values(this.state.threads).filter(t => t.status === 'queued' && (t.notBefore ?? 0) <= now),
+      now,
+    )
   }
 
   /** Starts each latched turn the budget has room for; a held one waits without holding the rest, until it starves. */
   pump() {
     return this.serial(async () => {
-      for (const thread of this.queue()) {
+      const rules = await this.refresh()
+      for (const thread of this.queue(rules)) {
         if (this.draining) return
-        const held = await this.hold(thread)
+        const held = await this.hold(rules, thread)
         if (held) {
           if (held.why !== thread.held || held.opensAt !== thread.opensAt) {
             if (held.why !== thread.held) this.record('hold', thread, { reason: held.why, opensAt: held.opensAt && new Date(held.opensAt).toISOString() })
@@ -663,7 +623,7 @@ export class Bridge {
             thread.opensAt = held.opensAt
             this.save()
           }
-          if (starving(thread, Date.now())) return
+          if (rules.starving(thread, Date.now())) return
           continue
         }
         const prompt = thread.queued ?? ''
@@ -698,9 +658,10 @@ export class Bridge {
     const agent = input.role ? roleAgent(input.role) : undefined
     const effort = input.effort ?? agent?.effort
     return this.serial(async () => {
-      // A first turn that would wait past the patience makes no thread: its role moves to Claude now.
-      const held = await this.wait({ id: '', model: model ?? configured() ?? '', role: input.role, turns: 0, status: 'idle' })
-      if (held?.opensAt && held.opensAt > Date.now() + PATIENCE_MS) {
+      const rules = await this.refresh()
+      const held = await this.wait(rules, { id: '', model: model ?? configured() ?? '', role: input.role, turns: 0, status: 'idle' })
+      // A first turn that would wait too long makes no thread: its role moves to Claude now.
+      if (held?.opensAt && rules.refuses(held, Date.now())) {
         const opens = new Date(held.opensAt).toISOString()
         this.record('refuse', undefined, { owner: input.owner, unit: input.unit, round: input.round, role: input.role, model, reason: held.why, opensAt: opens })
         return { status: 'held', held: held.why, opensAt: held.opensAt } satisfies Refused
@@ -808,13 +769,8 @@ export class Bridge {
 
   /** Whether a new thread and a next turn fit the account's usage (./budget.ts), and the last rate admission. */
   async budget() {
-    let config: Config = DEFAULTS
-    try {
-      config = { ...DEFAULTS, ...JSON.parse(readFileSync(BUDGET, 'utf8')).codex }
-    } catch {
-      // No settings file: the defaults.
-    }
-    return { ...budget(await this.limits(), Date.now(), config), admission: this.admitted }
+    const rules = await this.refresh()
+    return { ...rules.gates(await this.limits(), Date.now()), admission: this.admitted }
   }
 }
 
@@ -889,16 +845,26 @@ async function serve() {
   }
   process.on('SIGTERM', () => stop())
   process.on('SIGINT', () => stop())
-  // A daemon whose source changed (a pull) hands over once no turn runs, since
-  // stopping would fail a running turn. Until then it latches each new turn, so
-  // a busy host still drains, and it starts the new code itself, which runs them.
-  const source = () => statSync(import.meta.path).mtimeMs
-  const built = source()
-  setInterval(() => {
-    if (source() === built) return
-    bridge.drain()
-    if (!bridge.busy()) stop(true)
+  const tick = watcher(bridge)
+  setInterval(async () => {
+    if (await tick()) stop(true)
   }, 30e3)
+}
+
+/**
+ * The daemon's watch on its source, run every 30 s: true once it should hand
+ * over. A policy change only reloads the policy. A core change (a pull)
+ * drains: stopping would fail a running turn, so until none runs it latches
+ * each new turn, and then it starts the new code itself, which runs them.
+ */
+export function watcher(bridge: Bridge, core: readonly string[] = CORE) {
+  const built = stamp(core)
+  return async () => {
+    await bridge.refresh()
+    if (stamp(core) === built) return false
+    bridge.drain()
+    return !bridge.busy()
+  }
 }
 
 // A daemon in its own session, so the caller's exit (a mod's one-shot run, a

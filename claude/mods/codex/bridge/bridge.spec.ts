@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, setSystemTime, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -21,7 +21,8 @@ const admitter = (name: string, line: string, code: number) => {
 // Unless a test says otherwise, the admission cannot measure, so the even line decides.
 const UNMEASURED = admitter('unmeasured', 'unmeasured: no host has seen the week', 2)
 process.env.CODEX_BRIDGE_ADMIT = UNMEASURED
-const { Bridge, handler, newest, PATIENCE_MIN, resumePrompt, roleAgent, waitStarted } = await import('./bridge.ts')
+const { Bridge, handler, newest, PATIENCE_MIN, roleAgent, waitStarted, watcher } = await import('./bridge.ts')
+const { resumePrompt } = await import('./policy.ts')
 
 const requests = () =>
   readFileSync(log, 'utf8')
@@ -35,8 +36,8 @@ const journal = () =>
     .filter(Boolean)
     .map(line => JSON.parse(line) as Record<string, any>)
 const bridges: InstanceType<typeof Bridge>[] = []
-const open = () => {
-  const bridge = new Bridge(state)
+const open = (policy?: string) => {
+  const bridge = new Bridge(state, policy)
   bridges.push(bridge)
   const http = handler(bridge)
   const call = async (method: 'GET' | 'POST', path: string, body?: unknown) => {
@@ -440,5 +441,53 @@ describe('waiting on a latched turn', () => {
     // One that should open past the patience gives up at once.
     const far = { ...queued, opensAt: Date.UTC(2099, 0, 1, 9, 30) }
     expect(await waitStarted('t1', 10, reads([far]), 1)).toMatchObject({ code: 4, line: expect.stringContaining('it should open about 2099-01-01 09:30Z, past 10 min') })
+  })
+})
+
+describe('an upgrade', () => {
+  afterEach(() => {
+    process.env.CODEX_BRIDGE_ADMIT = UNMEASURED
+  })
+
+  test('a policy edit takes effect at the next decision without a drain; a core edit drains', async () => {
+    // A copy of the policy to edit, and a stand-in for the core.
+    const copy = join(dir, 'policy')
+    mkdirSync(copy, { recursive: true })
+    for (const file of ['policy.ts', 'budget.ts']) copyFileSync(join(import.meta.dir, file), join(copy, file))
+    const core = join(dir, 'core.ts')
+    writeFileSync(core, '')
+    const late = new Date(Date.now() + 2 * 60 * 60e3).toISOString().slice(0, 16).replace('T', ' ')
+    process.env.CODEX_BRIDGE_ADMIT = admitter('late', `hold: no room; opens about ${late}Z`, 1)
+    const { bridge, call } = open(join(copy, 'policy.ts'))
+    const tick = watcher(bridge, [core])
+    const ask = () => call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })
+    expect((await ask()).body).toMatchObject({ status: 'held' })
+
+    // Three hours of patience: the same start now latches.
+    const policy = join(copy, 'policy.ts')
+    writeFileSync(policy, readFileSync(policy, 'utf8').replace('export const PATIENCE_MIN = 10', 'export const PATIENCE_MIN = 180'))
+    utimesSync(policy, new Date(), new Date(Date.now() + 5e3))
+    expect(await tick()).toBe(false)
+    expect(bridge.draining).toBe(false)
+    expect((await ask()).body).toMatchObject({ id: 't1', status: 'queued' })
+    expect(journal().some(line => line.event === 'policy')).toBe(true)
+
+    utimesSync(core, new Date(), new Date(Date.now() + 5e3))
+    expect(await tick()).toBe(true)
+    expect(bridge.draining).toBe(true)
+  })
+
+  test("an edit to the bridge's own policy files does not drain it", async () => {
+    const { bridge } = open()
+    const tick = watcher(bridge)
+    const files = ['policy.ts', 'budget.ts'].map(file => join(import.meta.dir, file))
+    const before = files.map(file => statSync(file))
+    try {
+      for (const file of files) utimesSync(file, new Date(), new Date(Date.now() + 5e3))
+      expect(await tick()).toBe(false)
+      expect(bridge.draining).toBe(false)
+    } finally {
+      files.forEach((file, i) => utimesSync(file, before[i]!.atime, before[i]!.mtime))
+    }
   })
 })
