@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fateOf, joinUnit, outcomeOf, verdictOf } from './outcomes.ts';
 import { costOf } from './prices.ts';
-import { claudeAgent, codexAgent } from './sources.ts';
+import { bridgeUnits, claudeAgent, codexAgent, codexAgents } from './sources.ts';
 
 const jsonl = (xs: object[]) => xs.map((x) => JSON.stringify(x)).join('\n');
 
@@ -57,8 +57,10 @@ describe('codexAgent', () => {
       { ...count(300, 200, 20), timestamp: '2026-10-20T10:05:00Z' },
     ]);
     const a = codexAgent(text, 'rollout-x')!;
-    expect(a).toMatchObject({ harness: 'codex', model: 'gpt-6.1-sol', effort: 'max', role: 'review', cwd: '/r/u', min: 5, cost: null });
+    expect(a).toMatchObject({ harness: 'codex', model: 'gpt-6.1-sol', effort: 'max', role: 'review', cwd: '/r/u', min: 5 });
     expect(a.tokens).toEqual({ input: 100, cacheWrite: 0, cacheRead: 200, output: 20 });
+    // OpenAI's Standard row for gpt-6.1-sol: $2 input, $0.10 cached input, $10 output per million.
+    expect(a.cost).toBeCloseTo(0.00042);
     expect(a.prompt.trim()).toBe('Review /r/u/round-1-request.md');
   });
 
@@ -71,6 +73,46 @@ describe('codexAgent', () => {
     ]);
     expect(codexAgent(text, 'rollout-y')).toMatchObject({ model: 'gpt-6-luna', role: 'implement' });
   });
+});
+
+describe('a transcript that spans the window start counts only its usage inside the window', () => {
+  const since = Date.parse('2026-10-20T00:00:00Z');
+  test('Claude', () => {
+    const msg = (id: string, at: string, output: number) => ({ type: 'assistant', timestamp: at, message: { id, model: 'claude-opus-5-5', usage: { output_tokens: output }, content: [] } });
+    const text = jsonl([
+      { type: 'user', timestamp: '2026-10-10T10:00:00Z', message: { content: 'orchestrate the run' } },
+      msg('m1', '2026-10-10T10:01:00Z', 1000),
+      { type: 'system', subtype: 'compact_boundary', timestamp: '2026-10-11T10:00:00Z' },
+      msg('m2', '2026-10-20T10:00:00Z', 30),
+      msg('m3', '2026-10-20T10:10:00Z', 7),
+    ]);
+    expect(claudeAgent(text, 'a', 'a', '', true, '', since)).toMatchObject({ tokens: { output: 37 }, min: 10, compacted: false });
+  });
+  test('Codex', () => {
+    const count = (at: string, input: number, cached: number, output: number) => ({ type: 'event_msg', timestamp: at, payload: { type: 'token_count', info: { total_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output } } } });
+    const text = jsonl([
+      { type: 'turn_context', timestamp: '2026-10-10T10:00:00Z', payload: { model: 'gpt-6-luna' } },
+      count('2026-10-10T10:05:00Z', 1000, 800, 50),
+      count('2026-10-20T10:05:00Z', 1500, 1100, 70),
+    ]);
+    expect(codexAgent(text, 'r', since)!.tokens).toEqual({ input: 200, cacheWrite: 0, cacheRead: 300, output: 20 });
+  });
+});
+
+test("a Codex thread carries the unit and round its bridge start named, from the state or the log", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bridge-'));
+  const a = '01a184fe-d423-7352-943c-524b71bd8327', b = '01a18504-ae1b-75f0-8eea-511e064dc88c', c = '01a18524-a8df-7001-af96-1850e9c452e8';
+  writeFileSync(join(dir, 'state.json'), JSON.stringify({ threads: { [a]: { id: a, unit: 'sheet', round: 2 }, [c]: { id: c } } }));
+  writeFileSync(join(dir, 'bridge.log'), jsonl([{ event: 'drain' }, { event: 'start', thread: b, unit: 'tabs', round: 1 }]));
+  const sessions = join(dir, 'sessions', '2026', '10', '29');
+  mkdirSync(sessions, { recursive: true });
+  const rollout = jsonl([
+    { type: 'turn_context', timestamp: '2026-10-29T10:00:00Z', payload: { model: 'gpt-6-luna' } },
+    { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 1, output_tokens: 1 } } } },
+  ]);
+  for (const id of [a, b, c]) writeFileSync(join(sessions, `rollout-2026-10-29T00-10-55-${id}.jsonl`), rollout);
+  const tags = Object.fromEntries(codexAgents(join(dir, 'sessions'), 0, bridgeUnits(dir)).map((x) => [x.id.slice(-36), [x.unit, x.round]]));
+  expect(tags).toEqual({ [a]: ['sheet', 2], [b]: ['tabs', 1], [c]: [undefined, undefined] });
 });
 
 test('a model with no price row has no cost', () => {
@@ -130,6 +172,14 @@ describe('outcomes', () => {
     expect(outcomeOf({ phase: 'review', dir, unit: dir, round: 1 }).result).toBe('escaped');
     expect(outcomeOf({ phase: 'implement', dir, unit: dir, round: 1 }).result).toBe('failed verify');
     expect(outcomeOf({ phase: 'verify', dir, unit: dir, round: 1 }).result).toBe('fail');
+  });
+
+  test("with no hand-back line, joins a bridge thread by its unit's name and round", () => {
+    const dir = unit();
+    const other = unit();
+    const thread = { ...agent('implement', 'Fix the findings.'), unit: 'unit', round: 2, last: Date.now() };
+    expect(joinUnit(thread, 'context ran out', () => [dir])).toEqual({ phase: 'implement', dir, unit: dir, round: 2 });
+    expect(joinUnit({ ...thread, prompt: `Read ${other}/spec.md` }, '', () => [dir])).toEqual({ phase: 'implement', dir: other, unit: other, round: 2 });
   });
 
   test('with no hand-back line, joins by the unit files the prompt names', () => {

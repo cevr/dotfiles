@@ -1,11 +1,12 @@
 // What each orchestrate worker's phase produced, joined to its agent. A worker
 // ends with `<role> <unit> r<N>: <verdict> <path>` (protocol.md), and each
 // verdict file states its verdict on its first line, so the join reads files,
-// not prose. A worker with no hand-back line is joined by the unit files its
-// prompt names, or by a working directory that holds the unit's log.md.
-import { existsSync, readFileSync } from 'node:fs';
+// not prose. A worker with no hand-back line is joined by the unit and round its
+// codex-bridge thread named, else by the unit files its prompt names, or by a
+// working directory that holds the unit's log.md.
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import type { Agent } from './sources.ts';
 
 export type Phase = 'plan' | 'implement' | 'review' | 'verify' | 'decide';
@@ -51,8 +52,13 @@ const unitOf = (dir: string) => [dir, dirname(dir)].find(isUnit);
 
 export type Join = { phase: Phase; dir: string; unit: string; round: number; own?: string };
 
-/** The phase this agent ran, its unit and round, from its last message or else its prompt. */
-export function joinUnit(a: Agent, final: string): Join | undefined {
+const logAt = (unit: string) => { try { return statSync(join(unit, 'log.md')).mtimeMs; } catch { return 0; } };
+
+/**
+ * The phase this agent ran, its unit and round: from its last message, else its bridge thread's
+ * unit (`find` lists the unit dirs of that name), else its prompt.
+ */
+export function joinUnit(a: Agent, final: string, find: (unit: string) => string[] = () => []): Join | undefined {
   const hands = [...final.matchAll(HAND_BACK)];
   const h = hands[hands.length - 1];
   const handDir = h && dirname(home(h[4]));
@@ -65,7 +71,14 @@ export function joinUnit(a: Agent, final: string): Join | undefined {
   const round = rounds.length ? Math.max(...rounds) : 1;
   const named = [...a.prompt.matchAll(UNIT_FILE)].map((m) => home(m[1]));
   const said = /\bunit dir(?:ectory)? is `?((?:~|\/)[^\s`'"]+?)\/?\.?(?=[\s`'"]|$)/i.exec(a.prompt)?.[1];
-  for (const dir of [...named, ...(said ? [home(said)] : []), ...(a.cwd ? [a.cwd] : [])]) {
+  const dirs = [...named, ...(said ? [home(said)] : []), ...(a.cwd ? [a.cwd] : [])];
+  if (a.unit) {
+    // A dir the prompt names wins; else the unit of that name whose log changed nearest the agent's end.
+    const dir = dirs.find((d) => basename(unitOf(d) ?? '') === a.unit);
+    const unit = dir ? unitOf(dir)! : find(a.unit).filter(isUnit).sort((x, y) => Math.abs(logAt(x) - a.last) - Math.abs(logAt(y) - a.last))[0];
+    if (unit) return { phase, dir: dir ?? unit, unit, round: Math.max(a.round ?? 1, round) };
+  }
+  for (const dir of dirs) {
     const unit = unitOf(dir);
     if (unit) return { phase, dir, unit, round };
   }

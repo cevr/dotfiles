@@ -5,22 +5,31 @@
 // Run it on each host: units and transcripts live where they ran.
 // Usage: bun models.ts [--since 2026-10-17] [--json]
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { joinUnit, outcomeOf, type Outcome, type Phase } from './models/outcomes.ts';
-import { claudeAgents, codexAgents, type Agent } from './models/sources.ts';
+import { bridgeUnits, claudeAgents, codexAgents, type Agent } from './models/sources.ts';
+import { ROOTS, unitDirs } from './runs.ts';
 
 const args = process.argv.slice(2);
 const sinceAt = args.indexOf('--since');
 const since = sinceAt >= 0 ? Date.parse(args[sinceAt + 1]) : Date.now() - 7 * 86400e3;
 const json = args.includes('--json');
 
-const agents = [...claudeAgents(join(homedir(), '.claude/projects'), since), ...codexAgents(join(homedir(), '.codex/sessions'), since)];
+// codex-bridge's state dir, as the bridge finds it.
+const bridge = process.env.CODEX_BRIDGE_DIR ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), '.local/state'), 'codex-bridge');
+const agents = [...claudeAgents(join(homedir(), '.claude/projects'), since), ...codexAgents(join(homedir(), '.codex/sessions'), since, bridgeUnits(bridge))];
 const label = (a: Agent) => (a.effort ? `${a.model}@${a.effort}` : a.model);
 
 // Each worker's phase outcome; the orchestrator's (decide) is the units its workers touched.
 type Row = { agent: Agent; outcome?: Outcome };
+// A bridge thread's unit is a name; its dir is found once, among the units active in the window.
+let byName: Map<string, string[]> | undefined;
+const find = (unit: string) => {
+  byName ??= unitDirs(ROOTS, since).reduce((m, d) => m.set(basename(d), [...(m.get(basename(d)) ?? []), d]), new Map<string, string[]>());
+  return byName.get(unit) ?? [];
+};
 const rows: Row[] = agents.map((agent) => {
-  const j = joinUnit(agent, agent.final);
+  const j = joinUnit(agent, agent.final, find);
   return { agent, outcome: j ? outcomeOf(j) : undefined };
 });
 const units = new Map<string, Set<string>>();

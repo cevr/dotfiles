@@ -1,6 +1,7 @@
 // Agents read from each harness's transcripts: Claude Code subagents and main
 // sessions, and Codex rollouts. Each parser takes a transcript's text, so the
-// tests feed it synthetic lines.
+// tests feed it synthetic lines. A transcript that spans the window's start
+// counts only its usage inside the window.
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { costOf, type Tokens } from './prices.ts';
@@ -20,6 +21,8 @@ export type Agent = {
   cost: number | null;
   compacted: boolean;
   last: number;
+  unit?: string; // the orchestrate unit and round a Codex thread's start named, from codex-bridge
+  round?: number;
 };
 
 const ROLE: Record<string, string> = { planner: 'plan', implementor: 'implement', reviewer: 'review', verifier: 'verify' };
@@ -46,22 +49,23 @@ const lines = (text: string) => text.split('\n').flatMap((l) => { try { return [
 const top = (counts: Map<string, number>) => [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
 
 /** One Claude Code transcript. A message spans several lines; its usage counts once. */
-export function claudeAgent(text: string, id: string, session: string, description = '', main = false, type = ''): Agent | undefined {
+export function claudeAgent(text: string, id: string, session: string, description = '', main = false, type = '', since = 0): Agent | undefined {
   const models = new Map<string, number>();
   const seen = new Set<string>();
   const tokens = zero();
   let first = 0, last = 0, prompt = '', final = '', compacted = false, cwd: string | undefined;
   for (const d of lines(text)) {
-    if (d.timestamp) { const t = Date.parse(d.timestamp); first ||= t; last = t; }
+    if (d.timestamp) { last = Date.parse(d.timestamp); if (last >= since) first ||= last; }
+    const inside = last >= since;
     cwd ??= d.cwd;
-    if (d.type === 'system' && /compact/.test(d.subtype ?? '')) compacted = true;
+    if (d.type === 'system' && /compact/.test(d.subtype ?? '') && inside) compacted = true;
     if (d.type === 'user' && !prompt && !d.isMeta) {
       const c = d.message?.content;
       prompt = typeof c === 'string' ? c : (c ?? []).map((x: any) => x?.text ?? '').join(' ');
     }
     const m = d.message;
     if (d.type === 'assistant') for (const x of m?.content ?? []) if (x?.type === 'text' && x.text?.trim()) final = x.text;
-    if (d.type !== 'assistant' || !m?.model?.startsWith('claude-') || seen.has(m.id)) continue;
+    if (d.type !== 'assistant' || !m?.model?.startsWith('claude-') || seen.has(m.id) || !inside) continue;
     seen.add(m.id);
     models.set(m.model, (models.get(m.model) ?? 0) + 1);
     const u = m.usage ?? {};
@@ -86,17 +90,20 @@ export function claudeAgent(text: string, id: string, session: string, descripti
 const INJECTED = /^\s*(# AGENTS\.md|<environment_context>|<user_instructions>|<permissions)/;
 
 /** One Codex rollout. token_count totals are cumulative, so the last one is the session's. */
-export function codexAgent(text: string, id: string): Agent | undefined {
+export function codexAgent(text: string, id: string, since = 0): Agent | undefined {
   const models = new Map<string, number>();
   let first = 0, last = 0, prompt = '', final = '', compacted = false, cwd: string | undefined, effort: string | undefined, session = id;
-  let total: any, type = '';
+  let total: any, before: any, type = '';
   for (const d of lines(text)) {
-    if (d.timestamp) { const t = Date.parse(d.timestamp); first ||= t; last = t; }
+    if (d.timestamp) { last = Date.parse(d.timestamp); if (last >= since) first ||= last; }
     const p = d.payload ?? {};
     if (d.type === 'session_meta') { cwd ??= p.cwd; session = p.forked_from_id ?? p.parent_thread_id ?? p.id ?? id; }
     if (d.type === 'turn_context' && p.model) { models.set(p.model, (models.get(p.model) ?? 0) + 1); effort = p.effort ?? effort; }
-    if (d.type === 'compacted' || p.type === 'context_compacted') compacted = true;
-    if (d.type === 'event_msg' && p.type === 'token_count' && p.info?.total_token_usage) total = p.info.total_token_usage;
+    if ((d.type === 'compacted' || p.type === 'context_compacted') && last >= since) compacted = true;
+    if (d.type === 'event_msg' && p.type === 'token_count' && p.info?.total_token_usage) {
+      total = p.info.total_token_usage;
+      if (last < since) before = total;
+    }
     if (d.type === 'response_item' && p.type === 'message' && p.role === 'assistant') {
       const t = (p.content ?? []).map((x: any) => x?.text ?? '').join(' ');
       if (t.trim()) final = t;
@@ -113,8 +120,10 @@ export function codexAgent(text: string, id: string): Agent | undefined {
   }
   const model = top(models);
   if (!model || !total) return undefined;
-  const cached = total.cached_input_tokens ?? 0;
-  const tokens = { input: (total.input_tokens ?? 0) - cached, cacheWrite: total.cache_write_input_tokens ?? 0, cacheRead: cached, output: total.output_tokens ?? 0 };
+  // token_count totals are cumulative: the window's usage is the last total less the last one before it.
+  const used = (k: string) => (total[k] ?? 0) - (before?.[k] ?? 0);
+  const cached = used('cached_input_tokens');
+  const tokens = { input: used('input_tokens') - cached, cacheWrite: used('cache_write_input_tokens'), cacheRead: cached, output: used('output_tokens') };
   return {
     id, harness: 'codex', session, model, effort, role: namedRole('', prompt, type) ?? roleOf(prompt.slice(0, 400).toLowerCase()),
     prompt: prompt.slice(0, 4000), final: final.slice(-600), cwd, min: (last - first) / 60000, tokens, cost: costOf(model, tokens), compacted, last,
@@ -135,7 +144,7 @@ export function claudeAgents(root: string, since: number): Agent[] {
       if (!existsSync(sdir) || !newer(sdir, since)) continue;
       const main = join(pdir, `${session}.jsonl`);
       if (newer(main, since)) {
-        const a = claudeAgent(readFileSync(main, 'utf8'), session, session, '', true);
+        const a = claudeAgent(readFileSync(main, 'utf8'), session, session, '', true, '', since);
         if (a && a.last >= since) out.push(a);
       }
       for (const f of readdirSync(sdir)) {
@@ -143,7 +152,7 @@ export function claudeAgents(root: string, since: number): Agent[] {
         if (!f.endsWith('.jsonl') || !newer(path, since)) continue;
         let meta: { description?: string; agentType?: string } = {};
         try { meta = JSON.parse(readFileSync(path.replace(/\.jsonl$/, '.meta.json'), 'utf8')); } catch {}
-        const a = claudeAgent(readFileSync(path, 'utf8'), f.replace(/\.jsonl$/, ''), session, meta.description ?? '', false, meta.agentType ?? '');
+        const a = claudeAgent(readFileSync(path, 'utf8'), f.replace(/\.jsonl$/, ''), session, meta.description ?? '', false, meta.agentType ?? '', since);
         if (a && a.last >= since) out.push(a);
       }
     }
@@ -151,8 +160,28 @@ export function claudeAgents(root: string, since: number): Agent[] {
   return out;
 }
 
-/** Every Codex rollout active since `since`, under sessions/YYYY/MM/DD. */
-export function codexAgents(root: string, since: number): Agent[] {
+export type BridgeTag = { unit: string; round?: number };
+
+/**
+ * The unit and round each codex-bridge thread's start named, by thread id: from each thread
+ * in state.json, then from bridge.log's JSON lines, which outlive the state's pruning.
+ */
+export function bridgeUnits(dir: string): Map<string, BridgeTag> {
+  const out = new Map<string, BridgeTag>();
+  const tag = (thread: unknown, unit: unknown, round: unknown) => {
+    if (typeof thread !== 'string' || typeof unit !== 'string' || !unit || out.has(thread)) return;
+    out.set(thread, { unit, round: typeof round === 'number' ? round : undefined });
+  };
+  try {
+    const state = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
+    for (const t of Object.values<any>(state.threads ?? {})) tag(t?.id, t?.unit, t?.round);
+  } catch {}
+  try { for (const l of lines(readFileSync(join(dir, 'bridge.log'), 'utf8'))) tag(l?.thread, l?.unit, l?.round); } catch {}
+  return out;
+}
+
+/** Every Codex rollout active since `since`, under sessions/YYYY/MM/DD, with its bridge thread's unit and round. */
+export function codexAgents(root: string, since: number, bridge = new Map<string, BridgeTag>()): Agent[] {
   const out: Agent[] = [];
   const walk = (dir: string) => {
     if (!existsSync(dir)) return;
@@ -160,8 +189,9 @@ export function codexAgents(root: string, since: number): Agent[] {
       const path = join(dir, d.name);
       if (d.isDirectory()) walk(path);
       else if (/^rollout-.*\.jsonl$/.test(d.name) && newer(path, since)) {
-        const a = codexAgent(readFileSync(path, 'utf8'), d.name.replace(/\.jsonl$/, ''));
-        if (a && a.last >= since) out.push(a);
+        const a = codexAgent(readFileSync(path, 'utf8'), d.name.replace(/\.jsonl$/, ''), since);
+        const thread = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?=\.jsonl$)/.exec(d.name)?.[0];
+        if (a && a.last >= since) out.push({ ...a, ...(thread && bridge.get(thread)) });
       }
     }
   };
