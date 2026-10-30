@@ -55,3 +55,14 @@ test('a rewrite at decide starts its rounds from 1 again', () => {
   bun('log.ts', dir, 'review', 'decide', 'r3', '3 failed rounds');
   expect(bun('log.ts', dir, 'decide', 'implement', 'r1', 'rewrite on a new premise').code).toBe(0);
 });
+
+test('a unit too big for a round is stuck(size): logged, timed as stuck, and shown as such', () => {
+  const dir = unitDir();
+  bun('log.ts', dir, 'new', 'implement', 'r2');
+  expect(bun('log.ts', dir, 'implement', 'stuck(size)', 'r2', 'third continuation').code).toBe(0);
+  expect(bun('log.ts', dir, 'stuck(size)', 'decide', 'r2', 're-plan into smaller units').code).toBe(0);
+  const [u] = JSON.parse(bun('timing.ts', join(dir, '..'), '--json').out);
+  expect(Object.keys(u.time)).toEqual(['implement', 'stuck']);
+  bun('log.ts', dir, 'decide', 'stuck(size)', 'r2');
+  expect(bun('status.ts', join(dir, '..')).out).toContain('| sheet | stuck(size) | 2 |');
+});

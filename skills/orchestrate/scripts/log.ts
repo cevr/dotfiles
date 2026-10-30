@@ -8,7 +8,7 @@ import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { transitions } from './transition.ts';
 
-export const STATES = ['plan', 'implement', 'review', 'verify', 'decide', 'waiting(pr)', 'merged', 'blocked', 'stuck', 'stuck(quota)', 'dropped'];
+export const STATES = ['plan', 'implement', 'review', 'verify', 'decide', 'waiting(pr)', 'merged', 'blocked', 'stuck', 'stuck(quota)', 'stuck(size)', 'dropped'];
 const MAX = 200;
 
 /** The line to append to a unit's log, or the reason it is refused. */
