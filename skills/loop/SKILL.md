@@ -65,7 +65,7 @@ An **area** is a set of directories that change together (a package, or a layer 
 
 1. **Open the ledger.** First `wc -c` the ledger; over about 100 KB, archive before you add the pass section (below). Copy the section layout of the newest `plans/loop-*.md` (`plans/architecture-loop-*.md` in a repo whose ledgers predate the rename), or [`ledger-template.md`](ledger-template.md) when none exists. Record the HEAD hash and the baseline: source lines and files per package, by a `git ls-files` pathspec of source extensions that excludes tests and fixtures. Write the command on the ledger so every pass counts the same way; use `':(glob)…'` pathspecs, since a plain `*` crosses `/`. Keep each ledger row to one line. When the ledger passes about 100 KB, move closed passes into `plans/archive/`, keeping the baseline, Decisions, Rejected, Owner questions and open `Carried` rows. A ledger that every agent reads in full grew to 643 KB, past what Read accepts. Done when the ledger exists with a baseline.
 
-2. **Coverage audit.** List every source directory with its file count (the baseline pathspec, `| xargs -n1 dirname | sort | uniq -c`). Mark each directory no earlier ledger or report names. Those go first. Done when every directory is marked swept-before or unswept.
+2. **Coverage audit.** List every source directory with its file count (the baseline pathspec, `| xargs -n1 dirname | sort | uniq -c`). Mark each directory no earlier ledger or report names. Those go first. Once every directory has been swept, a pass sweeps what changed since the last pass (`git diff --stat <last pass HEAD>`) and the areas with open `Carried` rows; every fourth pass sweeps everything again. Done when every directory is marked swept-before or unswept, and this pass's areas are named on the ledger.
 
 3. **Prior art.** First pass, and any pass while `PRIOR_ART.md` → To survey has rows. One read-only agent per source to survey, reading only what Settled leaves open. Done when every new idea is a ledger row (adopt, or rejected with the north star it fails) and each answered question moved to Settled.
 
@@ -74,7 +74,6 @@ An **area** is a set of directories that change together (a package, or a layer 
 5. **Triage.** Group findings into batches by the files they touch. Every report's P3s and "not worth a pass" lines go to the batch that owns their file; that batch fixes each or rejects it with a reason. Write the pass section of the ledger: verdict, decisions, the triage table (batch, workspace, items), and the open `Carried` rows of the last pass, each in a batch or carried on. Done when every finding is in a batch or rejected with a receipt.
 
 6. **Apply, review and verify, as orchestrate units.** Run the loop as the [`orchestrate`](../orchestrate/SKILL.md) orchestrator, one unit per batch, through its machine: plan, implement, review, verify, decide. The batch's apply agent is the unit's implementor, kept for round 2 and replaced by a fresh one after that (orchestrate's Fresh implementor).
-   - **Workspace.** Each batch gets its own workspace from main on branch `p<N>-<batch>`, as `AGENTS.md` says. On a filesystem without reflinks (ext4), where Rift cannot clone, use a git worktree. Setup beyond install (a build, a linked git-ignored file, a shared lock for a heavy test) belongs in the project's `AGENTS.md`; a missing step found here goes there.
    - **Spec.** Fill each batch's spec from [`spec-template.md`](../orchestrate/spec-template.md). The apply prompt ([`prompts/apply.md`](prompts/apply.md)) supplies it:
      - its slots go to Goal, Workspace, Owns and Decided;
      - its work rules go to Work rules;
@@ -82,22 +81,12 @@ An **area** is a set of directories that change together (a package, or a layer 
      - the counsel questions ([`prompts/counsel.md`](prompts/counsel.md)) go to Risks.
 
      The Gate is the repo's full gate, guards included. Hymn tracks were accepted on a narrower gate, then failed `dead-exports` on main.
-   - **Counsel.** The unit's reviewer is the counsel round through the `counsel-review` skill: the other model family, fresh each round. It reviews every fixup round's delta until it accepts, or until the third failed round sends the batch back to you for a rewrite (orchestrate's Rewrite). When the other model is unreachable, a fresh read-only agent reviews, and its ledger row says it was the same model family.
-   - **Size.** A batch is one concern, about 10 items. An implementor that compacts within its first round is holding too much: split the batch then, not at the round's end, and one agent carries one deliverable (orchestrate's Units). In bible-tools, apply agents were 93% of all cache reads, and 124 of 288 hit the compaction window.
-   - **Parallelism.** The budget alone sets how many agents run at once (orchestrate's Defaults). Before each heavy agent (one that runs a gate or a browser), read the load and start none above the core count. Time the gate once before the first wave. While a gate waits in the queue longer than twice its own run, start no new unit and make gate speed the next batch. Seven or eight parallel gates drove the workbox to a load of 540–830 and turned every e2e into a flake; on the laptop, seven agents at once drove a 12-core Mac to 38–45 and every e2e failure was a load-only timeout. A batch that needs another's files starts from main after that one merges.
-
-   - **Cost.** At each hand-back, run `bun ~/.claude/skills/orchestrate/scripts/agent-cost.ts <agent id>` and append its line to the unit's `log.md`. A task notification's token count is the agent's final context, not its spend. An implementor that has compacted gets no further round; a fresh one takes the unit (orchestrate's Fresh implementor). The retro (step 11) reads these lines instead of rebuilding them.
+   - **Size.** A batch is one concern, about 10 items. An implementor that compacts within its first round is holding too much: split the batch then. In bible-tools, apply agents were 93% of all cache reads, and 124 of 288 hit the compaction window.
+   - Workspaces, the reviewer's family, rounds, a batch that builds on another's files (it stacks on that branch), parallelism and cost lines are orchestrate's rules; follow them there.
 
    Done per batch when its unit passes verification.
 
-7. **Merge.** Integrate as orchestrate's [pass](../orchestrate/SKILL.md#pass) step says:
-   1. The branch contains today's main. If it does not, the implementor merges main in as a merge round. Conflicts are resolved by keeping both sides' edits, never one side's file whole, and then the merge audit in [`guardrails.md`](guardrails.md) runs over that merge.
-   2. Run the gate at the branch head.
-   3. `git merge --ff-only` it from the main checkout. Never commit a unit's work yourself.
-   4. If the Push line allows it, push, and wait for the pushed commit's CI as orchestrate's pass step says. A red CI is the next batch, and no other batch merges before it.
-   5. Write the batch's ledger row: `done <hash> … <hash>, merged <hash>`, decisions, the reviewer and its rounds, open items, and the report's "decisions for the orchestrator" as `Carried` rows.
-   6. Stop the batch's agents.
-   7. Delete the branch, and remove the workspace by its full path.
+7. **Merge.** Integrate as orchestrate's [pass](../orchestrate/SKILL.md#pass) step says. If the Push line allows it, push; a red CI is the next batch, and no other batch merges before it. Then write the batch's ledger row: `done <hash> … <hash>, merged <hash>`, decisions, the reviewer and its rounds, open items, and the report's "decisions for the orchestrator" as `Carried` rows.
 
    Done when the gate on main is green, the row is written, and the branch and the workspace are gone.
 
