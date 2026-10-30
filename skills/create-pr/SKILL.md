@@ -108,70 +108,11 @@ Apply these rules:
 
 ## Change-Shape Evidence
 
-Add numbered inline review-guide comments at key changed lines. State the local callgraph change in each comment.
+Add a numbered inline review-guide comment only where one changed line needs its local callgraph change explained and the body's views do not already show it.
 
 Use a compact shape in the PR body when reviewers need a broad map. Use an inline comment when the evidence explains one changed line.
 
-### Shape examples
-
-Logic or state flow:
-
-```diff
- on(save)
--  write content
-+  if content is unchanged
-+    return cached result
-   write content
-+  invalidate cache
-```
-
-Call flow:
-
-```diff
- submitForm
-   createSession
-     persistPrompt
-+    expandSkillMention
-     launchAgent
-   navigateToSession
-+    subscribeToEvents
-```
-
-Component ownership:
-
-```diff
- <SessionPage> (apps/example/src/routes/session.tsx)
-   useSessionEvents()
-   <SessionToolbar>
-+    <RunSkillButton /> (packages/ui)
-   <SessionTimeline>
-+    <SkillResultCard />
-```
-
-File responsibility:
-
-```diff
- src/
- ├── commands/
-+│   └── show-me.ts       # expands the command
- ├── sessions/
--└── transport.ts
-+└── transport/
-+    ├── client.ts
-+    └── stream.ts
-```
-
-Multi-system interaction:
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant UI
-    participant Daemon
-    User->>UI: choose command
-    UI->>Daemon: send expanded prompt
-    Daemon-->>UI: stream result
-```
+Examples of each view: [`references/shapes.md`](references/shapes.md).
 
 ### Function and component callgraphs
 
@@ -225,9 +166,8 @@ Rules:
 
 - **The real product.** Proof comes from the running app or a real execution, never from a mock or a test that only exercises the mock.
 - **Every changed path.** Each user-visible state, entry point and branch the change touches has its own proof. A proof of one convenient path does not cover the others.
-- **Head commit.** Capture after the last code change. Recapture when a later commit changes behavior.
+- **Head commit.** Capture after the last code change. Recapture when a later commit changes behavior. Proof already captured (a verify run, a review receipt) counts when it names this head commit and the same command.
 - **Hosting.** Upload media where every PR viewer can open it: GitHub attachments where available, else a dedicated PR asset branch (keep assets out of the product diff). Embed screenshots inline and link each video. Never a local or temporary path.
-- **Live check.** Open the posted PR body and confirm every image renders and every video link plays.
 
 When a piece of proof is genuinely impossible on this machine (a payment terminal, a printer, a production-only integration), name it under **Unproven** in the PR body with what was tried and what the reviewer must check, and say so in the report. Everything that can be proven here is proven first.
 
@@ -238,7 +178,7 @@ After all external changes:
 1. Re-read the live PR body.
 2. Verify each image renders and each video link plays.
 3. Verify assignees and requested reviewers.
-4. Verify numbered review-guide comments.
+4. Verify the review-guide comments, if any.
 5. Verify that each diagram matches the final code and renders on GitHub.
 6. Verify the local SHA, remote SHA, and PR head SHA.
 7. Treat automation commits as remote changes. Inspect them before a fast-forward.
