@@ -368,6 +368,15 @@ describe('the budget', () => {
     expect(requests().filter(r => r.method === 'thread/start')).toHaveLength(1)
   })
 
+  test('past the even line, an unmeasured admission lets a next turn go on', async () => {
+    const { call } = open()
+    await call('POST', '/start', { owner: 's1', description: 'x', prompt: 'build it', cwd: dir })
+    await settle()
+    process.env.FAKE_LIMITS = ahead()
+    const next = await call('POST', '/send', { threadId: 't1', prompt: 'fix round 2' })
+    expect(next.body).toMatchObject({ id: 't1', status: 'running', turns: 2 })
+  })
+
   test('an admission that does not answer in its own words leaves the even line to decide', async () => {
     // A missing script exits 1 too.
     process.env.CODEX_BRIDGE_ADMIT = admitter('missing', 'error: Module not found', 1)

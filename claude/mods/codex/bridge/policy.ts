@@ -109,7 +109,8 @@ export async function decide(thread: Asking, limits: Budget.Limits | null, reser
     const why = admitted.line.replace(/^hold: /, '').replace(OPENS, '')
     return { admitted, hold: { why, opensAt: at ? Date.parse(`${at[1]}T${at[2]}:00Z`) : undefined } }
   }
-  if (admitted.ok === undefined && !g.start.ok) return { admitted, hold: { why: g.start.reason!, opensAt: g.start.until } }
+  // Unmeasured, the even line holds a new thread; a next turn goes on past it (./budget.ts).
+  if (admitted.ok === undefined && !continues && !g.start.ok) return { admitted, hold: { why: g.start.reason!, opensAt: g.start.until } }
   const adds = /\(\+([\d.]+) %\/h\)/.exec(admitted.line)?.[1]
   return { admitted, adds: adds ? Number(adds) : undefined }
 }
