@@ -69,7 +69,9 @@ const active = (t: Thread) => t.status === 'running' || t.status === 'queued'
 const minute = (ms: number) => `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')}Z`
 // A latched turn: the budget or a draining bridge holds it, and it starts by itself.
 const QUEUED = (t: Thread) =>
-  t.status === 'queued'
+  t.status === 'queued' && /\bthe Sabbath\b/.test(t.held ?? '')
+    ? `The turn is latched for the Sabbath's rest (${t.held}); it starts by itself when the rest ends. Leave it latched: Claude rests too. `
+    : t.status === 'queued'
     ? `The turn is latched (${t.held ?? 'waiting'})${t.opensAt ? `; it should start about ${minute(t.opensAt)}` : ''}; it starts by itself when there is room. To move the role to Claude if it waits past 10 minutes, run \`codex-bridge wait ${t.id} --patience 10\` in the background. `
     : ''
 // A start the bridge refused: its first turn would wait past the patience, so no thread was made.

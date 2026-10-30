@@ -155,6 +155,8 @@ const POLICY = join(import.meta.dir, 'policy.ts')
 const policyFiles = (policy: string) => [policy, join(dirname(policy), 'budget.ts')]
 /** The daemon's core: a change to it drains the daemon. */
 const CORE = [import.meta.path]
+/** A hold of the Sabbath's rest: policy.ts `paused` and its resume. */
+export const SABBATH = /\bthe Sabbath\b/
 /** The app-server's id of a thread. */
 const codexId = (thread: Thread) => thread.codexId ?? thread.id
 const stamp = (files: readonly string[]) => files.map(f => statSync(f).mtimeMs).join('-')
@@ -626,7 +628,8 @@ export class Bridge {
     const now = Date.now()
     this.recent = this.recent.filter(r => r.at > now - RECENT_MS)
     const reserve = this.recent.reduce((n, r) => n + r.pctph, 0)
-    const decided = await rules.decide(thread, await this.limits(), reserve, now)
+    // The admission reads the account's rollouts, which name the app-server's id.
+    const decided = await rules.decide('codexId' in thread ? { ...thread, id: codexId(thread as Thread) } : thread, await this.limits(), reserve, now)
     if (decided.admitted) this.admitted = { at: now, ...decided.admitted }
     if (decided.adds && !decided.hold) this.recent.push({ at: now, pctph: decided.adds })
     return decided.hold
@@ -988,7 +991,7 @@ export async function waitStarted(
     fetch('http://bridge/threads', { unix: SOCKET } as RequestInit).then(r => r.json(), () => undefined),
   every = 15e3,
 ): Promise<{ code: 0 | 3 | 4; line: string }> {
-  const deadline = Date.now() + minutes * 60e3
+  let deadline = Date.now() + minutes * 60e3
   let held = 'the bridge is down'
   for (;;) {
     const threads = await read()
@@ -996,6 +999,8 @@ export async function waitStarted(
     if (threads && !thread) return { code: 3, line: `codex-bridge has no thread ${id}` }
     if (thread && thread.status !== 'queued') return { code: 0, line: `started: thread ${id} is ${thread.status}` }
     if (thread) held = thread.held ?? 'latched'
+    // The Sabbath holds Claude too: the turn stays latched, and the patience runs from the rest's end.
+    if (thread?.opensAt && SABBATH.test(held)) deadline = Math.max(deadline, thread.opensAt + minutes * 60e3)
     // A turn that should open past the patience moves now, not at the deadline.
     if (thread?.opensAt && thread.opensAt > deadline)
       return {

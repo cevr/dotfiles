@@ -72,14 +72,16 @@ const mock = (on: Parameters<TestBody>[1], time: number | (() => number)) => {
     store.delete(e.key)
     return { value: undefined }
   })
+  // The engine takes each prompt unless `drop` says it drops them.
+  const submit = { drop: false }
   on('prompt.submit', (_, e) => {
     prompts.push(e.text)
-    return { text: e.text }
+    return submit.drop ? { drop: 'busy' } : { text: e.text }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('agent.spawn', () => ({ model: 'opus', agentId: 'a1' }))
   on('tool.call', () => ({ result: 'ran' }))
-  return { status, ticks, prompts }
+  return { status, ticks, prompts, submit }
 }
 
 test('the rest runs from Friday sunset to 30 minutes after Saturday sunset', () => {
@@ -125,6 +127,26 @@ test('once the rest ends, the session gets one message to resume the work it hel
   expect(prompts[0]).toContain('The Sabbath rest ended at Sat 18:09')
   expect(prompts[0]).toContain('implementor sheet r2')
   expect(prompts[0]!.match(/subagent a1/g)).toHaveLength(1)
+})
+
+test('refusals at once are all kept, and a dropped resume message is sent again on the next tick', async ($, on) => {
+  let time = at('2026-10-31T12:00:00Z')
+  const { ticks, prompts, submit } = mock(on, () => time)
+  submit.drop = true
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle()
+  await Promise.all(['a', 'b', 'c'].map(d => $.agent.spawn({ ...SPAWN, subagentType: 'orchestrate-implementor', description: `implementor ${d} r1` })))
+  time = at('2026-10-31T22:10:00Z')
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle()
+  expect(prompts).toHaveLength(1)
+  for (const d of ['a', 'b', 'c']) expect(prompts[0]).toContain(`implementor ${d} r1`)
+  submit.drop = false
+  for (const t of ticks.splice(0)) t()
+  await settle()
+  for (const t of ticks.splice(0)) t()
+  await settle()
+  expect(prompts).toHaveLength(2)
 })
 
 test('outside the Sabbath everything runs, and the status line is clear', async ($, on) => {

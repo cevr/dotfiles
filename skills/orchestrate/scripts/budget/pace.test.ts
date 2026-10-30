@@ -164,5 +164,16 @@ describe('the Sabbath', () => {
     expect(rest.floor / clock.floor).toBeGreaterThan(168 / 145);
     expect(rest.floor / clock.floor).toBeLessThan(168 / 143);
   });
+  test('a reset that falls in the rest leaves no pace undefined: its quota left is lost, and it refills', () => {
+    // Saturday noon in Knowlton, in the rest; one account resets at 15:00, the other next Wednesday.
+    const now = Date.UTC(2026, 9, 31, 16);
+    const accounts = [
+      { used7d: 1, reset7d: Date.UTC(2026, 9, 31, 19), used5h: 0 },
+      { used7d: 0.2, reset7d: Date.UTC(2026, 10, 4, 12), used5h: 0 },
+    ];
+    const pace = weeklyPace(accounts, now, DEFAULTS);
+    expect(Number.isFinite(pace.floor)).toBe(true);
+    expect(pace.floor).toBeGreaterThan(0);
+    expect(Number.isFinite(pace.ceiling)).toBe(true);
+  });
 });
-

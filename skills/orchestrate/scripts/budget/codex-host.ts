@@ -207,8 +207,9 @@ function read(line: string, t: FileTally, snapshots: Cache['snapshots']): void {
 /** Each bridge thread's role: its orchestrate role, else `none`. */
 function roles(): Map<string, string> {
   try {
-    const state = JSON.parse(readFileSync(bridgeState, 'utf8')) as { threads?: Record<string, { role?: string }> };
-    return new Map(Object.entries(state.threads ?? {}).map(([id, thread]) => [id, thread.role ?? 'none']));
+    // A thread the bridge opened again writes its rollout under its app-server id (`codexId`).
+    const state = JSON.parse(readFileSync(bridgeState, 'utf8')) as { threads?: Record<string, { role?: string; codexId?: string }> };
+    return new Map(Object.entries(state.threads ?? {}).flatMap(([id, thread]) => [id, thread.codexId ?? id].map((key) => [key, thread.role ?? 'none'] as const)));
   } catch {
     return new Map();
   }

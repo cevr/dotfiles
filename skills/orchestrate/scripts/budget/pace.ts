@@ -59,9 +59,15 @@ export function weeklyPace(accounts: readonly Account[], now: number, c: Config)
   let fuel = due.reduce((n, a) => n + Math.max(0, 1 - a.used7d), 0);
   let ceiling = Infinity;
   for (const a of due) {
+    const h = hours(now, a.reset7d, c);
+    // No working hour comes before this reset (it falls in the rest): its quota left is lost, and it refills whole.
+    if (h <= 0) {
+      fuel += Math.min(1, a.used7d) - Math.max(0, 1 - a.used7d);
+      continue;
+    }
     expiring += Math.max(0, c.weeklyTarget - a.used7d);
-    floor = Math.max(floor, expiring / hours(now, a.reset7d, c));
-    ceiling = Math.min(ceiling, fuel / hours(now, a.reset7d, c));
+    floor = Math.max(floor, expiring / h);
+    ceiling = Math.min(ceiling, fuel / h);
     fuel += Math.min(1, a.used7d);
   }
   const inView = due.reduce(

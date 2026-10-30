@@ -603,6 +603,11 @@ describe('waiting on a latched turn', () => {
     const far = { ...queued, opensAt: Date.UTC(2099, 0, 1, 9, 30) }
     expect(await waitStarted('t1', 10, reads([far]), 1)).toMatchObject({ code: 4, line: expect.stringContaining('it should open about 2099-01-01 09:30Z, past 10 min') })
   })
+
+  test('a turn latched for the Sabbath is waited through, never moved to Claude', async () => {
+    const resting = { id: 't1', status: 'queued', held: 'the Sabbath, until Sat 18:09 (30 min after sunset, Knowlton, QC)', opensAt: Date.now() + 24 * 3600e3 }
+    expect(await waitStarted('t1', 0, reads([resting], [resting], [{ id: 't1', status: 'running' }]), 1)).toEqual({ code: 0, line: 'started: thread t1 is running' })
+  })
 })
 
 describe('an upgrade', () => {
