@@ -49,7 +49,7 @@ A retro asked for mid-run is **queued**: finish the work in flight to its next c
 
 Remember that all work goes through two stages: implementation and review. The implementation agent has the most **context pressure**. They are responsible for exploration, writing code, and debugging failures.
 
-The review agent has the least context pressure - it receives a diff, so no exploration needed. It often does not need to write code or debug.
+The review agent has less context pressure: it starts from a diff and a packet. It still explores what the diff touches (call sites, owners, the contract), so a review prompt names those paths rather than assuming none are needed.
 
 This means that the review agent should be responsible for imposing coding standards, not the implementation agent.
 

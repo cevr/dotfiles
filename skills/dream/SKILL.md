@@ -54,5 +54,6 @@ The window is the last 7 days unless the owner names another. Work only from mea
 ## Reference
 
 - **Compute or process.** Limit errors and compactions say the week was compute-bound. Rework rounds, owner waits and a serialized shared slot say the process was the bound. Report both. Do not treat more compute as the fix for a process bound.
-- **Ceremony scales with risk.** A review or verify step that never bounces for a class of unit is ceremony for that class. Propose a lighter path for that class, not the removal of the step.
+- **Ceremony scales with risk.** A review or verify step that never bounces for a class of unit is a candidate for a lighter path for that class, never for removal. Before calling it ceremony, check for escapes: defects found later (a later round, verify, CI, the owner, production) in units that step passed, over a comparable number of units. A week with no finds means sound work or a blind check; the escape count tells which.
+- **Measured, not assumed.** Report usage inside the window only, and the effort each agent actually ran at. An outcome that cannot be joined to its unit is reported as missing, with the join rate, not left out.
 - **Converging tails.** When rounds 3 and later bounce only on test strength, the round cap or the class-seen-twice rule is the candidate, not the implementor.
