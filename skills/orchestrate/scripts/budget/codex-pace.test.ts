@@ -129,6 +129,7 @@ describe('estimate', () => {
 });
 
 describe('admit', () => {
+  const T = START;
   const k = { k: { sol: 1 / 8e6, luna: 1 / 48e6 }, windows: { sol: 40, luna: 10 }, shared: 1 / 10e6, sharedWindows: 50 };
   const load = (more: Partial<CodexLoad>): CodexLoad => ({
     host: 'mac',
@@ -147,41 +148,49 @@ describe('admit', () => {
     load({ host: 'box', threads: [], interactive1h: { luna: 4.8e6 } }),
   ];
 
-  test('holds a thread whose cost takes the burn past the pace', () => {
-    expect(admit({ loads, fit: k, pctph: 1.2, family: 'sol', role: 'implementor' })).toEqual({
+  test('holds a thread whose cost takes the burn past the pace, until enough live work should end', () => {
+    // Thread a burns 1.0 %/h; sol threads run 2 active hours: without it, 0.1 + 0.4 %/h fits.
+    expect(admit({ loads, fit: k, pctph: 1.2, family: 'sol', role: 'implementor', now: T })).toEqual({
       ok: false,
       reason: 'codex burns 1.1 %/h; this sol implementor adds about 0.4 %/h; the pace is 1.2 %/h',
+      opensAt: T + 2 * HOUR,
     });
+    // Two live sol reviewers at 1.0 %/h each, 0.5 and 1.5 hours in: the first to end (in half an hour) leaves 1.0 + 0.4 %/h.
+    const two = [load({ live: [{ id: 'a', family: 'sol', role: 'reviewer', recentWph: 8e6, activeHours: 0.5 }, { id: 'b', family: 'sol', role: 'reviewer', recentWph: 8e6, activeHours: 1.5 }] })];
+    expect(admit({ loads: two, fit: k, pctph: 1.6, family: 'sol', role: 'implementor', now: T })?.opensAt).toBe(T + 0.5 * HOUR);
+    // At a pace that only a lone turn passes, it opens once both have ended.
+    expect(admit({ loads: two, fit: k, pctph: 0.3, family: 'sol', role: 'implementor', now: T })?.opensAt).toBe(T + 1.5 * HOUR);
   });
 
   test('starts one that fits', () => {
-    expect(admit({ loads, fit: k, pctph: 2, family: 'sol', role: 'implementor' })).toEqual({ ok: true, reason: 'fits: codex 1.5 %/h of 2.0 %/h with this sol implementor (+0.4 %/h)' });
+    expect(admit({ loads, fit: k, pctph: 2, family: 'sol', role: 'implementor', now: T })).toEqual({ ok: true, reason: 'fits: codex 1.5 %/h of 2.0 %/h with this sol implementor (+0.4 %/h)' });
   });
 
   test("a next turn does not count its own thread's live burn again", () => {
     // Without thread a's 1.0 %/h: 0.1 %/h interactive, plus 0.4 %/h for the turn.
-    expect(admit({ loads, fit: k, pctph: 1.2, family: 'sol', role: 'reviewer', thread: 'a' })).toEqual({ ok: true, reason: 'fits: codex 0.5 %/h of 1.2 %/h with this sol reviewer (+0.4 %/h)' });
+    expect(admit({ loads, fit: k, pctph: 1.2, family: 'sol', role: 'reviewer', thread: 'a', now: T })).toEqual({ ok: true, reason: 'fits: codex 0.5 %/h of 1.2 %/h with this sol reviewer (+0.4 %/h)' });
   });
 
   test('counts the turns just started that the live burn does not show yet', () => {
-    expect(admit({ loads, fit: k, pctph: 2, family: 'sol', role: 'implementor', reserve: 0.6 })).toEqual({
+    expect(admit({ loads, fit: k, pctph: 2, family: 'sol', role: 'implementor', reserve: 0.6, now: T })).toEqual({
       ok: false,
       reason: 'codex burns 1.7 %/h (0.6 %/h of it just started); this sol implementor adds about 0.4 %/h; the pace is 2.0 %/h',
+      opensAt: T + 2 * HOUR,
     });
   });
 
   test('starts a lone turn that alone passes the pace', () => {
-    expect(admit({ loads: [load({}), load({ host: 'box', threads: [] })], fit: k, pctph: 0.3, family: 'sol', role: 'implementor' })).toEqual({
+    expect(admit({ loads: [load({}), load({ host: 'box', threads: [], now: T })], fit: k, pctph: 0.3, family: 'sol', role: 'implementor' })).toEqual({
       ok: true,
       reason: 'fits: this sol implementor runs alone, as no other worker burns; the pace is 0.3 %/h (+0.4 %/h)',
     });
     // Interactive use is no worker (2026-10-28: 0.2 %/h of it held the Workbox queue).
-    expect(admit({ loads: [load({ interactive1h: { sol: 1.6e6 } })], fit: k, pctph: 0.5, family: 'sol', role: 'implementor' })).toMatchObject({ ok: true });
+    expect(admit({ loads: [load({ interactive1h: { sol: 1.6e6 }, now: T })], fit: k, pctph: 0.5, family: 'sol', role: 'implementor' })).toMatchObject({ ok: true });
     // A worker live or just started is not alone.
-    expect(admit({ loads: [load({})], fit: k, pctph: 0.3, family: 'sol', role: 'implementor', reserve: 0.1 })).toMatchObject({ ok: false });
+    expect(admit({ loads: [load({})], fit: k, pctph: 0.3, family: 'sol', role: 'implementor', reserve: 0.1, now: T })).toMatchObject({ ok: false });
   });
 
   test('cannot tell without a cost', () => {
-    expect(admit({ loads, fit: { k: {}, windows: {}, sharedWindows: 0 }, pctph: 2, family: 'sol', role: 'none' })).toBeUndefined();
+    expect(admit({ loads, fit: { k: {}, windows: {}, sharedWindows: 0 }, pctph: 2, family: 'sol', role: 'none', now: T })).toBeUndefined();
   });
 });

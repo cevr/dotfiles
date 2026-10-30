@@ -13,6 +13,9 @@
 // - Admission: the threads live now and the last hour of interactive use burn
 //   at some %/h; a new thread adds its family and role's median cost per
 //   active hour. It starts when the sum stays within the pace.
+// - Opening: a held turn should fit once enough live workers end, each at its
+//   family and role's median active hours, soonest first; once none is left it
+//   runs alone.
 
 import type { CodexLoad, HourLoad, LiveThread, Snapshot, ThreadCost } from './codex-host.ts';
 import { weeklyPace, type Config } from './pace.ts';
@@ -188,13 +191,23 @@ const MIN_ACTIVE = 5 / 60;
 export const wph = (threads: readonly ThreadCost[]): number[] =>
   threads.filter((t) => t.activeHours >= MIN_ACTIVE).map((t) => t.w / t.activeHours);
 
-/** A new thread's W per active hour: its family and role's median, then its family's, then every thread's. */
-export function estimate(threads: readonly ThreadCost[], family: string, role: string): number | undefined {
-  for (const xs of [wph(threads.filter((t) => t.family === family && t.role === role)), wph(threads.filter((t) => t.family === family))]) {
+/** The median of `of` over a kind's threads: its family and role's, then its family's, then every thread's. */
+function ofKind(threads: readonly ThreadCost[], family: string, role: string, of: (ts: readonly ThreadCost[]) => number[]): number | undefined {
+  for (const xs of [of(threads.filter((t) => t.family === family && t.role === role)), of(threads.filter((t) => t.family === family))]) {
     if (xs.length >= 3) return median(xs);
   }
-  return median(wph(threads));
+  return median(of(threads));
 }
+
+/** A new thread's W per active hour. */
+export const estimate = (threads: readonly ThreadCost[], family: string, role: string): number | undefined => ofKind(threads, family, role, wph);
+
+/** How long a thread of a kind is active in all, in hours. */
+export const typicalHours = (threads: readonly ThreadCost[], family: string, role: string): number | undefined =>
+  ofKind(threads, family, role, (ts) => ts.filter((t) => t.activeHours >= MIN_ACTIVE).map((t) => t.activeHours));
+
+/** A live thread runs at least this much longer, in hours, however long its kind runs. */
+const MIN_LEFT = 5 / 60;
 
 /** The %/h burnt now: each live thread's recent rate, and the last hour of interactive use, which no admission sees. */
 export function burn(live: readonly LiveThread[], interactive1h: Record<string, number>, f: Fit): number {
@@ -202,7 +215,30 @@ export function burn(live: readonly LiveThread[], interactive1h: Record<string, 
   return threads + Object.entries(interactive1h).reduce((n, [family, w]) => n + w * (kOf(f, family) ?? 0), 0);
 }
 
-export type Decision = { ok: boolean; reason: string };
+/** `opensAt` (ms): when a held turn should fit. */
+export type Decision = { ok: boolean; reason: string; opensAt?: number };
+
+/**
+ * When a held turn should fit: the live workers end, soonest first, each at
+ * its kind's typical hours less what it ran, until the burn left with the turn
+ * is within the pace. The turns just started (`reserve`) run a whole typical
+ * thread. With no worker left the turn runs alone, so it opens by the last end.
+ */
+function opening(input: { workers: readonly LiveThread[]; threads: readonly ThreadCost[]; f: Fit; burning: number; reserve: number; adds: number; pctph: number; family: string; role: string; now: number }): number {
+  const { threads, f, adds, pctph, now } = input;
+  const ends = input.workers.map((t) => ({
+    rate: t.recentWph * (kOf(f, t.family) ?? 0),
+    left: Math.max(MIN_LEFT, (typicalHours(threads, t.family, t.role) ?? 0) - (t.activeHours ?? 0)),
+  }));
+  if (input.reserve > 0) ends.push({ rate: input.reserve, left: Math.max(MIN_LEFT, typicalHours(threads, input.family, input.role) ?? 0) });
+  ends.sort((a, b) => a.left - b.left);
+  let burning = input.burning;
+  for (const end of ends) {
+    burning -= end.rate;
+    if (burning + adds <= pctph) return now + end.left * HOUR;
+  }
+  return now + (ends.at(-1)?.left ?? 0) * HOUR;
+}
 
 /**
  * Whether one more turn of `family` in `role` fits the pace; undefined when its cost cannot be measured.
@@ -217,14 +253,12 @@ export function admit(input: {
   role: string;
   thread?: string;
   reserve?: number;
+  now: number;
 }): Decision | undefined {
-  const { loads, fit: f, pctph, family, role, thread, reserve = 0 } = input;
+  const { loads, fit: f, pctph, family, role, thread, reserve = 0, now: at } = input;
   const k = kOf(f, family);
-  const wph = estimate(
-    loads.flatMap((l) => l.threads),
-    family,
-    role,
-  );
+  const threads = loads.flatMap((l) => l.threads);
+  const wph = estimate(threads, family, role);
   if (k === undefined || wph === undefined) return undefined;
   const interactive: Record<string, number> = {};
   for (const l of loads) for (const [fam, w] of Object.entries(l.interactive1h)) interactive[fam] = (interactive[fam] ?? 0) + w;
@@ -239,7 +273,9 @@ export function admit(input: {
   // A turn is the smallest unit of work: with no other worker live, one runs even when it alone passes the pace.
   if (now + adds > pctph) {
     if (alone) return { ok: true, reason: `fits: this ${who} runs alone, as no other worker burns; the pace is ${p(pctph)} (+${p(adds)})` };
-    return { ok: false, reason: `${burns}; this ${who} adds about ${p(adds)}; the pace is ${p(pctph)}` };
+    const workers = others.filter((t) => t.role !== 'interactive');
+    const opensAt = opening({ workers, threads, f, burning: now, reserve, adds, pctph, family, role, now: at });
+    return { ok: false, reason: `${burns}; this ${who} adds about ${p(adds)}; the pace is ${p(pctph)}`, opensAt };
   }
   return { ok: true, reason: `fits: codex ${p(now + adds)} of ${p(pctph)} with this ${who} (+${p(adds)})` };
 }

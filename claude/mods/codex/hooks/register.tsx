@@ -66,8 +66,15 @@ const readBudget = ($: EngineInterface) => call<Budget>($, 'GET', '/budget').cat
 
 /** A thread with a turn running, or latched while the bridge updates. */
 const active = (t: Thread) => t.status === 'running' || t.status === 'queued'
-// A turn latched while the bridge drains for an update; the new bridge starts it.
-const QUEUED = (t: Thread) => (t.status === 'queued' ? `The turn is latched (${t.held ?? 'waiting'}); it starts by itself when there is room. To move the role to Claude if it waits past 10 minutes, run \`codex-bridge wait ${t.id} --patience 10\` in the background. ` : '')
+const minute = (ms: number) => `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')}Z`
+// A latched turn: the budget or a draining bridge holds it, and it starts by itself.
+const QUEUED = (t: Thread) =>
+  t.status === 'queued'
+    ? `The turn is latched (${t.held ?? 'waiting'})${t.opensAt ? `; it should start about ${minute(t.opensAt)}` : ''}; it starts by itself when there is room. To move the role to Claude if it waits past 10 minutes, run \`codex-bridge wait ${t.id} --patience 10\` in the background. `
+    : ''
+// A start the bridge refused: its first turn would wait past the patience, so no thread was made.
+const HELD = (t: Thread) =>
+  `Codex holds this turn and made no thread: ${t.held}. It should open about ${minute(t.opensAt ?? 0)}, more than 10 minutes away. Run this role on Claude now (orchestrate Families).`
 
 const tokens = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}k`)
 const facts = (t: Thread) =>
@@ -171,7 +178,8 @@ const TOOLS = [
       'For an orchestrate role pass `role`: the thread then carries that role agent\'s instructions and effort (~/.codex/agents/orchestrate-<role>.toml). ' +
       '`model` takes a slug, or a family (luna, sol, terra, astra) for its newest release; left out, Codex\'s configured default. ' +
       'The thread runs under the host Codex config (sandbox and approvals included) unless `sandbox` is passed. ' +
-      'When the Codex budget has no room (the account\'s burn with this turn past the weekly pace, or, when that cannot be measured, weekly use ahead of an even burn), the turn is latched and starts by itself later; the answer says why.',
+      'When the Codex budget has no room (the account\'s burn with this turn past the weekly pace, or, when that cannot be measured, weekly use ahead of an even burn), the turn is latched and starts by itself later; the answer says why and when it should start. ' +
+      'When it would start more than 10 minutes from now, no thread is made and the answer says to run the role on Claude now.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -229,6 +237,7 @@ async function answer($: EngineInterface, name: (typeof TOOLS)[number]['name'], 
       effort: str(e, 'effort'),
       sandbox: str(e, 'sandbox'),
     })
+    if (thread.status === 'held') return { text: HELD(thread) }
     return { text: `${thread.status === 'queued' ? 'Queued' : 'Started'} Codex thread ${thread.id} (${facts(thread)}). ${QUEUED(thread)}Its turn's end arrives as a message; do not poll.`, started: thread }
   }
   if (name === 'send') {

@@ -18,7 +18,11 @@
 // --codex --admit), or the even line of ./budget.ts when the admission cannot
 // measure. A turn the budget holds is latched (status `queued`, with why), as is
 // one asked of a daemon draining for an update; the pump starts latched turns,
-// next turns before first ones, oldest first, as the budget makes room.
+// next turns before first ones, oldest first, as the budget makes room. A held
+// turn does not hold the ones behind it that fit, until it has waited past the
+// patience (PATIENCE_MIN); then it goes first and holds the rest. A hold names
+// when the turn should open; a new thread whose first turn would open past the
+// patience is refused at once (`held`, no thread made), for its role to run on Claude.
 // A turn that ended for the infrastructure (the model at capacity, the
 // app-server gone, the bridge restarted) is resumed by the bridge itself: one
 // standard next turn after 1, 5 and 15 minutes; its owner hears only the end
@@ -63,6 +67,8 @@ export type Thread = {
   queued?: string
   held?: string
   queuedAt?: number
+  /** When the latched turn should start, as the budget estimates it. */
+  opensAt?: number
   /** A resumed turn waits until then. */
   notBefore?: number
   /** The bridge's resumes since the thread's last turn that its owner heard of. */
@@ -97,6 +103,10 @@ export type Event = {
   compactions: number
 }
 type State = { seq: number; threads: Record<string, Thread>; events: Event[] }
+/** A start the budget would hold past the patience: no thread was made. */
+export type Refused = { status: 'held'; held: string; opensAt: number }
+/** Why a turn waits, and when it should open when that is known. */
+type Hold = { why: string; opensAt?: number }
 
 const STATE_DIR = process.env.CODEX_BRIDGE_DIR ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), '.local/state'), 'codex-bridge')
 export const SOCKET = join(STATE_DIR, 'bridge.sock')
@@ -120,6 +130,13 @@ const BUDGET = process.env.CODEX_BRIDGE_BUDGET ?? join(homedir(), '.config/orche
 // It reads every host over SSH; past this, the even line decides.
 const ADMIT_MS = 60e3
 const STEPS = 12
+/** Minutes a latched turn may wait before its role moves to Claude (orchestrate's Families). */
+export const PATIENCE_MIN = 10
+const PATIENCE_MS = PATIENCE_MIN * 60e3
+/** A latched turn that waited past the patience: it goes first, and holds the turns behind it. */
+const starving = (t: Thread, now: number) => now - Math.max(t.queuedAt ?? now, t.notBefore ?? 0) > PATIENCE_MS
+// An admission's hold line ends with when the turn should open: `; opens about 2026-10-30 14:20Z`.
+const OPENS = /; opens about (\d{4}-\d\d-\d\d) (\d\d:\d\d)Z$/
 // A turn the infrastructure ended is resumed after these waits, then left to its owner.
 const BACKOFF_MIN = [1, 5, 15]
 const RESUMES: Cause[] = ['capacity', 'app-server-exit', 'drain-interrupt']
@@ -231,6 +248,15 @@ export async function admission(
   }
 }
 
+
+/** The model Codex runs when none is named. */
+function configured(): string | undefined {
+  try {
+    return (Bun.TOML.parse(readFileSync(join(CODEX_HOME, 'config.toml'), 'utf8')) as { model?: string }).model
+  } catch {
+    return undefined
+  }
+}
 
 /** A role agent's instructions and effort, from the file agents.ts writes for Codex. */
 export function roleAgent(role: Role, dir = AGENTS): { instructions: string; effort?: string } {
@@ -432,7 +458,7 @@ export class Bridge {
       const wait = BACKOFF_MIN[tries]! * 60e3
       thread.resumes = tries + 1
       this.latch(thread, resumePrompt(cause), `resume ${tries + 1} of ${BACKOFF_MIN.length}: the last turn ended on ${ENDED_ON[cause]}`)
-      thread.notBefore = Date.now() + wait
+      thread.notBefore = thread.opensAt = Date.now() + wait
       this.record('resume', thread, { cause, try: tries + 1, notBefore: new Date(thread.notBefore).toISOString() })
       this.save()
       setTimeout(() => void this.pump(), wait + 1e3).unref?.()
@@ -550,17 +576,18 @@ export class Bridge {
   }
 
   /** Holds a turn until the pump starts it, as the thread's next turn. */
-  private latch(thread: Thread, prompt: string, why: string) {
+  private latch(thread: Thread, prompt: string, why: string, opensAt?: number) {
     thread.status = 'queued'
     thread.queued = prompt
     thread.held = why
+    thread.opensAt = opensAt
     thread.queuedAt = Date.now()
     thread.notBefore = undefined
     thread.final = undefined
     thread.live = undefined
     thread.turns++
     thread.updatedAt = Date.now()
-    this.record('latch', thread, { reason: why })
+    this.record('latch', thread, { reason: why, opensAt: opensAt && new Date(opensAt).toISOString() })
     this.save()
     return thread
   }
@@ -571,10 +598,10 @@ export class Bridge {
     return next
   }
 
-  /** Why the budget holds one more turn of `thread` now; undefined when it may start. */
-  private async hold(thread: Thread): Promise<string | undefined> {
+  /** Why the budget holds one more turn of `thread` now, and until when; undefined when it may start. */
+  private async hold(thread: Pick<Thread, 'id' | 'model' | 'role' | 'turns' | 'status'>): Promise<Hold | undefined> {
     const gates = await this.budget()
-    if (!gates.send.ok) return gates.send.reason
+    if (!gates.send.ok) return { why: gates.send.reason!, opensAt: gates.send.until }
     const now = Date.now()
     this.recent = this.recent.filter(r => r.at > now - RECENT_MS)
     const reserve = this.recent.reduce((n, r) => n + r.pctph, 0)
@@ -582,50 +609,67 @@ export class Bridge {
     const continues = thread.turns > (thread.status === 'queued' ? 1 : 0)
     const admitted = await admission(thread.model, thread.role, continues ? thread.id : undefined, reserve, await this.limits())
     this.admitted = { at: now, ...admitted }
-    if (admitted.ok === false) return admitted.line.replace(/^hold: /, '')
-    if (admitted.ok === undefined && !gates.start.ok) return gates.start.reason
+    if (admitted.ok === false) {
+      const at = OPENS.exec(admitted.line)
+      return { why: admitted.line.replace(/^hold: /, '').replace(OPENS, ''), opensAt: at ? Date.parse(`${at[1]}T${at[2]}:00Z`) : undefined }
+    }
+    if (admitted.ok === undefined && !gates.start.ok) return { why: gates.start.reason!, opensAt: gates.start.until }
     const adds = /\(\+([\d.]+) %\/h\)/.exec(admitted.line)?.[1]
     if (adds) this.recent.push({ at: now, pctph: Number(adds) })
     return undefined
   }
 
-  /** A turn now, or latched behind the turns already waiting or the budget. */
+  /** Why a new turn waits: the drain, a starving latched turn, or the budget; undefined when it starts now. */
+  private async wait(thread: Pick<Thread, 'id' | 'model' | 'role' | 'turns' | 'status'>): Promise<Hold | undefined> {
+    if (this.draining) return { why: 'the bridge is updating' }
+    const first = this.queue().find(t => starving(t, Date.now()))
+    if (first) return { why: `a turn latched past ${PATIENCE_MIN} min goes first (${first.held})`, opensAt: first.opensAt }
+    return this.hold(thread)
+  }
+
+  /** A turn now, or latched until the budget has room. */
   private enqueue(thread: Thread, prompt: string) {
     return this.serial(async () => {
-      if (this.draining) return this.latch(thread, prompt, 'the bridge is updating')
-      const waiting = this.queue().length
-      const why = waiting > 0 ? `${waiting} latched turn${waiting === 1 ? '' : 's'} ahead` : await this.hold(thread)
-      if (why) return this.latch(thread, prompt, why)
+      const held = await this.wait(thread)
+      if (held) return this.latch(thread, prompt, held.why, held.opensAt)
       await this.load(thread)
       return this.turn(thread, prompt)
     })
   }
 
-  /** The latched turns due now, in the order they start: next turns before first ones, then the oldest. */
+  /** The latched turns due now, in the order they start: a starving one, then next turns before first ones, then the oldest. */
   private queue() {
     const now = Date.now()
     return Object.values(this.state.threads)
       .filter(t => t.status === 'queued' && (t.notBefore ?? 0) <= now)
-      .sort((a, b) => Number(a.turns === 1) - Number(b.turns === 1) || (a.queuedAt ?? 0) - (b.queuedAt ?? 0))
+      .sort(
+        (a, b) =>
+          Number(starving(b, now)) - Number(starving(a, now)) ||
+          Number(a.turns === 1) - Number(b.turns === 1) ||
+          (a.queuedAt ?? 0) - (b.queuedAt ?? 0),
+      )
   }
 
-  /** Starts latched turns while the budget has room; the first one it holds waits, with the rest behind it. */
+  /** Starts each latched turn the budget has room for; a held one waits without holding the rest, until it starves. */
   pump() {
     return this.serial(async () => {
       for (const thread of this.queue()) {
         if (this.draining) return
-        const why = await this.hold(thread)
-        if (why) {
-          if (why !== thread.held) {
-            thread.held = why
-            this.record('hold', thread, { reason: why })
+        const held = await this.hold(thread)
+        if (held) {
+          if (held.why !== thread.held || held.opensAt !== thread.opensAt) {
+            if (held.why !== thread.held) this.record('hold', thread, { reason: held.why, opensAt: held.opensAt && new Date(held.opensAt).toISOString() })
+            thread.held = held.why
+            thread.opensAt = held.opensAt
             this.save()
           }
-          return
+          if (starving(thread, Date.now())) return
+          continue
         }
         const prompt = thread.queued ?? ''
         thread.queued = undefined
         thread.held = undefined
+        thread.opensAt = undefined
         thread.queuedAt = undefined
         thread.notBefore = undefined
         try {
@@ -649,16 +693,31 @@ export class Bridge {
     model?: string
     effort?: string
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access'
-  }) {
-    // The thread exists at once (it costs nothing); its first turn passes the budget like any other.
+  }): Promise<Thread | Refused> {
     const model = await this.model(input.model)
     const agent = input.role ? roleAgent(input.role) : undefined
     const effort = input.effort ?? agent?.effort
+    return this.serial(async () => {
+      // A first turn that would wait past the patience makes no thread: its role moves to Claude now.
+      const held = await this.wait({ id: '', model: model ?? configured() ?? '', role: input.role, turns: 0, status: 'idle' })
+      if (held?.opensAt && held.opensAt > Date.now() + PATIENCE_MS) {
+        const opens = new Date(held.opensAt).toISOString()
+        this.record('refuse', undefined, { owner: input.owner, unit: input.unit, round: input.round, role: input.role, model, reason: held.why, opensAt: opens })
+        return { status: 'held', held: held.why, opensAt: held.opensAt } satisfies Refused
+      }
+      const thread = await this.open(input, model, agent?.instructions, effort)
+      if (held) return this.latch(thread, input.prompt, held.why, held.opensAt)
+      return this.turn(thread, input.prompt)
+    })
+  }
+
+  /** A new thread on the app-server, with its first turn still to come. */
+  private async open(input: Parameters<Bridge['start']>[0], model: string | undefined, instructions: string | undefined, effort: string | undefined) {
     const started = await this.server.call('thread/start', {
       model: model ?? null,
       cwd: input.cwd,
       sandbox: input.sandbox ?? null,
-      developerInstructions: agent?.instructions ?? null,
+      developerInstructions: instructions ?? null,
       config: effort ? { model_reasoning_effort: effort } : null,
       serviceName: 'codex_bridge',
     })
@@ -680,7 +739,7 @@ export class Bridge {
     }
     this.state.threads[thread.id] = thread
     this.server.loaded.add(thread.id)
-    return this.enqueue(thread, input.prompt)
+    return thread
   }
 
   /** The next turn on a thread: the same context and prompt cache, so a fix round is a delta. */
@@ -706,6 +765,7 @@ export class Bridge {
     if (thread.status === 'queued') {
       thread.queued = undefined
       thread.held = undefined
+      thread.opensAt = undefined
       thread.notBefore = undefined
       this.finish(thread, 'interrupted', 'stopped before it started', 0, 'interrupted-by-caller')
       return thread
@@ -858,9 +918,6 @@ async function ensure() {
   console.log(JSON.stringify({ socket: SOCKET }))
 }
 
-/** Minutes a latched turn may wait before its role moves to Claude (orchestrate's Families). */
-export const PATIENCE_MIN = 10
-
 /**
  * Waits for a latched turn of `id` to start: 0 once it left `queued`, 3 when the
  * bridge knows no such thread, 4 when it is still latched (or the bridge is down) after `minutes`.
@@ -868,7 +925,7 @@ export const PATIENCE_MIN = 10
 export async function waitStarted(
   id: string,
   minutes = PATIENCE_MIN,
-  read: () => Promise<Array<{ id: string; status: string; held?: string }> | undefined> = async () =>
+  read: () => Promise<Array<{ id: string; status: string; held?: string; opensAt?: number }> | undefined> = async () =>
     fetch('http://bridge/threads', { unix: SOCKET } as RequestInit).then(r => r.json(), () => undefined),
   every = 15e3,
 ): Promise<{ code: 0 | 3 | 4; line: string }> {
@@ -880,6 +937,12 @@ export async function waitStarted(
     if (threads && !thread) return { code: 3, line: `codex-bridge has no thread ${id}` }
     if (thread && thread.status !== 'queued') return { code: 0, line: `started: thread ${id} is ${thread.status}` }
     if (thread) held = thread.held ?? 'latched'
+    // A turn that should open past the patience moves now, not at the deadline.
+    if (thread?.opensAt && thread.opensAt > deadline)
+      return {
+        code: 4,
+        line: `latched (${held}); it should open about ${new Date(thread.opensAt).toISOString().slice(0, 16).replace('T', ' ')}Z, past ${minutes} min: interrupt it with mcp__codex__interrupt and run this role on Claude instead (orchestrate Families)`,
+      }
     if (Date.now() >= deadline)
       return {
         code: 4,

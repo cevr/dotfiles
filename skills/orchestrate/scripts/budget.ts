@@ -39,7 +39,8 @@
 //             burn now, the pace and each family and role's cost. With
 //             --admit it decides one Codex turn (the codex-bridge asks before
 //             every turn): exit 0 to start it, 1 to hold it, 2 when nothing
-//             can be measured. --thread names the thread a next turn
+//             can be measured; a hold ends with the time it should open
+//             (`; opens about 2026-10-30 14:20Z`). --thread names the thread a next turn
 //             continues; --reserve adds the turns just started (%/h);
 //             --week is the week as Codex reports it now (percent used,
 //             reset in Unix seconds, window minutes), which the session
@@ -206,12 +207,14 @@ if (args.includes('--codex')) {
           ? 'no fit of the cost of the week is in hand'
           : undefined;
     const reserve = Number(option('--reserve') ?? 0) || 0;
-    const d = why || !pace || !fit ? undefined : codex.admit({ loads, fit, pctph: pace.pctph, family, role, thread: option('--thread'), reserve });
+    const d = why || !pace || !fit ? undefined : codex.admit({ loads, fit, pctph: pace.pctph, family, role, thread: option('--thread'), reserve, now });
     if (!d) {
       console.log(`unmeasured: ${why ?? `no ${family} or other thread has run long enough to cost`}`);
       process.exit(2);
     }
-    console.log(`${d.ok ? 'admit' : 'hold'}: ${d.reason}`);
+    // The bridge reads the opening time off the end of the line.
+    const opens = d.opensAt ? `; opens about ${new Date(d.opensAt).toISOString().slice(0, 16).replace('T', ' ')}Z` : '';
+    console.log(`${d.ok ? 'admit' : 'hold'}: ${d.reason}${opens}`);
     process.exit(d.ok ? 0 : 1);
   }
 

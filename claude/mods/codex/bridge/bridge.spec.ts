@@ -21,7 +21,7 @@ const admitter = (name: string, line: string, code: number) => {
 // Unless a test says otherwise, the admission cannot measure, so the even line decides.
 const UNMEASURED = admitter('unmeasured', 'unmeasured: no host has seen the week', 2)
 process.env.CODEX_BRIDGE_ADMIT = UNMEASURED
-const { Bridge, handler, newest, resumePrompt, roleAgent, waitStarted } = await import('./bridge.ts')
+const { Bridge, handler, newest, PATIENCE_MIN, resumePrompt, roleAgent, waitStarted } = await import('./bridge.ts')
 
 const requests = () =>
   readFileSync(log, 'utf8')
@@ -327,10 +327,11 @@ describe('the budget', () => {
     const fresh = await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir, model: 'gpt-6.1-sol' })
     const next = await call('POST', '/send', { threadId: 't1', prompt: 'fix round 2' })
     expect(fresh.body).toMatchObject({ id: 't2', status: 'queued' })
-    expect(next.body).toMatchObject({ id: 't1', status: 'queued', turns: 2, held: '1 latched turn ahead' })
+    expect(next.body).toMatchObject({ id: 't1', status: 'queued', turns: 2, held: 'codex burns 4.1 %/h; this sol thread adds about 0.4 %/h; the pace is 0.3 %/h' })
 
+    // The next turn is asked first; the held one does not keep the first turn from being asked.
     await bridge.pump()
-    expect(admitted().at(-1)).toBe('--model gpt-6.1-sol --role none --thread t1')
+    expect(admitted().slice(-2)).toEqual(['--model gpt-6.1-sol --role none --thread t1', '--model gpt-6.1-sol --role none'])
     expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([
       { id: 't1', status: 'queued', held: 'codex burns 4.1 %/h; this sol thread adds about 0.4 %/h; the pace is 0.3 %/h' },
       { id: 't2', status: 'queued' },
@@ -359,8 +360,11 @@ describe('the budget', () => {
     process.env.FAKE_LIMITS = spent()
     const { call } = open()
     const held = await call('POST', '/start', { owner: 's1', description: 'x', prompt: 'y', cwd: dir })
-    expect(held.body).toMatchObject({ status: 'queued', held: expect.stringMatching(/^the 7-day window is spent/) })
+    // Spent until its reset a day away: refused at once, with no thread made.
+    expect(held.body).toEqual({ status: 'held', held: expect.stringMatching(/^the 7-day window is spent/), opensAt: expect.any(Number) })
+    expect(held.body.opensAt).toBeGreaterThan(Date.now() + 23 * 60 * 60e3)
     expect(admitted()).toHaveLength(1)
+    expect(requests().filter(r => r.method === 'thread/start')).toHaveLength(1)
   })
 
   test('an admission that does not answer in its own words leaves the even line to decide', async () => {
@@ -371,7 +375,7 @@ describe('the budget', () => {
     expect(started.status).toBe(200)
   })
 
-  test('latches a new thread ahead of an even burn when the admission cannot measure', async () => {
+  test('refuses a new thread ahead of an even burn when the admission cannot measure, as the line opens past the patience', async () => {
     const first = open()
     await first.call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir })
     await settle()
@@ -380,21 +384,61 @@ describe('the budget', () => {
     process.env.FAKE_LIMITS = ahead()
     const { call } = open()
     const held = await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })
-    expect(held.body).toMatchObject({ status: 'queued', held: expect.stringMatching(/^the 7-day window is 58% used/) })
-    expect(requests().filter(r => r.method === 'turn/start')).toHaveLength(1)
+    expect(held.body).toMatchObject({ status: 'held', held: expect.stringMatching(/^the 7-day window is 58% used/) })
+    expect(requests().filter(r => r.method === 'thread/start')).toHaveLength(1)
     expect((await call('GET', '/budget')).body).toMatchObject({ start: { ok: false }, send: { ok: true } })
+  })
+
+  test('a start the admission holds past the patience is refused with its opening time; one within it latches', async () => {
+    const minute = (ms: number) => new Date(ms).toISOString().slice(0, 16).replace('T', ' ') + 'Z'
+    const hold = 'hold: codex burns 1.6 %/h; this sol reviewer adds about 0.4 %/h; the pace is 1.2 %/h'
+    const late = Date.now() + 2 * 60 * 60e3
+    process.env.CODEX_BRIDGE_ADMIT = admitter('late', `${hold}; opens about ${minute(late)}`, 1)
+    const { call } = open()
+    const refused = await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir, role: 'implementor', unit: 'sheet', round: 1 })
+    expect(refused.body).toEqual({ status: 'held', held: hold.slice('hold: '.length), opensAt: Math.floor(late / 60e3) * 60e3 })
+    expect(requests().filter(r => r.method === 'thread/start')).toHaveLength(0)
+    expect(journal()).toMatchObject([{ event: 'refuse', owner: 's1', unit: 'sheet', round: 1, opensAt: new Date(Math.floor(late / 60e3) * 60e3).toISOString() }])
+
+    const soon = Date.now() + 5 * 60e3
+    process.env.CODEX_BRIDGE_ADMIT = admitter('soon', `${hold}; opens about ${minute(soon)}`, 1)
+    expect((await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })).body).toMatchObject({
+      id: 't1',
+      status: 'queued',
+      opensAt: Math.floor(soon / 60e3) * 60e3,
+    })
+  })
+
+  test('a held turn does not hold a later one that fits, until it has waited past the patience', async () => {
+    // Luna turns are held; every other turn fits.
+    const file = join(dir, 'admit-luna.sh')
+    writeFileSync(file, `echo "$@" >> ${join(dir, 'admit.log')}\ncase "$*" in *luna*) echo 'hold: no room for luna'; exit 1;; esac\necho 'admit: fits'\n`)
+    process.env.CODEX_BRIDGE_ADMIT = `sh ${file}`
+    const { bridge, call } = open()
+    expect((await call('POST', '/start', { owner: 's1', description: 'verifier sheet r1', prompt: 'check it', cwd: dir, model: 'luna' })).body).toMatchObject({ id: 't1', status: 'queued' })
+    expect((await call('POST', '/start', { owner: 's1', description: 'implementor queue r1', prompt: 'build it', cwd: dir })).body).toMatchObject({ id: 't2', status: 'running' })
+
+    later(PATIENCE_MIN)
+    const behind = await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'build it', cwd: dir })
+    expect(behind.body).toMatchObject({ id: 't3', status: 'queued', held: 'a turn latched past 10 min goes first (no room for luna)' })
+    await bridge.pump()
+    expect(admitted().at(-1)).toContain('--model gpt-6-luna')
+    expect((await call('GET', '/threads?owner=s1')).body.map((t: any) => t.status)).toEqual(['queued', 'idle', 'queued'])
   })
 })
 
 describe('waiting on a latched turn', () => {
   const reads = (...answers: Array<Array<{ id: string; status: string; held?: string }> | undefined>) => async () => answers.shift() ?? answers.at(-1)
   test('ends once the turn starts, and gives up on a turn still latched past its patience', async () => {
-    const queued = { id: 't1', status: 'queued', held: 'the pace is 0.3 %/h' }
+    const queued = { id: 't1', status: 'queued', held: 'the pace is 0.3 %/h' } as { id: string; status: string; held?: string; opensAt?: number }
     expect(await waitStarted('t1', 1, reads([queued], [{ id: 't1', status: 'running' }]), 1)).toEqual({ code: 0, line: 'started: thread t1 is running' })
     expect(await waitStarted('t9', 1, reads([queued]), 1)).toMatchObject({ code: 3 })
     const late = await waitStarted('t1', 0, reads([queued]), 1)
     expect(late).toMatchObject({ code: 4, line: expect.stringContaining('still latched after 0 min (the pace is 0.3 %/h)') })
     // A bridge that does not answer counts as latched.
     expect(await waitStarted('t1', 0, reads(undefined), 1)).toMatchObject({ code: 4, line: expect.stringContaining('(the bridge is down)') })
+    // One that should open past the patience gives up at once.
+    const far = { ...queued, opensAt: Date.UTC(2099, 0, 1, 9, 30) }
+    expect(await waitStarted('t1', 10, reads([far]), 1)).toMatchObject({ code: 4, line: expect.stringContaining('it should open about 2099-01-01 09:30Z, past 10 min') })
   })
 })

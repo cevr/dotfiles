@@ -15,8 +15,9 @@ export type Thread = {
   model: string
   effort?: string
   status: string
-  /** Why a latched turn (status `queued`) waits. */
+  /** Why a latched turn (status `queued`) waits, and when it should start (ms). */
   held?: string
+  opensAt?: number
   turns: number
   compactions: number
   final?: string

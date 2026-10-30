@@ -63,7 +63,8 @@ type Cache = { version: number; files: Record<string, FileTally>; snapshots: Rec
 
 export type HourLoad = { at: number; w: Record<string, number> };
 export type ThreadCost = { id: string; family: string; role: string; activeHours: number; w: number };
-export type LiveThread = { id: string; family: string; role: string; recentWph: number };
+/** `activeHours`: how long the thread has been active so far. */
+export type LiveThread = { id: string; family: string; role: string; recentWph: number; activeHours?: number };
 export type CodexLoad = {
   host: string;
   complete: boolean;
@@ -277,7 +278,7 @@ export function codexLoad(now = Date.now(), deadline = Date.now() + scanMs): Cod
       // A thread younger than the window burns over its own age, not the whole window.
       const span = Math.min(RECENT, Math.max(MIN_SPAN, now - (t.firstAt ?? now)));
       const x = recent.reduce((n, [, v]) => n + v, 0);
-      liveThreads.push({ id: t.id ?? id, family: t.family, role: r, recentWph: Math.round(x * (HOUR / span)) });
+      liveThreads.push({ id: t.id ?? id, family: t.family, role: r, recentWph: Math.round(x * (HOUR / span)), activeHours: Number((t.activeMs / HOUR).toFixed(3)) });
     }
   }
   return {

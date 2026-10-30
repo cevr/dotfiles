@@ -57,7 +57,7 @@ function bridge(
   on('http.fetch', (_, e) => {
     const path = new URL(e.url).pathname
     if (e.init?.body) posted.push({ path, body: JSON.parse(e.init.body) })
-    const body = path === '/start' ? (threads().find(t => t.status === 'queued') ?? running) : path === '/send' ? threads()[0] : path === '/threads' ? threads() : path === '/events' ? events.splice(0) : path === '/ack' ? {} : path === '/budget' ? budget : null
+    const body = path === '/start' ? (threads().find(t => t.status === 'queued' || t.status === 'held') ?? running) : path === '/send' ? threads()[0] : path === '/threads' ? threads() : path === '/events' ? events.splice(0) : path === '/ack' ? {} : path === '/budget' ? budget : null
     return { value: { ok: true, status: 200, text: JSON.stringify(body), headers: {} } }
   })
   on('command.register', () => ({ value: { command: 'codex' } }))
@@ -149,6 +149,16 @@ test('a start names its orchestrate unit and round to the bridge', async ($, on)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r2', prompt: 'review', unit: 'sheet', round: 2, tool_use_id: 'tu1' })
   expect(posted.findLast(p => p.path === '/start')?.body).toMatchObject({ unit: 'sheet', round: 2, cwd: '/' })
+})
+
+test('a start the bridge holds past the patience says when it would open and to run the role on Claude', async ($, on) => {
+  const held = { status: 'held', held: 'codex burns 1.6 %/h; this sol reviewer adds about 0.4 %/h; the pace is 1.2 %/h', opensAt: Date.UTC(2026, 9, 30, 14, 20) }
+  bridge(on, () => [held as unknown as Thread])
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const answer = await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r1', prompt: 'review', tool_use_id: 'tu1' })
+  expect(answer).toMatchObject({
+    result: `Codex holds this turn and made no thread: ${held.held}. It should open about 2026-10-30 14:20Z, more than 10 minutes away. Run this role on Claude now (orchestrate Families).`,
+  })
 })
 
 test("a turn's end names its cause in plain words", async ($, on) => {
