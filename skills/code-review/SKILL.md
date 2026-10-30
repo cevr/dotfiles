@@ -63,7 +63,7 @@ Outcome is **report** (read-only; edit nothing) unless the user asked for fixes.
 
 ## Phase 3: Your review
 
-Read the exact diff and every changed file in full. Read call sites and owner modules. Reproduce or inspect the behavior when you can.
+Read the exact diff. Read a changed file in full where the diff alone does not show its contract: a new module, a changed signature, a rewritten flow. Read call sites and owner modules. Reproduce or inspect the behavior when you can.
 
 Apply the review contract to the changed scope. Apply the test-audit authoring gate to every new or changed test; in `tests` mode, hunt the junk patterns and collect candidate evidence for each deletion. Prefer a few high-confidence findings over a speculative list.
 

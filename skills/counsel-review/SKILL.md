@@ -7,7 +7,7 @@ description: Get an independent review of a change from the other model family t
 
 The other model family reviews the change against the same criteria as `code-review`. You ground the packet first and validate every claim after. Read-only: edit nothing during the review.
 
-A PR someone else asked you to review runs `code-review`'s Requested review instead, in this session.
+A PR someone else asked you to review runs `code-review`'s Requested review instead, in this session. A **direct reviewer** (a prompt that says *Review directly*: you are the other family) skips this skill and reviews with `code-review` from Phase 2, on the packet it was given.
 
 Read `../code-review/SKILL.md` and `../counsel/SKILL.md` first. The criteria live in `../code-review/references/review-contract.md` and `../code-review/references/test-audit.md`.
 
@@ -22,7 +22,7 @@ Say which path ran in the report.
 
 ## 1. Ground the packet
 
-Run `code-review` Phases 1–3 (scope and mode, context, your review) in report outcome. Counsel challenges a grounded candidate; it does not do discovery.
+For an explicit second opinion (the user asked for one, or a final gate before merge or release), run `code-review` Phases 1–3 (scope and mode, context, your review) in report outcome first: Counsel then challenges a grounded candidate. Otherwise ground only the scope, the contract and the diff, send the packet without candidates, and spend your own reading on validation (§3).
 
 ## 2. Send the packet
 
@@ -39,17 +39,7 @@ Include every applicable item:
 
 Tell it: the review is read-only; attack each candidate and hunt for missed blockers; cite full paths and line numbers; say "no blocker" when there is none.
 
-Through the codex mod: `mcp__codex__start` with `model: "sol"`, `effort: "max"`, `sandbox: "read-only"`, `description: "counsel-review <checkpoint> r1"`, and the packet as the prompt. Pass no `role`. Keep the thread id for rounds two and three.
-
-Through `okra counsel`:
-
-```bash
-prompt_path="$(mktemp -t counsel-review)"
-# write the packet to "$prompt_path"
-okra counsel --deep -f "$prompt_path"
-```
-
-Read the output file named on stdout (`claude.md` or `codex.md`), and its `.stderr` on failure. Set no short time limit.
+Invoke each path as [`counsel`](../counsel/SKILL.md) says, at its deep setting (`effort: "max"` through the mod, `--deep` through `okra counsel`), with the description `counsel-review <checkpoint> r<N>`. Set no short time limit.
 
 ## 3. Validate
 
