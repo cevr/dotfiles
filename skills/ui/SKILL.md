@@ -9,14 +9,17 @@ One skill for interface work in any stack. `references/` holds what is true ever
 
 ## Platform
 
-Identify the platform first and read its index:
+Identify the render target first (a browser, iOS, Android), then the framework, and read the target's index:
 
 | Project has | Platform | Read |
 | --- | --- | --- |
-| `package.json` with a UI framework (React, Solid) | Web | [web](platforms/web/index.md) |
+| `package.json` with a UI framework that renders to a browser (React DOM, Solid) | Web | [web](platforms/web/index.md) |
+| `package.json` with `react-native` or Expo | Native | The [apple](platforms/apple/index.md) and [android](platforms/android/index.md) indexes for each target's conventions, and the `react-native-best-practices` skill for the APIs. The web index's DOM and CSS notes do not apply. |
 | An Xcode project or `Package.swift` with SwiftUI, UIKit, or AppKit | Apple | [apple](platforms/apple/index.md) |
 | `build.gradle(.kts)` with Compose or Android views | Android | [android](platforms/android/index.md) |
 | Anything else (Flutter, Qt, GTK, a terminal UI, a game UI) | Other | No index: apply the references directly, and translate their labelled web notes through the platform file closest to the stack. The platform's own guidelines take the platform-convention slot in [precedence](#precedence). |
+
+**States.** List the affected states once, at the start (each screen's loading, empty, error, long-content and disabled states, each theme and size class). Implementation, verification and the PR's proof use that one list, and a capture of a state on the same head commit serves all three.
 
 A domain reference states the rule and its values; the platform's file for that domain (`platforms/<platform>/<domain>.md`, listed in its index) gives the APIs and code. Sizes are in points: CSS `px`, Apple `pt`, Android `dp`. Durations are in milliseconds.
 
