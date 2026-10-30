@@ -97,12 +97,29 @@ describe('a transcript that spans the window start counts only its usage inside 
     ]);
     expect(codexAgent(text, 'r', since)!.tokens).toEqual({ input: 200, cacheWrite: 0, cacheRead: 300, output: 20 });
   });
+  test('Codex: the window prices its own model, not the one most used before it', () => {
+    const context = (at: string, model: string) => ({ type: 'turn_context', timestamp: at, payload: { model } });
+    const count = (at: string, input: number, output: number) => ({ type: 'event_msg', timestamp: at, payload: { type: 'token_count', info: { total_token_usage: { input_tokens: input, output_tokens: output } } } });
+    const text = jsonl([
+      context('2026-10-10T10:00:00Z', 'gpt-6.1-sol'),
+      context('2026-10-11T10:00:00Z', 'gpt-6.1-sol'),
+      count('2026-10-11T10:05:00Z', 500, 50),
+      context('2026-10-20T10:00:00Z', 'gpt-6-luna'),
+      count('2026-10-20T10:05:00Z', 1500, 1050),
+    ]);
+    expect(codexAgent(text, 'r', since)).toMatchObject({ model: 'gpt-6-luna' });
+  });
 });
 
 test("a Codex thread carries the unit and round its bridge start named, from the state or the log", () => {
   const dir = mkdtempSync(join(tmpdir(), 'bridge-'));
   const a = '01a184fe-d423-7352-943c-524b71bd8327', b = '01a18504-ae1b-75f0-8eea-511e064dc88c', c = '01a18524-a8df-7001-af96-1850e9c452e8';
-  writeFileSync(join(dir, 'state.json'), JSON.stringify({ threads: { [a]: { id: a, unit: 'sheet', round: 2 }, [c]: { id: c } } }));
+  // d named no unit, so its description joins it; e is a's thread the bridge opened again on the app-server.
+  const d = '01a18530-0000-7000-8000-000000000001', e = '01a18531-0000-7000-8000-000000000002';
+  writeFileSync(
+    join(dir, 'state.json'),
+    JSON.stringify({ threads: { [a]: { id: a, unit: 'sheet', round: 2, codexId: e }, [c]: { id: c, description: 'a look prototype' }, [d]: { id: d, description: 'reviewer tabs r3: delta' } } }),
+  );
   writeFileSync(join(dir, 'bridge.log'), jsonl([{ event: 'drain' }, { event: 'start', thread: b, unit: 'tabs', round: 1 }]));
   const sessions = join(dir, 'sessions', '2026', '10', '29');
   mkdirSync(sessions, { recursive: true });
@@ -110,9 +127,9 @@ test("a Codex thread carries the unit and round its bridge start named, from the
     { type: 'turn_context', timestamp: '2026-10-29T10:00:00Z', payload: { model: 'gpt-6-luna' } },
     { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 1, output_tokens: 1 } } } },
   ]);
-  for (const id of [a, b, c]) writeFileSync(join(sessions, `rollout-2026-10-29T00-10-55-${id}.jsonl`), rollout);
+  for (const id of [a, b, c, d, e]) writeFileSync(join(sessions, `rollout-2026-10-29T00-10-55-${id}.jsonl`), rollout);
   const tags = Object.fromEntries(codexAgents(join(dir, 'sessions'), 0, bridgeUnits(dir)).map((x) => [x.id.slice(-36), [x.unit, x.round]]));
-  expect(tags).toEqual({ [a]: ['sheet', 2], [b]: ['tabs', 1], [c]: [undefined, undefined] });
+  expect(tags).toEqual({ [a]: ['sheet', 2], [b]: ['tabs', 1], [c]: [undefined, undefined], [d]: ['tabs', 3], [e]: ['sheet', 2] });
 });
 
 test('a model with no price row has no cost', () => {

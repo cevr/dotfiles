@@ -25,6 +25,11 @@ export function repeats(findings: string): string[] {
   return out;
 }
 
+/** The head commit a request names: `Head: <sha>`, or the right side of `<base>..<head>`. */
+export function headOf(request: string): string | undefined {
+  return /\bhead\b[^\n]*?\b([0-9a-f]{7,40})\b/i.exec(request)?.[1] ?? /\b[0-9a-f]{7,40}\.\.([0-9a-f]{7,40})\b/.exec(request)?.[1];
+}
+
 /** Why round `n`'s request cannot go to review; empty when it can. */
 export function refusals(dir: string, n: number): string[] {
   const request = read(join(dir, `round-${n}-request.md`));
@@ -32,11 +37,12 @@ export function refusals(dir: string, n: number): string[] {
   const out: string[] = [];
   // `Head: <sha>`, or a range `<base>..<head>`.
   if (!/\bhead\b[^\n]*\b[0-9a-f]{7,40}\b|\b[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\b/i.test(request)) out.push(`round-${n}-request.md names no head commit`);
-  const reviewed = new Set(read(join(dir, `round-${n - 1}-request.md`))?.match(/\b[0-9a-f]{7,40}\b/g) ?? []);
+  const reviewed = headOf(read(join(dir, `round-${n - 1}-request.md`)) ?? '');
   for (const id of repeats(read(join(dir, `round-${n - 1}-findings.md`)) ?? '')) {
     const m = new RegExp(String.raw`^[\s>*-]*repeat\s+${escape(id)}\**:\s*\S.*?\bred at\s+\`?([0-9a-f]{7,40})\b`, 'im').exec(request);
     if (!m) out.push(`${id} is a repeat: add \`repeat ${id}: <new test> red at <the head round ${n - 1} reviewed>\``);
-    else if (![...reviewed].some((sha) => sha.startsWith(m[1]) || m[1].startsWith(sha))) out.push(`repeat ${id}: ${m[1]} is not a commit round-${n - 1}-request.md names`);
+    else if (!reviewed) out.push(`repeat ${id}: round-${n - 1}-request.md names no head commit`);
+    else if (!(reviewed.startsWith(m[1]) || m[1].startsWith(reviewed))) out.push(`repeat ${id}: ${m[1]} is not the head round ${n - 1} reviewed (${reviewed})`);
   }
   return out;
 }

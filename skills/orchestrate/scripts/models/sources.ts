@@ -93,12 +93,18 @@ const INJECTED = /^\s*(# AGENTS\.md|<environment_context>|<user_instructions>|<p
 export function codexAgent(text: string, id: string, since = 0): Agent | undefined {
   const models = new Map<string, number>();
   let first = 0, last = 0, prompt = '', final = '', compacted = false, cwd: string | undefined, effort: string | undefined, session = id;
-  let total: any, before: any, type = '';
+  let total: any, before: any, type = '', opening: string | undefined;
   for (const d of lines(text)) {
     if (d.timestamp) { last = Date.parse(d.timestamp); if (last >= since) first ||= last; }
     const p = d.payload ?? {};
     if (d.type === 'session_meta') { cwd ??= p.cwd; session = p.forked_from_id ?? p.parent_thread_id ?? p.id ?? id; }
-    if (d.type === 'turn_context' && p.model) { models.set(p.model, (models.get(p.model) ?? 0) + 1); effort = p.effort ?? effort; }
+    // The model of the window's own turns: usage before `since` is not counted, so neither is its model,
+    // past the one in force when the window opened.
+    if (d.type === 'turn_context' && p.model) {
+      if (last >= since) models.set(p.model, (models.get(p.model) ?? 0) + 1);
+      else opening = p.model;
+      effort = p.effort ?? effort;
+    }
     if ((d.type === 'compacted' || p.type === 'context_compacted') && last >= since) compacted = true;
     if (d.type === 'event_msg' && p.type === 'token_count' && p.info?.total_token_usage) {
       total = p.info.total_token_usage;
@@ -118,7 +124,7 @@ export function codexAgent(text: string, id: string, since = 0): Agent | undefin
       if (role) type = `orchestrate-${role}`;
     }
   }
-  const model = top(models);
+  const model = top(models) ?? opening;
   if (!model || !total) return undefined;
   // token_count totals are cumulative: the window's usage is the last total less the last one before it.
   const used = (k: string) => (total[k] ?? 0) - (before?.[k] ?? 0);
@@ -162,21 +168,29 @@ export function claudeAgents(root: string, since: number): Agent[] {
 
 export type BridgeTag = { unit: string; round?: number };
 
+// A start's description begins like the hand-back line: `implementor sheet r2`.
+const HANDBACK = /^(?:planner|implementor|reviewer|verifier)\s+(\S+)\s+r(\d+)\b/;
+
 /**
  * The unit and round each codex-bridge thread's start named, by thread id: from each thread
- * in state.json, then from bridge.log's JSON lines, which outlive the state's pruning.
+ * in state.json, then from bridge.log's JSON lines, which outlive the state's pruning. A start
+ * that passed no `unit` is joined by its description. A thread the bridge opened again is
+ * tagged under its app-server id too, which names its rollout.
  */
 export function bridgeUnits(dir: string): Map<string, BridgeTag> {
   const out = new Map<string, BridgeTag>();
-  const tag = (thread: unknown, unit: unknown, round: unknown) => {
-    if (typeof thread !== 'string' || typeof unit !== 'string' || !unit || out.has(thread)) return;
-    out.set(thread, { unit, round: typeof round === 'number' ? round : undefined });
+  const tag = (ids: unknown[], unit: unknown, round: unknown, description: unknown) => {
+    const named = typeof description === 'string' ? HANDBACK.exec(description) : null;
+    const u = typeof unit === 'string' && unit ? unit : named?.[1];
+    const r = typeof round === 'number' ? round : named ? Number(named[2]) : undefined;
+    if (!u) return;
+    for (const id of ids) if (typeof id === 'string' && !out.has(id)) out.set(id, { unit: u, round: r });
   };
   try {
     const state = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
-    for (const t of Object.values<any>(state.threads ?? {})) tag(t?.id, t?.unit, t?.round);
+    for (const t of Object.values<any>(state.threads ?? {})) tag([t?.id, t?.codexId], t?.unit, t?.round, t?.description);
   } catch {}
-  try { for (const l of lines(readFileSync(join(dir, 'bridge.log'), 'utf8'))) tag(l?.thread, l?.unit, l?.round); } catch {}
+  try { for (const l of lines(readFileSync(join(dir, 'bridge.log'), 'utf8'))) tag([l?.thread, l?.codexId], l?.unit, l?.round, l?.description); } catch {}
   return out;
 }
 

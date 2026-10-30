@@ -45,8 +45,18 @@ test("a red test must be red at the head the repeat's round reviewed", () => {
   const request = 'Head: 9f8e7d6c5b\n\n## Repeat tests\n- repeat M1: test/sheet.prop.ts "every drag speed settles" red at 1a2b3c4\n- repeat M3: test/header.test.ts red at 0000000\n';
   const r = check({ 'round-2-request.md': r2, 'round-2-findings.md': findings, 'round-3-request.md': request }, 3);
   expect(r.code).toBe(1);
-  expect(r.err).toContain('repeat M3: 0000000 is not a commit');
+  expect(r.err).toContain('repeat M3: 0000000 is not the head round 2 reviewed');
   expect(r.err).not.toContain('M1');
+});
+
+test('red at the base of the reviewed range is not red at its head', () => {
+  const range = 'Base: aaaaaaa\nHead: bbbbbbb\n';
+  const at = (sha: string) => check({ 'round-2-request.md': range, 'round-2-findings.md': findings, 'round-3-request.md': `Head: ccccccc\n- repeat M1: a.test.ts red at ${sha}\n- repeat M3: b.test.ts red at ${sha}\n` }, 3).code;
+  expect(at('aaaaaaa')).toBe(1);
+  expect(at('bbbbbbb')).toBe(0);
+  // A range names its head on the right.
+  const r = check({ 'round-2-request.md': 'Commits: aaaaaaa..bbbbbbb\n', 'round-2-findings.md': findings, 'round-3-request.md': 'Head: ccccccc\n- repeat M1: a red at bbbbbbb\n- repeat M3: b red at bbbbbbb\n' }, 3);
+  expect(r.code).toBe(0);
 });
 
 test('a request with a red test for every repeat, or with no repeat behind it, goes to review', () => {
