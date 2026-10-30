@@ -367,9 +367,9 @@ export class Bridge {
     )
   }
 
-  /** Why a running turn ended when its child went away: the Sabbath's, when it stopped it or is on now. */
+  /** Why a running turn ended when its child went away: the Sabbath's only when the Sabbath stopped it. */
   private lost(thread: Thread, cause: Cause): Cause {
-    return thread.paused || this.rules.paused(Date.now()) ? 'sabbath' : cause
+    return thread.paused ? 'sabbath' : cause
   }
 
   /** Appends one event to bridge.log, with the thread's unit and round when it names one. */
@@ -402,16 +402,20 @@ export class Bridge {
     if (this.loading?.at === at) return this.loading.done
     // The first load is no change: only a reload goes to the log.
     const reload = this.rulesAt !== ''
-    const done = (async () => {
+    const done = (async (): Promise<Policy> => {
+      let rules: Policy | undefined
+      let failed: Error | undefined
       try {
-        const rules: Policy = await import(`${this.policy}?v=${at}`)
-        if (this.loading?.at !== at) return this.rules
+        rules = await import(`${this.policy}?v=${at}`)
+      } catch (error) {
+        failed = error as Error
+      }
+      // Overtaken: its callers follow the newest load.
+      if (this.loading?.at !== at) return this.loading ? this.loading.done : this.rules
+      if (rules) {
         this.rules = rules
         if (reload) this.record('policy', undefined, { version: at })
-      } catch (error) {
-        if (this.loading?.at !== at) return this.rules
-        this.record('policy', undefined, { version: at, error: (error as Error).message })
-      }
+      } else this.record('policy', undefined, { version: at, error: failed?.message })
       this.rulesAt = at
       this.loading = undefined
       return this.rules
@@ -514,7 +518,7 @@ export class Bridge {
       if (final) thread.final = final.text
       const status = turn.status === 'completed' ? 'idle' : turn.status === 'interrupted' ? 'interrupted' : 'failed'
       const error: string | undefined = turn.error?.message
-      this.finish(thread, status, error, turn.durationMs ?? 0, this.rules.cause(status, error, thread.paused ?? thread.interrupting))
+      this.finish(thread, status, error, turn.durationMs ?? 0, this.rules.cause(status, error, thread.interrupting === true ? true : (thread.paused ?? thread.interrupting)))
     }
   }
 
@@ -574,10 +578,10 @@ export class Bridge {
     } catch (error) {
       // An app-server exit already ended the turn (and latched its resume): that end stands.
       if (thread.status !== 'running') return thread
+      this.record('start-failed', thread, { error: (error as Error).message })
       thread.status = before
       thread.live = live
       if (count) thread.turns--
-      this.record('start-failed', thread, { error: (error as Error).message })
       throw error
     }
     this.save()

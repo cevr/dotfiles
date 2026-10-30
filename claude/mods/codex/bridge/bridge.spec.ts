@@ -216,10 +216,41 @@ describe('a thread', () => {
     setSystemTime(new Date('2026-10-31T12:00:00Z'))
     await first.bridge.pump()
     await settle()
+    // The state as a daemon that died left it: the turn running, the Sabbath's mark saved.
+    const saved = readFileSync(state, 'utf8')
+    expect(JSON.parse(saved).threads.t1).toMatchObject({ status: 'running', paused: 'sabbath' })
     first.bridge.server.stop()
+    await settle()
+    writeFileSync(state, saved)
     const second = open()
     expect((await second.call('GET', '/events?owner=s1')).body).toEqual([])
     expect((await second.call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'queued', held: 'resume after the Sabbath', resumes: 0 }])
+  })
+
+  test("a caller's interrupt after a refused Sabbath interrupt reaches its owner and is not resumed", async () => {
+    const { bridge, call } = open()
+    await call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'deaf', cwd: dir })
+    setSystemTime(new Date('2026-10-31T12:00:00Z'))
+    await bridge.pump()
+    await settle()
+    await call('POST', '/interrupt', { threadId: 't1' })
+    await settle()
+    expect((await call('GET', '/events?owner=s1')).body).toMatchObject([{ status: 'interrupted', cause: 'interrupted-by-caller' }])
+    expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'interrupted' }])
+  })
+
+  test('a turn lost before the Sabbath keeps its own cause when the daemon restarts during it', async () => {
+    const first = open()
+    await first.call('POST', '/start', { owner: 's1', description: 'implementor sheet r1', prompt: 'hang on', cwd: dir })
+    // The state as a daemon that died left it: the turn running. Three restarts already resumed it.
+    const saved = JSON.parse(readFileSync(state, 'utf8'))
+    first.bridge.server.stop()
+    await settle()
+    saved.threads.t1.resumes = 3
+    writeFileSync(state, JSON.stringify(saved))
+    setSystemTime(new Date('2026-10-31T12:00:00Z'))
+    const second = open()
+    expect((await second.call('GET', '/events?owner=s1')).body).toMatchObject([{ status: 'failed', cause: 'drain-interrupt', resumes: 3 }])
   })
 
   test('an admission that ends after sunset starts no turn: the turn latches for the Sabbath', async () => {
