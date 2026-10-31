@@ -113,15 +113,6 @@
             "timeout": 15
           }
         ]
-      },
-      {
-        "matcher": "mcp__cua__.*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bun \"$HOME/Developer/personal/dotfiles/claude/hooks/accept-cua.ts\""
-          }
-        ]
       }
     ],
     "SessionEnd": [
@@ -177,17 +168,6 @@
           }
         ]
       }
-    ],
-    "Elicitation": [
-      {
-        "matcher": "cua",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bun \"$HOME/Developer/personal/dotfiles/claude/hooks/accept-cua.ts\""
-          }
-        ]
-      }
     ]
   },
   "modelSettings": {
@@ -213,7 +193,6 @@
       "WebFetch(domain:anthropic.com)",
       "Skill(react)",
       "Skill(cleanup)",
-      "mcp__cua",
       "Bash(agent-desktop:*)"
     ],
     "ask": [],
