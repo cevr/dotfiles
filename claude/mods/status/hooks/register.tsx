@@ -10,6 +10,8 @@ import { duration, fiveHourPerHour, isNear, outlook, parseAccounts, parseBudget,
 // else dim at the end of the hint under the prompt. The accounts, agents and orchestrate runs
 // are in the /pool pane.
 // Each refresh also rotates the accounts into weekly reset order.
+// An account that needs a login is named above the prompt until it is signed in,
+// and in a toast when it first drops out.
 // Each agent kind compacts at the window the burn says it costs least at (compact.ts).
 
 const PANE = 'status'
@@ -80,6 +82,8 @@ async function load($: EngineInterface) {
       error,
     }
     await update($, snapshot, () => next)
+    const dropped = loggedOut(accounts).filter(label => !loggedOut(before.accounts).includes(label))
+    if (dropped.length > 0) $.ui.toast(`${loginNotice(dropped)}. Run \`teamclaude login\`.`)
     $.ui.status(
       isNear(view, now) ? statusLine(view, now) : !view && error ? `limits unknown: ${error}` : undefined,
     )
@@ -87,6 +91,10 @@ async function load($: EngineInterface) {
     $.ui.log(`status: refresh failed: ${String(error)}`, { to: 'debug' })
   }
 }
+
+const loggedOut = (accounts: readonly Account[]) => accounts.filter(a => a.needsLogin).map(a => a.label)
+const loginNotice = (labels: string[]) =>
+  labels.length === 1 ? `A Claude account needs a login: ${labels[0]}` : `Claude accounts need a login: ${labels.join(', ')}`
 
 const percent = (fraction: number) => `${Math.round(fraction * 100)}%`
 const resetIn = (at: number | undefined, now: number) => (at && at > now ? `resets in ${duration(at - now)}` : '')
@@ -122,6 +130,18 @@ export const register: Register = on => {
     return { text: 'Rate limits pane opened.' }
   })
 
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const labels = e.props.hasSurvey ? [] : loggedOut((await read($, snapshot)).accounts)
+    if (labels.length === 0) return next(e)
+    const { Text } = $.ui.resolve(e)
+    return (
+      <Text color="warning">
+        {labels.join(', ')} {labels.length === 1 ? 'needs' : 'need'} a login: run `teamclaude status` to see which account, then
+        `teamclaude login`.
+      </Text>
+    )
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
     const { at, accounts, outlook: view, pool, runs, error } = await read($, snapshot)
@@ -139,8 +159,8 @@ export const register: Register = on => {
         <Text> </Text>
         <Text bold>Accounts (use of each window)</Text>
         {accounts.map(account => (
-          <Text dimColor={account.usedWeek >= 1}>
-            {account.label} 5h {percent(account.used5h)} {resetIn(account.reset5h, at)} · week {percent(account.usedWeek)}{' '}
+          <Text dimColor={account.usedWeek >= 1} color={account.needsLogin ? 'warning' : undefined}>
+            {account.label} {account.needsLogin && 'needs a login · '}5h {percent(account.used5h)} {resetIn(account.reset5h, at)} · week {percent(account.usedWeek)}{' '}
             {resetIn(account.resetWeek, at)}
           </Text>
         ))}

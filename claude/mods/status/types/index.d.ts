@@ -3,9 +3,11 @@ export type Unit = { unit: string; state: string; round: number; since: string }
 export type Run = { name: string; units: Unit[] }
 
 // One Claude account as teamclaude reports it: use as a fraction of each
-// window (1 is spent), the window's reset, and the weekly burn per hour.
+// window (1 is spent), the window's reset, the weekly burn per hour, and
+// whether it is out of the pool until someone signs it in again.
 export type Account = {
   label: string
+  needsLogin: boolean
   used5h: number
   usedWeek: number
   reset5h?: number

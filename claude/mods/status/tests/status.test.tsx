@@ -220,3 +220,54 @@ test('only a rate limit less than 6 hours away is near', () => {
   expect(isNear({ ...view, limitedAt: NOW + 7 * HOUR }, NOW)).toBe(false)
   expect(isNear({ ...view, limitedAt: undefined }, NOW)).toBe(false)
 })
+
+test('an account that needs a login is named by label above the prompt, once in a toast, and not when all are signed in', async ($, on) => {
+  const toasts: string[] = []
+  let pool = JSON.stringify({
+    accounts: [
+      account('one', 0.2, 0.5, 100),
+      { ...account('two', 0, 0, 100), status: 'error', errorReason: { code: 'refresh_rejected', remedy: 'teamclaude login' } },
+      account('three', 0.1, 0.5, 100),
+    ],
+  })
+  on('command.register', () => ({ value: { command: 'pool' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('clock.every', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: NOW }))
+  on('process.run', (_, e) => {
+    if (e.argv.join(' ').includes('teamclaude status')) return ok(pool)
+    return ran(1, '', 'unexpected')
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  // Stands for the engine's band, which draws nothing of its own here.
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine band</Text>
+  })
+  const band = { plugin: 'status', component: 'AbovePrompt', surface: 'terminal', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+  } as const
+  const refresh = () =>
+    $.command.run({ command: 'pool', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
+
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await refresh()
+  let ui = await $.ui.mount(band)
+  expect((await ui.find({ type: 'Text', text: /login/ }))?.text).toBe(
+    'A2 needs a login: run `teamclaude status` to see which account, then `teamclaude login`.',
+  )
+  expect(await ui.find({ type: 'Text', text: /example\.com|two/ })).toBeUndefined()
+  await ui.unmount()
+  await refresh()
+  expect(toasts).toEqual(['A Claude account needs a login: A2. Run `teamclaude login`.'])
+
+  pool = JSON.stringify({ accounts: [account('one', 0.2, 0.5, 100), account('two', 0, 0, 100), account('three', 0.1, 0.5, 100)] })
+  await refresh()
+  ui = await $.ui.mount(band)
+  expect(await ui.find({ type: 'Text', text: /login/ })).toBeUndefined()
+  await ui.unmount()
+})

@@ -50,6 +50,9 @@ export function parseAccounts(stdout: string): Account[] {
       const quota = field(account, 'quota')
       return {
         label: `A${index + 1}`,
+        // teamclaude puts an OAuth account in error when the provider rejects
+        // its token; only `teamclaude login` brings it back.
+        needsLogin: field(account, 'status') === 'error',
         used5h: num(field(quota, 'unified5h')) ?? 0,
         usedWeek: num(field(quota, 'unified7d')) ?? 0,
         reset5h: num(field(quota, 'unified5hReset')),
