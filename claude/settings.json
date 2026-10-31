@@ -213,7 +213,8 @@
       "WebFetch(domain:anthropic.com)",
       "Skill(react)",
       "Skill(cleanup)",
-      "mcp__cua"
+      "mcp__cua",
+      "Bash(agent-desktop:*)"
     ],
     "ask": [],
     "defaultMode": "auto",
