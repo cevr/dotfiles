@@ -125,7 +125,9 @@ workspace, and archives the rest to `~/rift-archive/<date>` for 30 days before
 it removes them. Pin a workspace by adding its path to `~/.config/workrift/keep`.
 
 All Rift workspaces use the local cache at `/workspaces/.cache/turbo`.
-`TURBO_CACHE=local:rw` disables remote cache reads and writes. Turbo uses two
+`TURBO_CACHE=local:rw` disables remote cache reads and writes. Turbo 2.10 and later
+evicts the oldest entries at the start of a run once the cache passes
+`TURBO_CACHE_MAX_SIZE` (2 GB). Turbo uses two
 concurrent tasks by default on this workbox.
 
 The Herdr service keeps running when the kernel kills a pane process for excess

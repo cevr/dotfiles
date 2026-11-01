@@ -25,6 +25,8 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 # Turborepo (shared local cache for Rift workspaces)
 export TURBO_CACHE=local:rw
 export TURBO_CACHE_DIR="$HOME/.cache/turbo"
+# Turbo 2.10+ evicts the oldest entries at the start of a run once the cache passes this size.
+export TURBO_CACHE_MAX_SIZE=2GB
 
 # pnpm (keep for legacy projects)
 export PNPM_HOME="/Users/cvr/Library/pnpm"
