@@ -86,7 +86,7 @@ An error is an instruction, and it belongs beside the field that failed:
 | Invalid date | Enter a date as DD/MM/YYYY |
 | Oops! Something went wrong. | Unable to save. Check your connection and try again. |
 
-No blame, no "oops" and no exclamation marks. Phrase hints positively, as in "Use at least 8 characters" rather than "Don't use fewer than 8". Show a known requirement as helper text before input, not only in the error. When the same error keeps firing, redesign the interaction so it cannot happen.
+No blame, no "oops" and no exclamation marks. Phrase hints positively, as in "Use at least 8 characters" rather than "Don't use fewer than 8". Remove a requirement the input can absorb: a picker, or a parser that accepts any common format. One that remains (password rules, a file's type and size) shows as helper text beside the field before input and is tied to it (**Web:** `aria-describedby`), not only in the error. When the same error keeps firing, redesign the interaction so it cannot happen.
 
 ## Undo beats confirmation
 
