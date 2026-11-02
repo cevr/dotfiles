@@ -22,7 +22,7 @@ States sit in a vertical list under the group headings from **Find the states in
 - `H` hides and shows the switcher, list and select alike, for screenshots and screen recordings.
 - Key handling ignores events with a modifier key, events already `defaultPrevented` and events from inputs, textareas, selects and contenteditable elements.
 - The active button carries `aria-pressed="true"` and scrolls into view inside the list. The list carries a label, and each group is a `role="group"` labelled by its heading.
-- The component switches instantly and keeps the scroll position. Only the active label eases its font weight.
+- The component switches instantly and keeps the scroll position. Only the label color eases; the active label keeps the same weight, so its width never changes.
 - The list and the select are both always rendered, and a container query shows one, so the active state survives a resize.
 
 ## Structure
@@ -128,7 +128,7 @@ The list's 6px padding keeps its own scrolling from clipping focus rings. The re
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  transition: color 200ms ease-out, font-weight 200ms ease-out;
+  transition: color 200ms ease-out;
 }
 
 .state-switcher button:hover {
@@ -138,7 +138,6 @@ The list's 6px padding keeps its own scrolling from clipping focus rings. The re
 .state-switcher button[aria-pressed="true"] {
   background: rgb(255 255 255 / 0.14);
   color: rgb(255 255 255);
-  font-weight: 500;
 }
 
 .state-switcher button:focus-visible {
