@@ -55,12 +55,13 @@ export function serve(input: {
   sessions: readonly Session[];
   targetWph: number;
   cap?: number;
+  leeway?: number;
 }): Decision & { ahead: number } {
-  const { ticket, sessions, targetWph, cap } = input;
+  const { ticket, sessions, targetWph, cap, leeway } = input;
   const tickets = input.tickets.some((t) => t.id === ticket.id) ? input.tickets : [...input.tickets, ticket];
   const ahead = order(tickets, sessions).findIndex((t) => t.id === ticket.id);
   if (ahead > 0) return { ok: false, ahead, reason: `${ahead} request(s) ahead of this one` };
-  return { ...admit({ targetWph, sessions, reserved: granted(tickets), estimateWph: ticket.estimateWph, cap }), ahead: 0 };
+  return { ...admit({ targetWph, sessions, reserved: granted(tickets), estimateWph: ticket.estimateWph, cap, leeway }), ahead: 0 };
 }
 
 // ── This host's store ──

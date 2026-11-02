@@ -152,6 +152,12 @@ describe('admit', () => {
   test('without a pace only the cap decides', () => {
     expect(admit({ ...base, targetWph: Infinity, estimateWph: 0, sessions: [], cap: 1 })).toEqual({ ok: true, reason: 'fits: pool 0.0 MW/h of no pace yet' });
   });
+  test('the leeway admits an agent that passes the pace by no more than its fraction', () => {
+    // A pace of 100: 82 + 20 = 102 is held at no leeway, admitted at 5%; 86 + 20 = 106 is held at 5%.
+    expect(admit({ ...base, sessions: [root(82)] }).ok).toBe(false);
+    expect(admit({ ...base, sessions: [root(82)], leeway: 0.05 })).toEqual({ ok: true, reason: 'fits: pool 0.0 MW/h of 0.0 MW/h (+5% leeway)' });
+    expect(admit({ ...base, sessions: [root(86)], leeway: 0.05 }).ok).toBe(false);
+  });
 });
 
 describe('the Sabbath', () => {

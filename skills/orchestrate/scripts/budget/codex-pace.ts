@@ -253,9 +253,11 @@ export function admit(input: {
   role: string;
   thread?: string;
   reserve?: number;
+  /** The fraction the projected burn may pass the pace by (Config.leeway). */
+  leeway?: number;
   now: number;
 }): Decision | undefined {
-  const { loads, fit: f, pctph, family, role, thread, reserve = 0, now: at } = input;
+  const { loads, fit: f, pctph, family, role, thread, reserve = 0, leeway = 0, now: at } = input;
   const k = kOf(f, family);
   const threads = loads.flatMap((l) => l.threads);
   const wph = estimate(threads, family, role);
@@ -271,11 +273,12 @@ export function admit(input: {
   const who = `${family} ${role === 'none' ? 'thread' : role}`;
   const burns = `codex burns ${p(now)}${reserve > 0 ? ` (${p(reserve)} of it just started)` : ''}`;
   // A turn is the smallest unit of work: with no other worker live, one runs even when it alone passes the pace.
-  if (now + adds > pctph) {
+  const room = leeway > 0 ? ` (+${Math.round(leeway * 100)}% leeway)` : '';
+  if (now + adds > pctph * (1 + leeway)) {
     if (alone) return { ok: true, reason: `fits: this ${who} runs alone, as no other worker burns; the pace is ${p(pctph)} (+${p(adds)})` };
     const workers = others.filter((t) => t.role !== 'interactive');
-    const opensAt = opening({ workers, threads, f, burning: now, reserve, adds, pctph, family, role, now: at });
-    return { ok: false, reason: `${burns}; this ${who} adds about ${p(adds)}; the pace is ${p(pctph)}`, opensAt };
+    const opensAt = opening({ workers, threads, f, burning: now, reserve, adds, pctph: pctph * (1 + leeway), family, role, now: at });
+    return { ok: false, reason: `${burns}; this ${who} adds about ${p(adds)}; the pace is ${p(pctph)}${room}`, opensAt };
   }
-  return { ok: true, reason: `fits: codex ${p(now + adds)} of ${p(pctph)} with this ${who} (+${p(adds)})` };
+  return { ok: true, reason: `fits: codex ${p(now + adds)} of ${p(pctph)}${room} with this ${who} (+${p(adds)})` };
 }

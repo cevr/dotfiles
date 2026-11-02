@@ -91,7 +91,7 @@ const writeJson = (path: string, value: unknown) => {
   writeFileSync(path, JSON.stringify(value));
 };
 
-const settings = readJson<Partial<Config> & { codex?: { target?: number } }>(join(homedir(), '.config', 'orchestrate', 'budget.json'), {});
+const settings = readJson<Partial<Config> & { codex?: { target?: number; leeway?: number } }>(join(homedir(), '.config', 'orchestrate', 'budget.json'), {});
 const config: Config = { ...DEFAULTS, ...settings };
 const now = Date.now();
 
@@ -194,6 +194,7 @@ if (args.includes('--codex')) {
     writeJson(fitPath, { at: now, fit });
   } else if (kept && now - kept.at < 24 * 60 * MINUTE) fit = kept.fit;
   const weeklyTarget = settings.codex?.target ?? config.weeklyTarget;
+  const leeway = settings.codex?.leeway ?? config.leeway;
   const pace = week && codex.target(week, now, { ...config, weeklyTarget });
 
   if (admitting) {
@@ -207,7 +208,7 @@ if (args.includes('--codex')) {
           ? 'no fit of the cost of the week is in hand'
           : undefined;
     const reserve = Number(option('--reserve') ?? 0) || 0;
-    const d = why || !pace || !fit ? undefined : codex.admit({ loads, fit, pctph: pace.pctph, family, role, thread: option('--thread'), reserve, now });
+    const d = why || !pace || !fit ? undefined : codex.admit({ loads, fit, pctph: pace.pctph, family, role, thread: option('--thread'), reserve, leeway, now });
     if (!d) {
       console.log(`unmeasured: ${why ?? `no ${family} or other thread has run long enough to cost`}`);
       process.exit(2);
@@ -243,7 +244,7 @@ if (args.includes('--codex')) {
     for (const l of loads) for (const [f, w] of Object.entries(l.interactive1h)) interactive[f] = (interactive[f] ?? 0) + w;
     const threads = codex.burn(loads.flatMap((l) => l.live), {}, fit);
     const all = codex.burn(loads.flatMap((l) => l.live), interactive, fit);
-    console.log(`burn now: ${p(all)} (threads ${p(threads)}, interactive ${p(all - threads)})${pace ? (all > pace.pctph ? '; over pace: new threads hold' : '; room for more') : ''}`);
+    console.log(`burn now: ${p(all)} (threads ${p(threads)}, interactive ${p(all - threads)})${pace ? (all > pace.pctph * (1 + leeway) ? '; over pace: new threads hold' : '; room for more') : ''}`);
   }
   const threads = loads.flatMap((l) => l.threads);
   const groups = new Map<string, { family: string; role: string; wph: number[] }>();
@@ -358,7 +359,7 @@ if (args.includes('--admit')) {
       mine.push(ticket);
     }
     ticket.beat = p.now;
-    const d = serve({ ticket, tickets: [...mine, ...p.remoteTickets], sessions: p.sessions, targetWph: p.targetWph ?? Infinity, cap: capOf(p.targetWph) });
+    const d = serve({ ticket, tickets: [...mine, ...p.remoteTickets], sessions: p.sessions, targetWph: p.targetWph ?? Infinity, cap: capOf(p.targetWph), leeway: config.leeway });
     if (d.ok) ticket.granted = ticket.started = p.now;
     return { ...d, ticket };
   });
@@ -382,7 +383,7 @@ if (args.includes('--wait')) {
       const ticket = mine.find((t) => t.id === id);
       if (!ticket || ticket.granted !== undefined) return { ticket };
       ticket.beat = p.now;
-      const d = serve({ ticket, tickets: [...mine, ...p.remoteTickets], sessions: p.sessions, targetWph: p.targetWph ?? Infinity, cap: capOf(p.targetWph) });
+      const d = serve({ ticket, tickets: [...mine, ...p.remoteTickets], sessions: p.sessions, targetWph: p.targetWph ?? Infinity, cap: capOf(p.targetWph), leeway: config.leeway });
       if (d.ok) ticket.granted = p.now;
       return { ticket, reason: d.reason };
     });
@@ -448,14 +449,14 @@ const cap =
     ? Number(option('--cap'))
     : targetWph === undefined || !typical
       ? UNMEASURED_CAP
-      : agents + Math.max(0, Math.floor((targetWph - burnWph) / typical));
+      : agents + Math.max(0, Math.floor((targetWph * (1 + config.leeway) - burnWph) / typical));
 
 if (pace && k.k7) {
   const p = (wph: number) => pct(wph * k.k7!);
   const verdict =
     burnWph > pace.week.ceiling / k.k7
       ? 'over pace: a weekly limit comes before the next reset'
-      : targetWph !== undefined && burnWph > targetWph
+      : targetWph !== undefined && burnWph > targetWph * (1 + config.leeway)
         ? 'over pace: hold new agents'
         : 'room for more';
   const five = k.k5 ? `, 5h ceiling ${p(pace.five / k.k5)}/h` : '';

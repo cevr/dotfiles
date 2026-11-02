@@ -37,12 +37,15 @@ export type Config = {
   fiveHourMax: number;
   /** The weekly paces count only the hours outside the Sabbath. */
   sabbath: boolean;
+  /** Admission lets the projected burn pass the pace by this fraction: at 0.05, a pace of 20 still admits an agent that brings the burn to 21 (owner, 2026-11-01). */
+  leeway: number;
 };
 
 export const DEFAULTS: Config = {
   weeklyTarget: 0.99,
   fiveHourMax: 0.9,
   sabbath: true,
+  leeway: 0.05,
 };
 
 const HOUR = 3600e3;
@@ -163,16 +166,19 @@ export function admit(input: {
   estimateWph: number;
   /** The most agents the pool runs at once, whatever the pace. */
   cap?: number;
+  /** The fraction the projected burn may pass the pace by (Config.leeway). */
+  leeway?: number;
 }): Decision {
-  const { targetWph, sessions, reserved, estimateWph, cap } = input;
+  const { targetWph, sessions, reserved, estimateWph, cap, leeway = 0 } = input;
   const burn = sessions.reduce((n, s) => n + s.recentWph, 0) + reserved.reduce((n, r) => n + r.estimateWph, 0);
   const mw = (n: number) => (Number.isFinite(n) ? `${(n / 1e6).toFixed(1)} MW/h` : 'no pace yet');
   const agents = sessions.filter((s) => s.sub).length + reserved.length;
   if (cap !== undefined && agents >= cap) {
     return { ok: false, reason: `the pool runs ${agents} of its ${cap} agent(s)` };
   }
-  if (burn + estimateWph > targetWph) {
-    return { ok: false, reason: `pool burns ${mw(burn)}; this agent adds about ${mw(estimateWph)}; the pace is ${mw(targetWph)}` };
+  const room = leeway > 0 ? ` (+${Math.round(leeway * 100)}% leeway)` : '';
+  if (burn + estimateWph > targetWph * (1 + leeway)) {
+    return { ok: false, reason: `pool burns ${mw(burn)}; this agent adds about ${mw(estimateWph)}; the pace is ${mw(targetWph)}${room}` };
   }
-  return { ok: true, reason: `fits: pool ${mw(burn + estimateWph)} of ${mw(targetWph)}` };
+  return { ok: true, reason: `fits: pool ${mw(burn + estimateWph)} of ${mw(targetWph)}${room}` };
 }

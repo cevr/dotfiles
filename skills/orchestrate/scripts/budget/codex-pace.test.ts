@@ -169,6 +169,12 @@ describe('admit', () => {
     expect(admit({ loads, fit: k, pctph: 2, family: 'sol', role: 'implementor', now: T })).toEqual({ ok: true, reason: 'fits: codex 1.5 %/h of 2.0 %/h with this sol implementor (+0.4 %/h)' });
   });
 
+  test('the leeway admits a turn that passes the pace by no more than its fraction', () => {
+    // 1.1 + 0.4 = 1.5 %/h against a pace of 1.45: held at no leeway, admitted at 5% (1.52).
+    expect(admit({ loads, fit: k, pctph: 1.45, family: 'sol', role: 'implementor', now: T })?.ok).toBe(false);
+    expect(admit({ loads, fit: k, pctph: 1.45, family: 'sol', role: 'implementor', leeway: 0.05, now: T })).toEqual({ ok: true, reason: 'fits: codex 1.5 %/h of 1.4 %/h (+5% leeway) with this sol implementor (+0.4 %/h)' });
+  });
+
   test("a next turn does not count its own thread's live burn again", () => {
     // Without thread a's 1.0 %/h: 0.1 %/h interactive, plus 0.4 %/h for the turn.
     expect(admit({ loads, fit: k, pctph: 1.2, family: 'sol', role: 'reviewer', thread: 'a', now: T })).toEqual({ ok: true, reason: 'fits: codex 0.5 %/h of 1.2 %/h with this sol reviewer (+0.4 %/h)' });
