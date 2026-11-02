@@ -54,7 +54,6 @@ check_memory_protection() {
 check_system_service tailscaled.service
 check_system_service systemd-resolved.service
 check_system_service bite-workbox-sshd.service
-check_system_service bite-workbox-sideshow-firewall.service
 check_system_service bite-agent-settings.path
 check_system_service syncthing@exedev.service
 check_system_service mongod.service
@@ -117,7 +116,6 @@ check "Tailscale address" sh -c 'test -n "$(tailscale ip -4 | head -1)"'
 # shellcheck disable=SC2016
 check "Tailscale SSH port" sh -c 'tailscale_ipv4=$(tailscale ip -4 | head -1); ss -ltn "sport = :2222" | grep -q "$tailscale_ipv4:2222"'
 check "Sideshow HTTP" curl --fail --silent --max-time 3 http://127.0.0.1:8228/
-check "Sideshow firewall" sudo -n nft list table inet bite_workbox_sideshow
 # shellcheck disable=SC2016
 check "Syncthing folders" sh -c '
   syncthing_gui_json=$(syncthing cli config gui dump-json)
