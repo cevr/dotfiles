@@ -53,7 +53,6 @@ check_mode() {
   systemctl --user is-active --quiet workbox-health.timer
   systemctl --user is-active --quiet workbox-update-report.timer
   systemctl is-active --quiet bite-workbox-sshd.service
-  systemctl is-active --quiet bite-workbox-sideshow-firewall.service
   systemctl is-active --quiet bite-agent-settings.path
   systemctl is-enabled --quiet bite.slice
   systemctl is-active --quiet bite.slice
@@ -150,7 +149,6 @@ done
 
 sudo install -m 0644 "$system_dir/bite-agent-settings.service" /etc/systemd/system/
 sudo install -m 0644 "$system_dir/bite-agent-settings.path" /etc/systemd/system/
-sudo install -m 0644 "$system_dir/bite-workbox-sideshow-firewall.service" /etc/systemd/system/
 sudo install -m 0644 "$system_dir/bite-workbox-sshd.service" /etc/systemd/system/
 sudo install -m 0644 "$system_dir/bite-workbox-resolver.service" /etc/systemd/system/
 sudo install -m 0644 "$system_dir/bite.slice" /etc/systemd/system/
@@ -159,7 +157,6 @@ sudo install -d -m 0755 /etc/systemd/system/user-.slice.d
 sudo install -m 0644 \
   "$system_dir/user-.slice.d/20-workbox-memory-limit.conf" \
   /etc/systemd/system/user-.slice.d/20-workbox-memory-limit.conf
-sudo install -m 0644 "$system_dir/bite-workbox-sideshow.nft" /etc/nftables.d/bite-workbox-sideshow.nft
 sudo install -m 0644 "$system_dir/20auto-upgrades" /etc/apt/apt.conf.d/20auto-upgrades
 sudo install -d -m 0755 /etc/systemd/system/tailscaled.service.d
 sudo install -m 0644 \
@@ -171,6 +168,13 @@ sudo install -m 0644 \
   /etc/systemd/system/systemd-resolved.service.d/20-bite-memory-protection.conf
 sudo install -d -m 0755 /etc/systemd/resolved.conf.d
 sudo install -m 0644 "$resolved_config" /etc/systemd/resolved.conf.d/workbox.conf
+
+# Sideshow is reachable through exe.dev and Tailscale. Older boxes kept a
+# firewall that dropped port 8228 off loopback; remove it.
+sudo systemctl disable --now bite-workbox-sideshow-firewall.service 2>/dev/null || true
+sudo rm -f \
+  /etc/systemd/system/bite-workbox-sideshow-firewall.service \
+  /etc/nftables.d/bite-workbox-sideshow.nft
 
 tailscale_ipv4=$(tailscale ip -4 | head -1)
 sshd_config_file=$(mktemp)
@@ -222,7 +226,6 @@ sudo systemctl enable --now apt-daily.timer apt-daily-upgrade.timer
 sudo systemctl enable --now \
   bite-agent-settings.path \
   bite-workbox-resolver.service \
-  bite-workbox-sideshow-firewall.service \
   bite-workbox-sshd.service
 sudo systemctl restart bite-workbox-sshd.service
 systemctl --user enable --now \

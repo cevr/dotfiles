@@ -30,6 +30,7 @@ Expected failure and defects are different contracts:
 - Native Error construction is permitted only as the direct argument of an explicit defect constructor: Effect.die(new Error(...)), Cause.die(new Error(...)), or Exit.die(new Error(...)).
 - Constructing an Error earlier, returning it from a callback, or placing it in Effect.fail is not an explicit defect boundary.
 - Preserve causes when translating infrastructure failures; do not erase them into generic messages.
+- When a failure is deliberately dropped, `Effect.ignore({ log: "Unhandled" })` logs it at the configured `References.UnhandledLogLevel` instead of a hand-written log before the ignore.
 
 ## Composition
 
@@ -55,20 +56,24 @@ Use these Effect capabilities in application code instead of ambient or runtime-
 | --- | --- | --- |
 | Time and scheduling | Date.now, new Date, performance.now, timers, Bun.sleep | Clock, DateTime, Effect.sleep, Schedule |
 | Randomness | Math.random | Random |
-| Secure randomness and UUIDs | crypto.getRandomValues, crypto.randomUUID, Bun.randomUUIDv7, matching node:crypto operations | Crypto |
-| SHA digests | crypto.subtle.digest when the supported Effect algorithms fit | Crypto.digest |
+| Secure randomness, UUIDs and ULIDs | crypto.getRandomValues, crypto.randomUUID, Bun.randomUUIDv7, matching node:crypto operations | `effect/crypto` SecureRandom |
+| Digests, HMAC, signatures, encryption, key derivation | crypto.subtle, node:crypto, hand-written token signing | `effect/crypto` (Digest, Mac, Signature, Aead, Cipher, Kdf, KeyAgreement, KeyWrap); JWT, JWK and JWS through `effect/jose` |
 | Configuration | process.env, Bun.env, Deno.env | Config and ConfigProvider |
-| Filesystem and globbing | node:fs, Bun.file/write/Glob, Deno filesystem APIs | FileSystem |
+| Filesystem and globbing | node:fs, Bun.file/write/Glob, Deno filesystem APIs, glob and minimatch packages | FileSystem, `FileSystem.glob`, Glob |
+| User directories | os.homedir, XDG_* env reads, hand-built `~/.config` or `~/.cache` paths | `effect/persistence` UserDirectories |
 | Paths | node:path | Path |
-| Processes | node:child_process, Bun.spawn, Bun.$ | ChildProcessSpawner |
-| Standard I/O and arguments | process argv/stdin/stdout/stderr, Bun stdio, Deno stdio | Stdio and Terminal |
+| Processes | node:child_process, Bun.spawn, Bun.$, hand-quoted command strings | ChildProcessSpawner; `effect/process` CommandLine; `Redacted` args and env values for secrets |
+| Standard I/O and arguments | process argv/stdin/stdout/stderr, process.stdout.columns, Bun stdio, Deno stdio | Stdio and Terminal (`Terminal.size` streams resizes) |
 | HTTP | fetch, node:http/https, Bun.serve, Deno.serve | HttpClient and HttpServer |
 | Sockets | WebSocket and Bun connect/listen | Socket and SocketServer |
 | Workers | Worker, SharedWorker, node:worker_threads | Effect Worker |
 | Streaming | node:stream for application pipelines | Stream, Sink, and Channel |
 | Logging | console methods | Effect logging or Console |
 | JSON boundaries | JSON.parse/stringify | Schema JSON codecs |
-| Base64 | atob/btoa | Encoding |
+| Data formats | JSONC, JSON5, TOML, YAML, CSV, XML, tar and zip packages; hand-split lines | `effect/encoding` (Jsonc, Json5, Toml, Yaml, Ini, Csv, Xml, Ndjson, JsonArray, Tar, Zip) |
+| Versions | semver package, hand-written version compare | SemVer, SemVerRange |
+| Text diffs | diff/jsdiff packages, hand-written line diff | TextDiff |
+| Base64 and hex | atob/btoa, Buffer encodings | `effect/encoding` Base64, Base64Url, Hex |
 | Key-value storage | localStorage/sessionStorage | KeyValueStore |
 
 Platform implementations provide the concrete Node, Bun, browser, or Deno layers at the edge.
@@ -77,9 +82,9 @@ Platform implementations provide the concrete Node, Bun, browser, or Deno layers
 
 Do not ban a whole runtime module when Effect covers only part of it.
 
-- node:crypto and Web Crypto: use Effect Crypto for secure randomness, UUIDs, and supported SHA digests. HMAC, password hashing, signing, verification, encryption, and unsupported or incremental hashing remain adapter capabilities.
+- node:crypto and Web Crypto: `effect/crypto` covers randomness, digests, HMAC, signatures, encryption, key derivation and key agreement as services with typed `CryptoError`s; provide each service's layer at the edge. Layers differ in what they implement (`Kdf.layerWebCrypto` has no Argon2id; `NodeCrypto.layerKdf` and `BunCrypto.layerKdf` do), and platform services layers such as `BunServices.layer` leave crypto out, and each module's doc comments say which; read them before choosing a layer. An algorithm no layer provides remains an adapter capability.
 - node:process: use Config, Stdio, Clock, and Effect scheduling for replaced operations. Platform and resource inspection may remain in an adapter.
-- DNS, UDP, compression, module resolution, FFI, VM/runtime inspection, archive/image APIs, and similar unmatched host capabilities are allowed only through named adapters.
+- DNS, UDP, compression, module resolution, FFI, VM/runtime inspection, image APIs, and similar unmatched host capabilities are allowed only through named adapters.
 - Node streams, EventTarget/EventEmitter, Buffer, and native sockets are legitimate interoperability types at adapters. Convert them to Effect abstractions before domain logic.
 - A lint override documents an adapter boundary; it is not permission to use host APIs throughout the package.
 

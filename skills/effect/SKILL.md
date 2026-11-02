@@ -5,18 +5,20 @@ description: Opinionated guide for designing, building, and reviewing production
 
 # Effect
 
-Use current Effect v4 APIs and the production defaults in this skill. Established project conventions still take precedence unless the task is explicitly changing them.
+## Discover, never recall
 
-## Source Rule
+Effect v4 moves faster than any model's training. A module path, function name or signature you remember is a guess until the installed package confirms it: 4.1.0 removed `effect/Crypto` outright, and each release adds modules that replace code people still write by hand. So discover every Effect API before you write it, in this order:
 
-Check these before guessing, in order:
+1. The nearest `AGENTS.md` and any project-local Effect practices doc.
+2. `node_modules/effect/AGENTS.md` and `node_modules/effect/ai-docs/`, shipped inside the installed package and matched to its version.
+3. The installed source, `node_modules/effect/src`. Each path's `index.ts` lists its modules: the root, `crypto`, `encoding`, `process`, `persistence`, `cli`, `http`, `ai` and the rest. Read a module's exports and doc comments before you call it.
+4. Upstream, when the installed package cannot answer: `okra repo fetch effect-ts/effect` when `command -v okra` succeeds; it carries `packages/effect/CHANGELOG.md`, which the installed package does not ship.
 
-- the nearest `AGENTS.md` and any project-local Effect practices doc
-- `node_modules/effect/AGENTS.md`, shipped inside the installed package and matched to its version; `node_modules/effect/ai-docs/` holds its runnable examples
-- the installed `effect` package source (`node_modules/effect/src`)
-- current upstream Effect source when the installed package does not answer the question: `okra repo fetch effect-ts/effect` when `command -v okra` succeeds; without okra, the installed package is the source
+Discovery covers absence too. Before you hand-write a utility (hashing, tokens, UUIDs, glob, semver, text diff, CSV/TOML/YAML/JSONC parsing, user directories, shell quoting, request timeouts), search the installed source for it; [STYLEGUIDE.md](references/STYLEGUIDE.md) §Effect Replacements maps the common ones.
 
-This skill holds project policy. When it disagrees with the installed package about an API, the package wins; fix this skill.
+After an Effect upgrade, read the upstream `CHANGELOG.md` from the old version to the new one. Removed and renamed modules break the build; added modules are code you can delete.
+
+This skill holds project policy and says where to look; the installed package is the authority on what exists. When they disagree, the package wins: fix this skill. Established project conventions take precedence over this skill's defaults unless the task is changing them.
 
 ## Branch Chooser
 
@@ -85,7 +87,7 @@ If a task spans several branches, read all matching files before editing.
 - Memoize a single effect result: `Effect.cached(...)` / `Effect.cachedWithTTL(...)`.
 - Batch N keys into one backend call (only when a real batch endpoint exists): `Effect.request(...)` + `RequestResolver`.
 - HTTP request in an Effect application: prefer Effect `HttpClient` plus request/response schema decoding.
-- HTTP transient retry: `HttpClient.retryTransient(...)`.
+- HTTP transient retry: `HttpClient.retryTransient(...)`, with each attempt bounded by `HttpClient.timeout(...)`.
 - Time-sensitive test: `TestClock`, not real sleeping.
 - Test fixture setup and teardown: a Layer, or `Effect.acquireRelease` in a scoped test, never `beforeAll`/`afterAll`/`beforeEach`/`afterEach`.
 - Concurrent/background test synchronization: `Deferred`, `Queue`, `Latch`, `Ref`, or explicit test hooks.
@@ -119,7 +121,7 @@ If a task spans several branches, read all matching files before editing.
 
 ## Compatibility
 
-Requires Effect v4, stable since `4.0.0` (2026-10-01); `effect@latest` is v4, and the `rc` dist-tag still points at a pre-release. Stable moved the `effect/unstable/*` modules to top-level paths (`effect/cli`, `effect/http`, `effect/http-api`, `effect/ai`, `effect/rpc`). Examples were reviewed against `effect@4.0.0-rc.117` on 2026-09-27; recheck source for the project's pinned version. Pin the version exactly.
+Requires Effect v4, stable since `4.0.0` (2026-10-01); `effect@latest` is v4, and the `rc` dist-tag still points at a pre-release. Stable moved the `effect/unstable/*` modules to top-level paths (`effect/cli`, `effect/http`, `effect/http-api`, `effect/ai`, `effect/rpc`). Examples were reviewed against `effect@4.1.2` on 2026-11-02. Pin the version exactly.
 
 ## License
 
