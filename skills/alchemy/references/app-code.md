@@ -11,7 +11,7 @@ How application code carries its own infrastructure: a Runtime declared next to 
 - Config and secrets
 - Layers that own infrastructure
 - Keeping the app runnable without Alchemy
-- Testing
+- Testing (in testing.md)
 
 ## Runtime
 
@@ -157,26 +157,4 @@ When the app also runs as a CLI or a local `bun --watch` server, keep domain ser
 
 ## Testing
 
-- Keep unit and route tests on local Layers (`HttpRouter.serve` + `BunHttpServer.layerTest`). They need no Alchemy.
-- For a deploy test, use `Test.make` from `@alchemy.run/test/Bun` (beta.85 moved it out of `alchemy/Test/*`; add `@alchemy.run/test` at Alchemy's exact version). It deploys into `test_$USER`, so make the stack stage-aware: non-prod stages get their own project and a public URL, and skip custom domains and DNS. Tie deploy and destroy to the test's scope with `acquireRelease`. `oxlint-plugin-effect` bans `beforeAll`/`afterAll`, and a scope also destroys the stage on failure:
-
-```typescript
-import * as Test from "@alchemy.run/test/Bun";
-import Stack, { providers } from "../alchemy.run.js"; // export the providers Layer from the stack file
-
-const { test, deploy, destroy } = Test.make({ providers, state: Alchemy.localState() });
-const deployed = Effect.acquireRelease(deploy(Stack), () => destroy(Stack).pipe(Effect.orDie));
-
-test("health", Effect.gen(function* () {
-  const { url } = yield* deployed;
-  const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
-  const res = yield* client.get(`${url}/health`).pipe(
-    Effect.retry({ schedule: Schedule.exponential("1 second"), times: 8 }), // a fresh host 404s briefly
-  );
-  expect(yield* res.text).toBe("ok");
-}).pipe(Effect.scoped), { timeout: 600_000 });
-```
-
-- `HttpClient` is in scope in harness tests. `Test.getWhenReady` exists, but its error type is `unknown`, which trips tsgo's `anyUnknownInErrorContext`.
-- Name the file outside Bun's test pattern (`tests/deploy.integration.ts`) and run it from a script (`"test:deploy": "bun test ./tests/deploy.integration.ts"`), so the gate never deploys. On Railway it takes about a minute: 40 s to deploy and 15 s to destroy.
-- `Test.make({ dev: true })` runs against the local emulators (workerd, Docker) and needs no cloud credentials. Railway has no emulator.
+Route tests on local Layers, deploy tests with `@alchemy.run/test`, and how they fit together: [testing.md](testing.md).

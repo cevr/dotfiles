@@ -1,6 +1,6 @@
 ---
 name: alchemy
-description: Alchemy v2, Effect-native infrastructure as code (`alchemy.run.ts` stacks) with Infrastructure as Effects on top. Use when deploying or provisioning infrastructure (Railway, Cloudflare, AWS, DNS, custom domains), writing or reviewing `alchemy.run.ts`, binding cloud resources into Effect application code, running `alchemy` deploys, profiles, stages, state, or CI, or testing a deploy against real infrastructure.
+description: Alchemy v2, Effect-native infrastructure as code (`alchemy.run.ts` stacks) with Infrastructure as Effects on top. Use when deploying or provisioning infrastructure (Railway, Cloudflare, AWS, DNS, custom domains), writing or reviewing `alchemy.run.ts`, binding cloud resources into Effect application code, building a backend with `@alchemy.run/domain` (commands, events, one Api projected to HTTP, CLI and MCP), running `alchemy` deploys, profiles, stages, state, or CI, or testing a domain model, a deployed stack, or a provider (`@alchemy.run/test`).
 ---
 
 # Alchemy
@@ -11,19 +11,23 @@ Alchemy (`alchemy-run/alchemy`, npm `alchemy` plus one `@alchemy.run/<provider>`
 
 ```
 What are you doing?
-├─ Adding Alchemy to a repo              → §Setup
-├─ Writing alchemy.run.ts                → §Stack Anatomy, then the platform reference
-├─ Putting app code on a Runtime         → references/app-code.md
-├─ Checking that a deploy really works    → §Test on Real Infrastructure, then app-code.md §Testing
-├─ Railway service / domain / database   → references/railway.md
+├─ Adding Alchemy to a repo               → §Setup
+├─ Writing alchemy.run.ts                 → §Stack Anatomy, then the platform reference
+├─ Putting app code on a Runtime          → references/app-code.md
+├─ Backend on @alchemy.run/domain         → references/domain.md
+├─ Stories, Api, stack, provider tests    → references/testing.md
+├─ Checking that a deploy really works    → §Test on Real Infrastructure, then testing.md §Stack tests
+├─ Railway service / domain / database    → references/railway.md
 ├─ Cloudflare Worker / DNS / zone / state → references/cloudflare.md
 ├─ Deploying, profiles, stages, CI, state → references/operations.md
-└─ Something failed                      → §Gotchas, then references/operations.md §Troubleshooting
+└─ Something failed                       → §Gotchas, then references/operations.md §Troubleshooting
 ```
 
 | Topic | File | When to Read |
 |-------|------|--------------|
-| App-level code | `references/app-code.md` | Runtimes with `main: import.meta.url`, bindings, `Config` binding, `HttpRouter` in `fetch`, Layers that own resources, phases, the test harness |
+| App-level code | `references/app-code.md` | Runtimes with `main: import.meta.url`, bindings, `Config` binding, `HttpRouter` in `fetch`, Layers that own resources, phases |
+| Domain backends | `references/domain.md` | Whether to use `@alchemy.run/domain`, the upstream `alchemy-domain` skill, the domain/server/web split, the Api's HTTP, CLI and MCP projections, beta.85 gaps |
+| Testing | `references/testing.md` | Which test fits, stories, Api tests, stack tests with `@alchemy.run/test`, provider tests, the runner adapters |
 | Railway | `references/railway.md` | Project, Service (the `main`, `context`+`dockerfilePath`, and `image` sources), CustomDomain, Postgres/Redis/Bucket, Variables |
 | Cloudflare | `references/cloudflare.md` | Workers, Zone/DNS records, adopting a zone, `Cloudflare.state()`, OAuth scopes |
 | Operations | `references/operations.md` | CLI, profiles and credentials, stages, state, adopt/retain/rename, CI, troubleshooting |
@@ -108,6 +112,7 @@ Keep `alchemy.run.ts` as wiring. Put each Resource, Runtime, or resource-owning 
 | An Effect HTTP server on Railway | An Effect-native `Railway.Service` class with `main: import.meta.url` that returns `{ fetch: HttpRouter.toHttpEffect(Routes) }`, with no Dockerfile (app-code.md) |
 | A server that must keep its own Dockerfile (Bun-only APIs, a native toolchain) | `Railway.Service` with `context` + `dockerfilePath` (railway.md §Dockerfile) |
 | An edge function | `Cloudflare.Worker` with `main: import.meta.url` (cloudflare.md) |
+| A backend of business rules (commands, events, views) reached by several clients, on Cloudflare | A `@alchemy.run/domain` model hosted on Durable Objects, its Api projected to each client (domain.md) |
 | A database, cache, or bucket used by app code | The Resource plus a Binding in the Runtime's constructor, never a hand-wired env var (app-code.md §Bindings) |
 | A DNS record for a non-Cloudflare host | An adopted and retained `Cloudflare.Zone.Zone` plus `Cloudflare.DNS.Record` (cloudflare.md §DNS) |
 | A secret from `.env` | `yield* Config.Redacted("KEY")` in the constructor (app-code.md §Config) |
@@ -123,7 +128,7 @@ A green typecheck and a clean plan only prove the stack is well formed. What pro
   3. Probe the outputs: `curl` the URL, run a real request, and read the host's logs (`railway logs` / `alchemy logs`).
   4. Fix the cause and redeploy. An update in place takes about 30 s on Railway.
   5. `alchemy destroy --stage <s> --yes`
-- **Keep the loop as a test.** A `Test.make` file (app-code.md §Testing) that deploys, asserts, and destroys in one scope becomes the repeatable check behind `bun run test:deploy`. Run it before handing off infrastructure or Runtime changes, and after upgrading Alchemy or Effect. Add an assertion for each failure you hit, such as a bot wall, a missing binding, or a slow cold start.
+- **Keep the loop as a test.** A `Test.make` file (testing.md §Stack tests) that deploys, asserts, and destroys in one scope becomes the repeatable check behind `bun run test:deploy`. Run it before handing off infrastructure or Runtime changes, and after upgrading Alchemy or Effect. Add an assertion for each failure you hit, such as a bot wall, a missing binding, or a slow cold start.
 - **Reproduce production problems on a stage first.** Deploy the same commit to a throwaway stage, reproduce the problem there, and fix it there. Then promote the fix to `prod`.
 - **Clean up.** Destroy each stage you created before handing off. `alchemy state list` shows leftover stages.
 
@@ -144,3 +149,9 @@ A green typecheck and a clean plan only prove the stack is well formed. What pro
 ## Compatibility
 
 Last proven on a real project with `alchemy@2.0.0-beta.84` and `effect@4.0.5`: cvr.im on Cloudflare, deployed by CI on 2026-10-26. On 2026-11-02, `alchemy@2.0.0-beta.85` with `effect@4.1.2` passed cvr.im's gate and `alchemy plan` loaded the stack, then stopped at the v7 state store; it is not deployed yet. Effect stable (`4.0.0` and later) has no `effect/unstable/*`: those modules live at `effect/cli`, `effect/http`, `effect/http-api`, `effect/ai` and `effect/rpc`. For a newer release, recheck against its source.
+
+`@alchemy.run/domain` and `@alchemy.run/test` are reviewed against their 2.0.0-beta.85 source and docs, not yet proven on one of our projects.
+
+## License
+
+The Alchemy guidance restates, in our own words, Alchemy's Apache-2.0 source, docs and `alchemy-domain` skill from `alchemy-run/alchemy` at commit `d0b4a3326` (2.0.0-beta.85). No text is copied.
