@@ -41,4 +41,4 @@ Code examples across the web files are React. Check `package.json`:
 
 ## Verify
 
-Render in a browser at mobile and desktop widths, in each color mode, at 200% zoom, and with portalled surfaces open. Check the keyboard path and a screen reader (VoiceOver on macOS) on anything interactive. Capture commands and preview harnesses: [harness](../../workflows/harness.md#looking-at-it).
+Render in a browser at mobile and desktop widths, in each color mode, at 200% zoom, and with portalled surfaces open. Check the keyboard path and a screen reader (VoiceOver on macOS) on anything interactive. Where the project has a build step, render the production build once before calling a visual change done (its build and preview scripts): minifiers and CSS pipelines change what ships, and one has dropped a `backdrop-filter` the dev server showed. Capture commands and preview harnesses: [harness](../../workflows/harness.md#looking-at-it).
