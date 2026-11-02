@@ -10,7 +10,7 @@ import {
   HttpClient,
   HttpClientRequest,
   HttpClientResponse
-} from "effect/unstable/http"
+} from "effect/http"
 
 const RemoteUser = Schema.Struct({ id: Schema.String, name: Schema.String })
 interface RemoteUser extends Schema.Schema.Type<typeof RemoteUser> {}

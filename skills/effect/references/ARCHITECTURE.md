@@ -31,7 +31,7 @@ The contract holds:
 | `output` | Schema. |
 | `failure` | Schema of the expected tagged errors. |
 | `annotations` | Honest `readOnly`, `idempotent`, `destructive`, `openWorld`. MCP clients and retry policy read them. |
-| `needsApproval` | Adds an approval requirement to `R` and an approval-denied failure to `E` for every projection. Policy stays out of the handler. |
+| `needsApproval` | Adds an approval requirement to `R` and an approval-denied failure to `E` for every projection. Policy stays out of the handler. The CLI approves on `--yes` or an opt-in confirmation prompt, and denies without either. |
 
 ```ts
 export const inspectFileContract = defineContract("inspectFile", {
@@ -49,14 +49,15 @@ export const inspectFile = implement(inspectFileContract, ({ path }) =>
 
 | Projection | Effect module | Derived artifact |
 | --- | --- | --- |
-| CLI | `effect/unstable/cli` (`Command`, `Flag`, `Argument`) | Flags from input fields, `--json` from output |
-| HTTP | `effect/unstable/httpapi` | Endpoints and `OpenApi.fromApi` document |
-| MCP | `effect/unstable/ai` (`Tool`, `Toolkit`, `McpServer`) | Tool JSON Schema and annotations |
-| Browser | `effect/unstable/rpc` | `RpcGroup` built from contracts alone |
+| CLI | `effect/cli` (`Command`, `Flag`, `Argument`) | Flags from input fields, `--json` from output |
+| HTTP | `effect/http-api` | Endpoints and `OpenApi.fromApi` document |
+| MCP | `effect/ai` (`Tool`, `Toolkit`, `McpServer`) | Tool JSON Schema and annotations |
+| Browser | `effect/rpc` | `RpcGroup` built from contracts alone |
 
 Rules:
 
 - JSON Schema, OpenAPI, and tool declarations are derived from the contract schemas. Nothing is written by hand.
+- The HTTP projection answers each failure member with its own `httpApiStatus` annotation (422 when it has none) and declares the 400 for a body that does not decode, so the OpenAPI document lists every response a client can get.
 - Contracts live in a module with no server dependencies, so browser code can import them.
 - The handler stays small. Real work lives in a service or a lifecycle machine.
 - Only the projection package calls `HttpApiEndpoint`, `Rpc.make`, `RpcGroup.make`, `Tool.make`, or `Toolkit.make`. Everything else projects contracts.
@@ -139,7 +140,7 @@ The client SDK is one root `createClient()` that exposes the whole product, with
 2. Does the inferred operation, the query library, the transport, or a host adapter already own the behavior? Reuse that owner.
 3. Otherwise the addition owns work that must run on the client (assembling a stream, cancelling a local attachment, reading a documented connection protocol). Name its consumer, the state only it owns, and why it cannot run on the server.
 
-Failures reach the screen typed. Each declared failure has a stable, unique tag and a schema payload; a payload that offers recovery (switch to the right team) carries only what the server authorized the caller to see. The SDK turns transport, decode, and unexpected failures into its own tagged variants, so a consumer handles one closed union and never parses a message.
+Failures reach the screen typed. Each declared failure has a stable, unique tag and a schema payload with no `name` field (it replaces the error's own name in logs and `String(error)`); a payload that offers recovery (switch to the right team) carries only what the server authorized the caller to see. The SDK turns transport, decode, and unexpected failures into its own tagged variants, so a consumer handles one closed union and never parses a message.
 
 Prove the SDK with a non-React consumer that runs the slice's lifecycle (including recovery and cancellation, where the product has them) through public exports alone. Calling raw endpoints proves the transport, not the SDK.
 

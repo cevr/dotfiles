@@ -119,7 +119,7 @@ If a task spans several branches, read all matching files before editing.
 
 ## Compatibility
 
-Requires Effect v4, stable since `4.0.0` (2026-10-01); `effect@latest` is v4, and the `rc` dist-tag still points at a pre-release. Examples were reviewed against `effect@4.0.0-rc.117` on 2026-09-27; recheck source for the project's pinned version. Pin the version exactly.
+Requires Effect v4, stable since `4.0.0` (2026-10-01); `effect@latest` is v4, and the `rc` dist-tag still points at a pre-release. Stable moved the `effect/unstable/*` modules to top-level paths (`effect/cli`, `effect/http`, `effect/http-api`, `effect/ai`, `effect/rpc`). Examples were reviewed against `effect@4.0.0-rc.117` on 2026-09-27; recheck source for the project's pinned version. Pin the version exactly.
 
 ## License
 
