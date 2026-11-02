@@ -1,0 +1,270 @@
+[
+  {
+    "name": "emil-skills",
+    "repo": "emilkowalski/skills",
+    "paths": [
+      "skills",
+      ":!skills/write-swift"
+    ],
+    "into": [
+      "ui"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "2d228630ba1446365f614a108cb8252f1feda202",
+      "date": "2026-10-14T19:32:24-04:00"
+    }
+  },
+  {
+    "name": "jakub-skills",
+    "repo": "jakubkrehel/skills",
+    "paths": [
+      "skills"
+    ],
+    "into": [
+      "ui"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "4c66b1fa86e9ab70187b43d7da9b6fdb29f2ef63",
+      "date": "2026-10-14T19:32:24-04:00"
+    }
+  },
+  {
+    "name": "taste-skill",
+    "repo": "Leonxlnx/taste-skill",
+    "paths": [
+      "skills/taste-skill"
+    ],
+    "into": [
+      "ui"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "f624f37a8c650b9cc550253104925efe4c8de246",
+      "date": "2026-10-15T22:17:17-04:00"
+    }
+  },
+  {
+    "name": "web-interface-guidelines",
+    "repo": "vercel-labs/web-interface-guidelines",
+    "paths": [
+      "."
+    ],
+    "into": [
+      "ui"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "434b7f91364665f2f733b310ec54809bf8f37937",
+      "date": "2026-10-14T19:32:24-04:00"
+    }
+  },
+  {
+    "name": "shadcn-design",
+    "repo": "shadcn/ui",
+    "paths": [
+      "skills/shadcn"
+    ],
+    "into": [
+      "ui"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "4233ed1caded8c38f4bc14b14afe1f93ebcaf966",
+      "date": "2026-10-14T19:32:24-04:00"
+    }
+  },
+  {
+    "name": "pstack-why-how-architect",
+    "repo": "cursor/plugins",
+    "paths": [
+      "pstack/skills/why",
+      "pstack/skills/how",
+      "pstack/skills/architect"
+    ],
+    "into": [
+      "why",
+      "how",
+      "architect"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "190d28736eff128ec94f502a22c7fe0c4b56cd37",
+      "date": "2026-10-20T23:39:14-04:00"
+    }
+  },
+  {
+    "name": "pstack-verification",
+    "repo": "cursor/plugins",
+    "paths": [
+      "pstack/skills/create-verification-skill",
+      "pstack/skills/maintain-verification-skill"
+    ],
+    "into": [
+      "create-verification-skill",
+      "maintain-verification-skill"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "fe53d9e9093dbb9ae298563b1a9d702dd6e2ca08",
+      "date": "2026-10-12T22:15:54-04:00"
+    }
+  },
+  {
+    "name": "pstack-principles",
+    "repo": "cursor/plugins",
+    "paths": [
+      "pstack/skills/principle-*"
+    ],
+    "into": [
+      "principles/"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "190d28736eff128ec94f502a22c7fe0c4b56cd37",
+      "date": "2026-10-20T23:41:50-04:00"
+    }
+  },
+  {
+    "name": "pstack-run-discipline",
+    "repo": "cursor/plugins",
+    "paths": [
+      "pstack/skills/poteto-mode",
+      "pstack/skills/swarm"
+    ],
+    "into": [
+      "orchestrate",
+      "loop"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "e5136d82418d2db3165ea1050d17577cd618cc05",
+      "date": "2026-10-15T11:46:26-04:00"
+    }
+  },
+  {
+    "name": "pstack-correct",
+    "repo": "cursor/plugins",
+    "paths": [
+      "pstack/skills/correct"
+    ],
+    "into": [
+      "retro"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "e5136d82418d2db3165ea1050d17577cd618cc05",
+      "date": "2026-10-15T11:41:18-04:00"
+    }
+  },
+  {
+    "name": "mattpocock-tdd",
+    "repo": "mattpocock/skills",
+    "paths": [
+      "skills/engineering/tdd"
+    ],
+    "into": [
+      "writing-tests"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "5beb35b040e3de97e54fa9e386d7e42d15c295c2",
+      "date": "2026-10-20T23:41:00-04:00"
+    }
+  },
+  {
+    "name": "mattpocock-implement",
+    "repo": "mattpocock/skills",
+    "paths": [
+      "skills/engineering/implement",
+      "skills/engineering/implement-spec"
+    ],
+    "into": [
+      "implement",
+      "orchestrate"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "5beb35b040e3de97e54fa9e386d7e42d15c295c2",
+      "date": "2026-10-20T23:41:32-04:00"
+    }
+  },
+  {
+    "name": "mattpocock-prototype",
+    "repo": "mattpocock/skills",
+    "paths": [
+      "skills/engineering/prototype"
+    ],
+    "into": [
+      "prototype"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "5beb35b040e3de97e54fa9e386d7e42d15c295c2",
+      "date": "2026-10-20T23:41:32-04:00"
+    }
+  },
+  {
+    "name": "fold-effect-program-design",
+    "repo": "humanlayer/fold",
+    "paths": [
+      ".claude/skills/effect-program-design"
+    ],
+    "into": [
+      "effect"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "3b1f144abd829cb027ab30d32b3f227301201ef6",
+      "date": "2026-11-02"
+    }
+  },
+  {
+    "name": "nando-product-engineering",
+    "repo": "nandorojo/nando-skill",
+    "paths": [
+      "skills/fernando-product-engineering"
+    ],
+    "into": [
+      "effect",
+      "react",
+      "ui"
+    ],
+    "license": "none: restate, never copy",
+    "folded": {
+      "sha": "85fb76f9f7f1ebce6b2cd167d1dfd867163396b6",
+      "date": "2026-11-02"
+    }
+  },
+  {
+    "name": "openclaw-test-audit",
+    "repo": "openclaw/openclaw",
+    "paths": [
+      ".agents/skills/test-audit"
+    ],
+    "into": [
+      "code-review"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "e187219fa2426cf9c63e57779e8fb3ac6fe69ccd",
+      "date": "2026-09-29T02:12:49Z"
+    }
+  },
+  {
+    "name": "rat-stack-capability",
+    "repo": "joelhooks/rat-stack",
+    "paths": [
+      "packages/capability"
+    ],
+    "into": [
+      "effect"
+    ],
+    "license": "MIT",
+    "folded": {
+      "sha": "753c7b07dcc516037dd1d455a8766bf112084844",
+      "date": "2026-09-29T01:59:49Z"
+    }
+  }
+]
