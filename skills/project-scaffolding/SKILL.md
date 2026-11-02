@@ -254,10 +254,10 @@ typescript
 
 ### Runtime Dependencies (Effect v4)
 
-**`bun add effect` installs v3.** The npm `latest` dist-tag points at Effect 3.x; v4 lives on the `rc` tag (the `beta` tag is frozen at an older 4.0.0-beta). Every Effect-4 project must install explicitly:
+**Effect v4 is the npm `latest` tag** (stable since 4.0.0; the `rc` and `beta` tags are frozen pre-releases, and v3 is on `prev`). Install from `latest` and pin the resolved version exactly:
 
 ```bash
-bun add effect@rc @effect/platform-bun@rc
+bun add -E effect @effect/platform-bun
 ```
 
 and pin the resolved version exactly (no caret) in `package.json` — e.g. `"effect": "4.0.0-rc.117"`, so a re-install cannot drift across releases. Keep every `@effect/*` package on that exact version.
@@ -391,7 +391,7 @@ Use the `repo` skill (`skills/repo/SKILL.md`) — `okra repo fetch` + `repo path
 - **`types: ["bun"]` required** — TS6 defaults `types` to `[]` in some configs. Without it, `Bun.*` globals are invisible.
 - **`oxlint-plugin-effect` must be a devDep when `.oxlintrc.json` lists `jsPlugins: ["oxlint-plugin-effect/plugin"]`** — otherwise `oxlint` cannot load the `effect/*` rules.
 - **`"plugins": ["effect"]` loads nothing** — `plugins` is oxlint's built-in plugin list; JS plugins go in `jsPlugins`. The misconfiguration is silent: oxlint runs fine with zero `effect/*` rules active. Check the rule count in `oxlint`'s summary line.
-- **`bun add effect` installs v3** — the `latest` dist-tag is Effect 3.x. Use `effect@rc` + `@effect/platform-bun@rc` and pin exact versions for v4 projects.
+- **`effect@rc` is a frozen pre-release** — v4 is on `latest` now; an old `@rc` pin still uses `effect/unstable/*` paths that stable v4 moved to `effect/cli`, `effect/http`, `effect/http-api`, `effect/ai` and `effect/rpc`.
 - **`oxlint-plugin-effect` has one `recommended` preset (42 `effect/*` rules at 0.12.x)** — pre-0.4 rule names (`noSpread`, `noSchemaStruct`, `noMakeUnsafe`, ...) were deleted and fail config resolution. Bump the dep and rewrite the rules block together.
 - **`diagnosticSeverity` drifts as `@effect/tsgo` adds diagnostics** — after bumping, diff your map against `node_modules/@effect/tsgo/schema.json` (definition `effectLanguageServicePluginDiagnosticSeverityDefinition`) or run `effect-tsgo config`.
 - **Do not use legacy `tsgolint-effect` or env-var lint wiring** — the current shape is plain `oxlint` plus `oxlint-plugin-effect` for AST rules and `tsc --noEmit` for type-aware Effect diagnostics.

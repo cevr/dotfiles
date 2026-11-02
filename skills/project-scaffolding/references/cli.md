@@ -51,8 +51,8 @@ Set `"type": "module"` in `package.json`.
 ## Step 2: Install Dependencies
 
 ```bash
-# Runtime: v4 is on the rc tag; pin the resolved version exactly
-bun add -E effect@rc @effect/platform-bun@rc
+# Runtime: Effect v4 is the latest tag; pin the resolved version exactly
+bun add -E effect @effect/platform-bun
 
 # Dev tooling
 bun add -D -E typescript @typescript/native-preview @types/bun \
@@ -81,7 +81,7 @@ After install, run `bun run prepare` (or just `bun install` again — the `prepa
 ```typescript
 import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
-import { Command } from "effect/unstable/cli"
+import { Command } from "effect/cli"
 import { version } from "../package.json" with { type: "json" }
 import { command } from "./commands/index.js"
 // ... import service layers
@@ -100,7 +100,7 @@ No suppression comment here. This entry-point shape is what `strictEffectProvide
 ### Commands (`src/commands/index.ts`)
 
 ```typescript
-import { Command } from "effect/unstable/cli"
+import { Command } from "effect/cli"
 import { subcommandA } from "./subcommand-a.js"
 import { subcommandB } from "./subcommand-b.js"
 
@@ -116,7 +116,7 @@ export const command = root.pipe(
 ### Individual Command
 
 ```typescript
-import { Argument, Command, Flag } from "effect/unstable/cli"
+import { Argument, Command, Flag } from "effect/cli"
 import { Console, Effect } from "effect"
 import { MyService } from "../services/MyService.js"
 
