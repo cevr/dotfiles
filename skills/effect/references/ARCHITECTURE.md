@@ -2,10 +2,9 @@
 
 Use this reference to lay out an application: its packages, its public actions, the surfaces that expose them, the units that own infrastructure, and the rules that keep the layout from eroding. [PROGRAM_DESIGN.md](PROGRAM_DESIGN.md) covers a single module's seam; this file covers how modules fit together.
 
-The reference implementation is `joelhooks/rat-stack` (`okra repo fetch joelhooks/rat-stack`, or `git clone --depth 1 https://github.com/joelhooks/rat-stack` without okra). Read `packages/capability/src` there before building a contract kit, and adopt its code only after reading it at the pinned Effect version.
-
 ## Contents
 
+- Pick the contract source
 - One contract, every surface
 - Shape operations for the client's outcome
 - Composition root
@@ -17,6 +16,32 @@ The reference implementation is `joelhooks/rat-stack` (`okra repo fetch joelhook
 - Build one vertical slice
 - Braids to look for
 - Fence the layout
+
+## Pick the contract source
+
+Every public action has one contract, and every surface is derived from it. Where that contract comes from is the first decision, because it decides most of the layout below.
+
+| The app | Contract source |
+| --- | --- |
+| A backend whose job is business rules over recorded facts (requests a state owner accepts or refuses, reads shaped for screens), hosted on Cloudflare with Alchemy | The **Domain Api** of an `@alchemy.run/domain` model. Load the `alchemy` skill's `references/domain.md`: it settles the fit and routes to the upstream `alchemy-domain` skill for building the model. |
+| A library; a CLI or tool over local files or a vendor API; request/response work with no state of its own; a backend on Railway or another container host; a product that needs approval before a write, its own tool annotations, or tool lists filtered per caller | **Hand-built contracts**, the rest of this file. Its reference implementation is `joelhooks/rat-stack` (`okra repo fetch joelhooks/rat-stack`, or `git clone --depth 1 https://github.com/joelhooks/rat-stack` without okra): read `packages/capability/src` before building a contract kit, and adopt its code only after reading it at the pinned Effect version. |
+
+One app can hold both: a Domain backend, plus hand-built contracts for local work a CLI does beside it.
+
+The two paths share one architecture: an infrastructure-free core package, surfaces derived from one contract and never written by hand, a host that is the composition root and owns infrastructure, typed failures that reach the client, and import boundaries fenced in lint. On the Domain path `@alchemy.run/domain` is the kit; on the hand-built path you write it. The sections below are written for the hand-built path, and each says what changes on the Domain path where it differs. The vocabulary maps one to one:
+
+| Hand-built | Domain path |
+| --- | --- |
+| Contract and capability | A command, which its aggregate decides, or a read (a view, a stream, or an aggregate with `read`), listed on a `Domain.Api` |
+| Projection | `yield* MyApi` and `MyApi.client` (Effect RPC), `toHttpApi`, `toCli`, `toToolkit` and `toMcp`, the foldkit adapter |
+| Contract kit | `@alchemy.run/domain` |
+| `annotations` | Fixed: reads are read-only and idempotent, commands destructive |
+| `needsApproval` | No equivalent at beta.85; a command's middleware can demand a second factor |
+| Composition root | The `server` package's Worker Layer |
+| Cartridge | A port or external system declared in the `domain` package, with its vendor Layer in `server` |
+| Machine | An aggregate for one instance's states, a saga for a process across aggregates |
+| Client SDK | `MyApi.layerClient` over a protocol |
+| Tests through public Effect interfaces | Stories for the model, an Api test per access rule, one deploy test ([TESTING.md](TESTING.md) §Domain models and deployed stacks) |
 
 ## One contract, every surface
 
@@ -67,6 +92,8 @@ A single-surface app does not need a contract kit. Write the `HttpApi` or `Comma
 
 The API is complete when a team in another language (a Swift app, a CLI, an MCP server) could rebuild the product from the documented operations and protocols alone, without the TypeScript client or app source. Domain rules, authorization, state transitions, and orchestration sit behind operations.
 
+On the Domain path, the Api lists entries and the package projects them, so none of the rules above is written by hand. A narrower surface is a smaller Api (one per kind of client), and an HTTP status is an `httpApiStatus` annotation on the rejection, with the same 422 default. The surfaces and their limits are in the `alchemy` skill's `references/domain.md`.
+
 ## Shape operations for the client's outcome
 
 Logic that can run on the server runs there. Design each operation around what the client needs to show or do next, so the client makes one call:
@@ -84,11 +111,14 @@ const { user, teams } = yield* client.users.currentWithTeams()
 - A command creates its own prerequisites (the workspace, the session) on the server. The client never runs an open, then status, then start chain.
 - Dependent writes for one outcome are one operation, with stated transaction or partial-failure behavior.
 - Queries are safe reads: a retry, a refetch on focus, or a second observer never starts work or changes state. A command is a mutation even when it is idempotent.
+- On the Domain path, the outcome-shaped read is a view keyed by what it is about, and a command's prerequisites come from a policy or saga on the server.
 - Compose operations instead of passing a mode: `terminals.attach({ sessionId })` and `computers.attach({ sessionId })`, not `surface({ kind, sessionId })` that branches inside. Each operation composes the shared authorization and connection parts. This holds for services, client helpers, hooks, and components. IDs, limits, and abort signals are ordinary parameters, and a discriminant in a returned state describes data, not a mode.
 
 ## Composition root
 
 One module per app instantiates projections, and one module provides the layer graph. Domain code never calls `Layer.provide` for its own dependencies; requirements bubble to the root. The root is also the only place that chooses a runtime (`BunRuntime.runMain`, a Worker `fetch`, a CLI `run`).
+
+On the Domain path, the `server` package's Worker is the root: it builds one Layer from the platform, `Model.layer(handlers)`, the middleware implementations, and the adapters, and serves each surface from it. Swapping the platform Layer (`Domain.InMemory` or Durable Objects) moves the model between a test and production without touching it.
 
 ## Nouns and dependency direction
 
@@ -109,6 +139,8 @@ Organize by feature first, then by role inside the feature. A global `contracts`
 
 Dependencies point one way: `apps/*` → domain packages → contract kit → `effect`. Packages never import apps. The contract kit never imports domain code. Browser modules import contracts, never handlers. Enforce each arrow with a lint rule (see Fence the layout).
 
+On the Domain path, the upstream layout replaces this table: one `<Noun>.<kind>.ts` file per building block in a `domain` package, folders per subdomain, and hosting and adapters in a `server` package. Dependencies still point one way: `web` and `server` → `domain` → `@alchemy.run/domain` and `effect`.
+
 For package manifests, workspaces, and turbo wiring, load the `project-scaffolding` skill.
 
 ## Cartridges
@@ -128,6 +160,8 @@ Cartridge test, run concretely:
 
 Load the `alchemy` skill for resource and binding APIs.
 
+On the Domain path, the service tag is a port (`Context.Service` with a memory implementation) or an external-system declaration in the `domain` package, and each vendor Layer lives in `server`. The cartridge test holds unchanged.
+
 ## Clients
 
 The server is authoritative. A client holds a replica and reconciles; it never decides.
@@ -145,6 +179,8 @@ Failures reach the screen typed. Each declared failure has a stable, unique tag 
 Prove the SDK with a non-React consumer that runs the slice's lifecycle (including recovery and cancellation, where the product has them) through public exports alone. Calling raw endpoints proves the transport, not the SDK.
 
 Where tools execute is a separate choice from where the client runs. A mobile client, a CLI on the cloud API, and a CLI with an in-process API are different composition roots of the same contracts. The host authorizes and provides the execution capability; shared code never checks `isLocal` or `window` to decide where a command runs.
+
+On the Domain path, the inferred client is the Api's (`MyApi.client`, `MyApi.layerClient`), and `MyApi.rejections` is one schema of every rejection its commands declare, so a screen holds a refusal as typed data. The admission test still governs every handwritten addition.
 
 For component patterns and server state in React, load the `react` skill.
 
@@ -164,6 +200,8 @@ When work has modes with different legal events (retrying, cancelled, resumable,
 
 Keep a plain `Effect.gen` workflow when the work has no states that matter.
 
+On the Domain path, an aggregate is the machine for one instance: its state, `decide` for which commands are legal, `evolve` for the transitions. A saga carries a process with steps, waits, and compensation across aggregates.
+
 ## Build one vertical slice
 
 Design from the consumer inward, build from the core outward, and verify through the user's interaction. Before code, write the SDK call and the component tree the outcome needs, with its failure and recovery states, and mark each layer below as reuse, change, or not applicable. Then build in this order; each stage hands its evidence to the next:
@@ -179,6 +217,8 @@ Design from the consumer inward, build from the core outward, and verify through
 | 7. App mounts the feature and injects host choices | The real interaction travels the mounted path and updates the screen, failure path included |
 
 A greenfield product builds only the shared foundation its first slice needs, then finishes that slice before the next one. A narrower change starts at the lowest owner whose contract changes. A failed check goes back to the stage that owns it; downstream code never compensates with a copied schema, a cast, a manual fetch, or an alternate client method.
+
+On the Domain path, stages 1 to 3 follow the upstream skill's checklist for a change: the command with its events and rejections, the aggregate's `decide` and `evolve` branches, the views, policies and projections that care, the Api entry, and a story for every outcome. Stage 3's evidence is an Api test over `Domain.InMemory` with the real middleware. Stages 4 to 7 hold as written, with the Api's client as the inferred client.
 
 Report architecture evidence (lint profile, public-consumer checks, a second client's lifecycle) apart from functional evidence (the user flow). A working demo or a green compiler does not pass an architecture requirement nobody tested, and a mocked screen or a working endpoint is not a finished feature.
 
@@ -199,6 +239,9 @@ Use this table when reviewing or redesigning a layout. Each row is a concern tha
 | A mode argument that selects a code path | Explicit operations that compose shared parts |
 | SDK code making a decision the server could make | The owning operation |
 | A check for local, sandbox, or `window` that picks where a command runs | An execution capability the host provides |
+| A business rule in a route, CLI command, tool handler, or other projection of a Domain Api | The command's `decide`, or the entry's middleware and `validate` |
+| An HTTP, CLI, or MCP surface written by hand beside a Domain Api | A projection of the Api; a smaller Api to publish less |
+| Infrastructure imported into a `domain` package | The `server` package |
 | Two ways to do one thing | One paved path; delete the other |
 
 For each proposed new piece, name what it deletes. A tag, layer, or state that deletes nothing is ceremony.
@@ -210,5 +253,7 @@ Agents copy what they find, so a boundary that lives only in prose erodes. Put e
 1. **Code.** A type or API that makes the wrong version unwritable: a schema at the boundary, a required service, a contract kit that projects surfaces.
 2. **Static analysis.** An import-boundary or pattern rule in oxlint, with a fixture test that fails when the rule is broken.
 3. **Repo law.** A line in `AGENTS.md`, only when neither rung above can hold it.
+
+On the Domain path, the import rule admits only `@alchemy.run/domain` and `effect` into the `domain` package, and a test that expects `Domain.verify(Model)` to be empty fences the declaration itself.
 
 When a bad pattern appears, write the rule that fails on it first, then fix every instance so the rule starts at zero findings. When some findings must stay, record them in a baseline that only shrinks. `project-scaffolding` covers the lint wiring.

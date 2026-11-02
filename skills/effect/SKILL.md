@@ -1,6 +1,6 @@
 ---
 name: effect
-description: Opinionated guide for designing, building, and reviewing production TypeScript applications with Effect v4. Use for application architecture (package layout, contracts projected to CLI/HTTP/MCP/RPC, composition roots, replaceable infrastructure units, import boundaries), deep modules, Effect workflows, services, layers, schemas, tagged data, configuration, schedules, caches, streams, HTTP clients, resources, concurrency, or tests.
+description: Opinionated guide for designing, building, and reviewing production TypeScript applications with Effect v4. Use for application architecture (package layout, hand-built contracts or an `@alchemy.run/domain` Api projected to CLI/HTTP/MCP/RPC, composition roots, replaceable infrastructure units, import boundaries), deep modules, Effect workflows, services, layers, schemas, tagged data, configuration, schedules, caches, streams, HTTP clients, resources, concurrency, or tests.
 ---
 
 # Effect
@@ -25,7 +25,7 @@ This skill holds project policy and says where to look; the installed package is
 Read only the branch references that match the task.
 
 - Data models, schemas, brands, variants, optional keys, or decoders: read [SCHEMA.md](references/SCHEMA.md).
-- Package layout, public actions exposed on several surfaces, composition roots, units that own infrastructure, client/server split, the client SDK, import boundaries, or the build order of a feature that crosses the API: read [ARCHITECTURE.md](references/ARCHITECTURE.md).
+- Package layout, public actions exposed on several surfaces, a Domain Api versus hand-built contracts, composition roots, units that own infrastructure, client/server split, the client SDK, import boundaries, or the build order of a feature that crosses the API: read [ARCHITECTURE.md](references/ARCHITECTURE.md).
 - Public interfaces, deep modules, capability seams, resource ownership, error boundaries, or concurrency ownership: read [PROGRAM_DESIGN.md](references/PROGRAM_DESIGN.md).
 - Services, module surfaces, layers, runtime wiring, errors, `Effect.fn`, or test services: read [SERVICES_LAYERS.md](references/SERVICES_LAYERS.md).
 - Normal tagged values, `Predicate`, `Match`, tag guards, or exhaustive dispatch: read [TAGGED_VALUES.md](references/TAGGED_VALUES.md).
@@ -34,9 +34,9 @@ Read only the branch references that match the task.
 - Memoization, per-key TTL caches, deduplicating concurrent lookups, or request batching: read [CACHING.md](references/CACHING.md).
 - Streams, event sources, async iterables, queues/pubsubs, pagination, backpressure, or stream consumers: read [STREAMS.md](references/STREAMS.md).
 - Outgoing HTTP calls, Effect HttpClient, status handling, or HTTP rate limiting: read [HTTP_CLIENTS.md](references/HTTP_CLIENTS.md).
-- Effect tests, time, sleeps, concurrency synchronization, or fakes: read [TESTING.md](references/TESTING.md).
+- Effect tests, time, sleeps, concurrency synchronization, fakes, domain-model stories, or deployed-stack tests: read [TESTING.md](references/TESTING.md).
 - Effect-native style, lint ownership, runtime builtin replacement, or agent review: read [STYLEGUIDE.md](references/STYLEGUIDE.md).
-- Deploying the app, or cloud resources the app uses (databases, buckets, queues, secrets, domains): load the `alchemy` skill. Its `references/app-code.md` covers Runtimes, Bindings, and Layers that own infrastructure.
+- Deploying the app, cloud resources the app uses (databases, buckets, queues, secrets, domains), or a backend built on `@alchemy.run/domain`: load the `alchemy` skill. Its `references/app-code.md` covers Runtimes, Bindings, and Layers that own infrastructure; `references/domain.md` the Domain backend; `references/testing.md` stories and deploy tests.
 
 If a task spans several branches, read all matching files before editing.
 
@@ -55,6 +55,7 @@ If a task spans several branches, read all matching files before editing.
 - Model typed Effect errors with `Schema.TaggedError`.
 - Read runtime config through `Config`, not direct `process.env` access in application logic.
 - Declare infrastructure with Alchemy. Cloud resources reach the app as Bindings, or as Layers that own their resources behind the same `Context.Service` tags the local entry satisfies with local Layers. Domain services, routes, and errors stay Alchemy-free.
+- Build a backend of business rules hosted on Cloudflare as an `@alchemy.run/domain` model whose Api projects every surface. [ARCHITECTURE.md](references/ARCHITECTURE.md) §Pick the contract source says when, and when to hand-build contracts instead.
 - Use `Schedule` for retry, repeat, polling, pacing, and backoff policies.
 - Use `Stream` for effectful sources that emit many values over time and need pull, backpressure, interruption, or transformation.
 - Prefer Effect HTTP client modules for outgoing HTTP in Effect applications when their typed errors, layers, and client transforms are useful.
@@ -130,3 +131,5 @@ MIT.
 Program-design guidance is adapted from HumanLayer Fold's MIT-licensed `effect-program-design` skill at commit `4bd8c58c4c644ad43df573c156ecdf8bddedd04d`.
 
 The architecture reference's operation shaping, SDK admission test, package rules, and vertical-slice order restate ideas from Fernando Rojo's [nando-skill](https://github.com/nandorojo/nando-skill) (no license, so no text is copied).
+
+The Domain Api path in the architecture and testing references restates, in our own words, Alchemy's Apache-2.0 `@alchemy.run/domain` and `@alchemy.run/test` source, docs, and `alchemy-domain` skill from `alchemy-run/alchemy` at commit `d0b4a3326` (2.0.0-beta.85). No text is copied.
