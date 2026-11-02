@@ -21,7 +21,7 @@ A Runtime is a Resource that carries code: `Railway.Service`, `Railway.Function`
 // src/Api.ts: declaration and runtime code in one file
 import { Service } from "alchemy/Railway/Service";
 import * as Effect from "effect/Effect";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import { HttpServerResponse } from "effect/http";
 import { Site } from "./Site.ts";
 
 export default class Api extends Service<Api>()(
