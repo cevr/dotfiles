@@ -22,7 +22,7 @@ A wrapper may light up while an inner input has focus, such as a search box with
 
 Sticky chrome hides whatever scrolls under it, including the element that just received focus (2.4.11). The scroll container reserves the sticky element's height: at the top for a header, at the bottom for a sticky footer or cookie banner. An in-page jump target keeps the same margin, so it isn't hidden when jumped to.
 
-**Web:** `html { scroll-padding-top: 64px; }` (the header's height), `scroll-padding-bottom` for a footer, `scroll-margin-top` on anchored headings.
+**Web:** `scroll-padding-block-start` on the scroller at the header's height, `scroll-padding-block-end` for a footer, `scroll-margin-block-start` on anchored headings; the recipe is the [web layout file's](../../platforms/web/layout.md#full-bleed-safe-areas-sticky-headers).
 
 ## Bypass blocks
 

@@ -55,7 +55,7 @@ Rule: [bypass blocks](../../references/accessibility/focus-and-keyboard.md#bypas
 </body>
 ```
 
-Give in-page anchor targets `scroll-margin-top`, such as `80px` under a sticky header, so the target isn't hidden when jumped to.
+Give in-page anchor targets `scroll-margin-block-start`, such as `80px` under a sticky header, so the target isn't hidden when jumped to.
 
 ### tabindex
 
@@ -337,7 +337,6 @@ Rule: [zoom and reflow](../../references/accessibility/motion-and-zoom.md#zoom-a
 | `aria-label` whose text omits the visible label | Start the name with the visible text |
 | `aria-hidden` on an ancestor of a button, link or input | Remove it, or make the subtree inert |
 | `maximum-scale=1` or `user-scalable=no` | Remove it |
-| `position: sticky` header with no `scroll-padding-top` on the scroller | Pad the scroller by the header height |
 | Tooltip on a natively `disabled` control | Text beside it, or `aria-disabled` so it stays focusable |
 | `onDragStart` or a drag library with no button alternative | Add a single-pointer path to the same result |
 

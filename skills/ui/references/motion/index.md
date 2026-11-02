@@ -312,7 +312,7 @@ Also, for everyone:
 ## Loops and scrolling
 
 - Looping animations pause when off-screen, or the loop unmounts. **Web:** an `IntersectionObserver` toggles `animation-play-state`.
-- Scrolling to an in-page target animates, lands clear of any sticky header, and jumps instantly under reduced motion. **Web:** `scroll-behavior: smooth` with `scroll-margin-top`.
+- Scrolling to an in-page target animates, lands clear of any sticky header, and jumps instantly under reduced motion. **Web:** `scroll-behavior: smooth` with `scroll-margin-block-start`.
 - A staggered parent and its children render in the same component tree, or the children mount without the parent's orchestration. **Web (React):** the same client component tree.
 
 ## Cohesion
