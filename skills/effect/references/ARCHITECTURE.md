@@ -75,7 +75,7 @@ Logic that can run on the server runs there. Design each operation around what t
 const user = yield* client.users.current()
 const teams = yield* client.teams.forUser({ userId: user.id })
 
-// One operation; the service resolves the dependency.
+// One call: the server joins the user to their teams.
 const { user, teams } = yield* client.users.currentWithTeams()
 ```
 
@@ -139,6 +139,8 @@ The client SDK is one root `createClient()` that exposes the whole product, with
 2. Does the inferred operation, the query library, the transport, or a host adapter already own the behavior? Reuse that owner.
 3. Otherwise the addition owns work that must run on the client (assembling a stream, cancelling a local attachment, reading a documented connection protocol). Name its consumer, the state only it owns, and why it cannot run on the server.
 
+Failures reach the screen typed. Each declared failure has a stable, unique tag and a schema payload; a payload that offers recovery (switch to the right team) carries only what the server authorized the caller to see. The SDK turns transport, decode, and unexpected failures into its own tagged variants, so a consumer handles one closed union and never parses a message.
+
 Prove the SDK with a non-React consumer that runs the slice's lifecycle (including recovery and cancellation, where the product has them) through public exports alone. Calling raw endpoints proves the transport, not the SDK.
 
 Where tools execute is a separate choice from where the client runs. A mobile client, a CLI on the cloud API, and a CLI with an in-process API are different composition roots of the same contracts. The host authorizes and provides the execution capability; shared code never checks `isLocal` or `window` to decide where a command runs.
@@ -152,7 +154,7 @@ Build every package as if it were published, whether or not it is:
 - It declares its dependencies, files, runtime, and exports. Pack it and import it from an isolated consumer through public exports only; a workspace alias must not hide a missing dependency or a broken declaration path.
 - Its root entry is vanilla: no React, Next, or platform imports. Framework adapters live in explicit subpath exports (`client-sdk/react`, `api/next`, `api/bun`), with the framework as an optional peer, so importing the root works without it.
 - Each consumed entry point is one barrel that re-exports implementation files directly. Do not chain folder barrels into feature barrels into a package barrel. Inside the package, import implementation files through private aliases; no `./*` export reaches private files.
-- Apps and features import vendors through an owned entry point that names what the product uses. A wildcard re-export of a vendor is not ownership.
+- Apps and features import vendors through an owned entry point that names what the product uses. A wildcard re-export of a vendor is not ownership. When the vendor's root is a barrel, the owned entry re-exports from its granular paths; measure the bundle.
 - App bootstrap (root layout, global providers, client lifetimes, host configuration) belongs to the app, not to a feature named `app`.
 
 ## Lifecycles

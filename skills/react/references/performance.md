@@ -40,11 +40,11 @@ const isMobile = useMediaQuery('(max-width: 767px)');
 **Narrow effect dependencies — use primitives, not objects:**
 
 ```tsx
-// BAD: Runs when any user property changes
-useEffect(() => fetchUserData(user.id), [user]);
+// In a host adapter hook. BAD: resubscribes when any user property changes
+useEffect(() => presence.subscribe(user.id), [user]);
 
-// GOOD: Runs only when id changes
-useEffect(() => fetchUserData(user.id), [user.id]);
+// GOOD: resubscribes only when the id changes
+useEffect(() => presence.subscribe(user.id), [user.id]);
 ```
 
 **Defer state reads — read on-demand instead of subscribing:**
@@ -142,12 +142,15 @@ const handleSearch = async (q: string) => {
   setIsLoading(false); // won't run if fetchResults throws
 };
 
-// GOOD: isPending resets automatically, even on error
+// GOOD: the query owns the results and their loading state
+const [q, setQ] = useState('');
+const results = useQuery(query.search.getOptions({ q }));
+
+// GOOD: an action with no data to keep; isPending resets even on error
 const [isPending, startTransition] = useTransition();
-const handleSearch = (q: string) => {
+const handleArchive = (id: string) => {
   startTransition(async () => {
-    const data = await fetchResults(q);
-    setResults(data);
+    await archive(id);
   });
 };
 ```
@@ -283,7 +286,7 @@ function CodeEditor() {
 
 ### Avoid Barrel File Imports
 
-Barrel files (`index.js` with `export *`) pull in thousands of unused modules:
+A vendor whose root is a barrel (`index.js` with `export *`) pulls in thousands of unused modules. Import its granular paths, inside the project's owned entry point for that vendor, and measure the bundle. Our own packages expose one deliberate barrel per entry point (the `effect` skill's ARCHITECTURE.md, Packages).
 
 ```tsx
 // BAD: Imports entire library

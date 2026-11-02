@@ -4,7 +4,7 @@ Rules for reading and changing server data in React through a query library (Tan
 
 ## Effects and promises
 
-- Feature components and hooks contain no `useEffect` or `useLayoutEffect`. Reads and mutations go through the query library; an external subscription goes through an SDK adapter (a `useSyncExternalStore` bridge to a vanilla controller); DOM or native synchronization lives in one named host adapter with its cleanup and a comment on why nothing else can do it.
+- Effects stay out of feature code: no `useEffect` or `useLayoutEffect` in a feature's components or hooks. Server reads and writes use the query library. A live subscription reaches React through an SDK adapter, such as `useSyncExternalStore` over a vanilla controller. Syncing with the DOM, a native view, or a non-React widget happens in one named host adapter hook that cleans up and says why no other primitive fits. The effect examples in [state.md](state.md) and [events.md](events.md) are such adapters.
 - Never track a promise with `setState`. A simple action uses `useTransition` and its pending flag; data work uses `useQuery` or `useMutation`. Read the primitive's lifecycle directly. Moving the `try`/`finally` bookkeeping into a custom hook or reducer does not change this.
 - A custom hook still runs during render. Extracting logic into a hook changes where it lives, not whether a side effect may run there. Retry, backoff, sequencing, and protocol parsing that another client would also need belong in the vanilla SDK.
 
@@ -27,6 +27,7 @@ In Next.js, mount the query client by the official TanStack Advanced Server Rend
 ## Derived options and one mutation policy
 
 - Query options and keys come from the inferred operation: `query.users.byId.getOptions({ id })`. `.key` is the operation prefix; `getOptions(input).queryKey` is the full key. Keep no second key registry, and pass `exact: true` for an exact invalidation.
+- A key carries the non-secret scope a result depends on (account, workspace, team), and the app clears the cache when that identity changes (sign-out, account switch), so one person's results never render for another.
 - Register mutation defaults (invalidation, cache updates) once, where the shared client is built. Hooks and call sites do not repeat or override them, and a call site does not pass a long inline `onSuccess`.
 - Consumers get types from the operation in front of them (`InputOf<typeof op>`, `OutputOf<typeof op>`), not from hand-written aliases, explicit generics, or tag strings.
 
@@ -35,10 +36,8 @@ In Next.js, mount the query client by the official TanStack Advanced Server Rend
 Wrap each query or mutation once at the feature's boundary, in the feature's folder, never in a global `hooks/` folder:
 
 ```ts
-export function useUserById(input: InputOf<UserRead>): ResourceOf<UserRead> {
-  const query = useQueryApi()
-  return useQuery(query.users.byId.getOptions(input))
-}
+// features/projects/use-project.ts
+export const useProject = (id: ProjectId) => useQuery(useQueryApi().projects.get.getOptions({ id }))
 ```
 
 - Return the query result unchanged so property tracking keeps working; narrow its type, not its value. Never spread or normalize it into a new object.
@@ -51,14 +50,17 @@ export function useUserById(input: InputOf<UserRead>): ResourceOf<UserRead> {
 
 - Put each independently updating owner in its own provider. A parent that nests them has no hooks and passes `children` through, so one resource's update does not rerun the others.
 - Name headless providers with a `Provider` suffix; keep `Screen`, `Frame`, and `Panels` for visual components.
-- The context contract is `state` (values the consumer controls, such as a draft), `actions` (`patch`, `replace`, `reset`, plus real operations like `submit`), and `meta` (derived eligibility such as `canSubmit`, submission lifecycle, typed errors, and refs). Consumers cannot write `meta`.
+- The context contract is the `state` / `actions` / `meta` shape from the `composition-patterns` skill (`state-context-interface`), with one difference: request lifecycle and derived values go in `meta`, not `state`. Its example puts `isSubmitting` in `state`; here `state` holds only what the consumer controls (the draft), and `meta` holds `canSubmit`, the submission status, typed errors, and handles, none of which consumers write. Prefer `patch`, `replace`, and `reset` over a setter per field, and keep real operations like `submit` as named actions.
+- A handle in a shared contract is a semantic capability (`{ focus(): void }`), never a DOM element or a React Native `TextInput` type.
 - A missing provider throws from the accessor. A mock provider is an explicit implementation, never a silent no-op default.
 - Swap implementations by mounting a different provider. Never call hooks conditionally or pass hook functions through context; pass values, promises, or stores.
+- A different provider type at the same position remounts its subtree. When a transition must keep a draft, focus, or scroll (new chat becoming an existing chat), keep one provider type at a stable position holding a discriminated session, or persist and restore that state on purpose.
 - A hook that branches on a mode argument (`useSurface({ kind })`) becomes explicit hooks or providers that share parts underneath.
 
 ## Minimal state
 
-- Before adding state, name the independent fact it owns. Derive everything else during render.
+The general rule (derive, don't store) is in [state.md](state.md#you-might-not-need-state). For server data:
+
 - Store IDs (`selectedUserId`) and resolve the entity from query data. Handle an ID that does not resolve.
 - An edit form keeps the entity's ID and the user's overrides only. Display values and the submit input combine fetched data with those overrides, so a refetch never overwrites an edit. Track which fields are overridden so an empty string or `false` stays an override.
 - A chat composer allocates the message ID on submit, not on each keystroke, and clears at once on an optimistic send. A failed message keeps its own retry in the transcript, read from the mutation cache with a scoped `useMutationState`; a retry never overwrites newer input.
@@ -72,7 +74,7 @@ export function useUserById(input: InputOf<UserRead>): ResourceOf<UserRead> {
 
 ## React Compiler
 
-New React code targets React 19+ with the compiler on. Run its diagnostics (`eslint-plugin-react-hooks`, recommended preset) in CI and after React edits; a diagnostic can mean a component was skipped while the build passed. Fix the cause instead of disabling the rule or adding memoization. A `"use no memo"` opt-out carries a reason and a follow-up.
+New React code targets React 19+ with the compiler on. Run its diagnostics (`eslint-plugin-react-hooks`, recommended preset) in CI and after React edits: a green build can hide a component the compiler declined to optimize. Fix the cause instead of disabling the rule or adding memoization. A `"use no memo"` opt-out carries a reason and a follow-up.
 
 ---
 

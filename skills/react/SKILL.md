@@ -68,7 +68,7 @@ What are you working on?
 - Refs + direct DOM mutation for high-frequency values (mouse, scroll)
 - Don't `useMemo` simple expressions — inline boolean OR is cheaper
 - Don't define components inside components — remounts on every parent render
-- Barrel files pull everything — use direct imports
+- A vendor's root barrel pulls everything — import its granular paths in the owned vendor entry point; measure the bundle
 - `.toSorted()` not `.sort()` on prop arrays
 - `suppressHydrationWarning` for dates/random IDs; inline script for theme
 - Cache repeated function results only in bounded or lifecycle-owned Maps

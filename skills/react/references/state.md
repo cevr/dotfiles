@@ -33,7 +33,7 @@ function handleSubmit() {
 }
 ```
 
-**When effects ARE appropriate:** Subscriptions (WebSocket, event listeners), syncing with non-React widgets (maps, video players), analytics on page view.
+**When effects ARE appropriate:** Subscriptions (WebSocket, event listeners), syncing with non-React widgets (maps, video players), analytics on page view. Each lives in one named host adapter hook, never in a feature component or hook; server data goes through the query library ([server-state.md](server-state.md#effects-and-promises)).
 
 ## You Might Not Need State
 

@@ -56,13 +56,13 @@ Each branch has exactly the fields it needs. No `data ?? null` guards.
 
 ## Reducers Over useState
 
-Once state has more than ~3 fields or transitions depend on current state, switch to `useReducer`.
+Once state has more than ~3 fields or transitions depend on current state, switch to `useReducer`. A reducer models a workflow the UI owns. A request's pending, success, and error states come from `useMutation`, `useQuery`, or a transition, never from reducer actions ([server-state.md](server-state.md#effects-and-promises)).
 
 ```tsx
-// BAD: scattered setState calls, easy to forget one
+// BAD: the request's lifecycle mirrored into local state, one setter per field
 function useCheckout() {
   const [items, setItems] = useState<Item[]>([])
-  const [total, setTotal] = useState(0)
+  const [total, setTotal] = useState(0) // derivable from items
   const [status, setStatus] = useState<'idle' | 'processing' | 'done'>('idle')
   const [error, setError] = useState<Error | null>(null)
 
@@ -81,35 +81,33 @@ function useCheckout() {
   }
 }
 
-// GOOD: all transitions explicit, impossible to forget a field
-type CheckoutState =
-  | { status: 'idle'; items: Item[]; total: number }
-  | { status: 'processing'; items: Item[]; total: number }
-  | { status: 'done' }
-  | { status: 'error'; items: Item[]; total: number; error: Error }
+// GOOD: the reducer owns the cart; the mutation owns the request
+type CartAction =
+  | { type: 'item_added'; item: Item }
+  | { type: 'item_removed'; id: string }
+  | { type: 'emptied' }
 
-type CheckoutAction =
-  | { type: 'add_item'; item: Item }
-  | { type: 'submit' }
-  | { type: 'submit_success' }
-  | { type: 'submit_error'; error: Error }
-
-function checkoutReducer(state: CheckoutState, action: CheckoutAction): CheckoutState {
+function cartReducer(items: Item[], action: CartAction): Item[] {
   switch (action.type) {
-    case 'add_item': {
-      if (state.status !== 'idle') return state // transition protection
-      const items = [...state.items, action.item]
-      return { ...state, items, total: items.reduce((s, i) => s + i.price, 0) }
-    }
-    case 'submit':
-      if (state.status !== 'idle') return state
-      return { ...state, status: 'processing' }
-    case 'submit_success':
-      return { status: 'done' }
-    case 'submit_error':
-      if (state.status !== 'processing') return state
-      return { ...state, status: 'error', error: action.error }
+    case 'item_added':
+      return [...items, action.item]
+    case 'item_removed':
+      return items.filter((i) => i.id !== action.id)
+    case 'emptied':
+      return []
   }
+  action satisfies never
+  return items
+}
+
+function useCheckout() {
+  const [items, dispatch] = useReducer(cartReducer, [])
+  const total = items.reduce((s, i) => s + i.price, 0) // derived, not stored
+  const checkout = useMutation({
+    ...mutation.orders.checkout.mutationOptions(),
+    onSuccess: () => dispatch({ type: 'emptied' }),
+  })
+  return { items, total, dispatch, checkout } // checkout.isPending, checkout.error
 }
 ```
 
@@ -118,25 +116,23 @@ function checkoutReducer(state: CheckoutState, action: CheckoutAction): Checkout
 Not every action is valid in every state. Guard transitions at the reducer level.
 
 ```tsx
-// State machine: idle → loading → success | error → idle (retry)
-function fetchReducer(state: FetchState, action: FetchAction): FetchState {
+// State machine: stopped → playing ⇄ paused → stopped
+function playerReducer(state: PlayerState, action: PlayerAction): PlayerState {
   switch (action.type) {
-    case 'fetch':
-      // Only allow fetch from idle or error (retry)
-      if (state.status !== 'idle' && state.status !== 'error') return state
-      return { status: 'loading' }
+    case 'played':
+      // Playing again is a no-op; play from stopped starts at 0
+      if (state.status === 'playing') return state
+      return { status: 'playing', position: state.status === 'paused' ? state.position : 0 }
 
-    case 'success':
-      if (state.status !== 'loading') return state
-      return { status: 'success', data: action.data }
+    case 'paused':
+      if (state.status !== 'playing') return state
+      return { status: 'paused', position: action.position }
 
-    case 'error':
-      if (state.status !== 'loading') return state
-      return { status: 'error', error: action.error }
-
-    case 'reset':
-      return { status: 'idle' }
+    case 'stopped':
+      return { status: 'stopped' }
   }
+  action satisfies never
+  return state
 }
 ```
 
@@ -151,9 +147,9 @@ function guardTransition<S extends { status: string }>(
 }
 
 // Usage
-case 'submit':
-  if (!guardTransition(state, ['idle', 'error'])) return state
-  return { ...state, status: 'processing' }
+case 'paused':
+  if (!guardTransition(state, ['playing'])) return state
+  return { status: 'paused', position: action.position }
 ```
 
 ## State Machines with useReducer
@@ -190,6 +186,6 @@ function machineReducer(state: { status: Status }, action: { type: Event }) {
 ## Gotchas
 
 - **Don't mix paradigms** — if using a reducer, ALL state transitions go through `dispatch`. No side `useState` for "just this one field."
-- **Exhaustive switches** — use `satisfies` or `default: never` to catch missing cases at compile time.
+- **Exhaustive switches** — end the `switch` with `value satisfies never` and a plain return, with no `default`, so a new variant fails the typecheck. No throwing `assertNever` in components.
 - **Derived state is not state** — `total` computed from `items` should be a `useMemo`, not in the reducer.
 - **Events, not setters** — name actions after what happened (`'submit'`, `'item_added'`), not what to do (`'set_loading'`, `'set_items'`).

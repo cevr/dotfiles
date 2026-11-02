@@ -26,18 +26,24 @@ function useLatest<T>(value: T) {
   return ref;
 }
 
+// The debounce runs in the event handler; useLatest is the only effect, inside the adapter
 function Search({ onSearch }) {
   const onSearchRef = useLatest(onSearch);
-  const [query, setQuery] = useState('');
+  const timer = useRef<ReturnType<typeof setTimeout>>();
 
-  useEffect(() => {
-    const timer = setTimeout(() => onSearchRef.current(query), 300);
-    return () => clearTimeout(timer);
-  }, [query]);
-
-  return <input value={query} onChange={e => setQuery(e.target.value)} />;
+  return (
+    <input
+      onChange={(e) => {
+        const query = e.target.value;
+        clearTimeout(timer.current);
+        timer.current = setTimeout(() => onSearchRef.current(query), 300);
+      }}
+    />
+  );
 }
 ```
+
+Hooks like `useLatest` are host adapters: keep them in one shared place, and keep effects out of feature components ([server-state.md](server-state.md#effects-and-promises)).
 
 ## Deduplicate Global Event Listeners
 
