@@ -148,7 +148,7 @@ A green typecheck and a clean plan only prove the stack is well formed. What pro
 
 ## Compatibility
 
-Last proven on a real project with `alchemy@2.0.0-beta.84` and `effect@4.0.5`: cvr.im on Cloudflare, deployed by CI on 2026-10-26. On 2026-11-02, `alchemy@2.0.0-beta.85` with `effect@4.1.2` passed cvr.im's gate and `alchemy plan` loaded the stack, then stopped at the v7 state store; it is not deployed yet. Effect stable (`4.0.0` and later) has no `effect/unstable/*`: those modules live at `effect/cli`, `effect/http`, `effect/http-api`, `effect/ai` and `effect/rpc`. For a newer release, recheck against its source.
+Last proven on a real project with `alchemy@2.0.0-beta.85` and `effect@4.1.2`: cvr.im on Cloudflare, deployed by CI on 2026-11-02; that first beta.85 deploy upgraded the shared Cloudflare state store from v7 to v8, and gent.cvr.im, the paulo-suzanne Worker and budget.cvr.im deployed on it the same day. Effect stable (`4.0.0` and later) has no `effect/unstable/*`: those modules live at `effect/cli`, `effect/http`, `effect/http-api`, `effect/ai` and `effect/rpc`. For a newer release, recheck against its source.
 
 `@alchemy.run/domain` and `@alchemy.run/test` are reviewed against their 2.0.0-beta.85 source and docs, not yet proven on one of our projects.
 
