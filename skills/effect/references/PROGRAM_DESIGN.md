@@ -4,7 +4,7 @@ Use this reference when you define a public API, choose a module seam, or assign
 
 ## Design the public interface
 
-A caller supplies domain values that it owns. The public interface hides credentials, provider clients, decoded storage records, layers, scopes, and runtime wiring. Required credential and provider capabilities stay in the internal Effect environment.
+A caller supplies domain values that it owns. The public interface hides credentials, provider clients, decoded storage records, layers, scopes, and runtime wiring. Required credential and provider capabilities stay in the internal Effect environment. A backend the host chooses (where an event log or store lives) is the exception: the host selects it by ordinary `Layer` composition at its composition root, never through a descriptor or session option.
 
 Use this deletion test. Delete the proposed module in thought. A useful module deletion spreads orchestration and invariants across its callers. A pass-through module deletion only removes forwarding code.
 
@@ -34,7 +34,9 @@ Keep handlers thin. Decode the request. Read the required context. Call a domain
 
 ## Own construction and resources
 
-Build runtime-specific layer graphs at one composition boundary. A facade or provisioner can coordinate config, clients, adapters, memoization, scopes, and session-specific services. Callers must not rebuild this graph.
+Build runtime-specific layer graphs at one composition boundary. A facade or provisioner can coordinate config, clients, adapters, memoization, scopes, and session-specific services, with a fresh memo map per runtime or session. Callers must not rebuild this graph.
+
+A host-supplied backend belongs to the host's acquisition scope, and the host sets its cardinality: one instance per session, shared by that session's consumers and alive for every use, never one instance under unrelated sessions. The facade adopts the supplied backend (resumes its identity or initializes it when empty) and never rebuilds it.
 
 - Acquire external resources in the owning layer or scope.
 - Register release at the same ownership boundary.
@@ -47,7 +49,7 @@ Build runtime-specific layer graphs at one composition boundary. A facade or pro
 
 Wrap a throwing SDK or native API once with `Effect.try` or `Effect.tryPromise`. Map the unknown cause into the adapter's typed error vocabulary. Preserve the safe status, code, retry metadata, and cause information that a caller or operator needs.
 
-Keep rich internal failures until the public module boundary. Narrow them there to the outcomes that callers can act on. Use a fallback only when the operation contract defines one.
+Keep rich internal failures until the public module boundary. Narrow them there to the outcomes that callers can act on. Use a fallback only when the operation contract defines one. A persisted store that fails to open never falls back to an empty one: that reads as lost data. When no caller can act on a store failure, make it a defect where it happens (`Layer.orDie` at acquisition, `Effect.orDie` at the operation).
 
 Use `Effect.catchTag` or `Effect.catchTags` for expected failures. Use cause-level recovery only for a deliberate safety boundary that must also handle defects. Make an unexpected or swallowed failure observable before recovery.
 

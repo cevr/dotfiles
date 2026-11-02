@@ -119,12 +119,12 @@ If a task spans several branches, read all matching files before editing.
 
 ## Compatibility
 
-Requires Effect v4. Examples were reviewed against `effect@4.0.0-rc.117` on 2026-09-27; recheck source for another project-pinned version. Pin v4 exactly (for example `effect@4.0.0-rc.117`, from the `rc` dist-tag); `effect@latest` is still v3.
+Requires Effect v4, stable since `4.0.0` (2026-10-01); `effect@latest` is v4, and the `rc` dist-tag still points at a pre-release. Examples were reviewed against `effect@4.0.0-rc.117` on 2026-09-27; recheck source for the project's pinned version. Pin the version exactly.
 
 ## License
 
 MIT.
 
-Program-design guidance is adapted from HumanLayer Fold's MIT-licensed `effect-program-design` skill at commit `3b1f144abd829cb027ab30d32b3f227301201ef6`.
+Program-design guidance is adapted from HumanLayer Fold's MIT-licensed `effect-program-design` skill at commit `4bd8c58c4c644ad43df573c156ecdf8bddedd04d`.
 
 The architecture reference's operation shaping, SDK admission test, package rules, and vertical-slice order restate ideas from Fernando Rojo's [nando-skill](https://github.com/nandorojo/nando-skill) (no license, so no text is copied).
