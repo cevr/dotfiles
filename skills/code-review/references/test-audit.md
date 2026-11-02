@@ -25,7 +25,7 @@ Each contract has one primary test owner at the strongest boundary. A test at an
 
 When question 4 is yes, the repair is to move the test to the real boundary. Do not accept the seam.
 
-A bug regression test must fail on the pre-fix code for the intended reason. It must pass after the owner-boundary repair. A regression test that never failed proves the mock, not the fix. One regression test at the owner boundary covers the bug. Do not accept the same scenario at each layer it crosses.
+A bug regression test must fail on the pre-fix code for the intended reason. It must pass after the owner-boundary repair. When the pre-fix code cannot run, report the baseline proof as missing. A regression test that never failed proves the mock, not the fix. One regression test at the owner boundary covers the bug. Do not accept the same scenario at each layer it crosses.
 
 ## Junk patterns
 
@@ -48,7 +48,7 @@ A new test that matches a pattern fails the gate. An existing test that matches 
 - Fixtures that supply the receipt, admission, or callback order that the owner must produce.
 - Persistence asserted against a store that the path never writes.
 - Capability tests that restate declared flags instead of exercising the delivery the flag promises.
-- Negative controls that pass for an unrelated reason, such as a denial from a different guard.
+- Negative controls that pass for an unrelated reason, such as a denial from a different guard or a rejection the input never reaches.
 - Names or fixtures that promise more than the input exercises.
 - A test that passes but does not exercise the changed mode or branch.
 - A test whose meaning changed to accept a regression.
@@ -85,3 +85,5 @@ A recommendation to delete or move an existing test needs every field below. A m
 Recommend one coherent owner-boundary batch. Delete obsolete test-only exports, globals, wrappers, and dead production paths. Do not keep aliases for them. Move retained regression tests to their canonical owners. Consolidate repeated package or dependency assertions into one generic contract.
 
 Prefer net-negative production lines. Optimize for confidence, not for deletion count. Leave an uncertain candidate out of the batch.
+
+Run the owner and sibling tests of every batch. A removed source grep or plan assertion gets its contract shown by running the owning executable or its dry run. Before the batch lands, run the repo's dead-code checks in full (unused dependencies, files, and exports, every phase CI runs): removed tests orphan support files and exports that changed-file checks miss.
