@@ -1,10 +1,12 @@
 # Explain the Number
 
-Before you trust, report or act on a number you measured (a speedup, a regression, a failure count, a token cost, an eval score), name what limits it and rule out that it measured something else.
+Before you measure, write down the result that would change a decision. Before you trust, report or act on a number you measured (a speedup, a regression, a failure count, a token cost, an eval score), name what limits it and rule out that it measured something else.
 
 **Why:** A number is evidence about whatever it actually measured. A count of the wrong thing reads exactly like a count of the right thing, and every decision built on it inherits the error.
 
-**Pattern:** Answer these with evidence from a run, not a guess about the code:
+**Before the run:** name the result that would change the decision (ship, revert, pick A over B) and the noise floor you expect. Stop when the run-to-run spread is larger than the effect: no number from that setup can carry the decision.
+
+**Pattern:** After the run, answer these with evidence from it, not a guess about the code:
 
 1. **Why not double?** Name the resource or code path that bounds the result: a core, a lock, the disk, the network, the load generator, other work on the machine. Get it from a profile or system counters, then map it to source. If you cannot say why it is not twice as good, you do not know what you measured.
 2. **Did it even happen?** Confirm the work ran inside the measured region: the request reached the server, the rows were written, the result was used. Lazy code, cached results and early exits produce numbers for work that never ran.
