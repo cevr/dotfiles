@@ -130,6 +130,8 @@ Read every reference below and complete each domain review before consolidation.
 | 8 | Motion | [motion/standards.md](../references/motion/standards.md) | Whether it should animate, easing, duration, interruptibility, reduced motion |
 | 9 | Interface judgment | [interface-judgment.md](../references/interface-judgment.md) | Whether each element earns its place; the closing pass that removes what adds nothing |
 
+A dashboard, admin or analytics screen also takes [dashboards](../references/dashboards.md), reported under Interface judgment.
+
 From each, take its principles, its sub-files and its verification checks. Any severity ladder or report format inside a reference is for standalone use; the ones in this file replace them.
 
 Motion gets the standards pass here. When the scope is motion-heavy, or the user asks for a strict motion verdict, run the full [motion review](motion-review.md) and fold its confirmed findings into this report under the `Motion` domain.

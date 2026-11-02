@@ -33,7 +33,7 @@ Asymmetric grid with mixed-size cells (1x1, 2x1, 1x2, 2x2). Use CSS Grid with `g
 
 **Bento 2.0 Architecture:**
 - Container: CSS Grid with `auto-fill`/`minmax` for responsive reflow
-- Cards: 5 archetypes — **Hero** (2x2, primary CTA), **Metric** (1x1, single stat + sparkline), **Showcase** (2x1, image/video + caption), **List** (1x2, scrollable vertical content), **Interactive** (any size, embedded widget/demo)
+- Cards: 5 archetypes — **Hero** (2x2, primary CTA), **Metric** (1x1, a label over one figure; a trend worth showing gets its own cell, per [dashboards](../../references/dashboards.md#kpis)), **Showcase** (2x1, image/video + caption), **List** (1x2, scrollable vertical content), **Interactive** (any size, embedded widget/demo)
 - Animation engine: stagger entrance by grid position (`delay = (row + col) * 50ms`), hover lifts card with layered shadow, content within cards animates independently
 - Gap: consistent `gap` value (12–20px); rounded corners on cards match gap proportionality
 
