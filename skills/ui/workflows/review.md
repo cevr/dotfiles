@@ -138,11 +138,19 @@ If a reference cannot be read, mark that domain `Not reviewed`, name the file an
 
 When two references appear to cover one issue, assign it to the owner of the underlying rule and note secondary effects in the **Why** cell.
 
-## 5. Require evidence
+## 5. Verify what can be verified
+
+**Surface review.** Run the safe, relevant checks the project offers. Inspect the rendered interface when runtime behavior or visual judgment matters, through the renderer [harness](harness.md#looking-at-it) names for the platform, judge it by [its passes](harness.md#judging-it), and report the exact command or interaction and its result.
+
+**Change review.** Rendered verification is opt-in. Mark visual and runtime claims **Not verified** unless the project exposes a cheap preview or the user asks for a rendered review. For `working` and `branch`, the checkout already is the head, so render it in place. For any other target, render an isolated worktree such as `git worktree add /tmp/review-<n> refs/remotes/pr/<n>` and remove it when done.
+
+Either way, a check you cannot run is **Not verified**, never a finding.
+
+## Require evidence
 
 Every finding cites `path/to/file:line` and shows the current implementation. When runtime behavior determines the result, source alone cannot support a visual finding and a screenshot alone cannot support a code finding.
 
-## 6. Rank by user impact
+## Rank by user impact
 
 Use one shared severity scale:
 
@@ -174,7 +182,7 @@ These set severity, not new rules. The owning reference decides whether the symp
 
 For a change, the cap and the verdict cover `Introduced` and `Regression` findings only, so a change whose only findings are `Pre-existing` is an `Approve`.
 
-## 7. Prefer the cheaper fix
+## Prefer the cheaper fix
 
 Severity says how bad a finding is; this says which fix to propose. When more than one would work, take the earliest that does:
 
@@ -186,19 +194,11 @@ Severity says how bad a finding is; this says which fix to propose. When more th
 
 When the code under review adds what **Delete** would fix, that is a finding, and its **After** is the deletion.
 
-## 8. Consolidate systemic findings
+## Consolidate systemic findings
 
 One root cause is one finding, with every confirmed location in the same row. Report at most 15 findings. Never pad toward the cap; a short review or no findings is a valid result.
 
-## 9. Verify what can be verified
-
-**Surface review.** Run the safe, relevant checks the project offers. Inspect the rendered interface when runtime behavior or visual judgment matters, through the renderer [harness](harness.md#looking-at-it) names for the platform, judge it by [its passes](harness.md#judging-it), and report the exact command or interaction and its result.
-
-**Change review.** Rendered verification is opt-in. Mark visual and runtime claims **Not verified** unless the project exposes a cheap preview or the user asks for a rendered review. For `working` and `branch`, the checkout already is the head, so render it in place. For any other target, render an isolated worktree such as `git worktree add /tmp/review-<n> refs/remotes/pr/<n>` and remove it when done.
-
-Either way, a check you cannot run is **Not verified**, never a finding.
-
-## 10. Review without mutating
+## Review without mutating
 
 Treat a review request as read-only. Do not edit source unless the user also asks you to implement the findings. When they do, keep the consolidated report as the change scope and re-run the relevant verification afterward.
 

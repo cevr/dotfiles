@@ -51,7 +51,7 @@ Write each round in one shape, so rounds compare:
     Top three problems, most visible first, each with its screenshot, the region and the fix:
     1. …
 
-Name a problem as a designer tells a colleague: "the filter row starts 12pt right of the table's edge", never "could be more polished". Fix in this order, since a later fix cannot rescue an earlier one: hierarchy, composition, type, color, detail, motion. Fix the top three, render again and judge again. Stop when a round finds nothing a stranger would notice, or after three rounds, and list what remains plainly. A finding from this pass cites its screenshot, and its fix cites the code ([review](review.md#5-require-evidence)).
+Name a problem as a designer tells a colleague: "the filter row starts 12pt right of the table's edge", never "could be more polished". Fix in this order, since a later fix cannot rescue an earlier one: hierarchy, composition, type, color, detail, motion. Fix the top three, render again and judge again. Stop when a round finds nothing a stranger would notice, or after three rounds, and list what remains plainly. A finding from this pass cites its screenshot, and its fix cites the code ([review](review.md#require-evidence)).
 
 ## Viewing modes
 
