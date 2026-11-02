@@ -83,7 +83,7 @@ animate(el, { y: target }, { type: 'spring', bounce: 0.2, duration: 0.4 });
 
 - **Name the transitioned properties**: `transition-property: scale, opacity`, never `transition: all` ([why and the Tailwind spellings](motion-performance.md#transition-only-what-changes)).
 - **Trigger-anchored origin**: `transform-origin: var(--transform-origin)`, which Base UI (React) supplies; `@bible/ui` does not ([solid.md](solid.md#5-motion)). Modals keep `transform-origin: center`.
-- **Motion's `x`/`y`/`scale` shorthands** run on the main thread. Keep them by default and switch to the full `transform` string when the animation must survive a busy main thread ([web performance](motion-performance.md#where-it-runs)).
+- **Motion's `x`/`y`/`scale` shorthands** are hardware-accelerated from Motion 14.2. Before it they run on the main thread: keep them by default and switch to the full `transform` string when the animation must survive a busy main thread. Layout animations (`layout`, `layoutId`) run on the main thread in every version ([web performance](motion-performance.md#where-it-runs)).
 - **Never drive a child's transform from a CSS variable on the parent.** It recalculates styles for every child. Set `transform` on the element directly ([web performance](motion-performance.md#two-traps-that-look-correct)).
 
 ## CSS transforms
@@ -220,7 +220,7 @@ The [detection checklist](../../references/motion/standards.md#detection-checkli
 | Keyframes (`animation:`) on toasts, toggles, `:hover`, `.open` or another toggled class | A CSS transition on the same properties |
 | Animating `width`/`height`/`margin`/`padding`/`top`/`left` | `transform` / `opacity` (accordion `height` tolerated) |
 | Animated `box-shadow` | `filter: drop-shadow(…)` |
-| Motion `x`/`y`/`scale` props on motion that plays while the page is busy | The full `transform` string |
+| Motion `x`/`y`/`scale` props before 14.2, or a layout animation, on motion that plays while the page is busy | Upgrade to 14.2+ or use the full `transform` string; a CSS animation for the layout animation |
 | `setProperty('--x', …)` on a parent driving child transforms | Set `transform` on the element directly |
 | `setState` (React) or a widely read signal write (Solid) inside rAF, pointer, scroll or drag handlers | A direct style write or a motion value |
 | Animated `blur()` above `20px` | Under `20px`; `2`–`5px` for a crossfade |

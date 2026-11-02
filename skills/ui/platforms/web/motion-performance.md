@@ -9,7 +9,7 @@ How browsers decide whether motion lands every frame: the rendering pipeline, th
 | Animation stutters | Animate `transform`/`opacity`, not `width`/`height`/`top`/`margin` |
 | Shadow animation is choppy | `filter: drop-shadow()` |
 | Jank only during navigation or loading | Move the animation to CSS or WAAPI so it runs off the main thread |
-| Framer Motion `x`/`y` drops frames | Animate the full `transform` string |
+| Motion `x`/`y` drops frames | Upgrade to Motion 14.2+, or animate the full `transform` string |
 | Hand-rolled animation drops frames in React | Write to `ref.current.style`, not state |
 | Drag gets laggier as the list grows | Stop animating an inherited CSS variable; set `transform` directly |
 | Blur transition lags (especially Safari) | Keep animated `blur()` under 20px |
@@ -71,8 +71,8 @@ In Tailwind 4, `transition-transform` covers `transform, translate, scale, rotat
 
 | Driver | Thread |
 | --- | --- |
-| JS + `requestAnimationFrame` (GSAP, `motion/react` components) | Main thread, always |
-| Web Animations API (`element.animate()`, Motion's `animate()`) | Can be hardware-accelerated |
+| JS + `requestAnimationFrame` (GSAP, Motion layout animations) | Main thread, always |
+| Web Animations API (`element.animate()`, Motion's `animate()` and `motion/react` components) | Can be hardware-accelerated |
 | CSS transitions and keyframes | Can be hardware-accelerated |
 
 Hardware acceleration means the animation runs off the main thread, so it stays smooth no matter what JavaScript is doing. "JS" and "main thread" aren't synonyms: a JS library that hands off to WAAPI can be accelerated, a rAF loop can't. WAAPI gives JavaScript control with CSS performance, interruptible and with no library ([recipe](motion-recipes.md#programmatic-without-a-library)).
@@ -81,14 +81,14 @@ Reliably accelerated: `transform` and `opacity`. Gaining support: `filter`, `cli
 
 Vercel's dashboard animated its active tab indicator with a Framer Motion shared layout animation. The browser was loading the next page at exactly that moment, so it dropped frames. Moving it to a CSS animation fixed it. Watch for the same during page transitions, data fetching and hydration.
 
-Framer Motion can be accelerated, but only when the transform is a string:
+Motion hands `opacity`, `transform`, `clip-path` and `filter` to WAAPI, so they can be accelerated. The `x`, `y`, `scale`, `rotate` shorthands depend on the version (`motion` and `framer-motion` share version numbers):
 
 ```jsx
-<motion.div animate={{ x: 100 }} />                          // main thread, can jank
-<motion.div animate={{ transform: "translateX(100px)" }} />  // hardware-accelerated
+<motion.div animate={{ x: 100 }} />                          // 14.2+: hardware-accelerated. Before: main thread, can jank
+<motion.div animate={{ transform: "translateX(100px)" }} />  // hardware-accelerated in every version
 ```
 
-The `x`, `y`, `scale`, `rotate` shorthands are implemented with CSS variables, and animated CSS variables aren't accelerated. The shorthands read better, so keep them by default and switch to the string form when the animation has to survive a busy main thread.
+From 14.2, the shorthands on an HTML element combine into one accelerated `transform` animation, so keep them. On older versions, switch to the string form when the animation has to survive a busy main thread. In every version these stay on the main thread: layout animations (`layout`, `layoutId`), `onUpdate`, `transformTemplate`, inertia, and values driven every frame by a motion value (drag, `useTransform`).
 
 **Acceleration is progressive enhancement.** Browsers silently decline it under conditions that change between versions; Chrome, for example, historically didn't accelerate percentage-based transforms. That's not a reason to stop using `translateY(100%)`. Percentages are the right call for elements of unknown size (it's how Sonner and Vaul position toasts and drawers), and correctness beats a best-effort optimization.
 
@@ -123,7 +123,7 @@ element.style.setProperty('--swipe-amount', `${draggedDistance}px`);
 element.style.transform = `translateY(${draggedDistance}px)`;
 ```
 
-CSS variables inherit, so changing one on a parent triggers style recalculation for every child. The more content, the slower each frame. Suspect this whenever a `transform` animation degrades as content grows. It's the same reason Framer Motion's shorthands aren't accelerated.
+CSS variables inherit, so changing one on a parent triggers style recalculation for every child. The more content, the slower each frame. Suspect this whenever a `transform` animation degrades as content grows.
 
 **Blur.** `filter: blur()` gets expensive fast, especially in Safari. Keep animated blur under `20px`; `2`–`5px` is enough to soften a crossfade.
 
@@ -167,9 +167,9 @@ Where it earns its place is an expensive paint, like a large blurred or filtered
 
 No. Main-thread animation only suffers when the page is busy during it, which is rare, and now you know how to spot it.
 
-Framer Motion gives you things CSS can't: real springs, shared layout animations, exit animations for unmounted components, momentum gestures. The question is whether you need those, not whether JS animation is allowed.
+Motion gives you things CSS can't: real springs, shared layout animations, exit animations for unmounted components, momentum gestures. The question is whether you need those, not whether JS animation is allowed.
 
-**The working split:** CSS for simple and predetermined motion and anything that plays while the page is busy; Framer Motion for complex, interruptible, gesture-driven motion.
+**The working split:** CSS for simple and predetermined motion and anything that plays while the page is busy; Motion for complex, interruptible, gesture-driven motion.
 
 ## Page-level costs
 
@@ -181,7 +181,7 @@ Framer Motion gives you things CSS can't: real springs, shared layout animations
 
 Phase 1 of [diagnosing jank](../../references/motion/performance.md#diagnosing-jank) expands `transition: all` and Motion shorthands into what they actually animate. Phase 2 adds these web causes to the neutral list, in this order after the framework check:
 
-1. **Is a CSS variable animated at all?** Directly, through an inherited variable on a parent, or through Motion's `x`/`y`/`scale`.
+1. **Is a CSS variable animated at all?** Directly, through an inherited variable on a parent, or through Motion's `x`/`y`/`scale` before 14.2.
 2. **Still shifting or stuttering?** Now add `will-change` naming the animated property to the animating element.
 
 Record with the DevTools Performance panel for dropped frames and long tasks, and the Animations panel to slow motion down. Profile on a real mid-range phone over remote debugging. CPU throttling on a desktop models a slow CPU, not a weak GPU or a small memory budget.

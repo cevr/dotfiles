@@ -36,7 +36,7 @@ Apple: `keyframeAnimator` or `CABasicAnimation` on rapidly toggled UI; `UIView.a
 
 Rules: [motion performance](../../references/motion/performance.md). `transition: all` is always a finding.
 
-Hunt for: `transition: all` and `transition-all`, animated layout properties, animated `box-shadow`, Framer Motion shorthand props on motion that plays while the page is busy, `setProperty('--x', …)` driving child transforms, `setState` in rAF/pointer/scroll handlers, rAF loops doing what CSS could, animated `blur()` above `20px`, `will-change: all` or `will-change` on elements that never animate.
+Hunt for: `transition: all` and `transition-all`, animated layout properties, animated `box-shadow`, Motion shorthand props (before 14.2) and layout animations on motion that plays while the page is busy, `setProperty('--x', …)` driving child transforms, `setState` in rAF/pointer/scroll handlers, rAF loops doing what CSS could, animated `blur()` above `20px`, `will-change: all` or `will-change` on elements that never animate.
 
 Apple: an animated `.frame`, padding or font size where `scaleEffect` or `offset` would do, animated `.shadow` or `.blur` across many views, `GeometryReader` writing `@State` on every frame, an `.animation(_:value:)` high on a container that animates everything beneath it. Android: an animated value read during composition (`Modifier.offset(x = value.dp)`, `padding`, `size`) where a deferred read (`Modifier.offset { }`, `graphicsLayer { }`) skips recomposition and relayout, an animated `Modifier.blur`, `animateContentSize` on every row of a long list.
 
