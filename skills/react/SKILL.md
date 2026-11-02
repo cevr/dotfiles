@@ -1,6 +1,6 @@
 ---
 name: react
-description: React best practices for state management, state modeling (discriminated unions, reducers, state machines), async patterns (use, useTransition, useOptimistic, Suspense), performance optimization, and avoiding common pitfalls. Use when writing React components, managing state, handling async operations, or structuring component hierarchies.
+description: React best practices for state management, state modeling (discriminated unions, reducers, state machines), server state (React Query, providers, feature data hooks), async patterns (use, useTransition, useOptimistic, Suspense), performance optimization, and avoiding common pitfalls. Use when writing React components, managing state, handling async operations, or structuring component hierarchies.
 allowed-tools: Read, Grep, Glob, Edit, Write
 ---
 
@@ -16,6 +16,7 @@ What are you working on?
 ├─ Async / loading / optimistic / Suspense    → references/async.md
 ├─ Slow renders / re-renders / bundle size    → references/performance.md
 ├─ Event listeners / subscriptions            → references/events.md
+├─ Server state / React Query / providers     → references/server-state.md
 └─ Data fetching / waterfalls                 → references/async.md §Eliminate Waterfalls
 ```
 
@@ -29,6 +30,7 @@ What are you working on?
 | Async patterns | `references/async.md` | use(), useTransition, useOptimistic, Suspense, caching, waterfalls |
 | Performance | `references/performance.md` | Re-renders, memo, refs, hydration, SVG, bundle, JS patterns |
 | Events | `references/events.md` | Handler refs, useLatest, dedup listeners, passive events |
+| Server state | `references/server-state.md` | One QueryClient, derived query options, mutation policy, feature data hooks, provider boundaries, minimal state, exhaustive rendering, React Compiler |
 
 ## Quick Rules
 
@@ -43,16 +45,20 @@ What are you working on?
 - `useReducer` once state has 3+ related fields or transitions depend on current state
 - Guard transitions — not every action is valid in every state
 - Name actions after events (`'submitted'`), not setters (`'set_loading'`)
+- Exhaustive `switch`, then `state satisfies never; return null`: no `default`, no throwing `assertNever` in components
 
 ### State Management
 - Compute during render, don't `useEffect` to derive state
 - Use the platform: FormData, URL state (`nuqs`), `key` prop to reset
 - Colocate state: local → lifted → context → external store
 - Functional `setState` when next state depends on current
+- Store IDs and derive entities from query data; an edit form keeps only the user's overrides
+- Feature components and hooks have no `useEffect`: Query for data, an SDK adapter for subscriptions, a named host adapter for DOM sync
 
 ### Async
 - `use()` for promises and context — can be called conditionally
 - `useTransition` over manual `isLoading` state — auto-resets on error
+- Never mirror a promise into `setState`: `useTransition` for simple actions, `useQuery`/`useMutation` for data
 - React 19: `useOptimistic` for instant UI feedback during mutations
 - Suspense fallbacks for initial load, transitions for subsequent
 
@@ -72,6 +78,7 @@ What are you working on?
 - Loop for min/max, not `.sort()` — O(n) vs O(n log n)
 
 ### Events
+- These patterns belong in host adapters, not feature components
 - Store handlers in refs for stable subscriptions
 - Deduplicate global listeners with shared registry
 - `{ passive: true }` on scroll/touch unless you need `preventDefault()`

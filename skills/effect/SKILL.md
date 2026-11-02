@@ -23,7 +23,7 @@ This skill holds project policy. When it disagrees with the installed package ab
 Read only the branch references that match the task.
 
 - Data models, schemas, brands, variants, optional keys, or decoders: read [SCHEMA.md](references/SCHEMA.md).
-- Package layout, public actions exposed on several surfaces, composition roots, units that own infrastructure, client/server split, or import boundaries: read [ARCHITECTURE.md](references/ARCHITECTURE.md).
+- Package layout, public actions exposed on several surfaces, composition roots, units that own infrastructure, client/server split, the client SDK, import boundaries, or the build order of a feature that crosses the API: read [ARCHITECTURE.md](references/ARCHITECTURE.md).
 - Public interfaces, deep modules, capability seams, resource ownership, error boundaries, or concurrency ownership: read [PROGRAM_DESIGN.md](references/PROGRAM_DESIGN.md).
 - Services, module surfaces, layers, runtime wiring, errors, `Effect.fn`, or test services: read [SERVICES_LAYERS.md](references/SERVICES_LAYERS.md).
 - Normal tagged values, `Predicate`, `Match`, tag guards, or exhaustive dispatch: read [TAGGED_VALUES.md](references/TAGGED_VALUES.md).
@@ -126,3 +126,5 @@ Requires Effect v4. Examples were reviewed against `effect@4.0.0-rc.117` on 2026
 MIT.
 
 Program-design guidance is adapted from HumanLayer Fold's MIT-licensed `effect-program-design` skill at commit `3b1f144abd829cb027ab30d32b3f227301201ef6`.
+
+The architecture reference's operation shaping, SDK admission test, package rules, and vertical-slice order restate ideas from Fernando Rojo's [nando-skill](https://github.com/nandorojo/nando-skill) (no license, so no text is copied).

@@ -19,7 +19,7 @@ Identify the render target first (a browser, iOS, Android), then the framework, 
 | `build.gradle(.kts)` with Compose or Android views | Android | [android](platforms/android/index.md) |
 | Anything else (Flutter, Qt, GTK, a terminal UI, a game UI) | Other | No index: apply the references directly, and translate their labelled web notes through the platform file closest to the stack. The platform's own guidelines take the platform-convention slot in [precedence](#precedence). |
 
-**States.** List the affected states once, at the start (each screen's loading, empty, error, long-content and disabled states, each theme and size class). Implementation, verification and the PR's proof use that one list, and a capture of a state on the same head commit serves all three.
+**States.** List the affected states once, at the start (each screen's loading, empty, error, long-content and disabled states, data kept through a refresh error, each theme and size class; [async states](references/async-states.md) lists the data and activity pairs). Implementation, verification and the PR's proof use that one list, and a capture of a state on the same head commit serves all three.
 
 A domain reference states the rule and its values; the platform's file for that domain (`platforms/<platform>/<domain>.md`, listed in its index) gives the APIs and code. Sizes are in points: CSS `px`, Apple `pt`, Android `dp`. Durations are in milliseconds.
 
@@ -67,7 +67,8 @@ When there is no system to follow and the task is to choose one:
 
 | Domain | Read when |
 | --- | --- |
-| [Interface judgment](references/interface-judgment.md) | Composing any screen: design principles, hierarchy, copy that earns its place, where each fact lives; designing a reusable component |
+| [Interface judgment](references/interface-judgment.md) | Composing any screen: design principles, hierarchy, copy that earns its place, where each fact lives, a host and its embeds as one screen; designing a reusable component |
+| [Async states](references/async-states.md) | A region that loads, refetches, paginates, fails, or mutates: what to show for each data and activity pair, inline errors, keeping geometry still, progress on the trigger |
 | [Theming](references/theming.md) | Any styling in a project with tokens, a theme, or a component library; overlays; state treatments |
 | [Design system](references/design-system.md) | Applying a brand spec or `DESIGN.md`; building a design system page |
 | [Motion](references/motion/index.md) | Whether and how to animate: purpose, easing, duration, springs, pattern values, enter/exit, reduced motion |

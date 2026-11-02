@@ -66,6 +66,8 @@ Read-only values (fixed dates, computed totals) render as metadata. Values the u
 
 Review the normal page, its empty states, and its expanded states. For each eyebrow, subtitle, badge, explanation, and footer line, name the distinct information or action it contributes; remove it when there is none. Remove repeated navigation, labels, facts, captions, and style variations when meaning and usability survive. Keep requested content, essential qualifications, accessible structure, useful metadata, and the cues needed to act. A title without supporting copy is a complete design choice.
 
+Review the composed screen as one, including embedded viewers and third-party UI: a host heading, a host toolbar, and an embedded toolbar are one experience. Give each user intent one control; two "Reconnect" buttons become one reliable action, or two named in the user's terms, never two internal mechanisms (renewing a credential, reopening a socket) exposed side by side. Do not render a control because the API exposes the operation: keep secondary lifecycle actions (stop, delete, reset) in a deliberate secondary place, chosen by frequency and consequence, and show status only when it changes what the user understands or does next. Prefer the embed's supported headless configuration over cropping an iframe or hiding its controls with CSS.
+
 ## Building Components People Love
 
 These principles come from building Sonner, a web toast library (13M+ weekly npm downloads); each Sonner detail below is the worked example, and the principle applies to any component on any platform:

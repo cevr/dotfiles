@@ -16,7 +16,7 @@ The states are the branches the component already has. Read it and its data hook
 
 | Kind | States |
 | --- | --- |
-| Data | Loading, empty, error, one item, a typical set, a set long enough to scroll or paginate, some requests resolved and others pending, stale data refetching |
+| Data | Loading, empty, error, one item, a typical set, a set long enough to scroll or paginate, some requests resolved and others pending, stale data refetching, data kept with a refresh error, offline, a disabled query ([async states](../references/async-states.md)) |
 | Account | Plan tier, role and permission checks, an owner versus a member |
 | Feature | Flags, trials, limits reached, a disabled or locked feature |
 
