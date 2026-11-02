@@ -19,6 +19,7 @@ Ask whether usable data exists before asking what the request is doing. Data and
 | Absent | Disabled or waiting on input | A not-requested or prerequisite state, never a spinner that never ends |
 
 - Test for absence with the declared sentinel (`data === undefined`), never with truthiness or list length.
+- A real zero prints as a value (`0`, `$0`). A missing or not-applicable value is a muted dash at text size; a placeholder at the value's display size reads as loading.
 - Refresh, retry, and focus refetch never clear content or swap in a skeleton. Keep the list's scroll, selection, and focus.
 - Show cached data from a previous resource only when identity and permissions allow it.
 

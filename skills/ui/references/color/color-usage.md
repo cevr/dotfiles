@@ -15,6 +15,8 @@ Users read a near-miss in hue as a slightly different shade, not as a different 
 
 Interactive elements own the accent. The rule runs both ways. A color must not be *absent* where its meaning occurs. If the accent means interactive, an interactive element rendered neutral is just as misleading.
 
+A color on a change says good or bad, not up or down: rising latency, errors or cost takes the negative color, and a change in the good direction takes the positive color or stays neutral. A zero or undefined change stays neutral, and a change from zero is said in words ("+4, new"), never as a percentage.
+
 ## Use tokens in their role
 
 A value that happens to work in two roles stops working in both at the next theme change. Two common borrowings:
