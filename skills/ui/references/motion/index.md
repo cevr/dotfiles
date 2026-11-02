@@ -64,7 +64,7 @@ Name it in one of these words before continuing:
 
 Can't name it? Don't build it. "It looks cool" on a frequently-seen element is a reason to stop.
 
-Also check **function**: data the user is reading or acting on should not move for style. A decorative mouse-tracking effect belongs on a marketing page, not on a functional graph in a banking app, where no animation is better.
+Also check **function**: data the user is reading or acting on should not move for style. A decorative mouse-tracking effect belongs on a marketing page, not on a functional graph in a banking app, where no animation is better. Data moves only to show a real change in value, such as a number ticking from old to new after the user acts; a chart redrawn from zero or a number counting up on every mount or refresh is decoration.
 
 ## 3. Pick the tool, cheapest that works
 

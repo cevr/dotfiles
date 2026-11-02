@@ -62,8 +62,8 @@ Flag these on sight, hard. Each row is also the self-check before handing off an
 
 When proposing fixes, prefer earlier moves over later ones:
 
-1. **Delete the animation** (high-frequency, no purpose, keyboard-triggered).
-2. **Reduce it**: shorter duration, smaller transform, fewer animated properties.
+1. **Delete the animation** (high-frequency, no purpose, keyboard-triggered), with what it held in place: a hidden start state only the animation revealed (an `opacity: 0` initial or `from` frame), code that waits for it (an end callback, a timer sized to its duration, an unmount held for an exit, focus moved after it) and tests that wait on it. A layout animation can be masking a layout jump; if removing it shows one, keep it and report the jump.
+2. **Reduce it**: the same motion, smaller: shorter duration, smaller transform, fewer animated properties (a hover lift becomes a color change, a slide on a frequent surface becomes a fade). When the smaller motion no longer carries its purpose, delete it.
 3. **Fix the easing**: swap `ease-in` for ease-out or a custom curve; use a strong cubic-bezier.
 4. **Fix the origin and physicality**: anchor the scale at the trigger; replace scale `0` with `0.95` + opacity.
 5. **Make it interruptible**: fixed timelines to retargeting transitions, or a spring for gesture-driven motion.
