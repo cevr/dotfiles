@@ -1,29 +1,33 @@
 ---
 name: alchemy
-description: Alchemy v2, Effect-native infrastructure as code (`alchemy.run.ts` stacks) with Infrastructure as Effects on top. Use when deploying or provisioning infrastructure (Railway, Cloudflare, AWS, DNS, custom domains), writing or reviewing `alchemy.run.ts`, binding cloud resources into Effect application code, running `alchemy` deploys, profiles, stages, state, or CI, or testing a deploy against real infrastructure.
+description: Alchemy v2, Effect-native infrastructure as code (`alchemy.run.ts` stacks) with Infrastructure as Effects on top. Use when deploying or provisioning infrastructure (Railway, Cloudflare, AWS, DNS, custom domains), writing or reviewing `alchemy.run.ts`, binding cloud resources into Effect application code, building a backend with `@alchemy.run/domain` (commands, events, one Api projected to HTTP, CLI and MCP), running `alchemy` deploys, profiles, stages, state, or CI, or testing a domain model, a deployed stack, or a provider (`@alchemy.run/test`).
 ---
 
 # Alchemy
 
-Alchemy (`alchemy-run/alchemy`, npm `alchemy`, v2 beta) is our infrastructure layer. A **Stack** is an Effect that yields **Resources**, and **Providers** are Layers. The same program can also carry the code that runs on those resources: a **Runtime** such as a Railway Service or a Cloudflare Worker, typed **Bindings**, and **Layers** that own their infrastructure. That second part is Infrastructure as Effects.
+Alchemy (`alchemy-run/alchemy`, npm `alchemy` plus one `@alchemy.run/<provider>` package per cloud, v2 beta) is our infrastructure layer. A **Stack** is an Effect that yields **Resources**, and **Providers** are Layers. The same program can also carry the code that runs on those resources: a **Runtime** such as a Railway Service or a Cloudflare Worker, typed **Bindings**, and **Layers** that own their infrastructure. That second part is Infrastructure as Effects.
 
 ## Navigation
 
 ```
 What are you doing?
-├─ Adding Alchemy to a repo              → §Setup
-├─ Writing alchemy.run.ts                → §Stack Anatomy, then the platform reference
-├─ Putting app code on a Runtime         → references/app-code.md
-├─ Checking that a deploy really works    → §Test on Real Infrastructure, then app-code.md §Testing
-├─ Railway service / domain / database   → references/railway.md
+├─ Adding Alchemy to a repo               → §Setup
+├─ Writing alchemy.run.ts                 → §Stack Anatomy, then the platform reference
+├─ Putting app code on a Runtime          → references/app-code.md
+├─ Backend on @alchemy.run/domain         → references/domain.md
+├─ Stories, Api, stack, provider tests    → references/testing.md
+├─ Checking that a deploy really works    → §Test on Real Infrastructure, then testing.md §Stack tests
+├─ Railway service / domain / database    → references/railway.md
 ├─ Cloudflare Worker / DNS / zone / state → references/cloudflare.md
 ├─ Deploying, profiles, stages, CI, state → references/operations.md
-└─ Something failed                      → §Gotchas, then references/operations.md §Troubleshooting
+└─ Something failed                       → §Gotchas, then references/operations.md §Troubleshooting
 ```
 
 | Topic | File | When to Read |
 |-------|------|--------------|
-| App-level code | `references/app-code.md` | Runtimes with `main: import.meta.url`, bindings, `Config` binding, `HttpRouter` in `fetch`, Layers that own resources, phases, the test harness |
+| App-level code | `references/app-code.md` | Runtimes with `main: import.meta.url`, bindings, `Config` binding, `HttpRouter` in `fetch`, Layers that own resources, phases |
+| Domain backends | `references/domain.md` | Whether to use `@alchemy.run/domain`, the upstream `alchemy-domain` skill, the domain/server/web split, the Api's HTTP, CLI and MCP projections, beta.85 gaps |
+| Testing | `references/testing.md` | Which test fits, stories, Api tests, stack tests with `@alchemy.run/test`, provider tests, the runner adapters |
 | Railway | `references/railway.md` | Project, Service (the `main`, `context`+`dockerfilePath`, and `image` sources), CustomDomain, Postgres/Redis/Bucket, Variables |
 | Cloudflare | `references/cloudflare.md` | Workers, Zone/DNS records, adopting a zone, `Cloudflare.state()`, OAuth scopes |
 | Operations | `references/operations.md` | CLI, profiles and credentials, stages, state, adopt/retain/rename, CI, troubleshooting |
@@ -36,14 +40,15 @@ Beta APIs move. Check the installed `node_modules/alchemy/src` for the pinned ve
 
 ```bash
 npm view alchemy dist-tags            # take `latest`; `next` can be older
-bun add -D -E alchemy@<latest> @effect/platform-node@<effect version>   # plus a provider SDK when you call its API directly, e.g. @distilled.cloud/railway
+bun add -D -E alchemy@<latest> @alchemy.run/cloudflare@<latest> @effect/platform-node@<effect version>   # one @alchemy.run/<provider> per cloud; plus a provider SDK when you call its API directly, e.g. @distilled.cloud/railway
 ```
 
 - **Start from the newest release.** Look up `latest` every time you add Alchemy, and never pin a version from memory or from this skill. Pin it exactly (no `^`), because betas break between releases.
 - **In an existing repo, compare the pinned version with `latest` first.** If the repo is behind, say so, and read the newer source (`okra repo fetch npm:alchemy@<latest>`) before working around a bug or a missing API; the fix may already have shipped. Upgrade as its own commit, and run `alchemy plan` after it to confirm the plan shows no changes.
-- Alchemy's peers are `effect`, `@effect/platform-bun`, and `@effect/platform-node` (`^4.0.5` in beta.84). Keep all three on the project's exact Effect version. `alchemy/Cloudflare` loads `@effect/platform-node` even under Bun.
-- **Alchemy up to `2.0.0-beta.84` does not load on Effect 4.1.** It imports `effect/Crypto`, which `effect@4.1.0` removed, so `alchemy plan` and `deploy` fail with `Cannot find package 'effect' imported from …/alchemy/src/Auth/OAuthFlow.ts`. Typecheck, build and unit tests still pass, because none of them load the CLI. Stay on Effect 4.0.x with beta.84, and move to 4.1 with the first Alchemy release after it (the fix is alchemy#2754). After any Effect bump, run `alchemy plan` as well as the gate.
-- **On Effect 4.0.x, keep the lockfile.** `@effect/platform-bun@4.0.7` depends on `@effect/platform-node-shared@^4.0.7`, so a fresh resolve installs 4.1.x, which imports 4.1-only modules and fails to load on Effect 4.0.
+- **Providers are their own packages since beta.84** (`@alchemy.run/cloudflare`, `@alchemy.run/railway`, …), released with `alchemy` and peering on its exact version. Pin each at the same version as `alchemy`. The `alchemy/Cloudflare` and `alchemy/Railway/*` paths are gone.
+- Alchemy's peers are `effect`, `@effect/platform-bun`, and `@effect/platform-node` (`^4.1.0` from beta.85). Keep all three on the project's exact Effect version. `@alchemy.run/cloudflare` loads `@effect/platform-node` even under Bun.
+- **Alchemy `2.0.0-beta.85` and later need Effect 4.1 (peer `^4.1.0`); beta.84 and earlier do not load on 4.1.** Those import `effect/Crypto`, which `effect@4.1.0` removed, so `alchemy plan` and `deploy` fail with `Cannot find package 'effect' imported from …/alchemy/src/Auth/OAuthFlow.ts`. Typecheck, build and unit tests still pass, because none of them load the CLI. Bump Alchemy and Effect together, then run `alchemy plan` as well as the gate.
+- **beta.85 upgrades the Cloudflare state store from v7 to v8, one way.** See cloudflare.md §State Store before the first beta.85 deploy.
 - `devDependencies` is fine even when app code imports `alchemy/*`: the Runtime bundle inlines everything `main` imports, and nothing installs at runtime unless `build.install` asks for it.
 
 `package.json` scripts:
@@ -70,8 +75,8 @@ bun add -D -E alchemy@<latest> @effect/platform-node@<effect version>   # plus a
 ```typescript
 // alchemy.run.ts: composition root. Name the stack, merge providers, pick state, return outputs.
 import * as Alchemy from "alchemy";
-import * as Cloudflare from "alchemy/Cloudflare";
-import { providers as railwayProviders } from "alchemy/Railway/Providers";
+import * as Cloudflare from "@alchemy.run/cloudflare";
+import { providers as railwayProviders } from "@alchemy.run/railway/Providers";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import Api from "./src/Api.ts";
@@ -107,6 +112,7 @@ Keep `alchemy.run.ts` as wiring. Put each Resource, Runtime, or resource-owning 
 | An Effect HTTP server on Railway | An Effect-native `Railway.Service` class with `main: import.meta.url` that returns `{ fetch: HttpRouter.toHttpEffect(Routes) }`, with no Dockerfile (app-code.md) |
 | A server that must keep its own Dockerfile (Bun-only APIs, a native toolchain) | `Railway.Service` with `context` + `dockerfilePath` (railway.md §Dockerfile) |
 | An edge function | `Cloudflare.Worker` with `main: import.meta.url` (cloudflare.md) |
+| A backend of business rules (commands, events, views) reached by several clients, on Cloudflare | A `@alchemy.run/domain` model hosted on Durable Objects, its Api projected to each client (domain.md) |
 | A database, cache, or bucket used by app code | The Resource plus a Binding in the Runtime's constructor, never a hand-wired env var (app-code.md §Bindings) |
 | A DNS record for a non-Cloudflare host | An adopted and retained `Cloudflare.Zone.Zone` plus `Cloudflare.DNS.Record` (cloudflare.md §DNS) |
 | A secret from `.env` | `yield* Config.Redacted("KEY")` in the constructor (app-code.md §Config) |
@@ -122,13 +128,13 @@ A green typecheck and a clean plan only prove the stack is well formed. What pro
   3. Probe the outputs: `curl` the URL, run a real request, and read the host's logs (`railway logs` / `alchemy logs`).
   4. Fix the cause and redeploy. An update in place takes about 30 s on Railway.
   5. `alchemy destroy --stage <s> --yes`
-- **Keep the loop as a test.** A `Test.make` file (app-code.md §Testing) that deploys, asserts, and destroys in one scope becomes the repeatable check behind `bun run test:deploy`. Run it before handing off infrastructure or Runtime changes, and after upgrading Alchemy or Effect. Add an assertion for each failure you hit, such as a bot wall, a missing binding, or a slow cold start.
+- **Keep the loop as a test.** A `Test.make` file (testing.md §Stack tests) that deploys, asserts, and destroys in one scope becomes the repeatable check behind `bun run test:deploy`. Run it before handing off infrastructure or Runtime changes, and after upgrading Alchemy or Effect. Add an assertion for each failure you hit, such as a bot wall, a missing binding, or a slow cold start.
 - **Reproduce production problems on a stage first.** Deploy the same commit to a throwaway stage, reproduce the problem there, and fix it there. Then promote the fix to `prod`.
 - **Clean up.** Destroy each stage you created before handing off. `alchemy state list` shows leftover stages.
 
 ## Gotchas
 
-- **Import subpaths when a barrel drags in peers.** `alchemy/Railway` re-exports `Website`, which needs the optional `@alchemy.run/frontend-frameworks` peer. Import from `alchemy/Railway/Service`, `/Project`, `/CustomDomain`, and `/Providers` instead.
+- **Import subpaths when a barrel drags in peers.** `@alchemy.run/railway` re-exports `Website`, which needs `@alchemy.run/frontend-frameworks`. Import from `@alchemy.run/railway/Service`, `/Project`, `/CustomDomain`, and `/Providers` instead.
 - **`Output.mapEffect` needs `E = never`.** Finish lookups with `Effect.orDie`, and die with a descriptive error when a value is missing, since that failure stops the plan.
 - **Environment credentials beat the profile.** When every variable a provider needs is set (`RAILWAY_API_TOKEN`, or `CLOUDFLARE_API_TOKEN`+`CLOUDFLARE_ACCOUNT_ID`), including through `.env`, that provider ignores the profile. Remove the variables to use OAuth.
 - **Agents get plain mode, which never prompts.** It prints the plan and exits 1 with "Pass --yes". Read the `alchemy plan` output, then run `alchemy deploy --stage <s> --yes`. That is routine on a throwaway stage, and needs the user's approval on `prod`.
@@ -142,4 +148,10 @@ A green typecheck and a clean plan only prove the stack is well formed. What pro
 
 ## Compatibility
 
-Last proven on a real project with `alchemy@2.0.0-beta.84` and `effect@4.0.5`: cvr.im on Cloudflare, deployed by CI on 2026-10-26. On 2026-11-02, `effect@4.1.2` with beta.84 passed cvr.im's typecheck, build and tests, but `alchemy plan` failed to load (see Setup). Effect stable (`4.0.0` and later) has no `effect/unstable/*`: those modules live at `effect/cli`, `effect/http`, `effect/http-api`, `effect/ai` and `effect/rpc`. For a newer release, recheck against its source.
+Last proven on a real project with `alchemy@2.0.0-beta.85` and `effect@4.1.2`: cvr.im on Cloudflare, deployed by CI on 2026-11-02; that first beta.85 deploy upgraded the shared Cloudflare state store from v7 to v8, and gent.cvr.im, the paulo-suzanne Worker and budget.cvr.im deployed on it the same day. Effect stable (`4.0.0` and later) has no `effect/unstable/*`: those modules live at `effect/cli`, `effect/http`, `effect/http-api`, `effect/ai` and `effect/rpc`. For a newer release, recheck against its source.
+
+`@alchemy.run/domain` and `@alchemy.run/test` are reviewed against their 2.0.0-beta.85 source and docs, not yet proven on one of our projects.
+
+## License
+
+The Alchemy guidance restates, in our own words, Alchemy's Apache-2.0 source, docs and `alchemy-domain` skill from `alchemy-run/alchemy` at commit `d0b4a3326` (2.0.0-beta.85). No text is copied.

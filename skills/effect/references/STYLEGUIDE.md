@@ -76,6 +76,8 @@ Use these Effect capabilities in application code instead of ambient or runtime-
 | Base64 and hex | atob/btoa, Buffer encodings | `effect/encoding` Base64, Base64Url, Hex |
 | Key-value storage | localStorage/sessionStorage | KeyValueStore |
 
+Switching an existing tool to `UserDirectories` moves its files on macOS. Unless an absolute `XDG_*` variable is set, cache resolves to `~/Library/Caches` and config, data and state to `~/Library/Application Support`, not `~/.cache` and `~/.config`. Plan the move of files already on disk before you switch.
+
 Platform implementations provide the concrete Node, Bun, browser, or Deno layers at the edge.
 
 ## Partial Runtime Modules

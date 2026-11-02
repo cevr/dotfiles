@@ -15,17 +15,17 @@ Railway resources in Alchemy: Projects, Services and their three code sources, c
 
 | Resource | Import | Notes |
 |----------|--------|-------|
-| `Project` | `alchemy/Railway/Project` | Pass `name` and `workspaceId` to land in a specific workspace. Production is `project.environmentId`; never recreate it as an `Environment`. |
-| `Service` | `alchemy/Railway/Service` | A container. See §Service sources. `url` is `https://{name}.up.railway.app` unless `publicDomain: false`. |
-| `CustomDomain` | `alchemy/Railway/CustomDomain` | `{ service, environment: project, domain, targetPort }`. Exposes `verificationToken`, `verificationDnsHost`, `certificateStatus`, and `url`, but not the CNAME target. |
-| `Postgres` / `MySQL` / `Mongo` / `Redis` | `alchemy/Railway` | Bind with `ConnectPostgres`, `ConnectMySQL`, `ConnectMongo`, or `ReadWriteRedis` plus the matching `…Http` Layer. |
-| `Bucket` | `alchemy/Railway` | Bind with `PutObject`, `GetObject`, `HeadObject`, `ListObjectsV2`, or `DeleteObject`. |
-| `Volume` | `alchemy/Railway` | `MountVolume(volume, { path })` in one Service. |
-| `Variable` | `alchemy/Railway` | For a value Railway owns. `Railway.ref(Db, "DATABASE_URL")` for templates. |
-| `Environment` | `alchemy/Railway` | Extra environments such as staging. |
-| `providers()` | `alchemy/Railway/Providers` | Credentials come from `RAILWAY_API_TOKEN` or the profile's Railway login. |
+| `Project` | `@alchemy.run/railway/Project` | Pass `name` and `workspaceId` to land in a specific workspace. Production is `project.environmentId`; never recreate it as an `Environment`. |
+| `Service` | `@alchemy.run/railway/Service` | A container. See §Service sources. `url` is `https://{name}.up.railway.app` unless `publicDomain: false`. |
+| `CustomDomain` | `@alchemy.run/railway/CustomDomain` | `{ service, environment: project, domain, targetPort }`. Exposes `verificationToken`, `verificationDnsHost`, `certificateStatus`, and `url`, but not the CNAME target. |
+| `Postgres` / `MySQL` / `Mongo` / `Redis` | `@alchemy.run/railway` | Bind with `ConnectPostgres`, `ConnectMySQL`, `ConnectMongo`, or `ReadWriteRedis` plus the matching `…Http` Layer. |
+| `Bucket` | `@alchemy.run/railway` | Bind with `PutObject`, `GetObject`, `HeadObject`, `ListObjectsV2`, or `DeleteObject`. |
+| `Volume` | `@alchemy.run/railway` | `MountVolume(volume, { path })` in one Service. |
+| `Variable` | `@alchemy.run/railway` | For a value Railway owns. `Railway.ref(Db, "DATABASE_URL")` for templates. |
+| `Environment` | `@alchemy.run/railway` | Extra environments such as staging. |
+| `providers()` | `@alchemy.run/railway/Providers` | Credentials come from `RAILWAY_API_TOKEN` or the profile's Railway login. |
 
-The `alchemy/Railway` barrel also exports `Website`, which needs `@alchemy.run/frontend-frameworks`. Use subpaths when that peer is absent.
+The `@alchemy.run/railway` barrel also exports `Website`, which needs `@alchemy.run/frontend-frameworks`. Use subpaths when that peer is absent.
 
 ## Service Sources
 

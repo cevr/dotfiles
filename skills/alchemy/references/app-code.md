@@ -11,7 +11,7 @@ How application code carries its own infrastructure: a Runtime declared next to 
 - Config and secrets
 - Layers that own infrastructure
 - Keeping the app runnable without Alchemy
-- Testing
+- Testing (in testing.md)
 
 ## Runtime
 
@@ -19,7 +19,7 @@ A Runtime is a Resource that carries code: `Railway.Service`, `Railway.Function`
 
 ```typescript
 // src/Api.ts: declaration and runtime code in one file
-import { Service } from "alchemy/Railway/Service";
+import { Service } from "@alchemy.run/railway/Service";
 import * as Effect from "effect/Effect";
 import { HttpServerResponse } from "effect/http";
 import { Site } from "./Site.ts";
@@ -43,7 +43,7 @@ export default class Api extends Service<Api>()(
   - Class: `class Api extends Service<Api>()(…) {}`, which gives a nominal type in hovers and outputs.
   - Tag + `.make()`: `class Api extends Service<Api, {}>()("Api") {}` plus `export default Api.make(props, effect)`, with the Layer provided to the Stack. Use it when other Runtimes bind `Api` and must not bundle its implementation, or for circular bindings.
 - Return methods next to `fetch` to expose schemaless RPC. Other Runtimes bind them with `Railway.bindService(Api)` or `Cloudflare.Workers.bindWorker(Api)`.
-- For a background service, omit `fetch` and register a loop with `yield* ServerHost` (from `alchemy/Server`) and `host.run(effect)`.
+- For a background service, omit `fetch` and register a loop with `yield* ServerHost` (from `alchemy/Runtime/Process`) and `host.run(effect)`.
 
 ## Phases
 
@@ -157,26 +157,4 @@ When the app also runs as a CLI or a local `bun --watch` server, keep domain ser
 
 ## Testing
 
-- Keep unit and route tests on local Layers (`HttpRouter.serve` + `BunHttpServer.layerTest`). They need no Alchemy.
-- For a deploy test, use `Test.make` from `alchemy/Test/Bun`. It deploys into `test_$USER`, so make the stack stage-aware: non-prod stages get their own project and a public URL, and skip custom domains and DNS. Tie deploy and destroy to the test's scope with `acquireRelease`. `oxlint-plugin-effect` bans `beforeAll`/`afterAll`, and a scope also destroys the stage on failure:
-
-```typescript
-import * as Test from "alchemy/Test/Bun";
-import Stack, { providers } from "../alchemy.run.js"; // export the providers Layer from the stack file
-
-const { test, deploy, destroy } = Test.make({ providers, state: Alchemy.localState() });
-const deployed = Effect.acquireRelease(deploy(Stack), () => destroy(Stack).pipe(Effect.orDie));
-
-test("health", Effect.gen(function* () {
-  const { url } = yield* deployed;
-  const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
-  const res = yield* client.get(`${url}/health`).pipe(
-    Effect.retry({ schedule: Schedule.exponential("1 second"), times: 8 }), // a fresh host 404s briefly
-  );
-  expect(yield* res.text).toBe("ok");
-}).pipe(Effect.scoped), { timeout: 600_000 });
-```
-
-- `HttpClient` is in scope in harness tests. `Test.getWhenReady` exists, but its error type is `unknown`, which trips tsgo's `anyUnknownInErrorContext`.
-- Name the file outside Bun's test pattern (`tests/deploy.integration.ts`) and run it from a script (`"test:deploy": "bun test ./tests/deploy.integration.ts"`), so the gate never deploys. On Railway it takes about a minute: 40 s to deploy and 15 s to destroy.
-- `Test.make({ dev: true })` runs against the local emulators (workerd, Docker) and needs no cloud credentials. Railway has no emulator.
+Route tests on local Layers, deploy tests with `@alchemy.run/test`, and how they fit together: [testing.md](testing.md).
