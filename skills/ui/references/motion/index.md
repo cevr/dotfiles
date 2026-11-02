@@ -352,4 +352,4 @@ Don't pad this into a report; the code is the deliverable. When the honest answe
 | [Apple motion](../../platforms/apple/motion.md) | Building motion in SwiftUI, UIKit or AppKit |
 | [Android motion](../../platforms/android/motion.md) | Building motion in Jetpack Compose |
 
-Workflows that apply this domain: [motion review](../../workflows/motion-review.md) for a diff or component, [motion audit](../../workflows/motion-audit.md) for a codebase-wide plan, [motion opportunities](../../workflows/motion-opportunities.md) to find what should and shouldn't animate.
+Workflows that apply this domain: [motion review](../../workflows/motion-review.md) for a diff or component, [motion audit](../../workflows/motion-audit.md) for a codebase-wide plan, [motion opportunities](../../workflows/motion-opportunities.md) to find what should and shouldn't animate, [remove motion](../../workflows/remove-motion.md) to delete what can't defend itself.

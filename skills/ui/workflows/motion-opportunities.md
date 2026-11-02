@@ -1,6 +1,6 @@
 # Motion opportunities
 
-Sweep a codebase or interface for moments that would genuinely benefit from motion, propose a precise recipe for each, and reject everything that shouldn't move. Read-only: this mode proposes motion with exact values, it does not implement it. Use it for "what could be animated here?" or "make this feel more alive". Existing animations get a [motion review](motion-review.md) or a [motion audit](motion-audit.md) instead.
+Sweep a codebase or interface for moments that would genuinely benefit from motion, propose a precise recipe for each, and reject everything that shouldn't move. Read-only: this mode proposes motion with exact values, it does not implement it. Use it for "what could be animated here?" or "make this feel more alive". Existing animations get a [motion review](motion-review.md) or a [motion audit](motion-audit.md) instead, and [remove motion](remove-motion.md) deletes the ones that shouldn't exist.
 
 ## Operating posture
 

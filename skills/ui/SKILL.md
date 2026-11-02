@@ -32,6 +32,7 @@ A domain reference states the rule and its values; the platform's file for that 
 | `/ui motion-review [target]` | Strict review of animation code | [workflows/motion-review.md](workflows/motion-review.md) |
 | `/ui motion-audit` | Codebase-wide motion audit into prioritized, self-contained plans | [workflows/motion-audit.md](workflows/motion-audit.md) |
 | `/ui motion-opportunities` | Find what should animate and what shouldn't | [workflows/motion-opportunities.md](workflows/motion-opportunities.md) |
+| `/ui remove-motion [target]` | Delete or reduce the animations that can't defend themselves; edits only to subtract | [workflows/remove-motion.md](workflows/remove-motion.md) |
 | `/ui build-design <figma\|image>` | Build UI that matches a design, using project tokens and components | [workflows/build-design.md](workflows/build-design.md) |
 | `/ui stress-test <component>` | Render worst-case data and every reachable scenario; report what broke | [workflows/stress-test.md](workflows/stress-test.md) |
 | `/ui states <component>` | Render every state side by side or behind a switcher | [workflows/states.md](workflows/states.md) |
