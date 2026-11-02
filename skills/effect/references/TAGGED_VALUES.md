@@ -50,6 +50,8 @@ const label = Match.type<JobState>().pipe(
 )
 ```
 
+For a union of plain string or number literals, `Match.literals({ ... })` and `Match.literalsExhaustive({ ... })` take a record keyed by the literal (unstable since 4.1.0).
+
 Use `Match.value(value)` for one local dispatch. Use a fallback only when unmatched values are valid by contract. Do not use a fallback only to suppress exhaustiveness for an owned union.
 
 ## Keep boundaries and failures separate

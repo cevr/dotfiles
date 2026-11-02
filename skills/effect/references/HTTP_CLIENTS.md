@@ -61,6 +61,8 @@ const idempotentClient = base.pipe(
 )
 ```
 
+Bound each attempt with `HttpClient.timeout("5 seconds")` on the base client rather than `Effect.timeout` around a call: it keeps the `HttpClient` type and fails with a transport error, which `retryTransient` then retries. A custom retry rule reuses `HttpClient.isTransientError` and `HttpClient.isTransientResponse`, the predicates `retryTransient` applies.
+
 `HttpClient.retryTransient` can handle transient transport errors and responses such as rate limits. Keep it bounded, honor provider retry metadata when possible, and apply it only to a client used for idempotent requests. Keep it off a shared client that also sends writes; send non-idempotent operations through the base client unless the provider supports an idempotency key.
 
 ## Boundary errors
