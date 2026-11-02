@@ -3,7 +3,7 @@
 // upstreams.json records the upstream commit we last read; `scan` lists what
 // changed upstream since then, `diff` shows it, and `mark` records a reviewed
 // head. `scan` also lists okra-managed skills an update would change, and
-// managed skills with local commits that the update would silently revert.
+// managed skills with local edits, which okra's update skips (`modified`).
 //
 // Usage: bun upstreams.ts scan [--json] [--notify]
 //        bun upstreams.ts diff <name> [--stat]
@@ -15,7 +15,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 type Source = {
   name: string;
@@ -64,36 +64,24 @@ function changeOf(source: Source): Change {
   return { source, head, commits, stat };
 }
 
-type Managed = { outdated: string[]; drift: { name: string; commits: string[] }[] };
-// okra-managed skills: what an update would change, and local commits it would revert.
+type Managed = { outdated: string[]; modified: string[] };
+// okra-managed skills: what an update would change, and what it skips for local edits.
 function managed(): Managed {
-  const lock = JSON.parse(readFileSync(join(skillsDir, '.skill-lock.json'), 'utf8')).skills as Record<
-    string,
-    { updatedAt: string }
-  >;
   let outdated: string[] = [];
+  let modified: string[] = [];
   try {
     const out = execFileSync('okra', ['skills', 'update', '--dry-run', '--json'], {
       encoding: 'utf8',
       env: { ...process.env, SKILLS_DIR: skillsDir },
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    outdated = JSON.parse(out).outdated.map((o: { name: string }) => o.name);
+    const report = JSON.parse(out);
+    outdated = report.outdated.map((o: { name: string }) => o.name);
+    modified = report.modified.map((o: { name: string }) => o.name);
   } catch {
     outdated = ['(okra skills update --dry-run failed)'];
   }
-  // Only an outdated skill can lose local edits: the update rewrites it to its source.
-  const repoDir = dirname(skillsDir);
-  const drift = outdated
-    .filter((name) => lock[name])
-    .map((name) => ({
-      name,
-      commits: git(repoDir, 'log', '--format=%h %s', `--since=${lock[name]!.updatedAt}`, '--', `skills/${name}`)
-        .split('\n')
-        .filter((line) => line && !/ chore\(skills\): (sync|refresh|update)/.test(line)),
-    }))
-    .filter((d) => d.commits.length > 0);
-  return { outdated, drift };
+  return { outdated, modified };
 }
 
 function digest(changes: Change[], m: Managed): string {
@@ -112,7 +100,7 @@ function digest(changes: Change[], m: Managed): string {
   if (still.length) lines.push(`Unchanged: ${still.join(', ')}`, '');
   lines.push('## okra-managed skills', '');
   lines.push(`Outdated: ${m.outdated.length ? m.outdated.join(', ') : 'none'}`);
-  for (const d of m.drift) lines.push(`- ${d.name}: local commits an update would revert: ${d.commits.join('; ')}`);
+  lines.push(`Modified locally (update skips them): ${m.modified.length ? m.modified.join(', ') : 'none'}`);
   return lines.join('\n') + '\n';
 }
 
@@ -143,7 +131,7 @@ if (command === 'scan') {
     if (flag('--notify')) {
       writeFileSync(join(cacheDir, 'digest.md'), text);
       const moved = changes.filter((c) => c.commits.length).length;
-      const pending = moved + m.outdated.length + m.drift.length;
+      const pending = moved + m.outdated.length + m.modified.length;
       if (pending > 0) {
         const message = `${moved} folded sources moved, ${m.outdated.length} managed skills outdated. Run /upstreams.`;
         execFileSync('osascript', ['-e', `display notification "${message}" with title "Upstream skills"`]);

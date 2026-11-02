@@ -15,11 +15,11 @@ The script is `scripts/upstreams.ts` (run with `bun`). A weekly launchd job (`ma
 bun ~/.claude/skills/upstreams/scripts/upstreams.ts scan
 ```
 
-It lists each source that moved since its recorded commit, the okra-managed skills an update would change, and any managed skill with local commits that update would revert.
+It lists each source that moved since its recorded commit, the okra-managed skills an update would change, and the managed skills with local edits. okra records a hash of each skill it writes, and `okra skills update` skips a skill whose files changed since (`modified`).
 
 ## 2. Sync the managed skills
 
-For a managed skill with local commits, move those edits into its source first (okra's own skills live in `~/Developer/personal/okra/skills`, `bible` in manna; for a third-party repo, ask the owner whether to make the skill our own in `skills/.own-skills`). Then run `SKILLS_DIR=<rift>/skills okra skills update` in a dotfiles Rift and commit it as `chore(skills): sync okra skills`. Done when the scan shows no outdated skill and no drift.
+For a `modified` skill, move the local edits into its source first (okra's own skills live in `~/Developer/personal/okra/skills`, `bible` in manna; for a third-party repo, ask the owner whether to make the skill our own in `skills/.own-skills`). Then run `SKILLS_DIR=<rift>/skills okra skills update` in a dotfiles Rift and commit it as `chore(skills): sync okra skills`. Pass `--force` only to discard a local edit on purpose. Done when the scan shows no outdated and no modified skill.
 
 ## 3. Review each moved source
 
