@@ -12,7 +12,7 @@
 
 - Contact: Cristian (@cevr, seeve.c@gmail.com)
 - Workspace: `~/Developer` — `personal/`, `work/`. Dotfiles: `~/Developer/personal/dotfiles`. Skills: `~/.claude/skills` (symlinked from dotfiles/skills).
-- Guardrail: `trash` aliased to `rm`; use for deletes.
+- Deletes: `rm` deletes for good; use it for build output, caches, scratch and generated files. `trash` (macOS Trash) is for the owner's data that might be wanted back. The guard hook refuses `rm -rf` on home, root or a repository root, `git reset --hard`, and a forced wide `git clean`.
 - Devbox: the exe devbox `bite-cristian` IS the Bite workbox. Herdr machine `Workbox` (session `bite`) = SSH alias `bite-workbox` (Tailscale, port 2222) = host `bite-cristian`. Use `herdr --machine Workbox …`; never add another herdr machine for it.
 - Principles: `~/Developer/personal/dotfiles/principles/` — read before architectural decisions or code review.
 - Issue tracker: personal repos → GitHub Issues via `gh`; `~/Developer/work` (Bite) → Linear via the `linear` skill.

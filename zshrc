@@ -196,7 +196,6 @@ workbox() {
 }
 
 # Safety nets
-alias rm='trash'  # brew install trash - sends to macOS Trash instead of permanent delete
 alias mv='mv -i'
 alias cp='cp -i'
 

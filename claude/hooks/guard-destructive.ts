@@ -54,9 +54,9 @@ for (const c of commands) {
     for (const target of w.slice(1).filter((x) => !x.startsWith('-'))) {
       const path = resolve(cwd, expand(target));
       if (path === '/' || path === home || target === '*' || target === '/*' || target === '~/*') {
-        deny(`\`${c}\` would delete ${path === '/' ? 'the root' : 'your home'}; use \`trash\` on a narrower path`);
+        deny(`\`${c}\` would delete ${path === '/' ? 'the root' : 'your home'}; name a narrower path`);
       }
-      if (isRepoRoot(path)) deny(`\`${c}\` would delete the repository at ${path}; use \`trash\` if you mean it`);
+      if (isRepoRoot(path)) deny(`\`${c}\` would delete the repository at ${path}; the owner removes a repository`);
     }
   }
 
@@ -70,7 +70,7 @@ for (const c of commands) {
       const forced = short.includes('f') || args.includes('--force');
       const wide = short.includes('d') || short.includes('x') || short.includes('X');
       const dry = short.includes('n') || args.includes('--dry-run');
-      if (forced && wide && !dry) deny(`\`${c}\` deletes untracked files for good; run it with -n first and trash what you mean to remove`);
+      if (forced && wide && !dry) deny(`\`${c}\` deletes untracked files for good; run it with -n first and remove what you mean by path`);
     }
   }
 }
