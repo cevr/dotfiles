@@ -91,8 +91,8 @@ const writeJson = (path: string, value: unknown) => {
   writeFileSync(path, JSON.stringify(value));
 };
 
-const settings = readJson<Partial<Config> & { codex?: { target?: number; leeway?: number } }>(join(homedir(), '.config', 'orchestrate', 'budget.json'), {});
-const config: Config = { ...DEFAULTS, ...settings };
+const settings = readJson<Partial<Config> & { codex?: { target?: number; leeway?: Partial<Config['leeway']> } }>(join(homedir(), '.config', 'orchestrate', 'budget.json'), {});
+const config: Config = { ...DEFAULTS, ...settings, leeway: { ...DEFAULTS.leeway, ...settings.leeway } };
 const now = Date.now();
 
 // ── Accounts ──
@@ -194,8 +194,8 @@ if (args.includes('--codex')) {
     writeJson(fitPath, { at: now, fit });
   } else if (kept && now - kept.at < 24 * 60 * MINUTE) fit = kept.fit;
   const weeklyTarget = settings.codex?.target ?? config.weeklyTarget;
-  const leeway = settings.codex?.leeway ?? config.leeway;
-  const pace = week && codex.target(week, now, { ...config, weeklyTarget });
+  const pace = week && codex.target(week, now, { ...config, weeklyTarget, leeway: { ...config.leeway, ...settings.codex?.leeway } });
+  const leeway = pace?.leeway ?? config.leeway.high;
 
   if (admitting) {
     const family = familyOf(option('--model'));
@@ -237,7 +237,7 @@ if (args.includes('--codex')) {
     );
   } else console.log('cost: no fit yet');
   if (week && pace) {
-    console.log(`week: ${week.used}% used, resets ${when(week.resetsAt)}; pace ${p(pace.pctph)} (even ${p(pace.floor)}, rolling ${p(pace.rolling)}, ceiling ${p(pace.ceiling)})`);
+    console.log(`week: ${week.used}% used, resets ${when(week.resetsAt)}; pace ${p(pace.pctph)} (+${Math.round(leeway * 100)}% leeway; even ${p(pace.floor)}, rolling ${p(pace.rolling)}, ceiling ${p(pace.ceiling)})`);
   } else console.log('week: no host has seen its use');
   if (fit) {
     const interactive: Record<string, number> = {};
@@ -359,7 +359,7 @@ if (args.includes('--admit')) {
       mine.push(ticket);
     }
     ticket.beat = p.now;
-    const d = serve({ ticket, tickets: [...mine, ...p.remoteTickets], sessions: p.sessions, targetWph: p.targetWph ?? Infinity, cap: capOf(p.targetWph), leeway: config.leeway });
+    const d = serve({ ticket, tickets: [...mine, ...p.remoteTickets], sessions: p.sessions, targetWph: p.targetWph ?? Infinity, cap: capOf(p.targetWph), leeway: p.pace?.leeway ?? config.leeway.high });
     if (d.ok) ticket.granted = ticket.started = p.now;
     return { ...d, ticket };
   });
@@ -383,7 +383,7 @@ if (args.includes('--wait')) {
       const ticket = mine.find((t) => t.id === id);
       if (!ticket || ticket.granted !== undefined) return { ticket };
       ticket.beat = p.now;
-      const d = serve({ ticket, tickets: [...mine, ...p.remoteTickets], sessions: p.sessions, targetWph: p.targetWph ?? Infinity, cap: capOf(p.targetWph), leeway: config.leeway });
+      const d = serve({ ticket, tickets: [...mine, ...p.remoteTickets], sessions: p.sessions, targetWph: p.targetWph ?? Infinity, cap: capOf(p.targetWph), leeway: p.pace?.leeway ?? config.leeway.high });
       if (d.ok) ticket.granted = p.now;
       return { ticket, reason: d.reason };
     });
@@ -442,6 +442,7 @@ for (const l of loads) {
 }
 
 const burnWph = sessions.reduce((n, s) => n + s.recentWph, 0);
+const leeway = pace?.leeway ?? config.leeway.high;
 const agents = sessions.filter((s) => s.sub).length;
 const typical = estimate(kinds, '', '');
 const cap =
@@ -449,19 +450,19 @@ const cap =
     ? Number(option('--cap'))
     : targetWph === undefined || !typical
       ? UNMEASURED_CAP
-      : agents + Math.max(0, Math.floor((targetWph * (1 + config.leeway) - burnWph) / typical));
+      : agents + Math.max(0, Math.floor((targetWph * (1 + leeway) - burnWph) / typical));
 
 if (pace && k.k7) {
   const p = (wph: number) => pct(wph * k.k7!);
   const verdict =
     burnWph > pace.week.ceiling / k.k7
       ? 'over pace: a weekly limit comes before the next reset'
-      : targetWph !== undefined && burnWph > targetWph * (1 + config.leeway)
+      : targetWph !== undefined && burnWph > targetWph * (1 + leeway)
         ? 'over pace: hold new agents'
         : 'room for more';
   const five = k.k5 ? `, 5h ceiling ${p(pace.five / k.k5)}/h` : '';
   console.log(
-    `weekly: burn ${p(burnWph)}/h; pace ${p(targetWph ?? 0)}/h, weekly ceiling ${pct(pace.week.ceiling)}/h${five}; ${verdict}`,
+    `weekly: burn ${p(burnWph)}/h; pace ${p(targetWph ?? 0)}/h (+${Math.round(leeway * 100)}% leeway), weekly ceiling ${pct(pace.week.ceiling)}/h${five}; ${verdict}`,
   );
 }
 

@@ -18,7 +18,7 @@
 //   runs alone.
 
 import type { CodexLoad, HourLoad, LiveThread, Snapshot, ThreadCost } from './codex-host.ts';
-import { weeklyPace, type Config } from './pace.ts';
+import { leewayAt, weeklyPace, type Config } from './pace.ts';
 
 const HOUR = 3600e3;
 /** The fit's window: long enough that the use rises several whole percent in it. */
@@ -171,11 +171,12 @@ export function weekNow(snapshots: readonly Snapshot[], now: number): Week | und
   return { used: 0, resetsAt, windowMinutes: last.windowMinutes, at: now };
 }
 
-/** The pace in %/h: the higher of the even burn to the target and the rolling pace, under the ceiling. */
+/** The pace in %/h: the higher of the even burn to the target and the rolling pace, under the ceiling; and its admission leeway. */
 export function target(week: Week, now: number, c: Config) {
   const pace = weeklyPace([{ used7d: week.used / 100, reset7d: week.resetsAt, used5h: 0 }], now, c);
   const pct = { floor: 100 * pace.floor, rolling: 100 * pace.rolling, ceiling: 100 * pace.ceiling };
-  return { ...pct, pctph: Math.max(0, Math.min(Math.max(pct.floor, pct.rolling), pct.ceiling)) };
+  const pctph = Math.max(0, Math.min(Math.max(pct.floor, pct.rolling), pct.ceiling));
+  return { ...pct, pctph, leeway: leewayAt(pctph / 100, 1, now, c) };
 }
 
 const median = (xs: number[]): number | undefined => {

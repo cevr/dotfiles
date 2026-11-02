@@ -37,15 +37,20 @@ export type Config = {
   fiveHourMax: number;
   /** The weekly paces count only the hours outside the Sabbath. */
   sabbath: boolean;
-  /** Admission lets the projected burn pass the pace by this fraction: at 0.05, a pace of 20 still admits an agent that brings the burn to 21 (owner, 2026-11-01). */
-  leeway: number;
+  /**
+   * Admission lets the projected burn pass the pace by a fraction: `high` once the pace is at or above the
+   * even weekly supply, `low` at half of it or below, linear between (owner, 2026-11-01). At 5%, a pace of 20
+   * still admits an agent that brings the burn to 21. A slow pace leaves room for few agents, so one agent
+   * passes it by more.
+   */
+  leeway: { high: number; low: number };
 };
 
 export const DEFAULTS: Config = {
   weeklyTarget: 0.99,
   fiveHourMax: 0.9,
   sabbath: true,
-  leeway: 0.05,
+  leeway: { high: 0.05, low: 0.1 },
 };
 
 const HOUR = 3600e3;
@@ -128,10 +133,21 @@ export function calibrate(samples: readonly Sample[]): { k7?: number; k5?: numbe
 export function target(accounts: readonly Account[], now: number, c: Config, k: { k7?: number; k5?: number }) {
   const week = weeklyPace(accounts, now, c);
   const five = fiveHourCeiling(accounts, now, c);
-  if (!k.k7) return { week, five, targetWph: undefined };
+  if (!k.k7) return { week, five, targetWph: undefined, leeway: c.leeway.high };
   const limits = [Math.max(week.floor, week.rolling) / k.k7, week.ceiling / k.k7];
   if (k.k5) limits.push(five / k.k5);
-  return { week, five, targetWph: Math.max(0, Math.min(...limits)) };
+  const targetWph = Math.max(0, Math.min(...limits));
+  return { week, five, targetWph, leeway: leewayAt(targetWph * k.k7, accounts.length, now, c) };
+}
+
+/**
+ * The admission leeway at `pace` (fractions of one account's week per hour) for a pool of `accounts`:
+ * its place between half the even weekly supply (`low`) and the whole of it (`high`).
+ */
+export function leewayAt(pace: number, accounts: number, now: number, c: Config): number {
+  const supply = (accounts * c.weeklyTarget) / hours(now, now + WEEK, c);
+  const t = supply > 0 ? Math.min(1, Math.max(0, pace / supply / 0.5 - 1)) : 1;
+  return c.leeway.low + (c.leeway.high - c.leeway.low) * t;
 }
 
 export type Session = { session: string; project: string; kind: string; sub: boolean; recentWph: number };

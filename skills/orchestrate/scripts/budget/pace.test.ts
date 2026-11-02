@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { admit, calibrate, DEFAULTS, estimate, fiveHourCeiling, resumeAt, target, weeklyPace, type Config } from './pace.ts';
+import { admit, calibrate, DEFAULTS, estimate, fiveHourCeiling, leewayAt, resumeAt, target, weeklyPace, type Config } from './pace.ts';
 
 const HOUR = 3600e3;
 // Clock hours: these cases check the arithmetic, not the Sabbath.
@@ -181,5 +181,23 @@ describe('the Sabbath', () => {
     expect(Number.isFinite(pace.floor)).toBe(true);
     expect(pace.floor).toBeGreaterThan(0);
     expect(Number.isFinite(pace.ceiling)).toBe(true);
+  });
+});
+
+describe('leewayAt', () => {
+  // Clock hours: 7 accounts at 99% supply 6.93 account-weeks over 168 hours.
+  const c: Config = { ...DEFAULTS, sabbath: false };
+  const supply = (7 * 0.99) / 168;
+  const now = Date.UTC(2026, 10, 2, 12);
+  test('5% at or above the even weekly supply', () => {
+    expect(leewayAt(supply, 7, now, c)).toBeCloseTo(0.05);
+    expect(leewayAt(2 * supply, 7, now, c)).toBeCloseTo(0.05);
+  });
+  test('10% at half the supply or below', () => {
+    expect(leewayAt(supply / 2, 7, now, c)).toBeCloseTo(0.1);
+    expect(leewayAt(0, 7, now, c)).toBeCloseTo(0.1);
+  });
+  test('linear between', () => {
+    expect(leewayAt(0.75 * supply, 7, now, c)).toBeCloseTo(0.075);
   });
 });
