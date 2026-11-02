@@ -193,7 +193,7 @@ The CSS patterns behind the neutral [checklist](../../references/color/index.md#
 | `var(--blue-600)` or `bg-blue-600` in a component file | Point a semantic token at the primitive and use that |
 | `--color-primary` and `--color-text-primary` both defined | Rename the brand token `accent` |
 | A `border` or `separator` token inside `color:`, or a `text` token inside `background:` | Add a token for the missing role |
-| `hsl(` ramp values that differ only in lightness | Rebuild in OKLCH with a constant hue |
+| `hsl(` ramp values that differ only in lightness | Rebuild with a constant perceived hue, in the project's notation |
 | Color tokens set under both `prefers-color-scheme` and a `.dark` class | Pick one switching mechanism and use it throughout |
 | `prefers-contrast: more` overriding a color for both appearances in one block | Give each appearance its own increased-contrast value |
 | Text on a color with alpha, such as `/50`, `rgba(` or `color-mix(` with `transparent` | Measure the rendered result, or use a solid token |

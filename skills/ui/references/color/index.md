@@ -76,7 +76,7 @@ Each platform file adds the API-level patterns for these.
 | A semantic name containing a hue or a component, as in `color-blue-button` or `color-sidebar-gray` | Rename it for its role: `color-accent-solid`, `color-bg-surface` |
 | `primary` meaning both the brand and the most prominent text | Rename the brand token `accent`, unless the platform fixes the word |
 | A border or separator token used as text color, or a text token used as a background | Add a token for the missing role |
-| Ramp values that differ only in HSL lightness | Rebuild in OKLCH with a constant hue |
+| Ramp values that differ only in HSL lightness | Rebuild with a constant perceived hue, in the project's notation |
 | `50`–`200` stepping as far apart in OKLCH `L` as mid-ramp steps do | Tighten the light end to about `0.04`–`0.05` per step |
 | One chroma or saturation number copied across every hue's ramp | Use the same proportion of each hue's own maximum |
 | A status hue within `15°` of the accent hue | Move it at least `15°` away, or give the destructive action a distinct treatment |
