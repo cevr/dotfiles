@@ -41,9 +41,9 @@ bun add -D -E alchemy@<latest> @effect/platform-node@<effect version>   # plus a
 
 - **Start from the newest release.** Look up `latest` every time you add Alchemy, and never pin a version from memory or from this skill. Pin it exactly (no `^`), because betas break between releases.
 - **In an existing repo, compare the pinned version with `latest` first.** If the repo is behind, say so, and read the newer source (`okra repo fetch npm:alchemy@<latest>`) before working around a bug or a missing API; the fix may already have shipped. Upgrade as its own commit, and run `alchemy plan` after it to confirm the plan shows no changes.
-- Alchemy's peers are `effect`, `@effect/platform-bun`, and `@effect/platform-node` (`^4.0.5` in beta.84). Keep all three on the project's exact Effect version. `alchemy/Cloudflare` loads `@effect/platform-node` even under Bun.
-- **Alchemy up to `2.0.0-beta.84` does not load on Effect 4.1.** It imports `effect/Crypto`, which `effect@4.1.0` removed, so `alchemy plan` and `deploy` fail with `Cannot find package 'effect' imported from …/alchemy/src/Auth/OAuthFlow.ts`. Typecheck, build and unit tests still pass, because none of them load the CLI. Stay on Effect 4.0.x with beta.84, and move to 4.1 with the first Alchemy release after it (the fix is alchemy#2754). After any Effect bump, run `alchemy plan` as well as the gate.
-- **On Effect 4.0.x, keep the lockfile.** `@effect/platform-bun@4.0.7` depends on `@effect/platform-node-shared@^4.0.7`, so a fresh resolve installs 4.1.x, which imports 4.1-only modules and fails to load on Effect 4.0.
+- Alchemy's peers are `effect`, `@effect/platform-bun`, and `@effect/platform-node` (`^4.1.0` from beta.85). Keep all three on the project's exact Effect version. `alchemy/Cloudflare` loads `@effect/platform-node` even under Bun.
+- **Alchemy `2.0.0-beta.85` and later need Effect 4.1 (peer `^4.1.0`); beta.84 and earlier do not load on 4.1.** Those import `effect/Crypto`, which `effect@4.1.0` removed, so `alchemy plan` and `deploy` fail with `Cannot find package 'effect' imported from …/alchemy/src/Auth/OAuthFlow.ts`. Typecheck, build and unit tests still pass, because none of them load the CLI. Bump Alchemy and Effect together, then run `alchemy plan` as well as the gate.
+- **beta.85 upgrades the Cloudflare state store from v7 to v8, one way.** See cloudflare.md §State Store before the first beta.85 deploy.
 - `devDependencies` is fine even when app code imports `alchemy/*`: the Runtime bundle inlines everything `main` imports, and nothing installs at runtime unless `build.install` asks for it.
 
 `package.json` scripts:
@@ -142,4 +142,4 @@ A green typecheck and a clean plan only prove the stack is well formed. What pro
 
 ## Compatibility
 
-Last proven on a real project with `alchemy@2.0.0-beta.84` and `effect@4.0.5`: cvr.im on Cloudflare, deployed by CI on 2026-10-26. On 2026-11-02, `effect@4.1.2` with beta.84 passed cvr.im's typecheck, build and tests, but `alchemy plan` failed to load (see Setup). Effect stable (`4.0.0` and later) has no `effect/unstable/*`: those modules live at `effect/cli`, `effect/http`, `effect/http-api`, `effect/ai` and `effect/rpc`. For a newer release, recheck against its source.
+Last proven on a real project with `alchemy@2.0.0-beta.84` and `effect@4.0.5`: cvr.im on Cloudflare, deployed by CI on 2026-10-26. On 2026-11-02, `alchemy@2.0.0-beta.85` with `effect@4.1.2` passed cvr.im's gate and `alchemy plan` loaded the stack, then stopped at the v7 state store; it is not deployed yet. Effect stable (`4.0.0` and later) has no `effect/unstable/*`: those modules live at `effect/cli`, `effect/http`, `effect/http-api`, `effect/ai` and `effect/rpc`. For a newer release, recheck against its source.

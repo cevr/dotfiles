@@ -158,10 +158,10 @@ When the app also runs as a CLI or a local `bun --watch` server, keep domain ser
 ## Testing
 
 - Keep unit and route tests on local Layers (`HttpRouter.serve` + `BunHttpServer.layerTest`). They need no Alchemy.
-- For a deploy test, use `Test.make` from `alchemy/Test/Bun`. It deploys into `test_$USER`, so make the stack stage-aware: non-prod stages get their own project and a public URL, and skip custom domains and DNS. Tie deploy and destroy to the test's scope with `acquireRelease`. `oxlint-plugin-effect` bans `beforeAll`/`afterAll`, and a scope also destroys the stage on failure:
+- For a deploy test, use `Test.make` from `@alchemy.run/test/Bun` (beta.85 moved it out of `alchemy/Test/*`; add `@alchemy.run/test` at Alchemy's exact version). It deploys into `test_$USER`, so make the stack stage-aware: non-prod stages get their own project and a public URL, and skip custom domains and DNS. Tie deploy and destroy to the test's scope with `acquireRelease`. `oxlint-plugin-effect` bans `beforeAll`/`afterAll`, and a scope also destroys the stage on failure:
 
 ```typescript
-import * as Test from "alchemy/Test/Bun";
+import * as Test from "@alchemy.run/test/Bun";
 import Stack, { providers } from "../alchemy.run.js"; // export the providers Layer from the stack file
 
 const { test, deploy, destroy } = Test.make({ providers, state: Alchemy.localState() });

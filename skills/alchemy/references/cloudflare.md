@@ -68,6 +68,7 @@ yield* Cloudflare.DNS.Record("App", {
 
 - `Alchemy.localState()` writes `.alchemy/` and is enough for solo projects.
 - `Cloudflare.state()` is a Worker-backed store shared across machines and CI. Its bootstrap token lives in the Cloudflare Secrets Store, so CI tokens need `Secrets Store Write`.
+- **beta.85 upgrades the store to v8, and there is no way back.** Until then, `alchemy plan` stops with `Cloudflare State Store 'alchemy-state-store' is out of date (expected v8, observed v7)`. The next `deploy` (or `--yes` in CI, or `alchemy state bootstrap`) upgrades it. After that, Alchemy beta.84 or earlier must not run against the store: it can no longer manage it, and the encryption key can be lost for good. Every stack in the account that uses the default `Cloudflare.state()` shares this one store, so upgrade all of them, on every machine and CI job, together. A pull request's preview deploy in CI with `--yes` upgrades the shared store too. Or give the upgraded project its own store with `Cloudflare.state({ workerName })`, which re-adopts its resources. `name` became `workerName` (the full Worker name, such as `alchemy-state-store-team-a`).
 
 ## Credentials and OAuth Scopes
 
