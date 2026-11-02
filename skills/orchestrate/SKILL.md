@@ -162,7 +162,7 @@ Every transition appends one line to `<run dir>/<unit>/log.md` by `bun ~/.claude
    - **Team approval.** Where main changes only through a PR that a teammate approves (Bite), green opens the PR (`create-pr`), and the unit goes to `waiting(pr)`, holding no slot: follow [`references/pr-wait.md`](references/pr-wait.md).
    - Green: in the main checkout, `git merge --ff-only <branch>`. A fix you would make yourself goes to the implementor as a round.
    - Push only as the Reserved default allows. After a push, wait for the pushed commit's CI run (`gh run watch` on the run whose head is that commit). Green is that run, not the local gate. While it is red, merge nothing but the unit that fixes it. gent's main stayed red from 2026-09-25 to 2026-10-18 behind a green local gate: 10 of 400 runs passed.
-3. **Record and close.** Write `merged <hash>` into the unit's row, with decisions, follow-ups from `state.md`, and anything for Review later. A spike, sketch or prototype unit's verdict also goes where the next session reads it: a `NORTH_STAR.md` row, a `PRIOR_ART.md` → Settled row, or an ADR. Rive was studied twice in bible-tools because the first verdict lived in a session. A helper the unit's workers built that a later round or unit would rebuild (a browser driver, a rerun script, a seed root) is a follow-up unit that moves it into the repo's scripts or its `verify-<app>` skill ([build-the-lever](~/Developer/personal/dotfiles/principles/build-the-lever.md)). Stop the unit's agents (Codex: `close_agent`). Delete the branch and remove the workspace by its full path.
+3. **Record and close.** Write `merged <hash>` into the unit's row, with decisions, follow-ups from `state.md` and the findings' `on base` Minors, and anything for Review later. A spike, sketch or prototype unit's verdict also goes where the next session reads it: a `NORTH_STAR.md` row, a `PRIOR_ART.md` → Settled row, or an ADR. Rive was studied twice in bible-tools because the first verdict lived in a session. A helper the unit's workers built that a later round or unit would rebuild (a browser driver, a rerun script, a seed root) is a follow-up unit that moves it into the repo's scripts or its `verify-<app>` skill ([build-the-lever](~/Developer/personal/dotfiles/principles/build-the-lever.md)). Stop the unit's agents (Codex: `close_agent`). Delete the branch and remove the workspace by its full path.
 4. **Next.** Start each unit whose seams are frozen, stacked on its parents' current heads, up to the limit. Restack its children. If a result changes what a later unit needs, update that unit's spec first.
 
 ### asks
@@ -200,7 +200,7 @@ Stop the old implementor.
 
 The run closes when every unit is merged, dropped, or blocked on an owner question.
 
-The end report covers:
+The end report opens with the goal from `plan.md`'s first line, word for word, and whether it is met. It covers:
 
 - what merged, with hashes;
 - the gate on main;
