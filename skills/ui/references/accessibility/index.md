@@ -70,7 +70,7 @@ Every control has an accessible name (4.1.2). Icon-only buttons need a name that
 
 **Web:** visible text or `aria-labelledby` over `aria-label`; name precedence and examples are in [semantics-and-aria.md](../../platforms/web/semantics-and-aria.md#accessible-names).
 
-## Don't rely on color alone
+## Pair color with a second cue
 
 Status needs a redundant cue: an icon, text or an underline alongside the color (1.4.1).
 
@@ -120,7 +120,7 @@ Text must survive 200% resize through the platform's text-size setting (1.4.4), 
 - **Nested menus** keep a prediction cone (safe triangle) so diagonal pointer travel toward a submenu doesn't close it.
 - **Help.** Inline help first, tooltips last. A hover tooltip holds no interactive content.
 - **Content images** are real images with a description, not background decoration, so screen readers and copy work. **Web:** `<img>` with alt text, not CSS backgrounds.
-- **Charts** use a color-blind-safe palette and pair every hue with a label, pattern, or position (see [Don't rely on color alone](#dont-rely-on-color-alone)).
+- **Charts** use a color-blind-safe palette and pair every hue with a label, pattern, or position (see [Pair color with a second cue](#pair-color-with-a-second-cue)).
 
 ## Reporting
 
