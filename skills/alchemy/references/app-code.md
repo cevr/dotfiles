@@ -19,7 +19,7 @@ A Runtime is a Resource that carries code: `Railway.Service`, `Railway.Function`
 
 ```typescript
 // src/Api.ts: declaration and runtime code in one file
-import { Service } from "alchemy/Railway/Service";
+import { Service } from "@alchemy.run/railway/Service";
 import * as Effect from "effect/Effect";
 import { HttpServerResponse } from "effect/http";
 import { Site } from "./Site.ts";
@@ -43,7 +43,7 @@ export default class Api extends Service<Api>()(
   - Class: `class Api extends Service<Api>()(…) {}`, which gives a nominal type in hovers and outputs.
   - Tag + `.make()`: `class Api extends Service<Api, {}>()("Api") {}` plus `export default Api.make(props, effect)`, with the Layer provided to the Stack. Use it when other Runtimes bind `Api` and must not bundle its implementation, or for circular bindings.
 - Return methods next to `fetch` to expose schemaless RPC. Other Runtimes bind them with `Railway.bindService(Api)` or `Cloudflare.Workers.bindWorker(Api)`.
-- For a background service, omit `fetch` and register a loop with `yield* ServerHost` (from `alchemy/Server`) and `host.run(effect)`.
+- For a background service, omit `fetch` and register a loop with `yield* ServerHost` (from `alchemy/Runtime/Process`) and `host.run(effect)`.
 
 ## Phases
 

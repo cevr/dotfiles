@@ -13,7 +13,7 @@ Cloudflare resources in Alchemy: Workers, R2/KV/D1/Queues/Durable Objects, DNS, 
 ## Imports and Providers
 
 ```typescript
-import * as Cloudflare from "alchemy/Cloudflare"; // barrel: Worker, R2, KV, D1, Zone, DNS, ApiToken, providers(), state()
+import * as Cloudflare from "@alchemy.run/cloudflare"; // barrel: Worker, R2, KV, D1, Zone, DNS, ApiToken, providers(), state()
 ```
 
 The barrel loads `@effect/platform-node`, so install it at the project's exact Effect version even on Bun. Merge `Cloudflare.providers()` with other providers using `Layer.mergeAll`, or `Layer.provideMerge` when one provider's layer needs another's services.
