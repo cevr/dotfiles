@@ -266,5 +266,22 @@
       "sha": "4a653d322bf8637c6e6ff3fc71c085b91c01ee26",
       "date": "2026-11-02"
     }
+  },
+  {
+    "name": "alchemy-domain-docs",
+    "repo": "alchemy-run/alchemy",
+    "paths": [
+      "website/src/content/docs/domain",
+      "website/src/content/docs/testing"
+    ],
+    "into": [
+      "alchemy",
+      "effect"
+    ],
+    "license": "Apache-2.0",
+    "folded": {
+      "sha": "d0b4a3326718309793459160e94b35abee517b23",
+      "date": "2026-11-02"
+    }
   }
 ]
