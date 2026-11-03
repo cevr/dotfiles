@@ -177,7 +177,7 @@ const TOOLS = [
     description:
       'Starts a Codex thread on this host and runs its first turn in the background. Returns at once with the thread id; ' +
       'when the turn ends, its final message arrives as a message from the codex plugin, so never poll. ' +
-      'For an orchestrate role pass `role`: the thread then carries that role agent\'s instructions and effort (~/.codex/agents/orchestrate-<role>.toml). ' +
+      'For an orchestrate role pass `role`: the thread then carries that role agent\'s instructions and effort (~/.codex/agents/<role>.toml). ' +
       '`model` takes a slug, or a family (luna, sol, terra, astra) for its newest release; left out, Codex\'s configured default. ' +
       'The thread runs under the host Codex config (sandbox and approvals included) unless `sandbox` is passed. ' +
       'When the Codex budget has no room (the account\'s burn with this turn past the weekly pace, or, when that cannot be measured, weekly use ahead of an even burn), the turn is latched and starts by itself later; the answer says why and when it should start. ' +

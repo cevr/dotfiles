@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Writes one agent per orchestrate role for each host, from protocol.md and
-// loop/safety.md: Claude Code's agents/orchestrate-<role>.md and Codex's
-// codex/agents/orchestrate-<role>.toml. A worker starts with its rules in its
+// loop/safety.md: Claude Code's agents/<role>.md and Codex's
+// codex/agents/<role>.toml. A worker starts with its rules in its
 // prompt instead of reading them, and on Claude Code each role is its own agent
 // kind with its own tuned compaction window. protocol.md stays the one copy.
 // A file it wrote for a role it no longer has is removed, and --check fails on it.
@@ -59,7 +59,7 @@ ${own}
 
 /** The Claude Code agent file for a role. */
 export const agentFile = (role: Role, protocol: string, safety: string): string => `---
-name: orchestrate-${role}
+name: ${role}
 description: ${ROLES[role]} Its prompt carries the worker protocol.
 tools: ${TOOLS}
 # ${WRITTEN}
@@ -71,7 +71,7 @@ export function codexFile(role: Role, protocol: string, safety: string): string 
   const text = instructions(role, protocol, safety);
   if (text.includes("'''")) throw new Error("the instructions hold ''', which ends a TOML literal string");
   return `# ${WRITTEN}
-name = "orchestrate-${role}"
+name = "${role}"
 description = "${ROLES[role]} Its instructions carry the worker protocol."
 model_reasoning_effort = "${CODEX_EFFORT[role]}"
 developer_instructions = '''
@@ -83,18 +83,18 @@ const built = () => {
   const protocol = readFileSync(PROTOCOL, 'utf8');
   const safety = readFileSync(SAFETY, 'utf8');
   return (Object.keys(ROLES) as Role[]).flatMap((role) => [
-    [join(AGENTS, `orchestrate-${role}.md`), agentFile(role, protocol, safety)] as const,
-    [join(CODEX_AGENTS, `orchestrate-${role}.toml`), codexFile(role, protocol, safety)] as const,
+    [join(AGENTS, `${role}.md`), agentFile(role, protocol, safety)] as const,
+    [join(CODEX_AGENTS, `${role}.toml`), codexFile(role, protocol, safety)] as const,
   ]);
 };
 
-/** Agent files this script wrote for a role it no longer has. */
+/** Agent files this script wrote for a role it no longer has, or under a role's former name (`orchestrate-<role>`). */
 export const retired = (dirs = [AGENTS, CODEX_AGENTS], roles = Object.keys(ROLES)) =>
   dirs.flatMap((dir) => {
     let names: string[] = [];
     try { names = readdirSync(dir); } catch {}
     return names
-      .filter((name) => /^orchestrate-[a-z]+\.(md|toml)$/.test(name) && !roles.includes(name.slice('orchestrate-'.length, name.lastIndexOf('.'))))
+      .filter((name) => /^[a-z-]+\.(md|toml)$/.test(name) && !roles.includes(name.slice(0, name.lastIndexOf('.'))))
       .map((name) => join(dir, name))
       .filter((path) => readFileSync(path, 'utf8').includes(WRITTEN));
   });

@@ -1,5 +1,5 @@
 # Written by skills/orchestrate/scripts/agents.ts from protocol.md and loop/safety.md. Edit those, then run it.
-name = "orchestrate-planner"
+name = "planner"
 description = "Writes one orchestrate unit's spec and its red acceptance check. Changes no product code. Its instructions carry the worker protocol."
 model_reasoning_effort = "high"
 developer_instructions = '''

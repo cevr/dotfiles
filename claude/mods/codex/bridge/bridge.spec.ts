@@ -52,12 +52,12 @@ const settle = () => Bun.sleep(50)
 beforeAll(() => {
   require('node:fs').mkdirSync(agents)
   writeFileSync(
-    join(agents, 'orchestrate-implementor.toml'),
-    `name = "orchestrate-implementor"\nmodel_reasoning_effort = "max"\ndeveloper_instructions = '''\nYou are the implementor of one orchestrate unit.\n'''\n`,
+    join(agents, 'implementor.toml'),
+    `name = "implementor"\nmodel_reasoning_effort = "max"\ndeveloper_instructions = '''\nYou are the implementor of one orchestrate unit.\n'''\n`,
   )
   writeFileSync(
-    join(agents, 'orchestrate-verifier.toml'),
-    `name = "orchestrate-verifier"\nmodel_reasoning_effort = "medium"\ndeveloper_instructions = '''\nYou are the verifier of one orchestrate unit.\n'''\n`,
+    join(agents, 'verifier.toml'),
+    `name = "verifier"\nmodel_reasoning_effort = "medium"\ndeveloper_instructions = '''\nYou are the verifier of one orchestrate unit.\n'''\n`,
   )
 })
 

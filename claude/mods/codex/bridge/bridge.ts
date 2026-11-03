@@ -230,8 +230,8 @@ function configured(): string | undefined {
 
 /** A role agent's instructions and effort, from the file agents.ts writes for Codex. */
 export function roleAgent(role: Role, dir = AGENTS): { instructions: string; effort?: string } {
-  const file = Bun.TOML.parse(readFileSync(join(dir, `orchestrate-${role}.toml`), 'utf8')) as Record<string, string>
-  if (!file.developer_instructions) throw new Error(`orchestrate-${role}.toml has no developer_instructions`)
+  const file = Bun.TOML.parse(readFileSync(join(dir, `${role}.toml`), 'utf8')) as Record<string, string>
+  if (!file.developer_instructions) throw new Error(`${role}.toml has no developer_instructions`)
   return { instructions: file.developer_instructions, effort: file.model_reasoning_effort }
 }
 

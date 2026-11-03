@@ -1,5 +1,5 @@
 ---
-name: orchestrate-implementor
+name: implementor
 description: The sole writer of one orchestrate unit: builds its spec on the unit's branch and hands back a round request. Its prompt carries the worker protocol.
 tools: Bash, Read, Edit, Write, Skill, Monitor, TaskStop, WebFetch, WebSearch
 # Written by skills/orchestrate/scripts/agents.ts from protocol.md and loop/safety.md. Edit those, then run it.
