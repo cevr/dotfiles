@@ -68,7 +68,7 @@ import {
   type Config,
   type Sample,
 } from './budget/pace.ts';
-import { live, order, serve, update } from './budget/queue.ts';
+import { QueueBusy, live, order, serve, update } from './budget/queue.ts';
 
 const MINUTE = 60e3;
 const UNMEASURED_CAP = 8;
@@ -379,14 +379,22 @@ if (args.includes('--wait')) {
   let said = '';
   for (;;) {
     const p = await pool(15e3);
-    const out = update(queuePath, p.now, (mine) => {
-      const ticket = mine.find((t) => t.id === id);
-      if (!ticket || ticket.granted !== undefined) return { ticket };
-      ticket.beat = p.now;
-      const d = serve({ ticket, tickets: [...mine, ...p.remoteTickets], sessions: p.sessions, targetWph: p.targetWph ?? Infinity, cap: capOf(p.targetWph), leeway: p.pace?.leeway ?? config.leeway.high });
-      if (d.ok) ticket.granted = p.now;
-      return { ticket, reason: d.reason };
-    });
+    let out;
+    try {
+      out = update(queuePath, p.now, (mine) => {
+        const ticket = mine.find((t) => t.id === id);
+        if (!ticket || ticket.granted !== undefined) return { ticket };
+        ticket.beat = p.now;
+        const d = serve({ ticket, tickets: [...mine, ...p.remoteTickets], sessions: p.sessions, targetWph: p.targetWph ?? Infinity, cap: capOf(p.targetWph), leeway: p.pace?.leeway ?? config.leeway.high });
+        if (d.ok) ticket.granted = p.now;
+        return { ticket, reason: d.reason };
+      });
+    } catch (e) {
+      // Other waiters hold the lock; the ticket outlives a missed beat, so poll again.
+      if (!(e instanceof QueueBusy)) throw e;
+      await Bun.sleep(10e3);
+      continue;
+    }
     if (!out.ticket) {
       console.log(`ticket ${id} is gone: no waiter kept it alive for 2 minutes, or its grant passed 5 minutes unused. Call Agent again to queue it anew.`);
       process.exit(3);

@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Session, Ticket } from './host.ts';
-import { LIFE, live, order, serve, update } from './queue.ts';
+import { LIFE, QueueBusy, live, order, serve, update } from './queue.ts';
 
 const NOW = 1_000_000_000;
 const ticket = (id: string, session: string, at: number, more: Partial<Ticket> = {}): Ticket => ({
@@ -68,4 +68,10 @@ describe('update', () => {
     update(path, NOW, (tickets) => tickets.push(ticket('a', 's1', 1), ticket('dead', 's2', 1, { beat: 0 })));
     expect(update(path, NOW, (tickets) => tickets.map((t) => t.id))).toEqual(['a']);
   });
+
+  test('a lock another process holds fails as QueueBusy, for the caller to retry', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'queue-')), 'queue.json');
+    mkdirSync(`${path}.lock`);
+    expect(() => update(path, NOW, () => {})).toThrow(QueueBusy);
+  }, 10e3);
 });

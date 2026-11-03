@@ -68,6 +68,9 @@ export function serve(input: {
 
 const LOCK_STALE = 10e3;
 
+/** Another process held the queue lock past the wait; the lock is live, not stale, so try again later. */
+export class QueueBusy extends Error {}
+
 function lock(path: string): () => void {
   const dir = `${path}.lock`;
   mkdirSync(dirname(path), { recursive: true });
@@ -80,7 +83,7 @@ function lock(path: string): () => void {
       try {
         if (Date.now() - statSync(dir).mtimeMs > LOCK_STALE) rmSync(dir, { recursive: true, force: true });
       } catch {}
-      if (Date.now() > until) throw new Error(`queue lock ${dir} held over 5 s`);
+      if (Date.now() > until) throw new QueueBusy(`queue lock ${dir} held over 5 s`);
       Bun.sleepSync(20);
     }
   }
