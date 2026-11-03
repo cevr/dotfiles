@@ -508,16 +508,17 @@ export const ceilingOf = (env = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW): nu
 // minute, which the replay's token cost does not count: a larger window costs
 // the replay a few percent more tokens but compacts the main session far less.
 //
-// The worker and the planner run at WORKER_MAX: a worker
-// hands off at its first compaction (protocol.md), so a tuned 120k window,
-// which compacts at about 87k, ended fresh workers before their first edit.
+// The worker runs at WORKER_MAX: a worker hands off at its first compaction
+// (protocol.md), so a tuned 120k window, which compacts at about 87k, ended
+// fresh workers before their first edit.
 //
-// The implementor and the verifier run at ROLE_MAX. Each holds the spec, the
-// diff and the gate's output in one context, and typically needs about 300k:
-// at WORKER_MAX, half of them compacted, most within minutes, and handed off
-// to a fresh agent that read everything again. That costs the run more wall
-// time than the replay's token saving buys.
-const ROLES = ['worker', 'planner'];
+// The planner, the implementor and the verifier run at ROLE_MAX. Each holds
+// the plan or spec, the code it reads and the output of what it runs (a red
+// check, mutants, a gate) in one context: at WORKER_MAX, more than half of
+// each compacted, most within minutes, and handed off to a fresh agent that
+// read everything again. That costs the run more wall time than the replay's
+// token saving buys.
+const ROLES = ['worker'];
 // A worker's window stays at or under this: past it, one agent's context costs
 // more than the tune's replay can see.
 export const WORKER_MAX = 200e3;
@@ -525,6 +526,7 @@ export const ROLE_MAX = 400e3;
 export const PINNED: Record<string, number> = {
   root: 400e3,
   ...Object.fromEntries(ROLES.map((kind) => [kind, WORKER_MAX])),
+  planner: ROLE_MAX,
   implementor: ROLE_MAX,
   verifier: ROLE_MAX,
 };

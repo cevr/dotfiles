@@ -212,6 +212,6 @@ test("an older cache with a wide worker window registers the copies at each kind
   await settle()
   // Two loads (before the tune and the mocked hourly one); each registers all four kinds.
   expect(new Set(registered.map(r => r.name)).size).toBe(4)
-  for (const r of registered) expect(r).toMatchObject({ autoCompactWindow: ['implementor', 'verifier'].includes(String(r.name)) ? 400e3 : 200e3 })
+  for (const r of registered) expect(r).toMatchObject({ autoCompactWindow: ['planner', 'implementor', 'verifier'].includes(String(r.name)) ? 400e3 : 200e3 })
   expect(toasts).toEqual([expect.stringContaining('1 verifier past 200k')])
 })

@@ -32,7 +32,7 @@ export const RENAMED: Record<string, string> = {
 const current = (kind: string) => RENAMED[kind.replace(/^status:/, '')] ?? kind
 // budget/burn.ts WORKER_MAX and ROLE_MAX: the largest window each kind is registered with.
 export const WORKER_MAX = 200e3
-const MAX: Record<string, number> = { implementor: 400e3, verifier: 400e3 }
+const MAX: Record<string, number> = { planner: 400e3, implementor: 400e3, verifier: 400e3 }
 export const KINDS = [WORKER, 'planner', 'implementor', 'verifier']
 const CACHE = '"$HOME/.cache/orchestrate"'
 export const KEEP =
