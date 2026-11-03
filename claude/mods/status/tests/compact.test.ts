@@ -9,7 +9,7 @@ tools: Bash, Read, Edit
 ---
 You are a subagent.
 `
-const TUNED = JSON.stringify({ at: 0, ceiling: 200e3, windows: { worker: 140e3, 'orchestrate-verifier': 160e3, root: 150e3, Explore: 50e3 } })
+const TUNED = JSON.stringify({ at: 0, ceiling: 200e3, windows: { worker: 140e3, verifier: 160e3, root: 150e3, Explore: 50e3 } })
 
 const ok = (stdout: string) => ({
   value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
@@ -26,13 +26,15 @@ test('reads an agent file and keeps only windows the engine takes', () => {
     tools: ['Bash', 'Read', 'Edit'],
     prompt: 'You are a subagent.',
   })
-  expect(parseWindows(TUNED)).toEqual({ worker: 140e3, 'orchestrate-verifier': 160e3, root: 150e3 })
+  expect(parseWindows(TUNED)).toEqual({ worker: 140e3, verifier: 160e3, root: 150e3 })
 })
 
 test("an older cache's window counts for the kind's current name, unless that has its own", () => {
   expect(parseWindows(JSON.stringify({ windows: { 'orchestrate-worker': 180e3 } }))).toEqual({ worker: 180e3 })
   expect(parseWindows(JSON.stringify({ windows: { 'orchestrate-worker': 180e3, worker: 140e3 } }))).toEqual({ worker: 140e3 })
-  expect(parseWindows(JSON.stringify({ windows: { 'orchestrate-reviewer': 300e3 } }))).toEqual({ 'orchestrate-verifier': 300e3 })
+  expect(parseWindows(JSON.stringify({ windows: { 'orchestrate-reviewer': 300e3 } }))).toEqual({ verifier: 300e3 })
+  expect(parseWindows(JSON.stringify({ windows: { 'orchestrate-implementor': 400e3, 'orchestrate-planner': 200e3 } }))).toEqual({ implementor: 400e3, planner: 200e3 })
+  expect(parseWindows(JSON.stringify({ windows: { 'orchestrate-verifier': 300e3, verifier: 160e3 } }))).toEqual({ verifier: 160e3 })
 })
 
 test('workers and roles run as copies with their tuned windows, and every compaction keeps the state files', async ($, on) => {
@@ -47,7 +49,7 @@ test('workers and roles run as copies with their tuned windows, and every compac
   on('process.run', (_, e) => {
     const script = e.argv.join(' ')
     if (script.includes('cat') && script.includes('compact.json')) return ok(TUNED)
-    const kind = script.match(/(orchestrate-[a-z]+|worker)(?=\.md)/)?.[0]
+    const kind = script.match(/(planner|implementor|verifier|worker)(?=\.md)/)?.[0]
     if (kind) return ok(WORKER_FILE.replace('name: worker', `name: ${kind}`))
     return failed
   })
@@ -84,20 +86,33 @@ test('workers and roles run as copies with their tuned windows, and every compac
   const last = (name: string) => registered.findLast(r => r.name === name)
   expect(last('worker')).toMatchObject({ tools: ['Bash', 'Read', 'Edit'], autoCompactWindow: 140e3 })
   // A tuned role keeps its own window; an untuned one takes the worker's.
-  expect(last('orchestrate-verifier')).toMatchObject({ autoCompactWindow: 160e3 })
-  expect(last('orchestrate-reviewer')).toBeUndefined()
-  expect(last('orchestrate-implementor')).toMatchObject({ autoCompactWindow: 140e3 })
+  expect(last('verifier')).toMatchObject({ autoCompactWindow: 160e3 })
+  expect(last('orchestrate-verifier')).toBeUndefined()
+  expect(last('implementor')).toMatchObject({ autoCompactWindow: 140e3 })
 
   const spawn = { tool_use_id: 't1', prompt: 'p', description: 'd', provider: { plugin: 'engine', tier: 'core' as const }, parentModel: 'opus', background: false, fork: false }
   await $.agent.spawn({ ...spawn, subagentType: 'worker' })
   // A session mid-run still asks for the former name, before or after the guard hook renames it.
   await $.agent.spawn({ ...spawn, subagentType: 'orchestrate-worker' })
+  await $.agent.spawn({ ...spawn, subagentType: 'verifier' })
   await $.agent.spawn({ ...spawn, subagentType: 'orchestrate-verifier' })
   await $.agent.spawn({ ...spawn, subagentType: 'orchestrate-reviewer' })
   await $.agent.spawn({ ...spawn, subagentType: 'status:orchestrate-reviewer' })
   await $.agent.spawn({ ...spawn, subagentType: 'status:orchestrate-verifier' })
+  await $.agent.spawn({ ...spawn, subagentType: 'status:verifier' })
+  await $.agent.spawn({ ...spawn, subagentType: 'orchestrate-implementor' })
+  await $.agent.spawn({ ...spawn, subagentType: 'status:orchestrate-implementor' })
+  await $.agent.spawn({ ...spawn, subagentType: 'orchestrate-planner' })
   await $.agent.spawn({ ...spawn, subagentType: 'Explore' })
-  expect(spawned).toEqual(['status:worker', 'status:worker', ...Array(4).fill('status:orchestrate-verifier'), 'Explore'])
+  expect(spawned).toEqual([
+    'status:worker',
+    'status:worker',
+    ...Array(6).fill('status:verifier'),
+    'status:implementor',
+    'status:implementor',
+    'status:planner',
+    'Explore',
+  ])
   // Dispatch checks the offer of the name the spawn carries: the copy must be offered.
   const copy = { agent: 'status:worker', description: 'd', source: 'plugin', provider: { plugin: 'status', tier: 'user' as const } }
   expect(await $.agent.offer(copy)).toEqual({ isOffered: true })
@@ -124,8 +139,8 @@ test('a reload registers the copies before the tune ends, and warns of agents th
   const overran = JSON.stringify({
     ...JSON.parse(TUNED),
     kinds: [
-      { kind: 'orchestrate-implementor', window: 120e3, overrun: 22 },
-      { kind: 'orchestrate-verifier', window: 160e3, overrun: 0 },
+      { kind: 'implementor', window: 120e3, overrun: 22 },
+      { kind: 'verifier', window: 160e3, overrun: 0 },
       { kind: 'Explore', window: 140e3, overrun: 3 },
     ],
   })
@@ -137,7 +152,7 @@ test('a reload registers the copies before the tune ends, and warns of agents th
     // The tune never ends here.
     if (script.includes('--tune')) return new Promise(() => {})
     if (script.includes('cat') && script.includes('compact.json')) return ok(overran)
-    const kind = script.match(/(orchestrate-[a-z]+|worker)(?=\.md)/)?.[0]
+    const kind = script.match(/(planner|implementor|verifier|worker)(?=\.md)/)?.[0]
     if (kind) return ok(WORKER_FILE.replace('name: worker', `name: ${kind}`))
     return failed
   })
@@ -155,8 +170,8 @@ test('a reload registers the copies before the tune ends, and warns of agents th
 
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle()
-  expect(registered).toContain('orchestrate-implementor')
-  expect(toasts).toEqual([expect.stringContaining('22 orchestrate-implementor past 120k')])
+  expect(registered).toContain('implementor')
+  expect(toasts).toEqual([expect.stringContaining('22 implementor past 120k')])
   expect(toasts[0]).not.toContain('Explore')
 })
 
@@ -168,7 +183,7 @@ test("an older cache with a wide worker window registers the copies at each kind
     ceiling: 1e6,
     windows: { 'orchestrate-worker': 400e3 },
     kinds: [],
-    untuned: [{ kind: 'orchestrate-verifier', window: 200e3, overrun: 1 }],
+    untuned: [{ kind: 'verifier', window: 200e3, overrun: 1 }],
   })
   on('command.register', () => ({ value: { command: 'pool' } }))
   on('clock.every', () => ({ value: undefined }))
@@ -177,7 +192,7 @@ test("an older cache with a wide worker window registers the copies at each kind
     const script = e.argv.join(' ')
     if (script.includes('--tune')) return new Promise(() => {})
     if (script.includes('cat') && script.includes('compact.json')) return ok(wide)
-    const kind = script.match(/(orchestrate-[a-z]+|worker)(?=\.md)/)?.[0]
+    const kind = script.match(/(planner|implementor|verifier|worker)(?=\.md)/)?.[0]
     if (kind) return ok(WORKER_FILE.replace('name: worker', `name: ${kind}`))
     return failed
   })
@@ -197,6 +212,6 @@ test("an older cache with a wide worker window registers the copies at each kind
   await settle()
   // Two loads (before the tune and the mocked hourly one); each registers all four kinds.
   expect(new Set(registered.map(r => r.name)).size).toBe(4)
-  for (const r of registered) expect(r).toMatchObject({ autoCompactWindow: ['orchestrate-implementor', 'orchestrate-verifier'].includes(String(r.name)) ? 400e3 : 200e3 })
-  expect(toasts).toEqual([expect.stringContaining('1 orchestrate-verifier past 200k')])
+  for (const r of registered) expect(r).toMatchObject({ autoCompactWindow: ['implementor', 'verifier'].includes(String(r.name)) ? 400e3 : 200e3 })
+  expect(toasts).toEqual([expect.stringContaining('1 verifier past 200k')])
 })

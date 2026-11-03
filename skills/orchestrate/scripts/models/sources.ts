@@ -30,7 +30,7 @@ const ROLE: Record<string, string> = { planner: 'plan', implementor: 'implement'
 
 /** The role an orchestrate worker was given: its role agent, the description's first word, or the first role its protocol prompt names. */
 export const namedRole = (description: string, prompt: string, type = '') => {
-  const word = /orchestrate-(planner|implementor|reviewer|verifier)$/.exec(type)?.[1]
+  const word = /^(?:status:)?(?:orchestrate-)?(planner|implementor|reviewer|verifier)$/.exec(type)?.[1]
     ?? /^(planner|implementor|reviewer|verifier)\b/i.exec(description.trim())?.[1]
     ?? (prompt.includes('protocol.md') ? /\b(planner|implementor|reviewer|verifier)\b/i.exec(prompt)?.[1] : undefined);
   return word ? ROLE[word.toLowerCase()] : undefined;
@@ -121,7 +121,7 @@ export function codexAgent(text: string, id: string, since = 0): Agent | undefin
     // A role agent (spawn_agent's agent_type, or a codex-bridge thread) opens its developer instructions with its role.
     if (d.type === 'response_item' && p.type === 'message' && p.role === 'developer' && !type) {
       const role = /^You are the (planner|implementor|reviewer|verifier) of one orchestrate unit\./.exec(p.content?.[0]?.text ?? '')?.[1];
-      if (role) type = `orchestrate-${role}`;
+      if (role) type = role;
     }
   }
   const model = top(models) ?? opening;

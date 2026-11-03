@@ -119,20 +119,21 @@ const ROLES: [RegExp, string][] = [
   [/implement|build|fix|write|add|split|port|refactor|migrat/i, 'implement'],
 ];
 
-// orchestrate-reviewer is orchestrate-verifier's former name: its cost history is the verifier's.
+// A role agent by its name, or its former one (`orchestrate-<role>`); the reviewer is the verifier's former name.
 const ROLE_AGENT: Record<string, string> = { planner: 'plan', implementor: 'implement', reviewer: 'verify', verifier: 'verify' };
+const roleAgent = (type: string) => /^(?:orchestrate-)?(planner|implementor|reviewer|verifier)$/.exec(type)?.[1];
 
 /**
  * An agent's kind: its type and the role its description names. A role agent
- * (`orchestrate-implementor`) is the worker in that role, so it keeps the cost
- * history the worker built in it. The status mod runs each of them as its own
- * copy (`status:worker`).
+ * (`implementor`) is the worker in that role, so it keeps the cost history the
+ * worker built in it. The status mod runs each of them as its own copy
+ * (`status:worker`).
  */
 export const kindFor = (agentType: string | undefined, description: string | undefined): string => {
   const named = agentType?.replace(/^status:/, '') || 'agent';
   const type = named === 'orchestrate-worker' ? 'worker' : named;
-  const role = ROLE_AGENT[/^orchestrate-([a-z]+)$/.exec(type)?.[1] ?? ''];
-  if (role) return `worker:${role}`;
+  const role = roleAgent(type);
+  if (role) return `worker:${ROLE_AGENT[role]}`;
   return `${type}:${ROLES.find(([re]) => re.test(description ?? ''))?.[1] ?? 'task'}`;
 };
 

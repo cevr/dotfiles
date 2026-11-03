@@ -5,9 +5,9 @@ import type { EngineInterface, Register } from 'claude-code'
 // writes the cheapest for each kind, re-reads after a compaction counted, to
 // compact.json. The settings' CLAUDE_CODE_AUTO_COMPACT_WINDOW stays the
 // ceiling, and the mod only lowers it:
-// - worker and each role's agent (orchestrate-planner, ...) run as this mod's
-//   copy, which carries the kind's tuned autoCompactWindow; a role with too
-//   few transcripts to tune takes worker's;
+// - worker and each role's agent (planner, implementor, verifier) run as
+//   this mod's copy, which carries the kind's tuned autoCompactWindow; a role
+//   with too few transcripts to tune takes worker's;
 // - the main session compacts between turns once its context passes root's
 //   window, so that compaction never lands in the middle of a step. Root's
 //   window is the owner's (burn.ts PINNED), below the ceiling, so the
@@ -21,12 +21,19 @@ const HOUR = 3600e3
 const WORKER = 'worker'
 // A kind's former name → its current one: a session mid-run still spawns the
 // former, bare or as its copy, and compact.json holds it until the next tune.
-export const RENAMED: Record<string, string> = { 'orchestrate-worker': WORKER, 'orchestrate-reviewer': 'orchestrate-verifier' }
+// The role agents dropped their orchestrate- prefix; the reviewer is the verifier's former name.
+export const RENAMED: Record<string, string> = {
+  'orchestrate-worker': WORKER,
+  'orchestrate-planner': 'planner',
+  'orchestrate-implementor': 'implementor',
+  'orchestrate-verifier': 'verifier',
+  'orchestrate-reviewer': 'verifier',
+}
 const current = (kind: string) => RENAMED[kind.replace(/^status:/, '')] ?? kind
 // budget/burn.ts WORKER_MAX and ROLE_MAX: the largest window each kind is registered with.
 export const WORKER_MAX = 200e3
-const MAX: Record<string, number> = { 'orchestrate-implementor': 400e3, 'orchestrate-verifier': 400e3 }
-export const KINDS = [WORKER, ...['planner', 'implementor', 'verifier'].map(role => `orchestrate-${role}`)]
+const MAX: Record<string, number> = { implementor: 400e3, verifier: 400e3 }
+export const KINDS = [WORKER, 'planner', 'implementor', 'verifier']
 const CACHE = '"$HOME/.cache/orchestrate"'
 export const KEEP =
   'Keep these word for word: the path of every plan, log, notes or state file the work reads or writes; the current step and its next action; each instruction the user gave during the session. Name a file by its path rather than restating its contents: it can be read again.'

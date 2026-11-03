@@ -41,8 +41,11 @@ test('a worker takes the role it was given, not the roles its prompt mentions', 
   expect(agent('Read protocol.md and verify round 3.', 'verifier coldload r3')).toMatchObject({ role: 'verify' });
   expect(agent('Review the findings of the last run', 'look over notes')).toMatchObject({ role: 'verify' });
   expect(agent('Read protocol.md. You are the reviewer of auth, round 2.', 'reviewer auth r2')).toMatchObject({ role: 'verify' });
-  const typed = claudeAgent(jsonl([{ type: 'user', message: { content: 'Round 2: the findings are in round-1-findings.md' } }, { type: 'assistant', message: { id: 'm1', model: 'claude-opus-5-5', usage: {}, content: [] } }]), 'a', 's', 'auth r2', false, 'status:orchestrate-implementor');
+  const typed = claudeAgent(jsonl([{ type: 'user', message: { content: 'Round 2: the findings are in round-1-findings.md' } }, { type: 'assistant', message: { id: 'm1', model: 'claude-opus-5-5', usage: {}, content: [] } }]), 'a', 's', 'auth r2', false, 'status:implementor');
   expect(typed).toMatchObject({ role: 'implement' });
+  // A role agent's former name, orchestrate-<role>, names the same role.
+  const former = claudeAgent(jsonl([{ type: 'user', message: { content: 'Round 2: the findings are in round-1-findings.md' } }, { type: 'assistant', message: { id: 'm1', model: 'claude-opus-5-5', usage: {}, content: [] } }]), 'a', 's', 'auth r2', false, 'status:orchestrate-reviewer');
+  expect(former).toMatchObject({ role: 'verify' });
 });
 
 describe('codexAgent', () => {

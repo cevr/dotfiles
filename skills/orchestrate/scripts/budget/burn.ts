@@ -90,21 +90,28 @@ function projectFor(sessionId: string, cwd: string | undefined): string {
 const sessionOf = (file: string): string =>
   file.includes('/subagents/') ? basename(dirname(dirname(file))) : basename(file, '.jsonl');
 // An agent kind's former name → its current one; a cached burn's kind is renamed too.
-// The reviewer is the verifier's former name; an older run's separate verifier is the verifier too.
-const RENAMED: Record<string, string> = { 'orchestrate-worker': 'worker', 'orchestrate-reviewer': 'orchestrate-verifier' };
+// The role agents dropped their orchestrate- prefix; the reviewer is the verifier's former name.
+const RENAMED: Record<string, string> = {
+  'orchestrate-worker': 'worker',
+  'orchestrate-planner': 'planner',
+  'orchestrate-implementor': 'implementor',
+  'orchestrate-verifier': 'verifier',
+  'orchestrate-reviewer': 'verifier',
+};
+// The role agents' kinds, which run at the worker's window until tuned.
+const ROLE_KINDS = ['planner', 'implementor', 'verifier'];
 const current = (kind: string): string => RENAMED[kind] ?? kind;
 /**
  * An agent's kind: its type, without the status mod's `status:` prefix, and
- * under its current name (`orchestrate-worker` is `worker`). A worker that ran
- * a protocol role before the role agents existed counts as that role's agent
- * (`orchestrate-<role>`), so each role tunes on its history from the first
- * day.
+ * under its current name (`orchestrate-implementor` is `implementor`). A worker
+ * that ran a protocol role before the role agents existed counts as that role's
+ * agent (`<role>`), so each role tunes on its history from the first day.
  */
 export function workerKind(type: string | undefined, prompt: string): string {
   const kind = current(type?.replace(/^status:/, '') || 'agent');
   if (kind !== 'worker' || !prompt.includes('protocol.md')) return kind;
   const role = /\b(planner|implementor|reviewer|verifier)\b/i.exec(prompt)?.[1]?.toLowerCase();
-  return role ? `orchestrate-${role === 'reviewer' ? 'verifier' : role}` : kind;
+  return role ? (role === 'reviewer' ? 'verifier' : role) : kind;
 }
 
 // The first user message of a transcript: an agent's task.
@@ -510,7 +517,7 @@ export const ceilingOf = (env = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW): nu
 // at WORKER_MAX, half of them compacted, most within minutes, and handed off
 // to a fresh agent that read everything again. That costs the run more wall
 // time than the replay's token saving buys.
-const ROLES = ['worker', 'orchestrate-planner'];
+const ROLES = ['worker', 'planner'];
 // A worker's window stays at or under this: past it, one agent's context costs
 // more than the tune's replay can see.
 export const WORKER_MAX = 200e3;
@@ -518,8 +525,8 @@ export const ROLE_MAX = 400e3;
 export const PINNED: Record<string, number> = {
   root: 400e3,
   ...Object.fromEntries(ROLES.map((kind) => [kind, WORKER_MAX])),
-  'orchestrate-implementor': ROLE_MAX,
-  'orchestrate-verifier': ROLE_MAX,
+  implementor: ROLE_MAX,
+  verifier: ROLE_MAX,
 };
 // An agent whose context passed its kind's window by this much ran without it:
 // the engine ignored the window (2.1.310 did, for every registered agent). The
@@ -583,7 +590,7 @@ export function tune(burns: FileBurn[], ceiling = ceilingOf(), since = 0): Tuned
 
 /**
  * The overruns of the kinds too small to tune: each runs at the window the
- * status mod registers for it (orchestrate kinds at the worker's tuned window,
+ * status mod registers for it (role kinds at the worker's tuned window,
  * or the worker cap), so an engine that ignores it shows here too.
  */
 export function untunedOverruns(burns: FileBurn[], tuned: Tuned[], ceiling = ceilingOf(), since = 0): { kind: string; window: number; overrun: number }[] {
@@ -592,7 +599,7 @@ export function untunedOverruns(burns: FileBurn[], tuned: Tuned[], ceiling = cei
   const kinds = new Map<string, FileBurn[]>();
   for (const b of burns) if (!done.has(b.kind)) kinds.set(b.kind, [...(kinds.get(b.kind) ?? []), b]);
   return [...kinds].flatMap(([kind, bs]) => {
-    const window = kind === 'worker' || kind.startsWith('orchestrate-') ? worker : ceiling;
+    const window = kind === 'worker' || ROLE_KINDS.includes(kind) ? worker : ceiling;
     const overrun = bs.filter((b) => b.last >= since && b.peak > OVERRUN * window).length;
     return overrun ? [{ kind, window, overrun }] : [];
   });

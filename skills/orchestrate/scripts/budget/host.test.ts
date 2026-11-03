@@ -42,8 +42,13 @@ describe('hostLoad', () => {
 });
 
 test("a role agent keeps the worker's cost history in its role", () => {
+  expect(kindFor('status:implementor', 'implementor auth r2')).toBe('worker:implement');
+  expect(kindFor('verifier', 'verifier auth r2')).toBe('worker:verify');
+  expect(kindFor('planner', 'anything')).toBe('worker:plan');
+  // A role agent's former name is orchestrate-<role>.
   expect(kindFor('status:orchestrate-implementor', 'implementor auth r2')).toBe('worker:implement');
   expect(kindFor('orchestrate-verifier', 'verifier auth r2')).toBe('worker:verify');
+  expect(kindFor('orchestrate-planner', 'anything')).toBe('worker:plan');
   expect(kindFor('status:worker', 'verify coldload r3')).toBe('worker:verify');
   // The reviewer is the verifier's former name: its cost history is the verifier's.
   expect(kindFor('status:orchestrate-reviewer', 'anything')).toBe('worker:verify');

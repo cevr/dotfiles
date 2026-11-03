@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -67,6 +67,18 @@ describe('hostBurn', () => {
     expect(h.burns).toHaveLength(1);
     expect(report([h])).toContain('| tool:Bash |');
   });
+
+  test("a cached burn under a role agent's former name counts under its current one", () => {
+    const root = mkdtempSync(join(tmpdir(), 'burn-projects-'));
+    mkdirSync(join(root, '-a'));
+    writeFileSync(join(root, '-a', 's1.jsonl'), jsonl);
+    const cacheFile = join(root, 'burn.json');
+    hostBurn(Date.now(), root, cacheFile);
+    const cached = JSON.parse(readFileSync(cacheFile, 'utf8'));
+    for (const b of Object.values(cached.files) as FileBurn[]) b.kind = 'orchestrate-implementor';
+    writeFileSync(cacheFile, JSON.stringify(cached));
+    expect(hostBurn(Date.now(), root, cacheFile).burns.map((b) => b.kind)).toEqual(['implementor']);
+  });
 });
 
 describe('simulate', () => {
@@ -124,21 +136,21 @@ describe('tune', () => {
     const tuned = tune(burns, 200e3, 1000);
     // No worker ran, so an untuned role runs at the worker cap.
     const worker = 200e3;
-    const few = [ran('orchestrate-implementor', 396e3), ran('orchestrate-implementor', worker), ran('Explore', 230e3), ran('Explore', 210e3)];
+    const few = [ran('implementor', 396e3), ran('implementor', worker), ran('Explore', 230e3), ran('Explore', 210e3)];
     expect(untunedOverruns([...burns, ...few], tuned, 200e3, 1000)).toEqual([
-      { kind: 'orchestrate-implementor', window: worker, overrun: 1 },
+      { kind: 'implementor', window: worker, overrun: 1 },
       { kind: 'Explore', window: 200e3, overrun: 1 },
     ]);
   });
 
   test('runs the implementor and verifier at 400k and the worker at 200k, however cheap a smaller window replays', () => {
-    const roles = ['worker', 'orchestrate-implementor', 'orchestrate-verifier'].flatMap((kind) => Array.from({ length: 20 }, () => agent(kind)));
+    const roles = ['worker', 'implementor', 'verifier'].flatMap((kind) => Array.from({ length: 20 }, () => agent(kind)));
     for (const t of tune(roles, 450e3)) expect(t).toMatchObject({ window: t.kind === 'worker' ? 200e3 : 400e3 });
-    expect(tune([agent('orchestrate-verifier')], 450e3)).toMatchObject([{ kind: 'orchestrate-verifier', window: 400e3 }]);
+    expect(tune([agent('verifier')], 450e3)).toMatchObject([{ kind: 'verifier', window: 400e3 }]);
   });
 
   test('keeps a pinned window under the ceiling', () => {
-    expect(tune([agent('orchestrate-verifier')], 200e3)).toMatchObject([{ kind: 'orchestrate-verifier', window: 200e3 }]);
+    expect(tune([agent('verifier')], 200e3)).toMatchObject([{ kind: 'verifier', window: 200e3 }]);
   });
 
   test("keeps the owner's window for the main session, however few its transcripts", () => {
@@ -148,14 +160,18 @@ describe('tune', () => {
 });
 
 test("a worker that ran a protocol role tunes as that role's agent", () => {
-  expect(workerKind('status:orchestrate-worker', 'Read protocol.md. You are the reviewer of auth, round 2.')).toBe('orchestrate-verifier');
+  expect(workerKind('status:orchestrate-worker', 'Read protocol.md. You are the reviewer of auth, round 2.')).toBe('verifier');
   expect(workerKind('status:orchestrate-worker', 'Survey the docs for the reviewer.')).toBe('worker');
-  expect(workerKind('status:worker', 'Read protocol.md. You are the implementor of auth, round 1.')).toBe('orchestrate-implementor');
+  expect(workerKind('status:worker', 'Read protocol.md. You are the implementor of auth, round 1.')).toBe('implementor');
   expect(workerKind('orchestrate-worker', '')).toBe('worker');
-  expect(workerKind('status:orchestrate-verifier', '')).toBe('orchestrate-verifier');
-  // The reviewer is the verifier's former name.
-  expect(workerKind('status:orchestrate-reviewer', '')).toBe('orchestrate-verifier');
-  expect(workerKind('orchestrate-reviewer', '')).toBe('orchestrate-verifier');
-  expect(workerKind('status:orchestrate-worker', 'Read protocol.md. You are the verifier of auth, round 2.')).toBe('orchestrate-verifier');
+  expect(workerKind('status:verifier', '')).toBe('verifier');
+  expect(workerKind('planner', '')).toBe('planner');
+  // A role agent's former name is orchestrate-<role>; the reviewer is the verifier's.
+  expect(workerKind('status:orchestrate-verifier', '')).toBe('verifier');
+  expect(workerKind('status:orchestrate-implementor', '')).toBe('implementor');
+  expect(workerKind('orchestrate-planner', '')).toBe('planner');
+  expect(workerKind('status:orchestrate-reviewer', '')).toBe('verifier');
+  expect(workerKind('orchestrate-reviewer', '')).toBe('verifier');
+  expect(workerKind('status:orchestrate-worker', 'Read protocol.md. You are the verifier of auth, round 2.')).toBe('verifier');
   expect(workerKind(undefined, '')).toBe('agent');
 });

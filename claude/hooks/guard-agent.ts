@@ -17,7 +17,14 @@ type Input = { session_id?: string; cwd?: string; tool_input?: Record<string, un
 
 const FULL = new Set([undefined, '', 'general-purpose', 'claude']);
 // Former agent type → current, asked for bare or as the status mod's copy.
-const RENAMED: Record<string, string> = { 'orchestrate-worker': 'worker', 'orchestrate-reviewer': 'orchestrate-verifier' };
+// The role agents dropped their orchestrate- prefix; the reviewer is the verifier's former name.
+const RENAMED: Record<string, string> = {
+  'orchestrate-worker': 'worker',
+  'orchestrate-planner': 'planner',
+  'orchestrate-implementor': 'implementor',
+  'orchestrate-verifier': 'verifier',
+  'orchestrate-reviewer': 'verifier',
+};
 const renamed = (type: string) => RENAMED[type.replace(/^status:/, '')];
 const BUDGET = join(homedir(), '.claude', 'skills', 'orchestrate', 'scripts', 'budget.ts');
 

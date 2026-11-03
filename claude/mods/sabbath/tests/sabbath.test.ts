@@ -98,7 +98,7 @@ test('during the Sabbath no agent work starts, a running subagent is told to sto
   await settle()
   expect(status.at(-1)).toBe('Sabbath; work resumes Sat 18:09')
 
-  expect(await $.agent.spawn({ ...SPAWN, subagentType: 'orchestrate-implementor' })).toEqual({ deny: expect.stringContaining('resumes at Sat 18:09') })
+  expect(await $.agent.spawn({ ...SPAWN, subagentType: 'implementor' })).toEqual({ deny: expect.stringContaining('resumes at Sat 18:09') })
   expect(await $.tool.call(codexStart)).toMatchObject({ result: 'ran' })
   expect(await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'a1' })).toEqual({ deny: expect.stringContaining('Stop now') })
   // The main loop still answers the owner.
@@ -110,7 +110,7 @@ test('once the rest ends, the session gets one message to resume the work it hel
   const { ticks, prompts } = mock(on, () => time)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle()
-  await $.agent.spawn({ ...SPAWN, subagentType: 'orchestrate-implementor', description: 'implementor sheet r2' })
+  await $.agent.spawn({ ...SPAWN, subagentType: 'implementor', description: 'implementor sheet r2' })
   await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'a1' })
   await $.tool.call({ tool: 'Bash', command: 'pwd', agentId: 'a1' })
   for (const t of ticks.splice(0)) t()
@@ -135,7 +135,7 @@ test('refusals at once are all kept, and a dropped resume message is sent again 
   submit.drop = true
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle()
-  await Promise.all(['a', 'b', 'c'].map(d => $.agent.spawn({ ...SPAWN, subagentType: 'orchestrate-implementor', description: `implementor ${d} r1` })))
+  await Promise.all(['a', 'b', 'c'].map(d => $.agent.spawn({ ...SPAWN, subagentType: 'implementor', description: `implementor ${d} r1` })))
   time = at('2026-10-31T22:10:00Z')
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle()
@@ -154,7 +154,7 @@ test('outside the Sabbath everything runs, and the status line is clear', async 
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle()
   expect(status.at(-1)).toBeUndefined()
-  expect(await $.agent.spawn({ ...SPAWN, subagentType: 'orchestrate-implementor' })).toMatchObject({ agentId: 'a1' })
+  expect(await $.agent.spawn({ ...SPAWN, subagentType: 'implementor' })).toMatchObject({ agentId: 'a1' })
   expect(await $.tool.call(codexStart)).toMatchObject({ result: 'ran' })
   expect(await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'a1' })).toMatchObject({ result: 'ran' })
 })
