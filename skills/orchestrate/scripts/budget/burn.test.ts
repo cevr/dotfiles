@@ -132,7 +132,7 @@ describe('tune', () => {
   });
 
   test('runs every orchestrate role at 200k, however cheap a smaller window replays', () => {
-    const roles = ['orchestrate-worker', 'orchestrate-implementor', 'orchestrate-verifier'].flatMap((kind) => Array.from({ length: 20 }, () => agent(kind)));
+    const roles = ['orchestrate-worker', 'orchestrate-implementor', 'orchestrate-reviewer'].flatMap((kind) => Array.from({ length: 20 }, () => agent(kind)));
     for (const t of tune(roles, 200e3)) expect(t).toMatchObject({ window: 200e3 });
     expect(tune([agent('orchestrate-reviewer')], 200e3)).toMatchObject([{ kind: 'orchestrate-reviewer', window: 200e3 }]);
   });
@@ -146,6 +146,7 @@ describe('tune', () => {
 test("a worker that ran a protocol role tunes as that role's agent", () => {
   expect(workerKind('status:orchestrate-worker', 'Read protocol.md. You are the reviewer of auth, round 2.')).toBe('orchestrate-reviewer');
   expect(workerKind('status:orchestrate-worker', 'Survey the docs for the reviewer.')).toBe('orchestrate-worker');
-  expect(workerKind('status:orchestrate-verifier', '')).toBe('orchestrate-verifier');
+  expect(workerKind('status:orchestrate-verifier', '')).toBe('orchestrate-reviewer');
+  expect(workerKind('status:orchestrate-worker', 'Read protocol.md. You are the verifier of auth, round 2.')).toBe('orchestrate-reviewer');
   expect(workerKind(undefined, '')).toBe('agent');
 });

@@ -9,6 +9,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Agent } from './sources.ts';
 
+// `verify` is an older run's verifier, before the reviewer ran the acceptance check itself.
 export type Phase = 'plan' | 'implement' | 'review' | 'verify' | 'decide';
 export type Outcome = { phase: Phase; unit: string; round: number; result: string; fate: string };
 
@@ -85,7 +86,7 @@ export function joinUnit(a: Agent, final: string, find: (unit: string) => string
   return undefined;
 }
 
-/** What the phase produced. A reviewer's `accepted` that its verifier failed is `escaped`. */
+/** What the phase produced. In an older run, a reviewer's `accepted` that its verifier failed is `escaped`. */
 export function outcomeOf(j: Join, files = read): Outcome {
   const at = (...names: string[]) => names.map((n) => files(join(j.dir, n))).find((t) => t !== undefined);
   const review = verdictOf(at(`round-${j.round}-findings.md`, `review-${j.round}.md`));

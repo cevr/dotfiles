@@ -74,7 +74,11 @@ const HEADLINE: Record<Phase, (os: Outcome[]) => string> = {
     const r1 = os.filter((o) => o.round === 1);
     return `r1 accepted ${pct(r1.filter((o) => o.result === 'accepted').length, r1.length)} (${r1.length}), all rounds ${pct(os.filter((o) => o.result === 'accepted').length, os.length)}`;
   },
-  review: (os) => `changes ${pct(os.filter((o) => o.result === 'changes').length, os.length)}, escaped to verify ${os.filter((o) => o.result === 'escaped').length}`,
+  review: (os) => {
+    const escaped = os.filter((o) => o.result === 'escaped').length;
+    return `changes ${pct(os.filter((o) => o.result === 'changes').length, os.length)}${escaped ? `, escaped to verify ${escaped}` : ''}`;
+  },
+  // An older run's verifier.
   verify: (os) => `fail ${pct(os.filter((o) => o.result === 'fail').length, os.length)}`,
   decide: (os) => `units ${os.reduce((s, o) => s + parseInt(o.unit), 0)}, merged ${os.reduce((s, o) => s + parseInt(o.result), 0)}`,
 };

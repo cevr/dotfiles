@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -47,6 +47,16 @@ test('refuses an unknown state, a from that is not the current state, and a roun
     expect([r.code, r.err]).toEqual([1, expect.stringContaining('log.ts refused')]);
   }
   expect(readFileSync(join(dir, 'log.md'), 'utf8')).toBe(before);
+});
+
+test('a unit an older run left in verify can leave it, and no unit enters it', () => {
+  const dir = unitDir();
+  bun('log.ts', dir, 'new', 'implement', 'r1');
+  bun('log.ts', dir, 'implement', 'review', 'r1');
+  expect(bun('log.ts', dir, 'review', 'verify', 'r1').code).toBe(1);
+  appendFileSync(join(dir, 'log.md'), '2026-10-20T10:00Z review → verify r1 round-1-findings.md\n');
+  expect(bun('log.ts', dir, 'verify', 'decide', 'r1', 'round-1-verify.md pass').code).toBe(0);
+  expect(bun('log.ts', dir, 'decide', 'verify', 'r1').code).toBe(1);
 });
 
 test('a rewrite at decide starts its rounds from 1 again', () => {

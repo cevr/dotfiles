@@ -21,7 +21,7 @@ const HOUR = 3600e3
 const WORKER = 'orchestrate-worker'
 // budget/burn.ts WORKER_MAX: the largest window a worker kind is registered with.
 export const WORKER_MAX = 200e3
-export const KINDS = [WORKER, ...['planner', 'implementor', 'reviewer', 'verifier'].map(role => `orchestrate-${role}`)]
+export const KINDS = [WORKER, ...['planner', 'implementor', 'reviewer'].map(role => `orchestrate-${role}`)]
 const CACHE = '"$HOME/.cache/orchestrate"'
 export const KEEP =
   'Keep these word for word: the path of every plan, log, notes or state file the work reads or writes; the current step and its next action; each instruction the user gave during the session. Name a file by its path rather than restating its contents: it can be read again.'

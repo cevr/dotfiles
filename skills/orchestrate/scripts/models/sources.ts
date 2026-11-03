@@ -25,6 +25,7 @@ export type Agent = {
   round?: number;
 };
 
+// `verifier` is an older run's role: its rounds still read as the verify phase.
 const ROLE: Record<string, string> = { planner: 'plan', implementor: 'implement', reviewer: 'review', verifier: 'verify' };
 
 /** The role an orchestrate worker was given: its role agent, the description's first word, or the first role its protocol prompt names. */

@@ -156,7 +156,7 @@ test('an older cache with a wide worker window registers the copies at the cap, 
     ceiling: 1e6,
     windows: { 'orchestrate-worker': 400e3 },
     kinds: [],
-    untuned: [{ kind: 'orchestrate-verifier', window: 200e3, overrun: 1 }],
+    untuned: [{ kind: 'orchestrate-reviewer', window: 200e3, overrun: 1 }],
   })
   on('command.register', () => ({ value: { command: 'pool' } }))
   on('clock.every', () => ({ value: undefined }))
@@ -183,8 +183,8 @@ test('an older cache with a wide worker window registers the copies at the cap, 
 
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle()
-  // Two loads (before the tune and the mocked hourly one); each registers all five kinds.
-  expect(new Set(registered.map(r => r.name)).size).toBe(5)
+  // Two loads (before the tune and the mocked hourly one); each registers all four kinds.
+  expect(new Set(registered.map(r => r.name)).size).toBe(4)
   for (const r of registered) expect(r).toMatchObject({ autoCompactWindow: 200e3 })
-  expect(toasts).toEqual([expect.stringContaining('1 orchestrate-verifier past 200k')])
+  expect(toasts).toEqual([expect.stringContaining('1 orchestrate-reviewer past 200k')])
 })

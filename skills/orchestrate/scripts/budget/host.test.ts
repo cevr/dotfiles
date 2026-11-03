@@ -45,5 +45,8 @@ test("a role agent keeps the worker's cost history in its role", () => {
   expect(kindFor('status:orchestrate-implementor', 'implementor auth r2')).toBe('orchestrate-worker:implement');
   expect(kindFor('orchestrate-reviewer', 'anything')).toBe('orchestrate-worker:review');
   expect(kindFor('status:orchestrate-worker', 'verify coldload r3')).toBe('orchestrate-worker:verify');
+  // An older run's verifier keeps its cost history under the reviewer, which runs the check now.
+  expect(kindFor('orchestrate-verifier', 'verifier auth r2')).toBe('orchestrate-worker:review');
+  expect(kindFor('status:orchestrate-worker', 'verifier coldload r3')).toBe('orchestrate-worker:review');
   expect(kindFor(undefined, 'explore the docs')).toBe('agent:explore');
 });

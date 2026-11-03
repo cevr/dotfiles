@@ -93,13 +93,15 @@ const sessionOf = (file: string): string =>
  * An agent's kind: its type, without the status mod's `status:` prefix. An
  * orchestrate-worker that ran a protocol role before the role agents existed
  * counts as that role's agent (`orchestrate-<role>`), so each role tunes on its
- * history from the first day.
+ * history from the first day. An older run's verifier counts as a reviewer,
+ * whose role now runs its check.
  */
 export function workerKind(type: string | undefined, prompt: string): string {
   const kind = type?.replace(/^status:/, '') || 'agent';
+  if (kind === 'orchestrate-verifier') return 'orchestrate-reviewer';
   if (kind !== 'orchestrate-worker' || !prompt.includes('protocol.md')) return kind;
-  const role = /\b(planner|implementor|reviewer|verifier)\b/i.exec(prompt)?.[1];
-  return role ? `orchestrate-${role.toLowerCase()}` : kind;
+  const role = /\b(planner|implementor|reviewer|verifier)\b/i.exec(prompt)?.[1]?.toLowerCase();
+  return role ? `orchestrate-${role === 'verifier' ? 'reviewer' : role}` : kind;
 }
 
 // The first user message of a transcript: an agent's task.
@@ -499,7 +501,7 @@ export const ceilingOf = (env = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW): nu
 // Every orchestrate kind runs at WORKER_MAX: a worker
 // hands off at its first compaction (protocol.md), so a tuned 120k window,
 // which compacts at about 87k, ended fresh workers before their first edit.
-const ROLES = ['worker', 'planner', 'implementor', 'reviewer', 'verifier'].map((role) => `orchestrate-${role}`);
+const ROLES = ['worker', 'planner', 'implementor', 'reviewer'].map((role) => `orchestrate-${role}`);
 export const PINNED: Record<string, number> = { root: 400e3, ...Object.fromEntries(ROLES.map((kind) => [kind, 200e3])) };
 // A worker's window stays at or under this: past it, one agent's context costs
 // more than the tune's replay can see.

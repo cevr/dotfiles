@@ -204,12 +204,12 @@ function read(line: string, t: FileTally, snapshots: Cache['snapshots']): void {
   t.turns.push([at, w, t.family]);
 }
 
-/** Each bridge thread's role: its orchestrate role, else `none`. */
+/** Each bridge thread's role: its orchestrate role, else `none`. An older run's verifier counts as a reviewer. */
 function roles(): Map<string, string> {
   try {
     // A thread the bridge opened again writes its rollout under its app-server id (`codexId`).
     const state = JSON.parse(readFileSync(bridgeState, 'utf8')) as { threads?: Record<string, { role?: string; codexId?: string }> };
-    return new Map(Object.entries(state.threads ?? {}).flatMap(([id, thread]) => [id, thread.codexId ?? id].map((key) => [key, thread.role ?? 'none'] as const)));
+    return new Map(Object.entries(state.threads ?? {}).flatMap(([id, thread]) => [id, thread.codexId ?? id].map((key) => [key, thread.role === 'verifier' ? 'reviewer' : (thread.role ?? 'none')] as const)));
   } catch {
     return new Map();
   }

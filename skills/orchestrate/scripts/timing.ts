@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 // Wall-clock per machine state across orchestrate units, read from each unit's log.md.
+// An older run's logs hold a `verify` state, which it still counts.
 // Usage: bun timing.ts <run dir>... [--since 2026-10-17] [--json]
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -66,6 +67,7 @@ const impl = sum(units.map((u) => u.time.implement ?? 0)), rework = sum(units.ma
 console.log(`implement: round 1 ${h(impl - rework)} h, rework (round 2+) ${h(rework)} h`);
 for (const [name, key] of [['review', 'reviewBounces'], ['verify', 'verifyBounces']] as const) {
   const xs = units.map((u) => u[key]);
+  if (key === 'verifyBounces' && !sum(xs)) continue;
   console.log(`${name} bounces: total ${sum(xs)}, units with ≥1 ${xs.filter((x) => x > 0).length}, max ${Math.max(...xs)}`);
 }
 console.log(`rounds: median ${med(units.map((u) => u.rounds))}, max ${Math.max(...units.map((u) => u.rounds))}`);
