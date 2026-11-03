@@ -122,7 +122,7 @@ describe('tune', () => {
   test('counts the overruns of a kind too small to tune, at the window it runs with', () => {
     const ran = (kind: string, peak: number) => ({ ...agent(kind), peak, last: 2000 });
     const tuned = tune(burns, 200e3, 1000);
-    // No orchestrate-worker ran, so an untuned role runs at the worker cap.
+    // No worker ran, so an untuned role runs at the worker cap.
     const worker = 200e3;
     const few = [ran('orchestrate-implementor', 396e3), ran('orchestrate-implementor', worker), ran('Explore', 230e3), ran('Explore', 210e3)];
     expect(untunedOverruns([...burns, ...few], tuned, 200e3, 1000)).toEqual([
@@ -132,8 +132,8 @@ describe('tune', () => {
   });
 
   test('runs the implementor and reviewer at 400k and the worker at 200k, however cheap a smaller window replays', () => {
-    const roles = ['orchestrate-worker', 'orchestrate-implementor', 'orchestrate-reviewer'].flatMap((kind) => Array.from({ length: 20 }, () => agent(kind)));
-    for (const t of tune(roles, 450e3)) expect(t).toMatchObject({ window: t.kind === 'orchestrate-worker' ? 200e3 : 400e3 });
+    const roles = ['worker', 'orchestrate-implementor', 'orchestrate-reviewer'].flatMap((kind) => Array.from({ length: 20 }, () => agent(kind)));
+    for (const t of tune(roles, 450e3)) expect(t).toMatchObject({ window: t.kind === 'worker' ? 200e3 : 400e3 });
     expect(tune([agent('orchestrate-reviewer')], 450e3)).toMatchObject([{ kind: 'orchestrate-reviewer', window: 400e3 }]);
   });
 
@@ -149,7 +149,9 @@ describe('tune', () => {
 
 test("a worker that ran a protocol role tunes as that role's agent", () => {
   expect(workerKind('status:orchestrate-worker', 'Read protocol.md. You are the reviewer of auth, round 2.')).toBe('orchestrate-reviewer');
-  expect(workerKind('status:orchestrate-worker', 'Survey the docs for the reviewer.')).toBe('orchestrate-worker');
+  expect(workerKind('status:orchestrate-worker', 'Survey the docs for the reviewer.')).toBe('worker');
+  expect(workerKind('status:worker', 'Read protocol.md. You are the implementor of auth, round 1.')).toBe('orchestrate-implementor');
+  expect(workerKind('orchestrate-worker', '')).toBe('worker');
   expect(workerKind('status:orchestrate-verifier', '')).toBe('orchestrate-reviewer');
   expect(workerKind('status:orchestrate-worker', 'Read protocol.md. You are the verifier of auth, round 2.')).toBe('orchestrate-reviewer');
   expect(workerKind(undefined, '')).toBe('agent');

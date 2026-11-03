@@ -58,7 +58,7 @@ test("a file written for a role the script no longer has is retired; a hand-writ
   const written = agentFile('reviewer', protocol, safety);
   writeFileSync(join(dir, 'orchestrate-verifier.md'), written.replace('orchestrate-reviewer', 'orchestrate-verifier'));
   writeFileSync(join(dir, 'orchestrate-reviewer.md'), written);
-  writeFileSync(join(dir, 'orchestrate-worker.md'), '---\nname: orchestrate-worker\n---\nA lean worker.\n');
+  writeFileSync(join(dir, 'orchestrate-notes.md'), '---\nname: orchestrate-notes\n---\nA hand-written agent.\n');
   expect(retired([dir], ['planner', 'implementor', 'reviewer'])).toEqual([join(dir, 'orchestrate-verifier.md')]);
 });
 

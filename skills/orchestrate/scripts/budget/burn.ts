@@ -89,17 +89,20 @@ function projectFor(sessionId: string, cwd: string | undefined): string {
 }
 const sessionOf = (file: string): string =>
   file.includes('/subagents/') ? basename(dirname(dirname(file))) : basename(file, '.jsonl');
+// An agent kind's former name → its current one; a cached burn's kind is renamed too.
+// An older run's verifier counts as a reviewer, whose role now runs its check.
+const RENAMED: Record<string, string> = { 'orchestrate-worker': 'worker', 'orchestrate-verifier': 'orchestrate-reviewer' };
+const current = (kind: string): string => RENAMED[kind] ?? kind;
 /**
- * An agent's kind: its type, without the status mod's `status:` prefix. An
- * orchestrate-worker that ran a protocol role before the role agents existed
- * counts as that role's agent (`orchestrate-<role>`), so each role tunes on its
- * history from the first day. An older run's verifier counts as a reviewer,
- * whose role now runs its check.
+ * An agent's kind: its type, without the status mod's `status:` prefix, and
+ * under its current name (`orchestrate-worker` is `worker`). A worker that ran
+ * a protocol role before the role agents existed counts as that role's agent
+ * (`orchestrate-<role>`), so each role tunes on its history from the first
+ * day.
  */
 export function workerKind(type: string | undefined, prompt: string): string {
-  const kind = type?.replace(/^status:/, '') || 'agent';
-  if (kind === 'orchestrate-verifier') return 'orchestrate-reviewer';
-  if (kind !== 'orchestrate-worker' || !prompt.includes('protocol.md')) return kind;
+  const kind = current(type?.replace(/^status:/, '') || 'agent');
+  if (kind !== 'worker' || !prompt.includes('protocol.md')) return kind;
   const role = /\b(planner|implementor|reviewer|verifier)\b/i.exec(prompt)?.[1]?.toLowerCase();
   return role ? `orchestrate-${role === 'verifier' ? 'reviewer' : role}` : kind;
 }
@@ -128,7 +131,7 @@ function kindOf(file: string): string {
   if (!file.includes('/subagents/')) return 'root';
   try {
     const type = (JSON.parse(readFileSync(file.replace(/\.jsonl$/, '.meta.json'), 'utf8')) as { agentType?: string }).agentType;
-    return workerKind(type, type?.endsWith('orchestrate-worker') ? firstPrompt(file) : '');
+    return workerKind(type, /(^|:)(orchestrate-)?worker$/.test(type ?? '') ? firstPrompt(file) : '');
   } catch {
     return 'agent';
   }
@@ -469,7 +472,7 @@ export function hostBurn(now = Date.now(), dir = root, cacheFile = cachePath): H
   for (const file of files) {
     const size = statSync(file).size;
     const hit = cache[file];
-    if (hit && hit.size === size) next[file] = hit;
+    if (hit && hit.size === size) next[file] = { ...hit, kind: current(hit.kind) };
     else if (Date.now() < deadline) next[file] = burnOf(file, size);
     else complete = false;
   }
@@ -498,7 +501,7 @@ export const ceilingOf = (env = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW): nu
 // minute, which the replay's token cost does not count: a larger window costs
 // the replay a few percent more tokens but compacts the main session far less.
 //
-// The planner and orchestrate-worker run at WORKER_MAX: a worker
+// The worker and the planner run at WORKER_MAX: a worker
 // hands off at its first compaction (protocol.md), so a tuned 120k window,
 // which compacts at about 87k, ended fresh workers before their first edit.
 //
@@ -507,7 +510,7 @@ export const ceilingOf = (env = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW): nu
 // at WORKER_MAX, half of them compacted, most within minutes, and handed off
 // to a fresh agent that read everything again. That costs the run more wall
 // time than the replay's token saving buys.
-const ROLES = ['worker', 'planner'].map((role) => `orchestrate-${role}`);
+const ROLES = ['worker', 'orchestrate-planner'];
 // A worker's window stays at or under this: past it, one agent's context costs
 // more than the tune's replay can see.
 export const WORKER_MAX = 200e3;
@@ -585,11 +588,11 @@ export function tune(burns: FileBurn[], ceiling = ceilingOf(), since = 0): Tuned
  */
 export function untunedOverruns(burns: FileBurn[], tuned: Tuned[], ceiling = ceilingOf(), since = 0): { kind: string; window: number; overrun: number }[] {
   const done = new Set(tuned.map((t) => t.kind));
-  const worker = tuned.find((t) => t.kind === 'orchestrate-worker')?.window ?? Math.min(ceiling, WORKER_MAX);
+  const worker = tuned.find((t) => t.kind === 'worker')?.window ?? Math.min(ceiling, WORKER_MAX);
   const kinds = new Map<string, FileBurn[]>();
   for (const b of burns) if (!done.has(b.kind)) kinds.set(b.kind, [...(kinds.get(b.kind) ?? []), b]);
   return [...kinds].flatMap(([kind, bs]) => {
-    const window = kind.startsWith('orchestrate-') ? worker : ceiling;
+    const window = kind === 'worker' || kind.startsWith('orchestrate-') ? worker : ceiling;
     const overrun = bs.filter((b) => b.last >= since && b.peak > OVERRUN * window).length;
     return overrun ? [{ kind, window, overrun }] : [];
   });

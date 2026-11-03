@@ -3,13 +3,13 @@ import { expect, test } from 'claude-code/testing'
 import { KEEP, parseAgent, parseWindows } from '../hooks/compact'
 
 const WORKER_FILE = `---
-name: orchestrate-worker
+name: worker
 description: Lean subagent for an orchestrate role.
 tools: Bash, Read, Edit
 ---
 You are a subagent.
 `
-const TUNED = JSON.stringify({ at: 0, ceiling: 200e3, windows: { 'orchestrate-worker': 140e3, 'orchestrate-reviewer': 160e3, root: 150e3, Explore: 50e3 } })
+const TUNED = JSON.stringify({ at: 0, ceiling: 200e3, windows: { worker: 140e3, 'orchestrate-reviewer': 160e3, root: 150e3, Explore: 50e3 } })
 
 const ok = (stdout: string) => ({
   value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
@@ -26,7 +26,12 @@ test('reads an agent file and keeps only windows the engine takes', () => {
     tools: ['Bash', 'Read', 'Edit'],
     prompt: 'You are a subagent.',
   })
-  expect(parseWindows(TUNED)).toEqual({ 'orchestrate-worker': 140e3, 'orchestrate-reviewer': 160e3, root: 150e3 })
+  expect(parseWindows(TUNED)).toEqual({ worker: 140e3, 'orchestrate-reviewer': 160e3, root: 150e3 })
+})
+
+test("an older cache's window counts for the kind's current name, unless that has its own", () => {
+  expect(parseWindows(JSON.stringify({ windows: { 'orchestrate-worker': 180e3 } }))).toEqual({ worker: 180e3 })
+  expect(parseWindows(JSON.stringify({ windows: { 'orchestrate-worker': 180e3, worker: 140e3 } }))).toEqual({ worker: 140e3 })
 })
 
 test('workers and roles run as copies with their tuned windows, and every compaction keeps the state files', async ($, on) => {
@@ -41,8 +46,8 @@ test('workers and roles run as copies with their tuned windows, and every compac
   on('process.run', (_, e) => {
     const script = e.argv.join(' ')
     if (script.includes('cat') && script.includes('compact.json')) return ok(TUNED)
-    const kind = script.match(/orchestrate-[a-z]+(?=\.md)/)?.[0]
-    if (kind) return ok(WORKER_FILE.replace('orchestrate-worker', kind))
+    const kind = script.match(/(orchestrate-[a-z]+|worker)(?=\.md)/)?.[0]
+    if (kind) return ok(WORKER_FILE.replace('name: worker', `name: ${kind}`))
     return failed
   })
   on('agent.register', (_, e) => {
@@ -76,18 +81,20 @@ test('workers and roles run as copies with their tuned windows, and every compac
   expect(logs).toEqual([])
   // The mocked clock repeats the hourly check at once; each registration replaces the last.
   const last = (name: string) => registered.findLast(r => r.name === name)
-  expect(last('orchestrate-worker')).toMatchObject({ tools: ['Bash', 'Read', 'Edit'], autoCompactWindow: 140e3 })
+  expect(last('worker')).toMatchObject({ tools: ['Bash', 'Read', 'Edit'], autoCompactWindow: 140e3 })
   // A tuned role keeps its own window; an untuned one takes the worker's.
   expect(last('orchestrate-reviewer')).toMatchObject({ autoCompactWindow: 160e3 })
   expect(last('orchestrate-implementor')).toMatchObject({ autoCompactWindow: 140e3 })
 
   const spawn = { tool_use_id: 't1', prompt: 'p', description: 'd', provider: { plugin: 'engine', tier: 'core' as const }, parentModel: 'opus', background: false, fork: false }
+  await $.agent.spawn({ ...spawn, subagentType: 'worker' })
+  // A session mid-run still asks for the former name, before or after the guard hook renames it.
   await $.agent.spawn({ ...spawn, subagentType: 'orchestrate-worker' })
   await $.agent.spawn({ ...spawn, subagentType: 'orchestrate-reviewer' })
   await $.agent.spawn({ ...spawn, subagentType: 'Explore' })
-  expect(spawned).toEqual(['status:orchestrate-worker', 'status:orchestrate-reviewer', 'Explore'])
+  expect(spawned).toEqual(['status:worker', 'status:worker', 'status:orchestrate-reviewer', 'Explore'])
   // Dispatch checks the offer of the name the spawn carries: the copy must be offered.
-  const copy = { agent: 'status:orchestrate-worker', description: 'd', source: 'plugin', provider: { plugin: 'status', tier: 'user' as const } }
+  const copy = { agent: 'status:worker', description: 'd', source: 'plugin', provider: { plugin: 'status', tier: 'user' as const } }
   expect(await $.agent.offer(copy)).toEqual({ isOffered: true })
 
   // 160k of context passes root's 150k window: the session compacts once the turn is over, KEEP in its instructions.
@@ -125,8 +132,8 @@ test('a reload registers the copies before the tune ends, and warns of agents th
     // The tune never ends here.
     if (script.includes('--tune')) return new Promise(() => {})
     if (script.includes('cat') && script.includes('compact.json')) return ok(overran)
-    const kind = script.match(/orchestrate-[a-z]+(?=\.md)/)?.[0]
-    if (kind) return ok(WORKER_FILE.replace('orchestrate-worker', kind))
+    const kind = script.match(/(orchestrate-[a-z]+|worker)(?=\.md)/)?.[0]
+    if (kind) return ok(WORKER_FILE.replace('name: worker', `name: ${kind}`))
     return failed
   })
   on('agent.register', (_, e) => {
@@ -165,8 +172,8 @@ test("an older cache with a wide worker window registers the copies at each kind
     const script = e.argv.join(' ')
     if (script.includes('--tune')) return new Promise(() => {})
     if (script.includes('cat') && script.includes('compact.json')) return ok(wide)
-    const kind = script.match(/orchestrate-[a-z]+(?=\.md)/)?.[0]
-    if (kind) return ok(WORKER_FILE.replace('orchestrate-worker', kind))
+    const kind = script.match(/(orchestrate-[a-z]+|worker)(?=\.md)/)?.[0]
+    if (kind) return ok(WORKER_FILE.replace('name: worker', `name: ${kind}`))
     return failed
   })
   on('agent.register', (_, e) => {

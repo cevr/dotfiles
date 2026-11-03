@@ -28,13 +28,13 @@ Cover every category in [`references/source-playbook.md`](references/source-play
 Each investigation gets [`references/investigator-prompt.md`](references/investigator-prompt.md) filled in, its category's playbook, the code anchor and the question.
 
 - **Small target** (a few commits, one PR that names its reason): run the investigations yourself, in order, one category at a time.
-- **Large target** (a subsystem, a long history): hand each category to an `orchestrate-worker` agent. Run `bun ~/.claude/skills/orchestrate/scripts/budget.ts` first and start only as many agents as the pool has room for; the rest wait for the first to return. An investigator reads and searches; it writes nothing.
+- **Large target** (a subsystem, a long history): hand each category to a `worker` agent. Run `bun ~/.claude/skills/orchestrate/scripts/budget.ts` first and start only as many agents as the pool has room for; the rest wait for the first to return. An investigator reads and searches; it writes nothing.
 
 Skip a category only with a written reason that goes into Sources Consulted: no such source for this repo, or provably irrelevant (an error tracker for a build-time script).
 
 ## 4. Synthesize
 
-Fill [`references/synthesizer-prompt.md`](references/synthesizer-prompt.md) with the findings (null results and skips included), the code anchor, the question and the epistemics framework. Run it yourself for a small target; for a large one, give it to one fresh `orchestrate-worker`, so the synthesis reads the findings and not your search context. The synthesis spot-checks its citations against the code and the sources.
+Fill [`references/synthesizer-prompt.md`](references/synthesizer-prompt.md) with the findings (null results and skips included), the code anchor, the question and the epistemics framework. Run it yourself for a small target; for a large one, give it to one fresh `worker`, so the synthesis reads the findings and not your search context. The synthesis spot-checks its citations against the code and the sources.
 
 ## 5. Present
 

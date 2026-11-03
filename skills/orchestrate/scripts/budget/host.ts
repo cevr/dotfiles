@@ -126,15 +126,19 @@ const ROLE_AGENT: Record<string, string> = { planner: 'plan', implementor: 'impl
 /**
  * An agent's kind: its type and the role its description names. A role agent
  * (`orchestrate-implementor`) is the worker in that role, so it keeps the cost
- * history orchestrate-worker built in it.
+ * history the worker built in it. The status mod runs each of them as its own
+ * copy (`status:worker`).
  */
-// The status mod runs each of them as its own copy, `status:orchestrate-worker`.
 export const kindFor = (agentType: string | undefined, description: string | undefined): string => {
-  const type = agentType?.replace(/^status:/, '') || 'agent';
+  const named = agentType?.replace(/^status:/, '') || 'agent';
+  const type = named === 'orchestrate-worker' ? 'worker' : named;
   const role = ROLE_AGENT[/^orchestrate-([a-z]+)$/.exec(type)?.[1] ?? ''];
-  if (role) return `orchestrate-worker:${role}`;
+  if (role) return `worker:${role}`;
   return `${type}:${ROLES.find(([re]) => re.test(description ?? ''))?.[1] ?? 'task'}`;
 };
+
+/** A kind a cached tally holds under a former name, under its current one. */
+export const currentKind = (kind: string): string => kind.replace(/^orchestrate-worker:/, 'worker:');
 
 function kindOf(file: string): { kind: string; sub: boolean } {
   if (!file.includes('/subagents/')) return { kind: 'root', sub: false };
@@ -246,7 +250,8 @@ export function hostLoad(now = Date.now(), deadline = Date.now() + scanMs): Host
   const mtime = new Map(live.map((f) => [f, statSync(f).mtimeMs]));
   live.sort((a, b) => mtime.get(b)! - mtime.get(a)!);
   for (const file of live) {
-    const t = cache.files[file] ?? { offset: 0, ...kindOf(file), totalW: 0, activeMs: 0, lastAt: 0, lastW: 0, turns: [] };
+    const kept = cache.files[file];
+    const t = kept ? { ...kept, kind: currentKind(kept.kind) } : { offset: 0, ...kindOf(file), totalW: 0, activeMs: 0, lastAt: 0, lastW: 0, turns: [] };
     if (Date.now() < deadline) tally(file, t, now);
     else complete = false;
     files[file] = t;

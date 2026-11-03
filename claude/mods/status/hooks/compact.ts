@@ -5,9 +5,9 @@ import type { EngineInterface, Register } from 'claude-code'
 // writes the cheapest for each kind, re-reads after a compaction counted, to
 // compact.json. The settings' CLAUDE_CODE_AUTO_COMPACT_WINDOW stays the
 // ceiling, and the mod only lowers it:
-// - orchestrate-worker and each role's agent (orchestrate-planner, ...) run as
-//   this mod's copy, which carries the kind's tuned autoCompactWindow; a role
-//   with too few transcripts to tune takes orchestrate-worker's;
+// - worker and each role's agent (orchestrate-planner, ...) run as this mod's
+//   copy, which carries the kind's tuned autoCompactWindow; a role with too
+//   few transcripts to tune takes worker's;
 // - the main session compacts between turns once its context passes root's
 //   window, so that compaction never lands in the middle of a step. Root's
 //   window is the owner's (burn.ts PINNED), below the ceiling, so the
@@ -18,7 +18,11 @@ import type { EngineInterface, Register } from 'claude-code'
 type On = Parameters<Register>[0]
 
 const HOUR = 3600e3
-const WORKER = 'orchestrate-worker'
+const WORKER = 'worker'
+// A kind's former name → its current one: a session mid-run still spawns the
+// former, and compact.json holds it until the next tune.
+export const RENAMED: Record<string, string> = { 'orchestrate-worker': WORKER }
+const current = (kind: string) => RENAMED[kind] ?? kind
 // budget/burn.ts WORKER_MAX and ROLE_MAX: the largest window each kind is registered with.
 export const WORKER_MAX = 200e3
 const MAX: Record<string, number> = { 'orchestrate-implementor': 400e3, 'orchestrate-reviewer': 400e3 }
@@ -48,14 +52,16 @@ export function overruns(stdout: string): string[] {
   )
 }
 
-// compact.json's `windows`: agent kind → tokens, each within the engine's 100k–1M.
+// compact.json's `windows`: agent kind → tokens, each within the engine's
+// 100k–1M. A former name's window counts for its current name unless that has its own.
 export function parseWindows(stdout: string): Record<string, number> {
   const windows = (JSON.parse(stdout) as { windows?: Record<string, unknown> }).windows ?? {}
-  return Object.fromEntries(
-    Object.entries(windows).filter(
-      (entry): entry is [string, number] => typeof entry[1] === 'number' && entry[1] >= 100e3 && entry[1] <= 1e6,
-    ),
+  const valid = Object.entries(windows).filter(
+    (entry): entry is [string, number] => typeof entry[1] === 'number' && entry[1] >= 100e3 && entry[1] <= 1e6,
   )
+  const named = Object.fromEntries(valid.filter(([kind]) => !(kind in RENAMED)))
+  for (const [kind, window] of valid) if (kind in RENAMED) named[current(kind)] ??= window
+  return named
 }
 
 // An agent file: front matter with `description` and `tools`, then the prompt.
@@ -119,7 +125,11 @@ export function tune($: EngineInterface) {
 
 export const compaction = (on: On) => {
   // The copy stays offered: an offer the model is refused is refused at dispatch too, and the spawn names the copy.
-  on('agent.spawn', ($, e, next) => next(e.subagentType && copied.has(e.subagentType) ? { ...e, subagentType: `status:${e.subagentType}` } : e))
+  // A former name spawns its current kind, whether or not the guard hook renamed it first.
+  on('agent.spawn', ($, e, next) => {
+    const kind = e.subagentType && current(e.subagentType)
+    return next(kind && copied.has(kind) ? { ...e, subagentType: `status:${kind}` } : kind === e.subagentType ? e : { ...e, subagentType: kind })
+  })
 
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
