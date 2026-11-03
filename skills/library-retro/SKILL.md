@@ -13,7 +13,7 @@ You change only scratch copies. The library changes once the owner picks the fin
 ## 1. Fix the scope
 
 - **Library.** Its repository, its package name, its public surface (`exports` in `package.json` and the entry modules), and its latest release. Use the local checkout on whichever host has one, else `okra repo fetch <owner>/<repo>`.
-- **Consumers.** The codebases the owner named. When none is named, search every checkout on every host: `rg -l "from ['\"]<package>" ~/Developer -g '!node_modules'` on this machine and over `ssh bite-workbox`. Count each repository once: skip Rifts, worktrees and backups. Record each consumer's host, path and pinned version. Read the changelog between a consumer's version and the latest, so you do not report what a release already fixed.
+- **Consumers.** The codebases the owner named. When none is named, search every checkout on every host: `rg -l "from ['\"]<package>" ~/Developer -g '!node_modules'` on this machine and over `ssh` on each remote dev box. Count each repository once: skip Rifts, worktrees and backups. Record each consumer's host, path and pinned version. Read the changelog between a consumer's version and the latest, so you do not report what a release already fixed.
 - **The owner's complaint**, when there is one, goes first. The lenses in step 3 still run in full.
 
 Done when every export is listed and every consumer has its host, path and version.

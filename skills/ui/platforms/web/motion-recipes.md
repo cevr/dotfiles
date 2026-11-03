@@ -129,7 +129,7 @@ Scales out of its trigger, not out of thin air.
 
 ```css
 .popover {
-  transform-origin: var(--transform-origin); /* Base UI and @bible/ui positioners set this */
+  transform-origin: var(--transform-origin); /* Base UI positioners and their ports set this */
   transition:
     opacity 200ms var(--ease-out),
     transform 200ms var(--ease-out);

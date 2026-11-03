@@ -37,10 +37,10 @@ test('a worker takes the role it was given, not the roles its prompt mentions', 
       { type: 'user', message: { content: prompt } },
       { type: 'assistant', message: { id: 'm1', model: 'claude-opus-5-5', usage: {}, content: [] } },
     ]), 'a', 's', description);
-  expect(agent('Read protocol.md. You are the implementor for round 1; the reviewer reads your request.', 'ftb-copy rewrite r1: built-output guard')).toMatchObject({ role: 'implement' });
+  expect(agent('Read protocol.md. You are the implementor for round 1; the reviewer reads your request.', 'copy rewrite r1: built-output guard')).toMatchObject({ role: 'implement' });
   expect(agent('Read protocol.md and verify round 3.', 'verifier coldload r3')).toMatchObject({ role: 'verify' });
   expect(agent('Review the findings of the last run', 'look over notes')).toMatchObject({ role: 'review' });
-  const typed = claudeAgent(jsonl([{ type: 'user', message: { content: 'Round 2: the findings are in round-1-findings.md' } }, { type: 'assistant', message: { id: 'm1', model: 'claude-opus-5-5', usage: {}, content: [] } }]), 'a', 's', 'sheet r2', false, 'status:orchestrate-implementor');
+  const typed = claudeAgent(jsonl([{ type: 'user', message: { content: 'Round 2: the findings are in round-1-findings.md' } }, { type: 'assistant', message: { id: 'm1', model: 'claude-opus-5-5', usage: {}, content: [] } }]), 'a', 's', 'auth r2', false, 'status:orchestrate-implementor');
   expect(typed).toMatchObject({ role: 'implement' });
 });
 
@@ -68,7 +68,7 @@ describe('codexAgent', () => {
     const text = jsonl([
       { type: 'turn_context', payload: { model: 'gpt-6-luna', effort: 'max' } },
       { type: 'response_item', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'You are the implementor of one orchestrate unit. Your first message names the spec.' }] } },
-      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Unit sheet, review findings in round-1-findings.md' }] } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Unit auth, review findings in round-1-findings.md' }] } },
       { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 10, output_tokens: 1 } } } },
     ]);
     expect(codexAgent(text, 'rollout-y')).toMatchObject({ model: 'gpt-6-luna', role: 'implement' });
@@ -118,7 +118,7 @@ test("a Codex thread carries the unit and round its bridge start named, from the
   const d = '01a18530-0000-7000-8000-000000000001', e = '01a18531-0000-7000-8000-000000000002';
   writeFileSync(
     join(dir, 'state.json'),
-    JSON.stringify({ threads: { [a]: { id: a, unit: 'sheet', round: 2, codexId: e }, [c]: { id: c, description: 'a look prototype' }, [d]: { id: d, description: 'reviewer tabs r3: delta' } } }),
+    JSON.stringify({ threads: { [a]: { id: a, unit: 'auth', round: 2, codexId: e }, [c]: { id: c, description: 'a look prototype' }, [d]: { id: d, description: 'reviewer tabs r3: delta' } } }),
   );
   writeFileSync(join(dir, 'bridge.log'), jsonl([{ event: 'drain' }, { event: 'start', thread: b, unit: 'tabs', round: 1 }]));
   const sessions = join(dir, 'sessions', '2026', '10', '29');
@@ -129,7 +129,7 @@ test("a Codex thread carries the unit and round its bridge start named, from the
   ]);
   for (const id of [a, b, c, d, e]) writeFileSync(join(sessions, `rollout-2026-10-29T00-10-55-${id}.jsonl`), rollout);
   const tags = Object.fromEntries(codexAgents(join(dir, 'sessions'), 0, bridgeUnits(dir)).map((x) => [x.id.slice(-36), [x.unit, x.round]]));
-  expect(tags).toEqual({ [a]: ['sheet', 2], [b]: ['tabs', 1], [c]: [undefined, undefined], [d]: ['tabs', 3], [e]: ['sheet', 2] });
+  expect(tags).toEqual({ [a]: ['auth', 2], [b]: ['tabs', 1], [c]: [undefined, undefined], [d]: ['tabs', 3], [e]: ['auth', 2] });
 });
 
 test('a model with no price row has no cost', () => {
@@ -145,7 +145,7 @@ describe('outcomes', () => {
     expect(verdictOf('**CHANGES. Do not merge yet.**')).toBe('changes');
     expect(verdictOf('APPROVE with minor corrections.')).toBe('accepted');
     expect(verdictOf('REVISE. Reviewed a..b.')).toBe('changes');
-    expect(verdictOf('# p6 review 1\n- Range')).toBeUndefined();
+    expect(verdictOf('# web review 1\n- Range')).toBeUndefined();
     expect(verdictOf(undefined)).toBeUndefined();
   });
 

@@ -27,7 +27,7 @@ Call the Skill tool with "codebase-design" once at the start; its glossary is th
 - publishing or deploying;
 - pushing, unless the owner rules' Push line allows it.
 
-Each becomes an owner question on the ledger, with your recommendation, and the user gets one short message. The loop carries on with everything else. A dialog that waits for an answer stalls every batch behind it: in one film run, five finished batches waited five hours on a single question.
+Each becomes an owner question on the ledger, with your recommendation, and the user gets one short message. The loop carries on with everything else. A dialog that waits for an answer stalls every batch behind it, finished ones included.
 
 **Owner direction.** Direction the owner gives mid-run goes, in the same turn and dated, into the file that owns it: `NORTH_STAR.md` → Owner rules for the loop's scope and standing rules, the project's skill for craft and voice, `AGENTS.md` for the stack. Every later brief carries it. Direction left in a pass file, or in memory (which is per machine and per account), had to be given three times. The loop's state lives on the ledger and in the run's unit folders. A feature the owner asks for mid-run is its own plan, not a batch of this loop.
 
@@ -80,8 +80,8 @@ An **area** is a set of directories that change together (a package, or a layer 
      - its Report goes into what each round request carries;
      - the counsel questions ([`prompts/counsel.md`](prompts/counsel.md)) go to Risks.
 
-     The Gate is the repo's full gate, guards included. Hymn tracks were accepted on a narrower gate, then failed `dead-exports` on main.
-   - **Size.** A batch is one concern, about 10 items. An implementor that compacts within its first round is holding too much: split the batch then. In bible-tools, apply agents were 93% of all cache reads, and 124 of 288 hit the compaction window.
+     The Gate is the repo's full gate, guards included. A batch accepted on a narrower gate can still fail a guard on main.
+   - **Size.** A batch is one concern, about 10 items. An implementor that compacts within its first round is holding too much: split the batch then. Oversized batches make apply agents most of a run's cache reads.
    - **Workspace.** Each batch's workspace and branch follow orchestrate (`<run>/<unit>`; ledger rows from earlier passes name `p<N>-<batch>`). Setup beyond install (a build, a linked git-ignored file, a shared lock for a heavy test) belongs in the project's `AGENTS.md`; a missing step found here goes there.
    - **Cost.** At each hand-back, run `bun ~/.claude/skills/orchestrate/scripts/agent-cost.ts <agent id>` and append its line to the unit's `log.md`. A task notification's token count is the agent's final context, not its spend. The retro (step 11) reads these lines instead of rebuilding them.
    - The reviewer's family, rounds, a batch that builds on another's files (it stacks on that branch) and parallelism are orchestrate's rules; follow them there.
@@ -94,12 +94,12 @@ An **area** is a set of directories that change together (a package, or a layer 
 
 8. **Live check.** After each merge, or a small group of merges, run `NORTH_STAR.md` → Live check over every ability the batches changed (each apply report names them): the drive shows what rendered, the state view shows what happened. A defect found here becomes a live-fix batch (step 6). Done when the state matches the intent, the ledger has a live-check row, and every process the check started is stopped.
 
-9. **Project files and docs.** Add re-proposable rejections to `NORTH_STAR.md` → Rejected and drop rows whose subject left the tree; move settled comparisons into `PRIOR_ART.md` → Settled; update the READMEs, `GLOSSARY.md` (`CONTEXT.md` in a repo not yet renamed) and project skills wherever the pass changed an API, a workflow or a decision. A doc that briefs send agents to read in full (`ARCHITECTURE.md`, a project `SKILL.md`, a package README) stays under about 40 KB: split it by area into files behind a short index, and move history and receipts to the ledger. gent's `ARCHITECTURE.md` grew to 355 KB and was read 1,082 times in one run. Done when each describes the code as it is and each full-read doc is within its budget.
+9. **Project files and docs.** Add re-proposable rejections to `NORTH_STAR.md` → Rejected and drop rows whose subject left the tree; move settled comparisons into `PRIOR_ART.md` → Settled; update the READMEs, `GLOSSARY.md` (`CONTEXT.md` in a repo not yet renamed) and project skills wherever the pass changed an API, a workflow or a decision. A doc that briefs send agents to read in full (`ARCHITECTURE.md`, a project `SKILL.md`, a package README) stays under about 40 KB: split it by area into files behind a short index, and move history and receipts to the ledger. Every brief that sends an agent to a large doc pays its whole size again. Done when each describes the code as it is and each full-read doc is within its budget.
 
 10. **Count.** Re-run the baseline command. The pass verdict carries lines and files per package against the baseline and against the last pass.
     - A pass whose net count grows names why: a bug fix with its test, a guard, or a north star that asks for the code.
     - Two growing passes in a row, with no north star asking for growth, become an owner question about scope.
-    - A gent run whose goal was fewer concepts grew from 70k to 131k source lines, because no pass counted.
+    - A run whose goal is fewer concepts can still grow the code when no pass counts.
 
     Done when the pass row has its counts and, if it grew, its reason.
 
@@ -109,7 +109,7 @@ An **area** is a set of directories that change together (a package, or a layer 
 
 Close when one pass holds all of these: no unswept directory; on a pass that swept everything (step 2), the architecture sweeps and package reviews report polish only (under about 5 lines of value each); every project sweep meets its "done when"; `PRIOR_ART.md` → To survey is empty; no `Carried` row is open; and reading the pass's reports end to end, you can name no structural change left. A pass that finds a guard blind spot is never the last: close the blind spot with a check placed by [`guardrails.md`](guardrails.md), run it, and sweep what it reveals.
 
-A loop that does not converge stops being a loop. A class of finding that returns in three passes in a row becomes an owner question about scope, not one more batch: gent's bash guard drew 85 commits over passes 8–19 before the owner made it opt-in. So does a pass made mostly of the last pass's regressions. Then run a retro over every pass's `retro.md` (did each applied action save what it promised?), and write the HTML report from [`improve-codebase-architecture`'s HTML-REPORT.md](../improve-codebase-architecture/HTML-REPORT.md) with the card additions under [single pass](#single-pass-with-the-user) (one card per structural change the loop made, before and after) and the final message, ending with the ledger path.
+A loop that does not converge stops being a loop. A class of finding that returns in three passes in a row becomes an owner question about scope, not one more batch. So does a pass made mostly of the last pass's regressions. Then run a retro over every pass's `retro.md` (did each applied action save what it promised?), and write the HTML report from [`improve-codebase-architecture`'s HTML-REPORT.md](../improve-codebase-architecture/HTML-REPORT.md) with the card additions under [single pass](#single-pass-with-the-user) (one card per structural change the loop made, before and after) and the final message, ending with the ledger path.
 
 ## What pays late
 

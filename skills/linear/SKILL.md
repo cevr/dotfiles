@@ -36,9 +36,9 @@ linear project list --json
 ### Read one or many issues
 
 ```bash
-linear issue view BITE-123 --json
-linear issue view https://linear.app/acme/issue/BITE-123/slug --json
-linear issue view BITE-123 BITE-124 BITE-125 --json
+linear issue view ENG-123 --json
+linear issue view https://linear.app/acme/issue/ENG-123/slug --json
+linear issue view ENG-123 ENG-124 ENG-125 --json
 ```
 
 `issue view --json` always returns an array, including for one issue. Each item includes its ID, identifier, title, description, URL, branch name, priority, state, team, assignee, project, parent, and labels.
@@ -46,10 +46,10 @@ linear issue view BITE-123 BITE-124 BITE-125 --json
 Request potentially larger relationships only when needed:
 
 ```bash
-linear issue view BITE-123 --children --json
-linear issue view BITE-123 --comments --json
-linear issue view BITE-123 --relations --json
-linear issue view BITE-123 --children --comments --relations --json
+linear issue view ENG-123 --children --json
+linear issue view ENG-123 --comments --json
+linear issue view ENG-123 --relations --json
+linear issue view ENG-123 --children --comments --relations --json
 ```
 
 Use the returned `branchName`; do not invent a branch name from the title.
@@ -59,8 +59,8 @@ Use the returned `branchName`; do not invent a branch name from the title.
 Files attached to an issue are Markdown links to `https://uploads.linear.app/...`, which need the Linear credential. Never fetch them with `curl`; use the CLI:
 
 ```bash
-linear issue files BITE-123 --json
-linear issue files BITE-123 --download --output-dir ./files --json
+linear issue files ENG-123 --json
+linear issue files ENG-123 --download --output-dir ./files --json
 linear file download https://uploads.linear.app/... --output-dir ./files --json
 ```
 
@@ -71,8 +71,8 @@ linear file download https://uploads.linear.app/... --output-dir ./files --json
 ### Start work
 
 ```bash
-linear issue start BITE-123 --dry-run
-linear issue start BITE-123 --json
+linear issue start ENG-123 --dry-run
+linear issue start ENG-123 --json
 ```
 
 The dry run resolves the issue and target state without updating Linear. The real command moves the issue to the team's started state and returns the Linear branch name. It does not create or check out a Git branch.
@@ -89,19 +89,19 @@ Non-interactive agent flow:
 
 ```bash
 linear issue create \
-  --team BITE \
+  --team ENG \
   --title "Concise title" \
   --description "Markdown description" \
-  --parent BITE-100 \
+  --parent ENG-100 \
   --project "Tech Debt" \
   --priority 3 \
   --dry-run
 
 linear issue create \
-  --team BITE \
+  --team ENG \
   --title "Concise title" \
   --description "Markdown description" \
-  --parent BITE-100 \
+  --parent ENG-100 \
   --project "Tech Debt" \
   --priority 3 \
   --json
@@ -112,8 +112,8 @@ linear issue create \
 ### Add a comment
 
 ```bash
-linear issue comment BITE-123 --body "Markdown comment" --dry-run
-linear issue comment BITE-123 --body "Markdown comment" --json
+linear issue comment ENG-123 --body "Markdown comment" --dry-run
+linear issue comment ENG-123 --body "Markdown comment" --json
 ```
 
 Comments are external messages. Only send one when the user explicitly requested it.
@@ -125,13 +125,13 @@ Use this only when typed commands cannot express the operation:
 ```bash
 linear api graphql \
   --query 'query Issue($id: String!) { issue(id: $id) { id identifier title } }' \
-  --variables '{"id":"BITE-123"}'
+  --variables '{"id":"ENG-123"}'
 ```
 
 For multiline documents, keep the query in a file:
 
 ```bash
-linear api graphql --query-file .linear/issue-query.graphql --variables '{"id":"BITE-123"}'
+linear api graphql --query-file .linear/issue-query.graphql --variables '{"id":"ENG-123"}'
 ```
 
 The query file must resolve inside the current workspace. The command uses the configured credential and emits only the GraphQL `data` object as JSON. Keep variables separate from the query. Prefer one bulk GraphQL operation over shell loops when migrating a large issue tree.
@@ -154,5 +154,5 @@ Token resolution order:
 Project defaults live in `.linear.toml`:
 
 ```toml
-team_id = "BITE"
+team_id = "ENG"
 ```

@@ -5,8 +5,8 @@
 // - Cost: Codex reports only the week's use, in whole percent. One weighted
 //   token (W) of each model family costs k percent of the week, fitted from
 //   every host's tokens against the rise of that use over 3-hour windows. An
-//   early reset can change what a percent costs (on 2026-10-27 sol's went
-//   from about 5 MW to 9.5 MW), so the fit takes the current reset period once
+//   early reset can change what a percent costs (it can nearly double), so
+//   the fit takes the current reset period once
 //   it has enough windows, and the last 7 days until then.
 // - Pace: the weekly pace of pace.ts for one account: spend the target by the
 //   reset at an even rate, never below the rolling pace, under the ceiling.

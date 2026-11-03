@@ -42,7 +42,7 @@ Edit only the skill's own directory and the helper scripts its `SKILL.md` names.
    - A wrong or missing user-POV description is **drift**: fix it.
    - Working behavior the harness cannot drive is a **harness gap**: fix it as a `bun run` script in the repo with its invocation in `SKILL.md`, the same helpers rule as creation.
    - Broken app behavior is a **product gap**: report it, and keep it out of the commit.
-7. **Ship or stop.** For **changed**: re-read every changed file, run the repo's gate (the docs guard reads the skill where the repo has one), and make one Conventional Commit, `docs(verify-<app>): …`. Commit where the repo says: on main when it commits to main (bible-tools), and in a branch and PR only when it uses PRs. Push as the repo's rules say. For **clean** or **blocked**: no commit.
+7. **Ship or stop.** For **changed**: re-read every changed file, run the repo's gate (the docs guard reads the skill where the repo has one), and make one Conventional Commit, `docs(verify-<app>): …`. Commit where the repo says: on main when it commits to main, and in a branch and PR only when it uses PRs. Push as the repo's rules say. For **clean** or **blocked**: no commit.
 
 Keep run notes (features covered, unreachable prerequisites, confirmed drift) in `tmp/`, uncommitted.
 

@@ -18,17 +18,17 @@ The loop records evidence while it runs, so the retro reads it instead of rebuil
 
 Answer each with a number or a file.
 
-1. **Rounds.** Which units took more than one round, and what did each failing round catch? A defect class caught twice should have had its property or guard written after the first catch. For example, talk1b fixed one comment-ownership class case by case over three rounds, reached the failure cap, and closed it in one round once a generated property owned the class.
+1. **Rounds.** Which units took more than one round, and what did each failing round catch? A defect class caught twice should have had its property or guard written after the first catch. For example, a class fixed case by case can run to the failure cap, then close in one round once a generated property owns it.
 2. **Lost work.** Which agents died, and from what: quota, compaction, a permission refusal, or the host? What was redone? Which units waited, and on what: the gate queue, the owner, or another unit?
 3. **Cost.** What were the tokens and wall time per accepted unit, and which three units spent the most? Find the reads behind the spend, such as whole logs, whole files, or a context re-read every round.
-4. **Hand work.** What did the orchestrator do by hand more than once that a script would do? For example, in p5 the orchestrator diffed a full e2e run's failures against base and reran each new failure alone, by hand, for each unit.
+4. **Hand work.** What did the orchestrator do by hand more than once that a script would do? For example, diffing a full e2e run's failures against base and rerunning each new failure alone, by hand, for each unit.
 5. **Checks.** Which review or verify finding could a lint rule, a type or a test have caught? Place each check by [`guardrails.md`](guardrails.md).
-6. **Host.** What broke on the host that the loop should have caught first? For example, in p5 the test Chrome played audio through the owner's speakers until the owner asked about it.
+6. **Host.** What broke on the host that the loop should have caught first? For example, a test browser that plays audio through the owner's speakers.
 7. **Remove.** Which step, rule, prompt line or file changed no outcome this pass? A rule that changed no outcome is a candidate for removal. The test: could the loop have accepted the same units without it?
-8. **Project skills.** List the project's domains and goals: its north stars, its packages and apps, and what the owner works on (in bible-tools, the film engine and its looks, the lab, the UI kit, EGW search, the CLI, the studies). For each domain the pass touched, answer three things:
+8. **Project skills.** List the project's domains and goals: its north stars, its packages and apps, and what the owner works on (for example a rendering engine, a UI kit, search, a CLI). For each domain the pass touched, answer three things:
    - **Navigate.** Which files did agents explore again and again before they could act? Grep the transcripts for the same paths read by several agents, or by one agent after each compaction. A skill holding that map (where things live, which seam owns what, the commands that prove a change) is a candidate.
    - **Understand.** Which rule did an agent break because no skill said it? Which owner direction lived only in a message? Which domain fact did several agents rediscover: a runtime quirk, a host fact, an art rule?
-   - **Stale.** Does a project skill now say what the code or the owner no longer means? In p5, the film skill still said "one hand design, a mitten with a thumb" after the owner chose circle hands. A stale skill steers every later agent wrong.
+   - **Stale.** Does a project skill now say what the code or the owner no longer means? For example, a skill that still describes a design the owner has replaced. A stale skill steers every later agent wrong.
 
    Each answer becomes an edit to an existing project skill, or a new one when no skill covers the domain. A domain with no skill that agents worked in all pass is a finding by itself.
 

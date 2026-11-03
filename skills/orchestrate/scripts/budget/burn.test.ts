@@ -144,7 +144,7 @@ describe('tune', () => {
 });
 
 test("a worker that ran a protocol role tunes as that role's agent", () => {
-  expect(workerKind('status:orchestrate-worker', 'Read protocol.md. You are the reviewer of sheet, round 2.')).toBe('orchestrate-reviewer');
+  expect(workerKind('status:orchestrate-worker', 'Read protocol.md. You are the reviewer of auth, round 2.')).toBe('orchestrate-reviewer');
   expect(workerKind('status:orchestrate-worker', 'Survey the docs for the reviewer.')).toBe('orchestrate-worker');
   expect(workerKind('status:orchestrate-verifier', '')).toBe('orchestrate-verifier');
   expect(workerKind(undefined, '')).toBe('agent');

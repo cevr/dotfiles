@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 // Label this Claude session with the project it works on, for the budget's
-// per-project shares and costs: one checkout can hold several projects (manna
-// holds the hymnal, First the Blade and the film lab), so the session names
-// its project, not its directory. The status mod runs this at session start.
+// per-project shares and costs: one checkout can hold several projects (a
+// monorepo with several apps), so the session names its project, not its
+// directory. The status mod runs this at session start.
 //
 // Usage: bun label.ts               label from the herdr workspace's name
 //        bun label.ts --set <name>  fix the label; later defaults keep it

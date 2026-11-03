@@ -10,7 +10,7 @@ const NOW = 1_000_000_000;
 const ticket = (id: string, session: string, at: number, more: Partial<Ticket> = {}): Ticket => ({
   id,
   session,
-  project: 'gent',
+  project: 'app',
   kind: 'w:task',
   description: id,
   estimateWph: 20,
@@ -19,7 +19,7 @@ const ticket = (id: string, session: string, at: number, more: Partial<Ticket> =
   beat: NOW,
   ...more,
 });
-const agent = (session: string, recentWph = 10): Session => ({ session, project: 'gent', kind: 'w:task', sub: true, recentWph });
+const agent = (session: string, recentWph = 10): Session => ({ session, project: 'app', kind: 'w:task', sub: true, recentWph });
 
 describe('order', () => {
   test('serves the earliest request among sessions that run as many agents', () => {

@@ -12,7 +12,7 @@ Code examples across the web files are React. Check `package.json`:
 ## Stack
 
 - **Styling**: Tailwind defaults, extended through theme tokens; classes, `cn`, `cva`, state attributes, and z-index in [web theming](theming.md).
-- **Primitives**: one system per project, never mixed. React: Radix, Base UI, or React Aria. Solid: the project's primitive package (e.g. `@bible/ui`, Base UI ported to Solid 2).
+- **Primitives**: one system per project, never mixed. React: Radix, Base UI, or React Aria. Solid: the project's primitive package (e.g. `@app/ui`, Base UI ported to Solid 2).
 - **Components**: before hand-rolling any component (toast, command menu, OTP input, chart, empty state), use what the project has. React: the `shadcn` skill owns component APIs, composition, and the CLI in a project with `components.json`; installed components first, then `shadcn search` across registries. Solid: the project's primitive package first; [solid.md](solid.md) covers what to do when it lacks one.
 - **Animation**: CSS transitions first. Then `motion/react` (React) or WAAPI / Motion's `animate()` (Solid) when a gesture, layout animation, or spring needs it. → [motion](../../references/motion/index.md), [web motion](motion.md#tools)
 - **Icons**: the project's icon library; `currentColor`; icon-only buttons need an accessible name. → [icons](../../references/icons.md)

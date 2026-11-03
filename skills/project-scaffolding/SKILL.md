@@ -5,7 +5,7 @@ description: Scaffold new TypeScript projects with Effect, Bun, oxlint, oxlint-p
 
 # Project Scaffolding
 
-Opinionated project setup for Effect TypeScript on Bun. All configs derived from `gent`, a production project.
+Opinionated project setup for Effect TypeScript on Bun. All configs are derived from production projects.
 
 ## Navigation
 

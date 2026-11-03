@@ -33,7 +33,7 @@ Pick one:
 
 | Source | Props | When |
 |--------|-------|------|
-| Effect-native | `main: import.meta.url` + the constructor Effect | The default for Effect servers (ytt.cvr.im runs this way: a code change deploys in about 30 s). Alchemy bundles the file and generates a Dockerfile (`FROM node:26-slim`, `ENTRYPOINT node /app/index.mjs`), and the upload is skipped when the hash is unchanged. `build: { install: ["pg"] }` for CJS or native packages, and `image` for another base (it must run the bundle). |
+| Effect-native | `main: import.meta.url` + the constructor Effect | The default for Effect servers (a code change deploys in about 30 s). Alchemy bundles the file and generates a Dockerfile (`FROM node:26-slim`, `ENTRYPOINT node /app/index.mjs`), and the upload is skipped when the hash is unchanged. `build: { install: ["pg"] }` for CJS or native packages, and `image` for another base (it must run the bundle). |
 | Dockerfile context | `context: <dir>`, `dockerfilePath: "Dockerfile"` | The runtime needs Bun APIs, a native toolchain, or an unbundled source tree. |
 | Image | `image: "org/name:tag"` | A prebuilt public image. |
 | GitHub | `repo`, `branch`, `rootDirectory`, `buildCommand`, `startCommand` | Railway builds from the repo (requires a GitHub connection). |

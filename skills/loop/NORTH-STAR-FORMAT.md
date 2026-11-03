@@ -19,7 +19,7 @@
 ## Tiebreaks
 
 - **Explicit** beats **Expressive**: shorter code that hides an ID, a scope or a placement is rejected.
-- **Art direction** beats **Performant** (owner, 2026-09-27): a speed change that moves pixels needs owner approval.
+- **Art direction** beats **Performant**: a speed change that moves pixels needs owner approval.
 
 ## Owner rules
 
@@ -28,7 +28,7 @@ Propose nothing against these.
 - Children wake, never block.
 - No persisted-format change unless it is additive and optional.
 - A live run uses `--debug` with its data directory under the scratch directory.
-- Push: main after each merge, when its gate is green (owner, 2026-10-07).
+- Push: main after each merge, when its gate is green.
 
 ## Sweeps
 
@@ -37,15 +37,15 @@ Run every loop pass beside the standard sweeps (architecture areas, package revi
 | Sweep      | Serves           | Scope                    | Method                                   | Done when                                           |
 | ---------- | ---------------- | ------------------------ | ---------------------------------------- | --------------------------------------------------- |
 | efficiency | Lean core        | what the harness sends   | [docs/architecture/efficiency.md](...)   | no measured saving left that it can change directly |
-| ui         | Consistent UI    | the rendered TUI         | [docs/architecture/ui.md](...)           | a matrix row per checklist moment, gent × each reference |
+| ui         | Consistent UI    | the rendered TUI         | [docs/architecture/ui.md](...)           | a matrix row per checklist moment, the app × each reference |
 
 ## Live check
 
 How to drive changed behavior in the real product, and what shows the state behind what rendered.
 
-- Drive: `bun run gamut up <preset> --prompt <file>`, keys through `herdr pane send-text`.
-- State: `bun run gamut status` prints the stored messages and the session tree.
-- Stop: `bun run gamut down`.
+- Drive: `bun run live up <preset> --prompt <file>`, keys through `herdr pane send-text`.
+- State: `bun run live status` prints the stored messages and the session tree.
+- Stop: `bun run live down`.
 
 ## Rejected
 
@@ -53,7 +53,7 @@ A sweep re-proposes a row only with a new receipt. A row leaves when its subject
 
 | Candidate                        | Why it stays                                              |
 | -------------------------------- | --------------------------------------------------------- |
-| Fold the cell trio into one file | a process entry and a shared wire module (2026-09-22 ledger) |
+| Fold the cell trio into one file | a process entry and a shared wire module (ledger, pass 3)   |
 ```
 
 ## Rules

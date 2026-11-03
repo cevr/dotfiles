@@ -82,7 +82,7 @@ animate(el, { y: target }, { type: 'spring', bounce: 0.2, duration: 0.4 });
 ## Properties
 
 - **Name the transitioned properties**: `transition-property: scale, opacity`, never `transition: all` ([why and the Tailwind spellings](motion-performance.md#transition-only-what-changes)).
-- **Trigger-anchored origin**: `transform-origin: var(--transform-origin)`, which Base UI (React) supplies; `@bible/ui` does not ([solid.md](solid.md#5-motion)). Modals keep `transform-origin: center`.
+- **Trigger-anchored origin**: `transform-origin: var(--transform-origin)`, which Base UI (React) supplies; a Solid port may not ([solid.md](solid.md#5-motion)). Modals keep `transform-origin: center`.
 - **Motion's `x`/`y`/`scale` shorthands** are hardware-accelerated from Motion 14.2. Before it they run on the main thread: keep them by default and switch to the full `transform` string when the animation must survive a busy main thread. Layout animations (`layout`, `layoutId`) run on the main thread in every version ([web performance](motion-performance.md#where-it-runs)).
 - **Never drive a child's transform from a CSS variable on the parent.** It recalculates styles for every child. Set `transform` on the element directly ([web performance](motion-performance.md#two-traps-that-look-correct)).
 

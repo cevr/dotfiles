@@ -2,7 +2,7 @@
 
 Every loop agent (sweep, apply, counsel, live check) reads this file and `NORTH_STAR.md` → Owner rules in full before any action, and follows both. This is the one copy; each prompt points here instead of carrying the rules. Project-specific safety (a live binary, the owner's data, paid runs) lives in the owner rules.
 
-SAFETY (mandatory; in gent, on 2026-09-23, a heredoc of guard probe text ran `rm -rf ~`):
+SAFETY (mandatory; a heredoc of guard probe text can run `rm -rf ~`):
 
 - Create every file with the Write tool, never through a shell heredoc (`cat > f <<EOF`, quoted or not), `python3 -c`, `python3 - <<X` or `bun -e`.
 - A destructive command string (rm, git reset, git clean, git push -f, dd, mkfs, chmod -R, find -delete, kill and similar) lives only as a string literal in a file created with the Write tool, run with `bun <file>`. It stays out of every shell command line, heredoc, `echo`, `python3 -c`, `bun -e` and commit message; commit with `-m "..."` or `git commit -F <file written with Write>`.

@@ -17,10 +17,10 @@ Answer from the code. Ask the owner only what no file shows.
 - **Surface.** What does the user touch: a web page, a CLI, a TUI, a desktop app, an HTTP API?
 - **Run.** The repo's own dev command (`package.json` scripts, `AGENTS.md` or `CLAUDE.md`, the README), with its ports, env, seed data and auth.
 - **Drive.** Existing harnesses first: e2e fixtures, gesture helpers, a debug port. Then the generic driver: `agent-browser` for web and Electron, `pilotty` for a CLI or TUI, `curl` for HTTP.
-- **Observe.** What proof exists: video, screenshots, ARIA snapshots, terminal transcripts, response bodies, the dev logs (`tmp/logs/latest` in bible-tools), exit codes, rows, the `git diff` of a scratch root.
+- **Observe.** What proof exists: video, screenshots, ARIA snapshots, terminal transcripts, response bodies, the dev logs (for example `tmp/logs/latest`), exit codes, rows, the `git diff` of a scratch root.
 - **Isolate.** Can two instances run side by side (ports, data dirs, browser profiles, scratch roots)? Which instance is the owner's own and must never be driven?
-- **Hosts.** Which machines run the repo (the laptop, the Workbox), and what differs per host: ports, GPU, a mic or screen permission, the address the owner opens.
-- **Docs guard.** Does a test check docs against code? In bible-tools it is `readDocs` in `packages/film/src/docs.test.ts`.
+- **Hosts.** Which machines run the repo (the laptop, a remote dev box), and what differs per host: ports, GPU, a mic or screen permission, the address the owner opens.
+- **Docs guard.** Does a test check docs against code (for example a `readDocs` list in a docs test)?
 
 If the checkout does not build or start as it is, fix that first or report it exactly. A skill written against a broken base teaches wrong steps.
 
@@ -28,7 +28,7 @@ Done when each answer names the file or command behind it.
 
 ## 2. Build the helpers as repo scripts
 
-A helper is a script in the repo, run as `bun run <name>` from the package that owns the surface (the repo's own runner where it is not Bun), with a test when it holds logic. A helper in a scratch dir is rebuilt by every verifier, as [build-the-lever](~/Developer/personal/dotfiles/principles/build-the-lever.md) records: sheet's verifiers wrote their own `cdp.ts` three rounds running. A repo script is allowed by the safety classifier where an ad-hoc `/tmp` script is refused, the gate keeps it alive, and the docs guard checks its name.
+A helper is a script in the repo, run as `bun run <name>` from the package that owns the surface (the repo's own runner where it is not Bun), with a test when it holds logic. A helper in a scratch dir is rebuilt by every verifier, as [build-the-lever](~/Developer/personal/dotfiles/principles/build-the-lever.md) records: without one, each round's verifiers write their own driver again. A repo script is allowed by the safety classifier where an ad-hoc `/tmp` script is refused, the gate keeps it alive, and the docs guard checks its name.
 
 **Write them on the repo's Effect stack.** Our repos are Effect v4 on Bun (see the **effect** skill), so a helper is an Effect program, not a loose script: `effect/cli` for its commands and flags, `ChildProcessSpawner` and `FileSystem` from the platform for processes and files, `Schema` for the JSON it prints and the data it reads, `Effect.timeout` and `Schedule` for readiness waits, and scoped resources so a launched app is stopped when the drive ends. It imports the repo's own services and test layers (fixtures, seeders, the scripted model) instead of rebuilding them. Every command prints one JSON result on success and exits non-zero with a tagged error on failure, so an agent reads the outcome without parsing logs.
 
@@ -77,7 +77,7 @@ Write `features/README.md` and one file per user-facing feature: the top 3 to 7,
 
 ## 5. Wire it in
 
-- **Docs guard.** Add `.claude/skills/verify-<app>` to it (in bible-tools, the `readDocs` list), so the gate checks every route, script and path the map names. Fix what it finds.
+- **Docs guard.** Add `.claude/skills/verify-<app>` to it (for example its `readDocs` list), so the gate checks every route, script and path the map names. Fix what it finds.
 - **Pointers.** One line in the repo's `AGENTS.md` or `CLAUDE.md` where a verifier looks for how to run the app. A `NORTH_STAR.md` Live check that holds its own drive steps becomes a pointer to the skill.
 - **Commit** as the repo says: on main where it commits to main, in a branch and PR where it uses PRs.
 
@@ -85,6 +85,6 @@ Write `features/README.md` and one file per user-facing feature: the top 3 to 7,
 
 Run the generated skill's own instructions end to end, from a fresh session: launch, doctor, drive one feature fully, capture evidence, clean up. Then check that the evidence is still at its named path and that no process or port is left. Fix what fails, and run the cleanup after every failed attempt. A skill that was never executed is a draft.
 
-If you proved it on a stand-in (the laptop for the Workbox, a local stack for a remote one), list each step the stand-in did that the real host will not. Those steps stay unproven until a run there covers them.
+If you proved it on a stand-in (the laptop for a remote dev box, a local stack for a remote one), list each step the stand-in did that the real host will not. Those steps stay unproven until a run there covers them.
 
 Done when you can hand back the evidence path, the gate result with the docs guard in it, and the commit hash. Keep the map honest afterwards with `maintain-verification-skill`.

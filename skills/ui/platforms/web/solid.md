@@ -6,14 +6,14 @@ Read this before writing code for any `ui` task in a project whose `package.json
 
 | React | Solid 2 |
 | --- | --- |
-| shadcn/ui, Radix, Base UI React, React Aria | The project's primitive package, e.g. `@bible/ui` (Base UI parts ported to Solid 2, one subpath per part: `import { Menu } from '@bible/ui/menu'`). The `shadcn` skill does not apply: there is no `components.json`, CLI, or registry. |
+| shadcn/ui, Radix, Base UI React, React Aria | The project's primitive package, e.g. `@app/ui` (Base UI parts ported to Solid 2, one subpath per part: `import { Menu } from '@app/ui/menu'`). The `shadcn` skill does not apply: there is no `components.json`, CLI, or registry. |
 | `asChild` (Radix), `render={<a />}` (Base UI React) | `render={(props, state) => <a {...props} href="/x" />}`. Spread the merged props onto your element. |
 | `className={(state) => …}` | `class={(state) => …}`. `style` takes a value or a function of state too. |
 | `data-[state=open]:` (Radix) | Base UI names: `data-open`/`data-closed`, `data-starting-style`/`data-ending-style`, `data-highlighted`, `data-pressed`, `data-side`, `data-align`, `data-instant`. The package README lists each part's attributes. That list is the styling contract. |
-| `var(--transform-origin)`, `--anchor-width`, `--available-height` (Base UI) | The same names on `@bible/ui`'s Menu and Context Menu positioners: `--transform-origin`, `--anchor-width`/`--anchor-height`, `--available-width`/`--available-height`. The skill's popover recipes apply as written. |
+| `var(--transform-origin)`, `--anchor-width`, `--available-height` (Base UI) | The same names on a Base UI port's Menu and Context Menu positioners: `--transform-origin`, `--anchor-width`/`--anchor-height`, `--available-width`/`--available-height`. The skill's popover recipes apply as written. |
 | `lucide-react` | Inline SVG components that spread props, using `currentColor`. `lucide-solid` peer-locks to Solid 1. |
 
-**When the package lacks a part:** (1) port the upstream Base UI part into the primitive package, keeping upstream's attribute names (the `@bible/ui` README: "a part returns with its first consumer"); (2) only then consider a third-party Solid library. Its health check has two steps: the peer range must accept `solid-js@2`, and a grep of its `dist` must find none of the removed APIs: `solid-js/web`, `solid-js/store`, `createResource`, `mergeProps`, `splitProps`, `createComputed`, `onMount`, `Suspense`, `classList`. As of 2026-10, Kobalte, Corvu, `solid-sonner`, `@solid-primitives/*`, `solid-transition-group`, `solid-motionone` and `lucide-solid` all peer-lock to `^1.x`.
+**When the package lacks a part:** (1) port the upstream Base UI part into the primitive package, keeping upstream's attribute names, when its first consumer needs it; (2) only then consider a third-party Solid library. Its health check has two steps: the peer range must accept `solid-js@2`, and a grep of its `dist` must find none of the removed APIs: `solid-js/web`, `solid-js/store`, `createResource`, `mergeProps`, `splitProps`, `createComputed`, `onMount`, `Suspense`, `classList`. As of 2026-10, Kobalte, Corvu, `solid-sonner`, `@solid-primitives/*`, `solid-transition-group`, `solid-motionone` and `lucide-solid` all peer-lock to `^1.x`.
 
 **shadcn's composition rules still apply in concept:** items sit inside their group (`Menu.Item` inside `Menu.Group` with a `Menu.GroupLabel`); every dialog and drawer has a title (`Dialog.Title`, visually hidden if needed); 2–7 options use `ToggleGroup` + `Toggle`; overlays own their z-index; call-site `class` is for layout only, while color and type come from tokens.
 
@@ -108,7 +108,7 @@ Choose the tool in the skill's order: CSS transition, then `@starting-style`, th
 | React / `motion/react` | Solid 2 |
 | --- | --- |
 | `motion.div animate={…}` driven by state | A CSS transition keyed on a `data-*` attribute. |
-| `AnimatePresence` around primitive popups | Nothing to add when the primitives set `data-starting-style`/`data-ending-style` and unmount after `getAnimations()` finish, as Base UI ports such as `@bible/ui` do: the skill's popover, menu, modal, drawer and toast CSS recipes then apply verbatim. Otherwise use the conditional-element pattern below. |
+| `AnimatePresence` around primitive popups | Nothing to add when the primitives set `data-starting-style`/`data-ending-style` and unmount after `getAnimations()` finish, as Base UI ports do: the skill's popover, menu, modal, drawer and toast CSS recipes then apply verbatim. Otherwise use the conditional-element pattern below. |
 | `AnimatePresence` around your own conditional | An element that may stay in the DOM: `hidden={!open()}` with `transition-behavior: allow-discrete` on `display`. One that must unmount: `createPresence` (below). |
 | `initial={false}` | This is the default for state swaps when both states are in the DOM: nothing animates at mount. `@starting-style` **does** run on first mount, including server-rendered markup on page load, so reserve it for things that mount later. |
 | `mode="popLayout"` (swap without layout shift) | Stack both states in one grid cell (`grid-area: 1/1`) and cross-fade them. |
@@ -144,7 +144,7 @@ export function CopyButton(props: { copied: boolean; onCopy: () => void }) {
 @media (prefers-reduced-motion: reduce) { .icon-swap-layer { scale: 1; filter: none; } }
 ```
 
-**Enter and exit of a conditional element** (the `AnimatePresence` equivalent, modeled on `@bible/ui`'s `internals/transitions.ts`). CSS `@starting-style` handles the enter. The primitive keeps the element mounted while `data-ending-style` transitions run:
+**Enter and exit of a conditional element** (the `AnimatePresence` equivalent, modeled on a Base UI port's transitions). CSS `@starting-style` handles the enter. The primitive keeps the element mounted while `data-ending-style` transitions run:
 
 ```tsx
 import { type Accessor, createEffect, createSignal, untrack } from "solid-js";
@@ -235,7 +235,7 @@ export function Sheet(props: ParentProps<{ onDismiss: () => void }>) {
 }
 ```
 
-Before hand-rolling a sheet, check the primitive package for a drawer. For example, `@bible/ui/drawer` handles swipe-to-dismiss and exposes `--drawer-swipe-movement-y`.
+Before hand-rolling a sheet, check the primitive package for a drawer. For example, a Base UI port's drawer handles swipe-to-dismiss and exposes `--drawer-swipe-movement-y`.
 
 ## 6. Async, optimistic UI, URL state
 
@@ -243,10 +243,10 @@ Before hand-rolling a sheet, check the primitive package for a drawer. For examp
 | --- | --- |
 | `<Suspense>` | `<Loading fallback={…}>`. Once content has rendered, revalidation keeps it visible. `on={id()}` is a dependency list: when it changes and something under the boundary is pending, the fallback shows again. |
 | `<ErrorBoundary>` | `<Errored fallback={(err, reset) => …}>`. `err` is an accessor. |
-| `use(promise)`, react-query reads | An async memo, `createMemo(() => fetchUser(id()))`, read under `<Loading>`. In bible-tools use `@bible/atom-solid` (`useAtomValue`, `useAtomSuspense`). `@solidjs/router` 2 has `query()` and no `createAsync`. |
+| `use(promise)`, react-query reads | An async memo, `createMemo(() => fetchUser(id()))`, read under `<Loading>`. Where the project has an atom binding for Solid, use it (`useAtomValue`, `useAtomSuspense`). `@solidjs/router` 2 has `query()` and no `createAsync`. |
 | `useTransition`, `isPending` | Transitions are built in. `isPending(() => x())` is true while a **change** is in flight. `latest(x)` keeps the last settled value. Together they give stale-while-revalidate: dim the old rows with `data-pending={isPending(() => rows())}` (see `apps/egw-search/src/app.tsx`). |
 | `useOptimistic` | `createOptimistic` / `createOptimisticStore` written inside an `action(function* …)`. The optimistic value reverts when the action settles, and `refresh(source)` reconciles it with the source. A "saving…" label is a co-written `createOptimistic(false)` flag, not `isPending`. |
-| `nuqs` | `@bible/url-state`, which follows the nuqs model with Effect Schema codecs and an atom binding, where the repo has it. Otherwise `useSearchParams()` from `@solidjs/router`. 2.0-next adds a typed overload over a Standard Schema path. |
+| `nuqs` | The project's URL-state package, one that follows the nuqs model with Effect Schema codecs and an atom binding, where the repo has it. Otherwise `useSearchParams()` from `@solidjs/router`. 2.0-next adds a typed overload over a Standard Schema path. |
 
 ```ts
 const [comments, setComments] = createOptimisticStore(() => api.comments(postId()), []);
@@ -264,26 +264,26 @@ const post = action(function* (text: string) {
 | React | Solid 2 |
 | --- | --- |
 | `createPortal(node, target)` | `<Portal mount={target}>` from `@solidjs/web` (default `document.body`). Its only props are `mount` and `children`. It inserts children with **no wrapper element**, so a theme class has nowhere to go but the child's own root. It renders nothing on the server and fills in after hydration. |
-| Radix or Base UI `Portal container` | `<Portal mount={el}>` from `@solidjs/web` (`document.body` when `mount` is left out). A Base UI port's part portal does the same: `@bible/ui`'s `X.Portal` renders a `<div>` at the end of `<body>`. Add `inline` to render it where it is written instead: it then inherits the subtree's CSS variables and is included in the server markup. Use it for a `position: fixed` popup under no `transform`, `filter` or `contain`. |
+| Radix or Base UI `Portal container` | `<Portal mount={el}>` from `@solidjs/web` (`document.body` when `mount` is left out). A Base UI port's part portal does the same: its `X.Portal` renders a `<div>` at the end of `<body>`. Add `inline` to render it where it is written instead: it then inherits the subtree's CSS variables and is included in the server markup. Use it for a `position: fixed` popup under no `transform`, `filter` or `contain`. |
 
 Theming follows the skill's rule: put mode and theme variables on `<html>` (or `:root`) so that portalled popups, dialogs and toasts at the end of `<body>` inherit them. If a theme is scoped to a subtree, use `inline`, or repeat its class or `data-theme` on the portal's root element. Context crosses portals because it follows the owner tree; CSS inheritance does not.
 
 ## 8. SSR and hydration
 
 - **`"use client"` maps to nothing.** Components are isomorphic and there are no server components. Browser-only code goes in `onSettled` or a `createEffect` apply; neither runs on the server. The `createRenderEffect` apply *does* run there. Guard anything else with `isServer` from `@solidjs/web`.
-- **Hydration does not patch attributes.** While a node hydrates, `class`, `style` and attribute bindings keep the server's value, silently, until the value next changes. A mode, locale, `Date.now()`, `matchMedia` or `localStorage` value that differs on the client therefore leaves stale markup instead of raising a warning. Render a server-safe value and switch to the real one in `onSettled`, or use `@bible/atom-solid`'s `Atom.withServerValue`. Set the theme mode on `<html>` with an inline script before first paint.
+- **Hydration does not patch attributes.** While a node hydrates, `class`, `style` and attribute bindings keep the server's value, silently, until the value next changes. A mode, locale, `Date.now()`, `matchMedia` or `localStorage` value that differs on the client therefore leaves stale markup instead of raising a warning. Render a server-safe value and switch to the real one in `onSettled`, or use the atom binding's `Atom.withServerValue` where the project has one. Set the theme mode on `<html>` with an inline script before first paint.
 - A typed field must never reset when its server value arrives. Bind `value` once and update it through `onInput`.
-- No project here uses SolidStart. bible-tools renders with `renderToStream` and `hydrate` (`packages/film/src/lab/page-server.tsx`, `page-client.tsx`). SolidStart on Solid 2 is unverified.
+- Without SolidStart, render with `renderToStream` on the server and `hydrate` on the client. SolidStart on Solid 2 is unverified.
 
 ## 9. Composition (the `composition-patterns` rules in Solid 2)
 
 | Rule | Solid 2 |
 | --- | --- |
-| Compound components | One context and a namespace object: `export const Composer = { Provider, Frame, Input, Submit }` (`@bible/ui` uses `export * as Toast from './index.parts.ts'`). The context is its own provider: `<Ctx value={…}>`. `Ctx.Provider` is gone. |
+| Compound components | One context and a namespace object: `export const Composer = { Provider, Frame, Input, Submit }` (a primitive package can use `export * as Toast from './index.parts.ts'`). The context is its own provider: `<Ctx value={…}>`. `Ctx.Provider` is gone. |
 | Context interface (`state` / `actions` / `meta`) | The same shape, with `state` holding **accessors or a store**, because a context value is not reactive by itself. `createContext<T>()` with no default throws outside its provider, and `useContext` is typed `T`, so write no `useX` null-check wrapper. |
 | Decouple state, lift state | The same. The provider is the only code that knows whether state comes from signals, a store, an atom or the URL. |
 | Avoid boolean props, explicit variants | The same reasoning. A `cva` variant or a named component (`ThreadComposer`), never `isThread`. |
-| Children over render props | The same, for content slots. `@bible/ui`'s `render` prop is the `asChild` replacement for swapping the element, not a content slot. Each read of `props.children` creates new nodes, so resolve once with `children(() => props.children)` when you need to inspect or reuse them. |
+| Children over render props | The same, for content slots. A Base UI port's `render` prop is the `asChild` replacement for swapping the element, not a content slot. Each read of `props.children` creates new nodes, so resolve once with `children(() => props.children)` when you need to inspect or reuse them. |
 | No `forwardRef`, `use()` over `useContext` | `ref` is a plain prop (section 4). `useContext` is the only reader. |
 | `mergeProps` / `splitProps` / default props | `merge(defaults, props)` and `omit(props, "class", "tone")`. Both return live views. In `merge`, an explicit `undefined` **overrides** a default. Never destructure props: `function C({ value })` freezes `value` (dev warns). |
 | Pass values, not accessors | `<Counter value={count()} />`, not `value={count}`. To forward a getter on purpose, name it as one: `getValue={() => count()}`. |
@@ -317,7 +317,7 @@ Remix 3 composes behaviour with a `mix` prop: an array of mixins on one element,
 | click, key and pointer handlers | prop mixin `onX` | They are delegated, and `mergeProps` runs every handler. |
 | listener options, `document`/`window` listeners, observers, focus, measuring, animation | ref factory | Runs only in the DOM, never on the server. |
 
-The helpers below need nothing beyond `solid-js` (checked on rc.15: server markup, state across updates, handler order, setup timing). Put them in the project's UI package. If the project already has them, use those: bible-tools' `@bible/ui` has the same set in `packages/ui/src/mix/mix.ts`, with Base UI's `preventBaseUIHandler` on top.
+The helpers below need nothing beyond `solid-js` (checked on rc.15: server markup, state across updates, handler order, setup timing). Put them in the project's UI package. If the project already has them, use those; a Base UI port may add Base UI's `preventBaseUIHandler` on top.
 
 ```ts
 // mix.ts
@@ -420,9 +420,9 @@ function Card(props: { ref?: JSX.Ref<HTMLDivElement>; onOpen: () => void }) {
 
 ## 10. Toasts
 
-Sonner is React-only. In Solid use the primitive package's toast (`@bible/ui/toast` in bible-tools). Without one, port Base UI's Toast parts into the package; Solid toast libraries still peer-lock to Solid 1.
+Sonner is React-only. In Solid use the primitive package's toast (`@app/ui/toast`). Without one, port Base UI's Toast parts into the package; Solid toast libraries still peer-lock to Solid 1.
 
-| Sonner | the primitive package's toast (`@bible/ui/toast`) |
+| Sonner | the primitive package's toast (`@app/ui/toast`) |
 | --- | --- |
 | One `<Toaster />` at the root | One `<Toast.Provider toastManager={manager}>` → `<Toast.Portal>` → `<Toast.Viewport>` → `<For each={Toast.useToastManager().toasts} keyed={(t) => t.id}>` → `<Toast.Root toast={t()}>`. The manager comes from `Toast.createToastManager()` at app scope. |
 | `toast("…")`, `toast.success` | `manager.add({ title, type: "success" })` returns the id. `type` becomes `data-type` on every part. |
@@ -433,7 +433,7 @@ Sonner is React-only. In Solid use the primitive package's toast (`@bible/ui/toa
 | `classNames` + `!important` | Unstyled. Style it with `class` and `data-type`, `data-starting-style`/`data-ending-style`, `data-swiping`, `data-swipe-direction`, `data-expanded`, `data-behind` and `data-limited`. |
 | `onDismiss` / `onAutoClose` | `onRemove`, which fires after the exit animation. |
 
-These Sonner rules still apply: mount one provider; fire toasts from event handlers or actions, never from effects; toasts carrying an action or an error persist, and those that time out show for at least 5 s; a toast exits through the edge it entered (`swipeDirection`). The viewport is a polite live region. `@bible/ui` dropped `priority`, so an error that must interrupt needs its own `role="alert"` region.
+These Sonner rules still apply: mount one provider; fire toasts from event handlers or actions, never from effects; toasts carrying an action or an error persist, and those that time out show for at least 5 s; a toast exits through the edge it entered (`swipeDirection`). The viewport is a polite live region. A Base UI port without `priority` needs its own `role="alert"` region for an error that must interrupt.
 
 ## 11. Review checklist (Solid-specific)
 

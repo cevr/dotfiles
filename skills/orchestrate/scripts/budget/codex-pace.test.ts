@@ -193,7 +193,7 @@ describe('admit', () => {
       ok: true,
       reason: 'fits: this sol implementor runs alone, as no other worker burns; the pace is 0.3 %/h (+0.4 %/h)',
     });
-    // Interactive use is no worker (2026-10-28: 0.2 %/h of it held the Workbox queue).
+    // Interactive use is no worker: even a little of it would otherwise hold a host's queue.
     expect(admit({ loads: [load({ interactive1h: { sol: 1.6e6 }, now: T })], fit: k, pctph: 0.5, family: 'sol', role: 'implementor' })).toMatchObject({ ok: true });
     // A worker live or just started is not alone.
     expect(admit({ loads: [load({})], fit: k, pctph: 0.3, family: 'sol', role: 'implementor', reserve: 0.1, now: T })).toMatchObject({ ok: false });

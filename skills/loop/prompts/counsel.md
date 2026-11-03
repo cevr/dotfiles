@@ -16,4 +16,4 @@ Read-only review of commits `<base>..HEAD` on `<workspace path>` (<one line: wha
 Real defects only. Per question: OK, or the defect with file:line, a concrete failure (input or event order → wrong output), severity, reproduced yes/no. End with the list of files you read.
 ```
 
-The apply agent fixes each defect with a test that is red first. The reviewer then reviews that fixup's delta, and the rounds go on until it accepts, or until the third failed round makes the batch stuck and the orchestrator re-plans it. In gent, fixups that merged without a second look were how each pass's regressions reached the next pass. A defect left unfixed gets a written rejection on the ledger.
+The apply agent fixes each defect with a test that is red first. The reviewer then reviews that fixup's delta, and the rounds go on until it accepts, or until the third failed round makes the batch stuck and the orchestrator re-plans it. Fixups that merge without a second look carry each pass's regressions into the next. A defect left unfixed gets a written rejection on the ledger.

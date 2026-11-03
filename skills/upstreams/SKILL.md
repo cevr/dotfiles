@@ -19,7 +19,7 @@ It lists each source that moved since its recorded commit, the okra-managed skil
 
 ## 2. Sync the managed skills
 
-For a `modified` skill, move the local edits into its source first (okra's own skills live in `~/Developer/personal/okra/skills`, `bible` in manna; for a third-party repo, ask the owner whether to make the skill our own in `skills/.own-skills`). Then run `SKILLS_DIR=<rift>/skills okra skills update` in a dotfiles Rift and commit it as `chore(skills): sync okra skills`. Pass `--force` only to discard a local edit on purpose. Done when the scan shows no outdated and no modified skill.
+For a `modified` skill, move the local edits into its source first (okra's own skills live in `~/Developer/personal/okra/skills`, and a skill another of our repos publishes lives in that repo; for a third-party repo, ask the owner whether to make the skill our own in `skills/.own-skills`). Then run `SKILLS_DIR=<rift>/skills okra skills update` in a dotfiles Rift and commit it as `chore(skills): sync okra skills`. Pass `--force` only to discard a local edit on purpose. Done when the scan shows no outdated and no modified skill.
 
 ## 3. Review each moved source
 

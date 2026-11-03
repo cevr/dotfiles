@@ -35,7 +35,7 @@ The first line of your file states the same verdict. At your first compaction, i
 
 **Shell.** Separate outputs with `echo ----`, since zsh fails on a word that starts with `=`. Run a long command (counsel, an e2e) once with `run_in_background: true` and end your turn or do other work; its completion wakes you, so you never poll it.
 
-**Signals.** Send a signal only to a pid or process group that your own command started and still holds. Never signal `-1`, pid 0 or 1, or a pid you read from elsewhere, in a shell, a test or a probe. `kill -HUP -- -1` reaches every process of the user, and `unshare --user --net` does not stop it: on 2026-10-23 two reviewers' real-host probes each ended every agent session, the multiplexer and the Claude proxy on the workbox. A probe of broadcast-signal behavior runs on a simulated host only.
+**Signals.** Send a signal only to a pid or process group that your own command started and still holds. Never signal `-1`, pid 0 or 1, or a pid you read from elsewhere, in a shell, a test or a probe. `kill -HUP -- -1` reaches every process of the user, and `unshare --user --net` does not stop it: a real-host probe of it ends every agent session, the terminal multiplexer and the proxy on that host. A probe of broadcast-signal behavior runs on a simulated host only.
 
 ## Rounds
 

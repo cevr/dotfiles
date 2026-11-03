@@ -9,7 +9,7 @@ const bun = (script: string, ...args: string[]) => {
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
 };
 const unitDir = () => {
-  const dir = join(mkdtempSync(join(tmpdir(), 'log-')), 'run', 'sheet');
+  const dir = join(mkdtempSync(join(tmpdir(), 'log-')), 'run', 'auth');
   mkdirSync(dir, { recursive: true });
   return dir;
 };
@@ -27,8 +27,8 @@ test('the lines log.ts writes are the transitions timing.ts and status.ts read',
   ]) expect(bun('log.ts', dir, ...step).code).toBe(0);
 
   const [u] = JSON.parse(bun('timing.ts', join(dir, '..'), '--json').out);
-  expect(u).toMatchObject({ unit: 'sheet', final: 'merged', rounds: 2, reviewBounces: 1 });
-  expect(bun('status.ts', join(dir, '..')).out).toContain('| sheet | merged abc1234 | 2 |');
+  expect(u).toMatchObject({ unit: 'auth', final: 'merged', rounds: 2, reviewBounces: 1 });
+  expect(bun('status.ts', join(dir, '..')).out).toContain('| auth | merged abc1234 | 2 |');
 });
 
 test('refuses an unknown state, a from that is not the current state, and a round below the last', () => {
@@ -60,7 +60,7 @@ test('a stale branch goes through integration-check, which the timing names', ()
   const dir = unitDir();
   bun('log.ts', dir, 'new', 'decide', 'r1');
   expect(bun('log.ts', dir, 'decide', 'integration-check', 'r1', 'main moved; merge with no conflict').code).toBe(0);
-  expect(bun('log.ts', dir, 'integration-check', 'decide', 'r1', 'merge-sheet.log exit 0').code).toBe(0);
+  expect(bun('log.ts', dir, 'integration-check', 'decide', 'r1', 'merge-auth.log exit 0').code).toBe(0);
   const [u] = JSON.parse(bun('timing.ts', join(dir, '..'), '--json').out);
   expect(Object.keys(u.time)).toEqual(['decide', 'integration-check']);
 });
@@ -73,5 +73,5 @@ test('a unit too big for a round is stuck(size): logged, timed as stuck, and sho
   const [u] = JSON.parse(bun('timing.ts', join(dir, '..'), '--json').out);
   expect(Object.keys(u.time)).toEqual(['implement', 'stuck']);
   bun('log.ts', dir, 'decide', 'stuck(size)', 'r2');
-  expect(bun('status.ts', join(dir, '..')).out).toContain('| sheet | stuck(size) | 2 |');
+  expect(bun('status.ts', join(dir, '..')).out).toContain('| auth | stuck(size) | 2 |');
 });

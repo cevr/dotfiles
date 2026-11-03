@@ -42,7 +42,7 @@ describe('hostLoad', () => {
 });
 
 test("a role agent keeps the worker's cost history in its role", () => {
-  expect(kindFor('status:orchestrate-implementor', 'implementor sheet r2')).toBe('orchestrate-worker:implement');
+  expect(kindFor('status:orchestrate-implementor', 'implementor auth r2')).toBe('orchestrate-worker:implement');
   expect(kindFor('orchestrate-reviewer', 'anything')).toBe('orchestrate-worker:review');
   expect(kindFor('status:orchestrate-worker', 'verify coldload r3')).toBe('orchestrate-worker:verify');
   expect(kindFor(undefined, 'explore the docs')).toBe('agent:explore');

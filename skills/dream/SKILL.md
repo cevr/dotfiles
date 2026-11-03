@@ -12,13 +12,13 @@ The window is the last 7 days unless the owner names another. Work only from mea
 
 1. **Read last week's dream** in `~/.claude/dreams/`, if one exists. For each action it applied, find the number it promised to move. An action that moved nothing is a revert candidate. Removing tooling counts the same as adding it.
 
-2. **Mine the sessions on each machine.** The machines are this Mac and the workbox (`ssh bite-workbox`). Run the miner from [`retro`](../retro/SKILL.md) step 2 on each one, with its own `--out`:
+2. **Mine the sessions on each machine.** The machines are this one and each remote dev box the global `AGENTS.md` names (over `ssh`). Run the miner from [`retro`](../retro/SKILL.md) step 2 on each one, with its own `--out`:
 
    ```
    bun ~/.claude/skills/retro/scripts/mine-sessions.ts --since 7d --out <scratch>/<machine>
    ```
 
-   On the workbox, run `git -C ~/Developer/personal/dotfiles pull --ff-only` first. Then mine gent's sessions on each machine through its running server (gent's store is the server's; never open `~/.gent/data.db`):
+   On a remote box, run `git -C ~/Developer/personal/dotfiles pull --ff-only` first. Then mine gent's sessions on each machine through its running server (gent's store is the server's; never open `~/.gent/data.db`):
 
    ```
    gent ctl review --since 7d --out <scratch>/<machine>-gent

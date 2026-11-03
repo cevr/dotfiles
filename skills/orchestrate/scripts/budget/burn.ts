@@ -493,17 +493,16 @@ const TIE = 0.01;
 export const ceilingOf = (env = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW): number => Number(env) || 200e3;
 // Windows the owner sets, which the tuner reports but never changes. The main
 // session's compaction loses the run's state and holds the owner for about a
-// minute, which the replay's token cost does not count (owner, 2026-10-24: at
-// 400k the week's replay cost 4-5% more tokens across the host and compacted
-// the main session 70% less).
+// minute, which the replay's token cost does not count: a larger window costs
+// the replay a few percent more tokens but compacts the main session far less.
 //
-// Every orchestrate kind runs at WORKER_MAX (vperf2, 2026-10-30): a worker
+// Every orchestrate kind runs at WORKER_MAX: a worker
 // hands off at its first compaction (protocol.md), so a tuned 120k window,
 // which compacts at about 87k, ended fresh workers before their first edit.
 const ROLES = ['worker', 'planner', 'implementor', 'reviewer', 'verifier'].map((role) => `orchestrate-${role}`);
 export const PINNED: Record<string, number> = { root: 400e3, ...Object.fromEntries(ROLES.map((kind) => [kind, 200e3])) };
 // A worker's window stays at or under this: past it, one agent's context costs
-// more than the tune's replay can see (owner, 2026-10-30).
+// more than the tune's replay can see.
 export const WORKER_MAX = 200e3;
 // An agent whose context passed its kind's window by this much ran without it:
 // the engine ignored the window (2.1.310 did, for every registered agent). The

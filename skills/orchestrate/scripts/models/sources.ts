@@ -168,7 +168,7 @@ export function claudeAgents(root: string, since: number): Agent[] {
 
 export type BridgeTag = { unit: string; round?: number };
 
-// A start's description begins like the hand-back line: `implementor sheet r2`.
+// A start's description begins like the hand-back line: `implementor auth r2`.
 const HANDBACK = /^(?:planner|implementor|reviewer|verifier)\s+(\S+)\s+r(\d+)\b/;
 
 /**

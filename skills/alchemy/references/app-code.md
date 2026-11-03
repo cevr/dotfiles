@@ -60,7 +60,7 @@ export default class Api extends Service<Api>()(
 
 ## Serving an HttpRouter or HttpApi from `fetch`
 
-`fetch` is an `HttpEffect`: `Effect<HttpServerResponse, HttpServerError | HttpBodyError, HttpServerRequest | Scope | …>`. Turn the app's router Layer into one with `HttpRouter.toHttpEffect`, which builds the Layer once at boot. This is ytt.cvr.im's deployed server (`src/deploy/Server.ts`):
+`fetch` is an `HttpEffect`: `Effect<HttpServerResponse, HttpServerError | HttpBodyError, HttpServerRequest | Scope | …>`. Turn the app's router Layer into one with `HttpRouter.toHttpEffect`, which builds the Layer once at boot. A deployed server (`src/deploy/Server.ts`):
 
 ```typescript
 const AppLive = YouTubeTranscript.layer.pipe(Layer.provide(FetchHttpClient.layer));

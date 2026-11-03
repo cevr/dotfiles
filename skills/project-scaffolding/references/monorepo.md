@@ -1,6 +1,6 @@
 # Monorepo Setup
 
-Step-by-step guide for scaffolding a multi-package Effect monorepo with Turbo. Based on `gent` and `bible-tools`.
+Step-by-step guide for scaffolding a multi-package Effect monorepo with Turbo, based on production monorepos.
 
 For package roles, contracts projected onto several surfaces, and core/client splits, read the `effect` skill's `references/ARCHITECTURE.md`.
 

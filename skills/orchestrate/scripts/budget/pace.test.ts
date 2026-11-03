@@ -118,22 +118,22 @@ describe('target', () => {
 
 describe('estimate', () => {
   const kinds = [
-    { project: 'gent', kind: 'w:review', agents: 3, wph: [10, 12, 14] },
-    { project: 'hymn', kind: 'w:review', agents: 1, wph: [40] },
-    { project: 'hymn', kind: 'w:verify', agents: 3, wph: [20, 22, 24] },
+    { project: 'app', kind: 'w:review', agents: 3, wph: [10, 12, 14] },
+    { project: 'web', kind: 'w:review', agents: 1, wph: [40] },
+    { project: 'web', kind: 'w:verify', agents: 3, wph: [20, 22, 24] },
   ];
   test("prefers the project's own history for the kind", () => {
-    expect(estimate(kinds, 'gent', 'w:review')).toBe(12);
+    expect(estimate(kinds, 'app', 'w:review')).toBe(12);
   });
   test("falls back to the kind's history across projects", () => {
-    expect(estimate(kinds, 'hymn', 'w:review')).toBe(14);
+    expect(estimate(kinds, 'web', 'w:review')).toBe(14);
   });
 });
 
 describe('admit', () => {
   const base = { targetWph: 100, estimateWph: 20, reserved: [] };
-  const root = (recentWph: number) => ({ session: 'r', project: 'gent', kind: 'root', sub: false, recentWph });
-  const sub = (recentWph: number) => ({ session: 'r', project: 'gent', kind: 'w:task', sub: true, recentWph });
+  const root = (recentWph: number) => ({ session: 'r', project: 'app', kind: 'root', sub: false, recentWph });
+  const sub = (recentWph: number) => ({ session: 'r', project: 'app', kind: 'w:task', sub: true, recentWph });
   test('starts an agent that fits the pace', () => {
     expect(admit({ ...base, sessions: [root(30)] }).ok).toBe(true);
   });
@@ -166,12 +166,12 @@ describe('the Sabbath', () => {
     const accounts = [{ used7d: 0.5, reset7d: NOON + 7 * 24 * HOUR, used5h: 0 }];
     const clock = weeklyPace(accounts, NOON, UTC);
     const rest = weeklyPace(accounts, NOON, DEFAULTS);
-    // Friday sunset to Saturday sunset in Knowlton is about 24 hours of the 168.
+    // Friday sunset to Saturday sunset at the sabbath mod's location is about 24 hours of the 168.
     expect(rest.floor / clock.floor).toBeGreaterThan(168 / 145);
     expect(rest.floor / clock.floor).toBeLessThan(168 / 143);
   });
   test('a reset that falls in the rest leaves no pace undefined: its quota left is lost, and it refills', () => {
-    // Saturday noon in Knowlton, in the rest; one account resets at 15:00, the other next Wednesday.
+    // Saturday noon at the sabbath mod's location, in the rest; one account resets at 15:00, the other next Wednesday.
     const now = Date.UTC(2026, 9, 31, 16);
     const accounts = [
       { used7d: 1, reset7d: Date.UTC(2026, 9, 31, 19), used5h: 0 },

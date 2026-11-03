@@ -1,15 +1,15 @@
 # UI guidance
 
-For any repo with a UI. The loop's `ui guidance` sweep reads it, UI batches build by it, and their reviewers check against it. It gathers four guides the owner chose (2026-10-11):
+For any repo with a UI. The loop's `ui guidance` sweep reads it, UI batches build by it, and their reviewers check against it. It gathers four guides the owner chose:
 
 - **shadcn**: `~/.claude/skills/shadcn/SKILL.md` and `rules/*.md`. Its design rules, not its CLI. In a repo without `components.json`, never run `shadcn init`, `add` or `apply`. Run `bunx --bun shadcn@latest docs|view <part>` from a scratch directory outside the repo to read a part's anatomy. Its Base UI flavour is the one to read when the repo's primitives are Base UI.
 - **Graphical**: `~/Developer/personal/dotfiles/design/graphical-untitled/GUI.md` (→ Rules for UI work) and `gui/interface-judgment.md`, `gui/foundations.md`, `gui/base-ui.md`, `gui/custom-components.md`, with the global skills `graphical-ui`, `graphical-audit` and `graphical-convert`. Its rules apply. Its theme values do not, unless the owner chose a conversion.
 - **composition-patterns**: `~/.claude/skills/composition-patterns/` (`AGENTS.md` has every rule).
 - **react**: `~/.claude/skills/react/SKILL.md` and `references/*.md`.
 
-**Scope (owner):** "mostly about guidance - i think our ui is fine but this could improve it." The guides improve what exists. Never restyle or restructure working UI only to match them. The project's own design language and `NORTH_STAR.md` win a conflict. Name the conflict, don't count it as a finding.
+**Scope:** guidance, not a redesign. The guides improve what exists. Never restyle or restructure working UI only to match them. The project's own design language and `NORTH_STAR.md` win a conflict. Name the conflict, don't count it as a finding.
 
-**Solid (owner: "insofar as it relates to solid"):** composition-patterns and react are written for React. In a Solid repo, take the idea, not the React mechanics, through the map below. A React-only rule with no Solid meaning is skipped, never imitated.
+**Solid:** the guides apply only insofar as they relate to Solid. composition-patterns and react are written for React. In a Solid repo, take the idea, not the React mechanics, through the map below. A React-only rule with no Solid meaning is skipped, never imitated.
 
 ## Design (shadcn, Graphical)
 

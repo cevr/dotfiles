@@ -15,7 +15,7 @@
 // - Quota fractions turn into W/h through k7 and k5: the rise of the accounts'
 //   weekly and 5-hour use per weighted token over the last hour.
 // - No agent works on the Sabbath (the sabbath mod), so with `sabbath` set the
-//   weekly paces spread the quota over the hours outside it (owner, 2026-10-30).
+//   weekly paces spread the quota over the hours outside it.
 
 import { awake } from '../../../../claude/mods/sabbath/hooks/sabbath.ts';
 
@@ -39,7 +39,7 @@ export type Config = {
   sabbath: boolean;
   /**
    * Admission lets the projected burn pass the pace by a fraction: `high` once the pace is at or above the
-   * even weekly supply, `low` at half of it or below, linear between (owner, 2026-11-01). At 5%, a pace of 20
+   * even weekly supply, `low` at half of it or below, linear between. At 5%, a pace of 20
    * still admits an agent that brings the burn to 21. A slow pace leaves room for few agents, so one agent
    * passes it by more.
    */
