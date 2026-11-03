@@ -131,9 +131,13 @@ describe('tune', () => {
     ]);
   });
 
-  test('runs every orchestrate role at 200k, however cheap a smaller window replays', () => {
+  test('runs the reviewer at 400k and every other orchestrate role at 200k, however cheap a smaller window replays', () => {
     const roles = ['orchestrate-worker', 'orchestrate-implementor', 'orchestrate-reviewer'].flatMap((kind) => Array.from({ length: 20 }, () => agent(kind)));
-    for (const t of tune(roles, 200e3)) expect(t).toMatchObject({ window: 200e3 });
+    for (const t of tune(roles, 450e3)) expect(t).toMatchObject({ window: t.kind === 'orchestrate-reviewer' ? 400e3 : 200e3 });
+    expect(tune([agent('orchestrate-reviewer')], 450e3)).toMatchObject([{ kind: 'orchestrate-reviewer', window: 400e3 }]);
+  });
+
+  test('keeps a pinned window under the ceiling', () => {
     expect(tune([agent('orchestrate-reviewer')], 200e3)).toMatchObject([{ kind: 'orchestrate-reviewer', window: 200e3 }]);
   });
 

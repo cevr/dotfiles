@@ -19,8 +19,9 @@ type On = Parameters<Register>[0]
 
 const HOUR = 3600e3
 const WORKER = 'orchestrate-worker'
-// budget/burn.ts WORKER_MAX: the largest window a worker kind is registered with.
+// budget/burn.ts WORKER_MAX and REVIEWER_MAX: the largest window each kind is registered with.
 export const WORKER_MAX = 200e3
+const MAX: Record<string, number> = { 'orchestrate-reviewer': 400e3 }
 export const KINDS = [WORKER, ...['planner', 'implementor', 'reviewer'].map(role => `orchestrate-${role}`)]
 const CACHE = '"$HOME/.cache/orchestrate"'
 export const KEEP =
@@ -87,9 +88,9 @@ async function load($: EngineInterface) {
   warned = over
   const next = new Set<string>()
   for (const name of KINDS) {
-    // A worker never runs past WORKER_MAX, whatever an older cache holds.
+    // A kind never runs past its cap, whatever an older cache holds.
     const tuned = windows[name] ?? windows[WORKER]
-    const window = tuned && Math.min(tuned, WORKER_MAX)
+    const window = tuned && Math.min(tuned, MAX[name] ?? WORKER_MAX)
     const file = window ? await $.process.run(sh(`cat "$HOME/.claude/agents/${name}.md"`), { timeoutMs: 5e3 }) : undefined
     const agent = file?.exitCode === 0 ? parseAgent(file.stdout) : undefined
     if (!window || !agent) continue

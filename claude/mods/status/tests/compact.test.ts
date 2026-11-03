@@ -148,7 +148,7 @@ test('a reload registers the copies before the tune ends, and warns of agents th
   expect(toasts[0]).not.toContain('Explore')
 })
 
-test('an older cache with a wide worker window registers the copies at the cap, and warns of an untuned role that ran past it', async ($, on) => {
+test("an older cache with a wide worker window registers the copies at each kind's cap, and warns of an untuned role that ran past it", async ($, on) => {
   const registered: Record<string, unknown>[] = []
   const toasts: string[] = []
   const wide = JSON.stringify({
@@ -185,6 +185,6 @@ test('an older cache with a wide worker window registers the copies at the cap, 
   await settle()
   // Two loads (before the tune and the mocked hourly one); each registers all four kinds.
   expect(new Set(registered.map(r => r.name)).size).toBe(4)
-  for (const r of registered) expect(r).toMatchObject({ autoCompactWindow: 200e3 })
+  for (const r of registered) expect(r).toMatchObject({ autoCompactWindow: r.name === 'orchestrate-reviewer' ? 400e3 : 200e3 })
   expect(toasts).toEqual([expect.stringContaining('1 orchestrate-reviewer past 200k')])
 })
