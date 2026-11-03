@@ -6,7 +6,7 @@ The planner fills one copy per unit into `<run dir>/<unit>/spec.md`, and the orc
 # <unit> — spec (orchestrator-owned; agents do not edit it)
 
 Run `<run>` · unit dir `<run dir>/<unit>` · failure cap 3 · timebox <hours per round>
-Machine: plan → implement → review (the other model family: directly from Claude Code, through okra counsel from Codex) → verify (`deep` only: fresh agent, clean checkout) → decide.
+Machine: plan → implement → review (the other model family: directly from Claude Code, through okra counsel from Codex) → verify (`standard` and `deep`: fresh agent, clean checkout) → decide.
 Path: <light | standard | deep>: <why; for deep, why a defect is costly or why the check is a live drive>.
 Protocol: a role agent carries it in its prompt; any other worker reads `~/.claude/skills/orchestrate/protocol.md` in full first.
 
@@ -23,7 +23,7 @@ Protocol: a role agent carries it in its prompt; any other worker reads `~/.clau
 <Files that running units own; shared resources (migration numbers, lab and debug (CDP) ports, sequence ids, a branch stack, the e2e lock) and the one unit that owns each.>
 
 ## Acceptance check
-<Objective, runnable, written before any code: the commands, and the result that means done. Prefer a test that is red now and must go green, a parity or golden diff, a live drive with its expected state, a benchmark against its baseline. "Looks right" is not a check. When the repo has a `verify-<app>` skill, name its feature and sub-feature ids, plus any rows this unit adds to its map.>
+<Objective, runnable, written before any code: the commands, and the result that means done. Prefer a test that is red now and must go green, a parity or golden diff, a live drive with its expected state, a benchmark against its baseline. A rule gets a generated property over its whole domain; behavior over time gets a model-based test against a reference model; interleaving concurrency also gets a checked Quint or TLA+ model, named here with its invariants. "Looks right" is not a check. When the repo has a `verify-<app>` skill, name its feature and sub-feature ids, plus any rows this unit adds to its map.>
 
 ## Gate
 <The repo's full gate command, its guards included (a dead-exports or boundary check that only CI or main runs is still the gate); where the log goes (`<run dir>/<unit>/gate-N.log`). Round gate: the legs under a minute each. Merge only: each slower leg, run once at decide.>

@@ -26,6 +26,14 @@ The sheet snaps shut on a slow drag.
 ### M3
 repeat of r1 M1: the header jumps on rotate.
 
+## Unproven
+
+- U1 repeat of r1 M1: may stall on a cold iPhone; probe: cold launch, play.
+
+## On base
+
+- O1 repeat of r1 M2: main already drops the tab press.
+
 ## Minor
 
 - m1 repeat of r1 m1: a stale comment.
@@ -39,6 +47,8 @@ test('a request that names no red test for a repeated Major goes back, naming ea
   expect(r.err).toContain('M3 is a repeat');
   expect(r.err).not.toContain('M2');
   expect(r.err).not.toContain('m1');
+  expect(r.err).not.toContain('U1');
+  expect(r.err).not.toContain('O1');
 });
 
 test("a red test must be red at the head the repeat's round reviewed", () => {

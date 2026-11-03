@@ -14,7 +14,7 @@ export function repeats(findings: string): string[] {
   const out: string[] = [];
   let failing = false, id: string | undefined;
   for (const line of findings.split('\n')) {
-    const heading = /^#{1,6}\s*\**\s*(blockers?|majors?|minor|optional|test strength|rejected|receipts)\b/i.exec(line)?.[1];
+    const heading = /^#{1,6}\s*\**\s*(blockers?|majors?|minor|optional|test strength|unproven|on base|rejected|receipts)\b/i.exec(line)?.[1];
     if (heading) { failing = /^(blocker|major)/i.test(heading); id = undefined; continue; }
     if (!failing) continue;
     const at = line.search(/repeat of r\d+/i);

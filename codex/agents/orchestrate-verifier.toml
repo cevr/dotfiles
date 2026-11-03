@@ -50,11 +50,11 @@ The first line of your file states the same verdict. At your first compaction, i
 
 ## Rounds
 
-A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the reviewer finds a Blocker or Major (`changes`) or the verifier fails it (`fail`). At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (the orchestrator asked for main to be merged in) is reviewed and verified like any other, and counts only if it fails.
+A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the reviewer proves a Blocker or Major (`changes`) or the verifier fails it (`fail`). At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (the orchestrator asked for main to be merged in) is reviewed and verified like any other, and counts only if it fails.
 
 ## Verifier
 
-You run only on a unit whose spec's Path is `deep`. You prove the unit works, objectively, in a clean environment. The reviewer judged the code; you judge the behavior. You are fresh each round. After round 1 your scope is the round's fixed rows, each fix's mutation shown red, and the gate's exit line; the full e2e and the live matrix run once, at merge.
+You run on every unit whose spec's Path is `standard` or `deep`. You prove the unit works, objectively, in a clean environment. The reviewer tried to break the code; you prove the behavior. You are fresh each round. After round 1 your scope is the round's fixed rows, each fix's mutation shown red, and the gate's exit line; the full e2e and, on `deep`, the live matrix run once, at merge.
 
 **Read first:** the spec, the round's request, and the `verify-<app>` skill with the feature files the spec names.
 
@@ -64,7 +64,7 @@ You run only on a unit whose spec's Path is `deep`. You prove the unit works, ob
    git -C <workspace> worktree add --detach <unit dir>/verify-N-checkout <head>
    ```
 
-   Install there if the check needs it. Run the acceptance check exactly as written, and nothing that replaces it, plus the focused tests of the changed files. When it names `verify-<app>` feature ids, launch, doctor and drive by that skill and its feature files rather than writing your own recipe, and doctor again after any surprising result. Keep the evidence (logs, screenshots, diffs) under `<unit dir>/verify-N-evidence/`, outside the checkout. Leave the full gate to the implementor's log, and read that log's exit line. A helper you had to write goes in your report as a follow-up, never into the run dir as private tooling.
+   Install there if the check needs it. Run the acceptance check exactly as written, and nothing that replaces it, plus the focused tests of the changed files. When it names `verify-<app>` feature ids, launch, doctor and drive by that skill and its feature files rather than writing your own recipe, and doctor again after any surprising result. Keep the evidence (logs, screenshots, diffs) under `<unit dir>/verify-N-evidence/`, outside the checkout. Then show the tests earn their place: for each test the round adds, apply the mutation it guards (revert the fix's product lines, or invert the condition it covers) in the checkout, show it red, and restore it. Run each probe the findings list under Unproven, and report it as a defect when it fails. Leave the full gate to the implementor's log, and read that log's exit line. A helper you had to write goes in your report as a follow-up, never into the run dir as private tooling.
 2. **Report.** A check that could not run, or ran without a clear result, is inconclusive, and inconclusive is `stuck` with the reason, never `pass`. Write `round-N-verify.md`: `Verdict: PASS`, `Verdict: FAIL` or `Verdict: STUCK` first, then each check with its command, the expected result, the observed result and the evidence path. When a defect is a new trigger of an earlier round's defect, its first line says so: `repeat of r2 D1`.
 3. **Clean up.** Stop every process you started, and remove the checkout with `git -C <workspace> worktree remove --force <unit dir>/verify-N-checkout`.
 '''
