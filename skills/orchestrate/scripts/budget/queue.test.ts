@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Session, Ticket } from './host.ts';
-import { LIFE, QueueBusy, live, order, serve, update } from './queue.ts';
+import { LIFE, live, order, serve, update } from './queue.ts';
 
 const NOW = 1_000_000_000;
 const ticket = (id: string, session: string, at: number, more: Partial<Ticket> = {}): Ticket => ({
@@ -69,9 +69,11 @@ describe('update', () => {
     expect(update(path, NOW, (tickets) => tickets.map((t) => t.id))).toEqual(['a']);
   });
 
-  test('a lock another process holds fails as QueueBusy, for the caller to retry', () => {
+  test('a lock a dead process left 4 s ago is taken once it goes stale, inside the wait', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'queue-')), 'queue.json');
     mkdirSync(`${path}.lock`);
-    expect(() => update(path, NOW, () => {})).toThrow(QueueBusy);
-  }, 10e3);
+    const leftAt = (Date.now() - 4e3) / 1e3;
+    utimesSync(`${path}.lock`, leftAt, leftAt);
+    expect(update(path, NOW, () => 'taken')).toBe('taken');
+  }, 15e3);
 });

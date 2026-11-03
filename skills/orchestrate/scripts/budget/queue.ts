@@ -67,14 +67,16 @@ export function serve(input: {
 // ── This host's store ──
 
 const LOCK_STALE = 10e3;
+// A caller outwaits the stale age, so a lock a dead process left is always cleared within one wait.
+const LOCK_WAIT = LOCK_STALE + 2e3;
 
-/** Another process held the queue lock past the wait; the lock is live, not stale, so try again later. */
+/** The queue lock could not be taken within the wait, so try again later. */
 export class QueueBusy extends Error {}
 
 function lock(path: string): () => void {
   const dir = `${path}.lock`;
   mkdirSync(dirname(path), { recursive: true });
-  const until = Date.now() + 5e3;
+  const until = Date.now() + LOCK_WAIT;
   for (;;) {
     try {
       mkdirSync(dir);
@@ -83,7 +85,7 @@ function lock(path: string): () => void {
       try {
         if (Date.now() - statSync(dir).mtimeMs > LOCK_STALE) rmSync(dir, { recursive: true, force: true });
       } catch {}
-      if (Date.now() > until) throw new QueueBusy(`queue lock ${dir} held over 5 s`);
+      if (Date.now() > until) throw new QueueBusy(`queue lock ${dir} held over ${LOCK_WAIT / 1e3} s`);
       Bun.sleepSync(20);
     }
   }
