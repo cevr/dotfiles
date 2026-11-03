@@ -55,6 +55,10 @@ beforeAll(() => {
     join(agents, 'orchestrate-implementor.toml'),
     `name = "orchestrate-implementor"\nmodel_reasoning_effort = "max"\ndeveloper_instructions = '''\nYou are the implementor of one orchestrate unit.\n'''\n`,
   )
+  writeFileSync(
+    join(agents, 'orchestrate-verifier.toml'),
+    `name = "orchestrate-verifier"\nmodel_reasoning_effort = "medium"\ndeveloper_instructions = '''\nYou are the verifier of one orchestrate unit.\n'''\n`,
+  )
 })
 
 afterEach(() => {
@@ -79,30 +83,31 @@ describe('newest', () => {
 
 test('every committed Codex role agent parses with its instructions and effort', () => {
   const committed = join(import.meta.dir, '../../../../codex/agents')
-  for (const role of ['planner', 'implementor', 'reviewer'] as const) {
+  for (const role of ['planner', 'implementor', 'verifier'] as const) {
     const agent = roleAgent(role, committed)
     expect(agent.instructions).toStartWith(`You are the ${role} of one orchestrate unit.`)
     expect(agent.effort).toBeString()
   }
 })
 
-test('a thread an older bridge saved as a verifier reads back as a reviewer', async () => {
+test('a thread an older bridge saved as a reviewer or a verifier reads back as the verifier', async () => {
   const now = Date.now()
-  writeFileSync(
-    state,
-    JSON.stringify({
-      seq: 1,
-      events: [],
-      threads: { t1: { id: 't1', owner: 's1', description: 'verifier sheet r1', role: 'verifier', cwd: dir, model: 'gpt', status: 'idle', turns: 0, updatedAt: now } },
-    }),
-  )
+  const thread = (id: string, role: string) => ({ id, owner: 's1', description: `${role} sheet r1`, role, cwd: dir, model: 'gpt', status: 'idle', turns: 0, updatedAt: now })
+  writeFileSync(state, JSON.stringify({ seq: 1, events: [], threads: { t1: thread('t1', 'reviewer'), t2: thread('t2', 'verifier') } }))
   const { call } = open()
   const listed = await call('GET', '/threads?owner=s1')
-  expect(JSON.stringify(listed.body)).not.toContain('"verifier"')
-  expect(JSON.stringify(listed.body)).toContain('"reviewer"')
+  expect(JSON.stringify(listed.body)).not.toContain('"reviewer"')
+  expect(JSON.stringify(listed.body).match(/"role":"verifier"/g)).toHaveLength(2)
 })
 
 describe('a thread', () => {
+  test("a session that still passes the verifier's former name starts a verifier", async () => {
+    const { call } = open()
+    const started = await call('POST', '/start', { owner: 's1', description: 'verifier sheet r1', prompt: 'check it', cwd: dir, role: 'reviewer' })
+    expect(started.body).toMatchObject({ id: 't1', role: 'verifier', effort: 'medium' })
+    expect(requests().find(r => r.method === 'thread/start')!.params.developerInstructions).toStartWith('You are the verifier of one orchestrate unit.')
+  })
+
   test('starts as a role agent on the newest family model, and its finished turn waits for its owner until acked', async () => {
     const { call } = open()
     const started = await call('POST', '/start', {
@@ -200,7 +205,7 @@ describe('a thread', () => {
       expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'queued', held: 'resume after the Sabbath' }])
       expect(journal().map(e => e.event)).toEqual(expect.arrayContaining(['pause', 'resume']))
       // A new thread latches through the rest instead of moving to Claude, which rests too.
-      const fresh = await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })
+      const fresh = await call('POST', '/start', { owner: 's1', description: 'verifier sheet r1', prompt: 'review it', cwd: dir })
       expect(fresh.body).toMatchObject({ status: 'queued', held: expect.stringMatching(/^the Sabbath, until Sat 18:09/) })
 
       // After sunset, inside the buffer: still held.
@@ -313,7 +318,7 @@ describe('a thread', () => {
       const first = open()
       setSystemTime(new Date('2026-10-31T12:00:00Z'))
       // During the rest a new thread latches: its first turn never reaches the app-server.
-      const started = await first.call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })
+      const started = await first.call('POST', '/start', { owner: 's1', description: 'verifier sheet r1', prompt: 'review it', cwd: dir })
       expect(started.body).toMatchObject({ status: 'queued' })
       first.bridge.server.stop()
       await settle()
@@ -343,7 +348,7 @@ describe('a thread', () => {
     await settle()
     first.bridge.draining = true
     const sent = await first.call('POST', '/send', { threadId: 't1', prompt: 'again' })
-    const started = await first.call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })
+    const started = await first.call('POST', '/start', { owner: 's1', description: 'verifier sheet r1', prompt: 'review it', cwd: dir })
     expect(sent.body).toMatchObject({ id: 't1', status: 'queued', turns: 2 })
     expect(started.body).toMatchObject({ id: 't2', status: 'queued', turns: 1 })
     expect(first.bridge.busy()).toBe(false)
@@ -420,7 +425,7 @@ describe('a thread', () => {
   })
 
   test('a turn a stopped daemon left running is resumed by the next one', async () => {
-    const thread = { id: 't7', owner: 's1', description: 'reviewer sheet r1', cwd: dir, model: 'gpt-6.1-sol', status: 'running', turns: 1, compactions: 0, startedAt: Date.now(), updatedAt: Date.now() }
+    const thread = { id: 't7', owner: 's1', description: 'verifier sheet r1', cwd: dir, model: 'gpt-6.1-sol', status: 'running', turns: 1, compactions: 0, startedAt: Date.now(), updatedAt: Date.now() }
     writeFileSync(state, JSON.stringify({ seq: 0, threads: { t7: thread }, events: [] }))
     const { bridge, call } = open()
     expect((await call('GET', '/threads?owner=s1')).body).toMatchObject([{ status: 'queued', held: 'resume 1 of 3: the last turn ended on a codex-bridge restart' }])
@@ -492,7 +497,7 @@ describe('the budget', () => {
     await settle()
 
     process.env.CODEX_BRIDGE_ADMIT = admitter('hold', 'hold: codex burns 4.1 %/h; this sol thread adds about 0.4 %/h; the pace is 0.3 %/h', 1)
-    const fresh = await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir, model: 'gpt-6.1-sol' })
+    const fresh = await call('POST', '/start', { owner: 's1', description: 'verifier sheet r1', prompt: 'review it', cwd: dir, model: 'gpt-6.1-sol' })
     const next = await call('POST', '/send', { threadId: 't1', prompt: 'fix round 2' })
     expect(fresh.body).toMatchObject({ id: 't2', status: 'queued' })
     expect(next.body).toMatchObject({ id: 't1', status: 'queued', turns: 2, held: 'codex burns 4.1 %/h; this sol thread adds about 0.4 %/h; the pace is 0.3 %/h' })
@@ -561,7 +566,7 @@ describe('the budget', () => {
 
     process.env.FAKE_LIMITS = ahead()
     const { call } = open()
-    const held = await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })
+    const held = await call('POST', '/start', { owner: 's1', description: 'verifier sheet r1', prompt: 'review it', cwd: dir })
     expect(held.body).toMatchObject({ status: 'held', held: expect.stringMatching(/^the 7-day window is 58% used/) })
     expect(requests().filter(r => r.method === 'thread/start')).toHaveLength(1)
     expect((await call('GET', '/budget')).body).toMatchObject({ start: { ok: false }, send: { ok: true } })
@@ -569,18 +574,18 @@ describe('the budget', () => {
 
   test('a start the admission holds past the patience is refused with its opening time; one within it latches', async () => {
     const minute = (ms: number) => new Date(ms).toISOString().slice(0, 16).replace('T', ' ') + 'Z'
-    const hold = 'hold: codex burns 1.6 %/h; this sol reviewer adds about 0.4 %/h; the pace is 1.2 %/h'
+    const hold = 'hold: codex burns 1.6 %/h; this sol verifier adds about 0.4 %/h; the pace is 1.2 %/h'
     const late = Date.now() + 2 * 60 * 60e3
     process.env.CODEX_BRIDGE_ADMIT = admitter('late', `${hold}; opens about ${minute(late)}`, 1)
     const { call } = open()
-    const refused = await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir, role: 'implementor', unit: 'sheet', round: 1 })
+    const refused = await call('POST', '/start', { owner: 's1', description: 'verifier sheet r1', prompt: 'review it', cwd: dir, role: 'implementor', unit: 'sheet', round: 1 })
     expect(refused.body).toEqual({ status: 'held', held: hold.slice('hold: '.length), opensAt: Math.floor(late / 60e3) * 60e3 })
     expect(requests().filter(r => r.method === 'thread/start')).toHaveLength(0)
     expect(journal()).toMatchObject([{ event: 'refuse', owner: 's1', unit: 'sheet', round: 1, opensAt: new Date(Math.floor(late / 60e3) * 60e3).toISOString() }])
 
     const soon = Date.now() + 5 * 60e3
     process.env.CODEX_BRIDGE_ADMIT = admitter('soon', `${hold}; opens about ${minute(soon)}`, 1)
-    expect((await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })).body).toMatchObject({
+    expect((await call('POST', '/start', { owner: 's1', description: 'verifier sheet r1', prompt: 'review it', cwd: dir })).body).toMatchObject({
       id: 't1',
       status: 'queued',
       opensAt: Math.floor(soon / 60e3) * 60e3,
@@ -593,7 +598,7 @@ describe('the budget', () => {
     writeFileSync(file, `echo "$@" >> ${join(dir, 'admit.log')}\ncase "$*" in *luna*) echo 'hold: no room for luna'; exit 1;; esac\necho 'admit: fits'\n`)
     process.env.CODEX_BRIDGE_ADMIT = `sh ${file}`
     const { bridge, call } = open()
-    expect((await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'check it', cwd: dir, model: 'luna' })).body).toMatchObject({ id: 't1', status: 'queued' })
+    expect((await call('POST', '/start', { owner: 's1', description: 'verifier sheet r1', prompt: 'check it', cwd: dir, model: 'luna' })).body).toMatchObject({ id: 't1', status: 'queued' })
     expect((await call('POST', '/start', { owner: 's1', description: 'implementor queue r1', prompt: 'build it', cwd: dir })).body).toMatchObject({ id: 't2', status: 'running' })
 
     later(PATIENCE_MIN)
@@ -646,7 +651,7 @@ describe('an upgrade', () => {
     process.env.CODEX_BRIDGE_ADMIT = admitter('late', `hold: no room; opens about ${late}Z`, 1)
     const { bridge, call } = open(join(copy, 'policy.ts'))
     const tick = watcher(bridge, [core])
-    const ask = () => call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'review it', cwd: dir })
+    const ask = () => call('POST', '/start', { owner: 's1', description: 'verifier sheet r1', prompt: 'review it', cwd: dir })
     expect((await ask()).body).toMatchObject({ status: 'held' })
 
     // Three hours of patience: the same start now latches.

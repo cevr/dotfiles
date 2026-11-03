@@ -90,8 +90,8 @@ function projectFor(sessionId: string, cwd: string | undefined): string {
 const sessionOf = (file: string): string =>
   file.includes('/subagents/') ? basename(dirname(dirname(file))) : basename(file, '.jsonl');
 // An agent kind's former name → its current one; a cached burn's kind is renamed too.
-// An older run's verifier counts as a reviewer, whose role now runs its check.
-const RENAMED: Record<string, string> = { 'orchestrate-worker': 'worker', 'orchestrate-verifier': 'orchestrate-reviewer' };
+// The reviewer is the verifier's former name; an older run's separate verifier is the verifier too.
+const RENAMED: Record<string, string> = { 'orchestrate-worker': 'worker', 'orchestrate-reviewer': 'orchestrate-verifier' };
 const current = (kind: string): string => RENAMED[kind] ?? kind;
 /**
  * An agent's kind: its type, without the status mod's `status:` prefix, and
@@ -104,7 +104,7 @@ export function workerKind(type: string | undefined, prompt: string): string {
   const kind = current(type?.replace(/^status:/, '') || 'agent');
   if (kind !== 'worker' || !prompt.includes('protocol.md')) return kind;
   const role = /\b(planner|implementor|reviewer|verifier)\b/i.exec(prompt)?.[1]?.toLowerCase();
-  return role ? `orchestrate-${role === 'verifier' ? 'reviewer' : role}` : kind;
+  return role ? `orchestrate-${role === 'reviewer' ? 'verifier' : role}` : kind;
 }
 
 // The first user message of a transcript: an agent's task.
@@ -505,7 +505,7 @@ export const ceilingOf = (env = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW): nu
 // hands off at its first compaction (protocol.md), so a tuned 120k window,
 // which compacts at about 87k, ended fresh workers before their first edit.
 //
-// The implementor and the reviewer run at ROLE_MAX. Each holds the spec, the
+// The implementor and the verifier run at ROLE_MAX. Each holds the spec, the
 // diff and the gate's output in one context, and typically needs about 300k:
 // at WORKER_MAX, half of them compacted, most within minutes, and handed off
 // to a fresh agent that read everything again. That costs the run more wall
@@ -519,7 +519,7 @@ export const PINNED: Record<string, number> = {
   root: 400e3,
   ...Object.fromEntries(ROLES.map((kind) => [kind, WORKER_MAX])),
   'orchestrate-implementor': ROLE_MAX,
-  'orchestrate-reviewer': ROLE_MAX,
+  'orchestrate-verifier': ROLE_MAX,
 };
 // An agent whose context passed its kind's window by this much ran without it:
 // the engine ignored the window (2.1.310 did, for every registered agent). The

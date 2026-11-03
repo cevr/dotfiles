@@ -9,11 +9,14 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Agent } from './sources.ts';
 
-// `verify` is an older run's verifier, before the reviewer ran the acceptance check itself.
-export type Phase = 'plan' | 'implement' | 'review' | 'verify' | 'decide';
+export type Phase = 'plan' | 'implement' | 'verify' | 'decide';
 export type Outcome = { phase: Phase; unit: string; round: number; result: string; fate: string };
 
-const ROLE: Record<string, Phase> = { planner: 'plan', implementor: 'implement', reviewer: 'review', verifier: 'verify' };
+// `reviewer` is the verifier's former name. An older run also ran a separate check after
+// review, also named verifier, whose file is `round-N-verify.md` (`pass` or `fail`); both
+// read as the verify phase, and that file tells the older check apart (Join `check`).
+const ROLE: Record<string, Phase> = { planner: 'plan', implementor: 'implement', reviewer: 'verify', verifier: 'verify' };
+const CHECK_FILE = /^(?:round-\d+-verify|verify-\d+)\.md$/;
 const HAND_BACK = /\b(planner|implementor|reviewer|verifier) \S+ r(\d+): ([a-z()]+) (\S+\.md)/g;
 const UNIT_FILE = /((?:~|\/)[^\s'"`()<>\[\]]*?)\/(?:spec|state|blocked|round-(\d+)-(?:request|findings|verify))\.md/g;
 
@@ -51,7 +54,7 @@ export const fateOf = (log: string | undefined) => {
 const isUnit = (dir: string) => existsSync(join(dir, 'log.md')) && !existsSync(join(dir, 'plan.md'));
 const unitOf = (dir: string) => [dir, dirname(dir)].find(isUnit);
 
-export type Join = { phase: Phase; dir: string; unit: string; round: number; own?: string };
+export type Join = { phase: Phase; dir: string; unit: string; round: number; own?: string; check?: boolean };
 
 const logAt = (unit: string) => { try { return statSync(join(unit, 'log.md')).mtimeMs; } catch { return 0; } };
 
@@ -64,9 +67,12 @@ export function joinUnit(a: Agent, final: string, find: (unit: string) => string
   const h = hands[hands.length - 1];
   const handDir = h && dirname(home(h[4]));
   const handUnit = handDir && unitOf(handDir);
-  if (h && handUnit) return { phase: ROLE[h[1]], dir: handDir, unit: handUnit, round: Number(h[2]), own: h[3] };
+  if (h && handUnit) {
+    const check = CHECK_FILE.test(basename(h[4])) || h[3] === 'pass' || h[3] === 'fail';
+    return { phase: ROLE[h[1]], dir: handDir, unit: handUnit, round: Number(h[2]), own: h[3], ...(check ? { check } : {}) };
+  }
   if (a.role === 'root') return undefined;
-  const phase: Phase | undefined = a.role === 'plan' || a.role === 'implement' || a.role === 'review' || a.role === 'verify' ? a.role : undefined;
+  const phase: Phase | undefined = a.role === 'plan' || a.role === 'implement' || a.role === 'verify' ? a.role : undefined;
   if (!phase) return undefined;
   const rounds = [...a.prompt.matchAll(/round-(\d+)-/g), ...a.prompt.matchAll(/\bround[ -]?(\d+)\b/gi)].map((x) => Number(x[1]));
   const round = rounds.length ? Math.max(...rounds) : 1;
@@ -86,17 +92,20 @@ export function joinUnit(a: Agent, final: string, find: (unit: string) => string
   return undefined;
 }
 
-/** What the phase produced. In an older run, a reviewer's `accepted` that its verifier failed is `escaped`. */
+/**
+ * What the phase produced. A verifier's result is its findings' verdict; an older run's separate
+ * check's is its `pass` or `fail`, and an `accepted` that check failed is `escaped`.
+ */
 export function outcomeOf(j: Join, files = read): Outcome {
   const at = (...names: string[]) => names.map((n) => files(join(j.dir, n))).find((t) => t !== undefined);
-  const review = verdictOf(at(`round-${j.round}-findings.md`, `review-${j.round}.md`));
-  const verify = verdictOf(at(`round-${j.round}-verify.md`, `verify-${j.round}.md`));
+  const findings = verdictOf(at(`round-${j.round}-findings.md`, `review-${j.round}.md`));
+  const check = verdictOf(at(`round-${j.round}-verify.md`, `verify-${j.round}.md`));
   const unit = j.unit.split('/').slice(-2).join('/');
   const fate = fateOf(files(join(j.unit, 'log.md')));
   const result =
     j.phase === 'plan' ? fate
-    : j.phase === 'implement' ? (review === 'accepted' && verify === 'fail' ? 'failed verify' : review ?? 'no review')
-    : j.phase === 'review' ? ((review ?? j.own) === 'accepted' && verify === 'fail' ? 'escaped' : review ?? j.own ?? 'no file')
-    : verify ?? j.own ?? 'no file';
+    : j.phase === 'implement' ? (findings === 'accepted' && check === 'fail' ? 'failed check' : findings ?? 'no findings')
+    : j.check ? check ?? j.own ?? 'no file'
+    : (findings ?? j.own) === 'accepted' && check === 'fail' ? 'escaped' : findings ?? j.own ?? 'no file';
   return { phase: j.phase, unit, round: j.round, result, fate };
 }

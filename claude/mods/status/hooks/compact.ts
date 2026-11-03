@@ -20,13 +20,13 @@ type On = Parameters<Register>[0]
 const HOUR = 3600e3
 const WORKER = 'worker'
 // A kind's former name → its current one: a session mid-run still spawns the
-// former, and compact.json holds it until the next tune.
-export const RENAMED: Record<string, string> = { 'orchestrate-worker': WORKER }
-const current = (kind: string) => RENAMED[kind] ?? kind
+// former, bare or as its copy, and compact.json holds it until the next tune.
+export const RENAMED: Record<string, string> = { 'orchestrate-worker': WORKER, 'orchestrate-reviewer': 'orchestrate-verifier' }
+const current = (kind: string) => RENAMED[kind.replace(/^status:/, '')] ?? kind
 // budget/burn.ts WORKER_MAX and ROLE_MAX: the largest window each kind is registered with.
 export const WORKER_MAX = 200e3
-const MAX: Record<string, number> = { 'orchestrate-implementor': 400e3, 'orchestrate-reviewer': 400e3 }
-export const KINDS = [WORKER, ...['planner', 'implementor', 'reviewer'].map(role => `orchestrate-${role}`)]
+const MAX: Record<string, number> = { 'orchestrate-implementor': 400e3, 'orchestrate-verifier': 400e3 }
+export const KINDS = [WORKER, ...['planner', 'implementor', 'verifier'].map(role => `orchestrate-${role}`)]
 const CACHE = '"$HOME/.cache/orchestrate"'
 export const KEEP =
   'Keep these word for word: the path of every plan, log, notes or state file the work reads or writes; the current step and its next action; each instruction the user gave during the session. Name a file by its path rather than restating its contents: it can be read again.'

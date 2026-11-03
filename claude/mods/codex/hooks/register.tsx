@@ -187,7 +187,7 @@ const TOOLS = [
       properties: {
         description: { type: 'string', description: 'Starts like the hand-back line: `<role> <unit> r<N>` (`implementor sheet r1`).' },
         prompt: { type: 'string', description: 'The first message: role, spec path and round, for a role thread.' },
-        role: { type: 'string', enum: ['planner', 'implementor', 'reviewer'] },
+        role: { type: 'string', enum: ['planner', 'implementor', 'verifier', 'reviewer'], description: '`reviewer` is the verifier\'s former name and runs as the verifier.' },
         unit: { type: 'string', description: 'The orchestrate unit (`sheet`), for the bridge\'s log and the cost of each unit.' },
         round: { type: 'integer', description: 'The orchestrate round, 1 for r1.' },
         model: { type: 'string' },

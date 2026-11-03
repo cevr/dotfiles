@@ -23,12 +23,12 @@ describe('claudeAgent', () => {
   });
 });
 
-test('a Claude reviewer that runs counsel-review is labelled as such', () => {
+test('a Claude verifier that runs counsel-review is labelled as such', () => {
   const text = jsonl([
     { type: 'user', message: { content: 'You are the reviewer. Run the counsel-review skill on /r/u/round-1-request.md' } },
     { type: 'assistant', message: { id: 'm1', model: 'claude-opus-5-5', usage: {}, content: [] } },
   ]);
-  expect(claudeAgent(text, 'a', 's')).toMatchObject({ role: 'review', model: 'opus-5-5+counsel' });
+  expect(claudeAgent(text, 'a', 's')).toMatchObject({ role: 'verify', model: 'opus-5-5+counsel' });
 });
 
 test('a worker takes the role it was given, not the roles its prompt mentions', () => {
@@ -39,7 +39,8 @@ test('a worker takes the role it was given, not the roles its prompt mentions', 
     ]), 'a', 's', description);
   expect(agent('Read protocol.md. You are the implementor for round 1; the reviewer reads your request.', 'copy rewrite r1: built-output guard')).toMatchObject({ role: 'implement' });
   expect(agent('Read protocol.md and verify round 3.', 'verifier coldload r3')).toMatchObject({ role: 'verify' });
-  expect(agent('Review the findings of the last run', 'look over notes')).toMatchObject({ role: 'review' });
+  expect(agent('Review the findings of the last run', 'look over notes')).toMatchObject({ role: 'verify' });
+  expect(agent('Read protocol.md. You are the reviewer of auth, round 2.', 'reviewer auth r2')).toMatchObject({ role: 'verify' });
   const typed = claudeAgent(jsonl([{ type: 'user', message: { content: 'Round 2: the findings are in round-1-findings.md' } }, { type: 'assistant', message: { id: 'm1', model: 'claude-opus-5-5', usage: {}, content: [] } }]), 'a', 's', 'auth r2', false, 'status:orchestrate-implementor');
   expect(typed).toMatchObject({ role: 'implement' });
 });
@@ -57,7 +58,7 @@ describe('codexAgent', () => {
       { ...count(300, 200, 20), timestamp: '2026-10-20T10:05:00Z' },
     ]);
     const a = codexAgent(text, 'rollout-x')!;
-    expect(a).toMatchObject({ harness: 'codex', model: 'gpt-6.1-sol', effort: 'max', role: 'review', cwd: '/r/u', min: 5 });
+    expect(a).toMatchObject({ harness: 'codex', model: 'gpt-6.1-sol', effort: 'max', role: 'verify', cwd: '/r/u', min: 5 });
     expect(a.tokens).toEqual({ input: 100, cacheWrite: 0, cacheRead: 200, output: 20 });
     // OpenAI's Standard row for gpt-6.1-sol: $2 input, $0.10 cached input, $10 output per million.
     expect(a.cost).toBeCloseTo(0.00042);
@@ -177,18 +178,28 @@ describe('outcomes', () => {
     const dir = join(unitDir, 'rewrite');
     mkdirSync(dir);
     writeFileSync(join(dir, 'round-1-findings.md'), 'Verdict: CHANGES REQUIRED\n');
-    const j = joinUnit(agent('review', `Review ${dir}/round-1-request.md`), '')!;
-    expect(j).toEqual({ phase: 'review', dir, unit: unitDir, round: 1 });
-    expect(outcomeOf(j)).toEqual({ phase: 'review', unit: 'run/unit', round: 1, result: 'changes', fate: 'open' });
+    const j = joinUnit(agent('verify', `Review ${dir}/round-1-request.md`), '')!;
+    expect(j).toEqual({ phase: 'verify', dir, unit: unitDir, round: 1 });
+    expect(outcomeOf(j)).toEqual({ phase: 'verify', unit: 'run/unit', round: 1, result: 'changes', fate: 'open' });
   });
 
-  test('a review that accepted what verify failed escaped', () => {
+  test("in an older run, a reviewer's accept that its separate check failed escaped, and that check is told apart by its file", () => {
     const dir = unit();
     writeFileSync(join(dir, 'round-1-findings.md'), 'Verdict: ACCEPTED\n');
     writeFileSync(join(dir, 'round-1-verify.md'), 'Verdict: FAIL\n');
-    expect(outcomeOf({ phase: 'review', dir, unit: dir, round: 1 }).result).toBe('escaped');
-    expect(outcomeOf({ phase: 'implement', dir, unit: dir, round: 1 }).result).toBe('failed verify');
-    expect(outcomeOf({ phase: 'verify', dir, unit: dir, round: 1 }).result).toBe('fail');
+    const reviewer = joinUnit(agent('verify'), `reviewer unit r1: accepted ${dir}/round-1-findings.md`)!;
+    const check = joinUnit(agent('verify'), `verifier unit r1: fail ${dir}/round-1-verify.md`)!;
+    expect([reviewer.phase, reviewer.check, check.phase, check.check]).toEqual(['verify', undefined, 'verify', true]);
+    expect(outcomeOf(reviewer).result).toBe('escaped');
+    expect(outcomeOf(check).result).toBe('fail');
+    expect(outcomeOf({ phase: 'implement', dir, unit: dir, round: 1 }).result).toBe('failed check');
+  });
+
+  test("a verifier's result is its findings' verdict", () => {
+    const dir = unit();
+    writeFileSync(join(dir, 'round-1-findings.md'), 'Verdict: CHANGES REQUIRED\n');
+    const j = joinUnit(agent('verify'), `verifier unit r1: changes ${dir}/round-1-findings.md`)!;
+    expect(outcomeOf(j)).toEqual({ phase: 'verify', unit: 'run/unit', round: 1, result: 'changes', fate: 'open' });
   });
 
   test("with no hand-back line, joins a bridge thread by its unit's name and round", () => {
@@ -201,7 +212,7 @@ describe('outcomes', () => {
 
   test('with no hand-back line, joins by the unit files the prompt names', () => {
     const dir = unit();
-    expect(joinUnit(agent('review', `Review ${dir}/round-3-request.md against ${dir}/spec.md`), 'done')).toEqual({ phase: 'review', dir, unit: dir, round: 3 });
+    expect(joinUnit(agent('verify', `Review ${dir}/round-3-request.md against ${dir}/spec.md`), 'done')).toEqual({ phase: 'verify', dir, unit: dir, round: 3 });
     expect(joinUnit(agent('implement', `Implementor, round 2. The unit dir is ${dir}/.`), '')).toEqual({ phase: 'implement', dir, unit: dir, round: 2 });
     expect(joinUnit(agent('explore', `Read ${dir}/spec.md`), '')).toBeUndefined();
     writeFileSync(join(dir, '..', 'plan.md'), '');

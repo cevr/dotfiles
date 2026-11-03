@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Wall-clock per machine state across orchestrate units, read from each unit's log.md.
-// An older run's logs hold a `verify` state, which it still counts.
+// An older run's `review` and its separate `verify` both count as verify (transition.ts).
 // Usage: bun timing.ts <run dir>... [--since 2026-10-17] [--json]
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -20,7 +20,7 @@ if (!dirs.length) {
 
 type Unit = {
   run: string; unit: string; final: string; total: number; time: Record<string, number>;
-  rework: number; rounds: number; reviewBounces: number; verifyBounces: number; outOfOrder: number;
+  rework: number; rounds: number; verifyBounces: number; outOfOrder: number;
 };
 const units: Unit[] = [];
 for (const dir of dirs) {
@@ -42,7 +42,6 @@ for (const dir of dirs) {
       run: basename(dir), unit: d.name, final: ts[ts.length - 1].to,
       total: (ts[ts.length - 1].at - ts[0].at) / 60000, time, rework, outOfOrder,
       rounds: Math.max(...ts.map((t) => t.round)),
-      reviewBounces: ts.filter((t) => t.from === 'review' && t.to === 'implement').length,
       verifyBounces: ts.filter((t) => t.from === 'verify' && t.to === 'implement').length,
     });
   }
@@ -56,7 +55,7 @@ const h = (min: number) => (min / 60).toFixed(1);
 const all = sum(units.map((u) => sum(Object.values(u.time))));
 console.log(`units ${units.length}, merged ${units.filter((u) => u.final === 'merged').length}`);
 console.log('state      total-h  share  median-min-per-unit');
-const named = ['plan', 'approved', 'implement', 'review', 'verify', 'decide', 'integration-check', 'waiting', 'stuck', 'blocked'];
+const named = ['plan', 'approved', 'implement', 'verify', 'decide', 'integration-check', 'waiting', 'stuck', 'blocked'];
 for (const s of [...named, 'other']) {
   const of = (u: Unit) => (s === 'other' ? sum(Object.entries(u.time).filter(([k]) => !named.includes(k)).map(([, v]) => v)) : u.time[s] ?? 0);
   const xs = units.map(of);
@@ -65,11 +64,8 @@ for (const s of [...named, 'other']) {
 }
 const impl = sum(units.map((u) => u.time.implement ?? 0)), rework = sum(units.map((u) => u.rework));
 console.log(`implement: round 1 ${h(impl - rework)} h, rework (round 2+) ${h(rework)} h`);
-for (const [name, key] of [['review', 'reviewBounces'], ['verify', 'verifyBounces']] as const) {
-  const xs = units.map((u) => u[key]);
-  if (key === 'verifyBounces' && !sum(xs)) continue;
-  console.log(`${name} bounces: total ${sum(xs)}, units with ≥1 ${xs.filter((x) => x > 0).length}, max ${Math.max(...xs)}`);
-}
+const bounces = units.map((u) => u.verifyBounces);
+console.log(`verify bounces: total ${sum(bounces)}, units with ≥1 ${bounces.filter((x) => x > 0).length}, max ${Math.max(...bounces)}`);
 console.log(`rounds: median ${med(units.map((u) => u.rounds))}, max ${Math.max(...units.map((u) => u.rounds))}`);
 console.log(`first→last transition: median ${med(units.map((u) => u.total)).toFixed(0)} min, worst ${Math.max(...units.map((u) => u.total)).toFixed(0)} min`);
 const slow = [...units].sort((a, b) => b.rounds - a.rounds || b.total - a.total).slice(0, 5);

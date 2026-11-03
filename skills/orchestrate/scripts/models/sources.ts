@@ -25,8 +25,8 @@ export type Agent = {
   round?: number;
 };
 
-// `verifier` is an older run's role: its rounds still read as the verify phase.
-const ROLE: Record<string, string> = { planner: 'plan', implementor: 'implement', reviewer: 'review', verifier: 'verify' };
+// `reviewer` is the verifier's former name: an older run's rounds read as the verify phase.
+const ROLE: Record<string, string> = { planner: 'plan', implementor: 'implement', reviewer: 'verify', verifier: 'verify' };
 
 /** The role an orchestrate worker was given: its role agent, the description's first word, or the first role its protocol prompt names. */
 export const namedRole = (description: string, prompt: string, type = '') => {
@@ -38,8 +38,7 @@ export const namedRole = (description: string, prompt: string, type = '') => {
 
 // Any other agent's role comes from the Agent description and the first words of the prompt.
 export const roleOf = (head: string) =>
-  /\breview|counsel|findings/.test(head) ? 'review'
-  : /\bverif/.test(head) ? 'verify'
+  /\breview|counsel|findings|\bverif/.test(head) ? 'verify'
   : /\bplanner|\bplan\b|write spec/.test(head) && !/implement/.test(head) ? 'plan'
   : /implement|round[- ]?\d|\bfix|\bbuild|spec\.md/.test(head) ? 'implement'
   : /explore|search|research|read-only|investigat/.test(head) ? 'explore'
@@ -79,8 +78,8 @@ export function claudeAgent(text: string, id: string, session: string, descripti
   if (!model) return undefined;
   const head = `${description} ${prompt.slice(0, 600)}`.toLowerCase();
   const role = main ? 'root' : namedRole(description, prompt, type) ?? roleOf(head);
-  // A reviewer that runs counsel-review hands the review to the other family: its row says so.
-  const via = role === 'review' && /counsel/.test(head) ? '+counsel' : '';
+  // A verifier that runs counsel-review hands the review to the other family: its row says so.
+  const via = role === 'verify' && /counsel/.test(head) ? '+counsel' : '';
   return {
     id, harness: 'claude', session, model: model.replace('claude-', '') + via, role,
     prompt: prompt.slice(0, 4000), final: final.slice(-600), cwd, min: (last - first) / 60000, tokens, cost: costOf(model, tokens), compacted, last,

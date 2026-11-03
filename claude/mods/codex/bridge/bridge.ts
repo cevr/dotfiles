@@ -42,7 +42,9 @@ import type { Limits } from './budget.ts'
 import * as boot from './policy.ts'
 import type { Asking, Hold } from './policy.ts'
 
-export type Role = 'planner' | 'implementor' | 'reviewer'
+export type Role = 'planner' | 'implementor' | 'verifier'
+/** A role by its current name: `reviewer` is the verifier's former one, which a session mid-run still passes. */
+export const currentRole = (role: string | undefined): Role | undefined => (role === 'reviewer' ? 'verifier' : (role as Role | undefined))
 /** Why a turn ended: its work, its caller, or the infrastructure under it (`capacity`, `app-server-exit`, `drain-interrupt`). */
 export type Cause = 'completed' | 'interrupted-by-caller' | 'capacity' | 'app-server-exit' | 'drain-interrupt' | 'sabbath' | 'error'
 export type Usage = { tokens: number; input: number; cached: number; output: number; context: number; window: number }
@@ -365,8 +367,8 @@ export class Bridge {
     const kept = Date.now() - KEEP_MS
     this.state.events = this.state.events.filter(event => event.at > kept)
     for (const [id, thread] of Object.entries(this.state.threads)) if (thread.updatedAt < kept) delete this.state.threads[id]
-    // Review and verify became one role: a thread an older bridge saved as a verifier reopens as a reviewer.
-    for (const thread of Object.values(this.state.threads)) if ((thread.role as string | undefined) === 'verifier') thread.role = 'reviewer'
+    // A thread an older bridge saved as a reviewer reopens as the verifier.
+    for (const thread of Object.values(this.state.threads)) thread.role = currentRole(thread.role)
     // A turn that was running when the last daemon stopped has no child to finish it.
     for (const thread of Object.values(this.state.threads))
       if (thread.status === 'running') this.finish(thread, 'failed', 'codex-bridge restarted', 0, this.lost(thread, 'drain-interrupt'))
@@ -734,6 +736,7 @@ export class Bridge {
     effort?: string
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access'
   }): Promise<Thread | Refused> {
+    input = { ...input, role: currentRole(input.role) }
     const model = await this.model(input.model)
     const agent = input.role ? roleAgent(input.role) : undefined
     const effort = input.effort ?? agent?.effort

@@ -131,14 +131,14 @@ describe('tune', () => {
     ]);
   });
 
-  test('runs the implementor and reviewer at 400k and the worker at 200k, however cheap a smaller window replays', () => {
-    const roles = ['worker', 'orchestrate-implementor', 'orchestrate-reviewer'].flatMap((kind) => Array.from({ length: 20 }, () => agent(kind)));
+  test('runs the implementor and verifier at 400k and the worker at 200k, however cheap a smaller window replays', () => {
+    const roles = ['worker', 'orchestrate-implementor', 'orchestrate-verifier'].flatMap((kind) => Array.from({ length: 20 }, () => agent(kind)));
     for (const t of tune(roles, 450e3)) expect(t).toMatchObject({ window: t.kind === 'worker' ? 200e3 : 400e3 });
-    expect(tune([agent('orchestrate-reviewer')], 450e3)).toMatchObject([{ kind: 'orchestrate-reviewer', window: 400e3 }]);
+    expect(tune([agent('orchestrate-verifier')], 450e3)).toMatchObject([{ kind: 'orchestrate-verifier', window: 400e3 }]);
   });
 
   test('keeps a pinned window under the ceiling', () => {
-    expect(tune([agent('orchestrate-reviewer')], 200e3)).toMatchObject([{ kind: 'orchestrate-reviewer', window: 200e3 }]);
+    expect(tune([agent('orchestrate-verifier')], 200e3)).toMatchObject([{ kind: 'orchestrate-verifier', window: 200e3 }]);
   });
 
   test("keeps the owner's window for the main session, however few its transcripts", () => {
@@ -148,11 +148,14 @@ describe('tune', () => {
 });
 
 test("a worker that ran a protocol role tunes as that role's agent", () => {
-  expect(workerKind('status:orchestrate-worker', 'Read protocol.md. You are the reviewer of auth, round 2.')).toBe('orchestrate-reviewer');
+  expect(workerKind('status:orchestrate-worker', 'Read protocol.md. You are the reviewer of auth, round 2.')).toBe('orchestrate-verifier');
   expect(workerKind('status:orchestrate-worker', 'Survey the docs for the reviewer.')).toBe('worker');
   expect(workerKind('status:worker', 'Read protocol.md. You are the implementor of auth, round 1.')).toBe('orchestrate-implementor');
   expect(workerKind('orchestrate-worker', '')).toBe('worker');
-  expect(workerKind('status:orchestrate-verifier', '')).toBe('orchestrate-reviewer');
-  expect(workerKind('status:orchestrate-worker', 'Read protocol.md. You are the verifier of auth, round 2.')).toBe('orchestrate-reviewer');
+  expect(workerKind('status:orchestrate-verifier', '')).toBe('orchestrate-verifier');
+  // The reviewer is the verifier's former name.
+  expect(workerKind('status:orchestrate-reviewer', '')).toBe('orchestrate-verifier');
+  expect(workerKind('orchestrate-reviewer', '')).toBe('orchestrate-verifier');
+  expect(workerKind('status:orchestrate-worker', 'Read protocol.md. You are the verifier of auth, round 2.')).toBe('orchestrate-verifier');
   expect(workerKind(undefined, '')).toBe('agent');
 });

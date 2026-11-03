@@ -5,7 +5,7 @@ import type { Budget, Thread } from '../types'
 // The bridge, as the mod reaches it: `codex-bridge ensure`, then HTTP on its socket.
 const running: Thread = {
   id: 't1',
-  description: 'reviewer sheet r1',
+  description: 'verifier sheet r1',
   model: 'gpt-6.1-sol',
   effort: 'max',
   status: 'running',
@@ -84,7 +84,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`a start call's row and a footer line show the thread's live work (${surface})`, async ($, on) => {
     bridge(on, () => [running, { ...running, id: 't2', description: 'implementor queue r2' }])
     await $.session.start({ cwd: '/', surface, isInteractive: true })
-    const call = await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r1', prompt: 'review', tool_use_id: 'tu1' })
+    const call = await $.tool.call({ tool: 'mcp__codex__start', description: 'verifier sheet r1', prompt: 'review', tool_use_id: 'tu1' })
     expect(JSON.stringify(call)).toContain('Started Codex thread t1')
 
     const row = await $.ui.mount({
@@ -93,7 +93,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       component: 'ToolResult',
       props: { tool_use_id: 'tu1', tool: 'mcp__codex__start', output: call.result, isErrored: false },
     })
-    expect((await row.find({ type: 'Text', text: /running/ }))?.text).toContain('reviewer sheet r1')
+    expect((await row.find({ type: 'Text', text: /running/ }))?.text).toContain('verifier sheet r1')
     expect((await row.find({ type: 'Text', text: /4 commands/ }))?.text).toContain('context 41%')
     expect((await row.find({ type: 'Text', text: /plan/ }))?.text).toContain('plan 1/2: test')
     expect(await row.find({ type: 'Text', text: /▸ \$ bun test/ })).toBeDefined()
@@ -102,7 +102,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     expect(await footer($, surface)).toEqual([
       'engine footer',
-      '◆ codex reviewer sheet r1 · running 1m 0s · 4 commands · 1 edit · context 41% · ▸ $ bun test',
+      '◆ codex verifier sheet r1 · running 1m 0s · 4 commands · 1 edit · context 41% · ▸ $ bun test',
       '◆ codex implementor queue r2 · running 1m 0s · 4 commands · 1 edit · context 41% · ▸ $ bun test',
     ])
   })
@@ -111,15 +111,15 @@ for (const surface of ['terminal', 'desktop'] as const) {
 test('a thread from a bridge with no live record counts from its last update', async ($, on) => {
   bridge(on, () => [{ ...running, live: undefined, updatedAt: 15e3 }])
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r1', prompt: 'review', tool_use_id: 'tu1' })
-  expect((await footer($, 'terminal'))[1]).toBe('◆ codex reviewer sheet r1 · running 45s · context 41%')
+  await $.tool.call({ tool: 'mcp__codex__start', description: 'verifier sheet r1', prompt: 'review', tool_use_id: 'tu1' })
+  expect((await footer($, 'terminal'))[1]).toBe('◆ codex verifier sheet r1 · running 45s · context 41%')
 })
 
 test('the footer is the engine\'s alone when no thread runs', async ($, on) => {
   let threads: Thread[] = [running]
   bridge(on, () => threads)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r1', prompt: 'review', tool_use_id: 'tu1' })
+  await $.tool.call({ tool: 'mcp__codex__start', description: 'verifier sheet r1', prompt: 'review', tool_use_id: 'tu1' })
   expect(await footer($, 'terminal')).toHaveLength(2)
   threads = [{ ...running, status: 'idle', live: { ...running.live!, running: {} } }]
   await $.tool.call({ tool: 'mcp__codex__send', thread: 't1', prompt: 'again', tool_use_id: 'tu3' })
@@ -138,31 +138,31 @@ test('a latched start says why it waits, and its footer line shows it latched', 
   const queued: Thread = { ...running, status: 'queued', held: 'the bridge is updating', live: undefined, updatedAt: 50e3 }
   bridge(on, () => [queued])
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  const answer = await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r1', prompt: 'review', tool_use_id: 'tu1' })
+  const answer = await $.tool.call({ tool: 'mcp__codex__start', description: 'verifier sheet r1', prompt: 'review', tool_use_id: 'tu1' })
   expect(answer).toMatchObject({ result: expect.stringContaining('Queued Codex thread t1') })
   expect(answer).toMatchObject({ result: expect.stringContaining('The turn is latched (the bridge is updating); it starts by itself when there is room.') })
-  expect((await footer($, 'terminal'))[1]).toBe('◆ codex reviewer sheet r1 · latched 10s: the bridge is updating · context 41%')
+  expect((await footer($, 'terminal'))[1]).toBe('◆ codex verifier sheet r1 · latched 10s: the bridge is updating · context 41%')
 })
 
 test('a start names its orchestrate unit and round to the bridge', async ($, on) => {
   bridge(on, () => [running])
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r2', prompt: 'review', unit: 'sheet', round: 2, tool_use_id: 'tu1' })
+  await $.tool.call({ tool: 'mcp__codex__start', description: 'verifier sheet r2', prompt: 'review', unit: 'sheet', round: 2, tool_use_id: 'tu1' })
   expect(posted.findLast(p => p.path === '/start')?.body).toMatchObject({ unit: 'sheet', round: 2, cwd: '/' })
 })
 
 test('a start the bridge holds past the patience says when it would open and to run the role on Claude', async ($, on) => {
-  const held = { status: 'held', held: 'codex burns 1.6 %/h; this sol reviewer adds about 0.4 %/h; the pace is 1.2 %/h', opensAt: Date.UTC(2026, 9, 30, 14, 20) }
+  const held = { status: 'held', held: 'codex burns 1.6 %/h; this sol verifier adds about 0.4 %/h; the pace is 1.2 %/h', opensAt: Date.UTC(2026, 9, 30, 14, 20) }
   bridge(on, () => [held as unknown as Thread])
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  const answer = await $.tool.call({ tool: 'mcp__codex__start', description: 'reviewer sheet r1', prompt: 'review', tool_use_id: 'tu1' })
+  const answer = await $.tool.call({ tool: 'mcp__codex__start', description: 'verifier sheet r1', prompt: 'review', tool_use_id: 'tu1' })
   expect(answer).toMatchObject({
     result: `Codex holds this turn and made no thread: ${held.held}. It should open about 2026-10-30 14:20Z, more than 10 minutes away. Run this role on Claude now (orchestrate Families).`,
   })
 })
 
 test("a turn's end names its cause in plain words", async ($, on) => {
-  const end = { seq: 1, threadId: 't1', description: 'reviewer sheet r1', model: 'gpt-6.1-sol', final: 'half done', durationMs: 24 * 60e3 }
+  const end = { seq: 1, threadId: 't1', description: 'verifier sheet r1', model: 'gpt-6.1-sol', final: 'half done', durationMs: 24 * 60e3 }
   const clock = mock.clock(on)
   const submitted: string[] = []
   on('prompt.submit', (_, e) => {

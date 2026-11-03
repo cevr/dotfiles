@@ -118,14 +118,14 @@ describe('estimate', () => {
     thread('sol', 'implementor', 3e6),
     thread('sol', 'implementor', 4e6),
     thread('sol', 'implementor', 5e6),
-    thread('sol', 'reviewer', 1e6),
+    thread('sol', 'verifier', 1e6),
     thread('luna', 'verifier', 9e6),
     // Too short to tell.
-    { ...thread('sol', 'reviewer', 50e6), activeHours: 0.05, w: 2.5e6 },
+    { ...thread('sol', 'verifier', 50e6), activeHours: 0.05, w: 2.5e6 },
   ];
   test("a family and role's median, then the family's, then every thread's", () => {
     expect(estimate(threads, 'sol', 'implementor')).toBe(4e6);
-    expect(estimate(threads, 'sol', 'reviewer')).toBe(4e6);
+    expect(estimate(threads, 'sol', 'verifier')).toBe(4e6);
     expect(estimate(threads, 'luna', 'verifier')).toBe(4e6);
     expect(estimate([], 'sol', 'none')).toBeUndefined();
   });
@@ -147,7 +147,7 @@ describe('admit', () => {
   });
   // 8 MW/h of live sol threads, and 4.8 MW of interactive luna in the last hour: 1.1 %/h.
   const loads = [
-    load({ live: [{ id: 'a', family: 'sol', role: 'reviewer', recentWph: 8e6 }, { id: 'i', family: 'sol', role: 'interactive', recentWph: 99e6 }] }),
+    load({ live: [{ id: 'a', family: 'sol', role: 'verifier', recentWph: 8e6 }, { id: 'i', family: 'sol', role: 'interactive', recentWph: 99e6 }] }),
     load({ host: 'box', threads: [], interactive1h: { luna: 4.8e6 } }),
   ];
 
@@ -158,8 +158,8 @@ describe('admit', () => {
       reason: 'codex burns 1.1 %/h; this sol implementor adds about 0.4 %/h; the pace is 1.2 %/h',
       opensAt: T + 2 * HOUR,
     });
-    // Two live sol reviewers at 1.0 %/h each, 0.5 and 1.5 hours in: the first to end (in half an hour) leaves 1.0 + 0.4 %/h.
-    const two = [load({ live: [{ id: 'a', family: 'sol', role: 'reviewer', recentWph: 8e6, activeHours: 0.5 }, { id: 'b', family: 'sol', role: 'reviewer', recentWph: 8e6, activeHours: 1.5 }] })];
+    // Two live sol verifiers at 1.0 %/h each, 0.5 and 1.5 hours in: the first to end (in half an hour) leaves 1.0 + 0.4 %/h.
+    const two = [load({ live: [{ id: 'a', family: 'sol', role: 'verifier', recentWph: 8e6, activeHours: 0.5 }, { id: 'b', family: 'sol', role: 'verifier', recentWph: 8e6, activeHours: 1.5 }] })];
     expect(admit({ loads: two, fit: k, pctph: 1.6, family: 'sol', role: 'implementor', now: T })?.opensAt).toBe(T + 0.5 * HOUR);
     // At a pace that only a lone turn passes, it opens once both have ended.
     expect(admit({ loads: two, fit: k, pctph: 0.3, family: 'sol', role: 'implementor', now: T })?.opensAt).toBe(T + 1.5 * HOUR);
@@ -177,7 +177,7 @@ describe('admit', () => {
 
   test("a next turn does not count its own thread's live burn again", () => {
     // Without thread a's 1.0 %/h: 0.1 %/h interactive, plus 0.4 %/h for the turn.
-    expect(admit({ loads, fit: k, pctph: 1.2, family: 'sol', role: 'reviewer', thread: 'a', now: T })).toEqual({ ok: true, reason: 'fits: codex 0.5 %/h of 1.2 %/h with this sol reviewer (+0.4 %/h)' });
+    expect(admit({ loads, fit: k, pctph: 1.2, family: 'sol', role: 'verifier', thread: 'a', now: T })).toEqual({ ok: true, reason: 'fits: codex 0.5 %/h of 1.2 %/h with this sol verifier (+0.4 %/h)' });
   });
 
   test('counts the turns just started that the live burn does not show yet', () => {

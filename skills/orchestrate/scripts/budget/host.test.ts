@@ -43,16 +43,17 @@ describe('hostLoad', () => {
 
 test("a role agent keeps the worker's cost history in its role", () => {
   expect(kindFor('status:orchestrate-implementor', 'implementor auth r2')).toBe('worker:implement');
-  expect(kindFor('orchestrate-reviewer', 'anything')).toBe('worker:review');
+  expect(kindFor('orchestrate-verifier', 'verifier auth r2')).toBe('worker:verify');
   expect(kindFor('status:worker', 'verify coldload r3')).toBe('worker:verify');
-  // An older run's verifier keeps its cost history under the reviewer, which runs the check now.
-  expect(kindFor('orchestrate-verifier', 'verifier auth r2')).toBe('worker:review');
-  expect(kindFor('status:worker', 'verifier coldload r3')).toBe('worker:review');
+  // The reviewer is the verifier's former name: its cost history is the verifier's.
+  expect(kindFor('status:orchestrate-reviewer', 'anything')).toBe('worker:verify');
+  expect(kindFor('status:worker', 'reviewer coldload r3')).toBe('worker:verify');
   expect(kindFor(undefined, 'explore the docs')).toBe('agent:explore');
 });
 
-test('an agent and a cached tally under the former worker name count as the worker', () => {
+test('an agent and a cached tally under a former name count under the current one', () => {
   expect(kindFor('status:orchestrate-worker', 'explore the docs')).toBe('worker:explore');
   expect(currentKind('orchestrate-worker:implement')).toBe('worker:implement');
+  expect(currentKind('worker:review')).toBe('worker:verify');
   expect(currentKind('Explore:task')).toBe('Explore:task');
 });

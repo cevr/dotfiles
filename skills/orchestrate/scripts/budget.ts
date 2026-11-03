@@ -199,7 +199,9 @@ if (args.includes('--codex')) {
 
   if (admitting) {
     const family = familyOf(option('--model'));
-    const role = option('--role') ?? 'none';
+    // `reviewer` is the verifier's former name: a session mid-run still passes it.
+    const asked = option('--role') ?? 'none';
+    const role = asked === 'reviewer' ? 'verifier' : asked;
     const why = unreachable.length
       ? `${unreachable.map((l) => `${l.host} unreachable (${l.error})`).join(', ')}, so its threads' burn is unknown`
       : !pace

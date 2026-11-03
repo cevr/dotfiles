@@ -8,9 +8,11 @@
 //   `<from> → <to>` (or `->`), the round as `r<N>` or `round <N>`, and the
 //   file that caused it. Other lines (agent-cost receipts) are skipped.
 //   Warns when `<run dir>/plan.md` is over 40 KB.
+//   A former state name shows as its current one (`review` as `verify`).
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { currentState } from './transition.ts';
 
 const dir = process.argv[2];
 if (!dir || !existsSync(dir)) {
@@ -31,7 +33,7 @@ const rows = readdirSync(dir, { withFileTypes: true })
       if (!t) continue;
       row = {
         unit: d.name,
-        state: t[2]!,
+        state: currentState(t[2]!),
         round: /\b(?:r|round )(\d+)\b/.exec(line)?.[1] ?? row.round,
         since: /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z?/.exec(line)?.[0] ?? '',
         cause: line.match(/\S+\.(?:md|log)\b/g)?.pop() ?? '',

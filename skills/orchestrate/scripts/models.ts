@@ -74,17 +74,19 @@ const HEADLINE: Record<Phase, (os: Outcome[]) => string> = {
     const r1 = os.filter((o) => o.round === 1);
     return `r1 accepted ${pct(r1.filter((o) => o.result === 'accepted').length, r1.length)} (${r1.length}), all rounds ${pct(os.filter((o) => o.result === 'accepted').length, os.length)}`;
   },
-  review: (os) => {
-    const escaped = os.filter((o) => o.result === 'escaped').length;
-    return `changes ${pct(os.filter((o) => o.result === 'changes').length, os.length)}${escaped ? `, escaped to verify ${escaped}` : ''}`;
+  verify: (os) => {
+    // An older run's separate check after review ends `pass` or `fail`; a verifier's findings, the rest.
+    const checks = os.filter((o) => o.result === 'pass' || o.result === 'fail');
+    const rounds = os.filter((o) => !checks.includes(o));
+    const escaped = rounds.filter((o) => o.result === 'escaped').length;
+    const older = checks.length ? `, older check fail ${pct(checks.filter((o) => o.result === 'fail').length, checks.length)} (${checks.length})` : '';
+    return `changes ${pct(rounds.filter((o) => o.result === 'changes').length, rounds.length)}${escaped ? `, escaped the older check ${escaped}` : ''}${older}`;
   },
-  // An older run's verifier.
-  verify: (os) => `fail ${pct(os.filter((o) => o.result === 'fail').length, os.length)}`,
   decide: (os) => `units ${os.reduce((s, o) => s + parseInt(o.unit), 0)}, merged ${os.reduce((s, o) => s + parseInt(o.result), 0)}`,
 };
 const joined = rows.filter((r) => r.outcome);
-const workers = rows.filter((r) => ['plan', 'implement', 'review', 'verify'].includes(r.agent.role));
-console.log(`\nOutcome: phase      model                 n   headline; results   (n = unit rounds; joined ${joined.length} of ${workers.length} plan, implement, review and verify agents to a unit)`);
+const workers = rows.filter((r) => ['plan', 'implement', 'verify'].includes(r.agent.role));
+console.log(`\nOutcome: phase      model                 n   headline; results   (n = unit rounds; joined ${joined.length} of ${workers.length} plan, implement and verify agents to a unit)`);
 for (const [key, rs] of group(joined, (r) => `${r.outcome!.phase}\t${label(r.agent)}`)) {
   const [phase, model] = key.split('\t') as [Phase, string];
   // One result per unit and round: a round that took several agents of one model counts once.

@@ -51,11 +51,11 @@ test('a request that names no red test for a repeated Major goes back, naming ea
   expect(r.err).not.toContain('O1');
 });
 
-test("a red test must be red at the head the repeat's round reviewed", () => {
+test("a red test must be red at the head the repeat's round verified", () => {
   const request = 'Head: 9f8e7d6c5b\n\n## Repeat tests\n- repeat M1: test/sheet.prop.ts "every drag speed settles" red at 1a2b3c4\n- repeat M3: test/header.test.ts red at 0000000\n';
   const r = check({ 'round-2-request.md': r2, 'round-2-findings.md': findings, 'round-3-request.md': request }, 3);
   expect(r.code).toBe(1);
-  expect(r.err).toContain('repeat M3: 0000000 is not the head round 2 reviewed');
+  expect(r.err).toContain('repeat M3: 0000000 is not the head round 2 verified');
   expect(r.err).not.toContain('M1');
 });
 
@@ -69,7 +69,7 @@ test('red at the base of the reviewed range is not red at its head', () => {
   expect(r.code).toBe(0);
 });
 
-test('a request with a red test for every repeat, or with no repeat behind it, goes to review', () => {
+test('a request with a red test for every repeat, or with no repeat behind it, goes to verify', () => {
   const request = 'Head: 9f8e7d6c5b\n- repeat M1: test/sheet.prop.ts red at 1a2b3c4\n- repeat M3: test/header.test.ts red at 1a2b3c4d5e\n';
   expect(check({ 'round-2-request.md': r2, 'round-2-findings.md': findings, 'round-3-request.md': request }, 3).code).toBe(0);
   expect(check({ 'round-1-request.md': r2 }, 1).code).toBe(0);

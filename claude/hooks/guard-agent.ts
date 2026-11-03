@@ -16,8 +16,9 @@ import { join } from 'node:path';
 type Input = { session_id?: string; cwd?: string; tool_input?: Record<string, unknown> };
 
 const FULL = new Set([undefined, '', 'general-purpose', 'claude']);
-// Former agent type → current.
-const RENAMED: Record<string, string> = { 'orchestrate-worker': 'worker' };
+// Former agent type → current, asked for bare or as the status mod's copy.
+const RENAMED: Record<string, string> = { 'orchestrate-worker': 'worker', 'orchestrate-reviewer': 'orchestrate-verifier' };
+const renamed = (type: string) => RENAMED[type.replace(/^status:/, '')];
 const BUDGET = join(homedir(), '.claude', 'skills', 'orchestrate', 'scripts', 'budget.ts');
 
 const input: Input = JSON.parse((await Bun.stdin.text()) || '{}');
@@ -30,7 +31,7 @@ const reply = (output: Record<string, unknown>) => {
 
 const asked = toolInput.subagent_type as string | undefined;
 const lean = FULL.has(asked) && process.env.CLAUDE_FULL_AGENT !== '1';
-const type = lean ? 'worker' : ((asked && RENAMED[asked]) ?? asked);
+const type = lean ? 'worker' : ((asked && renamed(asked)) ?? asked);
 const run = Bun.spawnSync(
   [
     'bun',

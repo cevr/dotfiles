@@ -112,16 +112,15 @@ const sessionOf = (file: string): string =>
   file.includes('/subagents/') ? basename(dirname(dirname(file))) : basename(file, '.jsonl');
 
 const ROLES: [RegExp, string][] = [
-  // An older run's verifier (`verifier auth r2`): its check is the reviewer's now.
-  [/review|counsel|audit|^verifier\b/i, 'review'],
-  [/verif|prove|probe|e2e|smoke/i, 'verify'],
+  // A description that names the reviewer, the verifier's former name, is a verify.
+  [/review|counsel|audit|verif|prove|probe|e2e|smoke/i, 'verify'],
   [/plan|design|spec/i, 'plan'],
   [/explore|search|find|survey|read|research/i, 'explore'],
   [/implement|build|fix|write|add|split|port|refactor|migrat/i, 'implement'],
 ];
 
-// An older run's orchestrate-verifier keeps its cost history under the reviewer, which runs the check now.
-const ROLE_AGENT: Record<string, string> = { planner: 'plan', implementor: 'implement', reviewer: 'review', verifier: 'review' };
+// orchestrate-reviewer is orchestrate-verifier's former name: its cost history is the verifier's.
+const ROLE_AGENT: Record<string, string> = { planner: 'plan', implementor: 'implement', reviewer: 'verify', verifier: 'verify' };
 
 /**
  * An agent's kind: its type and the role its description names. A role agent
@@ -138,7 +137,7 @@ export const kindFor = (agentType: string | undefined, description: string | und
 };
 
 /** A kind a cached tally holds under a former name, under its current one. */
-export const currentKind = (kind: string): string => kind.replace(/^orchestrate-worker:/, 'worker:');
+export const currentKind = (kind: string): string => kind.replace(/^orchestrate-worker:/, 'worker:').replace(/:review$/, ':verify');
 
 function kindOf(file: string): { kind: string; sub: boolean } {
   if (!file.includes('/subagents/')) return { kind: 'root', sub: false };
