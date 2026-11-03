@@ -42,7 +42,7 @@ import type { Limits } from './budget.ts'
 import * as boot from './policy.ts'
 import type { Asking, Hold } from './policy.ts'
 
-export type Role = 'planner' | 'implementor' | 'reviewer' | 'verifier'
+export type Role = 'planner' | 'implementor' | 'reviewer'
 /** Why a turn ended: its work, its caller, or the infrastructure under it (`capacity`, `app-server-exit`, `drain-interrupt`). */
 export type Cause = 'completed' | 'interrupted-by-caller' | 'capacity' | 'app-server-exit' | 'drain-interrupt' | 'sabbath' | 'error'
 export type Usage = { tokens: number; input: number; cached: number; output: number; context: number; window: number }

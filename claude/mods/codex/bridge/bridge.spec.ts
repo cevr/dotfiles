@@ -79,7 +79,7 @@ describe('newest', () => {
 
 test('every committed Codex role agent parses with its instructions and effort', () => {
   const committed = join(import.meta.dir, '../../../../codex/agents')
-  for (const role of ['planner', 'implementor', 'reviewer', 'verifier'] as const) {
+  for (const role of ['planner', 'implementor', 'reviewer'] as const) {
     const agent = roleAgent(role, committed)
     expect(agent.instructions).toStartWith(`You are the ${role} of one orchestrate unit.`)
     expect(agent.effort).toBeString()
@@ -577,7 +577,7 @@ describe('the budget', () => {
     writeFileSync(file, `echo "$@" >> ${join(dir, 'admit.log')}\ncase "$*" in *luna*) echo 'hold: no room for luna'; exit 1;; esac\necho 'admit: fits'\n`)
     process.env.CODEX_BRIDGE_ADMIT = `sh ${file}`
     const { bridge, call } = open()
-    expect((await call('POST', '/start', { owner: 's1', description: 'verifier sheet r1', prompt: 'check it', cwd: dir, model: 'luna' })).body).toMatchObject({ id: 't1', status: 'queued' })
+    expect((await call('POST', '/start', { owner: 's1', description: 'reviewer sheet r1', prompt: 'check it', cwd: dir, model: 'luna' })).body).toMatchObject({ id: 't1', status: 'queued' })
     expect((await call('POST', '/start', { owner: 's1', description: 'implementor queue r1', prompt: 'build it', cwd: dir })).body).toMatchObject({ id: 't2', status: 'running' })
 
     later(PATIENCE_MIN)

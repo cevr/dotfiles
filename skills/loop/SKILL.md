@@ -73,7 +73,7 @@ An **area** is a set of directories that change together (a package, or a layer 
 
 5. **Triage.** Group findings into batches by the files they touch. Every report's P3s and "not worth a pass" lines go to the batch that owns their file; that batch fixes each or rejects it with a reason. Write the pass section of the ledger: verdict, decisions, the triage table (batch, workspace, items), and the open `Carried` rows of the last pass, each in a batch or carried on. Done when every finding is in a batch or rejected with a receipt.
 
-6. **Apply, review and verify, as orchestrate units.** Run the loop as the [`orchestrate`](../orchestrate/SKILL.md) orchestrator, one unit per batch, through its machine: plan, implement, review, verify, decide. The batch's apply agent is the unit's implementor, kept for round 2 and replaced by a fresh one after that (orchestrate's Fresh implementor).
+6. **Apply and review, as orchestrate units.** Run the loop as the [`orchestrate`](../orchestrate/SKILL.md) orchestrator, one unit per batch, through its machine: plan, implement, review, decide. The batch's apply agent is the unit's implementor, kept for round 2 and replaced by a fresh one after that (orchestrate's Fresh implementor).
    - **Spec.** Fill each batch's spec from [`spec-template.md`](../orchestrate/spec-template.md). The apply prompt ([`prompts/apply.md`](prompts/apply.md)) supplies it:
      - its slots go to Goal, Workspace, Owns and Decided;
      - its work rules go to Work rules;
@@ -86,9 +86,9 @@ An **area** is a set of directories that change together (a package, or a layer 
    - **Cost.** At each hand-back, run `bun ~/.claude/skills/orchestrate/scripts/agent-cost.ts <agent id>` and append its line to the unit's `log.md`. A task notification's token count is the agent's final context, not its spend. The retro (step 11) reads these lines instead of rebuilding them.
    - The reviewer's family, rounds, a batch that builds on another's files (it stacks on that branch) and parallelism are orchestrate's rules; follow them there.
 
-   Done per batch when its unit passes verification.
+   Done per batch when its unit's review accepts it.
 
-7. **Merge.** Integrate as orchestrate's [pass](../orchestrate/SKILL.md#pass) step says. A merge of main into a batch's branch keeps both sides' edits, never one side's file whole, and the merge audit in [`guardrails.md`](guardrails.md) runs over it before the gate. If the Push line allows it, push; a red CI is the next batch, and no other batch merges before it. Then write the batch's ledger row: `done <hash> … <hash>, merged <hash>`, decisions, the reviewer and its rounds, open items, and the report's "decisions for the orchestrator" as `Carried` rows.
+7. **Merge.** Integrate as orchestrate's [accepted](../orchestrate/SKILL.md#accepted) step says. A merge of main into a batch's branch keeps both sides' edits, never one side's file whole, and the merge audit in [`guardrails.md`](guardrails.md) runs over it before the gate. If the Push line allows it, push; a red CI is the next batch, and no other batch merges before it. Then write the batch's ledger row: `done <hash> … <hash>, merged <hash>`, decisions, the reviewer and its rounds, open items, and the report's "decisions for the orchestrator" as `Carried` rows.
 
    Done when the gate on main is green, the row is written, and the branch and the workspace are gone.
 

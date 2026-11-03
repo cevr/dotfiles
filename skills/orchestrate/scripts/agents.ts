@@ -4,8 +4,9 @@
 // codex/agents/orchestrate-<role>.toml. A worker starts with its rules in its
 // prompt instead of reading them, and on Claude Code each role is its own agent
 // kind with its own tuned compaction window. protocol.md stays the one copy.
+// A file it wrote for a role it no longer has is removed, and --check fails on it.
 // Usage: bun agents.ts [--check]
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const here = import.meta.dir;
@@ -18,8 +19,7 @@ const TOOLS = 'Bash, Read, Edit, Write, Skill, Monitor, TaskStop, WebFetch, WebS
 export const ROLES = {
   planner: 'Writes one orchestrate unit\'s spec and its red acceptance check. Changes no product code.',
   implementor: 'The sole writer of one orchestrate unit: builds its spec on the unit\'s branch and hands back a round request.',
-  reviewer: 'Reviews one orchestrate unit\'s round from the other model family, directly or through okra counsel, and writes the findings.',
-  verifier: 'Proves one orchestrate unit\'s round works on a clean checkout of its head, and writes the verify report.',
+  reviewer: 'Runs one orchestrate unit\'s acceptance check on a clean checkout of its head and tries to break the round, from the other model family, directly or through okra counsel, and writes the findings.',
 } as const;
 export type Role = keyof typeof ROLES;
 
@@ -27,7 +27,7 @@ export type Role = keyof typeof ROLES;
 // sol or luna), so no file pins one; an effort in the file wins over a Codex spawn's,
 // and a Claude Code orchestrator's mcp__codex__start effort wins over the file's.
 // A reviewer runs at medium; a deep unit's round 1 passes max to its one call.
-const CODEX_EFFORT: Record<Role, string> = { planner: 'high', implementor: 'max', reviewer: 'medium', verifier: 'medium' };
+const CODEX_EFFORT: Record<Role, string> = { planner: 'high', implementor: 'max', reviewer: 'medium' };
 
 /** protocol.md's `## ` sections by heading. */
 const sections = (text: string) =>
@@ -88,8 +88,22 @@ const built = () => {
   ]);
 };
 
-/** The agent files that differ from what protocol.md and safety.md make. */
-export const stale = () => built().filter(([path, text]) => { try { return readFileSync(path, 'utf8') !== text; } catch { return true; } }).map(([path]) => path);
+/** Agent files this script wrote for a role it no longer has. */
+export const retired = (dirs = [AGENTS, CODEX_AGENTS], roles = Object.keys(ROLES)) =>
+  dirs.flatMap((dir) => {
+    let names: string[] = [];
+    try { names = readdirSync(dir); } catch {}
+    return names
+      .filter((name) => /^orchestrate-[a-z]+\.(md|toml)$/.test(name) && !roles.includes(name.slice('orchestrate-'.length, name.lastIndexOf('.'))))
+      .map((name) => join(dir, name))
+      .filter((path) => readFileSync(path, 'utf8').includes(WRITTEN));
+  });
+
+/** The agent files that differ from what protocol.md and safety.md make, and those of a retired role. */
+export const stale = () => [
+  ...built().filter(([path, text]) => { try { return readFileSync(path, 'utf8') !== text; } catch { return true; } }).map(([path]) => path),
+  ...retired(),
+];
 
 if (import.meta.main) {
   if (process.argv.includes('--check')) {
@@ -98,5 +112,6 @@ if (import.meta.main) {
   } else {
     mkdirSync(CODEX_AGENTS, { recursive: true });
     for (const [path, text] of built()) writeFileSync(path, text);
+    for (const path of retired()) rmSync(path);
   }
 }

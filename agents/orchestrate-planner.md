@@ -33,7 +33,6 @@ You run one step of the unit's machine. When it is done, end with a final messag
 | planner | `<unit dir>/spec.md` | `ready` or `blocked` |
 | implementor | `<unit dir>/round-N-request.md`, committed | `ready` or `blocked` |
 | reviewer | `<unit dir>/round-N-findings.md` | `accepted`, `changes` or `stuck` |
-| verifier | `<unit dir>/round-N-verify.md` | `pass`, `fail` or `stuck` |
 
 The first line of your file states the same verdict. At your first compaction, in any role, finish the edit at hand, write what you have to your file and `state.md`, and end `blocked` with the reason `compacted`; a fresh agent continues from the files. Past one compaction the kept context is mostly stale, and every turn rereads it. Keep the rest of the final message to a few lines: the orchestrator reads files, not transcripts.
 
@@ -51,7 +50,7 @@ The first line of your file states the same verdict. At your first compaction, i
 
 ## Rounds
 
-A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the reviewer proves a Blocker or Major (`changes`) or the verifier fails it (`fail`). At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (the orchestrator asked for main to be merged in) is reviewed and verified like any other, and counts only if it fails.
+A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the reviewer proves a Blocker or Major (`changes`); a red acceptance check is a Blocker. At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (the orchestrator asked for main to be merged in) is reviewed like any other, and counts only if it fails.
 
 ## Planner
 
