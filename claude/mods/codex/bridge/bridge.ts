@@ -365,6 +365,8 @@ export class Bridge {
     const kept = Date.now() - KEEP_MS
     this.state.events = this.state.events.filter(event => event.at > kept)
     for (const [id, thread] of Object.entries(this.state.threads)) if (thread.updatedAt < kept) delete this.state.threads[id]
+    // Review and verify became one role: a thread an older bridge saved as a verifier reopens as a reviewer.
+    for (const thread of Object.values(this.state.threads)) if ((thread.role as string | undefined) === 'verifier') thread.role = 'reviewer'
     // A turn that was running when the last daemon stopped has no child to finish it.
     for (const thread of Object.values(this.state.threads))
       if (thread.status === 'running') this.finish(thread, 'failed', 'codex-bridge restarted', 0, this.lost(thread, 'drain-interrupt'))

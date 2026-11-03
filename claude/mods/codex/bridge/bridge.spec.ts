@@ -86,6 +86,22 @@ test('every committed Codex role agent parses with its instructions and effort',
   }
 })
 
+test('a thread an older bridge saved as a verifier reads back as a reviewer', async () => {
+  const now = Date.now()
+  writeFileSync(
+    state,
+    JSON.stringify({
+      seq: 1,
+      events: [],
+      threads: { t1: { id: 't1', owner: 's1', description: 'verifier sheet r1', role: 'verifier', cwd: dir, model: 'gpt', status: 'idle', turns: 0, updatedAt: now } },
+    }),
+  )
+  const { call } = open()
+  const listed = await call('GET', '/threads?owner=s1')
+  expect(JSON.stringify(listed.body)).not.toContain('"verifier"')
+  expect(JSON.stringify(listed.body)).toContain('"reviewer"')
+})
+
 describe('a thread', () => {
   test('starts as a role agent on the newest family model, and its finished turn waits for its owner until acked', async () => {
     const { call } = open()
