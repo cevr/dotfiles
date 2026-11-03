@@ -18,13 +18,7 @@ The window is the last 7 days unless the owner names another. Work only from mea
    bun ~/.claude/skills/retro/scripts/mine-sessions.ts --since 7d --out <scratch>/<machine>
    ```
 
-   On a remote box, run `git -C ~/Developer/personal/dotfiles pull --ff-only` first. Then mine gent's sessions on each machine through its running server (gent's store is the server's; never open `~/.gent/data.db`):
-
-   ```
-   gent ctl review --since 7d --out <scratch>/<machine>-gent
-   ```
-
-   It writes the same `messages.jsonl`, `sessions.jsonl` and `digest.md` shapes with `src: "gent"`, plus `rounds.jsonl`: each machine thread round with its role, model, effort, tokens and outcome. Gent records no slash commands. Copy each `digest.md` back. Read the digests, not the transcripts. Record per machine: limit errors, cache-read tokens, compactions, the costliest sessions and agents, the skills used, and the owner's repeated messages.
+   On a remote box, run `git -C ~/Developer/personal/dotfiles pull --ff-only` first. The miner reads Claude Code and Codex transcripts. Find every other agent harness the machine ran in the window (its session store, its server, or a recent process) and mine its sessions too, through the harness's own export or review command, never by opening its database while it runs. Bring each into the same `messages.jsonl`, `sessions.jsonl` and `digest.md` shapes with its own `src`, plus any per-round records it keeps (role, model, effort, tokens, outcome). Copy each `digest.md` back. Read the digests, not the transcripts. Record per machine: limit errors, cache-read tokens, compactions, the costliest sessions and agents, the skills used, and the owner's repeated messages.
 
 3. **Time the orchestrate runs.** On each machine, pass every run directory touched in the window (under `~/Developer`, `/tmp` and `~/.cache/orchestrate`) to the timing script:
 
@@ -35,7 +29,7 @@ The window is the last 7 days unless the owner names another. Work only from mea
 
    It prints the wall-clock share of each state, round 1 against rework, review and verify bounces, rounds per unit, and the longest tails.
 
-   Then, on each machine, run `bun ~/.claude/skills/orchestrate/scripts/models.ts --since <window start>`. It reads Claude Code and Codex transcripts, and prints two tables: per role and model, the count, the API-priced cost, minutes, tokens and compaction share; and per orchestrate phase and model, what the phase produced (round-1 accepts, review changes and escapes, verify fails, units merged). Add gent's machine runs from each machine's `rounds.jsonl` (its digest's rounds table is per role and `model@effort`). Compare models within a phase, never across phases. A model swap is judged on both tables: cost alone does not justify one.
+   Then, on each machine, run `bun ~/.claude/skills/orchestrate/scripts/models.ts --since <window start>`. It reads Claude Code and Codex transcripts, and prints two tables: per role and model, the count, the API-priced cost, minutes, tokens and compaction share; and per orchestrate phase and model, what the phase produced (round-1 accepts, review changes and escapes, verify fails, units merged). Add the rounds any other harness recorded, per role and `model@effort`. Compare models within a phase, never across phases. A model swap is judged on both tables: cost alone does not justify one.
 
 4. **Classify every bounce in the longest tails.** Read the Major headings in each tail unit's `round-*-findings.md` and `verify-*.md`, not the whole files. Put each Major in one class:
    - **defect**: a bug a user would hit.
