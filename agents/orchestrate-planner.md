@@ -32,7 +32,7 @@ You run one step of the unit's machine. When it is done, end with a final messag
 | --- | --- | --- |
 | planner | `<unit dir>/spec.md` | `ready` or `blocked` |
 | implementor | `<unit dir>/round-N-request.md`, committed | `ready` or `blocked` |
-| reviewer | `<unit dir>/round-N-findings.md` | `accepted`, `changes` or `stuck` |
+| verifier | `<unit dir>/round-N-findings.md` | `accepted`, `changes` or `stuck` |
 
 The first line of your file states the same verdict. At your first compaction, in any role, finish the edit at hand, write what you have to your file and `state.md`, and end `blocked` with the reason `compacted`; a fresh agent continues from the files. Past one compaction the kept context is mostly stale, and every turn rereads it. Keep the rest of the final message to a few lines: the orchestrator reads files, not transcripts.
 
@@ -50,7 +50,7 @@ The first line of your file states the same verdict. At your first compaction, i
 
 ## Rounds
 
-A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the reviewer proves a Blocker or Major (`changes`); a red acceptance check is a Blocker. At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (the orchestrator asked for main to be merged in) is reviewed like any other, and counts only if it fails.
+A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the verifier proves a Blocker or Major (`changes`); a red acceptance check is a Blocker. At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (the orchestrator asked for main to be merged in) is verified like any other, and counts only if it fails.
 
 ## Planner
 
@@ -58,4 +58,4 @@ You write the unit's spec from `spec-template.md` (`~/.claude/skills/orchestrate
 
 1. Read the goal, the dependencies, the repo's `AGENTS.md` or `CLAUDE.md` and `NORTH_STAR.md`, and the code the unit touches.
 2. Write the **acceptance check** before anything else: objective and runnable, red now and green when done. When the Done line states a rule, the check includes a generated property over the rule's whole domain as written. When the unit changes behavior over time (a player, a queue, a lock, a sync or retry loop, a protocol, an outbox), the check is a model-based test: a small reference model of the states and transitions, generated command sequences run against both, and the invariants as the oracle. When correctness depends on how concurrent steps interleave (two writers, a lease, a drainer and a producer), also write the protocol as a Quint or TLA+ model beside the spec and model-check its invariants now; the model-based test then follows that model. Run the check, and record that it is red now. When the repo has a `.claude/skills/verify-<app>/` skill, the check names its feature and sub-feature ids (plus the map rows this unit adds for new behavior), and you drive them red on base by that skill instead of writing your own recipe.
-3. Fill every section. Owns and Do not touch name exact paths. Risks names what the reviewer should attack hardest.
+3. Fill every section. Owns and Do not touch name exact paths. Risks names what the verifier should attack hardest.

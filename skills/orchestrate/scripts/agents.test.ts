@@ -24,17 +24,17 @@ Plan it.
 
 Build it.
 
-## Reviewer
+## Verifier
 
-Review it.
+Verify it.
 `;
 const safety = '# SAFETY\n\nEvery loop agent reads this.\n\nSAFETY (mandatory):\n\n- Write files with Write.\n';
 
 describe('agentFile', () => {
   test("carries the shared sections, its own role's section and the safety rules, and no other role", () => {
-    const text = agentFile('reviewer', protocol, safety);
-    expect(text).toStartWith('---\nname: orchestrate-reviewer\ndescription: ');
-    for (const part of ['## Ending a step', '## Rounds', '## Reviewer\n\nReview it.', '- Write files with Write.']) expect(text).toContain(part);
+    const text = agentFile('verifier', protocol, safety);
+    expect(text).toStartWith('---\nname: orchestrate-verifier\ndescription: ');
+    for (const part of ['## Ending a step', '## Rounds', '## Verifier\n\nVerify it.', '- Write files with Write.']) expect(text).toContain(part);
     for (const part of ['## Planner', '## Implementor', 'Intro for the orchestrator', 'Every loop agent reads this']) expect(text).not.toContain(part);
   });
 
@@ -49,20 +49,20 @@ describe('agentFile', () => {
   });
 
   test('fails loudly when protocol.md loses a section a role needs', () => {
-    expect(() => agentFile('reviewer', protocol.replace('## Reviewer', '## Critic'), safety)).toThrow();
+    expect(() => agentFile('verifier', protocol.replace('## Verifier', '## Critic'), safety)).toThrow();
   });
 });
 
 test("a file written for a role the script no longer has is retired; a hand-written agent is not", () => {
   const dir = mkdtempSync(join(tmpdir(), 'agents-'));
-  const written = agentFile('reviewer', protocol, safety);
-  writeFileSync(join(dir, 'orchestrate-verifier.md'), written.replace('orchestrate-reviewer', 'orchestrate-verifier'));
-  writeFileSync(join(dir, 'orchestrate-reviewer.md'), written);
+  const written = agentFile('verifier', protocol, safety);
+  writeFileSync(join(dir, 'orchestrate-reviewer.md'), written.replace('orchestrate-verifier', 'orchestrate-reviewer'));
+  writeFileSync(join(dir, 'orchestrate-verifier.md'), written);
   writeFileSync(join(dir, 'orchestrate-notes.md'), '---\nname: orchestrate-notes\n---\nA hand-written agent.\n');
-  expect(retired([dir], ['planner', 'implementor', 'reviewer'])).toEqual([join(dir, 'orchestrate-verifier.md')]);
+  expect(retired([dir], ['planner', 'implementor', 'verifier'])).toEqual([join(dir, 'orchestrate-reviewer.md')]);
 });
 
 test('the committed agents match protocol.md and safety.md (run bun agents.ts)', () => {
-  expect(Object.keys(ROLES) as Role[]).toEqual(['planner', 'implementor', 'reviewer']);
+  expect(Object.keys(ROLES) as Role[]).toEqual(['planner', 'implementor', 'verifier']);
   expect(stale()).toEqual([]);
 });

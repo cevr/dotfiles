@@ -32,7 +32,7 @@ You run one step of the unit's machine. When it is done, end with a final messag
 | --- | --- | --- |
 | planner | `<unit dir>/spec.md` | `ready` or `blocked` |
 | implementor | `<unit dir>/round-N-request.md`, committed | `ready` or `blocked` |
-| reviewer | `<unit dir>/round-N-findings.md` | `accepted`, `changes` or `stuck` |
+| verifier | `<unit dir>/round-N-findings.md` | `accepted`, `changes` or `stuck` |
 
 The first line of your file states the same verdict. At your first compaction, in any role, finish the edit at hand, write what you have to your file and `state.md`, and end `blocked` with the reason `compacted`; a fresh agent continues from the files. Past one compaction the kept context is mostly stale, and every turn rereads it. Keep the rest of the final message to a few lines: the orchestrator reads files, not transcripts.
 
@@ -50,7 +50,7 @@ The first line of your file states the same verdict. At your first compaction, i
 
 ## Rounds
 
-A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the reviewer proves a Blocker or Major (`changes`); a red acceptance check is a Blocker. At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (the orchestrator asked for main to be merged in) is reviewed like any other, and counts only if it fails.
+A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the verifier proves a Blocker or Major (`changes`); a red acceptance check is a Blocker. At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (the orchestrator asked for main to be merged in) is verified like any other, and counts only if it fails.
 
 ## Implementor
 
@@ -59,10 +59,10 @@ You are the sole writer. You work in the spec's workspace (a Rift or worktree on
 **Read first:** the spec, the run's `common.md`, and `NORTH_STAR.md` → Owner rules.
 
 1. **State.** Keep `<unit dir>/state.md` current with: the branch, the commits, what is done, what is next, and open questions. Update it after each commit. After a compaction, read the spec and `state.md` again before any other action, and this protocol too when your prompt does not carry it.
-2. **Build.** Work until the whole unit is ready for review, not one piece at a time. Use commits in Conventional Commits form, one logical unit each, staged by exact path. A behavior change the repo's `verify-<app>` feature map describes edits that feature file in the same branch.
+2. **Build.** Work until the whole unit is ready to verify, not one piece at a time. Use commits in Conventional Commits form, one logical unit each, staged by exact path. A behavior change the repo's `verify-<app>` feature map describes edits that feature file in the same branch.
 3. **Decide.** When the spec leaves a choice open, take the simpler, reversible option. Record it in `state.md` with "decided by <principle>" (see `~/Developer/personal/dotfiles/principles/`), and carry on. Questions are for what you truly cannot infer.
 4. **Gate.** Run the focused checks while you work. Before each request, run the spec's round gate into `<unit dir>/gate-N.log` with its exit line, and read the exit line and the failing section only. A test that fails once under load and passes on one retry is a flake: retry once, name it in the request, and keep its assertions.
-5. **Request.** Write `round-N-request.md`. Its first lines name this protocol, the spec path and the head commit, for a reviewer arriving cold. Then:
+5. **Request.** Write `round-N-request.md`. Its first lines name this protocol, the spec path and the head commit, for a verifier arriving cold. Then:
    - the base and head commits, with `git diff --stat <base>..HEAD | tail -1`;
    - what changed, by file;
    - how to run it;
@@ -70,7 +70,7 @@ You are the sole writer. You work in the spec's workspace (a Rift or worktree on
    - the acceptance check's command and its exit line, run at the head;
    - known gaps.
 
-   From round 2 on, add the **fix report**: every finding of the last round, each `fixed <hash>` with the guard it added (or `guard: tooling unit` when the guard is outside the spec's Owns), or `rejected: <reason>`. Never leave a finding unaccounted for. For each Blocker or Major the last findings mark `repeat of`, add the line `repeat <id>: <test> red at <the head that round reviewed>`, naming a test this round adds that fails at that head. `bun ~/.claude/skills/orchestrate/scripts/request.ts <unit dir> <N>` checks the request; hand back once it exits 0.
+   From round 2 on, add the **fix report**: every finding of the last round, each `fixed <hash>` with the guard it added (or `guard: tooling unit` when the guard is outside the spec's Owns), or `rejected: <reason>`. Never leave a finding unaccounted for. For each Blocker or Major the last findings mark `repeat of`, add the line `repeat <id>: <test> red at <the head that round verified>`, naming a test this round adds that fails at that head. `bun ~/.claude/skills/orchestrate/scripts/request.ts <unit dir> <N>` checks the request; hand back once it exits 0.
 
 **Timebox.** Past the spec's timebox for a round, hand back `blocked` with `state.md` current and what remains.
 

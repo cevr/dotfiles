@@ -27,7 +27,7 @@ The window is the last 7 days unless the owner names another. Work only from mea
      | xargs bun ~/.claude/skills/orchestrate/scripts/timing.ts --since <window start>
    ```
 
-   It prints the wall-clock share of each state, round 1 against rework, review and verify bounces, rounds per unit, and the longest tails.
+   It prints the wall-clock share of each state, round 1 against rework, verify bounces, rounds per unit, and the longest tails.
 
    Then, on each machine, run `bun ~/.claude/skills/orchestrate/scripts/models.ts --since <window start>`. It reads Claude Code and Codex transcripts, and prints two tables: per role and model, the count, the API-priced cost, minutes, tokens and compaction share; and per orchestrate phase and model, what the phase produced (round-1 accepts, review changes, units merged). Add the rounds any other harness recorded, per role and `model@effort`. Compare models within a phase, never across phases. A model swap is judged on both tables: cost alone does not justify one.
 
@@ -54,6 +54,6 @@ The window is the last 7 days unless the owner names another. Work only from mea
 ## Reference
 
 - **Compute or process.** Limit errors and compactions say the week was compute-bound. Rework rounds, owner waits and a serialized shared slot say the process was the bound. Report both. Do not treat more compute as the fix for a process bound.
-- **Ceremony scales with risk.** A review or verify step that never bounces for a class of unit is a candidate for a lighter path for that class, never for removal. Before calling it ceremony, check for escapes: defects found later (a later round, verify, CI, the owner, production) in units that step passed, over a comparable number of units. A week with no finds means sound work or a blind check; the escape count tells which.
+- **Ceremony scales with risk.** A verify step that never bounces for a class of unit is a candidate for a lighter path for that class, never for removal. Before calling it ceremony, check for escapes: defects found later (a later round, CI, the owner, production) in units that step passed, over a comparable number of units. A week with no finds means sound work or a blind check; the escape count tells which.
 - **Measured, not assumed.** Report usage inside the window only, and the effort each agent actually ran at. An outcome that cannot be joined to its unit is reported as missing, with the join rate, not left out.
 - **Converging tails.** When rounds 3 and later bounce only on test strength, the round cap or the class-seen-twice rule is the candidate, not the implementor.

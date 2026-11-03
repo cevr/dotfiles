@@ -1,12 +1,12 @@
 # Unit spec template
 
-The planner fills one copy per unit into `<run dir>/<unit>/spec.md`, and the orchestrator approves it before the unit is implemented. The spec is the planner's output. The implementor builds against it, and the reviewer runs its acceptance check and judges against it. Write it for a capable reader with no context, and keep it to what this unit needs: the shared rules live in `protocol.md`.
+The planner fills one copy per unit into `<run dir>/<unit>/spec.md`, and the orchestrator approves it before the unit is implemented. The spec is the planner's output. The implementor builds against it, and the verifier runs its acceptance check and judges against it. Write it for a capable reader with no context, and keep it to what this unit needs: the shared rules live in `protocol.md`.
 
 ```markdown
 # <unit> — spec (orchestrator-owned; agents do not edit it)
 
 Run `<run>` · unit dir `<run dir>/<unit>` · failure cap 3 · timebox <hours per round>
-Machine: plan → implement → review (the other model family: directly from Claude Code, through okra counsel from Codex; a fresh agent in a clean checkout runs the acceptance check and tries to break the change) → decide.
+Machine: plan → implement → verify (the other model family: directly from Claude Code, through okra counsel from Codex; a fresh agent in a clean checkout runs the acceptance check and tries to break the change) → decide.
 Path: <light | standard | deep>: <why; for deep, why a defect is costly or why the check is a live drive>.
 Protocol: a role agent carries it in its prompt; any other worker reads `~/.claude/skills/orchestrate/protocol.md` in full first.
 
@@ -29,7 +29,7 @@ Protocol: a role agent carries it in its prompt; any other worker reads `~/.clau
 <The repo's full gate command, its guards included (a dead-exports or boundary check that only CI or main runs is still the gate); where the log goes (`<run dir>/<unit>/gate-N.log`). Round gate: the legs under a minute each. Merge only: each slower leg, run once at decide.>
 
 ## Risks
-<What could go wrong in this unit and what the reviewer should attack hardest: invariants a refactor must keep, formats that must still decode, traps earlier units found.>
+<What could go wrong in this unit and what the verifier should attack hardest: invariants a refactor must keep, formats that must still decode, traps earlier units found.>
 
 ## Decided
 <Choices the orchestrator already made, each with its principle.>

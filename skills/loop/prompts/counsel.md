@@ -1,6 +1,6 @@
 # Counsel prompt
 
-This is what the batch's reviewer reads: these questions go into the spec's Risks, and the unit's reviewer runs them through the `counsel-review` skill, on the batch's workspace. A fresh read-only agent gets the same prompt when the other model is unreachable, and the ledger row says so. Write the prompt to `<pass dir>/counsel-<batch>.md`.
+This is what the batch's verifier reads: these questions go into the spec's Risks, and the unit's verifier runs them through the `counsel-review` skill, on the batch's workspace. A fresh read-only agent gets the same prompt when the other model is unreachable, and the ledger row says so. Write the prompt to `<pass dir>/counsel-<batch>.md`.
 
 ```
 Read `~/.claude/skills/loop/safety.md` and `<workspace>/NORTH_STAR.md` → Owner rules in full before any action, and follow them.
@@ -16,4 +16,4 @@ Read-only review of commits `<base>..HEAD` on `<workspace path>` (<one line: wha
 Real defects only. Per question: OK, or the defect with file:line, a concrete failure (input or event order → wrong output), severity, reproduced yes/no. End with the list of files you read.
 ```
 
-The apply agent fixes each defect with a test that is red first. The reviewer then reviews that fixup's delta, and the rounds go on until it accepts, or until the third failed round makes the batch stuck and the orchestrator re-plans it. Fixups that merge without a second look carry each pass's regressions into the next. A defect left unfixed gets a written rejection on the ledger.
+The apply agent fixes each defect with a test that is red first. The verifier then checks that fixup's delta, and the rounds go on until it accepts, or until the third failed round makes the batch stuck and the orchestrator re-plans it. Fixups that merge without a second look carry each pass's regressions into the next. A defect left unfixed gets a written rejection on the ledger.

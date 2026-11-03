@@ -19,15 +19,15 @@ const TOOLS = 'Bash, Read, Edit, Write, Skill, Monitor, TaskStop, WebFetch, WebS
 export const ROLES = {
   planner: 'Writes one orchestrate unit\'s spec and its red acceptance check. Changes no product code.',
   implementor: 'The sole writer of one orchestrate unit: builds its spec on the unit\'s branch and hands back a round request.',
-  reviewer: 'Runs one orchestrate unit\'s acceptance check on a clean checkout of its head and tries to break the round, from the other model family, directly or through okra counsel, and writes the findings.',
+  verifier: 'Runs one orchestrate unit\'s acceptance check on a clean checkout of its head and tries to break the round, from the other model family, directly or through okra counsel, and writes the findings.',
 } as const;
 export type Role = keyof typeof ROLES;
 
 // The Codex efforts in SKILL.md's role table. The model is the spawn's (the newest
 // sol or luna), so no file pins one; an effort in the file wins over a Codex spawn's,
 // and a Claude Code orchestrator's mcp__codex__start effort wins over the file's.
-// A reviewer runs at medium; a deep unit's round 1 passes max to its one call.
-const CODEX_EFFORT: Record<Role, string> = { planner: 'high', implementor: 'max', reviewer: 'medium' };
+// A verifier runs at medium; a deep unit's round 1 passes max to its one call.
+const CODEX_EFFORT: Record<Role, string> = { planner: 'high', implementor: 'max', verifier: 'medium' };
 
 /** protocol.md's `## ` sections by heading. */
 const sections = (text: string) =>

@@ -1,6 +1,6 @@
 # Worker protocol
 
-A role agent (`orchestrate-planner`, `orchestrate-implementor`, `orchestrate-reviewer`, on Claude Code and on Codex) carries this protocol in its prompt: the sections from Ending a step to Rounds, its own role's section, and the safety rules. `scripts/agents.ts` writes those agents from this file and [`safety.md`](../loop/safety.md); run it after you edit either. Every other worker reads this file in full before its first action.
+A role agent (`orchestrate-planner`, `orchestrate-implementor`, `orchestrate-verifier`, on Claude Code and on Codex) carries this protocol in its prompt: the sections from Ending a step to Rounds, its own role's section, and the safety rules. `scripts/agents.ts` writes those agents from this file and [`safety.md`](../loop/safety.md); run it after you edit either. Every other worker reads this file in full before its first action.
 
 The orchestrator gave you one message: your role, your unit's `spec.md` path, and the round. This protocol holds the rules shared by every role; the spec holds what is special to the unit.
 
@@ -20,7 +20,7 @@ You run one step of the unit's machine. When it is done, end with a final messag
 | --- | --- | --- |
 | planner | `<unit dir>/spec.md` | `ready` or `blocked` |
 | implementor | `<unit dir>/round-N-request.md`, committed | `ready` or `blocked` |
-| reviewer | `<unit dir>/round-N-findings.md` | `accepted`, `changes` or `stuck` |
+| verifier | `<unit dir>/round-N-findings.md` | `accepted`, `changes` or `stuck` |
 
 The first line of your file states the same verdict. At your first compaction, in any role, finish the edit at hand, write what you have to your file and `state.md`, and end `blocked` with the reason `compacted`; a fresh agent continues from the files. Past one compaction the kept context is mostly stale, and every turn rereads it. Keep the rest of the final message to a few lines: the orchestrator reads files, not transcripts.
 
@@ -38,7 +38,7 @@ The first line of your file states the same verdict. At your first compaction, i
 
 ## Rounds
 
-A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the reviewer proves a Blocker or Major (`changes`); a red acceptance check is a Blocker. At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (the orchestrator asked for main to be merged in) is reviewed like any other, and counts only if it fails.
+A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the verifier proves a Blocker or Major (`changes`); a red acceptance check is a Blocker. At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (the orchestrator asked for main to be merged in) is verified like any other, and counts only if it fails.
 
 ## Planner
 
@@ -46,7 +46,7 @@ You write the unit's spec from `spec-template.md` (`~/.claude/skills/orchestrate
 
 1. Read the goal, the dependencies, the repo's `AGENTS.md` or `CLAUDE.md` and `NORTH_STAR.md`, and the code the unit touches.
 2. Write the **acceptance check** before anything else: objective and runnable, red now and green when done. When the Done line states a rule, the check includes a generated property over the rule's whole domain as written. When the unit changes behavior over time (a player, a queue, a lock, a sync or retry loop, a protocol, an outbox), the check is a model-based test: a small reference model of the states and transitions, generated command sequences run against both, and the invariants as the oracle. When correctness depends on how concurrent steps interleave (two writers, a lease, a drainer and a producer), also write the protocol as a Quint or TLA+ model beside the spec and model-check its invariants now; the model-based test then follows that model. Run the check, and record that it is red now. When the repo has a `.claude/skills/verify-<app>/` skill, the check names its feature and sub-feature ids (plus the map rows this unit adds for new behavior), and you drive them red on base by that skill instead of writing your own recipe.
-3. Fill every section. Owns and Do not touch name exact paths. Risks names what the reviewer should attack hardest.
+3. Fill every section. Owns and Do not touch name exact paths. Risks names what the verifier should attack hardest.
 
 ## Implementor
 
@@ -55,10 +55,10 @@ You are the sole writer. You work in the spec's workspace (a Rift or worktree on
 **Read first:** the spec, the run's `common.md`, and `NORTH_STAR.md` → Owner rules.
 
 1. **State.** Keep `<unit dir>/state.md` current with: the branch, the commits, what is done, what is next, and open questions. Update it after each commit. After a compaction, read the spec and `state.md` again before any other action, and this protocol too when your prompt does not carry it.
-2. **Build.** Work until the whole unit is ready for review, not one piece at a time. Use commits in Conventional Commits form, one logical unit each, staged by exact path. A behavior change the repo's `verify-<app>` feature map describes edits that feature file in the same branch.
+2. **Build.** Work until the whole unit is ready to verify, not one piece at a time. Use commits in Conventional Commits form, one logical unit each, staged by exact path. A behavior change the repo's `verify-<app>` feature map describes edits that feature file in the same branch.
 3. **Decide.** When the spec leaves a choice open, take the simpler, reversible option. Record it in `state.md` with "decided by <principle>" (see `~/Developer/personal/dotfiles/principles/`), and carry on. Questions are for what you truly cannot infer.
 4. **Gate.** Run the focused checks while you work. Before each request, run the spec's round gate into `<unit dir>/gate-N.log` with its exit line, and read the exit line and the failing section only. A test that fails once under load and passes on one retry is a flake: retry once, name it in the request, and keep its assertions.
-5. **Request.** Write `round-N-request.md`. Its first lines name this protocol, the spec path and the head commit, for a reviewer arriving cold. Then:
+5. **Request.** Write `round-N-request.md`. Its first lines name this protocol, the spec path and the head commit, for a verifier arriving cold. Then:
    - the base and head commits, with `git diff --stat <base>..HEAD | tail -1`;
    - what changed, by file;
    - how to run it;
@@ -66,13 +66,13 @@ You are the sole writer. You work in the spec's workspace (a Rift or worktree on
    - the acceptance check's command and its exit line, run at the head;
    - known gaps.
 
-   From round 2 on, add the **fix report**: every finding of the last round, each `fixed <hash>` with the guard it added (or `guard: tooling unit` when the guard is outside the spec's Owns), or `rejected: <reason>`. Never leave a finding unaccounted for. For each Blocker or Major the last findings mark `repeat of`, add the line `repeat <id>: <test> red at <the head that round reviewed>`, naming a test this round adds that fails at that head. `bun ~/.claude/skills/orchestrate/scripts/request.ts <unit dir> <N>` checks the request; hand back once it exits 0.
+   From round 2 on, add the **fix report**: every finding of the last round, each `fixed <hash>` with the guard it added (or `guard: tooling unit` when the guard is outside the spec's Owns), or `rejected: <reason>`. Never leave a finding unaccounted for. For each Blocker or Major the last findings mark `repeat of`, add the line `repeat <id>: <test> red at <the head that round verified>`, naming a test this round adds that fails at that head. `bun ~/.claude/skills/orchestrate/scripts/request.ts <unit dir> <N>` checks the request; hand back once it exits 0.
 
 **Timebox.** Past the spec's timebox for a round, hand back `blocked` with `state.md` current and what remains.
 
 **Scope.** Work outside the spec does not enter the unit. Write it in `state.md` under "Follow-ups" for the orchestrator.
 
-## Reviewer
+## Verifier
 
 You are read-only on the deliverables. Write only into the unit dir. You are fresh each round: the findings of earlier rounds are files, and you read them. In one pass you prove the behavior in a clean checkout and try to break the change.
 
@@ -80,7 +80,7 @@ You are read-only on the deliverables. Write only into the unit dir. You are fre
 
 1. **Review directly, or through Counsel.** The review comes from the other model family than the implementor's, and your message says which way you get it.
    - **Directly** (your message says `review directly`). You do the discovery yourself, by the criteria below, with no counsel run, so skip `counsel-review` §1 and §2. Hold each Blocker and Major you find to the source before you file it. When your message says you share the implementor's family because the other cannot run the whole acceptance check on this host, say so in one line at the head of Check.
-   - **Through Counsel** (you share the implementor's family). You operate the review and run the check; Counsel does the discovery, so skip `counsel-review` §1. The packet names paths: the request, the spec, the base and head commits, the earlier rounds' findings and the fix report. Send it with `okra counsel -f <packet>` (it reaches the other model family). Make each Blocker and Major claim fail at the head (Proof, below), in at most 40 tool calls in all. Drop Counsel's claims about style, naming, wording or speculative scope. A counsel run that exits non-zero or writes an empty file is no review: end `stuck` with the reason `quota` (or the error) on your file's first line, never `accepted` on your own reading. When an earlier reviewer died after its counsel run exited 0, validate that output instead of a new run.
+   - **Through Counsel** (you share the implementor's family). You operate the review and run the check; Counsel does the discovery, so skip `counsel-review` §1. The packet names paths: the request, the spec, the base and head commits, the earlier rounds' findings and the fix report. Send it with `okra counsel -f <packet>` (it reaches the other model family). Make each Blocker and Major claim fail at the head (Proof, below), in at most 40 tool calls in all. Drop Counsel's claims about style, naming, wording or speculative scope. A counsel run that exits non-zero or writes an empty file is no review: end `stuck` with the reason `quota` (or the error) on your file's first line, never `accepted` on your own reading. When an earlier verifier died after its counsel run exited 0, validate that output instead of a new run.
 2. **Check.** Make a clean checkout of the head commit:
 
    ```
