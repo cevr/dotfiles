@@ -498,24 +498,25 @@ export const ceilingOf = (env = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW): nu
 // minute, which the replay's token cost does not count: a larger window costs
 // the replay a few percent more tokens but compacts the main session far less.
 //
-// Every other orchestrate kind runs at WORKER_MAX: a worker
+// The planner and orchestrate-worker run at WORKER_MAX: a worker
 // hands off at its first compaction (protocol.md), so a tuned 120k window,
 // which compacts at about 87k, ended fresh workers before their first edit.
 //
-// The reviewer runs at REVIEWER_MAX. It reads the whole diff and runs the
-// acceptance check in one context, so a review that needs about 300k is
-// typical; at WORKER_MAX half of all reviews compacted and handed off to a
-// fresh reviewer that read everything again, which costs the run more wall
+// The implementor and the reviewer run at ROLE_MAX. Each holds the spec, the
+// diff and the gate's output in one context, and typically needs about 300k:
+// at WORKER_MAX, half of them compacted, most within minutes, and handed off
+// to a fresh agent that read everything again. That costs the run more wall
 // time than the replay's token saving buys.
-const ROLES = ['worker', 'planner', 'implementor'].map((role) => `orchestrate-${role}`);
+const ROLES = ['worker', 'planner'].map((role) => `orchestrate-${role}`);
 // A worker's window stays at or under this: past it, one agent's context costs
 // more than the tune's replay can see.
 export const WORKER_MAX = 200e3;
-export const REVIEWER_MAX = 400e3;
+export const ROLE_MAX = 400e3;
 export const PINNED: Record<string, number> = {
   root: 400e3,
   ...Object.fromEntries(ROLES.map((kind) => [kind, WORKER_MAX])),
-  'orchestrate-reviewer': REVIEWER_MAX,
+  'orchestrate-implementor': ROLE_MAX,
+  'orchestrate-reviewer': ROLE_MAX,
 };
 // An agent whose context passed its kind's window by this much ran without it:
 // the engine ignored the window (2.1.310 did, for every registered agent). The

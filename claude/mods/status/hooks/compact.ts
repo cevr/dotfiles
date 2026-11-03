@@ -19,9 +19,9 @@ type On = Parameters<Register>[0]
 
 const HOUR = 3600e3
 const WORKER = 'orchestrate-worker'
-// budget/burn.ts WORKER_MAX and REVIEWER_MAX: the largest window each kind is registered with.
+// budget/burn.ts WORKER_MAX and ROLE_MAX: the largest window each kind is registered with.
 export const WORKER_MAX = 200e3
-const MAX: Record<string, number> = { 'orchestrate-reviewer': 400e3 }
+const MAX: Record<string, number> = { 'orchestrate-implementor': 400e3, 'orchestrate-reviewer': 400e3 }
 export const KINDS = [WORKER, ...['planner', 'implementor', 'reviewer'].map(role => `orchestrate-${role}`)]
 const CACHE = '"$HOME/.cache/orchestrate"'
 export const KEEP =
