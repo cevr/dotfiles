@@ -3,8 +3,16 @@
 // agent works yet. A copy of the Claude Code sabbath mod's pure part
 // (dotfiles claude/mods/sabbath/hooks/sabbath.ts), so both hosts keep the
 // same hours.
+import { Schema } from "effect"
 
-export type Place = { readonly name: string; readonly lat: number; readonly lon: number; readonly timeZone: string }
+/** Where the Sabbath is kept: its coordinates for sunset, its time zone for the days. */
+export const Place = Schema.Struct({
+  name: Schema.String,
+  lat: Schema.Finite,
+  lon: Schema.Finite,
+  timeZone: Schema.String,
+})
+export interface Place extends Schema.Schema.Type<typeof Place> {}
 
 /** The owner's location. */
 export const KNOWLTON: Place = { name: "Knowlton, QC", lat: 45.2167, lon: -72.5167, timeZone: "America/Toronto" }
@@ -91,10 +99,18 @@ export const local = (t: number, place: Place = KNOWLTON) =>
     hour12: false,
   }).format(t)
 
-/** Why agent work waits at `t`, or undefined when it may run. The Claude Code mod's words. */
-export const why = (t: number, place: Place = KNOWLTON): string | undefined => {
+/** When agent work resumes, if `t` falls in the rest; undefined when work may run. */
+export const resumesAt = (t: number, place: Place = KNOWLTON): number | undefined => {
   const s = rest(t, place)
-  return s.on
-    ? `It is the Sabbath; agent work resumes at ${local(s.end, place)} (30 min after sunset, ${place.name}).`
-    : undefined
+  return s.on ? s.end : undefined
+}
+
+/** Why agent work waits until `end`. The Claude Code mod's words. */
+export const explain = (end: number, place: Place = KNOWLTON): string =>
+  `It is the Sabbath; agent work resumes at ${local(end, place)} (30 min after sunset, ${place.name}).`
+
+/** Why agent work waits at `t`, or undefined when it may run. */
+export const why = (t: number, place: Place = KNOWLTON): string | undefined => {
+  const end = resumesAt(t, place)
+  return end === undefined ? undefined : explain(end, place)
 }

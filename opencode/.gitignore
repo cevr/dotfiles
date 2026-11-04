@@ -1,4 +1,5 @@
 node_modules/
 mods/*/node_modules
+lib/node_modules
 out/
 media/

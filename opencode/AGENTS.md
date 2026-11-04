@@ -10,6 +10,8 @@ Before changing a mod, read `ARCHITECTURE.md`: every mod is an Effect program sh
 - `scenarios/`: opencode-drive scenarios. Each runs OpenCode headless with a scripted model and writes frames (text) and screenshots. They are the deterministic check for every UI or plugin change.
 - `themes/`, `mods/`: what OpenCode loads from us. `mods/prime` is the Prime look with fx's rail composer and tool-call groups (a header over a `├`/`└` tree per step, after `vercel-labs/fx` as gent copied it), a TUI plugin package loaded by path through the config's `plugins`. Steps that only start background agents, each within a minute of the last, share one group, and worker completion notices that land side by side fold into one line (through the fork's `session.message.completion` slot). It imports only `@opencode/plugin`, `@opentui/*` and `solid-js`; OpenCode provides them and compiles the TSX at load time.
 - `mods/orchestrate`: the orchestrate skill's rules, a server plugin. It defines the role agents (planner, implementor, verifier, worker) from `src/agents.json`, runs untyped and general subagent calls as the worker and former role names as the role (logging each call to `~/.cache/orchestrate/opencode-agents.jsonl`), gives each role its compaction window from `~/.cache/orchestrate/compact.json`, and stops agent work over the Sabbath. The window takes effect through the fork's per-agent compaction threshold (`request.settings.compactionWindow`).
+  It is the first mod on `ARCHITECTURE.md`'s layout (`src/domain/`, `src/host/`, `src/Orchestrate.plugin.ts`); its model is in the README's Orchestrate section.
+- `lib/`: what migrated mods share. `decider.ts` is the aggregate's `Decider` type and `fold`; `story.ts` runs a Decider's stories (`Story.make(decider)(given, clock, when, then, rejected, state, view)`).
 - `mods/anthropic-auth`: the Claude subscription login, vendored from `@ex-machina/opencode-anthropic-auth` (MIT) with our quota readings and the seam the pool chooses each request's credential through; provenance in its README. Its tests run without `ANTHROPIC_BASE_URL`.
 - `mods/kernel`: the code kernel, a server plugin ported from gent's `cell`. The `kernel` tool runs TypeScript in a Bun worker per session (`src/worker.ts`, framed over fd 3 and 4) whose bindings persist and are stored after each call; `tools.<name>()` inside it runs the session's other tools (`src/host-tools.ts`). By default it is the agent's runtime (the fork's `options.runtime`): the model sees only the kernel, and calls go through the registry's hooks. Options and limits are in the README.
 - `scripts/agents.ts`: `bun run agents` writes `mods/orchestrate/src/agents.json` from the orchestrate skill (`~/.claude/skills/orchestrate`), so the prompts are Claude Code's word for word; `--check` fails when it is stale. Edit the skill, never the JSON.
@@ -19,7 +21,7 @@ Before changing a mod, read `ARCHITECTURE.md`: every mod is an Effect program sh
 
 ## Checks
 All three need `OPENCODE_DEV` pointing at the fork checkout.
-- `bun run typecheck`: links `mods/*/node_modules` to the fork's `packages/tui/node_modules` (`bun run link-fork`), then checks the root and each plugin.
+- `bun run typecheck`: links `mods/*/node_modules` and `lib/node_modules` to the fork's `packages/tui/node_modules` (`bun run link-fork`), then checks the root and each plugin.
 - `bun run test`: the scenario tests. Without `OPENCODE_DEV` they skip and say so.
 
 ## Running a scenario

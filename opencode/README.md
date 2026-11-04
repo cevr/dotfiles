@@ -43,6 +43,40 @@ opens; Esc or `q` closes it, and `/pool` from the prompt toggles it.
 model and a scratch home. See [the gamut testbed](testbeds/gamut/README.md).
 It makes no live model request.
 
+## Orchestrate
+
+`mods/orchestrate` holds the orchestrate skill's rules. It defines the role
+agents and their compaction windows, routes each subagent call to a role,
+holds new starts on the pace, and stops agent work over the Sabbath. Its
+options are `windows`, `log`, `now`, `place`, `fullAgent` and `codex`. A
+missing or malformed option takes its default.
+
+The model (`src/domain/`):
+
+- Facts: `SubagentStarted` (the agent, why it was routed there, and its
+  model) and `SubagentFinished` (the child session and how it ended).
+- Commands: `StartSubagent`, `UseTool` (any other tool call) and
+  `FinishSubagent`. Each one is decided only from inputs gathered
+  beforehand: the clock, the place, the asked agent, the child's agent, the
+  role's model and the pace hold.
+- Rejections: `SabbathRest` (when work resumes) and `PaceHeld` (whose pace,
+  the reason, and when to retry). The call log records each one as a
+  `denied` line.
+- Aggregate: `ToolCall`, keyed by the session and call id. A kernel cell's
+  tool calls share the outer call's id, so `decide` never reads state.
+- Values: the Sabbath (`Sabbath.ts`), role routing (`Role.ts`), the
+  compaction windows (`Compaction.ts`) and the pace answers (`Pace.ts`).
+- Views: the call log, `~/.cache/orchestrate/opencode-agents.jsonl`. It has
+  one line per fact or rejection (`CallLine.ts`), and the status pane reads
+  it.
+- Externals: the pool's pace (`PoolPace`), the Codex admission script
+  (`CodexAdmission`), sessions, models, the compaction windows file and the
+  call log. Each one is a `Context.Service` in `domain/`, with a live layer
+  and a test layer in `host/`.
+
+The aggregate stores events, not state. The status pane reads the history
+as the call log, and no command needs the folded state.
+
 ## The code kernel
 
 `mods/kernel` gives the model a `kernel` tool, `{ code, reset? }`, ported

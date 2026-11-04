@@ -1,6 +1,7 @@
-// Points each plugin's node_modules at the OpenCode checkout in OPENCODE_DEV,
-// so the plugins typecheck against the host's API, OpenTUI and Solid. At
-// runtime OpenCode provides these modules itself; the links are for tooling.
+// Points each plugin's node_modules, and lib's, at the OpenCode checkout in
+// OPENCODE_DEV, so the plugins and the helpers they share typecheck and test
+// against one copy of the host's Effect, API, OpenTUI and Solid. At runtime
+// OpenCode provides these modules itself; the links are for tooling.
 import { existsSync, lstatSync, readdirSync, readlinkSync, rmSync, symlinkSync } from "node:fs"
 import path from "node:path"
 
@@ -15,9 +16,10 @@ if (!existsSync(path.join(target, "@opencode/plugin"))) {
   process.exit(1)
 }
 
-const root = path.resolve(import.meta.dir, "../mods")
-for (const name of readdirSync(root)) {
-  const link = path.join(root, name, "node_modules")
+const mods = path.resolve(import.meta.dir, "../mods")
+const lib = path.resolve(import.meta.dir, "../lib")
+for (const dir of [...readdirSync(mods).map((name) => path.join(mods, name)), lib]) {
+  const link = path.join(dir, "node_modules")
   const current = existsSync(link) || isLink(link) ? lstatSync(link) : undefined
   if (current?.isSymbolicLink() && readlinkSync(link) === target) continue
   if (current && !current.isSymbolicLink()) {

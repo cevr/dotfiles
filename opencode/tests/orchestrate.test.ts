@@ -7,8 +7,8 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { build, DEFAULT_SOURCE, OUT, parseAgent, ROOT } from "../scripts/agents.ts"
-import { definitions, effort, ROLES } from "../mods/orchestrate/src/roles.ts"
-import { KEEP } from "../mods/orchestrate/src/windows.ts"
+import { definitions, effort, ROLES } from "../mods/orchestrate/src/domain/Role.ts"
+import { KEEP } from "../mods/orchestrate/src/domain/Compaction.ts"
 import type { Result, Spec } from "./orchestrate/run.ts"
 import { REVIEW_TASK, SUMMARY, UNTYPED_TASK } from "./orchestrate/sim.ts"
 
