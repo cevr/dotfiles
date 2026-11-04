@@ -17,6 +17,22 @@
           }
         ]
       }
+    },
+    {
+      "files": ["mods/kernel/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
+                "message": "The kernel domain fence: the kernel's domain files import effect, @dotfiles/decider/*, the kernel's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of the kernel's folders."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }

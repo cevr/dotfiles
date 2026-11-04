@@ -1,6 +1,7 @@
 // How frames and the end of a cell's output travel between the host and its
-// worker. Ported from gent's `cell-protocol.ts`. This file imports only types,
-// so the worker loads it without Effect.
+// worker. Ported from gent's `cell-protocol.ts`. The worker program loads this
+// file, so it must stay Effect-free: it imports frame.ts for types only and, at
+// run time, only limits.ts, which imports nothing.
 //
 // Frames are one JSON value per line. The worker writes its frames on fd 3 and
 // reads the host's on fd 4, so stdout and stderr stay the cell's own. A

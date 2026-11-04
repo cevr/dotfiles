@@ -22,7 +22,7 @@ const run = async (name: string, spec: Pick<Spec, "task" | "denyExecute" | "code
   const home = join(base, "home")
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
-  writeFileSync(file, JSON.stringify({ ...spec, base, fork: resolve(fork!), plugin: join(ROOT, "mods/kernel") } satisfies Spec))
+  writeFileSync(file, JSON.stringify({ ...spec, base, fork: resolve(fork!), plugin: join(ROOT, "cmd/kernel") } satisfies Spec))
   const child = Bun.spawn([process.execPath, join(import.meta.dir, "kernel/run.ts"), file], {
     env: {
       PATH: process.env.PATH ?? "",

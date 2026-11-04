@@ -21,6 +21,14 @@
         "typescript": "^7",
       },
     },
+    "cmd/kernel": {
+      "name": "@dotfiles/opencode-cmd-kernel",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-kernel": "workspace:*",
+        "oxc-parser": "0.157.0",
+      },
+    },
     "decider": {
       "name": "@dotfiles/decider",
       "version": "0.0.0",
@@ -32,6 +40,18 @@
     "mods/kernel": {
       "name": "@dotfiles/opencode-kernel",
       "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+      },
+      "devDependencies": {
+        "oxc-parser": "0.157.0",
+      },
+      "peerDependencies": {
+        "oxc-parser": "0.157.0",
+      },
+      "optionalPeers": [
+        "oxc-parser",
+      ],
     },
     "mods/orchestrate": {
       "name": "@dotfiles/opencode-orchestrate",
@@ -63,6 +83,8 @@
     "@dotfiles/decider": ["@dotfiles/decider@workspace:decider"],
 
     "@dotfiles/opencode-anthropic-auth": ["@dotfiles/opencode-anthropic-auth@workspace:mods/anthropic-auth"],
+
+    "@dotfiles/opencode-cmd-kernel": ["@dotfiles/opencode-cmd-kernel@workspace:cmd/kernel"],
 
     "@dotfiles/opencode-kernel": ["@dotfiles/opencode-kernel@workspace:mods/kernel"],
 

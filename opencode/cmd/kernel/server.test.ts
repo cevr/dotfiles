@@ -11,12 +11,12 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Tool } from "@opencode/plugin/effect"
 import { Cause, Effect, Exit, Layer, Queue, Schema, type Scope, Stream } from "effect"
-import type { Json } from "../../kernel/frame.ts"
-import type { Reached, Rule } from "../../kernel/tools.ts"
-import * as MemorySessions from "../../memory/sessions.ts"
-import * as OpenCodeSnapshots from "../../opencode/snapshots.ts"
-import * as ProcessWorkers from "../../worker/workers.ts"
-import Kernel, { make } from "./main.ts"
+import type { Json } from "@dotfiles/opencode-kernel/frame"
+import type { Reached, Rule } from "@dotfiles/opencode-kernel/tools"
+import * as MemorySessions from "@dotfiles/opencode-kernel/memory/sessions"
+import * as OpenCodeSnapshots from "@dotfiles/opencode-kernel/opencode/snapshots"
+import * as ProcessWorkers from "@dotfiles/opencode-kernel/worker/workers"
+import Kernel, { make } from "./server.ts"
 
 const work = mkdtempSync(join(tmpdir(), "kernel-plugin-"))
 

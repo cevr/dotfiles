@@ -4,8 +4,8 @@
 // plain functions, so the laws run it over a stand-in host.
 import { Agent, type Plugin } from "@opencode/plugin/effect"
 import { Effect, Layer } from "effect"
-import { Sessions, SessionUnreadable } from "../kernel/service.ts"
-import { messageOf, type Rule } from "../kernel/tools.ts"
+import { Sessions, SessionUnreadable } from "../service.ts"
+import { messageOf, type Rule } from "../tools.ts"
 
 /** A session as the kernel reads it. */
 export interface SessionInfo {

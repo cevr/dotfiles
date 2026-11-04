@@ -23,8 +23,8 @@
  */
 import { deserialize, serialize } from "bun:jsc"
 import { types } from "node:util"
-import type { Json, Omission, OmissionReason, Snapshot, SnapshotBinding } from "../kernel/frame.ts"
-import { MAX_BINDING_BYTES, MAX_SNAPSHOT_BYTES } from "../kernel/limits.ts"
+import type { Json, Omission, OmissionReason, Snapshot, SnapshotBinding } from "../frame.ts"
+import { MAX_BINDING_BYTES, MAX_SNAPSHOT_BYTES } from "../limits.ts"
 /** How deep the copy goes; the serializer recurses, so a deeper value fails there anyway. */
 const MAX_DEPTH = 10_000
 /** Strings at least this long are charged once each against the budget, as the serializer stores them once. */

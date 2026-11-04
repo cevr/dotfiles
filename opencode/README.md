@@ -192,7 +192,7 @@ that plugins define; an agent defined only in a config file arrives after the
 plugins' transforms and keeps code mode. A call made inside a cell shows as
 the kernel's row in the transcript, not as its own tool row.
 
-The model (the domain folder `mods/kernel/kernel/`):
+The model (the domain files at the root of `mods/kernel`):
 
 - Facts: `KernelReset`, `KernelStarted` (with the bindings it restored),
   `CellRan` (the cell's output, its display, the bindings it bound that the
@@ -218,7 +218,7 @@ The model (the domain folder `mods/kernel/kernel/`):
   call: the runtime's, else the registry's). `worker/` implements `Workers`;
   `opencode/` implements `Snapshots`, `Sessions` and `Toolbox` over the
   plugin context; `memory/` holds the in-memory `Sessions` the seam test
-  uses. `cmd/server/main.ts` is the plugin and the only composition root.
+  uses. `cmd/kernel/server.ts` is the plugin and the only composition root.
 - The worker itself (`worker/program.ts`, with `codec.ts` and
   `declarations.ts`) is a separate Bun program: it imports only `node:`,
   `bun:` and `oxc-parser`, and from the domain only types and the

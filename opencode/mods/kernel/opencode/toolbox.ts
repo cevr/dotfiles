@@ -9,15 +9,15 @@
 // registry would, and runs the tool's own `execute` with the kernel call's
 // context, so the tool asks for permission and stops with the call as it does
 // for a direct call. That skips the hooks, so the tools whose policy lives
-// there are left out (kernel/tools.ts).
+// there are left out (../tools.ts).
 //
 // Either way a call resolves to its result's value as code mode gives it: its
 // output (encoded by the tool's output schema), else its text, else null.
 import type { Plugin, Tool } from "@opencode/plugin/effect"
 import { Cause, Effect, JsonSchema, Layer, Schema, SchemaRepresentation } from "effect"
-import type { Json, Listing } from "../kernel/frame.ts"
-import { Toolbox, type CellTools } from "../kernel/service.ts"
-import { CallFailed, callable, messageOf, notATool, plain, reachable, textOf, type ContentPart, type Reached, type Registered } from "../kernel/tools.ts"
+import type { Json, Listing } from "../frame.ts"
+import { Toolbox, type CellTools } from "../service.ts"
+import { CallFailed, callable, messageOf, notATool, plain, reachable, textOf, type ContentPart, type Reached, type Registered } from "../tools.ts"
 
 /** A tool result as the host gives it. */
 export interface ToolResult {

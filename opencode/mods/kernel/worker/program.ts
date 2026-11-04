@@ -23,7 +23,7 @@
  */
 import { createRequire } from "node:module"
 import { types } from "node:util"
-import type { Evaluation, Json, Listing, Request, Response, Snapshot, SnapshotBinding } from "../kernel/frame.ts"
+import type { Evaluation, Json, Listing, Request, Response, Snapshot, SnapshotBinding } from "../frame.ts"
 import {
   MAX_CALLS_PER_CELL,
   MAX_DISPLAY_CHARS,
@@ -31,9 +31,9 @@ import {
   MAX_PENDING_CALLS,
   MAX_SNAPSHOT_BYTES,
   MAX_SOURCE_CHARS,
-} from "../kernel/limits.ts"
-import { makeBoundedOutput } from "../kernel/output.ts"
-import { encodeFrame, makeFrameReader, outputMarker, oversized, REQUEST_FD, RESPONSE_FD } from "../kernel/wire.ts"
+} from "../limits.ts"
+import { makeBoundedOutput } from "../output.ts"
+import { encodeFrame, makeFrameReader, outputMarker, oversized, REQUEST_FD, RESPONSE_FD } from "../wire.ts"
 import { decodeBinding, encodeSnapshot } from "./codec.ts"
 import { declarationsOf, decodeDeclaration, makeDeclarations, type Declared } from "./declarations.ts"
 

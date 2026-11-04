@@ -1,6 +1,6 @@
 // The worker processes: one Bun process per session, running program.ts
 // in the session's working directory, spoken to over the worker protocol
-// (kernel/frame.ts, kernel/wire.ts).
+// (../frame.ts, ../wire.ts).
 //
 // The compute limit counts the worker's own compute only: its clock stops
 // while a host tool call is in flight and starts again once the reply is sent.
@@ -12,14 +12,14 @@
 // reason it ended and the last words it wrote outside a cell.
 import { join } from "node:path"
 import { Clock, Deferred, Effect, Exit, Fiber, Layer, Schema, Scope, Stream } from "effect"
-import { ABORTED } from "../kernel/model.ts"
-import { Response, type Evaluation, type Json, type Request, type SnapshotBinding } from "../kernel/frame.ts"
-import type { KernelSessionId } from "../kernel/session.ts"
-import { WorkerLost, Workers, type Cell, type CellResult } from "../kernel/service.ts"
-import { MAX_DISPLAY_CHARS, MAX_DISPLAY_HEAD_CHARS, MAX_REPLY_BYTES, READY_MS } from "../kernel/limits.ts"
-import { makeBoundedOutput } from "../kernel/output.ts"
-import { messageOf } from "../kernel/tools.ts"
-import { encodeFrame, makeFrameReader, makeOutputScanner, oversized, REQUEST_FD, RESPONSE_FD } from "../kernel/wire.ts"
+import { ABORTED } from "../model.ts"
+import { Response, type Evaluation, type Json, type Request, type SnapshotBinding } from "../frame.ts"
+import type { KernelSessionId } from "../session.ts"
+import { WorkerLost, Workers, type Cell, type CellResult } from "../service.ts"
+import { MAX_DISPLAY_CHARS, MAX_DISPLAY_HEAD_CHARS, MAX_REPLY_BYTES, READY_MS } from "../limits.ts"
+import { makeBoundedOutput } from "../output.ts"
+import { messageOf } from "../tools.ts"
+import { encodeFrame, makeFrameReader, makeOutputScanner, oversized, REQUEST_FD, RESPONSE_FD } from "../wire.ts"
 
 /** The worker entry. */
 export const WORKER = join(import.meta.dir, "program.ts")

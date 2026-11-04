@@ -3,8 +3,8 @@
 // earlier version wrote, so stored sessions keep restoring. A value is the
 // worker codec's encoding (worker/codec.ts), stored as it came.
 import { Effect, Layer, Option, Schema } from "effect"
-import { SnapshotBinding, type Json } from "../kernel/frame.ts"
-import { Snapshots } from "../kernel/service.ts"
+import { SnapshotBinding, type Json } from "../frame.ts"
+import { Snapshots } from "../service.ts"
 
 export const STORAGE_PREFIX = "kernel:"
 

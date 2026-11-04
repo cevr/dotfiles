@@ -3,7 +3,7 @@
 // loses its worker; an idle or deleted session's worker stops.
 import { describe, test } from "bun:test"
 import { Effect } from "effect"
-import * as Story from "../../../lib/story.ts"
+import * as Story from "@dotfiles/decider/story"
 import { CellAnswer } from "./answer.ts"
 import {
   CellRan,

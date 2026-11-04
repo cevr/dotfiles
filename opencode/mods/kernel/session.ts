@@ -10,7 +10,7 @@
 // this history but the worker's bindings, stored as its snapshot (service.ts,
 // `Snapshots`).
 import { Effect, Schema } from "effect"
-import type { Decider } from "../../../lib/decider.ts"
+import type { Decider } from "@dotfiles/decider/decider"
 import { Omission } from "./frame.ts"
 
 /** One OpenCode session's kernel: the session's id. */

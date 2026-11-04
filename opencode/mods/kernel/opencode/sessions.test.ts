@@ -2,7 +2,7 @@
 // an unknown session fails as the host's `session.get` does, an unknown agent
 // as its `agent.get` does.
 import { Effect } from "effect"
-import { sessionsLaws } from "../kernel/laws.ts"
+import { sessionsLaws } from "../laws.ts"
 import * as OpenCodeSessions from "./sessions.ts"
 
 sessionsLaws("OpenCode's Sessions", (world) =>

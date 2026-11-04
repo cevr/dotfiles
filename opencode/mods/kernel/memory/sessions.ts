@@ -2,8 +2,8 @@
 // the sessions a test names, each with its directory and own rules, and the
 // agents' rules. A session the test did not name cannot be read.
 import { Effect, Layer } from "effect"
-import { Sessions, SessionUnreadable } from "../kernel/service.ts"
-import type { Rule } from "../kernel/tools.ts"
+import { Sessions, SessionUnreadable } from "../service.ts"
+import type { Rule } from "../tools.ts"
 
 export interface World {
   readonly sessions: Readonly<Record<string, { readonly directory: string; readonly permissions?: ReadonlyArray<Rule> }>>

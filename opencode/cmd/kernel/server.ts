@@ -1,14 +1,14 @@
 /**
  * The code kernel as an OpenCode server plugin, ported from gent's `cell`
  * tool. The composition root: it decodes the options, builds the model
- * (kernel/model.ts) on one implementation of each contract in
- * kernel/service.ts, and registers the `kernel` tool with it.
+ * (`@dotfiles/opencode-kernel/model`) on one implementation of each contract
+ * in `@dotfiles/opencode-kernel/service`, and registers the `kernel` tool.
  *
  * - `kernel({ code, reset? })` runs TypeScript in a Bun worker that lives as
  *   long as its session, so top-level bindings persist between calls. The
  *   result is what the code printed, then its last expression's value.
  * - Inside the code, `await tools.<id>(input)` runs another OpenCode tool
- *   (opencode/toolbox.ts).
+ *   (`@dotfiles/opencode-kernel/opencode/toolbox`).
  * - One worker per session, started on the first call. It is killed when the
  *   session is deleted, after `idleMs` without a call, on abort, and past the
  *   compute limit. After every call the bindings that hold data are stored
@@ -33,14 +33,14 @@
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Schema, Stream } from "effect"
-import { description, KernelInput } from "../../kernel/description.ts"
-import * as Model from "../../kernel/model.ts"
-import type { Sessions, Snapshots, Workers } from "../../kernel/service.ts"
-import { KernelSessionId } from "../../kernel/session.ts"
-import * as OpenCodeSessions from "../../opencode/sessions.ts"
-import * as OpenCodeSnapshots from "../../opencode/snapshots.ts"
-import * as OpenCodeToolbox from "../../opencode/toolbox.ts"
-import * as ProcessWorkers from "../../worker/workers.ts"
+import { description, KernelInput } from "@dotfiles/opencode-kernel/description"
+import * as Model from "@dotfiles/opencode-kernel/model"
+import type { Sessions, Snapshots, Workers } from "@dotfiles/opencode-kernel/service"
+import { KernelSessionId } from "@dotfiles/opencode-kernel/session"
+import * as OpenCodeSessions from "@dotfiles/opencode-kernel/opencode/sessions"
+import * as OpenCodeSnapshots from "@dotfiles/opencode-kernel/opencode/snapshots"
+import * as OpenCodeToolbox from "@dotfiles/opencode-kernel/opencode/toolbox"
+import * as ProcessWorkers from "@dotfiles/opencode-kernel/worker/workers"
 
 /**
  * An option that takes `fallback` when absent. A present value must decode.

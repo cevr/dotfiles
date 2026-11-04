@@ -3,9 +3,9 @@
 // the registry's hooks; then what only the registry's bridge does.
 import { describe, expect, test } from "bun:test"
 import { Effect, Schema } from "effect"
-import { toolboxLaws, type LawTool } from "../kernel/laws.ts"
-import { Toolbox } from "../kernel/service.ts"
-import { CallFailed } from "../kernel/tools.ts"
+import { toolboxLaws, type LawTool } from "../laws.ts"
+import { Toolbox } from "../service.ts"
+import { CallFailed } from "../tools.ts"
 import * as OpenCodeToolbox from "./toolbox.ts"
 
 const registryTool = (tool: LawTool): OpenCodeToolbox.RegistryTool => ({

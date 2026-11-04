@@ -1,7 +1,7 @@
 // What one kernel call answers, folded from the events the call recorded: the
 // notes on what happened to the kernel, then the cell's output and display,
 // or the reason the worker was lost.
-import type { Fold } from "../../../lib/decider.ts"
+import type { Fold } from "@dotfiles/decider/decider"
 import { viewOf } from "./output.ts"
 import type { Event } from "./session.ts"
 

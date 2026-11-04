@@ -1,0 +1,14 @@
+{
+  "name": "@dotfiles/opencode-cmd-kernel",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The kernel's OpenCode server plugin: the composition root of @dotfiles/opencode-kernel.",
+  "exports": {
+    "./server": "./server.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-kernel": "workspace:*",
+    "oxc-parser": "0.157.0"
+  }
+}

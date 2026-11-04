@@ -5,7 +5,7 @@
 // recorded. The aggregate is the one decision entry point, so the stories run
 // exactly what these do. The plugin calls these and nothing else.
 import { Clock, Context, Effect, FiberMap, Layer, Semaphore, SynchronizedRef } from "effect"
-import { fold } from "../../../lib/decider.ts"
+import { fold } from "@dotfiles/decider/decider"
 import { CellAnswer, read, type Answer } from "./answer.ts"
 import { KernelSession, LoseKernel, RecordCell, ResetKernel, StartKernel, StopKernel, type Command, type Event, type KernelSessionId, type KernelSessionState, type StopReason } from "./session.ts"
 import { Sessions, Snapshots, Toolbox, Workers, type SessionUnreadable } from "./service.ts"

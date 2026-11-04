@@ -3,10 +3,10 @@
 // which every earlier version wrote and every later one must read.
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import type { Json } from "../kernel/frame.ts"
-import { snapshotsLaws } from "../kernel/laws.ts"
-import { Snapshots } from "../kernel/service.ts"
-import { KernelSessionId } from "../kernel/session.ts"
+import type { Json } from "../frame.ts"
+import { snapshotsLaws } from "../laws.ts"
+import { Snapshots } from "../service.ts"
+import { KernelSessionId } from "../session.ts"
 import * as OpenCodeSnapshots from "./snapshots.ts"
 
 /** The host's storage over `entries`: JSON in, JSON out. */

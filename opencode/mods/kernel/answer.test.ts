@@ -1,6 +1,6 @@
 // The CellAnswer view: what the model reads of one call's events.
 import { describe, expect, test } from "bun:test"
-import { fold } from "../../../lib/decider.ts"
+import { fold } from "@dotfiles/decider/decider"
 import { CellAnswer, read } from "./answer.ts"
 import { CellRan, KernelLost, KernelReset, KernelSessionId, KernelStarted, type Event } from "./session.ts"
 
