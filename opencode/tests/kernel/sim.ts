@@ -25,7 +25,7 @@ interface ChatMessage {
 interface ChatRequest {
   readonly model?: string
   readonly messages?: ReadonlyArray<ChatMessage>
-  readonly tools?: ReadonlyArray<{ readonly function?: { readonly name?: string } }>
+  readonly tools?: ReadonlyArray<{ readonly function?: { readonly name?: string; readonly description?: string } }>
 }
 
 /** What the test reads back about one request. */
@@ -33,6 +33,8 @@ export interface Seen {
   readonly task: string
   readonly last: string
   readonly tools: ReadonlyArray<string>
+  /** The kernel's description as offered, when it was. */
+  readonly kernel?: string
 }
 
 type Reply =
@@ -52,6 +54,10 @@ const text = (content: unknown): string => {
 const firstUser = (messages: ReadonlyArray<ChatMessage>) =>
   text(messages.find((message) => message.role === "user")?.content).trim()
 
+export const SUBAGENT_TASK = "kernel subagent"
+/** One kernel call that starts a subagent from a cell and prints why it could not. */
+export const SUBAGENT_CELL = `try {\n  await tools.subagent({ agent: "worker", description: "probe from a cell", prompt: "Say hi" })\n  console.log("started")\n} catch (error) {\n  console.log("refused: " + (error instanceof Error ? error.message : String(error)))\n}`
+
 /** The two kernel calls; the first reads `file` through the kernel's `tools`. */
 export const cells = (file: string) => [
   `let note = "kept"\nconst page = await tools.read({ path: ${JSON.stringify(file)} })\nconsole.log(JSON.stringify(page))\nnote.length`,
@@ -67,6 +73,8 @@ const reply = (request: ChatRequest, file: string): Reply => {
   if (system.includes("You name conversations")) return { kind: "text", text: "Kernel run" }
   const results = messages.filter((message) => message.role === "tool").length
   const offersKernel = (request.tools ?? []).some((tool) => tool.function?.name === "kernel")
+  if (firstUser(messages).endsWith(SUBAGENT_TASK) && offersKernel)
+    return results === 0 ? { kind: "tool", name: "kernel", input: { code: SUBAGENT_CELL } } : { kind: "text", text: DONE }
   if (firstUser(messages).endsWith(KERNEL_TASK) && offersKernel) {
     const code = cells(file)[results]
     if (code !== undefined) return { kind: "tool", name: "kernel", input: { code } }
@@ -117,6 +125,10 @@ export const serve = (file: string) => {
         task: firstUser(messages),
         last: text(messages.at(-1)?.content),
         tools: (body.tools ?? []).map((tool) => tool.function?.name ?? ""),
+        ...(() => {
+          const kernel = (body.tools ?? []).find((tool) => tool.function?.name === "kernel")?.function?.description
+          return kernel === undefined ? {} : { kernel }
+        })(),
       })
       served += 1
       return new Response(events(reply(body, file), body.model ?? "sim", `sim${served}`), {

@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./kernel/run.ts"
-import { cells, DONE, HELLO, KERNEL_TASK } from "./kernel/sim.ts"
+import { cells, DONE, HELLO, KERNEL_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/kernel.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
@@ -17,7 +17,7 @@ const scratch = mkdtempSync(join(tmpdir(), "kernel-e2e-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** One run of real OpenCode in a scratch home; see tests/kernel/run.ts. */
-const run = async (name: string, spec: Pick<Spec, "task" | "denyExecute">): Promise<Result & { base: string }> => {
+const run = async (name: string, spec: Pick<Spec, "task" | "denyExecute" | "codeOnly" | "orchestrate">): Promise<Result & { base: string }> => {
   const base = join(scratch, name)
   const home = join(base, "home")
   mkdirSync(home, { recursive: true })
@@ -61,7 +61,7 @@ const RUN_MS = 150_000
 
 describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   test(
-    "two kernel calls share a binding; the first reads a work-dir file through tools.read; execute is not offered",
+    "code only: the kernel is the one tool offered; two calls share a binding, the first reads a work-dir file through tools.read",
     async () => {
       const result = await run("kernel", { task: KERNEL_TASK, denyExecute: true })
       const calls = toolParts(result.messages)
@@ -79,23 +79,57 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       const turns = result.seen.filter((request) => request.task === KERNEL_TASK)
       expect(turns.map((request) => request.last).slice(1)).toEqual(texts)
       expect(JSON.stringify(result.messages)).toContain(DONE)
-      // denyExecute: the kernel is the only code tool, and the others are offered directly.
-      for (const request of turns) {
-        expect(request.tools).toContain("kernel")
-        expect(request.tools).toContain("read")
-        expect(request.tools).not.toContain("execute")
-      }
+      // The kernel is the runtime: no other tool is offered, and its description lists them with their input.
+      for (const request of turns) expect(request.tools).toEqual(["kernel"])
+      expect(turns[0]!.kernel).toContain("### tools.read(input: { ")
+      expect(turns[0]!.kernel).toContain("### tools.subagent(input: { ")
     },
     RUN_MS,
   )
 
   test(
-    "without denyExecute, code mode's execute is offered beside the kernel",
+    "without codeOnly the kernel sits beside the direct tools; denyExecute decides whether execute is offered",
     async () => {
-      const result = await run("execute", { task: "plain", denyExecute: false })
+      const denied = await run("direct", { task: "plain", denyExecute: true, codeOnly: false })
+      const direct = denied.seen.find((item) => item.task === "plain")!
+      expect(direct.tools).toContain("kernel")
+      expect(direct.tools).toContain("read")
+      expect(direct.tools).not.toContain("execute")
+      const result = await run("execute", { task: "plain", denyExecute: false, codeOnly: false })
       const request = result.seen.find((item) => item.task === "plain")!
       expect(request.tools).toContain("kernel")
       expect(request.tools).toContain("execute")
+    },
+    RUN_MS,
+  )
+
+  test(
+    "a cell's tools.subagent runs through the orchestrate hooks: refused in the Sabbath, started on a weekday",
+    async () => {
+      const result = await run("subagent", {
+        task: SUBAGENT_TASK,
+        denyExecute: true,
+        orchestrate: { plugin: join(ROOT, "mods/orchestrate"), now: "2026-10-30T23:00:00Z" },
+      })
+      const [cell] = toolParts(result.messages)
+      const text = (cell!.state.content ?? []).map((part) => part.text ?? "").join("")
+      expect(text).toMatch(/^refused: It is the Sabbath; agent work resumes at Sat 18:\d\d/)
+      expect(text).toContain("No agent starts now.")
+      // The guard logged the refused call under the kernel call's id.
+      const log = readFileSync(join(result.base, "agents.jsonl"), "utf8")
+      expect(log).toContain('"kind":"denied"')
+      expect(log).toContain('"tool":"subagent"')
+      // On a weekday the same cell starts the worker, which the guard logs.
+      const weekday = await run("subagent-weekday", {
+        task: SUBAGENT_TASK,
+        denyExecute: true,
+        orchestrate: { plugin: join(ROOT, "mods/orchestrate"), now: "2026-11-04T15:00:00Z" },
+      })
+      const [started] = toolParts(weekday.messages)
+      expect((started!.state.content ?? []).map((part) => part.text ?? "").join("")).toBe("started")
+      const calls = readFileSync(join(weekday.base, "agents.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as { kind: string; agent?: string; status?: string })
+      expect(calls.filter((call) => call.kind === "call").map((call) => call.agent)).toEqual(["worker"])
+      expect(calls.filter((call) => call.kind === "done").map((call) => call.status)).toEqual(["completed"])
     },
     RUN_MS,
   )

@@ -9,33 +9,42 @@
  *   for permission and stops on abort as for a direct call (host-tools.ts).
  * - One worker per session, started on the first call. It is killed when the
  *   session is deleted, after `idleMs` without a call, on abort, and past the
- *   compute limit. After every call the JSON-safe bindings are stored under the
- *   session; a new worker starts with them, and `reset` drops them.
- * - The kernel is a direct tool (`codemode: false`). With `denyExecute`, every
- *   agent the plugins define denies code mode's `execute`, so the kernel is the
- *   only code tool and every other tool is offered directly too.
+ *   compute limit. After every call the bindings that hold data are stored
+ *   under the session as structured clones (codec.ts); a new worker starts
+ *   with them, and `reset` drops them.
+ * - With `codeOnly` (the default) the kernel is the agent's runtime, as Prime
+ *   Agent's REPL is: the model is offered the kernel alone, its description
+ *   lists every other tool with its input, and a cell's call runs through the
+ *   registry's hooks, so `tools.subagent` passes the orchestrate guard, pace
+ *   and Sabbath. Deny `kernel` to an agent to give it its usual tools. Needs
+ *   the fork's `options.runtime`.
+ * - Without `codeOnly` it is a direct tool beside the others (`codemode:
+ *   false`), whose calls skip the hooks; with `denyExecute`, every agent the
+ *   plugins define denies code mode's `execute`.
  *
  * Options (all optional):
  * - `idleMs`: kill a session's worker after this long without a call; default 1,800,000 (30 min).
  * - `timeoutMs`: a call's compute limit, paused while its tool calls run; default 30,000.
  * - `viewChars`: the characters of output the model sees per call; default 8,000.
- * - `denyExecute`: deny code mode's `execute` to every agent; default true.
+ * - `codeOnly`: make the kernel the agents' only tool; default true.
+ * - `denyExecute`: without `codeOnly`, deny code mode's `execute` to every agent; default true.
  *
  * @module
  */
 import { Plugin } from "@opencode/plugin"
 import { Schema } from "effect"
-import { callable, callTool, listing, type HostContext, type Rule } from "./host-tools.ts"
+import { callable, callTool, catalog, listing, runtimeTools, type HostContext, type Rule, type RuntimeTool } from "./host-tools.ts"
 import { Kernel } from "./kernel.ts"
 import { MAX_DISPLAY_CHARS, viewOf, type Omission, type SnapshotBinding } from "./protocol.ts"
 
-export const DEFAULTS = { idleMs: 30 * 60_000, timeoutMs: 30_000, viewChars: 8_000, denyExecute: true } as const
+export const DEFAULTS = { idleMs: 30 * 60_000, timeoutMs: 30_000, viewChars: 8_000, codeOnly: true, denyExecute: true } as const
 const STORAGE_PREFIX = "kernel:"
 
 export interface Options {
   readonly idleMs: number
   readonly timeoutMs: number
   readonly viewChars: number
+  readonly codeOnly: boolean
   readonly denyExecute: boolean
 }
 
@@ -47,21 +56,30 @@ export const readOptions = (options: Plugin.Context["options"]): Options => ({
   idleMs: positive(options.idleMs, DEFAULTS.idleMs),
   timeoutMs: positive(options.timeoutMs, DEFAULTS.timeoutMs),
   viewChars: positive(options.viewChars, DEFAULTS.viewChars),
+  codeOnly: typeof options.codeOnly === "boolean" ? options.codeOnly : DEFAULTS.codeOnly,
   denyExecute: typeof options.denyExecute === "boolean" ? options.denyExecute : DEFAULTS.denyExecute,
 })
 
-/** What the model reads about the kernel. */
-export const description = (options: Options) => `Run TypeScript in a persistent kernel: one Bun process for this session.
+/** What the model reads about the kernel; `tools` when it is the runtime, which reaches them. */
+export const description = (options: Options, tools?: ReadonlyArray<RuntimeTool>) => `Run TypeScript in a persistent kernel: one Bun process for this session.
 
 What persists: top-level bindings (let, const, var, function, class) stay defined for the next kernel call in this session. Data also survives a kernel restart, cycles included: primitives and BigInt, plain objects, arrays, Map, Set, Date, RegExp, Buffer, typed arrays and errors (type, name, message), up to 16 MiB per binding and 256 MiB in all. Functions, classes and their instances, imports, promises and other live objects do not: after a restart, declare and import them again. The result names each binding it dropped and why. reset: true starts an empty kernel.
 
 The result is what the code printed (console.log and friends), then the value of its last expression. Top-level await works.
 
-Calling tools: \`await tools.<id>(input)\` runs any other tool this session offers, with the same input it takes as a direct call, and resolves to its result (its output, or its text). Permissions apply as for a direct call. \`tools.list()\` returns the ids and descriptions. A failed tool call throws; catch it to continue. Run independent calls together with Promise.all.
+${tools === undefined ? DIRECT_TOOLS : RUNTIME_TOOLS}
 
-Limits: ${options.timeoutMs / 1000} s of compute per call, paused while tool calls run; past it the kernel is killed and bindings since the last call are lost. You see at most ${options.viewChars.toLocaleString("en-US")} characters of output, its head and tail; ${MAX_DISPLAY_CHARS / 1024} KiB at most are kept. Keep large data in variables and print what you need.
+Limits: ${options.timeoutMs / 1000} s of compute per call, paused while tool calls run; past it the kernel is killed and bindings since the last call are lost. You see at most ${options.viewChars.toLocaleString("en-US")} characters of output, its head and tail; ${MAX_DISPLAY_CHARS / 1024} KiB at most are kept. Keep large data in variables and print what you need.${tools === undefined ? `
 
-Use the kernel to compute, to chain several tool calls, to transform or filter tool results, and to keep data between steps. Call a tool directly for a single call whose full result you want to read.`
+Use the kernel to compute, to chain several tool calls, to transform or filter tool results, and to keep data between steps. Call a tool directly for a single call whose full result you want to read.` : `
+
+## Tools
+
+${catalog(tools)}`}`
+
+const DIRECT_TOOLS = "Calling tools: \`await tools.<id>(input)\` runs any other tool this session offers, with the same input it takes as a direct call, and resolves to its result (its output, or its text). Permissions apply as for a direct call. \`tools.list()\` returns the ids and descriptions. A failed tool call throws; catch it to continue. Run independent calls together with Promise.all."
+
+const RUNTIME_TOOLS = "Calling tools: the kernel is your only tool. Every other tool is a function on \`tools\`, listed below with its input: \`await tools.<name>(input)\` runs it and resolves to its result (its output, or its text). Read files, edit, run commands and start subagents from here. Permissions apply and a refused or failed call throws; catch it to continue. Run independent calls together with Promise.all, and print only what you need to read."
 
 const Input = Schema.Struct({
   code: Schema.String.annotate({ description: "TypeScript to run at the kernel's top level" }),
@@ -122,6 +140,14 @@ export const kernel = () =>
         return { directory, rules }
       }
 
+      /** A cell's tools without the runtime: each tool's own execute, which skips the registry's hooks. */
+      const hostTools = async (rules: ReadonlyArray<Rule>, context: HostContext) => {
+        const tools = callable(await ctx.tool.list(), rules)
+        // Inner tools must not replace the kernel call's own progress.
+        const inner: HostContext = { ...context, progress: async () => {} }
+        return { listing: listing(tools), call: (id: string, input: unknown) => callTool(tools, id, input, inner) }
+      }
+
       /** The session's live worker, or a new one with the stored bindings; notes say what happened. */
       const worker = async (session: Session, sessionID: string, directory: string, notes: string[]) => {
         if (session.kernel?.alive) return session.kernel
@@ -145,13 +171,11 @@ export const kernel = () =>
           notes.push("[kernel reset]")
         }
         const { directory, rules } = await scope(context)
-        const tools = callable(await ctx.tool.list(), rules)
+        const bridge = context.runtime ? runtimeTools(context.runtime) : await hostTools(rules, context)
         const current = await worker(session, context.sessionID, directory, notes)
-        // Inner tools must not replace the kernel call's own progress.
-        const inner: HostContext = { ...context, progress: async () => {} }
         let result
         try {
-          result = await current.evaluate(code, listing(tools), (id, input) => callTool(tools, id, input, inner), context.signal)
+          result = await current.evaluate(code, bridge.listing, bridge.call, context.signal)
         } catch (cause) {
           // The worker is gone; the next call starts a new one from the stored bindings.
           session.kernel = undefined
@@ -176,7 +200,9 @@ export const kernel = () =>
           name: "kernel",
           description: description(options),
           input: Input,
-          options: { codemode: false },
+          options: options.codeOnly
+            ? { codemode: false, runtime: { describe: (tools) => description(options, tools) } }
+            : { codemode: false },
           execute: (input, context) => {
             const session = sessionOf(context.sessionID)
             // One call at a time per session: parallel calls share one worker.
@@ -187,7 +213,7 @@ export const kernel = () =>
         })
       })
 
-      if (options.denyExecute)
+      if (!options.codeOnly && options.denyExecute)
         await ctx.agent.transform((editor) => {
           for (const agent of editor.list())
             editor.update(agent.id, (item) => {

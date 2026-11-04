@@ -46,10 +46,17 @@ It makes no live model request.
 `mods/kernel` gives the model a `kernel` tool, `{ code, reset? }`, ported
 from gent's `cell`. It runs TypeScript in one Bun process per session, so
 top-level bindings persist from call to call, and returns what the code
-printed, then its last expression's value. Inside the code,
-`await tools.<id>(input)` runs another tool of the session through the tool's
-own `execute`, with the kernel call's context, so permissions and abort work
-as for a direct call; `tools.list()` lists them. After each call the bindings
+printed, then its last expression's value.
+
+Code only, as Prime Agent's REPL: the kernel registers as the agent's
+runtime (the fork's `options.runtime`), so the model is offered the kernel
+alone, and its description lists every other tool as
+`tools.<name>(input: …)` with the tool's own text. Inside the code,
+`await tools.<name>(input)` runs that tool through OpenCode's registry with
+the kernel call's context: permissions, abort and the
+`execute.before`/`execute.after` hooks apply as for a direct call, so
+`tools.subagent` passes orchestrate's role guard, pace hold and Sabbath stop.
+Deny `kernel` to an agent to give it its usual tools. After each call the bindings
 that hold data are stored with the session as structured clones (cycles,
 BigInt, Map, Set, Date, RegExp, typed arrays and errors included; 16 MiB per
 binding, 256 MiB in all), so a worker that timed out, crashed, went idle or
@@ -63,15 +70,15 @@ promises are not stored: the call names each one it left out and why. The worker
 | `idleMs` | `1800000` (30 min) | Kill a session's worker after this long without a call. Its stored bindings stay. |
 | `timeoutMs` | `30000` | One call's compute limit, paused while its tool calls run. Past it the worker is killed. |
 | `viewChars` | `8000` | Characters of output the model sees per call: the head and the tail. The worker keeps 64 KiB at most. |
-| `denyExecute` | `true` | Deny code mode's `execute` to every agent, so the kernel is the only code tool and every other tool is offered directly. |
+| `codeOnly` | `true` | Make the kernel the agents' only tool, as above. `false` offers it beside the direct tools. |
+| `denyExecute` | `true` | Without `codeOnly`: deny code mode's `execute` to every agent, so the kernel is the only code tool and every other tool is offered directly. |
 
-Limits of the port: a tool called from the kernel skips the
-`tool.execute.before` and `execute.after` hooks, which only OpenCode's
-registry can trigger. So the kernel offers no `subagent`: orchestrate's role
-guard, the pace hold and the Sabbath stop run in those hooks. Start agents
-with the direct tool. `denyExecute` reaches agents that plugins define; an agent
-defined only in a config file arrives after the plugins' transforms and keeps
-code mode.
+Without `codeOnly` a cell's call runs the tool's own `execute` and skips
+those hooks, which only the registry triggers, so the kernel then offers no
+`subagent`; start agents with the direct tool. `denyExecute` reaches agents
+that plugins define; an agent defined only in a config file arrives after the
+plugins' transforms and keeps code mode. A call made inside a cell shows as
+the kernel's row in the transcript, not as its own tool row.
 
 ## The other model family
 
