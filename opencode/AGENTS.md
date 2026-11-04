@@ -4,6 +4,8 @@ Our harness work, ported onto OpenCode 2.x: the Prime Agent look, orchestration,
 
 This folder lives in the PUBLIC dotfiles repo: stage by exact path, keep tokens, account labels and run evidence out of it (`out/` and `media/` are ignored). Run every command from `opencode/`.
 
+Before changing a mod, read `ARCHITECTURE.md`: every mod is an Effect program shaped like an alchemy-domain model (a pure domain, host adapters, one composition root). Mods not yet migrated say so in their README.
+
 ## Layout
 - `scenarios/`: opencode-drive scenarios. Each runs OpenCode headless with a scripted model and writes frames (text) and screenshots. They are the deterministic check for every UI or plugin change.
 - `themes/`, `mods/`: what OpenCode loads from us. `mods/prime` is the Prime look with fx's rail composer and tool-call groups (a header over a `├`/`└` tree per step, after `vercel-labs/fx` as gent copied it), a TUI plugin package loaded by path through the config's `plugins`. Steps that only start background agents, each within a minute of the last, share one group, and worker completion notices that land side by side fold into one line (through the fork's `session.message.completion` slot). It imports only `@opencode/plugin`, `@opentui/*` and `solid-js`; OpenCode provides them and compiles the TSX at load time.
