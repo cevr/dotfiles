@@ -13,7 +13,7 @@
 //    committed.
 // 4. Restarts the background service so it loads the server plugins.
 import { $ } from "bun"
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
@@ -137,8 +137,12 @@ if (import.meta.main) {
   const share = join(home, ".local/share/opencode-prime")
   mkdirSync(share, { recursive: true })
   const binary = join(share, `opencode-${version}`)
-  copyFileSync(built, binary)
-  chmodSync(binary, 0o755)
+  // Copy beside it, then rename over it: Linux refuses to write a binary the running service executes
+  // (ETXTBSY), and a rename leaves that process on the old file.
+  const staged = `${binary}.${process.pid}`
+  copyFileSync(built, staged)
+  chmodSync(staged, 0o755)
+  renameSync(staged, binary)
   const link = join(home, ".local/bin/opencode")
   mkdirSync(dirname(link), { recursive: true })
   rmSync(link, { force: true })
