@@ -3,7 +3,7 @@
 // subagent is refused over the Sabbath; a subagent call finishes.
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import * as Story from "../../../lib/story.ts"
+import * as Story from "@dotfiles/decider/story"
 import { explain, KNOWLTON, resumesAt } from "../src/domain/Sabbath.ts"
 import { FinishSubagent, SubagentFinished } from "../src/domain/ToolCall/FinishSubagent.command.ts"
 import { SabbathRest } from "../src/domain/ToolCall/SabbathRest.rejection.ts"

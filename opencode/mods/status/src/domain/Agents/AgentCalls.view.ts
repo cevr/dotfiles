@@ -5,7 +5,7 @@
 // live. The log is another program's, so its lines arrive here already
 // decoded (host/CallLog.ts); the fold keeps the order calls first appeared in.
 import { HashMap, Option, Schema } from "effect"
-import type { Fold } from "../../../../../lib/decider.ts"
+import type { Fold } from "@dotfiles/decider/decider"
 import type { AgentCall } from "../Status.ts"
 
 /** A `call` line: a subagent call started. */

@@ -2,7 +2,7 @@
 // folds: whether an account is held, whether a refused run fails over, and
 // each account's status.
 import { describe, expect, test } from "bun:test"
-import { fold } from "../../../lib/decider.ts"
+import { fold } from "@dotfiles/decider/decider"
 import { held, rank, shouldFailOver, status, WINDOW_MS } from "../src/domain/Accounts.ts"
 import { AccountPool, restored, type Event } from "../src/domain/AccountPool/AccountPool.aggregate.ts"
 import { LoginsListed } from "../src/domain/AccountPool/ListLogins.command.ts"

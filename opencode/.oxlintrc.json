@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "ignorePatterns": ["**/node_modules/**", "testbeds/gamut/fixture/**", "out/**", "media/**"],
+  "overrides": [
+    {
+      "files": ["decider/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!bun:test", "!./*.ts"],
+                "message": "The decider kit imports effect and its own files only."
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

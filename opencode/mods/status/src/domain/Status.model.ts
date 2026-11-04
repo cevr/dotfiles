@@ -3,7 +3,7 @@
 // decides nothing, so it has no aggregate: the call log folds into the
 // AgentCalls view, and the runs' tables parse into units.
 import { Context, Effect, Layer, Result } from "effect"
-import { fold } from "../../../../lib/decider.ts"
+import { fold } from "@dotfiles/decider/decider"
 import { AgentCalls, live } from "./Agents/AgentCalls.view.ts"
 import { CallLog } from "./Agents/CallLog.external.ts"
 import { unitsOf } from "./RunTable.ts"

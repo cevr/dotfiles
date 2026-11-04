@@ -5,7 +5,7 @@
 // The holds, readings and steps are its ledger: the next process reads them
 // back (Ledger.external.ts). Pins, caches and placements are this process's own.
 import { Schema } from "effect"
-import type { Decider } from "../../../../../lib/decider.ts"
+import type { Decider } from "@dotfiles/decider/decider"
 import { Mark, placedKey, Step, stepIdentity } from "../Accounts.ts"
 import { Hold } from "../PoolStatus.ts"
 import { QuotaReading } from "../Quota.ts"

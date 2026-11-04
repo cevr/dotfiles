@@ -3,7 +3,7 @@
 // on its account, a run ends, and the ledger forgets what has expired.
 import { describe, test } from "bun:test"
 import { Effect } from "effect"
-import * as Story from "../../../lib/story.ts"
+import * as Story from "@dotfiles/decider/story"
 import { CACHE_LIFE_MS, DEFAULT_HOLD_MS, PIN_IDLE_MS, WINDOW_MS, type RequestKind } from "../src/domain/Accounts.ts"
 import { AccountPool } from "../src/domain/AccountPool/AccountPool.aggregate.ts"
 import { ListLogins, LoginsListed } from "../src/domain/AccountPool/ListLogins.command.ts"

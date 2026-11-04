@@ -20,6 +20,10 @@ import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } from "../testbeds/gamut/gamut.ts"
 
 const MODS = resolve(import.meta.dir, "../mods")
+const CMD = resolve(import.meta.dir, "../cmd")
+
+/** The directory OpenCode loads a plugin from: its `cmd/` package once it has one, else its mod. */
+export const pluginDir = (name: string): string => (existsSync(join(CMD, name, "package.json")) ? join(CMD, name) : join(MODS, name))
 const THEME = resolve(import.meta.dir, "../themes/prime.json")
 
 type PluginEntry = string | { readonly package: string; readonly options?: Record<string, unknown> }
@@ -110,7 +114,10 @@ if (import.meta.main) {
   const target = `cli-${process.platform}-${process.arch}`
   const built = join(cli, "dist", target, "bin/opencode")
 
-  // The mods' own dependencies (the kernel's parser): OpenCode loads plugins in place and installs nothing.
+  // The workspace links and vendor packages the plugins import: OpenCode loads plugins in place and
+  // installs nothing. The fork's modules are linked first, so the install never writes through an
+  // older checkout's whole-directory link into the fork (scripts/link-fork.ts).
+  await $`bun ${join(import.meta.dir, "link-fork.ts")}`.env({ ...process.env, OPENCODE_DEV: fork }).quiet()
   await $`bun install --frozen-lockfile`.cwd(resolve(import.meta.dir, "..")).quiet()
 
   if (!process.argv.includes("--skip-build")) {
@@ -135,22 +142,22 @@ if (import.meta.main) {
 
   const auth = anthropicAuthPlugin
   const gent = gentAuthDir()
-  const pool = join(MODS, "pool")
+  const pool = pluginDir("pool")
   const server: PluginEntry[] = [
     auth,
     existsSync(gent) ? { package: pool, options: { sources: [{ kind: "gent", dir: gent }] } } : pool,
-    join(MODS, "orchestrate"),
-    join(MODS, "kernel"),
-    join(MODS, "status"),
+    pluginDir("orchestrate"),
+    pluginDir("kernel"),
+    pluginDir("status"),
   ]
   // Earlier runs loaded the auth plugin through a loader directory here; its entry is replaced too.
   const loader = join(share, "anthropic-auth")
   rmSync(loader, { recursive: true, force: true })
-  const owned = [MODS, loader]
+  const owned = [MODS, CMD, loader]
   const config = join(home, ".config/opencode")
   const models = roleModels(await loadCatalog(fork))
   writeJson(join(config, "opencode.json"), mergeServer(readJson(join(config, "opencode.json")), server, models, owned))
-  writeJson(join(config, "cli.json"), mergeCli(readJson(join(config, "cli.json")), [join(MODS, "prime"), join(MODS, "status")], owned))
+  writeJson(join(config, "cli.json"), mergeCli(readJson(join(config, "cli.json")), [pluginDir("prime"), pluginDir("status")], owned))
   mkdirSync(join(config, "themes"), { recursive: true })
   copyFileSync(THEME, join(config, "themes/prime.json"))
 
