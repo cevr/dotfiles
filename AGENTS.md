@@ -10,7 +10,7 @@ Our harness work, ported onto OpenCode 2.x: the Prime Agent look, orchestration,
 ## Running a scenario
 `OPENCODE_DEV=<opencode checkout or rift> SCENARIO_OUT=out OPENCODE_DRIVE_MEDIA_DIR=$PWD/media bunx opencode-drive run scenarios/<name>.ts`
 - Without `OPENCODE_DEV` it drives the installed `opencode2`.
-- `SCENARIO_LABEL` names the frame and screenshot; `SCENARIO_THEME` picks the theme; `SCENARIO_DUMP=1` writes the model request.
+- `SCENARIO_LABEL` names the frame and screenshot; `SCENARIO_THEME` picks the theme; `SCENARIO_DUMP=1` writes each model request as `request-<n>.json`.
 - The simulated model is offered `patch`, not `edit`, and `shell`, not `bash`.
 
 ## Reference
