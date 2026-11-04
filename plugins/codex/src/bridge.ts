@@ -26,6 +26,7 @@ export interface Completion {
   readonly durationMs: number
 }
 export interface Budget {
+  readonly admission?: { readonly ok?: boolean; readonly line: string }
   readonly summary: string
   readonly start: { ok: boolean; reason?: string; until?: number }
   readonly send: { ok: boolean; reason?: string; until?: number }
@@ -61,7 +62,8 @@ export class Bridge {
     // Retry connection failures only. An HTTP error is a policy refusal, and
     // replaying a successful POST after losing its response could start twice.
     const response = await send().catch((error: unknown) => {
-      if (this.options.socket || this.options.signal?.aborted) throw error
+      const code = (error as { code?: string }).code
+      if (this.options.socket || this.options.signal?.aborted || (method === "POST" && code !== "ECONNREFUSED" && code !== "ENOENT")) throw error
       this.socket = undefined
       return send()
     })
@@ -73,7 +75,9 @@ export class Bridge {
 }
 
 const minute = (at: number) => new Date(at).toISOString().slice(0, 16).replace("T", " ") + "Z"
-export const queued = (thread: Thread) => thread.status !== "queued" ? "" :
+export const queued = (thread: Thread) => thread.status !== "queued" ? "" : /\bthe Sabbath\b/.test(thread.held ?? "")
+  ? `The turn is latched for the Sabbath's rest (${thread.held}); it starts by itself when the rest ends. Leave it latched: Claude rests too. `
+  :
   `The turn is latched (${thread.held ?? "waiting"})${thread.opensAt ? `; it should start about ${minute(thread.opensAt)}` : ""}; it starts by itself when there is room. Run \`codex-bridge wait ${thread.id} --patience 10\` in the background if needed. `
 export const facts = (thread: Thread) => `${thread.model}${thread.effort ? ` ${thread.effort}` : ""}, ${thread.turns} turns, ${thread.compactions} compactions${thread.usage ? `, ${thread.usage.tokens} tokens, context ${Math.round(100 * thread.usage.context / (thread.usage.window || 1))}%` : ""}`
 export const completionText = (event: Completion) => {

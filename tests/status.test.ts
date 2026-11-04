@@ -1,7 +1,7 @@
 // Public UI seam: real OpenCode, real status plugin, fake pool/bridge RPC,
 // real logged and running subagent; shared status.ts reads real unit logs.
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -16,7 +16,7 @@ describe.skipIf(!fork)("/pool in the Prime look", () => {
       stdout: "pipe", stderr: "pipe",
     })
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
-    if (code !== 0) throw new Error(`pool scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${readFileSync(join(out, "pool-timeout.txt"), "utf8")}`)
+    if (code !== 0) throw new Error(`pool scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(join(out, "pool-timeout.txt")) ? readFileSync(join(out, "pool-timeout.txt"), "utf8") : ""}`)
     const frame = readFileSync(join(out, "pool.txt"), "utf8")
     for (const text of ["Account pool", "gent:alpha", "gent:beta", "held (usage-limit)", "5h 23%", "7d 44%", "5h 100%", "7d 72%", "reset 2026-11-04 16:00Z", "Running agents (1)", "implementor pane r1", "Codex threads (1)", "implementor bridge r1", "luna max", "wake · implement · r1", "closed · merged abcdef1 · r2", "◆ 1 subagent", "▸ 0 shells"]) expect(frame).toContain(text)
     expect(readFileSync(join(out, "pool-loading.txt"), "utf8")).toContain("Loading accounts…")

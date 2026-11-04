@@ -504,6 +504,11 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
       expect(up.code).toBe(0)
       work = workOf(up.out)
       expect(work).not.toBe("")
+      const config = JSON.parse(readFileSync(join(work, "opencode.json"), "utf8"))
+      const packages = config.plugins.map((entry: string | { package: string }) => typeof entry === "string" ? entry : entry.package)
+      for (const name of ["orchestrate", "codex", "status", "pool"]) expect(packages).toContain(join(root, "plugins", name))
+      expect(config.agents.worker.model).toBe(config.agents.general.model)
+      expect(config.agents.verifier.model).toBe(config.agents.reviewer.model)
 
       expect(gamut("wait", "120")).toMatchObject({ code: 0, out: "idle\n" })
       const first = gamut("read")

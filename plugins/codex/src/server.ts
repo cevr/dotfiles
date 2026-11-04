@@ -53,7 +53,10 @@ export default Plugin.define({
           if (tool.name === "threads") {
             const threads = await bridge.threads(owner)
             const budget = await bridge.call<Budget>("GET", "/budget").catch(() => undefined)
-            return { content: [threads.length ? threads.map((t) => `${t.id} "${t.description}": ${t.status}; ${facts(t)}`).join("\n") : "This session has no Codex threads.", budget?.summary ?? "Codex budget unavailable."].join("\n") }
+            return { content: [threads.length ? threads.map((t) => `${t.id} "${t.description}": ${t.status}; ${facts(t)}`).join("\n") : "This session has no Codex threads.", budget?.summary ?? "Codex budget unavailable.",
+              budget && !budget.start.ok && budget.admission?.ok === undefined ? `New threads: ${budget.start.reason}.` : undefined,
+              budget?.admission ? `Last admission: ${budget.admission.line}` : undefined,
+            ].filter(Boolean).join("\n") }
           }
           // The daemon's send/interrupt endpoints take a global thread id. Enforce session ownership here.
           if (!(await bridge.threads(owner)).some((t) => t.id === input.thread)) throw new Error("This session does not own that Codex thread")

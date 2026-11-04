@@ -350,6 +350,10 @@ export const projectConfig = (preset: ResolvedPreset, simPort?: number, plugins:
       compaction: orchestrator,
       general: worker,
       explore: worker,
+      worker,
+      implementor: worker,
+      planner: orchestrator,
+      verifier: { model: selection(preset.reviewer) },
       title: helper,
       summary: helper,
       reviewer: {
@@ -895,7 +899,12 @@ const prepareAndLaunch = async (
     simPort = sim.port
   }
 
-  const plugins = usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin(paths.root), gentStore) : []
+  const plugins: ReadonlyArray<PluginEntry> = [
+    join(PLUGINS, "orchestrate"),
+    join(PLUGINS, "codex"),
+    { package: join(PLUGINS, "status"), options: { log: join(paths.home, ".cache/orchestrate/opencode-agents.jsonl"), statusScript: join(homedir(), ".claude/skills/orchestrate/scripts/status.ts") } },
+    ...(usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin(paths.root), gentStore) : [poolPlugin]),
+  ]
   await Bun.write(
     join(paths.work, "opencode.json"),
     `${JSON.stringify(projectConfig(preset, simPort, plugins), null, 2)}\n`,

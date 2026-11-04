@@ -18,6 +18,7 @@ function Pane(props: { ctx: Plugin.Context; sessionID: string }) {
   const [codex, setCodex] = createSignal<{ threads: readonly Thread[]; budget?: Budget }>()
   const [errors, setErrors] = createSignal<string[]>([])
   const [at, setAt] = createSignal<number>()
+  const abort = new AbortController()
   let pending = false
   let closed = false
   const refresh = async () => {
@@ -25,9 +26,9 @@ function Pane(props: { ctx: Plugin.Context; sessionID: string }) {
     pending = true
     const location = ctx.location
     const results = await Promise.allSettled([
-      ctx.client.rpc(POOL_STATUS).status({}, { location }),
-      ctx.client.rpc(STATUS).status({}, { location }),
-      ctx.client.rpc(CODEX_STATUS).status({ owner: props.sessionID }, { location }),
+      ctx.client.rpc(POOL_STATUS).status({}, { location, signal: abort.signal }),
+      ctx.client.rpc(STATUS).status({}, { location, signal: abort.signal }),
+      ctx.client.rpc(CODEX_STATUS).status({ owner: props.sessionID }, { location, signal: abort.signal }),
     ])
     if (closed) return
     const [p, s, c] = results
@@ -40,7 +41,7 @@ function Pane(props: { ctx: Plugin.Context; sessionID: string }) {
   }
   void refresh()
   const timer = setInterval(() => void refresh(), 2000)
-  onCleanup(() => { closed = true; clearInterval(timer) })
+  onCleanup(() => { closed = true; abort.abort(); clearInterval(timer) })
   const agents = createMemo(() => ctx.data.session.family(props.sessionID)
     .filter((id) => id !== props.sessionID && ctx.data.session.status(id) === "running")
     .map((id) => {

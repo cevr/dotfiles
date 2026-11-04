@@ -25,7 +25,6 @@ interface Source {
   readonly AGENTS: string
   readonly instructions: (role: string, protocol: string, safety: string) => string
   readonly agentFile: (role: string, protocol: string, safety: string) => string
-  readonly codexFile: (role: string, protocol: string, safety: string) => string
 }
 
 export const ROOT = resolve(import.meta.dir, "..")

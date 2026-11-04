@@ -29,12 +29,11 @@
 import { Plugin } from "@opencode/plugin"
 import { appendFileSync, mkdirSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { definitions, effort, isRole, ROLES, route, type Reason } from "./roles.ts"
 import { KNOWLTON, why, type Place } from "./sabbath.ts"
 import { POOL_STATUS } from "../../pool/src/protocol.ts"
 import type { Pace } from "../../pool/src/pace.ts"
-import { resolve } from "node:path"
 import { DEFAULT_FILE, KEEP, ROOT, windows } from "./windows.ts"
 
 export const DEFAULT_LOG = join(homedir(), ".cache/orchestrate/opencode-agents.jsonl")
