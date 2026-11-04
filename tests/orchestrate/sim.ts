@@ -73,6 +73,11 @@ export const reply = (request: ChatRequest): Reply => {
   if (last.includes("You MUST summarize the conversation")) return { kind: "text", text: SUMMARY }
   const task = lastLine(text(messages.find((message) => message.role === "user")?.content))
   const results = messages.filter((message) => message.role === "tool").length
+  if (task === "codex-wake") {
+    if (results === 0) return { kind: "tool", name: "codex_start", input: { description: "implementor wake r1", prompt: "tiny scripted work", role: "implementor", model: "luna" } }
+    if (messages.some((m) => text(m.content).includes("SCRIPTED CODEX FINAL"))) return { kind: "text", text: "root: received SCRIPTED CODEX FINAL" }
+    return { kind: "text", text: "root: waiting for Codex" }
+  }
   const offersSubagent = (request.tools ?? []).some((tool) => tool.function?.name === "subagent")
   if (task === ROOT_TASK && offersSubagent) {
     if (results === 0)

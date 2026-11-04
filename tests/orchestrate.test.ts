@@ -89,6 +89,17 @@ const run = async (name: string, spec: Omit<Spec, "base" | "fork" | "plugin">): 
 const RUN_MS = 150_000
 
 describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
+  test("Codex completion wakes its initiating idle session with the final message, once", async () => {
+    const result = await run("codex", { scenario: "codex", now: WEDNESDAY, codexPlugin: join(ROOT, "plugins/codex") })
+    const messages = result.root!.messages as Array<{ type: string; text?: string }>
+    expect(messages.filter((m) => m.type === "synthetic" && m.text?.includes("SCRIPTED CODEX FINAL"))).toHaveLength(1)
+    expect(JSON.stringify(messages)).toContain("root: received SCRIPTED CODEX FINAL")
+    expect(result.acked).toBe(true)
+    const start = result.bridgeCalls!.find((c) => c.path === "/start")!
+    expect(start.body).toMatchObject({ owner: result.root!.id, role: "implementor", model: "luna", description: "implementor wake r1" })
+    expect(result.bridgeCalls!.filter((c) => c.path === "/ack")).toHaveLength(2)
+  }, RUN_MS)
+
   test(
     "guard: an untyped subagent runs as the worker, `orchestrate-reviewer` as the verifier at medium effort",
     async () => {
