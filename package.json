@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "link-fork": "bun scripts/link-fork.ts",
+    "agents": "bun scripts/agents.ts",
     "typecheck": "bun scripts/link-fork.ts && bun check --no-script && bun check --no-script -p plugins/prime && bun check --no-script -p plugins/pool",
     "test": "bun test --timeout 300000",
     "gamut": "bun testbeds/gamut/gamut.ts"
