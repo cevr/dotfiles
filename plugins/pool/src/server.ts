@@ -22,6 +22,7 @@
  */
 import { Plugin } from "@opencode/plugin"
 import { GentSource, registerCredentialSource } from "./gent.ts"
+import { poolPace } from "./pace.ts"
 import { AccountPool, type RequestKind, type Store } from "./pool.ts"
 import { asReading, quotaProtocol } from "./quota.ts"
 
@@ -288,6 +289,14 @@ export default Plugin.define({
     }
 
     const status = await ctx.rpc.register(POOL_STATUS, {
+      pace: async (input) => {
+        const providerID = typeof input === "object" && input !== null && "providerID" in input ? String(input.providerID) : ""
+        const pooled = pooledFor(providerID)
+        if (!pooled) return { ok: true, measured: false, reason: "provider is not pooled" } as never
+        await refreshCredentials(pooled)
+        for (const account of pooled.pool.accounts()) await pull(pooled, account)
+        return poolPace(pooled.pool.status()) as never
+      },
       status: async () =>
         Object.fromEntries(
           [...pools.values()].map((pooled) => [

@@ -19,7 +19,7 @@ import { join } from "node:path"
 import { ROOT_TASK, serve } from "./sim.ts"
 
 export interface Spec {
-  readonly scenario: "subagents" | "compaction" | "codex"
+  readonly scenario: "subagents" | "compaction" | "codex" | "codex-held"
   readonly base: string
   readonly fork: string
   readonly plugin: string
@@ -27,6 +27,8 @@ export interface Spec {
   readonly now: string
   /** compact.json's content, if the run has one. */
   readonly windows?: Record<string, number>
+  readonly pace?: boolean
+  readonly codexImmediate?: boolean
   readonly codexPlugin?: string
   readonly promptTokens?: number
 }
@@ -60,22 +62,31 @@ const sim = serve(spec.promptTokens)
 // A daemon boundary fake: completion is released only after the initiating session is idle.
 const bridgeCalls: Array<{ path: string; body: Record<string, unknown> }> = []
 let owner = ""
-let completed = false
+let completed = spec.codexImmediate === true
 let acked = false
 let ackAttempts = 0
 const thread = { id: "thread-scripted", description: "implementor wake r1", model: "luna", effort: "max", status: "running", turns: 1, compactions: 0, updatedAt: 0 }
 const socket = join(spec.base, "bridge.sock")
-const bridge = spec.scenario === "codex" ? Bun.serve({ unix: socket, async fetch(request) {
+const bridge = spec.scenario.startsWith("codex") ? Bun.serve({ unix: socket, async fetch(request) {
   const url = new URL(request.url)
   const body = request.method === "POST" ? await request.json() as Record<string, unknown> : {}
   bridgeCalls.push({ path: url.pathname, body })
-  if (url.pathname === "/start") { owner = String(body.owner); return Response.json(thread) }
-  if (url.pathname === "/threads") return Response.json([{ ...thread, owner, status: completed ? "idle" : "running" }])
+  if (url.pathname === "/start") {
+    owner = String(body.owner)
+    return Response.json(spec.scenario === "codex-held" ? { status: "held", held: "Codex weekly pace is over", opensAt: Date.parse(spec.now) + 3600000 } : thread)
+  }
+  if (url.pathname === "/threads") return Response.json(spec.scenario === "codex-held" ? [] : [{ ...thread, owner, status: completed ? "idle" : "running" }])
   if (url.pathname === "/events") return Response.json(completed && !acked && url.searchParams.get("owner") === owner ? [{ seq: 1, owner, threadId: thread.id, description: thread.description, model: thread.model, status: "completed", cause: "completed", durationMs: 1, final: "SCRIPTED CODEX FINAL", compactions: 0 }] : [])
-  if (url.pathname === "/ack") { ackAttempts++; if (ackAttempts === 1) return Response.json({ error: "lost ack" }, { status: 503 }); acked = true; return Response.json({ acked: 1 }) }
+  if (url.pathname === "/ack") { ackAttempts++; if (ackAttempts === 1 && !spec.codexImmediate) return Response.json({ error: "lost ack" }, { status: 503 }); acked = true; return Response.json({ acked: 1 }) }
   if (url.pathname === "/budget") return Response.json({ summary: "Codex budget: room", start: { ok: true }, send: { ok: true } })
   return Response.json({ error: "not found" }, { status: 404 })
 }}) : undefined
+const pacePlugin = join(spec.base, "fake-pace")
+if (spec.pace !== undefined) {
+  mkdirSync(pacePlugin, { recursive: true })
+  writeFileSync(join(pacePlugin, "package.json"), JSON.stringify({ type: "module", exports: { "./server": "./server.js" } }))
+  writeFileSync(join(pacePlugin, "server.js"), `export default { id: "fixture.pace", async setup(ctx) { await ctx.rpc.register({ id: "opencode-gent.pool", methods: { pace: { input: { type: "object" }, output: { type: "object" } } }, events: {} }, { pace: async () => ({ ok: ${!spec.pace}, measured: true, reason: "scripted weekly pace", retryAt: ${Date.parse(spec.now) + 60000} }) }); } }`)
+}
 const content = {
   model: "sim/sim-model",
   providers: {
@@ -93,7 +104,7 @@ const content = {
       },
     },
   },
-  plugins: [{ package: spec.plugin, options: { windows: windowsFile, log: logFile, now: spec.now } }, ...(spec.codexPlugin ? [{ package: spec.codexPlugin, options: { socket, pollMs: 25 } }] : [])],
+  plugins: [{ package: spec.plugin, options: { windows: windowsFile, log: logFile, now: spec.now } }, ...(spec.codexPlugin ? [{ package: spec.codexPlugin, options: { socket, pollMs: spec.codexImmediate ? 30000 : 25 } }] : []), ...(spec.pace !== undefined ? [{ package: pacePlugin }] : [])],
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
@@ -132,18 +143,19 @@ const messages = (sessionID: string) => opencode.sessions.context({ sessionID })
 
 let result: Result
 try {
-  if (spec.scenario === "codex") {
+  if (spec.scenario.startsWith("codex")) {
+    const other = await opencode.sessions.create({ location })
     const root = await opencode.sessions.create({ location })
     await turn(root.id, "codex-wake")
-    completed = true
+    if (spec.scenario !== "codex-held") completed = true
     // Wait on observable API state, bounded; the test never drives delivery itself.
     const deadline = Date.now() + 10_000
-    while (!JSON.stringify(await messages(root.id)).includes("root: received SCRIPTED CODEX FINAL") || !acked) {
+    while (spec.scenario !== "codex-held" && (!JSON.stringify(await messages(root.id)).includes("root: received SCRIPTED CODEX FINAL") || !acked)) {
       if (Date.now() > deadline) throw new Error(`Codex did not wake: ${JSON.stringify(await messages(root.id))}`)
       await Bun.sleep(25)
     }
     await opencode.experimental.session.wait({ sessionID: root.id })
-    result = { root: { id: root.id, messages: await messages(root.id) }, children: [], sessions: {}, seen: sim.seen, log: [], bridgeCalls, acked }
+    result = { root: { id: root.id, messages: await messages(root.id) }, children: [], sessions: { unrelated: { messages: await messages(other.id) } }, seen: sim.seen, log: [], bridgeCalls, acked }
   } else if (spec.scenario === "subagents") {
     const root = await opencode.sessions.create({ location })
     await turn(root.id, ROOT_TASK)

@@ -32,6 +32,9 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { definitions, effort, isRole, ROLES, route, type Reason } from "./roles.ts"
 import { KNOWLTON, why, type Place } from "./sabbath.ts"
+import { POOL_STATUS } from "../../pool/src/protocol.ts"
+import type { Pace } from "../../pool/src/pace.ts"
+import { resolve } from "node:path"
 import { DEFAULT_FILE, KEEP, ROOT, windows } from "./windows.ts"
 
 export const DEFAULT_LOG = join(homedir(), ".cache/orchestrate/opencode-agents.jsonl")
@@ -109,12 +112,17 @@ export const orchestrate = (deps: Dependencies = {}) =>
       const isCodex = (tool: string) => codex.some((prefix) => tool === prefix || tool.startsWith(`${prefix}_`))
 
       /** The model a new role subagent runs on, at the role's effort, when that model offers it. */
-      const roleModel = async (sessionID: string, agentID: string, variant: string) => {
+      const roleBase = async (sessionID: string, agentID: string) => {
         const parent = await ctx.session.get({ sessionID })
         const location = { directory: parent.location.directory }
         const agent = await ctx.agent.get({ agentID, location }).catch(() => undefined)
         // The subagent tool's order: the agent's model, else the parent's, else (a session that never chose one) the default.
-        const base = agent?.data?.model ?? parent.model ?? (await ctx.model.default({ location })).data ?? undefined
+        return agent?.data?.model ?? parent.model ?? (await ctx.model.default({ location })).data ?? undefined
+      }
+      const roleModel = async (sessionID: string, agentID: string, variant: string) => {
+        const parent = await ctx.session.get({ sessionID })
+        const location = { directory: parent.location.directory }
+        const base = await roleBase(sessionID, agentID)
         if (!base) return undefined
         const models = await ctx.model.list({ location })
         const model = models.data.find((item) => item.providerID === base.providerID && item.id === base.id)
@@ -190,6 +198,24 @@ export const orchestrate = (deps: Dependencies = {}) =>
         if (!follow && level && (input.model === undefined || input.model === "")) {
           const model = await roleModel(event.sessionID, routed.agent, level).catch(() => undefined)
           if (model) input.model = model
+        }
+        if (!follow) {
+          // The pool reads provider quota, so OpenCode spend is visible. Missing
+          // RPC/host failures fail open, as guard-agent's unreachable-host case.
+          let pace: Pace | undefined
+          try {
+            const providerID = typeof input.model === "string" && input.model.includes("/")
+              ? input.model.slice(0, input.model.indexOf("/"))
+              : (await roleBase(event.sessionID, routed.agent))?.providerID
+            if (providerID) pace = await ctx.rpc(POOL_STATUS).pace({ providerID }, { signal: AbortSignal.timeout(8000) }) as Pace
+          } catch {}
+          if (pace?.ok === false) {
+            const at = Number.isFinite(pace.retryAt) ? Math.max(now() + 1000, pace.retryAt!) : now() + 60_000
+            const script = resolve(import.meta.dir, "../../../scripts/pace.ts")
+            const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
+            record({ kind: "denied", at: new Date().toISOString(), sessionID: event.sessionID, callID: event.id, tool: event.tool, why: pace.reason })
+            throw new Error(`orchestrate: the pool's pace holds this agent. ${pace.reason}. Run \`bun ${quote(script)} --wait ${Math.ceil(at)}\` with shell's background:true and go on with other work. When it exits, call subagent again with the same agent and description; admission is checked again. Do not poll.`)
+          }
         }
         event.input = input
         record({

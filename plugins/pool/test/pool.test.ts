@@ -357,6 +357,19 @@ const retry = async (hooks: Map<string, Hook>, decision: unknown = { retry: fals
 }
 
 describe("pool plugin hooks", () => {
+  test("pace RPC admits unpooled models, holds the measured pool and picks up newer quota readings", async () => {
+    const { ctx, readings, rpcHandlers } = fakeContext()
+    const dispose = await pool.setup(ctx as never)
+    try {
+      const at = Date.now()
+      for (const id of ["cred-a", "cred-b"]) readings.set(id, { at, windows: [{ name: "7d", utilization: 0.8, resetAt: at + 3.5 * 86400000 }] })
+      const pace = rpcHandlers.get("opencode-gent.pool")!.pace!
+      expect(await pace({ providerID: "openai" })).toMatchObject({ ok: true, measured: false })
+      expect(await pace({ providerID: "anthropic" })).toMatchObject({ ok: false, measured: true })
+      for (const id of ["cred-a", "cred-b"]) readings.set(id, { at, windows: [{ name: "7d", utilization: 0.2, resetAt: at + 3.5 * 86400000 }] })
+      expect(await pace({ providerID: "anthropic" })).toMatchObject({ ok: true, measured: true })
+    } finally { await dispose?.() }
+  })
   test("pools only the provider's OAuth logins and names the chosen one on the request", async () => {
     const { ctx, hooks } = fakeContext()
     await pool.setup(ctx as never)

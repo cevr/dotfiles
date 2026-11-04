@@ -2,6 +2,7 @@
 export const POOL_STATUS = {
   id: "opencode-gent.pool",
   methods: {
+    pace: { input: { type: "object", properties: { providerID: { type: "string" } }, required: ["providerID"] }, output: { type: "object" } },
     status: { input: { type: "object" }, output: { type: "object" } },
   },
   events: {},
