@@ -1,0 +1,10 @@
+{
+  "name": "@opencode-gent/pool",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Several subscription logins of one provider as one pool: each run goes out on the best account, and a refused account is held until its reset.",
+  "exports": {
+    "./server": "./src/server.ts"
+  }
+}

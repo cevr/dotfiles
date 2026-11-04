@@ -1,0 +1,10 @@
+{
+  "name": "@opencode-gent/prime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Prime Agent look for OpenCode's session screen, as a TUI plugin.",
+  "exports": {
+    "./tui": "./src/index.tsx"
+  }
+}

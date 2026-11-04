@@ -1,0 +1,23 @@
+{
+  "name": "opencode-gent",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "link-fork": "bun scripts/link-fork.ts",
+    "agents": "bun scripts/agents.ts",
+    "typecheck": "bun scripts/link-fork.ts && bun check --no-script && bun check --no-script -p plugins/prime && bun check --no-script -p plugins/pool && bun check --no-script -p plugins/orchestrate && bun check --no-script -p plugins/codex && bun check --no-script -p plugins/status",
+    "test": "bun test --timeout 300000",
+    "gamut": "bun testbeds/gamut/gamut.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@xterm/headless": "6.0.0",
+    "effect": "4.0.1",
+    "opencode-drive": "2.4.0",
+    "zigpty": "0.2.1"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  }
+}
