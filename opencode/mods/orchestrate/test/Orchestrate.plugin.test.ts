@@ -328,30 +328,51 @@ describe("the options", () => {
   const defaults = {
     windows: DEFAULT_WINDOWS,
     log: DEFAULT_LOG,
-    now: undefined,
     place: KNOWLTON,
     fullAgent: false,
     codex: { providers: ["openai"], script: CODEX_BUDGET },
   }
 
-  test("each absent or misshapen option takes its default", () => {
+  test("each absent option takes its default; an undefined one is absent", () => {
     expect(decode({})).toEqual(defaults)
-    expect(decode({ windows: 1, log: null, now: "someday", place: "home", fullAgent: "yes", codex: true })).toEqual(defaults)
+    expect(decode({ windows: undefined, now: undefined, place: undefined, codex: undefined })).toEqual(defaults)
+    expect(decode({ codex: {} }).codex).toEqual(defaults.codex)
   })
 
   test("the ones given are read as the plugin uses them", () => {
     const place = { name: "Lisbon", lat: 38.7, lon: -9.1, timeZone: "Europe/Lisbon" }
     expect(
-      decode({ windows: "/w.json", log: "/l.jsonl", now: WEDNESDAY, place, fullAgent: true, codex: { providers: ["openai", 7] } }),
+      decode({ windows: "/w.json", log: "/l.jsonl", now: WEDNESDAY, place, fullAgent: true, codex: { providers: ["openai", "sim"] } }),
     ).toEqual({
       windows: "/w.json",
       log: "/l.jsonl",
       now: Date.parse(WEDNESDAY),
       place,
       fullAgent: true,
-      codex: { providers: ["openai", "7"], script: CODEX_BUDGET },
+      codex: { providers: ["openai", "sim"], script: CODEX_BUDGET },
     })
     expect(decode({ codex: false }).codex).toBe(false)
-    expect(decode({ codex: { providers: "openai", script: "/budget.ts" } }).codex).toEqual({ providers: ["openai"], script: "/budget.ts" })
+  })
+
+  test("a malformed option stops the plugin at setup, naming the option", async () => {
+    const malformed: ReadonlyArray<readonly [Record<string, unknown>, string]> = [
+      [{ windows: 1 }, '["windows"]'],
+      [{ log: null }, '["log"]'],
+      [{ now: "someday" }, '["now"]'],
+      [{ place: "home" }, '["place"]'],
+      [{ place: { name: "Lisbon" } }, '["place"]["lat"]'],
+      [{ fullAgent: "yes" }, '["fullAgent"]'],
+      [{ codex: true }, '["codex"]'],
+      [{ codex: { providers: ["openai", 7] } }, '["codex"]["providers"][1]'],
+    ]
+    for (const [options, path] of malformed) {
+      const exit = await Effect.runPromise(Effect.exit(Effect.scoped(start(options))))
+      expect(exit._tag).toBe("Failure")
+      const reason = exit._tag === "Failure" ? exit.cause.reasons[0] : undefined
+      expect(reason?._tag).toBe("Die")
+      const message = reason?._tag === "Die" ? String((reason.defect as Error).message) : ""
+      expect(message).toStartWith("dotfiles-opencode.orchestrate: invalid options: ")
+      expect(message).toContain(`at ${path}`)
+    }
   })
 })

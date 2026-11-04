@@ -20,7 +20,7 @@
  *   place, no subagent starts and a running subagent's next tool call is
  *   refused so it ends its turn. The main session answers as always.
  *
- * Options (all optional; a value of the wrong shape counts as absent):
+ * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `windows`: path of compact.json, default `~/.cache/orchestrate/compact.json`.
  * - `log`: path of the call log, default `~/.cache/orchestrate/opencode-agents.jsonl`.
  * - `now`: a fixed time (ISO 8601) for the Sabbath clock, for tests.
@@ -33,7 +33,7 @@
  */
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
-import { Agent, Plugin } from "@opencode/plugin/effect"
+import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Option, Schema, SchemaGetter } from "effect"
 import { POOL_STATUS } from "../../pool/src/protocol.ts"
 import { CompactionWindows } from "./domain/Agents/CompactionWindows.external.ts"
@@ -63,18 +63,15 @@ export const CODEX_BUDGET = join(homedir(), ".claude/skills/orchestrate/scripts/
 
 const SUBAGENT = "subagent"
 
-/** A value `schema` decodes, else (absent or of another shape) `fallback`. */
-const lenient = <S extends Schema.Codec<any, any, never, never>>(schema: S, fallback: S["Type"]) => {
-  const decode = Schema.decodeUnknownOption(schema)
-  return Schema.optionalKey(Schema.Unknown).pipe(
-    Schema.decodeTo(Schema.toType(schema), {
-      decode: SchemaGetter.transformOptional((value) =>
-        Option.some(Option.getOrElse(Option.flatMap(value, decode), () => fallback)),
-      ),
-      encode: SchemaGetter.passthrough(),
-    }),
-  )
-}
+/**
+ * An option that takes `fallback` when absent. A present value must decode.
+ * `undefined` counts as absent: a host passing options in-process leaves an
+ * unset one undefined, and a JSON config cannot write it.
+ */
+const withDefault =
+  <A>(fallback: A) =>
+  <S extends Schema.Codec<A, any, never, never>>(schema: S) =>
+    schema.pipe(Schema.withDecodingDefaultType(Effect.succeed(fallback)))
 
 /** A time as ISO 8601, read as epoch ms. */
 const Instant = Schema.String.pipe(
@@ -84,28 +81,20 @@ const Instant = Schema.String.pipe(
   }),
 )
 
-/** Provider ids, each read as a string. */
-const Providers = Schema.Array(Schema.Unknown).pipe(
-  Schema.decodeTo(Schema.Array(Schema.String), {
-    decode: SchemaGetter.transform((items: ReadonlyArray<unknown>) => items.map(String)),
-    encode: SchemaGetter.transform((items: ReadonlyArray<string>) => items),
-  }),
-)
-
 const CODEX_DEFAULT = { providers: ["openai"], script: CODEX_BUDGET }
 
 const Codex = Schema.Struct({
-  providers: lenient(Providers, CODEX_DEFAULT.providers),
-  script: lenient(Schema.String, CODEX_DEFAULT.script),
+  providers: Schema.Array(Schema.String).pipe(withDefault<ReadonlyArray<string>>(CODEX_DEFAULT.providers)),
+  script: Schema.String.pipe(withDefault(CODEX_DEFAULT.script)),
 })
 
 export const Options = Schema.Struct({
-  windows: lenient(Schema.String, DEFAULT_WINDOWS),
-  log: lenient(Schema.String, DEFAULT_LOG),
-  now: lenient(Schema.UndefinedOr(Instant), undefined),
-  place: lenient(Place, KNOWLTON),
-  fullAgent: lenient(Schema.Boolean, false),
-  codex: lenient(Schema.Union([Schema.Literal(false), Codex]), CODEX_DEFAULT),
+  windows: Schema.String.pipe(withDefault(DEFAULT_WINDOWS)),
+  log: Schema.String.pipe(withDefault(DEFAULT_LOG)),
+  now: Schema.optional(Instant),
+  place: Place.pipe(withDefault<Place>(KNOWLTON)),
+  fullAgent: Schema.Boolean.pipe(withDefault(false)),
+  codex: Schema.Union([Schema.Literal(false), Codex]).pipe(withDefault<false | typeof Codex.Type>(CODEX_DEFAULT)),
 })
 export type Options = typeof Options.Type
 
@@ -144,33 +133,21 @@ export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externa
     CompactionWindowsLive.layer(options.windows),
   )
 
-/**
- * OpenCode's answer to a refused call. `@opencode/plugin/effect` does not
- * export `Tool`, so this is its shape and tag: the host catches the failure
- * by its `Tool.Error` tag and reports its message, as it does a Promise
- * plugin's thrown error.
- */
-class ToolError extends Schema.TaggedError<ToolError>()("Tool.Error", {
-  message: Schema.String,
-  error: Schema.optional(Schema.Defect()),
-  metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-}) {}
-
 /** The help script a held agent waits with. */
 const PACE_SCRIPT = resolve(import.meta.dir, "../../../scripts/pace.ts")
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
 
 /** What the model reads when a call is refused, word for word as before. */
-const refusal = (tool: string, rejection: SabbathRest | PaceHeld): ToolError => {
+const refusal = (tool: string, rejection: SabbathRest | PaceHeld): Tool.Error => {
   if (rejection._tag === "SabbathRest") {
     const then =
       tool === SUBAGENT
         ? "No agent starts now. Do not retry; start it again once work resumes."
         : "Stop now: end your turn with one line on where you stopped. Make no more tool calls."
-    return new ToolError({ message: `${rejection.why} ${then}`, error: rejection })
+    return new Tool.Error({ message: `${rejection.why} ${then}`, error: rejection })
   }
   const whose = rejection.whose === "codex" ? "the Codex account's" : "the pool's"
-  return new ToolError({
+  return new Tool.Error({
     message: `orchestrate: ${whose} pace holds this agent. ${rejection.reason}. Run \`bun ${quote(PACE_SCRIPT)} --wait ${Math.ceil(rejection.retryAt)}\` with shell's background:true and go on with other work. When it exits, call subagent again with the same agent and description; admission is checked again. Do not poll.`,
     error: rejection,
   })
@@ -186,7 +163,11 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
   Plugin.define({
     id: "dotfiles-opencode.orchestrate",
     effect: Effect.fn("Orchestrate.plugin")(function* (ctx) {
-      const options = yield* Schema.decodeUnknownEffect(Options)(ctx.options).pipe(Effect.orDie)
+      // A malformed option is a mistake in the config: the plugin does not start, and says which.
+      const options = yield* Schema.decodeUnknownEffect(Options)(ctx.options).pipe(
+        Effect.mapError((error) => new Error(`dotfiles-opencode.orchestrate: invalid options: ${error.message}`)),
+        Effect.orDie,
+      )
       const services = yield* Layer.build(
         Model.layer({
           place: options.place,

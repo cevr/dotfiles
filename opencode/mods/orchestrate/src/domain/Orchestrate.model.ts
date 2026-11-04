@@ -1,6 +1,7 @@
 // The orchestrate model's handlers: each gathers what one command needs from
-// the outside systems, has the ToolCall aggregate's command decide it, and writes the
-// outcome to the call log. The plugin calls these and nothing else.
+// the outside systems, has the ToolCall aggregate decide it, and writes the
+// outcome to the call log. The aggregate is the one decision entry point, so
+// the stories run exactly what these do. The plugin calls these and nothing else.
 import { Clock, Context, Effect, Layer, Option } from "effect"
 import * as CallLine from "./CallLine.ts"
 import { parseModel, type PaceHold } from "./Pace.ts"
@@ -14,7 +15,7 @@ import { PoolPace } from "./ToolCall/PoolPace.external.ts"
 import type { SabbathRest } from "./ToolCall/SabbathRest.rejection.ts"
 import { Sessions } from "./ToolCall/Sessions.external.ts"
 import * as Start from "./ToolCall/StartSubagent.command.ts"
-import type { Event, Rejection } from "./ToolCall/ToolCall.aggregate.ts"
+import { ToolCall, type Command, type Event, type Rejection } from "./ToolCall/ToolCall.aggregate.ts"
 import type { ToolCallId } from "./ToolCall/ToolCall.id.ts"
 import * as Use from "./ToolCall/UseTool.command.ts"
 
@@ -71,15 +72,14 @@ export const layer = (config: Config) =>
       const at = Clock.currentTimeMillis.pipe(Effect.map((ms) => new Date(ms).toISOString()))
 
       /**
-       * Log what a command recorded, or why it was refused. Each command is
-       * decided on its own inputs against the aggregate's initial state (see
-       * ToolCall.aggregate.ts), so its own module's `decide` keeps its exact
-       * rejections.
+       * Have the aggregate decide a command, and log what it recorded or why it
+       * was refused. Every command is decided on its own inputs against the
+       * aggregate's initial state (see ToolCall.aggregate.ts).
        */
-      const record = <J extends Rejection>(decided: Effect.Effect<ReadonlyArray<Event>, J>, call: ToolCallId, tool: string) =>
-        decided.pipe(
+      const decide = (command: Command, now: number, tool: string) =>
+        ToolCall.decide(ToolCall.initial, command, now).pipe(
           Effect.tap((events) => Effect.forEach(events, (event) => Effect.flatMap(at, (time) => log.append(lineOf(event, time))))),
-          Effect.tapError((rejection) => Effect.flatMap(at, (time) => log.append(CallLine.denied(call, tool, whyOf(rejection), time)))),
+          Effect.tapError((rejection) => Effect.flatMap(at, (time) => log.append(CallLine.denied(command.call, tool, whyOf(rejection), time)))),
         )
 
       /** The pace's hold on a new agent running on `model` (else the agent's model), or none. */
@@ -120,7 +120,7 @@ export const layer = (config: Config) =>
           place: config.place,
         }
         // Over the Sabbath nothing is gathered: the call is refused whatever it asks.
-        if (resting) return yield* record(Start.decide(Start.StartSubagent.make(base), now), call, SUBAGENT).pipe(Effect.as(Option.none()))
+        if (resting) return yield* decide(Start.StartSubagent.make(base), now, SUBAGENT).pipe(Effect.as(Option.none()))
         // A follow-up naming no agent keeps its child's: the guard must not switch a verifier to the worker.
         const childAgent = child !== undefined && Start.continues(base) ? yield* sessions.agentOf(child) : undefined
         const routed = Start.routeOf({ ...base, ...(childAgent ? { childAgent } : {}) })
@@ -138,7 +138,7 @@ export const layer = (config: Config) =>
           ...(model === undefined ? {} : { model }),
           ...(hold === undefined ? {} : { hold }),
         })
-        const events = yield* record(Start.decide(command, now), call, SUBAGENT)
+        const events = yield* decide(command, now, SUBAGENT)
         return Option.fromNullishOr(events.find((event) => event._tag === "SubagentStarted"))
       })
 
@@ -153,7 +153,10 @@ export const layer = (config: Config) =>
         const now = yield* sabbathNow
         const resting = resumesAt(now, config.place) !== undefined
         const inSubagent = resting ? Boolean(yield* sessions.parentOf(call.sessionID)) : false
-        yield* record(Use.decide(Use.UseTool.make({ call, tool, inSubagent, place: config.place }), now), call, tool)
+        // Another tool is never paced.
+        yield* decide(Use.UseTool.make({ call, tool, inSubagent, place: config.place }), now, tool).pipe(
+          Effect.catchTag("PaceHeld", Effect.die),
+        )
       })
 
       const finishSubagent = Effect.fn("Orchestrate.finishSubagent")(function* (input: {
@@ -161,7 +164,11 @@ export const layer = (config: Config) =>
         readonly child?: string
         readonly status: Finish.Status
       }) {
-        yield* record(Finish.decide(Finish.FinishSubagent.make(input)), input.call, SUBAGENT)
+        // A finish is only recorded, never refused.
+        const now = yield* sabbathNow
+        yield* decide(Finish.FinishSubagent.make(input), now, SUBAGENT).pipe(
+          Effect.catchTags({ SabbathRest: Effect.die, PaceHeld: Effect.die }),
+        )
       })
 
       return { startSubagent, useTool, finishSubagent }

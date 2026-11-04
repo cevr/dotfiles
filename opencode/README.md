@@ -48,8 +48,9 @@ It makes no live model request.
 `mods/orchestrate` holds the orchestrate skill's rules. It defines the role
 agents and their compaction windows, routes each subagent call to a role,
 holds new starts on the pace, and stops agent work over the Sabbath. Its
-options are `windows`, `log`, `now`, `place`, `fullAgent` and `codex`. A
-missing or malformed option takes its default.
+options are `windows`, `log`, `now`, `place`, `fullAgent` and `codex`. An
+absent option takes its default. A malformed one stops the plugin at setup,
+with a message that names it.
 
 The model (`src/domain/`):
 
@@ -62,8 +63,9 @@ The model (`src/domain/`):
 - Rejections: `SabbathRest` (when work resumes) and `PaceHeld` (whose pace,
   the reason, and when to retry). The call log records each one as a
   `denied` line.
-- Aggregate: `ToolCall`, keyed by the session and call id. A kernel cell's
-  tool calls share the outer call's id, so `decide` never reads state.
+- Aggregate: `ToolCall`, keyed by the session and call id. Every command
+  goes through its `decide`. A kernel cell's tool calls share the outer
+  call's id, so `decide` never reads state.
 - Values: the Sabbath (`Sabbath.ts`), role routing (`Role.ts`), the
   compaction windows (`Compaction.ts`) and the pace answers (`Pace.ts`).
 - Views: the call log, `~/.cache/orchestrate/opencode-agents.jsonl`. It has
