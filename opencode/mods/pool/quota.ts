@@ -1,6 +1,6 @@
 // A provider's quota as its auth plugin reads it: each window's use and
 // reset, and why the provider refuses an account, if it does. The pool reads
-// it over the quota protocol (host/Quota.ts) and checks it here field by field.
+// it over the quota protocol (opencode/quota.ts) and checks it here field by field.
 import { Schema } from "effect"
 
 export const QuotaStatus = Schema.Literals(["allowed", "allowed_warning", "rejected"])

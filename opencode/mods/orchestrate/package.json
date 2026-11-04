@@ -8,6 +8,7 @@
     "./server": "./src/Orchestrate.plugin.ts"
   },
   "dependencies": {
-    "@dotfiles/decider": "workspace:*"
+    "@dotfiles/decider": "workspace:*",
+    "@dotfiles/opencode-pool": "workspace:*"
   }
 }

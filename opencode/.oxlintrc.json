@@ -33,6 +33,22 @@
           }
         ]
       }
+    },
+    {
+      "files": ["mods/pool/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
+                "message": "The pool domain fence: the pool's domain files import effect, @dotfiles/decider/*, the pool's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of the pool's folders."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }

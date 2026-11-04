@@ -7,4 +7,4 @@ import { resolve } from "node:path"
 export const anthropicAuthPlugin = resolve(import.meta.dir, "../mods/anthropic-auth")
 
 /** The pool plugin's directory in this repository. */
-export const poolPlugin = resolve(import.meta.dir, "../mods/pool")
+export const poolPlugin = resolve(import.meta.dir, "../cmd/pool")

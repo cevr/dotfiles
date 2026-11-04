@@ -26,7 +26,7 @@ bun run gamut login anthropic            # add one Claude subscription login (on
    orchestrate and status plugins,
    with worker/implementor/planner/verifier models bound to the preset;
    for a Claude preset, the Anthropic auth plugin and
-   then `mods/pool` as server plugins; other presets load an empty pool), `config/cli.json` (our TUI
+   then `cmd/pool` as server plugins; other presets load an empty pool), `config/cli.json` (our TUI
    plugins, those whose `package.json` exports `./tui`, by absolute path,
    `mods/prime` first, and the Prime theme), and the roster block of the
    fixture's `AGENTS.md`.

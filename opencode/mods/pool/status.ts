@@ -3,7 +3,7 @@
 // wire contract, kept byte for byte; the schemas below are the shapes its
 // methods answer with. No answer carries a secret.
 import { Schema } from "effect"
-import { QuotaReading, RefusalKind } from "./Quota.ts"
+import { QuotaReading, RefusalKind } from "./quota.ts"
 
 /** The pool's own RPC: each pooled provider's accounts, holds and readings. No secrets. */
 export const POOL_STATUS = {

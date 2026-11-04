@@ -29,6 +29,13 @@
         "oxc-parser": "0.157.0",
       },
     },
+    "cmd/pool": {
+      "name": "@dotfiles/opencode-cmd-pool",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-pool": "workspace:*",
+      },
+    },
     "decider": {
       "name": "@dotfiles/decider",
       "version": "0.0.0",
@@ -58,6 +65,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-pool": "workspace:*",
       },
     },
     "mods/pool": {
@@ -76,6 +84,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-pool": "workspace:*",
       },
     },
   },
@@ -85,6 +94,8 @@
     "@dotfiles/opencode-anthropic-auth": ["@dotfiles/opencode-anthropic-auth@workspace:mods/anthropic-auth"],
 
     "@dotfiles/opencode-cmd-kernel": ["@dotfiles/opencode-cmd-kernel@workspace:cmd/kernel"],
+
+    "@dotfiles/opencode-cmd-pool": ["@dotfiles/opencode-cmd-pool@workspace:cmd/pool"],
 
     "@dotfiles/opencode-kernel": ["@dotfiles/opencode-kernel@workspace:mods/kernel"],
 

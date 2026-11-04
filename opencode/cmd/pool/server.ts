@@ -1,7 +1,8 @@
 /**
  * The pool as an OpenCode server plugin. The composition root: it decodes the
- * options, builds the pool model (domain/Pool.model.ts) on its outside
- * systems (host/), and answers OpenCode's hooks with it.
+ * options, builds the pool model (`@dotfiles/opencode-pool/model`) on its
+ * outside systems (its `opencode/` and `gent/` implementations), and answers
+ * OpenCode's hooks with it.
  *
  * For each pooled provider it chooses the login each request goes out on
  * (`model.request` sets the credential header the provider's auth plugin
@@ -9,14 +10,15 @@
  * request into an immediate retry on another login. Quota comes from the
  * provider's auth plugin over the quota RPC: a reading after each response,
  * the readings it publishes, and a sweep of the usage endpoint every few
- * minutes. Other mods read the pool over its own RPC (domain/PoolStatus.ts).
+ * minutes. Other mods read the pool over its own RPC
+ * (`@dotfiles/opencode-pool/status`).
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `providers`: provider id to integration id, default `{ anthropic: "anthropic" }`.
  * - `sweepMinutes`: how often to read each login's usage; 0 turns it off. Default 10.
  * - `sources`: other stores whose logins join a pool beside OpenCode's own, read
  *   in place, never copied. Default none. `[{ kind: "gent", dir: "~/.local/share/opencode-prime/pool-auth" }]`
- *   adds the Claude accounts gent signed in to (host/GentStore.ts) to the
+ *   adds the Claude accounts gent signed in to (`@dotfiles/opencode-pool/gent/store`) to the
  *   `anthropic` pool as `gent:<label>`; the pool refreshes their tokens under
  *   gent's lock and the auth plugin takes them from it (`registerCredentialSource`).
  *   `tokenURL` points a source's refresh elsewhere, for tests. The `anthropic`
@@ -25,19 +27,17 @@
  */
 import { Integration, Plugin } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Schedule, Schema, Stream } from "effect"
-import { PoolId } from "./domain/AccountPool/AccountPool.id.ts"
-import type { Ledger } from "./domain/AccountPool/Ledger.external.ts"
-import type { Logins } from "./domain/AccountPool/Logins.external.ts"
-import type { Quota } from "./domain/AccountPool/Quota.external.ts"
-import * as Model from "./domain/Pool.model.ts"
-import { POOL_STATUS } from "./domain/PoolStatus.ts"
-import { quotaProtocol } from "./domain/Quota.ts"
-import { GentSource, registerCredentialSource } from "./host/GentStore.ts"
-import * as LedgerLive from "./host/Ledger.ts"
-import * as LoginsLive from "./host/Logins.ts"
-import * as QuotaLive from "./host/Quota.ts"
+import { PoolId } from "@dotfiles/opencode-pool/account-pool"
+import { GentSource, registerCredentialSource } from "@dotfiles/opencode-pool/gent/store"
+import * as Model from "@dotfiles/opencode-pool/model"
+import * as LedgerLive from "@dotfiles/opencode-pool/opencode/ledger"
+import * as LoginsLive from "@dotfiles/opencode-pool/opencode/logins"
+import * as QuotaLive from "@dotfiles/opencode-pool/opencode/quota"
+import { quotaProtocol } from "@dotfiles/opencode-pool/quota"
+import type { Ledger, Logins, Quota } from "@dotfiles/opencode-pool/service"
+import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 
-export { POOL_STATUS } from "./domain/PoolStatus.ts"
+export { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 
 /** The request header that names the login a request goes out on. Its auth plugin strips it. */
 export const CREDENTIAL_HEADER = "x-opencode-credential-id"

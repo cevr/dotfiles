@@ -1,12 +1,12 @@
 // A pool's logins: its integration's OAuth logins, as OpenCode lists them,
-// then each gent store's (host/GentStore.ts). The list is trusted for a short
+// then each gent store's (gent/store.ts). The list is trusted for a short
 // while, a gent store's logins join even when the integration cannot be read,
 // and a login is marked as needing a sign-in only when that changes.
 import { Clock, Effect, Layer } from "effect"
-import type { PoolId } from "../domain/AccountPool/AccountPool.id.ts"
-import { Logins, LoginsUnavailable } from "../domain/AccountPool/Logins.external.ts"
-import type { SourceStatus } from "../domain/PoolStatus.ts"
-import type { GentListing, GentSource } from "./GentStore.ts"
+import type { PoolId } from "../account-pool.ts"
+import type { GentListing, GentSource } from "../gent/store.ts"
+import { Logins, LoginsUnavailable } from "../service.ts"
+import type { SourceStatus } from "../status.ts"
 
 /** How long the list of a provider's logins is trusted before it is read again. */
 export const CREDENTIALS_LIFE_MS = 30_000
@@ -95,29 +95,6 @@ export const layer = <C extends Connection>(integration: Integration<C>, stores:
         sources: listed,
       })
     }),
-  )
-
-/** A pool's logins in the test: each integration's OAuth logins and status marks, and its outside stores. */
-export interface TestIntegration {
-  /** The integration's connections by pool; a pool absent here cannot be read. */
-  readonly connections: Map<PoolId, ReadonlyArray<Connection>>
-  /** Each status the plugin set, in order. */
-  readonly marks: Array<{ readonly pool: PoolId; readonly credentialID: string; readonly needed: boolean }>
-}
-
-export const layerTest = (integration: TestIntegration, stores: (pool: PoolId) => ReadonlyArray<Store> = () => []) =>
-  layer<Connection>(
-    {
-      connections: (pool) => {
-        const connections = integration.connections.get(pool)
-        return connections === undefined ? Effect.fail("unreadable") : Effect.succeed(connections)
-      },
-      status: (pool, connection, status) =>
-        Effect.sync(() => {
-          if (connection.id !== undefined) integration.marks.push({ pool, credentialID: connection.id, needed: status !== undefined })
-        }),
-    },
-    stores,
   )
 
 /** A gent store as the pool lists it. */

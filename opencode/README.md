@@ -52,7 +52,7 @@ options are `windows`, `log`, `now`, `place`, `fullAgent` and `codex`. An
 absent option takes its default. A malformed one stops the plugin at setup,
 with a message that names it.
 
-The model (`src/domain/`):
+The model (the domain files at `mods/pool/`):
 
 - Facts: `SubagentStarted` (the agent, why it was routed there, and its
   model) and `SubagentFinished` (the child session and how it ended).
@@ -81,13 +81,13 @@ as the call log, and no command needs the folded state.
 
 ## Pool
 
-`mods/pool` pools a provider's OAuth logins. It chooses the login each
+`mods/pool` pools a provider's OAuth logins; its plugin is `cmd/pool`. It chooses the login each
 request goes out on, holds a login its provider refuses, and turns a refused
 primary request into an immediate retry on another login. Its options are
 `providers`, `sweepMinutes` and `sources`. An absent option takes its
 default. A malformed one stops the plugin at setup, with a message that
 names it. Other mods read it over its `dotfiles-opencode.pool` RPC
-(`src/domain/PoolStatus.ts`): orchestrate asks `pace`, and the `/pool`
+(`status.ts`, `@dotfiles/opencode-pool/status`): orchestrate asks `pace`, and the `/pool`
 pane draws `status`.
 
 The model (`src/domain/`):
@@ -100,17 +100,20 @@ The model (`src/domain/`):
   from the pool's state, its input and the clock.
 - Rejections: `NoAccount` (a request on a pool that lists no login). The
   plugin then names no login on the request.
-- Aggregate: `AccountPool`, keyed by its integration (`PoolId`). Every
-  command goes through its `decide`.
-- Values: placement ranking (`Placement.ts`), holds, failover and each
-  account's status (`Accounts.ts`), quota readings and the quota RPC's
-  contract (`Quota.ts`), pace admission (`Pace.ts`) and the pool's own RPC
-  (`PoolStatus.ts`).
-- Externals: the integration's logins and a gent store's (`Logins`), the
+- Aggregate: `AccountPool`, keyed by its integration (`PoolId`), with its
+  commands, facts and rejection in `account-pool.ts`. Every command goes
+  through its `decide`; `model.ts` holds the handlers.
+- Values: placement ranking (`placement.ts`), holds, failover and each
+  account's status (`accounts.ts`), quota readings and the quota RPC's
+  contract (`quota.ts`), pace admission (`pace.ts`) and the pool's own RPC
+  (`status.ts`).
+- Contracts: the integration's logins and a gent store's (`Logins`), the
   auth plugin's quota RPC (`Quota`) and the ledger in the plugin's storage
-  (`Ledger`). Each one is a `Context.Service` in `domain/`, with a live layer
-  and a test layer in `host/`. `host/GentStore.ts` reads and refreshes
-  gent's store in place, under gent's lock, byte-compatible with gent.
+  (`Ledger`), each a `Context.Service` in `service.ts`, with what every
+  implementation owes in `laws.ts`. `opencode/` implements them over the
+  plugin's integration, RPC and storage; `memory/` holds the in-memory
+  ones the seam tests use. `gent/store.ts` reads and refreshes gent's
+  store in place, under gent's lock, byte-compatible with gent.
 
 The aggregate stores folded state, not events: no one reads its history.
 The ledger keeps its holds, readings and priced steps under

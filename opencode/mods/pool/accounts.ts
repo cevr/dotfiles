@@ -14,10 +14,10 @@
 //   until the host refreshes it, a failed sign-in for as long as the provider
 //   says. A window read as exhausted holds it until that reset.
 import { Schema } from "effect"
-import type { AccountPoolState } from "./AccountPool/AccountPool.aggregate.ts"
-import { rankPlacement, type PlacementSlot } from "./Placement.ts"
-import type { AccountStatus } from "./PoolStatus.ts"
-import type { QuotaReading } from "./Quota.ts"
+import type { AccountPoolState } from "./account-pool.ts"
+import { rankPlacement, type PlacementSlot } from "./placement.ts"
+import type { AccountStatus } from "./status.ts"
+import type { QuotaReading } from "./quota.ts"
 
 const MINUTE = 60_000
 

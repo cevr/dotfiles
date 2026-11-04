@@ -2,7 +2,7 @@
 // their share after those with room, then by score and weekly reset, and the
 // account a session's cache is on kept within one session.
 import { describe, expect, test } from "bun:test"
-import { rankPlacement, type PlacementSlot } from "../src/domain/Placement.ts"
+import { rankPlacement, type PlacementSlot } from "./placement.ts"
 
 const HOUR = 3_600_000
 const T0 = 1_800_000_000_000

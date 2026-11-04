@@ -8,6 +8,7 @@
     "./tui": "./src/Status.tui.tsx"
   },
   "dependencies": {
-    "@dotfiles/decider": "workspace:*"
+    "@dotfiles/decider": "workspace:*",
+    "@dotfiles/opencode-pool": "workspace:*"
   }
 }

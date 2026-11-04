@@ -5,7 +5,7 @@
 // mistaken for provider quota. This is less predictive than the shared queue.
 // A waiter wakes at retryAt and the tool rechecks; it never grants a stale slot.
 import { Schema } from "effect"
-import type { AccountStatus } from "./PoolStatus.ts"
+import type { AccountStatus } from "./status.ts"
 
 const WEEK = 7 * 86400000
 const TARGET = 0.99

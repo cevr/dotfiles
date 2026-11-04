@@ -1,10 +1,10 @@
-// The provider's quota over its auth plugin's quota RPC (domain/Quota.ts's
+// The provider's quota over its auth plugin's quota RPC (quota.ts's
 // `quotaProtocol`). The answers are untyped JSON: each reading is checked
 // field by field, and a failure or a malformed answer is no reading.
-import { Effect, Layer, Queue, Schedule, Stream } from "effect"
-import type { PoolId } from "../domain/AccountPool/AccountPool.id.ts"
-import { Quota } from "../domain/AccountPool/Quota.external.ts"
-import { asReading, type QuotaReading } from "../domain/Quota.ts"
+import { Effect, Layer, Schedule, Stream } from "effect"
+import type { PoolId } from "../account-pool.ts"
+import { asReading } from "../quota.ts"
+import { Quota, type PublishedReading } from "../service.ts"
 
 /** The quota RPC of one pool's integration, as the plugin's RPC client calls it. */
 export interface QuotaRpc {
@@ -22,12 +22,7 @@ const readingOf = (answer: unknown) => (isRecord(answer) ? asReading(answer.read
 /** How long a broken subscription waits before it subscribes again. */
 const RESUBSCRIBE = "1 second"
 
-export interface Published {
-  readonly credentialID: string
-  readonly reading: QuotaReading
-}
-
-const publishedOf = (data: unknown): ReadonlyArray<Published> => {
+const publishedOf = (data: unknown): ReadonlyArray<PublishedReading> => {
   if (!isRecord(data) || typeof data.credentialID !== "string") return []
   const reading = asReading(data.reading)
   return reading === undefined ? [] : [{ credentialID: data.credentialID, reading }]
@@ -55,22 +50,3 @@ export const layer = (rpc: (pool: PoolId) => QuotaRpc) =>
         Stream.catchCause(() => Stream.empty),
       ),
   })
-
-/**
- * Each pool's readings by login, as the auth plugin holds them now (both
- * `reading` and `usage` answer them), and the readings it publishes, per pool.
- */
-export const layerTest = (
-  readings: ReadonlyMap<PoolId, ReadonlyMap<string, QuotaReading>>,
-  published: ReadonlyMap<PoolId, Queue.Dequeue<Published>> = new Map(),
-) => {
-  const read = (pool: PoolId, credentialID: string) => Effect.sync(() => readings.get(pool)?.get(credentialID))
-  return Layer.succeed(Quota, {
-    reading: read,
-    usage: read,
-    readings: (pool: PoolId) => {
-      const queue = published.get(pool)
-      return queue === undefined ? Stream.empty : Stream.fromQueue(queue)
-    },
-  })
-}

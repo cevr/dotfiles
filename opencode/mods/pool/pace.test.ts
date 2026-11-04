@@ -1,7 +1,7 @@
 // The pool's pace: whether a new agent may start now, from its accounts' readings.
 import { expect, test } from "bun:test"
-import { poolPace } from "../src/domain/Pace.ts"
-import type { AccountStatus } from "../src/domain/PoolStatus.ts"
+import { poolPace } from "./pace.ts"
+import type { AccountStatus } from "./status.ts"
 const now = Date.parse("2026-11-04T15:00:00Z")
 const day = 86400000
 const account = (used: number, reset = now + 3.5 * day): AccountStatus => ({ credentialID: "a", live: 1, load: 0, noRoom: false, reading: { at: now, windows: [{ name: "7d", utilization: used, resetAt: reset }, { name: "5h", utilization: 0.1, resetAt: now + 3600000 }] } })

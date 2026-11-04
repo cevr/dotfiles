@@ -3,12 +3,11 @@
 // `<pool>/reading/<credentialID>` and `<pool>/step/<at, 15 digits>/<sessionID>`.
 // A previous process wrote the same keys, so the format stays as it is.
 import { Effect, Layer, Option, Schema } from "effect"
-import { Step } from "../domain/Accounts.ts"
-import type { Event, LedgerState } from "../domain/AccountPool/AccountPool.aggregate.ts"
-import type { PoolId } from "../domain/AccountPool/AccountPool.id.ts"
-import { Ledger } from "../domain/AccountPool/Ledger.external.ts"
-import { Hold } from "../domain/PoolStatus.ts"
-import { QuotaReading } from "../domain/Quota.ts"
+import type { Event, LedgerState, PoolId } from "../account-pool.ts"
+import { Step } from "../accounts.ts"
+import { QuotaReading } from "../quota.ts"
+import { Ledger } from "../service.ts"
+import { Hold } from "../status.ts"
 
 /** The plugin's storage, as the plugin provides it. */
 export interface Storage {
@@ -21,7 +20,8 @@ export interface Storage {
   readonly remove: (key: string) => Effect.Effect<void, unknown>
 }
 
-const PAGE = 500
+/** How many entries one scan of the storage asks for. */
+export const PAGE = 500
 
 const holdKey = (credentialID: string) => `hold/${credentialID}`
 const readingKey = (credentialID: string) => `reading/${credentialID}`
@@ -104,22 +104,3 @@ export const layer = (storage: Storage) =>
       }
     }),
   })
-
-/** A storage held in `entries`, by key, paged as the plugin's is. */
-export const memory = (entries: Map<string, Schema.Json>): Storage => ({
-  scan: ({ prefix, after, limit = PAGE }) =>
-    Effect.sync(() => {
-      const keys = [...entries.keys()].filter((key) => key.startsWith(prefix) && (after === undefined || key > after)).sort()
-      const page = keys.slice(0, limit)
-      const last = page.at(-1)
-      return {
-        entries: page.map((key) => ({ key, value: entries.get(key) })),
-        ...(keys.length > limit && last !== undefined ? { next: last } : {}),
-      }
-    }),
-  set: (key, value) => Effect.sync(() => void entries.set(key, value)),
-  remove: (key) => Effect.sync(() => void entries.delete(key)),
-})
-
-/** The ledger in `entries`, by key, as the plugin's storage keeps it. */
-export const layerTest = (entries: Map<string, Schema.Json> = new Map()) => layer(memory(entries))

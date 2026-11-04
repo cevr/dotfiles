@@ -10,15 +10,16 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect, Layer, Queue, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
-import { PoolId } from "../src/domain/AccountPool/AccountPool.id.ts"
-import { WINDOW_MS } from "../src/domain/Accounts.ts"
-import type { Pace } from "../src/domain/Pace.ts"
-import type { PoolsStatus } from "../src/domain/PoolStatus.ts"
-import type { QuotaReading } from "../src/domain/Quota.ts"
-import * as LedgerTest from "../src/host/Ledger.ts"
-import * as LoginsTest from "../src/host/Logins.ts"
-import * as QuotaTest from "../src/host/Quota.ts"
-import Pool, { CREDENTIAL_HEADER, live, make } from "../src/Pool.plugin.ts"
+import { PoolId } from "@dotfiles/opencode-pool/account-pool"
+import { WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
+import * as LedgerTest from "@dotfiles/opencode-pool/memory/ledger"
+import * as LoginsTest from "@dotfiles/opencode-pool/memory/logins"
+import * as QuotaTest from "@dotfiles/opencode-pool/memory/quota"
+import type { Pace } from "@dotfiles/opencode-pool/pace"
+import type { QuotaReading } from "@dotfiles/opencode-pool/quota"
+import type { PublishedReading } from "@dotfiles/opencode-pool/service"
+import type { PoolsStatus } from "@dotfiles/opencode-pool/status"
+import Pool, { CREDENTIAL_HEADER, live, make } from "./server.ts"
 
 const HOUR = 3_600_000
 const ANTHROPIC = PoolId.make("anthropic")
@@ -49,7 +50,7 @@ interface World {
   /** The auth plugin's newest reading of each login. */
   readonly readings: Map<string, QuotaReading>
   /** The integration's connections (a pool absent there cannot be read) and the sign-in marks set on them. */
-  readonly integration: LoginsTest.TestIntegration
+  readonly integration: LoginsTest.Integration
   /** The plugin's storage, by key. */
   readonly storage: Map<string, Schema.Json>
 }
@@ -61,11 +62,11 @@ const world = (): World => ({
 })
 
 /** The outside systems as test layers over `state`. */
-const testLayers = (state: World, published: Queue.Dequeue<QuotaTest.Published>) => () =>
+const testLayers = (state: World, published: Queue.Dequeue<PublishedReading>) => () =>
   Layer.mergeAll(
-    LoginsTest.layerTest(state.integration),
-    QuotaTest.layerTest(new Map([[ANTHROPIC, state.readings]]), new Map([[ANTHROPIC, published]])),
-    LedgerTest.layerTest(state.storage),
+    LoginsTest.layer(state.integration),
+    QuotaTest.layer(new Map([[ANTHROPIC, state.readings]]), new Map([[ANTHROPIC, published]])),
+    LedgerTest.layer(state.storage),
   )
 
 /** A hook or RPC handler the plugin registered; a missing one fails the test. */
@@ -92,7 +93,7 @@ const start = (
     const quotaIDs: Array<string> = []
     const statuses: Array<{ readonly credentialID: unknown; readonly status: unknown }> = []
     const events = yield* Queue.unbounded<SessionEvent>()
-    const published = yield* Queue.unbounded<QuotaTest.Published>()
+    const published = yield* Queue.unbounded<PublishedReading>()
     const answer = ({ credentialID }: { readonly credentialID: string }) =>
       Effect.sync(() => ({ reading: state.readings.get(credentialID) ?? null }))
     const host = {
@@ -137,7 +138,7 @@ const start = (
             }),
         },
       ),
-      storage: LedgerTest.memory(state.storage),
+      storage: LedgerTest.storage(state.storage),
     } as unknown as Host
     yield* make(externals === "test" ? testLayers(state, published) : externals).effect(host)
 
@@ -175,7 +176,7 @@ const start = (
     })
     /** A host event or a published reading, taken in before the test goes on. */
     const emit = (event: SessionEvent) => Queue.offer(events, event).pipe(Effect.andThen(settle))
-    const publish = (reading: QuotaTest.Published) => Queue.offer(published, reading).pipe(Effect.andThen(settle))
+    const publish = (reading: PublishedReading) => Queue.offer(published, reading).pipe(Effect.andThen(settle))
     return { request, respond, retry, idle, pace, status, emit, publish, transforms, quotaIDs, statuses, rpc }
   })
 

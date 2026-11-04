@@ -3,12 +3,8 @@
 // each account's status.
 import { describe, expect, test } from "bun:test"
 import { fold } from "@dotfiles/decider/decider"
-import { held, rank, shouldFailOver, status, WINDOW_MS } from "../src/domain/Accounts.ts"
-import { AccountPool, restored, type Event } from "../src/domain/AccountPool/AccountPool.aggregate.ts"
-import { LoginsListed } from "../src/domain/AccountPool/ListLogins.command.ts"
-import { RequestPlaced } from "../src/domain/AccountPool/PlaceRequest.command.ts"
-import { StepRecorded } from "../src/domain/AccountPool/RecordStep.command.ts"
-import { ReadingTaken } from "../src/domain/AccountPool/TakeReading.command.ts"
+import { AccountPool, LoginsListed, ReadingTaken, RequestPlaced, restored, StepRecorded, type Event } from "./account-pool.ts"
+import { held, rank, shouldFailOver, status, WINDOW_MS } from "./accounts.ts"
 
 const HOUR = 3_600_000
 const T0 = 1_800_000_000_000

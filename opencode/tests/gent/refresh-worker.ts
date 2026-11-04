@@ -2,7 +2,7 @@
 // through the pool's gent source and print a fingerprint of the token it got
 // (never the token) and when it asked (epoch ms).
 import { createHash } from "node:crypto"
-import { GentSource } from "../../mods/pool/src/host/GentStore.ts"
+import { GentSource } from "../../mods/pool/gent/store.ts"
 
 const [dir, tokenURL, credentialID] = process.argv.slice(2)
 if (!dir || !tokenURL || !credentialID) throw new Error("usage: refresh-worker <dir> <tokenURL> <credentialID>")

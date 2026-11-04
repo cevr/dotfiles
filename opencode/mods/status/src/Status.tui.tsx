@@ -7,7 +7,7 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { Option, Schema } from "effect"
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
-import { POOL_STATUS } from "../../pool/src/domain/PoolStatus.ts"
+import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { accountRows, agentRows, PanePools, stamp, unavailable, unitLine } from "./domain/Pane.ts"
 import { Snapshot, STATUS } from "./domain/Status.ts"
 
