@@ -1,4 +1,4 @@
-// Transcript rows in the Prime look: a full-width band for the user prompt,
+// Transcript rows in the Prime look: a full-width band for the user prompt (its markdown, as Prime's user block renders it),
 // one dim line of reasoning, and plain assistant text.
 import type { Plugin } from "@opencode/plugin/tui"
 import { createMemo, Show, type Accessor } from "solid-js"
@@ -30,7 +30,11 @@ export function UserBand(props: { context: Context; sessionID: string; messageID
           paddingTop={1}
           paddingBottom={1}
         >
-          <text fg={props.context.theme.text.base}>{value()}</text>
+          <props.context.ui.Markdown
+            content={value()}
+            fg={props.context.theme.text.base}
+            bg={props.context.theme.background.raised.base}
+          />
         </box>
       )}
     </Show>

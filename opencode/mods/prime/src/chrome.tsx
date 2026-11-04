@@ -122,7 +122,7 @@ export function Dock(props: { context: Context; sessionID?: string }) {
 
 const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-/** While a turn runs: a braille spinner in the primary accent (Prime #7c6faf), then `Executing · 13s`. */
+/** While a turn runs: a blank row, then a braille spinner in the primary accent (Prime #7c6faf) and `Executing · 13s` (Prime's loader rows). */
 export function Working(props: { context: Context; sessionID: string }) {
   const data = props.context.data
   const running = createMemo(() => data.session.status(props.sessionID) === "running")
@@ -144,7 +144,7 @@ export function Working(props: { context: Context; sessionID: string }) {
   onCleanup(() => clearInterval(timer))
   return (
     <Show when={running()}>
-      <box paddingLeft={GUTTER} flexShrink={0}>
+      <box paddingLeft={GUTTER} marginTop={1} flexShrink={0}>
         <text wrapMode="none" fg={props.context.theme.text.muted}>
           <span style={{ fg: props.context.theme.hue.accent[300] }}>{SPINNER[frame()]} </span>
           Executing · {elapsed(now() - started())}

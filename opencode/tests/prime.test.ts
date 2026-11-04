@@ -183,13 +183,14 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     expect(running.text).toMatch(row(" ◆ 1 subagent  ·  ▸ 0 shells  ·  goal"))
     expect(running.text).not.toContain("Agent message")
     expect(running.text).not.toContain("reviewer approved")
-    // The loader is the transcript's last row, straight under the running group (Prime's placement).
+    // The loader is the transcript's last row, a blank row under the running group (Prime's loader: a spacer, then the spinner).
     const executing = running.lines.findIndex((line) => line.includes("Executing"))
-    expect(running.lines[executing - 1]).toContain("Running code-reviewer")
+    expect(running.lines[executing - 1]!.trim()).toBe("")
+    expect(running.lines[executing - 2]).toContain("Running code-reviewer")
     const spinner = running.lines[executing]!.trim()[0]!
     expect(cell(running, spinner).fg).toBe(ACCENT)
     // The running group's glyph blinks in the accent.
-    const glyph = running.lines[executing - 1]!.trim()[0]!
+    const glyph = running.lines[executing - 2]!.trim()[0]!
     expect(cell(running, `${glyph} Running code-reviewer`).fg).toBe(ACCENT)
     expect(cell(running, "◆ 1 subagent").fg).toBe(SUCCESS)
   })
