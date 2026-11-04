@@ -1,0 +1,10 @@
+{
+  "name": "@dotfiles/opencode-kernel",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A persistent TypeScript kernel for OpenCode: one Bun process per session, top-level bindings kept between calls, and every other tool callable as tools.<id>(input).",
+  "exports": {
+    "./server": "./src/server.ts"
+  }
+}
