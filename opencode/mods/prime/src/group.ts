@@ -174,6 +174,8 @@ export function subject(row: Row): string {
     return row.calls.map((part) => subagentName(toolInput(part))).join(", ")
   if (row.tool === "subagent") {
     const input = toolInput(first)
+    // The description is the model's own short label for the task; the prompt is the brief behind it.
+    if (typeof input.description === "string" && input.description.trim()) return input.description.trim()
     const task = toolPreview("subagent", input)
     return task ? `${subagentName(input)} · ${task}` : subagentName(input)
   }

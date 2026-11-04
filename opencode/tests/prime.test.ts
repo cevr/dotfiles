@@ -136,7 +136,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       "   2 -     for i in range(retries - 1):",
       "   2 +     for i in range(retries):",
       "   3           try:",
-      "  ● Ran code-reviewer · Review the diff in src/net.py.",
+      "  ● Ran code-reviewer",
       "    │ ✉ Agent message · ↓ code-reviewer",
       "  ✗ Searched 1 pattern · read 1 file · 1 failed",
       "  ├ Searched /retries/ in src",
@@ -178,7 +178,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
 
   test("while the reviewer runs: a running group, the Executing line and one subagent", () => {
     const running = frames.running
-    expect(running.text).toMatch(/^ {2}[○●] Running code-reviewer · Review the diff in src\/net\.py\.$/m)
+    expect(running.text).toMatch(/^ {2}[○●] Running code-reviewer$/m)
     expect(running.text).toMatch(/^ {2}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Executing · \d+s$/m)
     expect(running.text).toMatch(row(" ◆ 1 subagent  ·  ▸ 0 shells  ·  goal"))
     expect(running.text).not.toContain("Agent message")

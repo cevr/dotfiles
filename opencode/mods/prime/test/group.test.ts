@@ -88,12 +88,17 @@ describe("the tree rows", () => {
       call("subagent", { description: "review", prompt: "R" }),
     )
     expect(words(list)).toBe("Started 2 agents · ran 1 agent")
-    expect(rows(list).map((row) => `${verb(row)} ${subject(row)}`)).toEqual(["Started fix-a, fix-b", "Ran review · R"])
+    expect(rows(list).map((row) => `${verb(row)} ${subject(row)}`)).toEqual(["Started fix-a, fix-b", "Ran review"])
   })
 
   test("a running call reads in the running tense; a subagent names its agent and task", () => {
-    const tree = rows(calls(call("task", { description: "code-reviewer", prompt: "Review the diff." }, "running")))
+    const tree = rows(calls(call("task", { agent: "code-reviewer", prompt: "Review the diff." }, "running")))
     expect(`${verb(tree[0]!)} ${subject(tree[0]!)}`).toBe("Running code-reviewer · Review the diff.")
+  })
+
+  test("a subagent with a description reads as that description alone, without its prompt", () => {
+    const tree = rows(calls(call("subagent", { agent: "general", description: "Fix money parsing", prompt: "Task 1: a long brief." })))
+    expect(`${verb(tree[0]!)} ${subject(tree[0]!)}`).toBe("Ran Fix money parsing")
   })
 })
 
