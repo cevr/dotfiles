@@ -2,8 +2,7 @@
 // and activity come from the same collection Prime's dock counts.
 import { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
-import type { AccountStatus } from "../../pool/src/pool.ts"
-import { POOL_STATUS } from "../../pool/src/protocol.ts"
+import { POOL_STATUS, type AccountStatus } from "../../pool/src/domain/PoolStatus.ts"
 import { STATUS, type Snapshot } from "./protocol.ts"
 
 type Pools = Record<string, { accounts: readonly AccountStatus[] }>

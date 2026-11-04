@@ -1,6 +1,7 @@
+// The pool's pace: whether a new agent may start now, from its accounts' readings.
 import { expect, test } from "bun:test"
-import { poolPace } from "../src/pace.ts"
-import type { AccountStatus } from "../src/pool.ts"
+import { poolPace } from "../src/domain/Pace.ts"
+import type { AccountStatus } from "../src/domain/PoolStatus.ts"
 const now = Date.parse("2026-11-04T15:00:00Z")
 const day = 86400000
 const account = (used: number, reset = now + 3.5 * day): AccountStatus => ({ credentialID: "a", live: 1, load: 0, noRoom: false, reading: { at: now, windows: [{ name: "7d", utilization: used, resetAt: reset }, { name: "5h", utilization: 0.1, resetAt: now + 3600000 }] } })
@@ -11,7 +12,7 @@ test("weekly pace holds ahead-of-time use and opens once the pool catches up", (
   expect(held.ok).toBe(false)
   expect(held.reason).toContain("weekly pace")
   expect(held.retryAt).toBeGreaterThan(now)
-  expect(poolPace([account(0.7)], held.retryAt!).ok).toBe(true)
+  expect(poolPace([account(0.7)], held.retryAt ?? Number.NaN).ok).toBe(true)
   expect(poolPace([account(0.5)], now).ok).toBe(true)
 })
 test("it pools accounts, honors short-window holds and never treats a reset reading as spent", () => {

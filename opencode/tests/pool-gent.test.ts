@@ -16,7 +16,7 @@ import {
   GentSource,
   limitDetail,
   registerCredentialSource,
-} from "../mods/pool/src/gent.ts"
+} from "../mods/pool/src/host/GentStore.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAccount, type FakeAnthropic, type FakeTokenAnswer } from "./fake-anthropic.ts"
 import { gentAvailable, gentSource, openGentStore, type GentStore } from "./gent/store.ts"

@@ -79,6 +79,46 @@ The model (`src/domain/`):
 The aggregate stores events, not state. The status pane reads the history
 as the call log, and no command needs the folded state.
 
+## Pool
+
+`mods/pool` pools a provider's OAuth logins. It chooses the login each
+request goes out on, holds a login its provider refuses, and turns a refused
+primary request into an immediate retry on another login. Its options are
+`providers`, `sweepMinutes` and `sources`. An absent option takes its
+default. A malformed one stops the plugin at setup, with a message that
+names it. Other mods read it over its `dotfiles-opencode.pool` RPC
+(`src/domain/PoolStatus.ts`): orchestrate asks `pace`, and the `/pool`
+pane draws `status`.
+
+The model (`src/domain/`):
+
+- Facts: `LoginsListed`, `RequestPlaced`, `RequestRefused` (with its hold),
+  `ReadingTaken` (with the hold it sets, if any), `StepRecorded` (a priced
+  step), `RunReleased` and `LedgerPruned`.
+- Commands: `ListLogins`, `PlaceRequest`, `RefuseRequest`, `TakeReading`,
+  `RecordStep`, `ReleaseRun` and `PruneLedger`. Each one is decided only
+  from the pool's state, its input and the clock.
+- Rejections: `NoAccount` (a request on a pool that lists no login). The
+  plugin then names no login on the request.
+- Aggregate: `AccountPool`, keyed by its integration (`PoolId`). Every
+  command goes through its `decide`.
+- Values: placement ranking (`Placement.ts`), holds, failover and each
+  account's status (`Accounts.ts`), quota readings and the quota RPC's
+  contract (`Quota.ts`), pace admission (`Pace.ts`) and the pool's own RPC
+  (`PoolStatus.ts`).
+- Externals: the integration's logins and a gent store's (`Logins`), the
+  auth plugin's quota RPC (`Quota`) and the ledger in the plugin's storage
+  (`Ledger`). Each one is a `Context.Service` in `domain/`, with a live layer
+  and a test layer in `host/`. `host/GentStore.ts` reads and refreshes
+  gent's store in place, under gent's lock, byte-compatible with gent.
+
+The aggregate stores folded state, not events: no one reads its history.
+The ledger keeps its holds, readings and priced steps under
+`<pool>/hold/<id>`, `<pool>/reading/<id>` and `<pool>/step/<at>/<session>`,
+the keys earlier processes wrote, so a new process starts where the last
+one stopped. Decisions read Effect's `Clock`; the seam tests move it with
+`TestClock`.
+
 ## The code kernel
 
 `mods/kernel` gives the model a `kernel` tool, `{ code, reset? }`, ported

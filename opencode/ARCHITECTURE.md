@@ -74,7 +74,7 @@ export default Plugin.define({
 })
 ```
 
-- Options are a `Schema` decoded here; a default lives in the schema. An absent option takes its default; a malformed one is a defect at setup (`Effect.orDie`, naming the option), never a silent fallback. A malformed *reply* from another plugin or system at run time is different: its adapter decides (the pool's pace answer fails open).
+- Options are a `Schema` decoded here; a default lives in the schema. An absent option takes its default; a malformed one is a defect at setup (`Effect.orDie`, naming the option), never a silent fallback. An option set to `undefined` counts as absent: in-process hosts pass unset options as `undefined`, and JSON cannot write it. A malformed *reply* from another plugin or system at run time is different: its adapter decides (the pool's pace answer fails open).
 - Errors the host reads come from the host: `Tool` (and `Tool.Error`) from `@opencode/plugin/effect`, never a local copy.
 - Transform callbacks (`ctx.agent.transform` and the rest) are synchronous. Load what they need before registering, or run a synchronous effect inside (`Effect.runSync` of a sync read).
 - Decisions read `now` from the mod's clock (the `now` option, when a test fixes it). Timestamps a log writes may use the wall clock; say which in the README.
