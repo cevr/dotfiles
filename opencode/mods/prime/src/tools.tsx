@@ -16,6 +16,7 @@ import { createMemo, For, Match, Show, Switch, type Accessor, type JSX } from "s
 import { useNow } from "./clock"
 import {
   errorText,
+  followsCall,
   headerRuns,
   outcome,
   rowFiles,
@@ -58,6 +59,13 @@ export function ToolRow(props: PartProps & { tool: string; detail: Accessor<Deta
     return message?.type === "assistant" ? toolRun(message.content, props.partID) : []
   })
   const first = createMemo(() => run()[0]?.part.id === props.partID)
+  // Two steps' groups stack as adjacent call rows; the later one opens with a blank row.
+  const apart = createMemo(
+    () =>
+      first() &&
+      props.detail() !== "overview" &&
+      followsCall(props.context.data.session.message.list(props.sessionID), props.messageID, props.partID),
+  )
   // The rows the tree shows at this level, in order; the connector depends on the whole list.
   const shown = createMemo((): Row[] => {
     const detail = props.detail()
@@ -73,7 +81,7 @@ export function ToolRow(props: PartProps & { tool: string; detail: Accessor<Deta
   const glyph = createMemo(() => groupGlyph(props.context, run(), now()))
   return (
     <Show when={run().length > 0}>
-      <box flexDirection="column" flexShrink={0}>
+      <box flexDirection="column" flexShrink={0} paddingTop={apart() ? 1 : 0}>
         <Show when={first() && !single()}>
           <Header context={props.context} calls={run()} glyph={glyph()} />
         </Show>

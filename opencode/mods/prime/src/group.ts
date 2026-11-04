@@ -1,8 +1,34 @@
 // The fx-style tool-call group, without rendering: a step's run of calls
 // reads as one header (`Read 3 files · ran 2 commands · 1 failed`) with one
 // tree row per run of one tool under it.
+import type { Plugin } from "@opencode/plugin/tui"
 import type { SessionPart } from "@opencode/plugin/tui/context"
 import { editedFiles, errorName, toolInput, toolMetadata, toolPreview, subagentName, type ToolPart } from "./view"
+
+/** A session message, as the plugin API lists them. */
+type SessionMessageInfo = ReturnType<Plugin.Context["data"]["session"]["message"]["list"]>[number]
+
+/** Whether a part draws a transcript row: a call, or text with words in it. */
+function drawn(part: SessionPart) {
+  return part.type === "tool" || ("text" in part && typeof part.text === "string" && part.text.trim() !== "")
+}
+
+/**
+ * Whether the transcript row just above a run is a call of another step. The
+ * host gives each call its own row, so row gaps cannot tell two steps' groups
+ * apart; the group's header adds the blank row between them itself.
+ */
+export function followsCall(messages: ReadonlyArray<SessionMessageInfo>, messageID: string, firstPartID: string): boolean {
+  const at = messages.findIndex((message) => message.id === messageID)
+  const message = messages[at]
+  if (message?.type !== "assistant") return false
+  const start = message.content.findIndex((part) => part.type === "tool" && part.id === firstPartID)
+  const before = message.content.slice(0, Math.max(0, start)).filter(drawn).at(-1)
+  if (before) return before.type === "tool"
+  const previous = messages[at - 1]
+  if (previous?.type !== "assistant") return false
+  return previous.content.filter(drawn).at(-1)?.type === "tool"
+}
 
 /** How a call stands: still running (or streaming its input), ended well, ended with a warning, or failed. */
 export type Outcome = "running" | "done" | "warning" | "failed"

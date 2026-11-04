@@ -1,6 +1,6 @@
 // The fx-style tool group's words, from calls as OpenCode stores them.
 import { describe, expect, test } from "bun:test"
-import { canonical, headerRuns, rows, subject, toolRun, verb, type Call } from "../src/group"
+import { canonical, followsCall, headerRuns, rows, subject, toolRun, verb, type Call } from "../src/group"
 import type { ToolPart } from "../src/view"
 
 let ids = 0
@@ -93,4 +93,27 @@ test("a run is the tool calls next to each other around a call", () => {
   expect(toolRun(content, b.id).map((item) => item.part.id)).toEqual([a.id, b.id])
   expect(toolRun(content, c.id).map((item) => item.tool)).toEqual(["read"])
   expect(toolRun(content, "text:0")).toEqual([])
+})
+
+describe("the blank row between groups", () => {
+  const assistant = (id: string, content: unknown[]) => ({ type: "assistant", id, content }) as never
+  const [a, b, c] = [call("read", { path: "a" }), call("bash", { command: "ls" }), call("read", { path: "c" })]
+
+  test("opens a group whose row above is another step's call", () => {
+    const messages = [assistant("m1", [{ type: "text", text: "Looking." }, a]), assistant("m2", [b])]
+    expect(followsCall(messages, "m2", b.id)).toBe(true)
+  })
+
+  test("not after prose, a user message, or empty text that draws nothing", () => {
+    expect(followsCall([assistant("m1", [{ type: "text", text: "Looking." }, a])], "m1", a.id)).toBe(false)
+    expect(followsCall([{ type: "user", id: "u1", text: "go" } as never, assistant("m2", [b])], "m2", b.id)).toBe(false)
+    const messages = [assistant("m1", [a, { type: "text", text: "  " }]), assistant("m2", [{ type: "reasoning", text: "" }, b])]
+    expect(followsCall(messages, "m2", b.id)).toBe(true)
+  })
+
+  test("within a message, a run after another run's calls opens apart", () => {
+    const messages = [assistant("m1", [a, { type: "text", text: "" }, c])]
+    expect(followsCall(messages, "m1", c.id)).toBe(true)
+    expect(followsCall(messages, "m1", a.id)).toBe(false)
+  })
 })
