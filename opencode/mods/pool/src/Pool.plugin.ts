@@ -24,7 +24,7 @@
  *   configured provider is (unless the config disables it).
  */
 import { Integration, Plugin } from "@opencode/plugin/effect"
-import { Context, Effect, Layer, Schema, Stream } from "effect"
+import { Context, Effect, Layer, Schedule, Schema, Stream } from "effect"
 import { PoolId } from "./domain/AccountPool/AccountPool.id.ts"
 import type { Ledger } from "./domain/AccountPool/Ledger.external.ts"
 import type { Logins } from "./domain/AccountPool/Logins.external.ts"
@@ -188,10 +188,7 @@ export const make = (
 
       if (options.sweepMinutes > 0)
         yield* Effect.forkScoped(
-          Effect.sleep(FIRST_SWEEP).pipe(
-            Effect.andThen(pool.sweep),
-            Effect.andThen(Effect.forever(Effect.sleep(`${options.sweepMinutes} minutes`).pipe(Effect.andThen(pool.sweep)))),
-          ),
+          pool.sweep.pipe(Effect.repeat(Schedule.spaced(`${options.sweepMinutes} minutes`)), Effect.delay(FIRST_SWEEP)),
         )
 
       // The pool's own RPC has no error to answer with: a pool whose logins

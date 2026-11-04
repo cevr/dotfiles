@@ -81,15 +81,15 @@ export default Plugin.define({
 - Hooks registered through `ctx` are owned by the plugin's scope. Background fibers start with `Effect.forkScoped`.
 - A handler is thin: decode, read context, call the service, map the small public error set.
 - Services are `Context.Service` classes with package-qualified keys (`dotfiles-opencode/<mod>/<Noun>`). Public and non-trivial operations are `Effect.fn("<Noun>.<operation>")`.
-- RPC protocols other mods read (`dotfiles-opencode.pool` and the rest) keep their ids and shapes, defined with Schema in `domain/`.
+- RPC protocols other mods read (`dotfiles-opencode.pool` and the rest) keep their ids and definition literals byte for byte in `domain/` (the host's `rpc.register` and `client.rpc` take those literals), with Schema for the answers they carry. A reader decodes an answer with its own schema; it does not import the other mod's domain.
 
 ## TUI mods
 
-Prime and the status pane draw with Solid through `@opencode/plugin/tui`. What they show comes from views in `domain/`: pure folds and projections, such as tool-call groups or the agent list, with stories. Components stay thin: they read a view and draw it.
+Prime and the status pane draw with Solid through `@opencode/plugin/tui`. What they show comes from `domain/`: a fold over events is a view (the agent list), and a pure projection a component draws is a value in `domain/<Value>.ts` (tool-call groups, pane rows), tested in `test/<Value>.test.ts`. Components stay thin: they read a view and draw it.
 
 ## Tests
 
-- **Stories** test the model through `lib/story.ts`: given events, when a command, then the events, the rejection, or a view's state. They cover the happy path, every rejection and every policy reaction. They are pure and fast.
+- **Stories** test the model through `lib/story.ts`: given events, when a command, then the events, the rejection, or a view's state. They cover the happy path, every rejection and every policy reaction. They are pure and fast. A view with no aggregate (its events are another program's records, such as the call log the status pane reads) is tested in `test/<View>.test.ts` by folding events with `fold` from `lib/decider.ts`.
 - **Plugin seam tests** run the composition root against `layerTest` fakes with explicit state and failure controls. No module mocks, spies or `beforeEach`; fixtures are Layers or scoped `acquireRelease`.
 - **The real-OpenCode tests in `tests/`** are the acceptance check. A refactor keeps every one of them green with their assertions unchanged. Change one only to follow a renamed import, and say so in the commit.
 
