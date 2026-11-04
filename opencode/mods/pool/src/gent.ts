@@ -40,12 +40,7 @@ import { open, rename, rm } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 
-/**
- * The token endpoint Claude Code refreshes at, and its public client id. gent's
- * `https://claude.ai/v1/oauth/token` answers 429 to every refresh (measured
- * 2026-11-04), so this source refreshes where Claude Code and the Anthropic
- * auth plugin do.
- */
+/** The token endpoint Claude Code and the Anthropic auth plugin refresh at, and Claude Code's public client id. */
 export const GENT_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 export const GENT_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 /** The prefix of a gent account's credential id in the pool. */
@@ -63,6 +58,13 @@ const LOCK_POLLS = 1500
 const DEFAULT_EXPIRES_IN_S = 36_000
 /** How soon a credential that failed for a passing reason is tried again. */
 const RETRY_MS = 60_000
+/**
+ * How long a 429 from the token endpoint pauses every refresh from this store
+ * when it names no retry-after. The limit is the endpoint's, not one account's:
+ * retrying each account on its own kept a rate limit going for 40 minutes on
+ * 2026-11-04.
+ */
+const ENDPOINT_PAUSE_MS = 5 * 60_000
 /** gent's `CredentialSlot` pattern; `default` is the default entry, never a slot. */
 const SLOT = /^[a-z0-9_-]{1,32}$/
 const STAGING_TAG = ".gent-write-"
@@ -248,6 +250,15 @@ export const withGentLock = async <A>(
   }
 }
 
+/** A 429's `retry-after` (seconds or an HTTP date) as a wait in ms; ENDPOINT_PAUSE_MS when it names none. */
+function pauseFor(retryAfter: string | null, now: number): number {
+  if (retryAfter === null || retryAfter.trim() === "") return ENDPOINT_PAUSE_MS
+  const seconds = Number(retryAfter)
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000
+  const at = Date.parse(retryAfter)
+  return Number.isFinite(at) && at > now ? at - now : ENDPOINT_PAUSE_MS
+}
+
 /** One store's state in this process: refreshes held for a write, and tokens a provider rejected. */
 interface StoreState {
   /** Per label: tokens a refresh got whose write failed, and the refresh token they replace. */
@@ -256,6 +267,8 @@ interface StoreState {
   readonly rejected: Map<string, string>
   /** The tail of this process's queue for the lock: one refresh at a time per store. */
   queue: Promise<unknown>
+  /** Until when (epoch ms) the token endpoint asked this store to wait; no refresh goes out before. */
+  pausedUntil: number
 }
 
 /** Shared by every setup in the process, whichever copy of this module it loaded. */
@@ -266,7 +279,7 @@ const stateOf = (dir: string): StoreState => {
   const states = (global[STATES] ??= new Map())
   let state = states.get(dir)
   if (state === undefined) {
-    state = { pending: new Map(), rejected: new Map(), queue: Promise.resolve() }
+    state = { pending: new Map(), rejected: new Map(), queue: Promise.resolve(), pausedUntil: 0 }
     states.set(dir, state)
   }
   return state
@@ -450,8 +463,17 @@ export class GentSource {
         `The gent account "${label}" could not refresh: ${why}`,
         this.now() + RETRY_MS,
       )
+    const paused = this.state.pausedUntil
+    if (this.now() < paused) {
+      throw new GentCredentialError(
+        "unavailable",
+        `The gent account "${label}" could not refresh: the token endpoint asked to wait until ${new Date(paused).toISOString()}`,
+        paused,
+      )
+    }
     let status: number
     let body: string
+    let retryAfter: string | null = null
     try {
       const response = await this.fetch(this.tokenURL, {
         method: "POST",
@@ -465,11 +487,21 @@ export class GentSource {
         signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
       })
       status = response.status
+      retryAfter = response.headers.get("retry-after")
       body = await response.text()
     } catch {
       throw unavailable("the token endpoint did not answer")
     }
-    if (status === 429 || status >= 500) throw unavailable(`the token endpoint answered ${status}`)
+    if (status === 429) {
+      // A rate limit holds the whole store, so the other accounts do not keep it going.
+      this.state.pausedUntil = Math.max(this.state.pausedUntil, this.now() + pauseFor(retryAfter, this.now()))
+      throw new GentCredentialError(
+        "unavailable",
+        `The gent account "${label}" could not refresh: the token endpoint answered 429`,
+        this.state.pausedUntil,
+      )
+    }
+    if (status >= 500) throw unavailable(`the token endpoint answered ${status}`)
     if (status >= 400) {
       throw new GentCredentialError(
         "rejected",

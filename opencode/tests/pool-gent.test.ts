@@ -89,7 +89,7 @@ const failure = async (run: Promise<unknown>): Promise<GentCredentialError> => {
   throw new Error("expected the resolve to fail")
 }
 
-// claude.ai's token endpoint refused every refresh with 429; Claude Code and the auth plugin refresh here.
+// The endpoint Claude Code and the Anthropic auth plugin refresh at.
 test("the gent source refreshes at Claude Code's token endpoint", () => {
   expect(GENT_TOKEN_URL).toBe("https://platform.claude.com/v1/oauth/token")
 })
@@ -255,6 +255,22 @@ describe.skipIf(!ready)("the pool's gent source over gent's own store", () => {
     await source.resolve(`${GENT_PREFIX}alpha`)
     expect(trades()).toBe(2)
     expect(file("alpha")).not.toBe(before)
+  })
+
+  test("a rate-limited refresh pauses every account of the store until retry-after", async () => {
+    let answer: FakeTokenAnswer = { kind: "rate-limited", retryAfterSeconds: 120 }
+    const { source, trades } = await bench(
+      { alpha: fakeAccount(), beta: fakeAccount() },
+      { expires: Date.now() - 1000, token: () => answer },
+    )
+    const first = await failure(source.resolve(`${GENT_PREFIX}alpha`))
+    expect(first.kind).toBe("unavailable")
+    expect(first.retryAt).toBeGreaterThan(Date.now() + 110_000)
+    // The other account waits too, without a request of its own.
+    answer = { kind: "rotate" }
+    const second = await failure(source.resolve(`${GENT_PREFIX}beta`))
+    expect(second.retryAt).toBe(first.retryAt)
+    expect(trades()).toBe(1)
   })
 
   test("a refresh the endpoint refused writes nothing and asks for a new sign-in", async () => {

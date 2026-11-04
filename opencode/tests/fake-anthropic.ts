@@ -57,6 +57,8 @@ export type FakeTokenAnswer =
   | { readonly kind: "unavailable" }
   /** A 400 `invalid_grant`, as for a refresh token that was spent or revoked. */
   | { readonly kind: "rejected" }
+  /** A 429, as a rate-limited token endpoint, with `retry-after` when given. */
+  | { readonly kind: "rate-limited"; readonly retryAfterSeconds?: number }
 
 /** What the fake knows of one request when it picks the answer. */
 export interface FakeRequestInfo {
@@ -365,6 +367,11 @@ export const startFakeAnthropic = (options: FakeAnthropicOptions): FakeAnthropic
       return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 })
     }
     if (answer?.kind === "unavailable") return new Response("unavailable", { status: 503 })
+    if (answer?.kind === "rate-limited")
+      return new Response("rate limited", {
+        status: 429,
+        headers: answer.retryAfterSeconds === undefined ? {} : { "retry-after": String(answer.retryAfterSeconds) },
+      })
     if (answer?.kind === "rotate" && answer.delayMs !== undefined) await Bun.sleep(answer.delayMs)
     const rotated = fakeAccount()
     current.set(entry[0], rotated)
