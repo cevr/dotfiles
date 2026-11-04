@@ -31,14 +31,8 @@ export const CREDENTIAL_HEADER = "x-opencode-credential-id"
 const CREDENTIALS_LIFE_MS = 30_000
 const DEFAULT_SWEEP_MINUTES = 10
 
-/** The pool's own RPC: each pooled provider's accounts, holds and readings. No secrets. */
-export const POOL_STATUS = {
-  id: "opencode-gent.pool",
-  methods: {
-    status: { input: { type: "object" }, output: { type: "object" } },
-  },
-  events: {},
-} as const
+import { POOL_STATUS } from "./protocol.ts"
+export { POOL_STATUS } from "./protocol.ts"
 
 type Context = Plugin.Context
 
