@@ -7,9 +7,11 @@
 // Each package's node_modules is a real directory that Bun owns: it holds the
 // workspace links (`@dotfiles/*`) and vendor packages Bun installs. This script
 // adds one link per entry of the fork's node_modules that Bun did not put
-// there, and Bun leaves those links alone on later installs. Run it before
-// `bun install`: an older checkout linked the whole directory to the fork,
-// and an install through that link would write into the fork.
+// there. Run it before `bun install` (an older checkout linked the whole
+// directory to the fork, and an install through that link would write into
+// the fork) and again after it: an install that changes a package's
+// node_modules drops the links it did not make. The TUI plugins resolve
+// `solid-js` through these links when OpenCode loads them.
 import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, rmSync, symlinkSync } from "node:fs"
 import path from "node:path"
 
