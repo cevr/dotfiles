@@ -1,0 +1,17 @@
+{
+  "name": "opencode-gent",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "typecheck": "bun check"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "effect": "4.0.1",
+    "opencode-drive": "2.4.0"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  }
+}
