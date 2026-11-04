@@ -99,8 +99,15 @@ never reserves a stale slot.
 Cost of this choice: this is quota pacing, without Claude Code's calibrated
 per-role cost prediction, fair ticket queue, cross-host reservations or
 Sabbath-adjusted working-hour budget. Quota updates can lag a wave of starts.
-The OpenAI provider is not pooled or paced: a verifier on GPT runs
-against the ChatGPT plan's own limits.
+The OpenAI provider is not pooled. A new subagent on it asks the Codex
+account's pace instead: the orchestrate skill's `budget.ts --codex --admit
+--model <id> --role <role>`, the admission the Claude-side Codex bridge asks
+before each turn. A hold denies the call with the same background waiter,
+timed to the hold's `opens about` time. Only the script's own `admit`/`hold`
+answer counts; anything else fails open. That budget measures Codex's own
+transcripts, so OpenCode's GPT tokens reach it only through the account's
+weekly use. The orchestrate mod's `codex` option names the providers and
+the script; `false` turns it off.
 
 `bun run agents` copies role prompts from the orchestrate skill and reads
 the Claude-family effort from its role table: planner `high`, implementor

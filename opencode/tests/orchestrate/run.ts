@@ -28,6 +28,8 @@ export interface Spec {
   /** compact.json's content, if the run has one. */
   readonly windows?: Record<string, number>
   readonly pace?: boolean
+  /** The Codex admission's answer: the sim provider is paced as Codex, and each call's arguments land in codex-args.jsonl. */
+  readonly codex?: "admit" | "hold"
   readonly promptTokens?: number
 }
 
@@ -61,6 +63,15 @@ if (spec.pace !== undefined) {
   writeFileSync(join(pacePlugin, "package.json"), JSON.stringify({ type: "module", exports: { "./server": "./server.js" } }))
   writeFileSync(join(pacePlugin, "server.js"), `export default { id: "fixture.pace", async setup(ctx) { await ctx.rpc.register({ id: "dotfiles-opencode.pool", methods: { pace: { input: { type: "object" }, output: { type: "object" } } }, events: {} }, { pace: async () => ({ ok: ${!spec.pace}, measured: true, reason: "scripted weekly pace", retryAt: ${Date.parse(spec.now) + 60000} }) }); } }`)
 }
+const codexScript = join(spec.base, "fake-codex.ts")
+if (spec.codex !== undefined) {
+  const line = spec.codex === "admit" ? "admit: scripted Codex pace" : "hold: scripted Codex week is over; opens about 2026-11-04 16:20Z"
+  writeFileSync(
+    codexScript,
+    `import { appendFileSync } from "node:fs"\nappendFileSync(${JSON.stringify(join(spec.base, "codex-args.jsonl"))}, JSON.stringify(process.argv.slice(2)) + "\\n")\nconsole.log(${JSON.stringify(line)})\nprocess.exit(${spec.codex === "admit" ? 0 : 1})\n`,
+  )
+}
+const codexOption = spec.codex === undefined ? {} : { codex: { providers: ["sim"], script: codexScript } }
 const content = {
   model: "sim/sim-model",
   providers: {
@@ -78,7 +89,7 @@ const content = {
       },
     },
   },
-  plugins: [{ package: spec.plugin, options: { windows: windowsFile, log: logFile, now: spec.now } }, ...(spec.pace !== undefined ? [{ package: pacePlugin }] : [])],
+  plugins: [{ package: spec.plugin, options: { windows: windowsFile, log: logFile, now: spec.now, ...codexOption } }, ...(spec.pace !== undefined ? [{ package: pacePlugin }] : [])],
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */

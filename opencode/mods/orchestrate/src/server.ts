@@ -24,6 +24,10 @@
  * - `now`: a fixed time (ISO 8601) for the Sabbath clock, for tests.
  * - `place`: `{ name, lat, lon, timeZone }` for the Sabbath, default Knowlton, QC.
  * - `fullAgent`: true lets an untyped or general call run as asked.
+ * - `codex`: `{ providers, script }`, the providers whose new subagents the
+ *   Codex account's pace admits (default `["openai"]`) and the script run
+ *   with `--codex --admit` (default the orchestrate skill's `budget.ts`, the
+ *   one the Claude-side Codex bridge asks); `false` leaves them to the pool.
  */
 import { Plugin } from "@opencode/plugin"
 import { appendFileSync, mkdirSync } from "node:fs"
@@ -77,6 +81,31 @@ export interface Dependencies {
   readonly now?: () => number
 }
 
+/** The orchestrate skill's Codex admission: `admit: …` exit 0, `hold: …[; opens about <time>Z]` exit 1. */
+export const CODEX_BUDGET = join(homedir(), ".claude/skills/orchestrate/scripts/budget.ts")
+const CODEX_ADMIT_MS = 20_000
+
+/**
+ * One new agent against the Codex account's pace. Only the script's own
+ * answer holds; anything else (unmeasured, no answer, no script) fails open,
+ * as an unreachable pool does. The service's binary is Bun underneath.
+ */
+const codexPace = async (script: string, model: string, role: string): Promise<Pace | undefined> => {
+  const child = Bun.spawn([process.execPath, script, "--codex", "--admit", "--model", model, "--role", role], {
+    env: { ...process.env, BUN_BE_BUN: "1" },
+    stdout: "pipe",
+    stderr: "ignore",
+    timeout: CODEX_ADMIT_MS,
+  })
+  const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited])
+  const line = out.trim().split("\n").pop() ?? ""
+  if (code === 0 && line.startsWith("admit: ")) return { ok: true, measured: true, reason: line.slice(7) }
+  if (code !== 1 || !line.startsWith("hold: ")) return undefined
+  const opens = /; opens about (\d{4}-\d\d-\d\d) (\d\d:\d\d)Z$/.exec(line)
+  const retryAt = opens ? Date.parse(`${opens[1]}T${opens[2]}:00Z`) : undefined
+  return { ok: false, measured: true, reason: (opens ? line.slice(6, opens.index) : line.slice(6)), ...(retryAt === undefined ? {} : { retryAt }) }
+}
+
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 
 const clock = (deps: Dependencies, options: Plugin.Context["options"]): (() => number) => {
@@ -96,6 +125,13 @@ export const orchestrate = (deps: Dependencies = {}) =>
       const now = clock(deps, options)
       const place: Place = isObject(options.place) ? (options.place as unknown as Place) : KNOWLTON
       const full = options.fullAgent === true
+      const codexOption = isObject(options.codex) ? options.codex : {}
+      const codex = options.codex === false
+        ? undefined
+        : {
+            providers: Array.isArray(codexOption.providers) ? codexOption.providers.map(String) : ["openai"],
+            script: typeof codexOption.script === "string" ? codexOption.script : CODEX_BUDGET,
+          }
       const windowsFile = typeof options.windows === "string" ? options.windows : DEFAULT_FILE
       const logFile = typeof options.log === "string" ? options.log : DEFAULT_LOG
       const disposers: Array<() => Promise<void> | void> = []
@@ -195,21 +231,26 @@ export const orchestrate = (deps: Dependencies = {}) =>
           if (model) input.model = model
         }
         if (!follow) {
-          // The pool reads provider quota, so OpenCode spend is visible. Missing
+          // The pool reads provider quota, so OpenCode spend is visible; the Codex
+          // account's pace is the one the Claude-side Codex bridge asks. Missing
           // RPC/host failures fail open, as guard-agent's unreachable-host case.
           let pace: Pace | undefined
+          let whose = "the pool's"
           try {
-            const providerID = typeof input.model === "string" && input.model.includes("/")
-              ? input.model.slice(0, input.model.indexOf("/"))
-              : (await roleBase(event.sessionID, routed.agent))?.providerID
-            if (providerID) pace = await ctx.rpc(POOL_STATUS).pace({ providerID }, { signal: AbortSignal.timeout(8000) }) as Pace
+            const base = typeof input.model === "string" && input.model.includes("/")
+              ? { providerID: input.model.slice(0, input.model.indexOf("/")), id: input.model.slice(input.model.indexOf("/") + 1).split("#")[0]! }
+              : await roleBase(event.sessionID, routed.agent)
+            if (base && codex && codex.providers.includes(base.providerID)) {
+              whose = "the Codex account's"
+              pace = await codexPace(codex.script, base.id, isRole(routed.agent) ? routed.agent : "none")
+            } else if (base) pace = await ctx.rpc(POOL_STATUS).pace({ providerID: base.providerID }, { signal: AbortSignal.timeout(8000) }) as Pace
           } catch {}
           if (pace?.ok === false) {
             const at = Number.isFinite(pace.retryAt) ? Math.max(now() + 1000, pace.retryAt!) : now() + 60_000
             const script = resolve(import.meta.dir, "../../../scripts/pace.ts")
             const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
             record({ kind: "denied", at: new Date().toISOString(), sessionID: event.sessionID, callID: event.id, tool: event.tool, why: pace.reason })
-            throw new Error(`orchestrate: the pool's pace holds this agent. ${pace.reason}. Run \`bun ${quote(script)} --wait ${Math.ceil(at)}\` with shell's background:true and go on with other work. When it exits, call subagent again with the same agent and description; admission is checked again. Do not poll.`)
+            throw new Error(`orchestrate: ${whose} pace holds this agent. ${pace.reason}. Run \`bun ${quote(script)} --wait ${Math.ceil(at)}\` with shell's background:true and go on with other work. When it exits, call subagent again with the same agent and description; admission is checked again. Do not poll.`)
           }
         }
         event.input = input

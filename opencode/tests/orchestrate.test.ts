@@ -101,6 +101,21 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
     expect(open.children.map((child) => child.agent).sort()).toEqual(["verifier", "worker"])
   }, RUN_MS)
 
+  test("codex pace: a subagent on a Codex-paced provider asks the Codex admission, with its model and role", async () => {
+    const held = await run("codex-held", { scenario: "subagents", now: WEDNESDAY, codex: "hold", pace: false })
+    expect(held.children).toEqual([])
+    const messages = JSON.stringify(held.root!.messages)
+    expect(messages).toContain("the Codex account's pace holds this agent. scripted Codex week is over.")
+    // The wait ends when the admission said the week opens.
+    expect(messages).toContain(`--wait ${Date.parse("2026-11-04T16:20:00Z")}`)
+    const asked = readFileSync(join(scratch, "codex-held", "codex-args.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[])
+    expect(asked).toContainEqual(["--codex", "--admit", "--model", "sim-model", "--role", "worker"])
+    expect(asked).toContainEqual(["--codex", "--admit", "--model", "sim-model", "--role", "verifier"])
+    // Admitted, they run, and the pool is not asked: its fake would hold them.
+    const open = await run("codex-open", { scenario: "subagents", now: WEDNESDAY, codex: "admit", pace: true })
+    expect(open.children.map((child) => child.agent).sort()).toEqual(["verifier", "worker"])
+  }, RUN_MS)
+
   test(
     "guard: an untyped subagent runs as the worker, `orchestrate-reviewer` as the verifier at medium effort",
     async () => {
