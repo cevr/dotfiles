@@ -150,7 +150,10 @@ Status stores nothing. Each RPC call reads the call log and the runs again.
 `mods/kernel` gives the model a `kernel` tool, `{ code, reset? }`, ported
 from gent's `cell`. It runs TypeScript in one Bun process per session, so
 top-level bindings persist from call to call, and returns what the code
-printed, then its last expression's value.
+printed, then its last expression's value. Its options are `idleMs`,
+`timeoutMs`, `viewChars`, `codeOnly` and `denyExecute` (below). An absent
+option takes its default. A malformed one stops the plugin at setup, with a
+message that names it.
 
 Code only, as Prime Agent's REPL: the kernel registers as the agent's
 runtime (the fork's `options.runtime`), so the model is offered the kernel
@@ -188,6 +191,46 @@ those hooks, which only the registry triggers, so the kernel then offers no
 that plugins define; an agent defined only in a config file arrives after the
 plugins' transforms and keeps code mode. A call made inside a cell shows as
 the kernel's row in the transcript, not as its own tool row.
+
+The model (the domain folder `mods/kernel/kernel/`):
+
+- Facts: `KernelReset`, `KernelStarted` (with the bindings it restored),
+  `CellRan` (the cell's output, its display, the bindings it bound that the
+  store left out, and whether its bindings were stored), `KernelLost` (why
+  the worker went) and `KernelStopped` (idle or deleted).
+- Commands: `ResetKernel`, `StartKernel`, `RecordCell`, `LoseKernel` and
+  `StopKernel`. A cell that throws and a worker that dies are facts, not
+  rejections: the model reads both as the tool's error.
+- Aggregate: `KernelSession` (`session.ts`, with its commands and facts),
+  keyed by the session. Every command goes through its `decide`; its state is
+  whether a worker runs. The handlers are `model.ts`.
+- View: `CellAnswer` (`answer.ts`), a fold of one call's facts into what the
+  model reads: the notes (`[kernel reset]`, `[new kernel; restored …]`,
+  `[not kept across restarts: …]`), then the output, cut to `viewChars`.
+- Values: the tool's description and input (`description.ts`), the tools a
+  cell reaches and how the model reads them (`tools.ts`), the output's head
+  and tail (`output.ts`), the limits (`limits.ts`), and the worker protocol:
+  its frames as schemas (`frame.ts`) and their framing on the pipes
+  (`wire.ts`).
+- Contracts (`service.ts`, with their laws in `laws.ts`): the worker
+  processes (`Workers`), the stored bindings (`Snapshots`), sessions and
+  agents' rules (`Sessions`), and the call's tools (`Toolbox`, provided per
+  call: the runtime's, else the registry's). `worker/` implements `Workers`;
+  `opencode/` implements `Snapshots`, `Sessions` and `Toolbox` over the
+  plugin context; `memory/` holds the in-memory `Sessions` the seam test
+  uses. `cmd/server/main.ts` is the plugin and the only composition root.
+- The worker itself (`worker/program.ts`, with `codec.ts` and
+  `declarations.ts`) is a separate Bun program: it imports only `node:`,
+  `bun:` and `oxc-parser`, and from the domain only types and the
+  Effect-free `wire.ts`, `output.ts` and `limits.ts`.
+
+The aggregate's state lives in memory, as the worker does; a new process
+starts every session with no worker. What persists is the worker's
+bindings, stored after every call under `kernel:<sessionID>` in the
+plugin's storage as `{ bindings: [{ name, value }] }`, the shape every
+earlier version wrote, so stored sessions keep restoring. A deleted
+session's entry is removed. The compute limit and the idle timer read
+Effect's `Clock`; the worker's own clock stops while its tool calls run.
 
 ## The other model family
 
