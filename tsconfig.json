@@ -27,5 +27,5 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  "exclude": ["plugins"]
+  "exclude": ["plugins", "testbeds/gamut/fixture"]
 }

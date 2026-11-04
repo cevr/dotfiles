@@ -1,0 +1,3 @@
+[test]
+# The gamut fixture's red tests are the exercise, not a regression.
+pathIgnorePatterns = ["testbeds/gamut/fixture/**"]
