@@ -4,7 +4,7 @@
 // The aggregate is the one decision entry point, so the stories run exactly
 // what these do. The plugin calls these and nothing else.
 import { Clock, Context, Effect, Layer, Stream, SynchronizedRef } from "effect"
-import { fold } from "../../../../lib/decider.ts"
+import { fold } from "@dotfiles/decider/decider"
 import {
   AccountPool,
   restored,

@@ -6,12 +6,10 @@
     "typecheck": {
       "dependsOn": ["^typecheck"],
       "inputs": [
-        "src/**/*.ts",
-        "src/**/*.tsx",
-        "tests/**/*.ts",
-        "tests/**/*.tsx",
+        "**/*.ts",
+        "**/*.tsx",
         "tsconfig.json",
-        "../../tsconfig.json",
+        "$TURBO_ROOT$/tsconfig.json",
         "package.json"
       ],
       "outputs": []
@@ -19,16 +17,18 @@
     "build": {
       "dependsOn": ["^build"],
       "inputs": [
-        "src/**/*.ts",
-        "src/**/*.tsx",
+        "**/*.ts",
+        "**/*.tsx",
+        "!**/*.test.ts",
+        "!**/*.test.tsx",
         "tsconfig.json",
-        "../../tsconfig.json",
+        "$TURBO_ROOT$/tsconfig.json",
         "package.json"
       ],
       "outputs": ["dist/**"]
     },
     "test": {
-      "inputs": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx", "package.json"],
+      "inputs": ["**/*.ts", "**/*.tsx", "package.json"],
       "outputs": [],
       "cache": false
     },

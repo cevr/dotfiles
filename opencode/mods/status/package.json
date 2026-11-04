@@ -1,1 +1,13 @@
-{ "name": "@dotfiles/opencode-status", "version": "0.0.0", "private": true, "type": "module", "exports": { "./server": "./src/Status.plugin.ts", "./tui": "./src/Status.tui.tsx" } }
+{
+  "name": "@dotfiles/opencode-status",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./server": "./src/Status.plugin.ts",
+    "./tui": "./src/Status.tui.tsx"
+  },
+  "dependencies": {
+    "@dotfiles/decider": "workspace:*"
+  }
+}

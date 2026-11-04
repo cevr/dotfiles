@@ -6,7 +6,7 @@
 // for a start the log never saw (the plugin loaded mid-call). Every command is
 // decided on its own inputs; the state is what the history says happened.
 import { Schema } from "effect"
-import type { Decider } from "../../../../../lib/decider.ts"
+import type { Decider } from "@dotfiles/decider/decider"
 import * as FinishSubagent from "./FinishSubagent.command.ts"
 import type { SabbathRest } from "./SabbathRest.rejection.ts"
 import * as StartSubagent from "./StartSubagent.command.ts"

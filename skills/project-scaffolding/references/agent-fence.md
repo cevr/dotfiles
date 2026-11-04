@@ -17,7 +17,7 @@ Write these sections on day one. Keep each one to what the environment cannot te
 | Section | Holds |
 | --- | --- |
 | Stack contract | Runtime, Effect version, and the pins that matter, with one line on why each exists |
-| Nouns | Table of noun, home folder, and job (contract, service, cartridge, feature, client). See the `effect` skill's `references/ARCHITECTURE.md` |
+| Layout | The contexts, their adapter and UI folders, and the `cmd/` binaries, with one line on each. The rules are the `effect` skill's `references/ARCHITECTURE.md` §Layout; name only what this repo adds |
 | Commands | The gate command that must pass before claiming a change is ready |
 | Fence | What the hooks run, and "fix the failure, never bypass the hook" |
 | Architecture | Dependency direction, and the lint rule that enforces each arrow |
@@ -51,24 +51,27 @@ The script ignores quoted text, so a commit message that mentions `--no-verify` 
 
 ## Import boundaries
 
-Enforce dependency direction with oxlint's built-in `no-restricted-imports`, scoped by `overrides`. No custom plugin is needed:
+Enforce dependency direction with oxlint's built-in `no-restricted-imports`, scoped by `overrides`. No custom plugin is needed. A context is one package, so the boundary between its domain files and its adapter folders is a file glob, not a package edge: `board/*.ts` matches the domain files at the context root only.
 
 ```jsonc
 {
   "overrides": [
     {
-      "files": ["packages/**"],
+      "files": ["board/*.ts"],
       "rules": {
         "no-restricted-imports": ["error", {
-          "patterns": [{ "group": ["@acme/cli", "@acme/cli/*", "@acme/web", "@acme/web/*"], "message": "Packages never import apps." }]
+          "patterns": [
+            { "group": ["./*/**", "@effect/platform-*", "pg", "react"], "message": "Domain files import no vendor and none of their own adapter or UI folders." },
+            { "group": ["@acme/**", "!@acme/billing/api", "!@acme/billing/service"], "message": "Another context is reached only through its contract and Api files." }
+          ]
         }]
       }
     },
     {
-      "files": ["apps/web/src/features/**", "apps/web/src/client/**"],
+      "files": ["board/web/**"],
       "rules": {
         "no-restricted-imports": ["error", {
-          "patterns": [{ "group": ["@acme/core", "@acme/core/*", "!@acme/core/contracts"], "message": "Browser code imports contracts, never handlers." }]
+          "patterns": [{ "group": ["../postgres/**", "../memory/**", "pg"], "message": "UI code imports the domain's contracts and Api, never an adapter." }]
         }]
       }
     }
@@ -76,7 +79,7 @@ Enforce dependency direction with oxlint's built-in `no-restricted-imports`, sco
 }
 ```
 
-Add one override per arrow in the `AGENTS.md` Architecture section. Write a custom `jsPlugins` rule only for a pattern that is not an import, such as module-level mutable state or a projection built outside its package; `joelhooks/rat-stack` `scripts/oxlint-plugin-*.ts` has worked examples.
+Nothing imports a `cmd/` package; it has no `exports`, so that arrow needs no rule. Add one override per context, and one per arrow in the `AGENTS.md` Architecture section. Before trusting a new override, add a file that breaks it and watch `oxlint` fail. Write a custom `jsPlugins` rule only for a pattern that is not an import, such as module-level mutable state or a projection built outside its package; `joelhooks/rat-stack` `scripts/oxlint-plugin-*.ts` has worked examples.
 
 ## Grow the fence
 

@@ -280,14 +280,18 @@ effort on whichever model it gets. No generated prompt is edited by hand.
 
 ```sh
 export OPENCODE_DEV=~/Developer/personal/.rifts/opencode/prime-look
+bun run lint
 bun run typecheck
-bun run test
 bun run agents -- --check
+bun run test
 ```
 
-There is no separate lint script. `git diff --check` checks patch whitespace.
-The typecheck links plugins to the fork's installed host packages; install
-only when changing the lock file. If working in a Rift, set `GENT_SOURCE` to
+`bun run lint` is oxlint: its errors are the layout fence (`.oxlintrc.json`,
+one import override per context; see `ARCHITECTURE.md`), and its warnings are
+advice. `git diff --check` checks patch whitespace. The typecheck links every
+workspace package (`mods/*`, `cmd/*`, `decider`) to the fork's installed host
+packages; run `bun run link-fork` before `bun install`, and install only when
+changing the lock file. If working in a Rift, set `GENT_SOURCE` to
 its source checkout so the gent pool integration tests run instead of
 skipping.
 

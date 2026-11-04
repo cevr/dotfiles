@@ -1,0 +1,10 @@
+{
+  "name": "@dotfiles/decider",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The aggregate's Decider type, fold, and stories: the kit every mod's domain shares. No domain code.",
+  "exports": {
+    "./*": "./*.ts"
+  }
+}
