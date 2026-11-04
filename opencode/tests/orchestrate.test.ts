@@ -7,8 +7,8 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { build, DEFAULT_SOURCE, OUT, parseAgent, ROOT } from "../scripts/agents.ts"
-import { definitions, effort, ROLES } from "../mods/orchestrate/src/roles.ts"
-import { KEEP } from "../mods/orchestrate/src/windows.ts"
+import { definitions, effort, ROLES } from "../mods/orchestrate/src/domain/Role.ts"
+import { KEEP } from "../mods/orchestrate/src/domain/Compaction.ts"
 import type { Result, Spec } from "./orchestrate/run.ts"
 import { REVIEW_TASK, SUMMARY, UNTYPED_TASK } from "./orchestrate/sim.ts"
 
@@ -101,30 +101,19 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
     expect(open.children.map((child) => child.agent).sort()).toEqual(["verifier", "worker"])
   }, RUN_MS)
 
-  test("Codex starts held by the bridge return the wait/fallback message without a synthetic completion", async () => {
-    const result = await run("codex-held", { scenario: "codex-held", now: WEDNESDAY, codexPlugin: join(ROOT, "mods/codex") })
-    expect(JSON.stringify(result.root!.messages)).toContain("Codex holds this turn and made no thread")
-    expect(JSON.stringify(result.root!.messages)).toContain("Run this role on Claude now")
-    expect((result.root!.messages as Array<{ type: string }>).filter((m) => m.type === "synthetic")).toEqual([])
-    expect(result.bridgeCalls!.filter((c) => c.path === "/ack")).toEqual([])
-  }, RUN_MS)
-
-  test("a Codex completion already ready at idle wakes the session through experimental.idle", async () => {
-    const result = await run("codex-idle", { scenario: "codex", now: WEDNESDAY, codexImmediate: true, codexPlugin: join(ROOT, "mods/codex") })
-    expect(JSON.stringify(result.root!.messages)).toContain("root: received SCRIPTED CODEX FINAL")
-    expect(result.acked).toBe(true)
-  }, RUN_MS)
-
-  test("Codex completion wakes its initiating idle session with the final message, once", async () => {
-    const result = await run("codex", { scenario: "codex", now: WEDNESDAY, codexPlugin: join(ROOT, "mods/codex") })
-    const messages = result.root!.messages as Array<{ type: string; text?: string }>
-    expect(messages.filter((m) => m.type === "synthetic" && m.text?.includes("SCRIPTED CODEX FINAL"))).toHaveLength(1)
-    expect(JSON.stringify(messages)).toContain("root: received SCRIPTED CODEX FINAL")
-    expect(result.acked).toBe(true)
-    expect(result.sessions.unrelated!.messages).toEqual([])
-    const start = result.bridgeCalls!.find((c) => c.path === "/start")!
-    expect(start.body).toMatchObject({ owner: result.root!.id, role: "implementor", model: "luna", description: "implementor wake r1" })
-    expect(result.bridgeCalls!.filter((c) => c.path === "/ack")).toHaveLength(2)
+  test("codex pace: a subagent on a Codex-paced provider asks the Codex admission, with its model and role", async () => {
+    const held = await run("codex-held", { scenario: "subagents", now: WEDNESDAY, codex: "hold", pace: false })
+    expect(held.children).toEqual([])
+    const messages = JSON.stringify(held.root!.messages)
+    expect(messages).toContain("the Codex account's pace holds this agent. scripted Codex week is over.")
+    // The wait ends when the admission said the week opens.
+    expect(messages).toContain(`--wait ${Date.parse("2026-11-04T16:20:00Z")}`)
+    const asked = readFileSync(join(scratch, "codex-held", "codex-args.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[])
+    expect(asked).toContainEqual(["--codex", "--admit", "--model", "sim-model", "--role", "worker"])
+    expect(asked).toContainEqual(["--codex", "--admit", "--model", "sim-model", "--role", "verifier"])
+    // Admitted, they run, and the pool is not asked: its fake would hold them.
+    const open = await run("codex-open", { scenario: "subagents", now: WEDNESDAY, codex: "admit", pace: true })
+    expect(open.children.map((child) => child.agent).sort()).toEqual(["verifier", "worker"])
   }, RUN_MS)
 
   test(

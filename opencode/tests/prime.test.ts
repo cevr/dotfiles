@@ -26,6 +26,13 @@ const ACCENT = "#7c6faf"
 const ERROR = "#d06f82"
 const SUCCESS = "#7da876"
 const BAND = "#1a1a1f"
+/** The theme's `text.base` and `text.muted`. */
+const TEXT = "#f4f4f5"
+const MUTED = "#a1a1aa"
+/** The theme's `markdown.text`: assistant prose is a step dimmer than `text.base`. */
+const PROSE = "#d8d8dc"
+/** The theme's `syntax.keyword`. */
+const KEYWORD = "#38bdf8"
 const DIFF = { addedBg: "#015f00", removedBg: "#5e0000", added: "#3fb950", removed: "#f85149" }
 
 /** A tool row's exact line; `<t>` stands for a duration such as `12ms`, `5.2s` or `1m 05s`. */
@@ -115,102 +122,111 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     }
   })
 
-  test("Details: one line per tool call, stacked tight, with the edit and its diff bands", () => {
+  test("Details: each step's calls are one fx group; a lone call is one line, a run is a header over a tree", () => {
     const details = frames.details
     const rows = [
       "  Look at the test first, then spawn a reviewer.",
       "  Reading the retry test and its helper.",
-      "  ✓ shell · printf 'test_net.py F\\n1 failed\\n' · ↑ 1 ↓ 2 lines · <t>",
+      "  ● Ran printf 'test_net.py F\\n1 failed\\n'",
+      "    │ test_net.py F",
+      "    │ 1 failed",
       "  The backoff loop exits one attempt early. Patching it.",
-      "  ✓ patch · src/net.py · ↑ 6 lines · <t>",
-      "     ╰─ src/net.py +1 -1",
+      "  ● Edited src/net.py +1 / -1",
       "   1   def fetch(url, retries=3):",
       "   2 -     for i in range(retries - 1):",
       "   2 +     for i in range(retries):",
       "   3           try:",
-      "  ✓ subagent · Review the diff in src/net.py. · ↑ 1 ↓ 1 lines · <t>",
-      "  ✉ Agent message · ↓ code-reviewer",
-      "  ✓ grep · retries in src · ↑ 1 ↓ 5 lines · <t>",
-      "  ✗ read · out/traces.jsonl · ↑ 1 lines · <t> · File not found",
+      "  ● Ran code-reviewer",
+      "    │ ✉ Agent message · ↓ code-reviewer",
+      "  ✗ Searched 1 pattern · read 1 file · 1 failed",
+      "  ├ Searched /retries/ in src",
+      "  └ Read out/traces.jsonl · File not found",
+      "    │ File not found: out/traces.jsonl",
       "  The fix is in. 1 file changed, reviewer approved.",
     ]
     const at = rows.map((line) => {
       expect(details.text).toMatch(row(line))
       return indexOf(details, row(line))
     })
-    // In order; the edit summary and diff rows sit straight under the patch call,
-    // and calls from different steps stack without a blank row.
     expect(at).toEqual([...at].sort((a, b) => a - b))
-    expect(at.slice(4, 14)).toEqual(Array.from({ length: 10 }, (_, index) => at[4]! + index))
-    // Details keeps tool output and the diff's far context collapsed.
-    expect(details.text).not.toMatch(/^ +1 failed$/m)
+    // A row's output and diff hang straight under it; the tree's rows stack tight.
+    expect(at.slice(6, 11)).toEqual(Array.from({ length: 5 }, (_, index) => at[6]! + index))
+    expect(at.slice(13, 17)).toEqual(Array.from({ length: 4 }, (_, index) => at[13]! + index))
+    // Groups from different steps sit a blank row apart.
+    expect(details.lines[at[11]! - 1]).toBe("")
+    expect(details.lines[at[13]! - 1]).toBe("")
+    // Details keeps the diff's far context and the agent's reply collapsed.
     expect(details.text).not.toContain("backoff(i)")
     expect(details.text).not.toContain("Approved: the loop")
   })
 
-  test("the dock: hint, band composer, tray with context use, rule and activity counts", () => {
+  test("the dock: hint, fx rail composer, tray with context use, rule and activity counts", () => {
     const details = frames.details
     const hint = indexOf(details, /^ {40,}Details mode \(Ctrl\+O to expand\)$/)
     expect(hint).toBeGreaterThan(0)
-    expect(details.lines.slice(hint + 1, hint + 7)).toEqual([
-      " ┃",
-      " ┃>",
+    expect(details.lines.slice(hint + 1, hint + 5)).toEqual([
       " ┃",
       expect.stringMatching(/^ ← manage {20,}gpt-sim-model · 64k \(24%\)$/),
       ` ${"─".repeat(104)}`,
       " ◆ 0 subagents  ·  ▸ 0 shells  ·  goal",
     ])
-    // The composer is a band: its bar is painted in the band colour, so only `>` shows.
-    expect(cell(details, "┃>").fg).toBe(BAND)
+    // The composer is fx's bare rail: drawn in the text colour, with no fill behind it.
+    expect(cellAt(details, hint + 1, 1).fg).toBe(TEXT)
+    expect(cellAt(details, hint + 1, 3).bg).not.toBe(BAND)
     expect(cell(details, "◆ 0 subagents").fg).not.toBe(SUCCESS)
   })
 
-  test("while the reviewer runs: a running call, the Executing line and one subagent", () => {
+  test("while the reviewer runs: a running group, the Executing line and one subagent", () => {
     const running = frames.running
-    expect(running.text).toMatch(row("  ◆ subagent · Review the diff in src/net.py. · ↑ 1 lines"))
+    expect(running.text).toMatch(/^ {2}[○●] Running code-reviewer$/m)
     expect(running.text).toMatch(/^ {2}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Executing · \d+s$/m)
     expect(running.text).toMatch(row(" ◆ 1 subagent  ·  ▸ 0 shells  ·  goal"))
     expect(running.text).not.toContain("Agent message")
     expect(running.text).not.toContain("reviewer approved")
-    const spinner = running.lines.find((line) => line.includes("Executing"))!.trim()[0]!
+    // The loader is the transcript's last row, straight under the running group (Prime's placement).
+    const executing = running.lines.findIndex((line) => line.includes("Executing"))
+    expect(running.lines[executing - 1]).toContain("Running code-reviewer")
+    const spinner = running.lines[executing]!.trim()[0]!
     expect(cell(running, spinner).fg).toBe(ACCENT)
-    expect(cell(running, "◆ subagent").fg).toBe(SUCCESS)
+    // The running group's glyph blinks in the accent.
+    const glyph = running.lines[executing - 1]!.trim()[0]!
+    expect(cell(running, `${glyph} Running code-reviewer`).fg).toBe(ACCENT)
     expect(cell(running, "◆ 1 subagent").fg).toBe(SUCCESS)
   })
 
-  test("All: expands tool output, the whole diff and the agent's reply", () => {
+  test("All: a row per call with Prime's counts, the whole diff, output and the agent's reply", () => {
     const all = frames.all
     expect(all.text).toMatch(/^ {40,}Expanded mode \(Ctrl\+O to collapse\)$/m)
     for (const line of [
       "  ✓ shell · printf 'test_net.py F\\n1 failed\\n' · ↑ 1 ↓ 2 lines · <t>",
-      "     ╰─ test_net.py F",
-      "        1 failed",
+      "    ╰─ test_net.py F",
+      "       1 failed",
       "   6               backoff(i)",
-      "  ✉ Agent message · ↓ code-reviewer",
-      "     ╰─ Approved: the loop now makes every attempt.",
-      "     ╰─ Found 2 matches",
-      "  ✗ read · out/traces.jsonl · ↑ 1 lines · <t> · File not found",
+      "    │ ✉ Agent message · ↓ code-reviewer",
+      "    ╰─ Approved: the loop now makes every attempt.",
+      "  ✗ Searched 1 pattern · read 1 file · 1 failed",
+      "  ├ ✓ grep · retries in src · ↑ 1 ↓ 5 lines · <t>",
+      "    ╰─ Found 2 matches",
+      "  └ ✗ read · out/traces.jsonl · ↑ 1 lines · <t> · File not found",
     ])
       expect(all.text).toMatch(row(line))
     // The subagent's result envelope never shows.
     expect(all.text).not.toContain("<subagent")
   })
 
-  test("Overview: no thinking, no diff rows, no blank rows between items", () => {
+  test("Overview: each group is its header, plus a row per failure; no thinking, no diffs, no blank rows", () => {
     const overview = frames.overview
     expect(overview.text).toMatch(/^ {40,}Collapsed mode \(Ctrl\+O to expand\)$/m)
     expect(overview.text).not.toContain("Look at the test first")
     expect(overview.text).not.toContain("range(retries - 1)")
     const rows = [
       "  Reading the retry test and its helper.",
-      "  ✓ shell · printf 'test_net.py F\\n1 failed\\n' · ↑ 1 ↓ 2 lines · <t>",
+      "  ● Ran 1 command",
       "  The backoff loop exits one attempt early. Patching it.",
-      "  ✓ patch · src/net.py · ↑ 6 lines · <t>",
-      "     ╰─ src/net.py +1 -1",
-      "  ✓ subagent · Review the diff in src/net.py. · ↑ 1 ↓ 1 lines · <t>",
-      "  ✉ Agent message · ↓ code-reviewer",
-      "  ✓ grep · retries in src · ↑ 1 ↓ 5 lines · <t>",
-      "  ✗ read · out/traces.jsonl · ↑ 1 lines · <t> · File not found",
+      "  ● Edited 1 file",
+      "  ● Ran 1 agent",
+      "  ✗ Searched 1 pattern · read 1 file · 1 failed",
+      "  └ Read out/traces.jsonl · File not found",
       "  The fix is in. 1 file changed, reviewer approved.",
     ]
     const first = indexOf(overview, row(rows[0]!))
@@ -226,16 +242,23 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
 
   test("key cells carry Prime's colours", () => {
     const details = frames.details
-    expect(cell(details, "✓ shell").fg).toBe(SUCCESS)
-    expect(cell(details, "✉ Agent").fg).toBe(SUCCESS)
-    expect(cell(details, "✗ read").fg).toBe(ERROR)
+    expect(cell(details, "Reading the retry test").fg).toBe(PROSE)
+    // A settled group's glyph is muted; a failed one is the error colour, as is its failure count and reason.
+    expect(cell(details, "● Ran printf").fg).toBe(MUTED)
+    expect(cell(details, "✗ Searched").fg).toBe(ERROR)
+    expect(cell(details, "· 1 failed", 2).fg).toBe(ERROR)
     expect(cell(details, "File not found").fg).toBe(ERROR)
-    expect(cell(details, "+1 -1").fg).toBe(DIFF.added)
-    expect(cell(details, "+1 -1", 3).fg).toBe(DIFF.removed)
+    expect(cell(details, "├ Searched").fg).toBe(MUTED)
+    expect(cell(details, "✉ Agent").fg).toBe(SUCCESS)
+    expect(cell(details, "+1 / -1").fg).toBe(DIFF.added)
+    expect(cell(details, "+1 / -1", 5).fg).toBe(DIFF.removed)
     const removed = cell(details, "2 -     for")
     expect(removed).toEqual({ fg: DIFF.removed, bg: DIFF.removedBg })
     const added = cell(details, "2 +     for")
     expect(added).toEqual({ fg: DIFF.added, bg: DIFF.addedBg })
+    // The code keeps its syntax colours on the band: `for` is a keyword.
+    expect(cell(details, "2 +     for", 8)).toEqual({ fg: KEYWORD, bg: DIFF.addedBg })
+    expect(cell(details, "2 -     for", 8)).toEqual({ fg: KEYWORD, bg: DIFF.removedBg })
     expect(cell(details, "for i in range(retries - 1)").bg).toBe(DIFF.removedBg)
     expect(cell(details, "for i in range(retries):").bg).toBe(DIFF.addedBg)
   })

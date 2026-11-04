@@ -22,8 +22,8 @@ bun run gamut login anthropic            # add one Claude subscription login (on
 1. Copies `fixture/` (ledgerline, a small Bun app with 4 red tests) into a
    scratch root, renames `.gitignore.fixture`, runs `bun install`, and commits
    it with git.
-2. Writes the run's `opencode.json` (the preset's models per agent, plus a
-   `reviewer` subagent; the orchestrate, Codex bridge and status plugins,
+2. Writes the run's `opencode.json` (the preset's models per agent; the
+   orchestrate and status plugins,
    with worker/implementor/planner/verifier models bound to the preset;
    for a Claude preset, the Anthropic auth plugin and
    then `mods/pool` as server plugins; other presets load an empty pool), `config/cli.json` (our TUI
@@ -50,7 +50,7 @@ OpenCode runs from the fork's source at `OPENCODE_DEV` (default: the
 
 Presets are data in `gamut.ts` (`PRESETS`): a model and an effort for each
 role. The orchestrator is OpenCode's `build` agent, the worker the `general`
-and `explore` subagents, the reviewer the run's `reviewer` subagent. A
+and `explore` subagents, the verifier the orchestrate mod's `verifier` agent. A
 family such as `opencode-go/glm` resolves to its newest release in the model
 catalog when the run starts.
 
@@ -59,13 +59,12 @@ catalog when the run starts.
 - `deepseek`: DeepSeek flash in every role on the OpenCode Go plan.
 - `glm-deepseek`: GLM orchestrates and reviews, DeepSeek flash implements.
 - `haiku`: the newest Claude Haiku in every role on the Claude subscription,
-  through the Anthropic auth plugin (`../anthropic-auth.ts` loads it from the
-  `cevr/opencode-anthropic-auth` checkout beside this repository, or
-  `OPENCODE_ANTHROPIC_AUTH`) and the account pool. Claude Haiku is the only
+  through the Anthropic auth plugin (`mods/anthropic-auth`) and the account
+  pool. Claude Haiku is the only
   model a preset spends a Claude account on.
 - `haiku-gent`: `haiku` on the Claude accounts gent holds instead of the
   `opencode2` logins. The pool gets `sources: [{ kind: "gent", dir }]` with
-  gent's store (`~/.gent/auth` of the caller, or `GAMUT_GENT_AUTH`); it reads
+  the store (`~/.local/share/opencode-prime/pool-auth` of the caller, where gent's logins moved, or `GAMUT_GENT_AUTH`); it reads
   each account's token from gent's slot file for every request and, when one
   is stale, refreshes it under gent's own lock and writes it back in gent's
   format, so gent and the run always hold the same token. Nothing is copied.

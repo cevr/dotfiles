@@ -8,8 +8,16 @@ import { createHash } from "node:crypto"
 import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { CREDENTIAL_SOURCES, GENT_PREFIX, GentCredentialError, GentSource, registerCredentialSource } from "../mods/pool/src/gent.ts"
-import { anthropicAuthSource } from "../testbeds/anthropic-auth.ts"
+import {
+  CREDENTIAL_SOURCES,
+  GENT_PREFIX,
+  GENT_TOKEN_URL,
+  GentCredentialError,
+  GentSource,
+  limitDetail,
+  registerCredentialSource,
+} from "../mods/pool/src/host/GentStore.ts"
+import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAccount, type FakeAnthropic, type FakeTokenAnswer } from "./fake-anthropic.ts"
 import { gentAvailable, gentSource, openGentStore, type GentStore } from "./gent/store.ts"
 
@@ -81,6 +89,21 @@ const failure = async (run: Promise<unknown>): Promise<GentCredentialError> => {
   }
   throw new Error("expected the resolve to fail")
 }
+
+// The endpoint Claude Code and the Anthropic auth plugin refresh at.
+test("the gent source refreshes at Claude Code's token endpoint", () => {
+  expect(GENT_TOKEN_URL).toBe("https://platform.claude.com/v1/oauth/token")
+})
+
+test("a 429's log line names who limited the request, and never more than the error's words", () => {
+  expect(limitDetail("cloudflare", "60", "<html><body><h1>Error 1015</h1> You are being rate limited</body></html>")).toBe(
+    'server cloudflare; retry-after 60; "Error 1015 You are being rate limited"',
+  )
+  expect(limitDetail(null, null, JSON.stringify({ error: { type: "rate_limit_error", message: "Too many refreshes" } }))).toBe(
+    'server unnamed; retry-after none; "rate_limit_error: Too many refreshes"',
+  )
+  expect(limitDetail("envoy", null, "")).toBe("server envoy; retry-after none; empty body")
+})
 
 describe.skipIf(!ready)("the pool's gent source over gent's own store", () => {
   test("lists the accounts gent owns by label, and says why it leaves the rest alone", async () => {
@@ -245,6 +268,24 @@ describe.skipIf(!ready)("the pool's gent source over gent's own store", () => {
     expect(file("alpha")).not.toBe(before)
   })
 
+  test("a rate-limited refresh pauses every account of the store until retry-after", async () => {
+    let answer: FakeTokenAnswer = { kind: "rate-limited", retryAfterSeconds: 120 }
+    const { source, trades } = await bench(
+      { alpha: fakeAccount(), beta: fakeAccount() },
+      { expires: Date.now() - 1000, token: () => answer },
+    )
+    const first = await failure(source.resolve(`${GENT_PREFIX}alpha`))
+    expect(first.kind).toBe("unavailable")
+    expect(first.message).toContain("answered 429 (server")
+    expect(first.message).toContain("retry-after 120")
+    expect(first.retryAt).toBeGreaterThan(Date.now() + 110_000)
+    // The other account waits too, without a request of its own.
+    answer = { kind: "rotate" }
+    const second = await failure(source.resolve(`${GENT_PREFIX}beta`))
+    expect(second.retryAt).toBe(first.retryAt)
+    expect(trades()).toBe(1)
+  })
+
   test("a refresh the endpoint refused writes nothing and asks for a new sign-in", async () => {
     const { source, file } = await bench({ alpha: fakeAccount() }, { expires: Date.now() - 1000, token: () => ({ kind: "rejected" }) })
     const before = file("alpha")
@@ -311,7 +352,7 @@ describe.skipIf(!ready)("the pool's gent source over gent's own store", () => {
   })
 
   test("registers with the registry the auth plugin reads, and leaves it on dispose", async () => {
-    const { credentialSource } = await import(join(anthropicAuthSource(), "src/credential-sources.ts"))
+    const { credentialSource } = await import(join(anthropicAuthPlugin, "src/credential-sources.ts"))
     const { source } = await bench({ alpha: fakeAccount() })
     const unregister = registerCredentialSource("anthropic-gent-test", source)
     expect((globalThis as Record<symbol, unknown>)[CREDENTIAL_SOURCES]).toBeInstanceOf(Map)

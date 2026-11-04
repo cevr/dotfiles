@@ -50,7 +50,7 @@ import {
 import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { GentSource } from "../../mods/pool/src/gent.ts"
+import { GentSource } from "../../mods/pool/src/host/GentStore.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../anthropic-auth.ts"
 import { type HostConfig, type HostScreen, hostCall, isKeyName, keys } from "./pty-host.ts"
 
@@ -62,16 +62,16 @@ const THEME = join(CHECKOUT, "themes/prime.json")
 /** The host's entry; `isHost` also finds a run's host by it in `ps`. */
 const HOST_ENTRY = join(HERE, "pty-host.ts")
 const SIM_ENTRY = join(HERE, "sim-model.ts")
-/** The fork `up` runs when `OPENCODE_DEV` is unset: the prime-look Rift beside this checkout. */
-export const DEFAULT_FORK = resolve(CHECKOUT, "../.rifts/opencode/prime-look")
+/** The fork `up` runs when `OPENCODE_DEV` is unset: the prime-look Rift beside the dotfiles checkout. */
+export const DEFAULT_FORK = resolve(CHECKOUT, "../../.rifts/opencode/prime-look")
 /** The owner's OpenCode, where the logins live; `--installed` runs it too. */
 const OWNER_OPENCODE = "opencode2"
 
 // ── Presets ─────────────────────────────────────────────────────────────
 
-export type Role = "orchestrator" | "worker" | "reviewer"
+export type Role = "orchestrator" | "worker" | "verifier"
 
-export const ROLES: ReadonlyArray<Role> = ["orchestrator", "worker", "reviewer"]
+export const ROLES: ReadonlyArray<Role> = ["orchestrator", "worker", "verifier"]
 
 /**
  * One model choice. `model` is a family (`opencode-go/glm`, resolved to its
@@ -86,7 +86,7 @@ export interface Slot {
 /**
  * A preset pins the three roles. The orchestrator is OpenCode's `build` agent
  * (and `plan`, `compaction`), the worker the `general` and `explore`
- * subagents, the reviewer a `reviewer` subagent the run's config adds.
+ * subagents, the verifier the orchestrate mod's `verifier` agent.
  */
 export interface Preset {
   readonly about: string
@@ -110,13 +110,15 @@ export const FAMILIES: Readonly<Record<string, { readonly provider: string; read
   "opencode-go/glm": { provider: "opencode-go", family: "glm" },
   "opencode-go/deepseek-flash": { provider: "opencode-go", family: "deepseek-flash" },
   "anthropic/claude-haiku": { provider: "anthropic", family: "claude-haiku" },
+  "anthropic/claude-opus": { provider: "anthropic", family: "claude-opus" },
+  "openai/gpt-sol": { provider: "openai", family: "gpt-sol" },
 }
 
 /** The provider gamut serves itself (`sim-model.ts`): no credential, no network. */
 export const SIM_PROVIDER = "sim"
 const SIM_MODEL = "sim/sim-model"
 
-const every = (slot: Slot): Readonly<Record<Role, Slot>> => ({ orchestrator: slot, worker: slot, reviewer: slot })
+const every = (slot: Slot): Readonly<Record<Role, Slot>> => ({ orchestrator: slot, worker: slot, verifier: slot })
 
 export const PRESETS: Readonly<Record<string, Preset>> = {
   sim: {
@@ -132,7 +134,7 @@ export const PRESETS: Readonly<Record<string, Preset>> = {
     roles: {
       orchestrator: { model: "opencode-go/glm", effort: "high" },
       worker: { model: "opencode-go/deepseek-flash", effort: "high" },
-      reviewer: { model: "opencode-go/glm", effort: "high" },
+      verifier: { model: "opencode-go/glm", effort: "high" },
     },
   },
   haiku: {
@@ -211,7 +213,7 @@ export const resolvePreset = (preset: Preset, catalog: Catalog): ResolvedPreset 
   return {
     orchestrator: resolveSlot(preset.roles.orchestrator),
     worker: resolveSlot(preset.roles.worker),
-    reviewer: resolveSlot(preset.roles.reviewer),
+    verifier: resolveSlot(preset.roles.verifier),
   }
 }
 
@@ -231,9 +233,13 @@ export const providersNeeded = (preset: ResolvedPreset): ReadonlyArray<string> =
 export const loginsToCopy = (named: Preset, preset: ResolvedPreset): ReadonlyArray<string> =>
   providersNeeded(preset).filter((provider) => !(named.claudeLogins === "gent" && provider === POOLED_PROVIDER))
 
-/** gent's credential store: `GAMUT_GENT_AUTH`, else `~/.gent/auth` of the caller's home (the run has its own). */
+/**
+ * The Claude logins the pool reads, in gent's store format: `GAMUT_GENT_AUTH`, else
+ * `~/.local/share/opencode-prime/pool-auth` of the caller's home (the run has its own). The
+ * store moved there from `~/.gent/auth` when gent was removed from this machine.
+ */
 export const gentAuthDir = (env: Readonly<Record<string, string | undefined>> = process.env): string =>
-  resolve(env.GAMUT_GENT_AUTH || join(homedir(), ".gent/auth"))
+  resolve(env.GAMUT_GENT_AUTH || join(homedir(), ".local/share/opencode-prime/pool-auth"))
 
 export const usesSim = (preset: ResolvedPreset): boolean =>
   ROLES.some((role) => preset[role].provider === SIM_PROVIDER)
@@ -244,7 +250,7 @@ const CATALOG_URL = "https://models.opencode.ai/experimental/v2.0/api.json?type=
  * The model catalog OpenCode itself reads. Offline, the snapshot the fork
  * ships (`packages/core/src/models-dev/snapshot.txt`), which has the same shape.
  */
-const loadCatalog = async (fork: string | undefined): Promise<Catalog> => {
+export const loadCatalog = async (fork: string | undefined): Promise<Catalog> => {
   try {
     const response = await fetch(CATALOG_URL, { signal: AbortSignal.timeout(15_000) })
     if (!response.ok) throw new Error(`${CATALOG_URL} answered ${response.status}`)
@@ -265,20 +271,6 @@ interface Rule {
   readonly resource: string
   readonly effect: "allow" | "deny" | "ask"
 }
-
-/** The reviewer reads and runs commands; it never edits or delegates. */
-const REVIEWER_PERMISSIONS: ReadonlyArray<Rule> = [
-  { action: "*", resource: "*", effect: "deny" },
-  { action: "read", resource: "*", effect: "allow" },
-  { action: "grep", resource: "*", effect: "allow" },
-  { action: "glob", resource: "*", effect: "allow" },
-  { action: "shell", resource: "*", effect: "allow" },
-  { action: "subagent", resource: "*", effect: "deny" },
-]
-
-const REVIEWER_SYSTEM =
-  "You review a change for another agent. Read the diff and the files it touches, run the named test " +
-  "command, and report what is wrong: correctness first, then scope. Do not edit files."
 
 /** The sim provider's entry: an OpenAI-compatible endpoint on the run's own port. */
 export const simProvider = (port: number) => ({
@@ -303,7 +295,7 @@ export type PluginEntry = string | { readonly package: string; readonly options:
 
 /**
  * The server plugins a run on the Claude subscription loads, in this order:
- * the Anthropic auth plugin (`authPlugin`, its loader directory), then the
+ * the Anthropic auth plugin (`authPlugin`, its directory), then the
  * pool, which chooses the login each request goes out on. With `gentStore`
  * the pool also takes the Claude accounts gent holds there.
  */
@@ -330,8 +322,8 @@ export const gentAccounts = (dir: string): ReadonlyArray<string> => {
 /**
  * The run's `opencode.json`: the orchestrator as the default model and as
  * `build`, `plan` and `compaction`; the worker as `general` and `explore`
- * (and, without its variant, the `title` and `summary` helpers); and a
- * `reviewer` subagent on the reviewer's model. Agent entries merge into
+ * (and, without its variant, the `title` and `summary` helpers); and the
+ * orchestrate roles on the preset's models. Agent entries merge into
  * OpenCode's own, so the built-in prompts and permissions stay. Server
  * plugins load from here; the TUI plugins load from `cli.json`.
  */
@@ -353,16 +345,9 @@ export const projectConfig = (preset: ResolvedPreset, simPort?: number, plugins:
       worker,
       implementor: worker,
       planner: orchestrator,
-      verifier: { model: selection(preset.reviewer) },
+      verifier: { model: selection(preset.verifier) },
       title: helper,
       summary: helper,
-      reviewer: {
-        model: selection(preset.reviewer),
-        description: "Reviews a diff for correctness and scope. Reads and runs commands; never edits.",
-        mode: "subagent",
-        system: REVIEWER_SYSTEM,
-        permissions: REVIEWER_PERMISSIONS,
-      },
     },
   }
 }
@@ -411,7 +396,7 @@ export const rosterBlock = (preset: ResolvedPreset): string =>
     ROSTER_START,
     `- Orchestrator: the \`build\` agent, on \`${selection(preset.orchestrator)}\`.`,
     `- Worker (fix or feature): \`agent: "general"\`, pinned in \`opencode.json\` to \`${selection(preset.worker)}\`.`,
-    `- Reviewer (second opinion on a diff): \`agent: "reviewer"\`, pinned to \`${selection(preset.reviewer)}\`.`,
+    `- Verifier (proves a change and checks it against the rules): \`agent: "verifier"\`, pinned to \`${selection(preset.verifier)}\`.`,
     ROSTER_END,
   ].join("\n")
 
@@ -901,9 +886,8 @@ const prepareAndLaunch = async (
 
   const plugins: ReadonlyArray<PluginEntry> = [
     join(PLUGINS, "orchestrate"),
-    join(PLUGINS, "codex"),
     { package: join(PLUGINS, "status"), options: { log: join(paths.home, ".cache/orchestrate/opencode-agents.jsonl"), statusScript: join(homedir(), ".claude/skills/orchestrate/scripts/status.ts") } },
-    ...(usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin(paths.root), gentStore) : [poolPlugin]),
+    ...(usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin, gentStore) : [poolPlugin]),
   ]
   await Bun.write(
     join(paths.work, "opencode.json"),
@@ -1375,7 +1359,7 @@ const login = async (provider: string | undefined) => {
   }
   const dir = mkdtempSync(join(tmpdir(), "opencode-gamut-login-"))
   try {
-    writeFileSync(join(dir, "opencode.json"), `${JSON.stringify({ plugins: [anthropicAuthPlugin(dir)] })}\n`)
+    writeFileSync(join(dir, "opencode.json"), `${JSON.stringify({ plugins: [anthropicAuthPlugin] })}\n`)
     // The sign-in talks to Anthropic itself, not to a proxy the caller's shell names.
     const env = { ...process.env }
     delete env.ANTHROPIC_BASE_URL

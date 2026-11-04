@@ -1,0 +1,290 @@
+// The fx-style tool-call group, without rendering: a step's run of calls
+// reads as one header (`Read 3 files · ran 2 commands · 1 failed`) with one
+// tree row per run of one tool under it.
+import type { Plugin } from "@opencode/plugin/tui"
+import type { SessionPart } from "@opencode/plugin/tui/context"
+import { editedFiles, errorName, toolInput, toolMetadata, toolPreview, subagentName, type ToolPart } from "./view"
+
+/** A session message, as the plugin API lists them. */
+type SessionMessageInfo = ReturnType<Plugin.Context["data"]["session"]["message"]["list"]>[number]
+
+/** Whether a part draws a transcript row: a call, or text or reasoning with words in it. */
+function drawn(part: SessionPart) {
+  if (part.type === "tool") return true
+  if (!("text" in part) || typeof part.text !== "string") return false
+  return part.text.replace("[REDACTED]", "").trim() !== ""
+}
+
+/** The longest pause between two subagent events that still reads as one burst. */
+export const BURST_MS = 60_000
+
+/**
+ * Whether the transcript row just above a run is a call of another step. The
+ * host gives each call its own row, so row gaps cannot tell two steps' groups
+ * apart; the group's header adds the blank row between them itself.
+ */
+export function followsCall(messages: ReadonlyArray<SessionMessageInfo>, messageID: string, firstPartID: string): boolean {
+  const at = messages.findIndex((message) => message.id === messageID)
+  const message = messages[at]
+  if (message?.type !== "assistant") return false
+  const start = message.content.findIndex((part) => part.type === "tool" && part.id === firstPartID)
+  const before = message.content.slice(0, Math.max(0, start)).filter(drawn).at(-1)
+  if (before) return before.type === "tool"
+  const previous = messages[at - 1]
+  if (previous?.type !== "assistant") return false
+  return previous.content.filter(drawn).at(-1)?.type === "tool"
+}
+
+/** How a call stands: still running (or streaming its input), ended well, ended with a warning, or failed. */
+export type Outcome = "running" | "done" | "warning" | "failed"
+
+export function outcome(part: ToolPart): Outcome {
+  if (part.state.status === "streaming" || part.state.status === "running") return "running"
+  if (part.state.status === "error") return "failed"
+  // A command that exits nonzero ended, but not well.
+  const exit = toolMetadata(part).exit
+  if (typeof exit === "number" && exit !== 0) return "warning"
+  return "done"
+}
+
+/** The host's name for a tool, whatever the model called it (the host's `canonicalToolName`). */
+export function canonical(name: string) {
+  if (name === "bash") return "shell"
+  if (name === "task") return "subagent"
+  if (name === "apply_patch") return "patch"
+  return name
+}
+
+/** A call with its canonical tool name. */
+export type Call = { readonly tool: string; readonly part: ToolPart }
+
+/** The run of tool calls next to each other in a message that holds `partID`; empty when it is not a tool call. */
+export function toolRun(content: ReadonlyArray<SessionPart>, partID: string): Call[] {
+  const at = content.findIndex((part) => part.type === "tool" && part.id === partID)
+  if (at < 0) return []
+  let start = at
+  while (start > 0 && content[start - 1]!.type === "tool") start--
+  let end = at
+  while (end < content.length - 1 && content[end + 1]!.type === "tool") end++
+  return (content.slice(start, end + 1) as ToolPart[]).map((part) => ({ tool: canonical(part.name), part }))
+}
+
+/** Whether a message is a step that only starts background agents: every row it draws is such a launch. */
+function launches(message: SessionMessageInfo | undefined): boolean {
+  if (message?.type !== "assistant") return false
+  const shown = message.content.filter(drawn)
+  return (
+    shown.length > 0 &&
+    shown.every((part) => part.type === "tool" && canonical(part.name) === "subagent" && background(part))
+  )
+}
+
+/** Whether `next` starts within the burst window of `previous` ending. */
+function close(previous: SessionMessageInfo, next: SessionMessageInfo) {
+  const end = "completed" in previous.time && typeof previous.time.completed === "number" ? previous.time.completed : previous.time.created
+  return next.time.created - end <= BURST_MS
+}
+
+/** The stretch of messages around `at` that `joins` links pairwise. */
+function stretch<T>(items: ReadonlyArray<T>, at: number, joins: (previous: T, next: T) => boolean) {
+  let start = at
+  while (start > 0 && joins(items[start - 1]!, items[start]!)) start--
+  let end = at
+  while (end < items.length - 1 && joins(items[end]!, items[end + 1]!)) end++
+  return items.slice(start, end + 1)
+}
+
+/**
+ * The calls a call's group draws: its step's run, or, for a step that only
+ * starts background agents, every such step next to it in the transcript,
+ * each starting within the burst window of the one before.
+ */
+export function groupRun(messages: ReadonlyArray<SessionMessageInfo>, messageID: string, partID: string): Call[] {
+  const at = messages.findIndex((message) => message.id === messageID)
+  const message = messages[at]
+  if (message?.type !== "assistant") return []
+  if (!launches(message)) return toolRun(message.content, partID)
+  if (toolRun(message.content, partID).length === 0) return []
+  return stretch(messages, at, (previous, next) => launches(previous) && launches(next) && close(previous, next)).flatMap(
+    (step) =>
+      step.type === "assistant"
+        ? step.content.flatMap((part) => (part.type === "tool" ? [{ tool: canonical(part.name), part }] : []))
+        : [],
+  )
+}
+
+/** Whether a message is a subagent's notice that it finished well. */
+function finished(message: SessionMessageInfo | undefined): boolean {
+  if (message?.type !== "synthetic") return false
+  return message.metadata?.source === "subagent" && message.metadata?.state === "completed"
+}
+
+/**
+ * The finished-worker notices a notice folds with: the ones next to it, each
+ * within the burst window of the one before. Empty for any other message.
+ */
+export function noticeBurst(messages: ReadonlyArray<SessionMessageInfo>, messageID: string): SessionMessageInfo[] {
+  const at = messages.findIndex((message) => message.id === messageID)
+  if (!finished(messages[at])) return []
+  return stretch(messages, at, (previous, next) => finished(previous) && finished(next) && close(previous, next))
+}
+
+const titlecase = (word: string) => word.charAt(0).toUpperCase() + word.slice(1)
+
+/** A burst's line: the host's `↳ Worker finished · task` for one, a count of agents and every task for several. */
+export function completionWords(burst: ReadonlyArray<SessionMessageInfo>) {
+  const agent = (message: SessionMessageInfo) =>
+    message.type === "synthetic" && typeof message.metadata?.agent === "string" ? message.metadata.agent : "subagent"
+  const task = (message: SessionMessageInfo) =>
+    message.type === "synthetic" ? (message.description ?? "").replace(/\s+/g, " ").trim() : ""
+  const first = burst[0]
+  if (!first) return { heading: "", suffix: "" }
+  const suffix = burst.map(task).filter(Boolean).join(", ")
+  if (burst.length === 1) return { heading: `↳ ${titlecase(agent(first))} finished`, suffix }
+  // Counted as agents, as the launch group's header counts them.
+  return { heading: `↳ ${burst.length} agents finished`, suffix }
+}
+
+type Kind = { readonly key: string; readonly past: string; readonly running: string; readonly unit: (count: number) => string }
+
+const plural = (word: string) => (count: number) => `${count} ${word}${count === 1 ? "" : "s"}`
+const times = (word: string) => (count: number) => `${word} ${count}×`
+
+/** Whether a subagent call runs in the background: it returns at once, and the agent's reply comes later. */
+export function background(part: ToolPart) {
+  return toolInput(part).background === true
+}
+
+/** What a call does, in words: one kind per tool family, as gent's header names them. */
+export function kind(tool: string, part?: ToolPart): Kind {
+  if (tool === "read") return { key: "read", past: "Read", running: "Reading", unit: plural("file") }
+  if (tool === "grep" || tool === "glob")
+    return { key: "search", past: "Searched", running: "Searching", unit: plural("pattern") }
+  if (tool === "websearch") return { key: "websearch", past: "Searched", running: "Searching", unit: times("the web") }
+  if (tool === "webfetch") return { key: "webfetch", past: "Fetched", running: "Fetching", unit: plural("page") }
+  if (tool === "patch" || tool === "edit") return { key: "edit", past: "Edited", running: "Editing", unit: plural("file") }
+  if (tool === "write") return { key: "write", past: "Wrote", running: "Writing", unit: plural("file") }
+  if (tool === "shell") return { key: "shell", past: "Ran", running: "Running", unit: plural("command") }
+  if (tool === "kernel") return { key: "kernel", past: "Ran", running: "Running", unit: plural("cell") }
+  if (tool === "subagent" && part && background(part))
+    return { key: "subagent-start", past: "Started", running: "Starting", unit: plural("agent") }
+  if (tool === "subagent") return { key: "subagent", past: "Ran", running: "Running", unit: plural("agent") }
+  if (tool === "question") return { key: "question", past: "Asked", running: "Asking", unit: plural("question") }
+  return { key: tool, past: "", running: "", unit: times(tool) }
+}
+
+/** How many units one call counts for: an edit counts its files. */
+function units(tool: string, part: ToolPart) {
+  if (kind(tool).key === "edit") return Math.max(1, editedFiles(part).length)
+  return 1
+}
+
+/** One stretch of the header, with the tone it is drawn in. */
+export type Run = { readonly text: string; readonly tone: "muted" | "error" }
+
+/**
+ * The header's words: ended kinds first, the largest count first (ties keep
+ * the order they ran in), then the kinds still running, then the failures.
+ * Only the first phrase is capitalised.
+ */
+export function headerRuns(calls: ReadonlyArray<Call>): Run[] {
+  const counts = (running: boolean) => {
+    const order: string[] = []
+    const totals = new Map<string, { kind: Kind; count: number }>()
+    for (const call of calls) {
+      if ((outcome(call.part) === "running") !== running) continue
+      const which = kind(call.tool, call.part)
+      const entry = totals.get(which.key)
+      if (entry) entry.count += units(call.tool, call.part)
+      else {
+        order.push(which.key)
+        totals.set(which.key, { kind: which, count: units(call.tool, call.part) })
+      }
+    }
+    return order.map((key) => totals.get(key)!)
+  }
+  const phrase = (entry: { kind: Kind; count: number }, running: boolean, first: boolean) => {
+    const verb = running ? entry.kind.running : entry.kind.past
+    if (!verb) return entry.kind.unit(entry.count)
+    return `${first ? verb : verb.toLowerCase()} ${entry.kind.unit(entry.count)}`
+  }
+  const ended = counts(false).toSorted((a, b) => b.count - a.count)
+  const phrases = [
+    ...ended.map((entry) => ({ entry, running: false })),
+    ...counts(true).map((entry) => ({ entry, running: true })),
+  ].map((item, index) => phrase(item.entry, item.running, index === 0))
+  const runs: Run[] = [{ text: phrases.join(" · "), tone: "muted" }]
+  const failed = calls.filter((call) => outcome(call.part) === "failed").length
+  if (failed) runs.push({ text: " · ", tone: "muted" }, { text: `${failed} failed`, tone: "error" })
+  return runs
+}
+
+/** One tree row: a run of calls to one tool with one outcome, named by its first call. */
+export type Row = {
+  readonly tool: string
+  readonly outcome: Outcome
+  readonly calls: ReadonlyArray<ToolPart>
+  /** The call the row is drawn under: its first. */
+  readonly owner: string
+}
+
+/** The tree rows of a run: calls to one tool with one outcome fold into a row; a failure or an agent always stands alone. */
+export function rows(calls: ReadonlyArray<Call>): Row[] {
+  const result: Row[] = []
+  for (const call of calls) {
+    const state = outcome(call.part)
+    const last = result.at(-1)
+    const same = last && last.tool === call.tool && kind(last.tool, last.calls[0]).key === kind(call.tool, call.part).key
+    // Each agent keeps its own row: it is a worker to follow, not one of a batch of reads.
+    if (last && same && last.outcome === state && state !== "failed" && state !== "warning" && call.tool !== "subagent")
+      result[result.length - 1] = { ...last, calls: [...last.calls, call.part] }
+    else result.push({ tool: call.tool, outcome: state, calls: [call.part], owner: call.part.id })
+  }
+  return result
+}
+
+/** A row's subject: what its calls touched, as one line. */
+export function subject(row: Row): string {
+  const first = row.calls[0]!
+  if (row.tool === "read") return row.calls.map((part) => toolPreview("read", toolInput(part))).join(", ")
+  if (row.tool === "grep") {
+    const input = toolInput(first)
+    const path = typeof input.path === "string" ? ` in ${input.path}` : ""
+    return `/${String(input.pattern ?? "")}/${path}`
+  }
+  if (row.tool === "subagent") {
+    const input = toolInput(first)
+    // The description is the model's own short label for the task; the prompt is the brief behind it.
+    if (typeof input.description === "string" && input.description.trim()) return input.description.trim()
+    const task = toolPreview("subagent", input)
+    return task ? `${subagentName(input)} · ${task}` : subagentName(input)
+  }
+  return row.calls.map((part) => toolPreview(row.tool, toolInput(part))).join(", ")
+}
+
+/** The row's verb, in the tense of its outcome; empty for a tool with no verb. */
+export function verb(row: Row) {
+  const which = kind(row.tool, row.calls[0])
+  if (!which.past) return row.tool
+  return row.outcome === "running" ? which.running : which.past
+}
+
+/** The edited files of an edit row, with their line counts. */
+export function rowFiles(row: Row) {
+  return row.calls.flatMap((part) => editedFiles(part))
+}
+
+/** Why a row ended badly, in a few words: the exit code, or the error's name. */
+export function rowReason(row: Row): string | undefined {
+  const part = row.calls[0]!
+  const exit = toolMetadata(part).exit
+  if (typeof exit === "number" && exit !== 0) return `exit ${exit}`
+  return errorName(part)
+}
+
+/** The full error text of a failed call, for the lines under its row. */
+export function errorText(part: ToolPart): string {
+  if (part.state.status !== "error") return ""
+  const error = part.state.error as { message?: unknown } | undefined
+  return typeof error?.message === "string" ? error.message : ""
+}

@@ -1,0 +1,77 @@
+// The subagent calls orchestrate's call log records, folded by caller and
+// call id: tool call ids can repeat across sessions. A `call` line starts a
+// call; a `done` line adds its child and how it ended. A background call's
+// `done` with status `running` means its child still owns work, so it stays
+// live. The log is another program's, so its lines arrive here already
+// decoded (host/CallLog.ts); the fold keeps the order calls first appeared in.
+import { HashMap, Option, Schema } from "effect"
+import type { Fold } from "../../../../../lib/decider.ts"
+import type { AgentCall } from "../Status.ts"
+
+/** A `call` line: a subagent call started. */
+export const AgentCalled = Schema.TaggedStruct("AgentCalled", {
+  sessionID: Schema.String,
+  callID: Schema.String,
+  agent: Schema.String,
+  description: Schema.optionalKey(Schema.String),
+  child: Schema.optionalKey(Schema.String),
+})
+export interface AgentCalled extends Schema.Schema.Type<typeof AgentCalled> {}
+
+/** A `done` line: a subagent call returned, with its child and status when the line names them. */
+export const AgentReturned = Schema.TaggedStruct("AgentReturned", {
+  sessionID: Schema.String,
+  callID: Schema.String,
+  child: Schema.optionalKey(Schema.String),
+  status: Schema.optionalKey(Schema.String),
+})
+export interface AgentReturned extends Schema.Schema.Type<typeof AgentReturned> {}
+
+export type Event = AgentCalled | AgentReturned
+
+/** Each call by `sessionID/callID`, with the place it first appeared in. */
+export interface AgentCallsState {
+  readonly calls: HashMap.HashMap<string, { readonly order: number; readonly call: AgentCall }>
+  readonly next: number
+}
+
+const keyOf = (event: Event) => `${event.sessionID}/${event.callID}`
+
+export const AgentCalls: Fold<AgentCallsState, Event> = {
+  initial: { calls: HashMap.empty(), next: 0 },
+  evolve: (state, event) => {
+    const key = keyOf(event)
+    const known = HashMap.get(state.calls, key)
+    switch (event._tag) {
+      case "AgentCalled": {
+        const call: AgentCall = {
+          sessionID: event.sessionID,
+          callID: event.callID,
+          agent: event.agent,
+          ...(event.description === undefined ? {} : { description: event.description }),
+          ...(event.child === undefined ? {} : { child: event.child }),
+        }
+        // A call seen again starts over, in its first place.
+        return Option.isSome(known)
+          ? { ...state, calls: HashMap.set(state.calls, key, { order: known.value.order, call }) }
+          : { calls: HashMap.set(state.calls, key, { order: state.next, call }), next: state.next + 1 }
+      }
+      case "AgentReturned": {
+        if (Option.isNone(known)) return state
+        const call: AgentCall = {
+          ...known.value.call,
+          ...(event.child === undefined ? {} : { child: event.child }),
+          ...(event.status === undefined ? {} : { status: event.status }),
+        }
+        return { ...state, calls: HashMap.set(state.calls, key, { order: known.value.order, call }) }
+      }
+    }
+  },
+}
+
+/** The calls still live, in the order they first appeared: every call that has not completed or failed. */
+export const live = (state: AgentCallsState): ReadonlyArray<AgentCall> =>
+  HashMap.toValues(state.calls)
+    .sort((left, right) => left.order - right.order)
+    .map((entry) => entry.call)
+    .filter((call) => call.status !== "completed" && call.status !== "error")

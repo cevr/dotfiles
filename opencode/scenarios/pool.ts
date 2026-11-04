@@ -14,7 +14,6 @@ const accounts = [
   { credentialID: "gent:beta", live: 0, load: 2, noRoom: true, hold: { kind: "usage-limit", until: now + 7200000, at: now }, reading: { at: now, windows: [{ name: "5h", utilization: 1, resetAt: now + 7200000 }, { name: "7d", utilization: 0.72, resetAt: now + 172800000 }] } },
 ]
 const poolRpc = { id: "dotfiles-opencode.pool", methods: { status: { input: { type: "object" }, output: { type: "object" } } }, events: {} }
-const codexRpc = { id: "dotfiles-opencode.codex", methods: { status: { input: { type: "object" }, output: { type: "object" } } }, events: {} }
 const stateFile = `${out}/pool-state`
 writeFileSync(stateFile, "loading")
 const fake = `export default {id: "fixture.pool", async setup(ctx) {
@@ -25,7 +24,6 @@ const fake = `export default {id: "fixture.pool", async setup(ctx) {
     if (value === "error") throw new Error("scripted pool outage");
     return value === "empty" ? {} : (${JSON.stringify({ anthropic: { accounts } })});
   }});
-  await ctx.rpc.register(${JSON.stringify(codexRpc)}, {status: async () => ({threads: [{id: "thread-status", description: "implementor bridge r1", model: "luna", effort: "max", status: "running", turns: 1, compactions: 0, updatedAt: 0}]})});
 }}`
 
 export default OpenCodeDriver.use({
@@ -65,7 +63,7 @@ export default OpenCodeDriver.use({
   yield* until((frame) => frame.includes("Loading accounts…"))
   writeFileSync(`${out}/pool-loading.txt`, text(yield* ui.capture()))
   writeFileSync(stateFile, "normal")
-  yield* until((frame) => frame.includes("gent:beta") && frame.includes("implementor bridge r1") && frame.includes("wake · implement"))
+  yield* until((frame) => frame.includes("gent:beta") && frame.includes("wake · implement"))
   const frame = yield* ui.capture()
   writeFileSync(`${out}/pool.txt`, text(frame))
   console.log("screenshot:", yield* ui.screenshot("pool"))
@@ -75,5 +73,24 @@ export default OpenCodeDriver.use({
   writeFileSync(stateFile, "empty")
   yield* until((frame) => frame.includes("No pool accounts.") && !frame.includes("gent:alpha"))
   writeFileSync(`${out}/pool-empty.txt`, text(yield* ui.capture()))
+  // The pane takes focus when it opens; Esc hands it back to the prompt.
+  yield* ui.press("escape")
+  yield* until((frame) => !frame.includes("Account pool"))
+  yield* ui.type("typed-after-pool")
+  yield* until((frame) => frame.includes("typed-after-pool"))
+  writeFileSync(`${out}/pool-closed.txt`, text(yield* ui.capture()))
+  yield* ui.press("u", { ctrl: true })
+  // q closes it too.
+  yield* ui.submit("/pool")
+  yield* until((frame) => frame.includes("Account pool"))
+  yield* ui.press("q")
+  yield* until((frame) => !frame.includes("Account pool"))
+  // From the prompt, a second /pool closes it.
+  yield* ui.submit("/pool")
+  yield* until((frame) => frame.includes("Account pool"))
+  yield* ui.press("x", { ctrl: true })
+  yield* ui.press("left")
+  yield* ui.submit("/pool")
+  yield* until((frame) => !frame.includes("Account pool"))
   yield* Deferred.succeed(child, undefined)
 }))

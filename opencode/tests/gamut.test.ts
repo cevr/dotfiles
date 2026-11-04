@@ -6,12 +6,13 @@ import { Database } from "bun:sqlite"
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { poolPlugin } from "../testbeds/anthropic-auth.ts"
 import {
   type Catalog,
   checkKeyNames,
   cliConfig,
+  DEFAULT_FORK,
   forkLaunch,
   formatReport,
   gentAccounts,
@@ -115,6 +116,11 @@ const CATALOG: Catalog = {
   },
 }
 
+test("the default fork is the prime-look Rift beside the dotfiles checkout", () => {
+  const dotfiles = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd: import.meta.dir }).stdout.toString().trim()
+  expect(DEFAULT_FORK).toBe(join(dirname(dotfiles), ".rifts/opencode/prime-look"))
+})
+
 describe("presets", () => {
   test("a family resolves to its newest release that is not deprecated", () => {
     expect(newestRelease(CATALOG, "opencode-go", "glm")).toBe("glm-5.3")
@@ -149,7 +155,7 @@ describe("presets", () => {
 
   test("a family with no release, or an effort the release lacks, stops the run", () => {
     const glm = { model: "opencode-go/glm", effort: "xhigh" }
-    expect(() => resolvePreset({ about: "", roles: { orchestrator: glm, worker: glm, reviewer: glm } }, CATALOG)).toThrow(
+    expect(() => resolvePreset({ about: "", roles: { orchestrator: glm, worker: glm, verifier: glm } }, CATALOG)).toThrow(
       "has no xhigh effort",
     )
     expect(() => resolvePreset(PRESETS.deepseek!, {})).toThrow("no opencode-go/deepseek-flash release")
@@ -166,7 +172,7 @@ describe("the run's config", () => {
     expect(config.providers?.sim.settings.baseURL).toBe("http://127.0.0.1:4321/v1")
     expect(config.agents.build.model).toBe("sim/sim-model")
     expect(config.agents.general.model).toBe("sim/sim-model")
-    expect(config.agents.reviewer.model).toBe("sim/sim-model")
+    expect(config.agents.verifier.model).toBe("sim/sim-model")
     expect(() => projectConfig(sim)).toThrow("needs the sim model's port")
   })
 
@@ -177,10 +183,9 @@ describe("the run's config", () => {
     expect(config.agents.plan.model).toBe("opencode-go/deepseek-v4.1-flash#high")
     expect(config.agents.explore.model).toBe("opencode-go/deepseek-v4.1-flash#high")
     expect(config.agents.title.model).toBe("opencode-go/deepseek-v4.1-flash")
-    expect(config.agents.reviewer.mode).toBe("subagent")
-    // The reviewer never edits or delegates.
-    expect(config.agents.reviewer.permissions).toContainEqual({ action: "*", resource: "*", effect: "deny" })
-    expect(config.agents.reviewer.permissions).toContainEqual({ action: "subagent", resource: "*", effect: "deny" })
+    expect(config.agents.verifier.model).toBe("opencode-go/deepseek-v4.1-flash#high")
+    // The verifier is the orchestrate mod's role; no separate reviewer agent remains.
+    expect(config.agents).not.toHaveProperty("reviewer")
   })
 
   test("the TUI plugins load by absolute path from cli.json, Prime first, with the Prime theme", () => {
@@ -226,7 +231,7 @@ describe("the run's config", () => {
     expect(projectConfig(haiku, undefined, plugins).plugins).toEqual(plugins)
     // The store is the caller's, never the run's own home.
     expect(gentAuthDir({ GAMUT_GENT_AUTH: "/elsewhere/auth" })).toBe("/elsewhere/auth")
-    expect(gentAuthDir({})).toEndWith("/.gent/auth")
+    expect(gentAuthDir({})).toEndWith("/.local/share/opencode-prime/pool-auth")
   })
 
   test("a gent store with no account the pool can use is refused, saying why", () => {
@@ -506,15 +511,15 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
       expect(work).not.toBe("")
       const config = JSON.parse(readFileSync(join(work, "opencode.json"), "utf8"))
       const packages = config.plugins.map((entry: string | { package: string }) => typeof entry === "string" ? entry : entry.package)
-      for (const name of ["orchestrate", "codex", "status", "pool"]) expect(packages).toContain(join(root, "mods", name))
+      for (const name of ["orchestrate", "status", "pool"]) expect(packages).toContain(join(root, "mods", name))
       expect(config.agents.worker.model).toBe(config.agents.general.model)
-      expect(config.agents.verifier.model).toBe(config.agents.reviewer.model)
+      expect(config.agents.verifier.model).toBe(config.agents.build.model)
 
       expect(gamut("wait", "120")).toMatchObject({ code: 0, out: "idle\n" })
       const first = gamut("read")
       // The scripted turn ran the suite through the shell tool and quoted its last line.
       expect(first.out).toContain("run the tests")
-      expect(first.out).toContain(`shell · ${SIM_COMMAND}`)
+      expect(first.out).toContain(`● Ran ${SIM_COMMAND}`)
       expect(first.out).toContain("sim: the suite says Ran 15 tests across 5 files.")
       // Prime's dock, not the stock look.
       expect(first.out).toContain("◆ 0 subagents")

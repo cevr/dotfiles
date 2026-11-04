@@ -121,8 +121,9 @@ export default OpenCodeDriver.use(
           Llm.finish(),
         )
       })
-      // ui.waitFor reads the last render buffer without rendering, so an idle
-      // screen never shows the final text; capture() renders first.
+      // ui.waitFor reads the last render buffer without rendering and can time
+      // out on text already on screen (anomalyco/opencode#61681, fixed on our
+      // fork); capture() renders first, so this works on any OpenCode.
       const until = (name: string, ready: (frame: string) => boolean) =>
         ui.capture().pipe(
           Effect.flatMap((frame) => (ready(text(frame)) ? Effect.void : Effect.fail("pending"))),
