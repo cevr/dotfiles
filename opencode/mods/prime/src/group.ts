@@ -69,8 +69,13 @@ type Kind = { readonly key: string; readonly past: string; readonly running: str
 const plural = (word: string) => (count: number) => `${count} ${word}${count === 1 ? "" : "s"}`
 const times = (word: string) => (count: number) => `${word} ${count}×`
 
-/** What a tool does, in words: one kind per tool family, as gent's header names them. */
-export function kind(tool: string): Kind {
+/** Whether a subagent call runs in the background: it returns at once, and the agent's reply comes later. */
+export function background(part: ToolPart) {
+  return toolInput(part).background === true
+}
+
+/** What a call does, in words: one kind per tool family, as gent's header names them. */
+export function kind(tool: string, part?: ToolPart): Kind {
   if (tool === "read") return { key: "read", past: "Read", running: "Reading", unit: plural("file") }
   if (tool === "grep" || tool === "glob")
     return { key: "search", past: "Searched", running: "Searching", unit: plural("pattern") }
@@ -80,6 +85,8 @@ export function kind(tool: string): Kind {
   if (tool === "write") return { key: "write", past: "Wrote", running: "Writing", unit: plural("file") }
   if (tool === "shell") return { key: "shell", past: "Ran", running: "Running", unit: plural("command") }
   if (tool === "kernel") return { key: "kernel", past: "Ran", running: "Running", unit: plural("cell") }
+  if (tool === "subagent" && part && background(part))
+    return { key: "subagent-start", past: "Started", running: "Starting", unit: plural("agent") }
   if (tool === "subagent") return { key: "subagent", past: "Ran", running: "Running", unit: plural("agent") }
   if (tool === "question") return { key: "question", past: "Asked", running: "Asking", unit: plural("question") }
   return { key: tool, past: "", running: "", unit: times(tool) }
@@ -105,7 +112,7 @@ export function headerRuns(calls: ReadonlyArray<Call>): Run[] {
     const totals = new Map<string, { kind: Kind; count: number }>()
     for (const call of calls) {
       if ((outcome(call.part) === "running") !== running) continue
-      const which = kind(call.tool)
+      const which = kind(call.tool, call.part)
       const entry = totals.get(which.key)
       if (entry) entry.count += units(call.tool, call.part)
       else {
@@ -146,7 +153,8 @@ export function rows(calls: ReadonlyArray<Call>): Row[] {
   for (const call of calls) {
     const state = outcome(call.part)
     const last = result.at(-1)
-    if (last && last.tool === call.tool && last.outcome === state && state !== "failed" && state !== "warning")
+    const same = last && last.tool === call.tool && kind(last.tool, last.calls[0]).key === kind(call.tool, call.part).key
+    if (last && same && last.outcome === state && state !== "failed" && state !== "warning")
       result[result.length - 1] = { ...last, calls: [...last.calls, call.part] }
     else result.push({ tool: call.tool, outcome: state, calls: [call.part], owner: call.part.id })
   }
@@ -162,6 +170,8 @@ export function subject(row: Row): string {
     const path = typeof input.path === "string" ? ` in ${input.path}` : ""
     return `/${String(input.pattern ?? "")}/${path}`
   }
+  if (row.tool === "subagent" && row.calls.length > 1)
+    return row.calls.map((part) => subagentName(toolInput(part))).join(", ")
   if (row.tool === "subagent") {
     const input = toolInput(first)
     const task = toolPreview("subagent", input)
@@ -172,7 +182,7 @@ export function subject(row: Row): string {
 
 /** The row's verb, in the tense of its outcome; empty for a tool with no verb. */
 export function verb(row: Row) {
-  const which = kind(row.tool)
+  const which = kind(row.tool, row.calls[0])
   if (!which.past) return row.tool
   return row.outcome === "running" ? which.running : which.past
 }

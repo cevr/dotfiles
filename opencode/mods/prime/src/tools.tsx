@@ -15,6 +15,7 @@ import type { RGBA } from "@opentui/core"
 import { createMemo, For, Match, Show, Switch, type Accessor, type JSX } from "solid-js"
 import { useNow } from "./clock"
 import {
+  background,
   errorText,
   followsCall,
   headerRuns,
@@ -206,7 +207,11 @@ function EditCounts(props: { context: Context; row: Row }) {
   )
 }
 
-/** What hangs under a row at the details level: an edit's diff, a failure's reason, the last command's output, a subagent's reply. */
+/**
+ * What hangs under a row at the details level: an edit's diff, a failure's
+ * reason, the last command's output, a subagent's reply (a background
+ * agent's reply comes later, in its own row).
+ */
 function RowBody(props: { context: Context; row: Row; lastCommand: boolean }) {
   const part = () => props.row.calls[0]!
   return (
@@ -222,7 +227,7 @@ function RowBody(props: { context: Context; row: Row; lastCommand: boolean }) {
       <Match when={props.row.tool === "shell" && (props.lastCommand || props.row.outcome === "warning")}>
         <Head context={props.context} text={toolOutput(part())} />
       </Match>
-      <Match when={props.row.tool === "subagent" && props.row.outcome === "done"}>
+      <Match when={props.row.tool === "subagent" && props.row.outcome === "done" && !background(part())}>
         <AgentMessage context={props.context} from={subagentName(toolInput(part()))} />
       </Match>
     </Switch>
@@ -332,7 +337,7 @@ function CallRow(props: { context: Context; lead?: string; tool: string; part: T
           </>
         )}
       </For>
-      <Show when={props.tool === "subagent" && props.part.state.status === "completed"}>
+      <Show when={props.tool === "subagent" && props.part.state.status === "completed" && !background(props.part)}>
         <AgentMessage context={props.context} from={subagentName(toolInput(props.part))} />
       </Show>
       <Show when={props.tool !== "patch" && output()}>

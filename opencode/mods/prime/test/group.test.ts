@@ -81,6 +81,16 @@ describe("the tree rows", () => {
     expect(tree[0]!.owner).toBe(list[0]!.part.id)
   })
 
+  test("a background subagent call reads as started, and does not fold with a foreground one", () => {
+    const list = calls(
+      call("subagent", { description: "fix-a", prompt: "A", background: true }),
+      call("subagent", { description: "fix-b", prompt: "B", background: true }),
+      call("subagent", { description: "review", prompt: "R" }),
+    )
+    expect(words(list)).toBe("Started 2 agents · ran 1 agent")
+    expect(rows(list).map((row) => `${verb(row)} ${subject(row)}`)).toEqual(["Started fix-a, fix-b", "Ran review · R"])
+  })
+
   test("a running call reads in the running tense; a subagent names its agent and task", () => {
     const tree = rows(calls(call("task", { description: "code-reviewer", prompt: "Review the diff." }, "running")))
     expect(`${verb(tree[0]!)} ${subject(tree[0]!)}`).toBe("Running code-reviewer · Review the diff.")
