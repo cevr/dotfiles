@@ -5,7 +5,8 @@ Our harness work, ported onto OpenCode 2.x: the Prime Agent look, orchestration,
 ## Layout
 - `scenarios/`: opencode-drive scenarios. Each runs OpenCode headless with a scripted model and writes frames (text) and screenshots. They are the deterministic check for every UI or plugin change.
 - `themes/`, `plugins/`: what OpenCode loads from us. `plugins/prime` is the Prime look, a TUI plugin package loaded by path through the config's `plugins`. It imports only `@opencode/plugin`, `@opentui/*` and `solid-js`; OpenCode provides them and compiles the TSX at load time.
-- `tests/`: `prime.test.ts` runs `scenarios/prime-demo.ts` and asserts on its frames' text and colours.
+- `tests/`: `prime.test.ts` runs `scenarios/prime-demo.ts` and asserts on its frames' text and colours. `gamut.test.ts` and `pty-host.test.ts` cover gamut.
+- `testbeds/gamut/`: `bun run gamut`, a live run of OpenCode with our plugins against a red fixture app, driven from the shell (`up`, `send`, `wait`, `read`, `status`, `down`). See its README.
 - The fork lives at `~/Developer/personal/opencode` (remote `cevr/opencode`, upstream `anomalyco/opencode`), based on the v2.2.5 release commit `4878a0e30f`. Branch `prime-look` carries the TUI plugin hook points the look uses. Keep the fork's diff small and generic (hook points OpenCode lacks); the look itself belongs here.
 
 ## Checks
