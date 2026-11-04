@@ -25,8 +25,8 @@ change.
 
 Why a fork: stock OpenCode's plugin API covers the pool, the `/pool` pane,
 the orchestrate guard, the Sabbath and the pace hold. It has no hook for the
-transcript's message and tool rows, header or layout, which the Prime look
-replaces, and no per-agent compaction window. The fork adds only those.
+transcript's message and tool rows, header, layout or composer chrome,
+which the Prime look replaces, and no per-agent compaction window. The fork adds only those.
 
 `/pool` opens a host-owned panel, which becomes fullscreen on a narrow
 terminal. It shows pool accounts, holds, 5-hour and 7-day usage and reset

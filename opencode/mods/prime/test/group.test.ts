@@ -1,7 +1,7 @@
 // The fx-style tool group's words, from calls as OpenCode stores them.
 import { describe, expect, test } from "bun:test"
-import { canonical, headerRuns, rows, subject, toolRun, verb, type Call } from "../mods/prime/src/group"
-import type { ToolPart } from "../mods/prime/src/view"
+import { canonical, headerRuns, rows, subject, toolRun, verb, type Call } from "../src/group"
+import type { ToolPart } from "../src/view"
 
 let ids = 0
 function call(

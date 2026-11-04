@@ -519,7 +519,7 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
       const first = gamut("read")
       // The scripted turn ran the suite through the shell tool and quoted its last line.
       expect(first.out).toContain("run the tests")
-      expect(first.out).toContain(`shell · ${SIM_COMMAND}`)
+      expect(first.out).toContain(`● Ran ${SIM_COMMAND}`)
       expect(first.out).toContain("sim: the suite says Ran 15 tests across 5 files.")
       // Prime's dock, not the stock look.
       expect(first.out).toContain("◆ 0 subagents")
