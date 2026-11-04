@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { poolPlugin } from "../testbeds/anthropic-auth.ts"
 import {
   type Catalog,
   checkKeyNames,
@@ -14,6 +15,7 @@ import {
   forkLaunch,
   formatReport,
   isSettled,
+  loginStep,
   newestRelease,
   NO_RECORD,
   openTurnSessions,
@@ -33,6 +35,7 @@ import {
   screenText,
   selection,
   sendAwaitsTurn,
+  serverPlugins,
   testSummary,
   WAIT_START,
   waitStep,
@@ -80,6 +83,17 @@ describe("up's arguments", () => {
 })
 
 const CATALOG: Catalog = {
+  anthropic: {
+    models: {
+      "claude-haiku-4-5": { family: "claude-haiku", release_date: "2025-10-15" },
+      "claude-haiku-5-5": {
+        family: "claude-haiku",
+        release_date: "2026-10-07",
+        capabilities: { reasoning: { effort: ["low", "medium", "high", "xhigh", "max"] } },
+      },
+      "claude-opus-5-5": { family: "claude-opus", release_date: "2026-10-20" },
+    },
+  },
   "opencode-go": {
     models: {
       "glm-5.2": { family: "glm", release_date: "2026-06-13", capabilities: { reasoning: { effort: ["high", "max"] } } },
@@ -105,9 +119,10 @@ describe("presets", () => {
   })
 
   test("every preset resolves, and only the sim preset needs no login", () => {
+    const needs: Record<string, ReadonlyArray<string>> = { sim: [], haiku: ["anthropic"] }
     for (const [name, preset] of Object.entries(PRESETS)) {
       const resolved = resolvePreset(preset, CATALOG)
-      expect(providersNeeded(resolved)).toEqual(name === "sim" ? [] : ["opencode-go"])
+      expect(providersNeeded(resolved)).toEqual(needs[name] ?? ["opencode-go"])
     }
     const mixed = resolvePreset(PRESETS["glm-deepseek"]!, CATALOG)
     expect(selection(mixed.orchestrator)).toBe("opencode-go/glm-5.3#high")
@@ -115,10 +130,15 @@ describe("presets", () => {
     expect(selection(mixed.worker, false)).toBe("opencode-go/deepseek-v4.1-flash")
   })
 
-  test("no preset spends an Anthropic or OpenAI account", () => {
+  test("Claude Haiku is the only model a preset spends a Claude account on, and none spends OpenAI", () => {
     for (const preset of Object.values(PRESETS)) {
-      for (const slot of Object.values(preset.roles)) expect(slot.model).not.toMatch(/^(anthropic|openai)\//)
+      for (const slot of Object.values(preset.roles)) {
+        expect(slot.model).not.toMatch(/^openai\//)
+        if (slot.model.startsWith("anthropic/")) expect(slot.model).toBe("anthropic/claude-haiku")
+      }
     }
+    const haiku = resolvePreset(PRESETS.haiku!, CATALOG)
+    for (const slot of Object.values(haiku)) expect(selection(slot)).toBe("anthropic/claude-haiku-5-5#high")
   })
 
   test("a family with no release, or an effort the release lacks, stops the run", () => {
@@ -157,18 +177,41 @@ describe("the run's config", () => {
     expect(config.agents.reviewer.permissions).toContainEqual({ action: "subagent", resource: "*", effect: "deny" })
   })
 
-  test("the plugins load by absolute path, Prime first, with the Prime theme", () => {
+  test("the TUI plugins load by absolute path from cli.json, Prime first, with the Prime theme", () => {
     const dir = mkdtempSync(join(tmpdir(), "ocg-plugins-"))
     try {
-      for (const name of ["aaa", "prime", "zzz", "no-package"]) mkdirSync(join(dir, name))
-      for (const name of ["aaa", "prime", "zzz"]) writeFileSync(join(dir, name, "package.json"), "{}")
+      for (const name of ["aaa", "prime", "zzz", "server-only", "no-package"]) mkdirSync(join(dir, name))
+      const tui = JSON.stringify({ exports: { "./tui": "./src/index.tsx" } })
+      for (const name of ["aaa", "prime", "zzz"]) writeFileSync(join(dir, name, "package.json"), tui)
+      writeFileSync(join(dir, "server-only", "package.json"), JSON.stringify({ exports: { "./server": "./s.ts" } }))
       const plugins = pluginPaths(dir)
       expect(plugins).toEqual([join(dir, "prime"), join(dir, "aaa"), join(dir, "zzz")])
       expect(cliConfig(plugins)).toEqual({ plugins, theme: { name: "prime", mode: "dark" } })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-    expect(pluginPaths(join(root, "plugins"))[0]).toBe(join(root, "plugins/prime"))
+    const ours = pluginPaths(join(root, "plugins"))
+    expect(ours[0]).toBe(join(root, "plugins/prime"))
+    expect(ours).not.toContain(join(root, "plugins/pool"))
+  })
+
+  test("a Claude run loads the auth plugin, then the pool, from the project config", () => {
+    const haiku = resolvePreset(PRESETS.haiku!, CATALOG)
+    const plugins = serverPlugins(haiku, "/run/anthropic-auth")
+    expect(plugins).toEqual(["/run/anthropic-auth", poolPlugin])
+    const config = projectConfig(haiku, undefined, plugins)
+    expect(config.plugins).toEqual(plugins)
+    expect(config.model).toBe("anthropic/claude-haiku-5-5#high")
+    expect(config.agents.title.model).toBe("anthropic/claude-haiku-5-5")
+    // A run on another provider loads no server plugin.
+    const deepseek = resolvePreset(PRESETS.deepseek!, CATALOG)
+    expect(serverPlugins(deepseek, "/run/anthropic-auth")).toEqual([])
+    expect("plugins" in projectConfig(deepseek)).toBe(false)
+  })
+
+  test("a missing Claude login is added through the auth plugin; others through opencode2", () => {
+    expect(loginStep("anthropic")).toBe("bun run gamut login anthropic")
+    expect(loginStep("opencode-go")).toBe("opencode2 auth login opencode-go")
   })
 
   test("the roster block names the preset's models and keeps the text around it", () => {
@@ -193,6 +236,7 @@ describe("the run's environment", () => {
     ANTHROPIC_API_KEY: "sk-ant",
     HOME: "/Users/owner",
     OPENCODE_DEV: "/fork",
+    ANTHROPIC_BASE_URL: "http://localhost:3456",
   }
 
   test("only the terminal basics and the proxy variables come from the caller", () => {
@@ -202,6 +246,8 @@ describe("the run's environment", () => {
     expect(env.OPENAI_API_KEY).toBeUndefined()
     expect(env.ANTHROPIC_API_KEY).toBeUndefined()
     expect(env.OPENCODE_DEV).toBeUndefined()
+    // A Claude proxy in the caller's shell would take the pool's choice of login away.
+    expect(env.ANTHROPIC_BASE_URL).toBeUndefined()
     // An empty variable reads as unset.
     expect("SHELL" in env).toBe(false)
   })

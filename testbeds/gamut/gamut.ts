@@ -12,10 +12,13 @@
  *   bun run gamut restart
  *   bun run gamut down
  *   bun run gamut list
+ *   bun run gamut login anthropic
  *
  * `up` copies `fixture/` (the ledgerline app in its red state) to a fresh
- * scratch directory, writes the preset's models into its `opencode.json`,
- * loads `plugins/` (Prime first) through the run's `cli.json`, and launches
+ * scratch directory, writes the preset's models into its `opencode.json`
+ * (with the Anthropic auth plugin and the account pool for a Claude preset),
+ * loads the TUI plugins of `plugins/` (Prime first) through the run's
+ * `cli.json`, and launches
  * OpenCode on a pty that a detached terminal host keeps (`pty-host.ts`). It
  * runs the fork from source in `OPENCODE_DEV` (default: the prime-look Rift
  * beside this checkout), or the installed `opencode2` with `--installed`.
@@ -35,8 +38,10 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -45,6 +50,7 @@ import {
 import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { anthropicAuthPlugin, poolPlugin } from "../anthropic-auth.ts"
 import { type HostConfig, type HostScreen, hostCall, isKeyName, keys } from "./pty-host.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -95,6 +101,7 @@ export interface Preset {
 export const FAMILIES: Readonly<Record<string, { readonly provider: string; readonly family: string }>> = {
   "opencode-go/glm": { provider: "opencode-go", family: "glm" },
   "opencode-go/deepseek-flash": { provider: "opencode-go", family: "deepseek-flash" },
+  "anthropic/claude-haiku": { provider: "anthropic", family: "claude-haiku" },
 }
 
 /** The provider gamut serves itself (`sim-model.ts`): no credential, no network. */
@@ -120,7 +127,15 @@ export const PRESETS: Readonly<Record<string, Preset>> = {
       reviewer: { model: "opencode-go/glm", effort: "high" },
     },
   },
+  haiku: {
+    about:
+      "the newest Claude Haiku in every role on the Claude subscription, through the Anthropic auth plugin and the account pool",
+    roles: every({ model: "anthropic/claude-haiku", effort: "high" }),
+  },
 }
+
+/** The provider whose subscription logins the account pool shares out. */
+export const POOLED_PROVIDER = "anthropic"
 
 /** A slot with its family resolved: the provider, the model id and the variant. */
 export interface ResolvedSlot {
@@ -257,20 +272,34 @@ export const simProvider = (port: number) => ({
   },
 })
 
+/** Whether a run on `preset` signs in to the Claude subscription, so loads the auth plugin and the pool. */
+export const usesPool = (preset: ResolvedPreset): boolean =>
+  ROLES.some((role) => preset[role].provider === POOLED_PROVIDER)
+
+/**
+ * The server plugins a run on the Claude subscription loads, in this order:
+ * the Anthropic auth plugin (`authPlugin`, its loader directory), then the
+ * pool, which chooses the login each request goes out on.
+ */
+export const serverPlugins = (preset: ResolvedPreset, authPlugin: string): ReadonlyArray<string> =>
+  usesPool(preset) ? [authPlugin, poolPlugin] : []
+
 /**
  * The run's `opencode.json`: the orchestrator as the default model and as
  * `build`, `plan` and `compaction`; the worker as `general` and `explore`
  * (and, without its variant, the `title` and `summary` helpers); and a
  * `reviewer` subagent on the reviewer's model. Agent entries merge into
- * OpenCode's own, so the built-in prompts and permissions stay.
+ * OpenCode's own, so the built-in prompts and permissions stay. Server
+ * plugins load from here; the TUI plugins load from `cli.json`.
  */
-export const projectConfig = (preset: ResolvedPreset, simPort?: number) => {
+export const projectConfig = (preset: ResolvedPreset, simPort?: number, plugins: ReadonlyArray<string> = []) => {
   if (usesSim(preset) && simPort === undefined) throw new Error("a sim preset needs the sim model's port")
   const orchestrator = { model: selection(preset.orchestrator) }
   const worker = { model: selection(preset.worker) }
   const helper = { model: selection(preset.worker, false) }
   return {
     model: selection(preset.orchestrator),
+    ...(plugins.length === 0 ? {} : { plugins }),
     ...(simPort === undefined ? {} : { providers: { [SIM_PROVIDER]: simProvider(simPort) } }),
     agents: {
       build: orchestrator,
@@ -291,13 +320,26 @@ export const projectConfig = (preset: ResolvedPreset, simPort?: number) => {
   }
 }
 
+/** Whether the package in `dir` has a TUI entry: its `package.json` exports `./tui`. */
+const exportsTui = (dir: string): boolean => {
+  const manifest = join(dir, "package.json")
+  if (!existsSync(manifest)) return false
+  try {
+    const { exports } = JSON.parse(readFileSync(manifest, "utf8")) as { exports?: unknown }
+    return typeof exports === "object" && exports !== null && "./tui" in exports
+  } catch {
+    return false
+  }
+}
+
 /**
- * Our plugins, by absolute path, Prime first. Each is a directory of
- * `plugins/` with a `package.json`.
+ * Our TUI plugins, by absolute path, Prime first: each directory of
+ * `plugins/` whose `package.json` exports `./tui`. A server-only plugin (the
+ * pool) is left out; `serverPlugins` adds it to the project config instead.
  */
 export const pluginPaths = (pluginsDir: string): ReadonlyArray<string> =>
   readdirSync(pluginsDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && existsSync(join(pluginsDir, entry.name, "package.json")))
+    .filter((entry) => entry.isDirectory() && exportsTui(join(pluginsDir, entry.name)))
     .map((entry) => entry.name)
     .sort((a, b) => Number(b === "prime") - Number(a === "prime") || a.localeCompare(b))
     .map((name) => join(pluginsDir, name))
@@ -380,6 +422,12 @@ const resolveLaunch = (installed: boolean, callerEnv: Readonly<Record<string, st
 /** The caller's terminal basics: the only caller variables OpenCode sees besides the proxy ones. */
 export const TERMINAL_VARIABLES = ["PATH", "SHELL", "USER", "LOGNAME", "TMPDIR", "LANG"] as const
 
+/**
+ * Network proxy settings. `ANTHROPIC_BASE_URL` is not one of them: the
+ * owner's points at a local proxy that pools Claude accounts itself, and a
+ * run's Claude traffic goes straight to Anthropic so the pool's choice of
+ * login is the one that counts.
+ */
 export const PROXY_VARIABLES = [
   "HTTPS_PROXY",
   "https_proxy",
@@ -388,7 +436,6 @@ export const PROXY_VARIABLES = [
   "NO_PROXY",
   "no_proxy",
   "NODE_EXTRA_CA_CERTS",
-  "ANTHROPIC_BASE_URL",
 ] as const
 
 /** Where a run keeps its parts, under its scratch root. */
@@ -689,8 +736,13 @@ const missingLogins = async (providers: ReadonlyArray<string>): Promise<Readonly
   )
 }
 
-/** The exact step that stores a missing login. */
-export const loginStep = (provider: string): string => `${OWNER_OPENCODE} auth login ${provider}`
+/**
+ * The exact step that stores a missing login. A Claude subscription login
+ * needs the Anthropic auth plugin loaded, which the owner's own config does
+ * not do: `gamut login` signs in with it.
+ */
+export const loginStep = (provider: string): string =>
+  provider === POOLED_PROVIDER ? `bun run gamut login ${provider}` : `${OWNER_OPENCODE} auth login ${provider}`
 
 /** `text` with every secret value replaced, for an error line that might echo one. */
 export const redact = (text: string, secrets: ReadonlyArray<string>): string =>
@@ -797,7 +849,11 @@ const prepareAndLaunch = async (
     simPort = sim.port
   }
 
-  await Bun.write(join(paths.work, "opencode.json"), `${JSON.stringify(projectConfig(preset, simPort), null, 2)}\n`)
+  const plugins = usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin(paths.root)) : []
+  await Bun.write(
+    join(paths.work, "opencode.json"),
+    `${JSON.stringify(projectConfig(preset, simPort, plugins), null, 2)}\n`,
+  )
   await Bun.write(join(paths.config, "cli.json"), `${JSON.stringify(cliConfig(pluginPaths(PLUGINS)), null, 2)}\n`)
   cpSync(THEME, join(paths.work, ".opencode/themes/prime.json"))
   const agentsPath = join(paths.work, "AGENTS.md")
@@ -1247,6 +1303,36 @@ const down = async () => {
   console.log(`stopped the host, removed ${state.root}`)
 }
 
+/**
+ * Add one Claude subscription login to the owner's OpenCode. The owner's
+ * config does not load the Anthropic auth plugin, which is what offers the
+ * Claude Pro/Max sign-in, so the login runs on a private server in a scratch
+ * directory whose project config loads it. The login lands in the owner's
+ * own database, where `up` copies it from. Each call adds one account: sign
+ * in to a different Claude account in the browser each time.
+ */
+const login = async (provider: string | undefined) => {
+  if (provider !== POOLED_PROVIDER) {
+    throw new Error(`gamut login signs in to ${POOLED_PROVIDER}; for another provider run: ${OWNER_OPENCODE} auth login <provider>`)
+  }
+  const dir = mkdtempSync(join(tmpdir(), "opencode-gamut-login-"))
+  try {
+    writeFileSync(join(dir, "opencode.json"), `${JSON.stringify({ plugins: [anthropicAuthPlugin(dir)] })}\n`)
+    // The sign-in talks to Anthropic itself, not to a proxy the caller's shell names.
+    const env = { ...process.env }
+    delete env.ANTHROPIC_BASE_URL
+    const child = Bun.spawn([OWNER_OPENCODE, "auth", "login", provider, "--method", "claude-max", "--standalone"], {
+      cwd: dir,
+      env,
+      stdio: ["inherit", "inherit", "inherit"],
+    })
+    const code = await child.exited
+    if (code !== 0) throw new Error(`${OWNER_OPENCODE} auth login ${provider} exited ${code}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 /** The presets as `up` would run them today, and the login each needs. */
 const list = async () => {
   const fork = resolve(process.env.OPENCODE_DEV || DEFAULT_FORK)
@@ -1283,7 +1369,9 @@ const USAGE = `usage: bun run gamut <command>
   status                sessions, turns, models, tool calls, errors, bun test
   restart               quit OpenCode and resume the session
   down                  quit, stop the host, remove the scratch dir
-  list                  presets, their models and the login each needs`
+  list                  presets, their models and the login each needs
+  login anthropic       add one Claude subscription login to opencode2, through
+                        the Anthropic auth plugin (once per account)`
 
 const main = async (argv: ReadonlyArray<string>): Promise<void> => {
   const [command, ...rest] = argv
@@ -1308,6 +1396,8 @@ const main = async (argv: ReadonlyArray<string>): Promise<void> => {
       return down()
     case "list":
       return list()
+    case "login":
+      return login(rest[0])
     default:
       console.log(USAGE)
       if (command !== undefined && command !== "help" && command !== "--help") process.exitCode = 2

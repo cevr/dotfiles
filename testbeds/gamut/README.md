@@ -14,6 +14,7 @@ bun run gamut send "now task 2"          # type a message and press Enter
 bun run gamut keys esc down enter        # named keys; `interrupt` is one ctrl+c
 bun run gamut restart                    # quit and resume the newest session
 bun run gamut down                       # quit, stop the host, remove the run
+bun run gamut login anthropic            # add one Claude subscription login (once per account)
 ```
 
 ## What `up` does
@@ -22,12 +23,16 @@ bun run gamut down                       # quit, stop the host, remove the run
    scratch root, renames `.gitignore.fixture`, runs `bun install`, and commits
    it with git.
 2. Writes the run's `opencode.json` (the preset's models per agent, plus a
-   `reviewer` subagent), `config/cli.json` (our plugins by absolute path,
+   `reviewer` subagent; for a Claude preset, the Anthropic auth plugin and
+   then `plugins/pool` as server plugins), `config/cli.json` (our TUI
+   plugins, those whose `package.json` exports `./tui`, by absolute path,
    `plugins/prime` first, and the Prime theme), and the roster block of the
    fixture's `AGENTS.md`.
 3. Gives OpenCode a home, database and config directory of the run's own. Its
    environment is built from an allowlist: the terminal basics and the proxy
-   variables. No API key in the caller's shell reaches it.
+   variables. No API key in the caller's shell reaches it, and neither does
+   `ANTHROPIC_BASE_URL`: a Claude proxy there would take the pool's choice of
+   login away.
 4. Copies each login the preset needs from the owner's `opencode2` into the
    run's database: `auth export` piped to `auth import`, through stdin only.
 5. Starts OpenCode with `--auto` on a detached terminal host (`pty-host.ts`)
@@ -50,9 +55,20 @@ catalog when the run starts.
   port. No network, no login. The e2e test in `tests/gamut.test.ts` uses it.
 - `deepseek`: DeepSeek flash in every role on the OpenCode Go plan.
 - `glm-deepseek`: GLM orchestrates and reviews, DeepSeek flash implements.
+- `haiku`: the newest Claude Haiku in every role on the Claude subscription,
+  through the Anthropic auth plugin (`../anthropic-auth.ts` loads it from the
+  `cevr/opencode-anthropic-auth` checkout beside this repository, or
+  `OPENCODE_ANTHROPIC_AUTH`) and the account pool. Claude Haiku is the only
+  model a preset spends a Claude account on.
 
-The live presets need the OpenCode Go login: `opencode2 auth login opencode-go`.
-No preset uses an Anthropic or OpenAI account.
+The OpenCode Go presets need its login: `opencode2 auth login opencode-go`.
+`haiku` needs at least one Claude login, and the pool needs two to have a
+choice. The owner's `opencode2` does not load the Anthropic auth plugin, so
+`bun run gamut login anthropic` signs in through it: it runs `opencode2 auth
+login anthropic --method claude-max --standalone` in a scratch directory that
+loads the plugin, and the login lands in the owner's database. Run it once per
+account, signing in to a different Claude account in the browser each time.
+No preset uses an OpenAI account.
 
 ## State
 
