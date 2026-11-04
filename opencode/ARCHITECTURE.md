@@ -34,6 +34,8 @@ opencode/
 - **A mod is one context and one workspace package**, `mods/<mod>`, named `@dotfiles/opencode-<mod>`. Its domain files sit at its root. Name each file by its concept (`tool-call.ts`, `sabbath.ts`, `errors.ts`, `service.ts`), never by its kind (`*.aggregate.ts`, `*.command.ts`, `commands/`, `services/`, `host/`, `src/`, `test/`); the declaration says what kind of thing it is. Split a file by concept when it grows (`refusal.ts` out of `tool-call.ts`).
 - **The consumer owns the contract.** The domain declares each service it needs as a `Context.Service` in `service.ts` (or in the file of its concept), with its failures, and states what every implementation owes in `laws.ts`: a function that runs the shared cases against a Layer. Implementations import the domain; the domain imports no implementation.
 - **Implementations nest under the context, in folders named after their dependency**: `opencode` (the plugin context, RPC, sessions), `filestore`, `worker`, `gent`, `process`, `memory`. Each exports Layers for the domain's contracts, maps its vendor errors to the domain's failures at that edge (`Effect.mapError`, `Effect.tryPromise` with a classifying `catch`), and runs the domain's laws in its own test beside it.
+- **Effect-free programs** (the kernel's worker program) may import a domain file only through `import type`, or when that file has no runtime imports. Each domain file used this way declares that constraint at its top.
+- **`memory/` holds an implementation only when a test uses it.** Do not add an unused double to complete the folder layout.
 - **UI folders** (`tui/`) hold the components of that context and what they draw; a `cmd/` package runs them.
 - **`cmd/<plugin>` is the only composition root**, one workspace package per plugin OpenCode loads, named `@dotfiles/opencode-cmd-<plugin>`. OpenCode finds a local plugin's parts through its `package.json` `exports`, so the entries are named for those parts: `server.ts` for the server plugin, `tui.tsx` for the TUI plugin. Those exports are for OpenCode's loader; no code imports a `cmd/` package. The entry decodes options, picks one implementation per contract, builds the Layer once and registers the hooks, so swapping a store is a one-line change there.
 - **Packages and subpaths.** The workspaces are `mods/*`, `cmd/*` and `decider`. A context exports its files by path, `"exports": { "./*": "./*.ts" }`, which also reaches its folders, so an import names the concept it reaches (`@dotfiles/opencode-orchestrate/filestore/call-log`). Write no barrel files. Inside a package, import with relative paths and the `.ts` extension; across packages, by package name. A package lists each workspace package it imports as `"workspace:*"`.
@@ -66,6 +68,7 @@ The rules that keep a model correct come over unchanged:
 - `decide` returns events or a rejection, never both. A refusal someone must see later (a `denied` line in a log) is recorded by the handler from the rejection.
 - Never `throw`. Expected failures are tagged errors in `E`; adapters classify a host or SDK failure once, with `Effect.tryPromise`.
 - Persistence is a port. An aggregate whose history someone reads (the status pane, an audit) is stored as its events through an `EventLog` contract, keyed `stream:seq`. Otherwise store the folded state. Each mod chooses which and says so in its README. A format another program already reads (orchestrate's JSONL call log, which the status mod reads) stays byte-compatible: its lines are a view of the events, written by the store implementation.
+- Live resources (a process, a socket) belong to the implementation that owns them, not to an aggregate. The aggregate records only the facts about the resource.
 - Policies run at least once, so their effects are idempotent.
 
 ## The composition root
@@ -88,6 +91,7 @@ export default Plugin.define({
 - Errors the host reads come from the host: `Tool` (and `Tool.Error`) from `@opencode/plugin/effect`, never a local copy.
 - Transform callbacks (`ctx.agent.transform` and the rest) are synchronous. Load what they need before registering, or run a synchronous effect inside (`Effect.runSync` of a sync read).
 - Decisions read `now` from the mod's clock (the `now` option, when a test fixes it). Timestamps a log writes may use the wall clock; say which in the README.
+- A contract whose implementation depends on one call's context (`Tool.Context`, such as the kernel's `Toolbox`) is provided per call, around that call, by the composition root. Leave it out of the Layer built at setup.
 - Hooks registered through `ctx` are owned by the plugin's scope. Background fibers start with `Effect.forkScoped`.
 - A handler is thin: decode, read context, call the service, map the small public error set.
 - Contracts are `Context.Service` classes with package-qualified keys (`dotfiles-opencode/<mod>/<Noun>`). Public and non-trivial operations are `Effect.fn("<Noun>.<operation>")`.
@@ -101,7 +105,8 @@ Prime and the status pane draw with Solid through `@opencode/plugin/tui`. What t
 
 - **Stories** test the model through `@dotfiles/decider/story`: given events, when a command, then the events, the rejection, or a view's state. They cover the happy path, every rejection and every policy reaction. They are pure and fast. A view with no aggregate (its events are another program's records, such as the call log the status pane reads) is tested beside its file by folding events with `fold` from `@dotfiles/decider/decider`.
 - **Laws** run in each implementation's test beside it: the domain's `laws.ts` over that implementation's Layer, so `memory/` and the real store owe the same behaviour.
-- **Plugin seam tests** (`cmd/server/main.test.ts`) run the composition root over `memory/` and test Layers with explicit state and failure controls. No module mocks, spies or `beforeEach`; fixtures are Layers or scoped `acquireRelease`.
+- When a contract's only implementation is a program the repo owns and can run in a scratch directory (the kernel's worker), its laws and plugin seam test may run that program live instead of using a `memory/` double. Scope the program and scratch directory to the test.
+- **Plugin seam tests** (`cmd/<plugin>/server.test.ts`) run the composition root over `memory/` and test Layers with explicit state and failure controls. No module mocks, spies or `beforeEach`; fixtures are Layers or scoped `acquireRelease`.
 - **The real-OpenCode tests in `tests/`** are the acceptance check. A refactor keeps every one of them green with their assertions unchanged. Change one only to follow a renamed import, and say so in the commit.
 
 ## Migrating a mod
