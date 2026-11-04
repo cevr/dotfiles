@@ -1,6 +1,7 @@
 // Tool calls as fx draws them, in Prime's colours: a step's run of calls is
 // one group, a `●` header naming what it did (`Read 3 files · ran 2 commands
-// · 1 failed`) and a `├`/`└` tree row per run of one tool under it.
+// · 1 failed`) and a `├`/`└` tree row per run of one tool under it. Steps
+// that only start background agents, close in time, share one group.
 //
 // The host renders each call in its own slot, so each call draws its share:
 // the run's first call draws the header, and every call draws the rows it
@@ -18,13 +19,13 @@ import {
   background,
   errorText,
   followsCall,
+  groupRun,
   headerRuns,
   outcome,
   rowFiles,
   rowReason,
   rows,
   subject,
-  toolRun,
   verb,
   type Call,
   type Row,
@@ -56,8 +57,7 @@ const UNDER = GUTTER + 2
 
 export function ToolRow(props: PartProps & { tool: string; detail: Accessor<Detail> }) {
   const run = createMemo((): Call[] => {
-    const message = props.context.data.session.message.get(props.sessionID, props.messageID)
-    return message?.type === "assistant" ? toolRun(message.content, props.partID) : []
+    return groupRun(props.context.data.session.message.list(props.sessionID), props.messageID, props.partID)
   })
   const first = createMemo(() => run()[0]?.part.id === props.partID)
   // Two steps' groups stack as adjacent call rows; the later one opens with a blank row.

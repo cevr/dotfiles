@@ -8,10 +8,15 @@ import { editedFiles, errorName, toolInput, toolMetadata, toolPreview, subagentN
 /** A session message, as the plugin API lists them. */
 type SessionMessageInfo = ReturnType<Plugin.Context["data"]["session"]["message"]["list"]>[number]
 
-/** Whether a part draws a transcript row: a call, or text with words in it. */
+/** Whether a part draws a transcript row: a call, or text or reasoning with words in it. */
 function drawn(part: SessionPart) {
-  return part.type === "tool" || ("text" in part && typeof part.text === "string" && part.text.trim() !== "")
+  if (part.type === "tool") return true
+  if (!("text" in part) || typeof part.text !== "string") return false
+  return part.text.replace("[REDACTED]", "").trim() !== ""
 }
+
+/** The longest pause between two subagent events that still reads as one burst. */
+export const BURST_MS = 60_000
 
 /**
  * Whether the transcript row just above a run is a call of another step. The
@@ -62,6 +67,82 @@ export function toolRun(content: ReadonlyArray<SessionPart>, partID: string): Ca
   let end = at
   while (end < content.length - 1 && content[end + 1]!.type === "tool") end++
   return (content.slice(start, end + 1) as ToolPart[]).map((part) => ({ tool: canonical(part.name), part }))
+}
+
+/** Whether a message is a step that only starts background agents: every row it draws is such a launch. */
+function launches(message: SessionMessageInfo | undefined): boolean {
+  if (message?.type !== "assistant") return false
+  const shown = message.content.filter(drawn)
+  return (
+    shown.length > 0 &&
+    shown.every((part) => part.type === "tool" && canonical(part.name) === "subagent" && background(part))
+  )
+}
+
+/** Whether `next` starts within the burst window of `previous` ending. */
+function close(previous: SessionMessageInfo, next: SessionMessageInfo) {
+  const end = "completed" in previous.time && typeof previous.time.completed === "number" ? previous.time.completed : previous.time.created
+  return next.time.created - end <= BURST_MS
+}
+
+/** The stretch of messages around `at` that `joins` links pairwise. */
+function stretch<T>(items: ReadonlyArray<T>, at: number, joins: (previous: T, next: T) => boolean) {
+  let start = at
+  while (start > 0 && joins(items[start - 1]!, items[start]!)) start--
+  let end = at
+  while (end < items.length - 1 && joins(items[end]!, items[end + 1]!)) end++
+  return items.slice(start, end + 1)
+}
+
+/**
+ * The calls a call's group draws: its step's run, or, for a step that only
+ * starts background agents, every such step next to it in the transcript,
+ * each starting within the burst window of the one before.
+ */
+export function groupRun(messages: ReadonlyArray<SessionMessageInfo>, messageID: string, partID: string): Call[] {
+  const at = messages.findIndex((message) => message.id === messageID)
+  const message = messages[at]
+  if (message?.type !== "assistant") return []
+  if (!launches(message)) return toolRun(message.content, partID)
+  if (toolRun(message.content, partID).length === 0) return []
+  return stretch(messages, at, (previous, next) => launches(previous) && launches(next) && close(previous, next)).flatMap(
+    (step) =>
+      step.type === "assistant"
+        ? step.content.flatMap((part) => (part.type === "tool" ? [{ tool: canonical(part.name), part }] : []))
+        : [],
+  )
+}
+
+/** Whether a message is a subagent's notice that it finished well. */
+function finished(message: SessionMessageInfo | undefined): boolean {
+  if (message?.type !== "synthetic") return false
+  return message.metadata?.source === "subagent" && message.metadata?.state === "completed"
+}
+
+/**
+ * The finished-worker notices a notice folds with: the ones next to it, each
+ * within the burst window of the one before. Empty for any other message.
+ */
+export function noticeBurst(messages: ReadonlyArray<SessionMessageInfo>, messageID: string): SessionMessageInfo[] {
+  const at = messages.findIndex((message) => message.id === messageID)
+  if (!finished(messages[at])) return []
+  return stretch(messages, at, (previous, next) => finished(previous) && finished(next) && close(previous, next))
+}
+
+const titlecase = (word: string) => word.charAt(0).toUpperCase() + word.slice(1)
+
+/** A burst's line: the host's `↳ Worker finished · task` for one, a count of agents and every task for several. */
+export function completionWords(burst: ReadonlyArray<SessionMessageInfo>) {
+  const agent = (message: SessionMessageInfo) =>
+    message.type === "synthetic" && typeof message.metadata?.agent === "string" ? message.metadata.agent : "subagent"
+  const task = (message: SessionMessageInfo) =>
+    message.type === "synthetic" ? (message.description ?? "").replace(/\s+/g, " ").trim() : ""
+  const first = burst[0]
+  if (!first) return { heading: "", suffix: "" }
+  const suffix = burst.map(task).filter(Boolean).join(", ")
+  if (burst.length === 1) return { heading: `↳ ${titlecase(agent(first))} finished`, suffix }
+  // Counted as agents, as the launch group's header counts them.
+  return { heading: `↳ ${burst.length} agents finished`, suffix }
 }
 
 type Kind = { readonly key: string; readonly past: string; readonly running: string; readonly unit: (count: number) => string }
@@ -147,14 +228,15 @@ export type Row = {
   readonly owner: string
 }
 
-/** The tree rows of a run: calls to one tool with one outcome fold into a row; a failure always stands alone. */
+/** The tree rows of a run: calls to one tool with one outcome fold into a row; a failure or an agent always stands alone. */
 export function rows(calls: ReadonlyArray<Call>): Row[] {
   const result: Row[] = []
   for (const call of calls) {
     const state = outcome(call.part)
     const last = result.at(-1)
     const same = last && last.tool === call.tool && kind(last.tool, last.calls[0]).key === kind(call.tool, call.part).key
-    if (last && same && last.outcome === state && state !== "failed" && state !== "warning")
+    // Each agent keeps its own row: it is a worker to follow, not one of a batch of reads.
+    if (last && same && last.outcome === state && state !== "failed" && state !== "warning" && call.tool !== "subagent")
       result[result.length - 1] = { ...last, calls: [...last.calls, call.part] }
     else result.push({ tool: call.tool, outcome: state, calls: [call.part], owner: call.part.id })
   }
@@ -170,8 +252,6 @@ export function subject(row: Row): string {
     const path = typeof input.path === "string" ? ` in ${input.path}` : ""
     return `/${String(input.pattern ?? "")}/${path}`
   }
-  if (row.tool === "subagent" && row.calls.length > 1)
-    return row.calls.map((part) => subagentName(toolInput(part))).join(", ")
   if (row.tool === "subagent") {
     const input = toolInput(first)
     // The description is the model's own short label for the task; the prompt is the brief behind it.

@@ -5,6 +5,7 @@ import { Plugin } from "@opencode/plugin/tui"
 import type { TranscriptRowKind } from "@opencode/plugin/tui/context"
 import { createSignal } from "solid-js"
 import { Dock, ModeHint, Splash, TopBar, Working } from "./chrome"
+import { Completion } from "./notice"
 import { ToolRow } from "./tools"
 import { AssistantText, ReasoningLine, UserBand } from "./transcript"
 import { nextDetail, type Detail } from "./view"
@@ -18,6 +19,8 @@ export function rowGap(detail: Detail, row: { kind: TranscriptRowKind; previous?
   if (row.kind === "footer") return 0
   const call = (kind?: TranscriptRowKind) => kind === "tool" || kind === "group"
   if (call(row.kind) && call(row.previous)) return 0
+  // Notices stack like calls; a folded notice draws nothing, so it must add no gap either.
+  if (row.kind === "notice" && row.previous === "notice") return 0
   if (row.kind === "reasoning" && row.previous === "user") return 0
   return 1
 }
@@ -58,6 +61,10 @@ export default Plugin.define({
     context.ui.slot({
       replace: "session.part.tool",
       render: (input) => <ToolRow context={context} {...input} detail={detail} />,
+    })
+    context.ui.slot({
+      replace: "session.message.completion",
+      render: (input) => <Completion context={context} sessionID={input.sessionID} messageID={input.messageID} />,
     })
     // Prime closes a turn with nothing: no agent, model or duration line.
     context.ui.slot({ replace: "session.message.assistant.footer", render: () => null })

@@ -1,6 +1,19 @@
 // The fx-style tool group's words, from calls as OpenCode stores them.
 import { describe, expect, test } from "bun:test"
-import { canonical, followsCall, headerRuns, rows, subject, toolRun, verb, type Call } from "../src/group"
+import {
+  BURST_MS,
+  canonical,
+  completionWords,
+  followsCall,
+  groupRun,
+  headerRuns,
+  noticeBurst,
+  rows,
+  subject,
+  toolRun,
+  verb,
+  type Call,
+} from "../src/group"
 import type { ToolPart } from "../src/view"
 
 let ids = 0
@@ -88,7 +101,7 @@ describe("the tree rows", () => {
       call("subagent", { description: "review", prompt: "R" }),
     )
     expect(words(list)).toBe("Started 2 agents · ran 1 agent")
-    expect(rows(list).map((row) => `${verb(row)} ${subject(row)}`)).toEqual(["Started fix-a, fix-b", "Ran review"])
+    expect(rows(list).map((row) => `${verb(row)} ${subject(row)}`)).toEqual(["Started fix-a", "Started fix-b", "Ran review"])
   })
 
   test("a running call reads in the running tense; a subagent names its agent and task", () => {
@@ -130,5 +143,83 @@ describe("the blank row between groups", () => {
     const messages = [assistant("m1", [a, { type: "text", text: "" }, c])]
     expect(followsCall(messages, "m1", c.id)).toBe(true)
     expect(followsCall(messages, "m1", a.id)).toBe(false)
+  })
+})
+
+describe("subagent launches across steps", () => {
+  const step = (id: string, created: number, content: unknown[]) =>
+    ({ type: "assistant", id, time: { created, completed: created + 500 }, content }) as never
+  const launch = (description: string) =>
+    call("subagent", { agent: "general", description, prompt: "A long brief.", background: true })
+
+  test("steps that only start agents, close in time, read as one group with a row per agent", () => {
+    const [a, b, c] = [launch("fix-a"), launch("fix-b"), launch("fix-c")]
+    const messages = [
+      step("m1", 0, [a]),
+      step("m2", 3_000, [{ type: "reasoning", text: "" }, b]),
+      step("m3", 6_000, [c]),
+    ]
+    for (const [id, part] of [["m1", a], ["m2", b], ["m3", c]] as const)
+      expect(groupRun(messages, id, part.id).map((item) => item.part.id)).toEqual([a.id, b.id, c.id])
+    const run = groupRun(messages, "m3", c.id)
+    expect(words(run)).toBe("Started 3 agents")
+    expect(rows(run).map((row) => `${verb(row)} ${subject(row)}`)).toEqual(["Started fix-a", "Started fix-b", "Started fix-c"])
+  })
+
+  test("a pause past the window, prose, shown reasoning or another call keeps launch steps apart", () => {
+    const [a, b] = [launch("fix-a"), launch("fix-b")]
+    const apart = (second: unknown[], at = 3_000) =>
+      groupRun([step("m1", 0, [a]), step("m2", at, second)], "m1", a.id).map((item) => item.part.id)
+    expect(apart([b], 500 + BURST_MS + 1)).toEqual([a.id])
+    expect(apart([{ type: "text", text: "Now the CSV fix." }, b])).toEqual([a.id])
+    expect(apart([{ type: "reasoning", text: "The CSV fix is separate." }, b])).toEqual([a.id])
+    expect(apart([b, call("read", { path: "a.ts" })])).toEqual([a.id])
+    expect(apart([b])).toEqual([a.id, b.id])
+  })
+
+  test("other calls stay in their own step's group", () => {
+    const [a, b] = [call("read", { path: "a" }), call("read", { path: "b" })]
+    expect(groupRun([step("m1", 0, [a]), step("m2", 1_000, [b])], "m2", b.id).map((item) => item.part.id)).toEqual([b.id])
+    const foreground = call("subagent", { description: "review", prompt: "R" })
+    const later = launch("fix-a")
+    expect(groupRun([step("m1", 0, [foreground]), step("m2", 1_000, [later])], "m2", later.id)).toHaveLength(1)
+  })
+})
+
+describe("completion notices", () => {
+  const done = (id: string, created: number, description: string, metadata: Record<string, unknown> = {}) =>
+    ({
+      type: "synthetic",
+      id,
+      text: "Notice",
+      description,
+      metadata: { source: "subagent", state: "completed", agent: "worker", childID: `ses_${id}`, ...metadata },
+      time: { created },
+    }) as never
+  const ids = (burst: ReadonlyArray<{ id: string }>) => burst.map((message) => message.id)
+
+  test("finished workers next to each other, close in time, fold into the first notice", () => {
+    const messages = [done("n1", 0, "fix-a"), done("n2", 2_000, "fix-b"), done("n3", 4_000, "fix-c")]
+    expect(ids(noticeBurst(messages, "n1"))).toEqual(["n1", "n2", "n3"])
+    expect(ids(noticeBurst(messages, "n3"))).toEqual(["n1", "n2", "n3"])
+    expect(completionWords(noticeBurst(messages, "n1"))).toEqual({
+      heading: "↳ 3 agents finished",
+      suffix: "fix-a, fix-b, fix-c",
+    })
+  })
+
+  test("a failure, a shell, a pause or a row between stands alone", () => {
+    const failed = done("n2", 1_000, "fix-b", { state: "error" })
+    expect(ids(noticeBurst([done("n1", 0, "fix-a"), failed], "n1"))).toEqual(["n1"])
+    expect(noticeBurst([done("n1", 0, "fix-a"), failed], "n2")).toEqual([])
+    const shell = done("n2", 1_000, "bun test", { source: "shell" })
+    expect(ids(noticeBurst([done("n1", 0, "fix-a"), shell], "n1"))).toEqual(["n1"])
+    expect(ids(noticeBurst([done("n1", 0, "fix-a"), done("n2", BURST_MS + 1, "fix-b")], "n2"))).toEqual(["n2"])
+    const text = { type: "assistant", id: "m1", time: { created: 500 }, content: [{ type: "text", text: "One down." }] } as never
+    expect(ids(noticeBurst([done("n1", 0, "fix-a"), text, done("n2", 1_000, "fix-b")], "n2"))).toEqual(["n2"])
+  })
+
+  test("one notice reads as the host's line, naming its agent", () => {
+    expect(completionWords([done("n1", 0, "fix-a")])).toEqual({ heading: "↳ Worker finished", suffix: "fix-a" })
   })
 })
