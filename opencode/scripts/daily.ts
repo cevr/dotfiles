@@ -110,6 +110,9 @@ if (import.meta.main) {
   const target = `cli-${process.platform}-${process.arch}`
   const built = join(cli, "dist", target, "bin/opencode")
 
+  // The mods' own dependencies (the kernel's parser): OpenCode loads plugins in place and installs nothing.
+  await $`bun install --frozen-lockfile`.cwd(resolve(import.meta.dir, "..")).quiet()
+
   if (!process.argv.includes("--skip-build")) {
     console.log(`building ${version} from ${fork}`)
     await $`bun run script/build.ts --single --skip-install --skip-web-ui`

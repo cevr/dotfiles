@@ -10,7 +10,9 @@ bun run daily            # build the fork, write ~/.local/bin/opencode, merge th
 bun run daily --skip-build
 ```
 
-`scripts/daily.ts` builds the fork in `OPENCODE_DEV` (default: the
+`scripts/daily.ts` installs the mods' dependencies (`bun install
+--frozen-lockfile`; OpenCode loads the plugins in place and installs nothing),
+builds the fork in `OPENCODE_DEV` (default: the
 `prime-look` Rift) as a release binary named `<version>-prime.<commit>`,
 copies it to `~/.local/share/opencode-prime/`, and writes
 `~/.local/bin/opencode`, a launcher that runs it without `ANTHROPIC_BASE_URL`,
