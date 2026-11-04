@@ -4,16 +4,16 @@
 //    (channel `latest`, version `<base>-prime.<commit>`), so it shares the installed OpenCode's
 //    database and background service; a version change restarts that service as ours.
 //    `--skip-build` reuses the last build.
-// 2. Copies it to `~/.local/share/opencode-prime/` and links `~/.local/bin/opencode` to it
-//    (`~/.local/bin` comes before `~/.bun/bin` on PATH; `opencode2` stays the stock release).
+// 2. Copies it to `~/.local/share/opencode-prime/` and writes `~/.local/bin/opencode`, a launcher
+//    that runs it without the caller's Anthropic routing (`launcher`). `~/.local/bin` comes before
+//    `~/.bun/bin` on PATH; `opencode2` stays the stock release.
 // 3. Merges our entries into `~/.config/opencode/opencode.json` (server plugins, the role
 //    agents' models, no auto-update) and `cli.json` (TUI plugins, the Prime theme), keeping
 //    every other key and plugin. Paths are this checkout's, so nothing machine-specific is
 //    committed.
-// 4. Restarts the background service so it loads the server plugins, without the caller's
-//    Anthropic routing (`serviceEnv`).
+// 4. Restarts the background service so it loads the server plugins.
 import { $ } from "bun"
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
@@ -29,18 +29,20 @@ const packageOf = (entry: unknown): string | undefined =>
   typeof entry === "string" ? entry : typeof entry === "object" && entry !== null && "package" in entry ? String(entry.package) : undefined
 
 /**
- * The environment the background service starts with: the caller's, less Anthropic routing.
- * The service inherits the env of whoever restarts it, and a Claude Code session on TeamClaude
- * carries `ANTHROPIC_BASE_URL` to TeamClaude's proxy; the Anthropic auth plugin would then send
- * OpenCode's Claude requests and usage reads there, past the pool's choice of account.
+ * `~/.local/bin/opencode`: runs `binary` without the caller's Anthropic routing. The pool picks
+ * the account for OpenCode's Claude requests, but the Anthropic auth plugin sends them to
+ * `ANTHROPIC_BASE_URL` when it is set, and a Claude Code session on TeamClaude sets it to the
+ * proxy. The background service inherits the environment of the client that starts it, so the
+ * variables are dropped at every launch, not only when `daily` restarts the service.
  */
-export const serviceEnv = (env: Readonly<Record<string, string | undefined>>): Record<string, string> =>
-  Object.fromEntries(
-    Object.entries(env).filter(
-      (entry): entry is [string, string] =>
-        entry[1] !== undefined && entry[0] !== "ANTHROPIC_BASE_URL" && entry[0] !== "ANTHROPIC_INSECURE",
-    ),
-  )
+export const launcher = (binary: string): string =>
+  [
+    "#!/bin/sh",
+    "# Written by `bun run daily` (dotfiles/opencode/scripts/daily.ts).",
+    "unset ANTHROPIC_BASE_URL ANTHROPIC_INSECURE",
+    `exec '${binary.replaceAll("'", `'\\''`)}' "$@"`,
+    "",
+  ].join("\n")
 
 /** Each role's model: Claude plans and implements; the verifier is the other family (the skill's Families rule). */
 export const roleModels = (catalog: Catalog): Record<string, string> => {
@@ -126,7 +128,7 @@ if (import.meta.main) {
   const link = join(home, ".local/bin/opencode")
   mkdirSync(dirname(link), { recursive: true })
   rmSync(link, { force: true })
-  symlinkSync(binary, link)
+  writeFileSync(link, launcher(binary), { mode: 0o755 })
 
   const auth = anthropicAuthPlugin(share)
   const gent = gentAuthDir()
@@ -146,7 +148,7 @@ if (import.meta.main) {
   mkdirSync(join(config, "themes"), { recursive: true })
   copyFileSync(THEME, join(config, "themes/prime.json"))
 
-  const restart = await $`${link} service restart`.env(serviceEnv(process.env)).nothrow().quiet()
+  const restart = await $`${link} service restart`.nothrow().quiet()
   console.log(`opencode -> ${binary} (${reported})`)
   console.log(`server plugins: ${server.map(packageOf).join(", ")}`)
   console.log(`roles: ${Object.entries(models).map(([role, model]) => `${role} ${model}`).join(", ")}`)

@@ -6,15 +6,17 @@ plugin hooks supply the UI; orchestration policy lives in this repository.
 ## Your daily `opencode`
 
 ```sh
-bun run daily            # build the fork, link ~/.local/bin/opencode, merge the config
+bun run daily            # build the fork, write ~/.local/bin/opencode, merge the config
 bun run daily --skip-build
 ```
 
 `scripts/daily.ts` builds the fork in `OPENCODE_DEV` (default: the
 `prime-look` Rift) as a release binary named `<version>-prime.<commit>`,
-copies it to `~/.local/share/opencode-prime/`, and links
-`~/.local/bin/opencode` to it; `~/.local/bin` precedes `~/.bun/bin`, so a new
-terminal runs it, and `opencode2` stays the stock release. As a `latest`
+copies it to `~/.local/share/opencode-prime/`, and writes
+`~/.local/bin/opencode`, a launcher that runs it without `ANTHROPIC_BASE_URL`,
+so OpenCode's Claude traffic never routes through TeamClaude's proxy, even when
+an agent session on TeamClaude starts it. `~/.local/bin` precedes `~/.bun/bin`,
+so a new terminal runs it, and `opencode2` stays the stock release. As a `latest`
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin, the pool (on

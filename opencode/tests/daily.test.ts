@@ -1,6 +1,9 @@
 // `bun run daily`'s config merge: ours replaces only what it owns, and the roles cross families.
 import { describe, expect, test } from "bun:test"
-import { mergeCli, mergeServer, roleModels, serviceEnv } from "../scripts/daily.ts"
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { launcher, mergeCli, mergeServer, roleModels } from "../scripts/daily.ts"
 
 const MODS = "/repo/opencode/mods"
 const AUTH = "/home/.local/share/opencode-prime/anthropic-auth"
@@ -49,15 +52,17 @@ describe("the role models", () => {
   })
 })
 
-describe("the service's environment", () => {
-  test("drops the caller's Anthropic routing and keeps everything else", () => {
-    const env = serviceEnv({
-      PATH: "/bin",
-      HOME: "/home",
-      ANTHROPIC_BASE_URL: "http://localhost:3456",
-      ANTHROPIC_INSECURE: "1",
-      EMPTY: undefined,
+describe("the opencode launcher", () => {
+  test("runs the binary with the caller's arguments and without its Anthropic routing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "launcher it's-"))
+    const binary = join(dir, "opencode-fake")
+    writeFileSync(binary, '#!/bin/sh\necho "base=${ANTHROPIC_BASE_URL:-unset} insecure=${ANTHROPIC_INSECURE:-unset} home=$HOME args=$*"\n')
+    chmodSync(binary, 0o755)
+    const link = join(dir, "opencode")
+    writeFileSync(link, launcher(binary), { mode: 0o755 })
+    const run = Bun.spawnSync([link, "service", "restart"], {
+      env: { ...process.env, HOME: "/home/x", ANTHROPIC_BASE_URL: "http://localhost:3456", ANTHROPIC_INSECURE: "1" },
     })
-    expect(env).toEqual({ PATH: "/bin", HOME: "/home" })
+    expect(run.stdout.toString().trim()).toBe("base=unset insecure=unset home=/home/x args=service restart")
   })
 })

@@ -17,7 +17,7 @@ My personal dotfiles.
 | `ghostty/config` | Ghostty terminal config |
 | `atuin.toml` | Atuin shell history config |
 | `claude/` | TeamClaude launcher and shared Claude Code settings and mods |
-| `opencode/` | OpenCode 2.x mods (Prime Agent look, account pool, orchestrate, Codex, status), their scenario tests and the gamut live testbed; see `opencode/AGENTS.md` |
+| `opencode/` | OpenCode 2.x mods (Prime Agent look, account pool, orchestrate, code kernel, status), their scenario tests and the gamut live testbed; see `opencode/AGENTS.md` |
 | `skills/track-work-hours` | `hours` command and agent skill for payroll tracking |
 
 ## Installation
