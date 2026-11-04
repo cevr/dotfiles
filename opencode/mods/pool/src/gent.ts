@@ -250,6 +250,29 @@ export const withGentLock = async <A>(
   }
 }
 
+/**
+ * What a 429 says about who limited the request, for the log: the `server` header (an edge such
+ * as Cloudflare, or Anthropic), `retry-after`, and the error's type and message from a JSON body,
+ * or the start of any other body with markup dropped. A 429 body carries no token.
+ */
+export function limitDetail(server: string | null, retryAfter: string | null, body: string): string {
+  let said = ""
+  try {
+    const parsed: unknown = JSON.parse(body)
+    const error = isRecord(parsed) && isRecord(parsed.error) ? parsed.error : isRecord(parsed) ? parsed : {}
+    said = [error.type, error.message, error.error, error.error_description]
+      .filter((part): part is string => typeof part === "string" && part !== "")
+      .join(": ")
+  } catch {
+    said = body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()
+  }
+  return [
+    `server ${server ?? "unnamed"}`,
+    `retry-after ${retryAfter ?? "none"}`,
+    said === "" ? "empty body" : `"${said.slice(0, 160)}"`,
+  ].join("; ")
+}
+
 /** A 429's `retry-after` (seconds or an HTTP date) as a wait in ms; ENDPOINT_PAUSE_MS when it names none. */
 function pauseFor(retryAfter: string | null, now: number): number {
   if (retryAfter === null || retryAfter.trim() === "") return ENDPOINT_PAUSE_MS
@@ -474,6 +497,7 @@ export class GentSource {
     let status: number
     let body: string
     let retryAfter: string | null = null
+    let server: string | null = null
     try {
       const response = await this.fetch(this.tokenURL, {
         method: "POST",
@@ -488,6 +512,7 @@ export class GentSource {
       })
       status = response.status
       retryAfter = response.headers.get("retry-after")
+      server = response.headers.get("server")
       body = await response.text()
     } catch {
       throw unavailable("the token endpoint did not answer")
@@ -497,7 +522,7 @@ export class GentSource {
       this.state.pausedUntil = Math.max(this.state.pausedUntil, this.now() + pauseFor(retryAfter, this.now()))
       throw new GentCredentialError(
         "unavailable",
-        `The gent account "${label}" could not refresh: the token endpoint answered 429`,
+        `The gent account "${label}" could not refresh: the token endpoint answered 429 (${limitDetail(server, retryAfter, body)})`,
         this.state.pausedUntil,
       )
     }

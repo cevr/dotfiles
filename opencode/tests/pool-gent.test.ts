@@ -14,6 +14,7 @@ import {
   GENT_TOKEN_URL,
   GentCredentialError,
   GentSource,
+  limitDetail,
   registerCredentialSource,
 } from "../mods/pool/src/gent.ts"
 import { anthropicAuthSource } from "../testbeds/anthropic-auth.ts"
@@ -92,6 +93,16 @@ const failure = async (run: Promise<unknown>): Promise<GentCredentialError> => {
 // The endpoint Claude Code and the Anthropic auth plugin refresh at.
 test("the gent source refreshes at Claude Code's token endpoint", () => {
   expect(GENT_TOKEN_URL).toBe("https://platform.claude.com/v1/oauth/token")
+})
+
+test("a 429's log line names who limited the request, and never more than the error's words", () => {
+  expect(limitDetail("cloudflare", "60", "<html><body><h1>Error 1015</h1> You are being rate limited</body></html>")).toBe(
+    'server cloudflare; retry-after 60; "Error 1015 You are being rate limited"',
+  )
+  expect(limitDetail(null, null, JSON.stringify({ error: { type: "rate_limit_error", message: "Too many refreshes" } }))).toBe(
+    'server unnamed; retry-after none; "rate_limit_error: Too many refreshes"',
+  )
+  expect(limitDetail("envoy", null, "")).toBe("server envoy; retry-after none; empty body")
 })
 
 describe.skipIf(!ready)("the pool's gent source over gent's own store", () => {
@@ -265,6 +276,8 @@ describe.skipIf(!ready)("the pool's gent source over gent's own store", () => {
     )
     const first = await failure(source.resolve(`${GENT_PREFIX}alpha`))
     expect(first.kind).toBe("unavailable")
+    expect(first.message).toContain("answered 429 (server")
+    expect(first.message).toContain("retry-after 120")
     expect(first.retryAt).toBeGreaterThan(Date.now() + 110_000)
     // The other account waits too, without a request of its own.
     answer = { kind: "rotate" }
