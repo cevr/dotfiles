@@ -10,13 +10,12 @@ import { AssistantText, ReasoningLine, UserBand } from "./transcript"
 import { nextDetail, type Detail } from "./view"
 
 // Blank rows between transcript rows. Overview packs everything; Details
-// and All keep a blank line around prose but stack tool calls tight.
+// and All keep a blank line between rows.
 export function rowGap(detail: Detail, row: { kind: TranscriptRowKind; previous?: TranscriptRowKind }) {
   if (detail === "overview") return 0
   if (row.kind === "footer") return 0
-  // The host keeps a step's run of calls as one "group" row even with grouping "none".
-  const call = (kind?: TranscriptRowKind) => kind === "tool" || kind === "group"
-  if (call(row.kind) && call(row.previous)) return 0
+  // The host keeps a step's run of calls as one "group" row even with grouping
+  // "none", so consecutive call rows are separate groups: a blank row apart.
   if (row.kind === "reasoning" && row.previous === "user") return 0
   return 1
 }
@@ -28,7 +27,7 @@ export default Plugin.define({
 
     context.ui.layout({
       inset: 1,
-      composer: { chrome: "band", prefix: "> " },
+      composer: { chrome: "rail" },
       rowGap: (row) => rowGap(detail(), row),
       // Prime shows every tool call and thought on its own row.
       transcript: { grouping: "none", thinking: "show" },
