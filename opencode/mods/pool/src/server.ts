@@ -12,7 +12,7 @@
  * - `providers`: provider id to integration id, default `{ anthropic: "anthropic" }`.
  * - `sweepMinutes`: how often to read each login's usage; 0 turns it off. Default 10.
  * - `sources`: other stores whose logins join a pool beside OpenCode's own, read
- *   in place, never copied. Off by default. `[{ kind: "gent", dir: "~/.gent/auth" }]`
+ *   in place, never copied. Off by default. `[{ kind: "gent", dir: "~/.local/share/opencode-prime/pool-auth" }]`
  *   adds the Claude accounts gent signed in to (`gent.ts`) to the `anthropic` pool
  *   as `gent:<label>`; the pool refreshes their tokens under gent's lock and the
  *   auth plugin takes them from it (`registerCredentialSource`). `tokenURL`

@@ -231,7 +231,7 @@ describe("the run's config", () => {
     expect(projectConfig(haiku, undefined, plugins).plugins).toEqual(plugins)
     // The store is the caller's, never the run's own home.
     expect(gentAuthDir({ GAMUT_GENT_AUTH: "/elsewhere/auth" })).toBe("/elsewhere/auth")
-    expect(gentAuthDir({})).toEndWith("/.gent/auth")
+    expect(gentAuthDir({})).toEndWith("/.local/share/opencode-prime/pool-auth")
   })
 
   test("a gent store with no account the pool can use is refused, saying why", () => {

@@ -233,9 +233,13 @@ export const providersNeeded = (preset: ResolvedPreset): ReadonlyArray<string> =
 export const loginsToCopy = (named: Preset, preset: ResolvedPreset): ReadonlyArray<string> =>
   providersNeeded(preset).filter((provider) => !(named.claudeLogins === "gent" && provider === POOLED_PROVIDER))
 
-/** gent's credential store: `GAMUT_GENT_AUTH`, else `~/.gent/auth` of the caller's home (the run has its own). */
+/**
+ * The Claude logins the pool reads, in gent's store format: `GAMUT_GENT_AUTH`, else
+ * `~/.local/share/opencode-prime/pool-auth` of the caller's home (the run has its own). The
+ * store moved there from `~/.gent/auth` when gent was removed from this machine.
+ */
 export const gentAuthDir = (env: Readonly<Record<string, string | undefined>> = process.env): string =>
-  resolve(env.GAMUT_GENT_AUTH || join(homedir(), ".gent/auth"))
+  resolve(env.GAMUT_GENT_AUTH || join(homedir(), ".local/share/opencode-prime/pool-auth"))
 
 export const usesSim = (preset: ResolvedPreset): boolean =>
   ROLES.some((role) => preset[role].provider === SIM_PROVIDER)

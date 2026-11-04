@@ -65,7 +65,7 @@ catalog when the run starts.
   model a preset spends a Claude account on.
 - `haiku-gent`: `haiku` on the Claude accounts gent holds instead of the
   `opencode2` logins. The pool gets `sources: [{ kind: "gent", dir }]` with
-  gent's store (`~/.gent/auth` of the caller, or `GAMUT_GENT_AUTH`); it reads
+  the store (`~/.local/share/opencode-prime/pool-auth` of the caller, where gent's logins moved, or `GAMUT_GENT_AUTH`); it reads
   each account's token from gent's slot file for every request and, when one
   is stale, refreshes it under gent's own lock and writes it back in gent's
   format, so gent and the run always hold the same token. Nothing is copied.

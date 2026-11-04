@@ -18,7 +18,7 @@ terminal runs it, and `opencode2` stays the stock release. As a `latest`
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin, the pool (on
-gent's accounts when `~/.gent/auth` exists), orchestrate and status, the role
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists), orchestrate and status, the role
 models and `autoupdate: false`, and into `cli.json` Prime, status and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork
 change.
