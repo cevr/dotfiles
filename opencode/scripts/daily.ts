@@ -115,10 +115,14 @@ if (import.meta.main) {
   const built = join(cli, "dist", target, "bin/opencode")
 
   // The workspace links and vendor packages the plugins import: OpenCode loads plugins in place and
-  // installs nothing. The fork's modules are linked first, so the install never writes through an
-  // older checkout's whole-directory link into the fork (scripts/link-fork.ts).
-  await $`bun ${join(import.meta.dir, "link-fork.ts")}`.env({ ...process.env, OPENCODE_DEV: fork }).quiet()
+  // installs nothing. The fork's modules are linked before the install, so it never writes through an
+  // older checkout's whole-directory link into the fork, and again after it, because an install that
+  // changes a package's node_modules drops links it did not make. The TUI plugins resolve `solid-js`
+  // through those links at load time (scripts/link-fork.ts).
+  const linkFork = () => $`bun ${join(import.meta.dir, "link-fork.ts")}`.env({ ...process.env, OPENCODE_DEV: fork }).quiet()
+  await linkFork()
   await $`bun install --frozen-lockfile`.cwd(resolve(import.meta.dir, "..")).quiet()
+  await linkFork()
 
   if (!process.argv.includes("--skip-build")) {
     console.log(`building ${version} from ${fork}`)

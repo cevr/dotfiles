@@ -23,7 +23,7 @@ Before changing a mod, read `ARCHITECTURE.md`: every mod is an Effect program mo
 ## Checks
 All of them need `OPENCODE_DEV` pointing at the fork checkout.
 - `bun run lint`: oxlint; errors are the layout fence.
-- `bun run typecheck`: links the fork's `packages/tui/node_modules` entries into every workspace package's `node_modules` (`bun run link-fork`), then checks the root and each `mods/*` and `cmd/*` project. Link before `bun install`.
+- `bun run typecheck`: links the fork's `packages/tui/node_modules` entries into every workspace package's `node_modules` (`bun run link-fork`), then checks the root and each `mods/*` and `cmd/*` project. Link before and after `bun install`, which drops the links.
 - `bun run test`: the scenario tests. Without `OPENCODE_DEV` they skip and say so.
 
 ## Running a scenario
