@@ -8,7 +8,14 @@ import { createHash } from "node:crypto"
 import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { CREDENTIAL_SOURCES, GENT_PREFIX, GentCredentialError, GentSource, registerCredentialSource } from "../mods/pool/src/gent.ts"
+import {
+  CREDENTIAL_SOURCES,
+  GENT_PREFIX,
+  GENT_TOKEN_URL,
+  GentCredentialError,
+  GentSource,
+  registerCredentialSource,
+} from "../mods/pool/src/gent.ts"
 import { anthropicAuthSource } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAccount, type FakeAnthropic, type FakeTokenAnswer } from "./fake-anthropic.ts"
 import { gentAvailable, gentSource, openGentStore, type GentStore } from "./gent/store.ts"
@@ -81,6 +88,11 @@ const failure = async (run: Promise<unknown>): Promise<GentCredentialError> => {
   }
   throw new Error("expected the resolve to fail")
 }
+
+// claude.ai's token endpoint refused every refresh with 429; Claude Code and the auth plugin refresh here.
+test("the gent source refreshes at Claude Code's token endpoint", () => {
+  expect(GENT_TOKEN_URL).toBe("https://platform.claude.com/v1/oauth/token")
+})
 
 describe.skipIf(!ready)("the pool's gent source over gent's own store", () => {
   test("lists the accounts gent owns by label, and says why it leaves the rest alone", async () => {

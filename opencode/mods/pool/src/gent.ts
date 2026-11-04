@@ -40,8 +40,13 @@ import { open, rename, rm } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 
-/** gent's token endpoint and Claude Code's public client id, as gent's `refreshViaOAuthClient` uses them. */
-export const GENT_TOKEN_URL = "https://claude.ai/v1/oauth/token"
+/**
+ * The token endpoint Claude Code refreshes at, and its public client id. gent's
+ * `https://claude.ai/v1/oauth/token` answers 429 to every refresh (measured
+ * 2026-11-04), so this source refreshes where Claude Code and the Anthropic
+ * auth plugin do.
+ */
+export const GENT_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 export const GENT_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 /** The prefix of a gent account's credential id in the pool. */
 export const GENT_PREFIX = "gent:"
