@@ -4,7 +4,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "typecheck": "bun check"
+    "link-fork": "bun scripts/link-fork.ts",
+    "typecheck": "bun scripts/link-fork.ts && bun check --no-script && bun check --no-script -p plugins/prime",
+    "test": "bun test --timeout 300000"
   },
   "devDependencies": {
     "@types/bun": "latest",

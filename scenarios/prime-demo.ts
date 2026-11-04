@@ -28,9 +28,8 @@ export default OpenCodeDriver.use(
       animations: false,
       tabs: { mode: "off" },
       theme: { name: process.env.SCENARIO_THEME ?? "opencode", mode: "dark" },
-      // SCENARIO_PRIME=1 turns on the fork's opt-in Prime look plugin.
-      // Prime shows every tool call and thought on its own row, so grouping is off.
-      ...(process.env.SCENARIO_PRIME ? { plugins: ["opencode.prime"], session: { grouping: "none", thinking: "show" } } : {}),
+      // SCENARIO_PRIME=1 loads the Prime look plugin from plugins/prime.
+      ...(process.env.SCENARIO_PRIME ? { plugins: [`${process.cwd()}/plugins/prime`] } : {}),
     },
     tui: { viewport: { cols: 106, rows: 38 } },
     project: {
