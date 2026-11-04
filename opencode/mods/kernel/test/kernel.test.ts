@@ -186,6 +186,14 @@ const readTool = {
   execute: async (input: { path: string }) => ({ content: await Bun.file(input.path).text() }),
 }
 
+// Stands for OpenCode's subagent tool, whose policy runs in hooks a cell skips.
+const subagentTool = {
+  id: "subagent",
+  description: "Start a subagent",
+  input: Schema.Struct({ prompt: Schema.String }),
+  execute: async () => ({ content: "started" }),
+}
+
 describe("plugin", () => {
   test("state persists across calls, and reset clears it", async () => {
     const { call, fail, storage } = await setup()
@@ -204,6 +212,12 @@ describe("plugin", () => {
     expect(await call(`const text = await tools.read({ path: ${JSON.stringify(file)} }); text.length`)).toBe("9")
     expect(await fail("await tools.read({ path: 1 })")).toContain("Invalid input for read")
     expect(await fail("await tools.kernel({ code: '1' })")).toContain("Tools: tools.read")
+  })
+
+  test("a cell cannot start a subagent, whose guards run only for direct calls", async () => {
+    const { call, fail } = await setup({}, [readTool, subagentTool])
+    expect(await fail("await tools.subagent({ prompt: 'x' })")).toContain("Tools: tools.read")
+    expect(await call("tools.list().map((tool) => tool.id).join()")).toBe("read")
   })
 
   test("the view keeps the head and tail of long output", async () => {

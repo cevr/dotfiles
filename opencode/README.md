@@ -62,8 +62,9 @@ them. The worker is the running OpenCode binary acting as Bun
 
 Limits of the port: a tool called from the kernel skips the
 `tool.execute.before` and `execute.after` hooks, which only OpenCode's
-registry can trigger, so orchestrate's guard and Sabbath stop and the pace
-hold do not see it. `denyExecute` reaches agents that plugins define; an agent
+registry can trigger. So the kernel offers no `subagent`: orchestrate's role
+guard, the pace hold and the Sabbath stop run in those hooks. Start agents
+with the direct tool. `denyExecute` reaches agents that plugins define; an agent
 defined only in a config file arrives after the plugins' transforms and keeps
 code mode.
 

@@ -30,6 +30,13 @@ export interface Rule {
 /** Tools a cell never reaches: the kernel itself, and code mode's interpreter. */
 export const CODE_TOOLS: ReadonlySet<string> = new Set(["kernel", "execute"])
 
+/**
+ * Tools a cell never reaches because their policy lives in `execute.before`
+ * hooks a cell's call skips: `subagent` passes orchestrate's role guard, the
+ * pace hold and the Sabbath stop there. Start agents with the direct tool.
+ */
+export const HOOKED_TOOLS: ReadonlySet<string> = new Set(["subagent"])
+
 /** OpenCode's permission wildcard: `*` is any text, `?` one character, a trailing ` *` optional. */
 export const wildcard = (input: string, pattern: string): boolean => {
   let escaped = pattern
@@ -51,7 +58,12 @@ export const whollyDisabled = (action: string, rules: ReadonlyArray<Rule>): bool
 export const callable = (tools: ReadonlyArray<HostTool>, rules: ReadonlyArray<Rule>): ReadonlyMap<string, HostTool> =>
   new Map(
     tools
-      .filter((tool) => !CODE_TOOLS.has(tool.id) && !whollyDisabled(tool.options?.permission ?? tool.id, rules))
+      .filter(
+        (tool) =>
+          !CODE_TOOLS.has(tool.id) &&
+          !HOOKED_TOOLS.has(tool.id) &&
+          !whollyDisabled(tool.options?.permission ?? tool.id, rules),
+      )
       .map((tool) => [tool.id, tool] as const),
   )
 
