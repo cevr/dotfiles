@@ -11,8 +11,15 @@ import { STATUS, type Snapshot } from "./protocol.ts"
 type Pools = Record<string, { accounts: readonly AccountStatus[] }>
 const stamp = (at?: number) => at === undefined ? "unknown" : new Date(at).toISOString().slice(0, 16).replace("T", " ") + "Z"
 
-function Pane(props: { ctx: Plugin.Context; sessionID: string }) {
+type PanelInput = { readonly focused: boolean; readonly close: () => void }
+
+function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: PanelInput }) {
   const ctx = props.ctx
+  // The pane holds focus once open; Esc or q hands it back to the prompt.
+  ctx.keymap.layer(() => ({
+    enabled: () => props.panel.focused,
+    commands: [{ title: "Close the account pool", group: "Pool", bind: "escape,q", run: () => props.panel.close() }],
+  }))
   const [pool, setPool] = createSignal<Pools>()
   const [snapshot, setSnapshot] = createSignal<Snapshot>()
   const [codex, setCodex] = createSignal<{ threads: readonly Thread[]; budget?: Budget }>()
@@ -99,7 +106,11 @@ function Pane(props: { ctx: Plugin.Context; sessionID: string }) {
 export default Plugin.define({
   id: "dotfiles-opencode.status",
   setup(ctx) {
-    ctx.keymap.layer(() => ({ mode: "global", commands: [{ id: "gent.pool", title: "Account pool, agents and runs", slash: { name: "pool" }, run() { ctx.ui.panel.open("pool") } }] }))
-    ctx.ui.slot({ append: "session.panel", render: (input) => input.name === "pool" ? <Pane ctx={ctx} sessionID={input.sessionID} /> : null })
+    ctx.keymap.layer(() => ({ mode: "global", commands: [{ id: "dotfiles-opencode.pool.open", title: "Account pool, agents and runs", slash: { name: "pool" }, run() {
+      // /pool toggles, as /diff does.
+      if (ctx.ui.panel.current()?.name === "pool") ctx.ui.panel.close()
+      else ctx.ui.panel.open("pool")
+    } }] }))
+    ctx.ui.slot({ append: "session.panel", render: (input) => input.name === "pool" ? <Pane ctx={ctx} sessionID={input.sessionID} panel={input} /> : null })
   },
 })
