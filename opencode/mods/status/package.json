@@ -1,1 +1,1 @@
-{ "name": "@dotfiles/opencode-status", "version": "0.0.0", "private": true, "type": "module", "exports": { "./server": "./src/server.ts", "./tui": "./src/index.tsx" } }
+{ "name": "@dotfiles/opencode-status", "version": "0.0.0", "private": true, "type": "module", "exports": { "./server": "./src/Status.plugin.ts", "./tui": "./src/Status.tui.tsx" } }

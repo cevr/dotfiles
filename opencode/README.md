@@ -119,6 +119,32 @@ the keys earlier processes wrote, so a new process starts where the last
 one stopped. Decisions read Effect's `Clock`; the seam tests move it with
 `TestClock`.
 
+## Status
+
+`mods/status` draws the `/pool` pane. Its server plugin answers the
+`dotfiles-opencode.status` RPC (`src/domain/Status.ts`) with the live
+agents from orchestrate's call log and the units of each orchestrate run,
+which the orchestrate skill's status script derives. Its options are `log`
+and `statusScript`. An absent option takes its default. A malformed one
+stops the plugin at setup, with a message that names it. The TUI plugin
+(`src/Status.tui.tsx`) reads this RPC and the pool's every two seconds. It
+keeps the last good reading when a read fails or does not decode, and it
+draws the rows `src/domain/Pane.ts` projects.
+
+The model (`src/domain/`) has no aggregate, because status decides nothing.
+It holds a view, values and externals:
+
+- View: `AgentCalls` (`Agents/AgentCalls.view.ts`), a fold of the call
+  log's `call` and `done` lines keyed by session and call id. A call is live
+  until it returns `completed` or `error`.
+- Values: the status script's table as units (`RunTable.ts`), the pane's
+  rows (`Pane.ts`) and the RPC's shapes (`Status.ts`).
+- Externals: the call log (`CallLog`) and the runs with their status
+  script tables (`RunTables`). Each one is a `Context.Service` in `domain/`,
+  with a live layer and a test layer in `host/`.
+
+Status stores nothing. Each RPC call reads the call log and the runs again.
+
 ## The code kernel
 
 `mods/kernel` gives the model a `kernel` tool, `{ code, reset? }`, ported
