@@ -3,64 +3,50 @@
 Our orchestration harness and Prime look on OpenCode 2.x. The fork's public
 plugin hooks supply the UI; orchestration policy lives in this repository.
 
-## Load the plugins
+## Your daily `opencode`
 
-Use absolute paths from your checkout in `opencode.json`:
-
-```json
-{
-  "plugins": [
-    "~/Developer/personal/dotfiles/opencode/mods/orchestrate",
-    "~/Developer/personal/dotfiles/opencode/mods/codex",
-    "~/Developer/personal/dotfiles/opencode/mods/status",
-    "~/Developer/personal/dotfiles/opencode/mods/pool"
-  ]
-}
+```sh
+bun run daily            # build the fork, link ~/.local/bin/opencode, merge the config
+bun run daily --skip-build
 ```
 
-Keep the existing Anthropic auth plugin before the pool when using Claude
-subscription accounts. The pool's `sources` option can also read gent's
-accounts in place: `[{ "kind": "gent", "dir": "/absolute/path/.gent/auth" }]`.
-No credentials travel over the status RPC.
+`scripts/daily.ts` builds the fork in `OPENCODE_DEV` (default: the
+`prime-look` Rift) as a release binary named `<version>-prime.<commit>`,
+copies it to `~/.local/share/opencode-prime/`, and links
+`~/.local/bin/opencode` to it; `~/.local/bin` precedes `~/.bun/bin`, so a new
+terminal runs it, and `opencode2` stays the stock release. As a `latest`
+build it shares the stock release's database, logins and background
+service; the version change restarts that service as ours. It merges into
+`~/.config/opencode/opencode.json` the Anthropic auth plugin, the pool (on
+gent's accounts when `~/.gent/auth` exists), orchestrate and status, the role
+models and `autoupdate: false`, and into `cli.json` Prime, status and the
+Prime theme. Every other key and plugin there is kept. Rerun it after a fork
+change.
 
-In `cli.json`, load `mods/prime` and `mods/status` by absolute path.
+Why a fork: stock OpenCode's plugin API covers the pool, the `/pool` pane,
+the orchestrate guard, the Sabbath and the pace hold. It has no hook for the
+transcript's message and tool rows, header or layout, which the Prime look
+replaces, and no per-agent compaction window. The fork adds only those.
+
 `/pool` opens a host-owned panel, which becomes fullscreen on a narrow
 terminal. It shows pool accounts, holds, 5-hour and 7-day usage and reset
-times; live agents with their call-log descriptions; the current session's
-Codex threads; and each orchestrate run's unit states. Reads refresh every
-two seconds while open, retain the last reading on errors, and stop when
-closed. The panel uses the current theme. Prime owns the dock counts.
+times; live agents with their call-log descriptions; and each orchestrate
+run's unit states. Reads refresh every two seconds while open, retain the
+last reading on errors, and stop when closed. The pane takes focus when it
+opens; Esc or `q` closes it, and `/pool` from the prompt toggles it.
 
 `bun run gamut up sim` loads these server and TUI plugins with a scripted
 model and a scratch home. See [the gamut testbed](testbeds/gamut/README.md).
 It makes no live model request.
 
-## Codex workers
+## The other model family
 
-The direct tools are `codex_start`, `codex_send`, `codex_interrupt` and
-`codex_threads`: the Claude mod's schemas and operations, with OpenCode's
-`codex_` prefix so the Sabbath guard recognizes them. `start` takes
-`description` and `prompt`, plus optional `role` (`planner`, `implementor`,
-`verifier`, or the former `reviewer`), `unit`, `round`, `model`, `effort`,
-`cwd` and `sandbox`. The other turn tools take `thread`; `send` also takes
-`prompt`.
-
-The server calls the installed `codex-bridge ensure`, then its Unix-socket
-HTTP API. The daemon owns model-family resolution, role instructions,
-Codex budget latches, restart recovery and Sabbath interruption. A start
-held beyond its patience returns the daemon's fallback instruction; a
-latched turn starts automatically. No app-server is implemented here.
-
-Every thread belongs to the initiating OpenCode session. `experimental.idle`
-checks for a ready completion; a five-second timer handles a completion
-arriving later. `session.synthetic` with `delivery: "queue", resume: true`
-wakes that session with the final message. A stable message id prevents a
-lost bridge acknowledgement from duplicating the notice. Owners persist
-in plugin storage. Send and interrupt enforce ownership.
-
-The Codex plugin's `socket` and `pollMs` options support deterministic
-fixtures. Production uses the installed daemon and its default polling
-interval.
+Every role is an OpenCode subagent; its family is its model. `bun run daily`
+binds the planner and the implementor to the newest Claude Opus and the
+verifier to the newest GPT sol, on the ChatGPT subscription OpenCode signs in
+to itself (`opencode auth login openai`). To move a role to the other family
+for one call, pass the subagent tool's `model` (`provider/model#variant`).
+No Codex bridge, MCP server or thread tools are involved.
 
 ## Pace and effort
 
@@ -82,18 +68,18 @@ never reserves a stale slot.
 Cost of this choice: this is quota pacing, without Claude Code's calibrated
 per-role cost prediction, fair ticket queue, cross-host reservations or
 Sabbath-adjusted working-hour budget. Quota updates can lag a wave of starts.
-Codex uses its own plan's admission in the existing bridge, including its
-shared budget integration and automatic release of latched turns.
+The OpenAI provider is not pooled or paced: a verifier on GPT runs
+against the ChatGPT plan's own limits.
 
 `bun run agents` copies role prompts from the orchestrate skill and reads
 the Claude-family effort from its role table: planner `high`, implementor
-`medium`, verifier `medium`. Codex role effort stays the daemon's policy
-(luna implementor `max`). No generated prompt is edited by hand.
+`medium`, verifier `medium`. The orchestrate mod runs each role at that
+effort on whichever model it gets. No generated prompt is edited by hand.
 
 ## Checks
 
 ```sh
-export OPENCODE_DEV=/Users/cvr/Developer/personal/.rifts/opencode/prime-look
+export OPENCODE_DEV=~/Developer/personal/.rifts/opencode/prime-look
 bun run typecheck
 bun run test
 bun run agents -- --check
@@ -105,16 +91,14 @@ only when changing the lock file. If working in a Rift, set
 `OPENCODE_ANTHROPIC_AUTH` and `GENT_SOURCE` to their source checkouts so the
 pool integration tests run instead of skipping.
 
-The deterministic acceptance seams are the session API (Codex final-message
-wake-up, ownership isolation, lost-ack retry, ready-at-idle delivery, held
-starts and subagent pace), the pool RPC and quota calculation, the generated
-agent config, and opencode-drive frames (`scenarios/pool.ts`). The pane
-scenario covers populated, loading, empty and failed-refresh states.
+The deterministic acceptance seams are the session API (the guard, compaction
+per role, the Sabbath, held starts and subagent pace), the pool RPC and quota
+calculation, the generated agent config, `bun run daily`'s config merge, and
+opencode-drive frames (`scenarios/pool.ts`). The pane scenario covers
+populated, loading, empty and failed-refresh states, and closing it.
 
 ## Remaining Claude mod features
 
-Codex tool rows and footer lines do not yet draw live commands, edits,
-plans, context fill and compactions, and there is no separate `/codex` pane.
 The status mod's burn forecast, approaching-limit warning, login toasts,
 project labels, account rotation and adaptive compaction tuning are not
 ported. The existing role compaction windows and Sabbath guard remain.

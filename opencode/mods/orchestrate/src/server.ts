@@ -14,7 +14,7 @@
  *   fork's automatic compaction reads. Every compaction keeps the files, the
  *   step and the user's instructions word for word.
  * - Sabbath: from Friday sunset to 30 minutes after Saturday's at the owner's
- *   place, no subagent starts, no Codex tool runs, and a running subagent's
+ *   place, no subagent starts and a running subagent's
  *   next tool call is refused so it ends its turn. The main session answers
  *   as always.
  *
@@ -24,7 +24,6 @@
  * - `now`: a fixed time (ISO 8601) for the Sabbath clock, for tests.
  * - `place`: `{ name, lat, lon, timeZone }` for the Sabbath, default Knowlton, QC.
  * - `fullAgent`: true lets an untyped or general call run as asked.
- * - `codex`: tool name prefixes that start Codex work, default `["codex"]`.
  */
 import { Plugin } from "@opencode/plugin"
 import { appendFileSync, mkdirSync } from "node:fs"
@@ -97,7 +96,6 @@ export const orchestrate = (deps: Dependencies = {}) =>
       const now = clock(deps, options)
       const place: Place = isObject(options.place) ? (options.place as unknown as Place) : KNOWLTON
       const full = options.fullAgent === true
-      const codex: readonly string[] = Array.isArray(options.codex) ? options.codex.map(String) : ["codex"]
       const windowsFile = typeof options.windows === "string" ? options.windows : DEFAULT_FILE
       const logFile = typeof options.log === "string" ? options.log : DEFAULT_LOG
       const disposers: Array<() => Promise<void> | void> = []
@@ -108,7 +106,6 @@ export const orchestrate = (deps: Dependencies = {}) =>
           appendFileSync(logFile, `${JSON.stringify(call)}\n`)
         } catch {}
       }
-      const isCodex = (tool: string) => codex.some((prefix) => tool === prefix || tool.startsWith(`${prefix}_`))
 
       /** The model a new role subagent runs on, at the role's effort, when that model offers it. */
       const roleBase = async (sessionID: string, agentID: string) => {
@@ -176,7 +173,6 @@ export const orchestrate = (deps: Dependencies = {}) =>
             throw new Error(`${resting} ${message}`)
           }
           if (event.tool === SUBAGENT) deny("No agent starts now. Do not retry; start it again once work resumes.")
-          if (isCodex(event.tool)) deny("No Codex turn starts now. Do not retry; start it again once work resumes.")
           const session = await ctx.session.get({ sessionID: event.sessionID }).catch(() => undefined)
           if (session?.parentID)
             deny("Stop now: end your turn with one line on where you stopped. Make no more tool calls.")

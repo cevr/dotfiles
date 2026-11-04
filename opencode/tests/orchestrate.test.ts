@@ -101,32 +101,6 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
     expect(open.children.map((child) => child.agent).sort()).toEqual(["verifier", "worker"])
   }, RUN_MS)
 
-  test("Codex starts held by the bridge return the wait/fallback message without a synthetic completion", async () => {
-    const result = await run("codex-held", { scenario: "codex-held", now: WEDNESDAY, codexPlugin: join(ROOT, "mods/codex") })
-    expect(JSON.stringify(result.root!.messages)).toContain("Codex holds this turn and made no thread")
-    expect(JSON.stringify(result.root!.messages)).toContain("Run this role on Claude now")
-    expect((result.root!.messages as Array<{ type: string }>).filter((m) => m.type === "synthetic")).toEqual([])
-    expect(result.bridgeCalls!.filter((c) => c.path === "/ack")).toEqual([])
-  }, RUN_MS)
-
-  test("a Codex completion already ready at idle wakes the session through experimental.idle", async () => {
-    const result = await run("codex-idle", { scenario: "codex", now: WEDNESDAY, codexImmediate: true, codexPlugin: join(ROOT, "mods/codex") })
-    expect(JSON.stringify(result.root!.messages)).toContain("root: received SCRIPTED CODEX FINAL")
-    expect(result.acked).toBe(true)
-  }, RUN_MS)
-
-  test("Codex completion wakes its initiating idle session with the final message, once", async () => {
-    const result = await run("codex", { scenario: "codex", now: WEDNESDAY, codexPlugin: join(ROOT, "mods/codex") })
-    const messages = result.root!.messages as Array<{ type: string; text?: string }>
-    expect(messages.filter((m) => m.type === "synthetic" && m.text?.includes("SCRIPTED CODEX FINAL"))).toHaveLength(1)
-    expect(JSON.stringify(messages)).toContain("root: received SCRIPTED CODEX FINAL")
-    expect(result.acked).toBe(true)
-    expect(result.sessions.unrelated!.messages).toEqual([])
-    const start = result.bridgeCalls!.find((c) => c.path === "/start")!
-    expect(start.body).toMatchObject({ owner: result.root!.id, role: "implementor", model: "luna", description: "implementor wake r1" })
-    expect(result.bridgeCalls!.filter((c) => c.path === "/ack")).toHaveLength(2)
-  }, RUN_MS)
-
   test(
     "guard: an untyped subagent runs as the worker, `orchestrate-reviewer` as the verifier at medium effort",
     async () => {

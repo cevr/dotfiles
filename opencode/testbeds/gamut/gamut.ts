@@ -110,6 +110,8 @@ export const FAMILIES: Readonly<Record<string, { readonly provider: string; read
   "opencode-go/glm": { provider: "opencode-go", family: "glm" },
   "opencode-go/deepseek-flash": { provider: "opencode-go", family: "deepseek-flash" },
   "anthropic/claude-haiku": { provider: "anthropic", family: "claude-haiku" },
+  "anthropic/claude-opus": { provider: "anthropic", family: "claude-opus" },
+  "openai/gpt-sol": { provider: "openai", family: "gpt-sol" },
 }
 
 /** The provider gamut serves itself (`sim-model.ts`): no credential, no network. */
@@ -244,7 +246,7 @@ const CATALOG_URL = "https://models.opencode.ai/experimental/v2.0/api.json?type=
  * The model catalog OpenCode itself reads. Offline, the snapshot the fork
  * ships (`packages/core/src/models-dev/snapshot.txt`), which has the same shape.
  */
-const loadCatalog = async (fork: string | undefined): Promise<Catalog> => {
+export const loadCatalog = async (fork: string | undefined): Promise<Catalog> => {
   try {
     const response = await fetch(CATALOG_URL, { signal: AbortSignal.timeout(15_000) })
     if (!response.ok) throw new Error(`${CATALOG_URL} answered ${response.status}`)
@@ -901,7 +903,6 @@ const prepareAndLaunch = async (
 
   const plugins: ReadonlyArray<PluginEntry> = [
     join(PLUGINS, "orchestrate"),
-    join(PLUGINS, "codex"),
     { package: join(PLUGINS, "status"), options: { log: join(paths.home, ".cache/orchestrate/opencode-agents.jsonl"), statusScript: join(homedir(), ".claude/skills/orchestrate/scripts/status.ts") } },
     ...(usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin(paths.root), gentStore) : [poolPlugin]),
   ]

@@ -2,8 +2,6 @@
 // and activity come from the same collection Prime's dock counts.
 import { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
-import { CODEX_STATUS } from "../../codex/src/protocol.ts"
-import type { Budget, Thread } from "../../codex/src/bridge.ts"
 import type { AccountStatus } from "../../pool/src/pool.ts"
 import { POOL_STATUS } from "../../pool/src/protocol.ts"
 import { STATUS, type Snapshot } from "./protocol.ts"
@@ -22,7 +20,6 @@ function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: PanelInput
   }))
   const [pool, setPool] = createSignal<Pools>()
   const [snapshot, setSnapshot] = createSignal<Snapshot>()
-  const [codex, setCodex] = createSignal<{ threads: readonly Thread[]; budget?: Budget }>()
   const [errors, setErrors] = createSignal<string[]>([])
   const [at, setAt] = createSignal<number>()
   const abort = new AbortController()
@@ -35,14 +32,12 @@ function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: PanelInput
     const results = await Promise.allSettled([
       ctx.client.rpc(POOL_STATUS).status({}, { location, signal: abort.signal }),
       ctx.client.rpc(STATUS).status({}, { location, signal: abort.signal }),
-      ctx.client.rpc(CODEX_STATUS).status({ owner: props.sessionID }, { location, signal: abort.signal }),
     ])
     if (closed) return
-    const [p, s, c] = results
+    const [p, s] = results
     if (p.status === "fulfilled") setPool(p.value as Pools)
     if (s.status === "fulfilled") setSnapshot(s.value as Snapshot)
-    if (c.status === "fulfilled") setCodex(c.value as { threads: Thread[]; budget?: Budget })
-    setErrors(results.flatMap((r, i) => r.status === "rejected" ? [`${["Pool", "Agents and runs", "Codex"][i]} unavailable; keeping last reading`] : []))
+    setErrors(results.flatMap((r, i) => r.status === "rejected" ? [`${["Pool", "Agents and runs"][i]} unavailable; keeping last reading`] : []))
     setAt(Date.now())
     pending = false
   }
@@ -84,13 +79,7 @@ function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: PanelInput
         </Show>
         {heading(`Running agents (${agents().length})`)}
         <For each={agents()} fallback={muted("No running agents.")}>{(agent) => <text fg={theme().text.base}>◆ {agent.role} · {agent.description}</text>}</For>
-        {heading(`Codex threads (${codex()?.threads.length ?? 0})`)}
-        <Show when={codex()?.budget}>{(budget) => muted(budget().summary)}</Show>
-        <For each={codex()?.threads} fallback={muted(codex() ? "No Codex threads." : "Loading Codex threads…")}>{(thread) => (
-          <text fg={thread.status === "queued" ? theme().text.feedback.warning.base : theme().text.base}>
-            {thread.description} · {thread.status} · {thread.model}{thread.effort ? ` ${thread.effort}` : ""} · turn {thread.turns}{thread.held ? ` · ${thread.held}` : ""}
-          </text>
-        )}</For>
+
         {heading("Orchestrate runs")}
         <For each={snapshot()?.runs} fallback={muted(snapshot() ? "No run dir in this repo." : "Loading runs…")}>{(run) => (
           <box flexDirection="column">

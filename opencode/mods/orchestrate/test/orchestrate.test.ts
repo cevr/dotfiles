@@ -100,14 +100,9 @@ describe("the Sabbath", () => {
     return { call, cleanup: cleanup as (() => Promise<void>) | undefined }
   }
 
-  test("in it, Codex tools and a running subagent's tools are refused; the main session's own tools are not", async () => {
+  test("in it, a running subagent's tools are refused; the main session's own tools are not", async () => {
     const friday = await host(Date.parse(FRIDAY_EVENING), { root: {}, child: { parentID: "root" } })
     try {
-      for (const tool of ["codex", "codex_turn", "codex_reply"]) {
-        const refused = await friday.call(tool, "root")
-        expect(refused).toStartWith("It is the Sabbath; agent work resumes at Sat ")
-        expect(refused).toEndWith("No Codex turn starts now. Do not retry; start it again once work resumes.")
-      }
       expect(await friday.call("subagent", "root", { prompt: "x" })).toEndWith(
         "No agent starts now. Do not retry; start it again once work resumes.",
       )
@@ -115,13 +110,11 @@ describe("the Sabbath", () => {
         "Stop now: end your turn with one line on where you stopped. Make no more tool calls.",
       )
       expect(await friday.call("shell", "root")).toBeUndefined()
-      expect(await friday.call("codexify", "root")).toBeUndefined()
     } finally {
       await friday.cleanup?.()
     }
     const wednesday = await host(Date.parse(WEDNESDAY), { root: {}, child: { parentID: "root" } })
     try {
-      expect(await wednesday.call("codex_turn", "root")).toBeUndefined()
       expect(await wednesday.call("shell", "child")).toBeUndefined()
     } finally {
       await wednesday.cleanup?.()
