@@ -3,7 +3,7 @@
 // commands against a real OpenCode on the `sim` preset. The end-to-end test
 // needs OPENCODE_DEV, the fork, like tests/prime.test.ts.
 import { Database } from "bun:sqlite"
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -385,7 +385,11 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/gamut.test.ts: the end-to-end run skipped. Set OPENCODE_DEV to the fork to run it.")
 
 describe.skipIf(!fork)("gamut on the sim preset", () => {
-  const state = join(mkdtempSync(join(tmpdir(), "ocg-gamut-e2e-")), "state.json")
+  // Made in beforeAll: a skipped describe still runs its body, so a dir made here would leak.
+  let state = ""
+  beforeAll(() => {
+    state = join(mkdtempSync(join(tmpdir(), "ocg-gamut-e2e-")), "state.json")
+  })
   const gamut = (...args: string[]) => {
     const run = Bun.spawnSync(["bun", join(root, "testbeds/gamut/gamut.ts"), ...args], {
       env: { ...process.env, GAMUT_STATE: state },
