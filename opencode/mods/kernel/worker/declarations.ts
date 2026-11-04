@@ -17,7 +17,7 @@
  */
 import { types } from "node:util"
 import { parseSync, type Expression, type Node, type Statement } from "oxc-parser"
-import type { Json, SnapshotBinding } from "./protocol.ts"
+import type { Json, SnapshotBinding } from "../kernel/frame.ts"
 
 /** The key that marks a stored declaration; the codec's clones share it. */
 const SOURCE_TAG = "$kernel"

@@ -16,35 +16,26 @@
  *   (declarations.ts), run again first, then every other value as a clone
  *   (codec.ts).
  *
- * The host launches it as `bun --config=/dev/null --no-env-file worker.ts`
+ * The host launches it as `bun --config=/dev/null --no-env-file program.ts`
  * under a shell that points stderr at stdout, with frames on fd 3 and 4.
  *
  * @module
  */
 import { createRequire } from "node:module"
 import { types } from "node:util"
-import { decodeBinding, encodeSnapshot, MAX_SNAPSHOT_BYTES } from "./codec.ts"
-import { declarationsOf, decodeDeclaration, makeDeclarations, type Declared } from "./declarations.ts"
+import type { Evaluation, Json, Listing, Request, Response, Snapshot, SnapshotBinding } from "../kernel/frame.ts"
 import {
-  encodeFrame,
-  makeBoundedOutput,
-  makeFrameReader,
   MAX_CALLS_PER_CELL,
   MAX_DISPLAY_CHARS,
   MAX_DISPLAY_HEAD_CHARS,
   MAX_PENDING_CALLS,
+  MAX_SNAPSHOT_BYTES,
   MAX_SOURCE_CHARS,
-  outputMarker,
-  REQUEST_FD,
-  RESPONSE_FD,
-  type Evaluation,
-  type Json,
-  type Listing,
-  type Request,
-  type Response,
-  type Snapshot,
-  type SnapshotBinding,
-} from "./protocol.ts"
+} from "../kernel/limits.ts"
+import { makeBoundedOutput } from "../kernel/output.ts"
+import { encodeFrame, makeFrameReader, outputMarker, oversized, REQUEST_FD, RESPONSE_FD } from "../kernel/wire.ts"
+import { decodeBinding, encodeSnapshot } from "./codec.ts"
+import { declarationsOf, decodeDeclaration, makeDeclarations, type Declared } from "./declarations.ts"
 
 /** Uncaught errors kept for the next cell; later ones between two cells are dropped. */
 const MAX_STRAY_ERRORS = 20
@@ -522,12 +513,21 @@ const descriptorTransport = (): Transport => {
   return {
     requests: (async function* () {
       const reader = makeFrameReader()
-      for await (const chunk of Bun.file(REQUEST_FD).stream()) for (const frame of reader.push(chunk)) yield frame as Request
+      for await (const chunk of Bun.file(REQUEST_FD).stream()) {
+        const read = reader.push(chunk)
+        // The host encoded each frame from `Request`, so its JSON is one.
+        for (const text of read.frames) yield JSON.parse(text) as Request
+        if (read.error !== undefined) {
+          process.stderr.write(`kernel worker: ${read.error}\n`)
+          process.exit(1)
+        }
+      }
     })(),
     send: (response) => {
-      const bytes = encodeFrame(response)
+      const encoded = encodeFrame(response)
+      if (encoded._tag === "Oversized") return Promise.reject(new Error(oversized(encoded.size)))
       queue = queue.then(async () => {
-        writer.write(bytes)
+        writer.write(encoded.bytes)
         await writer.flush()
       })
       return queue

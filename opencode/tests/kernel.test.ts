@@ -1,7 +1,7 @@
 // The kernel in real OpenCode (the fork, through its SDK) on the scripted
 // model: two kernel calls in one session share a binding, the first reads a
 // file through `tools.read`, and `denyExecute` keeps code mode's `execute` from
-// the model. The kernel on its own is mods/kernel/test.
+// the model. The kernel on its own is tested beside its code in mods/kernel.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
