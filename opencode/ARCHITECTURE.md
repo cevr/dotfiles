@@ -20,17 +20,20 @@ mods/<mod>/
         <Noun>.policy.ts            "whenever X, do Y": event in, commands out
         <Noun>.external.ts          a system outside the model: a Context.Service interface and its errors
       <Value>.ts                    plain value schemas and pure helpers
+      <Mod>.model.ts                the handlers: gather inputs through externals, send each command to its aggregate, record the outcome
     host/                   adapters: OpenCode's plugin context, storage, files, processes, HTTP
       <Noun>.ts                     Context.Service + its live Layer; a faithful layerTest beside it
     <Mod>.plugin.ts         the composition root
   test/
     <Subdomain>.story.test.ts       given events, when a command, then events, a rejection, a view
+    <Value>.test.ts                 a pure value module's own cases
     <Mod>.plugin.test.ts            the plugin seam with test layers
 ```
 
 - One block per file, named by its kind. Folders are subdomains. No barrel files. Import with relative paths and the `.ts` extension.
 - `domain/` never imports `@opencode/plugin`, `node:*`, `Bun` or a host adapter. What it needs from outside is an `.external.ts` service, and its implementation lives in `host/`.
-- `lib/` (`opencode/lib/`) holds the few shared helpers every mod uses: the `Decider` type, the story runner. A mod may import `../../../lib/*.ts`. Nothing domain-specific goes there.
+- `lib/` (`opencode/lib/`) holds the few shared helpers every mod uses: `decider.ts` (`Fold`, `Decider`, `fold`) and `story.ts` (`make(decider)(given, clock, when, then, rejected, state, view)`), with their own tests beside them. Import it relative to the file: `../../../lib/` from `src/`, one more `../` per folder below. `scripts/link-fork.ts` links `lib/node_modules` as it does the mods'. Nothing domain-specific goes there.
+- A subdomain may hold only externals or values when it has no aggregate (`Agents/CompactionWindows.external.ts`).
 
 ## Building blocks without alchemy
 
@@ -39,18 +42,20 @@ mods/<mod>/
 | `Domain.Event("X", fields)` | `Schema.TaggedStruct("X", fields)` plus a same-name interface |
 | `Domain.Command("X", { input, events, rejects })` | `Schema.TaggedStruct("X", input)`. Its file exports the events and rejections too, and a `X.Rejections` union type |
 | `Domain.Rejection("X", fields)` | `Schema.TaggedError<X>()("X", fields)`, always carrying its evidence |
-| `Domain.Aggregate` | a `Decider` from `lib/decider.ts`: `{ initial, decide(state, command, now) → Effect<events, rejection>, evolve(state, event) → state }` |
+| `Domain.Aggregate` | a `Decider` from `lib/decider.ts`: `{ initial, decide(state, command, now) → Effect<events, rejection>, evolve(state, event) → state }`. Its id is a branded schema, or a struct schema when the key has parts (`ToolCallId { sessionID, callID }`). A decider whose rules need no history keeps a trivial state |
 | `Domain.View` | `{ initial, evolve(state, event) }` keyed by what it is about; a read is a pure function of that state |
 | `Domain.Policy` | a pure `react(event) → commands`, run by the plugin's dispatcher; its commands carry deterministic ids |
 | `Domain.External` | a `Context.Service` declared in `domain/`, implemented in `host/` |
-| `Domain.Model` + handlers Layer | `<Mod>.plugin.ts`: one Layer built once and provided once |
+| `Domain.Model` + handlers Layer | `domain/<Mod>.model.ts`: the handlers, effectful, requiring only the externals. `<Mod>.plugin.ts` builds their Layer once and registers the hooks |
 
 The rules that keep a model correct come over unchanged:
 
 - `decide` is pure. It reads time from its `now` argument and nothing from outside. It returns events, `[]` when the state already is what the command asks for, or a declared rejection. It never performs I/O.
 - `evolve` and a view's `evolve` are total and never fail. Events carry the outcome `decide` worked out, so `evolve` copies it.
+- Every command goes through its aggregate's `decide`, the one decision entry point, so a story exercises what production runs. A handler narrows the rejection union with `Effect.catchTag` where it needs to.
+- `decide` returns events or a rejection, never both. A refusal someone must see later (a `denied` line in a log) is recorded by the handler from the rejection.
 - Never `throw`. Expected failures are tagged errors in `E`; adapters classify a host or SDK failure once, with `Effect.tryPromise`.
-- Persistence is a port. An aggregate whose history someone reads (the status pane, an audit) is stored as its events in an `EventLog` adapter, keyed `stream:seq`. Otherwise store the folded state. Each mod chooses which and says so in its README.
+- Persistence is a port. An aggregate whose history someone reads (the status pane, an audit) is stored as its events in an `EventLog` adapter, keyed `stream:seq`. Otherwise store the folded state. Each mod chooses which and says so in its README. A format another program already reads (orchestrate's JSONL call log, which the status mod reads) stays byte-compatible: its lines are a view of the events, written by the store adapter.
 - Policies run at least once, so their effects are idempotent.
 
 ## The composition root
@@ -69,7 +74,10 @@ export default Plugin.define({
 })
 ```
 
-- Options are a `Schema` decoded here; a default lives in the schema.
+- Options are a `Schema` decoded here; a default lives in the schema. An absent option takes its default; a malformed one is a defect at setup (`Effect.orDie`, naming the option), never a silent fallback. A malformed *reply* from another plugin or system at run time is different: its adapter decides (the pool's pace answer fails open).
+- Errors the host reads come from the host: `Tool` (and `Tool.Error`) from `@opencode/plugin/effect`, never a local copy.
+- Transform callbacks (`ctx.agent.transform` and the rest) are synchronous. Load what they need before registering, or run a synchronous effect inside (`Effect.runSync` of a sync read).
+- Decisions read `now` from the mod's clock (the `now` option, when a test fixes it). Timestamps a log writes may use the wall clock; say which in the README.
 - Hooks registered through `ctx` are owned by the plugin's scope. Background fibers start with `Effect.forkScoped`.
 - A handler is thin: decode, read context, call the service, map the small public error set.
 - Services are `Context.Service` classes with package-qualified keys (`dotfiles-opencode/<mod>/<Noun>`). Public and non-trivial operations are `Effect.fn("<Noun>.<operation>")`.
