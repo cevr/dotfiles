@@ -26,9 +26,9 @@ bun run gamut login anthropic            # add one Claude subscription login (on
    `reviewer` subagent; the orchestrate, Codex bridge and status plugins,
    with worker/implementor/planner/verifier models bound to the preset;
    for a Claude preset, the Anthropic auth plugin and
-   then `plugins/pool` as server plugins; other presets load an empty pool), `config/cli.json` (our TUI
+   then `mods/pool` as server plugins; other presets load an empty pool), `config/cli.json` (our TUI
    plugins, those whose `package.json` exports `./tui`, by absolute path,
-   `plugins/prime` first, and the Prime theme), and the roster block of the
+   `mods/prime` first, and the Prime theme), and the roster block of the
    fixture's `AGENTS.md`.
 3. Gives OpenCode a home, database and config directory of the run's own. Its
    environment is built from an allowlist: the terminal basics and the proxy
@@ -83,6 +83,6 @@ No preset uses an OpenAI account.
 
 ## State
 
-The run's state file is `$TMPDIR/opencode-gamut-opencode-gent.json`;
+The run's state file is `$TMPDIR/opencode-gamut-dotfiles-opencode.json`;
 `GAMUT_STATE` overrides it, so the e2e test can run beside a live run. The
 scratch root holds a copy of the login, so `down` deletes it.

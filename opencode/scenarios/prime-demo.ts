@@ -44,8 +44,8 @@ export default OpenCodeDriver.use(
       animations: false,
       tabs: { mode: "off" },
       theme: { name: process.env.SCENARIO_THEME ?? "opencode", mode: "dark" },
-      // SCENARIO_PRIME=1 loads the Prime look plugin from plugins/prime.
-      ...(process.env.SCENARIO_PRIME ? { plugins: [`${process.cwd()}/plugins/prime`] } : {}),
+      // SCENARIO_PRIME=1 loads the Prime look plugin from mods/prime.
+      ...(process.env.SCENARIO_PRIME ? { plugins: [`${process.cwd()}/mods/prime`] } : {}),
     },
     // Tall enough that the splash stays on screen in every Ctrl+O mode.
     tui: { viewport: { cols: 106, rows: 56 } },

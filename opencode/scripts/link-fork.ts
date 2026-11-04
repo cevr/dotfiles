@@ -15,7 +15,7 @@ if (!existsSync(path.join(target, "@opencode/plugin"))) {
   process.exit(1)
 }
 
-const root = path.resolve(import.meta.dir, "../plugins")
+const root = path.resolve(import.meta.dir, "../mods")
 for (const name of readdirSync(root)) {
   const link = path.join(root, name, "node_modules")
   const current = existsSync(link) || isLink(link) ? lstatSync(link) : undefined

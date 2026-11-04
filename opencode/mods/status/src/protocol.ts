@@ -1,5 +1,5 @@
 export const STATUS = {
-  id: "opencode-gent.status",
+  id: "dotfiles-opencode.status",
   methods: { status: { input: { type: "object" }, output: { type: "object" } } },
   events: {},
 } as const

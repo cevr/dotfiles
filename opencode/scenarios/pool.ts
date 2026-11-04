@@ -13,8 +13,8 @@ const accounts = [
   { credentialID: "gent:alpha", live: 1, load: 1, noRoom: false, reading: { at: now, windows: [{ name: "5h", utilization: 0.23, resetAt: now + 3600000 }, { name: "7d", utilization: 0.44, resetAt: now + 86400000 }] } },
   { credentialID: "gent:beta", live: 0, load: 2, noRoom: true, hold: { kind: "usage-limit", until: now + 7200000, at: now }, reading: { at: now, windows: [{ name: "5h", utilization: 1, resetAt: now + 7200000 }, { name: "7d", utilization: 0.72, resetAt: now + 172800000 }] } },
 ]
-const poolRpc = { id: "opencode-gent.pool", methods: { status: { input: { type: "object" }, output: { type: "object" } } }, events: {} }
-const codexRpc = { id: "opencode-gent.codex", methods: { status: { input: { type: "object" }, output: { type: "object" } } }, events: {} }
+const poolRpc = { id: "dotfiles-opencode.pool", methods: { status: { input: { type: "object" }, output: { type: "object" } } }, events: {} }
+const codexRpc = { id: "dotfiles-opencode.codex", methods: { status: { input: { type: "object" }, output: { type: "object" } } }, events: {} }
 const stateFile = `${out}/pool-state`
 writeFileSync(stateFile, "loading")
 const fake = `export default {id: "fixture.pool", async setup(ctx) {
@@ -31,10 +31,10 @@ const fake = `export default {id: "fixture.pool", async setup(ctx) {
 export default OpenCodeDriver.use({
   opencode: { dev: process.env.OPENCODE_DEV! },
   config: { plugins: [
-    { package: `${root}/plugins/orchestrate`, options: { now: "2026-11-04T15:00:00Z", log: `${out}/agents.jsonl` } },
-    { package: `${root}/plugins/status`, options: { log: `${out}/agents.jsonl`, statusScript: join(homedir(), ".claude/skills/orchestrate/scripts/status.ts") } },
+    { package: `${root}/mods/orchestrate`, options: { now: "2026-11-04T15:00:00Z", log: `${out}/agents.jsonl` } },
+    { package: `${root}/mods/status`, options: { log: `${out}/agents.jsonl`, statusScript: join(homedir(), ".claude/skills/orchestrate/scripts/status.ts") } },
   ] },
-  tuiConfig: { animations: false, tabs: { mode: "off" }, theme: { name: theme, mode: process.env.SCENARIO_MODE === "light" ? "light" : "dark" }, plugins: [`${root}/plugins/prime`, `${root}/plugins/status`] },
+  tuiConfig: { animations: false, tabs: { mode: "off" }, theme: { name: theme, mode: process.env.SCENARIO_MODE === "light" ? "light" : "dark" }, plugins: [`${root}/mods/prime`, `${root}/mods/status`] },
   tui: { viewport: { cols: Number(process.env.SCENARIO_COLS ?? 144), rows: 60 } },
   project: { git: true, files: {
     ".opencode/plugins/fixture/package.json": JSON.stringify({ name: "fixture-pool", type: "module", exports: { "./server": "./server.ts" } }),

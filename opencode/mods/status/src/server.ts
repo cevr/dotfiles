@@ -5,7 +5,7 @@ import { readAgents, readRuns } from "./read.ts"
 import { STATUS } from "./protocol.ts"
 
 export default Plugin.define({
-  id: "opencode-gent.status",
+  id: "dotfiles-opencode.status",
   async setup(ctx) {
     const log = typeof ctx.options.log === "string" ? ctx.options.log : join(homedir(), ".cache/orchestrate/opencode-agents.jsonl")
     const script = typeof ctx.options.statusScript === "string" ? ctx.options.statusScript : undefined

@@ -1,4 +1,4 @@
-# opencode-gent
+# OpenCode mods
 
 Our orchestration harness and Prime look on OpenCode 2.x. The fork's public
 plugin hooks supply the UI; orchestration policy lives in this repository.
@@ -10,10 +10,10 @@ Use absolute paths from your checkout in `opencode.json`:
 ```json
 {
   "plugins": [
-    "/absolute/path/opencode-gent/plugins/orchestrate",
-    "/absolute/path/opencode-gent/plugins/codex",
-    "/absolute/path/opencode-gent/plugins/status",
-    "/absolute/path/opencode-gent/plugins/pool"
+    "~/Developer/personal/dotfiles/opencode/mods/orchestrate",
+    "~/Developer/personal/dotfiles/opencode/mods/codex",
+    "~/Developer/personal/dotfiles/opencode/mods/status",
+    "~/Developer/personal/dotfiles/opencode/mods/pool"
   ]
 }
 ```
@@ -23,7 +23,7 @@ subscription accounts. The pool's `sources` option can also read gent's
 accounts in place: `[{ "kind": "gent", "dir": "/absolute/path/.gent/auth" }]`.
 No credentials travel over the status RPC.
 
-In `cli.json`, load `plugins/prime` and `plugins/status` by absolute path.
+In `cli.json`, load `mods/prime` and `mods/status` by absolute path.
 `/pool` opens a host-owned panel, which becomes fullscreen on a narrow
 terminal. It shows pool accounts, holds, 5-hour and 7-day usage and reset
 times; live agents with their call-log descriptions; the current session's
@@ -64,7 +64,7 @@ interval.
 
 ## Pace and effort
 
-A new subagent passes `opencode-gent.pool`'s `pace` RPC in the
+A new subagent passes `dotfiles-opencode.pool`'s `pace` RPC in the
 `tool.execute.before` hook. Follow-ups keep running. Models outside the
 pool and unavailable pace RPCs fail open, as the Claude hook does for an
 unreachable host.

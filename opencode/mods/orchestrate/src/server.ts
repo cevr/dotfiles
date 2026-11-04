@@ -91,7 +91,7 @@ const clock = (deps: Dependencies, options: Plugin.Context["options"]): (() => n
 
 export const orchestrate = (deps: Dependencies = {}) =>
   Plugin.define({
-    id: "opencode-gent.orchestrate",
+    id: "dotfiles-opencode.orchestrate",
     setup: async (ctx) => {
       const options = ctx.options
       const now = clock(deps, options)

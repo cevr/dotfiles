@@ -97,7 +97,7 @@ function Pane(props: { ctx: Plugin.Context; sessionID: string }) {
 }
 
 export default Plugin.define({
-  id: "opencode-gent.status",
+  id: "dotfiles-opencode.status",
   setup(ctx) {
     ctx.keymap.layer(() => ({ mode: "global", commands: [{ id: "gent.pool", title: "Account pool, agents and runs", slash: { name: "pool" }, run() { ctx.ui.panel.open("pool") } }] }))
     ctx.ui.slot({ append: "session.panel", render: (input) => input.name === "pool" ? <Pane ctx={ctx} sessionID={input.sessionID} /> : null })

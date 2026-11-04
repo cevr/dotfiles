@@ -1,4 +1,4 @@
 node_modules/
-plugins/*/node_modules
+mods/*/node_modules
 out/
 media/

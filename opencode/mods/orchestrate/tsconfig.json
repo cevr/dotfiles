@@ -1,6 +1,6 @@
 {
   // The plugin compiles against OpenCode's own sources (linked by
-  // scripts/link-fork.ts), like plugins/prime.
+  // scripts/link-fork.ts), like mods/prime.
   "compilerOptions": {
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "target": "ESNext",

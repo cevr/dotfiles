@@ -75,7 +75,7 @@ const gentSources = (options: Context["options"]): ReadonlyArray<{ dir: string; 
 }
 
 export default Plugin.define({
-  id: "opencode-gent.pool",
+  id: "dotfiles-opencode.pool",
   setup: async (ctx) => {
     const providers = providerMap(ctx.options)
     const sweepMinutes =

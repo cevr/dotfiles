@@ -1,14 +1,14 @@
 // The orchestrate port: the role agents against the orchestrate skill they
 // come from, and three runs of real OpenCode (the fork, through its SDK) on
 // the scripted model: the guard, compaction per role, and the Sabbath stop.
-// The plugin's rules on their own are plugins/orchestrate/test.
+// The plugin's rules on their own are mods/orchestrate/test.
 import { afterAll, describe, expect, test } from "bun:test"
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { build, DEFAULT_SOURCE, OUT, parseAgent, ROOT } from "../scripts/agents.ts"
-import { definitions, effort, ROLES } from "../plugins/orchestrate/src/roles.ts"
-import { KEEP } from "../plugins/orchestrate/src/windows.ts"
+import { definitions, effort, ROLES } from "../mods/orchestrate/src/roles.ts"
+import { KEEP } from "../mods/orchestrate/src/windows.ts"
 import type { Result, Spec } from "./orchestrate/run.ts"
 import { REVIEW_TASK, SUMMARY, UNTYPED_TASK } from "./orchestrate/sim.ts"
 
@@ -42,7 +42,7 @@ describe.skipIf(!skill)("the role agents", () => {
 
   test("--check passes on the written file and fails on a hand edit", () => {
     const root = join(scratch, "check")
-    mkdirSync(join(root, "plugins/orchestrate/src"), { recursive: true })
+    mkdirSync(join(root, "mods/orchestrate/src"), { recursive: true })
     const file = join(root, OUT)
     const check = () =>
       Bun.spawnSync([process.execPath, join(ROOT, "scripts/agents.ts"), "--check", "--root", root], { stderr: "pipe" })
@@ -62,7 +62,7 @@ const run = async (name: string, spec: Omit<Spec, "base" | "fork" | "plugin">): 
   const home = join(base, "home")
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
-  writeFileSync(file, JSON.stringify({ ...spec, base, fork: resolve(fork!), plugin: join(ROOT, "plugins/orchestrate") }))
+  writeFileSync(file, JSON.stringify({ ...spec, base, fork: resolve(fork!), plugin: join(ROOT, "mods/orchestrate") }))
   const child = Bun.spawn([process.execPath, join(import.meta.dir, "orchestrate/run.ts"), file], {
     env: {
       PATH: process.env.PATH ?? "",
@@ -102,7 +102,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   }, RUN_MS)
 
   test("Codex starts held by the bridge return the wait/fallback message without a synthetic completion", async () => {
-    const result = await run("codex-held", { scenario: "codex-held", now: WEDNESDAY, codexPlugin: join(ROOT, "plugins/codex") })
+    const result = await run("codex-held", { scenario: "codex-held", now: WEDNESDAY, codexPlugin: join(ROOT, "mods/codex") })
     expect(JSON.stringify(result.root!.messages)).toContain("Codex holds this turn and made no thread")
     expect(JSON.stringify(result.root!.messages)).toContain("Run this role on Claude now")
     expect((result.root!.messages as Array<{ type: string }>).filter((m) => m.type === "synthetic")).toEqual([])
@@ -110,13 +110,13 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   }, RUN_MS)
 
   test("a Codex completion already ready at idle wakes the session through experimental.idle", async () => {
-    const result = await run("codex-idle", { scenario: "codex", now: WEDNESDAY, codexImmediate: true, codexPlugin: join(ROOT, "plugins/codex") })
+    const result = await run("codex-idle", { scenario: "codex", now: WEDNESDAY, codexImmediate: true, codexPlugin: join(ROOT, "mods/codex") })
     expect(JSON.stringify(result.root!.messages)).toContain("root: received SCRIPTED CODEX FINAL")
     expect(result.acked).toBe(true)
   }, RUN_MS)
 
   test("Codex completion wakes its initiating idle session with the final message, once", async () => {
-    const result = await run("codex", { scenario: "codex", now: WEDNESDAY, codexPlugin: join(ROOT, "plugins/codex") })
+    const result = await run("codex", { scenario: "codex", now: WEDNESDAY, codexPlugin: join(ROOT, "mods/codex") })
     const messages = result.root!.messages as Array<{ type: string; text?: string }>
     expect(messages.filter((m) => m.type === "synthetic" && m.text?.includes("SCRIPTED CODEX FINAL"))).toHaveLength(1)
     expect(JSON.stringify(messages)).toContain("root: received SCRIPTED CODEX FINAL")

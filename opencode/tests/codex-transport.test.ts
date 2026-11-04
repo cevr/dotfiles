@@ -18,7 +18,7 @@ test("Codex ensures the daemon once and does not replay an HTTP-refused start", 
     return Response.json({ error: "budget refuses start" }, { status: 409 })
   } })
   try {
-    const source = join(import.meta.dir, "../plugins/codex/src/bridge.ts")
+    const source = join(import.meta.dir, "../mods/codex/src/bridge.ts")
     const code = `import { Bridge } from ${JSON.stringify(source)};
 const bridge = new Bridge();
 for (let i = 0; i < 2; i++) {

@@ -6,7 +6,7 @@
 // word. The worker's prompt and description come from its hand-written
 // Claude Code agent file.
 //
-// Out: plugins/orchestrate/src/agents.json, each role as the fields of an
+// Out: mods/orchestrate/src/agents.json, each role as the fields of an
 // OpenCode agent (`Agent.Info`: description, mode, permissions, system) plus
 // its Claude-family reasoning effort (the skill's role table). The
 // orchestrate plugin defines the agents from it through `agent.transform`,
@@ -30,7 +30,7 @@ interface Source {
 export const ROOT = resolve(import.meta.dir, "..")
 export const DEFAULT_SOURCE = join(homedir(), ".claude/skills/orchestrate")
 export const WORKER = "worker"
-const WRITTEN = "Written by opencode-gent scripts/agents.ts from the orchestrate skill. Edit the skill, then run `bun run agents`."
+const WRITTEN = "Written by dotfiles opencode/scripts/agents.ts from the orchestrate skill. Edit the skill, then run `bun run agents`."
 
 /**
  * The tools Claude Code gives these agents (Bash, Read, Edit, Write, Skill,
@@ -81,7 +81,7 @@ export interface Definition {
   readonly effort?: string
 }
 
-export const OUT = "plugins/orchestrate/src/agents.json"
+export const OUT = "mods/orchestrate/src/agents.json"
 
 const loadSource = async (dir: string): Promise<Source> => {
   const script = join(dir, "scripts/agents.ts")

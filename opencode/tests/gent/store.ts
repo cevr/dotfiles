@@ -7,7 +7,7 @@ import { join, resolve } from "node:path"
 
 /** gent's checkout: `GENT_SOURCE`, else beside this repository. */
 export const gentSource = (): string =>
-  resolve(process.env.GENT_SOURCE || join(import.meta.dir, "../../../gent"))
+  resolve(process.env.GENT_SOURCE || join(import.meta.dir, "../../../../gent"))
 
 const core = () => join(gentSource(), "packages/core")
 

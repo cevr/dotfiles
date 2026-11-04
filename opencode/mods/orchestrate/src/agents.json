@@ -1,5 +1,5 @@
 {
-  "written": "Written by opencode-gent scripts/agents.ts from the orchestrate skill. Edit the skill, then run `bun run agents`.",
+  "written": "Written by dotfiles opencode/scripts/agents.ts from the orchestrate skill. Edit the skill, then run `bun run agents`.",
   "agents": {
     "planner": {
       "description": "Writes one orchestrate unit's spec and its red acceptance check. Changes no product code. Its prompt carries the worker protocol.",

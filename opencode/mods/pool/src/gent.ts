@@ -254,7 +254,7 @@ interface StoreState {
 }
 
 /** Shared by every setup in the process, whichever copy of this module it loaded. */
-const STATES = Symbol.for("opencode-gent.pool.gent-stores")
+const STATES = Symbol.for("dotfiles-opencode.pool.gent-stores")
 
 const stateOf = (dir: string): StoreState => {
   const global = globalThis as unknown as Record<symbol, Map<string, StoreState> | undefined>

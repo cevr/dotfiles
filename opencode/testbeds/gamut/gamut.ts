@@ -17,7 +17,7 @@
  * `up` copies `fixture/` (the ledgerline app in its red state) to a fresh
  * scratch directory, writes the preset's models into its `opencode.json`
  * (with the Anthropic auth plugin and the account pool for a Claude preset),
- * loads the TUI plugins of `plugins/` (Prime first) through the run's
+ * loads the TUI plugins of `mods/` (Prime first) through the run's
  * `cli.json`, and launches
  * OpenCode on a pty that a detached terminal host keeps (`pty-host.ts`). It
  * runs the fork from source in `OPENCODE_DEV` (default: the prime-look Rift
@@ -50,14 +50,14 @@ import {
 import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { GentSource } from "../../plugins/pool/src/gent.ts"
+import { GentSource } from "../../mods/pool/src/gent.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../anthropic-auth.ts"
 import { type HostConfig, type HostScreen, hostCall, isKeyName, keys } from "./pty-host.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CHECKOUT = resolve(HERE, "../..")
 const FIXTURE = join(HERE, "fixture")
-const PLUGINS = join(CHECKOUT, "plugins")
+const PLUGINS = join(CHECKOUT, "mods")
 const THEME = join(CHECKOUT, "themes/prime.json")
 /** The host's entry; `isHost` also finds a run's host by it in `ps`. */
 const HOST_ENTRY = join(HERE, "pty-host.ts")
@@ -381,7 +381,7 @@ const exportsTui = (dir: string): boolean => {
 
 /**
  * Our TUI plugins, by absolute path, Prime first: each directory of
- * `plugins/` whose `package.json` exports `./tui`. A server-only plugin (the
+ * `mods/` whose `package.json` exports `./tui`. A server-only plugin (the
  * pool) is left out; `serverPlugins` adds it to the project config instead.
  */
 export const pluginPaths = (pluginsDir: string): ReadonlyArray<string> =>

@@ -1,5 +1,5 @@
 {
-  "name": "@opencode-gent/orchestrate",
+  "name": "@dotfiles/opencode-orchestrate",
   "version": "0.0.0",
   "private": true,
   "type": "module",

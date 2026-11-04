@@ -4,7 +4,7 @@ import { CODEX_STATUS } from "./protocol.ts"
 import { TOOLS } from "./tools.ts"
 
 export default Plugin.define({
-  id: "opencode-gent.codex",
+  id: "dotfiles-opencode.codex",
   async setup(ctx) {
     const abort = new AbortController()
     const bridge = new Bridge({ socket: typeof ctx.options.socket === "string" ? ctx.options.socket : undefined, signal: abort.signal })

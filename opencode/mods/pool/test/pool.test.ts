@@ -363,7 +363,7 @@ describe("pool plugin hooks", () => {
     try {
       const at = Date.now()
       for (const id of ["cred-a", "cred-b"]) readings.set(id, { at, windows: [{ name: "7d", utilization: 0.8, resetAt: at + 3.5 * 86400000 }] })
-      const pace = rpcHandlers.get("opencode-gent.pool")!.pace!
+      const pace = rpcHandlers.get("dotfiles-opencode.pool")!.pace!
       expect(await pace({ providerID: "openai" })).toMatchObject({ ok: true, measured: false })
       expect(await pace({ providerID: "anthropic" })).toMatchObject({ ok: false, measured: true })
       for (const id of ["cred-a", "cred-b"]) readings.set(id, { at, windows: [{ name: "7d", utilization: 0.2, resetAt: at + 3.5 * 86400000 }] })
@@ -452,7 +452,7 @@ describe("pool plugin hooks", () => {
     await request(hooks)
     readings.set("cred-a", { at: Date.now(), windows: [], refusal: { kind: "rate-limit", until: Date.now() + 60_000 } })
     await respond(hooks, 429)
-    const status = (await rpcHandlers.get("opencode-gent.pool")!.status!({})) as any
+    const status = (await rpcHandlers.get("dotfiles-opencode.pool")!.status!({})) as any
     expect(status.anthropic.accounts.map((account: any) => [account.credentialID, account.hold?.kind])).toEqual([
       ["cred-a", "rate-limit"],
       ["cred-b", undefined],

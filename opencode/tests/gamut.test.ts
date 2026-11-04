@@ -196,9 +196,9 @@ describe("the run's config", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-    const ours = pluginPaths(join(root, "plugins"))
-    expect(ours[0]).toBe(join(root, "plugins/prime"))
-    expect(ours).not.toContain(join(root, "plugins/pool"))
+    const ours = pluginPaths(join(root, "mods"))
+    expect(ours[0]).toBe(join(root, "mods/prime"))
+    expect(ours).not.toContain(join(root, "mods/pool"))
   })
 
   test("a Claude run loads the auth plugin, then the pool, from the project config", () => {
@@ -506,7 +506,7 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
       expect(work).not.toBe("")
       const config = JSON.parse(readFileSync(join(work, "opencode.json"), "utf8"))
       const packages = config.plugins.map((entry: string | { package: string }) => typeof entry === "string" ? entry : entry.package)
-      for (const name of ["orchestrate", "codex", "status", "pool"]) expect(packages).toContain(join(root, "plugins", name))
+      for (const name of ["orchestrate", "codex", "status", "pool"]) expect(packages).toContain(join(root, "mods", name))
       expect(config.agents.worker.model).toBe(config.agents.general.model)
       expect(config.agents.verifier.model).toBe(config.agents.reviewer.model)
 

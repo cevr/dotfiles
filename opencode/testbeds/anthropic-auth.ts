@@ -8,7 +8,7 @@ import { join, resolve } from "node:path"
 
 /** The checkout: `OPENCODE_ANTHROPIC_AUTH`, else beside this repository. */
 export const anthropicAuthSource = (env: Readonly<Record<string, string | undefined>> = process.env): string =>
-  resolve(env.OPENCODE_ANTHROPIC_AUTH || join(import.meta.dir, "../../opencode-anthropic-auth"))
+  resolve(env.OPENCODE_ANTHROPIC_AUTH || join(import.meta.dir, "../../../opencode-anthropic-auth"))
 
 /** Write the loader directory under `dir` and return it, for a config's `plugins`. */
 export const anthropicAuthPlugin = (dir: string, source = anthropicAuthSource()): string => {
@@ -24,4 +24,4 @@ export const anthropicAuthPlugin = (dir: string, source = anthropicAuthSource())
 }
 
 /** The pool plugin's directory in this repository. */
-export const poolPlugin = resolve(import.meta.dir, "../plugins/pool")
+export const poolPlugin = resolve(import.meta.dir, "../mods/pool")
