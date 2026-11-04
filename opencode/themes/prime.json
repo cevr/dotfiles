@@ -52,7 +52,7 @@
       }
     },
     "background": {
-      "base": "$hue.neutral.900",
+      "base": "transparent",
       "raised": {
         "base": "$hue.neutral.700",
         "high": "$hue.neutral.600",
@@ -106,7 +106,7 @@
       "background": {
         "added": "#015f00",
         "removed": "#5e0000",
-        "context": "$hue.neutral.800"
+        "context": "transparent"
       },
       "highlight": {
         "added": "#3fb950",
