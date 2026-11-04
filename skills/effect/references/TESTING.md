@@ -90,7 +90,7 @@ A `@alchemy.run/domain` backend and an Alchemy stack add three tests beside the 
 
 | Seam | Test | Proves |
 | --- | --- | --- |
-| The model, beside it in the domain package | A story from `@alchemy.run/domain/Story`: given these events, when this command, then these events, reply, rejection, view state, external calls, and saga outcome | Every rule and its consequences, with no cloud |
+| The model, beside its domain files | A story from `@alchemy.run/domain/Story`: given these events, when this command, then these events, reply, rejection, view state, external calls, and saga outcome | Every rule and its consequences, with no cloud |
 | An Api, beside the Worker's `cmd/` main | The Api's client over `Domain.InMemory`, through the real middleware | What each kind of client may do and see |
 | The deployed stack | `Test.make` from `@alchemy.run/test`, deploy and destroy in one scoped test | Hosting, bindings, and the wire |
 

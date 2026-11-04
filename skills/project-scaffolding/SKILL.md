@@ -1,6 +1,6 @@
 ---
 name: project-scaffolding
-description: Scaffold new TypeScript projects with Effect, Bun, oxlint, oxlint-plugin-effect, oxfmt, lefthook, changesets, and Alchemy deploys. Use when starting a new project, setting up a monorepo, configuring tooling, adding CI/CD, Effect lint guidelines, or when asked to "scaffold", "bootstrap", "init", "set up a project", "create a new project", or "new repo". Covers CLI apps, monorepos with core/cli/web splits, deploying with Alchemy, and npm publishing.
+description: Scaffold new TypeScript projects with Effect, Bun, oxlint, oxlint-plugin-effect, oxfmt, lefthook, changesets, and Alchemy deploys. Use when starting a new project, setting up a monorepo, configuring tooling, adding CI/CD, Effect lint guidelines, or when asked to "scaffold", "bootstrap", "init", "set up a project", "create a new project", or "new repo". Covers CLI apps, monorepos laid out by context with a cmd/ folder per binary, deploying with Alchemy, and npm publishing.
 ---
 
 # Project Scaffolding
@@ -12,7 +12,7 @@ Opinionated project setup for Effect TypeScript on Bun. All configs are derived 
 ```
 What are you setting up?
 ├─ New CLI tool (single package)         → references/cli.md
-├─ New monorepo (core + clients)         → references/monorepo.md
+├─ New monorepo (contexts + cmd/)        → references/monorepo.md
 ├─ Migrate from @effect/language-service → references/migration.md
 ├─ Just the tooling configs              → §Tooling Stack
 ├─ Copy-paste config files               → templates/
@@ -76,8 +76,8 @@ Copy `templates/tsconfig.json`. It is the source of truth for the full `diagnost
       "ignoreEffectSuggestionsInTscExitCode": false, "ignoreEffectWarningsInTscExitCode": false, "ignoreEffectErrorsInTscExitCode": false,
       "diagnosticSeverity": { /* every diagnostic, explicit; see the template */ },
       "keyPatterns": [
-        { "target": "service", "pattern": "default", "skipLeadingPath": ["src/", "packages/"] },
-        { "target": "error", "pattern": "default", "skipLeadingPath": ["src/", "packages/"] }
+        { "target": "service", "pattern": "default", "skipLeadingPath": ["src/"] },
+        { "target": "error", "pattern": "default", "skipLeadingPath": ["src/"] }
       ],
       "overrides": []
     }]
@@ -96,7 +96,7 @@ After bumping `@effect/tsgo`, diff the map against `node_modules/@effect/tsgo/sc
 - `overrides` starts empty. Add entries only when a real need appears; do not pre-populate a tests-only relaxation.
 - `plugins[].overrides[].include` — glob patterns. The plugin merges options for files matching `include`. This is the supported way to relax individual rules in tests/integration code without forking tsconfigs.
 - `plugins[].overrides[]` also accepts `exclude` globs alongside `include` and `options`.
-- `keyPatterns` — controls `deterministicKeys` rule. Skip-leading-path values (`src/`, `packages/`) make it ignore those prefixes when computing identifiers.
+- `keyPatterns` — controls `deterministicKeys` rule. The skip-leading-path value `src/` makes it ignore that prefix when computing identifiers.
 - `strict: true`, `target`, `module`, etc. are kept explicit even though TS6 defaults them — survives downgrades and `tsc --showConfig` clarity.
 
 **Monorepo**: add `paths` mapping for workspace packages alongside the plugin block.
@@ -346,7 +346,8 @@ Copy `templates/release.yml` and `templates/ci.yml` **verbatim** — they are by
 | Module system | `"type": "module"` |
 | TypeScript | `noEmit: true` — never compile, bun runs source directly |
 | Type checker | `tsc --noEmit` — the `tsc` binary is what `effect-tsgo patch` patches. Never `tsgo --noEmit`. |
-| Exports | `"exports": { ".": "./src/index.ts" }` — source-first, no build step for local dev |
+| Exports | `"exports": { "./*": "./*.ts" }` in a monorepo package: each file reachable by path, adapter folders included, no barrels; source-first, no build step for local dev |
+| Layout | Files by concept, adapters in folders named after their dependency, one `cmd/<name>/` per binary: the `effect` skill's `references/ARCHITECTURE.md` §Layout |
 | Tests | `bun test` with `effect-bun-test` for Effect integration |
 | Tracing | `Effect.fn("ServiceName.methodName")` on all service methods |
 | Quality gate | `bun run gate` before any commit/PR/ship |
@@ -398,9 +399,9 @@ Use the `repo` skill (`skills/repo/SKILL.md`) — `okra repo fetch` + `repo path
 - **`@effect/tsgo` and `@typescript/native-preview` versions are coupled** — `effect-tsgo patch` validates compatibility. Bump them together; if `patch` errors after an upgrade, update both pkgs.
 - **`repository.url` required for npm provenance** — publish will 422 without it.
 - **`noUncheckedIndexedAccess`** — array/record indexing returns `T | undefined`. Use `??` or guards, not `!`.
-- **Monorepo `paths`** — root `tsconfig.json` maps `@scope/pkg` → `packages/pkg/src/index.ts`. Without this, the editor can't resolve workspace packages.
+- **Monorepo `paths`** — root `tsconfig.json` maps `@scope/pkg/*` → `pkg/*`. Without this, the editor can't resolve workspace packages.
 - **`catalog:` in peerDependencies** — bun workspace catalog protocol. Only works in monorepo root.
 - **`turbo.json` test cache** — always `"cache": false` for tests. Cached test results hide real failures.
-- **`turbo.json` typecheck inputs** — include `tsconfig.json` and `../../tsconfig.json` so plugin/severity changes invalidate cache.
+- **`turbo.json` typecheck inputs** — include `tsconfig.json` and `$TURBO_ROOT$/tsconfig.json` so plugin/severity changes invalidate cache.
 - **`downlevelIteration` is a hard error in TS6** — remove it entirely, don't set to `false`.
 - **`baseUrl` deprecated in TS6** — inline the value into `paths` entries instead.

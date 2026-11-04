@@ -15,8 +15,8 @@ Which test answers which question once Alchemy is involved, and our rules for ea
 
 | Question | Test | Lives in | Touches a cloud |
 | --- | --- | --- | --- |
-| Does the model enforce its rules? Events, replies, rejections, views, policy reactions, saga outcomes | A story | the domain package | no |
-| Is the model declared correctly? | `Domain.verify(Model)` equals `[]` | the domain package | no |
+| Does the model enforce its rules? Events, replies, rejections, views, policy reactions, saga outcomes | A story | beside the domain files | no |
+| Is the model declared correctly? | `Domain.verify(Model)` equals `[]` | beside the domain files | no |
 | Can each kind of client do and see what it should, through its middleware? | An Api test over `Domain.InMemory` | beside the Worker's `cmd/` main | no |
 | Do the routes of a hand-built app work? | A route test on local Layers (`HttpRouter.serve` with `BunHttpServer.layerTest`) | the app | no |
 | Does the deployed stack boot, bind, and answer? | A stack test with `@alchemy.run/test` | the repo root | yes, or local emulators |

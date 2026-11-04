@@ -146,14 +146,14 @@
             "target": "service",
             "pattern": "default",
             "skipLeadingPath": [
-              "packages/"
+              "src/"
             ]
           },
           {
             "target": "error",
             "pattern": "default",
             "skipLeadingPath": [
-              "packages/"
+              "src/"
             ]
           }
         ],

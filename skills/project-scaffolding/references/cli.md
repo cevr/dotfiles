@@ -7,19 +7,11 @@ Step-by-step guide for scaffolding a single-package Effect CLI tool, based on pa
 ```
 project-name/
 ├── src/
-│   ├── main.ts              — entry point
-│   ├── commands/
-│   │   ├── index.ts         — root command + subcommands
-│   │   └── *.ts             — one file per command
-│   ├── services/
-│   │   └── *.ts             — one file per service
-│   └── errors/
-│       └── index.ts         — all tagged errors
-├── tests/
-│   ├── helpers/
-│   │   └── test-cli.ts      — mock services, call recorder, test layer factory
-│   └── commands/
-│       └── *.test.ts        — one test file per command
+│   ├── main.ts              — composition root: the Layers, the root command, runMain
+│   ├── thing.ts             — one concept: its service, its tagged errors, its command
+│   ├── thing.test.ts        — tests beside the code
+│   ├── github/              — an adapter folder named after its dependency (when the CLI wraps a vendor)
+│   └── testing.ts           — call recorder and test Layer factory
 ├── scripts/
 │   └── build.ts             — Bun.build compile script
 ├── bin/                     — compiled binary output (gitignored)
@@ -35,6 +27,8 @@ project-name/
 ├── .gitignore
 └── README.md
 ```
+
+Files are named by concept (`thing.ts`, `config.ts`), never grouped by kind into `commands/`, `services/` or `errors/`: the declaration says what each export is. This is the single-package form of the `effect` skill's `references/ARCHITECTURE.md` §Layout. When the CLI gains a second binary, or its vendor code outgrows one folder, move to the monorepo layout (monorepo.md): the concept files become a context, each vendor folder an adapter folder in it, and `main.ts` a `cmd/<name>/main.ts`.
 
 No more `tsconfig.lsp.json` / `tsconfig.lsp.test.json` split — Effect diagnostics live in the `@effect/language-service` plugin in the single `tsconfig.json`, and test relaxation goes through plugin `overrides`.
 
@@ -83,48 +77,35 @@ import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { Command } from "effect/cli"
 import { version } from "../package.json" with { type: "json" }
-import { command } from "./commands/index.js"
-// ... import service layers
+import { doThing, MyService } from "./thing.js"
+import { report } from "./report.js"
+
+const command = Command.make("project-name").pipe(
+  Command.withDescription("What it does"),
+  Command.withSubcommands([doThing, report]),
+)
 
 const MainLayer = Layer.mergeAll(
-  ServiceA.layer,
-  ServiceB.layer,
+  MyService.layer,
   BunServices.layer, // FileSystem, Path, ChildProcessSpawner, Stdio, Terminal
 )
 
 Command.run(command, { version }).pipe(Effect.provide(MainLayer), BunRuntime.runMain)
 ```
 
-No suppression comment here. This entry-point shape is what `strictEffectProvide` flags, but that rule is `"off"` in the canonical `diagnosticSeverity` map (see tsgo.md §strictEffectProvide).
+`main.ts` is the only place that picks Layers. No suppression comment here. This entry-point shape is what `strictEffectProvide` flags, but that rule is `"off"` in the canonical `diagnosticSeverity` map (see tsgo.md §strictEffectProvide).
 
-### Commands (`src/commands/index.ts`)
-
-```typescript
-import { Command } from "effect/cli"
-import { subcommandA } from "./subcommand-a.js"
-import { subcommandB } from "./subcommand-b.js"
-
-const root = Command.make("project-name").pipe(
-  Command.withDescription("What it does"),
-)
-
-export const command = root.pipe(
-  Command.withSubcommands([subcommandA, subcommandB]),
-)
-```
-
-### Individual Command
+### A concept file (`src/thing.ts`): its command
 
 ```typescript
 import { Argument, Command, Flag } from "effect/cli"
 import { Console, Effect } from "effect"
-import { MyService } from "../services/MyService.js"
 
 const nameArg = Argument.String("name")
 // v4 flags are required unless given a default
 const forceFlag = Flag.Boolean("force").pipe(Flag.withAlias("f"), Flag.withDefault(false))
 
-export const subcommandA = Command.make("do-thing", { name: nameArg, force: forceFlag }).pipe(
+export const doThing = Command.make("do-thing", { name: nameArg, force: forceFlag }).pipe(
   Command.withDescription("Does the thing"),
   Command.withHandler(({ name, force }) =>
     Effect.gen(function* () {
@@ -136,18 +117,17 @@ export const subcommandA = Command.make("do-thing", { name: nameArg, force: forc
 )
 ```
 
-### Services
+### The same file: its service
 
 ```typescript
 import { Context, Effect, Layer } from "effect"
-import { MyError } from "../errors/index.js"
 
 export class MyService extends Context.Service<
   MyService,
   {
     readonly doThing: (name: string, force: boolean) => Effect.Effect<void, MyError>
   }
->()("@scope/project/services/MyService") {
+>()("@scope/project/thing/MyService") {
   static layer: Layer.Layer<MyService> = Layer.sync(MyService, () => ({
     doThing: Effect.fn("MyService.doThing")(function* (name, force) {
       // implementation
@@ -162,7 +142,9 @@ export class MyService extends Context.Service<
 }
 ```
 
-### Errors
+### The same file: its errors
+
+An error shared by several concepts moves to `src/errors.ts`.
 
 ```typescript
 import { Schema } from "effect"
@@ -216,13 +198,13 @@ console.log(`Symlinked to: ${linkPath}`)
 
 ## Step 5: Testing
 
-Tests go under `tests/`. They need no special diagnostic handling out of the box — `overrides` ships empty and `strictEffectProvide` is `"off"` globally. If a rule genuinely needs relaxing for test paths only, add an `overrides` entry in `tsconfig.json` — don't fork the tsconfig. For a single line, use `// @effect-diagnostics-next-line <rule>:off -- <reason>` with a bare rule name.
+Tests sit beside the code they test (`src/thing.test.ts`). They need no special diagnostic handling out of the box — `overrides` ships empty and `strictEffectProvide` is `"off"` globally. If a rule genuinely needs relaxing for test paths only, add an `overrides` entry in `tsconfig.json` — don't fork the tsconfig. For a single line, use `// @effect-diagnostics-next-line <rule>:off -- <reason>` with a bare rule name.
 
-### Test Helper (`tests/helpers/test-cli.ts`)
+### Test Helper (`src/testing.ts`)
 
 ```typescript
 import { Context, Effect, Layer, Ref } from "effect"
-import { MyService } from "../../src/services/MyService.js"
+import { MyService } from "./thing.js"
 
 // Call recorder for verifying service interactions
 export interface ServiceCall {
@@ -238,7 +220,7 @@ export class CallRecorder extends Context.Service<
     readonly calls: Effect.Effect<ReadonlyArray<ServiceCall>>
     readonly clear: Effect.Effect<void>
   }
->()("@scope/project/tests/CallRecorder") {
+>()("@scope/project/testing/CallRecorder") {
   static layer = Layer.effect(
     CallRecorder,
     Effect.gen(function* () {
@@ -293,13 +275,13 @@ export const expectCall = (
 }
 ```
 
-### Test File
+### Test File (`src/thing.test.ts`)
 
 ```typescript
 import { describe, it, expect } from "effect-bun-test"
 import { Effect } from "effect"
-import { MyService } from "../../src/services/MyService.js"
-import { CallRecorder, createTestLayer, expectCall } from "../helpers/test-cli.js"
+import { MyService } from "./thing.js"
+import { CallRecorder, createTestLayer, expectCall } from "./testing.js"
 
 describe("subcommand-a", () => {
   it.effect("does the thing", () =>
@@ -346,11 +328,9 @@ If publishing to npm, follow SKILL.md §Publishing for:
 - [ ] `lefthook.yml`
 - [ ] `package.json` scripts (dev, build, gate, lint, fmt, prepare with `effect-tsgo patch`)
 - [ ] `bun install` runs `prepare` — confirms `effect-tsgo patch` succeeds
-- [ ] `src/main.ts` entry point
-- [ ] `src/commands/index.ts` root command
-- [ ] `src/services/` with `layer` + `layerTest` statics
-- [ ] `src/errors/index.ts` tagged errors
+- [ ] `src/main.ts`: root command, the Layers, `runMain`
+- [ ] One file per concept: its service (`layer` + `layerTest` statics), its tagged errors, its command
+- [ ] Tests beside the code, with `src/testing.ts` for the mock infrastructure
 - [ ] `scripts/build.ts` compile script
-- [ ] `tests/helpers/test-cli.ts` mock infrastructure
 - [ ] `.gitignore`
 - [ ] `bun run gate` passes
