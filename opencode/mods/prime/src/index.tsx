@@ -62,12 +62,12 @@ export default Plugin.define({
     context.ui.slot({ replace: "session.message.assistant.footer", render: () => null })
     context.ui.slot({
       append: "session.composer.top",
-      render: (input) => (
-        <>
-          <Working context={context} sessionID={input.sessionID} />
-          <ModeHint context={context} detail={detail} />
-        </>
-      ),
+      render: () => <ModeHint context={context} detail={detail} />,
+    })
+    // Prime's loader is the transcript's last row, straight under the newest output.
+    context.ui.slot({
+      append: "session.transcript.end",
+      render: (input) => <Working context={context} sessionID={input.sessionID} />,
     })
     context.ui.slot({
       replace: "prompt.footer",

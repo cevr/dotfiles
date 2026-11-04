@@ -28,6 +28,8 @@ const SUCCESS = "#7da876"
 const BAND = "#1a1a1f"
 /** The theme's `markdown.text`: assistant prose is a step dimmer than `text.base`. */
 const PROSE = "#d8d8dc"
+/** The theme's `syntax.keyword`. */
+const KEYWORD = "#38bdf8"
 const DIFF = { addedBg: "#015f00", removedBg: "#5e0000", added: "#3fb950", removed: "#f85149" }
 
 /** A tool row's exact line; `<t>` stands for a duration such as `12ms`, `5.2s` or `1m 05s`. */
@@ -174,7 +176,10 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     expect(running.text).toMatch(row(" ◆ 1 subagent  ·  ▸ 0 shells  ·  goal"))
     expect(running.text).not.toContain("Agent message")
     expect(running.text).not.toContain("reviewer approved")
-    const spinner = running.lines.find((line) => line.includes("Executing"))!.trim()[0]!
+    // The loader is the transcript's last row, straight under the running call (Prime's placement).
+    const executing = running.lines.findIndex((line) => line.includes("Executing"))
+    expect(running.lines[executing - 1]).toContain("◆ subagent · Review the diff")
+    const spinner = running.lines[executing]!.trim()[0]!
     expect(cell(running, spinner).fg).toBe(ACCENT)
     expect(cell(running, "◆ subagent").fg).toBe(SUCCESS)
     expect(cell(running, "◆ 1 subagent").fg).toBe(SUCCESS)
@@ -239,6 +244,9 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     expect(removed).toEqual({ fg: DIFF.removed, bg: DIFF.removedBg })
     const added = cell(details, "2 +     for")
     expect(added).toEqual({ fg: DIFF.added, bg: DIFF.addedBg })
+    // The code keeps its syntax colours on the band: `for` is a keyword.
+    expect(cell(details, "2 +     for", 8)).toEqual({ fg: KEYWORD, bg: DIFF.addedBg })
+    expect(cell(details, "2 -     for", 8)).toEqual({ fg: KEYWORD, bg: DIFF.removedBg })
     expect(cell(details, "for i in range(retries - 1)").bg).toBe(DIFF.removedBg)
     expect(cell(details, "for i in range(retries):").bg).toBe(DIFF.addedBg)
   })

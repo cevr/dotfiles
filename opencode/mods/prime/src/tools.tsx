@@ -100,7 +100,11 @@ function ToolCell(props: {
               </text>
             </box>
             <Show when={props.detail() !== "overview"}>
-              <DiffBands context={props.context} rows={diffRows(file.patch, props.detail() === "all" ? Infinity : 1)} />
+              <DiffBands
+                context={props.context}
+                path={file.path}
+                rows={diffRows(file.patch, props.detail() === "all" ? Infinity : 1)}
+              />
             </Show>
           </>
         )}
@@ -151,7 +155,8 @@ function ShellTail(props: { context: Context; output: string }) {
   )
 }
 
-function DiffBands(props: { context: Context; rows: DiffRow[] }) {
+/** Prime's diff rows: ` 42 - ` then the code in its syntax colours, on a full-width band. */
+function DiffBands(props: { context: Context; path: string; rows: DiffRow[] }) {
   const theme = () => props.context.theme
   const width = createMemo(() =>
     Math.max(2, ...props.rows.map((row) => (row.kind === "gap" ? 0 : String(row.line).length))),
@@ -168,6 +173,7 @@ function DiffBands(props: { context: Context; rows: DiffRow[] }) {
               {(line) => (
                 <box
                   width="100%"
+                  flexDirection="row"
                   backgroundColor={
                     line().kind === "added"
                       ? theme().diff.background.added
@@ -176,23 +182,22 @@ function DiffBands(props: { context: Context; rows: DiffRow[] }) {
                         : theme().diff.background.context
                   }
                 >
-                  <text wrapMode="none" truncate fg={theme().text.base}>
-                    <span
-                      style={{
-                        fg:
-                          line().kind === "added"
-                            ? theme().diff.text.added
-                            : line().kind === "removed"
-                              ? theme().diff.text.removed
-                              : theme().text.muted,
-                      }}
-                    >
-                      {" "}
-                      {String(line().line).padStart(width())}{" "}
-                      {line().kind === "added" ? "+" : line().kind === "removed" ? "-" : " "}{" "}
-                    </span>
-                    {line().text}
+                  <text
+                    wrapMode="none"
+                    flexShrink={0}
+                    fg={
+                      line().kind === "added"
+                        ? theme().diff.text.added
+                        : line().kind === "removed"
+                          ? theme().diff.text.removed
+                          : theme().text.muted
+                    }
+                  >
+                    {" "}
+                    {String(line().line).padStart(width())}{" "}
+                    {line().kind === "added" ? "+" : line().kind === "removed" ? "-" : " "}{" "}
                   </text>
+                  <props.context.ui.Code content={line().text} path={props.path} />
                 </box>
               )}
             </Match>
