@@ -26,6 +26,8 @@ const ACCENT = "#7c6faf"
 const ERROR = "#d06f82"
 const SUCCESS = "#7da876"
 const BAND = "#1a1a1f"
+/** The theme's `markdown.text`: assistant prose is a step dimmer than `text.base`. */
+const PROSE = "#d8d8dc"
 const DIFF = { addedBg: "#015f00", removedBg: "#5e0000", added: "#3fb950", removed: "#f85149" }
 
 /** A tool row's exact line; `<t>` stands for a duration such as `12ms`, `5.2s` or `1m 05s`. */
@@ -226,6 +228,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
 
   test("key cells carry Prime's colours", () => {
     const details = frames.details
+    expect(cell(details, "Reading the retry test").fg).toBe(PROSE)
     expect(cell(details, "✓ shell").fg).toBe(SUCCESS)
     expect(cell(details, "✉ Agent").fg).toBe(SUCCESS)
     expect(cell(details, "✗ read").fg).toBe(ERROR)
