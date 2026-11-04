@@ -11,8 +11,10 @@
  * - `tools.<id>(input)` asks the host to run tool `<id>` and resolves to its
  *   result. `tools.list()` lists the tools the host offered for this cell.
  * - A binding is any global a cell added or changed. The host takes a
- *   snapshot of them after each cell (codec.ts) and restores it into a fresh
- *   worker.
+ *   snapshot of them after each cell and restores it into a fresh worker:
+ *   top-level functions, classes and imports as their source
+ *   (declarations.ts), run again first, then every other value as a clone
+ *   (codec.ts).
  *
  * The host launches it as `bun --config=/dev/null --no-env-file worker.ts`
  * under a shell that points stderr at stdout, with frames on fd 3 and 4.
@@ -21,7 +23,8 @@
  */
 import { createRequire } from "node:module"
 import { types } from "node:util"
-import { decodeBinding, encodeSnapshot } from "./codec.ts"
+import { decodeBinding, encodeSnapshot, MAX_SNAPSHOT_BYTES } from "./codec.ts"
+import { declarationsOf, decodeDeclaration, makeDeclarations, type Declared } from "./declarations.ts"
 import {
   encodeFrame,
   makeBoundedOutput,
@@ -39,6 +42,7 @@ import {
   type Listing,
   type Request,
   type Response,
+  type Snapshot,
   type SnapshotBinding,
 } from "./protocol.ts"
 
@@ -250,7 +254,7 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
     Object.getOwnPropertyNames(globalThis).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const),
   )
   // Taken here, before any cell: a cell may replace `Map`, `Object` or their methods.
-  const { getOwnPropertyNames, getOwnPropertyDescriptor, hasOwn, is } = Object
+  const { getOwnPropertyNames, getOwnPropertyDescriptor, hasOwn, is, defineProperty } = Object
   const { apply } = Reflect
   const BindingMap = Map
   const { get: mapGet, set: mapSet, has: mapHas, forEach: mapForEach } = Map.prototype
@@ -297,6 +301,40 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
   const setConsole = (value: Console) =>
     Object.defineProperty(globalThis, "console", { value, writable: true, configurable: true })
 
+  const declarations = makeDeclarations()
+  const compile = (code: string) => transpiler.transformSync(code)
+  /** A global's value, read from its descriptor. */
+  const valueOf = (name: string): unknown => {
+    const descriptor = getOwnPropertyDescriptor(globalThis, name)
+    return descriptor !== undefined && hasOwn(descriptor, "value") ? descriptor.value : undefined
+  }
+  /** The prototype of the class a global holds, for the instances a restore rebuilds. */
+  const prototypeOfClass = (name: string): object | undefined => {
+    const value = valueOf(name)
+    if (typeof value !== "function" || types.isProxy(value)) return undefined
+    const descriptor = getOwnPropertyDescriptor(value, "prototype")
+    return descriptor !== undefined && hasOwn(descriptor, "value") && typeof descriptor.value === "object" && descriptor.value !== null
+      ? descriptor.value
+      : undefined
+  }
+
+  /** Runs compiled cell code at global scope with the cell's console, its promise included. */
+  const run = async (compiled: string): Promise<{ readonly result: unknown } | { readonly thrown: unknown }> => {
+    running = true
+    setConsole(cellConsole)
+    try {
+      let result = evaluateInRealm(compiled)
+      // A thenable a cell wrote is its value; only the realm's own promise is awaited.
+      if (isPromise(result)) result = await result
+      return { result }
+    } catch (cause) {
+      return { thrown: cause }
+    } finally {
+      running = false
+      setConsole(hostConsole)
+    }
+  }
+
   return {
     /** Runs one cell to its end, its promise included. */
     evaluate: async (source: string, tools: ReadonlyArray<Listing>): Promise<Evaluation> => {
@@ -304,9 +342,16 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
       for (const text of strays) output.append(text)
       strays = []
       listing = tools
+      let declared: ReadonlyArray<Declared> = []
+      /** The names the cell bound; what it declared among them is kept as source. */
+      const bound = (ok: boolean) => {
+        const names = newBindings()
+        declarations.record(declared, names, ok, valueOf)
+        return names
+      }
       const failed = (cause: unknown): Evaluation => {
         output.append(errorText(cause))
-        return { ok: false, display: output.read(), truncated: output.truncated(), bindings: newBindings() }
+        return { ok: false, display: output.read(), truncated: output.truncated(), bindings: bound(false) }
       }
       if (source.length > MAX_SOURCE_CHARS) return failed(new RangeError(`The code is over ${MAX_SOURCE_CHARS} characters`))
       let compiled: string
@@ -315,39 +360,70 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
       } catch (cause) {
         return failed(cause)
       }
-      running = true
-      setConsole(cellConsole)
-      let result: unknown
-      let thrown: { readonly cause: unknown } | undefined
-      try {
-        result = evaluateInRealm(compiled)
-        // A thenable a cell wrote is its value; only the realm's own promise is awaited.
-        if (isPromise(result)) result = await result
-      } catch (cause) {
-        thrown = { cause }
-      } finally {
-        running = false
-        setConsole(hostConsole)
-      }
+      // Before the cell runs: what it does to the globals cannot reach the parse.
+      declared = declarationsOf(source, compile)
+      const ran = await run(compiled)
       // After the console is back, so the cell's console never reads as a binding.
-      if (thrown) return failed(thrown.cause)
+      if ("thrown" in ran) return failed(ran.thrown)
       // replMode wraps the last expression as `{ value }`; an undefined value shows nothing.
       const value: unknown =
-        typeof result === "object" && result !== null ? Object.getOwnPropertyDescriptor(result, "value")?.value : undefined
+        typeof ran.result === "object" && ran.result !== null ? Object.getOwnPropertyDescriptor(ran.result, "value")?.value : undefined
       if (value !== undefined) output.append(display(value))
-      return { ok: true, display: output.read(), truncated: output.truncated(), bindings: newBindings() }
+      return { ok: true, display: output.read(), truncated: output.truncated(), bindings: bound(true) }
     },
     /** An error cell code raised outside any awaited path: the running cell's, else held for the next. */
     uncaught: (cause: unknown) => {
       if (running) output.append(`Uncaught: ${errorText(cause)}`)
       else if (strays.length < MAX_STRAY_ERRORS) strays.push(`Uncaught (after an earlier cell ended): ${errorText(cause)}`)
     },
-    snapshot: () => encodeSnapshot(namespace()),
-    /** Revives each binding in this realm; one the codec cannot read is left out of the names. */
-    restore: (bindings: ReadonlyArray<SnapshotBinding>): ReadonlyArray<string> => {
+    /** The declarations as source, then every other binding as a clone. Runs no code a cell wrote. */
+    snapshot: (): Snapshot => {
+      const globals = namespace()
+      const sources = declarations.snapshot(globals)
+      const values = new BindingMap<string, unknown>()
+      apply(mapForEach, globals, [
+        (value: unknown, name: string) => {
+          if (!apply(mapHas, sources.carried, [name])) apply(mapSet, values, [name, value])
+        },
+      ])
+      const encoded = encodeSnapshot(values, sources.classes, MAX_SNAPSHOT_BYTES - sources.bytes)
+      // By index and definition: a cell may have replaced the array iterator or put setters on Array.prototype.
+      const bindings: SnapshotBinding[] = []
+      const take = (part: ReadonlyArray<SnapshotBinding>) => {
+        for (let index = 0; index < part.length; index++)
+          defineProperty(bindings, bindings.length, { __proto__: null, value: part[index], writable: true, enumerable: true, configurable: true } as PropertyDescriptor)
+      }
+      take(sources.bindings)
+      take(encoded.bindings)
+      return { bindings, omitted: encoded.omitted }
+    },
+    /**
+     * Runs the stored imports again, then the declarations, each through the
+     * cell's own transpile; then revives every other binding. Resolves to the
+     * names it defined: a source that throws, or a value the codec cannot
+     * read, is left out.
+     */
+    restore: async (bindings: ReadonlyArray<SnapshotBinding>): Promise<ReadonlyArray<string>> => {
       const names: string[] = []
+      const sources = bindings.flatMap((binding) => {
+        const source = decodeDeclaration(binding.value)
+        return source === undefined ? [] : [{ ...source, name: binding.name }]
+      })
+      for (const source of [...sources.filter((item) => item.kind === "import"), ...sources.filter((item) => item.kind === "declaration")]) {
+        let compiled: string
+        try {
+          compiled = transpiler.transformSync(source.code)
+        } catch {
+          continue
+        }
+        if ("thrown" in (await run(compiled))) continue
+        declarations.record(declarationsOf(source.code, compile), source.name === "" ? [] : [source.name], true, valueOf)
+        if (source.name !== "") names.push(source.name)
+      }
+      output.reset()
       for (const binding of bindings) {
-        const decoded = decodeBinding(binding.value)
+        if (decodeDeclaration(binding.value) !== undefined) continue
+        const decoded = decodeBinding(binding.value, prototypeOfClass)
         if (decoded === undefined) continue
         const defined = Reflect.defineProperty(globalThis, binding.name, {
           value: decoded.value,
@@ -433,7 +509,7 @@ export const runWorker = async (transport: Transport, workingDirectory: string, 
         process.exit(1)
       })
     else if (request.type === "snapshot") await transport.send({ type: "snapshot", id: request.id, ...evaluator.snapshot() })
-    else await transport.send({ type: "restored", id: request.id, names: evaluator.restore(request.bindings) })
+    else await transport.send({ type: "restored", id: request.id, names: await evaluator.restore(request.bindings) })
   }
 }
 

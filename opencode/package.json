@@ -20,5 +20,8 @@
   },
   "peerDependencies": {
     "typescript": "^7"
+  },
+  "dependencies": {
+    "oxc-parser": "0.157.0"
   }
 }

@@ -56,13 +56,18 @@ alone, and its description lists every other tool as
 the kernel call's context: permissions, abort and the
 `execute.before`/`execute.after` hooks apply as for a direct call, so
 `tools.subagent` passes orchestrate's role guard, pace hold and Sabbath stop.
-Deny `kernel` to an agent to give it its usual tools. After each call the bindings
-that hold data are stored with the session as structured clones (cycles,
-BigInt, Map, Set, Date, RegExp, typed arrays and errors included; 16 MiB per
-binding, 256 MiB in all), so a worker that timed out, crashed, went idle or
-came back after a restart starts with them; `reset: true` drops them.
-Functions, classes and their instances, imports and live objects such as
-promises are not stored: the call names each one it left out and why. The worker is the running OpenCode binary acting as Bun
+Deny `kernel` to an agent to give it its usual tools. After each call the
+bindings are stored with the session, so a worker that timed out, crashed,
+went idle or came back after a restart starts with them; `reset: true` drops
+them. Top-level imports, function and class declarations, and `const`/`let`/`var`
+bound to a function or class expression are kept as their TypeScript source
+(parsed with oxc) and run again first, imports before declarations, the latest
+declaration of a name winning. Every other binding is a structured clone
+(cycles, BigInt, Map, Set, Date, RegExp, typed arrays, errors, and instances of
+the kept classes with their prototype back; 16 MiB per binding, 256 MiB in all).
+Closures made inside a function, instances of classes with `#private` members,
+and live objects such as promises are not stored: the call names each one it
+left out and why. The worker is the running OpenCode binary acting as Bun
 (`BUN_BE_BUN=1`), so it needs no separate Bun install.
 
 | Option | Default | Effect |

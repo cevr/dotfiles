@@ -73,15 +73,15 @@ describe("worker", () => {
     expect(listed.display).toContain('id: "read"')
   })
 
-  test("a snapshot restores into a fresh worker, functions left out", async () => {
+  test("a snapshot restores into a fresh worker, declarations first", async () => {
     const first = await start()
-    await first.evaluate('let n = 5; const m = new Map([["a", 1n]]); const f = () => 1', [], noTools)
+    await first.evaluate('let n = 5; const m = new Map([["a", 1n]]); const f = (x: number): number => x + n', [], noTools)
     const snapshot = await first.snapshot()
-    expect(snapshot.omitted).toEqual([{ name: "f", reason: "function" }])
+    expect(snapshot.omitted).toEqual([])
     first.kill()
     const second = await start()
-    expect(await second.restore(snapshot.bindings)).toEqual(["n", "m"])
-    expect((await second.evaluate("[n, m.get('a')]", [], noTools)).display).toBe("[ 5, 1n ]")
+    expect(await second.restore(snapshot.bindings)).toEqual(["f", "n", "m"])
+    expect((await second.evaluate("[n, m.get('a'), f(1)]", [], noTools)).display).toBe("[ 5, 1n, 6 ]")
   })
 
   test("a crash rejects the cell with the worker's exit", async () => {
@@ -92,10 +92,10 @@ describe("worker", () => {
   })
 })
 
-/** Binds `code` in one worker, then restores its snapshot into a fresh one. */
-const restart = async (code: string) => {
+/** Runs `cells` in one worker, then restores its snapshot into a fresh one. */
+const restart = async (...cells: string[]) => {
   const first = await start()
-  expect((await first.evaluate(code, [], noTools)).ok).toBe(true)
+  for (const code of cells) expect((await first.evaluate(code, [], noTools)).ok).toBe(true)
   const snapshot = await first.snapshot()
   first.kill()
   const second = await start()
@@ -149,25 +149,74 @@ describe("a restart", () => {
     expect(await show("[mid.length, mid[mid.length - 1], small]")).toBe("[ 4194304, 7, 1 ]")
   })
 
-  test("a closure made inside a function is left out and named", async () => {
-    const { snapshot, restored } = await restart("function make() { let n = 0; return () => ++n }; const counter = make(); const holder = { counter }; const kept = 1")
-    expect(snapshot.omitted).toContainEqual({ name: "counter", reason: "function" })
-    expect(snapshot.omitted).toContainEqual({ name: "holder", reason: "function" })
-    expect(restored).toEqual(["kept"])
+  test("a function declaration calls another top-level function", async () => {
+    const { snapshot, show } = await restart(
+      "function double(n: number): number { return n * 2 }",
+      "const offset = 1; function quad(n: number) { return double(double(n)) + offset }",
+    )
+    expect(snapshot.omitted).toEqual([])
+    expect(await show("quad(3)")).toBe("13")
   })
 
-  test("live values and class instances are left out, each named with its reason", async () => {
+  test("a class instance keeps its methods, its subclass and its place in other values", async () => {
+    const { snapshot, restored, show } = await restart(
+      "class Point { constructor(public x: number, public y: number) {} norm() { return Math.hypot(this.x, this.y) } }",
+      "const Labelled = class extends Point { label = 'p'; describe() { return `${this.label} ${this.norm()}` } }",
+      "const p = new Point(3, 4); const shapes = { all: [p, new Labelled(6, 8)] }",
+    )
+    expect(snapshot.omitted).toEqual([])
+    expect(restored).toEqual(["Point", "Labelled", "p", "shapes"])
+    const read = ["p.norm()", "p instanceof Point", "shapes.all[1].describe()", "shapes.all[1] instanceof Point", "shapes.all[0].norm()"]
+    expect(await show(`[${read.join(", ")}].join(" ")`)).toBe("5 true p 10 true 5")
+  })
+
+  test("imports run again: named, namespace, default and bare", async () => {
+    const helper = join(work, "helper.ts")
+    const effect = join(work, "effect.ts")
+    await Bun.write(helper, "export const shout = (text: string): string => text.toUpperCase()\nexport default (n: number) => n + 1\n")
+    await Bun.write(effect, "process.env.KERNEL_TEST_EFFECT = String(process.pid)\n")
+    const { snapshot, restored, show } = await restart(
+      `import { shout as loud } from ${JSON.stringify(helper)}; import * as path from "node:path"; import next from ${JSON.stringify(helper)}; import ${JSON.stringify(effect)}`,
+    )
+    expect(snapshot.omitted).toEqual([])
+    expect(restored).toEqual(["loud", "path", "next"])
+    expect(await show('[loud(path.join("a", "b")), next(1), process.env.KERNEL_TEST_EFFECT === String(process.pid)].join(" ")')).toBe("A/B 2 true")
+  })
+
+  test("a redeclared function keeps its latest version; one rebound to a value keeps the value", async () => {
+    const { restored, show } = await restart(
+      "function pick() { return 'first' }; const shift = (n: number) => n - 1; function gone() {}",
+      "function pick() { return 'latest' }; let shift = (n: number) => n + 1",
+      "gone = 5",
+    )
+    expect(restored).toEqual(["pick", "shift", "gone"])
+    expect(await show("[pick(), shift(1), gone].join(' ')")).toBe("latest 2 5")
+  })
+
+  test("a closure made inside a function is left out and named", async () => {
+    const { snapshot, restored, show } = await restart(
+      "function make() { let n = 0; return () => ++n }; const counter = make(); const holder = { counter }; const kept = 1",
+    )
+    expect(snapshot.omitted).toContainEqual({ name: "counter", reason: "function" })
+    expect(snapshot.omitted).toContainEqual({ name: "holder", reason: "function" })
+    expect(restored).toEqual(["make", "kept"])
+    expect(await show("[typeof counter, make()()].join(' ')")).toBe("undefined 1")
+  })
+
+  test("live values and instances no restore can rebuild are left out, each named with its reason", async () => {
     const { snapshot } = await restart(`const pending = Promise.resolve(1)
       const cache = new WeakMap()
       const steps = (function* () {})()
-      class Point { constructor(x) { this.x = x } }
-      const point = new Point(1)
+      class Vault { #key = 1; open() { return this.#key } }
+      const vault = new Vault()
+      const local = new (class Local {})()
       const lazy = { get v() { return 1 } }`)
     for (const omission of [
       { name: "pending", reason: "live" },
       { name: "cache", reason: "live" },
       { name: "steps", reason: "live" },
-      { name: "point", reason: "instance of Point" },
+      { name: "vault", reason: "instance of Vault" },
+      { name: "local", reason: "instance of Local" },
       { name: "lazy", reason: "unsupported" },
     ] satisfies Omission[])
       expect(snapshot.omitted).toContainEqual(omission)
@@ -180,7 +229,8 @@ describe("a restart", () => {
       const lazy = { get x() { ran++; return 1 } }
       const trap = new Proxy({}, { get() { ran++ }, ownKeys() { ran++; return [] }, getOwnPropertyDescriptor() { ran++ }, getPrototypeOf() { ran++; return null } })
       const early = new RangeError("early")
-      const plain = { list: [1, , 3], map: new Map([[1, { polluted: 1 }]]), set: new Set([1]), early }
+      class Shape { side = 1 }
+      const plain = { list: [1, , 3], map: new Map([[1, { polluted: 1 }]]), set: new Set([1]), early, shape: new Shape() }
       Object.defineProperty(Error.prototype, "name", { get() { ran++; return "E" }, configurable: true })
       Error.prepareStackTrace = () => { ran++; return "hooked" }
       plain.late = new Error("late")
@@ -196,6 +246,7 @@ describe("a restart", () => {
     expect(snapshot.omitted).toContainEqual({ name: "lazy", reason: "unsupported" })
     expect(snapshot.omitted).toContainEqual({ name: "trap", reason: "unsupported" })
     expect(snapshot.bindings.map((binding) => binding.name)).toContain("plain")
+    expect(snapshot.bindings.map((binding) => binding.name)).toContain("Shape")
   })
 })
 
@@ -354,9 +405,9 @@ describe("plugin", () => {
 
   test("a crash is a tool error, and the next call starts fresh from the stored bindings", async () => {
     const { call, fail } = await setup()
-    await call("let kept = 7; const f = () => 1")
+    await call("let kept = 7; const f = () => kept")
     expect(await fail("process.exit(5)")).toContain("exited (code 5)")
-    expect(await call("[kept, typeof f]")).toBe('[new kernel; restored kept]\n[ 7, "undefined" ]')
+    expect(await call("[kept, f()]")).toBe("[new kernel; restored f, kept]\n[ 7, 7 ]")
   })
 
   test("a value over the old frame size survives a crash through storage, cycles and all", async () => {
@@ -368,9 +419,25 @@ describe("plugin", () => {
     )
   })
 
+  test("bindings stored by the earlier tagged-JSON format restore too", async () => {
+    const { call, storage } = await setup()
+    const tag = (kind: string, value: unknown) => ({ $kernel: kind, value })
+    storage.set("kernel:ses_1", {
+      bindings: [
+        { name: "count", value: 3 },
+        { name: "lookup", value: tag("map", [["a", tag("bigint", "12")]]) },
+        { name: "when", value: tag("date", 0) },
+        { name: "tagged", value: tag("object", { $kernel: "kept", n: tag("number", "NaN") }) },
+      ],
+    })
+    expect(await call("[count, lookup.get('a'), when.getTime(), tagged.$kernel, tagged.n]")).toBe(
+      '[new kernel; restored count, lookup, when, tagged]\n[ 3, 12n, 0, "kept", NaN ]',
+    )
+  })
+
   test("a value that cannot be stored is named once, when it is bound", async () => {
     const { call } = await setup()
-    expect(await call("const f = () => 1; 1")).toBe("[not kept across restarts: f (function)]\n1")
+    expect(await call("const f = (() => () => 1)(); 1")).toBe("[not kept across restarts: f (function)]\n1")
     expect(await call("2")).toBe("2")
   })
 

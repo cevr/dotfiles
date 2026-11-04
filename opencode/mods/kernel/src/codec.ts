@@ -13,8 +13,11 @@
  *
  * What the clone loses comes back by fixups, keyed by the object's place in a
  * walk both sides take over the copy: a bare object's null prototype, a
- * Buffer's prototype, and an error's type and name. Each value that cannot make
- * the round trip is named with its reason.
+ * Buffer's prototype, an error's type and name, and the prototype of an
+ * instance of a top-level class the restore declares again. Each value that
+ * cannot make the round trip is named with its reason.
+ *
+ * `decodeBinding` also reads the tagged JSON earlier versions stored.
  *
  * @module
  */
@@ -123,12 +126,16 @@ const entriesOf = (collection: object): unknown[] => {
 }
 
 /** What restore puts back on the object at `at` in the walk: its prototype, or the error it stands for. */
-type Fixup =
-  | { readonly at: number; readonly kind: "null-prototype" | "buffer" }
-  | { readonly at: number; readonly kind: "error"; readonly type: string }
+type Fixup = Need & { readonly at: number }
 
 /** What a copied object needs back after the round trip; its place in the walk is set when the walk numbers it. */
-type Need = { readonly kind: "null-prototype" | "buffer" } | { readonly kind: "error"; readonly type: string }
+type Need =
+  | { readonly kind: "null-prototype" | "buffer" }
+  | { readonly kind: "error"; readonly type: string }
+  | { readonly kind: "class"; readonly name: string }
+
+/** The prototypes of the classes a restore declares again, each by the global that holds its class. */
+export type Classes = ReadonlyMap<object, string>
 
 /** A value that cannot round-trip; the copy stops at the first. */
 class Omitted {
@@ -211,7 +218,7 @@ class Budget {
  * leaves as they are, errors as stand-ins. Fixups are keyed by the copy's
  * objects until the walk numbers them.
  */
-const copyOf = (root: unknown, budget: Budget): { readonly copy: unknown; readonly needs: ReadonlyMap<object, Need> } | Omitted => {
+const copyOf = (root: unknown, budget: Budget, classes: Classes): { readonly copy: unknown; readonly needs: ReadonlyMap<object, Need> } | Omitted => {
   const copies = new MapConstructor<object, unknown>()
   const needs = new MapConstructor<object, Need>()
   /** Containers whose copies are made but not filled. */
@@ -288,9 +295,12 @@ const copyOf = (root: unknown, budget: Budget): { readonly copy: unknown; readon
       append(queue, { from: value, to: copy, depth })
       return copy
     }
-    if (proto !== ObjectPrototype && proto !== null) return new Omitted(foreignReason(value))
+    // An instance of a declared class is its own properties; restore gives it the class's prototype again.
+    const owner = typeof proto === "object" && proto !== null ? get(classes, proto) : undefined
+    if (proto !== ObjectPrototype && proto !== null && owner === undefined) return new Omitted(foreignReason(value))
     const copy = {}
     if (proto === null) set(needs, copy, { kind: "null-prototype" })
+    if (owner !== undefined) set(needs, copy, { kind: "class", name: owner })
     append(queue, { from: value, to: copy, depth })
     return copy
   }
@@ -380,8 +390,8 @@ const walk = (root: unknown): ReadonlyArray<object> => {
 }
 
 /** One binding as a stored clone, or why it cannot be one. */
-const encodeBinding = (value: unknown, limit: number): { readonly json: Json; readonly bytes: number } | Omitted => {
-  const copied = copyOf(value, new Budget(limit))
+const encodeBinding = (value: unknown, limit: number, classes: Classes): { readonly json: Json; readonly bytes: number } | Omitted => {
+  const copied = copyOf(value, new Budget(limit), classes)
   if (copied instanceof Omitted) return copied
   let bytes: Uint8Array
   try {
@@ -403,14 +413,17 @@ const encodeBinding = (value: unknown, limit: number): { readonly json: Json; re
   return { json, bytes: bytes.byteLength }
 }
 
-/** Each binding as a clone, within the limits, and each one left out by name with its reason. */
-export const encodeSnapshot = (namespace: ReadonlyMap<string, unknown>): Snapshot => {
+/**
+ * Each binding as a clone, within the limits, and each one left out by name
+ * with its reason. `limit` is what the snapshot's clones may take in all.
+ */
+export const encodeSnapshot = (namespace: ReadonlyMap<string, unknown>, classes: Classes = new MapConstructor(), limit = MAX_SNAPSHOT_BYTES): Snapshot => {
   const bindings: SnapshotBinding[] = []
   const omitted: Omission[] = []
-  let left = MAX_SNAPSHOT_BYTES
+  let left = limit
   apply(mapForEach, namespace, [
     (value: unknown, name: string) => {
-      const encoded = encodeBinding(value, left < MAX_BINDING_BYTES ? left : MAX_BINDING_BYTES)
+      const encoded = encodeBinding(value, left < MAX_BINDING_BYTES ? left : MAX_BINDING_BYTES, classes)
       if (encoded instanceof Omitted) return append(omitted, { name, reason: encoded.reason })
       left -= encoded.bytes
       append(bindings, { name, value: encoded.json })
@@ -421,8 +434,9 @@ export const encodeSnapshot = (namespace: ReadonlyMap<string, unknown>): Snapsho
 
 const isFixup = (value: unknown): value is Fixup => {
   if (typeof value !== "object" || value === null) return false
-  const { at, kind, type } = value as Record<string, unknown>
+  const { at, kind, type, name } = value as Record<string, unknown>
   if (typeof at !== "number") return false
+  if (kind === "class") return typeof name === "string"
   return kind === "null-prototype" || kind === "buffer" || (kind === "error" && typeof type === "string" && has(ERRORS, type))
 }
 
@@ -465,11 +479,15 @@ const replaceStandIns = (order: ReadonlyArray<object>, revived: ReadonlyMap<obje
   }
 }
 
-/** A stored binding's value, made in this realm; `undefined` for one this codec did not write. */
-export const decodeBinding = (stored: Json): { readonly value: unknown } | undefined => {
-  if (typeof stored !== "object" || stored === null || isArray(stored)) return undefined
+/**
+ * A stored binding's value, made in this realm; `undefined` for one this codec
+ * did not write, or an instance whose class `prototypeOfClass` cannot find.
+ */
+export const decodeBinding = (stored: Json, prototypeOfClass: (name: string) => object | undefined = () => undefined): { readonly value: unknown } | undefined => {
+  if (typeof stored !== "object" || stored === null || isArray(stored)) return decodeLegacy(stored)
   const { [CLONE_TAG]: tag, data: clone, fixups = [] } = stored as Record<string, Json | undefined>
-  if (tag !== "clone" || typeof clone !== "string" || !isArray(fixups)) return undefined
+  if (tag !== "clone") return decodeLegacy(stored)
+  if (typeof clone !== "string" || !isArray(fixups)) return undefined
   for (let index = 0; index < fixups.length; index++) if (!isFixup(fixups[index])) return undefined
   try {
     let value: unknown = deserialize(apply(fromBase64, Bytes, [clone]))
@@ -481,13 +499,70 @@ export const decodeBinding = (stored: Json): { readonly value: unknown } | undef
       const object = order[fixup.at]
       if (object === undefined) return undefined
       if (fixup.kind === "error") set(revived, object, reviveError(object, fixup.type))
-      else setPrototypeOf(object, fixup.kind === "buffer" ? BufferPrototype : null)
+      else if (fixup.kind === "class") {
+        const proto = prototypeOfClass(fixup.name)
+        if (proto === undefined) return undefined
+        setPrototypeOf(object, proto)
+      } else setPrototypeOf(object, fixup.kind === "buffer" ? BufferPrototype : null)
     }
     if (sizeOf(revived) > 0) {
       replaceStandIns(order, revived)
       if (has(revived, value)) value = get(revived, value)
     }
     return { value }
+  } catch {
+    return undefined
+  }
+}
+
+// ── the tagged JSON of earlier versions ─────────────────────────────────────
+
+/** The typed arrays the tagged JSON names by their constructor's name. */
+const LEGACY_VIEWS: ReadonlyMap<string, { from: (items: ArrayLike<unknown>) => object }> = new MapConstructor(
+  [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array, BigInt64Array, BigUint64Array].map(
+    (constructor) => [constructor.name, constructor as unknown as { from: (items: ArrayLike<unknown>) => object }],
+  ),
+)
+
+/**
+ * A value in the tagged JSON earlier versions stored: plain JSON as itself,
+ * `{ "$kernel": kind, value }` for the rest. `undefined` when it is not one.
+ */
+const decodeLegacy = (stored: Json): { readonly value: unknown } | undefined => {
+  const revive = (value: Json): unknown => {
+    if (value === null || typeof value !== "object") return value
+    if (isArray(value)) return value.map(revive)
+    const record = value as { readonly [key: string]: Json }
+    const kind = record[CLONE_TAG]
+    const plain = (from: { readonly [key: string]: Json }) => {
+      const out = {}
+      for (const key of Object.keys(from)) put(out, key, revive(from[key]!))
+      return out
+    }
+    if (typeof kind !== "string") return plain(record)
+    const inner = record.value as never
+    if (kind === "undefined") return undefined
+    if (kind === "number") return Number(inner)
+    if (kind === "bigint") return BigInt(inner)
+    if (kind === "date") return new Date(Number(inner))
+    if (kind === "regexp") return new RegExp((inner as string[])[0]!, (inner as string[])[1])
+    if (kind === "map") return new MapConstructor((inner as Json[][]).map(([key, item]) => [revive(key!), revive(item!)]))
+    if (kind === "set") return new SetConstructor((inner as Json[]).map(revive))
+    // An object with its own "$kernel" key, wrapped so the key reads as data.
+    if (kind === "object") return plain(inner)
+    if (kind === "error") {
+      const { name, message, stack } = inner as Record<string, string>
+      const error = new Error(message)
+      put(error, "name", name)
+      defineProperty(error, "stack", data(stack, false))
+      return error
+    }
+    const view = get(LEGACY_VIEWS, kind)
+    if (view === undefined) throw new TypeError(`no ${kind} in tagged JSON`)
+    return view.from((inner as Json[]).map((item) => (kind.startsWith("Big") ? BigInt(item as string) : Number(item))))
+  }
+  try {
+    return { value: revive(stored) }
   } catch {
     return undefined
   }
