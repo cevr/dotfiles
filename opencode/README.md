@@ -21,7 +21,7 @@ an agent session on TeamClaude starts it. `~/.local/bin` precedes `~/.bun/bin`,
 so a new terminal runs it, and `opencode2` stays the stock release. As a `latest`
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
-`~/.config/opencode/opencode.json` the Anthropic auth plugin, the pool (on
+`~/.config/opencode/opencode.json` the Anthropic auth plugin (`mods/anthropic-auth`), the pool (on
 the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists), orchestrate, the kernel and status, the role
 models and `autoupdate: false`, and into `cli.json` Prime, status and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork
@@ -142,9 +142,9 @@ bun run agents -- --check
 
 There is no separate lint script. `git diff --check` checks patch whitespace.
 The typecheck links plugins to the fork's installed host packages; install
-only when changing the lock file. If working in a Rift, set
-`OPENCODE_ANTHROPIC_AUTH` and `GENT_SOURCE` to their source checkouts so the
-pool integration tests run instead of skipping.
+only when changing the lock file. If working in a Rift, set `GENT_SOURCE` to
+its source checkout so the gent pool integration tests run instead of
+skipping.
 
 The deterministic acceptance seams are the session API (the guard, compaction
 per role, the Sabbath, held starts and subagent pace), the pool RPC and quota

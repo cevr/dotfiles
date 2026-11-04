@@ -1,0 +1,10 @@
+{
+  "name": "@dotfiles/opencode-anthropic-auth",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Claude subscription login for OpenCode, with the quota readings and per-request credential choice the pool uses. Vendored from @ex-machina/opencode-anthropic-auth (MIT).",
+  "exports": {
+    "./server": "./src/index.ts"
+  }
+}

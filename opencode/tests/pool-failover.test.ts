@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
-import { anthropicAuthPlugin, anthropicAuthSource, poolPlugin } from "../testbeds/anthropic-auth.ts"
+import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import {
   fakeAccount,
   startFakeAnthropic,
@@ -18,12 +18,10 @@ import {
 } from "./fake-anthropic.ts"
 
 const fork = process.env.OPENCODE_DEV
-const auth = anthropicAuthSource()
-const ready = Boolean(fork) && existsSync(join(auth, "src/index.ts"))
+const ready = Boolean(fork)
 if (!ready) {
   console.warn(
-    "tests/pool-failover.test.ts: skipped. Set OPENCODE_DEV to the fork, and clone the auth plugin fork " +
-      `to ${auth} (or set OPENCODE_ANTHROPIC_AUTH).`,
+    "tests/pool-failover.test.ts: skipped. Set OPENCODE_DEV to the fork.",
   )
 }
 
@@ -67,7 +65,7 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
       JSON.stringify({
         model: "anthropic/claude-haiku-4-5",
         plugins: [
-          anthropicAuthPlugin(join(base, "plugins")),
+          anthropicAuthPlugin,
           ...(pooled ? [{ package: poolPlugin, options: { sweepMinutes: 0 } }] : []),
         ],
       }),

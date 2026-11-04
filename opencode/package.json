@@ -6,7 +6,7 @@
   "scripts": {
     "link-fork": "bun scripts/link-fork.ts",
     "agents": "bun scripts/agents.ts",
-    "typecheck": "bun scripts/link-fork.ts && bun check --no-script && bun check --no-script -p mods/prime && bun check --no-script -p mods/pool && bun check --no-script -p mods/orchestrate && bun check --no-script -p mods/kernel && bun check --no-script -p mods/status",
+    "typecheck": "bun scripts/link-fork.ts && bun check --no-script && bun check --no-script -p mods/prime && bun check --no-script -p mods/anthropic-auth && bun check --no-script -p mods/pool && bun check --no-script -p mods/orchestrate && bun check --no-script -p mods/kernel && bun check --no-script -p mods/status",
     "test": "bun test --timeout 300000",
     "gamut": "bun testbeds/gamut/gamut.ts",
     "daily": "bun scripts/daily.ts"
@@ -14,6 +14,7 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@xterm/headless": "6.0.0",
+    "dedent": "1.7.2",
     "effect": "4.0.1",
     "opencode-drive": "2.4.0",
     "zigpty": "0.2.1"
@@ -22,6 +23,7 @@
     "typescript": "^7"
   },
   "dependencies": {
+    "@streamparser/json": "0.0.26",
     "oxc-parser": "0.157.0"
   }
 }

@@ -295,7 +295,7 @@ export type PluginEntry = string | { readonly package: string; readonly options:
 
 /**
  * The server plugins a run on the Claude subscription loads, in this order:
- * the Anthropic auth plugin (`authPlugin`, its loader directory), then the
+ * the Anthropic auth plugin (`authPlugin`, its directory), then the
  * pool, which chooses the login each request goes out on. With `gentStore`
  * the pool also takes the Claude accounts gent holds there.
  */
@@ -887,7 +887,7 @@ const prepareAndLaunch = async (
   const plugins: ReadonlyArray<PluginEntry> = [
     join(PLUGINS, "orchestrate"),
     { package: join(PLUGINS, "status"), options: { log: join(paths.home, ".cache/orchestrate/opencode-agents.jsonl"), statusScript: join(homedir(), ".claude/skills/orchestrate/scripts/status.ts") } },
-    ...(usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin(paths.root), gentStore) : [poolPlugin]),
+    ...(usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin, gentStore) : [poolPlugin]),
   ]
   await Bun.write(
     join(paths.work, "opencode.json"),
@@ -1359,7 +1359,7 @@ const login = async (provider: string | undefined) => {
   }
   const dir = mkdtempSync(join(tmpdir(), "opencode-gamut-login-"))
   try {
-    writeFileSync(join(dir, "opencode.json"), `${JSON.stringify({ plugins: [anthropicAuthPlugin(dir)] })}\n`)
+    writeFileSync(join(dir, "opencode.json"), `${JSON.stringify({ plugins: [anthropicAuthPlugin] })}\n`)
     // The sign-in talks to Anthropic itself, not to a proxy the caller's shell names.
     const env = { ...process.env }
     delete env.ANTHROPIC_BASE_URL

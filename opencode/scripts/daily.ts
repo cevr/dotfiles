@@ -133,7 +133,7 @@ if (import.meta.main) {
   rmSync(link, { force: true })
   writeFileSync(link, launcher(binary), { mode: 0o755 })
 
-  const auth = anthropicAuthPlugin(share)
+  const auth = anthropicAuthPlugin
   const gent = gentAuthDir()
   const pool = join(MODS, "pool")
   const server: PluginEntry[] = [
@@ -143,7 +143,10 @@ if (import.meta.main) {
     join(MODS, "kernel"),
     join(MODS, "status"),
   ]
-  const owned = [MODS, auth]
+  // Earlier runs loaded the auth plugin through a loader directory here; its entry is replaced too.
+  const loader = join(share, "anthropic-auth")
+  rmSync(loader, { recursive: true, force: true })
+  const owned = [MODS, loader]
   const config = join(home, ".config/opencode")
   const models = roleModels(await loadCatalog(fork))
   writeJson(join(config, "opencode.json"), mergeServer(readJson(join(config, "opencode.json")), server, models, owned))

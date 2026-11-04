@@ -10,17 +10,15 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } f
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
-import { anthropicAuthPlugin, anthropicAuthSource, poolPlugin } from "../testbeds/anthropic-auth.ts"
+import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAnswer, type FakeRequestInfo } from "./fake-anthropic.ts"
 import { gentAvailable, gentSource, openGentStore } from "./gent/store.ts"
 
 const fork = process.env.OPENCODE_DEV
-const auth = anthropicAuthSource()
-const ready = Boolean(fork) && existsSync(join(auth, "src/index.ts")) && gentAvailable()
+const ready = Boolean(fork) && gentAvailable()
 if (!ready) {
   console.warn(
-    "tests/pool-gent-opencode.test.ts: skipped. Set OPENCODE_DEV to the fork, clone the auth plugin fork " +
-      `to ${auth} (or set OPENCODE_ANTHROPIC_AUTH) and gent to ${gentSource()} (or set GENT_SOURCE).`,
+    `tests/pool-gent-opencode.test.ts: skipped. Set OPENCODE_DEV to the fork, and gent to ${gentSource()} (or set GENT_SOURCE).`,
   )
 }
 
@@ -59,7 +57,7 @@ describe.skipIf(!ready)("OpenCode runs on gent's Claude accounts through the poo
           JSON.stringify({
             model: "anthropic/claude-haiku-4-5",
             plugins: [
-              anthropicAuthPlugin(join(base, "plugins")),
+              anthropicAuthPlugin,
               {
                 package: poolPlugin,
                 options: { sweepMinutes: 0, sources: [{ kind: "gent", dir: store, tokenURL: `${fake.url}/v1/oauth/token` }] },
