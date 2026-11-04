@@ -14,7 +14,9 @@ import { nextDetail, type Detail } from "./view"
 export function rowGap(detail: Detail, row: { kind: TranscriptRowKind; previous?: TranscriptRowKind }) {
   if (detail === "overview") return 0
   if (row.kind === "footer") return 0
-  if (row.kind === "tool" && row.previous === "tool") return 0
+  // The host keeps a step's run of calls as one "group" row even with grouping "none".
+  const call = (kind?: TranscriptRowKind) => kind === "tool" || kind === "group"
+  if (call(row.kind) && call(row.previous)) return 0
   if (row.kind === "reasoning" && row.previous === "user") return 0
   return 1
 }

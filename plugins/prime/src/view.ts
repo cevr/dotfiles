@@ -54,7 +54,7 @@ export function toolSource(tool: string, input: Record<string, unknown>) {
   if (tool === "read") return text(input.path) ?? text(input.filePath) ?? ""
   if (tool === "grep") return [text(input.pattern), text(input.path)].filter(Boolean).join(" in ")
   if (tool === "glob") return text(input.pattern) ?? ""
-  if (tool === "subagent") return text(input.description) ?? text(input.prompt) ?? ""
+  if (tool === "subagent") return text(input.prompt) ?? text(input.description) ?? ""
   return Object.entries(input)
     .filter(([, value]) => typeof value === "string" || typeof value === "number" || typeof value === "boolean")
     .map(([key, value]) => `${key}=${String(value)}`)
@@ -77,7 +77,9 @@ export function toolPreview(tool: string, input: Record<string, unknown>) {
 
 export function toolOutput(part: ToolPart) {
   if (part.state.status === "streaming" || part.state.status === "running") return ""
-  return (part.state.content ?? []).flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n")
+  const output = (part.state.content ?? []).flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n")
+  // A subagent's answer arrives wrapped in a <subagent ...> envelope; show the message only.
+  return output.replace(/^<\/?subagent\b[^>]*>\n?/gm, "")
 }
 
 function lines(value: string) {
@@ -192,4 +194,9 @@ export function elapsed(ms: number) {
   const seconds = Math.max(0, Math.floor(ms / 1000))
   if (seconds < 60) return `${seconds}s`
   return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`
+}
+
+/** The name a subagent call shows: its short description, else the agent. */
+export function subagentName(input: Record<string, unknown>) {
+  return text(input.description) ?? text(input.agent) ?? "subagent"
 }

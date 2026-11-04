@@ -19,6 +19,7 @@ import {
   type Detail,
   type DiffRow,
   type ToolPart,
+  subagentName,
 } from "./view"
 
 type Context = Plugin.Context
@@ -104,9 +105,27 @@ function ToolCell(props: {
           </>
         )}
       </For>
+      <Show when={props.tool === "subagent" && props.part.state.status === "completed"}>
+        <AgentMessage context={props.context} from={subagentName(toolInput(props.part))} />
+      </Show>
       <Show when={props.detail() === "all" && props.tool !== "patch" && output()}>
         <ShellTail context={props.context} output={output()} />
       </Show>
+    </box>
+  )
+}
+
+// A subagent's answer, as Prime shows agent mail: a green envelope, then the
+// direction (`↓` received) and the sender.
+function AgentMessage(props: { context: Context; from: string }) {
+  const theme = () => props.context.theme
+  return (
+    <box paddingLeft={GUTTER}>
+      <text wrapMode="none" truncate fg={theme().text.muted}>
+        <span style={{ fg: theme().text.feedback.success.base }}>✉ </span>
+        Agent message
+        <span style={{ fg: theme().border.base }}> · </span>↓ {props.from}
+      </text>
     </box>
   )
 }
