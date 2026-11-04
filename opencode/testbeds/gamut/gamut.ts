@@ -62,8 +62,8 @@ const THEME = join(CHECKOUT, "themes/prime.json")
 /** The host's entry; `isHost` also finds a run's host by it in `ps`. */
 const HOST_ENTRY = join(HERE, "pty-host.ts")
 const SIM_ENTRY = join(HERE, "sim-model.ts")
-/** The fork `up` runs when `OPENCODE_DEV` is unset: the prime-look Rift beside this checkout. */
-export const DEFAULT_FORK = resolve(CHECKOUT, "../.rifts/opencode/prime-look")
+/** The fork `up` runs when `OPENCODE_DEV` is unset: the prime-look Rift beside the dotfiles checkout. */
+export const DEFAULT_FORK = resolve(CHECKOUT, "../../.rifts/opencode/prime-look")
 /** The owner's OpenCode, where the logins live; `--installed` runs it too. */
 const OWNER_OPENCODE = "opencode2"
 

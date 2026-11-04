@@ -6,12 +6,13 @@ import { Database } from "bun:sqlite"
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { poolPlugin } from "../testbeds/anthropic-auth.ts"
 import {
   type Catalog,
   checkKeyNames,
   cliConfig,
+  DEFAULT_FORK,
   forkLaunch,
   formatReport,
   gentAccounts,
@@ -114,6 +115,11 @@ const CATALOG: Catalog = {
     },
   },
 }
+
+test("the default fork is the prime-look Rift beside the dotfiles checkout", () => {
+  const dotfiles = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd: import.meta.dir }).stdout.toString().trim()
+  expect(DEFAULT_FORK).toBe(join(dirname(dotfiles), ".rifts/opencode/prime-look"))
+})
 
 describe("presets", () => {
   test("a family resolves to its newest release that is not deprecated", () => {
