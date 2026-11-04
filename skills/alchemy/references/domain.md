@@ -1,12 +1,12 @@
 # Domain Backends
 
-Our policy for backends written as a domain model with `@alchemy.run/domain`: when to use the package, where its build guidance lives, how it fits our package layout, and which client surfaces its Api projects. How to write the model itself is the upstream `alchemy-domain` skill's job.
+Our policy for backends written as a domain model with `@alchemy.run/domain`: when to use the package, where its build guidance lives, our layout for it, and which client surfaces its Api projects. How to write the model itself is the upstream `alchemy-domain` skill's job.
 
 ## Contents
 
 - When to reach for it
 - Build it from the upstream skill
-- Packages and imports
+- Layout
 - One Api, every surface
 - Gaps at beta.85
 - Testing
@@ -25,7 +25,7 @@ Build a hand-built Effect app instead (the `effect` skill, `references/ARCHITECT
 
 ## Build it from the upstream skill
 
-The package ships an agent skill, `alchemy-domain`: the modeling method, the file layout, a template per building block, stories, Cloudflare hosting and a foldkit frontend. Read it before you model anything, and follow its workflow. Take the copy that matches the pinned version:
+The package ships an agent skill, `alchemy-domain`: the modeling method, a file layout, a template per building block, stories, Cloudflare hosting and a foldkit frontend. Read it before you model anything, and follow its workflow with our layout (§Layout) in place of its own. Take the copy that matches the pinned version:
 
 1. `node_modules/@alchemy.run/domain/skills/alchemy-domain/` in the project. The npm package ships it, references included.
 2. Otherwise `okra repo fetch npm:@alchemy.run/domain@<version>`, then `skills/alchemy-domain/` inside it.
@@ -35,21 +35,45 @@ Read it in place. Installing it through `okra skills` loses its references, whic
 
 The docs live at https://alchemy.run/domain, with every page listed in https://alchemy.run/llms.txt. The worked project is `examples/cloudflare-domain` in the repo: a bank with domain, server and foldkit web packages, a story suite, Api tests, and a deploy test. When the docs and the source disagree, the source at the pinned version wins (SKILL.md §Source Rule).
 
-## Packages and imports
+## Layout
 
-The upstream layout is our package rule from the `effect` skill (`references/ARCHITECTURE.md` §Packages): the core is free of infrastructure, and the host owns it.
+Lay the project out by our Go-style rule (the `effect` skill, `references/ARCHITECTURE.md` §Layout), in place of the upstream skill's `references/layout.md`: files by concept, the consumer owns the contract, implementations named after their dependency, and `cmd/` per binary. The upstream bank, laid out our way:
 
-| Package | Holds | Imports |
-| --- | --- | --- |
-| `domain` | Building blocks, Apis, middleware declarations, request contexts, ports (`Context.Service`) with memory implementations, stories | `@alchemy.run/domain` and `effect`, nothing else |
-| `server` | The Worker that hosts the model, `*Live` middleware, external-system adapters, port implementations (D1, HTTP), Api tests | `domain`, `@alchemy.run/cloudflare` and its `/Domain` subpath, other provider packages |
-| `web` | The browser app | `domain` (Apis, ids, value schemas), `@alchemy.run/domain` |
-| root | `alchemy.run.ts`, the deploy test | `server`, `alchemy` |
+```text
+bank/
+  bank/                    the model; imports @alchemy.run/domain and effect only
+    account.ts             AccountId; the Account aggregate; OpenAccount, WithdrawMoney and their events
+    transfer.ts            the Transfer aggregate, RequestTransfer, the ExecuteTransfer saga
+    errors.ts              rejections that several commands share (NotOpen)
+    statement.ts           the AccountSummary and Statement views
+    fraud.ts               the FraudCheck external system (declaration) and the FraudReview policy
+    ledger.ts              the Ledger projection and the LedgerStore port it writes through
+    session.ts             the Session middleware declaration, its error, the CurrentActor context
+    api.ts                 CustomerApi; one Api per kind of client
+    model.ts               Domain.Model and its handlers Layer
+    bank.test.ts           stories and Domain.verify, over test Layers declared here
+  memory/                  LedgerStore in memory
+  d1/                      LedgerStore over D1
+  sift/                    FraudCheck over Sift
+  workos/                  SessionLive: verifies sessions against WorkOS
+  web/                     the foldkit app: Model, Message, update, view; no entry point
+  cmd/
+    bank-worker/           main.ts: the Worker; api.test.ts: an Api test per access rule
+    bank-web/              entry.ts, worker.ts, index.html, vite.config.ts
+    bank/                  main.ts: toCli(CustomerApi) over Domain.protocolHttp
+  alchemy.run.ts           the stack: the bank-worker and bank-web resources
+  test/integ.test.ts       deploys the stack and drives it
+```
 
-- **Fence the `domain` package** with an oxlint import rule that admits only `@alchemy.run/domain` and `effect`. That boundary is what lets stories run with no cloud account.
-- **Pin `@alchemy.run/domain` at Alchemy's exact version** wherever it is used. It peers on `alchemy` at that exact version and on `effect` `^4.1.0`, so the `domain` package lists `alchemy` too, though its code never imports it.
+Follow the upstream skill's workflow with this layout in its step 2. Its building-block templates hold unchanged; only the file each block lands in moves.
+
+- **A building block lands in the file of its concept**: an aggregate with its id, its commands and their events; a rejection beside the one command that returns it, in `errors.ts` once several share it; a policy or saga beside the concept it reacts to. Split a file by concept when it grows.
+- **The model declares every port** (`Context.Service`), external system and middleware it uses. Each implementation lives in a package named after its dependency, the memory one included.
+- **Fence the domain package** with an oxlint import rule that admits only `@alchemy.run/domain` and `effect`. That boundary is what lets stories run with no cloud account.
+- **Pin `@alchemy.run/domain` at Alchemy's exact version** wherever it is used. It peers on `alchemy` at that exact version and on `effect` `^4.1.0`, so the domain package lists `alchemy` too, though its code never imports it.
 - **One domain package per model** (bounded context). Models reach each other through Apis, never through each other's aggregates.
-- **The server Worker is the composition root.** It builds one Layer (platform, `Model.layer(handlers)`, middleware, adapters) and serves the surfaces from it.
+- **The Worker's `cmd/` main is the composition root.** It builds one Layer (platform, `Model.layer(handlers)`, middleware, adapters) and serves the surfaces from it. Every other binary (the web app's Worker, the CLI) has its own `cmd/` folder.
+- **The web app** imports the Apis, ids and value schemas from the domain package, and `@alchemy.run/domain` for the client protocols.
 - **A web client calls the Api's client.** beta.85 ships an adapter for foldkit (`@alchemy.run/domain/Foldkit`, upstream `references/frontend.md`); any other framework uses `MyApi.layerClient` over a protocol.
 
 ## One Api, every surface

@@ -26,7 +26,7 @@ What are you doing?
 | Topic | File | When to Read |
 |-------|------|--------------|
 | App-level code | `references/app-code.md` | Runtimes with `main: import.meta.url`, bindings, `Config` binding, `HttpRouter` in `fetch`, Layers that own resources, phases |
-| Domain backends | `references/domain.md` | Whether to use `@alchemy.run/domain`, the upstream `alchemy-domain` skill, the domain/server/web split, the Api's HTTP, CLI and MCP projections, beta.85 gaps |
+| Domain backends | `references/domain.md` | Whether to use `@alchemy.run/domain`, the upstream `alchemy-domain` skill, our Go-style layout in place of its kind-suffixed one, the Api's HTTP, CLI and MCP projections, beta.85 gaps |
 | Testing | `references/testing.md` | Which test fits, stories, Api tests, stack tests with `@alchemy.run/test`, provider tests, the runner adapters |
 | Railway | `references/railway.md` | Project, Service (the `main`, `context`+`dockerfilePath`, and `image` sources), CustomDomain, Postgres/Redis/Bucket, Variables |
 | Cloudflare | `references/cloudflare.md` | Workers, Zone/DNS records, adopting a zone, `Cloudflare.state()`, OAuth scopes |

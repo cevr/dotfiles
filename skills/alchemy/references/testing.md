@@ -15,9 +15,9 @@ Which test answers which question once Alchemy is involved, and our rules for ea
 
 | Question | Test | Lives in | Touches a cloud |
 | --- | --- | --- | --- |
-| Does the model enforce its rules? Events, replies, rejections, views, policy reactions, saga outcomes | A story | the `domain` package | no |
-| Is the model declared correctly? | `Domain.verify(Model)` equals `[]` | the `domain` package | no |
-| Can each kind of client do and see what it should, through its middleware? | An Api test over `Domain.InMemory` | the `server` package | no |
+| Does the model enforce its rules? Events, replies, rejections, views, policy reactions, saga outcomes | A story | the domain package | no |
+| Is the model declared correctly? | `Domain.verify(Model)` equals `[]` | the domain package | no |
+| Can each kind of client do and see what it should, through its middleware? | An Api test over `Domain.InMemory` | beside the Worker's `cmd/` main | no |
 | Do the routes of a hand-built app work? | A route test on local Layers (`HttpRouter.serve` with `BunHttpServer.layerTest`) | the app | no |
 | Does the deployed stack boot, bind, and answer? | A stack test with `@alchemy.run/test` | the repo root | yes, or local emulators |
 | Does a custom Provider create, update, replace, and delete? | `test.provider` | the provider's package | yes |
@@ -38,7 +38,7 @@ A story is given / when / then over the real model, in memory. `Story.make(Model
 
 ## Api tests
 
-In the `server` package, host the model with `Model.layer(handlers)` over `Domain.InMemory`, add the real middleware Layers, and call the Api as a client would: `MyApi.clientInProcess` with a test-signed session, or a test HTTP server serving `yield* MyApi` and a client over `Domain.protocolHttp`. Each test that provides the Layer gets a fresh, empty model. Upstream runs these with `it.live`. The worked examples are at https://alchemy.run/domain/testing-apis.
+Beside the Worker's `cmd/` main, host the model with `Model.layer(handlers)` over `Domain.InMemory`, add the real middleware Layers, and call the Api as a client would: `MyApi.clientInProcess` with a test-signed session, or a test HTTP server serving `yield* MyApi` and a client over `Domain.protocolHttp`. Each test that provides the Layer gets a fresh, empty model. Upstream runs these with `it.live`. The worked examples are at https://alchemy.run/domain/testing-apis.
 
 ## Stack tests
 

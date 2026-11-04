@@ -90,8 +90,8 @@ A `@alchemy.run/domain` backend and an Alchemy stack add three tests beside the 
 
 | Seam | Test | Proves |
 | --- | --- | --- |
-| The model, in the `domain` package | A story from `@alchemy.run/domain/Story`: given these events, when this command, then these events, reply, rejection, view state, external calls, and saga outcome | Every rule and its consequences, with no cloud |
-| An Api, in the `server` package | The Api's client over `Domain.InMemory`, through the real middleware | What each kind of client may do and see |
+| The model, beside it in the domain package | A story from `@alchemy.run/domain/Story`: given these events, when this command, then these events, reply, rejection, view state, external calls, and saga outcome | Every rule and its consequences, with no cloud |
+| An Api, beside the Worker's `cmd/` main | The Api's client over `Domain.InMemory`, through the real middleware | What each kind of client may do and see |
 | The deployed stack | `Test.make` from `@alchemy.run/test`, deploy and destroy in one scoped test | Hosting, bindings, and the wire |
 
 The rules of this file still hold. A story is an ordinary Effect run by `it.effect`, and it fails on any outcome it does not assert, which is the exhaustive form of asserting the smallest observable sequence. External systems are answered through the story's `stub` or provided as a real adapter Layer, never patched. A deployed stack is a scoped `acquireRelease` fixture. Rejections are asserted by value with `Story.rejected`, or by tag through the Api's client.

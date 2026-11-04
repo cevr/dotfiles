@@ -8,7 +8,7 @@ Use this reference to lay out an application: its packages, its public actions, 
 - One contract, every surface
 - Shape operations for the client's outcome
 - Composition root
-- Nouns and dependency direction
+- Layout
 - Cartridges
 - Clients
 - Packages
@@ -38,8 +38,8 @@ The two paths share one architecture: an infrastructure-free core package, surfa
 | Contract kit | `@alchemy.run/domain` |
 | `annotations` | Fixed: reads are read-only and idempotent, commands destructive |
 | `needsApproval` | No equivalent at beta.85; a command's middleware can demand a second factor |
-| Composition root | The `server` package's Worker Layer |
-| Cartridge | A port or external system declared in the `domain` package, with its vendor Layer in `server` |
+| Composition root | The Worker's `cmd/<name>-worker/main.ts` Layer |
+| Cartridge | A port or external system declared in the domain package, with its vendor Layer in a package named after the vendor |
 | Machine | An aggregate for one instance's states, a saga for a process across aggregates |
 | Client SDK | `MyApi.layerClient` over a protocol |
 | Tests through public Effect interfaces | Stories for the model, an Api test per access rule, one deploy test ([TESTING.md](TESTING.md) §Domain models and deployed stacks) |
@@ -119,28 +119,60 @@ const { user, teams } = yield* client.users.currentWithTeams()
 
 One module per app instantiates projections, and one module provides the layer graph. Domain code never calls `Layer.provide` for its own dependencies; requirements bubble to the root. The root is also the only place that chooses a runtime (`BunRuntime.runMain`, a Worker `fetch`, a CLI `run`).
 
-On the Domain path, the `server` package's Worker is the root: it builds one Layer from the platform, `Model.layer(handlers)`, the middleware implementations, and the adapters, and serves each surface from it. Swapping the platform Layer (`Domain.InMemory` or Durable Objects) moves the model between a test and production without touching it.
+On the Domain path, the Worker's `cmd/` main is the root: it builds one Layer from the platform, `Model.layer(handlers)`, the middleware implementations, and the adapters, and serves each surface from it. Swapping the platform Layer (`Domain.InMemory` or Durable Objects) moves the model between a test and production without touching it.
 
-## Nouns and dependency direction
+## Layout
 
-Name the pieces and give each one a home. Record the table in the repo's `AGENTS.md`:
+Lay the app out the way a Go service is laid out (Ben Johnson's Standard Package Layout), and model inside it the Effect way: typed failures, services as contracts, Layers bound at the edge. The owner prefers this to the upstream `alchemy-domain` layout of kind-suffixed files (`Account.aggregate.ts`, `OpenAccount.command.ts`), so it holds on both paths; the Ergo repo's `examples/` use the same shape. A board app with a CLI, a server and a TUI:
+
+```text
+standup/
+  board/                   the domain: entities, rules, contracts; imports effect only
+    card.ts                CardId, Member, Title (branded schemas); the Card lifecycle
+    board.ts               Board state, decide, evolve
+    commands.ts            the commands and the events they record
+    errors.ts              the tagged failures
+    service.ts             the contracts: BoardService, Session, Events
+    columns.ts             the columns read model
+    policy.ts              pullNext
+    board.test.ts          stories, over test Layers declared here
+  memory/                  Events and Session in memory (tests, the demo)
+  filestore/               Events over JSON-lines files
+  server/                  BoardService over any Events; the HTTP routes
+  tui/                     model.ts, update.ts, view.ts; no entry point
+  cmd/
+    standup/main.ts        the CLI: calls BoardService remotely
+    standup-server/main.ts binds filestore, serves
+    standup-tui/main.ts    connects, runs the TUI
+```
+
+- **A package per responsibility.** The domain package sits at the centre, named for its domain (`board`, `billing`), one per bounded context. Name each file by its concept (`card.ts`, `columns.ts`, `errors.ts`); the declaration itself (`Schema.TaggedError`, `Context.Service`, a machine) says what kind of thing it is. When a file grows, split it by concept (`move.ts` out of `commands.ts`).
+- **The consumer owns the contract.** The domain declares each service it needs (`Events`, `Session`, `FraudCheck`) as a `Context.Service` in its own files, and states what every implementation owes as a shared test suite: its laws. Implementations import the domain; the domain imports no implementation.
+- **Implementations live in packages named after their dependency**: `memory`, `filestore`, `d1`, `sift`, `server`. Each exports Layers for the domain's contracts and maps its vendor errors to the domain's failures at that edge (`Effect.mapError`).
+- **`cmd/<binary>/main.ts` is the only composition root**, one folder per binary: a CLI, a server, a TUI, a Worker. It picks one implementation per contract, provides the Layer graph and chooses the runtime, so swapping a store is a one-line change there.
+- **Tests sit beside their code** (`board.test.ts`). A domain test declares its own test Layers, since `memory` imports the domain, as Go's in-package tests do. A test of the real `memory` lives in `memory/`, and a test that needs the composed graph lives beside its `cmd/` main.
+- **UI packages** (`tui`, `web`) hold the model, update and view; the binary's `cmd/` folder runs them.
+
+Each folder above, and each `cmd/*` folder, is a workspace package. A package exports its files by path (`"exports": { "./*": "./*.ts" }`), so an import names the concept it reaches (`@acme/board/errors`); write no barrel files.
+
+On the hand-built path the other nouns find their homes in the same shape:
 
 | Noun | Home | Job |
 | --- | --- | --- |
-| Contract | `packages/<domain>/src/<feature>/contract.ts`, beside its service | Name, schemas, failure, annotations; no server imports |
-| Capability | beside its service or data | Binds one contract to its handler |
-| Projection | `packages/capability/src/to-<surface>.ts` | Exposes capabilities on one surface |
-| Service | `packages/<domain>/src/<name>.ts` | `Context.Service` plus `layer` |
-| Cartridge | `packages/<name>/` | Service tag plus vendor layers that own their infrastructure |
-| Machine | `packages/<domain>/src/<name>-machine.ts` | One finite lifecycle |
-| Feature | `apps/web/src/features/<name>/` | Thin route and view |
-| Client | `apps/web/src/client/<name>.ts` | Transport, replica, named commands |
+| Contract | the domain file of its concept, beside its service | Name, schemas, failure, annotations; no server imports |
+| Capability | beside its contract | Binds one contract to its handler |
+| Projection | the contract kit, `capability/to-<surface>.ts` | Exposes capabilities on one surface |
+| Service | the domain file of its concept | `Context.Service` plus `layer` |
+| Cartridge | a package named after its vendor | Vendor Layers that own their infrastructure |
+| Machine | the domain file of the concept it moves (`card.ts`) | One finite lifecycle |
+| Feature | `web/<feature>/` | Thin route and view |
+| Client | `client/<name>.ts` | Transport, replica, named commands |
 
-Organize by feature first, then by role inside the feature. A global `contracts`, `schemas`, `types`, `services`, or `hooks` folder splits each feature across the tree, so do not create one. The contract kit holds `defineContract` and the projections; each feature owns its contracts.
+Group by concept. Each domain package owns its contracts, schemas and failures, in the files of the concepts they belong to, so one feature reads in one place.
 
-Dependencies point one way: `apps/*` → domain packages → contract kit → `effect`. Packages never import apps. The contract kit never imports domain code. Browser modules import contracts, never handlers. Enforce each arrow with a lint rule (see Fence the layout).
+Dependencies point one way: `cmd/*` → implementation and UI packages → domain packages → contract kit → `effect`. The contract kit never imports domain code. Browser modules import contracts, never handlers. Enforce each arrow with a lint rule (see Fence the layout).
 
-On the Domain path, the upstream layout replaces this table: one `<Noun>.<kind>.ts` file per building block in a `domain` package, folders per subdomain, and hosting and adapters in a `server` package. Dependencies still point one way: `web` and `server` → `domain` → `@alchemy.run/domain` and `effect`.
+On the Domain path the domain package also imports `@alchemy.run/domain`, and the `alchemy` skill's `references/domain.md` §Layout maps each building block onto this shape.
 
 For package manifests, workspaces, and turbo wiring, load the `project-scaffolding` skill.
 
@@ -161,7 +193,7 @@ Cartridge test, run concretely:
 
 Load the `alchemy` skill for resource and binding APIs.
 
-On the Domain path, the service tag is a port (`Context.Service` with a memory implementation) or an external-system declaration in the `domain` package, and each vendor Layer lives in `server`. The cartridge test holds unchanged.
+On the Domain path, the service tag is a port (`Context.Service`) or an external-system declaration in the domain package, and each vendor Layer, the memory one included, lives in a package named after its vendor. The cartridge test holds unchanged.
 
 ## Clients
 
@@ -242,7 +274,8 @@ Use this table when reviewing or redesigning a layout. Each row is a concern tha
 | A check for local, sandbox, or `window` that picks where a command runs | An execution capability the host provides |
 | A business rule in a route, CLI command, tool handler, or other projection of a Domain Api | The command's `decide`, or the entry's middleware and `validate` |
 | An HTTP, CLI, or MCP surface written by hand beside a Domain Api | A projection of the Api; a smaller Api to publish less |
-| Infrastructure imported into a `domain` package | The `server` package |
+| Infrastructure imported into a domain package | A package named after that infrastructure |
+| Files named by kind (`*.aggregate.ts`, `*.view.ts`) or folders by kind (`contracts/`, `services/`) | Files named by concept in the package of their responsibility |
 | Two ways to do one thing | One paved path; delete the other |
 
 For each proposed new piece, name what it deletes. A tag, layer, or state that deletes nothing is ceremony.
@@ -255,6 +288,6 @@ Agents copy what they find, so a boundary that lives only in prose erodes. Put e
 2. **Static analysis.** An import-boundary or pattern rule in oxlint, with a fixture test that fails when the rule is broken.
 3. **Repo law.** A line in `AGENTS.md`, only when neither rung above can hold it.
 
-On the Domain path, the import rule admits only `@alchemy.run/domain` and `effect` into the `domain` package, and a test that expects `Domain.verify(Model)` to be empty fences the declaration itself.
+On the Domain path, the import rule admits only `@alchemy.run/domain` and `effect` into the domain package, and a test that expects `Domain.verify(Model)` to be empty fences the declaration itself.
 
 When a bad pattern appears, write the rule that fails on it first, then fix every instance so the rule starts at zero findings. When some findings must stay, record them in a baseline that only shrinks. `project-scaffolding` covers the lint wiring.
