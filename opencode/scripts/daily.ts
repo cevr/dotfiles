@@ -120,6 +120,7 @@ if (import.meta.main) {
     auth,
     existsSync(gent) ? { package: pool, options: { sources: [{ kind: "gent", dir: gent }] } } : pool,
     join(MODS, "orchestrate"),
+    join(MODS, "kernel"),
     join(MODS, "status"),
   ]
   const owned = [MODS, auth]

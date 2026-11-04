@@ -18,7 +18,7 @@ terminal runs it, and `opencode2` stays the stock release. As a `latest`
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin, the pool (on
-the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists), orchestrate and status, the role
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists), orchestrate, the kernel and status, the role
 models and `autoupdate: false`, and into `cli.json` Prime, status and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork
 change.
@@ -38,6 +38,34 @@ opens; Esc or `q` closes it, and `/pool` from the prompt toggles it.
 `bun run gamut up sim` loads these server and TUI plugins with a scripted
 model and a scratch home. See [the gamut testbed](testbeds/gamut/README.md).
 It makes no live model request.
+
+## The code kernel
+
+`mods/kernel` gives the model a `kernel` tool, `{ code, reset? }`, ported
+from gent's `cell`. It runs TypeScript in one Bun process per session, so
+top-level bindings persist from call to call, and returns what the code
+printed, then its last expression's value. Inside the code,
+`await tools.<id>(input)` runs another tool of the session through the tool's
+own `execute`, with the kernel call's context, so permissions and abort work
+as for a direct call; `tools.list()` lists them. After each call the JSON-safe
+bindings are stored with the session, so a worker that timed out, crashed,
+went idle or came back after a restart starts with them; `reset: true` drops
+them. The worker is the running OpenCode binary acting as Bun
+(`BUN_BE_BUN=1`), so it needs no separate Bun install.
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `idleMs` | `1800000` (30 min) | Kill a session's worker after this long without a call. Its stored bindings stay. |
+| `timeoutMs` | `30000` | One call's compute limit, paused while its tool calls run. Past it the worker is killed. |
+| `viewChars` | `8000` | Characters of output the model sees per call: the head and the tail. The worker keeps 64 KiB at most. |
+| `denyExecute` | `true` | Deny code mode's `execute` to every agent, so the kernel is the only code tool and every other tool is offered directly. |
+
+Limits of the port: a tool called from the kernel skips the
+`tool.execute.before` and `execute.after` hooks, which only OpenCode's
+registry can trigger, so orchestrate's guard and Sabbath stop and the pace
+hold do not see it. `denyExecute` reaches agents that plugins define; an agent
+defined only in a config file arrives after the plugins' transforms and keeps
+code mode.
 
 ## The other model family
 
