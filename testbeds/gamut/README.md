@@ -35,6 +35,7 @@ bun run gamut login anthropic            # add one Claude subscription login (on
    login away.
 4. Copies each login the preset needs from the owner's `opencode2` into the
    run's database: `auth export` piped to `auth import`, through stdin only.
+   `haiku-gent` copies no Claude login: the pool reads gent's store in place.
 5. Starts OpenCode with `--auto` on a detached terminal host (`pty-host.ts`)
    that later commands reach over a Unix socket. The host's config, which
    holds the environment, is written owner-only and removed once read.
@@ -60,9 +61,17 @@ catalog when the run starts.
   `cevr/opencode-anthropic-auth` checkout beside this repository, or
   `OPENCODE_ANTHROPIC_AUTH`) and the account pool. Claude Haiku is the only
   model a preset spends a Claude account on.
+- `haiku-gent`: `haiku` on the Claude accounts gent holds instead of the
+  `opencode2` logins. The pool gets `sources: [{ kind: "gent", dir }]` with
+  gent's store (`~/.gent/auth` of the caller, or `GAMUT_GENT_AUTH`); it reads
+  each account's token from gent's slot file for every request and, when one
+  is stale, refreshes it under gent's own lock and writes it back in gent's
+  format, so gent and the run always hold the same token. Nothing is copied.
+  `up` refuses a store holding no account gent signed in to itself; linked
+  Claude Code logins and gent's default entry are left to gent.
 
 The OpenCode Go presets need its login: `opencode2 auth login opencode-go`.
-`haiku` needs at least one Claude login, and the pool needs two to have a
+`haiku` needs at least one Claude login (`haiku-gent`: one gent account), and the pool needs two to have a
 choice. The owner's `opencode2` does not load the Anthropic auth plugin, so
 `bun run gamut login anthropic` signs in through it: it runs `opencode2 auth
 login anthropic --method claude-max --standalone` in a scratch directory that
