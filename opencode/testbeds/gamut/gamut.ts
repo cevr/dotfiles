@@ -69,9 +69,9 @@ const OWNER_OPENCODE = "opencode2"
 
 // ── Presets ─────────────────────────────────────────────────────────────
 
-export type Role = "orchestrator" | "worker" | "reviewer"
+export type Role = "orchestrator" | "worker" | "verifier"
 
-export const ROLES: ReadonlyArray<Role> = ["orchestrator", "worker", "reviewer"]
+export const ROLES: ReadonlyArray<Role> = ["orchestrator", "worker", "verifier"]
 
 /**
  * One model choice. `model` is a family (`opencode-go/glm`, resolved to its
@@ -86,7 +86,7 @@ export interface Slot {
 /**
  * A preset pins the three roles. The orchestrator is OpenCode's `build` agent
  * (and `plan`, `compaction`), the worker the `general` and `explore`
- * subagents, the reviewer a `reviewer` subagent the run's config adds.
+ * subagents, the verifier the orchestrate mod's `verifier` agent.
  */
 export interface Preset {
   readonly about: string
@@ -118,7 +118,7 @@ export const FAMILIES: Readonly<Record<string, { readonly provider: string; read
 export const SIM_PROVIDER = "sim"
 const SIM_MODEL = "sim/sim-model"
 
-const every = (slot: Slot): Readonly<Record<Role, Slot>> => ({ orchestrator: slot, worker: slot, reviewer: slot })
+const every = (slot: Slot): Readonly<Record<Role, Slot>> => ({ orchestrator: slot, worker: slot, verifier: slot })
 
 export const PRESETS: Readonly<Record<string, Preset>> = {
   sim: {
@@ -134,7 +134,7 @@ export const PRESETS: Readonly<Record<string, Preset>> = {
     roles: {
       orchestrator: { model: "opencode-go/glm", effort: "high" },
       worker: { model: "opencode-go/deepseek-flash", effort: "high" },
-      reviewer: { model: "opencode-go/glm", effort: "high" },
+      verifier: { model: "opencode-go/glm", effort: "high" },
     },
   },
   haiku: {
@@ -213,7 +213,7 @@ export const resolvePreset = (preset: Preset, catalog: Catalog): ResolvedPreset 
   return {
     orchestrator: resolveSlot(preset.roles.orchestrator),
     worker: resolveSlot(preset.roles.worker),
-    reviewer: resolveSlot(preset.roles.reviewer),
+    verifier: resolveSlot(preset.roles.verifier),
   }
 }
 
@@ -268,20 +268,6 @@ interface Rule {
   readonly effect: "allow" | "deny" | "ask"
 }
 
-/** The reviewer reads and runs commands; it never edits or delegates. */
-const REVIEWER_PERMISSIONS: ReadonlyArray<Rule> = [
-  { action: "*", resource: "*", effect: "deny" },
-  { action: "read", resource: "*", effect: "allow" },
-  { action: "grep", resource: "*", effect: "allow" },
-  { action: "glob", resource: "*", effect: "allow" },
-  { action: "shell", resource: "*", effect: "allow" },
-  { action: "subagent", resource: "*", effect: "deny" },
-]
-
-const REVIEWER_SYSTEM =
-  "You review a change for another agent. Read the diff and the files it touches, run the named test " +
-  "command, and report what is wrong: correctness first, then scope. Do not edit files."
-
 /** The sim provider's entry: an OpenAI-compatible endpoint on the run's own port. */
 export const simProvider = (port: number) => ({
   name: "Sim",
@@ -332,8 +318,8 @@ export const gentAccounts = (dir: string): ReadonlyArray<string> => {
 /**
  * The run's `opencode.json`: the orchestrator as the default model and as
  * `build`, `plan` and `compaction`; the worker as `general` and `explore`
- * (and, without its variant, the `title` and `summary` helpers); and a
- * `reviewer` subagent on the reviewer's model. Agent entries merge into
+ * (and, without its variant, the `title` and `summary` helpers); and the
+ * orchestrate roles on the preset's models. Agent entries merge into
  * OpenCode's own, so the built-in prompts and permissions stay. Server
  * plugins load from here; the TUI plugins load from `cli.json`.
  */
@@ -355,16 +341,9 @@ export const projectConfig = (preset: ResolvedPreset, simPort?: number, plugins:
       worker,
       implementor: worker,
       planner: orchestrator,
-      verifier: { model: selection(preset.reviewer) },
+      verifier: { model: selection(preset.verifier) },
       title: helper,
       summary: helper,
-      reviewer: {
-        model: selection(preset.reviewer),
-        description: "Reviews a diff for correctness and scope. Reads and runs commands; never edits.",
-        mode: "subagent",
-        system: REVIEWER_SYSTEM,
-        permissions: REVIEWER_PERMISSIONS,
-      },
     },
   }
 }
@@ -413,7 +392,7 @@ export const rosterBlock = (preset: ResolvedPreset): string =>
     ROSTER_START,
     `- Orchestrator: the \`build\` agent, on \`${selection(preset.orchestrator)}\`.`,
     `- Worker (fix or feature): \`agent: "general"\`, pinned in \`opencode.json\` to \`${selection(preset.worker)}\`.`,
-    `- Reviewer (second opinion on a diff): \`agent: "reviewer"\`, pinned to \`${selection(preset.reviewer)}\`.`,
+    `- Verifier (proves a change and checks it against the rules): \`agent: "verifier"\`, pinned to \`${selection(preset.verifier)}\`.`,
     ROSTER_END,
   ].join("\n")
 

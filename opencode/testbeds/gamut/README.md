@@ -22,8 +22,8 @@ bun run gamut login anthropic            # add one Claude subscription login (on
 1. Copies `fixture/` (ledgerline, a small Bun app with 4 red tests) into a
    scratch root, renames `.gitignore.fixture`, runs `bun install`, and commits
    it with git.
-2. Writes the run's `opencode.json` (the preset's models per agent, plus a
-   `reviewer` subagent; the orchestrate and status plugins,
+2. Writes the run's `opencode.json` (the preset's models per agent; the
+   orchestrate and status plugins,
    with worker/implementor/planner/verifier models bound to the preset;
    for a Claude preset, the Anthropic auth plugin and
    then `mods/pool` as server plugins; other presets load an empty pool), `config/cli.json` (our TUI
@@ -50,7 +50,7 @@ OpenCode runs from the fork's source at `OPENCODE_DEV` (default: the
 
 Presets are data in `gamut.ts` (`PRESETS`): a model and an effort for each
 role. The orchestrator is OpenCode's `build` agent, the worker the `general`
-and `explore` subagents, the reviewer the run's `reviewer` subagent. A
+and `explore` subagents, the verifier the orchestrate mod's `verifier` agent. A
 family such as `opencode-go/glm` resolves to its newest release in the model
 catalog when the run starts.
 

@@ -30,7 +30,7 @@ not invent other agents.
 
 <!-- roster -->
 - Worker (fix or feature): `agent: "general"`.
-- Reviewer (second opinion on a diff): `agent: "reviewer"`.
+- Verifier (proves a change and checks it against the rules): `agent: "verifier"`.
 <!-- /roster -->
 
 Subagents have no history. Each task must name the task, the files, the

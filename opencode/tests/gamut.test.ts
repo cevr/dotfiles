@@ -155,7 +155,7 @@ describe("presets", () => {
 
   test("a family with no release, or an effort the release lacks, stops the run", () => {
     const glm = { model: "opencode-go/glm", effort: "xhigh" }
-    expect(() => resolvePreset({ about: "", roles: { orchestrator: glm, worker: glm, reviewer: glm } }, CATALOG)).toThrow(
+    expect(() => resolvePreset({ about: "", roles: { orchestrator: glm, worker: glm, verifier: glm } }, CATALOG)).toThrow(
       "has no xhigh effort",
     )
     expect(() => resolvePreset(PRESETS.deepseek!, {})).toThrow("no opencode-go/deepseek-flash release")
@@ -172,7 +172,7 @@ describe("the run's config", () => {
     expect(config.providers?.sim.settings.baseURL).toBe("http://127.0.0.1:4321/v1")
     expect(config.agents.build.model).toBe("sim/sim-model")
     expect(config.agents.general.model).toBe("sim/sim-model")
-    expect(config.agents.reviewer.model).toBe("sim/sim-model")
+    expect(config.agents.verifier.model).toBe("sim/sim-model")
     expect(() => projectConfig(sim)).toThrow("needs the sim model's port")
   })
 
@@ -183,10 +183,9 @@ describe("the run's config", () => {
     expect(config.agents.plan.model).toBe("opencode-go/deepseek-v4.1-flash#high")
     expect(config.agents.explore.model).toBe("opencode-go/deepseek-v4.1-flash#high")
     expect(config.agents.title.model).toBe("opencode-go/deepseek-v4.1-flash")
-    expect(config.agents.reviewer.mode).toBe("subagent")
-    // The reviewer never edits or delegates.
-    expect(config.agents.reviewer.permissions).toContainEqual({ action: "*", resource: "*", effect: "deny" })
-    expect(config.agents.reviewer.permissions).toContainEqual({ action: "subagent", resource: "*", effect: "deny" })
+    expect(config.agents.verifier.model).toBe("opencode-go/deepseek-v4.1-flash#high")
+    // The verifier is the orchestrate mod's role; no separate reviewer agent remains.
+    expect(config.agents).not.toHaveProperty("reviewer")
   })
 
   test("the TUI plugins load by absolute path from cli.json, Prime first, with the Prime theme", () => {
@@ -514,7 +513,7 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
       const packages = config.plugins.map((entry: string | { package: string }) => typeof entry === "string" ? entry : entry.package)
       for (const name of ["orchestrate", "status", "pool"]) expect(packages).toContain(join(root, "mods", name))
       expect(config.agents.worker.model).toBe(config.agents.general.model)
-      expect(config.agents.verifier.model).toBe(config.agents.reviewer.model)
+      expect(config.agents.verifier.model).toBe(config.agents.build.model)
 
       expect(gamut("wait", "120")).toMatchObject({ code: 0, out: "idle\n" })
       const first = gamut("read")
