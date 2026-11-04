@@ -36,8 +36,8 @@ describe.skipIf(!skill)("the role agents", () => {
       expect(built.agents[role]!.system).toBe(claude.body.trim())
       expect(built.agents[role]!.description).toBe(claude.fields.description!)
     }
-    // The efforts are the Codex agents': planner high, implementor max, verifier medium; the worker the model's own.
-    expect(ROLES.map((role) => effort(role))).toEqual(["high", "max", "medium", undefined])
+    // Claude-family efforts from the skill role table; the worker uses the model default.
+    expect(ROLES.map((role) => effort(role))).toEqual(["high", "medium", "medium", undefined])
   })
 
   test("--check passes on the written file and fails on a hand edit", () => {

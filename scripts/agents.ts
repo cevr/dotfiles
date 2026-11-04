@@ -8,7 +8,7 @@
 //
 // Out: plugins/orchestrate/src/agents.json, each role as the fields of an
 // OpenCode agent (`Agent.Info`: description, mode, permissions, system) plus
-// its reasoning effort (the orchestrate skill's Codex effort). The
+// its Claude-family reasoning effort (the skill's role table). The
 // orchestrate plugin defines the agents from it through `agent.transform`,
 // as OpenCode's own plugins define build, plan and general, so an agent file
 // in the owner's config still overrides a role, and the plugin can give each
@@ -106,7 +106,11 @@ export const build = async (root = ROOT, sourceDir = DEFAULT_SOURCE): Promise<Bu
   for (const role of Object.keys(source.ROLES)) {
     // The description and prompt as Claude Code has them, from the same functions.
     const claude = parseAgent(source.agentFile(role, protocol, safety))
-    const effort = /^model_reasoning_effort = "([a-z]+)"$/m.exec(source.codexFile(role, protocol, safety))?.[1]
+    const table = readFileSync(join(sourceDir, "SKILL.md"), "utf8")
+    const row = table.split("\n").find((line) => line.startsWith(`| ${role} |`))
+    const cell = row?.split("|")[4]?.trim()
+    const effort = /^(?:Opus )?(minimal|low|medium|high|xhigh|max)\b/.exec(cell ?? "")?.[1]
+    if (!effort) throw new Error(`no Claude-family effort for ${role} in SKILL.md's role table`)
     agents[role] = define(claude.fields.description!, claude.body, effort)
   }
   const worker = parseAgent(readFileSync(join(source.AGENTS, `${WORKER}.md`), "utf8"))
