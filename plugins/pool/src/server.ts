@@ -11,8 +11,17 @@
  * Options (all optional):
  * - `providers`: provider id to integration id, default `{ anthropic: "anthropic" }`.
  * - `sweepMinutes`: how often to read each login's usage; 0 turns it off. Default 10.
+ * - `sources`: other stores whose logins join a pool beside OpenCode's own, read
+ *   in place, never copied. Off by default. `[{ kind: "gent", dir: "~/.gent/auth" }]`
+ *   adds the Claude accounts gent signed in to (`gent.ts`) to the `anthropic` pool
+ *   as `gent:<label>`; the pool refreshes their tokens under gent's lock and the
+ *   auth plugin takes them from it (`registerCredentialSource`). `tokenURL`
+ *   points a source's refresh elsewhere, for tests. The `anthropic` provider is
+ *   then available without a login of OpenCode's own, as a configured provider
+ *   is (unless the config disables it).
  */
 import { Plugin } from "@opencode/plugin"
+import { GentSource, registerCredentialSource } from "./gent.ts"
 import { AccountPool, type RequestKind, type Store } from "./pool.ts"
 import { asReading, quotaProtocol } from "./quota.ts"
 
@@ -42,6 +51,8 @@ interface Pooled {
   readAt: number
   /** Logins this plugin marked as needing a sign-in. */
   readonly flagged: Set<string>
+  /** Stores outside OpenCode whose logins join this pool. */
+  readonly sources: ReadonlyArray<GentSource>
 }
 
 const quotaClient = (ctx: Context, integrationID: string) => ctx.rpc(quotaProtocol(integrationID))
@@ -54,6 +65,18 @@ const providerMap = (options: Context["options"]): Readonly<Record<string, strin
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   )
+}
+
+/** The `sources` option: gent stores, by directory. Anything else is ignored. */
+const gentSources = (options: Context["options"]): ReadonlyArray<{ dir: string; tokenURL?: string }> => {
+  const configured = options.sources
+  if (!Array.isArray(configured)) return []
+  return configured.flatMap((entry: unknown) => {
+    if (typeof entry !== "object" || entry === null) return []
+    const { kind, dir, tokenURL } = entry as Record<string, unknown>
+    if (kind !== "gent" || typeof dir !== "string" || dir === "") return []
+    return [{ dir, ...(typeof tokenURL === "string" ? { tokenURL } : {}) }]
+  })
 }
 
 export default Plugin.define({
@@ -87,11 +110,30 @@ export default Plugin.define({
       return entries
     }
 
+    // gent keeps Claude accounts: they join the pool of the `anthropic` provider.
+    const gentIntegration = providers.anthropic
+    const gent = gentIntegration === undefined ? [] : gentSources(ctx.options).map((options) => new GentSource(options))
+
     for (const integrationID of new Set(Object.values(providers))) {
       const pool = new AccountPool(integrationID, storeFor(integrationID))
       pool.load(await ledger(integrationID).catch(() => []))
       const quota = quotaClient(ctx, integrationID)
-      pools.set(integrationID, { pool, quota, connections: [], readAt: 0, flagged: new Set() })
+      const sources = integrationID === gentIntegration ? gent : []
+      for (const source of sources) disposers.push(registerCredentialSource(integrationID, source))
+      pools.set(integrationID, { pool, quota, connections: [], readAt: 0, flagged: new Set(), sources })
+    }
+
+    // OpenCode offers a provider only when it holds a login for it or the config
+    // names it: gent's accounts are logins it cannot see, so the pool names it.
+    if (gent.length > 0) {
+      const enabled = await ctx.provider.transform((editor) => {
+        if (editor.get("anthropic")?.provider.activation === "auto") {
+          editor.update("anthropic", (provider) => {
+            provider.activation = "enabled"
+          })
+        }
+      })
+      disposers.push(enabled.dispose)
     }
 
     const pooledFor = (providerID: string) => {
@@ -99,17 +141,26 @@ export default Plugin.define({
       return integrationID === undefined ? undefined : pools.get(integrationID)
     }
 
-    /** The provider's subscription logins, in its integration's order. */
+    /** The provider's subscription logins: its integration's, in order, then each source's. */
     const refreshCredentials = async (pooled: Pooled, force = false) => {
       if (!force && Date.now() - pooled.readAt < CREDENTIALS_LIFE_MS) return
-      const integration = await ctx.integration.get({ integrationID: pooled.pool.integrationID })
-      pooled.connections = integration.data.connections.filter(
-        (connection) => connection.type === "credential" && connection.method === "oauth",
-      )
+      // A source's logins join even when the integration cannot be read.
+      const integration = await ctx.integration
+        .get({ integrationID: pooled.pool.integrationID })
+        .catch((error: unknown) => {
+          if (pooled.sources.length === 0) throw error
+          return undefined
+        })
+      if (integration !== undefined) {
+        pooled.connections = integration.data.connections.filter(
+          (connection) => connection.type === "credential" && connection.method === "oauth",
+        )
+      }
       pooled.readAt = Date.now()
-      pooled.pool.setCredentials(
-        pooled.connections.flatMap((connection) => (connection.type === "credential" ? [connection.id] : [])),
-      )
+      pooled.pool.setCredentials([
+        ...pooled.connections.flatMap((connection) => (connection.type === "credential" ? [connection.id] : [])),
+        ...pooled.sources.flatMap((source) => source.list().accounts),
+      ])
     }
 
     /** Mark a login as needing a sign-in when its provider says so, and clear the mark when it reads well again. */
@@ -245,7 +296,21 @@ export default Plugin.define({
     const status = await ctx.rpc.register(POOL_STATUS, {
       status: async () =>
         Object.fromEntries(
-          [...pools.values()].map((pooled) => [pooled.pool.integrationID, { accounts: pooled.pool.status() }]),
+          [...pools.values()].map((pooled) => [
+            pooled.pool.integrationID,
+            {
+              accounts: pooled.pool.status(),
+              ...(pooled.sources.length === 0
+                ? {}
+                : {
+                    sources: pooled.sources.map((source) => ({
+                      kind: "gent",
+                      dir: source.dir,
+                      ...source.list(),
+                    })),
+                  }),
+            },
+          ]),
         ) as never,
     })
     disposers.push(status.dispose)
