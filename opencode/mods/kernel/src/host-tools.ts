@@ -6,8 +6,12 @@
  * kernel call's context, so the tool asks for permission and stops on abort as
  * it does for a direct call, and returns the result's value as code mode does.
  *
- * What a call skips: the registry's `execute.before` and `execute.after`
- * hooks. Only the registry triggers them, and the plugin API offers no way to.
+ * Two bridges. When the kernel is the agent's runtime (the fork's
+ * `options.runtime`), a call goes through `context.runtime.call`: the
+ * registry runs it with its `execute.before`/`execute.after` hooks, so every
+ * tool is reachable, `subagent` included. Otherwise a call runs the tool's own
+ * `execute` and skips those hooks, so tools whose policy lives there are left
+ * out (HOOKED_TOOLS).
  *
  * @module
  */
@@ -19,6 +23,10 @@ import type { Json, Listing } from "./protocol.ts"
 export type HostTool = Awaited<ReturnType<Plugin.Context["tool"]["list"]>>[number]
 /** The context a tool's `execute` runs with: the kernel call's own. */
 export type HostContext = Parameters<HostTool["execute"]>[1]
+/** What the registry hands the kernel while it is the agent's runtime. */
+export type Runtime = NonNullable<HostContext["runtime"]>
+/** One tool the runtime reaches, with its input as JSON Schema. */
+export type RuntimeTool = Runtime["tools"][number]
 
 /** One permission rule, as agents and sessions carry them. */
 export interface Rule {
@@ -134,3 +142,66 @@ export const callTool = async (tools: ReadonlyMap<string, HostTool>, id: string,
   const decoded = await decodeInput(tool, input)
   return resultValue(tool, await tool.execute(decoded, context))
 }
+
+/** A tool result as a cell gets it: its output through JSON, else its text parts joined, else null. */
+const plainResult = (result: Awaited<ReturnType<Runtime["call"]>>): Json => {
+  let value: unknown = result.output
+  if (value === undefined) {
+    const parts = typeof result.content === "string" ? [{ type: "text" as const, text: result.content }] : (result.content ?? [])
+    const text = parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")
+    value = text === "" ? null : text
+  }
+  const text = JSON.stringify(value)
+  return text === undefined ? null : (JSON.parse(text) as Json)
+}
+
+/** A cell's tools while the kernel is the runtime: every other tool, run by the registry with its hooks. */
+export const runtimeTools = (runtime: Runtime) => {
+  const tools = runtime.tools.filter((tool) => !CODE_TOOLS.has(tool.name))
+  const names = new Set(tools.map((tool) => tool.name))
+  return {
+    listing: tools.map((tool): Listing => ({ id: tool.name, description: tool.description })),
+    call: async (id: string, input: unknown): Promise<Json> => {
+      if (!names.has(id)) throw new Error(`${id} is not a tool here. Tools: ${[...names].sort().join(", ") || "none"}`)
+      return plainResult(await runtime.call(id, input))
+    },
+  }
+}
+
+type Schemaish = { readonly [key: string]: unknown }
+const isRecord = (value: unknown): value is Schemaish => typeof value === "object" && value !== null && !Array.isArray(value)
+
+/** A JSON Schema as a short TypeScript-like type, enough to call the tool by. */
+export const typeOf = (schema: unknown, depth = 0): string => {
+  if (!isRecord(schema)) return "unknown"
+  if (Array.isArray(schema.enum)) return schema.enum.map((value) => JSON.stringify(value)).join(" | ")
+  if ("const" in schema) return JSON.stringify(schema.const)
+  const union = Array.isArray(schema.anyOf) ? schema.anyOf : Array.isArray(schema.oneOf) ? schema.oneOf : undefined
+  if (union) return union.map((item) => typeOf(item, depth)).join(" | ")
+  const type = Array.isArray(schema.type) ? schema.type.filter((item) => item !== "null") : [schema.type]
+  const named = type.map((item) => {
+    if (item === "integer" || item === "number") return "number"
+    if (item === "string" || item === "boolean" || item === "null") return String(item)
+    if (item === "array") return `${typeOf(schema.items, depth)}[]`
+    if (item === "object" || isRecord(schema.properties)) {
+      if (!isRecord(schema.properties) || depth > 2) return "object"
+      const required = new Set(Array.isArray(schema.required) ? schema.required.map(String) : [])
+      const fields = Object.entries(schema.properties).map(
+        ([key, value]) => `${/^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key)}${required.has(key) ? "" : "?"}: ${typeOf(value, depth + 1)}`,
+      )
+      return fields.length === 0 ? "{}" : `{ ${fields.join(", ")} }`
+    }
+    return "unknown"
+  })
+  return named.join(" | ") || "unknown"
+}
+
+/** The tools a cell reaches, as the model reads them in the kernel's description. */
+export const catalog = (tools: ReadonlyArray<RuntimeTool>): string =>
+  tools
+    .filter((tool) => !CODE_TOOLS.has(tool.name))
+    .map((tool) => {
+      const path = /^[A-Za-z_$][\w$]*$/.test(tool.name) ? `tools.${tool.name}` : `tools[${JSON.stringify(tool.name)}]`
+      return `### ${path}(input: ${typeOf(tool.input)})\n${tool.description.trim()}`
+    })
+    .join("\n\n")

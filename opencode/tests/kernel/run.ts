@@ -18,6 +18,10 @@ export interface Spec {
   /** The first prompt: `kernel` runs the sim's two kernel calls. */
   readonly task: string
   readonly denyExecute: boolean
+  /** The kernel's codeOnly option; absent keeps its default. */
+  readonly codeOnly?: boolean
+  /** Loads the orchestrate mod too, its Sabbath clock at this time (ISO 8601). */
+  readonly orchestrate?: { readonly plugin: string; readonly now: string }
 }
 
 export interface Result {
@@ -50,7 +54,13 @@ const content = {
       },
     },
   },
-  plugins: [{ package: spec.plugin, options: { denyExecute: spec.denyExecute, timeoutMs: 20_000 } }],
+  plugins: [
+    {
+      package: spec.plugin,
+      options: { denyExecute: spec.denyExecute, timeoutMs: 20_000, ...(spec.codeOnly === undefined ? {} : { codeOnly: spec.codeOnly }) },
+    },
+    ...(spec.orchestrate ? [{ package: spec.orchestrate.plugin, options: { now: spec.orchestrate.now, log: join(spec.base, "agents.jsonl") } }] : []),
+  ],
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */

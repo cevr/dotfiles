@@ -109,6 +109,7 @@ const fakeContext = (options: Record<string, unknown>, tools: unknown[] = []) =>
   const storage = new Map<string, unknown>()
   const agentRules: unknown[] = []
   let kernel: Executor | undefined
+  let registered: { options?: { runtime?: unknown } } | undefined
   let deleted: ((sessionID: string) => void) | undefined
   const ctx = {
     options,
@@ -129,7 +130,12 @@ const fakeContext = (options: Record<string, unknown>, tools: unknown[] = []) =>
     tool: {
       list: async () => [...tools, { id: "kernel", description: "itself" }],
       transform: async (callback: (editor: unknown) => void) => {
-        callback({ add: (tool: { execute: Executor }) => (kernel = tool.execute) })
+        callback({
+          add: (tool: { execute: Executor; options?: { runtime?: unknown } }) => {
+            kernel = tool.execute
+            registered = tool
+          },
+        })
         return { dispose: async () => undefined }
       },
     },
@@ -147,7 +153,7 @@ const fakeContext = (options: Record<string, unknown>, tools: unknown[] = []) =>
       }),
     },
   }
-  const call = (code: string, extra: { reset?: boolean; signal?: AbortSignal } = {}) =>
+  const call = (code: string, extra: { reset?: boolean; signal?: AbortSignal; runtime?: unknown } = {}) =>
     kernel!(
       { code, ...(extra.reset ? { reset: true } : {}) },
       {
@@ -157,15 +163,24 @@ const fakeContext = (options: Record<string, unknown>, tools: unknown[] = []) =>
         id: "call_1",
         signal: extra.signal ?? new AbortController().signal,
         progress: async () => undefined,
+        ...(extra.runtime === undefined ? {} : { runtime: extra.runtime }),
       },
     ).then((result) => result.content)
-  const fail = (code: string) => call(code).then(
+  const fail = (code: string, extra: { runtime?: unknown } = {}) => call(code, extra).then(
     () => {
       throw new Error("expected the call to fail")
     },
     (error: Error) => error.message,
   )
-  return { ctx, storage, agentRules, call, fail, deleteSession: (sessionID: string) => deleted?.(sessionID) }
+  return {
+    ctx,
+    storage,
+    agentRules,
+    call,
+    fail,
+    registered: () => registered,
+    deleteSession: (sessionID: string) => deleted?.(sessionID),
+  }
 }
 
 const disposers: Array<() => unknown> = []
@@ -259,8 +274,46 @@ describe("plugin", () => {
     expect(await call("typeof gone")).toBe("undefined")
   })
 
-  test("denyExecute denies code mode's execute to every agent", async () => {
-    expect((await setup()).agentRules).toEqual([{ action: "execute", resource: "*", effect: "deny" }])
-    expect((await setup({ denyExecute: false })).agentRules).toEqual([])
+  test("without codeOnly, denyExecute denies code mode's execute to every agent", async () => {
+    expect((await setup({ codeOnly: false })).agentRules).toEqual([{ action: "execute", resource: "*", effect: "deny" }])
+    expect((await setup({ codeOnly: false, denyExecute: false })).agentRules).toEqual([])
+    expect((await setup()).agentRules).toEqual([])
+  })
+
+  test("codeOnly makes the kernel the runtime, its description listing each tool it reaches with its input", async () => {
+    const runtime = (await setup()).registered()?.options?.runtime as { describe: (tools: unknown[]) => string }
+    const text = runtime.describe([
+      { name: "read", description: "Read a file", input: { type: "object", properties: { path: { type: "string" }, limit: { type: "integer" } }, required: ["path"] } },
+      { name: "mcp-search", description: "Search", input: { type: "object", properties: { mode: { enum: ["a", "b"] } } } },
+      { name: "kernel", description: "itself", input: {} },
+    ])
+    expect(text).toContain("### tools.read(input: { path: string, limit?: number })\nRead a file")
+    expect(text).toContain('### tools["mcp-search"](input: { mode?: "a" | "b" })\nSearch')
+    expect(text).not.toContain("tools.kernel")
+    expect(text).toContain("the kernel is your only tool")
+    expect((await setup({ codeOnly: false })).registered()?.options?.runtime).toBeUndefined()
+  })
+
+  test("with the runtime, a cell reaches every tool through it, subagent included, and a refusal throws", async () => {
+    const calls: Array<[string, unknown]> = []
+    const runtime = {
+      tools: [
+        { name: "read", description: "Read a file", input: {} },
+        { name: "subagent", description: "Start a subagent", input: {} },
+      ],
+      call: async (name: string, input: unknown) => {
+        calls.push([name, input])
+        if (name === "read") throw new Error("It is the Sabbath")
+        return { output: { sessionID: "ses_child", status: "completed", output: "done" } }
+      },
+    }
+    const { call, fail } = await setup({}, [readTool])
+    expect(await call("(await tools.subagent({ prompt: 'x' })).output", { runtime })).toBe("done")
+    expect(await call("tools.list().map((tool) => tool.id).join()", { runtime })).toBe("read,subagent")
+    expect(await fail("await tools.read({ path: 'a' })", { runtime })).toContain("It is the Sabbath")
+    expect(calls).toEqual([
+      ["subagent", { prompt: "x" }],
+      ["read", { path: "a" }],
+    ])
   })
 })
