@@ -1,7 +1,8 @@
 /**
  * A fake Anthropic API on a loopback port, for the pool's deterministic
  * tests: `POST /v1/messages` (streamed or not), `GET /api/oauth/usage` and
- * `POST /v1/oauth/token`. It answers with the headers the real API sends a
+ * `POST /v1/oauth/token` (a JSON body, as the auth plugin sends, or a form,
+ * as gent sends). It answers with the headers the real API sends a
  * Claude plan login: the unified quota headers on every answer, a refusal
  * included, and the classic `anthropic-ratelimit-*` pairs and `retry-after`
  * on a 429.
@@ -48,6 +49,15 @@ export type FakeAnswer =
   /** Anthropic is overloaded (529). */
   | { readonly kind: "overloaded" }
 
+/** What the token endpoint answers a refresh with. */
+export type FakeTokenAnswer =
+  /** Rotate both tokens, after `delayMs` when given. */
+  | { readonly kind: "rotate"; readonly delayMs?: number }
+  /** A 503, as a token endpoint that is down. */
+  | { readonly kind: "unavailable" }
+  /** A 400 `invalid_grant`, as for a refresh token that was spent or revoked. */
+  | { readonly kind: "rejected" }
+
 /** What the fake knows of one request when it picks the answer. */
 export interface FakeRequestInfo {
   /** The account whose access token signed it, or `undefined` for an unknown token. */
@@ -80,6 +90,8 @@ export interface FakeAnthropicOptions {
   readonly quota?: (account: string) => FakeQuota
   /** Clock for the reset times the default quota names. */
   readonly now?: () => number
+  /** The answer to each refresh of a known refresh token. Default: rotate at once. */
+  readonly token?: (account: string) => FakeTokenAnswer
 }
 
 export interface FakeAnthropic {
@@ -334,13 +346,26 @@ export const startFakeAnthropic = (options: FakeAnthropicOptions): FakeAnthropic
     return Response.json({ five_hour: window(quota.fiveHour), seven_day: window(quota.sevenDay) })
   }
 
+  /** A refresh as JSON (the auth plugin's) or as a form (gent's). */
+  const tokenBody = async (request: Request): Promise<{ grant_type?: string; refresh_token?: string }> => {
+    if ((request.headers.get("content-type") ?? "").includes("application/x-www-form-urlencoded")) {
+      const form = new URLSearchParams(await request.text())
+      return { grant_type: form.get("grant_type") ?? undefined, refresh_token: form.get("refresh_token") ?? undefined }
+    }
+    return (await request.json()) as { grant_type?: string; refresh_token?: string }
+  }
+
   const token = async (request: Request, path: string) => {
-    const body = (await request.json()) as { grant_type?: string; refresh_token?: string }
+    const body = await tokenBody(request)
     const entry = [...current].find(([, account]) => account.refresh === body.refresh_token)
-    record(request, path, entry?.[0], entry ? 200 : 400)
-    if (body.grant_type !== "refresh_token" || entry === undefined) {
+    const answer = entry === undefined ? undefined : (options.token?.(entry[0]) ?? { kind: "rotate" as const })
+    const status = entry === undefined || answer?.kind === "rejected" ? 400 : answer?.kind === "unavailable" ? 503 : 200
+    record(request, path, entry?.[0], status)
+    if (body.grant_type !== "refresh_token" || entry === undefined || answer?.kind === "rejected") {
       return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 })
     }
+    if (answer?.kind === "unavailable") return new Response("unavailable", { status: 503 })
+    if (answer?.kind === "rotate" && answer.delayMs !== undefined) await Bun.sleep(answer.delayMs)
     const rotated = fakeAccount()
     current.set(entry[0], rotated)
     return Response.json({
