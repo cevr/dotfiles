@@ -11,7 +11,8 @@
  * - `tools.<id>(input)` asks the host to run tool `<id>` and resolves to its
  *   result. `tools.list()` lists the tools the host offered for this cell.
  * - A binding is any global a cell added or changed. The host takes a
- *   snapshot of them after each cell and restores it into a fresh worker.
+ *   snapshot of them after each cell (codec.ts) and restores it into a fresh
+ *   worker.
  *
  * The host launches it as `bun --config=/dev/null --no-env-file worker.ts`
  * under a shell that points stderr at stdout, with frames on fd 3 and 4.
@@ -20,7 +21,7 @@
  */
 import { createRequire } from "node:module"
 import { types } from "node:util"
-import { encodeSnapshot } from "./codec.ts"
+import { decodeBinding, encodeSnapshot } from "./codec.ts"
 import {
   encodeFrame,
   makeBoundedOutput,
@@ -33,7 +34,6 @@ import {
   outputMarker,
   REQUEST_FD,
   RESPONSE_FD,
-  reviverSource,
   type Evaluation,
   type Json,
   type Listing,
@@ -249,23 +249,31 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
   const baseline = new Map(
     Object.getOwnPropertyNames(globalThis).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const),
   )
+  // Taken here, before any cell: a cell may replace `Map`, `Object` or their methods.
+  const { getOwnPropertyNames, getOwnPropertyDescriptor, hasOwn, is } = Object
+  const { apply } = Reflect
+  const BindingMap = Map
+  const { get: mapGet, set: mapSet, has: mapHas, forEach: mapForEach } = Map.prototype
   const sameDescriptor = (left: PropertyDescriptor | undefined, right: PropertyDescriptor | undefined) =>
     left !== undefined &&
     right !== undefined &&
-    Object.is(left.value, right.value) &&
+    is(left.value, right.value) &&
     left.get === right.get &&
     left.set === right.set &&
     left.writable === right.writable &&
     left.enumerable === right.enumerable &&
     left.configurable === right.configurable
-  const changed = (key: string) => !sameDescriptor(baseline.get(key), Object.getOwnPropertyDescriptor(globalThis, key))
+  const changed = (key: string) => !sameDescriptor(apply(mapGet, baseline, [key]), getOwnPropertyDescriptor(globalThis, key))
   /** Each binding's value, read from its descriptor: an accessor gives its getter, so no cell code runs. */
   const namespace = () => {
-    const bindings = new Map<string, unknown>()
-    for (const key of Object.getOwnPropertyNames(globalThis).filter(changed)) {
-      const descriptor = Object.getOwnPropertyDescriptor(globalThis, key)
+    const bindings = new BindingMap<string, unknown>()
+    const keys = getOwnPropertyNames(globalThis)
+    for (let index = 0; index < keys.length; index++) {
+      const key = keys[index]!
+      if (!changed(key)) continue
+      const descriptor = getOwnPropertyDescriptor(globalThis, key)
       if (descriptor === undefined) continue
-      bindings.set(key, "value" in descriptor ? descriptor.value : descriptor.get)
+      apply(mapSet, bindings, [key, hasOwn(descriptor, "value") ? descriptor.value : descriptor.get])
     }
     return bindings
   }
@@ -273,12 +281,14 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
   let reported = new Map<string, unknown>()
   const newBindings = () => {
     const current = namespace()
-    const named = [...current]
-      .filter(([name, value]) => !reported.has(name) || !Object.is(reported.get(name), value))
-      .map(([name]) => name)
-      .sort()
+    const named: string[] = []
+    apply(mapForEach, current, [
+      (value: unknown, name: string) => {
+        if (!apply(mapHas, reported, [name]) || !is(apply(mapGet, reported, [name]), value)) named.push(name)
+      },
+    ])
     reported = current
-    return named
+    return named.sort()
   }
 
   const write = (...values: unknown[]) => output.append(values.map(display).join(" "))
@@ -333,13 +343,14 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
       else if (strays.length < MAX_STRAY_ERRORS) strays.push(`Uncaught (after an earlier cell ended): ${errorText(cause)}`)
     },
     snapshot: () => encodeSnapshot(namespace()),
-    /** Revives each binding in this realm, so restored values carry its intrinsics. */
+    /** Revives each binding in this realm; one the codec cannot read is left out of the names. */
     restore: (bindings: ReadonlyArray<SnapshotBinding>): ReadonlyArray<string> => {
-      const revive = evaluateInRealm(reviverSource) as (text: string) => unknown
       const names: string[] = []
       for (const binding of bindings) {
+        const decoded = decodeBinding(binding.value)
+        if (decoded === undefined) continue
         const defined = Reflect.defineProperty(globalThis, binding.name, {
-          value: revive(JSON.stringify(binding.value)),
+          value: decoded.value,
           writable: true,
           enumerable: true,
           configurable: true,

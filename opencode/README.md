@@ -49,10 +49,13 @@ top-level bindings persist from call to call, and returns what the code
 printed, then its last expression's value. Inside the code,
 `await tools.<id>(input)` runs another tool of the session through the tool's
 own `execute`, with the kernel call's context, so permissions and abort work
-as for a direct call; `tools.list()` lists them. After each call the JSON-safe
-bindings are stored with the session, so a worker that timed out, crashed,
-went idle or came back after a restart starts with them; `reset: true` drops
-them. The worker is the running OpenCode binary acting as Bun
+as for a direct call; `tools.list()` lists them. After each call the bindings
+that hold data are stored with the session as structured clones (cycles,
+BigInt, Map, Set, Date, RegExp, typed arrays and errors included; 16 MiB per
+binding, 256 MiB in all), so a worker that timed out, crashed, went idle or
+came back after a restart starts with them; `reset: true` drops them.
+Functions, classes and their instances, imports and live objects such as
+promises are not stored: the call names each one it left out and why. The worker is the running OpenCode binary acting as Bun
 (`BUN_BE_BUN=1`), so it needs no separate Bun install.
 
 | Option | Default | Effect |

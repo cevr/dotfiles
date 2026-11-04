@@ -156,7 +156,7 @@ export class Kernel {
     })
   }
 
-  /** The worker's bindings as tagged JSON, with those it could not encode named. */
+  /** The worker's bindings as structured clones, with those it could not encode named. */
   async snapshot(): Promise<Snapshot> {
     const id = this.nextId()
     const frame = await this.bounded(undefined, () => this.request({ type: "snapshot", id }))

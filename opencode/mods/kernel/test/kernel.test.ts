@@ -8,7 +8,7 @@ import { join } from "node:path"
 import { Schema } from "effect"
 import { Kernel, KernelError } from "../src/kernel.ts"
 import { whollyDisabled } from "../src/host-tools.ts"
-import type { Json, Listing } from "../src/protocol.ts"
+import type { Json, Listing, Omission } from "../src/protocol.ts"
 import plugin from "../src/server.ts"
 
 const work = mkdtempSync(join(tmpdir(), "kernel-test-"))
@@ -92,6 +92,113 @@ describe("worker", () => {
   })
 })
 
+/** Binds `code` in one worker, then restores its snapshot into a fresh one. */
+const restart = async (code: string) => {
+  const first = await start()
+  expect((await first.evaluate(code, [], noTools)).ok).toBe(true)
+  const snapshot = await first.snapshot()
+  first.kill()
+  const second = await start()
+  const restored = await second.restore(snapshot.bindings)
+  const show = async (expression: string) => (await second.evaluate(expression, [], noTools)).display
+  return { snapshot, restored, show }
+}
+
+describe("a restart", () => {
+  test("a cyclic object keeps its cycles and shared references", async () => {
+    const { restored, show } = await restart("const node = { name: 'a', children: [] }; node.children.push(node); node.twin = node.children")
+    expect(restored).toEqual(["node"])
+    expect(await show("[node.children[0] === node, node.twin === node.children, node.name]")).toBe('[ true, true, "a" ]')
+  })
+
+  test("BigInt, collections, dates, patterns, errors, bytes and bare objects survive", async () => {
+    const { snapshot, show } = await restart(`const v = {
+      big: 2n ** 70n,
+      map: new Map([[1n, new Set(["a"])]]),
+      when: new Date(0),
+      pattern: /x+/gi,
+      error: Object.assign(new TypeError("bad"), { name: "BadInput" }),
+      floats: new Float64Array([1.5]),
+      buffer: Buffer.from("hi"),
+      bare: Object.assign(Object.create(null), { k: 1 }),
+    }`)
+    expect(snapshot.omitted).toEqual([])
+    const read = [
+      "v.big",
+      "v.map.get(1n).has('a')",
+      "v.when.getTime()",
+      "v.pattern.flags",
+      "v.error instanceof TypeError",
+      "v.error.name",
+      "v.error.message",
+      "v.floats[0]",
+      "Buffer.isBuffer(v.buffer)",
+      "v.buffer.toString()",
+      "String(Object.getPrototypeOf(v.bare))",
+      "v.bare.k",
+    ]
+    expect(await show(`[${read.join(", ")}].join(" ")`)).toBe("1180591620717411303424 true 0 gi true BadInput bad 1.5 true hi null 1")
+  })
+
+  test("a binding up to 16 MiB survives; one over is named too-large and left out", async () => {
+    const { snapshot, restored, show } = await restart(
+      "const mid = new Uint8Array(4 * 1024 * 1024).fill(7); const big = new Uint8Array(17 * 1024 * 1024); const small = 1",
+    )
+    expect(snapshot.omitted).toEqual([{ name: "big", reason: "too-large" }])
+    expect(restored).toEqual(["mid", "small"])
+    expect(await show("[mid.length, mid[mid.length - 1], small]")).toBe("[ 4194304, 7, 1 ]")
+  })
+
+  test("a closure made inside a function is left out and named", async () => {
+    const { snapshot, restored } = await restart("function make() { let n = 0; return () => ++n }; const counter = make(); const holder = { counter }; const kept = 1")
+    expect(snapshot.omitted).toContainEqual({ name: "counter", reason: "function" })
+    expect(snapshot.omitted).toContainEqual({ name: "holder", reason: "function" })
+    expect(restored).toEqual(["kept"])
+  })
+
+  test("live values and class instances are left out, each named with its reason", async () => {
+    const { snapshot } = await restart(`const pending = Promise.resolve(1)
+      const cache = new WeakMap()
+      const steps = (function* () {})()
+      class Point { constructor(x) { this.x = x } }
+      const point = new Point(1)
+      const lazy = { get v() { return 1 } }`)
+    for (const omission of [
+      { name: "pending", reason: "live" },
+      { name: "cache", reason: "live" },
+      { name: "steps", reason: "live" },
+      { name: "point", reason: "instance of Point" },
+      { name: "lazy", reason: "unsupported" },
+    ] satisfies Omission[])
+      expect(snapshot.omitted).toContainEqual(omission)
+  })
+
+  test("taking a snapshot runs no getter, trap, iterator or hook a cell wrote", async () => {
+    const first = await start()
+    // The values come first, so only what runs after the hooks are in counts.
+    const setup = `var ran = 0
+      const lazy = { get x() { ran++; return 1 } }
+      const trap = new Proxy({}, { get() { ran++ }, ownKeys() { ran++; return [] }, getOwnPropertyDescriptor() { ran++ }, getPrototypeOf() { ran++; return null } })
+      const early = new RangeError("early")
+      const plain = { list: [1, , 3], map: new Map([[1, { polluted: 1 }]]), set: new Set([1]), early }
+      Object.defineProperty(Error.prototype, "name", { get() { ran++; return "E" }, configurable: true })
+      Error.prepareStackTrace = () => { ran++; return "hooked" }
+      plain.late = new Error("late")
+      Map.prototype.forEach = function () { ran++ }
+      Map.prototype[Symbol.iterator] = function* () { ran++ }
+      Set.prototype[Symbol.iterator] = function* () { ran++ }
+      Object.defineProperty(Object.prototype, "polluted", { set() { ran++ }, configurable: true })
+      ran`
+    expect((await first.evaluate(setup, [], noTools)).display).toBe("0")
+    const snapshot = await first.snapshot()
+    await first.snapshot()
+    expect((await first.evaluate("ran", [], noTools)).display).toBe("0")
+    expect(snapshot.omitted).toContainEqual({ name: "lazy", reason: "unsupported" })
+    expect(snapshot.omitted).toContainEqual({ name: "trap", reason: "unsupported" })
+    expect(snapshot.bindings.map((binding) => binding.name)).toContain("plain")
+  })
+})
+
 describe("whollyDisabled", () => {
   test("follows the last matching rule, as the registry does", () => {
     expect(whollyDisabled("execute", [{ action: "execute", resource: "*", effect: "deny" }])).toBe(true)
@@ -114,7 +221,8 @@ const fakeContext = (options: Record<string, unknown>, tools: unknown[] = []) =>
     options,
     storage: {
       get: async (key: string) => storage.get(key),
-      set: async (key: string, value: unknown) => void storage.set(key, value),
+      // OpenCode's KV keeps JSON: a value must survive the round trip.
+      set: async (key: string, value: unknown) => void storage.set(key, JSON.parse(JSON.stringify(value))),
       remove: async (key: string) => void storage.delete(key),
     },
     session: { get: async () => ({ location: { directory: work }, permissions: [] }) },
@@ -199,7 +307,7 @@ describe("plugin", () => {
     const { call, fail, storage } = await setup()
     await call("let x = 1")
     expect(await call("x + 1")).toBe("2")
-    expect(storage.get("kernel:ses_1")).toEqual({ bindings: [{ name: "x", value: 1 }] })
+    expect((storage.get("kernel:ses_1") as { bindings: Array<{ name: string }> }).bindings.map((binding) => binding.name)).toEqual(["x"])
     expect(await call("typeof x", { reset: true })).toBe('[kernel reset]\nundefined')
     expect(storage.get("kernel:ses_1")).toEqual({ bindings: [] })
     expect(await fail("x")).toContain("ReferenceError")
@@ -234,6 +342,15 @@ describe("plugin", () => {
     await call("let kept = 7; const f = () => 1")
     expect(await fail("process.exit(5)")).toContain("exited (code 5)")
     expect(await call("[kept, typeof f]")).toBe('[new kernel; restored kept]\n[ 7, "undefined" ]')
+  })
+
+  test("a value over the old frame size survives a crash through storage, cycles and all", async () => {
+    const { call, fail } = await setup()
+    await call("const block = new Uint8Array(4 * 1024 * 1024).fill(3); const loop = { block }; loop.self = loop")
+    expect(await fail("process.exit(5)")).toContain("exited (code 5)")
+    expect(await call("[block.length, block[100], loop.self === loop, loop.block.length]")).toBe(
+      "[new kernel; restored block, loop]\n[ 4194304, 3, true, 4194304 ]",
+    )
   })
 
   test("a value that cannot be stored is named once, when it is bound", async () => {

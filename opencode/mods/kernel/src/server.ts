@@ -53,7 +53,7 @@ export const readOptions = (options: Plugin.Context["options"]): Options => ({
 /** What the model reads about the kernel. */
 export const description = (options: Options) => `Run TypeScript in a persistent kernel: one Bun process for this session.
 
-What persists: top-level bindings (let, const, var, function, class) stay defined for the next kernel call in this session. JSON-safe values (numbers, strings, plain objects, arrays, Map, Set, Date, RegExp, typed arrays) also survive a kernel restart; functions, classes and other live objects do not, and the result names any it dropped. reset: true starts an empty kernel.
+What persists: top-level bindings (let, const, var, function, class) stay defined for the next kernel call in this session. Data also survives a kernel restart, cycles included: primitives and BigInt, plain objects, arrays, Map, Set, Date, RegExp, Buffer, typed arrays and errors (type, name, message), up to 16 MiB per binding and 256 MiB in all. Functions, classes and their instances, imports, promises and other live objects do not: after a restart, declare and import them again. The result names each binding it dropped and why. reset: true starts an empty kernel.
 
 The result is what the code printed (console.log and friends), then the value of its last expression. Top-level await works.
 

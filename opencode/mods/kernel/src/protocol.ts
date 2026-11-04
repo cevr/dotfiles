@@ -1,11 +1,13 @@
 /**
  * What the kernel host and its worker process share: the frames they send each
- * other, the limits, the end-of-output marker, the bounded output buffer and the
- * snapshot reviver. Ported from gent's `cell-protocol.ts`, without Effect, so the
- * worker loads nothing but this file and the codec.
+ * other, the limits, the end-of-output marker and the bounded output buffer.
+ * Ported from gent's `cell-protocol.ts`, without Effect, so the worker loads
+ * nothing but this file and the codec.
  *
  * Frames are one JSON value per line. The worker writes its frames on fd 3 and
- * reads the host's on fd 4, so stdout and stderr stay the cell's own.
+ * reads the host's on fd 4, so stdout and stderr stay the cell's own. A
+ * snapshot or a restore may be larger than one line: it goes as lines that
+ * start with `+`, each a piece of its JSON, then a line with the last piece.
  *
  * @module
  */
@@ -17,6 +19,8 @@ export const REQUEST_FD = 4
 
 /** One frame, in bytes, before its newline. */
 export const MAX_FRAME_BYTES = 1024 * 1024
+/** A snapshot or restore frame, in bytes, all its lines together: room for 256 MiB of clones as base64. */
+export const MAX_SNAPSHOT_FRAME_BYTES = 512 * 1024 * 1024
 /** A host reply's value, in bytes, leaving room for its envelope. */
 export const MAX_REPLY_BYTES = MAX_FRAME_BYTES - 4 * 1024
 /** The source of one call, in characters. */
@@ -38,8 +42,12 @@ export interface Listing {
   readonly description: string
 }
 
-/** Why a binding was left out of a snapshot. */
-export type OmissionReason = "function" | "unsupported" | "cyclic" | "too-deep" | "too-large"
+/**
+ * Why a binding was left out of a snapshot: it holds a function, something
+ * live (a promise, a weak reference, an iterator, a module), an object of a
+ * class, something else a clone cannot carry, or too much.
+ */
+export type OmissionReason = "function" | "live" | `instance of ${string}` | "unsupported" | "too-deep" | "too-large"
 
 export interface SnapshotBinding {
   readonly name: string
@@ -89,30 +97,82 @@ export type Response =
   | { readonly type: "call"; readonly call: string; readonly name: string; readonly input: Json }
 
 const encoder = new TextEncoder()
+const NEWLINE = 10
+/** Starts a line that holds a piece of a frame, not its end. */
+const CONTINUED = 43
 
-/** One frame as bytes with its newline; throws past `MAX_FRAME_BYTES`. */
+/**
+ * One frame as bytes, ending in a newline; throws past its limit. A snapshot
+ * or restore over `MAX_FRAME_BYTES` goes as pieces, one line each.
+ */
 export const encodeFrame = (frame: Request | Response): Uint8Array => {
-  const bytes = encoder.encode(`${JSON.stringify(frame)}\n`)
-  if (bytes.byteLength - 1 > MAX_FRAME_BYTES) throw new Error(`frame of ${bytes.byteLength} bytes is over the limit`)
+  const json = encoder.encode(JSON.stringify(frame))
+  const limit = frame.type === "snapshot" || frame.type === "restore" ? MAX_SNAPSHOT_FRAME_BYTES : MAX_FRAME_BYTES
+  if (json.byteLength > limit) throw new Error(`frame of ${json.byteLength + 1} bytes is over the limit`)
+  const piece = MAX_FRAME_BYTES - 1
+  const pieces = Math.max(1, Math.ceil(json.byteLength / piece))
+  const bytes = new Uint8Array(json.byteLength + 2 * pieces - 1)
+  let at = 0
+  for (let index = 0; index < pieces; index++) {
+    const last = index === pieces - 1
+    if (!last) bytes[at++] = CONTINUED
+    const part = json.subarray(index * piece, last ? json.byteLength : (index + 1) * piece)
+    bytes.set(part, at)
+    at += part.byteLength
+    bytes[at++] = NEWLINE
+  }
   return bytes
 }
 
-/** Splits one pipe into frames, whatever the chunk splits; a line past the limit throws. */
+/** Splits one pipe into frames, whatever the chunk splits; a line or frame past its limit throws. */
 export const makeFrameReader = () => {
-  const buffer = new Uint8Array(MAX_FRAME_BYTES)
   const decoder = new TextDecoder("utf-8", { fatal: true })
-  let length = 0
+  /** The current line's bytes so far, and the pieces of the frame before it. */
+  let line: Uint8Array[] = []
+  let lineLength = 0
+  let pieces: Uint8Array[] = []
+  let frameLength = 0
+  const join = (parts: ReadonlyArray<Uint8Array>, length: number) => {
+    if (parts.length === 1) return parts[0]!
+    const out = new Uint8Array(length)
+    let at = 0
+    for (const part of parts) {
+      out.set(part, at)
+      at += part.byteLength
+    }
+    return out
+  }
+  /** A whole line: a piece to keep, or the end of a frame. */
+  const end = (frames: unknown[]) => {
+    const bytes = join(line, lineLength)
+    line = []
+    lineLength = 0
+    if (bytes.byteLength === 0) return
+    const continued = bytes[0] === CONTINUED
+    const piece = continued ? bytes.subarray(1) : bytes
+    frameLength += piece.byteLength
+    if (frameLength > MAX_SNAPSHOT_FRAME_BYTES) throw new Error("frame over the byte limit")
+    pieces.push(piece)
+    if (continued) return
+    const frame = join(pieces, frameLength)
+    pieces = []
+    frameLength = 0
+    frames.push(JSON.parse(decoder.decode(frame)))
+  }
   return {
     push: (chunk: Uint8Array): ReadonlyArray<unknown> => {
       const frames: unknown[] = []
-      for (const byte of chunk) {
-        if (byte === 10) {
-          if (length > 0) frames.push(JSON.parse(decoder.decode(buffer.subarray(0, length))))
-          length = 0
-        } else {
-          if (length === MAX_FRAME_BYTES) throw new Error("frame over the byte limit")
-          buffer[length++] = byte
-        }
+      let start = 0
+      while (start < chunk.byteLength) {
+        const newline = chunk.indexOf(NEWLINE, start)
+        const stop = newline === -1 ? chunk.byteLength : newline
+        lineLength += stop - start
+        if (lineLength > MAX_FRAME_BYTES) throw new Error("frame over the byte limit")
+        // A copy: the stream may reuse its chunk.
+        if (stop > start) line.push(chunk.slice(start, stop))
+        if (newline === -1) break
+        end(frames)
+        start = newline + 1
       }
       return frames
     },
@@ -248,48 +308,3 @@ export const viewOf = (text: string, chars: number): string => {
   const tail = cutTail(text, Math.floor(chars / 2))
   return `${head}${omittedNotice(text.length - head.length - tail.length)}${tail}`
 }
-
-// ── snapshot reviver ────────────────────────────────────────────────────────
-
-/** The key that marks a tagged value in snapshot JSON. */
-export const SNAPSHOT_TAG = "$kernel"
-
-/**
- * Source for a reviver that runs in the realm that evaluates it: a function from
- * encoded JSON text to a value made from that realm's own intrinsics.
- */
-export const reviverSource = `(function () {
-  var TAG = ${JSON.stringify(SNAPSHOT_TAG)};
-  // defineProperty, not assignment: an own "__proto__" key stays a key.
-  var put = function (target, key, value) {
-    Object.defineProperty(target, key, { value: value, writable: true, enumerable: true, configurable: true });
-  };
-  var revive = function (value) {
-    if (value === null || typeof value !== "object") return value;
-    if (Array.isArray(value)) return value.map(revive);
-    if (typeof value[TAG] !== "string") {
-      var out = {};
-      for (var key in value) put(out, key, revive(value[key]));
-      return out;
-    }
-    var kind = value[TAG];
-    var inner = value.value;
-    switch (kind) {
-      case "undefined": return undefined;
-      case "number": return Number(inner);
-      case "bigint": return BigInt(inner);
-      case "date": return new Date(Number(inner));
-      case "regexp": return new RegExp(inner[0], inner[1]);
-      case "error": { var error = new Error(inner.message); error.name = inner.name; error.stack = inner.stack; return error; }
-      case "map": return new Map(inner.map(function (pair) { return [revive(pair[0]), revive(pair[1])]; }));
-      case "set": return new Set(inner.map(revive));
-      case "object": { var plain = {}; for (var name in inner) put(plain, name, revive(inner[name])); return plain; }
-      default: {
-        var Ctor = globalThis[kind];
-        if (kind === "BigInt64Array" || kind === "BigUint64Array") return Ctor.from(inner.map(BigInt));
-        return Ctor.from(inner.map(Number));
-      }
-    }
-  };
-  return function (text) { return revive(JSON.parse(text)); };
-})()`

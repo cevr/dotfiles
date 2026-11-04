@@ -1,240 +1,494 @@
 /**
- * The snapshot codec: the worker's bindings as tagged JSON, so they outlive the
- * worker. Ported from gent's `cell-value.ts` codec. It reads data properties
- * through their descriptors and checks built-ins by brand, so encoding runs no
- * getter, Proxy trap or iterator a cell wrote. Each value that cannot make the
- * round trip is named with its reason. `reviverSource` in protocol.ts decodes.
+ * The snapshot codec: the worker's bindings as structured clones (`bun:jsc`),
+ * so they outlive the worker. Each binding is cloned on its own, so cycles and
+ * shared references inside one binding survive, and those between two do not.
+ *
+ * The clone is taken of a copy, never of the cell's own objects. The copy is
+ * built from data properties read through their descriptors, with brands
+ * checked by `node:util` and built-ins taken at load, so encoding runs no
+ * getter, Proxy trap, iterator or stack hook a cell wrote. Leaves the
+ * serializer reads by internal slot only (dates, patterns, byte arrays) go in
+ * as they are. Errors go in as plain stand-ins: reading an error's stack can
+ * call a cell's `Error.prepareStackTrace`.
+ *
+ * What the clone loses comes back by fixups, keyed by the object's place in a
+ * walk both sides take over the copy: a bare object's null prototype, a
+ * Buffer's prototype, and an error's type and name. Each value that cannot make
+ * the round trip is named with its reason.
  *
  * @module
  */
+import { deserialize, serialize } from "bun:jsc"
 import { types } from "node:util"
-import { SNAPSHOT_TAG, type Json, type Omission, type OmissionReason, type Snapshot, type SnapshotBinding } from "./protocol.ts"
+import type { Json, Omission, OmissionReason, Snapshot, SnapshotBinding } from "./protocol.ts"
 
-/** One binding's encoded size, in bytes. */
-export const MAX_BINDING_BYTES = 256 * 1024
-/** A whole snapshot's encoded size, in bytes. */
-export const MAX_SNAPSHOT_BYTES = 768 * 1024
-const MAX_DEPTH = 64
-/** Each entry encodes to at least two bytes, so a longer collection is too large unread. */
-const MAX_ENTRIES = MAX_BINDING_BYTES / 2
-
-/** A value that cannot round-trip; it never enters the JSON. */
-class Omitted {
-  constructor(readonly reason: OmissionReason) {}
-}
-type Encoded = Json | Omitted
-
-const omitted = {
-  function: new Omitted("function"),
-  unsupported: new Omitted("unsupported"),
-  cyclic: new Omitted("cyclic"),
-  "too-deep": new Omitted("too-deep"),
-  "too-large": new Omitted("too-large"),
-} as const
-
-const tagged = (kind: string, value: Json): Json => ({ [SNAPSHOT_TAG]: kind, value })
+/** One binding's clone, in bytes. */
+export const MAX_BINDING_BYTES = 16 * 1024 * 1024
+/** A whole snapshot's clones, in bytes. */
+export const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
+/** How deep the copy goes; the serializer recurses, so a deeper value fails there anyway. */
+const MAX_DEPTH = 10_000
+/** Strings at least this long are charged once each against the budget, as the serializer stores them once. */
+const COUNTED_STRING = 64
+/** The key that marks a stored clone. */
+const CLONE_TAG = "$kernel"
 
 // Taken at load, so a cell that replaces a built-in never runs here.
-const byteLength = Buffer.byteLength.bind(Buffer)
-const stringify = JSON.stringify
 const prototypeOf = Object.getPrototypeOf
+const setPrototypeOf = Object.setPrototypeOf
 const ownKeys = Reflect.ownKeys
 const descriptorOf = Object.getOwnPropertyDescriptor
+const defineProperty = Object.defineProperty
 const hasOwn = Object.hasOwn
+const apply = Reflect.apply
 const isArray = Array.isArray
-const dateTime = Date.prototype.getTime
-const regexpSource = descriptorOf(RegExp.prototype, "source")!.get!
-const regexpFlags = descriptorOf(RegExp.prototype, "flags")!.get!
+const ArrayConstructor = Array
+const MapConstructor = Map
+const SetConstructor = Set
+const Bytes = Uint8Array
+const RangeErrorConstructor = RangeError
+const toStringTag = Symbol.toStringTag
+const ObjectPrototype = Object.prototype
+const ArrayPrototype = Array.prototype
+const MapPrototype = Map.prototype
+const SetPrototype = Set.prototype
+const DatePrototype = Date.prototype
+const RegExpPrototype = RegExp.prototype
+const ArrayBufferPrototype = ArrayBuffer.prototype
+const BufferPrototype: object = Buffer.prototype
 const mapForEach = Map.prototype.forEach
+const mapSet = Map.prototype.set
+const mapGet = Map.prototype.get
+const mapHas = Map.prototype.has
+const mapClear = Map.prototype.clear
 const mapSize = descriptorOf(Map.prototype, "size")!.get!
 const setForEach = Set.prototype.forEach
-const setSize = descriptorOf(Set.prototype, "size")!.get!
+const setAdd = Set.prototype.add
+const setHas = Set.prototype.has
+const setClear = Set.prototype.clear
+const weakRefDeref = WeakRef.prototype.deref
+const registryUnregister = FinalizationRegistry.prototype.unregister
 const typedArrayPrototype: object = prototypeOf(Uint8Array.prototype)
-const typedArrayLength = descriptorOf(typedArrayPrototype, "length")!.get!
-const typedArrayTag = descriptorOf(typedArrayPrototype, Symbol.toStringTag)!.get!
+const typedArrayBuffer = descriptorOf(typedArrayPrototype, "buffer")!.get!
+const dataViewBuffer = descriptorOf(DataView.prototype, "buffer")!.get!
+const arrayBufferBytes = descriptorOf(ArrayBuffer.prototype, "byteLength")!.get!
+const toBase64 = Uint8Array.prototype.toBase64
+const fromBase64 = Uint8Array.fromBase64
+const IteratorPrototype: object = prototypeOf(prototypeOf([][Symbol.iterator]()))
+const AsyncIteratorPrototype: object = prototypeOf(prototypeOf(async function* () {}).prototype)
+const { isProxy, isPromise, isWeakMap, isWeakSet, isGeneratorObject, isModuleNamespaceObject, isSharedArrayBuffer } = types
+const { isBoxedPrimitive, isArgumentsObject, isNativeError, isDate, isRegExp, isTypedArray, isDataView, isArrayBuffer, isMap, isSet } = types
 
-/** The UTF-8 bytes one binding may still take; the encoder stops at the first charge past it. */
-class Budget {
-  constructor(private bytes: number) {}
+/** The native error types a stand-in can name, by name. */
+const ERRORS: ReadonlyMap<string, ErrorConstructor> = new MapConstructor(
+  [Error, TypeError, RangeError, SyntaxError, ReferenceError, EvalError, URIError].map((constructor) => [constructor.name, constructor]),
+)
+const errorTypeOf: ReadonlyMap<object, string> = new MapConstructor([...ERRORS].map(([name, constructor]) => [constructor.prototype, name]))
 
-  spend(bytes: number): boolean {
-    this.bytes -= bytes
-    return this.bytes >= 0
-  }
+/** The intrinsic prototypes of the byte views. */
+const VIEWS: ReadonlySet<object> = new SetConstructor([
+  Int8Array,
+  Uint8Array,
+  Uint8ClampedArray,
+  Int16Array,
+  Uint16Array,
+  Int32Array,
+  Uint32Array,
+  Float16Array,
+  Float32Array,
+  Float64Array,
+  BigInt64Array,
+  BigUint64Array,
+  DataView,
+].map((constructor) => constructor.prototype))
 
-  /** A string and its quotes. UTF-8 takes at least a byte per UTF-16 unit, so a longer string is refused uncounted. */
-  text(value: string): boolean {
-    if (value.length > this.bytes) return this.spend(value.length)
-    return this.spend(byteLength(value) + 2)
-  }
-}
-
-/** JSON has no NaN, infinities or -0; those travel as text. */
-const isJsonNumber = (value: number) => Number.isFinite(value) && !Object.is(value, -0)
-const numberText = (value: number) => (Object.is(value, -0) ? "-0" : String(value))
-const jsonNumber = (value: number): Json => (isJsonNumber(value) ? value : numberText(value))
-
-const encodePrimitive = (value: unknown, budget: Budget): Encoded | undefined => {
-  if (typeof value === "string") return budget.text(value) ? value : omitted["too-large"]
-  if (typeof value === "function") return omitted.function
-  if (typeof value === "object" && value !== null) return undefined
-  if (!budget.spend(2)) return omitted["too-large"]
-  if (value === null || typeof value === "boolean") return value
-  if (value === undefined) return tagged("undefined", null)
-  if (typeof value === "number") {
-    if (!isJsonNumber(value)) return tagged("number", numberText(value))
-    return budget.spend(String(value).length - 1) ? value : omitted["too-large"]
-  }
-  if (typeof value === "bigint") return tagged("bigint", String(value))
-  return omitted.unsupported
-}
-
-/** Plain: a null prototype, or a prototype whose own prototype is null (Object.prototype of any realm). */
-const isPlainObject = (value: object) => {
-  const proto: unknown = prototypeOf(value)
-  if (proto === null) return true
-  if (typeof proto !== "object" || types.isProxy(proto)) return false
-  return prototypeOf(proto) === null
-}
-
-/** An own data property's value; an accessor is cell code and refuses the object. */
-const dataValue = (object: object, key: PropertyKey): { readonly value: unknown } | undefined => {
-  const descriptor = descriptorOf(object, key)
-  if (descriptor === undefined) return { value: undefined }
-  if (!hasOwn(descriptor, "value")) return undefined
-  return { value: descriptor.value }
-}
-
-const encodeArray = (array: ReadonlyArray<unknown>, inner: (item: unknown) => Encoded): Encoded => {
-  if (array.length > MAX_ENTRIES) return omitted["too-large"]
-  const out: Json[] = []
-  for (let index = 0; index < array.length; index++) {
-    const item = dataValue(array, index)
-    if (item === undefined) return omitted.unsupported
-    const encoded = inner(item.value)
-    if (encoded instanceof Omitted) return encoded
-    out.push(encoded)
-  }
+// The codec calls no method on a value a cell can reach: a cell may have replaced it on the prototype.
+const has = <K>(map: ReadonlyMap<K, unknown>, key: K): boolean => apply(mapHas, map, [key])
+const get = <K, V>(map: ReadonlyMap<K, V>, key: K): V | undefined => apply(mapGet, map, [key])
+const set = <K, V>(map: Map<K, V>, key: K, value: V): void => void apply(mapSet, map, [key, value])
+const sizeOf = (map: ReadonlyMap<unknown, unknown>): number => apply(mapSize, map, [])
+const inSet = <T>(items: ReadonlySet<T>, item: T): boolean => apply(setHas, items, [item])
+const addTo = <T>(items: Set<T>, item: T): void => void apply(setAdd, items, [item])
+/** A data property's descriptor with no prototype, so `defineProperty` reads no `get` or `set` a cell put on `Object.prototype`. */
+const data = (value: unknown, enumerable = true): PropertyDescriptor =>
+  ({ __proto__: null, value, writable: true, enumerable, configurable: true }) as PropertyDescriptor
+/** Appends by definition: assigning an index would find a setter a cell put on `Array.prototype`. */
+const append = (list: unknown[], value: unknown): void => void defineProperty(list, list.length, data(value))
+/** A Map's keys and values, alternating, or a Set's items. */
+const entriesOf = (collection: object): unknown[] => {
+  const out: unknown[] = []
+  if (isMap(collection)) apply(mapForEach, collection, [(value: unknown, key: unknown) => (append(out, key), append(out, value))])
+  else apply(setForEach, collection, [(item: unknown) => append(out, item)])
   return out
 }
 
-const encodeRecord = (object: object, inner: (item: unknown) => Encoded, budget: Budget): Encoded => {
-  const keys = ownKeys(object)
-  if (keys.length > MAX_ENTRIES) return omitted["too-large"]
-  const out: Record<string, Json> = {}
-  for (const key of keys) {
-    if (typeof key !== "string") continue
-    const descriptor = descriptorOf(object, key)
-    if (descriptor === undefined || descriptor.enumerable !== true) continue
-    if (!hasOwn(descriptor, "value")) return omitted.unsupported
-    if (!budget.text(key)) return omitted["too-large"]
-    const encoded = inner(descriptor.value)
-    if (encoded instanceof Omitted) return encoded
-    // Assignment to an own `__proto__` key would set the prototype and drop the key.
-    Object.defineProperty(out, key, { value: encoded, writable: true, enumerable: true, configurable: true })
+/** What restore puts back on the object at `at` in the walk: its prototype, or the error it stands for. */
+type Fixup =
+  | { readonly at: number; readonly kind: "null-prototype" | "buffer" }
+  | { readonly at: number; readonly kind: "error"; readonly type: string }
+
+/** What a copied object needs back after the round trip; its place in the walk is set when the walk numbers it. */
+type Need = { readonly kind: "null-prototype" | "buffer" } | { readonly kind: "error"; readonly type: string }
+
+/** A value that cannot round-trip; the copy stops at the first. */
+class Omitted {
+  constructor(readonly reason: OmissionReason) {}
+}
+
+/** Whether `run` throws: a brand check by a built-in that throws on a foreign receiver. */
+const throws = (run: () => unknown) => {
+  try {
+    run()
+    return false
+  } catch {
+    return true
   }
-  return hasOwn(out, SNAPSHOT_TAG) ? tagged("object", out) : out
 }
 
-/** An error's `name`, `message` or `stack` as text, when it is a primitive data property. */
-const errorField = (error: object, key: string, fallback: string): string | undefined => {
-  const found = dataValue(error, key) ?? dataValue(prototypeOf(error) ?? {}, key)
-  if (found === undefined) return undefined
-  if (found.value === undefined) return fallback
-  if (typeof found.value === "object" && found.value !== null) return undefined
-  return String(found.value)
+/** The value of an own data property; `undefined` when absent; `Omitted` for an accessor. */
+const dataOf = (object: object, key: string): { readonly value: unknown } | undefined | Omitted => {
+  const descriptor = descriptorOf(object, key)
+  if (descriptor === undefined) return undefined
+  return hasOwn(descriptor, "value") ? { value: descriptor.value } : new Omitted("unsupported")
 }
 
-const encodeError = (error: object, budget: Budget): Encoded => {
-  const name = errorField(error, "name", "Error")
-  const message = errorField(error, "message", "")
-  const stack = errorField(error, "stack", "")
-  if (name === undefined || message === undefined || stack === undefined) return omitted.unsupported
-  if (!budget.text(name) || !budget.text(message) || !budget.text(stack)) return omitted["too-large"]
-  return tagged("error", { name, message, stack })
-}
-
-const encodeCollection = (value: object, kind: "map" | "set", inner: (item: unknown) => Encoded): Encoded => {
-  const size: number = (kind === "map" ? mapSize : setSize).call(value)
-  if (size > MAX_ENTRIES) return omitted["too-large"]
-  const out: Json[] = []
-  let failed: Omitted | undefined
-  const add = (item: unknown, key: unknown) => {
-    if (failed) return
-    const encodedKey = kind === "map" ? inner(key) : null
-    if (encodedKey instanceof Omitted) return void (failed = encodedKey)
-    const encoded = inner(item)
-    if (encoded instanceof Omitted) return void (failed = encoded)
-    out.push(kind === "map" ? [encodedKey, encoded] : encoded)
+/** Why an object with a prototype of its own cannot be kept: its class by name, read without running code. */
+const foreignReason = (object: object): OmissionReason => {
+  if (!throws(() => apply(weakRefDeref, object, [])) || !throws(() => apply(registryUnregister, object, [{}]))) return "live"
+  for (let proto: unknown = prototypeOf(object); typeof proto === "object" && proto !== null; proto = prototypeOf(proto)) {
+    if (isProxy(proto)) return "unsupported"
+    if (proto === IteratorPrototype || proto === AsyncIteratorPrototype) return "live"
+    if (proto === ObjectPrototype) break
+    const constructor = dataOf(proto, "constructor")
+    if (constructor !== undefined && !(constructor instanceof Omitted) && typeof constructor.value === "function" && !isProxy(constructor.value)) {
+      const name = dataOf(constructor.value, "name")
+      if (name !== undefined && !(name instanceof Omitted) && typeof name.value === "string" && name.value !== "") return `instance of ${name.value}`
+    }
+    const tag = descriptorOf(proto, toStringTag)
+    if (tag !== undefined && hasOwn(tag, "value") && typeof tag.value === "string" && tag.value !== "") return `instance of ${tag.value}`
   }
-  ;(kind === "map" ? mapForEach : setForEach).call(value, add)
-  return failed ?? tagged(kind, out)
+  return "unsupported"
 }
 
-const encodeTypedArray = (value: NodeJS.TypedArray, budget: Budget): Encoded => {
-  const kind: string = typedArrayTag.call(value)
-  const length: number = typedArrayLength.call(value)
-  if (length > MAX_ENTRIES || !budget.spend(length * 2)) return omitted["too-large"]
-  const values: Json[] = []
-  for (let index = 0; index < length; index++) {
-    const item = value[index]
-    if (typeof item === "bigint") values.push(String(item))
-    else if (typeof item === "number") values.push(jsonNumber(item))
+/** Objects that hold on to something outside the value: they mean nothing in a new process. Weak references are told in `foreignReason`. */
+const isLive = (object: object) =>
+  isPromise(object) ||
+  isWeakMap(object) ||
+  isWeakSet(object) ||
+  isGeneratorObject(object) ||
+  isModuleNamespaceObject(object) ||
+  isSharedArrayBuffer(object)
+
+/** The bytes one binding may still take; `charge` fails at the first charge past it. */
+class Budget {
+  private readonly strings = new SetConstructor<string>()
+  private readonly buffers = new SetConstructor<object>()
+  constructor(private left: number) {}
+
+  charge(bytes: number): boolean {
+    this.left -= bytes
+    return this.left >= 0
   }
-  return tagged(kind, values)
+
+  /** A string takes at least a byte per character, once however often it recurs. */
+  text(value: string): boolean {
+    if (value.length < COUNTED_STRING) return this.charge(1)
+    if (inSet(this.strings, value)) return true
+    addTo(this.strings, value)
+    return this.charge(value.length)
+  }
+
+  /** A byte store's contents, once however many views share it. */
+  store(buffer: object, bytes: number): boolean {
+    if (inSet(this.buffers, buffer)) return true
+    addTo(this.buffers, buffer)
+    return this.charge(bytes)
+  }
 }
 
-const encodeValue = (value: unknown, depth: number, seen: object[], budget: Budget): Encoded => {
-  if (depth > MAX_DEPTH) return omitted["too-deep"]
-  const primitive = encodePrimitive(value, budget)
-  if (primitive !== undefined) return primitive
-  // Every trap of a Proxy is cell code.
-  if (typeof value !== "object" || value === null || types.isProxy(value)) return omitted.unsupported
-  if (seen.includes(value)) return omitted.cyclic
-  if (!budget.spend(3)) return omitted["too-large"]
-  seen.push(value)
-  const inner = (child: unknown) => encodeValue(child, depth + 1, seen, budget)
-  let encoded: Encoded
-  if (types.isNativeError(value)) encoded = encodeError(value, budget)
-  else if (types.isDate(value)) encoded = tagged("date", jsonNumber(dateTime.call(value)))
-  else if (types.isRegExp(value)) {
-    const source: string = regexpSource.call(value)
-    encoded = budget.text(source) ? tagged("regexp", [source, regexpFlags.call(value)]) : omitted["too-large"]
-  } else if (types.isMap(value)) encoded = encodeCollection(value, "map", inner)
-  else if (types.isSet(value)) encoded = encodeCollection(value, "set", inner)
-  else if (types.isTypedArray(value)) encoded = encodeTypedArray(value, budget)
-  else if (isArray(value) && prototypeOf(value) === Array.prototype) encoded = encodeArray(value, inner)
-  else if (isPlainObject(value)) encoded = encodeRecord(value, inner, budget)
-  else encoded = omitted.unsupported
-  seen.pop()
-  return encoded
+/**
+ * The copy the serializer reads: containers rebuilt from data properties,
+ * leaves as they are, errors as stand-ins. Fixups are keyed by the copy's
+ * objects until the walk numbers them.
+ */
+const copyOf = (root: unknown, budget: Budget): { readonly copy: unknown; readonly needs: ReadonlyMap<object, Need> } | Omitted => {
+  const copies = new MapConstructor<object, unknown>()
+  const needs = new MapConstructor<object, Need>()
+  /** Containers whose copies are made but not filled. */
+  const queue: Array<{ readonly from: object; readonly to: object; readonly depth: number }> = []
+
+  const visit = (value: unknown, depth: number): unknown => {
+    if (typeof value === "function") return new Omitted("function")
+    if (typeof value === "symbol") return new Omitted("unsupported")
+    if (typeof value === "string") return budget.text(value) ? value : new Omitted("too-large")
+    if (typeof value !== "object" || value === null) return budget.charge(1) ? value : new Omitted("too-large")
+    if (has(copies, value)) return get(copies, value)
+    if (depth > MAX_DEPTH) return new Omitted("too-deep")
+    if (!budget.charge(1)) return new Omitted("too-large")
+    const made = shell(value, depth)
+    if (made instanceof Omitted) return made
+    set(copies, value, made)
+    return made
+  }
+
+  /** The object's copy, unfilled; a leaf is its own copy. */
+  const shell = (value: object, depth: number): object | Omitted => {
+    if (isProxy(value)) return new Omitted("unsupported")
+    if (isLive(value)) return new Omitted("live")
+    if (isBoxedPrimitive(value) || isArgumentsObject(value)) return new Omitted("unsupported")
+    const proto: unknown = prototypeOf(value)
+    if (isNativeError(value)) {
+      const type = typeof proto === "object" && proto !== null ? get(errorTypeOf, proto) : undefined
+      if (type === undefined) return new Omitted(foreignReason(value))
+      // Only `name` and `message`: reading anything else may build the stack, and with it call a cell's hook.
+      const name = dataOf(value, "name")
+      const message = dataOf(value, "message")
+      if (name instanceof Omitted || message instanceof Omitted) return name instanceof Omitted ? name : (message as Omitted)
+      if (!isPrimitive(name?.value) || !isPrimitive(message?.value)) return new Omitted("unsupported")
+      const standIn: Record<string, string> = {}
+      const text = message === undefined || message.value === undefined ? "" : String(message.value)
+      if (!budget.text(text)) return new Omitted("too-large")
+      put(standIn, "message", text)
+      if (name !== undefined && name.value !== undefined) put(standIn, "name", String(name.value))
+      set(needs, standIn, { kind: "error", type })
+      return standIn
+    }
+    if (isDate(value)) return proto === DatePrototype ? value : new Omitted(foreignReason(value))
+    if (isRegExp(value)) return proto === RegExpPrototype ? value : new Omitted(foreignReason(value))
+    if (isTypedArray(value) || isDataView(value)) {
+      const buffer = apply(isDataView(value) ? dataViewBuffer : typedArrayBuffer, value, []) as ArrayBuffer
+      if (isSharedArrayBuffer(buffer)) return new Omitted("live")
+      const isBuffer = proto === BufferPrototype && isTypedArray(value)
+      if (!isBuffer && !inSet(VIEWS, proto as object)) return new Omitted(foreignReason(value))
+      if (!budget.store(buffer, apply(arrayBufferBytes, buffer, []) as number)) return new Omitted("too-large")
+      if (isBuffer) set(needs, value, { kind: "buffer" })
+      return value
+    }
+    if (isArrayBuffer(value)) {
+      if (proto !== ArrayBufferPrototype) return new Omitted(foreignReason(value))
+      return budget.store(value, apply(arrayBufferBytes, value, []) as number) ? value : new Omitted("too-large")
+    }
+    if (isMap(value)) {
+      if (proto !== MapPrototype) return new Omitted(foreignReason(value))
+      const copy = new MapConstructor()
+      append(queue, { from: value, to: copy, depth })
+      return copy
+    }
+    if (isSet(value)) {
+      if (proto !== SetPrototype) return new Omitted(foreignReason(value))
+      const copy = new SetConstructor()
+      append(queue, { from: value, to: copy, depth })
+      return copy
+    }
+    if (isArray(value)) {
+      if (proto !== ArrayPrototype) return new Omitted(foreignReason(value))
+      // Holes cost the clone nothing, so the length is not charged.
+      const length = (descriptorOf(value, "length") as PropertyDescriptor).value as number
+      const copy = new ArrayConstructor(length)
+      append(queue, { from: value, to: copy, depth })
+      return copy
+    }
+    if (proto !== ObjectPrototype && proto !== null) return new Omitted(foreignReason(value))
+    const copy = {}
+    if (proto === null) set(needs, copy, { kind: "null-prototype" })
+    append(queue, { from: value, to: copy, depth })
+    return copy
+  }
+
+  /** Copies a container's own enumerable data properties, or its entries; an accessor stops the copy. */
+  const fill = (from: object, to: object, depth: number): Omitted | undefined => {
+    if (isMap(from) || isSet(from)) {
+      const items = entriesOf(from)
+      for (let index = 0; index < items.length; index++) {
+        const copied = visit(items[index], depth + 1)
+        if (copied instanceof Omitted) return copied
+        items[index] = copied
+      }
+      if (isSet(from)) for (let index = 0; index < items.length; index++) addTo(to as Set<unknown>, items[index])
+      else for (let index = 0; index < items.length; index += 2) set(to as Map<unknown, unknown>, items[index], items[index + 1])
+      return undefined
+    }
+    const keys = ownKeys(from)
+    for (let index = 0; index < keys.length; index++) {
+      const key = keys[index]
+      if (typeof key !== "string") continue
+      const descriptor = descriptorOf(from, key)
+      if (descriptor === undefined || descriptor.enumerable !== true) continue
+      if (!hasOwn(descriptor, "value")) return new Omitted("unsupported")
+      if (!budget.text(key)) return new Omitted("too-large")
+      const copied = visit(descriptor.value, depth + 1)
+      if (copied instanceof Omitted) return copied
+      put(to, key, copied)
+    }
+    return undefined
+  }
+
+  try {
+    const copy = visit(root, 0)
+    if (copy instanceof Omitted) return copy
+    // A queue, not recursion: a deep value cannot overflow the stack here.
+    for (let index = 0; index < queue.length; index++) {
+      const next = queue[index]!
+      const failed = fill(next.from, next.to, next.depth)
+      if (failed) return failed
+    }
+    return { copy, needs }
+  } catch {
+    // A namespace's binding before its module ran, or a host object that refuses to be read.
+    return new Omitted("unsupported")
+  }
 }
 
-/** Every binding as tagged JSON; those that cannot round-trip are named with the reason. */
+const isPrimitive = (value: unknown) => value === null || (typeof value !== "object" && typeof value !== "function")
+
+/** Defines, not assigns: an own `__proto__` key stays a key, and no setter on a prototype runs. */
+const put = (target: object, key: string, value: unknown) => defineProperty(target, key, data(value))
+
+const isLeaf = (object: object) => isDate(object) || isRegExp(object) || isTypedArray(object) || isDataView(object) || isArrayBuffer(object)
+
+/**
+ * Every object in a clone, in the order both sides number them: breadth first,
+ * a container's own enumerable properties, a Map's keys and values, a Set's
+ * items. Dates, patterns and byte stores are leaves.
+ */
+const walk = (root: unknown): ReadonlyArray<object> => {
+  const seen = new SetConstructor<object>()
+  const order: object[] = []
+  const enter = (value: unknown) => {
+    if (typeof value !== "object" || value === null || inSet(seen, value)) return
+    addTo(seen, value)
+    append(order, value)
+  }
+  enter(root)
+  for (let index = 0; index < order.length; index++) {
+    const object = order[index]!
+    if (isLeaf(object)) continue
+    if (isMap(object) || isSet(object)) {
+      const items = entriesOf(object)
+      for (let item = 0; item < items.length; item++) enter(items[item])
+      continue
+    }
+    const keys = ownKeys(object)
+    for (let key = 0; key < keys.length; key++) {
+      const name = keys[key]
+      if (typeof name !== "string") continue
+      const descriptor = descriptorOf(object, name)
+      if (descriptor !== undefined && descriptor.enumerable === true && hasOwn(descriptor, "value")) enter(descriptor.value)
+    }
+  }
+  return order
+}
+
+/** One binding as a stored clone, or why it cannot be one. */
+const encodeBinding = (value: unknown, limit: number): { readonly json: Json; readonly bytes: number } | Omitted => {
+  const copied = copyOf(value, new Budget(limit))
+  if (copied instanceof Omitted) return copied
+  let bytes: Uint8Array
+  try {
+    bytes = new Bytes(serialize(copied.copy))
+  } catch (cause) {
+    return new Omitted(cause instanceof RangeErrorConstructor ? "too-deep" : "unsupported")
+  }
+  if (bytes.byteLength > limit) return new Omitted("too-large")
+  const fixups: Fixup[] = []
+  if (sizeOf(copied.needs) > 0) {
+    const order = walk(copied.copy)
+    for (let at = 0; at < order.length; at++) {
+      const need = get(copied.needs, order[at]!)
+      if (need !== undefined) append(fixups, { at, ...need })
+    }
+  }
+  const clone = apply(toBase64, bytes, []) as string
+  const json: Json = fixups.length > 0 ? { [CLONE_TAG]: "clone", data: clone, fixups } : { [CLONE_TAG]: "clone", data: clone }
+  return { json, bytes: bytes.byteLength }
+}
+
+/** Each binding as a clone, within the limits, and each one left out by name with its reason. */
 export const encodeSnapshot = (namespace: ReadonlyMap<string, unknown>): Snapshot => {
   const bindings: SnapshotBinding[] = []
-  const left: Omission[] = []
-  let total = 0
-  for (const [name, value] of namespace) {
-    const budget = new Budget(Math.min(MAX_BINDING_BYTES, MAX_SNAPSHOT_BYTES - total))
-    let encoded: Encoded
-    try {
-      encoded = encodeValue(value, 0, [], budget)
-    } catch {
-      // A host getter may still throw; that value cannot round-trip either.
-      encoded = omitted.unsupported
-    }
-    if (encoded instanceof Omitted) {
-      left.push({ name, reason: encoded.reason })
+  const omitted: Omission[] = []
+  let left = MAX_SNAPSHOT_BYTES
+  apply(mapForEach, namespace, [
+    (value: unknown, name: string) => {
+      const encoded = encodeBinding(value, left < MAX_BINDING_BYTES ? left : MAX_BINDING_BYTES)
+      if (encoded instanceof Omitted) return append(omitted, { name, reason: encoded.reason })
+      left -= encoded.bytes
+      append(bindings, { name, value: encoded.json })
+    },
+  ])
+  return { bindings, omitted }
+}
+
+const isFixup = (value: unknown): value is Fixup => {
+  if (typeof value !== "object" || value === null) return false
+  const { at, kind, type } = value as Record<string, unknown>
+  if (typeof at !== "number") return false
+  return kind === "null-prototype" || kind === "buffer" || (kind === "error" && typeof type === "string" && has(ERRORS, type))
+}
+
+/** The error a stand-in stood for, made in this realm; its stack is its first line, as the old one is gone. */
+const reviveError = (standIn: object, type: string): Error => {
+  const message = dataOf(standIn, "message") as { readonly value: string }
+  const name = dataOf(standIn, "name") as { readonly value: string } | undefined
+  const error = new (get(ERRORS, type) as ErrorConstructor)(message.value)
+  if (name !== undefined) put(error, "name", name.value)
+  const head = name?.value ?? type
+  defineProperty(error, "stack", data(message.value === "" ? head : `${head}: ${message.value}`, false))
+  return error
+}
+
+/** Puts revived errors where their stand-ins are; a Map or Set is rebuilt in its order. */
+const replaceStandIns = (order: ReadonlyArray<object>, revived: ReadonlyMap<object, Error>) => {
+  const swap = (value: unknown) => (typeof value === "object" && value !== null && has(revived, value) ? get(revived, value) : value)
+  for (let index = 0; index < order.length; index++) {
+    const object = order[index]!
+    if (has(revived, object) || isLeaf(object)) continue
+    if (isMap(object) || isSet(object)) {
+      const items = entriesOf(object)
+      if (isSet(object)) {
+        apply(setClear, object, [])
+        for (let item = 0; item < items.length; item++) addTo(object, swap(items[item]))
+      } else {
+        apply(mapClear, object, [])
+        for (let item = 0; item < items.length; item += 2) set(object as Map<unknown, unknown>, swap(items[item]), swap(items[item + 1]))
+      }
       continue
     }
-    const size = byteLength(stringify(encoded))
-    if (size > MAX_BINDING_BYTES || total + size > MAX_SNAPSHOT_BYTES) {
-      left.push({ name, reason: "too-large" })
-      continue
+    const keys = ownKeys(object)
+    for (let key = 0; key < keys.length; key++) {
+      const name = keys[key]
+      if (typeof name !== "string") continue
+      const descriptor = descriptorOf(object, name)
+      if (descriptor !== undefined && hasOwn(descriptor, "value") && descriptor.value !== swap(descriptor.value))
+        defineProperty(object, name, { __proto__: null, ...descriptor, value: swap(descriptor.value) } as PropertyDescriptor)
     }
-    total += size
-    bindings.push({ name, value: encoded })
   }
-  return { bindings, omitted: left }
+}
+
+/** A stored binding's value, made in this realm; `undefined` for one this codec did not write. */
+export const decodeBinding = (stored: Json): { readonly value: unknown } | undefined => {
+  if (typeof stored !== "object" || stored === null || isArray(stored)) return undefined
+  const { [CLONE_TAG]: tag, data: clone, fixups = [] } = stored as Record<string, Json | undefined>
+  if (tag !== "clone" || typeof clone !== "string" || !isArray(fixups)) return undefined
+  for (let index = 0; index < fixups.length; index++) if (!isFixup(fixups[index])) return undefined
+  try {
+    let value: unknown = deserialize(apply(fromBase64, Bytes, [clone]))
+    if (fixups.length === 0) return { value }
+    const order = walk(value)
+    const revived = new MapConstructor<object, Error>()
+    for (let index = 0; index < fixups.length; index++) {
+      const fixup = fixups[index] as Fixup
+      const object = order[fixup.at]
+      if (object === undefined) return undefined
+      if (fixup.kind === "error") set(revived, object, reviveError(object, fixup.type))
+      else setPrototypeOf(object, fixup.kind === "buffer" ? BufferPrototype : null)
+    }
+    if (sizeOf(revived) > 0) {
+      replaceStandIns(order, revived)
+      if (has(revived, value)) value = get(revived, value)
+    }
+    return { value }
+  } catch {
+    return undefined
+  }
 }
