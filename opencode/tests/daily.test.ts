@@ -1,6 +1,6 @@
 // `bun run daily`'s config merge: ours replaces only what it owns, and the roles cross families.
 import { describe, expect, test } from "bun:test"
-import { mergeCli, mergeServer, roleModels } from "../scripts/daily.ts"
+import { mergeCli, mergeServer, roleModels, serviceEnv } from "../scripts/daily.ts"
 
 const MODS = "/repo/opencode/mods"
 const AUTH = "/home/.local/share/opencode-prime/anthropic-auth"
@@ -46,5 +46,18 @@ describe("the role models", () => {
       implementor: "anthropic/claude-opus-5-5",
       verifier: "openai/gpt-6.1-sol",
     })
+  })
+})
+
+describe("the service's environment", () => {
+  test("drops the caller's Anthropic routing and keeps everything else", () => {
+    const env = serviceEnv({
+      PATH: "/bin",
+      HOME: "/home",
+      ANTHROPIC_BASE_URL: "http://localhost:3456",
+      ANTHROPIC_INSECURE: "1",
+      EMPTY: undefined,
+    })
+    expect(env).toEqual({ PATH: "/bin", HOME: "/home" })
   })
 })

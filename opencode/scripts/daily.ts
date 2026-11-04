@@ -10,7 +10,8 @@
 //    agents' models, no auto-update) and `cli.json` (TUI plugins, the Prime theme), keeping
 //    every other key and plugin. Paths are this checkout's, so nothing machine-specific is
 //    committed.
-// 4. Restarts the background service so it loads the server plugins.
+// 4. Restarts the background service so it loads the server plugins, without the caller's
+//    Anthropic routing (`serviceEnv`).
 import { $ } from "bun"
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
@@ -26,6 +27,20 @@ type Json = Record<string, unknown>
 
 const packageOf = (entry: unknown): string | undefined =>
   typeof entry === "string" ? entry : typeof entry === "object" && entry !== null && "package" in entry ? String(entry.package) : undefined
+
+/**
+ * The environment the background service starts with: the caller's, less Anthropic routing.
+ * The service inherits the env of whoever restarts it, and a Claude Code session on TeamClaude
+ * carries `ANTHROPIC_BASE_URL` to TeamClaude's proxy; the Anthropic auth plugin would then send
+ * OpenCode's Claude requests and usage reads there, past the pool's choice of account.
+ */
+export const serviceEnv = (env: Readonly<Record<string, string | undefined>>): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(env).filter(
+      (entry): entry is [string, string] =>
+        entry[1] !== undefined && entry[0] !== "ANTHROPIC_BASE_URL" && entry[0] !== "ANTHROPIC_INSECURE",
+    ),
+  )
 
 /** Each role's model: Claude plans and implements; the verifier is the other family (the skill's Families rule). */
 export const roleModels = (catalog: Catalog): Record<string, string> => {
@@ -131,7 +146,7 @@ if (import.meta.main) {
   mkdirSync(join(config, "themes"), { recursive: true })
   copyFileSync(THEME, join(config, "themes/prime.json"))
 
-  const restart = await $`${link} service restart`.nothrow().quiet()
+  const restart = await $`${link} service restart`.env(serviceEnv(process.env)).nothrow().quiet()
   console.log(`opencode -> ${binary} (${reported})`)
   console.log(`server plugins: ${server.map(packageOf).join(", ")}`)
   console.log(`roles: ${Object.entries(models).map(([role, model]) => `${role} ${model}`).join(", ")}`)
