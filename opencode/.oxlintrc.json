@@ -49,6 +49,22 @@
           }
         ]
       }
+    },
+    {
+      "files": ["mods/orchestrate/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!./agents.json", "!bun:test"],
+                "message": "The orchestrate domain fence: orchestrate's domain files import effect, @dotfiles/decider/*, orchestrate's own root files (and the generated agents.json) and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of orchestrate's folders."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }

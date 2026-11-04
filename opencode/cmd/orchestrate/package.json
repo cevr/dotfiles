@@ -1,0 +1,14 @@
+{
+  "name": "@dotfiles/opencode-cmd-orchestrate",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The orchestrate rules' OpenCode server plugin: the composition root of @dotfiles/opencode-orchestrate.",
+  "exports": {
+    "./server": "./server.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-orchestrate": "workspace:*",
+    "@dotfiles/opencode-pool": "workspace:*"
+  }
+}

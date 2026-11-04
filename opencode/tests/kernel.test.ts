@@ -109,7 +109,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       const result = await run("subagent", {
         task: SUBAGENT_TASK,
         denyExecute: true,
-        orchestrate: { plugin: join(ROOT, "mods/orchestrate"), now: "2026-10-30T23:00:00Z" },
+        orchestrate: { plugin: join(ROOT, "cmd/orchestrate"), now: "2026-10-30T23:00:00Z" },
       })
       const [cell] = toolParts(result.messages)
       const text = (cell!.state.content ?? []).map((part) => part.text ?? "").join("")
@@ -123,7 +123,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       const weekday = await run("subagent-weekday", {
         task: SUBAGENT_TASK,
         denyExecute: true,
-        orchestrate: { plugin: join(ROOT, "mods/orchestrate"), now: "2026-11-04T15:00:00Z" },
+        orchestrate: { plugin: join(ROOT, "cmd/orchestrate"), now: "2026-11-04T15:00:00Z" },
       })
       const [started] = toolParts(weekday.messages)
       expect((started!.state.content ?? []).map((part) => part.text ?? "").join("")).toBe("started")
