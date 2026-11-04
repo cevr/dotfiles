@@ -64,7 +64,7 @@ function ToolCell(props: {
     const parts = [counts(), duration(props.part)].filter(Boolean)
     return parts.join(" · ")
   })
-  const sep = () => <span style={{ fg: theme().border.base }}> · </span>
+  const sep = () => <span style={{ fg: theme().text.faint }}> · </span>
   return (
     <box flexDirection="column" flexShrink={0}>
       <box flexDirection="row" paddingLeft={GUTTER}>
@@ -95,8 +95,8 @@ function ToolCell(props: {
             <box paddingLeft={GUTTER + 3}>
               <text wrapMode="none" fg={theme().text.faint}>
                 ╰─ <span style={{ fg: theme().text.muted }}>{file.path}</span>{" "}
-                <span style={{ fg: theme().text.feedback.success.base }}>+{file.additions}</span>{" "}
-                <span style={{ fg: theme().text.feedback.error.base }}>-{file.deletions}</span>
+                <span style={{ fg: theme().diff.text.added }}>+{file.additions}</span>{" "}
+                <span style={{ fg: theme().diff.text.removed }}>-{file.deletions}</span>
               </text>
             </box>
             <Show when={props.detail() !== "overview"}>
@@ -124,7 +124,7 @@ function AgentMessage(props: { context: Context; from: string }) {
       <text wrapMode="none" truncate fg={theme().text.muted}>
         <span style={{ fg: theme().text.feedback.success.base }}>✉ </span>
         Agent message
-        <span style={{ fg: theme().border.base }}> · </span>↓ {props.from}
+        <span style={{ fg: theme().text.faint }}> · </span>↓ {props.from}
       </text>
     </box>
   )
@@ -177,7 +177,16 @@ function DiffBands(props: { context: Context; rows: DiffRow[] }) {
                   }
                 >
                   <text wrapMode="none" truncate fg={theme().text.base}>
-                    <span style={{ fg: line().kind === "context" ? theme().text.faint : theme().text.base }}>
+                    <span
+                      style={{
+                        fg:
+                          line().kind === "added"
+                            ? theme().diff.text.added
+                            : line().kind === "removed"
+                              ? theme().diff.text.removed
+                              : theme().text.muted,
+                      }}
+                    >
                       {" "}
                       {String(line().line).padStart(width())}{" "}
                       {line().kind === "added" ? "+" : line().kind === "removed" ? "-" : " "}{" "}

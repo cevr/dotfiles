@@ -47,7 +47,7 @@ export function ReasoningLine(props: PartProps & { detail: Accessor<Detail> }) {
   return (
     <Show when={props.detail() !== "overview" && content()}>
       <box paddingLeft={GUTTER}>
-        <text fg={props.context.theme.text.muted} wrapMode={props.detail() === "all" ? "word" : "none"} truncate>
+        <text fg={props.context.theme.text.faint} wrapMode={props.detail() === "all" ? "word" : "none"} truncate>
           {props.detail() === "all" ? content() : content().split("\n")[0]}
         </text>
       </box>

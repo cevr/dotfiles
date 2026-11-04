@@ -104,15 +104,15 @@ export function Dock(props: { context: Context; sessionID?: string }) {
       </box>
       <box height={1} border={["top"]} borderColor={theme().border.base} />
       <text wrapMode="none" truncate fg={theme().text.faint} paddingLeft={GUTTER}>
-        <span style={{ fg: subagents() ? theme().text.feedback.success.base : theme().text.faint }}>
+        <span style={{ fg: subagents() ? theme().text.feedback.success.base : theme().text.muted }}>
           ◆ {plural(subagents(), "subagent")}
         </span>
         {sep()}
-        <span style={{ fg: shells() ? theme().text.feedback.success.base : theme().text.faint }}>
+        <span style={{ fg: shells() ? theme().text.feedback.success.base : theme().text.muted }}>
           ▸ {plural(shells(), "shell")}
         </span>
         {sep()}
-        <Show when={goal()} fallback={<span style={{ fg: theme().text.faint }}>goal</span>}>
+        <Show when={goal()} fallback={<span style={{ fg: theme().text.muted }}>goal</span>}>
           <span style={{ fg: theme().text.feedback.warning.base }}>goal</span>
         </Show>
       </text>
@@ -122,7 +122,7 @@ export function Dock(props: { context: Context; sessionID?: string }) {
 
 const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-/** While a turn runs: a braille spinner in the accent, then `Executing · 13s`. */
+/** While a turn runs: a braille spinner in the primary accent (Prime #7c6faf), then `Executing · 13s`. */
 export function Working(props: { context: Context; sessionID: string }) {
   const data = props.context.data
   const running = createMemo(() => data.session.status(props.sessionID) === "running")
@@ -146,7 +146,7 @@ export function Working(props: { context: Context; sessionID: string }) {
     <Show when={running()}>
       <box paddingLeft={GUTTER} flexShrink={0}>
         <text wrapMode="none" fg={props.context.theme.text.muted}>
-          <span style={{ fg: props.context.theme.hue.accent[200] }}>{SPINNER[frame()]} </span>
+          <span style={{ fg: props.context.theme.hue.accent[300] }}>{SPINNER[frame()]} </span>
           Executing · {elapsed(now() - started())}
         </text>
       </box>
