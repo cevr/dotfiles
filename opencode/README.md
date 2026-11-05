@@ -1248,11 +1248,28 @@ effort on whichever model it gets. No generated prompt is edited by hand.
 
 ```sh
 export OPENCODE_DEV=~/Developer/personal/.rifts/opencode/prime-look
-bun run lint
-bun run typecheck
-bun run agents -- --check
-bun run test
+bun run gate              # lint, agents --check, typecheck and unit tests at once
+bun run accept:affected   # the real-OpenCode tests that reach what changed
+bun run accept            # all of them, in parallel
 ```
+
+`bun run gate` (`scripts/gate.ts`) links the fork, then runs four legs at
+once: oxlint, `bun run agents -- --check`, `bun check` over the root and
+every `mods/*` and `cmd/*` project, and the unit tests (every `*.test.ts`
+outside `tests/`) with `bun test --parallel`. A unit test file that passed is
+skipped while the key over what it reaches is unchanged: its package, the
+packages its `package.json` depends on, and the shared inputs (the root
+manifest, lock file, bunfig, tsconfig, the gate's scripts, Bun's version and
+the fork's commit, diff and lock file). `scripts/reach.ts` derives that
+reach; `bun scripts/gate.ts --all` ignores the cache.
+
+The acceptance tests in `tests/` run real OpenCode, so they are not in the
+gate. `bun run accept` runs them all in parallel; `bun run accept:affected
+[base]` runs those that reach a file changed since `base` (default: the merge
+base with origin/main), following the scenarios, run scripts and plugin
+paths they name, and all of them when a shared input changed. A fork change
+is outside this repository: run `bun run accept` after one. `bun run test`
+still runs every file one after another.
 
 `bun run lint` is oxlint: its errors are the layout fence (`.oxlintrc.json`,
 one import override per context; see `ARCHITECTURE.md`), and its warnings are

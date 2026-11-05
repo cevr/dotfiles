@@ -4,7 +4,7 @@ Our harness work, ported onto OpenCode 2.x: the Prime Agent look, orchestration,
 
 This folder lives in the PUBLIC dotfiles repo: stage by exact path, keep tokens, account labels and run evidence out of it (`out/` and `media/` are ignored). Run every command from `opencode/`.
 
-Before changing a mod, read `ARCHITECTURE.md`: every mod is an Effect program modeled like an alchemy-domain model and laid out like a Go service. A mod is one context and one workspace package (`mods/<mod>`): domain files at its root that own their contracts, implementation folders inside it named after their dependency, and a `cmd/<mod>` package per plugin as the only composition root. oxlint fences the imports (`bun run lint`); `tests/layout.test.ts` checks the names and lists the mods not yet moved as pending.
+Before changing a mod, read `ARCHITECTURE.md`: every mod is an Effect program modeled like an alchemy-domain model and laid out like a Go service. A mod is one context and one workspace package (`mods/<mod>`): domain files at its root that own their contracts, implementation folders inside it named after their dependency, and a `cmd/<mod>` package per plugin as the only composition root. oxlint fences the imports (`bun run lint`); `scripts/layout.test.ts` checks the names and lists the mods not yet moved as pending.
 
 ## Layout
 - `scenarios/`: opencode-drive scenarios. Each runs OpenCode headless with a scripted model and writes frames (text) and screenshots. They are the deterministic check for every UI or plugin change.
@@ -36,9 +36,11 @@ Before changing a mod, read `ARCHITECTURE.md`: every mod is an Effect program mo
 
 ## Checks
 All of them need `OPENCODE_DEV` pointing at the fork checkout.
+- `bun run gate`: the gate every change passes before push, a few seconds (`scripts/gate.ts`). It links the fork, then runs lint, `agents --check`, the typecheck of every project and the unit tests (every `*.test.ts` outside `tests/`: `mods/**`, `cmd/**`, `decider/**` and `scripts/`, which holds the layout check and `bun run daily`'s tests) at once. A unit test file that passed is skipped while nothing it reaches changed (`scripts/reach.ts`: its package, the packages that package depends on, and the shared inputs: root manifest, lock file, configs, Bun, the fork), so a change to a shared package re-runs its dependents' tests. `bun scripts/gate.ts --all` ignores that cache (`node_modules/.cache/gate/`).
+- `bun run accept`: the acceptance tests (`tests/*.test.ts`), real OpenCode on a scripted model, every file in parallel (about two minutes). `bun run accept:affected [base]` runs only the files that reach a file changed since `base` (default: the merge base with origin/main); a change to a shared input runs them all. `--list` prints the files without running them. Run `accept:affected` before pushing a change a scenario covers, and `accept` after a fork change. Without `OPENCODE_DEV` the real-OpenCode tests skip and say so.
 - `bun run lint`: oxlint; errors are the layout fence.
-- `bun run typecheck`: links the fork's `packages/tui/node_modules` entries into every workspace package's `node_modules` (`bun run link-fork`), then checks the root and each `mods/*` and `cmd/*` project. Link before and after `bun install`, which drops the links.
-- `bun run test`: the scenario tests. Without `OPENCODE_DEV` they skip and say so.
+- `bun run typecheck`: links the fork's `packages/tui/node_modules` entries into every workspace package's `node_modules` (`bun run link-fork`), then checks the root and each `mods/*` and `cmd/*` project, all at once. Link before and after `bun install`, which drops the links.
+- `bun run test`: every test file, unit and acceptance, one after another (the old full run, about nine minutes).
 
 ## Running a scenario
 `OPENCODE_DEV=<opencode checkout or rift> SCENARIO_OUT=out OPENCODE_DRIVE_MEDIA_DIR=$PWD/media bunx opencode-drive run scenarios/<name>.ts`

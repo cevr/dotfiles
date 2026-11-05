@@ -13,6 +13,9 @@
     "agents": "bun scripts/agents.ts",
     "typecheck": "bun scripts/typecheck.ts",
     "test": "bun test --timeout 300000",
+    "gate": "bun scripts/gate.ts",
+    "accept": "bun scripts/accept.ts",
+    "accept:affected": "bun scripts/accept.ts --affected",
     "gamut": "bun testbeds/gamut/gamut.ts",
     "daily": "bun scripts/daily.ts",
     "lint": "oxlint"
