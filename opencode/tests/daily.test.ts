@@ -4,7 +4,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
-import { BUILTIN_BTW_OFF, CLAUDE_CACHE_TTL, launcher, mergeCli, mergeServer, poolEntry, roleModels } from "../scripts/daily.ts"
+import { BUILTIN_BTW_OFF, CLAUDE_CACHE_TTL, launcher, mergeCli, mergeServer, orchestrateEntry, peersOf, poolEntry, roleModels } from "../scripts/daily.ts"
 
 const MODS = "/repo/opencode/mods"
 const AUTH = "/home/.local/share/opencode-prime/anthropic-auth"
@@ -54,6 +54,38 @@ describe("the pool's entry", () => {
       package: `${MODS}/pool`,
       options: { cacheLifeMs: 3_600_000, sources: [{ kind: "gent", dir: "/home/.local/share/gent/auth" }] },
     })
+  })
+})
+
+describe("the pool's fleet", () => {
+  test("on the MacBook and the workbox, paces OpenAI on the ChatGPT account and reads the other host over SSH", () => {
+    expect(poolEntry(`${MODS}/pool`, undefined, { host: "Cristians-MacBook-Pro.local" })).toEqual({
+      package: `${MODS}/pool`,
+      options: {
+        cacheLifeMs: 3_600_000,
+        paced: { openai: "openai" },
+        fleet: { host: "Cristians-MacBook-Pro.local", peers: [{ name: "workbox", ssh: "bite-workbox" }] },
+      },
+    })
+    expect(peersOf("bite-cristian")).toEqual([{ name: "macbook", ssh: "cvr@cristians-macbook-pro" }])
+    expect(peersOf("cristians-macbook-pro")).toEqual([{ name: "workbox", ssh: "bite-workbox" }])
+  })
+
+  test("another host has no peers, and still paces OpenAI", () => {
+    expect(poolEntry(`${MODS}/pool`, "/g", { host: "ci-runner" })).toMatchObject({
+      options: {
+        sources: [{ kind: "gent", dir: "/g" }],
+        paced: { openai: "openai" },
+        fleet: { host: "ci-runner", peers: [] },
+      },
+    })
+  })
+
+  test("orchestrate asks the pool first for a Codex provider's agents, so they pace on every host's spend", () => {
+    const entry = orchestrateEntry(`${MODS}/orchestrate`)
+    expect(entry).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true } } })
+    // It replaces the bare entry an older run wrote, as every entry from our dirs is.
+    expect(mergeServer({ plugins: [`${MODS}/orchestrate`] }, [entry], {}, [MODS]).plugins).toEqual([entry])
   })
 })
 

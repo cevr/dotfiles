@@ -830,17 +830,56 @@ retry the same agent and description; admission is checked again. A waiter
 never reserves a stale slot.
 
 Cost of this choice: this is quota pacing, without Claude Code's calibrated
-per-role cost prediction, fair ticket queue, cross-host reservations or
-Sabbath-adjusted working-hour budget. Quota updates can lag a wave of starts.
-The OpenAI provider is not pooled. A new subagent on it asks the Codex
-account's pace instead: the orchestrate skill's `budget.ts --codex --admit
---model <id> --role <role>`, the admission the Claude-side Codex bridge asks
-before each turn. A hold denies the call with the same background waiter,
-timed to the hold's `opens about` time. Only the script's own `admit`/`hold`
-answer counts; anything else fails open. That budget measures Codex's own
-transcripts, so OpenCode's GPT tokens reach it only through the account's
-weekly use. The orchestrate mod's `codex` option names the providers and
-the script; `false` turns it off.
+per-role cost prediction, fair ticket queue or Sabbath-adjusted working-hour
+budget.
+
+A provider the pool measures but does not place goes in the pool's `paced`
+option (daily sets `paced: { openai: "openai" }`). OpenAI's pace is then the
+ChatGPT account's own usage, the same numbers Codex CLI's `/status` shows:
+the `wham/usage` endpoint, then the `x-codex-primary/secondary-*` headers and
+`codex.rate_limits` frames on each response
+(`mods/pool/chatgpt/usage.ts`). The account counts every place it is spent,
+this host or another, OpenCode or Codex CLI. Its requests are never placed,
+and its token is never stored or shown. A new subagent on a Codex provider
+takes that pace when the orchestrate mod's `codex.pool` is set (daily sets
+`codex: { pool: true }`). When the pool has no reading (`measured: false`),
+or without `codex.pool`, it asks the orchestrate skill's
+`budget.ts --codex --admit --model <id> --role <role>` as before.
+That script reads only this host's `~/.codex` transcripts. A hold denies the
+call with the same background waiter. The orchestrate mod's `codex` option
+names the providers, the script and `pool`; `false` turns it off.
+
+### The fleet
+
+A reading lags the agents just admitted, on every host spending the same
+accounts. The pool's `fleet` option closes that gap. Each host records the
+subagents orchestrate admits (`started`). It reads its peers' reports every
+`pollSeconds` (30), and its pace charges each start in the fleet
+`startCost` (0.005 of one account's week) for `settleMinutes` (10). The
+hold names the extra: `the pool's weekly pace is over (90.0% spent across 2
+accounts, +30.0% for 3 agents started in the last 10 min)`. It opens when the
+oldest start settles. A report also carries the host's readings. A peer's
+newer reading of a login this pool lists (the same credential id, such as
+`gent:<label>`) replaces the older one.
+
+The transport is SSH over the tailnet. No port opens, and no token or
+password crosses. A host reads a peer by running
+`ssh -o BatchMode=yes <dest> 'bun run -'` with
+`mods/pool/ssh/report.ts` on stdin. On the peer, report.ts asks its own
+server on loopback (`~/.local/state/opencode/service.json`) for the pool's
+`report` and prints it. daily configures the peers: the Mac reads
+`bite-workbox`, and the workbox reads `cvr@cristians-macbook-pro`.
+
+OpenCode runs the plugin once per directory it serves. The fleet is kept in
+the plugin's storage, which belongs to the host, so every instance counts
+the same starts, and a peer is read by one instance per half `pollSeconds`.
+A peer that cannot be read is logged once, and the pace goes on without its
+new starts. The /pool pane's Fleet section names it: `workbox ·
+unreachable since <time>: <message>; the pace goes on without it`.
+
+Gaps: a reading merges only for credential ids both hosts list. An
+OpenCode-signed login has a different connection id on each host. A ChatGPT
+header reading is credited to the provider's active connection.
 
 `bun run agents` copies role prompts from the orchestrate skill and reads
 the Claude-family effort from its role table: planner `high`, implementor

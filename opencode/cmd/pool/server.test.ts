@@ -12,14 +12,16 @@ import { Effect, Layer, Queue, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
+import * as FleetTest from "@dotfiles/opencode-pool/memory/fleet"
 import * as LedgerTest from "@dotfiles/opencode-pool/memory/ledger"
 import * as LoginsTest from "@dotfiles/opencode-pool/memory/logins"
+import * as PeersTest from "@dotfiles/opencode-pool/memory/peers"
 import * as QuotaTest from "@dotfiles/opencode-pool/memory/quota"
 import type { Pace } from "@dotfiles/opencode-pool/pace"
 import type { QuotaReading } from "@dotfiles/opencode-pool/quota"
 import type { PublishedReading } from "@dotfiles/opencode-pool/service"
 import { GentSource } from "@dotfiles/opencode-pool/gent/store"
-import type { Alerts, PoolsStatus, SessionAnswer, SessionLogins } from "@dotfiles/opencode-pool/status"
+import type { Alerts, FleetStatus, PoolsStatus, Report, SessionAnswer, SessionLogins } from "@dotfiles/opencode-pool/status"
 import Pool, { CREDENTIAL_HEADER, live, make } from "./server.ts"
 
 const HOUR = 3_600_000
@@ -58,6 +60,12 @@ interface World {
   readonly agents: Map<string, string | undefined>
   /** Each fork's source, by fork id; a session absent here is no fork. */
   readonly forks: Map<string, string>
+  /** The fleet's peers and what each answers, by name, in the config's order. */
+  readonly peers: Map<string, PeersTest.Answer>
+  /** Each login's credential as the host resolves it, by id. */
+  readonly credentials: Map<string, unknown>
+  /** The integration's active login, by integration. */
+  readonly active: Map<string, string>
 }
 
 const world = (): World => ({
@@ -66,6 +74,9 @@ const world = (): World => ({
   storage: new Map(),
   agents: new Map([["build", undefined]]),
   forks: new Map(),
+  peers: new Map(),
+  credentials: new Map(),
+  active: new Map(),
 })
 
 /** The outside systems as test layers over `state`. */
@@ -74,6 +85,8 @@ const testLayers = (state: World, published: Queue.Dequeue<PublishedReading>) =>
     LoginsTest.layer(state.integration),
     QuotaTest.layer(new Map([[ANTHROPIC, state.readings]]), new Map([[ANTHROPIC, published]])),
     LedgerTest.layer(state.storage),
+    PeersTest.layer(state.peers),
+    FleetTest.layer(state.storage),
   )
 
 /** A hook or RPC handler the plugin registered; a missing one fails the test. */
@@ -141,6 +154,12 @@ const start = (
         connection: {
           status: ({ connection, status }: { readonly connection: { readonly id?: string }; readonly status: unknown }) =>
             Effect.sync(() => void statuses.push({ credentialID: connection.id, status })),
+          resolve: (connection: { readonly id?: string }) => Effect.sync(() => state.credentials.get(connection.id ?? "")),
+          active: (integrationID: string) =>
+            Effect.sync(() => {
+              const id = state.active.get(integrationID)
+              return id === undefined ? undefined : { type: "credential", id, label: id, method: "oauth" }
+            }),
         },
       },
       rpc: Object.assign(
@@ -204,7 +223,53 @@ const start = (
     const logins = Effect.fn(function* (query: unknown) {
       return (yield* (yield* method("logins"))(query)) as SessionLogins
     })
-    return { request, respond, retry, idle, pace, status, session, alerts, logins, emit, publish, transforms, quotaIDs, statuses, rpc }
+    const started = Effect.fn(function* (input: unknown) {
+      return yield* (yield* method("started"))(input)
+    })
+    const report = Effect.gen(function* () {
+      return (yield* (yield* method("report"))({})) as Report
+    })
+    const fleet = Effect.gen(function* () {
+      return (yield* (yield* method("fleet"))({})) as FleetStatus
+    })
+    /** A response of `providerID`'s model came back carrying `headers`. */
+    const responded = Effect.fn(function* (providerID: string, headers: Record<string, string>, sessionID = "ses_1") {
+      yield* (yield* registered(hooks, "http.response"))({
+        sessionID,
+        agent: "build",
+        model: { ...model, providerID },
+        kind: "primary",
+        request: new Request("https://chatgpt.com/backend-api/codex/responses"),
+        response: new Response(null, { status: 200, headers }),
+      })
+    })
+    /** A frame of `providerID`'s websocket came in. */
+    const received = Effect.fn(function* (providerID: string, frame: string, sessionID = "ses_1") {
+      yield* (yield* registered(hooks, "experimental.ws.receive"))({ sessionID, agent: "build", model: { ...model, providerID }, kind: "primary", frame })
+    })
+    return {
+      request,
+      respond,
+      retry,
+      idle,
+      pace,
+      status,
+      session,
+      alerts,
+      logins,
+      started,
+      report,
+      fleet,
+      responded,
+      received,
+      emit,
+      publish,
+      transforms,
+      quotaIDs,
+      statuses,
+      rpc,
+      hooks,
+    }
   })
 
 /** Let the plugin's background fibers take in what was just offered: a real moment, on the test clock too. */
@@ -823,6 +888,202 @@ describe("the alerts RPC", () => {
     scenario(
       Effect.gen(function* () {
         expect(yield* (yield* start()).alerts).toEqual({ lost: [], outages: [] })
+      }),
+    ))
+})
+
+describe("the fleet", () => {
+  const DAY = 86_400_000
+  /** A weekly reading `utilization` spent, halfway through the week, at `at`. */
+  const week = (utilization: number, at: number): QuotaReading => ({ at, windows: [{ name: "7d", utilization, resetAt: at + 3.5 * DAY }] })
+  const FLEET = { host: "mac", peers: [{ name: "workbox", ssh: "bite-workbox" }, { name: "laptop", ssh: "laptop" }], startCost: 0.1 }
+
+  test("a peer's recent starts count on the pace here, its newer readings join, and a peer that cannot be read is named and skipped", () =>
+    scenario(
+      Effect.gen(function* () {
+        const state = world()
+        const now = Date.now()
+        state.readings.set("cred-b", week(0.45, now - 1_000))
+        state.peers.set("workbox", {
+          host: "bite-cristian",
+          at: now,
+          starts: [1, 2, 3].map((n) => ({ providerID: "anthropic", at: now - n * 60_000 })),
+          // cred-a is read only there; a login this pool does not list is left out.
+          readings: [
+            { pool: "anthropic", credentialID: "cred-a", reading: week(0.45, now - 500) },
+            { pool: "anthropic", credentialID: "gent:elsewhere", reading: week(1, now - 500) },
+          ],
+        })
+        state.peers.set("laptop", { down: "ssh: connect to host laptop port 22: Connection refused" })
+        const plugin = yield* start({ sweepMinutes: 0, fleet: FLEET }, state)
+        yield* settle
+        expect(yield* plugin.fleet).toEqual({
+          host: "mac",
+          starts: 0,
+          settleMinutes: 10,
+          peers: [
+            { name: "workbox", host: "bite-cristian", seenAt: expect.any(Number), starts: 3 },
+            { name: "laptop", starts: 0, missed: { since: expect.any(Number), message: "ssh: connect to host laptop port 22: Connection refused" } },
+          ],
+        })
+        // 90% read across two accounts halfway through their week is on pace; the three starts are 30% more.
+        const pace = yield* plugin.pace("anthropic")
+        expect(pace).toMatchObject({ ok: false, measured: true })
+        expect(pace.reason).toBe(
+          "the pool's weekly pace is over (90.0% spent across 2 accounts, +30.0% for 3 agents started in the last 10 min)",
+        )
+        // It holds until the oldest start settles, sooner than the week catches up.
+        expect(pace.ok ? 0 : pace.retryAt).toBe(now - 3 * 60_000 + 10 * 60_000 + 1)
+        // The pace read cred-b here; cred-a's reading came from the workbox.
+        expect((yield* plugin.status).anthropic?.accounts.map((account) => [account.credentialID, account.reading?.at])).toEqual([
+          ["cred-a", now - 500],
+          ["cred-b", now - 1_000],
+        ])
+      }),
+    ))
+
+  test("started records a new agent on this host, the report tells a peer of it with the readings and no token, and the pace counts it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const state = world()
+        const now = Date.now()
+        state.readings.set("cred-a", week(0.5, now))
+        state.readings.set("cred-b", week(0.5, now))
+        const plugin = yield* start({ sweepMinutes: 0, fleet: { host: "mac", startCost: 0.1 } }, state)
+        expect(yield* plugin.pace("anthropic")).toMatchObject({ ok: true })
+        expect(yield* plugin.started({ providerID: "anthropic" })).toEqual({})
+        // A malformed question records nothing; a provider this pool does not pace is reported but not counted here.
+        expect(yield* plugin.started({ provider: "anthropic" })).toEqual({})
+        yield* plugin.started({ providerID: "openai" })
+        const report = yield* plugin.report
+        // The starts are a set: two in the same millisecond come back in either order.
+        expect(report.starts.map((start) => start.providerID).sort()).toEqual(["anthropic", "openai"])
+        expect(report).toEqual({
+          host: "mac",
+          at: expect.any(Number),
+          starts: expect.arrayContaining([
+            { providerID: "anthropic", at: expect.any(Number) },
+            { providerID: "openai", at: expect.any(Number) },
+          ]),
+          readings: [
+            { pool: "anthropic", credentialID: "cred-a", reading: week(0.5, now) },
+            { pool: "anthropic", credentialID: "cred-b", reading: week(0.5, now) },
+          ],
+        })
+        expect(JSON.stringify(report)).not.toContain("token")
+        expect((yield* plugin.fleet).starts).toBe(2)
+        expect((yield* plugin.pace("anthropic")).reason).toContain("+10.0% for 1 agent started in the last 10 min")
+      }),
+    ))
+
+  test("the plugin's instances on one host (one per directory) share the fleet: a start in one counts in the other, and they share the peer reads", () =>
+    scenario(
+      Effect.gen(function* () {
+        const state = world()
+        const now = Date.now()
+        state.readings.set("cred-a", week(0.5, now))
+        state.readings.set("cred-b", week(0.5, now))
+        // Each read of a peer looks its answer up once.
+        let reads = 0
+        const peers = new (class extends Map<string, PeersTest.Answer> {
+          override get(name: string) {
+            reads += 1
+            return super.get(name)
+          }
+        })([["workbox", { host: "bite-cristian", at: now, starts: [], readings: [] }]])
+        const shared: World = { ...state, peers }
+        const fleet = { host: "mac", startCost: 0.1, pollSeconds: 30, peers: [{ name: "workbox", ssh: "bite-workbox" }] }
+        // Both instances run over the same storage, as OpenCode's are over the host's.
+        const project = yield* start({ sweepMinutes: 0, fleet }, shared)
+        const home = yield* start({ sweepMinutes: 0, fleet }, shared)
+        yield* settle
+        // Both instances' polls ran; only the first read the peer.
+        expect(reads).toBe(1)
+        expect((yield* home.fleet).peers).toEqual([{ name: "workbox", host: "bite-cristian", seenAt: expect.any(Number), starts: 0 }])
+        yield* project.started({ providerID: "anthropic" })
+        expect((yield* home.fleet).starts).toBe(1)
+        expect((yield* home.report).starts).toEqual([{ providerID: "anthropic", at: expect.any(Number) }])
+        expect((yield* home.pace("anthropic")).reason).toContain("+10.0% for 1 agent started in the last 10 min")
+      }),
+    ))
+
+  test("malformed fleet options stop the plugin", async () => {
+    for (const fleet of [{ peers: [{ name: "workbox" }] }, { pollSeconds: 0 }, { startCost: 2 }, { host: "" }]) {
+      const exit = await Effect.runPromise(Effect.exit(Effect.scoped(start({ sweepMinutes: 0, fleet }))))
+      expect(exit._tag).toBe("Failure")
+    }
+  })
+})
+
+describe("a paced provider on the live adapters", () => {
+  const OPENAI = PoolId.make("openai")
+  const DAY = 86_400_000
+
+  test("OpenAI's pace reads the ChatGPT account's usage, then what its responses and frames show, and its requests are never placed", () => {
+    const resetAt = Math.round((Date.now() + 3.5 * DAY) / 1000)
+    const seen: Array<string | null> = []
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: (request) => {
+        seen.push(request.headers.get("chatgpt-account-id"))
+        return request.headers.get("authorization") === "Bearer chatgpt-access"
+          ? Response.json({
+              plan_type: "pro",
+              rate_limit: { allowed: true, limit_reached: false, primary_window: { used_percent: 80, limit_window_seconds: 604_800, reset_at: resetAt } },
+            })
+          : new Response("unauthorized", { status: 401 })
+      },
+    })
+    return scenario(
+      Effect.gen(function* () {
+        const state = world()
+        state.integration.connections.set(OPENAI, [{ type: "credential", id: "chatgpt-1", label: "ChatGPT", method: "oauth" }])
+        state.credentials.set("chatgpt-1", {
+          type: "oauth",
+          methodID: "browser",
+          access: "chatgpt-access",
+          refresh: "chatgpt-refresh",
+          expires: Date.now() + DAY,
+          metadata: { accountID: "acct-1" },
+        })
+        state.active.set("openai", "chatgpt-1")
+        const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: `${server.url.origin}/backend-api/wham/usage` }, state, live)
+        // 80% of the week spent halfway through it: over the pace.
+        expect(yield* plugin.pace("openai")).toMatchObject({ ok: false, measured: true })
+        expect(seen).toEqual(["acct-1"])
+        expect(yield* plugin.request("ses_1", "openai")).toBeUndefined()
+        // A response's headers say 20%: the pace opens, without asking the endpoint again.
+        yield* plugin.responded("openai", {
+          "x-codex-primary-used-percent": "20",
+          "x-codex-primary-window-minutes": "10080",
+          "x-codex-primary-reset-at": String(resetAt),
+        })
+        expect(yield* plugin.pace("openai")).toMatchObject({ ok: true, measured: true })
+        // A websocket frame says 95%: held again.
+        yield* plugin.received(
+          "openai",
+          JSON.stringify({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 95, window_minutes: 10_080, reset_at: resetAt } } }),
+        )
+        expect(yield* plugin.pace("openai")).toMatchObject({ ok: false, measured: true })
+        expect(seen).toEqual(["acct-1"])
+        // The anthropic pool still reads its auth plugin; OpenAI's is not asked.
+        expect(plugin.quotaIDs).not.toContain("credential-quota.openai")
+        const status = JSON.stringify(yield* plugin.status)
+        expect(status).toContain("chatgpt-1")
+        expect(status).not.toContain("chatgpt-access")
+        expect(status).not.toContain("chatgpt-refresh")
+      }),
+    ).finally(() => server.stop(true))
+  })
+
+  test("a ChatGPT login that cannot be read leaves the pace open", () =>
+    scenario(
+      Effect.gen(function* () {
+        const state = world()
+        state.integration.connections.set(OPENAI, [{ type: "credential", id: "chatgpt-1", label: "ChatGPT", method: "oauth" }])
+        const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: "http://127.0.0.1:9/none" }, state, live)
+        expect(yield* plugin.pace("openai")).toMatchObject({ ok: true, measured: false })
       }),
     ))
 })

@@ -1,11 +1,13 @@
 // What the pool needs from outside, with its failures: the provider's logins,
-// its quota, and the ledger the next process reads. laws.ts states what every
-// implementation owes.
+// its quota, the ledger the next process reads, the other hosts of the fleet,
+// and where this host keeps what it knows of the fleet. laws.ts states what
+// every implementation owes.
 import { Context, type Effect, Schema, type Stream } from "effect"
 import type { Event, LedgerState, PoolId } from "./account-pool.ts"
 import type { StoreRefreshes } from "./alerts.ts"
+import type { Event as FleetEvent, FleetState } from "./fleet.ts"
 import type { QuotaReading } from "./quota.ts"
-import type { SourceStatus } from "./status.ts"
+import type { Report, SourceStatus } from "./status.ts"
 
 /**
  * Where a pool keeps what the next process needs: its holds, readings,
@@ -80,3 +82,38 @@ export class Quota extends Context.Service<
     readonly readings: (pool: PoolId) => Stream.Stream<PublishedReading>
   }
 >()("dotfiles-opencode/pool/Quota") {}
+
+/** A peer host could not be read: no answer in time, a refusal, or an answer that is not a report. */
+export class PeerUnreachable extends Schema.TaggedError<PeerUnreachable>()("PeerUnreachable", {
+  peer: Schema.String,
+  message: Schema.String,
+}) {}
+
+/**
+ * The other hosts of the fleet, each by the name the config gives it, and
+ * what each reports of itself now: the agents it admitted lately and its
+ * readings. A report never carries a token.
+ */
+export class Peers extends Context.Service<
+  Peers,
+  {
+    /** The peers, in the config's order. */
+    readonly names: ReadonlyArray<string>
+    readonly report: (peer: string) => Effect.Effect<Report, PeerUnreachable>
+  }
+>()("dotfiles-opencode/pool/Peers") {}
+
+/**
+ * Where this host keeps the Fleet aggregate's state: its own starts and what
+ * it knows of each peer. Every plugin instance on the host (one per directory
+ * OpenCode serves) reads and records the same state. A failed read is an
+ * empty fleet; a failed write is lost.
+ */
+export class FleetStore extends Context.Service<
+  FleetStore,
+  {
+    readonly read: Effect.Effect<FleetState>
+    /** Write what `events` change; `state` is the fleet with them folded in. */
+    readonly record: (events: ReadonlyArray<FleetEvent>, state: FleetState) => Effect.Effect<void>
+  }
+>()("dotfiles-opencode/pool/FleetStore") {}

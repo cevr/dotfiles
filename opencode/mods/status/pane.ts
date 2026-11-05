@@ -1,6 +1,8 @@
 // What the /pool pane draws, as text: each pool account with its hold and its
 // 5-hour and 7-day windows, each running agent with its role and what it was
-// asked, and each run's units. The pane reads the pool's RPC
+// asked, each run's units, and the fleet: the agents this host and each of the
+// owner's other hosts admitted that still count on the pace, and a host that
+// cannot be read. The pane reads the pool's RPC
 // (dotfiles-opencode.pool) and this mod's (status.ts) and draws these rows.
 import { Schema } from "effect"
 import type { AgentCall, Unit } from "./status.ts"
@@ -54,6 +56,49 @@ export const accountRows = (pools: PanePools): ReadonlyArray<AccountRow> =>
       }),
     })),
   )
+
+/**
+ * The pool's fleet answer as the pane reads it: the same fields as the pool's
+ * `FleetStatus` (`@dotfiles/opencode-pool/status`), so it needs no import of
+ * the pool's model.
+ */
+export const PaneFleet = Schema.Struct({
+  host: Schema.String,
+  starts: Schema.Number,
+  settleMinutes: Schema.Number,
+  peers: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      host: Schema.optionalKey(Schema.String),
+      seenAt: Schema.optionalKey(Schema.Number),
+      starts: Schema.Number,
+      missed: Schema.optionalKey(Schema.Struct({ since: Schema.Number, message: Schema.String })),
+    }),
+  ),
+})
+export type PaneFleet = typeof PaneFleet.Type
+
+export interface FleetRow {
+  /** A host that cannot be read: the pace goes on without its new agents. */
+  readonly down: boolean
+  readonly text: string
+}
+
+const agentsCounting = (starts: number) => `${starts} new agent${starts === 1 ? "" : "s"} counting`
+
+/** This host, then each peer: what it admitted that still counts on the pace, or since when it cannot be read and why. */
+export const fleetRows = (fleet: PaneFleet): ReadonlyArray<FleetRow> => [
+  { down: false, text: `${fleet.host} (this host) · ${agentsCounting(fleet.starts)} for ${fleet.settleMinutes} min` },
+  ...fleet.peers.map((peer) =>
+    peer.missed === undefined
+      ? {
+          down: false,
+          text: `${peer.name}${peer.host === undefined || peer.host === peer.name ? "" : ` (${peer.host})`} · ${agentsCounting(peer.starts)} · read ${stamp(peer.seenAt)}`,
+        }
+      : { down: true, text: `${peer.name} · unreachable since ${stamp(peer.missed.since)}: ${peer.missed.message}; the pace goes on without it` },
+  ),
+  ...(fleet.peers.length === 0 ? [{ down: false, text: "No other hosts: the pace counts this one's new agents only." }] : []),
+]
 
 /** A running child session of the pane's session, as OpenCode knows it. */
 export interface RunningSession {

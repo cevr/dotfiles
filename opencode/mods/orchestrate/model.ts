@@ -30,8 +30,14 @@ export interface Config {
   readonly fullAgent: boolean
   /** A fixed time (epoch ms) for the Sabbath clock; the system clock when absent. */
   readonly now?: number
-  /** The providers whose new subagents the Codex account's pace admits; absent leaves every provider to the pool. */
-  readonly codex?: { readonly providers: ReadonlyArray<string> }
+  /**
+   * The providers whose new subagents the Codex account's pace admits; absent
+   * leaves every provider to the pool. With `pool`, the pool answers first: it
+   * measures the account as the provider does when it paces the provider
+   * (`paced` in the pool's options), and only when it cannot does the
+   * admission script. Without it the script alone answers.
+   */
+  readonly codex?: { readonly providers: ReadonlyArray<string>; readonly pool?: boolean }
 }
 
 export class Orchestrate extends Context.Service<
@@ -86,16 +92,23 @@ export const layer = (config: Config) =>
           Effect.tapError((rejection) => Effect.flatMap(at, (time) => log.append(CallLine.denied(command.call, tool, whyOf(rejection), time)))),
         )
 
-      /** The pace's hold on a new agent running on `model` (else the agent's model), or none. */
-      const holdOf = Effect.fnUntraced(function* (sessionID: string, agent: string, model: string | undefined) {
+      /**
+       * The model a new agent runs on (`model`, else the agent's), and the
+       * pace's hold on it, if any. A Codex provider's pace is the admission
+       * script's, or with `codex.pool` the pool's when the pool measures it.
+       */
+      const paceOf = Effect.fnUntraced(function* (sessionID: string, agent: string, model: string | undefined) {
         const ref = parseModel(model) ?? (yield* models.base(sessionID, agent))
-        if (ref === undefined) return undefined
+        if (ref === undefined) return { ref, hold: undefined }
         const whose = config.codex?.providers.includes(ref.providerID) ? "codex" : "pool"
+        const pooled = whose === "pool" || config.codex?.pool === true ? yield* pool.pace(ref.providerID) : undefined
         const pace =
-          whose === "codex" ? yield* codex.admit(ref.id, isRole(agent) ? agent : "none") : yield* pool.pace(ref.providerID)
-        if (pace === undefined || pace.ok) return undefined
+          whose === "codex" && (pooled === undefined || !pooled.measured)
+            ? yield* codex.admit(ref.id, isRole(agent) ? agent : "none")
+            : pooled
+        if (pace === undefined || pace.ok) return { ref, hold: undefined }
         const hold: PaceHold = { whose, reason: pace.reason, ...(pace.retryAt === undefined ? {} : { retryAt: pace.retryAt }) }
-        return hold
+        return { ref, hold }
       })
 
       const startSubagent = Effect.fn("Orchestrate.startSubagent")(function* ({
@@ -135,7 +148,8 @@ export const layer = (config: Config) =>
           const variant = yield* models.variant(call.sessionID, routed.agent, level)
           if (variant) model = variant
         }
-        const hold = child === undefined ? yield* holdOf(call.sessionID, routed.agent, model) : undefined
+        const paced = child === undefined ? yield* paceOf(call.sessionID, routed.agent, model) : undefined
+        const hold = paced?.hold
         const command = StartSubagent.make({
           ...base,
           ...(childAgent ? { childAgent } : {}),
@@ -143,7 +157,10 @@ export const layer = (config: Config) =>
           ...(hold === undefined ? {} : { hold }),
         })
         const events = yield* decide(command, now, SUBAGENT)
-        return Option.fromNullishOr(events.find((event) => event._tag === "SubagentStarted"))
+        const started = events.find((event) => event._tag === "SubagentStarted")
+        // A new agent counts on its provider's pace, here and on the owner's other hosts, until its spend shows.
+        if (started !== undefined && paced?.ref !== undefined) yield* pool.started(paced.ref.providerID)
+        return Option.fromNullishOr(started)
       })
 
       const useTool = Effect.fn("Orchestrate.useTool")(function* ({

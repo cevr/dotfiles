@@ -14,7 +14,7 @@
 // 4. Restarts the background service so it loads the server plugins.
 import { $ } from "bun"
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
+import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } from "../testbeds/gamut/gamut.ts"
@@ -75,13 +75,38 @@ export const CLAUDE_CACHE_TTL: keyof typeof ANTHROPIC_CACHE_TTLS = "1h"
 export const CLAUDE_CACHE_LIFE_MS: number = ANTHROPIC_CACHE_TTLS[CLAUDE_CACHE_TTL]
 
 /**
- * The pool's plugin entry: Claude's cache lifetime, and gent's store as a source of logins when
- * `gent` (its directory) exists.
+ * The owner's hosts by host name (lower case, without `.local`), each with the others its pool
+ * reads over SSH, by the destination that reaches them on the tailnet: the MacBook and the
+ * workbox read each other.
  */
-export const poolEntry = (pool: string, gent: string | undefined): PluginEntry => ({
+export const FLEET: Readonly<Record<string, ReadonlyArray<{ readonly name: string; readonly ssh: string }>>> = {
+  "cristians-macbook-pro": [{ name: "workbox", ssh: "bite-workbox" }],
+  "bite-cristian": [{ name: "macbook", ssh: "cvr@cristians-macbook-pro" }],
+}
+
+/** A host's peers in `FLEET`; a host not listed has none. */
+export const peersOf = (host: string) => FLEET[host.toLowerCase().replace(/\.local$/, "")] ?? []
+
+/**
+ * The pool's plugin entry: Claude's cache lifetime, and gent's store as a source of logins when
+ * `gent` (its directory) exists. On one of the owner's hosts (`fleet`) it also paces OpenAI's
+ * agents on the ChatGPT account's own measure and reads the host's peers.
+ */
+export const poolEntry = (pool: string, gent: string | undefined, fleet?: { readonly host: string }): PluginEntry => ({
   package: pool,
-  options: { cacheLifeMs: CLAUDE_CACHE_LIFE_MS, ...(gent === undefined ? {} : { sources: [{ kind: "gent", dir: gent }] }) },
+  options: {
+    cacheLifeMs: CLAUDE_CACHE_LIFE_MS,
+    ...(gent === undefined ? {} : { sources: [{ kind: "gent", dir: gent }] }),
+    ...(fleet === undefined ? {} : { paced: { openai: "openai" }, fleet: { host: fleet.host, peers: peersOf(fleet.host) } }),
+  },
 })
+
+/**
+ * Orchestrate's plugin entry: a Codex provider's new agents take the pool's pace first, which
+ * paces OpenAI on the ChatGPT account (`poolEntry`'s `paced`); the admission script answers only
+ * when the pool has no measure of it.
+ */
+export const orchestrateEntry = (orchestrate: string): PluginEntry => ({ package: orchestrate, options: { codex: { pool: true } } })
 
 const record = (value: unknown): Json => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Json) : {})
 
@@ -189,8 +214,8 @@ if (import.meta.main) {
   const pool = pluginDir("pool")
   const server: PluginEntry[] = [
     auth,
-    poolEntry(pool, existsSync(gent) ? gent : undefined),
-    pluginDir("orchestrate"),
+    poolEntry(pool, existsSync(gent) ? gent : undefined, { host: hostname() }),
+    orchestrateEntry(pluginDir("orchestrate")),
     pluginDir("guard"),
     pluginDir("kernel"),
     pluginDir("status"),
