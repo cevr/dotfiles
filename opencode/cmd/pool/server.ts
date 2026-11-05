@@ -74,12 +74,16 @@ export type Externals = Logins | Quota | Ledger
 /** gent keeps Claude accounts: they join the pool of the `anthropic` provider. */
 const gentPool = (options: Options): PoolId | undefined => options.providers.anthropic
 
-/** The gent stores the options name, each read in place. One per directory per process. */
-const gentSources = (options: Options) =>
+/**
+ * The gent stores the options name, each read in place. One per directory per
+ * process. Each logs its refreshes to the host's log through `context`.
+ */
+const gentSources = (options: Options, context: Context.Context<never>) =>
   gentPool(options) === undefined
     ? []
     : options.sources.map(
-        (source) => new GentSource({ dir: source.dir, ...(source.tokenURL === undefined ? {} : { tokenURL: source.tokenURL }) }),
+        (source) =>
+          new GentSource({ dir: source.dir, context, ...(source.tokenURL === undefined ? {} : { tokenURL: source.tokenURL }) }),
       )
 
 /** The outside systems as OpenCode provides them: its integrations, the auth plugins' quota RPC, the plugin's storage. */
@@ -123,7 +127,8 @@ export const make = (
         Effect.mapError((error) => new Error(`dotfiles-opencode.pool: invalid options: ${error.message}`)),
         Effect.orDie,
       )
-      const sources = gentSources(options)
+      // The plugin's context carries the host's loggers.
+      const sources = gentSources(options, yield* Effect.context<never>())
       const services = yield* Layer.build(
         Model.layer({ providers: options.providers }).pipe(Layer.provideMerge(externals(ctx, options, sources))),
       )

@@ -65,6 +65,11 @@ export const roleModels = (catalog: Catalog): Record<string, string> => {
  * role's model (its other fields kept), and auto-update off so the stock release never
  * replaces the fork.
  */
+/** The prompt-cache lifetime daily sets for Claude (`providers.anthropic.settings.cache.ttl`). */
+export const CLAUDE_CACHE_TTL = "1h"
+
+const record = (value: unknown): Json => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Json) : {})
+
 export const mergeServer = (
   existing: Json,
   plugins: ReadonlyArray<PluginEntry>,
@@ -76,9 +81,15 @@ export const mergeServer = (
     return path === undefined || !owned.some((dir) => path === dir || path.startsWith(`${dir}/`))
   })
   const agents = (typeof existing.agents === "object" && existing.agents !== null ? existing.agents : {}) as Record<string, Json>
+  const providers = record(existing.providers)
+  const anthropic = record(providers.anthropic)
+  const settings = record(anthropic.settings)
   return {
     ...existing,
     autoupdate: false,
+    // Claude's prompt cache lives an hour instead of Anthropic's 5-minute default, so a pause for a
+    // review or a long tool call doesn't rewrite the whole context; a 1h write costs 2x input, not 1.25x.
+    providers: { ...providers, anthropic: { ...anthropic, settings: { ...settings, cache: { ...record(settings.cache), ttl: CLAUDE_CACHE_TTL } } } },
     plugins: [...plugins, ...others],
     agents: {
       ...agents,

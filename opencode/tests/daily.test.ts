@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test"
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { launcher, mergeCli, mergeServer, roleModels } from "../scripts/daily.ts"
+import { CLAUDE_CACHE_TTL, launcher, mergeCli, mergeServer, roleModels } from "../scripts/daily.ts"
 
 const MODS = "/repo/opencode/mods"
 const AUTH = "/home/.local/share/opencode-prime/anthropic-auth"
@@ -20,6 +20,22 @@ describe("the server config", () => {
     expect(merged.agents).toEqual({ verifier: { description: "mine", model: "openai/gpt-6.1-sol" }, build: { model: "x/y" } })
     expect(merged.model).toBe("openai/gpt-6.1-sol")
     expect(merged.autoupdate).toBe(false)
+    expect(merged.providers).toEqual({ anthropic: { settings: { cache: { ttl: "1h" } } } })
+  })
+
+  test("sets Claude's prompt cache to an hour and keeps the other provider settings", () => {
+    const existing = {
+      providers: {
+        openai: { settings: { reasoningEffort: "high" } },
+        anthropic: { name: "Claude", settings: { timeout: 60_000, cache: { ttl: "5m" } } },
+      },
+    }
+    const merged = mergeServer(existing, [], {}, [MODS])
+    expect(CLAUDE_CACHE_TTL).toBe("1h")
+    expect(merged.providers).toEqual({
+      openai: { settings: { reasoningEffort: "high" } },
+      anthropic: { name: "Claude", settings: { timeout: 60_000, cache: { ttl: "1h" } } },
+    })
   })
 })
 

@@ -9,15 +9,35 @@
  * two stores breaks the other the first time one refreshes; here there is no
  * copy.
  *
- * A token is read from the file on every request. When it is stale (it
- * expires within a minute) or the provider rejected it, the refresh runs as
- * gent's does (`makeCredentialCache` and `ownedStore` in gent's extensions):
- * under gent's lock for the provider (an exclusive SQLite transaction on
+ * A token is read from the file on every request. It is refreshed ahead of
+ * time: once it expires within the refresh-ahead window (five minutes plus a
+ * jitter of up to two minutes, fixed per label, so accounts signed in or
+ * refreshed together drift apart instead of expiring in one burst), or when
+ * the provider rejected it. The refresh runs as gent's does
+ * (`makeCredentialCache` and `ownedStore` in gent's extensions): under gent's
+ * lock for the provider (an exclusive SQLite transaction on
  * `<dir>/.locks/anthropic.lock.db`, taken by every gent process), the file is
  * read again, a token another writer refreshed meanwhile is served as it is,
- * and only a token still stale is traded at the token endpoint. The answer is
+ * and only a token still due is traded at the token endpoint. The answer is
  * written atomically, mode 0600, in gent's exact shape, keeping the sign-in's
  * `signedInAt` and `metadata`.
+ *
+ * A refresh ahead of time never costs a request its token. While the stored
+ * token is still good for more than gent's last minute (`FRESH_ENOUGH_MS`) and
+ * no provider rejected it, a refresh that cannot happen now (the endpoint
+ * paused the store, the last trade was too recent, a 429, a 5xx, a timeout, a
+ * lock held too long) serves the stored token, and a later request tries
+ * again. Only a token in its last minute, or one a provider rejected, must be
+ * refreshed before it is sent, and then such a failure fails the resolve.
+ *
+ * Trades are spaced: at least `REFRESH_GAP_MS` between two from one store in
+ * this process, so a wave of due accounts cannot burst at the endpoint. A 429
+ * pauses every trade from the store (`ENDPOINT_PAUSE_MS`). Each trade is
+ * logged at info with its label and outcome, a pause once at warning with its
+ * end; no token is ever logged.
+ *
+ * `peek` is the read that never trades: the stored token while it is good,
+ * else nothing. The usage sweep reads through it, so a sweep never refreshes.
  *
  * A failed refresh writes nothing: the refresh token in the file is still the
  * one to retry with. A refresh that worked but whose write failed keeps the
@@ -34,17 +54,18 @@
  * The store is worked in Effect (`listing`, `resolveEffect`). The provider's
  * auth plugin reads a source through a registry of plain functions shared by
  * every copy of a module in the process (`registerCredentialSource`), so
- * `list` and `resolve` are that registry's synchronous and Promise faces.
+ * `list`, `resolve` and `peek` are that registry's synchronous and Promise
+ * faces. `resolve` and `peek` log through the loggers given as `context`.
  *
  * @module
  */
 import { Database } from "bun:sqlite"
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import { mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs"
 import { open, rename, rm } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
-import { Effect, Schema } from "effect"
+import { Context, Effect, Logger, Schema } from "effect"
 
 /** The token endpoint Claude Code and the Anthropic auth plugin refresh at, and Claude Code's public client id. */
 export const GENT_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
@@ -71,6 +92,12 @@ const RETRY_MS = 60_000
  * 2026-11-04.
  */
 const ENDPOINT_PAUSE_MS = 5 * 60_000
+/** How long before it expires a token is refreshed, before the label's jitter (teamclaude's `isTokenExpiringSoon`). */
+export const REFRESH_AHEAD_MS = 5 * 60_000
+/** The most a label's jitter adds to the refresh-ahead window. */
+export const REFRESH_JITTER_MS = 120_000
+/** The least time between two trades from one store in this process. */
+export const REFRESH_GAP_MS = 3_000
 /** gent's `CredentialSlot` pattern; `default` is the default entry, never a slot. */
 const SLOT = /^[a-z0-9_-]{1,32}$/
 const STAGING_TAG = ".gent-write-"
@@ -131,11 +158,27 @@ export interface GentSourceOptions {
   readonly dir: string
   /** The token endpoint; tests point it at a fake. */
   readonly tokenURL?: string
-  readonly fetch?: typeof globalThis.fetch
+  readonly fetch?: (url: string, init: RequestInit) => Promise<Response>
   readonly now?: () => number
   /** How many times a busy lock is polled before the refresh gives up. */
   readonly lockPolls?: number
+  /** How a trade waits out the gap after the last one; tests move a fake clock. */
+  readonly sleep?: (ms: number) => Promise<void>
+  /** The least time between two trades from this store, ms. Default `REFRESH_GAP_MS`. */
+  readonly refreshGapMs?: number
+  /**
+   * What `resolve` and `peek` run with: the host's loggers, from the plugin's
+   * context. Default none, so the source logs nothing.
+   */
+  readonly context?: Context.Context<never>
 }
+
+/**
+ * How much a label adds to the refresh-ahead window, ms in `[0, maxMs]`: the
+ * same for a label every time, in every process, and spread across labels.
+ */
+export const refreshJitter = (label: string, maxMs: number = REFRESH_JITTER_MS): number =>
+  maxMs <= 0 ? 0 : createHash("sha256").update(`gent-refresh:${label}`).digest().readUInt32BE(0) % (Math.floor(maxMs) + 1)
 
 /** An account gent holds, or a label this source leaves alone and why. */
 export interface GentListing {
@@ -333,6 +376,8 @@ interface StoreState {
   queue: Promise<unknown>
   /** Until when (epoch ms) the token endpoint asked this store to wait; no refresh goes out before. */
   pausedUntil: number
+  /** When (epoch ms) this store's last trade went out; the next waits `REFRESH_GAP_MS` after it. */
+  lastTradeAt: number
 }
 
 /** Shared by every setup in the process, whichever copy of this module it loaded. */
@@ -343,7 +388,7 @@ const stateOf = (dir: string): StoreState => {
   const states = (global[STATES] ??= new Map())
   let state = states.get(dir)
   if (state === undefined) {
-    state = { pending: new Map(), rejected: new Map(), queue: Promise.resolve(), pausedUntil: 0 }
+    state = { pending: new Map(), rejected: new Map(), queue: Promise.resolve(), pausedUntil: 0, lastTradeAt: -Infinity }
     states.set(dir, state)
   }
   return state
@@ -373,9 +418,12 @@ export class GentSource {
   readonly dir: string
   private readonly slots: string
   private readonly tokenURL: string
-  private readonly fetch: typeof globalThis.fetch
+  private readonly fetch: (url: string, init: RequestInit) => Promise<Response>
   private readonly now: () => number
   private readonly lockPolls: number
+  private readonly sleep: (ms: number) => Effect.Effect<void>
+  private readonly gapMs: number
+  private readonly context: Context.Context<never>
   private readonly state: StoreState
 
   constructor(options: GentSourceOptions) {
@@ -385,6 +433,10 @@ export class GentSource {
     this.fetch = options.fetch ?? globalThis.fetch
     this.now = options.now ?? Date.now
     this.lockPolls = options.lockPolls ?? LOCK_POLLS
+    const sleep = options.sleep
+    this.sleep = sleep === undefined ? (ms) => Effect.sleep(ms) : (ms) => Effect.promise(() => sleep(ms))
+    this.gapMs = options.refreshGapMs ?? REFRESH_GAP_MS
+    this.context = options.context ?? Context.make(Logger.CurrentLoggers, new Set())
     this.state = stateOf(this.dir)
   }
 
@@ -434,15 +486,49 @@ export class GentSource {
       const label = this.labelOf(credentialID)
       if (label === undefined) return yield* failure("signed-out", "Not a gent account")
       const stored = yield* this.owned(label, yield* this.read(label))
-      if (!this.state.pending.has(label) && this.state.rejected.get(label) !== stored.refresh && this.fresh(stored.expires))
-        return { access: stored.access, expires: stored.expires }
-      return yield* serialized(this.state, withGentLock(this.dir, this.refreshLocked(label), this.lockPolls))
+      const served = { access: stored.access, expires: stored.expires }
+      const settled = !this.state.pending.has(label) && this.state.rejected.get(label) !== stored.refresh
+      if (settled && !this.due(label, stored.expires)) return served
+      // A token still good past its last minute can wait for its refresh: a
+      // trade that cannot happen now serves it, and a later request tries again.
+      const usable = settled && this.fresh(stored.expires)
+      if (usable && this.held() !== undefined) return served
+      // Under the lock the file is read again and a failed trade serves what it holds; a lock
+      // held for the whole wait serves the token read here.
+      return yield* serialized(this.state, withGentLock(this.dir, this.refreshLocked(label), this.lockPolls)).pipe(
+        Effect.catchIf(
+          (error) => usable && error._tag === "GentCredentialError" && error.kind === "busy",
+          () => Effect.succeed(served),
+        ),
+      )
     })
   }
 
   /** `resolveEffect`, as the credential registry calls it: a failure rejects with its error. */
   resolve(credentialID: string): Promise<{ access: string; expires: number }> {
-    return Effect.runPromise(this.resolveEffect(credentialID))
+    return Effect.runPromiseWith(this.context)(this.resolveEffect(credentialID))
+  }
+
+  /**
+   * The stored token for `credentialID` while it is good past its last minute
+   * and nothing asks to replace it (a provider's rejection, a held write);
+   * else nothing. Never trades, never takes the lock.
+   */
+  peekEffect(credentialID: string): Effect.Effect<{ access: string; expires: number } | undefined> {
+    return Effect.gen({ self: this }, function* (this: GentSource) {
+      const label = this.labelOf(credentialID)
+      if (label === undefined) return undefined
+      const stored = yield* this.read(label).pipe(Effect.orElseSucceed((): Stored => null))
+      if (!stored || !isGentOwned(stored)) return undefined
+      if (this.state.pending.has(label) || this.state.rejected.get(label) === stored.refresh || !this.fresh(stored.expires))
+        return undefined
+      return { access: stored.access, expires: stored.expires }
+    })
+  }
+
+  /** `peekEffect`, as the credential registry calls it. */
+  peek(credentialID: string): Promise<{ access: string; expires: number } | undefined> {
+    return Effect.runPromiseWith(this.context)(this.peekEffect(credentialID))
   }
 
   /**
@@ -511,10 +597,27 @@ export class GentSource {
     return expires > this.now() + FRESH_ENOUGH_MS
   }
 
-  /** Under gent's lock: settle a held write, then serve the stored token or refresh it. */
+  /** Whether a token expiring at `expires` is due a refresh: inside the refresh-ahead window plus the label's jitter. */
+  private due(label: string, expires: number) {
+    return expires <= this.now() + REFRESH_AHEAD_MS + refreshJitter(label)
+  }
+
+  /** Until when (epoch ms) no trade may go out from this store now, the later of a pause and the gap; none when one may. */
+  private held(): number | undefined {
+    const until = Math.max(this.state.pausedUntil, this.state.lastTradeAt + this.gapMs)
+    return this.now() < until ? until : undefined
+  }
+
+  /**
+   * Under gent's lock: settle a held write, then serve the stored token or
+   * refresh it. A stored token still good past its last minute is served when
+   * the trade cannot happen now; one that is not waits out the gap after the
+   * last trade, and fails on a pause or a failed trade.
+   */
   private refreshLocked(label: string): Effect.Effect<{ access: string; expires: number }, GentCredentialError | GentStoreUnreadable> {
     return Effect.gen({ self: this }, function* (this: GentSource) {
       const stored = yield* this.owned(label, yield* this.read(label))
+      const served = { access: stored.access, expires: stored.expires }
 
       const pending = this.state.pending.get(label)
       if (pending !== undefined) {
@@ -530,9 +633,23 @@ export class GentSource {
       }
 
       const rejected = this.state.rejected.get(label) === stored.refresh
-      if (!rejected && this.fresh(stored.expires)) return { access: stored.access, expires: stored.expires }
+      if (!rejected && !this.due(label, stored.expires)) return served
+      const usable = !rejected && this.fresh(stored.expires)
 
-      const next = yield* this.trade(label, stored.refresh)
+      const held = this.held()
+      if (held !== undefined) {
+        if (usable) return served
+        // Only the gap holds a pause-free store: wait it out. A pause fails the trade below.
+        if (this.now() >= this.state.pausedUntil) yield* this.sleep(held - this.now())
+      }
+      const next = yield* this.trade(label, stored.refresh).pipe(
+        Effect.map((tokens): Tokens | undefined => tokens),
+        Effect.catchIf(
+          (error) => usable && error.kind === "unavailable",
+          () => Effect.succeed(undefined),
+        ),
+      )
+      if (next === undefined) return served
       yield* this.write(label, stored, next, stored.refresh)
       this.state.rejected.delete(label)
       return { access: next.access, expires: next.expires }
@@ -556,18 +673,33 @@ export class GentSource {
     )
   }
 
-  /** gent's `refreshViaOAuthClient`: a form POST that trades the refresh token. */
+  /**
+   * gent's `refreshViaOAuthClient`: a form POST that trades the refresh token.
+   * Logged at info with the label and the outcome, never a token.
+   */
   private trade(label: string, refreshToken: string): Effect.Effect<Tokens, GentCredentialError> {
+    return Effect.suspend(() => {
+      const paused = this.state.pausedUntil
+      if (this.now() < paused)
+        return Effect.fail(
+          failure(
+            "unavailable",
+            `The gent account "${label}" could not refresh: the token endpoint asked to wait until ${new Date(paused).toISOString()}`,
+            paused,
+          ),
+        )
+      return this.post(label, refreshToken).pipe(
+        Effect.tap((next) => Effect.logInfo(`gent refresh "${label}": refreshed, expires ${new Date(next.expires).toISOString()}`)),
+        Effect.tapError((error) => Effect.logInfo(`gent refresh "${label}": ${error.kind}: ${error.message}`)),
+      )
+    })
+  }
+
+  private post(label: string, refreshToken: string): Effect.Effect<Tokens, GentCredentialError> {
     return Effect.gen({ self: this }, function* (this: GentSource) {
       const unavailable = (why: string) =>
         failure("unavailable", `The gent account "${label}" could not refresh: ${why}`, this.now() + RETRY_MS)
-      const paused = this.state.pausedUntil
-      if (this.now() < paused)
-        return yield* failure(
-          "unavailable",
-          `The gent account "${label}" could not refresh: the token endpoint asked to wait until ${new Date(paused).toISOString()}`,
-          paused,
-        )
+      this.state.lastTradeAt = this.now()
       const { status, body, retryAfter, server } = yield* Effect.tryPromise({
         try: async () => {
           const response = await this.fetch(this.tokenURL, {
@@ -592,7 +724,12 @@ export class GentSource {
       })
       if (status === 429) {
         // A rate limit holds the whole store, so the other accounts do not keep it going.
-        this.state.pausedUntil = Math.max(this.state.pausedUntil, this.now() + pauseFor(retryAfter, this.now()))
+        const before = this.state.pausedUntil
+        this.state.pausedUntil = Math.max(before, this.now() + pauseFor(retryAfter, this.now()))
+        if (before <= this.now())
+          yield* Effect.logWarning(
+            `gent refresh: the token endpoint answered 429; every refresh from ${this.dir} waits until ${new Date(this.state.pausedUntil).toISOString()}`,
+          )
         return yield* failure(
           "unavailable",
           `The gent account "${label}" could not refresh: the token endpoint answered 429 (${limitDetail(server, retryAfter, body)})`,
@@ -626,6 +763,8 @@ export interface CredentialSource {
   readonly owns: (credentialID: string) => boolean
   readonly resolve: (credentialID: string) => Promise<{ access: string; expires: number }>
   readonly rejected?: (credentialID: string, access: string) => void
+  /** The stored token while it is good, else none; never refreshes. */
+  readonly peek?: (credentialID: string) => Promise<{ access: string; expires: number } | undefined>
 }
 
 /** Register `source` for `integrationID`; the returned function removes it. */
