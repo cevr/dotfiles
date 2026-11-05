@@ -176,6 +176,8 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   })
   // The count opens the host's Subagents picker, as Down on an empty prompt does.
   const [pickerHover, setPickerHover] = createSignal(false)
+  // The shells count opens the session's shell list, where one can be read or killed.
+  const [shellsHover, setShellsHover] = createSignal(false)
   const sep = () => <span style={{ fg: theme().text.faint }}>{DOCK_SEP}</span>
   return (
     <box flexDirection="column" flexGrow={1} flexShrink={1}>
@@ -216,9 +218,32 @@ export function Dock(props: { host: Host; sessionID?: string }) {
             </span>
           </text>
         </box>
-        <text wrapMode="none" truncate fg={theme().text.faint}>
+        <text wrapMode="none" flexShrink={0}>
           {sep()}
-          <span style={{ fg: shells() ? theme().text.feedback.success.base : theme().text.muted }}>{shellText()}</span>
+        </text>
+        <box
+          flexShrink={0}
+          onMouseOver={() => setShellsHover(true)}
+          onMouseOut={() => setShellsHover(false)}
+          onMouseUp={() => {
+            if (props.sessionID) props.host.openShells(props.sessionID)
+          }}
+        >
+          <text wrapMode="none">
+            <span
+              style={{
+                fg: shellsHover()
+                  ? theme().text.base
+                  : shells()
+                    ? theme().text.feedback.success.base
+                    : theme().text.muted,
+              }}
+            >
+              {shellText()}
+            </span>
+          </text>
+        </box>
+        <text wrapMode="none" truncate fg={theme().text.faint}>
           <Show when={wake()}>
             {(item) => (
               <>

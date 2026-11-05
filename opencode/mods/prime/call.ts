@@ -56,6 +56,16 @@ export function outcome(part: ToolPart): Outcome {
   return "done"
 }
 
+/**
+ * Whether the host moved a shell call to the background, by its time limit
+ * or the reader's ctrl+b: its result came back while the command still ran.
+ */
+export function movedToBackground(part: ToolPart) {
+  if (part.state.status !== "completed") return false
+  const moved = toolMetadata(part).backgrounded
+  return moved === "limit" || moved === "user"
+}
+
 /** Whether a subagent call runs in the background: it returns at once, and the agent's reply comes later. */
 export function background(part: ToolPart) {
   return toolInput(part).background === true
@@ -79,6 +89,8 @@ export function toolSource(tool: string, input: Fields) {
   if (tool === "grep") return [text(input.pattern), text(input.path)].filter(Boolean).join(" in ")
   if (tool === "glob") return text(input.pattern) ?? ""
   if (tool === "subagent") return text(input.prompt) ?? text(input.description) ?? ""
+  if (tool === "shell_read" || tool === "shell_kill") return text(input.id) ?? ""
+  if (tool === "shell_list") return "shells"
   return Object.entries(input)
     .filter(([, value]) => typeof value === "string" || typeof value === "number" || typeof value === "boolean")
     .map(([key, value]) => `${key}=${String(value)}`)

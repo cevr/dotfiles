@@ -22,6 +22,7 @@ import {
   errorName,
   errorText,
   lineCounts,
+  movedToBackground,
   outcome,
   startOf,
   subagentName,
@@ -368,7 +369,11 @@ function CallRow(props: { host: Host; connector?: string; rail: boolean; tool: s
   const preview = createMemo(() => toolPreview(props.tool, toolInput(props.part)))
   const counts = createMemo(() => countLabel(lineCounts(props.tool, props.part)))
   const body = createMemo(() => callBody({ tool: props.tool, part: props.part }))
-  const tail = createMemo(() => [counts(), duration(props.part)].filter(Boolean).join(" · "))
+  const tail = createMemo(() =>
+    [counts(), duration(props.part), movedToBackground(props.part) ? "moved to the background" : ""]
+      .filter(Boolean)
+      .join(" · "),
+  )
   const sep = () => <span style={{ fg: theme().text.faint }}> · </span>
   const link = useSessionLink(props.host, () => (props.tool === "subagent" ? subagentSession(props.part) : undefined))
   return (

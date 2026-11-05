@@ -10,6 +10,7 @@ import {
   groupRun,
   hasBody,
   headerRuns,
+  levelRows,
   listed,
   rowEnding,
   rows,
@@ -89,6 +90,21 @@ describe("the group header", () => {
     expect(runs.at(-1)).toEqual({ text: "1 failed", tone: "error" })
   })
 
+  test("names the background-shell tools, and their rows by the shell", () => {
+    const list = calls(
+      call("shell_list", {}),
+      call("shell_read", { id: "sh_1", lines: 40 }),
+      call("shell_read", { id: "sh_2" }),
+      call("shell_kill", { id: "sh_1" }),
+    )
+    expect(words(list)).toBe("Read 2 shell outputs · listed shells · killed 1 command")
+    expect(rows(list).map((row) => `${verb(row)} ${subject(row)}`.trim())).toEqual([
+      "Listed shells",
+      "Read sh_1, sh_2",
+      "Killed sh_1",
+    ])
+  })
+
   test("counts an edit's files, and names an unknown tool by its id", () => {
     expect(words(calls(call("apply_patch", { patchText: "" }, "completed", { files: [{ relativePath: "a", patch: "" }, { relativePath: "b", patch: "" }] })))).toBe(
       "Edited 2 files",
@@ -107,6 +123,25 @@ describe("cancels and width, as gent's activityHeaderRuns", () => {
     expect(tree.map((row) => row.outcome)).toEqual(["done", "cancelled", "cancelled"])
     const [, second] = tree
     expect(second && rowEnding(second)).toEqual({ text: "cancelled", tone: "warning" })
+  })
+
+  test("a command the host moved to the background says so, muted; a run of commands counts them", () => {
+    const moved = call("shell", { command: "sleep 600" }, "completed", { backgrounded: "limit" })
+    const [alone] = rows(calls(moved))
+    expect(alone && rowEnding(alone)).toEqual({ text: "moved to the background", tone: "muted" })
+    const [run] = rows(
+      calls(
+        call("shell", { command: "bun dev" }, "completed", { backgrounded: "user" }),
+        call("shell", { command: "ls" }),
+        call("shell", { command: "sleep 9" }, "completed", { backgrounded: "limit" }),
+      ),
+    )
+    expect(run && rowEnding(run)).toEqual({ text: "2 moved to the background", tone: "muted" })
+    // An explicit background start is no move; nor is an ordinary run.
+    const [started] = rows(calls(call("shell", { command: "bun dev", background: true }, "completed", { background: true })))
+    expect(started && rowEnding(started)).toBeUndefined()
+    // It is no failure: the overview leaves it out.
+    expect(levelRows(calls(moved), "overview")).toEqual([])
   })
 
   test("narrow, kinds drop from the right; the first kind and the failures stay", () => {

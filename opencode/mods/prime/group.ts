@@ -7,6 +7,7 @@ import {
   canonical,
   editedFiles,
   errorText,
+  movedToBackground,
   outcome,
   subagentName,
   toolInput,
@@ -118,6 +119,11 @@ export function kind(tool: string, part?: ToolPart): Kind {
   if (tool === "patch" || tool === "edit") return { key: "edit", past: "Edited", running: "Editing", unit: plural("file") }
   if (tool === "write") return { key: "write", past: "Wrote", running: "Writing", unit: plural("file") }
   if (tool === "shell") return { key: "shell", past: "Ran", running: "Running", unit: plural("command") }
+  // The background-shell tools: look over, read and stop the session's commands.
+  if (tool === "shell_list")
+    return { key: "shell_list", past: "Listed", running: "Listing", unit: (count) => (count === 1 ? "shells" : `shells ${count}×`) }
+  if (tool === "shell_read") return { key: "shell_read", past: "Read", running: "Reading", unit: plural("shell output") }
+  if (tool === "shell_kill") return { key: "shell_kill", past: "Killed", running: "Killing", unit: plural("command") }
   if (tool === "kernel") return { key: "kernel", past: "Ran", running: "Running", unit: plural("cell") }
   if (tool === "subagent" && part && background(part))
     return { key: "subagent-start", past: "Started", running: "Starting", unit: plural("agent") }
@@ -389,12 +395,17 @@ export function subject(row: Row, width = Number.POSITIVE_INFINITY): string {
 
 /**
  * What a row says ended it, after gent's `failureWord`: a command's exit
- * status, `failed`, or `cancelled`, in its tone. None for a row that ran or
- * still runs.
+ * status, `failed`, or `cancelled`, in its tone; for a command the host moved
+ * to the background, that it did, muted. None for a row that ran or still
+ * runs.
  */
 export function rowEnding(row: Row): Run | undefined {
   if (row.outcome === "cancelled") return { text: "cancelled", tone: "warning" }
-  if (row.outcome !== "failed" && row.outcome !== "warning") return undefined
+  if (row.outcome !== "failed" && row.outcome !== "warning") {
+    const moved = row.calls.filter(movedToBackground).length
+    if (moved === 0 || row.outcome === "running") return undefined
+    return { text: row.calls.length === 1 ? "moved to the background" : `${moved} moved to the background`, tone: "muted" }
+  }
   const exit = toolMetadata(row.calls[0]).exit
   if (typeof exit === "number" && exit !== 0) return { text: `exit ${exit}`, tone: "error" }
   return { text: "failed", tone: "error" }

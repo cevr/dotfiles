@@ -5,6 +5,7 @@
 import { read } from "@dotfiles/opencode-subagents/opencode/view"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { Host } from "../tui/host.ts"
+import { openShells } from "./shells.ts"
 import { readWakes } from "./wakes.ts"
 
 export function host(context: Plugin.Context): Host {
@@ -37,6 +38,7 @@ export function host(context: Plugin.Context): Host {
     openSubagents: () => {
       context.keymap.dispatch("session.child.first")
     },
+    openShells: (sessionID) => void openShells(context, sessionID),
     Markdown: context.ui.Markdown,
     Code: context.ui.Code,
   }

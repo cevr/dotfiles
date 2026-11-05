@@ -37,6 +37,14 @@ describe("a kernel call's journal", () => {
     ])
   })
 
+  test("a shell command the host moved to the background by its time limit keeps that, which its row says", async () => {
+    const { record } = recording()
+    await Effect.runPromise(
+      record.around("shell", { command: "sleep 600" }, Effect.succeed({ content: "still running", metadata: { status: "running", shellID: "sh_2", backgrounded: "limit", truncated: false } })),
+    )
+    expect((record.metadata()[OPERATIONS_KEY] as ReadonlyArray<Operation>)[0]?.metadata).toEqual({ shellID: "sh_2", backgrounded: "limit" })
+  })
+
   test("a latched subagent keeps its child and its latched status, which its row reads; a running one keeps only its child", async () => {
     const { record } = recording()
     await Effect.runPromise(record.around("subagent", { agent: "worker" }, Effect.succeed({ content: "latched", metadata: { sessionID: "ses_l", status: "latched", latch: { id: "w1" } } })))

@@ -117,9 +117,77 @@ the summary. This needs the fork's `session.message.compaction` slot. A host
 without the slot draws its own block at every level, but then Prime's
 typecheck fails on the unknown slot name.
 
+The shells count is the session's running shell commands. A click on it
+opens the session's shell list (`shells.ts`, `opencode/shells.ts`), read
+fresh from the host's shell routes each time: running first, then the ones
+that ended, newest first, 30 at most. Each shows its description (else its
+command's first line), then `state · runtime · last line`:
+
+```
+Running
+  Blocking sleeper  running · 3s · no output
+Ended
+  Long sleeper      killed · 3s · tick 1
+```
+
+ctrl+k kills the highlighted running command (the host's `shell.kill`) and
+lists again; Enter shows its output's tail, and closing that returns to the
+list. A shell call the host moved to the background (see Background
+shells) ends its row with `moved to the background`, muted, at Details and
+All; `shell_list`, `shell_read` and `shell_kill` read as `Listed shells`,
+`Read sh_…` and `Killed sh_…`. `tests/prime-shells.test.ts` runs
+`scenarios/prime-shells.ts` for all of it.
+
 `.oxlintrc.json` fences both layers. The domain may import only `effect`,
 `@dotfiles/opencode-subagents/*` and its own root files. `tui/` may not
 import `opencode/` or `@opencode/*`.
+
+## Background shells
+
+The fork (branch `bg-shells`) moves a foreground `shell` call to the
+background once it outlives a limit, and gives the agent three tools to
+look after the session's commands. The call's `timeout` is that limit in
+milliseconds: it never kills a foreground command. With no `timeout` the
+limit is `experimental.shell_background_after` from the config, else
+120000 (2 min); `timeout: 0` blocks until the command ends. With
+`background: true`, `timeout` is still a kill deadline. Past the limit the
+call returns at once, and the command's end later notifies the session as
+an explicit background start does:
+
+```
+Command is still running after 120 s, so it moved to the background (shell ID: sh_1ade…).
+Output so far (last 20 lines):
+tick 1
+Check it with shell_read({ id: "sh_1ade…" }), stop it with shell_kill({ id: "sh_1ade…" }), or list this session's commands with shell_list. Output is streaming to: …/sh_1ade….out
+```
+
+ctrl+b (the host's `session.background`) moves the running call at once;
+the result then says `The user moved the command to the background after
+N s`. The call's metadata carries `backgrounded: "limit" | "user"`, which
+Prime's row reads. A `description` on the call names it in `shell_list` and
+the dock's list.
+
+| Tool | Input | Output |
+| --- | --- | --- |
+| `shell_list` | `{}` | `{ shells: [{ id, state, exit?, signal?, timedOut?, runtime, size, description, command, started, background }] }`; the text is a line per shell: `sh_1 running · 2.0 s · 7 bytes · Long sleeper` |
+| `shell_read` | `{ id, offset?, lines? (40), limit? (65536) }` | `{ …state, offset, next, dropped, output }`: without `offset` the last `lines` lines, else from that byte; pass `next` to read on |
+| `shell_kill` | `{ id }` | `{ …state, output }` (the last 20 lines); the text opens `Killed:` or `Already ended:` |
+
+`state` is `running`, `exited` (with `exit`) or `killed` (`timedOut` when
+its deadline killed it). Each tool reaches only the session's own shells;
+another id fails with `No shell sh_… in this session`. A kernel cell
+reaches them as `tools.shell_list`, `tools.shell_read`, `tools.shell_kill`.
+A kill sends SIGTERM to the command's process group, then SIGKILL to
+whatever of the group is left after 3 s; the record and output stay
+readable. A kill the agent asked for sends it no stop notice; a kill by the
+reader (the dock's list, the composer's shell tab) does.
+
+Output is kept on disk in two files of 8 MiB each: `<id>.out` holds the
+newest bytes, and when it fills it becomes `<id>.out.1`, replacing the one
+before. So a shell keeps its last 8 to 16 MiB; `shell_read` says how many
+bytes were dropped. The host keeps the 100 newest ended background shells
+and the 25 newest ended foreground ones, and sweeps output files after 7
+days. The server has `POST /api/shell/:id/kill` and `GET /api/shell?exited=true`.
 
 ## Orchestrate
 
@@ -1083,7 +1151,8 @@ as `metadata.operations` (`operations.ts`): each one's tool, its input's scalar
 fields (strings cut to 400 characters), whether it is running, completed or
 failed (with why), the head of its output (2,000 characters) and the result
 metadata a transcript reads (`exit`, edited `files` with patches cut to 4,000
-characters, a subagent's `sessionID`). At most 100 are kept and the rest
+characters, a subagent's `sessionID`, a background shell's `shellID` and
+whether the host moved it there, `backgrounded`). At most 100 are kept and the rest
 counted in `dropped`. The record is published through the call's progress
 while it runs and kept in its result, also when the cell fails; it stops
 changing once the call ends. Prime draws a kernel call as these calls, with

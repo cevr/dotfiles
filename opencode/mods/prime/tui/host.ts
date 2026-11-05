@@ -73,7 +73,7 @@ export interface Host {
   familyIDs(sessionID: string): ReadonlyArray<string>
   /** The session's family as the subagent rows read it. */
   subagents(sessionID: string): Family
-  /** How many background shells the session started. */
+  /** How many of the session's shell commands are running. */
   shells(sessionID: string): number
 
   // The frame.
@@ -89,6 +89,8 @@ export interface Host {
   selecting(): boolean
   /** Opens the host's Subagents picker, as Down on an empty prompt does. */
   openSubagents(): void
+  /** Opens the list of the session's shell commands, where the reader can read or kill one. */
+  openShells(sessionID: string): void
 
   /** The host's markdown renderer, for text that reads like the transcript. */
   readonly Markdown: (props: { readonly content: string; readonly streaming?: boolean }) => JSX.Element
