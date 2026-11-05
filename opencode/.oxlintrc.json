@@ -51,6 +51,22 @@
       }
     },
     {
+      "files": ["mods/anthropic-auth/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!@dotfiles/decider/*", "!./*.ts", "!bun:test", "!@dotfiles/opencode-pool/quota"],
+                "message": "The Anthropic auth domain fence: its domain files import effect, @dotfiles/decider/*, the mod's own root files, the pool's quota protocol (@dotfiles/opencode-pool/quota) and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of the mod's folders. (`*/**/effect` takes back what `!effect` lets through: any path ending in `effect`, such as @opencode/plugin/effect.)"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["mods/orchestrate/*.ts"],
       "rules": {
         "no-restricted-imports": [

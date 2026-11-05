@@ -18,5 +18,21 @@ commit 38b7c06, which adds to upstream's `v2/main`:
   `peek`, never a refresh, and skips a source without one;
 - Claude Code's per-model beta set and session header.
 
-The code is ours from here; edit it in place. Its tests are `test/`; the
-package and release tests of the original were left out.
+The code is ours from here; edit it in place. The package and release tests
+of the original were left out.
+
+## Layout
+
+The domain sits at the top, one concept per file (`betas.ts`, `oauth.ts`,
+`request-body.ts`, `tool-alias.ts`, …), and reaches nothing outside Effect.
+`service.ts` holds the contracts it needs from the world, `laws.ts` what each
+implementation owes, and `model.ts` the plugin's decisions over them (logins,
+refreshes, readings). Each implementation sits in a folder named after what
+it reaches: `fetch/` (Anthropic's endpoints and the request and response
+hooks), `node/` (entropy), `registry/` (the process-wide credential sources)
+and `opencode/` (the host's integration and the quota RPC). Tests sit beside
+the code they test.
+
+`cmd/anthropic-auth/server.ts` assembles them into the plugin OpenCode loads;
+its `server.test.ts` drives the plugin's hooks, methods and quota RPC on a
+stand-in host.

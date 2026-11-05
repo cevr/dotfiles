@@ -1,0 +1,13 @@
+{
+  "name": "@dotfiles/opencode-cmd-anthropic-auth",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Anthropic auth OpenCode server plugin: the composition root of @dotfiles/opencode-anthropic-auth.",
+  "exports": {
+    "./server": "./server.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-anthropic-auth": "workspace:*"
+  }
+}

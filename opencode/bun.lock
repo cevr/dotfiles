@@ -21,6 +21,13 @@
         "typescript": "^7",
       },
     },
+    "cmd/anthropic-auth": {
+      "name": "@dotfiles/opencode-cmd-anthropic-auth",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-anthropic-auth": "workspace:*",
+      },
+    },
     "cmd/cache": {
       "name": "@dotfiles/opencode-cmd-cache",
       "version": "0.0.0",
@@ -107,6 +114,9 @@
     "mods/anthropic-auth": {
       "name": "@dotfiles/opencode-anthropic-auth",
       "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-pool": "workspace:*",
+      },
     },
     "mods/cache": {
       "name": "@dotfiles/opencode-cache",
@@ -199,6 +209,8 @@
     "@dotfiles/opencode-anthropic-auth": ["@dotfiles/opencode-anthropic-auth@workspace:mods/anthropic-auth"],
 
     "@dotfiles/opencode-cache": ["@dotfiles/opencode-cache@workspace:mods/cache"],
+
+    "@dotfiles/opencode-cmd-anthropic-auth": ["@dotfiles/opencode-cmd-anthropic-auth@workspace:cmd/anthropic-auth"],
 
     "@dotfiles/opencode-cmd-cache": ["@dotfiles/opencode-cmd-cache@workspace:cmd/cache"],
 

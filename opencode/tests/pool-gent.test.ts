@@ -17,7 +17,6 @@ import {
   limitDetail,
   registerCredentialSource,
 } from "../mods/pool/gent/store.ts"
-import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAccount, type FakeAnthropic, type FakeTokenAnswer } from "./fake-anthropic.ts"
 import { gentAvailable, gentSource, openGentStore, type GentStore } from "./gent/store.ts"
 
@@ -352,7 +351,7 @@ describe.skipIf(!ready)("the pool's gent source over gent's own store", () => {
   })
 
   test("registers with the registry the auth plugin reads, and leaves it on dispose", async () => {
-    const { credentialSource } = await import(join(anthropicAuthPlugin, "src/credential-sources.ts"))
+    const { credentialSource } = await import("../mods/anthropic-auth/registry/credential-sources.ts")
     const { source } = await bench({ alpha: fakeAccount() })
     const unregister = registerCredentialSource("anthropic-gent-test", source)
     expect((globalThis as Record<symbol, unknown>)[CREDENTIAL_SOURCES]).toBeInstanceOf(Map)

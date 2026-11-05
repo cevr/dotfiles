@@ -60,7 +60,7 @@ catalog when the run starts.
 - `deepseek`: DeepSeek flash in every role on the OpenCode Go plan.
 - `glm-deepseek`: GLM orchestrates and reviews, DeepSeek flash implements.
 - `haiku`: the newest Claude Haiku in every role on the Claude subscription,
-  through the Anthropic auth plugin (`mods/anthropic-auth`) and the account
+  through the Anthropic auth plugin (`cmd/anthropic-auth`) and the account
   pool. Claude Haiku is the only
   model a preset spends a Claude account on.
 - `haiku-gent`: `haiku` on the Claude accounts gent holds instead of the
