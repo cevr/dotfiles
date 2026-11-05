@@ -161,6 +161,38 @@
           }
         ]
       }
+    },
+    {
+      "files": ["mods/git/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "message": "The git domain fence: git's domain files import effect, git's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of git's folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/git/tui/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["../process/**", "../opencode/**", "../laws.ts"],
+                "message": "The git UI fence: the sidebar and the pane import the git domain, never an implementation (process/, opencode/) or the laws; every read goes through the git RPC."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }

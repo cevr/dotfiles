@@ -1,0 +1,170 @@
+// The plugin seam: the composition root on a stand-in host, with the live
+// adapters over a real git checkout in a scratch directory and a scratch PATH
+// holding git, and, as each test says, a stand-in `gh` and `hunk`. It checks
+// that each method reads the session's directory as the host reports it now,
+// and that `gh` and hunk are optional. tests/git.test.ts runs it, with the
+// TUI, in OpenCode.
+import { describe, expect, test } from "bun:test"
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { Effect, Schema, type Scope } from "effect"
+import { CheckoutAnswer, GIT, PullRequestAnswer, ReviewAnswer } from "@dotfiles/opencode-git/git"
+import { OPEN_REQUEST } from "@dotfiles/opencode-git/laws"
+import { PULL_REQUEST_FIELDS } from "@dotfiles/opencode-git/pull-request"
+import { HUNK_MISSING } from "@dotfiles/opencode-git/review"
+import Git, { live, make } from "./server.ts"
+
+type Host = Parameters<(typeof Git)["effect"]>[0]
+type Handler = (input: unknown) => Effect.Effect<unknown, unknown>
+
+const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
+
+const scratch = Effect.acquireRelease(
+  Effect.sync(() => realpathSync(mkdtempSync(join(tmpdir(), "git-plugin-")))),
+  (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
+)
+
+const executable = (file: string, text: string) => {
+  writeFileSync(file, text)
+  chmodSync(file, 0o755)
+}
+
+/**
+ * A scratch world: a checkout on `feature` with `a.txt` changed and `b.txt`
+ * untracked, a directory in no checkout, and a PATH directory holding git
+ * and, when asked, a stand-in `gh` that names OPEN_REQUEST and a `hunk`.
+ */
+const world = (programs: { readonly gh: boolean; readonly hunk: boolean }) =>
+  Effect.gen(function* () {
+    const dir = yield* scratch
+    const bin = join(dir, "bin")
+    const repository = join(dir, "repository")
+    const outside = join(dir, "outside")
+    for (const each of [bin, repository, outside]) mkdirSync(each)
+    symlinkSync(Bun.which("git") ?? "/usr/bin/git", join(bin, "git"))
+    if (programs.gh)
+      executable(
+        join(bin, "gh"),
+        `#!/bin/sh\n[ "$*" = "pr view --json ${PULL_REQUEST_FIELDS}" ] || exit 9\nprintf '%s\\n' '${JSON.stringify(OPEN_REQUEST)}'\n`,
+      )
+    if (programs.hunk) executable(join(bin, "hunk"), "#!/bin/sh\n")
+    const env = { ...process.env, PATH: bin, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_CEILING_DIRECTORIES: dir }
+    const git = (...args: ReadonlyArray<string>) => {
+      const run = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: repository, env, stdout: "ignore", stderr: "pipe" })
+      return run.exitCode === 0 ? Effect.void : Effect.die(new Error(`git ${args.join(" ")}: ${run.stderr.toString()}`))
+    }
+    yield* git("init", "-q", "-b", "feature")
+    writeFileSync(join(repository, "a.txt"), "one\ntwo\n")
+    yield* git("add", "a.txt")
+    yield* git("commit", "-qm", "base")
+    writeFileSync(join(repository, "a.txt"), "one\n2\nthree\n")
+    writeFileSync(join(repository, "b.txt"), "new\n")
+    return { dir, env, repository, outside }
+  })
+
+/**
+ * The plugin started on a stand-in host whose sessions are `sessions` (read
+ * on every call, so a test can move one), and its git RPC.
+ */
+const start = (sessions: Record<string, string>, env: Record<string, string | undefined>) =>
+  Effect.gen(function* () {
+    const rpc: Record<string, Record<string, Handler>> = {}
+    const host = {
+      options: {},
+      location: { directory: "/plugin" },
+      session: {
+        get: ({ sessionID }: { readonly sessionID: string }) => {
+          const directory = sessions[sessionID]
+          return directory === undefined ? Effect.fail(new Error(`Session not found: ${sessionID}`)) : Effect.succeed({ location: { directory } })
+        },
+      },
+      rpc: {
+        register: (definition: { readonly id: string }, handlers: Record<string, Handler>) =>
+          Effect.sync(() => {
+            rpc[definition.id] = handlers
+            return { dispose: Effect.void }
+          }),
+      },
+    } as unknown as Host
+    yield* make((ctx) => live(ctx, env)).effect(host)
+    const handlers = rpc[GIT.id]
+    const call = <S extends Schema.Top & { readonly DecodingServices: never }>(name: string, answer: S, input: unknown) => {
+      const method = handlers?.[name]
+      return method === undefined
+        ? Effect.die(new Error(`not registered: ${GIT.id}.${name}`))
+        : method(input).pipe(Effect.flatMap(Schema.decodeUnknownEffect(answer)), Effect.orDie)
+    }
+    return {
+      checkout: (sessionID: string) => call("checkout", CheckoutAnswer, { sessionID }),
+      pullRequest: (sessionID: string) => call("pullRequest", PullRequestAnswer, { sessionID }),
+      review: (sessionID: string, path: string) => call("review", ReviewAnswer, { sessionID, path }),
+      raw: (name: string, input: unknown) => call(name, Schema.Unknown, input),
+    }
+  })
+
+describe("the git RPC", () => {
+  test("reads the checkout at the session's directory, and follows the session when it moves", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { env, repository, outside } = yield* world({ gh: false, hunk: false })
+        const sessions: Record<string, string> = { ses_1: repository }
+        const plugin = yield* start(sessions, env)
+        const answer = yield* plugin.checkout("ses_1")
+        expect(answer.checkout?.root).toBe(repository)
+        expect(answer.checkout?.head.branch).toBe("feature")
+        expect(answer.checkout?.files).toEqual([
+          { path: "a.txt", status: "M", added: 2, deleted: 1 },
+          { path: "b.txt", status: "?", added: 1, deleted: 0 },
+        ])
+        sessions.ses_1 = outside
+        expect(yield* plugin.checkout("ses_1")).toEqual({})
+      }),
+    ))
+
+  test("a session the host cannot read is an answer that says so", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { env } = yield* world({ gh: false, hunk: false })
+        const plugin = yield* start({}, env)
+        expect(yield* plugin.checkout("ses_gone")).toEqual({ error: "Session not found: ses_gone" })
+        expect(yield* plugin.pullRequest("ses_gone")).toEqual({})
+        expect(yield* plugin.review("ses_gone", "a.txt")).toEqual({ note: "Session not found: ses_gone" })
+      }),
+    ))
+
+  test("names the branch's pull request through gh, and none without gh", () =>
+    scenario(
+      Effect.gen(function* () {
+        const withGh = yield* world({ gh: true, hunk: false })
+        expect(yield* (yield* start({ ses_1: withGh.repository }, withGh.env)).pullRequest("ses_1")).toEqual({ pullRequest: OPEN_REQUEST })
+        const without = yield* world({ gh: false, hunk: false })
+        expect(yield* (yield* start({ ses_1: without.repository }, without.env)).pullRequest("ses_1")).toEqual({})
+      }),
+    ))
+
+  test("reviews a file with hunk when it is on PATH, else with git's pager and a note", () =>
+    scenario(
+      Effect.gen(function* () {
+        const withHunk = yield* world({ gh: false, hunk: true })
+        expect(yield* (yield* start({ ses_1: withHunk.repository }, withHunk.env)).review("ses_1", "a.txt")).toEqual({
+          command: { program: "hunk", argv: ["hunk", "diff", "--watch", "HEAD", "--", "a.txt"], cwd: withHunk.repository },
+        })
+        const without = yield* world({ gh: false, hunk: false })
+        expect(yield* (yield* start({ ses_1: without.repository }, without.env)).review("ses_1", "b.txt")).toEqual({
+          command: { program: "pager", argv: ["git", "--paginate", "diff", "--no-index", "--", "/dev/null", "b.txt"], cwd: without.repository },
+          note: HUNK_MISSING,
+        })
+      }),
+    ))
+
+  test("a question that names no session is answered, not failed", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { env } = yield* world({ gh: false, hunk: false })
+        const plugin = yield* start({}, env)
+        expect(yield* plugin.raw("checkout", {})).toEqual({ error: "the question names no session" })
+        expect(yield* plugin.raw("review", { sessionID: "ses_1" })).toEqual({ note: "the question names no session" })
+      }),
+    ))
+})

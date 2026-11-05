@@ -21,6 +21,13 @@
         "typescript": "^7",
       },
     },
+    "cmd/git": {
+      "name": "@dotfiles/opencode-cmd-git",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-git": "workspace:*",
+      },
+    },
     "cmd/guard": {
       "name": "@dotfiles/opencode-cmd-guard",
       "version": "0.0.0",
@@ -71,6 +78,10 @@
     },
     "mods/anthropic-auth": {
       "name": "@dotfiles/opencode-anthropic-auth",
+      "version": "0.0.0",
+    },
+    "mods/git": {
+      "name": "@dotfiles/opencode-git",
       "version": "0.0.0",
     },
     "mods/guard": {
@@ -136,6 +147,8 @@
 
     "@dotfiles/opencode-anthropic-auth": ["@dotfiles/opencode-anthropic-auth@workspace:mods/anthropic-auth"],
 
+    "@dotfiles/opencode-cmd-git": ["@dotfiles/opencode-cmd-git@workspace:cmd/git"],
+
     "@dotfiles/opencode-cmd-guard": ["@dotfiles/opencode-cmd-guard@workspace:cmd/guard"],
 
     "@dotfiles/opencode-cmd-herdr": ["@dotfiles/opencode-cmd-herdr@workspace:cmd/herdr"],
@@ -147,6 +160,8 @@
     "@dotfiles/opencode-cmd-pool": ["@dotfiles/opencode-cmd-pool@workspace:cmd/pool"],
 
     "@dotfiles/opencode-cmd-status": ["@dotfiles/opencode-cmd-status@workspace:cmd/status"],
+
+    "@dotfiles/opencode-git": ["@dotfiles/opencode-git@workspace:mods/git"],
 
     "@dotfiles/opencode-guard": ["@dotfiles/opencode-guard@workspace:mods/guard"],
 

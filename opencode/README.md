@@ -163,6 +163,49 @@ because status decides nothing. It holds a view, values and contracts:
 
 Status stores nothing. Each RPC call reads the call log and the runs again.
 
+## Git
+
+`mods/git` ports gent's `@gent/git`; its plugins are `cmd/git` (`server.ts`
+and `tui.tsx`). The TUI plugin adds a Git section to the session sidebar
+(`tui/sidebar.tsx`, lines from `sidebar.ts`):
+
+```
+Git
+main · ↑1 ↓2 origin/main
+3 files +40 −12
+#123 Title · open · checks ✓ · review required
+```
+
+It reads when it mounts, when a step of the session ends and every 10
+seconds. A directory in no checkout has no section. A checkout git could not
+read is one muted note. The pull request row needs `gh`. Without `gh`, with
+`gh` signed out, or with no GitHub remote, there is no row. `/git` opens a
+pane (`tui/pane.tsx`, rows from `pane.ts`) that lists the changed files and
+the pull request. In the pane, ↑ and ↓ pick a file. Enter hands the terminal
+to `hunk diff --watch <base> -- <path>`, or to `git --paginate diff` when
+hunk is not on PATH, and the pane says so. The plugin API has no handover,
+so the pane suspends the renderer, runs the command and resumes, as
+OpenCode's external editor does.
+
+The server plugin answers the `dotfiles-opencode.git` RPC (`git.ts`):
+`checkout`, `pullRequest` and `review`, each for one session. It reads the
+session's directory from OpenCode on every call, so a session that moves is
+read where it is. It takes no options. The model has no aggregate:
+
+- Values: the checkout (`checkout.ts`), parsed from `git status
+  --porcelain=v2 --branch -z` and `git diff --numstat -z` against `HEAD`, or
+  the empty tree on an unborn branch, with untracked files counted up to 200
+  files of 512 KiB each. Also the pull request (`pull-request.ts`) from
+  `gh pr view --json`, and the review command (`review.ts`).
+- Handler: `Git` (`model.ts`). It keeps `gh`'s answers by the checkout's
+  root, branch, upstream and ahead and behind counts, for 60 seconds, or 30
+  seconds after a failure. It does not ask again when `gh` is missing.
+- Contracts: `SessionDirectories`, `Checkouts`, `PullRequests` and
+  `Programs` in `service.ts`, with their laws in `laws.ts`. `opencode/`
+  asks the host. `process/` runs git with no optional locks and no index
+  refresh, so a read never takes the agent's `index.lock`. It also runs `gh`
+  and looks up programs on PATH.
+
 ## Herdr
 
 `cmd/herdr` is a TUI plugin that tells [herdr](https://herdr.dev) what the
