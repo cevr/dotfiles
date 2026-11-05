@@ -224,19 +224,32 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
   test("All: a row per call with Prime's counts, the whole diff, output and the agent's reply", () => {
     const all = frames.all
     expect(all.text).toMatch(/^ {40,}Expanded mode \(Ctrl\+O to collapse\)$/m)
-    for (const line of [
+    const lines = [
+      // A lone call is the group's line: what hangs under it has no rail.
       "  ✓ shell · printf 'test_net.py F\\n1 failed\\n' · ↑ 1 ↓ 2 lines · <t>",
       "    ╰─ test_net.py F",
       "       1 failed",
-      "   6               backoff(i)",
-      "    │ ✉ Agent message · ↓ code-reviewer",
-      "    ╰─ Approved: the loop now makes every attempt.",
       "  ✗ Edited 1 file · ran 1 agent · searched 1 pattern · read 1 file · 1 failed",
+      "  ├ ✓ patch · src/net.py · ↑ 6 lines · <t>",
+      // As at Details and in fx, a row's body keeps the tree's rail while rows follow.
+      "  │ ╰─ src/net.py +1 -1",
+      "  │   6               backoff(i)",
+      "  │ │ ✉ Agent message · ↓ code-reviewer",
+      "  │ ╰─ Approved: the loop now makes every attempt.",
       "  ├ ✓ grep · retries in src · ↑ 1 ↓ 5 lines · <t>",
-      "    ╰─ Found 2 matches",
+      "  │ ╰─ Found 2 matches",
       "  └ ✗ read · out/traces.jsonl · ↑ 1 lines · <t> · File not found",
-    ])
+    ]
+    const at = lines.map((line) => {
       expect(all.text).toMatch(row(line))
+      return indexOf(all, row(line))
+    })
+    expect(at).toEqual([...at].sort((a, b) => a - b))
+    // The rail runs unbroken from the first row to the last, through every body, and stops there.
+    const first = at[4]!
+    const last = at[11]!
+    for (const line of all.lines.slice(first, last + 1)) expect(line).toMatch(/^ {2}[├│└](?: |$)/)
+    expect(all.lines[last + 1]).toBe("")
     // All opens the thoughts the other levels hide.
     expect(all.text).toMatch(row("  Look at the test first, then spawn a reviewer."))
     // The subagent's result envelope never shows.

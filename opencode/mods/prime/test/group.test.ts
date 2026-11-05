@@ -2,11 +2,14 @@
 import { describe, expect, test } from "bun:test"
 import {
   BURST_MS,
+  branch,
+  callBody,
   canonical,
   completionWords,
   failureRuns,
   followsCall,
   groupRun,
+  hasBody,
   headerRuns,
   listed,
   noticeBurst,
@@ -165,6 +168,50 @@ describe("the tree rows", () => {
   test("a subagent with a description reads as that description alone, without its prompt", () => {
     const tree = rows(calls(call("subagent", { agent: "general", description: "Fix money parsing", prompt: "Task 1: a long brief." })))
     expect(`${verb(tree[0]!)} ${subject(tree[0]!)}`).toBe("Ran Fix money parsing")
+  })
+})
+
+describe("the tree's connectors and rail, at every level", () => {
+  test("rows that rows follow are ├ and keep the rail under their bodies; the last is └ and its body has none", () => {
+    expect([0, 1, 2].map((index) => branch(index, 3, false))).toEqual([
+      { connector: "├", rail: true },
+      { connector: "├", rail: true },
+      { connector: "└", rail: false },
+    ])
+    // Overview's one failure row still hangs under the header.
+    expect(branch(0, 1, false)).toEqual({ connector: "└", rail: false })
+  })
+
+  test("a row that is the group's line alone has no connector and no rail", () => {
+    expect(branch(0, 1, true)).toEqual({ rail: false })
+  })
+})
+
+describe("what hangs under a call at the all level", () => {
+  /** A finished call with `output` as its text content. */
+  const said = (part: ToolPart, output: string) => {
+    const done = part as unknown as { state: Record<string, unknown> }
+    return { ...done, state: { ...done.state, content: [{ type: "text", text: output }] } } as unknown as ToolPart
+  }
+  const [patch] = calls(said(edit("src/net.py", 1, 1), "Success. Updated src/net.py"))
+  const [reply] = calls(said(call("task", { agent: "code-reviewer", prompt: "Review." }), "Approved."))
+  const [started] = calls(said(call("subagent", { description: "fix-a", prompt: "A", background: true }), "Started."))
+  const [missing] = calls(call("read", { path: "x.md" }, "error"))
+
+  test("a patch hangs its files' diffs, never its output", () => {
+    const body = callBody(patch!)
+    expect(body.files.map((file) => file.path)).toEqual(["src/net.py"])
+    expect(body.output).toBe("")
+    expect(hasBody(body)).toBe(true)
+  })
+
+  test("a foreground agent that finished hangs its Agent message line and its reply; a background launch only its output", () => {
+    expect(callBody(reply!)).toEqual({ files: [], reply: true, output: "Approved." })
+    expect(callBody(started!)).toEqual({ files: [], reply: false, output: "Started." })
+  })
+
+  test("a failed read with no output hangs nothing, so no rail is drawn under it", () => {
+    expect(hasBody(callBody(missing!))).toBe(false)
   })
 })
 

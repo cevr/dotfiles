@@ -4,7 +4,16 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import type { SessionPart } from "@opencode/plugin/tui/context"
 import { cellCalls, expand, operations, toolsInCode } from "./kernel"
-import { editedFiles, toolInput, toolMetadata, toolPreview, subagentName, type ToolPart } from "./view"
+import {
+  editedFiles,
+  toolInput,
+  toolMetadata,
+  toolOutput,
+  toolPreview,
+  subagentName,
+  type EditedFile,
+  type ToolPart,
+} from "./view"
 
 /** A session message, as the plugin API lists them. */
 type SessionMessageInfo = ReturnType<Plugin.Context["data"]["session"]["message"]["list"]>[number]
@@ -325,6 +334,45 @@ export function rows(calls: ReadonlyArray<Call>): Row[] {
     else result.push({ tool: call.tool, outcome: state, calls: [call.part], owner: call.part.id })
   }
   return result
+}
+
+/** A tree row's place: its connector (none for a row alone) and whether its body keeps the rail. */
+export type Branch = { readonly connector?: "├" | "└"; readonly rail: boolean }
+
+/**
+ * Where row `index` of `count` sits in the tree: its connector, `├` while
+ * rows follow and `└` on the last, and whether what hangs under it keeps the
+ * tree's `│` rail, as fx's continuation rows do (`│ ` while rows follow,
+ * blank past the last). A row `alone` is the group's line, behind the
+ * group's glyph: no connector and no rail. Every level draws its rows by it.
+ */
+export function branch(index: number, count: number, alone: boolean): Branch {
+  if (alone) return { rail: false }
+  const last = index >= count - 1
+  return { connector: last ? "└" : "├", rail: !last }
+}
+
+/**
+ * What hangs under one call's row at the all level: each edited file's
+ * whole diff, the agent's reply for a foreground subagent that finished, and
+ * the output's tail (none for a patch, whose diff says it). Empty when the
+ * row has nothing under it.
+ */
+export function callBody(call: Call): {
+  readonly files: ReadonlyArray<EditedFile>
+  readonly reply: boolean
+  readonly output: string
+} {
+  return {
+    files: editedFiles(call.part),
+    reply: call.tool === "subagent" && call.part.state.status === "completed" && !background(call.part),
+    output: call.tool === "patch" ? "" : toolOutput(call.part),
+  }
+}
+
+/** Whether a call's all-level body draws anything. */
+export function hasBody(body: ReturnType<typeof callBody>) {
+  return body.files.length > 0 || body.reply || body.output !== ""
 }
 
 /**

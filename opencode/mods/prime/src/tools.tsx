@@ -18,10 +18,13 @@ import { createMemo, For, Match, Show, Switch, type Accessor, type JSX } from "s
 import { useNow } from "./clock"
 import {
   background,
+  branch,
+  callBody,
   errorText,
   failureRuns,
   followsCall,
   groupRun,
+  hasBody,
   headerRuns,
   outcome,
   rowEnding,
@@ -29,6 +32,7 @@ import {
   rows,
   subject,
   verb,
+  type Branch,
   type Call,
   type Row,
   type Run,
@@ -40,7 +44,6 @@ import {
   countLabel,
   diffRows,
   duration,
-  editedFiles,
   elapsed,
   errorName,
   lineCounts,
@@ -57,8 +60,6 @@ type Context = Plugin.Context
 
 /** Lines of output under a row before the rest is counted. */
 const HEAD_LINES = 5
-/** Where output and diffs hang under a tree row: past the connector and its space. */
-const UNDER = GUTTER + 2
 /** The columns a header or a row has after its glyph or connector: the transcript's insets, the gutter, the lead and its space, and the terminal's last column, kept free as gent keeps it. */
 const LEAD_COLUMNS = 2 + GUTTER + 2 + 1
 
@@ -115,8 +116,8 @@ export function ToolRow(props: PartProps & { tool: string; detail: Accessor<Deta
               <TreeRow
                 context={props.context}
                 row={row}
-                lead={single() ? glyph() : { char: index() === shown().length - 1 ? "└" : "├" }}
-                rail={!single() && index() < shown().length - 1}
+                branch={branch(index(), shown().length, single())}
+                glyph={glyph()}
                 detail={props.detail()}
                 lastCommand={!running() && row === shown().findLast((item) => item.tool === "shell")}
                 now={now}
@@ -167,9 +168,10 @@ function Runs(props: { context: Context; runs: ReadonlyArray<Run> }) {
 function TreeRow(props: {
   context: Context
   row: Row
-  lead: Lead
-  /** Whether rows follow under this one: what hangs under it keeps the tree's `│` rail. */
-  rail: boolean
+  /** The row's place in the tree (`branch`): its connector, and whether what hangs under it keeps the `│` rail. */
+  branch: Branch
+  /** The group's glyph, which leads a row that is the group's line alone. */
+  glyph: Lead
   detail: Detail
   lastCommand: boolean
   now: Accessor<number>
@@ -177,7 +179,8 @@ function TreeRow(props: {
   const theme = () => props.context.theme
   const part = () => props.row.calls[0]!
   const width = useLineWidth()
-  const lead = () => <span style={{ fg: props.lead.color ?? theme().text.muted }}>{props.lead.char}</span>
+  const leadOf = (): Lead => (props.branch.connector ? { char: props.branch.connector } : props.glyph)
+  const lead = () => <span style={{ fg: leadOf().color ?? theme().text.muted }}>{leadOf().char}</span>
   // A subagent's row opens its session.
   const link = useSessionLink(props.context, () => (props.row.tool === "subagent" ? subagentSession(part()) : undefined))
   const timer = createMemo(() => {
@@ -194,7 +197,13 @@ function TreeRow(props: {
   return (
     <Switch>
       <Match when={props.detail === "all"}>
-        <CallRow context={props.context} lead={props.lead.color ? undefined : props.lead.char} tool={props.row.tool} part={part()} />
+        <CallRow
+          context={props.context}
+          connector={props.branch.connector}
+          rail={props.branch.rail}
+          tool={props.row.tool}
+          part={part()}
+        />
       </Match>
       <Match when={props.detail === "overview"}>
         <box paddingLeft={GUTTER} {...link.handlers}>
@@ -225,7 +234,7 @@ function TreeRow(props: {
               </Show>
             </text>
           </box>
-          <RowBody context={props.context} row={props.row} lastCommand={props.lastCommand} rail={props.rail} />
+          <RowBody context={props.context} row={props.row} lastCommand={props.lastCommand} rail={props.branch.rail} />
         </box>
       </Match>
     </Switch>
@@ -269,7 +278,7 @@ function RowBody(props: { context: Context; row: Row; lastCommand: boolean; rail
       <Match when={props.row.outcome === "failed" ? errorText(part()) : undefined}>
         {(text) => (
           <Hang context={props.context} rail={props.rail}>
-            <Head context={props.context} text={text()} inset={0} />
+            <Head context={props.context} text={text()} />
           </Hang>
         )}
       </Match>
@@ -282,12 +291,12 @@ function RowBody(props: { context: Context; row: Row; lastCommand: boolean; rail
       </Match>
       <Match when={props.row.tool === "shell" && (props.lastCommand || props.row.outcome === "warning")}>
         <Hang context={props.context} rail={props.rail}>
-          <Head context={props.context} text={toolOutput(part())} inset={0} />
+          <Head context={props.context} text={toolOutput(part())} />
         </Hang>
       </Match>
       <Match when={props.row.tool === "subagent" && props.row.outcome === "done" && !background(part())}>
         <Hang context={props.context} rail={props.rail}>
-          <AgentMessage context={props.context} from={subagentName(toolInput(part()))} inset={0} />
+          <AgentMessage context={props.context} from={subagentName(toolInput(part()))} />
         </Hang>
       </Match>
     </Switch>
@@ -333,8 +342,8 @@ const NO_BORDER = {
   rightT: "",
 }
 
-/** The first lines of some output under a `│ ` gutter, then how many lines the rest is; `inset` columns in (past a connector by default). */
-function Head(props: { context: Context; text: string; inset?: number }) {
+/** The first lines of some output under a `│ ` gutter, then how many lines the rest is; it goes in a row's hang. */
+function Head(props: { context: Context; text: string }) {
   const theme = () => props.context.theme
   const lines = createMemo(() => {
     const trimmed = props.text.replace(/\n+$/, "")
@@ -347,7 +356,7 @@ function Head(props: { context: Context; text: string; inset?: number }) {
     </text>
   )
   return (
-    <box flexDirection="column" paddingLeft={props.inset ?? UNDER} flexShrink={0}>
+    <box flexDirection="column" flexShrink={0}>
       <For each={lines().slice(0, HEAD_LINES)}>{(line) => gutter(line)}</For>
       <Show when={lines().length > HEAD_LINES}>
         {gutter(<span style={{ fg: theme().text.faint }}>… +{lines().length - HEAD_LINES} lines (ctrl+o)</span>)}
@@ -358,10 +367,10 @@ function Head(props: { context: Context; text: string; inset?: number }) {
 
 // A subagent's answer, as Prime shows agent mail: a green envelope, then the
 // direction (`↓` received) and the sender, under the tree's gutter.
-function AgentMessage(props: { context: Context; from: string; inset?: number }) {
+function AgentMessage(props: { context: Context; from: string }) {
   const theme = () => props.context.theme
   return (
-    <box paddingLeft={props.inset ?? UNDER}>
+    <box>
       <text wrapMode="none" truncate fg={theme().text.muted}>
         <span style={{ fg: theme().text.faint }}>│ </span>
         <span style={{ fg: theme().text.feedback.success.base }}>✉ </span>
@@ -387,14 +396,15 @@ function Glyph(props: { context: Context; part: ToolPart }) {
 /**
  * The all level's row: one call, as Prime draws it (`✓ shell · preview ·
  * ↑ 1 ↓ 2 lines · 12ms`) behind the tree connector (none when the group is
- * this call alone), then its whole diff and the tail of its output.
+ * this call alone), then its whole diff and the tail of its output, hung as
+ * the details level hangs a row's body: beside the tree's rail while rows
+ * follow.
  */
-function CallRow(props: { context: Context; lead?: string; tool: string; part: ToolPart }) {
+function CallRow(props: { context: Context; connector?: string; rail: boolean; tool: string; part: ToolPart }) {
   const theme = () => props.context.theme
   const preview = createMemo(() => toolPreview(props.tool, toolInput(props.part)))
   const counts = createMemo(() => countLabel(lineCounts(props.tool, props.part)))
-  const files = createMemo(() => editedFiles(props.part))
-  const output = createMemo(() => toolOutput(props.part))
+  const body = createMemo(() => callBody({ tool: props.tool, part: props.part }))
   const tail = createMemo(() => [counts(), duration(props.part)].filter(Boolean).join(" · "))
   const sep = () => <span style={{ fg: theme().text.faint }}> · </span>
   const link = useSessionLink(props.context, () => (props.tool === "subagent" ? subagentSession(props.part) : undefined))
@@ -402,7 +412,7 @@ function CallRow(props: { context: Context; lead?: string; tool: string; part: T
     <box flexDirection="column" flexShrink={0}>
       <box flexDirection="row" paddingLeft={GUTTER} {...link.handlers}>
         <text flexShrink={0} wrapMode="none">
-          <Show when={props.lead}>{(lead) => <span style={{ fg: theme().text.muted }}>{lead()} </span>}</Show>
+          <Show when={props.connector}>{(lead) => <span style={{ fg: theme().text.muted }}>{lead()} </span>}</Show>
           <Glyph context={props.context} part={props.part} />
           <span style={{ fg: link.hover() ? theme().text.base : theme().text.muted }}>{props.tool}</span>
           <Show when={preview()}>{sep()}</Show>
@@ -423,36 +433,38 @@ function CallRow(props: { context: Context; lead?: string; tool: string; part: T
           </Show>
         </text>
       </box>
-      <For each={files()}>
-        {(file) => (
-          <>
-            <box paddingLeft={UNDER}>
-              <text wrapMode="none" fg={theme().text.faint}>
-                ╰─ <span style={{ fg: theme().text.muted }}>{file.path}</span>{" "}
-                <span style={{ fg: theme().diff.text.added }}>+{file.additions}</span>{" "}
-                <span style={{ fg: theme().diff.text.removed }}>-{file.deletions}</span>
-              </text>
-            </box>
-            <DiffBands context={props.context} path={file.path} rows={diffRows(file.patch, Infinity)} />
-          </>
-        )}
-      </For>
-      <Show when={props.tool === "subagent" && props.part.state.status === "completed" && !background(props.part)}>
-        <AgentMessage context={props.context} from={subagentName(toolInput(props.part))} />
-      </Show>
-      <Show when={props.tool !== "patch" && output()}>
-        <ShellTail context={props.context} output={output()} />
+      <Show when={hasBody(body())}>
+        <Hang context={props.context} rail={props.rail}>
+          <For each={[...body().files]}>
+            {(file) => (
+              <>
+                <text wrapMode="none" fg={theme().text.faint}>
+                  ╰─ <span style={{ fg: theme().text.muted }}>{file.path}</span>{" "}
+                  <span style={{ fg: theme().diff.text.added }}>+{file.additions}</span>{" "}
+                  <span style={{ fg: theme().diff.text.removed }}>-{file.deletions}</span>
+                </text>
+                <DiffBands context={props.context} path={file.path} rows={diffRows(file.patch, Infinity)} />
+              </>
+            )}
+          </For>
+          <Show when={body().reply}>
+            <AgentMessage context={props.context} from={subagentName(toolInput(props.part))} />
+          </Show>
+          <Show when={body().output}>
+            <ShellTail context={props.context} output={body().output} />
+          </Show>
+        </Hang>
       </Show>
     </box>
   )
 }
 
-// Expanded output: the last five lines under a dim gutter.
+// Expanded output: the last five lines under a dim gutter, in a row's hang.
 function ShellTail(props: { context: Context; output: string }) {
   const lines = createMemo(() => props.output.replace(/\n+$/, "").split("\n"))
   const hidden = createMemo(() => Math.max(0, lines().length - 5))
   return (
-    <box flexDirection="column" paddingLeft={UNDER}>
+    <box flexDirection="column">
       <Show when={hidden()}>
         <text fg={props.context.theme.text.faint}>... {hidden()} earlier lines</text>
       </Show>
