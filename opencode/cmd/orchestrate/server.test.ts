@@ -317,9 +317,16 @@ describe("the agents", () => {
         })
         expect(agents.worker!.request.settings.compactionWindow).toBe(200_000)
 
+        // The keep-list joins the summary prompt, leaving the system (and so the cached prefix) as it was.
         const system: Array<unknown> = []
-        for (const hook of plugin.hooks.compaction ?? []) yield* hook({ system })
-        expect(system).toEqual([{ type: "text", text: KEEP }])
+        const prompt = ["Summarize."]
+        for (const hook of plugin.hooks.compaction ?? []) yield* hook({ system, experimental: { prompt } })
+        expect(system).toEqual([])
+        expect(prompt).toEqual(["Summarize.", KEEP])
+        // A host without the summary prompt takes it as a system part.
+        const older: Array<unknown> = []
+        for (const hook of plugin.hooks.compaction ?? []) yield* hook({ system: older })
+        expect(older).toEqual([{ type: "text", text: KEEP }])
       }),
     ))
 })

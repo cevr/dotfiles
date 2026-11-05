@@ -208,9 +208,14 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
       })
       yield* Effect.forkScoped(Effect.forever(Effect.sleep(REREAD).pipe(Effect.andThen(Effect.ignoreCause(ctx.agent.reload())))))
 
+      // The keep-list goes into the summary prompt, the last user message, so the compaction request keeps the
+      // conversation's cached prefix (system, tools and messages as the normal request sends them). A host without
+      // the summary prompt (before fork 5970ea5dc4) takes it as a system part, which costs the cache but still works.
       yield* ctx.session.hook("compaction", (event) =>
         Effect.sync(() => {
-          event.system.push({ type: "text", text: KEEP })
+          const prompt = (event as { experimental?: { prompt?: Array<string> } }).experimental?.prompt
+          if (Array.isArray(prompt)) prompt.push(KEEP)
+          else event.system.push({ type: "text", text: KEEP })
         }),
       )
 
