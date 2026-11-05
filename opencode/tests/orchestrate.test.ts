@@ -89,14 +89,14 @@ const run = async (name: string, spec: Omit<Spec, "base" | "fork" | "plugin">): 
 const RUN_MS = 150_000
 
 describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
-  test("pace: an over-limit pool holds new agents with a background wait command; under pace they run", async () => {
+  test("pace: with no wakes to keep a latch, an over-limit pool refuses new agents with when it opens; under pace they run", async () => {
     const held = await run("pace-held", { scenario: "subagents", now: WEDNESDAY, pace: true })
     expect(held.children).toEqual([])
     const messages = JSON.stringify(held.root!.messages)
     expect(messages).toContain("pace holds this agent")
-    expect(messages).toContain("--wait")
-    expect(messages).toContain("background")
-    expect(messages).toContain("same agent and description")
+    // The fake pool says it opens a minute on; tests/prime-latch.test.ts runs the latch itself.
+    expect(messages).toContain(`It opens about ${new Date(Date.parse(WEDNESDAY) + 60_000).toISOString()}`)
+    expect(messages).toContain("no latch could be kept for it")
     const open = await run("pace-open", { scenario: "subagents", now: WEDNESDAY, pace: false })
     expect(open.children.map((child) => child.agent).sort()).toEqual(["verifier", "worker"])
   }, RUN_MS)
@@ -106,8 +106,8 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
     expect(held.children).toEqual([])
     const messages = JSON.stringify(held.root!.messages)
     expect(messages).toContain("the Codex account's pace holds this agent. scripted Codex week is over.")
-    // The wait ends when the admission said the week opens.
-    expect(messages).toContain(`--wait ${Date.parse("2026-11-04T16:20:00Z")}`)
+    // It opens when the admission said the week opens.
+    expect(messages).toContain("It opens about 2026-11-04T16:20:00.000Z")
     const asked = readFileSync(join(scratch, "codex-held", "codex-args.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[])
     expect(asked).toContainEqual(["--codex", "--admit", "--model", "sim-model", "--role", "worker"])
     expect(asked).toContainEqual(["--codex", "--admit", "--model", "sim-model", "--role", "verifier"])

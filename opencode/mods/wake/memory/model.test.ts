@@ -1,18 +1,21 @@
 // The wakes model over the memory doubles, on the test clock: what a server
 // does with an alarm or a monitor from the tool call to the fire, through a
-// reload, a stop, and the OS backstop's call.
+// reload, a stop, and the OS backstop's call; and a latch from the moment it
+// latches to its opening, a recheck still held, a cancel, and a restart.
 import { describe, expect, test } from "bun:test"
 import { Context, Effect, Exit, Layer, Logger, Scope } from "effect"
 import { TestClock } from "effect/testing"
 import { oneShot, titleOf } from "../backstop.ts"
-import { alarm as alarmFixture } from "../laws.ts"
+import type { LatchAsk } from "../latch.ts"
+import { alarm as alarmFixture, latch as latchFixture } from "../laws.ts"
 import * as Model from "../model.ts"
-import { RETRY_MS, WakesModel } from "../model.ts"
+import { OPEN_RETRY_MS, RETRY_MS, WakesModel } from "../model.ts"
 import { Changes } from "../service.ts"
 import type { Alarm, Entry } from "../wake.ts"
 import * as MemoryBackstop from "./backstop.ts"
 import * as MemoryChecks from "./checks.ts"
 import * as MemoryCourier from "./courier.ts"
+import * as MemoryOpener from "./opener.ts"
 import * as MemoryStore from "./store.ts"
 
 const DIR = "/work/app"
@@ -38,6 +41,7 @@ const world = (...sessionIDs: ReadonlyArray<string>) => ({
   sessions: MemoryCourier.empty(...sessionIDs),
   jobs: MemoryBackstop.empty(),
   checks: MemoryChecks.empty(),
+  opener: MemoryOpener.empty(),
   changed: [] as Array<string>,
 })
 type World = ReturnType<typeof world>
@@ -51,6 +55,7 @@ const server = (w: World, directory = DIR) =>
       Layer.provide(MemoryCourier.layer(w.sessions)),
       Layer.provide(MemoryChecks.layer(w.checks)),
       Layer.provide(MemoryBackstop.layer(w.jobs)),
+      Layer.provide(MemoryOpener.layer(w.opener)),
       Layer.provide(Layer.succeed(Changes, { changed: (sessionID) => Effect.sync(() => void w.changed.push(sessionID)) })),
     )
     const model = Context.get(yield* Layer.buildWithScope(layer, scope), WakesModel)
@@ -62,6 +67,7 @@ const run = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) =>
 
 const inbox = (w: World, sessionID = "ses_a") => w.sessions.inboxes.get(sessionID) ?? []
 const texts = (w: World, sessionID = "ses_a") => inbox(w, sessionID).map((message) => message.letter.text)
+const firingOf = (entry: Entry | undefined) => (entry === undefined || entry.kind === "latch" ? undefined : entry.firing)
 
 describe("an alarm", () => {
   test("wakes its session at its time with the note, then goes with its OS job", () =>
@@ -117,7 +123,7 @@ describe("an alarm", () => {
         expect(texts(w)[0]).toContain("It repeats every 1m; the next is due")
         const next = w.store.entries.get(odd.entry.id)
         expect(next?.kind === "alarm" ? next.dueAt : undefined).toBe(270 * SECOND)
-        expect(next?.firing).toBeUndefined()
+        expect(firingOf(next)).toBeUndefined()
         expect(w.jobs.jobs.get(titleOf(odd.entry.id))?.schedule).toEqual(oneShot(270 * SECOND))
       }),
     ))
@@ -147,7 +153,7 @@ describe("an alarm", () => {
         w.sessions.refusing.set("ses_a", "busy")
         const placed = yield* model.wake("ses_a", { afterSeconds: 1, note: "n" })
         yield* until(SECOND)
-        const recorded = w.store.entries.get(placed.entry.id)?.firing
+        const recorded = firingOf(w.store.entries.get(placed.entry.id))
         expect(recorded).toBeDefined()
         w.sessions.refusing.delete("ses_a")
         yield* until(SECOND + RETRY_MS - 1)
@@ -288,7 +294,7 @@ describe("across a reload or a stop", () => {
         const placed = yield* first.model.wake("ses_a", { afterSeconds: 1, note: "n" })
         w.sessions.refusing.set("ses_a", "reloading")
         yield* until(SECOND)
-        const firing = w.store.entries.get(placed.entry.id)?.firing
+        const firing = firingOf(w.store.entries.get(placed.entry.id))
         expect(firing).toBeDefined()
         yield* first.stop
         // The message had reached the session before the reload cut the fire short of settling.
@@ -451,6 +457,168 @@ describe("the OS backstop's due call", () => {
         yield* until(5 * SECOND)
         expect(w.jobs.jobs.has(titleOf("w0000zz"))).toBe(false)
         expect(inbox(w)).toEqual([])
+      }),
+    ))
+})
+
+describe("a latch", () => {
+  const ask: LatchAsk = {
+    sessionID: "ses_a",
+    subagent: latchFixture.subagent,
+    hold: "pace",
+    reason: "anthropic is at 92% of its 5h window",
+    opensAt: 10 * MINUTE,
+    recheckAt: 2 * MINUTE,
+    context: { background: false },
+  }
+  const childOf = (w: World, sessionID: string) => w.sessions.children.get(sessionID)
+
+  test("latched: it is kept as the parent's, its child made unprompted with its mark, and its time guarded", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        w.opener.answer = () => ({ outcome: "opened" })
+        const { model } = yield* server(w)
+        const latched = yield* model.latch(ask)
+        expect(childOf(w, latched.child)).toEqual({
+          sessionID: latched.child,
+          parentID: "ses_a",
+          directory: DIR,
+          title: "Add the export",
+          agent: "implementor",
+          model: "anthropic/claude-opus#high",
+          mark: { hold: "pace", reason: ask.reason, opensAt: 10 * MINUTE, at: 0 },
+        })
+        expect(w.sessions.started.get(latched.child)).toBeUndefined()
+        expect(w.jobs.jobs.get(titleOf(latched.id))?.schedule).toEqual(oneShot(10 * MINUTE))
+        expect((yield* model.pending(["ses_a"])).entries).toEqual([
+          { id: latched.id, kind: "latch", sessionID: "ses_a", mode: "wake", note: "Add the export", dueAt: 10 * MINUTE, child: latched.child },
+        ])
+        expect(w.changed).toContain("ses_a")
+        yield* until(2 * MINUTE - SECOND)
+        expect(w.opener.asked).toEqual([])
+      }),
+    ))
+
+  test("re-latched: a recheck still held keeps it with the new reason and time, and asks again then and not before", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const answers = [
+          { outcome: "held" as const, hold: "pace" as const, reason: "anthropic is at 95% of its 5h window", opensAt: 20 * MINUTE, recheckAt: 4 * MINUTE },
+          { outcome: "opened" as const },
+        ]
+        w.opener.answer = () => answers.shift() ?? { outcome: "opened" }
+        const { model } = yield* server(w)
+        const latched = yield* model.latch(ask)
+        yield* until(2 * MINUTE)
+        expect(w.opener.asked).toHaveLength(1)
+        const held = w.store.entries.get(latched.id)
+        expect(held?.kind === "latch" ? [held.reason, held.opensAt, held.recheckAt] : undefined).toEqual(["anthropic is at 95% of its 5h window", 20 * MINUTE, 4 * MINUTE])
+        expect(childOf(w, latched.child)?.mark).toEqual({ hold: "pace", reason: "anthropic is at 95% of its 5h window", opensAt: 20 * MINUTE, at: 0 })
+        expect(w.jobs.jobs.get(titleOf(latched.id))?.schedule).toEqual(oneShot(20 * MINUTE))
+        yield* until(4 * MINUTE - SECOND)
+        expect(w.opener.asked).toHaveLength(1)
+        yield* until(4 * MINUTE)
+        expect(w.opener.asked).toHaveLength(2)
+      }),
+    ))
+
+  test("opened: at its time the opener starts it, and the latch, its job and the child's mark go", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        w.opener.answer = () => ({ outcome: "opened" })
+        const { model } = yield* server(w)
+        const latched = yield* model.latch({ ...ask, hold: "sabbath", reason: "It is the Sabbath", recheckAt: 10 * MINUTE })
+        yield* until(10 * MINUTE)
+        expect(w.opener.asked.map((asked) => [asked.id, asked.child, asked.subagent.prompt])).toEqual([[latched.id, latched.child, ask.subagent.prompt]])
+        expect(w.store.entries.has(latched.id)).toBe(false)
+        expect(childOf(w, latched.child)?.mark).toBeUndefined()
+        yield* until(10 * MINUTE + 6 * SECOND)
+        expect(w.jobs.jobs.has(titleOf(latched.id))).toBe(false)
+        expect(inbox(w)).toEqual([])
+      }),
+    ))
+
+  test("cancelled: wake_cancel drops it and its job, its child reads cancelled, and it never opens", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        w.opener.answer = () => ({ outcome: "opened" })
+        const { model } = yield* server(w)
+        const latched = yield* model.latch(ask)
+        yield* until(30 * SECOND)
+        expect(yield* model.cancel("ses_a", latched.id)).toEqual([latched.id])
+        expect(w.store.entries.has(latched.id)).toBe(false)
+        expect(w.jobs.jobs.has(titleOf(latched.id))).toBe(false)
+        expect(childOf(w, latched.child)?.mark).toEqual({ hold: "pace", reason: ask.reason, opensAt: 10 * MINUTE, at: 0, cancelledAt: 30 * SECOND })
+        yield* until(20 * MINUTE)
+        expect(w.opener.asked).toEqual([])
+      }),
+    ))
+
+  test("survives a restart: kept across a stop, it opens on the next start once its time passed while no server ran", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        w.opener.answer = () => ({ outcome: "opened" })
+        const first = yield* server(w)
+        const latched = yield* first.model.latch(ask)
+        yield* first.stop
+        yield* until(15 * MINUTE)
+        expect(w.opener.asked).toEqual([])
+        expect(w.store.entries.has(latched.id)).toBe(true)
+        const second = yield* server(w)
+        yield* second.model.start
+        yield* until(15 * MINUTE + SECOND)
+        expect(w.opener.asked.map((asked) => asked.id)).toEqual([latched.id])
+        expect(w.store.entries.has(latched.id)).toBe(false)
+      }),
+    ))
+
+  test("an opener not reachable yet is asked again shortly", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const { model } = yield* server(w)
+        const latched = yield* model.latch(ask)
+        yield* until(2 * MINUTE)
+        expect(w.opener.asked).toHaveLength(1)
+        w.opener.answer = () => ({ outcome: "opened" })
+        yield* until(2 * MINUTE + OPEN_RETRY_MS)
+        expect(w.opener.asked).toHaveLength(2)
+        expect(w.store.entries.has(latched.id)).toBe(false)
+      }),
+    ))
+
+  test("failed: it goes, its child reads failed, and its parent is told why", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        w.opener.answer = () => ({ outcome: "failed", message: "Unknown agent: implementor" })
+        const { model } = yield* server(w)
+        const latched = yield* model.latch(ask)
+        yield* until(2 * MINUTE)
+        expect(w.store.entries.has(latched.id)).toBe(false)
+        expect(childOf(w, latched.child)?.mark?.failed).toBe("Unknown agent: implementor")
+        expect(inbox(w)).toHaveLength(1)
+        expect(inbox(w)[0]?.resume).toBe(true)
+        expect(texts(w)[0]).toContain(`Latch ${latched.id} could not start its subagent: Unknown agent: implementor`)
+      }),
+    ))
+
+  test("a parent that does not exist is refused, and nothing is kept; a deleted child takes its latch with it", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const { model } = yield* server(w)
+        expect((yield* Effect.flip(model.latch({ ...ask, sessionID: "ses_gone" }))).reason).toContain("could not be made")
+        expect(w.store.entries.size).toBe(0)
+        const latched = yield* model.latch(ask)
+        yield* model.forget(latched.child)
+        expect(w.store.entries.size).toBe(0)
+        expect(w.jobs.jobs.has(titleOf(latched.id))).toBe(false)
       }),
     ))
 })

@@ -5,7 +5,7 @@ import { Effect, Layer, type Scope } from "effect"
 import type { CallLine } from "./call-line.ts"
 import { DEFAULTS, type Windows } from "./compaction.ts"
 import type { ModelRef, Pace } from "./pace.ts"
-import { CallLog, CodexAdmission, CompactionWindows, Models, PoolPace, Sessions } from "./service.ts"
+import { CallLog, CodexAdmission, CompactionWindows, type LatchRequest, Latches, type LatchStart, Models, PoolPace, Sessions } from "./service.ts"
 
 const check = <A, E, R>(layer: Layer.Layer<R>, body: Effect.Effect<A, E, R>) =>
   Effect.runPromise(body.pipe(Effect.provide(layer)))
@@ -66,7 +66,9 @@ export const callLogLaws = (name: string, make: Effect.Effect<CallLogProbe, neve
 // ── Sessions ──
 
 /** The sessions a host knows, by id; any other cannot be read. */
-export type SessionsWorld = Readonly<Record<string, { readonly parentID?: string; readonly agent?: string }>>
+export type SessionsWorld = Readonly<
+  Record<string, { readonly parentID?: string; readonly agent?: string; readonly started?: boolean; readonly latch?: unknown }>
+>
 
 export const sessionsLaws = (name: string, layer: (world: SessionsWorld) => Layer.Layer<Sessions>) =>
   describe(`${name} keeps the Sessions laws`, () => {
@@ -74,6 +76,11 @@ export const sessionsLaws = (name: string, layer: (world: SessionsWorld) => Laye
       root: { agent: "build" },
       child: { parentID: "root", agent: "verifier" },
       blank: { parentID: "", agent: "" },
+      ran: { parentID: "root", agent: "worker", started: true },
+      latched: { parentID: "root", agent: "worker", latch: { hold: "pace", reason: "held", opensAt: 9_000, at: 1_000 } },
+      cancelled: { parentID: "root", agent: "worker", latch: { hold: "pace", reason: "held", opensAt: 9_000, at: 1_000, cancelledAt: 2_000 } },
+      failed: { parentID: "root", agent: "worker", latch: { hold: "sabbath", reason: "rest", opensAt: 9_000, at: 1_000, failed: "gone" } },
+      marred: { parentID: "root", agent: "worker", latch: { opensAt: "soon" } },
     }
 
     test("a session's parent and agent are what the host knows", () =>
@@ -98,6 +105,26 @@ export const sessionsLaws = (name: string, layer: (world: SessionsWorld) => Laye
         }),
       ))
 
+    test("a session that ran a turn has started; one made and never prompted has not", () =>
+      check(
+        layer(world),
+        Effect.gen(function* () {
+          const sessions = yield* Sessions
+          expect(yield* sessions.startedOf("ran")).toBe(true)
+          expect(yield* sessions.startedOf("latched")).toBe(false)
+        }),
+      ))
+
+    test("a latched child opens when its mark says; cancelled, failed, unmarked or a mark that does not read is none", () =>
+      check(
+        layer(world),
+        Effect.gen(function* () {
+          const sessions = yield* Sessions
+          expect(yield* sessions.latchOf("latched")).toBe(9_000)
+          for (const id of ["cancelled", "failed", "ran", "marred"]) expect(yield* sessions.latchOf(id)).toBeUndefined()
+        }),
+      ))
+
     test("a session the host cannot read answers none, without failing", () =>
       check(
         layer(world),
@@ -105,6 +132,8 @@ export const sessionsLaws = (name: string, layer: (world: SessionsWorld) => Laye
           const sessions = yield* Sessions
           expect(yield* sessions.parentOf("missing")).toBeUndefined()
           expect(yield* sessions.agentOf("missing")).toBeUndefined()
+          expect(yield* sessions.startedOf("missing")).toBe(false)
+          expect(yield* sessions.latchOf("missing")).toBeUndefined()
         }),
       ))
   })
@@ -227,6 +256,84 @@ export const codexAdmissionLaws = (name: string, layer: (world: CodexWorld) => L
           expect(yield* (yield* CodexAdmission).admit("gpt-5", "verifier")).toBeUndefined()
         }),
       ))
+  })
+
+// ── Latches ──
+
+/** Latches under test: wakes that keep each latch, or refuse with `refuse`; a start that runs, or fails with `fail`. */
+export interface LatchesWorld {
+  readonly refuse?: string
+  readonly fail?: string
+}
+
+const request: LatchRequest = {
+  parent: "ses_parent",
+  from: "build",
+  messageID: "msg_1",
+  callID: "call-1",
+  agent: "implementor",
+  description: "Add the export",
+  prompt: "Add the CSV export.",
+  model: "anthropic/claude-opus#high",
+  hold: "pace",
+  why: "anthropic is at 92% of its 5h window",
+  opensAt: 9_000,
+  recheckAt: 5_000,
+  context: { reason: "kept" },
+}
+
+const opening = (child: string): LatchStart => ({
+  parent: "ses_parent",
+  from: "build",
+  messageID: "msg_1",
+  callID: "call-1",
+  child,
+  agent: "implementor",
+  description: "Add the export",
+  prompt: "Add the CSV export.",
+  model: "anthropic/claude-opus#high",
+})
+
+export const latchesLaws = (name: string, layer: (world: LatchesWorld) => Layer.Layer<Latches>) =>
+  describe(`${name} keeps the Latches laws`, () => {
+    test("each latch kept has its own id and child", () =>
+      check(
+        layer({}),
+        Effect.gen(function* () {
+          const latches = yield* Latches
+          const first = yield* latches.latch(request)
+          const second = yield* latches.latch({ ...request, callID: "call-2" })
+          expect(first.id).not.toBe(second.id)
+          expect(first.child).not.toBe(second.child)
+        }),
+      ))
+
+    test("a latch the wakes will not keep is refused, with their reason", () =>
+      check(
+        layer({ refuse: "this session has no room" }),
+        Effect.gen(function* () {
+          const refused = yield* Effect.flip((yield* Latches).latch(request))
+          expect(refused._tag).toBe("LatchRefused")
+          expect(refused.reason).toBe("this session has no room")
+        }),
+      ))
+
+    test("a latched child starts; a start that fails says why", async () => {
+      await check(
+        layer({}),
+        Effect.gen(function* () {
+          yield* (yield* Latches).start(opening("ses_child"))
+        }),
+      )
+      await check(
+        layer({ fail: "Unknown agent: implementor" }),
+        Effect.gen(function* () {
+          const failed = yield* Effect.flip((yield* Latches).start(opening("ses_child")))
+          expect(failed._tag).toBe("StartFailed")
+          expect(failed.message).toContain("Unknown agent: implementor")
+        }),
+      )
+    })
   })
 
 // ── CompactionWindows ──

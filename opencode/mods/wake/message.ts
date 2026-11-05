@@ -2,9 +2,11 @@
 // the note verbatim, when it was set, and how late it went (a fire due while
 // no OpenCode server ran goes when one starts, and says so). The transcript
 // draws its description as one notice row. Also the tools' receipts and the
-// listing the agent reads after a handoff.
+// listing the agent reads after a handoff, and the letter a latch that could
+// not open leaves its parent.
 import type { Schema } from "effect"
-import { type Alarm, type Check, dueOf, type Entry, type Fresh, type Monitor, type Notice } from "./wake.ts"
+import type { Latch } from "./latch.ts"
+import { type Alarm, type Check, dueOf, type Entry, type Fired, type Fresh, type Monitor, type Notice } from "./wake.ts"
 
 /** A fire as the session reads it. */
 export interface Letter {
@@ -58,10 +60,10 @@ const lateLine = (what: string, tick: number, firedAt: number): ReadonlyArray<st
     : [`It ${what} ${durationOf(late)} late: no OpenCode server was running at ${isoOf(tick)}, so it went when one started.`]
 }
 
-const noticeLine = (entry: Entry): ReadonlyArray<string> =>
+const noticeLine = (entry: Fired): ReadonlyArray<string> =>
   entry.mode === "notify" ? ["This is a notice: it started no turn, and you are reading it at your next one."] : []
 
-const metadataOf = (entry: Entry, tick: number, firedAt: number, extra: Record<string, Schema.Json>): Record<string, Schema.Json> => ({
+const metadataOf = (entry: Fired, tick: number, firedAt: number, extra: Record<string, Schema.Json>): Record<string, Schema.Json> => ({
   source: "wake",
   id: entry.id,
   kind: entry.kind,
@@ -128,6 +130,19 @@ export const freshPrompt = (alarm: Alarm, fresh: Fresh, tick: number, firedAt: n
     } Its note: ${alarm.note})`,
   ].join("\n")
 
+/** What a latch that will not open tells its parent: which subagent, and why it did not start. */
+export const latchFailedLetter = (latch: Latch, message: string, now: number): Letter => ({
+  text: [
+    `⏰ Latch ${latch.id} could not start its subagent: ${message}`,
+    `The ${latch.subagent.agent} subagent "${latch.subagent.description}" (sessionID: ${latch.child}) latched at ${isoOf(latch.setAt)}, held by ${holdOf(latch)}; it did not start.`,
+    "Call subagent again if the work is still wanted.",
+  ].join("\n"),
+  description: `latch ${latch.id} failed · ${excerpt(latch.subagent.description, LINE_NOTE)}`,
+  metadata: { source: "wake", id: latch.id, kind: "latch", mode: "wake", setAt: latch.setAt, tick: now, firedAt: now, lateMs: 0, child: latch.child },
+})
+
+const holdOf = (latch: Latch) => (latch.hold === "sabbath" ? "the Sabbath" : "the pace")
+
 // ── Receipts ──
 
 const inOf = (at: number, now: number) => `${isoOf(at)} (in ${durationOf(at - now)})`
@@ -168,6 +183,13 @@ export const cancelReceipt = (cancelled: ReadonlyArray<string>): string =>
   cancelled.length === 0 ? "Nothing was pending to cancel." : `Cancelled ${cancelled.join(", ")}.`
 
 const listingOf = (entry: Entry, now: number): string => {
+  if (entry.kind === "latch")
+    return [
+      `- ${entry.id}: latch · the ${entry.subagent.agent} subagent "${entry.subagent.description}" (sessionID: ${entry.child})`,
+      `held by ${holdOf(entry)}: ${entry.reason}`,
+      `opens ${inOf(entry.opensAt, now)}`,
+      ...(entry.recheckAt < entry.opensAt ? [`asked again ${inOf(entry.recheckAt, now)}`] : []),
+    ].join(" · ")
   if (entry.kind === "alarm")
     return [
       `- ${entry.id}: alarm · ${entry.mode} · due ${inOf(entry.dueAt, now)}`,
@@ -187,7 +209,7 @@ const listingOf = (entry: Entry, now: number): string => {
 export const listing = (entries: ReadonlyArray<Entry>, notices: ReadonlyArray<Notice>, now: number): string =>
   [
     `Now: ${isoOf(now)}.`,
-    entries.length === 0 ? "No alarms or monitors pending." : `Pending (${entries.length}):`,
+    entries.length === 0 ? "No alarms, monitors or latches pending." : `Pending (${entries.length}):`,
     ...entries.toSorted((left, right) => dueOf(left) - dueOf(right)).map((entry) => listingOf(entry, now)),
     ...(notices.length === 0 ? [] : [`Unread notices (${notices.length}), delivered to your next turn:`, ...notices.map((notice) => `- ${notice.wakeID}: ${notice.description}`)]),
   ].join("\n")

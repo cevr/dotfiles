@@ -1,10 +1,11 @@
-// What every implementation of WakeStore, Courier and Backstop owes, as shared
+// What every implementation of WakeStore, Courier, Backstop and Opener owes, as shared
 // test suites. Each implementation's test beside it runs the suite over its
 // Layer.
 import { describe, expect, test } from "bun:test"
 import { Effect, type Layer, type Scope } from "effect"
+import type { Latch, Mark, Opened } from "./latch.ts"
 import type { Letter } from "./message.ts"
-import { Backstop, Courier, WakeStore } from "./service.ts"
+import { Backstop, Courier, Opener, WakeStore } from "./service.ts"
 import type { Alarm, Monitor, Notice } from "./wake.ts"
 
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
@@ -46,6 +47,29 @@ export const monitor: Monitor = {
   deadline: SET + 1_800_000,
 }
 
+export const latch: Latch = {
+  kind: "latch",
+  id: "w000004",
+  sessionID: "ses_a",
+  directory: "/work/app",
+  setAt: SET,
+  child: "ses_child",
+  subagent: {
+    agent: "implementor",
+    description: "Add the export",
+    prompt: "Add the CSV export to the report page.",
+    model: "anthropic/claude-opus#high",
+    from: "build",
+    messageID: "msg_parent",
+    callID: "call_1",
+  },
+  hold: "pace",
+  reason: "anthropic is at 92% of its 5h window",
+  opensAt: SET + 600_000,
+  recheckAt: SET + 120_000,
+  context: { whose: "pool", background: false },
+}
+
 export const notice: Notice = { delivery: "msg_n", wakeID: "w000003", sessionID: "ses_b", directory: "/work/app", description: "monitor w000003 matched · The deploy", firedAt: SET }
 
 /** A store under test: its Layer, and a way to make one stored entry unreadable. */
@@ -74,15 +98,16 @@ export const storeLaws = (name: string, make: Effect.Effect<StoreProbe, never, S
       scenario(
         Effect.gen(function* () {
           const run = using(yield* make)
-          for (const entry of [alarm, repeating, monitor]) yield* run((store) => store.write(entry))
+          for (const entry of [alarm, repeating, monitor, latch]) yield* run((store) => store.write(entry))
           expect(yield* run((store) => store.read(alarm.id))).toEqual(alarm)
           expect(yield* run((store) => store.read(repeating.id))).toEqual(repeating)
           expect(yield* run((store) => store.read(monitor.id))).toEqual(monitor)
+          expect(yield* run((store) => store.read(latch.id))).toEqual(latch)
           const moved = { ...alarm, dueAt: alarm.dueAt + 1 }
           yield* run((store) => store.write(moved))
           expect(yield* run((store) => store.read(alarm.id))).toEqual(moved)
-          expect((yield* run((store) => store.entries)).map((entry) => entry.id).toSorted()).toEqual([alarm.id, repeating.id, monitor.id])
-          expect((yield* run((store) => store.ids)).toSorted()).toEqual([alarm.id, repeating.id, monitor.id])
+          expect((yield* run((store) => store.entries)).map((entry) => entry.id).toSorted()).toEqual([alarm.id, repeating.id, monitor.id, latch.id])
+          expect((yield* run((store) => store.ids)).toSorted()).toEqual([alarm.id, repeating.id, monitor.id, latch.id])
         }),
       ))
 
@@ -134,13 +159,26 @@ export interface Received {
   readonly resume: boolean
 }
 
-/** A courier under test: its Layer, a way to open a session (under a parent), what a session received, and the prompts a started one has. */
+/** A latch's child as the host holds it: its parent, title, agent, model, mark, and how many prompts it took. */
+export interface Inspected {
+  readonly parentID: string | undefined
+  readonly title: string | undefined
+  readonly agent: string | undefined
+  readonly model: string | undefined
+  readonly mark: Mark | undefined
+  readonly prompts: number
+}
+
+/** A courier under test: its Layer, a way to open a session (under a parent), what a session received, the prompts a started one has, and what a child is. */
 export interface CourierProbe {
   readonly layer: Layer.Layer<Courier>
   readonly open: (sessionID: string, parentID?: string) => Effect.Effect<void>
   readonly received: (sessionID: string) => Effect.Effect<ReadonlyArray<Received>>
   readonly started: (sessionID: string) => Effect.Effect<{ readonly directory: string; readonly prompts: ReadonlyArray<{ readonly id: string; readonly text: string }> } | undefined>
+  readonly inspect: (sessionID: string) => Effect.Effect<Inspected | undefined>
 }
+
+const mark: Mark = { hold: "pace", reason: "anthropic is at 92% of its 5h window", opensAt: SET + 600_000, at: SET }
 
 const letter: Letter = { text: "⏰ Wake w000001 fired.\nNote: Check CI.", description: "wake w000001 · Check CI.", metadata: { source: "wake", id: "w000001", lateMs: 0 } }
 
@@ -220,6 +258,57 @@ export const courierLaws = (name: string, make: Effect.Effect<CourierProbe, neve
           expect(yield* run((courier) => courier.parentOf("ses_none"))).toBeUndefined()
         }),
       ))
+
+    test("child makes a latch's child under its id, under its parent, carrying its mark, unprompted, once however often", () =>
+      scenario(
+        Effect.gen(function* () {
+          const probe = yield* make
+          const run = using(probe)
+          yield* probe.open("ses_root")
+          const sessionID = yield* run((courier) => courier.newSession)
+          const child = { sessionID, parentID: "ses_root", directory: "/work/app", title: "Add the export", agent: "implementor", model: "anthropic/claude-opus#high", mark }
+          yield* run((courier) => courier.child(child))
+          yield* run((courier) => courier.child(child))
+          expect(yield* probe.inspect(sessionID)).toEqual({
+            parentID: "ses_root",
+            title: "Add the export",
+            agent: "implementor",
+            model: "anthropic/claude-opus#high",
+            mark,
+            prompts: 0,
+          })
+          expect(yield* run((courier) => courier.parentOf(sessionID))).toBe("ses_root")
+        }),
+      ))
+
+    test("a child of a parent that does not exist refuses as gone", () =>
+      scenario(
+        Effect.gen(function* () {
+          const run = using(yield* make)
+          const sessionID = yield* run((courier) => courier.newSession)
+          const failure = yield* run((courier) =>
+            courier.child({ sessionID, parentID: "ses_gone", directory: "/work/app", title: "Add the export", agent: "implementor", mark }),
+          ).pipe(Effect.flip)
+          expect(failure.gone).toBe(true)
+        }),
+      ))
+
+    test("mark replaces a child's mark and clears it with none; a session that does not exist is no failure", () =>
+      scenario(
+        Effect.gen(function* () {
+          const probe = yield* make
+          const run = using(probe)
+          yield* probe.open("ses_root")
+          const sessionID = yield* run((courier) => courier.newSession)
+          yield* run((courier) => courier.child({ sessionID, parentID: "ses_root", directory: "/work/app", title: "Add the export", agent: "implementor", mark }))
+          const cancelled = { ...mark, cancelledAt: SET + 5000 }
+          yield* run((courier) => courier.mark(sessionID, cancelled))
+          expect((yield* probe.inspect(sessionID))?.mark).toEqual(cancelled)
+          yield* run((courier) => courier.mark(sessionID, undefined))
+          expect((yield* probe.inspect(sessionID))?.mark).toBeUndefined()
+          yield* run((courier) => courier.mark("ses_none", mark))
+        }),
+      ))
   })
 
 /** A backstop under test: its Layer, and a way to plant a job that is not a wake's. */
@@ -258,4 +347,24 @@ export const backstopLaws = (name: string, make: Effect.Effect<BackstopProbe, ne
           expect(yield* using(probe)((backstop) => backstop.titles)).toEqual([])
         }),
       ))
+  })
+
+/** An opener under test: its Layer over an opener that answers `answer`, or none at all. */
+export type OpenerOf = (answer: ((latch: Latch) => Opened) | undefined) => Layer.Layer<Opener>
+
+export const openerLaws = (name: string, make: OpenerOf) =>
+  describe(`${name} keeps the Opener laws`, () => {
+    const open = (layer: Layer.Layer<Opener>) => Opener.use((opener) => opener.open(latch)).pipe(Effect.provide(layer))
+
+    test("answers what the opener decided for the latch", async () => {
+      const held: Opened = { outcome: "held", hold: "sabbath", reason: "It is the Sabbath", opensAt: SET + 1, recheckAt: SET + 1 }
+      expect(await Effect.runPromise(open(make(() => ({ outcome: "opened" }))))).toEqual({ outcome: "opened" })
+      expect(await Effect.runPromise(open(make(() => held)))).toEqual(held)
+      expect(await Effect.runPromise(open(make((asked) => ({ outcome: "failed", message: asked.child }))))).toEqual({ outcome: "failed", message: latch.child })
+    })
+
+    test("no opener is OpenerUnavailable", async () => {
+      const failure = await Effect.runPromise(open(make(undefined)).pipe(Effect.flip))
+      expect(failure._tag).toBe("OpenerUnavailable")
+    })
   })

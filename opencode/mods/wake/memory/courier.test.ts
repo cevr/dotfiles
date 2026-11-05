@@ -15,6 +15,13 @@ courierLaws(
         }),
       received: (sessionID) => Effect.sync(() => memory.inboxes.get(sessionID) ?? []),
       started: (sessionID) => Effect.sync(() => memory.started.get(sessionID)),
+      inspect: (sessionID) =>
+        Effect.sync(() => {
+          const made = memory.children.get(sessionID)
+          return made === undefined
+            ? undefined
+            : { parentID: made.parentID, title: made.title, agent: made.agent, model: made.model, mark: made.mark, prompts: memory.started.get(sessionID)?.prompts.length ?? 0 }
+        }),
     }
   }),
 )

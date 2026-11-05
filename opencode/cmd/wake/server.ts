@@ -14,6 +14,9 @@
  *   no server runs: the job starts the OpenCode service and calls `due`.
  * - `pending({ sessionIDs })` for the tray, `due({ id })` for the OS jobs;
  *   every change publishes `changed({ sessionID })`.
+ * - `latch(LatchAsk)` for orchestrate: a held subagent start kept as a latch
+ *   of its parent, its child made unprompted; at its time the wakes ask
+ *   orchestrate's opener (`OPENER`) to decide it again.
  * - On start it arms this directory's entries (one past due fires now, and
  *   says how late) and drops OS jobs whose entry went; a deleted session's
  *   entries go; a notice goes once the session's turn takes it.
@@ -31,9 +34,11 @@ import * as MemoryBackstop from "@dotfiles/opencode-wake/memory/backstop"
 import { alarmReceipt, cancelReceipt, listing, monitorReceipt } from "@dotfiles/opencode-wake/message"
 import * as Model from "@dotfiles/opencode-wake/model"
 import * as OpenCodeCourier from "@dotfiles/opencode-wake/opencode/courier"
+import * as OpenCodeOpener from "@dotfiles/opencode-wake/opencode/opener"
 import * as OpenCodeStore from "@dotfiles/opencode-wake/opencode/store"
 import * as ProcessChecks from "@dotfiles/opencode-wake/process/checks"
-import { type Backstop, Changes, type Checks, type Courier, type WakeStore } from "@dotfiles/opencode-wake/service"
+import { type Latched, LatchAsk } from "@dotfiles/opencode-wake/latch"
+import { type Backstop, Changes, type Checks, type Courier, type Opener, type WakeStore } from "@dotfiles/opencode-wake/service"
 import {
   CANCEL_DESCRIPTION,
   CancelInput,
@@ -58,7 +63,7 @@ export const Options = Schema.Struct({
 export type Options = typeof Options.Type
 
 /** What the wakes run on. */
-export type Externals = WakeStore | Courier | Checks | Backstop
+export type Externals = WakeStore | Courier | Checks | Backstop | Opener
 
 /** The OS job's script, beside this file. */
 export const SCRIPT = fileURLToPath(new URL("./backstop.ts", import.meta.url))
@@ -79,9 +84,9 @@ export const backstopOf = (options: Options, env: Readonly<Record<string, string
   })
 }
 
-/** The live externals: the plugin's storage, the session inbox, owned checks, and the backstop the options pick. */
+/** The live externals: the plugin's storage, the session inbox, owned checks, orchestrate's opener, and the backstop the options pick. */
 export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externals> =>
-  Layer.mergeAll(OpenCodeStore.fromContext(ctx), OpenCodeCourier.fromContext(ctx), ProcessChecks.layer, backstopOf(options))
+  Layer.mergeAll(OpenCodeStore.fromContext(ctx), OpenCodeCourier.fromContext(ctx), ProcessChecks.layer, OpenCodeOpener.fromContext(ctx), backstopOf(options))
 
 const text = (value: string) => ({ content: [{ type: "text" as const, text: value }] })
 const refused = (failure: WakeRejected) => new Tool.Error({ message: failure.reason, error: failure })
@@ -166,6 +171,13 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
             Schema.decodeUnknownEffect(DueInput)(input).pipe(
               Effect.flatMap(({ id }) => wakes.due(id)),
               Effect.orElseSucceed((): Due => ({ outcome: "pending" })),
+            ),
+          latch: (input) =>
+            Schema.decodeUnknownEffect(LatchAsk)(input).pipe(
+              Effect.mapError((error) => ({ reason: `not a latch: ${error.message}` })),
+              Effect.flatMap((ask) => wakes.latch(ask)),
+              Effect.map((latched): Latched => ({ outcome: "latched", id: latched.id, child: latched.child })),
+              Effect.catch((failure) => Effect.succeed<Latched>({ outcome: "refused", reason: failure.reason })),
             ),
         })
         .pipe(Effect.orDie)

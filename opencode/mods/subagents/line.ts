@@ -4,6 +4,7 @@
 //   ◆ worker opus 5.5  Fix money parsing  running bun test … · 12s
 //   ◈ worker sol 6.1   closure-flake      flock gate.lock ./gate.sh · 37m · updated 26m ago
 //   ◆ planner opus 5.5 Plan month padding  3 steps
+//   ◇ verifier sol 6.1 Check the export    pace · opens 14:30 · 2m 10s
 //
 // No word names the state: the leading diamond does, by its fill and colour
 // (`SYMBOLS`, `stateTone`). A working row's diamond turns (`spinner`). After the role comes the model
@@ -42,6 +43,7 @@ export const SYMBOLS: Readonly<Record<State, string>> = {
   working: "◈",
   waiting: "◈",
   blocked: "◆",
+  latched: "◇",
   idle: "◇",
   cancelled: "◇",
   done: "◆",
@@ -49,14 +51,16 @@ export const SYMBOLS: Readonly<Record<State, string>> = {
 }
 
 /** The colour a state's diamond draws in, from the theme's feedback colours. */
-export type StateTone = "success" | "warning" | "error" | "muted"
+export type StateTone = "success" | "warning" | "error" | "info" | "muted"
 
 /**
  * Working is the success colour; waiting, blocked and cancelled the warning
- * colour; failed the error colour; idle and done muted.
+ * colour; failed the error colour; latched the info colour; idle and done
+ * muted. Each glyph and colour pair names one state.
  */
 export function stateTone(state: State): StateTone {
   if (state === "working") return "success"
+  if (state === "latched") return "info"
   if (state === "failed") return "error"
   if (state === "waiting" || state === "blocked" || state === "cancelled") return "warning"
   return "muted"

@@ -109,6 +109,7 @@ function Row(props: {
     if (tone === "success") return theme().text.feedback.success.base
     if (tone === "warning") return theme().text.feedback.warning.base
     if (tone === "error") return theme().text.feedback.error.base
+    if (tone === "info") return theme().text.feedback.info.base
     return theme().text.muted
   }
   const bright = () => link.hover() || props.marked

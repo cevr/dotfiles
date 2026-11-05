@@ -101,7 +101,7 @@ describe("receipts and the listing", () => {
       "Unread notices (1), delivered to your next turn:",
       "- w000003: monitor w000003 matched · The deploy",
     ])
-    expect(listing([], [], now)).toBe("Now: 2023-11-14T22:13:20.000Z.\nNo alarms or monitors pending.")
+    expect(listing([], [], now)).toBe("Now: 2023-11-14T22:13:20.000Z.\nNo alarms, monitors or latches pending.")
   })
 })
 

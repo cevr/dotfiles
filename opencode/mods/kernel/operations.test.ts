@@ -37,6 +37,16 @@ describe("a kernel call's journal", () => {
     ])
   })
 
+  test("a latched subagent keeps its child and its latched status, which its row reads; a running one keeps only its child", async () => {
+    const { record } = recording()
+    await Effect.runPromise(record.around("subagent", { agent: "worker" }, Effect.succeed({ content: "latched", metadata: { sessionID: "ses_l", status: "latched", latch: { id: "w1" } } })))
+    await Effect.runPromise(record.around("subagent", { agent: "worker" }, Effect.succeed({ content: "started", metadata: { sessionID: "ses_r", status: "running" } })))
+    expect((record.metadata()[OPERATIONS_KEY] as ReadonlyArray<Operation>).map((operation) => operation.metadata)).toEqual([
+      { sessionID: "ses_l", status: "latched" },
+      { sessionID: "ses_r" },
+    ])
+  })
+
   test("a failed call is recorded with its reason and still fails the cell's call", async () => {
     const { record } = recording()
     const exit = await Effect.runPromiseExit(record.around("read", { path: "missing.ts" }, Effect.fail(new Error("File not found: missing.ts"))))

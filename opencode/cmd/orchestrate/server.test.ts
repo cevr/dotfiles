@@ -1,10 +1,12 @@
 // The plugin seam: the composition root on a stand-in host, with every
 // outside system a test layer. It checks what OpenCode sees: the rewritten
-// subagent input, the refusals' words, the call log's lines, the compaction
-// prompt and the agents' windows. tests/orchestrate.test.ts runs it in OpenCode.
+// subagent input, the refusals' words, a latched call's answer and its
+// opening, the call log's lines, the compaction prompt and the agents'
+// windows. tests/orchestrate.test.ts and tests/prime-latch.test.ts run it in
+// OpenCode.
 import { describe, expect, test } from "bun:test"
-import { resolve } from "node:path"
 import { Effect, Layer, Schema } from "effect"
+import { type Latch, type LatchAsk, Opened } from "@dotfiles/opencode-wake/latch"
 import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import { KEEP } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogTest from "@dotfiles/opencode-orchestrate/memory/call-log"
@@ -13,6 +15,7 @@ import * as CompactionWindowsTest from "@dotfiles/opencode-orchestrate/memory/co
 import * as ModelsTest from "@dotfiles/opencode-orchestrate/memory/models"
 import * as PoolPaceTest from "@dotfiles/opencode-orchestrate/memory/pool-pace"
 import * as SessionsTest from "@dotfiles/opencode-orchestrate/memory/sessions"
+import * as OpenCodeLatches from "@dotfiles/opencode-orchestrate/opencode/latches"
 import type { Session } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
@@ -24,7 +27,6 @@ const FRIDAY_EVENING = "2026-10-30T23:00:00Z"
 /** Wednesday 4 November 2026, 10:00 in Knowlton. */
 const WEDNESDAY = "2026-11-04T15:00:00Z"
 const SABBATH = /^It is the Sabbath; agent work resumes at Sat 18:\d\d \(30 min after sunset, Knowlton, QC\)\.$/
-const PACE_SCRIPT = resolve(import.meta.dir, "../../scripts/pace.ts")
 
 type Host = Parameters<(typeof Orchestrate)["effect"]>[0]
 type Hook = (event: Record<string, unknown>) => Effect.Effect<void, { readonly _tag: string; readonly message: string }>
@@ -39,6 +41,22 @@ interface World {
   readonly model?: { readonly providerID: string; readonly id: string }
   readonly variants?: ReadonlyArray<string>
   readonly compactJson?: string
+  /** The wakes' refusal of every latch (no wakes plugin, say); absent, they keep each one. */
+  readonly refuse?: string
+  /** The latches the wakes kept, in order. */
+  readonly kept?: Array<LatchAsk & { readonly child: string }>
+}
+
+/** A tool as the host's tool editor hands it out: only what the plugin touches. */
+interface EditedTool {
+  execute: (input: unknown, context: unknown) => Effect.Effect<{ readonly output?: unknown; readonly content?: unknown; readonly metadata?: unknown }, unknown>
+  output?: unknown
+}
+
+/** What the stand-in subagent tool was run with. */
+interface Ran {
+  readonly input: Record<string, unknown>
+  readonly context: Record<string, unknown>
 }
 
 /** A mutable agent as the host's editor hands it out: only what the plugin touches. */
@@ -61,6 +79,8 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     const lines: Array<CallLine> = []
     const hooks: Record<string, Array<Hook>> = {}
     const transforms: Array<(editor: unknown) => void> = []
+    const toolTransforms: Array<(editor: unknown) => void> = []
+    const rpc: Record<string, Record<string, (input: unknown) => Effect.Effect<unknown>>> = {}
     const register = (name: string, callback: Hook) =>
       Effect.sync(() => {
         ;(hooks[name] ??= []).push(callback)
@@ -77,17 +97,60 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
         reload: () => Effect.void,
       },
       session: { hook: register },
-      tool: { hook: register },
+      tool: {
+        hook: register,
+        transform: (callback: (editor: unknown) => void) =>
+          Effect.sync(() => {
+            toolTransforms.push(callback)
+            return { dispose: Effect.void }
+          }),
+      },
+      rpc: {
+        register: (definition: { readonly id: string }, handlers: Record<string, (input: unknown) => Effect.Effect<unknown>>) =>
+          Effect.sync(() => {
+            rpc[definition.id] = handlers
+            return { dispose: Effect.void, events: { emit: () => Effect.void } }
+          }),
+      },
     } as unknown as Host
-    const externals = Layer.mergeAll(
+    const kept = world.kept ?? []
+    const keep = (ask: LatchAsk) =>
+      Effect.sync(() => {
+        if (world.refuse !== undefined) return { outcome: "refused", reason: world.refuse }
+        const child = `ses_latched${kept.length + 1}`
+        kept.push({ ...ask, child })
+        return { outcome: "latched", id: `w00000${kept.length}`, child }
+      })
+    const externals = (start: OpenCodeLatches.Start) => Layer.mergeAll(
       CallLogTest.layer(lines),
       SessionsTest.layer(world.sessions ?? {}),
       ModelsTest.layer(world.model, world.variants),
       PoolPaceTest.layer(world.pool ?? {}, world.started),
       CodexAdmissionTest.layer(world.codex ?? (() => undefined)),
       CompactionWindowsTest.layer(world.compactJson),
+      OpenCodeLatches.layer(keep, start),
     )
-    yield* make(() => externals).effect(host)
+    yield* make((_ctx, _options, start) => externals(start)).effect(host)
+
+    // The subagent tool, as the host's editor holds it after the plugin's transform: it records each run.
+    const ran: Array<Ran> = []
+    const subagent: EditedTool = {
+      execute: (input, context) =>
+        Effect.suspend(() => {
+          ran.push({ input: input as Record<string, unknown>, context: context as Record<string, unknown> })
+          const prompt = (input as { readonly prompt?: unknown }).prompt
+          if (typeof prompt === "string" && prompt.includes("boom")) return Effect.fail(new Error("the child would not start"))
+          return Effect.succeed({ output: { sessionID: "ses_ran", status: "running", output: "working" } })
+        }),
+    }
+    for (const transform of toolTransforms) transform({ update: (id: string, edit: (tool: EditedTool) => void) => (id === "subagent" ? edit(subagent) : undefined) })
+    /** The subagent tool run with the input the hooks left, in the root session's call. */
+    const runTool = (input: unknown) => subagent.execute(input, { sessionID: "root", agent: "build", messageID: "msg", id: "call", progress: () => Effect.void })
+    /** The wakes asking the opener to open a latch. */
+    const open = (latch: unknown) => {
+      const handler = rpc["dotfiles-opencode.wake.opener"]?.open
+      return handler === undefined ? Effect.die(new Error("no opener")) : handler(latch)
+    }
 
     /** One tool call through the `execute.before` hooks: the input the tool then runs with, or the refusal. */
     const call = Effect.fn(function* (tool: string, sessionID: string, input: unknown = {}) {
@@ -111,7 +174,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       for (const line of lines) expect(Number.isFinite(Date.parse(line.at))).toBe(true)
       return lines.map(({ at: _, ...line }) => JSON.stringify(line))
     }
-    return { call, finish, logged, hooks, transforms }
+    return { call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent }
   })
 
 const scenario = <A, E>(body: Effect.Effect<A, E, import("effect").Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
@@ -120,7 +183,8 @@ describe("over the Sabbath", () => {
   test("no subagent starts, and a running subagent's tools are refused; the main session's are not", () =>
     scenario(
       Effect.gen(function* () {
-        const friday = yield* start({ now: FRIDAY_EVENING }, { sessions: { root: {}, child: { parentID: "root" } } })
+        // No wakes plugin keeps a latch here, so a new subagent is refused.
+        const friday = yield* start({ now: FRIDAY_EVENING }, { sessions: { root: {}, child: { parentID: "root" } }, refuse: "no wakes" })
         const subagent = yield* friday.call("subagent", "root", { prompt: "x" })
         expect(subagent.refused?._tag).toBe("Tool.Error")
         expect(subagent.refused?.message).toEndWith("No agent starts now. Do not retry; start it again once work resumes.")
@@ -130,8 +194,11 @@ describe("over the Sabbath", () => {
           "Stop now: end your turn with one line on where you stopped. Make no more tool calls.",
         )
         expect((yield* friday.call("shell", "root")).refused).toBeUndefined()
-        // A subagent call is refused even when its input is not one the tool takes.
-        expect((yield* friday.call("subagent", "root", "x")).refused?._tag).toBe("Tool.Error")
+        // A follow-up is refused; a call whose input is not one the tool takes is left to the tool.
+        expect((yield* friday.call("subagent", "root", { sessionID: "child", prompt: "more" })).refused?.message).toEndWith(
+          "No agent starts now. Do not retry; start it again once work resumes.",
+        )
+        expect(yield* friday.call("subagent", "root", "x")).toEqual({ refused: undefined, input: "x" })
         const denied = friday.logged().map((line) => JSON.parse(line) as Record<string, unknown>)
         expect(denied.map(({ why: _, ...line }) => JSON.stringify(line))).toEqual([
           '{"kind":"denied","sessionID":"root","callID":"call","tool":"subagent"}',
@@ -182,6 +249,18 @@ describe("the guard", () => {
         })
         const plain = yield* start({ now: WEDNESDAY }, { model })
         expect((yield* plain.call("subagent", "root", { agent: "planner" })).input).toEqual({ agent: "planner" })
+      }),
+    ))
+
+  test("role work asked of a general agent runs as its described role, at the role's effort, and its line says why", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { model: { providerID: "anthropic", id: "claude" }, variants: ["medium"] })
+        const input = { agent: "general", description: "closure-flake verifier r1 (Opus)", prompt: "x", background: true }
+        expect((yield* plugin.call("subagent", "root", input)).input).toEqual({ ...input, agent: "verifier", model: "anthropic/claude#medium" })
+        expect(plugin.logged()).toEqual([
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"general","agent":"verifier","reason":"described","model":"anthropic/claude#medium","background":true,"description":"closure-flake verifier r1 (Opus)"}',
+        ])
       }),
     ))
 
@@ -244,7 +323,7 @@ describe("the guard", () => {
 describe("the pace", () => {
   const now = Date.parse(WEDNESDAY)
 
-  test("the pool's hold refuses a new agent, with the wait script and the time to retry", () =>
+  test("the pool's hold refuses a new agent when no latch can be kept, with the time it opens", () =>
     scenario(
       Effect.gen(function* () {
         const plugin = yield* start(
@@ -252,11 +331,12 @@ describe("the pace", () => {
           {
             model: { providerID: "anthropic", id: "claude" },
             pool: { anthropic: { ok: false, measured: true, reason: "all pool accounts are held", retryAt: now + 300_000.5 } },
+            refuse: "no wakes",
           },
         )
         const held = yield* plugin.call("subagent", "root", { agent: "explore" })
         expect(held.refused?.message).toBe(
-          `orchestrate: the pool's pace holds this agent. all pool accounts are held. Run \`bun '${PACE_SCRIPT}' --wait ${now + 300_001}\` with shell's background:true and go on with other work. When it exits, call subagent again with the same agent and description; admission is checked again. Do not poll.`,
+          `orchestrate: the pool's pace holds this agent. all pool accounts are held. It opens about ${new Date(now + 300_000).toISOString()} (Wed 10:05 America/Toronto); no latch could be kept for it, so start it again after then. Do not poll.`,
         )
         expect(plugin.logged()).toEqual([
           '{"kind":"denied","sessionID":"root","callID":"call","tool":"subagent","why":"all pool accounts are held"}',
@@ -272,10 +352,11 @@ describe("the pace", () => {
           asked.push(`${model} ${role}`)
           return { ok: false, measured: true, reason: "weekly pace" }
         }
-        const plugin = yield* start({ now: WEDNESDAY }, { codex })
+        const plugin = yield* start({ now: WEDNESDAY }, { codex, refuse: "no wakes" })
         const held = yield* plugin.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5#high" })
-        expect(held.refused?.message).toStartWith("orchestrate: the Codex account's pace holds this agent. weekly pace. Run")
-        expect(held.refused?.message).toContain(`--wait ${now + 60_000}\``)
+        expect(held.refused?.message).toStartWith(
+          `orchestrate: the Codex account's pace holds this agent. weekly pace. It opens about ${new Date(now + 60_000).toISOString()} (`,
+        )
         expect((yield* plugin.call("subagent", "root", { agent: "explore", model: "openai/gpt-5" })).refused).toBeDefined()
         expect(asked).toEqual(["gpt-5 verifier", "gpt-5 none"])
         // With `codex: false` the pool answers for every provider; it has no hold here.
@@ -296,11 +377,12 @@ describe("the pace", () => {
         const reason = "the pool's weekly pace is over (80.0% spent across 1 accounts)"
         const held = yield* start(
           { now: WEDNESDAY, codex: { pool: true } },
-          { codex, pool: { openai: { ok: false, measured: true, reason, retryAt: now + 120_000 } } },
+          { codex, pool: { openai: { ok: false, measured: true, reason, retryAt: now + 120_000 } }, refuse: "no wakes" },
         )
         const refused = (yield* held.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5#high" })).refused
-        expect(refused?.message).toStartWith(`orchestrate: the Codex account's pace holds this agent. ${reason}. Run`)
-        expect(refused?.message).toContain(`--wait ${now + 120_000}\``)
+        expect(refused?.message).toStartWith(
+          `orchestrate: the Codex account's pace holds this agent. ${reason}. It opens about ${new Date(now + 120_000).toISOString()} (`,
+        )
         // A pool that has no measure of it (no ChatGPT login read) leaves it to the script.
         const unmeasured = yield* start({ now: WEDNESDAY, codex: { pool: true } }, { codex, pool: { openai: { ok: true, measured: false, reason: "no pooled account readings" } } })
         expect((yield* unmeasured.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5" })).refused).toBeUndefined()
@@ -314,7 +396,7 @@ describe("the pace", () => {
       }),
     ))
 
-  test("each new agent that starts is told to the pool by its provider; a held one, a follow-up or a Sabbath refusal is not", () =>
+  test("each new agent that starts is told to the pool by its provider; a latched one or a follow-up is not", () =>
     scenario(
       Effect.gen(function* () {
         const started: Array<string> = []
@@ -329,12 +411,195 @@ describe("the pace", () => {
         )
         expect((yield* plugin.call("subagent", "root", { agent: "explore" })).refused).toBeUndefined()
         expect((yield* plugin.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5" })).refused).toBeUndefined()
-        expect((yield* plugin.call("subagent", "root", { agent: "explore", model: "sim/model" })).refused).toBeDefined()
+        const held = yield* plugin.call("subagent", "root", { agent: "explore", model: "sim/model" })
+        expect(held.refused).toBeUndefined()
+        expect(held.input).toMatchObject({ sessionID: "ses_latched1" })
         expect((yield* plugin.call("subagent", "root", { sessionID: "child", prompt: "more" })).refused).toBeUndefined()
         expect(started).toEqual(["anthropic", "openai"])
         const friday = yield* start({ now: FRIDAY_EVENING }, { started })
         yield* friday.call("subagent", "root", { agent: "explore" })
         expect(started).toEqual(["anthropic", "openai"])
+      }),
+    ))
+})
+
+describe("a latch", () => {
+  const now = Date.parse(WEDNESDAY)
+  const held = { anthropic: { ok: false, measured: true, reason: "all pool accounts are held", retryAt: now + 600_000 } }
+  const model = { providerID: "anthropic", id: "claude" }
+  /** The latch the wakes keep for an ask, as they hand it to the opener. */
+  const latchOf = (ask: LatchAsk & { readonly child: string }, id = "w000001"): Latch => {
+    const { child, ...rest } = ask
+    return { kind: "latch", id, directory: "/work", setAt: now, child, ...rest }
+  }
+  /**
+   * Run `body`, and the window of the system's clock it ran in, as offsets
+   * from the fixed clock: the wakes keep the system's time, so a latch's
+   * times reach them moved on by how far the system's clock is ahead.
+   */
+  const timed = <A, E>(body: Effect.Effect<A, E>) =>
+    Effect.gen(function* () {
+      const before = Date.now() - now
+      const value = yield* body
+      return { value, ahead: { min: before, max: Date.now() - now } }
+    })
+  const onWall = (value: number, fixed: number, ahead: { readonly min: number; readonly max: number }) => {
+    expect(value).toBeGreaterThanOrEqual(fixed + ahead.min)
+    expect(value).toBeLessThanOrEqual(fixed + ahead.max)
+  }
+
+  test("a held start latches: the call names its child, and the tool answers at once that it waits, why and until when", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { model, pool: held })
+        const { value: call, ahead } = yield* timed(plugin.call("subagent", "root", { agent: "explore", description: "look", prompt: "find it" }))
+        expect(call).toEqual({
+          refused: undefined,
+          input: { agent: "explore", description: "look", prompt: "find it", model: "anthropic/claude", sessionID: "ses_latched1" },
+        })
+        expect(plugin.kept).toEqual([
+          {
+            sessionID: "root",
+            subagent: { agent: "explore", description: "look", prompt: "find it", model: "anthropic/claude", from: "build", messageID: "msg", callID: "call" },
+            hold: "pace",
+            reason: "all pool accounts are held",
+            opensAt: expect.any(Number),
+            recheckAt: expect.any(Number),
+            context: { reason: "kept" },
+            child: "ses_latched1",
+          },
+        ])
+        // The wakes get the system's time; the answer and the log keep the fixed clock's.
+        onWall(plugin.kept[0]!.opensAt, now + 600_000, ahead)
+        expect(plugin.kept[0]!.opensAt - plugin.kept[0]!.recheckAt).toBe(480_000)
+        const answer = yield* plugin.runTool(call.input)
+        expect(plugin.ran).toEqual([])
+        expect(answer.output).toMatchObject({
+          sessionID: "ses_latched1",
+          status: "latched",
+          latch: { id: "w000001", hold: "pace", reason: "all pool accounts are held", opensAt: now + 600_000, opens: new Date(now + 600_000).toISOString() },
+        })
+        expect(answer.content).toBe(
+          [
+            "The subagent is latched (sessionID: ses_latched1, latch w000001). the pool's pace holds this agent: all pool accounts are held.",
+            `It starts by itself in the background when the latch opens, about ${new Date(now + 600_000).toISOString()} (${(answer.output as { latch: { local: string } }).latch.local} ${KNOWLTON.timeZone}), or sooner: it is decided again at ${new Date(now + 120_000).toISOString()}. You will be woken with its result, as for a background subagent.`,
+            "Go on with other work, or end your turn. Do not start it again, poll or wait for it. wake_list shows the latch; wake_cancel cancels it.",
+          ].join("\n"),
+        )
+        // The answer is given once: the same child run again goes to the tool.
+        yield* plugin.runTool(call.input)
+        expect(plugin.ran).toHaveLength(1)
+        // The call returns latched.
+        yield* plugin.finish({ status: "completed", result: answer })
+        expect(plugin.logged()).toEqual([
+          '{"kind":"latched","sessionID":"root","callID":"call","from":"build","asked":"explore","agent":"explore","reason":"kept","model":"anthropic/claude","child":"ses_latched1","description":"look","hold":"pace","why":"all pool accounts are held","opens":"' +
+            new Date(now + 600_000).toISOString() +
+            '"}',
+          '{"kind":"done","sessionID":"root","callID":"call","child":"ses_latched1","status":"latched"}',
+        ])
+      }),
+    ))
+
+  test("over the Sabbath a new subagent latches until work resumes", () =>
+    scenario(
+      Effect.gen(function* () {
+        const friday = yield* start({ now: FRIDAY_EVENING }, { model })
+        const call = yield* friday.call("subagent", "root", { agent: "explore", prompt: "x" })
+        expect(call.refused).toBeUndefined()
+        const kept = friday.kept[0]!
+        expect(kept).toMatchObject({ hold: "sabbath", subagent: { description: "explore" } })
+        expect(kept.reason).toMatch(SABBATH)
+        expect(kept.recheckAt).toBe(kept.opensAt)
+        const answer = yield* friday.runTool(call.input)
+        expect(String(answer.content)).toStartWith(`The subagent is latched (sessionID: ses_latched1, latch w000001). ${kept.reason}\nIt starts by itself`)
+        // Opened while it is still the Sabbath, it latches again, until the same resumption on the system's clock as it reads then.
+        const reopened = Schema.decodeUnknownSync(Opened)(yield* friday.open(latchOf(kept)))
+        expect(reopened).toMatchObject({ outcome: "held", hold: "sabbath", reason: kept.reason })
+        if (reopened.outcome !== "held") throw new Error("not held")
+        expect(reopened.recheckAt).toBe(reopened.opensAt)
+        expect(reopened.opensAt).toBeGreaterThanOrEqual(kept.opensAt)
+        expect(reopened.opensAt - kept.opensAt).toBeLessThan(1_000)
+        expect(friday.ran).toEqual([])
+      }),
+    ))
+
+  test("opened while still held, it latches again with the hold's new time", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { model, pool: held })
+        yield* plugin.call("subagent", "root", { agent: "explore", description: "look", prompt: "find it" })
+        const { value: answer, ahead } = yield* timed(plugin.open(latchOf(plugin.kept[0]!)))
+        const reopened = Schema.decodeUnknownSync(Opened)(answer)
+        expect(reopened).toEqual({ outcome: "held", hold: "pace", reason: "all pool accounts are held", opensAt: expect.any(Number), recheckAt: expect.any(Number) })
+        if (reopened.outcome !== "held") throw new Error("not held")
+        onWall(reopened.opensAt, now + 600_000, ahead)
+        onWall(reopened.recheckAt, now + 120_000, ahead)
+        expect(plugin.ran).toEqual([])
+      }),
+    ))
+
+  test("opened when admitted, it starts in the background on its child through the subagent tool, as the parent's call", () =>
+    scenario(
+      Effect.gen(function* () {
+        const kept: Array<LatchAsk & { readonly child: string }> = []
+        const plugin = yield* start({ now: WEDNESDAY }, { model, pool: held, kept })
+        yield* plugin.call("subagent", "root", { agent: "explore", description: "look", prompt: "find it" })
+        const started: Array<string> = []
+        const later = yield* start({ now: WEDNESDAY }, { model, started })
+        expect(yield* later.open(latchOf(kept[0]!))).toEqual({ outcome: "opened" })
+        expect(later.ran).toEqual([
+          {
+            input: {
+              agent: "explore",
+              description: "look",
+              prompt: "You are a subagent spawned by another session.\nfind it",
+              model: "anthropic/claude",
+              sessionID: "ses_latched1",
+              background: true,
+            },
+            context: expect.objectContaining({ sessionID: "root", agent: "build", messageID: "msg", id: "call" }),
+          },
+        ])
+        expect(started).toEqual(["anthropic"])
+        expect(later.logged()).toEqual([
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","agent":"explore","reason":"kept","model":"anthropic/claude","child":"ses_latched1","background":true,"description":"look"}',
+          '{"kind":"done","sessionID":"root","callID":"call","child":"ses_latched1","status":"running"}',
+        ])
+      }),
+    ))
+
+  test("a child that already started is not started twice; one that will not start fails the latch; a malformed latch fails", () =>
+    scenario(
+      Effect.gen(function* () {
+        const kept: Array<LatchAsk & { readonly child: string }> = []
+        const plugin = yield* start({ now: WEDNESDAY }, { model, pool: held, kept })
+        yield* plugin.call("subagent", "root", { agent: "explore", description: "look", prompt: "boom" })
+        const ran = yield* start({ now: WEDNESDAY }, { model, sessions: { ses_latched1: { parentID: "root", started: true } } })
+        expect(yield* ran.open(latchOf(kept[0]!))).toEqual({ outcome: "opened" })
+        expect(ran.ran).toEqual([])
+        expect(ran.logged()).toEqual([])
+
+        const later = yield* start({ now: WEDNESDAY }, { model })
+        expect(yield* later.open(latchOf(kept[0]!))).toEqual({ outcome: "failed", message: "the child would not start" })
+        expect(later.logged().at(-1)).toBe('{"kind":"done","sessionID":"root","callID":"call","child":"ses_latched1","status":"error"}')
+        const malformed = (yield* later.open({ kind: "alarm" })) as { readonly outcome: string; readonly message: string }
+        expect(malformed.outcome).toBe("failed")
+        expect(malformed.message).toStartWith("not a latch: ")
+      }),
+    ))
+
+  test("a follow-up to a latched child is refused until it opens", () =>
+    scenario(
+      Effect.gen(function* () {
+        const mark = { hold: "pace", reason: "held", opensAt: now + 60_000, at: now }
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: { kid: { parentID: "root", agent: "worker", latch: mark } } })
+        const followUp = yield* plugin.call("subagent", "root", { sessionID: "kid", prompt: "more" })
+        expect(followUp.refused?.message).toBe(
+          `orchestrate: subagent kid is latched and has not started; it starts by itself at ${new Date(now + 60_000).toISOString()} (Wed 10:01 ${KNOWLTON.timeZone}), and its result wakes you. Send it nothing until then, or cancel its latch with wake_cancel and start a new one.`,
+        )
+        // A cancelled latch's child takes follow-ups again.
+        const cancelled = yield* start({ now: WEDNESDAY }, { sessions: { kid: { parentID: "root", agent: "worker", latch: { ...mark, cancelledAt: now } } } })
+        expect((yield* cancelled.call("subagent", "root", { sessionID: "kid", prompt: "more" })).refused).toBeUndefined()
       }),
     ))
 })

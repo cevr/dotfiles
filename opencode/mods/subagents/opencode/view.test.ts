@@ -104,6 +104,22 @@ describe("read", () => {
   })
 })
 
+describe("a latched child", () => {
+  test("carries the wakes' latch mark from its metadata; a session with none, or a malformed one, carries none", () => {
+    const mark = { hold: "pace", reason: "held", opensAt: 20, at: 10, cancelledAt: 15 }
+    const world = reads({
+      root: { info: { id: "root", time: { created: 0 } } },
+      a: { info: { id: "a", parentID: "root", time: { created: 1 }, metadata: { latch: mark } } },
+      b: { info: { id: "b", parentID: "root", time: { created: 2 }, metadata: { latch: { hold: "pace" } } } },
+      c: { info: { id: "c", parentID: "root", time: { created: 3 } } },
+    })
+    const [, a, b, c] = read(world, "root").sessions
+    expect(a?.latch).toEqual(mark)
+    expect(b).not.toHaveProperty("latch")
+    expect(c).not.toHaveProperty("latch")
+  })
+})
+
 describe("a session's background work", () => {
   const world = reads({
     root: { info: { id: "root", time: { created: 0 } } },

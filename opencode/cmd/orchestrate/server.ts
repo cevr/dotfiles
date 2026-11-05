@@ -36,35 +36,51 @@
  *   every host and harness on the account, and the script answers only when
  *   the pool cannot. Without it the script alone answers.
  *
+ * - Latch: a new subagent the Sabbath or the pace holds latches instead of
+ *   being refused. The call answers at once, as a background subagent's
+ *   does, saying why it waits and when it opens; the wakes plugin keeps the
+ *   latch (`latch` on its RPC) as a wake of the parent's, with the child
+ *   session made and not prompted, so the parent's rows show it waiting. At
+ *   its time the wakes ask this plugin's opener (`OPENER`) to decide it
+ *   again: still held latches again, admitted starts the child in the
+ *   background through the subagent tool's own execute, and its answer wakes
+ *   the parent. A pace hold is decided again at least every two minutes,
+ *   since a pace may open early. With no wakes plugin the held call is
+ *   refused with the hold's reason and the time it opens.
+ *
  * Each new subagent is told to the pool (`started`), which counts it on its
  * provider's pace, here and on the owner's other hosts, until its spend shows
  * in a reading.
  */
 import { homedir } from "node:os"
-import { join, resolve } from "node:path"
+import { join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Option, Schema, SchemaGetter } from "effect"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
+import { Latch, MARK_KEY, type Opened, OPENER } from "@dotfiles/opencode-wake/latch"
+import { WAKES } from "@dotfiles/opencode-wake/wake"
 import * as CodexAdmissionLive from "@dotfiles/opencode-orchestrate/codex/admission"
 import { KEEP, ROOT } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogLive from "@dotfiles/opencode-orchestrate/filestore/call-log"
 import * as CompactionWindowsLive from "@dotfiles/opencode-orchestrate/filestore/compaction-windows"
 import * as Model from "@dotfiles/opencode-orchestrate/model"
+import * as LatchesLive from "@dotfiles/opencode-orchestrate/opencode/latches"
 import * as ModelsLive from "@dotfiles/opencode-orchestrate/opencode/models"
 import * as PoolPaceLive from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
 import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
 import { definitions, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
-import { KNOWLTON, Place, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
+import { KNOWLTON, local, Place, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
 import {
   CompactionWindows,
   type CallLog,
   type CodexAdmission,
+  type Latches,
   type Models,
   type PoolPace,
   type Sessions,
 } from "@dotfiles/opencode-orchestrate/service"
-import type { Status } from "@dotfiles/opencode-orchestrate/tool-call"
+import type { Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
 
 export const DEFAULT_WINDOWS = join(homedir(), ".cache/orchestrate/compact.json")
 export const DEFAULT_LOG = join(homedir(), ".cache/orchestrate/opencode-agents.jsonl")
@@ -110,12 +126,12 @@ export const Options = Schema.Struct({
 export type Options = typeof Options.Type
 
 /** The outside systems the model runs on. */
-export type Externals = CallLog | Sessions | Models | PoolPace | CodexAdmission | CompactionWindows
+export type Externals = CallLog | Sessions | Models | PoolPace | CodexAdmission | CompactionWindows | Latches
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 
-/** The outside systems as OpenCode, the filesystem and processes provide them. */
-export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externals> =>
+/** The outside systems as OpenCode, the filesystem and processes provide them; `start` runs a latched child through the subagent tool. */
+export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start): Layer.Layer<Externals> =>
   Layer.mergeAll(
     CallLogLive.layer(options.log),
     SessionsLive.layer((sessionID) =>
@@ -123,6 +139,8 @@ export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externa
         Effect.map((session) => ({
           ...(session.parentID === undefined ? {} : { parentID: session.parentID }),
           ...(session.agent === undefined ? {} : { agent: session.agent }),
+          started: session.time.busy !== undefined || session.outcome !== undefined,
+          ...(session.metadata?.[MARK_KEY] === undefined ? {} : { latch: session.metadata[MARK_KEY] }),
         })),
       ),
     ),
@@ -145,14 +163,16 @@ export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externa
     ),
     CodexAdmissionLive.layer(options.codex === false ? CODEX_BUDGET : options.codex.script),
     CompactionWindowsLive.layer(options.windows),
+    LatchesLive.layer((ask) => ctx.rpc(WAKES).latch(ask), start),
   )
 
-/** The help script a held agent waits with. */
-const PACE_SCRIPT = resolve(import.meta.dir, "../../scripts/pace.ts")
-const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
+/** A time as the model reads it: ISO 8601, and the owner's local time. */
+const timeOf = (ms: number, place: Place) => `${new Date(ms).toISOString()} (${local(ms, place)} ${place.timeZone})`
 
-/** What the model reads when a call is refused, word for word as before. */
-const refusal = (tool: string, rejection: SabbathRest | PaceHeld): Tool.Error => {
+const whoseOf = (whose: string | undefined) => (whose === "codex" ? "the Codex account's" : "the pool's")
+
+/** What the model reads when a call is refused. */
+const refusal = (tool: string, rejection: SabbathRest | PaceHeld | StillLatched, place: Place): Tool.Error => {
   if (rejection._tag === "SabbathRest") {
     const then =
       tool === SUBAGENT
@@ -160,20 +180,71 @@ const refusal = (tool: string, rejection: SabbathRest | PaceHeld): Tool.Error =>
         : "Stop now: end your turn with one line on where you stopped. Make no more tool calls."
     return new Tool.Error({ message: `${rejection.why} ${then}`, error: rejection })
   }
-  const whose = rejection.whose === "codex" ? "the Codex account's" : "the pool's"
+  if (rejection._tag === "StillLatched")
+    return new Tool.Error({
+      message: `orchestrate: subagent ${rejection.child} is latched and has not started; it starts by itself at ${timeOf(rejection.opensAt, place)}, and its result wakes you. Send it nothing until then, or cancel its latch with wake_cancel and start a new one.`,
+      error: rejection,
+    })
   return new Tool.Error({
-    message: `orchestrate: ${whose} pace holds this agent. ${rejection.reason}. Run \`bun ${quote(PACE_SCRIPT)} --wait ${Math.ceil(rejection.retryAt)}\` with shell's background:true and go on with other work. When it exits, call subagent again with the same agent and description; admission is checked again. Do not poll.`,
+    message: `orchestrate: ${whoseOf(rejection.whose)} pace holds this agent. ${rejection.reason}. It opens about ${timeOf(rejection.retryAt, place)}; no latch could be kept for it, so start it again after then. Do not poll.`,
     error: rejection,
   })
 }
+
+/** What a latched call answers, as the subagent tool's output: why it waits, when it opens, and that its result wakes the parent. */
+const latchedResult = (latched: Model.LatchedStart, place: Place) => {
+  const event = latched.latched
+  const holds = event.hold === "sabbath" ? event.why : `${whoseOf(event.whose)} pace holds this agent: ${event.why}.`
+  const latch = {
+    id: latched.id,
+    hold: event.hold,
+    reason: event.why,
+    opensAt: event.opensAt,
+    opens: new Date(event.opensAt).toISOString(),
+    local: local(event.opensAt, place),
+  }
+  const output = [
+    `The subagent is latched (sessionID: ${latched.child}, latch ${latched.id}). ${holds}`,
+    `It starts by itself in the background when the latch opens, about ${timeOf(event.opensAt, place)}${event.recheckAt < event.opensAt ? `, or sooner: it is decided again at ${new Date(event.recheckAt).toISOString()}` : ""}. You will be woken with its result, as for a background subagent.`,
+    "Go on with other work, or end your turn. Do not start it again, poll or wait for it. wake_list shows the latch; wake_cancel cancels it.",
+  ].join("\n")
+  return {
+    output: { sessionID: latched.child, status: "latched" as const, output, latch },
+    content: output,
+    metadata: { sessionID: latched.child, status: "latched", latch },
+  }
+}
+
+/** The subagent tool's output, widened with the latched answer. */
+const SubagentOutput = Schema.Struct({
+  sessionID: Schema.String,
+  status: Schema.Literals(["completed", "running", "latched"]),
+  output: Schema.String,
+  latch: Schema.optionalKey(
+    Schema.Struct({
+      id: Schema.String,
+      hold: Schema.Literals(["pace", "sabbath"]),
+      reason: Schema.String,
+      opensAt: Schema.Number,
+      opens: Schema.String,
+      local: Schema.String,
+    }),
+  ),
+})
+
+/** The subagent tool tells a new child this first; a latched child opens as a follow-up, so it is told here. */
+const SPAWNED = "You are a subagent spawned by another session."
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 
 /** The tuner rewrites compact.json about once a day; agents pick it up within this. */
 const REREAD = "1 hour"
 
+type Execute = Tool.Info["execute"]
+type ToolContext = Parameters<Execute>[1]
+
 /** The plugin on `externals`: the live systems in OpenCode, test layers in the seam tests. */
-export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer.Layer<Externals>) =>
+export const make = (externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start) => Layer.Layer<Externals>) =>
   Plugin.define({
     id: "dotfiles-opencode.orchestrate",
     effect: Effect.fn("Orchestrate.plugin")(function* (ctx) {
@@ -182,13 +253,37 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
         Effect.mapError((error) => new Error(`dotfiles-opencode.orchestrate: invalid options: ${error.message}`)),
         Effect.orDie,
       )
+      // The subagent tool's own execute, as the last tool transform saw it: a latched child starts through it.
+      let subagent: Execute | undefined
+      const start: LatchesLive.Start = (request) =>
+        Effect.suspend(() => {
+          if (subagent === undefined) return Effect.fail(new Error("the subagent tool is not loaded"))
+          const context: ToolContext = {
+            sessionID: request.parent as ToolContext["sessionID"],
+            agent: request.from as ToolContext["agent"],
+            messageID: request.messageID as ToolContext["messageID"],
+            id: request.callID as ToolContext["id"],
+            progress: () => Effect.void,
+          }
+          return subagent(
+            {
+              agent: request.agent,
+              description: request.description,
+              prompt: `${SPAWNED}\n${request.prompt}`,
+              ...(request.model === undefined ? {} : { model: request.model }),
+              sessionID: request.child,
+              background: true,
+            },
+            context,
+          ).pipe(Effect.asVoid)
+        })
       const services = yield* Layer.build(
         Model.layer({
           place: options.place,
           fullAgent: options.fullAgent,
           ...(options.now === undefined ? {} : { now: options.now }),
           ...(options.codex === false ? {} : { codex: { providers: options.codex.providers, ...(options.codex.pool === undefined ? {} : { pool: options.codex.pool }) } }),
-        }).pipe(Layer.provideMerge(externals(ctx, options))),
+        }).pipe(Layer.provideMerge(externals(ctx, options, start))),
       )
       const orchestrate = Context.get(services, Model.Orchestrate)
       const windows = Context.get(services, CompactionWindows)
@@ -232,17 +327,67 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
         }),
       )
 
+      // A latched call's answer, by its child: the call's input names the child, and the
+      // subagent tool answers it from here instead of starting it. A kernel cell's calls
+      // share one call id, so the child, not the call, is the key.
+      const latched = new Map<string, ReturnType<typeof latchedResult>>()
+      yield* ctx.tool.transform((editor) =>
+        editor.update(SUBAGENT, (tool) => {
+          const execute = tool.execute
+          subagent = execute
+          tool.output = SubagentOutput
+          tool.execute = (input, context) => {
+            const child = isObject(input) && typeof input.sessionID === "string" ? input.sessionID : undefined
+            const answer = child === undefined ? undefined : latched.get(child)
+            if (child === undefined || answer === undefined) return execute(input, context)
+            latched.delete(child)
+            return Effect.succeed(answer)
+          }
+        }),
+      )
+
+      // The wakes ask here when a latch's time comes.
+      yield* ctx.rpc
+        .register(OPENER, {
+          open: (input) =>
+            Schema.decodeUnknownEffect(Latch)(input).pipe(
+              Effect.flatMap(
+                (latch): Effect.Effect<Opened> =>
+                  orchestrate.openLatch({
+                    parent: latch.sessionID,
+                    from: latch.subagent.from,
+                    messageID: latch.subagent.messageID,
+                    callID: latch.subagent.callID,
+                    child: latch.child,
+                    agent: latch.subagent.agent,
+                    description: latch.subagent.description,
+                    prompt: latch.subagent.prompt,
+                    ...(latch.subagent.model === undefined ? {} : { model: latch.subagent.model }),
+                    context: latch.context,
+                  }),
+              ),
+              Effect.catch((error) => Effect.succeed<Opened>({ outcome: "failed", message: `not a latch: ${error.message}` })),
+            ),
+        })
+        .pipe(Effect.orDie)
+
       yield* ctx.tool.hook("execute.before", (event) => {
         const call = { sessionID: event.sessionID, callID: event.id }
         if (event.tool !== SUBAGENT)
-          return orchestrate.useTool({ call, tool: event.tool }).pipe(Effect.mapError((rejection) => refusal(event.tool, rejection)))
-        return orchestrate.startSubagent({ call, from: event.agent, input: event.input }).pipe(
-          Effect.mapError((rejection) => refusal(event.tool, rejection)),
-          Effect.map((started) => {
+          return orchestrate.useTool({ call, tool: event.tool }).pipe(Effect.mapError((rejection) => refusal(event.tool, rejection, options.place)))
+        return orchestrate.startSubagent({ call, from: event.agent, messageID: event.messageID, input: event.input }).pipe(
+          Effect.mapError((rejection) => refusal(event.tool, rejection, options.place)),
+          Effect.map((outcome) => {
+            if (Option.isNone(outcome) || !isObject(event.input)) return
+            const routed = outcome.value._tag === "LatchedStart" ? outcome.value.latched : outcome.value
             // Run the call as the guard routed it, on the role's model when one was chosen.
-            if (Option.isNone(started) || !isObject(event.input)) return
-            const input: Record<string, unknown> = { ...event.input, agent: started.value.agent }
-            if (started.value.model !== undefined) input.model = started.value.model
+            const input: Record<string, unknown> = { ...event.input, agent: routed.agent }
+            if (routed.model !== undefined) input.model = routed.model
+            // A latched call names its child, whose answer the subagent tool gives back at once.
+            if (outcome.value._tag === "LatchedStart") {
+              latched.set(outcome.value.child, latchedResult(outcome.value, options.place))
+              input.sessionID = outcome.value.child
+            }
             event.input = input
           }),
         )
@@ -253,7 +398,11 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
         const metadata = event.status === "completed" ? event.result.metadata : undefined
         const child = isObject(metadata) && typeof metadata.sessionID === "string" ? metadata.sessionID : undefined
         const status: Status =
-          event.status === "error" ? "error" : isObject(metadata) && metadata.status === "running" ? "running" : "completed"
+          event.status === "error"
+            ? "error"
+            : isObject(metadata) && (metadata.status === "running" || metadata.status === "latched")
+              ? metadata.status
+              : "completed"
         return orchestrate.finishSubagent({
           call: { sessionID: event.sessionID, callID: event.id },
           ...(child === undefined ? {} : { child }),

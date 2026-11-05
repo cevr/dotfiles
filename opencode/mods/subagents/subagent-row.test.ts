@@ -1,7 +1,8 @@
 // Who works on what, how it stands, what it says, and which rows show.
 import { describe, expect, test } from "bun:test"
 import type { Call, Message, Part, Session } from "./family.ts"
-import { LINGER_MS, rows, subagents, visible, waitingOn, type Row } from "./subagent-row.ts"
+import { columns, format } from "./line.ts"
+import { latchUpdate, LINGER_MS, rows, subagents, visible, waitingOn, type Row } from "./subagent-row.ts"
 
 const call = (tool: string, input: Record<string, unknown>, over: Partial<Call> = {}): Call => ({
   type: "call",
@@ -54,6 +55,54 @@ describe("a row's role, unit and order", () => {
       ["general", "general", "subagent"],
       ["planner", "planner", "Plan it"],
       ["code-reviewer", "other", "subagent"],
+    ])
+  })
+
+  test("a worker or general child whose description names an orchestrate step reads as that role, the role word out of its unit", () => {
+    const children = [
+      ["a", "worker", "pkg-lower implementor"],
+      ["b", "worker", "closure-flake verifier r1 (Opus)"],
+      ["c", "general", "planner hsdaily r1"],
+      ["d", "implementor", "implementor hsdaily r2"],
+      ["e", "worker", "Fix the verifier's timeout"],
+      ["f", "worker", "Fix money parsing"],
+      ["g", "verifier", "implementor pkg-lower r1"],
+      ["h", "explore", "verifier pkg-lower r1"],
+    ] as const
+    const world = family(
+      session("root", { messages: [step(children.map(([id, , description]) => launch(id, { agent: "general", description })))] }),
+      ...children.map(([id, agent], index) => session(id, { parentID: "root", agent, time: { created: index } })),
+    )
+    expect(subagents(world, "root").map((row) => [row.role, row.tone, row.unit])).toEqual([
+      ["implementor", "implementor", "pkg-lower"],
+      ["verifier", "verifier", "closure-flake r1 (Opus)"],
+      ["planner", "planner", "hsdaily r1"],
+      ["implementor", "implementor", "hsdaily r2"],
+      ["worker", "worker", "Fix the verifier's timeout"],
+      ["worker", "worker", "Fix money parsing"],
+      ["verifier", "verifier", "implementor pkg-lower r1"],
+      ["explore", "other", "verifier pkg-lower r1"],
+    ])
+  })
+
+  test("the workbox's worker lanes draw as the steps they run (ergo's dock)", () => {
+    const lanes = [
+      ["p", "pkg-lower implementor"],
+      ["c", "closure-flake verifier r1 (Opus)"],
+      ["g", "gate-test-disk verifier r1 (Opus)"],
+    ] as const
+    const world = family(
+      session("root", { messages: [step(lanes.map(([id, description]) => launch(id, { agent: "general", description })))] }),
+      ...lanes.map(([id], index) =>
+        session(id, { parentID: "root", agent: "worker", model: "claude-opus-5-5", time: { created: index, busy: 0 }, running: true }),
+      ),
+    )
+    const shown = rows(world, "root", 0)
+    const cols = columns(shown)
+    expect(shown.map((row) => format(row, 80, { columns: cols, spinner: "◆" }).map((segment) => segment.text).join(""))).toEqual([
+      "◆ implementor opus 5.5  pkg-lower                 starting · 0s",
+      "◆ verifier    opus 5.5  closure-flake r1 (Opus)   starting · 0s",
+      "◆ verifier    opus 5.5  gate-test-disk r1 (Opus)  starting · 0s",
     ])
   })
 
@@ -149,6 +198,56 @@ describe("a row's state", () => {
     expect(
       one({ running: true, messages: [step([words("Check the parser first.")]), step([call("bash", { command: "bun test money" }, { status: "running" })])] }),
     ).toMatchObject({ update: "running bun test money" })
+  })
+})
+
+describe("a latched subagent", () => {
+  // 13:00 UTC on Wednesday 4 November 2026; the pace opens at 14:30.
+  const AT = Date.parse("2026-11-04T13:00:00Z")
+  const pace = { hold: "pace", reason: "anthropic is at 92% of its 5h window", opensAt: Date.parse("2026-11-04T14:30:00Z"), at: AT }
+  const latched = (latch: Session["latch"], over: Partial<Session> = {}, root: Partial<Session> = {}) =>
+    subagents(
+      family(
+        session("root", root),
+        session("a", { parentID: "root", agent: "verifier", title: "Check the export", time: { created: AT, updated: AT + 5 }, ...(latch ? { latch } : {}), ...over }),
+      ),
+      "root",
+      { timeZone: "UTC" },
+    )[0]
+  const answered = call("subagent", { agent: "verifier", description: "Check the export" }, { metadata: { sessionID: "a", status: "latched" } })
+
+  test("waits latched from when it latched, saying what holds it and when it opens; it counts as live", () => {
+    expect(latched(pace)).toMatchObject({ role: "verifier", unit: "Check the export", state: "latched", update: "pace · opens 14:30", since: AT })
+    expect(visible([latched(pace)!], AT + 130_000).map((row) => [row.state, row.elapsed])).toEqual([["latched", 130_000]])
+    // The parent's call answered at once: it does not keep the row waiting, and its description names the unit.
+    expect(latched(pace, { title: "other" }, { messages: [step([answered])] })).toMatchObject({ state: "latched", unit: "Check the export" })
+  })
+
+  test("the Sabbath's opening names its day when it is not the day it latched", () => {
+    const sabbath = { hold: "sabbath", reason: "It is the Sabbath.", opensAt: Date.parse("2026-11-07T22:12:00Z"), at: Date.parse("2026-11-06T23:00:00Z") }
+    expect(latchUpdate(sabbath, "UTC")).toBe("Sabbath · opens Sat 22:12")
+    expect(latchUpdate(sabbath, "America/Toronto")).toBe("Sabbath · opens Sat 17:12")
+    expect(latchUpdate(pace, "UTC")).toBe("pace · opens 14:30")
+  })
+
+  test("a cancelled latch reads cancelled and a failed one failed, then they linger and go like other stopped rows", () => {
+    const cancelled = latched({ ...pace, cancelledAt: AT + 60_000 })
+    expect(cancelled).toMatchObject({ state: "cancelled", update: "", ended: AT + 60_000 })
+    expect(visible([cancelled!], AT + 60_000 + LINGER_MS).map((row) => row.id)).toEqual([])
+    expect(latched({ ...pace, failed: "the subagent tool is not loaded. More." })).toMatchObject({
+      state: "failed",
+      update: "the subagent tool is not loaded.",
+      ended: AT + 5,
+    })
+  })
+
+  test("once it opens it is a subagent like any other: running works, and a finished one ends as its notice says", () => {
+    expect(latched(pace, { running: true, time: { created: AT, busy: AT + 10 } })).toMatchObject({ state: "working", since: AT + 10 })
+    // Its parent's latched call counts as a background one: no stop notice yet keeps it waiting.
+    expect(latched(pace, { time: { created: AT, busy: AT + 10, idle: AT + 20 }, outcome: "succeeded" }, { messages: [step([answered])] })).toMatchObject({ state: "waiting" })
+    expect(
+      latched(pace, { time: { created: AT, busy: AT + 10, idle: AT + 20 }, outcome: "succeeded" }, { messages: [step([answered]), notice("a", "completed", AT + 21)] }),
+    ).toMatchObject({ state: "done", ended: AT + 21 })
   })
 })
 

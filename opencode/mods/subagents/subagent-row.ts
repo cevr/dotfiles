@@ -3,8 +3,13 @@
 // that was a while; one per subagent of a session family.
 //
 //   ◐ implementor opus 5.5  Fix money parsing   editing src/money.ts · 1m 12s
-//   ◷ worker      sol 6.1   closure-flake       flock gate.lock ./gate.sh · 37m · updated 26m ago
+//   ◷ verifier    sol 6.1   closure-flake r1    flock gate.lock ./gate.sh · 37m · updated 26m ago
 //   ✓ planner     opus 5.5  Plan month padding  3 steps
+//   ◇ verifier    sol 6.1   Check the export    pace · opens 14:30 · 2m 10s
+//
+// The role is the orchestrate step's role noun, as the skill and the agents
+// name it: a worker whose call's description says `closure-flake verifier r1`
+// reads `verifier` with the unit `closure-flake r1`.
 //
 // `rows(family, rootSessionID, now)` gives the rows worth showing at `now`;
 // `format(row, width)` (line.ts) draws one as a line of coloured segments.
@@ -20,21 +25,27 @@
 //   while its own background shells or subagents still run, or its parent
 //   still waits on it. The host wakes it when that work stops, and only then
 //   hands its answer back, so it is not done.
+// - latched: a held start (orchestrate's pace or the Sabbath) kept as a wake
+//   of its parent's: its child is made and not yet prompted, and starts by
+//   itself when the latch opens. Its row says what holds it and when it
+//   opens, timed since it latched. A cancelled latch reads cancelled, a
+//   failed one failed.
 // The time is how long it has been in that state, not since it started.
+import { described as stepOf } from "@dotfiles/opencode-orchestrate/described"
 import { canonical, firstSentence, lastHeard, lastSentence, liveCall, running, runningUpdate, sayings, waiting, waits } from "./activity.ts"
-import type { Call, Family, Message, Session } from "./family.ts"
+import type { Call, Family, Latch, Message, Session } from "./family.ts"
 import { modelName, type ModelName } from "./model.ts"
 import { label } from "./shell.ts"
 
 /**
- * How a subagent stands. `working` and `waiting` are live (see above),
- * `blocked` waits on the owner; `idle` is a stopped one whose end the data
- * does not say.
+ * How a subagent stands. `working`, `waiting` and `latched` are live (see
+ * above), `blocked` waits on the owner; `idle` is a stopped one whose end the
+ * data does not say.
  */
-export type State = "working" | "waiting" | "blocked" | "done" | "failed" | "cancelled" | "idle"
+export type State = "working" | "waiting" | "blocked" | "latched" | "done" | "failed" | "cancelled" | "idle"
 
-/** The states a row stays in view for, timed. */
-export const live = (state: State) => state === "working" || state === "waiting" || state === "blocked"
+/** The states a row stays in view for, timed. A latched row is queued work, so it counts as live. */
+export const live = (state: State) => state === "working" || state === "waiting" || state === "blocked" || state === "latched"
 
 /** The colour family a role draws in: the orchestrate roles each have one, other agents share one. */
 export type Tone = "planner" | "implementor" | "verifier" | "worker" | "general" | "other"
@@ -44,12 +55,20 @@ export type Row = {
   readonly id: string
   /** 0 for a child of the root, 1 for its child, and so on. */
   readonly depth: number
-  /** The child session's agent: planner, implementor, verifier, worker, general, or another agent. */
+  /**
+   * The orchestrate step it runs, else its agent: the child session's agent
+   * (planner, implementor, verifier, worker, general, or another agent), or,
+   * for a worker or general child whose call's description names a step in
+   * the skill's form (`<role> <unit> r<N>`, `<unit> <role>[ rN]`), that role.
+   */
   readonly role: string
   readonly tone: Tone
   /** The model it runs on, by its short name (model.ts), when the data says. */
   readonly model?: ModelName
-  /** What the parent called the work: the subagent call's description, else the child's title. */
+  /**
+   * What the parent called the work: the subagent call's description, without
+   * the role word when it names the row's role, else the child's title.
+   */
   readonly unit: string
   readonly state: State
   /** One short sentence of what it is doing now, or how it ended. */
@@ -107,6 +126,9 @@ function reason(text: string): string {
   return firstSentence(body.split("\n")[0] ?? "").replace(/^Subagent failed( \(sessionID: [^)]*\))?:?\s*/, "")
 }
 
+/** A subagent call that does not hold its turn: a background one, or a latched one, which answers at once. */
+const backgrounded = (call: Call) => call.input.background === true || call.metadata.status === "latched"
+
 const named = (value: unknown) => (typeof value === "string" ? value.split("\n")[0]?.trim() || undefined : undefined)
 
 /** One piece of background work a session still waits on: what it is, and the step's call that started it (a kernel cell for its own calls). */
@@ -120,7 +142,7 @@ function pendingWork(messages: ReadonlyArray<Message>): ReadonlyArray<Pending> {
     const shell = call.metadata.shellID
     if (tool === "shell" && typeof shell === "string" && !stopped.has(shell)) return label(call.input) || "a shell command"
     const child = call.metadata.sessionID
-    if (tool === "subagent" && call.input.background === true && typeof child === "string" && !stopped.has(child))
+    if (tool === "subagent" && backgrounded(call) && typeof child === "string" && !stopped.has(child))
       return named(call.input.description) ?? named(call.input.agent) ?? "a subagent"
     return undefined
   }
@@ -149,7 +171,7 @@ export const waitingOn = (messages: ReadonlyArray<Message>): ReadonlyArray<strin
 
 /** Whether the parent still waits on the subagent: its foreground call still runs, or its background one sent no stop notice yet. */
 const pending = ({ call, notice }: ReturnType<typeof launch>) =>
-  call !== undefined && notice === undefined && (call.input.background === true || running(call))
+  call !== undefined && notice === undefined && (backgrounded(call) || running(call))
 
 type Ending = { readonly state: State; readonly at?: number; readonly why?: string }
 
@@ -163,7 +185,7 @@ function ending(session: Session, found: ReturnType<typeof launch>): Ending {
     if (notice.state === "error") return { state: "failed", at: notice.at, why: reason(notice.text) }
     return { state: "cancelled", at: notice.at }
   }
-  if (call && call.input.background !== true && !running(call)) {
+  if (call && !backgrounded(call) && !running(call)) {
     if (call.status === "completed") return { state: "done", ...when(call.completed) }
     const message = call.error ?? ""
     if (message.startsWith("Subagent cancelled")) return { state: "cancelled", ...when(call.completed) }
@@ -200,20 +222,58 @@ function waitingUpdate(messages: ReadonlyArray<Message>, pendings: ReadonlyArray
   return `${first.what}${pendings.length > 1 ? ` +${pendings.length - 1}` : ""}`
 }
 
+/** A clock time, `14:30`, in `timeZone` (the host's own by default). */
+const clock = (ms: number, timeZone: string | undefined) =>
+  new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", ...(timeZone === undefined ? {} : { timeZone }) }).format(ms)
+const day = (ms: number, timeZone: string | undefined) =>
+  new Intl.DateTimeFormat("en-US", { weekday: "short", year: "numeric", month: "2-digit", day: "2-digit", ...(timeZone === undefined ? {} : { timeZone }) }).format(ms)
+const weekday = (ms: number, timeZone: string | undefined) =>
+  new Intl.DateTimeFormat("en-US", { weekday: "short", ...(timeZone === undefined ? {} : { timeZone }) }).format(ms)
+
+/**
+ * What a latched row says: what holds it and when it opens, `pace · opens
+ * 14:30`, or with its weekday when it opens on another day than it latched,
+ * `Sabbath · opens Sat 18:12`.
+ */
+export function latchUpdate(latch: Latch, timeZone?: string): string {
+  const what = latch.hold === "sabbath" ? "Sabbath" : latch.hold
+  const sameDay = day(latch.opensAt, timeZone) === day(latch.at, timeZone)
+  return `${what} · opens ${sameDay ? "" : `${weekday(latch.opensAt, timeZone)} `}${clock(latch.opensAt, timeZone)}`
+}
+
+/** The agents that run role work asked of no particular agent: the worker the guard routes it to, or the general agent under the full-agent escape. */
+const LEAN = new Set(["worker", "general"])
+
+/**
+ * The row's role and unit: the step the description names, when the child
+ * runs as that role or as the worker or general agent (a session started
+ * before the guard routed by the description), with the role word dropped
+ * from the unit; else the agent and the whole description.
+ */
+function roleAndUnit(agent: string, description: string): { readonly role: string; readonly unit?: string } {
+  const step = stepOf(description)
+  if (step && (step.role === agent || LEAN.has(agent))) return { role: step.role, unit: step.rest }
+  return { role: agent, ...(description ? { unit: description } : {}) }
+}
+
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
 
+/** How rows read times: `timeZone` for a latched row's opening time, the host's own by default. */
+export type ReadOptions = { readonly timeZone?: string }
+
 /** Every subagent of the family as a row, in `order`, whatever its state. */
-export function subagents(family: Family, rootSessionID: string): Row[] {
+export function subagents(family: Family, rootSessionID: string, options: ReadOptions = {}): Row[] {
   const byID = new Map(family.sessions.map((session) => [session.id, session]))
   return order(family, rootSessionID).map(({ session, depth }): Row => {
     const parent = session.parentID ? (byID.get(session.parentID)?.messages ?? []) : []
     const found = launch(parent, session.id)
     const input = found.call?.input ?? {}
     const described = typeof input.description === "string" ? input.description.trim() : ""
-    const role =
+    const agent =
       session.agent ??
       session.messages.flatMap((message) => (message.type === "assistant" && message.agent ? [message.agent] : [])).at(-1) ??
       (typeof input.agent === "string" ? input.agent : "subagent")
+    const { role, unit } = roleAndUnit(agent, described)
     const model = modelName(session.model)
     const base = {
       id: session.id,
@@ -221,7 +281,7 @@ export function subagents(family: Family, rootSessionID: string): Row[] {
       role,
       tone: tone(role),
       ...(model === undefined ? {} : { model }),
-      unit: described || session.title || "subagent",
+      unit: unit || session.title || "subagent",
     }
     const busy = session.time.busy ?? session.time.created
     const heard = lastHeard(session.messages)
@@ -235,6 +295,14 @@ export function subagents(family: Family, rootSessionID: string): Row[] {
       const update = runningUpdate(session.messages)
       if (call && waiting(call)) return { ...base, state: "waiting", update, ...timed(call.started ?? busy) }
       return { ...base, state: "working", update, ...timed(workingSince(session.messages, busy)) }
+    }
+    // A latched child has never run: its latch says how it stands until it opens.
+    const latch = session.latch
+    if (latch !== undefined && session.time.busy === undefined && session.outcome === undefined) {
+      if (latch.cancelledAt !== undefined) return { ...base, state: "cancelled", update: "", ended: latch.cancelledAt }
+      if (latch.failed !== undefined)
+        return { ...base, state: "failed", update: firstSentence(latch.failed), ended: session.time.updated ?? latch.at }
+      return { ...base, state: "latched", update: latchUpdate(latch, options.timeZone), since: latch.at }
     }
     const pendings = pendingWork(session.messages)
     if (pendings.length > 0 || pending(found)) {

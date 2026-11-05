@@ -2,15 +2,18 @@
 // doubles. It checks what OpenCode sees: the four direct tools, their answers
 // and refusals, the RPC's pending list and `due`, a `changed` event per change,
 // a fire reaching the session, a notice leaving once its message was taken, a
-// deleted session's wakes going, and the start arming what was stored.
+// deleted session's wakes going, the start arming what was stored, and a
+// latch kept over the RPC and opened through the opener.
 // tests/wake.test.ts runs it in OpenCode.
 import { describe, expect, test } from "bun:test"
 import type { Tool } from "@opencode/plugin/effect"
 import { Effect, Exit, Layer, Queue, Schema, type Scope, Stream } from "effect"
-import { alarm } from "@dotfiles/opencode-wake/laws"
+import { Latched } from "@dotfiles/opencode-wake/latch"
+import { alarm, latch } from "@dotfiles/opencode-wake/laws"
 import * as MemoryBackstop from "@dotfiles/opencode-wake/memory/backstop"
 import * as MemoryChecks from "@dotfiles/opencode-wake/memory/checks"
 import * as MemoryCourier from "@dotfiles/opencode-wake/memory/courier"
+import * as MemoryOpener from "@dotfiles/opencode-wake/memory/opener"
 import * as MemoryStore from "@dotfiles/opencode-wake/memory/store"
 import { Due, Pending, WAKES } from "@dotfiles/opencode-wake/wake"
 import WakePlugin, { make } from "./server.ts"
@@ -31,9 +34,17 @@ const DIR = "/work/app"
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
 const settle = (ms = 20) => Effect.promise(() => new Promise<void>((done) => setTimeout(done, ms)))
 
+interface Doubles {
+  readonly store: MemoryStore.MemoryWakes
+  readonly sessions: MemoryCourier.MemorySessions
+  readonly jobs: MemoryBackstop.MemoryJobs
+  readonly checks: MemoryChecks.MemoryChecks
+  readonly opener: MemoryOpener.MemoryOpener
+}
+
 /** The plugin started on a stand-in host over the doubles. */
 const start = (
-  doubles = { store: MemoryStore.empty(), sessions: MemoryCourier.empty("ses_root", "ses_child"), jobs: MemoryBackstop.empty(), checks: MemoryChecks.empty() },
+  doubles: Doubles = { store: MemoryStore.empty(), sessions: MemoryCourier.empty("ses_root", "ses_child"), jobs: MemoryBackstop.empty(), checks: MemoryChecks.empty(), opener: MemoryOpener.empty() },
   options: unknown = { backstop: "off" },
 ) =>
   Effect.gen(function* () {
@@ -62,7 +73,13 @@ const start = (
       },
     } as unknown as Host
     yield* make(() =>
-      Layer.mergeAll(MemoryStore.layer(doubles.store), MemoryCourier.layer(doubles.sessions), MemoryChecks.layer(doubles.checks), MemoryBackstop.layer(doubles.jobs)),
+      Layer.mergeAll(
+        MemoryStore.layer(doubles.store),
+        MemoryCourier.layer(doubles.sessions),
+        MemoryChecks.layer(doubles.checks),
+        MemoryBackstop.layer(doubles.jobs),
+        MemoryOpener.layer(doubles.opener),
+      ),
     ).effect(host)
     yield* settle()
     const handlers = rpc[WAKES.id]
@@ -82,8 +99,9 @@ const start = (
     }
     const pending = (...sessionIDs: ReadonlyArray<string>) => method("pending", { sessionIDs }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Pending)), Effect.orDie)
     const due = (id: string) => method("due", { id }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Due)), Effect.orDie)
+    const latched = (input: unknown) => method("latch", input).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Latched)), Effect.orDie)
     const inbox = (sessionID = "ses_root") => doubles.sessions.inboxes.get(sessionID) ?? []
-    return { added, call, fail, pending, due, inbox, emitted, emit: (event: Event) => Queue.offer(events, event).pipe(Effect.andThen(settle())), doubles }
+    return { added, call, fail, pending, due, latched, inbox, emitted, emit: (event: Event) => Queue.offer(events, event).pipe(Effect.andThen(settle())), doubles }
   })
 
 describe("the wake tools", () => {
@@ -132,7 +150,7 @@ describe("the wake tools", () => {
         expect(listed).toContain("Pending (1):")
         const id = /- (w[0-9a-z]{6}): alarm/.exec(listed)?.[1] ?? ""
         expect(yield* plugin.call("wake_cancel", { id })).toBe(`Cancelled ${id}.`)
-        expect(yield* plugin.call("wake_list", {})).toContain("No alarms or monitors pending.")
+        expect(yield* plugin.call("wake_list", {})).toContain("No alarms, monitors or latches pending.")
       }),
     ))
 })
@@ -166,13 +184,31 @@ describe("the plugin's events and start", () => {
   test("the start fires a stored wake that came due while no server ran; due then answers gone", () =>
     scenario(
       Effect.gen(function* () {
-        const doubles = { store: MemoryStore.empty(), sessions: MemoryCourier.empty("ses_root"), jobs: MemoryBackstop.empty(), checks: MemoryChecks.empty() }
+        const doubles = { store: MemoryStore.empty(), sessions: MemoryCourier.empty("ses_root"), jobs: MemoryBackstop.empty(), checks: MemoryChecks.empty(), opener: MemoryOpener.empty() }
         const now = Date.now()
         doubles.store.entries.set(alarm.id, { ...alarm, sessionID: "ses_root", directory: DIR, setAt: now - 3 * 3600_000, dueAt: now - 2 * 3600_000 })
         const plugin = yield* start(doubles)
         expect(plugin.inbox()[0]?.letter.text).toContain("It fired 2h late: no OpenCode server was running at")
         expect(yield* plugin.due(alarm.id)).toEqual({ outcome: "gone" })
         expect(yield* plugin.due("not an id")).toEqual({ outcome: "gone" })
+      }),
+    ))
+
+  test("latch keeps a held start for its parent, lists it, and opens it through the opener at its time", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        plugin.doubles.opener.answer = () => ({ outcome: "opened" })
+        const now = Date.now()
+        const ask = { sessionID: "ses_root", subagent: latch.subagent, hold: "pace", reason: latch.reason, opensAt: now + 200, recheckAt: now + 200, context: {} }
+        const answer = yield* plugin.latched(ask)
+        if (answer.outcome !== "latched") return yield* Effect.die(new Error(answer.reason))
+        expect((yield* plugin.pending("ses_root")).entries.map((entry) => [entry.kind, entry.note, entry.child])).toEqual([["latch", "Add the export", answer.child]])
+        expect(yield* plugin.call("wake_list", {})).toContain(`- ${answer.id}: latch`)
+        yield* settle(1400)
+        expect(plugin.doubles.opener.asked.map((asked) => asked.id)).toEqual([answer.id])
+        expect((yield* plugin.pending("ses_root")).entries).toEqual([])
+        expect(yield* plugin.latched({ sessionID: "ses_root" })).toMatchObject({ outcome: "refused" })
       }),
     ))
 

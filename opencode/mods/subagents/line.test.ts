@@ -32,8 +32,8 @@ const stuck = row({
   elapsed: 37 * MIN,
   quiet: 26 * MIN,
 })
-const STATES: ReadonlyArray<State> = ["working", "waiting", "blocked", "idle", "cancelled", "done", "failed"]
-const WORDS = /(^|\s)(working|waiting|blocked|idle|cancelled|done|failed)(\s|$)/
+const STATES: ReadonlyArray<State> = ["working", "waiting", "blocked", "latched", "idle", "cancelled", "done", "failed"]
+const WORDS = /(^|\s)(working|waiting|blocked|latched|idle|cancelled|done|failed)(\s|$)/
 
 describe("the state diamonds", () => {
   test("each diamond and spinner frame is one cell wide, from the Geometric Shapes block", () => {
@@ -53,6 +53,7 @@ describe("the state diamonds", () => {
       working: "◈ success",
       waiting: "◈ warning",
       blocked: "◆ warning",
+      latched: "◇ info",
       idle: "◇ muted",
       cancelled: "◇ warning",
       done: "◆ muted",
@@ -76,6 +77,10 @@ describe("a drawn row", () => {
     )
     expect(line(row({ state: "blocked", update: "question: Which?" }), 80)).toBe(
       "◆ implementor opus 5.5  Fix money parsing  question: Which? · 1m 12s",
+    )
+    // A latched row says what holds it and when it opens, timed since it latched; its diamond stands still.
+    expect(line(row({ state: "latched", update: "pace · opens 14:30" }), 80)).toBe(
+      "◇ implementor opus 5.5  Fix money parsing  pace · opens 14:30 · 1m 12s",
     )
     expect(line(row({ state: "done", update: "3 steps", since: undefined, elapsed: undefined }), 80)).toBe(
       "◆ implementor opus 5.5  Fix money parsing  3 steps",

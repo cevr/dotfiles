@@ -39,6 +39,7 @@ describe("fromFamily", () => {
         session("gone", { agent: "worker", title: "Gone", time: { created: 4 } }),
         session("bad", { agent: "worker", title: "Bad", outcome: "failed", time: { created: 5, idle: 7 } }),
         session("unknown", { title: "Unknown", time: { created: 6 } }),
+        session("queued", { agent: "worker", title: "Queued", time: { created: 7 }, latch: { hold: "pace", reason: "held", opensAt: now + 60_000, at: now } }),
       ],
     }
     expect([...fromFamily(family)]).toEqual([
@@ -49,6 +50,8 @@ describe("fromFamily", () => {
       ["gone", { state: "failed", since: 6 }],
       ["bad", { state: "failed", since: 7 }],
       ["unknown", { state: "done" }],
+      // A latched subagent is queued work: it waits.
+      ["queued", { state: "waiting" }],
     ])
   })
 })

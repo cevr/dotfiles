@@ -18,6 +18,7 @@ const liveOf = (row: Row): Live => {
     case "working":
       return { state: "running" }
     case "waiting":
+    case "latched":
       return { state: "waiting" }
     case "blocked":
       return { state: "blocked" }

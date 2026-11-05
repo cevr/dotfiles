@@ -4,7 +4,7 @@
 // tools its cell called), and the stop notices its background subagents and
 // shell commands sent it. Read inside a Solid computation, every read here is
 // reactive.
-import type { Call, Family, Message, Part, Session } from "../family.ts"
+import type { Call, Family, Latch, Message, Part, Session } from "../family.ts"
 
 /** A session as `context.data.session.get` returns it, narrowed to what a row reads. */
 export type SessionInfo = {
@@ -15,6 +15,8 @@ export type SessionInfo = {
   readonly model?: { readonly id: string }
   readonly outcome?: string
   readonly time?: { readonly created: number; readonly busy?: number; readonly idle?: number; readonly updated?: number }
+  /** The session's metadata: a latched child's carries the wakes' `latch` mark. */
+  readonly metadata?: Readonly<Record<string, unknown>>
 }
 
 /**
@@ -124,6 +126,19 @@ function message(value: unknown): Message | undefined {
   return { type: "notice", childID, state, at, text: string(fields.text) ?? "" }
 }
 
+/** A latched child's mark (the wakes' `latch` metadata, mods/wake latch.ts); undefined when it carries none. */
+function latchOf(value: unknown): Latch | undefined {
+  const fields = record(value)
+  const hold = string(fields.hold)
+  const reason = string(fields.reason)
+  const opensAt = number(fields.opensAt)
+  const at = number(fields.at)
+  if (hold === undefined || reason === undefined || opensAt === undefined || at === undefined) return undefined
+  const cancelledAt = number(fields.cancelledAt)
+  const failed = string(fields.failed)
+  return { hold, reason, opensAt, at, ...(cancelledAt === undefined ? {} : { cancelledAt }), ...(failed === undefined ? {} : { failed }) }
+}
+
 /** The model the latest assistant step ran on, by id. */
 const stepModel = (items: ReadonlyArray<unknown>): string | undefined =>
   items.flatMap((item) => {
@@ -137,6 +152,7 @@ function session(reads: Reads, id: string): Session {
   const time = info?.time
   const items = reads.session.message.list(id)
   const model = stepModel(items) ?? info?.model?.id
+  const latch = latchOf(info?.metadata?.latch)
   return {
     id,
     ...(info?.parentID ? { parentID: info.parentID } : {}),
@@ -150,6 +166,7 @@ function session(reads: Reads, id: string): Session {
       ...(time?.idle === undefined ? {} : { idle: time.idle }),
       ...(time?.updated === undefined ? {} : { updated: time.updated }),
     },
+    ...(latch === undefined ? {} : { latch }),
     running: reads.session.status(id) === "running",
     permissions: (reads.session.permission.list(id) ?? []).map((request) =>
       [request.action, request.resources[0]].filter(Boolean).join(" "),

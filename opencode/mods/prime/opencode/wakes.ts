@@ -3,6 +3,8 @@
 // every 2 seconds (so a time crossing midnight reads right), keeping the last
 // reading when a read fails. The protocol's id and event name come from the
 // wake mod's protocol file; the answer decodes with Prime's own narrow schema.
+// A latch is a held subagent start, which the subagent rows show: the dock's
+// wake item leaves it out.
 import { CHANGED, WAKES } from "@dotfiles/opencode-wake/wake"
 import type { Plugin } from "@opencode/plugin/tui"
 import { Option, Schema } from "effect"
@@ -11,7 +13,7 @@ import type { Wakes } from "../wakes.ts"
 
 const Answer = Schema.Struct({
   now: Schema.Number,
-  entries: Schema.Array(Schema.Struct({ kind: Schema.Literals(["alarm", "monitor"]), dueAt: Schema.Number })),
+  entries: Schema.Array(Schema.Struct({ kind: Schema.Literals(["alarm", "monitor", "latch"]), dueAt: Schema.Number })),
   notices: Schema.Array(Schema.Unknown),
 })
 const decodeAnswer = Schema.decodeUnknownOption(Answer)
@@ -45,7 +47,7 @@ export function readWakes(context: Plugin.Context, sessionID: Accessor<string | 
       if (abort.signal.aborted) return
       if (Option.isSome(answer)) {
         const { now, entries, notices } = answer.value
-        setWakes({ now, entries, notices: notices.length })
+        setWakes({ now, entries: entries.filter((entry): entry is Wakes["entries"][number] => entry.kind !== "latch"), notices: notices.length })
       }
       if (again) {
         again = false

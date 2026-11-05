@@ -1,9 +1,11 @@
 // The contracts the wakes need from outside: somewhere to keep the entries and
 // notices, a way into a session, a way to run a monitor's command, the OS
-// backstop that fires an entry when no server runs, and word of a change. What
-// every implementation owes is in laws.ts.
+// backstop that fires an entry when no server runs, the opener that decides a
+// latch again, and word of a change. What every implementation owes is in
+// laws.ts.
 import { Context, type Effect, Schema } from "effect"
 import type { Job, Schedule } from "./backstop.ts"
+import type { Latch, Mark, Opened } from "./latch.ts"
 import type { Letter } from "./message.ts"
 import type { Check, Entry, Notice } from "./wake.ts"
 
@@ -46,6 +48,18 @@ export interface Start {
   readonly text: string
 }
 
+/** A latch's child session: its minted id, its parent, where, its title (the subagent's description), agent and model, and its mark. */
+export interface Child {
+  readonly sessionID: string
+  readonly parentID: string
+  readonly directory: string
+  readonly title: string
+  readonly agent: string
+  /** `provider/id#variant`. */
+  readonly model?: string | undefined
+  readonly mark: Mark
+}
+
 /**
  * The way into a session.
  * - `newDelivery`: an id for one fire's message, minted before it is sent.
@@ -60,6 +74,13 @@ export interface Start {
  *   one session with one prompt.
  * - `parentOf`: the session's parent, undefined for a root session or one
  *   that does not exist.
+ * - `child`: a latch's child session under its minted id, a child of its
+ *   parent, carrying its mark, and not prompted: no turn starts. Making the
+ *   same id twice makes one session. A parent that does not exist refuses
+ *   with `gone`.
+ * - `mark`: the session's latch mark replaced, or with none cleared; the
+ *   session keeps the rest of its metadata. A session that does not exist is
+ *   no failure.
  */
 export class Courier extends Context.Service<
   Courier,
@@ -69,8 +90,23 @@ export class Courier extends Context.Service<
     readonly deliver: (sessionID: string, delivery: string, letter: Letter, resume: boolean) => Effect.Effect<void, DeliveryRefused>
     readonly start: (start: Start) => Effect.Effect<void, DeliveryRefused>
     readonly parentOf: (sessionID: string) => Effect.Effect<string | undefined>
+    readonly child: (child: Child) => Effect.Effect<void, DeliveryRefused>
+    readonly mark: (sessionID: string, mark: Mark | undefined) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/wake/Courier") {}
+
+/** The opener could not be asked: none serves it yet (its plugin is still loading), or the call failed. The latch is asked again. */
+export class OpenerUnavailable extends Schema.TaggedError<OpenerUnavailable>()("OpenerUnavailable", { message: Schema.String }) {}
+
+/**
+ * Whoever decides a latch again (orchestrate, over `OPENER`). `open` answers
+ * what it decided: `opened` (started, or started before), `held` with the new
+ * hold and times, or `failed`. An answer that does not read as `Opened` is
+ * `OpenerUnavailable`, as is no answer.
+ */
+export class Opener extends Context.Service<Opener, { readonly open: (latch: Latch) => Effect.Effect<Opened, OpenerUnavailable> }>()(
+  "dotfiles-opencode/wake/Opener",
+) {}
 
 /**
  * A monitor's check: `command` run once in `cwd`, owned by the caller, and
