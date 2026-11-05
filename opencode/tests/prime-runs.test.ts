@@ -66,7 +66,7 @@ describe.skipIf(!fork)("a message between two calls starts a new group in the Pr
     expect(transcript(frames.details)).toEqual([
       " ┃ Check the build, then run the long suite.",
       "  ● Ran printf 'build a ok\\n', printf 'build b ok\\n'",
-      "    │ build a ok",
+      "    │ build b ok",
       "  ● Ran printf 'lint ok\\n'",
       "    │ lint ok",
       "  Both builds pass. Running the long suite.",

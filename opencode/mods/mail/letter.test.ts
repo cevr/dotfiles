@@ -27,15 +27,15 @@ describe("a letter", () => {
 
   test("an untitled sender is named by its id", () => {
     expect(compose({ id: "ses_x" }, { id: "ses_x" }, "hi").text).toStartWith('✉ Message from session "ses_x" (ses_x)')
-    expect(compose({ id: "ses_x", title: " " }, { id: "ses_x" }, "hi").description).toBe("✉ from ses_x · hi")
+    expect(compose({ id: "ses_x", title: " " }, { id: "ses_x" }, "hi").description).toBe("from ses_x · hi")
   })
 
   test("the transcript's line is ✉ from the sender and an excerpt on one line", () => {
-    expect(compose(A, A, "Rebase\n  on   main").description).toBe("✉ from Bite PR · Rebase on main")
+    expect(compose(A, A, "Rebase\n  on   main").description).toBe("from Bite PR · Rebase on main")
     const long = compose(A, A, "word ".repeat(40)).description
-    expect(long).toStartWith("✉ from Bite PR · word word")
+    expect(long).toStartWith("from Bite PR · word word")
     expect(long).toEndWith("…")
-    expect(long.length).toBe("✉ from Bite PR · ".length + 80)
+    expect(long.length).toBe("from Bite PR · ".length + 80)
   })
 
   test("its metadata marks it as mail, with the sender and the session to answer", () => {

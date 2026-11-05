@@ -56,7 +56,7 @@ describe("sending a message", () => {
     const result = await run((mail) => mail.send("ses_a", { to: "ses_b", text: "rebase please" }))
     expect(result).toMatchObject({ _tag: "Success", success: { to: { id: "ses_b" }, delivery: "woke" } })
     expect(sent).toHaveLength(1)
-    expect(sent[0]).toMatchObject({ sessionID: "ses_b", wake: true, letter: { description: "✉ from Bite PR · rebase please" } })
+    expect(sent[0]).toMatchObject({ sessionID: "ses_b", wake: true, letter: { description: "from Bite PR · rebase please" } })
     expect(sent[0]?.letter.text).toStartWith('✉ Message from session "Bite PR" (ses_a)')
     expect(sent[0]?.letter.text).toEndWith("\n\nrebase please")
     expect(logs).toEqual([

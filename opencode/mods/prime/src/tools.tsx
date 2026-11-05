@@ -272,6 +272,7 @@ function EditCounts(props: { context: Context; row: Row }) {
  */
 function RowBody(props: { context: Context; row: Row; lastCommand: boolean; rail: boolean }) {
   const part = () => props.row.calls[0]!
+  const last = () => props.row.calls.at(-1)!
   // Everything under the row hangs past the connector, beside the tree's rail while rows follow.
   return (
     <Switch>
@@ -291,7 +292,7 @@ function RowBody(props: { context: Context; row: Row; lastCommand: boolean; rail
       </Match>
       <Match when={props.row.tool === "shell" && (props.lastCommand || props.row.outcome === "warning")}>
         <Hang context={props.context} rail={props.rail}>
-          <Head context={props.context} text={toolOutput(part())} />
+          <Head context={props.context} text={toolOutput(last())} />
         </Hang>
       </Match>
       <Match when={props.row.tool === "subagent" && props.row.outcome === "done" && !background(part())}>

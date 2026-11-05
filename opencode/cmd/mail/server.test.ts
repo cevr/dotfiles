@@ -136,7 +136,7 @@ describe("the mail plugin", () => {
               "",
               "Rebase on main, please.",
             ].join("\n"),
-            description: "✉ from Bite PR · Rebase on main, please.",
+            description: "from Bite PR · Rebase on main, please.",
             metadata: { source: "mail", from: { sessionID: "ses_a", title: "Bite PR" }, replyTo: { sessionID: "ses_a", title: "Bite PR" } },
             delivery: "steer",
             resume: true,
@@ -172,7 +172,7 @@ describe("the mail plugin", () => {
         expect(state.synthetic[0]?.text.split("\n")[1]).toBe(
           'Answers go to session "Dotfiles" (ses_b): call the message tool with { "to": "ses_b", "text": "…" }; answer only if it asks for something.',
         )
-        expect(state.synthetic[0]?.description).toBe("✉ from Fix money · blocked on a login")
+        expect(state.synthetic[0]?.description).toBe("from Fix money · blocked on a login")
       }),
     ))
 
