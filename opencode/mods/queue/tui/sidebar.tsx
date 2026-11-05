@@ -1,15 +1,16 @@
 // The Queue section of the session sidebar. Thin: it reads the route's root
 // session's queue over the queue RPC every 2 seconds (keeping the answer only
-// when its revision moved), reads that root's subagents from the TUI's data,
-// and draws the rows board.ts projects from them: one line each, and under a
-// subagent's row a second with its role, its one-sentence update and its time.
-// A failed or undecodable answer changes nothing; no rows draw nothing.
+// when its revision moved), reads the live state of that root's subagents from
+// the TUI's data for the items linked to one, and draws the rows board.ts
+// projects from them, one line each. The subagents themselves are Prime's rows
+// beneath the composer, not this section's. A failed or undecodable answer
+// changes nothing; no rows draw nothing.
 // cmd/queue/tui.tsx registers it on `sidebar.content`.
 import type { Plugin } from "@opencode/plugin/tui"
 import { Option, Schema } from "effect"
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
-import { agentLine, board, line, roleWidth, type Mark, type Row } from "../board.ts"
-import { subagents } from "../opencode/subagents.ts"
+import { board, line, type Mark } from "../board.ts"
+import { liveStates } from "../opencode/subagents.ts"
 import { QUEUE, Snapshot } from "../queue.ts"
 
 const decode = Schema.decodeUnknownOption(Snapshot)
@@ -53,16 +54,9 @@ export function QueueSection(props: { ctx: Plugin.Context; sessionID: string }) 
   const rows = createMemo(() => {
     const current = queue()
     const items = current?.root === root() ? current.snapshot.items : []
-    return board(items, subagents(ctx.data, root(), now()), now())
+    return board(items, liveStates(ctx.data, root()), now())
   })
-  const roles = createMemo(() => roleWidth(rows()))
   const theme = () => ctx.theme
-  const updateColour = (row: Row) => {
-    const text = theme().text
-    if (row.mark === "blocked") return text.feedback.warning.base
-    if (row.mark === "failed") return text.feedback.error.base
-    return text.muted
-  }
   const colour = (mark: Mark) => {
     const text = theme().text
     if (mark === "needs-you" || mark === "blocked") return text.feedback.warning.base
@@ -79,18 +73,9 @@ export function QueueSection(props: { ctx: Plugin.Context; sessionID: string }) 
         </text>
         <For each={rows()}>
           {(row) => (
-            <>
-              <text fg={colour(row.mark)} wrapMode="none">
-                {line(row, WIDTH)}
-              </text>
-              <Show when={row.agent}>
-                {(agent) => (
-                  <text fg={updateColour(row)} wrapMode="none">
-                    {agentLine(agent(), WIDTH, roles())}
-                  </text>
-                )}
-              </Show>
-            </>
+            <text fg={colour(row.mark)} wrapMode="none">
+              {line(row, WIDTH)}
+            </text>
           )}
         </For>
       </box>

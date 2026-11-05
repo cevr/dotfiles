@@ -217,11 +217,11 @@ seconds it reads the route's root session's queue over the
 `dotfiles-opencode.queue` RPC (`get({ sessionID })` answers
 `{ revision, items }`) and keeps the answer when its revision moved. An
 item with a `session` shows that subagent's live state (running, blocked,
-done, failed) instead of its own, and a running subagent no item names
-joins the Running group under its call's description. Under a subagent's
-row a second line gives its role, its one-sentence update and its time, as
-the Prime rows do (`  implementor  Check the money… · 1s`). Done items stay
-ten minutes.
+done, failed) as its mark instead of its own state, still one line. The
+section shows only the queue's items: a subagent no item names is not drawn
+there, and no row carries a subagent's role, update or time; Prime's rows
+beneath the composer show the subagents, sidebar open or closed. Done items
+stay ten minutes.
 
 The model, in the domain files at `mods/queue`'s root:
 
@@ -238,7 +238,7 @@ The model, in the domain files at `mods/queue`'s root:
   `memory/` holds the one the seam test uses.
 - `opencode/subagents.ts` maps the shared subagent rows
   (`@dotfiles/opencode-subagents`: `read` from the TUI's data, then its rows)
-  to the board's subagents, every row kept so a linked item outlives the
+  to each session's live state, every row kept so a linked item outlives the
   shared linger.
 
 ## Git

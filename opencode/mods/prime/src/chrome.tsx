@@ -198,7 +198,7 @@ export function Dock(props: { context: Context; sessionID?: string }) {
           </Show>
         </text>
       </box>
-      {/* A row per subagent under the count, unless the sidebar shows; inside a subagent they sit above its picker (index.tsx). */}
+      {/* A row per subagent under the count, sidebar open or closed; inside a subagent they sit above its picker (index.tsx). */}
       <Show when={props.sessionID && !data.session.get(props.sessionID)?.parentID ? props.sessionID : undefined}>
         {(id) => <SubagentRows context={props.context} sessionID={id()} child={false} />}
       </Show>

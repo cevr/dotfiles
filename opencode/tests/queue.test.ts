@@ -1,17 +1,18 @@
 // Public UI seam: real OpenCode, the real queue plugin (and the real kernel),
 // a scripted model that starts two background subagents, keeps the queue
 // through the `queue` tool directly or from a kernel cell, and later marks an
-// item done. The sidebar's Queue section is read off the frame.
+// item done. The sidebar's Queue section is read off the frame: only the
+// queue's items, one line each; the subagents are Prime's rows beneath the
+// composer, shown with the sidebar open.
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-/** The rows the sidebar shows after the set, in its order: grouped, the linked item running, the forgotten worker added. */
+/** The rows the sidebar shows after the set, in its order: grouped, the linked item running, no row for the unnamed worker. */
 const SET_ROWS = [
   "! Close old Claude panes",
   "● Money parsing worker",
-  "● Forgotten worker",
   "… manna brainstorm · wC:p6",
   /◷ [A-Z][a-z]{2} \d{1,2} 09:30 pool-token check/,
   "○ Merge workers, run daily",
@@ -45,7 +46,7 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/queue.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("the Queue section of the sidebar", () => {
   for (const via of ["direct", "kernel"] as const)
-    test(`shows the queue kept ${via === "direct" ? "through the queue tool" : "from a kernel cell"}, with live subagents, and follows a patch`, async () => {
+    test(`shows the queue kept ${via === "direct" ? "through the queue tool" : "from a kernel cell"}, a linked item's live state, and follows a patch`, async () => {
       const out = mkdtempSync(join(tmpdir(), `queue-${via}-`))
       const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/queue.ts"], {
         cwd: join(import.meta.dir, ".."),
@@ -65,19 +66,22 @@ describe.skipIf(!fork)("the Queue section of the sidebar", () => {
       expect(positions).toEqual(positions.toSorted((left, right) => left - right))
       // Linked to a running subagent, the item shows running, not the `next` it was written with.
       expect(set).not.toContain("○ Money parsing worker")
-      // Under each subagent's row: its role (orchestrate's), padded to the widest, its thought as the update, and its time.
+      // The sidebar is the queue's items only: no row for the worker no item names, no role or update line under the linked one.
       const column = sidebar(set)
       expect(column).toContain("● Money parsing worker")
-      expect(under(column, "● Money parsing worker")).toMatch(/^ {2}implementor {2}Check the money… · \d+s$/)
-      expect(under(column, "● Forgotten worker")).toMatch(/^ {2}worker {7}Read the forgott… · \d+s$/)
+      expect(under(column, "● Money parsing worker")).toBe("… manna brainstorm · wC:p6")
+      expect(column.some((line) => line.includes("Forgotten worker"))).toBe(false)
       expect(column.every((line) => [...line].length <= 37)).toBe(true)
+      // Both subagents are Prime's rows beneath the composer, with the sidebar open.
+      expect(set).toMatch(/^ ◆ implementor +Fix money parsing /m)
+      expect(set).toMatch(/^ ◆ worker +Forgotten worker /m)
 
       const patched = readFileSync(join(out, `queue-${via}-patched.txt`), "utf8")
       expect(patched).toContain("✓ Close old Claude panes")
       expect(patched).not.toContain("! Close old Claude panes")
       expect(position(patched, "✓ Close old Claude panes")).toBeLessThan(position(patched, "✓ Missing-folder fix"))
       expect(patched).toContain("● Money parsing worker")
-      expect(under(sidebar(patched), "● Money parsing worker")).toMatch(/^ {2}implementor {2}Check the money… · \d+s$/)
+      expect(under(sidebar(patched), "● Money parsing worker")).toBe("… manna brainstorm · wC:p6")
 
       // A call from a kernel cell leaves no queue tool part: only the cell's.
       const tools = toolNames(JSON.parse(readFileSync(join(out, `queue-${via}-transcript.json`), "utf8")))

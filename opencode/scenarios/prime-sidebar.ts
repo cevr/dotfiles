@@ -1,12 +1,11 @@
-// The live subagent rows step aside while the session's sidebar shows. A
-// background worker keeps thinking while the terminal is wide enough for the
-// host's auto sidebar, then narrow, then wide again. Replayed against OpenCode
-// with a scripted model; the fork's ui.sidebar.visible says which (a host
-// without it keeps the rows everywhere).
+// The live subagent rows stay beneath the composer while the session's
+// sidebar shows. A background worker keeps thinking while the terminal is wide
+// enough for the host's auto sidebar, then narrow, then wide again. Replayed
+// against OpenCode with a scripted model.
 // Run: OPENCODE_DEV=<opencode checkout> OPENCODE_DRIVE_MEDIA_DIR=<dir> bunx opencode-drive run scenarios/prime-sidebar.ts
 //
 // It writes, under SCENARIO_OUT:
-// - `sidebar-wide`: 160 columns, the sidebar shows, the worker runs;
+// - `sidebar-wide`: 160 columns, the sidebar shows, the worker's row under the dock;
 // - `sidebar-narrow`: 106 columns, no sidebar, the worker's row under the dock;
 // - `sidebar-wide-again`: 160 columns again.
 // Each frame is a `.txt` of its text and a `.json` of its styled lines.
@@ -94,10 +93,8 @@ export default OpenCodeDriver.use(
       const sidebar = (frame: string) => frame.split("\n").some((line) => line.indexOf(TITLE) >= WIDE.cols - 42)
 
       yield* ui.submit(ASK)
-      // Wide: the dock counts the running worker; the sidebar shows, so no row does.
-      yield* until("sidebar-wide", (frame) => frame.includes(STARTED) && running(frame) && sidebar(frame))
-      // Give the rows' clock a beat to show a row it should not.
-      yield* Effect.sleep("1 second")
+      // Wide: the sidebar shows, and the dock counts the running worker with its row under the count.
+      yield* until("sidebar-wide", (frame) => frame.includes(STARTED) && running(frame) && row(frame) && sidebar(frame))
       yield* save("sidebar-wide")
 
       yield* ui.resize(NARROW)
@@ -105,8 +102,7 @@ export default OpenCodeDriver.use(
       yield* save("sidebar-narrow")
 
       yield* ui.resize(WIDE)
-      yield* until("sidebar-wide-again", (frame) => running(frame) && sidebar(frame))
-      yield* Effect.sleep("1 second")
+      yield* until("sidebar-wide-again", (frame) => running(frame) && row(frame) && sidebar(frame))
       yield* save("sidebar-wide-again")
 
       yield* Deferred.succeed(end, undefined)
