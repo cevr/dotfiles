@@ -3,8 +3,9 @@
 // path through the tui config's `plugins`, and pair it with themes/prime.json.
 import { Plugin } from "@opencode/plugin/tui"
 import type { TranscriptRowKind } from "@opencode/plugin/tui/context"
-import { createSignal } from "solid-js"
+import { createSignal, Show } from "solid-js"
 import { Dock, ModeHint, Splash, TopBar, useFamily, Working } from "./chrome"
+import { SubagentRows } from "./live"
 import { Completion } from "./notice"
 import { ToolRow } from "./tools"
 import { AssistantText, ReasoningLine, UserBand } from "./transcript"
@@ -71,6 +72,16 @@ export default Plugin.define({
     context.ui.slot({
       append: "session.composer.top",
       render: (input) => <ModeHint context={context} sessionID={input.sessionID} detail={detail} />,
+    })
+    // Inside a subagent the host's picker takes the prompt's place, and the
+    // dock with it: the family's rows sit above the picker instead.
+    context.ui.slot({
+      append: "session.composer.top",
+      render: (input) => (
+        <Show when={context.data.session.get(input.sessionID)?.parentID}>
+          <SubagentRows context={context} sessionID={input.sessionID} child={true} />
+        </Show>
+      ),
     })
     // Prime's loader is the transcript's last row, straight under the newest output.
     context.ui.slot({

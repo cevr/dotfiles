@@ -64,6 +64,23 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
     expect(frames.started.join("\n")).toContain("◆ 3 subagents")
   })
 
+  test("beneath the dock, each running subagent has a live row in the order they started", () => {
+    const dock = frames.started.findIndex((line) => line.includes("◆ 3 subagents"))
+    const rows = frames.started.slice(dock + 1, dock + 4).map((line) => line.trim())
+    WORKERS.forEach((worker, index) =>
+      expect(rows[index]).toMatch(new RegExp(`^◆ general  ${worker.title} +[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] .+ · \\d+s$`)),
+    )
+  })
+
+  test("inside a subagent the rows sit above the picker and mark the one shown", () => {
+    for (const frame of [frames.clicked, frames.child, frames.sibling]) {
+      const worker = shown(frame)
+      const rows = frame.filter((line) => /^ (›| ) ◆ general  /.test(line))
+      expect(rows).toHaveLength(WORKERS.length)
+      expect(rows.filter((line) => line.startsWith(" › "))).toEqual([expect.stringContaining(`◆ general  ${worker?.title ?? "?"}`)])
+    }
+  })
+
   test("a click on a subagent's Started row opens that subagent", () => {
     expect(shown(frames.clicked)?.title).toBe("Fix money parsing")
     expectSubagent(frames.clicked, WORKERS[0]!)
