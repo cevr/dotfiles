@@ -8,6 +8,8 @@
  *   dir's hello.txt through `tools.read`, then a second `kernel` call that
  *   reads `note` back, then a closing line. Each next call comes once the last
  *   one's result is back.
+ * - The task `kernel attach`: one `kernel` call that attaches the work dir's
+ *   pixel.png, then a closing line.
  * - Anything else: one line.
  *
  * @module
@@ -35,6 +37,8 @@ export interface Seen {
   readonly tools: ReadonlyArray<string>
   /** The kernel's description as offered, when it was. */
   readonly kernel?: string
+  /** The image URLs the request's messages carry, when they carry any. */
+  readonly images?: ReadonlyArray<string>
 }
 
 type Reply =
@@ -51,12 +55,40 @@ const text = (content: unknown): string => {
     .join("")
 }
 
+/** The URL of each `image_url` part in the messages, in order. */
+const imagesOf = (messages: ReadonlyArray<ChatMessage>): ReadonlyArray<string> =>
+  messages.flatMap((message) =>
+    Array.isArray(message.content)
+      ? message.content.flatMap((part: unknown) =>
+          typeof part === "object" &&
+          part !== null &&
+          "type" in part &&
+          part.type === "image_url" &&
+          "image_url" in part &&
+          typeof part.image_url === "object" &&
+          part.image_url !== null &&
+          "url" in part.image_url &&
+          typeof part.image_url.url === "string"
+            ? [part.image_url.url]
+            : [],
+        )
+      : [],
+  )
+
 const firstUser = (messages: ReadonlyArray<ChatMessage>) =>
   text(messages.find((message) => message.role === "user")?.content).trim()
 
 export const SUBAGENT_TASK = "kernel subagent"
 /** One kernel call that starts a subagent from a cell and prints why it could not. */
 export const SUBAGENT_CELL = `try {\n  await tools.subagent({ agent: "worker", description: "probe from a cell", prompt: "Say hi" })\n  console.log("started")\n} catch (error) {\n  console.log("refused: " + (error instanceof Error ? error.message : String(error)))\n}`
+
+export const ATTACH_TASK = "kernel attach"
+/** The image the attach task's cell attaches, in the work dir. */
+export const PIXEL_FILE = "pixel.png"
+/** The smallest PNG: one transparent pixel, base64. */
+export const PIXEL_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+/** One kernel call that attaches the pixel by its path relative to the session's directory. */
+export const ATTACH_CELL = `attach(${JSON.stringify(PIXEL_FILE)})`
 
 /** The two kernel calls; the first reads `file` through the kernel's `tools`. */
 export const cells = (file: string) => [
@@ -75,6 +107,8 @@ const reply = (request: ChatRequest, file: string): Reply => {
   const offersKernel = (request.tools ?? []).some((tool) => tool.function?.name === "kernel")
   if (firstUser(messages).endsWith(SUBAGENT_TASK) && offersKernel)
     return results === 0 ? { kind: "tool", name: "kernel", input: { code: SUBAGENT_CELL } } : { kind: "text", text: DONE }
+  if (firstUser(messages).endsWith(ATTACH_TASK) && offersKernel)
+    return results === 0 ? { kind: "tool", name: "kernel", input: { code: ATTACH_CELL } } : { kind: "text", text: DONE }
   if (firstUser(messages).endsWith(KERNEL_TASK) && offersKernel) {
     const code = cells(file)[results]
     if (code !== undefined) return { kind: "tool", name: "kernel", input: { code } }
@@ -128,6 +162,10 @@ export const serve = (file: string) => {
         ...(() => {
           const kernel = (body.tools ?? []).find((tool) => tool.function?.name === "kernel")?.function?.description
           return kernel === undefined ? {} : { kernel }
+        })(),
+        ...(() => {
+          const images = imagesOf(messages)
+          return images.length === 0 ? {} : { images }
         })(),
       })
       served += 1

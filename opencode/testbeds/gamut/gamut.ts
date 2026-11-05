@@ -58,6 +58,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const CHECKOUT = resolve(HERE, "../..")
 const FIXTURE = join(HERE, "fixture")
 const PLUGINS = join(CHECKOUT, "mods")
+const CMD = join(CHECKOUT, "cmd")
 const THEME = join(CHECKOUT, "themes/prime.json")
 /** The host's entry; `isHost` also finds a run's host by it in `ps`. */
 const HOST_ENTRY = join(HERE, "pty-host.ts")
@@ -885,7 +886,7 @@ const prepareAndLaunch = async (
   }
 
   const plugins: ReadonlyArray<PluginEntry> = [
-    join(PLUGINS, "orchestrate"),
+    join(CMD, "orchestrate"),
     { package: join(PLUGINS, "status"), options: { log: join(paths.home, ".cache/orchestrate/opencode-agents.jsonl"), statusScript: join(homedir(), ".claude/skills/orchestrate/scripts/status.ts") } },
     ...(usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin, gentStore) : [poolPlugin]),
   ]

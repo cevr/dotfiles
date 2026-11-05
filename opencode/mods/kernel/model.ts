@@ -2,13 +2,15 @@
 // kernel needs from the outside systems (the session, its tools, its worker,
 // its stored bindings), has the KernelSession aggregate decide it, and keeps
 // what was recorded. A call's answer is the CellAnswer view of what that call
-// recorded. The aggregate is the one decision entry point, so the stories run
-// exactly what these do. The plugin calls these and nothing else.
+// recorded, with the images its cell attached read through Files. The
+// aggregate is the one decision entry point, so the stories run exactly what
+// these do. The plugin calls these and nothing else.
 import { Clock, Context, Effect, FiberMap, Layer, Semaphore, SynchronizedRef } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import { CellAnswer, read, type Answer } from "./answer.ts"
+import { imageOf, MAX_IMAGE_BYTES, replyOf, type Reply } from "./attachment.ts"
 import { KernelSession, LoseKernel, RecordCell, ResetKernel, StartKernel, StopKernel, type Command, type Event, type KernelSessionId, type KernelSessionState, type StopReason } from "./session.ts"
-import { Sessions, Snapshots, Toolbox, Workers, type SessionUnreadable } from "./service.ts"
+import { Files, Sessions, Snapshots, Toolbox, Workers, type SessionUnreadable } from "./service.ts"
 
 /** The kernel's settings, from the plugin's options. */
 export interface Config {
@@ -36,9 +38,10 @@ export class Kernel extends Context.Service<
     /**
      * Runs one cell in the session's kernel, starting a worker from the stored
      * bindings when none runs. A session's calls run one at a time. The cell's
-     * tools are the call's own (Toolbox).
+     * tools are the call's own (Toolbox). The reply carries the images the cell
+     * attached; a path it could not attach is a line in its text.
      */
-    readonly run: (call: Call) => Effect.Effect<Answer, SessionUnreadable, Toolbox>
+    readonly run: (call: Call) => Effect.Effect<Reply, SessionUnreadable, Toolbox>
     /** The session was deleted: its worker stops and its stored bindings go. */
     readonly deleted: (session: KernelSessionId) => Effect.Effect<void>
   }
@@ -57,6 +60,7 @@ export const layer = (config: Config) =>
       const workers = yield* Workers
       const snapshots = yield* Snapshots
       const sessions = yield* Sessions
+      const files = yield* Files
       /** Each session's idle timer; a new call or a deletion cancels it. */
       const idle = yield* FiberMap.make<KernelSessionId>()
       const entries = new Map<KernelSessionId, Entry>()
@@ -115,7 +119,14 @@ export const layer = (config: Config) =>
               const result = yield* workers
                 .evaluate(session, { source: call.code, tools: tools.listing, call: tools.call })
                 .pipe(Effect.onInterrupt(() => record(LoseKernel.make({ session, message: ABORTED }))))
-              const cell = { session, ok: result.ok, output: result.output, display: result.display, bindings: result.bindings }
+              const cell = {
+                session,
+                ok: result.ok,
+                output: result.output,
+                display: result.display,
+                bindings: result.bindings,
+                attached: result.attached,
+              }
               if (!(yield* workers.alive(session))) return yield* record(RecordCell.make(cell))
               const snapshot = yield* workers.snapshot(session)
               yield* snapshots.save(session, snapshot.bindings)
@@ -129,7 +140,18 @@ export const layer = (config: Config) =>
             )
             return read(fold(CellAnswer, recorded), config.viewChars)
           }),
+        ).pipe(Effect.flatMap(attach))
+      })
+
+      /** The answer with each file its cell attached: read, then taken as an image or refused. */
+      const attach = Effect.fn("Kernel.attach")(function* (answer: Answer) {
+        const attached = yield* Effect.forEach(answer.attached ?? [], (path) =>
+          files.read(path, MAX_IMAGE_BYTES).pipe(
+            Effect.map((bytes) => imageOf(path, bytes)),
+            Effect.catch((refused) => Effect.succeed(refused)),
+          ),
         )
+        return replyOf(answer, attached)
       })
 
       const deleted = Effect.fn("Kernel.deleted")(function* (session: KernelSessionId) {

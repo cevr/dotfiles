@@ -6,13 +6,14 @@
 // runtime's description, the agents' rules and a deleted session's cleanup.
 // tests/kernel.test.ts runs it in OpenCode.
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, realpathSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Tool } from "@opencode/plugin/effect"
 import { Cause, Effect, Exit, Layer, Queue, Schema, type Scope, Stream } from "effect"
 import type { Json } from "@dotfiles/opencode-kernel/frame"
 import type { Reached, Rule } from "@dotfiles/opencode-kernel/tools"
+import * as FileStoreFiles from "@dotfiles/opencode-kernel/filestore/files"
 import * as MemorySessions from "@dotfiles/opencode-kernel/memory/sessions"
 import * as OpenCodeSnapshots from "@dotfiles/opencode-kernel/opencode/snapshots"
 import * as ProcessWorkers from "@dotfiles/opencode-kernel/worker/workers"
@@ -24,7 +25,7 @@ type Host = Parameters<(typeof Kernel)["effect"]>[0]
 
 /** The kernel tool as the host's editor receives it: only what the tests read. */
 interface Added {
-  readonly execute: (input: { code: string; reset?: boolean }, context: unknown) => Effect.Effect<{ readonly content: string }, Tool.Error>
+  readonly execute: (input: { code: string; reset?: boolean }, context: unknown) => Effect.Effect<{ readonly content: string | ReadonlyArray<Tool.Content> }, Tool.Error>
   readonly options?: { readonly runtime?: { readonly describe: (tools: ReadonlyArray<Reached>) => string } }
 }
 
@@ -92,6 +93,7 @@ const start = (options: Record<string, unknown> = {}, world: World = {}) =>
         ProcessWorkers.layer({ timeoutMs: decoded.timeoutMs }),
         snapshots,
         MemorySessions.layer({ sessions: world.noSessions ? {} : { ses_1: { directory: work } }, agents: {} }),
+        FileStoreFiles.layer,
       ),
     ).effect(host)
     expect(added).toBeDefined()
@@ -114,13 +116,19 @@ const start = (options: Record<string, unknown> = {}, world: World = {}) =>
               },
             ),
       )
+    /** The answer's content parts: a string answer is one text part. */
+    const parts = (code: string, extra: { readonly reset?: boolean; readonly runtime?: Runtime } = {}) =>
+      run(code, extra).pipe(
+        Effect.map((result): ReadonlyArray<Tool.Content> => (typeof result.content === "string" ? [{ type: "text", text: result.content }] : result.content)),
+      )
+    /** The answer's text: its text parts joined. */
     const call = (code: string, extra: { readonly reset?: boolean; readonly runtime?: Runtime } = {}) =>
-      run(code, extra).pipe(Effect.map((result) => result.content))
+      parts(code, extra).pipe(Effect.map((content) => content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")))
     const fail = (code: string, extra: { readonly runtime?: Runtime } = {}) =>
       Effect.flip(run(code, extra)).pipe(Effect.map((error) => error.message))
     const deleteSession = (sessionID: string) =>
       Queue.offer(deletions, { type: "session.deleted", data: { sessionID } }).pipe(Effect.andThen(Queue.take(dropped)))
-    return { call, fail, entries, agentRules, tool, deleteSession }
+    return { call, parts, fail, entries, agentRules, tool, deleteSession }
   })
 
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
@@ -286,6 +294,37 @@ describe("the kernel tool", () => {
       Effect.gen(function* () {
         const { fail } = yield* start({}, { noSessions: true })
         expect(yield* fail("1")).toBe("Session not found: ses_1")
+      }),
+    ))
+})
+
+// The smallest PNG: one transparent pixel.
+const PIXEL = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64")
+
+describe("attach", () => {
+  test("shows an attached image as a file part after the text, its data a data URI named by its resolved path", () =>
+    scenario(
+      Effect.gen(function* () {
+        const file = join(work, "pixel.png")
+        yield* Effect.promise(() => Bun.write(file, PIXEL))
+        const { parts } = yield* start()
+        const content = yield* parts('attach("pixel.png")')
+        expect(content).toEqual([
+          { type: "text", text: "attached 1 image: pixel.png" },
+          // The worker runs in the directory itself, so the path is the real one (macOS's /var is /private/var).
+          { type: "file", mime: "image/png", uri: `data:image/png;base64,${PIXEL.toString("base64")}`, name: realpathSync(file) },
+        ])
+      }),
+    ))
+
+  test("names a missing path and why in the text, and adds no part for it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { parts } = yield* start()
+        const missing = join(work, "absent.png")
+        const content = yield* parts(`attach(${JSON.stringify(missing)}); "after"`)
+        expect(content).toHaveLength(1)
+        expect(content[0]).toEqual({ type: "text", text: `after\n[not attached: ${missing}: no such file]` })
       }),
     ))
 })

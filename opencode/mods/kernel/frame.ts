@@ -43,8 +43,10 @@ const evaluationFields = {
   truncated: Schema.Boolean,
   /** The bindings the cell added or rebound. */
   bindings: Schema.Array(Schema.String),
+  /** The files the cell passed to `attach`, absolute, each once, in order (attachment.ts). */
+  attached: Schema.Array(Schema.String),
 }
-/** What one evaluation left: its display, and the bindings it added or rebound. */
+/** What one evaluation left: its display, the bindings it added or rebound, and the files it attached. */
 export const Evaluation = Schema.Struct(evaluationFields)
 export interface Evaluation extends Schema.Schema.Type<typeof Evaluation> {}
 

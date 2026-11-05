@@ -1,14 +1,14 @@
 // The orchestrate port: the role agents against the orchestrate skill they
 // come from, and three runs of real OpenCode (the fork, through its SDK) on
 // the scripted model: the guard, compaction per role, and the Sabbath stop.
-// The plugin's rules on their own are mods/orchestrate/test.
+// The plugin's rules on their own are tested beside mods/orchestrate and cmd/orchestrate.
 import { afterAll, describe, expect, test } from "bun:test"
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { build, DEFAULT_SOURCE, OUT, parseAgent, ROOT } from "../scripts/agents.ts"
-import { definitions, effort, ROLES } from "../mods/orchestrate/src/domain/Role.ts"
-import { KEEP } from "../mods/orchestrate/src/domain/Compaction.ts"
+import { definitions, effort, ROLES } from "../mods/orchestrate/role.ts"
+import { KEEP } from "../mods/orchestrate/compaction.ts"
 import type { Result, Spec } from "./orchestrate/run.ts"
 import { REVIEW_TASK, SUMMARY, UNTYPED_TASK } from "./orchestrate/sim.ts"
 
@@ -42,7 +42,7 @@ describe.skipIf(!skill)("the role agents", () => {
 
   test("--check passes on the written file and fails on a hand edit", () => {
     const root = join(scratch, "check")
-    mkdirSync(join(root, "mods/orchestrate/src"), { recursive: true })
+    mkdirSync(join(root, "mods/orchestrate"), { recursive: true })
     const file = join(root, OUT)
     const check = () =>
       Bun.spawnSync([process.execPath, join(ROOT, "scripts/agents.ts"), "--check", "--root", root], { stderr: "pipe" })
@@ -62,7 +62,7 @@ const run = async (name: string, spec: Omit<Spec, "base" | "fork" | "plugin">): 
   const home = join(base, "home")
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
-  writeFileSync(file, JSON.stringify({ ...spec, base, fork: resolve(fork!), plugin: join(ROOT, "mods/orchestrate") }))
+  writeFileSync(file, JSON.stringify({ ...spec, base, fork: resolve(fork!), plugin: join(ROOT, "cmd/orchestrate") }))
   const child = Bun.spawn([process.execPath, join(import.meta.dir, "orchestrate/run.ts"), file], {
     env: {
       PATH: process.env.PATH ?? "",

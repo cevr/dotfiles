@@ -1,4 +1,4 @@
-// Orchestrate's call log as a JSONL file (orchestrate/src/domain/CallLine.ts
+// Orchestrate's call log as a JSONL file (orchestrate/call-line.ts
 // writes it). Its `call` and `done` lines decode into the AgentCalls view's
 // events; every other line, and a line that does not parse (a partial append
 // the writer has not finished), is skipped.

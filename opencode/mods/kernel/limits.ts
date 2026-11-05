@@ -23,3 +23,5 @@ export const MAX_BINDING_BYTES = 16 * 1024 * 1024
 export const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
 /** How long a new worker may take to say it is ready, in ms. */
 export const READY_MS = 10_000
+/** Images one cell may attach. */
+export const MAX_ATTACHMENTS_PER_CELL = 32

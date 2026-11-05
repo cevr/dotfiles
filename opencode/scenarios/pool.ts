@@ -29,7 +29,7 @@ const fake = `export default {id: "fixture.pool", async setup(ctx) {
 export default OpenCodeDriver.use({
   opencode: { dev: process.env.OPENCODE_DEV! },
   config: { plugins: [
-    { package: `${root}/mods/orchestrate`, options: { now: "2026-11-04T15:00:00Z", log: `${out}/agents.jsonl` } },
+    { package: `${root}/cmd/orchestrate`, options: { now: "2026-11-04T15:00:00Z", log: `${out}/agents.jsonl` } },
     { package: `${root}/mods/status`, options: { log: `${out}/agents.jsonl`, statusScript: join(homedir(), ".claude/skills/orchestrate/scripts/status.ts") } },
   ] },
   tuiConfig: { animations: false, tabs: { mode: "off" }, theme: { name: theme, mode: process.env.SCENARIO_MODE === "light" ? "light" : "dark" }, plugins: [`${root}/mods/prime`, `${root}/mods/status`] },

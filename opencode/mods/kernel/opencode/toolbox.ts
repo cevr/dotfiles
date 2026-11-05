@@ -12,12 +12,13 @@
 // there are left out (../tools.ts).
 //
 // Either way a call resolves to its result's value as code mode gives it: its
-// output (encoded by the tool's output schema), else its text, else null.
+// output (encoded by the tool's output schema), else its text, else null; an
+// image in it reaches the cell as a marker (../tools.ts, `cellValue`).
 import type { Plugin, Tool } from "@opencode/plugin/effect"
 import { Cause, Effect, JsonSchema, Layer, Schema, SchemaRepresentation } from "effect"
 import type { Json, Listing } from "../frame.ts"
 import { Toolbox, type CellTools } from "../service.ts"
-import { CallFailed, callable, messageOf, notATool, plain, reachable, textOf, type ContentPart, type Reached, type Registered } from "../tools.ts"
+import { CallFailed, callable, cellValue, messageOf, notATool, reachable, type ContentPart, type Reached, type Registered } from "../tools.ts"
 
 /** A tool result as the host gives it. */
 export interface ToolResult {
@@ -99,13 +100,13 @@ export const decodeInput = (tool: RegistryTool, input: unknown): Effect.Effect<u
   )
 }
 
-/** A registered tool's result as a cell gets it: its output, encoded, else its text parts joined, else null. */
+/** A registered tool's result as a cell gets it: its output, encoded, else its content (tools.ts, `cellValue`). */
 const registryValue = (tool: RegistryTool, result: ToolResult): Effect.Effect<Json, unknown> => {
-  if (result.output === undefined) return plain(textOf(result.content))
+  if (result.output === undefined) return cellValue(result)
   const encoded = Schema.isSchema(tool.output)
     ? Schema.encodeUnknownEffect(tool.output as Schema.Codec<unknown, unknown>)(result.output)
     : Effect.succeed(result.output)
-  return encoded.pipe(Effect.flatMap(plain))
+  return encoded.pipe(Effect.flatMap((output) => cellValue({ output })))
 }
 
 /** A cell's tools without the runtime: each registered tool's own `execute`. */
@@ -132,7 +133,7 @@ const fromRuntime = (runtime: Runtime): CellTools => {
     call: (id, input) => {
       if (!names.has(id)) return Effect.fail(new CallFailed({ message: notATool(id, names) }))
       return asCallFailed(
-        runtime.call(id, input).pipe(Effect.flatMap((result) => plain(result.output === undefined ? textOf(result.content) : result.output))),
+        runtime.call(id, input).pipe(Effect.flatMap(cellValue)),
       )
     },
   }

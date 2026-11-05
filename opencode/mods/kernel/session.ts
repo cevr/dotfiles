@@ -55,7 +55,7 @@ export declare namespace StartKernel {
 
 /**
  * What the cell left: whether it threw, what it wrote outside `console`, its
- * display and the bindings it added or rebound. `omitted` is set when the
+ * display, the bindings it added or rebound and the files it attached. `omitted` is set when the
  * worker lived on and its snapshot was stored: every binding the snapshot
  * left out.
  */
@@ -65,11 +65,16 @@ export const RecordCell = Schema.TaggedStruct("RecordCell", {
   output: Schema.String,
   display: Schema.String,
   bindings: Schema.Array(Schema.String),
+  attached: Schema.optional(Schema.Array(Schema.String)),
   omitted: Schema.optional(Schema.Array(Omission)),
 })
 export interface RecordCell extends Schema.Schema.Type<typeof RecordCell> {}
 
-/** `unkept`: the bindings this cell made that a restart loses. `stored`: the worker lived on and its bindings were stored. */
+/**
+ * `unkept`: the bindings this cell made that a restart loses. `stored`: the
+ * worker lived on and its bindings were stored. `attached`: the files the cell
+ * attached, set when it attached any.
+ */
 export const CellRan = Schema.TaggedStruct("CellRan", {
   session: KernelSessionId,
   ok: Schema.Boolean,
@@ -77,6 +82,7 @@ export const CellRan = Schema.TaggedStruct("CellRan", {
   display: Schema.String,
   unkept: Schema.Array(Omission),
   stored: Schema.Boolean,
+  attached: Schema.optional(Schema.Array(Schema.String)),
 })
 export interface CellRan extends Schema.Schema.Type<typeof CellRan> {}
 
@@ -147,6 +153,7 @@ export const KernelSession: Decider<KernelSessionState, Command, Event> = {
             display: command.display,
             unkept: (command.omitted ?? []).filter((item) => command.bindings.includes(item.name)),
             stored: command.omitted !== undefined,
+            ...(command.attached !== undefined && command.attached.length > 0 ? { attached: command.attached } : {}),
           }),
         ])
       case "LoseKernel":

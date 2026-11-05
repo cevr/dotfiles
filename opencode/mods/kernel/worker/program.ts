@@ -10,6 +10,9 @@
  *   stderr writes reach the host on the output pipe, closed by a marker.
  * - `tools.<id>(input)` asks the host to run tool `<id>` and resolves to its
  *   result. `tools.list()` lists the tools the host offered for this cell.
+ * - `attach(...paths)` records image files for the host to show the model
+ *   after the cell: only their paths, resolved against the session's working
+ *   directory, travel in the result frame (`attached`); the host reads them.
  * - A binding is any global a cell added or changed. The host takes a
  *   snapshot of them after each cell and restores it into a fresh worker:
  *   top-level functions, classes and imports as their source
@@ -22,9 +25,12 @@
  * @module
  */
 import { createRequire } from "node:module"
+import { homedir } from "node:os"
+import { resolve } from "node:path"
 import { types } from "node:util"
 import type { Evaluation, Json, Listing, Request, Response, Snapshot, SnapshotBinding } from "../frame.ts"
 import {
+  MAX_ATTACHMENTS_PER_CELL,
   MAX_CALLS_PER_CELL,
   MAX_DISPLAY_CHARS,
   MAX_DISPLAY_HEAD_CHARS,
@@ -147,20 +153,48 @@ const makeTools = (listing: () => ReadonlyArray<Listing>, call: (id: string, inp
 }
 
 /**
- * Installs `tools` once per realm as an accessor that is not configurable and
- * whose setter throws, so no cell can rebind, delete or shadow it.
+ * Installs a host global (`tools`, `attach`) once per realm as an accessor
+ * that is not configurable and whose setter throws, so no cell can rebind,
+ * delete or shadow it.
  */
-const installTools = (tools: ToolNode) => {
-  if (Object.getOwnPropertyDescriptor(globalThis, "tools")?.configurable === false) return
-  Object.defineProperty(globalThis, "tools", {
-    get: () => tools,
+const installHostGlobal = (name: string, value: unknown, what: string) => {
+  if (Object.getOwnPropertyDescriptor(globalThis, name)?.configurable === false) return
+  Object.defineProperty(globalThis, name, {
+    get: () => value,
     set: () => {
-      throw new TypeError("tools is the host tool namespace; choose another name")
+      throw new TypeError(`${name} is ${what}; choose another name`)
     },
     enumerable: false,
     configurable: false,
   })
 }
+
+// ── attach ──────────────────────────────────────────────────────────────────
+
+/** A path as `attach` names it: `~/` is the home directory, a relative path is under `directory`. */
+const absolutePath = (directory: string, path: string) =>
+  path === "~" || path.startsWith("~/") ? resolve(homedir(), `.${path.slice(1)}`) : resolve(directory, path)
+
+/**
+ * `attach(...paths)` inside the cell: records each path for the host and
+ * answers the confirmation the cell reads. It checks only that each is a
+ * non-empty string; whether the file is an image the host decides after the
+ * cell, and the call's answer says so for each path it could not attach.
+ */
+export const makeAttach = (directory: string, running: () => boolean, record: (path: string) => boolean) =>
+  function attach(...paths: unknown[]): string {
+    if (!running()) throw new Error("attach from a cell that has ended")
+    if (paths.length === 0) throw new TypeError("attach takes one or more image paths")
+    const named: string[] = []
+    for (const path of paths) {
+      if (typeof path !== "string" || path === "") throw new TypeError("attach takes image paths as strings")
+      named.push(path)
+    }
+    for (const path of named)
+      if (!record(absolutePath(directory, path)))
+        throw new RangeError(`More than ${MAX_ATTACHMENTS_PER_CELL} images attached in one cell`)
+    return `attached ${named.length} image${named.length === 1 ? "" : "s"}: ${named.join(", ")}`
+  }
 
 // ── evaluator ───────────────────────────────────────────────────────────────
 
@@ -219,8 +253,11 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
   let listing: ReadonlyArray<Listing> = []
   let running = false
   let strays: string[] = []
+  /** The files the running cell attached, each once. */
+  let attached: string[] = []
 
-  installTools(
+  installHostGlobal(
+    "tools",
     makeTools(
       () => listing,
       (id, input) => {
@@ -232,6 +269,21 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
         }
       },
     ),
+    "the host tool namespace",
+  )
+  installHostGlobal(
+    "attach",
+    makeAttach(
+      workingDirectory,
+      () => running,
+      (path) => {
+        if (attached.includes(path)) return true
+        if (attached.length >= MAX_ATTACHMENTS_PER_CELL) return false
+        attached.push(path)
+        return true
+      },
+    ),
+    "the kernel's image attachment",
   )
   if (typeof Reflect.get(globalThis, "require") !== "function")
     Object.defineProperty(globalThis, "require", {
@@ -332,6 +384,7 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
       output.reset()
       for (const text of strays) output.append(text)
       strays = []
+      attached = []
       listing = tools
       let declared: ReadonlyArray<Declared> = []
       /** The names the cell bound; what it declared among them is kept as source. */
@@ -342,7 +395,7 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
       }
       const failed = (cause: unknown): Evaluation => {
         output.append(errorText(cause))
-        return { ok: false, display: output.read(), truncated: output.truncated(), bindings: bound(false) }
+        return { ok: false, display: output.read(), truncated: output.truncated(), bindings: bound(false), attached }
       }
       if (source.length > MAX_SOURCE_CHARS) return failed(new RangeError(`The code is over ${MAX_SOURCE_CHARS} characters`))
       let compiled: string
@@ -360,7 +413,7 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
       const value: unknown =
         typeof ran.result === "object" && ran.result !== null ? Object.getOwnPropertyDescriptor(ran.result, "value")?.value : undefined
       if (value !== undefined) output.append(display(value))
-      return { ok: true, display: output.read(), truncated: output.truncated(), bindings: bound(true) }
+      return { ok: true, display: output.read(), truncated: output.truncated(), bindings: bound(true), attached }
     },
     /** An error cell code raised outside any awaited path: the running cell's, else held for the next. */
     uncaught: (cause: unknown) => {

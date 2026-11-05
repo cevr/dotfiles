@@ -8,7 +8,12 @@
  *   long as its session, so top-level bindings persist between calls. The
  *   result is what the code printed, then its last expression's value.
  * - Inside the code, `await tools.<id>(input)` runs another OpenCode tool
- *   (`@dotfiles/opencode-kernel/opencode/toolbox`).
+ *   (`@dotfiles/opencode-kernel/opencode/toolbox`); an image in its result
+ *   reaches the cell as a marker.
+ * - `attach(...paths)` in the code shows image files to the model: the result's
+ *   content is the text, then one file part per image as a data URI, which
+ *   OpenCode resizes to the model's limits. A path that is not an image, is
+ *   missing or is over 20 MB is a line in the text.
  * - One worker per session, started on the first call. It is killed when the
  *   session is deleted, after `idleMs` without a call, on abort, and past the
  *   compute limit. After every call the bindings that hold data are stored
@@ -34,8 +39,10 @@
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Schema, Stream } from "effect"
 import { description, KernelInput } from "@dotfiles/opencode-kernel/description"
+import type { Reply } from "@dotfiles/opencode-kernel/attachment"
+import * as FileStoreFiles from "@dotfiles/opencode-kernel/filestore/files"
 import * as Model from "@dotfiles/opencode-kernel/model"
-import type { Sessions, Snapshots, Workers } from "@dotfiles/opencode-kernel/service"
+import type { Files, Sessions, Snapshots, Workers } from "@dotfiles/opencode-kernel/service"
 import { KernelSessionId } from "@dotfiles/opencode-kernel/session"
 import * as OpenCodeSessions from "@dotfiles/opencode-kernel/opencode/sessions"
 import * as OpenCodeSnapshots from "@dotfiles/opencode-kernel/opencode/snapshots"
@@ -65,7 +72,7 @@ export const Options = Schema.Struct({
 export type Options = typeof Options.Type
 
 /** The contracts the model runs on, built once; a call's tools come with the call. */
-export type Contracts = Workers | Snapshots | Sessions
+export type Contracts = Workers | Snapshots | Sessions | Files
 
 /** One implementation of each contract, as OpenCode and Bun provide them. */
 export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Contracts> =>
@@ -73,7 +80,21 @@ export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Contrac
     ProcessWorkers.layer({ timeoutMs: options.timeoutMs }),
     OpenCodeSnapshots.layer(ctx.storage),
     OpenCodeSessions.fromContext(ctx),
+    FileStoreFiles.layer,
   )
+
+/** A reply as the tool's content: its text, then each image as a file part with a data URI, named by its path. */
+export const contentOf = (reply: Reply): ReadonlyArray<Tool.Content> => [
+  { type: "text", text: reply.text },
+  ...reply.images.map(
+    (image): Tool.Content => ({
+      type: "file",
+      mime: image.mime,
+      uri: `data:${image.mime};base64,${Buffer.from(image.bytes.buffer, image.bytes.byteOffset, image.bytes.byteLength).toString("base64")}`,
+      name: image.path,
+    }),
+  ),
+]
 
 /** The plugin on `externals`: OpenCode and Bun in production, memory and test Layers in the seam test. */
 export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer.Layer<Contracts>) =>
@@ -104,7 +125,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
               .pipe(
                 Effect.provide(OpenCodeToolbox.forCall(ctx, context)),
                 Effect.mapError((unreadable) => new Tool.Error({ message: unreadable.message, error: unreadable })),
-                Effect.flatMap((answer) => (answer.ok ? Effect.succeed({ content: answer.text }) : Effect.fail(new Tool.Error({ message: answer.text })))),
+                Effect.flatMap((reply) => (reply.ok ? Effect.succeed({ content: contentOf(reply) }) : Effect.fail(new Tool.Error({ message: reply.text })))),
               ),
         })
       })

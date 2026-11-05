@@ -2,14 +2,15 @@
  * One kernel run in real OpenCode (the fork, embedded through its SDK), on the
  * scripted model, with the kernel plugin loaded from config as the owner would
  * load it. The test starts it in a child process whose HOME and XDG dirs are a
- * scratch dir: `bun tests/kernel/run.ts <spec.json>`. It writes the session's
+ * scratch dir: `bun tests/kernel/run.ts <spec.json>`. The work dir holds
+ * hello.txt and pixel.png. It writes the session's
  * messages and the model's requests to `<base>/result.json`.
  *
  * @module
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { HELLO, serve, type Seen } from "./sim.ts"
+import { HELLO, PIXEL_FILE, PIXEL_PNG, serve, type Seen } from "./sim.ts"
 
 export interface Spec {
   readonly base: string
@@ -22,6 +23,8 @@ export interface Spec {
   readonly codeOnly?: boolean
   /** Loads the orchestrate mod too, its Sabbath clock at this time (ISO 8601). */
   readonly orchestrate?: { readonly plugin: string; readonly now: string }
+  /** The model reads images too; absent, it reads text only. */
+  readonly images?: boolean
 }
 
 export interface Result {
@@ -36,6 +39,7 @@ mkdirSync(work, { recursive: true })
 mkdirSync(config, { recursive: true })
 const file = join(work, "hello.txt")
 writeFileSync(file, `${HELLO}\n`)
+writeFileSync(join(work, PIXEL_FILE), Buffer.from(PIXEL_PNG, "base64"))
 
 const sim = serve(file)
 const content = {
@@ -48,7 +52,7 @@ const content = {
       models: {
         "sim-model": {
           name: "Sim",
-          capabilities: { tools: true, input: ["text"], output: ["text"] },
+          capabilities: { tools: true, input: spec.images ? ["text", "image"] : ["text"], output: ["text"] },
           limit: { context: 128_000, output: 16_000 },
         },
       },

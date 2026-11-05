@@ -211,8 +211,8 @@ export const layer = (config: Config) =>
           if (frame.type === "evaluated")
             return Effect.sync(() => {
               if (running === undefined || running.id !== frame.id) return
-              const { ok, display, truncated, bindings } = frame
-              Deferred.doneUnsafe(running.evaluated, Effect.succeed({ ok, display, truncated, bindings }))
+              const { ok, display, truncated, bindings, attached } = frame
+              Deferred.doneUnsafe(running.evaluated, Effect.succeed({ ok, display, truncated, bindings, attached }))
             })
           return Effect.sync(() => take(handle, frame.id, frame))
         })

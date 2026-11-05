@@ -1,13 +1,13 @@
 // The kernel in real OpenCode (the fork, through its SDK) on the scripted
 // model: two kernel calls in one session share a binding, the first reads a
-// file through `tools.read`, and `denyExecute` keeps code mode's `execute` from
-// the model. The kernel on its own is tested beside its code in mods/kernel.
+// file through `tools.read`, `denyExecute` keeps code mode's `execute` from
+// the model, and an image a cell attaches reaches the next request. The kernel on its own is tested beside its code in mods/kernel.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./kernel/run.ts"
-import { cells, DONE, HELLO, KERNEL_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
+import { ATTACH_CELL, ATTACH_TASK, cells, DONE, HELLO, KERNEL_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/kernel.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
@@ -17,7 +17,7 @@ const scratch = mkdtempSync(join(tmpdir(), "kernel-e2e-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** One run of real OpenCode in a scratch home; see tests/kernel/run.ts. */
-const run = async (name: string, spec: Pick<Spec, "task" | "denyExecute" | "codeOnly" | "orchestrate">): Promise<Result & { base: string }> => {
+const run = async (name: string, spec: Pick<Spec, "task" | "denyExecute" | "codeOnly" | "orchestrate" | "images">): Promise<Result & { base: string }> => {
   const base = join(scratch, name)
   const home = join(base, "home")
   mkdirSync(home, { recursive: true })
@@ -88,6 +88,22 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   )
 
   test(
+    "a cell attaches a PNG; the next model request carries it as an image",
+    async () => {
+      const result = await run("attach", { task: ATTACH_TASK, denyExecute: true, images: true })
+      const [cell] = toolParts(result.messages)
+      expect({ code: cell?.state.input.code, status: cell?.state.status }).toEqual({ code: ATTACH_CELL, status: "completed" })
+      expect((cell?.state.content ?? []).map((part) => part.text ?? "").join("")).toBe("attached 1 image: pixel.png")
+      const [first, next] = result.seen.filter((request) => request.task === ATTACH_TASK)
+      expect(first?.images).toBeUndefined()
+      // The host's normalizer may re-encode the pixel, so the request carries a PNG data URI, not these bytes.
+      expect(next?.images).toHaveLength(1)
+      expect(next?.images?.[0]).toStartWith("data:image/png;base64,")
+    },
+    RUN_MS,
+  )
+
+  test(
     "without codeOnly the kernel sits beside the direct tools; denyExecute decides whether execute is offered",
     async () => {
       const denied = await run("direct", { task: "plain", denyExecute: true, codeOnly: false })
@@ -109,7 +125,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       const result = await run("subagent", {
         task: SUBAGENT_TASK,
         denyExecute: true,
-        orchestrate: { plugin: join(ROOT, "mods/orchestrate"), now: "2026-10-30T23:00:00Z" },
+        orchestrate: { plugin: join(ROOT, "cmd/orchestrate"), now: "2026-10-30T23:00:00Z" },
       })
       const [cell] = toolParts(result.messages)
       const text = (cell!.state.content ?? []).map((part) => part.text ?? "").join("")
@@ -123,7 +139,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       const weekday = await run("subagent-weekday", {
         task: SUBAGENT_TASK,
         denyExecute: true,
-        orchestrate: { plugin: join(ROOT, "mods/orchestrate"), now: "2026-11-04T15:00:00Z" },
+        orchestrate: { plugin: join(ROOT, "cmd/orchestrate"), now: "2026-11-04T15:00:00Z" },
       })
       const [started] = toolParts(weekday.messages)
       expect((started!.state.content ?? []).map((part) => part.text ?? "").join("")).toBe("started")
