@@ -8,7 +8,7 @@ import { Dock, ModeHint, Splash, TopBar, useFamily, Working } from "./chrome"
 import { SubagentRows } from "./live"
 import { Completion, StepEnd } from "./notice"
 import { ToolRow } from "./tools"
-import { AssistantText, ReasoningLine, UserBand } from "./transcript"
+import { AssistantText, PinnedAsk, ReasoningLine, UserBand } from "./transcript"
 import { nextDetail, type Detail } from "./view"
 
 // Blank rows between transcript rows. Overview packs everything; Details
@@ -53,6 +53,11 @@ export default Plugin.define({
     context.ui.slot({
       append: "session.transcript.start",
       render: (input) => <Splash context={context} sessionID={input.sessionID} />,
+    })
+    // Scrolled up, the prompt the top of the view answers sits pinned over it (the fork's overlay slot).
+    context.ui.slot({
+      append: "session.transcript.overlay",
+      render: (input) => <PinnedAsk context={context} input={input} />,
     })
     context.ui.slot({
       replace: "session.message.user",

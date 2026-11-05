@@ -1,7 +1,10 @@
 // Transcript rows in the Prime look: the user prompt behind fx's heavy `┃` rail (bold text, no band),
 // reasoning only at All (fx keeps thinking out of the inline view), and plain assistant text.
 import type { Plugin } from "@opencode/plugin/tui"
-import { createMemo, Show, type Accessor } from "solid-js"
+import type { TranscriptOverlayInput } from "@opencode/plugin/tui/context"
+import { RGBA, type BoxRenderable } from "@opentui/core"
+import { createMemo, createSignal, Show, type Accessor } from "solid-js"
+import { governingAsk, oneLine } from "./ask"
 import type { Detail } from "./view"
 
 type Context = Plugin.Context
@@ -117,6 +120,66 @@ export function AssistantText(props: PartProps) {
       <box paddingLeft={GUTTER} flexShrink={0}>
         <Markdown content={content()} streaming={streaming()} />
       </box>
+    </Show>
+  )
+}
+
+/**
+ * While the reader is scrolled up, the prompt the top of the view answers,
+ * pinned over the transcript's top row as the prompt draws (the `┃` rail, bold
+ * text) on one line; a click scrolls that prompt to the top. It covers the
+ * row under it rather than reserving one, so the transcript keeps its height
+ * as the reader crosses the bottom; every row still reaches view, since the
+ * top row the pin covers moves on with a one-row scroll and the transcript's
+ * own first row is the splash's blank margin.
+ */
+/**
+ * The pin's fill: the terminal's own background, opaque. A cell drawn on a
+ * transparent background keeps the character under it, and the Prime theme's
+ * background is transparent (the terminal's), so the pin fills with the
+ * terminal's default colour instead, which looks the same; a theme with an
+ * opaque background fills with that.
+ */
+function cover(theme: Context["theme"]) {
+  const base = theme.background.base
+  return base.a >= 1 ? base : RGBA.defaultBackground()
+}
+
+export function PinnedAsk(props: { context: Context; input: TranscriptOverlayInput }) {
+  const ask = createMemo(() =>
+    props.input.away
+      ? governingAsk(props.context.data.session.message.list(props.input.sessionID), props.input.messages)
+      : undefined,
+  )
+  // Unmeasured, the text keeps its length and the host's truncate cuts it.
+  const [width, setWidth] = createSignal(Infinity)
+  const [hover, setHover] = createSignal(false)
+  const theme = () => props.context.theme
+  return (
+    <Show when={ask()}>
+      {(found) => (
+        <box
+          width="100%"
+          height={1}
+          flexShrink={0}
+          backgroundColor={cover(theme())}
+          border={["left"]}
+          borderColor={theme().text.base}
+          customBorderChars={USER_RAIL}
+          paddingLeft={1}
+          onSizeChange={function (this: BoxRenderable) {
+            const value = this.width
+            queueMicrotask(() => setWidth(value))
+          }}
+          onMouseOver={() => setHover(true)}
+          onMouseOut={() => setHover(false)}
+          onMouseUp={() => props.input.reveal(found().id)}
+        >
+          <text wrapMode="none" truncate fg={hover() ? theme().text.muted : theme().text.base}>
+            <span style={{ bold: true }}>{oneLine(found().text ?? "", width() - 2)}</span>
+          </text>
+        </box>
+      )}
     </Show>
   )
 }
