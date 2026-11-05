@@ -14,7 +14,7 @@
 // three), `-timeout.txt` when a wait times out, `-requests.json` (each model
 // request) and `-transcripts.json`; and a screenshot of the popup.
 import { Effect, Schedule, Stream } from "effect"
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
 
 const root = process.cwd()
@@ -25,7 +25,7 @@ const skill = (description: string, body: string) => `---\ndescription: ${descri
 
 const say = (text: string) => Stream.make(Llm.text(text), Llm.finish())
 // Prime's look, wherever another change has moved it.
-const prime = existsSync(`${root}/cmd/prime/package.json`) ? `${root}/cmd/prime` : `${root}/mods/prime`
+const prime = `${root}/cmd/prime`
 
 export default OpenCodeDriver.use(
   {
