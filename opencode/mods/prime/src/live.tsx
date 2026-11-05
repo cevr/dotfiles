@@ -1,7 +1,8 @@
 // The live subagent rows beneath the composer: one line per subagent of the
 // route's family, as `@dotfiles/opencode-subagents` reads and formats it. A
 // row opens its session on click and brightens under the pointer; inside a
-// subagent the current one is marked.
+// subagent the current one is marked. While the host shows the session's
+// sidebar, the sidebar carries the agents and the rows step aside.
 import type { Plugin } from "@opencode/plugin/tui"
 import type { BoxRenderable, RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
@@ -11,7 +12,7 @@ import { useSessionLink } from "./link"
 import { columns, format, spinner, type Columns, type Kind } from "@dotfiles/opencode-subagents/line"
 import { read } from "@dotfiles/opencode-subagents/opencode/view"
 import { subagents, visible, type Row as SubagentRow, type Tone } from "@dotfiles/opencode-subagents/subagent-row"
-import { capped, moreLine } from "./rows"
+import { capped, moreLine, sidebarShown } from "./rows"
 
 type Context = Plugin.Context
 
@@ -21,9 +22,10 @@ export function SubagentRows(props: { context: Context; sessionID: string; child
     const family = read(props.context.data, props.sessionID)
     return subagents(family, family.root)
   })
-  // The clock ticks while a row runs, waits or lingers, and settles once none does.
+  const hidden = createMemo(() => sidebarShown(props.context.ui, props.sessionID))
+  // The clock ticks while a row runs, waits or lingers in view, and settles once none does.
   const now = useNow(() => live())
-  const live = createMemo(() => visible(all(), now()).length > 0)
+  const live = createMemo(() => !hidden() && visible(all(), now()).length > 0)
   const current = () => (props.child ? { current: props.sessionID } : {})
   const shown = createMemo(() => capped(visible(all(), now(), current())))
   const cols = createMemo(() => columns(shown().rows))
@@ -31,7 +33,7 @@ export function SubagentRows(props: { context: Context; sessionID: string; child
   const [measured, setMeasured] = createSignal<number>()
   const width = createMemo(() => measured() ?? Math.max(0, terminal().width - 2))
   return (
-    <Show when={shown().rows.length > 0}>
+    <Show when={!hidden() && shown().rows.length > 0}>
       <box
         flexDirection="column"
         flexShrink={0}

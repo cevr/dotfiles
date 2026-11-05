@@ -1,0 +1,13 @@
+{
+  "name": "@dotfiles/opencode-cmd-idle-compact",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Idle compaction's OpenCode server plugin: the composition root of @dotfiles/opencode-idle-compact.",
+  "exports": {
+    "./server": "./server.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-idle-compact": "workspace:*"
+  }
+}

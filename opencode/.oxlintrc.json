@@ -131,6 +131,22 @@
       }
     },
     {
+      "files": ["mods/idle-compact/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "message": "The idle-compaction domain fence: its domain files import effect, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or its opencode/ folder."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["mods/subagents/*.ts"],
       "rules": {
         "no-restricted-imports": [
@@ -156,6 +172,70 @@
               {
                 "group": ["*", "!../*.ts", "!./*.ts", "!bun:test"],
                 "message": "The subagents reader fence: opencode/ reads the TUI's data through its own narrowed Reads, so it imports the model's root files, its own files and bun:test only; never @opencode/* or a renderer."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/cache/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "message": "The cache domain fence: the fold, causes and pricing import effect, the cache mod's own root files and bun:test only; never @opencode/*, solid-js, node:*, bun or one of its folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/cache/opencode/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!../*.ts", "!./*.ts", "!bun:test"],
+                "message": "The cache reader fence: opencode/ reads the TUI's data through its own narrowed Reads, so it imports effect, the domain's root files, its own files and bun:test only; never @opencode/* or a renderer."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/git/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "message": "The git domain fence: git's domain files import effect, git's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of git's folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/git/tui/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["../process/**", "../opencode/**", "../laws.ts"],
+                "message": "The git UI fence: the sidebar and the pane import the git domain, never an implementation (process/, opencode/) or the laws; every read goes through the git RPC."
               }
             ]
           }

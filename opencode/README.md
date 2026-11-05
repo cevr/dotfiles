@@ -22,7 +22,7 @@ so a new terminal runs it, and `opencode2` stays the stock release. As a `latest
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`mods/anthropic-auth`), the pool (on
-the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists), orchestrate, the kernel, status and the queue, the role
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists), orchestrate, the guard, the kernel, status, the queue, git and idle compaction, the role
 models and `autoupdate: false`, and into `cli.json` Prime, status, the queue and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork
 change.
@@ -211,6 +211,49 @@ The model, in the domain files at `mods/queue`'s root:
   to the board's subagents, every row kept so a linked item outlives the
   shared linger.
 
+## Git
+
+`mods/git` ports gent's `@gent/git`; its plugins are `cmd/git` (`server.ts`
+and `tui.tsx`). The TUI plugin adds a Git section to the session sidebar
+(`tui/sidebar.tsx`, lines from `sidebar.ts`):
+
+```
+Git
+main · ↑1 ↓2 origin/main
+3 files +40 −12
+#123 Title · open · checks ✓ · review required
+```
+
+It reads when it mounts, when a step of the session ends and every 10
+seconds. A directory in no checkout has no section. A checkout git could not
+read is one muted note. The pull request row needs `gh`. Without `gh`, with
+`gh` signed out, or with no GitHub remote, there is no row. `/git` opens a
+pane (`tui/pane.tsx`, rows from `pane.ts`) that lists the changed files and
+the pull request. In the pane, ↑ and ↓ pick a file. Enter hands the terminal
+to `hunk diff --watch <base> -- <path>`, or to `git --paginate diff` when
+hunk is not on PATH, and the pane says so. The plugin API has no handover,
+so the pane suspends the renderer, runs the command and resumes, as
+OpenCode's external editor does.
+
+The server plugin answers the `dotfiles-opencode.git` RPC (`git.ts`):
+`checkout`, `pullRequest` and `review`, each for one session. It reads the
+session's directory from OpenCode on every call, so a session that moves is
+read where it is. It takes no options. The model has no aggregate:
+
+- Values: the checkout (`checkout.ts`), parsed from `git status
+  --porcelain=v2 --branch -z` and `git diff --numstat -z` against `HEAD`, or
+  the empty tree on an unborn branch, with untracked files counted up to 200
+  files of 512 KiB each. Also the pull request (`pull-request.ts`) from
+  `gh pr view --json`, and the review command (`review.ts`).
+- Handler: `Git` (`model.ts`). It keeps `gh`'s answers by the checkout's
+  root, branch, upstream and ahead and behind counts, for 60 seconds, or 30
+  seconds after a failure. It does not ask again when `gh` is missing.
+- Contracts: `SessionDirectories`, `Checkouts`, `PullRequests` and
+  `Programs` in `service.ts`, with their laws in `laws.ts`. `opencode/`
+  asks the host. `process/` runs git with no optional locks and no index
+  refresh, so a read never takes the agent's `index.lock`. It also runs `gh`
+  and looks up programs on PATH.
+
 ## Herdr
 
 `cmd/herdr` is a TUI plugin that tells [herdr](https://herdr.dev) what the
@@ -239,6 +282,32 @@ state waits, and a failure is never shown. The plugin is inactive (no socket
 and no work) unless `HERDR_ENV=1` and both `HERDR_PANE_ID` and
 `HERDR_SOCKET_PATH` are set. The server runs as a background service outside
 any pane, so only the TUI can report.
+
+## Cache
+
+`cmd/cache` is a TUI plugin that shows when a request paid again for a
+prompt prefix the previous request had cached, why, and what it cost. It
+ports gent's `@gent/cache`. A turn that lost a large prefix (20k tokens or
+$0.10) ends on a row such as:
+
+```
+◌ cache miss · 48k tokens · $0.17 · expired during a 4s shell call
+```
+
+The causes are a model switch, a prefix that changed inside the cache
+lifetime (only on a provider that writes its cache, such as Anthropic), and,
+past the lifetime, the response itself, a tool call, an approval wait, a
+pause, a subagent's report or idle time between turns. The lifetime is the
+model's or provider's `settings.cache.ttl`, else 5 minutes for Anthropic and
+30 minutes for OpenAI. A provider with neither counts only model switches. A
+miss is priced at the cache-write rate for the tokens the request wrote back
+and the input rate for the rest, less the read rate it would have paid.
+
+The sidebar shows `Cache 91% · missed $0.42`: the share of prompt tokens
+read from the cache, and the sum of every miss, for the session and its
+subagents. Everything comes from the session's messages in the TUI; there is
+no server half. Approval waits are seen only while the TUI runs, so a wait
+from before it opened reads as the tool call it held up.
 
 ## Guard
 
@@ -273,6 +342,54 @@ repositories, and `shell-line.ts` reads a command line. `model.ts` asks the
 contracts in `service.ts`: `RepoRoots` (`filesystem/`: a path holding `.git`)
 and `SessionDirectories` (`opencode/`: the session's directory), with
 `memory/` implementations for tests and the laws in `laws.ts`.
+
+## Idle compaction
+
+`cmd/idle-compact` is a server plugin that compacts a large session that has
+gone idle shortly before its prompt cache expires, as Claude Code does. While
+the cache is warm the compaction reads the long prefix from cache; once it
+expires, the next message would write the whole context again. It runs
+OpenCode's own compaction (`session.compact`), so the next message starts
+from the summary.
+
+A session compacts at its cache's expiry less a margin when all of these hold:
+
+- it is a main session (a subagent's only with `subagents: true`);
+- it does not run, and none of its subagents runs (a session waiting on a
+  permission prompt counts as idle);
+- its last request read from or wrote to the cache, and its prompt (input,
+  cache read and cache write) is above the threshold: 30% of the model's
+  window or 60,000 tokens, whichever is smaller;
+- no compaction came after that request, and the cache has not expired.
+
+The cache's life counts from the last request's start (title requests
+aside), as Anthropic counts it. Its length is the model's or provider's
+configured `cache.ttl`, else the provider's default: 5 minutes for Anthropic,
+30 minutes for OpenAI GPT-5.6 and later, 5 minutes for older OpenAI models.
+Other providers are not compacted unless `ttlSeconds` is set. The margin is
+60 s for a cache of 5 minutes or less and 5 minutes for a longer one. A new
+request, a queued message or a started execution cancels the session's
+timer; it is set again when the session settles. At start the plugin decides
+the recent main sessions. It logs each decision at debug level and each
+compaction at info, with the session, the prompt's tokens and the cache's age.
+
+Options: `ttlSeconds`, `shortMarginSeconds` (60), `longMarginSeconds` (300),
+`thresholdRatio` (0.3), `thresholdTokens` (60000), `subagents` (false). An
+absent option takes its default; a malformed one stops the plugin.
+
+The compaction is OpenCode's manual one, so the transcript shows it as a
+plain compaction: the plugin API has no way to mark it automatic. Orchestrate's
+compaction windows trigger the fork's automatic compaction inside a request
+as the context nears the window; idle compaction runs only between requests,
+so the two never run at once, and orchestrate's `compaction` hook adds what it
+keeps to both.
+
+The model (the domain files at the root of `mods/idle-compact`): `idle.ts`
+decides from a session's facts (`due`), `cache.ts` holds the providers'
+lifetimes and the margins, and `model.ts` is the `IdleCompactor`, one timer
+per session. It asks the `Sessions` contract in `service.ts`, implemented in
+`opencode/`, with the laws in `laws.ts`. `tests/idle-compact.test.ts` runs it
+in real OpenCode on a 20 s cache.
 
 ## The code kernel
 
