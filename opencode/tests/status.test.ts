@@ -29,6 +29,15 @@ describe.skipIf(!fork)("/pool in the Prime look", () => {
     expect(closed).not.toContain("Account pool")
     expect(closed).toContain("typed-after-pool")
     expect(empty).not.toContain("gent:alpha")
+    const sidebar = readFileSync(join(out, "pool-sidebar.txt"), "utf8")
+    // The sidebar shares its rows with the transcript, so match its lines in order.
+    const rows = sidebar.split("\n")
+    const at = (line: RegExp) => rows.findIndex((row) => line.test(row))
+    const section = [/\sPool$/, /\salpha$/, /\sweek 44% · in 1d 0h · \w{3} \d\d:\d\dZ$/, /\s5h 23% · in 1h 2\dm · \d\d:\d\dZ$/].map(at)
+    const [first = -1] = section
+    expect(first).toBeGreaterThan(-1)
+    expect(section).toEqual([first, first + 1, first + 2, first + 3])
+    expect(JSON.parse(readFileSync(join(out, "pool-session-query.json"), "utf8"))).toMatchObject({ sessionID: expect.stringMatching(/^ses_/), providerID: "simulation" })
     console.log(`Status pane artifacts: ${out}`)
   }, 150_000)
 })

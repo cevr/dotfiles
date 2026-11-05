@@ -42,6 +42,12 @@ export class Logins extends Context.Service<
     readonly markSignIn: (pool: PoolId, credentialID: string, needed: boolean) => Effect.Effect<void>
     /** The outside stores whose logins join the pool, as they list them now. */
     readonly sources: (pool: PoolId) => Effect.Effect<ReadonlyArray<SourceStatus>, LoginsUnavailable>
+    /**
+     * A login's name as its store lists it, never a secret: an integration
+     * login's label, an outside store's own label. A login it cannot name
+     * (one not listed yet) is named by its id.
+     */
+    readonly label: (pool: PoolId, credentialID: string) => Effect.Effect<string>
   }
 >()("dotfiles-opencode/pool/Logins") {}
 

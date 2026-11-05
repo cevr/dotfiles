@@ -13,7 +13,10 @@ const accounts = [
   { credentialID: "gent:alpha", live: 1, load: 1, noRoom: false, reading: { at: now, windows: [{ name: "5h", utilization: 0.23, resetAt: now + 3600000 }, { name: "7d", utilization: 0.44, resetAt: now + 86400000 }] } },
   { credentialID: "gent:beta", live: 0, load: 2, noRoom: true, hold: { kind: "usage-limit", until: now + 7200000, at: now }, reading: { at: now, windows: [{ name: "5h", utilization: 1, resetAt: now + 7200000 }, { name: "7d", utilization: 0.72, resetAt: now + 172800000 }] } },
 ]
-const poolRpc = { id: "dotfiles-opencode.pool", methods: { status: { input: { type: "object" }, output: { type: "object" } } }, events: {} }
+const poolRpc = { id: "dotfiles-opencode.pool", methods: { status: { input: { type: "object" }, output: { type: "object" } }, session: { input: { type: "object", properties: { sessionID: { type: "string" }, providerID: { type: "string" } }, required: ["sessionID"] }, output: { type: "object" } } }, events: {} }
+// The session method names gent:alpha as the session's account, its windows
+// resetting a fixed while after the call, so the sidebar's relative times hold.
+const sessionQuery = `${out}/pool-session-query.json`
 const stateFile = `${out}/pool-state`
 writeFileSync(stateFile, "loading")
 const fake = `export default {id: "fixture.pool", async setup(ctx) {
@@ -23,6 +26,13 @@ const fake = `export default {id: "fixture.pool", async setup(ctx) {
     const value = await Bun.file(state).text();
     if (value === "error") throw new Error("scripted pool outage");
     return value === "empty" ? {} : (${JSON.stringify({ anthropic: { accounts } })});
+  }, session: async (input) => {
+    await Bun.write(${JSON.stringify(sessionQuery)}, JSON.stringify(input));
+    const at = Date.now();
+    return {account: {pool: "anthropic", credentialID: "gent:alpha", label: "alpha", on: "placed", reading: {at, windows: [
+      {name: "5h", utilization: 0.23, resetAt: at + 5400000},
+      {name: "7d", utilization: 0.44, resetAt: at + 88200000},
+    ]}}};
   }});
 }}`
 
@@ -59,6 +69,10 @@ export default OpenCodeDriver.use({
   )
   yield* ui.submit("show-pool-fixture")
   yield* until((frame) => frame.includes("◆ 1 subagent") && frame.includes("Status fixture ready"))
+  // The sidebar's Pool section: the session's account and its windows.
+  yield* until((frame) => frame.includes("week 44%") && frame.includes("5h 23%"))
+  writeFileSync(`${out}/pool-sidebar.txt`, text(yield* ui.capture()))
+  console.log("screenshot:", yield* ui.screenshot("pool-sidebar"))
   yield* ui.submit("/pool")
   yield* until((frame) => frame.includes("Loading accounts…"))
   writeFileSync(`${out}/pool-loading.txt`, text(yield* ui.capture()))

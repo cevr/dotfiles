@@ -94,7 +94,8 @@ primary request into an immediate retry on another login. Its options are
 default. A malformed one stops the plugin at setup, with a message that
 names it. Other mods read it over its `dotfiles-opencode.pool` RPC
 (`status.ts`, `@dotfiles/opencode-pool/status`): orchestrate asks `pace`, and the `/pool`
-pane draws `status`.
+pane draws `status`, and the sidebar asks `session` for the login a session
+is on (or would go out on next), by its label.
 
 The model, in the domain files at `mods/pool`'s root:
 
@@ -139,7 +140,10 @@ and `statusScript`. An absent option takes its default. A malformed one
 stops the plugin at setup, with a message that names it. The TUI plugin
 registers the pane (`tui/pane.tsx`), which reads this RPC and the pool's
 every two seconds. It keeps the last good reading when a read fails or does
-not decode, and it draws the rows `pane.ts` projects.
+not decode, and it draws the rows `pane.ts` projects. It also adds a Pool
+section to the session sidebar (`tui/sidebar.tsx`, lines from `sidebar.ts`):
+the session's login, its week and 5h use and when each resets, or nothing
+when the session's provider is not pooled.
 
 The model, in the domain files at `mods/status`'s root, has no aggregate,
 because status decides nothing. It holds a view, values and contracts:

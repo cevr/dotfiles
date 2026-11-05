@@ -397,6 +397,11 @@ export class GentSource {
     return this.labelOf(credentialID) !== undefined
   }
 
+  /** The slot label of one of this store's credential ids (`gent:<label>`); none for another id. */
+  label(credentialID: string): string | undefined {
+    return this.labelOf(credentialID)
+  }
+
   /** The accounts gent signed in to, by label, and the labels this source leaves alone. */
   readonly listing: Effect.Effect<GentListing, GentStoreUnreadable> = Effect.suspend(() => {
     const names = this.names()

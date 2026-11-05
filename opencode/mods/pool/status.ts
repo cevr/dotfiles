@@ -1,5 +1,6 @@
 // The pool's own RPC, which other mods read: orchestrate asks `pace` before a
-// new agent starts, and the status pane draws `status`. The definition is the
+// new agent starts, the status pane draws `status`, and the status sidebar
+// draws `session`, the account one session is on. The definition is the
 // wire contract, kept byte for byte; the schemas below are the shapes its
 // methods answer with. No answer carries a secret.
 import { Schema } from "effect"
@@ -11,6 +12,14 @@ export const POOL_STATUS = {
   methods: {
     pace: { input: { type: "object", properties: { providerID: { type: "string" } }, required: ["providerID"] }, output: { type: "object" } },
     status: { input: { type: "object" }, output: { type: "object" } },
+    session: {
+      input: {
+        type: "object",
+        properties: { sessionID: { type: "string" }, providerID: { type: "string" } },
+        required: ["sessionID"],
+      },
+      output: { type: "object" },
+    },
   },
   events: {},
 } as const
@@ -55,3 +64,33 @@ export type PoolEntry = typeof PoolEntry.Type
 /** The status method's answer: each pool by its integration id. */
 export const PoolsStatus = Schema.Record(Schema.String, PoolEntry)
 export type PoolsStatus = typeof PoolsStatus.Type
+
+/**
+ * The session method's question: which account `sessionID` is on, in the pool
+ * of `providerID`, or, without one, in the pool its newest request went through.
+ */
+export const SessionQuery = Schema.Struct({
+  sessionID: Schema.String,
+  providerID: Schema.optionalKey(Schema.String),
+})
+export type SessionQuery = typeof SessionQuery.Type
+
+/**
+ * The account a session is on: `placed` when its newest primary request went
+ * out on it, `next` when it has sent none yet and this is the pool's pick for
+ * its first. `label` is the login's name as its store lists it (an OpenCode
+ * login's label, a gent account's slot), never a token.
+ */
+export const SessionAccount = Schema.Struct({
+  pool: Schema.String,
+  credentialID: Schema.String,
+  label: Schema.String,
+  on: Schema.Literals(["placed", "next"]),
+  hold: Schema.optionalKey(Hold),
+  reading: Schema.optionalKey(QuotaReading),
+})
+export type SessionAccount = typeof SessionAccount.Type
+
+/** The session method's answer: no `account` when the provider is not pooled or the pool has none to name. */
+export const SessionAnswer = Schema.Struct({ account: Schema.optionalKey(SessionAccount) })
+export type SessionAnswer = typeof SessionAnswer.Type

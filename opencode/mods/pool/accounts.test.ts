@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test"
 import { fold } from "@dotfiles/decider/decider"
 import { AccountPool, LoginsListed, ReadingTaken, RequestPlaced, restored, StepRecorded, type Event } from "./account-pool.ts"
-import { held, rank, shouldFailOver, status, WINDOW_MS } from "./accounts.ts"
+import { held, rank, sessionAccount, shouldFailOver, status, WINDOW_MS } from "./accounts.ts"
 
 const HOUR = 3_600_000
 const T0 = 1_800_000_000_000
@@ -41,6 +41,43 @@ describe("a failed request", () => {
   test("stays when every account is held", () => {
     const state = pool(place("s1", "a"), holdOn("b", T0 + 60_000), holdOn("a", T0 + 60_000))
     expect(shouldFailOver(state, "s1", T0)).toBe(false)
+  })
+})
+
+describe("the account a session is on", () => {
+  const weekly = (utilization: number, resetAt: number) =>
+    ReadingTaken.make({ credentialID: "b", reading: { at: T0, windows: [{ name: "7d", utilization, resetAt }] } })
+
+  test("is where its newest primary request went out, with that account's hold and reading", () => {
+    const state = pool(place("s1", "b"), holdOn("b", T0 + HOUR))
+    expect(sessionAccount(state, "s1", T0 + 1)).toEqual({
+      credentialID: "b",
+      on: "placed",
+      hold: { kind: "rate-limit", until: T0 + HOUR, at: T0 },
+      reading: { at: T0, windows: [], refusal: { kind: "rate-limit", until: T0 + HOUR } },
+    })
+    // A request of another kind does not move it.
+    const titled = fold(AccountPool, [RequestPlaced.make({ sessionID: "s1", kind: "title", credentialID: "a", at: T0 })], pool(place("s1", "b")))
+    expect(sessionAccount(titled, "s1", T0)?.credentialID).toBe("b")
+  })
+
+  test("reads a window that has reset since as empty, and a past hold as none", () => {
+    const state = pool(place("s1", "b"), holdOn("b", T0 + HOUR), weekly(0.41, T0 + HOUR))
+    expect(sessionAccount(state, "s1", T0 + 1)?.reading?.windows[0]?.utilization).toBe(0.41)
+    expect(sessionAccount(state, "s1", T0 + HOUR)).toEqual({
+      credentialID: "b",
+      on: "placed",
+      reading: { at: T0, windows: [{ name: "7d", utilization: 0, resetAt: T0 + HOUR }] },
+    })
+  })
+
+  test("before its first request, is the pool's pick for it", () => {
+    expect(sessionAccount(pool(holdOn("a", T0 + HOUR)), "s1", T0)).toMatchObject({ credentialID: "b", on: "next" })
+    expect(sessionAccount(pool(), "s1", T0)).toEqual({ credentialID: "a", on: "next" })
+  })
+
+  test("is none in a pool with no account", () => {
+    expect(sessionAccount(fold(AccountPool, []), "s1", T0)).toBeUndefined()
   })
 })
 

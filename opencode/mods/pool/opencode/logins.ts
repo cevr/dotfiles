@@ -22,6 +22,8 @@ export interface Connection {
   readonly type: string
   readonly id?: string
   readonly method?: string
+  /** The name the integration shows for it. */
+  readonly label?: string
 }
 
 /** The integration's logins and their sign-in status, as the plugin reaches them. */
@@ -34,6 +36,8 @@ export interface Integration<C extends Connection> {
 export interface Store {
   readonly dir: string
   readonly listing: Effect.Effect<GentListing, { readonly message: string }>
+  /** The store's own name for one of its logins; none for a login it does not hold. */
+  readonly label: (credentialID: string) => string | undefined
 }
 
 const isLogin = <C extends Connection>(connection: C): connection is C & { readonly id: string } =>
@@ -93,9 +97,23 @@ export const layer = <C extends Connection>(integration: Integration<C>, stores:
           yield* integration.status(pool, connection, needed ? NEEDS_SIGN_IN : undefined).pipe(Effect.ignoreCause)
         }),
         sources: listed,
+        label: (pool: PoolId, credentialID: string) =>
+          Effect.sync(() => {
+            const connection = stateOf(pool).connections.find((entry) => entry.id === credentialID)
+            if (connection?.label !== undefined && connection.label.length > 0) return connection.label
+            for (const store of stores(pool)) {
+              const label = store.label(credentialID)
+              if (label !== undefined) return label
+            }
+            return credentialID
+          }),
       })
     }),
   )
 
 /** A gent store as the pool lists it. */
-export const gentStore = (source: GentSource): Store => ({ dir: source.dir, listing: source.listing })
+export const gentStore = (source: GentSource): Store => ({
+  dir: source.dir,
+  listing: source.listing,
+  label: (credentialID) => source.label(credentialID),
+})
