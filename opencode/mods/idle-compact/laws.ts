@@ -15,6 +15,8 @@ export type WorldMessage =
       readonly write: number
       readonly providerID: string
       readonly modelID: string
+      /** The agent it ran under; `build` when absent. */
+      readonly agent?: string
     }
   | { readonly kind: "compaction" }
 
@@ -35,7 +37,11 @@ export interface World {
     readonly ttl?: string
     /** USD per million tokens, as the catalog lists them; absent when it lists none. */
     readonly cost?: { readonly input: number; readonly output: number; readonly read: number; readonly write: number }
+    /** The catalog cannot be read for it, or for its provider. */
+    readonly unreadable?: boolean
   }>
+  /** The agents the host knows, with their own cache lifetime (`request.settings.cacheTTL`); any other cannot be read. */
+  readonly agents: Readonly<Record<string, { readonly cacheTTL?: string }>>
   /** Sessions whose compaction the host refuses. */
   readonly refuse?: ReadonlyArray<string>
 }
@@ -46,8 +52,13 @@ export interface Bench {
   readonly compacted: () => ReadonlyArray<string>
 }
 
-const request = (startedAt: number, tokens: { input: number; read: number; write: number }, providerID = "anthropic", modelID = "claude-x") =>
-  ({ kind: "request", startedAt, ...tokens, providerID, modelID }) as const
+const request = (
+  startedAt: number,
+  tokens: { input: number; read: number; write: number },
+  providerID = "anthropic",
+  modelID = "claude-x",
+  agent?: string,
+) => ({ kind: "request", startedAt, ...tokens, providerID, modelID, ...(agent === undefined ? {} : { agent }) }) as const
 
 const WORLD: World = {
   sessions: {
@@ -72,13 +83,25 @@ const WORLD: World = {
       ],
     },
     priced: { messages: [request(1_000, { input: 10, read: 150_000, write: 0 }, "anthropic", "claude-priced")] },
+    // An orchestration role's own five minutes on a model configured for an hour.
+    role: { messages: [request(1_000, { input: 10, read: 90_000, write: 0 }, "anthropic", "claude-long", "verifier")] },
+    // The same agent on models that configure no lifetime: the provider's default stays.
+    roleDefault: { messages: [request(1_000, { input: 10, read: 90_000, write: 0 }, "openai", "gpt-5.6", "verifier")] },
+    roleClaude: { messages: [request(1_000, { input: 10, read: 90_000, write: 0 }, "anthropic", "claude-x", "verifier")] },
+    // An agent the host cannot read, on a configured model.
+    ghost: { messages: [request(1_000, { input: 10, read: 90_000, write: 0 }, "anthropic", "claude-long", "ghost")] },
+    // A model whose catalog or provider read fails, and one the catalog does not have, on Anthropic.
+    unreadable: { messages: [request(1_000, { input: 10, read: 90_000, write: 0 }, "anthropic", "claude-unreadable")] },
+    lost: { messages: [request(1_000, { input: 10, read: 90_000, write: 0 }, "anthropic", "claude-lost")] },
   },
   models: [
     { providerID: "anthropic", modelID: "claude-x", window: 200_000 },
     { providerID: "anthropic", modelID: "claude-long", window: 1_000_000, ttl: "1h" },
     { providerID: "openai", modelID: "gpt-5.6", window: 400_000 },
     { providerID: "anthropic", modelID: "claude-priced", window: 1_000_000, ttl: "1h", cost: { input: 4, output: 20, read: 0.2, write: 5 } },
+    { providerID: "anthropic", modelID: "claude-unreadable", window: 1_000_000, ttl: "1h", unreadable: true },
   ],
+  agents: { build: {}, verifier: { cacheTTL: "5m" } },
   refuse: ["refused"],
 }
 
@@ -167,6 +190,30 @@ export const sessionsLaws = (name: string, bench: (world: World) => Effect.Effec
           const unknown = yield* facts("unknown")
           expect(Option.flatMap(unknown.last, (last) => last.ttl)).toEqual(Option.none())
           expect(Option.flatMap(unknown.last, (last) => last.window)).toEqual(Option.none())
+        }),
+      ))
+
+    test("the lifetime is the one the request got: the model's or provider's configured one, replaced by its agent's own only when one is configured", () =>
+      check(bench, () =>
+        Effect.gen(function* () {
+          const ttl = (sessionID: string) => Effect.map(facts(sessionID), (read) => Option.flatMap(read.last, (last) => last.ttl))
+          expect(yield* ttl("role")).toEqual(Option.some(5 * 60_000))
+          expect(yield* ttl("roleDefault")).toEqual(Option.some(30 * 60_000))
+          expect(yield* ttl("roleClaude")).toEqual(Option.some(5 * 60_000))
+          expect(yield* ttl("configured")).toEqual(Option.some(60 * 60_000))
+        }),
+      ))
+
+    test("a lifetime that cannot be read is unresolved, not the provider's default: the catalog, the provider or the agent fails, or the catalog lost the model", () =>
+      check(bench, () =>
+        Effect.gen(function* () {
+          for (const sessionID of ["unreadable", "lost", "ghost"]) {
+            const last = Option.getOrUndefined((yield* facts(sessionID)).last)
+            expect(last?.ttl).toEqual(Option.none())
+            expect(last?.unresolved).toBeString()
+            expect(last?.prompt).toBe(90_010)
+          }
+          expect(Option.getOrUndefined((yield* facts("configured")).last)?.unresolved).toBeUndefined()
         }),
       ))
 

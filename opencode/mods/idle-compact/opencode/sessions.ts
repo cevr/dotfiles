@@ -22,13 +22,21 @@
 //   "latest"), and the summary request records no assistant message of its own
 //   (its usage is the compaction message's `tokens`).
 // - ttl and window: the model's catalog entry (`model.list`, schema
-//   model.ts:114-140) and its provider's (`provider.get`): `settings.cache.ttl`
-//   and `limit`.
+//   model.ts:114-140) and its provider's (`provider.get`): `limit`, and
+//   `settings.cache.ttl`, the model's over the provider's as the fork merges
+//   them for the request (`Provider.mergeOverlay`, packages/core/src/
+//   model-resolver.ts:462,487). Then the agent the request ran under
+//   (`Session.Message.Assistant.agent`, session-message.ts:224; `agent.get`):
+//   its `request.settings.cacheTTL` replaces that lifetime, only when one is
+//   configured (packages/core/src/session/agent-cache.ts:17-20, applied at
+//   session/context.ts:170). When the catalog, the provider or the agent cannot
+//   be read, or the catalog no longer has the model, the lifetime is
+//   unresolved (`LastRequest.unresolved`) and none is guessed.
 // - price: the model's catalog entry's `cost` (schema model.ts:92-104,130),
 //   USD per million tokens, an entry per context tier.
-import type { Plugin } from "@opencode/plugin/effect"
+import { Agent, type Plugin } from "@opencode/plugin/effect"
 import { DateTime, Effect, Layer, Option } from "effect"
-import { ttlOf } from "../cache.ts"
+import { parseTTL, ttlOf } from "../cache.ts"
 import type { Facts, LastRequest } from "../idle.ts"
 import type { Rate } from "../price.ts"
 import { CompactionRefused, Sessions, SessionUnreadable } from "../service.ts"
@@ -56,6 +64,8 @@ export type MessageView =
       readonly created: number
       readonly tokens?: Usage | undefined
       readonly model: { readonly providerID: string; readonly id: string }
+      /** The agent the request ran under. */
+      readonly agent: string
     }
   | { readonly type: "compaction" }
   | { readonly type: "other" }
@@ -65,7 +75,7 @@ export interface ModelView {
   readonly providerID: string
   readonly canonical?: string | undefined
   readonly modelID: string
-  /** The model's `cache.ttl`, else its provider's. */
+  /** The model's `cache.ttl`, else its provider's: the lifetime the fork configures for its requests. */
   readonly ttl?: string | undefined
   /** The model's input window in tokens; 0 when unknown. */
   readonly window: number
@@ -78,11 +88,16 @@ export interface Host {
   readonly session: (sessionID: string) => Effect.Effect<SessionView, unknown>
   readonly messages: (sessionID: string) => Effect.Effect<ReadonlyArray<MessageView>, unknown>
   readonly children: (sessionID: string) => Effect.Effect<ReadonlyArray<SessionView>, unknown>
-  /** The model the session's request ran on; undefined when the catalog no longer has it. */
+  /**
+   * The model the session's request ran on; undefined when the catalog no longer has it. It fails when the catalog
+   * or the model's provider cannot be read.
+   */
   readonly model: (
     ref: { readonly providerID: string; readonly id: string },
     directory: string,
   ) => Effect.Effect<ModelView | undefined, unknown>
+  /** The agent's own cache lifetime (`request.settings.cacheTTL`), undefined when it sets none; fails when the agent cannot be read. */
+  readonly agentTTL: (agentID: string, directory: string) => Effect.Effect<string | undefined, unknown>
   readonly roots: Effect.Effect<ReadonlyArray<SessionView>, unknown>
   readonly compact: (sessionID: string) => Effect.Effect<void, unknown>
 }
@@ -113,6 +128,29 @@ export const lastRequest = (messages: ReadonlyArray<MessageView>) => {
   return { message: Option.none(), compacted: boundary >= 0, onSummary: false }
 }
 
+type AssistantView = Extract<MessageView, { readonly type: "assistant" }>
+
+/**
+ * The model a request ran on and the `cache.ttl` it was sent with, as the fork resolves it: the model's or its
+ * provider's setting, replaced by the agent's own lifetime when there is one to replace
+ * (packages/core/src/session/agent-cache.ts:17-20). `unresolved` says why it is unknown when a read failed or the
+ * catalog lost the model.
+ */
+const requested = Effect.fn("Sessions.requested")(function* (host: Host, message: AssistantView, directory: string) {
+  const read = yield* Effect.result(host.model(message.model, directory))
+  if (read._tag === "Failure") return { model: undefined, unresolved: `the catalog cannot be read: ${messageOf(read.failure)}` }
+  const model = read.success
+  if (model === undefined)
+    return { model, unresolved: `the catalog has no ${message.model.providerID}/${message.model.id}` }
+  // The fork lets an agent's lifetime replace only one the model or provider configures.
+  if (model.ttl === undefined) return { model, configured: undefined }
+  const agent = yield* Effect.result(host.agentTTL(message.agent, directory))
+  if (agent._tag === "Failure")
+    return { model, unresolved: `the agent ${message.agent} cannot be read: ${messageOf(agent.failure)}` }
+  const own = agent.success
+  return { model, configured: own !== undefined && Option.isSome(parseTTL(own)) ? own : model.ttl }
+})
+
 export const layer = (host: Host) =>
   Layer.succeed(
     Sessions,
@@ -127,22 +165,24 @@ export const layer = (host: Host) =>
         const last: Option.Option<LastRequest> = yield* Option.match(found.message, {
           onNone: () => Effect.succeed(Option.none()),
           onSome: (message) =>
-            // A model the catalog lost leaves the provider's default lifetime and no window.
-            host.model(message.model, session.directory).pipe(
-              Effect.orElseSucceed(() => undefined),
-              Effect.map((model) => {
+            requested(host, message, session.directory).pipe(
+              Effect.map(({ model, configured, unresolved }) => {
                 const { input, cache } = message.tokens
                 const rates = model?.rates ?? []
                 return Option.some({
                   startedAt: message.created,
                   prompt: input + cache.read + cache.write,
                   cached: cache.read + cache.write > 0,
-                  ttl: ttlOf({
-                    providerID: message.model.providerID,
-                    modelID: model?.modelID ?? message.model.id,
-                    canonical: model?.canonical,
-                    configured: model?.ttl,
-                  }),
+                  ttl:
+                    unresolved === undefined
+                      ? ttlOf({
+                          providerID: message.model.providerID,
+                          modelID: model?.modelID ?? message.model.id,
+                          canonical: model?.canonical,
+                          configured,
+                        })
+                      : Option.none(),
+                  ...(unresolved === undefined ? {} : { unresolved }),
                   window: model === undefined || model.window <= 0 ? Option.none() : Option.some(model.window),
                   ...(rates.length === 0
                     ? {}
@@ -213,6 +253,7 @@ export const fromContext = (ctx: Plugin.Context) =>
               created: DateTime.toEpochMillis(message.time.created),
               tokens: message.tokens,
               model: { providerID: message.model.providerID, id: message.model.id },
+              agent: message.agent,
             }
           }),
         ),
@@ -224,15 +265,14 @@ export const fromContext = (ctx: Plugin.Context) =>
         const models = yield* ctx.model.list({ location: { directory } })
         const model = models.data.find((item) => item.providerID === ref.providerID && item.id === ref.id)
         if (model === undefined) return undefined
-        const provider = yield* ctx.provider
-          .get({ providerID: ref.providerID as ProviderID, location: { directory } })
-          .pipe(Effect.option)
+        // A provider that cannot be read fails the read: its lifetime may be the one the request was sent with.
+        const provider = yield* ctx.provider.get({ providerID: ref.providerID as ProviderID, location: { directory } })
         const { context, input } = model.limit
         return {
           providerID: model.providerID,
           canonical: model.canonical,
           modelID: model.modelID,
-          ttl: model.settings?.cache?.ttl ?? Option.getOrUndefined(provider)?.data.settings?.cache?.ttl,
+          ttl: model.settings?.cache?.ttl ?? provider.data.settings?.cache?.ttl,
           // As the fork's compaction reads it: the input limit within the context window.
           window: input && context ? Math.min(input, context) : input || context,
           rates: model.cost.map(
@@ -246,6 +286,13 @@ export const fromContext = (ctx: Plugin.Context) =>
           ),
         }
       }),
+    agentTTL: (agentID, directory) =>
+      ctx.agent.get({ agentID: Agent.ID.make(agentID), location: { directory } }).pipe(
+        Effect.map((agent) => {
+          const ttl = agent.data.request.settings?.["cacheTTL"]
+          return typeof ttl === "string" ? ttl : undefined
+        }),
+      ),
     roots: ctx.session.list({ parentID: null, order: "desc", limit: RECENT }).pipe(Effect.map((page) => page.data.map(sessionView))),
     compact: (sessionID) => {
       const host: CompactHost = ctx.session

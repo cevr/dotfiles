@@ -16,7 +16,7 @@ type Host = Parameters<(typeof IdleCompact)["effect"]>[0]
 type Hook = (event: Record<string, unknown>) => Effect.Effect<void>
 interface HostEvent {
   readonly type: string
-  readonly data: { readonly sessionID: string }
+  readonly data: { readonly sessionID?: string }
 }
 
 const MINUTE = 60_000
@@ -41,6 +41,8 @@ const MODELS: ReadonlyArray<ModelView> = [
 /** The host's sessions, kept in memory, and the compactions OpenCode was asked for. */
 const world = () => {
   const sessions = new Map<string, WorldSession>()
+  /** The catalog as the host reads it now: a reload changes it. */
+  const catalog = { models: [...MODELS], agents: new Map<string, string | undefined>([["build", undefined]]), unreadable: false }
   const compactions: Array<string> = []
   const view = (id: string, session: WorldSession) => ({ id, directory: "/work", ...session })
   const host: SessionsHost = {
@@ -50,7 +52,11 @@ const world = () => {
     },
     messages: (id) => Effect.succeed(sessions.get(id)?.messages ?? []),
     children: (id) => Effect.succeed([...sessions].filter(([, session]) => session.parentID === id).map(([child, session]) => view(child, session))),
-    model: (ref) => Effect.succeed(MODELS.find((model) => model.providerID === ref.providerID && model.modelID === ref.id)),
+    model: (ref) =>
+      catalog.unreadable
+        ? Effect.fail(new Error(`provider ${ref.providerID} cannot be read`))
+        : Effect.succeed(catalog.models.find((model) => model.providerID === ref.providerID && model.modelID === ref.id)),
+    agentTTL: (id) => (catalog.agents.has(id) ? Effect.succeed(catalog.agents.get(id)) : Effect.fail(new Error(`Agent not found: ${id}`))),
     roots: Effect.sync(() => [...sessions].filter(([, session]) => session.parentID === undefined).map(([id, session]) => view(id, session))),
     compact: (id) => Effect.sync(() => void compactions.push(id)),
   }
@@ -59,7 +65,7 @@ const world = () => {
     sessions.set(id, made)
     return made
   }
-  return { sessions, compactions, host, session }
+  return { sessions, compactions, host, session, catalog }
 }
 type World = ReturnType<typeof world>
 
@@ -89,6 +95,9 @@ const start = (state: World, options: Record<string, unknown> = {}) =>
       for (const callback of hooks[name] ?? []) yield* callback(event)
     })
     const emit = (type: string, sessionID: string) => Queue.offer(events, { type, data: { sessionID } }).pipe(Effect.andThen(settle))
+    /** The host publishes a catalog change, as it does once a reload is applied. */
+    const publish = (type: "provider.updated" | "model.updated" | "agent.updated") =>
+      Queue.offer(events, { type, data: {} }).pipe(Effect.andThen(settle))
     const now = TestClock.testClockWith((clock) => Effect.sync(() => clock.currentTimeMillisUnsafe()))
 
     /**
@@ -99,20 +108,27 @@ const start = (state: World, options: Record<string, unknown> = {}) =>
     const turn = Effect.fn(function* (
       sessionID: string,
       usage: { readonly input?: number; readonly read?: number; readonly write?: number } = {},
-      options: { readonly streams?: number; readonly model?: string; readonly kind?: string; readonly requests?: number } = {},
+      options: {
+        readonly streams?: number
+        readonly model?: string
+        readonly kind?: string
+        readonly requests?: number
+        readonly agent?: string
+      } = {},
     ) {
       const session = state.sessions.get(sessionID) ?? state.session(sessionID)
       yield* emit("session.execution.started", sessionID)
       session.busy = yield* now
       for (let request = 0; request < (options.requests ?? 1); request += 1) {
         const started = yield* now
-        yield* hook("model.request", { sessionID, agent: "build", model: { providerID: "anthropic", id: options.model ?? "claude-x" }, kind: options.kind ?? "primary", headers: {} })
+        yield* hook("model.request", { sessionID, agent: options.agent ?? "build", model: { providerID: "anthropic", id: options.model ?? "claude-x" }, kind: options.kind ?? "primary", headers: {} })
         yield* TestClock.adjust(options.streams ?? 10_000)
         session.messages.push({
           type: "assistant",
           created: started + 500,
           tokens: { input: usage.input ?? 1_000, cache: { read: usage.read ?? 90_000, write: usage.write ?? 2_000 } },
           model: { providerID: "anthropic", id: options.model ?? "claude-x" },
+          agent: options.agent ?? "build",
         })
       }
       yield* hook("experimental.idle", { sessionID, background: [] })
@@ -126,7 +142,7 @@ const start = (state: World, options: Record<string, unknown> = {}) =>
       if (at > current) yield* TestClock.adjust(at - current)
       yield* settle
     })
-    return { hook, emit, turn, until, now }
+    return { hook, emit, publish, turn, until, now }
   })
 
 interface LogLine {
@@ -342,7 +358,7 @@ describe("the idle compaction plugin", () => {
           busy: 0,
           idle: 30_000,
           messages: [
-            { type: "assistant", created: 0, tokens: { input: 1_000, cache: { read: 90_000, write: 0 } }, model: { providerID: "anthropic", id: "claude-long" } },
+            { type: "assistant", created: 0, tokens: { input: 1_000, cache: { read: 90_000, write: 0 } }, model: { providerID: "anthropic", id: "claude-long" }, agent: "build" },
           ],
         })
         state.session("ses_child", { parentID: "ses_1", title: "implementor", busy: 20_000 })
@@ -354,7 +370,7 @@ describe("the idle compaction plugin", () => {
       }),
     ))
 
-  test("each decision is one line at info: scheduled with when and why, compacting, and not compacting with the reason", () =>
+  test("each decision is one line: scheduled with when and why, compacting, and not compacting with the reason; a session that could not compact at debug", () =>
     onTestClock(
       Effect.gen(function* () {
         const state = world()
@@ -363,16 +379,17 @@ describe("the idle compaction plugin", () => {
         state.session("ses_child", { parentID: "ses_1", title: "reviewer", busy: 5_000 })
         yield* plugin.turn("ses_small", { input: 1_000, read: 10_000, write: 0 })
         yield* plugin.until(HOUR)
-        const lines = logs.filter((line) => line.message.startsWith("idle-compact"))
+        const lines = logs.filter((line) => line.message.startsWith("idle-compact") && line.level === "Info")
         expect(lines.map((line) => [line.level, line.message, line.annotations["sessionID"]])).toEqual([
           ["Info", "idle-compact: compaction scheduled", "ses_1"],
-          ["Info", "idle-compact: not compacting", "ses_small"],
           ["Info", "idle-compact: compacting the idle session before its cache expires", "ses_1"],
         ])
         expect(lines[0]?.annotations).toMatchObject({ trigger: "settled", tokens: 93_000, ttlSeconds: 3_600, inSeconds: 3_290, threshold: 60_000 })
-        expect(lines[1]?.annotations).toMatchObject({ trigger: "settled", reason: "too-small", tokens: 11_000 })
-        expect(lines[2]?.annotations).toMatchObject({ trigger: "timer", tokens: 93_000, busy: "subagent reviewer", ttlSeconds: 3_600, cacheAgeSeconds: 3_300 })
-      }),
+        expect(lines[1]?.annotations).toMatchObject({ trigger: "timer", tokens: 93_000, busy: "subagent reviewer", ttlSeconds: 3_600, cacheAgeSeconds: 3_300 })
+        const small = logs.filter((line) => line.annotations["sessionID"] === "ses_small" && line.annotations["trigger"] === "settled")
+        expect(small.map((line) => [line.level, line.message])).toEqual([["Debug", "idle-compact: not compacting"]])
+        expect(small[0]?.annotations).toMatchObject({ reason: "too-small", tokens: 11_000 })
+      }).pipe(Effect.provideService(References.MinimumLogLevel, "Debug")),
     ))
 
   test("no compaction back to back: after one, idle again with no new request, or only the summary's first, does not compact", () =>
@@ -411,6 +428,7 @@ describe("the idle compaction plugin", () => {
           created,
           tokens: { input: 1_000, cache: { read: 150_000, write: 0 } },
           model: { providerID: "anthropic", id: "claude-x" },
+          agent: "build",
         })
         // Compacted on the window, its turn's next request on top of the summary; compacted by hand, nothing since.
         state.session("ses_auto", { busy: 0, idle: 20_000, messages: [large(0), { type: "compaction" }, { type: "other" }, large(10_000)] })
@@ -509,7 +527,7 @@ describe("the idle compaction plugin", () => {
           busy: 0,
           idle: 10_000,
           messages: [
-            { type: "assistant", created: 0, tokens: { input: 1_000, cache: { read: 90_000, write: 0 } }, model: { providerID: "anthropic", id: "claude-x" } },
+            { type: "assistant", created: 0, tokens: { input: 1_000, cache: { read: 90_000, write: 0 } }, model: { providerID: "anthropic", id: "claude-x" }, agent: "build" },
           ],
         })
         const plugin = yield* start(state)
@@ -517,6 +535,94 @@ describe("the idle compaction plugin", () => {
         expect(state.compactions).toEqual([])
         yield* plugin.until(4 * MINUTE)
         expect(state.compactions).toEqual(["ses_1"])
+      }),
+    ))
+
+  test("a reload: the first look waits for the catalog to settle, so a provider read without its configured hour does not compact an hour's cache early", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        // As on the workbox at 12:06Z: a 291k session idle 250 s on a model whose provider configures an hour.
+        yield* TestClock.adjust(250_000)
+        const state = world()
+        const large: MessageView = {
+          type: "assistant",
+          created: 0,
+          tokens: { input: 1_000, cache: { read: 290_000, write: 41 } },
+          model: { providerID: "anthropic", id: "claude-long" },
+          agent: "build",
+        }
+        state.session("ses_w23", { busy: 0, idle: 20_000, messages: [large] })
+        // The config plugins load after this one: until then the provider reads without its `cache.ttl`.
+        const configured = state.catalog.models
+        state.catalog.models = configured.map((model) => ({ ...model, ttl: undefined }))
+        const plugin = yield* start(state)
+        yield* plugin.until(250_400)
+        state.catalog.models = configured
+        yield* plugin.publish("provider.updated")
+        yield* plugin.publish("model.updated")
+        yield* plugin.until(55 * MINUTE - 1)
+        expect(state.compactions).toEqual([])
+        yield* plugin.until(55 * MINUTE)
+        expect(state.compactions).toEqual(["ses_w23"])
+        const scheduled = logs.find((line) => line.message === "idle-compact: compaction scheduled")
+        expect(scheduled?.annotations).toMatchObject({ trigger: "resume", ttlSeconds: 3_600 })
+      }),
+    ))
+
+  test("a catalog change after the first look decides the recent sessions again on the lifetime it now names", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        yield* TestClock.adjust(MINUTE)
+        const state = world()
+        state.session("ses_1", {
+          busy: 0,
+          idle: 10_000,
+          messages: [
+            { type: "assistant", created: 0, tokens: { input: 1_000, cache: { read: 90_000, write: 0 } }, model: { providerID: "anthropic", id: "claude-long" }, agent: "build" },
+          ],
+        })
+        const configured = state.catalog.models
+        state.catalog.models = configured.map((model) => ({ ...model, ttl: undefined }))
+        const plugin = yield* start(state)
+        yield* plugin.until(2 * MINUTE)
+        state.catalog.models = configured
+        yield* plugin.publish("provider.updated")
+        yield* plugin.until(4 * MINUTE)
+        expect(state.compactions).toEqual([])
+        yield* plugin.until(55 * MINUTE)
+        expect(state.compactions).toEqual(["ses_1"])
+        const scheduled = logs.filter((line) => line.message === "idle-compact: compaction scheduled").map((line) => line.annotations)
+        expect(scheduled.map((line) => [line["trigger"], line["ttlSeconds"]])).toEqual([
+          ["resume", 300],
+          ["catalog", 3_600],
+        ])
+      }),
+    ))
+
+  test("an agent's own lifetime is the one its sessions are judged by", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        state.catalog.agents.set("verifier", "5m")
+        const plugin = yield* start(state)
+        yield* plugin.turn("ses_1", {}, { model: "claude-long", agent: "verifier" })
+        yield* plugin.until(4 * MINUTE)
+        expect(state.compactions).toEqual(["ses_1"])
+      }),
+    ))
+
+  test("a lifetime that cannot be read does not compact, and says so at info", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        state.catalog.unreadable = true
+        const plugin = yield* start(state)
+        yield* plugin.turn("ses_1", {}, { model: "claude-long" })
+        yield* plugin.until(HOUR)
+        expect(state.compactions).toEqual([])
+        const line = logs.find((entry) => entry.annotations["sessionID"] === "ses_1" && entry.annotations["trigger"] === "settled")
+        expect(line?.level).toBe("Info")
+        expect(line?.annotations).toMatchObject({ reason: "ttl-unknown", unresolved: "the catalog cannot be read: provider anthropic cannot be read" })
       }),
     ))
 

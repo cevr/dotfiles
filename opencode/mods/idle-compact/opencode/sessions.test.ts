@@ -30,6 +30,7 @@ const host = (world: World, compacted: Array<string>): Host => {
             created: message.startedAt,
             tokens: { input: message.input, cache: { read: message.read, write: message.write } },
             model: { providerID: message.providerID, id: message.modelID },
+            agent: message.agent ?? "build",
           }
         }),
       )
@@ -40,21 +41,23 @@ const host = (world: World, compacted: Array<string>): Host => {
           .filter(([, session]) => session.parentID === id)
           .flatMap(([child]) => view(child) ?? []),
       ),
-    model: (ref) =>
-      Effect.succeed(
-        world.models
-          .filter((model) => model.providerID === ref.providerID && model.modelID === ref.id)
-          .map((model) => ({
-            providerID: model.providerID,
-            modelID: model.modelID,
-            window: model.window,
-            ttl: model.ttl,
-            rates:
-              model.cost === undefined
-                ? []
-                : [{ input: model.cost.input, output: model.cost.output, cacheRead: model.cost.read, cacheWrite: model.cost.write }],
-          }))[0],
-      ),
+    model: (ref) => {
+      const found = world.models.find((model) => model.providerID === ref.providerID && model.modelID === ref.id)
+      if (found?.unreadable === true) return Effect.fail(new Error(`provider ${ref.providerID} cannot be read`))
+      if (found === undefined) return Effect.succeed(undefined)
+      const { cost } = found
+      return Effect.succeed({
+        providerID: found.providerID,
+        modelID: found.modelID,
+        window: found.window,
+        ttl: found.ttl,
+        rates: cost === undefined ? [] : [{ input: cost.input, output: cost.output, cacheRead: cost.read, cacheWrite: cost.write }],
+      })
+    },
+    agentTTL: (id) => {
+      const agent = world.agents[id]
+      return agent === undefined ? Effect.fail(new Error(`Agent not found: ${id}`)) : Effect.succeed(agent.cacheTTL)
+    },
     roots: Effect.succeed(
       Object.entries(world.sessions)
         .filter(([, session]) => session.parentID === undefined)
@@ -84,8 +87,8 @@ describe("reading OpenCode's records", () => {
     const usage = { input: 1, cache: { read: 2, write: 3 } }
     const model = { providerID: "anthropic", id: "claude-x" }
     const found = lastRequest([
-      { type: "assistant", created: 1, tokens: usage, model },
-      { type: "assistant", created: 2, model },
+      { type: "assistant", created: 1, tokens: usage, model, agent: "build" },
+      { type: "assistant", created: 2, model, agent: "build" },
     ])
     expect(found.compacted).toBe(false)
     expect(found.message._tag === "Some" ? found.message.value.created : undefined).toBe(1)

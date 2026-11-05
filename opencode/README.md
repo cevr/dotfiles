@@ -405,14 +405,27 @@ A session compacts at its cache's expiry less a margin when all of these hold:
   model the catalog does not price compacts on the threshold alone.
 
 The cache's life counts from the last request's start (title requests
-aside), as Anthropic counts it. Its length is the model's or provider's
-configured `cache.ttl`, else the provider's default: 5 minutes for Anthropic,
-30 minutes for OpenAI GPT-5.6 and later, 5 minutes for older OpenAI models.
-Other providers are not compacted unless `ttlSeconds` is set. The margin is
-60 s for a cache of 5 minutes or less and 5 minutes for a longer one. A new
-request, a queued message or a started execution cancels the session's
-timer; it is set again when the session settles. At start the plugin decides
-the recent main sessions.
+aside), as Anthropic counts it. Its length is the one the request was sent
+with, resolved as the fork resolves it: the model's `cache.ttl`, else its
+provider's, replaced by the agent's own `request.settings.cacheTTL` (an
+orchestration role's 5 minutes) when one is configured; with none
+configured, the provider's default: 5 minutes for Anthropic, 30 minutes for
+OpenAI GPT-5.6 and later, 5 minutes for older OpenAI models. Other providers
+are not compacted unless `ttlSeconds` is set. When the catalog, the provider
+or the agent cannot be read, or the catalog no longer has the model, no
+default stands in: the session is skipped as `ttl-unknown` (unless
+`ttlSeconds` is set). The margin is 60 s for a cache of 5 minutes or less and
+5 minutes for a longer one. A new request, a queued message or a started
+execution cancels the session's timer; it is set again when the session
+settles.
+
+The plugin decides the recent main sessions once the catalog has been quiet
+for 2 s after it starts, and again 2 s after each `provider.updated`,
+`model.updated` or `agent.updated`. OpenCode loads its config plugins after
+ours, so while it reloads the plugins a provider reads without its
+configured `cache.ttl`; deciding then would judge an hour's cache by the
+5-minute default and compact it early. The catalog's events come once the
+reload is applied, and the decisions they trigger name the right lifetime.
 
 Background subagents and shells do not hold an idle session back. Their
 notice wakes the session when they end, and a wake after the cache expired
@@ -421,12 +434,16 @@ session: work still running when it fires leaves the session compacted, and
 its notice lands on the summary; a notice that comes first wakes the session
 and cancels the timer.
 
-Each decision is one line at info level: `compaction scheduled` (in how many
-seconds, the cache's lifetime, the prompt's tokens, the threshold), `compacting
-the idle session`, or `not compacting` with its reason (`running`,
-`too-small`, `expired`, `compacted`, `no-new-work`, `costs-more`,
-`no-cache`, `no-request`, `subagent-session`, `unreadable`), each with the
-session, what triggered it (`settled`, `timer`, `resume`), the cache's age,
+Each decision is one line: `compaction scheduled` (in how many seconds, the
+cache's lifetime, the prompt's tokens, the threshold), `compacting the idle
+session`, or `not compacting` with its reason (`running`, `too-small`,
+`expired`, `compacted`, `no-new-work`, `costs-more`, `no-cache`,
+`ttl-unknown` with what could not be read as `unresolved`, `no-request`,
+`subagent-session`, `unreadable`). Scheduled, compacting and not compacting a
+session above the threshold log at info; `too-small`, `no-request`,
+`no-cache`, and any skip of a session at or below the threshold, at debug.
+Each line has the session, what triggered it (`settled`, `timer`, `resume`,
+`catalog`), the cache's age,
 the background work still running (`busy`), and the price check: `verdict`
 (`pays`, `costs-more`, `unpriced`), `avoidedUsd`, `costUsd` and
 `breakEvenTokens`.

@@ -6,23 +6,28 @@
 // - A request starts (`requestStarted`): the timer is cancelled, and the time
 //   is kept as the cache's last refresh.
 // - Input arrives or an execution starts (`woke`): the timer is cancelled.
-// - An execution ends (`settled`), or the plugin starts (`resume`): the facts
-//   are read and the timer set.
+// - An execution ends (`settled`), or the recent sessions are looked at again
+//   (`resume`: once the plugin starts, and when the catalog changes): the
+//   facts are read and the timer set.
 // - The timer fires: the facts are read again, and the session compacts only
 //   if nothing woke it while they were read.
 // - Background work as the session goes idle (`background`) is kept to log
 //   with the decision; it does not hold the timer back (idle.ts). Its notice
 //   wakes the session (`woke`), which cancels the timer if it comes first.
 //
-// Each decision is one line at info: scheduled (in how long, the lifetime, the
+// Each decision is one line: scheduled (in how long, the lifetime, the
 // prompt's tokens), compacting, or not compacting and why, with the trigger,
 // the background work still running, and the price check: what compacting
 // costs, what it avoids, the verdict and the break-even prompt (price.ts).
+// Scheduled, compacting, and not compacting a session above the threshold are
+// at info; not compacting one that never could (no request, too small,
+// uncached), or one at or below the threshold, is at debug, so a resume over
+// every recent session logs only the ones that matter.
 //
 // A cache compacts once: the start of the request that wrote it is kept, and
 // a second decision for it reads as already compacted.
 import { Clock, Context, Effect, Fiber, Layer, Option, Scope } from "effect"
-import { billFor, Decision, due, type Facts, type Policy } from "./idle.ts"
+import { billFor, Decision, due, type Facts, type Policy, type Reason, thresholdOf } from "./idle.ts"
 import { Sessions } from "./service.ts"
 
 export class IdleCompactor extends Context.Service<
@@ -38,8 +43,11 @@ export class IdleCompactor extends Context.Service<
     readonly settled: (sessionID: string) => Effect.Effect<void>
     /** The session is gone. */
     readonly forget: (sessionID: string) => Effect.Effect<void>
-    /** At start: decide for the recent sessions, already idle before the plugin ran. */
-    readonly resume: Effect.Effect<void>
+    /**
+     * Decide for the recent sessions, which may have gone idle before the plugin ran (`resume`), or whose lifetimes
+     * the catalog may have changed (`catalog`).
+     */
+    readonly resume: (trigger: "resume" | "catalog") => Effect.Effect<void>
   }
 >()("dotfiles-opencode/idle-compact/IdleCompactor") {}
 
@@ -58,7 +66,10 @@ const seconds = (ms: number) => Math.round(ms / 1_000)
 const usd = (amount: number) => Math.round(amount * 10_000) / 10_000
 
 /** What made the compactor decide. */
-type Trigger = "settled" | "timer" | "resume"
+type Trigger = "settled" | "timer" | "resume" | "catalog"
+
+/** Skips of a session that could not compact whatever its cache: logged at debug. */
+const QUIET: ReadonlySet<Reason> = new Set<Reason>(["no-request", "too-small", "no-cache"])
 
 export const layer = (policy: Policy) =>
   Layer.effect(
@@ -140,9 +151,20 @@ export const layer = (policy: Policy) =>
             busy: facts.busy.length === 0 ? undefined : facts.busy.join("; "),
             ...priced,
           }
+          const unresolved = Option.match(facts.last, {
+            onNone: () => ({}),
+            onSome: (last) => (last.unresolved === undefined ? {} : { unresolved: last.unresolved }),
+          })
+          const above = Option.exists(facts.last, (last) => last.prompt > thresholdOf(last.window, policy))
           yield* Decision.$match(decision, {
             Skip: ({ reason }) =>
-              cancel(state).pipe(Effect.andThen(Effect.logInfo("idle-compact: not compacting").pipe(Effect.annotateLogs({ ...seen, reason })))),
+              cancel(state).pipe(
+                Effect.andThen(
+                  (above && !QUIET.has(reason) ? Effect.logInfo : Effect.logDebug)("idle-compact: not compacting").pipe(
+                    Effect.annotateLogs({ ...seen, reason, ...unresolved }),
+                  ),
+                ),
+              ),
             Due: (when) =>
               when.at > now
                 ? schedule(sessionID, state, when.at - now).pipe(
@@ -213,12 +235,13 @@ export const layer = (policy: Policy) =>
             watches.delete(sessionID)
             return state === undefined ? Effect.void : cancel(state)
           }),
-        resume: sessions.recent.pipe(
-          Effect.flatMap((ids) => Effect.forEach(ids, (sessionID) => decide(sessionID, "resume"), { discard: true })),
-          Effect.catchTag("SessionUnreadable", (error) =>
-            Effect.logInfo("idle-compact: cannot list the sessions").pipe(Effect.annotateLogs({ error: error.message })),
+        resume: (trigger) =>
+          sessions.recent.pipe(
+            Effect.flatMap((ids) => Effect.forEach(ids, (sessionID) => decide(sessionID, trigger), { discard: true })),
+            Effect.catchTag("SessionUnreadable", (error) =>
+              Effect.logInfo("idle-compact: cannot list the sessions").pipe(Effect.annotateLogs({ trigger, error: error.message })),
+            ),
           ),
-        ),
       })
     }),
   )

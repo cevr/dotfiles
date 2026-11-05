@@ -21,14 +21,25 @@
  *   compacts on time, and a notice that comes first cancels the timer.
  * - `session.execution.succeeded`/`failed`/`interrupted`: decide, set the timer.
  * - `session.deleted`: the session is forgotten. Disposing the plugin ends every timer.
- * - At start: the recent main sessions, idle before the plugin ran, are decided.
+ * - At start, and on `provider.updated`, `model.updated` or `agent.updated`, once
+ *   the catalog has been quiet for `SETTLE`: the recent main sessions are decided
+ *   (again). A session's lifetime comes from the catalog's settings, which a
+ *   reload rebuilds: OpenCode loads its config plugins after ours
+ *   (packages/core/src/plugin/internal.ts `post`), so while it reloads ours, a
+ *   provider reads without its configured `cache.ttl` and the lifetime falls back
+ *   to the provider's default (5 minutes for Anthropic instead of the config's
+ *   hour). Waiting for the catalog to settle keeps the first look out of that
+ *   window, and the catalog's events, published once the reload is applied
+ *   (packages/core/src/state.ts `batch`), correct any decision made in it.
  *
  * It compacts only when compacting costs less than letting the cache expire,
  * at the model's catalog prices (`.../price`), and not again after a
  * compaction until a request beyond the first on top of its summary.
  *
- * Each decision is logged at info: scheduled, compacting, or not and why, with
- * what compacting costs and avoids.
+ * Each decision is logged: scheduled, compacting, or not and why, with what
+ * compacting costs and avoids; at info, but at debug for a session that could not
+ * compact whatever its cache (no request, too small, uncached) or sits at or
+ * below the threshold.
  *
  * The compaction is OpenCode's requested one (an inbox item the runner runs),
  * asked for with `reason: "auto"` so the compaction message records it as
@@ -45,7 +56,7 @@
  * - `subagents`: true lets a subagent's session compact too; default false.
  */
 import { Plugin } from "@opencode/plugin/effect"
-import { Context, Effect, Layer, Option, Schema, Stream } from "effect"
+import { Context, Duration, Effect, Layer, Option, Queue, Schema, Stream } from "effect"
 import * as Model from "@dotfiles/opencode-idle-compact/model"
 import * as OpenCodeSessions from "@dotfiles/opencode-idle-compact/opencode/sessions"
 import type { Policy } from "@dotfiles/opencode-idle-compact/idle"
@@ -91,6 +102,10 @@ export const live = (ctx: Plugin.Context): Layer.Layer<Externals> => OpenCodeSes
 
 const WAKES = ["session.inbox.enqueued", "session.execution.started"] as const
 const ENDS = ["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"] as const
+/** The catalog changed: a model's or provider's settings, or an agent's, which name a request's cache lifetime. */
+const CATALOG = ["provider.updated", "model.updated", "agent.updated"] as const
+/** How long the catalog stays quiet before the recent sessions are decided: a reload publishes a burst of changes. */
+export const SETTLE = Duration.seconds(2)
 
 /** The plugin on `externals`: the live sessions in OpenCode, a stand-in host's in the seam test. */
 export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer.Layer<Externals>) =>
@@ -116,9 +131,14 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
         ),
       )
 
+      // The start, then each catalog change: the recent sessions are decided once they stop coming.
+      const looks = yield* Queue.unbounded<"resume" | "catalog">()
+      // Subscribed before the first look, so a change published after it is not missed.
       yield* Effect.forkScoped(
-        ctx.event.subscribe({ types: [...WAKES, ...ENDS, "session.deleted"] }).pipe(
+        ctx.event.subscribe({ types: [...WAKES, ...ENDS, "session.deleted", ...CATALOG] }).pipe(
           Stream.runForEach((event) => {
+            if (event.type === "provider.updated" || event.type === "model.updated" || event.type === "agent.updated")
+              return Queue.offer(looks, "catalog")
             const sessionID: string = event.data.sessionID
             if (event.type === "session.deleted") return compactor.forget(sessionID)
             if ((ENDS as ReadonlyArray<string>).includes(event.type)) return compactor.settled(sessionID)
@@ -126,8 +146,21 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
           }),
           Effect.ignoreCause,
         ),
+        { startImmediately: true },
       )
-      yield* Effect.forkScoped(compactor.resume)
+      yield* Queue.offer(looks, "resume")
+      // The first look is the start's even when a change came within its settle; later ones are the catalog's.
+      let started = false
+      yield* Effect.forkScoped(
+        Stream.fromQueue(looks).pipe(
+          Stream.debounce(SETTLE),
+          Stream.runForEach(() => {
+            const trigger = started ? "catalog" : "resume"
+            started = true
+            return compactor.resume(trigger)
+          }),
+        ),
+      )
     }),
   })
 

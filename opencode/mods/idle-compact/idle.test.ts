@@ -95,6 +95,14 @@ describe("when an idle session compacts", () => {
     expect(reason(due(facts({}, { cached: false }), 0, POLICY))).toBe("no-cache")
   })
 
+  test("not on a lifetime that could not be read: no default stands in, though the policy's ttl still decides", () => {
+    const unread = { ttl: Option.none(), unresolved: "the catalog cannot be read" }
+    expect(reason(due(facts({}, unread), 0, POLICY))).toBe("ttl-unknown")
+    expect(reason(due(facts({}, { ...unread, cached: false }), 0, POLICY))).toBe("no-cache")
+    const policy = { ...POLICY, ttl: Option.some(20_000), margins: { short: 5_000, long: 5 * MINUTE } }
+    expect(at(due(facts({}, unread), 0, policy))).toBe(15_000)
+  })
+
   test("not once the cache has expired: compacting would write it all again", () => {
     expect(reason(due(facts(), 5 * MINUTE, POLICY))).toBe("expired")
     expect(reason(due(facts({}, { ttl: Option.some(HOUR) }), 2 * HOUR, POLICY))).toBe("expired")

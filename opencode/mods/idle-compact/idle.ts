@@ -15,7 +15,9 @@
 //   summary request is no model request of the session's, and the first one
 //   after it only loads the summary, so it is no new work (a session that
 //   compacted, idle or automatic or manual, waits for real work first);
-// - the request was cached, on a provider whose lifetime is known;
+// - the request was cached, on a provider whose lifetime is known, and the
+//   lifetime it asked for could be read (a catalog or agent that could not be
+//   read skips it as `ttl-unknown` rather than guess the provider's default);
 // - the request's prompt is above the threshold;
 // - the cache has not expired yet;
 // - compacting costs less than the next request writing the whole prompt
@@ -42,6 +44,12 @@ export interface LastRequest {
   readonly cached: boolean
   /** The cache lifetime the request got, in ms; none when unknown. */
   readonly ttl: Option.Option<number>
+  /**
+   * Why the lifetime could not be resolved, when it could not: the catalog or
+   * the agent the request ran under could not be read, so the lifetime the
+   * request asked for is not known, and no provider default stands in for it.
+   */
+  readonly unresolved?: string | undefined
   /** The model's input window in tokens; none when unknown. */
   readonly window: Option.Option<number>
   /** The model's catalog prices; absent when the catalog does not price it. */
@@ -86,6 +94,7 @@ export type Reason =
   | "compacted"
   | "no-new-work"
   | "no-cache"
+  | "ttl-unknown"
   | "too-small"
   | "expired"
   | "costs-more"
@@ -131,8 +140,11 @@ export const due = (facts: Facts, now: number, policy: Policy): Decision => {
   if (Option.isNone(facts.last)) return skip("no-request")
   if (facts.onSummary) return skip("no-new-work")
   const last = facts.last.value
+  if (!last.cached) return skip("no-cache")
+  // A lifetime that could not be read is not guessed: a default could be too short and compact a live cache early.
+  if (last.unresolved !== undefined && Option.isNone(policy.ttl)) return skip("ttl-unknown")
   const ttl = ttlOf(last, policy)
-  if (Option.isNone(ttl) || !last.cached) return skip("no-cache")
+  if (Option.isNone(ttl)) return skip("no-cache")
   const threshold = thresholdOf(last.window, policy)
   if (last.prompt <= threshold) return skip("too-small")
   const expiresAt = last.startedAt + ttl.value
