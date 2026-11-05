@@ -1,0 +1,10 @@
+{
+  "name": "@dotfiles/opencode-idle-compact",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Idle compaction for OpenCode: a large session that has gone idle compacts shortly before its prompt cache expires.",
+  "exports": {
+    "./*": "./*.ts"
+  }
+}

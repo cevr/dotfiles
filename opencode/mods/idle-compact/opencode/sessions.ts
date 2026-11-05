@@ -1,0 +1,212 @@
+// Sessions as OpenCode's data holds them. `layer` reads the facts from plain
+// views of the host's records, so the laws run it over a stand-in host;
+// `fromContext` takes the views from the plugin context.
+//
+// Where each fact comes from, in the fork (packages/schema/src):
+// - running: `Session.Info.time.busy` is the start of the latest execution,
+//   `time.idle` the end of the last completed one (session.ts:44-50); it runs
+//   while busy is later than idle.
+// - child: `Session.Info.parentID` (session.ts:34).
+// - busy: the session's children (`session.list({ parentID })`) that run.
+// - last: the newest assistant message with usage after the last compaction
+//   (`Session.Message.Assistant`, session-message.ts:222-246): `tokens.input +
+//   tokens.cache.read + tokens.cache.write` is the prompt, `time.created` the
+//   step's start (the plugin replaces it with the request's exact start when
+//   it saw it), `model` the model it ran on.
+// - compacted: a compaction message (session-message.ts:248-289), of any
+//   status, after that assistant message, or with none after it.
+// - ttl and window: the model's catalog entry (`model.list`, schema
+//   model.ts:114-140) and its provider's (`provider.get`): `settings.cache.ttl`
+//   and `limit`.
+import type { Plugin } from "@opencode/plugin/effect"
+import { DateTime, Effect, Layer, Option } from "effect"
+import { ttlOf } from "../cache.ts"
+import type { Facts, LastRequest } from "../idle.ts"
+import { CompactionRefused, Sessions, SessionUnreadable } from "../service.ts"
+
+/** A session, as idle compaction reads it. Times in epoch ms. */
+export interface SessionView {
+  readonly id: string
+  readonly parentID?: string | undefined
+  readonly title?: string | undefined
+  readonly directory: string
+  readonly busy?: number | undefined
+  readonly idle?: number | undefined
+}
+
+/** Token usage as the fork records it. */
+export interface Usage {
+  readonly input: number
+  readonly cache: { readonly read: number; readonly write: number }
+}
+
+/** A message of the session's context, as idle compaction reads it. */
+export type MessageView =
+  | {
+      readonly type: "assistant"
+      readonly created: number
+      readonly tokens?: Usage | undefined
+      readonly model: { readonly providerID: string; readonly id: string }
+    }
+  | { readonly type: "compaction" }
+  | { readonly type: "other" }
+
+/** A model's catalog entry, as idle compaction reads it. */
+export interface ModelView {
+  readonly providerID: string
+  readonly canonical?: string | undefined
+  readonly modelID: string
+  /** The model's `cache.ttl`, else its provider's. */
+  readonly ttl?: string | undefined
+  /** The model's input window in tokens; 0 when unknown. */
+  readonly window: number
+}
+
+/** The host's reads and its compaction. */
+export interface Host {
+  readonly session: (sessionID: string) => Effect.Effect<SessionView, unknown>
+  readonly messages: (sessionID: string) => Effect.Effect<ReadonlyArray<MessageView>, unknown>
+  readonly children: (sessionID: string) => Effect.Effect<ReadonlyArray<SessionView>, unknown>
+  /** The model the session's request ran on; undefined when the catalog no longer has it. */
+  readonly model: (
+    ref: { readonly providerID: string; readonly id: string },
+    directory: string,
+  ) => Effect.Effect<ModelView | undefined, unknown>
+  readonly roots: Effect.Effect<ReadonlyArray<SessionView>, unknown>
+  readonly compact: (sessionID: string) => Effect.Effect<void, unknown>
+}
+
+export const messageOf = (cause: unknown): string => {
+  if (cause instanceof Error) return cause.message
+  if (typeof cause === "object" && cause !== null && "message" in cause && typeof cause.message === "string") return cause.message
+  return String(cause)
+}
+
+/** Whether an execution of the session runs. */
+export const running = (session: SessionView): boolean =>
+  session.busy !== undefined && (session.idle === undefined || session.busy > session.idle)
+
+/** The newest assistant message with usage, and whether a compaction came after it. */
+export const lastRequest = (messages: ReadonlyArray<MessageView>) => {
+  let compacted = false
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message === undefined) continue
+    if (message.type === "compaction") compacted = true
+    if (message.type === "assistant" && message.tokens !== undefined)
+      return { message: Option.some({ ...message, tokens: message.tokens }), compacted }
+  }
+  return { message: Option.none(), compacted }
+}
+
+export const layer = (host: Host) =>
+  Layer.succeed(
+    Sessions,
+    Sessions.of({
+      facts: Effect.fn("Sessions.facts")(function* (sessionID: string) {
+        const unreadable = (cause: unknown) => new SessionUnreadable({ sessionID, message: messageOf(cause) })
+        const [session, messages, children] = yield* Effect.all(
+          [host.session(sessionID), host.messages(sessionID), host.children(sessionID)],
+          { concurrency: "unbounded" },
+        ).pipe(Effect.mapError(unreadable))
+        const found = lastRequest(messages)
+        const last: Option.Option<LastRequest> = yield* Option.match(found.message, {
+          onNone: () => Effect.succeed(Option.none()),
+          onSome: (message) =>
+            // A model the catalog lost leaves the provider's default lifetime and no window.
+            host.model(message.model, session.directory).pipe(
+              Effect.orElseSucceed(() => undefined),
+              Effect.map((model) => {
+                const { input, cache } = message.tokens
+                return Option.some({
+                  startedAt: message.created,
+                  prompt: input + cache.read + cache.write,
+                  cached: cache.read + cache.write > 0,
+                  ttl: ttlOf({
+                    providerID: message.model.providerID,
+                    modelID: model?.modelID ?? message.model.id,
+                    canonical: model?.canonical,
+                    configured: model?.ttl,
+                  }),
+                  window: model === undefined || model.window <= 0 ? Option.none() : Option.some(model.window),
+                })
+              }),
+            ),
+        })
+        return {
+          child: session.parentID !== undefined,
+          running: running(session),
+          busy: children.filter(running).map((child) => `subagent ${child.title ?? child.id}`),
+          last,
+          compacted: found.compacted,
+        } satisfies Facts
+      }),
+      compact: (sessionID) =>
+        host.compact(sessionID).pipe(Effect.mapError((cause) => new CompactionRefused({ sessionID, message: messageOf(cause) }))),
+      recent: host.roots.pipe(
+        Effect.map((sessions) => sessions.map((session) => session.id)),
+        Effect.mapError((cause) => new SessionUnreadable({ sessionID: "*", message: messageOf(cause) })),
+      ),
+    }),
+  )
+
+type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
+type SessionInfo = Effect.Success<ReturnType<Plugin.Context["session"]["get"]>>
+type ProviderID = Parameters<Plugin.Context["provider"]["get"]>[0]["providerID"]
+
+const millis = (time: DateTime.Utc | undefined) => (time === undefined ? undefined : DateTime.toEpochMillis(time))
+
+const sessionView = (session: SessionInfo): SessionView => ({
+  id: session.id,
+  parentID: session.parentID,
+  title: session.title,
+  directory: session.location.directory,
+  busy: millis(session.time.busy),
+  idle: millis(session.time.idle),
+})
+
+/** How many recent main sessions the plugin looks at when it starts. */
+const RECENT = 50
+
+/** The host's reads and compaction through the plugin context. */
+export const fromContext = (ctx: Plugin.Context) =>
+  layer({
+    session: (sessionID) => ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map(sessionView)),
+    messages: (sessionID) =>
+      ctx.session.context({ sessionID: sessionID as SessionID }).pipe(
+        Effect.map((messages) =>
+          messages.map((message): MessageView => {
+            if (message.type === "compaction") return { type: "compaction" }
+            if (message.type !== "assistant") return { type: "other" }
+            return {
+              type: "assistant",
+              created: DateTime.toEpochMillis(message.time.created),
+              tokens: message.tokens,
+              model: { providerID: message.model.providerID, id: message.model.id },
+            }
+          }),
+        ),
+      ),
+    children: (sessionID) =>
+      ctx.session.list({ parentID: sessionID as SessionID }).pipe(Effect.map((page) => page.data.map(sessionView))),
+    model: (ref, directory) =>
+      Effect.gen(function* () {
+        const models = yield* ctx.model.list({ location: { directory } })
+        const model = models.data.find((item) => item.providerID === ref.providerID && item.id === ref.id)
+        if (model === undefined) return undefined
+        const provider = yield* ctx.provider
+          .get({ providerID: ref.providerID as ProviderID, location: { directory } })
+          .pipe(Effect.option)
+        const { context, input } = model.limit
+        return {
+          providerID: model.providerID,
+          canonical: model.canonical,
+          modelID: model.modelID,
+          ttl: model.settings?.cache?.ttl ?? Option.getOrUndefined(provider)?.data.settings?.cache?.ttl,
+          // As the fork's compaction reads it: the input limit within the context window.
+          window: input && context ? Math.min(input, context) : input || context,
+        }
+      }),
+    roots: ctx.session.list({ parentID: null, order: "desc", limit: RECENT }).pipe(Effect.map((page) => page.data.map(sessionView))),
+    compact: (sessionID) => ctx.session.compact({ sessionID: sessionID as SessionID }),
+  })

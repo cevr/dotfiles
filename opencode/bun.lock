@@ -35,6 +35,13 @@
         "@dotfiles/opencode-herdr": "workspace:*",
       },
     },
+    "cmd/idle-compact": {
+      "name": "@dotfiles/opencode-cmd-idle-compact",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-idle-compact": "workspace:*",
+      },
+    },
     "cmd/kernel": {
       "name": "@dotfiles/opencode-cmd-kernel",
       "version": "0.0.0",
@@ -79,6 +86,10 @@
     },
     "mods/herdr": {
       "name": "@dotfiles/opencode-herdr",
+      "version": "0.0.0",
+    },
+    "mods/idle-compact": {
+      "name": "@dotfiles/opencode-idle-compact",
       "version": "0.0.0",
     },
     "mods/kernel": {
@@ -140,6 +151,8 @@
 
     "@dotfiles/opencode-cmd-herdr": ["@dotfiles/opencode-cmd-herdr@workspace:cmd/herdr"],
 
+    "@dotfiles/opencode-cmd-idle-compact": ["@dotfiles/opencode-cmd-idle-compact@workspace:cmd/idle-compact"],
+
     "@dotfiles/opencode-cmd-kernel": ["@dotfiles/opencode-cmd-kernel@workspace:cmd/kernel"],
 
     "@dotfiles/opencode-cmd-orchestrate": ["@dotfiles/opencode-cmd-orchestrate@workspace:cmd/orchestrate"],
@@ -151,6 +164,8 @@
     "@dotfiles/opencode-guard": ["@dotfiles/opencode-guard@workspace:mods/guard"],
 
     "@dotfiles/opencode-herdr": ["@dotfiles/opencode-herdr@workspace:mods/herdr"],
+
+    "@dotfiles/opencode-idle-compact": ["@dotfiles/opencode-idle-compact@workspace:mods/idle-compact"],
 
     "@dotfiles/opencode-kernel": ["@dotfiles/opencode-kernel@workspace:mods/kernel"],
 
