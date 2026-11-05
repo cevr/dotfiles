@@ -10,7 +10,7 @@
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!bun:test", "!./*.ts"],
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!bun:test", "!./*.ts"],
                 "message": "The decider kit imports effect and its own files only."
               }
             ]
@@ -26,7 +26,7 @@
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
                 "message": "The kernel domain fence: the kernel's domain files import effect, @dotfiles/decider/*, the kernel's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of the kernel's folders."
               }
             ]
@@ -42,7 +42,7 @@
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
                 "message": "The pool domain fence: the pool's domain files import effect, @dotfiles/decider/*, the pool's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of the pool's folders."
               }
             ]
@@ -74,7 +74,7 @@
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!./agents.json", "!bun:test"],
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!@dotfiles/decider/*", "!./*.ts", "!./agents.json", "!bun:test"],
                 "message": "The orchestrate domain fence: orchestrate's domain files import effect, @dotfiles/decider/*, orchestrate's own root files (and the generated agents.json) and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of orchestrate's folders."
               }
             ]
@@ -90,7 +90,7 @@
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
                 "message": "The status domain fence: status's domain files import effect, @dotfiles/decider/*, status's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of status's folders."
               }
             ]
@@ -122,7 +122,7 @@
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
                 "message": "The herdr domain fence: the herdr reporter's domain files import effect, @dotfiles/decider/*, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
               }
             ]
@@ -138,7 +138,7 @@
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!./*.ts", "!bun:test"],
                 "message": "The guard domain fence: the guard's domain files import effect, the guard's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of the guard's folders."
               }
             ]
@@ -154,7 +154,7 @@
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!./*.ts", "!bun:test"],
                 "message": "The idle-compaction domain fence: its domain files import effect, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or its opencode/ folder."
               }
             ]
@@ -170,7 +170,7 @@
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!./*.ts", "!bun:test"],
                 "message": "The mail domain fence: its domain files import effect, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or its opencode/ folder."
               }
             ]
@@ -218,7 +218,7 @@
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!./*.ts", "!bun:test"],
                 "message": "The cache domain fence: the fold, causes and pricing import effect, the cache mod's own root files and bun:test only; never @opencode/*, solid-js, node:*, bun or one of its folders."
               }
             ]
@@ -234,7 +234,7 @@
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!../*.ts", "!./*.ts", "!bun:test"],
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!../*.ts", "!./*.ts", "!bun:test"],
                 "message": "The cache reader fence: opencode/ reads the TUI's data through its own narrowed Reads, so it imports effect, the domain's root files, its own files and bun:test only; never @opencode/* or a renderer."
               }
             ]
@@ -250,7 +250,7 @@
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!./*.ts", "!bun:test"],
                 "message": "The git domain fence: git's domain files import effect, git's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of git's folders."
               }
             ]
@@ -282,7 +282,7 @@
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!@dotfiles/opencode-subagents/*", "!./*.ts", "!bun:test"],
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!@dotfiles/decider/*", "!@dotfiles/opencode-subagents/*", "!./*.ts", "!bun:test"],
                 "message": "The queue domain fence: the queue's domain files import effect, @dotfiles/decider/*, the shared subagent rows' root files (@dotfiles/opencode-subagents/*, not its opencode/ reader), their own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
               }
             ]
