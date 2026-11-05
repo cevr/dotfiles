@@ -60,6 +60,8 @@ import { LoginsQuery, POOL_STATUS, SessionQuery } from "@dotfiles/opencode-pool/
 
 export { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 
+type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
+
 /** The request header that names the login a request goes out on. Its auth plugin strips it. */
 export const CREDENTIAL_HEADER = "x-opencode-credential-id"
 
@@ -188,14 +190,24 @@ export const make = (
           Effect.orElseSucceed(() => undefined),
         )
 
+      // A fork's requests read its source's cache (the host keys the cache by the source), so a
+      // fork with no cache of its own goes where its source's is. A session the host cannot read
+      // reads no other's.
+      const cacheOf = (sessionID: SessionID) =>
+        ctx.session.get({ sessionID }).pipe(
+          Effect.map((session) => session.fork?.sessionID),
+          Effect.orElseSucceed(() => undefined),
+        )
+
       yield* ctx.session.hook("model.request", (event) =>
-        agentCacheLife(event.agent).pipe(
-          Effect.flatMap((cacheLifeMs) =>
+        Effect.all([agentCacheLife(event.agent), cacheOf(event.sessionID)]).pipe(
+          Effect.flatMap(([cacheLifeMs, source]) =>
             pool.place({
               providerID: event.model.providerID,
               sessionID: event.sessionID,
               kind: event.kind,
               ...(cacheLifeMs === undefined ? {} : { cacheLifeMs }),
+              ...(source === undefined ? {} : { cacheOf: source }),
             }),
           ),
           Effect.map((credentialID) => {

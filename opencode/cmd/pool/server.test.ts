@@ -56,6 +56,8 @@ interface World {
   readonly storage: Map<string, Schema.Json>
   /** Each agent's own prompt-cache lifetime (`request.settings.cacheTTL`), by agent id; an agent absent here is unknown to the host. */
   readonly agents: Map<string, string | undefined>
+  /** Each fork's source, by fork id; a session absent here is no fork. */
+  readonly forks: Map<string, string>
 }
 
 const world = (): World => ({
@@ -63,6 +65,7 @@ const world = (): World => ({
   integration: { connections: new Map([[ANTHROPIC, CONNECTIONS]]), marks: [] },
   storage: new Map(),
   agents: new Map([["build", undefined]]),
+  forks: new Map(),
 })
 
 /** The outside systems as test layers over `state`. */
@@ -103,6 +106,10 @@ const start = (
     const host = {
       options,
       session: {
+        get: ({ sessionID }: { readonly sessionID: string }) => {
+          const source = state.forks.get(sessionID)
+          return Effect.succeed({ id: sessionID, ...(source === undefined ? {} : { fork: { sessionID: source, boundary: {} } }) })
+        },
         hook: (name: string, callback: Hook) =>
           Effect.sync(() => {
             hooks[name] = callback
@@ -388,6 +395,19 @@ describe("a session's cache", () => {
         yield* plugin.idle("s1")
         yield* TestClock.adjust(HOUR)
         expect(yield* plugin.request("s1")).toBe("cred-b")
+      }),
+    ))
+
+  test("a fork with no cache of its own goes to its source's login, against the load", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        state.forks.set("fork", "s1")
+        const plugin = yield* start({ sweepMinutes: 0 }, state)
+        yield* loaded(plugin)
+        // b scores better, but the fork reads s1's cache, which is on a.
+        expect(yield* plugin.request("fork")).toBe("cred-a")
+        expect(yield* plugin.request("other")).toBe("cred-b")
       }),
     ))
 

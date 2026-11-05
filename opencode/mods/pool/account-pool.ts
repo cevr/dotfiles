@@ -95,13 +95,16 @@ const listLogins = (state: AccountPoolState, command: ListLogins): Effect.Effect
 // ── PlaceRequest ──
 // A model request of a session goes out: on the run's pin while its account
 // is not held, else on the first account of a new placement, which keeps the
-// account its cache is on while the cache lives.
+// account its cache is on while the cache lives. A session with no cache of its
+// own that reads another's (a fork reads its source's) keeps that one's account.
 
 export const PlaceRequest = Schema.TaggedStruct("PlaceRequest", {
   sessionID: Schema.String,
   kind: RequestKind,
   /** How long the request's cache lives when its agent keeps its own lifetime (ms); else the provider's. */
   cacheLifeMs: Schema.optionalKey(Schema.Number),
+  /** The session whose cache the request reads when the session has none of its own: a fork's source. */
+  cacheOf: Schema.optionalKey(Schema.String),
 })
 export interface PlaceRequest extends Schema.Schema.Type<typeof PlaceRequest> {}
 
@@ -143,7 +146,7 @@ const placeRequest = (
     !held(state, pin.credentialID, now)
       ? pin.credentialID
       : undefined
-  const choice = pinned ?? rank(state, command.sessionID, now, rules)[0]
+  const choice = pinned ?? rank(state, command.sessionID, now, rules, command.cacheOf)[0]
   if (choice === undefined) return Effect.fail(new NoAccount({ sessionID: command.sessionID, kind: command.kind }))
   return Effect.succeed([
     RequestPlaced.make({
