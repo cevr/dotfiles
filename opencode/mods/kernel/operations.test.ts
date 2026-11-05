@@ -27,6 +27,16 @@ describe("a kernel call's journal", () => {
     expect(record.metadata()).toEqual({ [OPERATIONS_KEY]: published[1] })
   })
 
+  test("a shell command moved to the background keeps its shell's ID, which its stop notice names", async () => {
+    const { record } = recording()
+    await Effect.runPromise(
+      record.around("shell", { command: "sleep 2", background: true }, Effect.succeed({ content: "moved", metadata: { status: "running", shellID: "sh_1", truncated: false } })),
+    )
+    expect(record.metadata()[OPERATIONS_KEY]).toEqual([
+      { tool: "shell", status: "completed", input: { command: "sleep 2", background: true }, output: "moved", metadata: { shellID: "sh_1" } },
+    ])
+  })
+
   test("a failed call is recorded with its reason and still fails the cell's call", async () => {
     const { record } = recording()
     const exit = await Effect.runPromiseExit(record.around("read", { path: "missing.ts" }, Effect.fail(new Error("File not found: missing.ts"))))
