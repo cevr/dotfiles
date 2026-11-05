@@ -161,6 +161,70 @@
           }
         ]
       }
+    },
+    {
+      "files": ["mods/git/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "message": "The git domain fence: git's domain files import effect, git's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of git's folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/git/tui/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["../process/**", "../opencode/**", "../laws.ts"],
+                "message": "The git UI fence: the sidebar and the pane import the git domain, never an implementation (process/, opencode/) or the laws; every read goes through the git RPC."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/queue/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!@dotfiles/opencode-subagents/*", "!./*.ts", "!bun:test"],
+                "message": "The queue domain fence: the queue's domain files import effect, @dotfiles/decider/*, the shared subagent rows' root files (@dotfiles/opencode-subagents/*, not its opencode/ reader), their own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/queue/tui/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["../filestore/**", "../memory/**"],
+                "message": "The queue UI fence: the sidebar section imports the queue domain and the TUI's data reader (opencode/), never a store (filestore/, memory/)."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }

@@ -21,6 +21,13 @@
         "typescript": "^7",
       },
     },
+    "cmd/git": {
+      "name": "@dotfiles/opencode-cmd-git",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-git": "workspace:*",
+      },
+    },
     "cmd/guard": {
       "name": "@dotfiles/opencode-cmd-guard",
       "version": "0.0.0",
@@ -58,6 +65,13 @@
         "@dotfiles/opencode-pool": "workspace:*",
       },
     },
+    "cmd/queue": {
+      "name": "@dotfiles/opencode-cmd-queue",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-queue": "workspace:*",
+      },
+    },
     "cmd/status": {
       "name": "@dotfiles/opencode-cmd-status",
       "version": "0.0.0",
@@ -71,6 +85,10 @@
     },
     "mods/anthropic-auth": {
       "name": "@dotfiles/opencode-anthropic-auth",
+      "version": "0.0.0",
+    },
+    "mods/git": {
+      "name": "@dotfiles/opencode-git",
       "version": "0.0.0",
     },
     "mods/guard": {
@@ -118,6 +136,14 @@
         "@dotfiles/opencode-subagents": "workspace:*",
       },
     },
+    "mods/queue": {
+      "name": "@dotfiles/opencode-queue",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-subagents": "workspace:*",
+      },
+    },
     "mods/status": {
       "name": "@dotfiles/opencode-status",
       "version": "0.0.0",
@@ -136,6 +162,8 @@
 
     "@dotfiles/opencode-anthropic-auth": ["@dotfiles/opencode-anthropic-auth@workspace:mods/anthropic-auth"],
 
+    "@dotfiles/opencode-cmd-git": ["@dotfiles/opencode-cmd-git@workspace:cmd/git"],
+
     "@dotfiles/opencode-cmd-guard": ["@dotfiles/opencode-cmd-guard@workspace:cmd/guard"],
 
     "@dotfiles/opencode-cmd-herdr": ["@dotfiles/opencode-cmd-herdr@workspace:cmd/herdr"],
@@ -146,7 +174,11 @@
 
     "@dotfiles/opencode-cmd-pool": ["@dotfiles/opencode-cmd-pool@workspace:cmd/pool"],
 
+    "@dotfiles/opencode-cmd-queue": ["@dotfiles/opencode-cmd-queue@workspace:cmd/queue"],
+
     "@dotfiles/opencode-cmd-status": ["@dotfiles/opencode-cmd-status@workspace:cmd/status"],
+
+    "@dotfiles/opencode-git": ["@dotfiles/opencode-git@workspace:mods/git"],
 
     "@dotfiles/opencode-guard": ["@dotfiles/opencode-guard@workspace:mods/guard"],
 
@@ -159,6 +191,8 @@
     "@dotfiles/opencode-pool": ["@dotfiles/opencode-pool@workspace:mods/pool"],
 
     "@dotfiles/opencode-prime": ["@dotfiles/opencode-prime@workspace:mods/prime"],
+
+    "@dotfiles/opencode-queue": ["@dotfiles/opencode-queue@workspace:mods/queue"],
 
     "@dotfiles/opencode-status": ["@dotfiles/opencode-status@workspace:mods/status"],
 
