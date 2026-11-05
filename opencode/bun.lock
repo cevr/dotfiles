@@ -21,6 +21,13 @@
         "typescript": "^7",
       },
     },
+    "cmd/cache": {
+      "name": "@dotfiles/opencode-cmd-cache",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-cache": "workspace:*",
+      },
+    },
     "cmd/git": {
       "name": "@dotfiles/opencode-cmd-git",
       "version": "0.0.0",
@@ -85,6 +92,10 @@
     },
     "mods/anthropic-auth": {
       "name": "@dotfiles/opencode-anthropic-auth",
+      "version": "0.0.0",
+    },
+    "mods/cache": {
+      "name": "@dotfiles/opencode-cache",
       "version": "0.0.0",
     },
     "mods/git": {
@@ -161,6 +172,10 @@
     "@dotfiles/decider": ["@dotfiles/decider@workspace:decider"],
 
     "@dotfiles/opencode-anthropic-auth": ["@dotfiles/opencode-anthropic-auth@workspace:mods/anthropic-auth"],
+
+    "@dotfiles/opencode-cache": ["@dotfiles/opencode-cache@workspace:mods/cache"],
+
+    "@dotfiles/opencode-cmd-cache": ["@dotfiles/opencode-cmd-cache@workspace:cmd/cache"],
 
     "@dotfiles/opencode-cmd-git": ["@dotfiles/opencode-cmd-git@workspace:cmd/git"],
 

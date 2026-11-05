@@ -279,6 +279,32 @@ and no work) unless `HERDR_ENV=1` and both `HERDR_PANE_ID` and
 `HERDR_SOCKET_PATH` are set. The server runs as a background service outside
 any pane, so only the TUI can report.
 
+## Cache
+
+`cmd/cache` is a TUI plugin that shows when a request paid again for a
+prompt prefix the previous request had cached, why, and what it cost. It
+ports gent's `@gent/cache`. A turn that lost a large prefix (20k tokens or
+$0.10) ends on a row such as:
+
+```
+◌ cache miss · 48k tokens · $0.17 · expired during a 4s shell call
+```
+
+The causes are a model switch, a prefix that changed inside the cache
+lifetime (only on a provider that writes its cache, such as Anthropic), and,
+past the lifetime, the response itself, a tool call, an approval wait, a
+pause, a subagent's report or idle time between turns. The lifetime is the
+model's or provider's `settings.cache.ttl`, else 5 minutes for Anthropic and
+30 minutes for OpenAI. A provider with neither counts only model switches. A
+miss is priced at the cache-write rate for the tokens the request wrote back
+and the input rate for the rest, less the read rate it would have paid.
+
+The sidebar shows `Cache 91% · missed $0.42`: the share of prompt tokens
+read from the cache, and the sum of every miss, for the session and its
+subagents. Everything comes from the session's messages in the TUI; there is
+no server half. Approval waits are seen only while the TUI runs, so a wait
+from before it opened reads as the tool call it held up.
+
 ## Guard
 
 `cmd/guard` is a server plugin that refuses a shell command that loses work

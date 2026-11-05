@@ -168,7 +168,7 @@ if (import.meta.main) {
   const config = join(home, ".config/opencode")
   const models = roleModels(await loadCatalog(fork))
   writeJson(join(config, "opencode.json"), mergeServer(readJson(join(config, "opencode.json")), server, models, owned))
-  writeJson(join(config, "cli.json"), mergeCli(readJson(join(config, "cli.json")), [pluginDir("prime"), pluginDir("status"), pluginDir("queue"), pluginDir("herdr"), pluginDir("git")], owned))
+  writeJson(join(config, "cli.json"), mergeCli(readJson(join(config, "cli.json")), [pluginDir("prime"), pluginDir("status"), pluginDir("queue"), pluginDir("herdr"), pluginDir("git"), pluginDir("cache")], owned))
   mkdirSync(join(config, "themes"), { recursive: true })
   copyFileSync(THEME, join(config, "themes/prime.json"))
 

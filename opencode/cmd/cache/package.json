@@ -1,0 +1,13 @@
+{
+  "name": "@dotfiles/opencode-cmd-cache",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The cache mod's OpenCode TUI plugin: the composition root of @dotfiles/opencode-cache.",
+  "exports": {
+    "./tui": "./tui.tsx"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-cache": "workspace:*"
+  }
+}

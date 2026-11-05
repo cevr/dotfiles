@@ -163,6 +163,38 @@
       }
     },
     {
+      "files": ["mods/cache/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "message": "The cache domain fence: the fold, causes and pricing import effect, the cache mod's own root files and bun:test only; never @opencode/*, solid-js, node:*, bun or one of its folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/cache/opencode/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!../*.ts", "!./*.ts", "!bun:test"],
+                "message": "The cache reader fence: opencode/ reads the TUI's data through its own narrowed Reads, so it imports effect, the domain's root files, its own files and bun:test only; never @opencode/* or a renderer."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["mods/git/*.ts"],
       "rules": {
         "no-restricted-imports": [
