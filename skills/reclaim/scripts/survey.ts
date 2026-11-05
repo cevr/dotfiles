@@ -277,7 +277,16 @@ for (const root of ROOTS)
     if (idle >= IDLE_DAYS && !busy) add({ tier: 'A', category: 'idle node_modules', what: `${name}: node_modules, project idle ${idle} days`, paths: nodeModules(repo.path), idleDays: idle, command: 'rm -rf <paths> (reinstall with the lockfile)', note: 'a warm source for clones loses its install' });
   }
 
-// ── Temp: tool caches that rebuild, and folders nothing touched lately ──
+// ── Temp: Bun WebView profiles, tool caches that rebuild, and folders nothing touched lately ──
+// Bun's WebView leaves a headless Chrome profile per run in the per-user temp folder.
+const webview = (() => {
+  try {
+    return JSON.parse(sh(['bun', join(import.meta.dir, 'bun-webview-leftovers.ts')]) || '{}') as { paths?: string[]; bytes?: number; orphans?: number };
+  } catch {
+    return {};
+  }
+})();
+add({ tier: 'A', category: 'stale temp', what: `Bun WebView profiles in ${tilde(tmpdir())} (${webview.paths?.length ?? 0}${webview.orphans ? `, ${webview.orphans} orphaned Chrome` : ''})`, paths: webview.paths ?? [], bytes: webview.bytes, command: `bun ${join(import.meta.dir, 'bun-webview-leftovers.ts')} --apply`, note: 'stops headless Chrome nobody owns; skips profiles in use or changed in the last hour' });
 const TEMP_CACHES = /^(node-compile-cache|playwright-transform-cache-\d+|bunx-\d+-.+|jiti|v8-compile-cache-\d+)$/;
 const tempCaches = ls(TMP).filter((e) => TEMP_CACHES.test(e.name)).map((e) => join(TMP, e.name));
 add({ tier: 'A', category: 'stale temp', what: `Tool caches in ${TMP} (${tempCaches.length})`, paths: tempCaches, command: 'rm -rf <paths>', note: 'node, playwright and bunx rebuild them' });
