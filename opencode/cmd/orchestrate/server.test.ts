@@ -252,6 +252,18 @@ describe("the guard", () => {
       }),
     ))
 
+  test("role work asked of a general agent runs as its described role, at the role's effort, and its line says why", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { model: { providerID: "anthropic", id: "claude" }, variants: ["medium"] })
+        const input = { agent: "general", description: "closure-flake verifier r1 (Opus)", prompt: "x", background: true }
+        expect((yield* plugin.call("subagent", "root", input)).input).toEqual({ ...input, agent: "verifier", model: "anthropic/claude#medium" })
+        expect(plugin.logged()).toEqual([
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"general","agent":"verifier","reason":"described","model":"anthropic/claude#medium","background":true,"description":"closure-flake verifier r1 (Opus)"}',
+        ])
+      }),
+    ))
+
   test("a follow-up naming no agent keeps its child's, and is not paced", () =>
     scenario(
       Effect.gen(function* () {

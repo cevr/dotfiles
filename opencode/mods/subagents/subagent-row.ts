@@ -3,9 +3,13 @@
 // that was a while; one per subagent of a session family.
 //
 //   ◐ implementor opus 5.5  Fix money parsing   editing src/money.ts · 1m 12s
-//   ◷ worker      sol 6.1   closure-flake       flock gate.lock ./gate.sh · 37m · updated 26m ago
+//   ◷ verifier    sol 6.1   closure-flake r1    flock gate.lock ./gate.sh · 37m · updated 26m ago
 //   ✓ planner     opus 5.5  Plan month padding  3 steps
 //   ◇ verifier    sol 6.1   Check the export    pace · opens 14:30 · 2m 10s
+//
+// The role is the orchestrate step's role noun, as the skill and the agents
+// name it: a worker whose call's description says `closure-flake verifier r1`
+// reads `verifier` with the unit `closure-flake r1`.
 //
 // `rows(family, rootSessionID, now)` gives the rows worth showing at `now`;
 // `format(row, width)` (line.ts) draws one as a line of coloured segments.
@@ -27,6 +31,7 @@
 //   opens, timed since it latched. A cancelled latch reads cancelled, a
 //   failed one failed.
 // The time is how long it has been in that state, not since it started.
+import { described as stepOf } from "@dotfiles/opencode-orchestrate/described"
 import { canonical, firstSentence, lastHeard, lastSentence, liveCall, running, runningUpdate, sayings, waiting, waits } from "./activity.ts"
 import type { Call, Family, Latch, Message, Session } from "./family.ts"
 import { modelName, type ModelName } from "./model.ts"
@@ -50,12 +55,20 @@ export type Row = {
   readonly id: string
   /** 0 for a child of the root, 1 for its child, and so on. */
   readonly depth: number
-  /** The child session's agent: planner, implementor, verifier, worker, general, or another agent. */
+  /**
+   * The orchestrate step it runs, else its agent: the child session's agent
+   * (planner, implementor, verifier, worker, general, or another agent), or,
+   * for a worker or general child whose call's description names a step in
+   * the skill's form (`<role> <unit> r<N>`, `<unit> <role>[ rN]`), that role.
+   */
   readonly role: string
   readonly tone: Tone
   /** The model it runs on, by its short name (model.ts), when the data says. */
   readonly model?: ModelName
-  /** What the parent called the work: the subagent call's description, else the child's title. */
+  /**
+   * What the parent called the work: the subagent call's description, without
+   * the role word when it names the row's role, else the child's title.
+   */
   readonly unit: string
   readonly state: State
   /** One short sentence of what it is doing now, or how it ended. */
@@ -228,6 +241,21 @@ export function latchUpdate(latch: Latch, timeZone?: string): string {
   return `${what} · opens ${sameDay ? "" : `${weekday(latch.opensAt, timeZone)} `}${clock(latch.opensAt, timeZone)}`
 }
 
+/** The agents that run role work asked of no particular agent: the worker the guard routes it to, or the general agent under the full-agent escape. */
+const LEAN = new Set(["worker", "general"])
+
+/**
+ * The row's role and unit: the step the description names, when the child
+ * runs as that role or as the worker or general agent (a session started
+ * before the guard routed by the description), with the role word dropped
+ * from the unit; else the agent and the whole description.
+ */
+function roleAndUnit(agent: string, description: string): { readonly role: string; readonly unit?: string } {
+  const step = stepOf(description)
+  if (step && (step.role === agent || LEAN.has(agent))) return { role: step.role, unit: step.rest }
+  return { role: agent, ...(description ? { unit: description } : {}) }
+}
+
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
 
 /** How rows read times: `timeZone` for a latched row's opening time, the host's own by default. */
@@ -241,10 +269,11 @@ export function subagents(family: Family, rootSessionID: string, options: ReadOp
     const found = launch(parent, session.id)
     const input = found.call?.input ?? {}
     const described = typeof input.description === "string" ? input.description.trim() : ""
-    const role =
+    const agent =
       session.agent ??
       session.messages.flatMap((message) => (message.type === "assistant" && message.agent ? [message.agent] : [])).at(-1) ??
       (typeof input.agent === "string" ? input.agent : "subagent")
+    const { role, unit } = roleAndUnit(agent, described)
     const model = modelName(session.model)
     const base = {
       id: session.id,
@@ -252,7 +281,7 @@ export function subagents(family: Family, rootSessionID: string, options: ReadOp
       role,
       tone: tone(role),
       ...(model === undefined ? {} : { model }),
-      unit: described || session.title || "subagent",
+      unit: unit || session.title || "subagent",
     }
     const busy = session.time.busy ?? session.time.created
     const heard = lastHeard(session.messages)

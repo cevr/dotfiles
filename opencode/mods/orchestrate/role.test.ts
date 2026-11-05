@@ -1,6 +1,6 @@
 // The guard's routing: which agent a subagent call runs as.
 import { describe, expect, test } from "bun:test"
-import { route } from "./role.ts"
+import { route, unspecific } from "./role.ts"
 
 describe("the guard's routing", () => {
   test("an untyped or general call runs as the worker; a former role name as the role", () => {
@@ -19,5 +19,33 @@ describe("the guard's routing", () => {
     expect(route(undefined, true)).toEqual({ agent: "general", reason: "kept" })
     expect(route("general", true)).toEqual({ agent: "general", reason: "kept" })
     expect(route("orchestrate-reviewer", true)).toEqual({ agent: "verifier", reason: "renamed" })
+  })
+
+  test("a call that would run as the worker runs as the role its description names", () => {
+    for (const asked of [undefined, "", "general", "general-purpose", "worker", "orchestrate-worker"]) {
+      expect(route(asked, false, "verifier bite-19493 r3")).toEqual({ agent: "verifier", reason: "described" })
+      expect(route(asked, false, "pkg-lower implementor")).toEqual({ agent: "implementor", reason: "described" })
+      expect(route(asked, false, "closure-flake verifier r1 (Opus)")).toEqual({ agent: "verifier", reason: "described" })
+      expect(route(asked, false, "planner hsdaily r1")).toEqual({ agent: "planner", reason: "described" })
+    }
+  })
+
+  test("a role only mentioned in prose stays with the worker", () => {
+    expect(route("general", false, "Fix the verifier's timeout")).toEqual({ agent: "worker", reason: "general" })
+    expect(route(undefined, false, "Ask the planner about X")).toEqual({ agent: "worker", reason: "untyped" })
+    expect(route("worker", false, "std-1 wave planner (read-only)")).toEqual({ agent: "worker", reason: "kept" })
+  })
+
+  test("an agent asked by name stays as asked, whatever the description says; so does the full-agent escape's general", () => {
+    expect(route("implementor", false, "verifier pkg-lower r1")).toEqual({ agent: "implementor", reason: "kept" })
+    expect(route("explore", false, "planner hsdaily r1")).toEqual({ agent: "explore", reason: "kept" })
+    expect(route("orchestrate-reviewer", false, "implementor x r1")).toEqual({ agent: "verifier", reason: "renamed" })
+    expect(route("general", true, "verifier pkg-lower r1")).toEqual({ agent: "general", reason: "kept" })
+    expect(route(undefined, true, "verifier pkg-lower r1")).toEqual({ agent: "general", reason: "kept" })
+  })
+
+  test("a call names no particular agent when untyped, general or the worker", () => {
+    for (const asked of [undefined, null, "", "general", "claude", "status:general", "worker"]) expect(unspecific(asked)).toBe(true)
+    for (const asked of ["planner", "verifier", "explore", "orchestrate-reviewer"]) expect(unspecific(asked)).toBe(false)
   })
 })

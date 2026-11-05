@@ -14,7 +14,7 @@
 import { Effect, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { PaceHold, Whose } from "./pace.ts"
-import { Reason, route } from "./role.ts"
+import { Reason, route, unspecific } from "./role.ts"
 import { explain, Place, resumesAt, SabbathRest } from "./sabbath.ts"
 
 // ── The id ──
@@ -142,20 +142,25 @@ const latchedOf = (
   return SubagentLatched.make({ ...fields, hold: "pace", whose: hold.whose, why: hold.reason, opensAt, recheckAt: Math.min(opensAt, now + PACE_POLL_MS) })
 }
 
-/** Whether a call continues its child with no agent named; such a call keeps the child's agent. */
+/**
+ * Whether a call continues its child naming no particular agent (none, a
+ * general one, or the worker; role.ts `unspecific`); such a call keeps the
+ * child's agent, so a resume asked of `general` never moves a verifier to the worker.
+ */
 export const continues = (command: Pick<StartSubagent, "asked" | "child">) =>
-  command.child !== undefined && (typeof command.asked !== "string" || command.asked === "")
+  command.child !== undefined && (typeof command.asked !== "string" || unspecific(command.asked))
 
 /**
- * The agent a call runs as and why: a follow-up naming no agent keeps its
- * child's; otherwise the guard's route (role.ts).
+ * The agent a call runs as and why: a follow-up naming no particular agent
+ * keeps its child's; otherwise the guard's route (role.ts), which reads the
+ * description only for a new subagent: a follow-up never changes agent by it.
  */
 export const routeOf = (
-  command: Pick<StartSubagent, "asked" | "child" | "childAgent" | "fullAgent">,
+  command: Pick<StartSubagent, "asked" | "child" | "childAgent" | "fullAgent" | "description">,
 ): { readonly agent: string; readonly reason: Reason } =>
   continues(command) && command.childAgent
     ? { agent: command.childAgent, reason: "continued" }
-    : route(command.asked, command.fullAgent)
+    : route(command.asked, command.fullAgent, command.child === undefined ? command.description : undefined)
 
 const decideStart = (
   command: StartSubagent,

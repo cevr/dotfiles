@@ -3,9 +3,10 @@
 // holds each role's agent fields and reasoning effort; it is decoded here once.
 import { Schema } from "effect"
 import generated from "./agents.json"
+import { described, STEPS } from "./described.ts"
 
 export const WORKER = "worker"
-export const ROLES = ["planner", "implementor", "verifier", WORKER] as const
+export const ROLES = [...STEPS, WORKER] as const
 export type Role = (typeof ROLES)[number]
 
 /**
@@ -54,19 +55,27 @@ export const RENAMED: Readonly<Record<string, Role>> = {
   "orchestrate-reviewer": "verifier",
 }
 
-/** Why a call runs as the agent it does; `continued` is a follow-up keeping its child's agent. */
-export const Reason = Schema.Literals(["untyped", "general", "renamed", "kept", "continued"])
+/**
+ * Why a call runs as the agent it does; `described` is role work asked of the
+ * worker, run as the role its description names; `continued` is a follow-up
+ * keeping its child's agent.
+ */
+export const Reason = Schema.Literals(["untyped", "general", "renamed", "kept", "described", "continued"])
 export type Reason = typeof Reason.Type
 
 /**
- * The agent a subagent call asking for `requested` runs as. An untyped or
- * general call runs as the lean worker unless `full`; a former role name runs
- * as the role; anything else runs as asked.
+ * Whether a call names no particular agent: it is untyped, asks for a general
+ * one, or for the worker. Such a call would run as the worker, so its
+ * description may name the role it is (`route`), and as a follow-up it keeps
+ * its child's agent (tool-call.ts).
  */
-export const route = (
-  requested: unknown,
-  full = false,
-): { readonly agent: string; readonly reason: Exclude<Reason, "continued"> } => {
+export const unspecific = (requested: unknown): boolean => {
+  if (requested === undefined || requested === null) return true
+  const bare = String(requested).replace(/^status:/, "")
+  return FULL.has(bare) || bare === WORKER
+}
+
+const named = (requested: unknown, full: boolean): { readonly agent: string; readonly reason: Exclude<Reason, "described" | "continued"> } => {
   if (requested === undefined || requested === null || requested === "")
     return full ? { agent: "general", reason: "kept" } : { agent: WORKER, reason: "untyped" }
   const asked = String(requested)
@@ -75,4 +84,24 @@ export const route = (
   const role = RENAMED[bare]
   if (role) return { agent: role, reason: "renamed" }
   return { agent: asked, reason: "kept" }
+}
+
+/**
+ * The agent a subagent call asking for `requested` runs as. An untyped or
+ * general call runs as the lean worker unless `full`; a former role name runs
+ * as the role; anything else runs as asked. A call that would run as the
+ * worker and whose `description` names an orchestrate step in the skill's
+ * form (`verifier <unit> r1`, `<unit> implementor`; described.ts) runs as that
+ * role: the orchestrator meant the role, and the role agent carries the
+ * protocol, its effort and its cache lifetime. A role or another agent asked
+ * by name stays as asked.
+ */
+export const route = (
+  requested: unknown,
+  full = false,
+  description?: string,
+): { readonly agent: string; readonly reason: Exclude<Reason, "continued"> } => {
+  const routed = named(requested, full)
+  const step = routed.agent === WORKER ? described(description) : undefined
+  return step ? { agent: step.role, reason: "described" } : routed
 }
