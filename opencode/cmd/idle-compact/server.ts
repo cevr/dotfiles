@@ -15,10 +15,20 @@
  * - `model.request` (any request but a title's): the cache's last refresh;
  *   the session's timer is cancelled.
  * - `session.inbox.enqueued`, `session.execution.started`: the timer is cancelled.
- * - `experimental.idle`: the background work still running as the session goes idle.
+ * - `experimental.idle`: the background work still running as the session
+ *   goes idle, logged with the decision. It does not hold the timer back: its
+ *   notice would wake the session after the cache expired, so the session
+ *   compacts on time, and a notice that comes first cancels the timer.
  * - `session.execution.succeeded`/`failed`/`interrupted`: decide, set the timer.
  * - `session.deleted`: the session is forgotten. Disposing the plugin ends every timer.
  * - At start: the recent main sessions, idle before the plugin ran, are decided.
+ *
+ * It compacts only when compacting costs less than letting the cache expire,
+ * at the model's catalog prices (`.../price`), and not again after a
+ * compaction until a request beyond the first on top of its summary.
+ *
+ * Each decision is logged at info: scheduled, compacting, or not and why, with
+ * what compacting costs and avoids.
  *
  * The compaction is OpenCode's requested one (an inbox item the runner runs),
  * asked for with `reason: "auto"` so the compaction message records it as

@@ -385,12 +385,24 @@ from the summary.
 A session compacts at its cache's expiry less a margin when all of these hold:
 
 - it is a main session (a subagent's only with `subagents: true`);
-- it does not run, and none of its subagents runs (a session waiting on a
-  permission prompt counts as idle);
+- it does not run (a session waiting on a permission prompt counts as idle;
+  one waiting on a foreground subagent runs, since the subagent is its tool
+  call);
 - its last request read from or wrote to the cache, and its prompt (input,
   cache read and cache write) is above the threshold: 30% of the model's
   window or 60,000 tokens, whichever is smaller;
-- no compaction came after that request, and the cache has not expired.
+- no compaction came after that request, and the cache has not expired;
+- that request is not the first after a compaction: the first one only loads
+  the summary, so a session that compacted (idle, on the window, or by hand)
+  waits for real work before it compacts again;
+- compacting costs less than letting the cache expire, at the model's catalog
+  prices. Letting it expire, the next request writes the whole prompt again;
+  compacting, the summary request reads it from cache and writes a summary
+  (estimated at 32,000 output tokens), and the next request writes the
+  summary's prompt (estimated at 64,000 tokens). An Anthropic hour's cache is
+  written at twice the input rate. On Opus 5.5 with an hour's cache this pays
+  above about 148,000 prompt tokens; with a 5-minute cache, above 200,000. A
+  model the catalog does not price compacts on the threshold alone.
 
 The cache's life counts from the last request's start (title requests
 aside), as Anthropic counts it. Its length is the model's or provider's
@@ -400,23 +412,40 @@ Other providers are not compacted unless `ttlSeconds` is set. The margin is
 60 s for a cache of 5 minutes or less and 5 minutes for a longer one. A new
 request, a queued message or a started execution cancels the session's
 timer; it is set again when the session settles. At start the plugin decides
-the recent main sessions. It logs each decision at debug level and each
-compaction at info, with the session, the prompt's tokens and the cache's age.
+the recent main sessions.
+
+Background subagents and shells do not hold an idle session back. Their
+notice wakes the session when they end, and a wake after the cache expired
+would write the whole context again, so the timer runs as for any idle
+session: work still running when it fires leaves the session compacted, and
+its notice lands on the summary; a notice that comes first wakes the session
+and cancels the timer.
+
+Each decision is one line at info level: `compaction scheduled` (in how many
+seconds, the cache's lifetime, the prompt's tokens, the threshold), `compacting
+the idle session`, or `not compacting` with its reason (`running`,
+`too-small`, `expired`, `compacted`, `no-new-work`, `costs-more`,
+`no-cache`, `no-request`, `subagent-session`, `unreadable`), each with the
+session, what triggered it (`settled`, `timer`, `resume`), the cache's age,
+the background work still running (`busy`), and the price check: `verdict`
+(`pays`, `costs-more`, `unpriced`), `avoidedUsd`, `costUsd` and
+`breakEvenTokens`.
 
 Options: `ttlSeconds`, `shortMarginSeconds` (60), `longMarginSeconds` (300),
 `thresholdRatio` (0.3), `thresholdTokens` (60000), `subagents` (false). An
 absent option takes its default; a malformed one stops the plugin.
 
-The compaction is OpenCode's manual one, so the transcript shows it as a
-plain compaction: the plugin API has no way to mark it automatic. Orchestrate's
-compaction windows trigger the fork's automatic compaction inside a request
-as the context nears the window; idle compaction runs only between requests,
+The compaction is OpenCode's requested one, asked for with the fork's
+`reason: "auto"`, so the transcript records it as automatic; a host without
+`reason` records it as manual. Orchestrate's compaction windows trigger the
+fork's automatic compaction inside a request as the context nears the
+window; idle compaction runs only between requests,
 so the two never run at once, and orchestrate's `compaction` hook adds what it
 keeps to both.
 
 The model (the domain files at the root of `mods/idle-compact`): `idle.ts`
 decides from a session's facts (`due`), `cache.ts` holds the providers'
-lifetimes and the margins, and `model.ts` is the `IdleCompactor`, one timer
+lifetimes and the margins, `price.ts` what compacting costs and avoids, and `model.ts` is the `IdleCompactor`, one timer
 per session. It asks the `Sessions` contract in `service.ts`, implemented in
 `opencode/`, with the laws in `laws.ts`. `tests/idle-compact.test.ts` runs it
 in real OpenCode on a 20 s cache.

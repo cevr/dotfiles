@@ -8,14 +8,29 @@
 // cache.ts), so the clock runs from there. It compacts at expiry minus the
 // margin, and only when:
 // - it is a main session, not a subagent's (unless the policy says so);
-// - no execution runs: no turn, no tool, no permission or question awaited;
-// - no subagent or background job of it runs;
-// - it made a request since its last compaction, which wrote that cache;
+// - no execution runs: no turn, no tool, no permission or question awaited
+//   (a foreground subagent is its parent's running tool call, so it counts);
+// - it made a request since its last compaction, which wrote that cache, and
+//   that request is not the first on top of the compaction's summary: the
+//   summary request is no model request of the session's, and the first one
+//   after it only loads the summary, so it is no new work (a session that
+//   compacted, idle or automatic or manual, waits for real work first);
 // - the request was cached, on a provider whose lifetime is known;
 // - the request's prompt is above the threshold;
-// - the cache has not expired yet.
+// - the cache has not expired yet;
+// - compacting costs less than the next request writing the whole prompt
+//   again (price.ts), when the catalog prices the model. An unpriced model
+//   compacts on the threshold alone.
+//
+// Background work does not hold it back. A subagent or shell the session
+// started in the background, still running while the session sits idle, wakes
+// it with a notice when it ends; if that is after the cache expires, the wake
+// writes the whole context again. So the timer runs as for any idle session,
+// and a notice that comes first wakes the session and cancels it. The work is
+// kept in the facts only to be logged with the decision.
 import { Data, Option } from "effect"
 import { marginOf, type Margins } from "./cache.ts"
+import { type Bill, billOf, type Price } from "./price.ts"
 
 /** The session's last model request, as the cache sees it. */
 export interface LastRequest {
@@ -29,6 +44,8 @@ export interface LastRequest {
   readonly ttl: Option.Option<number>
   /** The model's input window in tokens; none when unknown. */
   readonly window: Option.Option<number>
+  /** The model's catalog prices; absent when the catalog does not price it. */
+  readonly price?: Price | undefined
 }
 
 /** What is known of a session when deciding. */
@@ -37,12 +54,14 @@ export interface Facts {
   readonly child: boolean
   /** An execution runs: a turn, a tool, or a permission or question it awaits. */
   readonly running: boolean
-  /** Subagents and background jobs of it still running, described. */
+  /** Its background subagents and jobs still running, described: logged with the decision, never a reason to wait. */
   readonly busy: ReadonlyArray<string>
   /** The last request since the last compaction, if any. */
   readonly last: Option.Option<LastRequest>
   /** It compacted, or idle compaction already started for this cache, after the last request. */
   readonly compacted: boolean
+  /** The last request is the first after a compaction: it loaded the summary, and no work came since. */
+  readonly onSummary: boolean
 }
 
 /** The plugin's settings. */
@@ -63,12 +82,13 @@ export interface Policy {
 export type Reason =
   | "subagent-session"
   | "running"
-  | "busy"
   | "no-request"
   | "compacted"
+  | "no-new-work"
   | "no-cache"
   | "too-small"
   | "expired"
+  | "costs-more"
 
 export type Decision = Data.TaggedEnum<{
   /** Compact at `at` (epoch ms); `at` may have passed, which means now. */
@@ -92,20 +112,33 @@ export const thresholdOf = (window: Option.Option<number>, policy: Pick<Policy, 
 
 const skip = (reason: Reason) => Decision.Skip({ reason })
 
+/** The lifetime the session's cache is judged by: the policy's, else the request's. */
+const ttlOf = (last: LastRequest, policy: Pick<Policy, "ttl">) => Option.orElse(policy.ttl, () => last.ttl)
+
+/**
+ * What compacting the session's last prompt costs and avoids; none when the
+ * lifetime is unknown or the catalog does not price the model. The write is
+ * billed at the lifetime the request asked for, the policy's when it did not say.
+ */
+export const billFor = (last: LastRequest, policy: Pick<Policy, "ttl">): Option.Option<Bill> =>
+  Option.flatMap(Option.orElse(last.ttl, () => policy.ttl), (ttl) => billOf(last.price, last.prompt, ttl))
+
 /** Whether and when the session compacts, judged at `now` (epoch ms). */
 export const due = (facts: Facts, now: number, policy: Policy): Decision => {
   if (facts.child && !policy.subagents) return skip("subagent-session")
   if (facts.running) return skip("running")
-  if (facts.busy.length > 0) return skip("busy")
   if (facts.compacted) return skip("compacted")
   if (Option.isNone(facts.last)) return skip("no-request")
+  if (facts.onSummary) return skip("no-new-work")
   const last = facts.last.value
-  const ttl = Option.orElse(policy.ttl, () => last.ttl)
+  const ttl = ttlOf(last, policy)
   if (Option.isNone(ttl) || !last.cached) return skip("no-cache")
   const threshold = thresholdOf(last.window, policy)
   if (last.prompt <= threshold) return skip("too-small")
   const expiresAt = last.startedAt + ttl.value
   if (now >= expiresAt) return skip("expired")
+  const bill = billFor(last, policy)
+  if (Option.isSome(bill) && bill.value.cost >= bill.value.avoided) return skip("costs-more")
   const at = Math.max(last.startedAt, expiresAt - marginOf(ttl.value, policy.margins))
   return Decision.Due({ at, expiresAt, ttl: ttl.value, prompt: last.prompt, threshold })
 }

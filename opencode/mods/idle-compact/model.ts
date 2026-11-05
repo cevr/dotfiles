@@ -10,11 +10,19 @@
 //   are read and the timer set.
 // - The timer fires: the facts are read again, and the session compacts only
 //   if nothing woke it while they were read.
+// - Background work as the session goes idle (`background`) is kept to log
+//   with the decision; it does not hold the timer back (idle.ts). Its notice
+//   wakes the session (`woke`), which cancels the timer if it comes first.
+//
+// Each decision is one line at info: scheduled (in how long, the lifetime, the
+// prompt's tokens), compacting, or not compacting and why, with the trigger,
+// the background work still running, and the price check: what compacting
+// costs, what it avoids, the verdict and the break-even prompt (price.ts).
 //
 // A cache compacts once: the start of the request that wrote it is kept, and
 // a second decision for it reads as already compacted.
 import { Clock, Context, Effect, Fiber, Layer, Option, Scope } from "effect"
-import { Decision, due, type Facts, type Policy } from "./idle.ts"
+import { billFor, Decision, due, type Facts, type Policy } from "./idle.ts"
 import { Sessions } from "./service.ts"
 
 export class IdleCompactor extends Context.Service<
@@ -46,6 +54,11 @@ interface Watch {
 }
 
 const seconds = (ms: number) => Math.round(ms / 1_000)
+/** USD to a hundredth of a cent. */
+const usd = (amount: number) => Math.round(amount * 10_000) / 10_000
+
+/** What made the compactor decide. */
+type Trigger = "settled" | "timer" | "resume"
 
 export const layer = (policy: Policy) =>
   Layer.effect(
@@ -92,54 +105,62 @@ export const layer = (policy: Policy) =>
         }
       }
 
-      const decide: (sessionID: string, trigger: "settled" | "timer" | "resume") => Effect.Effect<void> = Effect.fn(
-        "IdleCompactor.decide",
-      )(function* (sessionID, trigger) {
-        const state = watch(sessionID)
-        const generation = state.generation
-        const read = yield* Effect.result(sessions.facts(sessionID))
-        if (read._tag === "Failure") {
-          yield* Effect.logDebug("idle-compact: cannot read the session").pipe(
-            Effect.annotateLogs({ sessionID, trigger, error: read.failure.message }),
-          )
-          return
-        }
-        // Something woke the session while its facts were read: the next settle decides.
-        if (watch(sessionID).generation !== generation) return
-        const facts = merge(sessionID, state, read.success)
-        const now = yield* Clock.currentTimeMillis
-        const decision = due(facts, now, policy)
-        const tokens = Option.match(facts.last, { onNone: () => 0, onSome: (request) => request.prompt })
-        const cacheAge = Option.match(facts.last, { onNone: () => undefined, onSome: (request) => seconds(now - request.startedAt) })
-        yield* Decision.$match(decision, {
-          Skip: ({ reason }) =>
-            cancel(state).pipe(
-              Effect.andThen(
-                Effect.logDebug("idle-compact: not compacting").pipe(
-                  Effect.annotateLogs({ sessionID, trigger, reason, tokens, cacheAgeSeconds: cacheAge }),
-                ),
-              ),
-            ),
-          Due: (when) =>
-            when.at > now
-              ? schedule(sessionID, state, when.at - now).pipe(
-                  Effect.andThen(
-                    Effect.logDebug("idle-compact: compaction scheduled").pipe(
-                      Effect.annotateLogs({
-                        sessionID,
-                        trigger,
-                        tokens,
-                        threshold: when.threshold,
-                        cacheAgeSeconds: cacheAge,
-                        ttlSeconds: seconds(when.ttl),
-                        inSeconds: seconds(when.at - now),
-                      }),
+      const decide: (sessionID: string, trigger: Trigger) => Effect.Effect<void> = Effect.fn("IdleCompactor.decide")(
+        function* (sessionID, trigger) {
+          const state = watch(sessionID)
+          const generation = state.generation
+          const read = yield* Effect.result(sessions.facts(sessionID))
+          // Something woke the session while its facts were read: the next settle decides.
+          if (watch(sessionID).generation !== generation) return
+          if (read._tag === "Failure") {
+            yield* cancel(state)
+            return yield* Effect.logInfo("idle-compact: not compacting").pipe(
+              Effect.annotateLogs({ sessionID, trigger, reason: "unreadable", error: read.failure.message }),
+            )
+          }
+          const facts = merge(sessionID, state, read.success)
+          const now = yield* Clock.currentTimeMillis
+          const decision = due(facts, now, policy)
+          // One line per decision, at info, so a missed compaction can be explained from the log.
+          const bill = Option.flatMap(facts.last, (last) => billFor(last, policy))
+          const priced = Option.match(bill, {
+            onNone: () => ({ verdict: "unpriced" }),
+            onSome: ({ avoided, cost, breakEven }) => ({
+              verdict: cost < avoided ? "pays" : "costs-more",
+              avoidedUsd: usd(avoided),
+              costUsd: usd(cost),
+              breakEvenTokens: Option.getOrUndefined(breakEven),
+            }),
+          })
+          const seen = {
+            sessionID,
+            trigger,
+            tokens: Option.match(facts.last, { onNone: () => 0, onSome: (request) => request.prompt }),
+            cacheAgeSeconds: Option.match(facts.last, { onNone: () => undefined, onSome: (request) => seconds(now - request.startedAt) }),
+            busy: facts.busy.length === 0 ? undefined : facts.busy.join("; "),
+            ...priced,
+          }
+          yield* Decision.$match(decision, {
+            Skip: ({ reason }) =>
+              cancel(state).pipe(Effect.andThen(Effect.logInfo("idle-compact: not compacting").pipe(Effect.annotateLogs({ ...seen, reason })))),
+            Due: (when) =>
+              when.at > now
+                ? schedule(sessionID, state, when.at - now).pipe(
+                    Effect.andThen(
+                      Effect.logInfo("idle-compact: compaction scheduled").pipe(
+                        Effect.annotateLogs({
+                          ...seen,
+                          threshold: when.threshold,
+                          ttlSeconds: seconds(when.ttl),
+                          inSeconds: seconds(when.at - now),
+                        }),
+                      ),
                     ),
-                  ),
-                )
-              : compact(sessionID, state, facts, now, when.ttl),
-        })
-      })
+                  )
+                : compact(sessionID, state, facts, now, when.ttl, seen),
+          })
+        },
+      )
 
       const compact = Effect.fn("IdleCompactor.compact")(function* (
         sessionID: string,
@@ -147,18 +168,14 @@ export const layer = (policy: Policy) =>
         facts: Facts,
         now: number,
         ttl: number,
+        seen: Record<string, unknown>,
       ) {
         yield* cancel(state)
         if (Option.isNone(facts.last)) return
         const last = facts.last.value
         compacted.add(`${sessionID}@${last.startedAt}`)
         yield* Effect.logInfo("idle-compact: compacting the idle session before its cache expires").pipe(
-          Effect.annotateLogs({
-            sessionID,
-            tokens: last.prompt,
-            cacheAgeSeconds: seconds(now - last.startedAt),
-            ttlSeconds: seconds(ttl),
-          }),
+          Effect.annotateLogs({ ...seen, ttlSeconds: seconds(ttl) }),
         )
         yield* sessions.compact(sessionID).pipe(
           Effect.catchTag("CompactionRefused", (error) =>
@@ -199,7 +216,7 @@ export const layer = (policy: Policy) =>
         resume: sessions.recent.pipe(
           Effect.flatMap((ids) => Effect.forEach(ids, (sessionID) => decide(sessionID, "resume"), { discard: true })),
           Effect.catchTag("SessionUnreadable", (error) =>
-            Effect.logDebug("idle-compact: cannot list the sessions").pipe(Effect.annotateLogs({ error: error.message })),
+            Effect.logInfo("idle-compact: cannot list the sessions").pipe(Effect.annotateLogs({ error: error.message })),
           ),
         ),
       })

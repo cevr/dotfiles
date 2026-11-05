@@ -1,11 +1,13 @@
 // The plugin seam: the composition root on a stand-in host whose hooks and
 // events the test drives, its sessions read through the OpenCode adapter over
 // a world in memory, on the test clock. It checks when OpenCode is asked to
-// compact: at expiry minus the margin for an idle, large session, not after a
-// new request started, not twice for one cache, not while a subagent runs.
+// compact: at expiry minus the margin for an idle, large session, its
+// background work running or not, not after a new request started, not twice
+// for one cache, not back to back without new work, not while it runs (a
+// foreground subagent included), and only when it costs less than expiry.
 // tests/idle-compact.test.ts runs it in OpenCode, on a scripted model.
 import { describe, expect, test } from "bun:test"
-import { Effect, Exit, Queue, Schema, type Scope, Stream } from "effect"
+import { Effect, Exit, Logger, Queue, References, Schema, type Scope, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { type Host as SessionsHost, layer as sessionsLayer, type MessageView, type ModelView } from "@dotfiles/opencode-idle-compact/opencode/sessions"
 import IdleCompact, { make, Options } from "./server.ts"
@@ -32,6 +34,8 @@ interface WorldSession {
 const MODELS: ReadonlyArray<ModelView> = [
   { providerID: "anthropic", modelID: "claude-x", window: 200_000 },
   { providerID: "anthropic", modelID: "claude-long", window: 1_000_000, ttl: "1h" },
+  // Opus 5.5 as the catalog prices it: compacting pays above 147,693 prompt tokens on its hour's cache (mods/idle-compact/price.ts).
+  { providerID: "anthropic", modelID: "claude-priced", window: 1_000_000, ttl: "1h", rates: [{ input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 }] },
 ]
 
 /** The host's sessions, kept in memory, and the compactions OpenCode was asked for. */
@@ -89,25 +93,28 @@ const start = (state: World, options: Record<string, unknown> = {}) =>
 
     /**
      * One turn of one model request, as OpenCode runs it: the execution starts, the request starts now and streams
-     * for `streams`, its usage is recorded, and the execution ends.
+     * for `streams`, its usage is recorded, and the execution ends. With `requests`, that many in a row, as a turn
+     * that calls tools runs them.
      */
     const turn = Effect.fn(function* (
       sessionID: string,
       usage: { readonly input?: number; readonly read?: number; readonly write?: number } = {},
-      options: { readonly streams?: number; readonly model?: string; readonly kind?: string } = {},
+      options: { readonly streams?: number; readonly model?: string; readonly kind?: string; readonly requests?: number } = {},
     ) {
       const session = state.sessions.get(sessionID) ?? state.session(sessionID)
       yield* emit("session.execution.started", sessionID)
       session.busy = yield* now
-      const started = yield* now
-      yield* hook("model.request", { sessionID, agent: "build", model: { providerID: "anthropic", id: options.model ?? "claude-x" }, kind: options.kind ?? "primary", headers: {} })
-      yield* TestClock.adjust(options.streams ?? 10_000)
-      session.messages.push({
-        type: "assistant",
-        created: started + 500,
-        tokens: { input: usage.input ?? 1_000, cache: { read: usage.read ?? 90_000, write: usage.write ?? 2_000 } },
-        model: { providerID: "anthropic", id: options.model ?? "claude-x" },
-      })
+      for (let request = 0; request < (options.requests ?? 1); request += 1) {
+        const started = yield* now
+        yield* hook("model.request", { sessionID, agent: "build", model: { providerID: "anthropic", id: options.model ?? "claude-x" }, kind: options.kind ?? "primary", headers: {} })
+        yield* TestClock.adjust(options.streams ?? 10_000)
+        session.messages.push({
+          type: "assistant",
+          created: started + 500,
+          tokens: { input: usage.input ?? 1_000, cache: { read: usage.read ?? 90_000, write: usage.write ?? 2_000 } },
+          model: { providerID: "anthropic", id: options.model ?? "claude-x" },
+        })
+      }
       yield* hook("experimental.idle", { sessionID, background: [] })
       session.idle = yield* now
       yield* emit("session.execution.succeeded", sessionID)
@@ -122,9 +129,27 @@ const start = (state: World, options: Record<string, unknown> = {}) =>
     return { hook, emit, turn, until, now }
   })
 
+interface LogLine {
+  readonly level: string
+  readonly message: string
+  readonly annotations: Readonly<Record<string, unknown>>
+}
+/** What the plugin logged in the running test; each test starts it empty. */
+const logs: Array<LogLine> = []
+const logger = Logger.make((entry) => {
+  logs.push({
+    level: entry.logLevel,
+    message: (Array.isArray(entry.message) ? entry.message : [entry.message]).map(String).join(" "),
+    annotations: { ...entry.fiber.getRef(References.CurrentLogAnnotations) },
+  })
+})
+
 type Scoped<A, E> = Effect.Effect<A, E, Scope.Scope>
-/** On the test clock, which starts at 0 and moves only when told. */
-const onTestClock = <A, E>(body: Scoped<A, E>) => Effect.runPromise(Effect.scoped(body.pipe(Effect.provide(TestClock.layer()))))
+/** On the test clock, which starts at 0 and moves only when told, with the plugin's logs kept in `logs`. */
+const onTestClock = <A, E>(body: Scoped<A, E>) => {
+  logs.length = 0
+  return Effect.runPromise(Effect.scoped(body.pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([logger])))))
+}
 
 describe("the idle compaction plugin", () => {
   test("compacts an idle, large session one minute before its five-minute cache expires, counted from the request's start", () =>
@@ -245,23 +270,200 @@ describe("the idle compaction plugin", () => {
       }),
     ))
 
-  test("never while a subagent runs, whether its session runs or the idle hook lists it", () =>
+  test("never while a foreground subagent runs: its parent's tool call runs, so the parent does", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        const plugin = yield* start(state)
+        yield* plugin.turn("ses_1")
+        // The parent's next execution calls the subagent and waits on it: the parent runs until it answers.
+        yield* plugin.emit("session.execution.started", "ses_1")
+        const parent = state.sessions.get("ses_1")
+        if (parent !== undefined) parent.busy = yield* plugin.now
+        state.session("ses_child", { parentID: "ses_1", title: "reviewer", busy: yield* plugin.now })
+        yield* plugin.until(HOUR)
+        expect(state.compactions).toEqual([])
+      }),
+    ))
+
+  test("a background subagent that outlives the cache: the idle parent compacts at expiry less the margin, whether its session runs or the idle hook lists it", () =>
     onTestClock(
       Effect.gen(function* () {
         const state = world()
         const plugin = yield* start(state)
         yield* plugin.turn("ses_1")
         state.session("ses_child", { parentID: "ses_1", title: "reviewer", busy: 5_000, idle: 0 })
-        yield* plugin.until(HOUR)
+        yield* plugin.until(4 * MINUTE - 1)
         expect(state.compactions).toEqual([])
+        yield* plugin.until(4 * MINUTE)
+        expect(state.compactions).toEqual(["ses_1"])
 
         // The idle hook says a background subagent of ses_2 runs, which no child session shows yet.
         yield* plugin.turn("ses_2")
+        const started = (yield* plugin.now) - 10_000
         const background = [{ kind: "subagent", sessionID: "ses_2", childSessionID: "ses_x", agent: "worker", description: "scan" }]
         yield* plugin.hook("experimental.idle", { sessionID: "ses_2", background })
         yield* plugin.emit("session.execution.succeeded", "ses_2")
-        yield* plugin.until(2 * HOUR)
+        yield* plugin.until(started + 4 * MINUTE - 1)
+        expect(state.compactions).toEqual(["ses_1"])
+        yield* plugin.until(started + 4 * MINUTE)
+        expect(state.compactions).toEqual(["ses_1", "ses_2"])
+      }),
+    ))
+
+  test("a background job that ends before the timer: its notice wakes the session and cancels it, and the next idle stretch counts from the wake's request", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        const plugin = yield* start(state)
+        yield* plugin.turn("ses_1")
+        yield* plugin.hook("experimental.idle", { sessionID: "ses_1", background: [{ kind: "shell", sessionID: "ses_1", shellID: "sh_1", command: "bun test" }] })
+        yield* plugin.emit("session.execution.succeeded", "ses_1")
+        yield* plugin.until(2 * MINUTE)
+        // The shell ends: its notice is queued, and the session wakes on it.
+        yield* plugin.emit("session.inbox.enqueued", "ses_1")
+        yield* plugin.until(3 * MINUTE)
+        yield* plugin.turn("ses_1")
+        yield* plugin.until(4 * MINUTE + 30_000)
         expect(state.compactions).toEqual([])
+        yield* plugin.until(7 * MINUTE - 1)
+        expect(state.compactions).toEqual([])
+        yield* plugin.until(7 * MINUTE)
+        expect(state.compactions).toEqual(["ses_1"])
+      }),
+    ))
+
+  test("a session already idle when the plugin starts, its background subagent still running, compacts on time", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        yield* TestClock.adjust(10 * MINUTE)
+        const state = world()
+        state.session("ses_1", {
+          busy: 0,
+          idle: 30_000,
+          messages: [
+            { type: "assistant", created: 0, tokens: { input: 1_000, cache: { read: 90_000, write: 0 } }, model: { providerID: "anthropic", id: "claude-long" } },
+          ],
+        })
+        state.session("ses_child", { parentID: "ses_1", title: "implementor", busy: 20_000 })
+        const plugin = yield* start(state)
+        yield* plugin.until(55 * MINUTE - 1)
+        expect(state.compactions).toEqual([])
+        yield* plugin.until(55 * MINUTE)
+        expect(state.compactions).toEqual(["ses_1"])
+      }),
+    ))
+
+  test("each decision is one line at info: scheduled with when and why, compacting, and not compacting with the reason", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        const plugin = yield* start(state)
+        yield* plugin.turn("ses_1", {}, { model: "claude-long" })
+        state.session("ses_child", { parentID: "ses_1", title: "reviewer", busy: 5_000 })
+        yield* plugin.turn("ses_small", { input: 1_000, read: 10_000, write: 0 })
+        yield* plugin.until(HOUR)
+        const lines = logs.filter((line) => line.message.startsWith("idle-compact"))
+        expect(lines.map((line) => [line.level, line.message, line.annotations["sessionID"]])).toEqual([
+          ["Info", "idle-compact: compaction scheduled", "ses_1"],
+          ["Info", "idle-compact: not compacting", "ses_small"],
+          ["Info", "idle-compact: compacting the idle session before its cache expires", "ses_1"],
+        ])
+        expect(lines[0]?.annotations).toMatchObject({ trigger: "settled", tokens: 93_000, ttlSeconds: 3_600, inSeconds: 3_290, threshold: 60_000 })
+        expect(lines[1]?.annotations).toMatchObject({ trigger: "settled", reason: "too-small", tokens: 11_000 })
+        expect(lines[2]?.annotations).toMatchObject({ trigger: "timer", tokens: 93_000, busy: "subagent reviewer", ttlSeconds: 3_600, cacheAgeSeconds: 3_300 })
+      }),
+    ))
+
+  test("no compaction back to back: after one, idle again with no new request, or only the summary's first, does not compact", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        const plugin = yield* start(state)
+        yield* plugin.turn("ses_1")
+        yield* plugin.until(4 * MINUTE)
+        expect(state.compactions).toEqual(["ses_1"])
+        // The host runs it and records it; the session settles with no request of its own after it.
+        const session = state.sessions.get("ses_1")
+        yield* plugin.emit("session.execution.started", "ses_1")
+        yield* plugin.hook("model.request", { sessionID: "ses_1", agent: "build", model: { providerID: "anthropic", id: "claude-x" }, kind: "compaction", headers: {} })
+        session?.messages.push({ type: "compaction" })
+        if (session !== undefined) session.idle = (yield* plugin.now) + 1
+        yield* plugin.emit("session.execution.succeeded", "ses_1")
+        yield* plugin.until(30 * MINUTE)
+        expect(state.compactions).toEqual(["ses_1"])
+        // The owner comes back: one request on top of the summary, above the threshold, and idle again.
+        yield* plugin.turn("ses_1", { input: 1_000, read: 0, write: 70_000 })
+        yield* plugin.until(2 * HOUR)
+        expect(state.compactions).toEqual(["ses_1"])
+        const reasons = logs.filter((line) => line.message === "idle-compact: not compacting").map((line) => line.annotations["reason"])
+        expect(reasons).toEqual(["compacted", "no-new-work"])
+      }),
+    ))
+
+  test("not right after OpenCode's own compaction, automatic or manual, nor when the plugin starts on it", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        yield* TestClock.adjust(MINUTE)
+        const state = world()
+        const large = (created: number): MessageView => ({
+          type: "assistant",
+          created,
+          tokens: { input: 1_000, cache: { read: 150_000, write: 0 } },
+          model: { providerID: "anthropic", id: "claude-x" },
+        })
+        // Compacted on the window, its turn's next request on top of the summary; compacted by hand, nothing since.
+        state.session("ses_auto", { busy: 0, idle: 20_000, messages: [large(0), { type: "compaction" }, { type: "other" }, large(10_000)] })
+        state.session("ses_manual", { busy: 0, idle: 20_000, messages: [large(0), { type: "compaction" }] })
+        const plugin = yield* start(state)
+        yield* plugin.emit("session.execution.succeeded", "ses_auto")
+        yield* plugin.until(HOUR)
+        expect(state.compactions).toEqual([])
+      }),
+    ))
+
+  test("after a compaction, a new turn above the threshold is new work: idle again, it compacts", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        const plugin = yield* start(state)
+        yield* plugin.turn("ses_1")
+        yield* plugin.until(4 * MINUTE)
+        const session = state.sessions.get("ses_1")
+        session?.messages.push({ type: "compaction" })
+        yield* plugin.until(30 * MINUTE)
+        // A turn that calls a tool: the request that loads the summary, then the one after the tool's result.
+        yield* plugin.turn("ses_1", {}, { requests: 2 })
+        const second = (yield* plugin.now) - 10_000
+        yield* plugin.until(second + 4 * MINUTE - 1)
+        expect(state.compactions).toEqual(["ses_1"])
+        yield* plugin.until(second + 4 * MINUTE)
+        expect(state.compactions).toEqual(["ses_1", "ses_1"])
+      }),
+    ))
+
+  test("only when compacting costs less than the cache expiring, at the catalog's prices, and the check is logged", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        const plugin = yield* start(state)
+        // 141k on Opus's hour cache: compacting costs $1.20, letting it expire $1.13.
+        yield* plugin.turn("ses_small", { input: 1_000, read: 140_000, write: 0 }, { model: "claude-priced" })
+        // 201k: compacting costs $1.19, letting it expire $1.61.
+        yield* plugin.turn("ses_large", { input: 1_000, read: 200_000, write: 0 }, { model: "claude-priced" })
+        yield* plugin.until(HOUR)
+        expect(state.compactions).toEqual(["ses_large"])
+        const lines = logs.filter((line) => line.message.startsWith("idle-compact"))
+        expect(lines[0]?.annotations).toMatchObject({
+          sessionID: "ses_small",
+          reason: "costs-more",
+          verdict: "costs-more",
+          avoidedUsd: 1.128,
+          costUsd: 1.1802,
+          breakEvenTokens: 147_693,
+        })
+        expect(lines[1]?.annotations).toMatchObject({ sessionID: "ses_large", verdict: "pays", avoidedUsd: 1.608, costUsd: 1.1922 })
+        expect(lines[1]?.message).toBe("idle-compact: compaction scheduled")
       }),
     ))
 

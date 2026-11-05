@@ -6,6 +6,8 @@
  *
  * - A title request: a short title.
  * - A compaction request (OpenCode's summary prompt): a summary in its template.
+ * - The first request of `BACKGROUND_TASK`: a background `shell` call that
+ *   outlives the cache (`BACKGROUND_SECONDS`).
  * - Anything else: one line.
  *
  * @module
@@ -20,6 +22,11 @@ export const EARLY_MS = 10_000
 export const LATE_MS = 45_000
 
 export const TASK = "idle compact"
+/** A task whose first step leaves a background shell running past the cache's expiry. */
+export const BACKGROUND_TASK = "idle compact behind a background shell"
+export const BACKGROUND_SECONDS = 28
+/** How long the background run waits for the shell's notice to wake the session, after the turn's request came. */
+export const WAKE_MS = 45_000
 export const ANSWER = "sim: idle answer"
 export const SUMMARY = "## Objective\n- sim: the idle session's summary"
 /** The usage every answer reports: 1000 prompt tokens, 400 read from cache, 500 written to it. */
@@ -29,6 +36,8 @@ interface ChatMessage {
   readonly role: string
   readonly content?: unknown
 }
+
+type Reply = { readonly kind: "text"; readonly text: string } | { readonly kind: "shell"; readonly command: string }
 
 interface ChatRequest {
   readonly model?: string
@@ -64,7 +73,16 @@ const kindOf = (request: ChatRequest): Kind => {
   return "turn"
 }
 
-const events = (answer: string, model: string, id: string): string => {
+/** The background task's first step starts its shell; every other turn answers with one line. */
+const replyOf = (kind: Kind, request: ChatRequest): Reply => {
+  const messages = request.messages ?? []
+  const first = text(messages.find((message) => message.role === "user")?.content)
+  if (kind === "turn" && first.includes(BACKGROUND_TASK) && !messages.some((message) => message.role === "tool"))
+    return { kind: "shell", command: `sleep ${BACKGROUND_SECONDS}` }
+  return { kind: "text", text: ANSWERS[kind] }
+}
+
+const events = (answer: Reply, model: string, id: string): string => {
   const chunk = (delta: Record<string, unknown>, finish: string | null) => ({
     id,
     object: "chat.completion.chunk",
@@ -78,10 +96,23 @@ const events = (answer: string, model: string, id: string): string => {
     total_tokens: PROMPT_TOKENS + 10,
     prompt_tokens_details: { cached_tokens: 400, cache_write_tokens: 500 },
   }
+  const body =
+    answer.kind === "text"
+      ? [chunk({ content: answer.text }, null), chunk({}, "stop")]
+      : [
+          chunk(
+            {
+              tool_calls: [
+                { index: 0, id: `call_${id}`, type: "function", function: { name: "shell", arguments: JSON.stringify({ command: answer.command, background: true }) } },
+              ],
+            },
+            null,
+          ),
+          chunk({}, "tool_calls"),
+        ]
   const list: unknown[] = [
     chunk({ role: "assistant", content: "" }, null),
-    chunk({ content: answer }, null),
-    chunk({}, "stop"),
+    ...body,
     { id, object: "chat.completion.chunk", created: 0, model, choices: [], usage },
   ]
   return [...list.map((event) => `data: ${JSON.stringify(event)}\n\n`), "data: [DONE]\n\n"].join("")
@@ -103,7 +134,7 @@ export const serve = () => {
       const kind = kindOf(body)
       seen.push({ kind, at: Date.now() })
       served += 1
-      return new Response(events(ANSWERS[kind], body.model ?? "sim", `sim${served}`), {
+      return new Response(events(replyOf(kind, body), body.model ?? "sim", `sim${served}`), {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       })
     },

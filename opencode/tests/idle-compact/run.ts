@@ -11,16 +11,22 @@
  * `LATE_MS` has passed. It writes both, the model's requests and the turn's
  * start to `<base>/result.json`.
  *
+ * With `background`, the prompt is `BACKGROUND_TASK`, whose first step leaves a
+ * shell running past the cache's expiry, and `late` is read once a request
+ * came after the compaction (the shell's notice waking the session) or
+ * `WAKE_MS` has passed.
+ *
  * @module
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { EARLY_MS, LATE_MS, MARGIN_SECONDS, serve, TASK, TTL_SECONDS, type Seen } from "./sim.ts"
+import { BACKGROUND_TASK, EARLY_MS, LATE_MS, MARGIN_SECONDS, serve, TASK, TTL_SECONDS, WAKE_MS, type Seen } from "./sim.ts"
 
 export interface Spec {
   readonly base: string
   readonly fork: string
   readonly plugin: string
+  readonly background?: boolean
 }
 
 export interface Result {
@@ -85,16 +91,24 @@ const compacted = (messages: unknown) =>
 
 try {
   const session = await opencode.sessions.create({ location: { directory: work } })
-  await opencode.sessions.prompt({ sessionID: session.id, text: TASK })
+  await opencode.sessions.prompt({ sessionID: session.id, text: spec.background ? BACKGROUND_TASK : TASK })
   await opencode.experimental.session.wait({ sessionID: session.id })
-  const turn = sim.seen.find((item) => item.kind === "turn")?.at ?? Date.now()
+  const turn = sim.seen.findLast((item) => item.kind === "turn")?.at ?? Date.now()
   await sleep(turn + EARLY_MS - Date.now())
   const early = await opencode.sessions.context({ sessionID: session.id })
   let late = early
-  while (Date.now() < turn + LATE_MS && !compacted(late)) {
+  // The background run waits on past the compaction for the shell's notice to wake the session.
+  const woke = () => {
+    const compaction = sim.seen.find((item) => item.kind === "compaction")
+    return compaction !== undefined && sim.seen.some((item) => item.kind === "turn" && item.at > compaction.at)
+  }
+  const done = () => (spec.background ? compacted(late) && woke() : compacted(late))
+  while (Date.now() < turn + (spec.background ? WAKE_MS : LATE_MS) && !done()) {
     await sleep(500)
     late = await opencode.sessions.context({ sessionID: session.id })
   }
+  if (spec.background) await opencode.experimental.session.wait({ sessionID: session.id })
+  late = await opencode.sessions.context({ sessionID: session.id })
   const result: Result = { early, late, seen: sim.seen }
   writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
 } finally {
