@@ -31,6 +31,14 @@
  *   Codex account's pace admits (default `["openai"]`) and the script run
  *   with `--codex --admit` (default the orchestrate skill's `budget.ts`, the
  *   one the Claude-side Codex bridge asks); `false` leaves them to the pool.
+ *   With `pool: true` the pool answers first: when it paces the provider (its
+ *   `paced` option), its answer is the ChatGPT account's own measure, counting
+ *   every host and harness on the account, and the script answers only when
+ *   the pool cannot. Without it the script alone answers.
+ *
+ * Each new subagent is told to the pool (`started`), which counts it on its
+ * provider's pace, here and on the owner's other hosts, until its spend shows
+ * in a reading.
  */
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
@@ -88,6 +96,7 @@ const CODEX_DEFAULT = { providers: ["openai"], script: CODEX_BUDGET }
 const Codex = Schema.Struct({
   providers: Schema.Array(Schema.String).pipe(withDefault<ReadonlyArray<string>>(CODEX_DEFAULT.providers)),
   script: Schema.String.pipe(withDefault(CODEX_DEFAULT.script)),
+  pool: Schema.optional(Schema.Boolean),
 })
 
 export const Options = Schema.Struct({
@@ -130,7 +139,10 @@ export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externa
       defaultModel: (directory) => ctx.model.default({ location: { directory } }).pipe(Effect.map((answer) => answer.data)),
       offered: (directory) => ctx.model.list({ location: { directory } }).pipe(Effect.map((answer) => answer.data)),
     }),
-    PoolPaceLive.layer((input) => ctx.rpc(POOL_STATUS).pace(input)),
+    PoolPaceLive.layer(
+      (input) => ctx.rpc(POOL_STATUS).pace(input),
+      (input) => ctx.rpc(POOL_STATUS).started(input),
+    ),
     CodexAdmissionLive.layer(options.codex === false ? CODEX_BUDGET : options.codex.script),
     CompactionWindowsLive.layer(options.windows),
   )
@@ -175,7 +187,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
           place: options.place,
           fullAgent: options.fullAgent,
           ...(options.now === undefined ? {} : { now: options.now }),
-          ...(options.codex === false ? {} : { codex: { providers: options.codex.providers } }),
+          ...(options.codex === false ? {} : { codex: { providers: options.codex.providers, ...(options.codex.pool === undefined ? {} : { pool: options.codex.pool }) } }),
         }).pipe(Layer.provideMerge(externals(ctx, options))),
       )
       const orchestrate = Context.get(services, Model.Orchestrate)

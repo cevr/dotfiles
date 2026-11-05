@@ -43,7 +43,11 @@ export class Models extends Context.Service<
  */
 export class PoolPace extends Context.Service<
   PoolPace,
-  { readonly pace: (providerID: string) => Effect.Effect<Pace | undefined> }
+  {
+    readonly pace: (providerID: string) => Effect.Effect<Pace | undefined>
+    /** A new agent started on the provider: the pool counts it until its spend shows. Telling never fails. */
+    readonly started: (providerID: string) => Effect.Effect<void>
+  }
 >()("dotfiles-opencode/orchestrate/PoolPace") {}
 
 /**

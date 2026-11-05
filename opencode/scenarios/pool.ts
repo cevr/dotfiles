@@ -42,7 +42,7 @@ export default OpenCodeDriver.use({
     { package: `${root}/cmd/orchestrate`, options: { now: "2026-11-04T15:00:00Z", log: `${out}/agents.jsonl` } },
     { package: `${root}/cmd/status`, options: { log: `${out}/agents.jsonl`, statusScript: join(homedir(), ".claude/skills/orchestrate/scripts/status.ts") } },
   ] },
-  tuiConfig: { animations: false, tabs: { mode: "off" }, theme: { name: theme, mode: process.env.SCENARIO_MODE === "light" ? "light" : "dark" }, plugins: [`${root}/mods/prime`, `${root}/cmd/status`] },
+  tuiConfig: { animations: false, tabs: { mode: "off" }, theme: { name: theme, mode: process.env.SCENARIO_MODE === "light" ? "light" : "dark" }, plugins: [`${root}/cmd/prime`, `${root}/cmd/status`] },
   tui: { viewport: { cols: Number(process.env.SCENARIO_COLS ?? 144), rows: 60 } },
   project: { git: true, files: {
     ".opencode/plugins/fixture/package.json": JSON.stringify({ name: "fixture-pool", type: "module", exports: { "./server": "./server.ts" } }),

@@ -2,7 +2,7 @@
 // running agents named by their call, unit lines, and which read failed.
 import { describe, expect, test } from "bun:test"
 import { Option, Schema } from "effect"
-import { accountRows, agentRows, PanePools, stamp, unavailable, unitLine } from "./pane.ts"
+import { accountRows, agentRows, fleetRows, PaneFleet, PanePools, stamp, unavailable, unitLine } from "./pane.ts"
 
 const now = Date.parse("2026-11-04T15:00:00Z")
 
@@ -90,6 +90,39 @@ describe("agentRows", () => {
       { id: "ses_b", role: "agent", description: "Other" },
       { id: "ses_c", role: "agent", description: "ses_c" },
     ])
+  })
+})
+
+describe("fleetRows", () => {
+  test("this host's new agents, a peer read with its own, and a peer that cannot be read, flagged", () => {
+    const fleet = {
+      host: "Cristians-MacBook-Pro.local",
+      starts: 1,
+      settleMinutes: 10,
+      peers: [
+        { name: "workbox", host: "bite-cristian", seenAt: now, starts: 3 },
+        { name: "studio", starts: 0, missed: { since: now - 60_000, message: "ssh: connect to host studio port 22: Operation timed out" } },
+      ],
+    }
+    expect(fleetRows(fleet)).toEqual([
+      { down: false, text: "Cristians-MacBook-Pro.local (this host) · 1 new agent counting for 10 min" },
+      { down: false, text: "workbox (bite-cristian) · 3 new agents counting · read 2026-11-04 15:00Z" },
+      {
+        down: true,
+        text: "studio · unreachable since 2026-11-04 14:59Z: ssh: connect to host studio port 22: Operation timed out; the pace goes on without it",
+      },
+    ])
+  })
+
+  test("with no peers it says the pace counts this host only; the pool's answer decodes", () => {
+    const answer = { host: "bite-cristian", starts: 0, settleMinutes: 10, peers: [] }
+    expect(Option.map(Schema.decodeUnknownOption(PaneFleet)(answer), fleetRows)).toEqual(
+      Option.some([
+        { down: false, text: "bite-cristian (this host) · 0 new agents counting for 10 min" },
+        { down: false, text: "No other hosts: the pace counts this one's new agents only." },
+      ]),
+    )
+    expect(Option.isNone(Schema.decodeUnknownOption(PaneFleet)({ host: "x" }))).toBe(true)
   })
 })
 

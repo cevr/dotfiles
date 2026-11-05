@@ -4,6 +4,11 @@
 // spent evenly, with 5 percentage points of leeway. No tokens or USD are
 // mistaken for provider quota. This is less predictive than the shared queue.
 // A waiter wakes at retryAt and the tool rechecks; it never grants a stale slot.
+//
+// A reading lags the agents just admitted, on this host and on the others of
+// the fleet (fleet.ts): each start that has not settled yet is charged a fixed
+// share of one account's week until it has, so a wave on one host holds the
+// next start on any host before the readings show it.
 import { Schema } from "effect"
 import type { AccountStatus } from "./status.ts"
 
@@ -23,8 +28,21 @@ export type Pace = typeof Pace.Type
 /** The answer for a provider the pool does not hold. */
 export const UNPOOLED: Pace = { ok: true, measured: false, reason: "provider is not pooled" }
 
-/** The pace of a pool whose accounts read `accounts` at `now`. */
-export function poolPace(accounts: ReadonlyArray<AccountStatus>, now: number): Pace {
+/**
+ * The agents admitted in the fleet whose spend may not show in a reading yet:
+ * when each started (epoch ms), what each is charged (a share of one account's
+ * week, 0 to 1) and how long until a start has settled into the readings.
+ */
+export interface Inflight {
+  readonly starts: ReadonlyArray<number>
+  readonly cost: number
+  readonly settleMs: number
+}
+
+export const NO_INFLIGHT: Inflight = { starts: [], cost: 0, settleMs: 0 }
+
+/** The pace of a pool whose accounts read `accounts` at `now`, with the agents `inflight` charged on top. */
+export function poolPace(accounts: ReadonlyArray<AccountStatus>, now: number, inflight: Inflight = NO_INFLIGHT): Pace {
   if (!accounts.length) return { ok: true, measured: false, reason: "no pooled account readings" }
   const available = accounts.filter((a) => !a.hold || a.hold.until <= now)
   if (!available.length) {
@@ -45,14 +63,20 @@ export function poolPace(accounts: ReadonlyArray<AccountStatus>, now: number): P
   })
   if (short.length === available.length) return { ok: false, measured: true, reason: "the pool's quota windows have no room", retryAt: Math.min(...short) }
   if (!known.length) return { ok: true, measured: false, reason: "weekly pace unmeasured" }
-  const spent = known.reduce((n, a) => n + a.used, 0)
+  const read = known.reduce((n, a) => n + a.used, 0)
+  const charged = inflight.starts.length * inflight.cost
+  const spent = read + charged
   const allowance = known.reduce((n, a) => n + TARGET * (1 - (a.resetAt - now) / WEEK) + LEEWAY, 0)
   if (spent <= allowance + 1e-9) return { ok: true, measured: true, reason: "the pool is within its weekly pace" }
   const catchesUp = now + ((spent - allowance) * WEEK) / (known.length * TARGET)
+  const settles = inflight.starts.length ? [Math.min(...inflight.starts) + inflight.settleMs + 1] : []
+  const starting = inflight.starts.length
+    ? `, +${(100 * charged).toFixed(1)}% for ${inflight.starts.length} agent${inflight.starts.length === 1 ? "" : "s"} started in the last ${Math.round(inflight.settleMs / 60_000)} min`
+    : ""
   return {
     ok: false,
     measured: true,
-    reason: `the pool's weekly pace is over (${(100 * spent).toFixed(1)}% spent across ${known.length} accounts)`,
-    retryAt: Math.min(Math.ceil(catchesUp) + 1, ...known.map((a) => a.resetAt)),
+    reason: `the pool's weekly pace is over (${(100 * read).toFixed(1)}% spent across ${known.length} accounts${starting})`,
+    retryAt: Math.min(Math.ceil(catchesUp) + 1, ...settles, ...known.map((a) => a.resetAt)),
   }
 }

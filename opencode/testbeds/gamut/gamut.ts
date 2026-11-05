@@ -57,7 +57,6 @@ import { type HostConfig, type HostScreen, hostCall, isKeyName, keys } from "./p
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CHECKOUT = resolve(HERE, "../..")
 const FIXTURE = join(HERE, "fixture")
-const PLUGINS = join(CHECKOUT, "mods")
 const CMD = join(CHECKOUT, "cmd")
 const THEME = join(CHECKOUT, "themes/prime.json")
 /** The host's entry; `isHost` also finds a run's host by it in `ps`. */
@@ -895,8 +894,11 @@ const prepareAndLaunch = async (
     join(paths.work, "opencode.json"),
     `${JSON.stringify(projectConfig(preset, simPort, plugins), null, 2)}\n`,
   )
-  // cmd/btw's /btw replaces the fork's built-in one, which "-opencode.btw" turns off.
-  await Bun.write(join(paths.config, "cli.json"), `${JSON.stringify(cliConfig([...pluginPaths(PLUGINS), ...pluginPaths(CMD), "-opencode.btw"]), null, 2)}\n`)
+  // Every TUI plugin is a cmd/ composition root, Prime first; mods/prime's
+  // old `./tui` entry only forwards to cmd/prime, so loading mods/ too would
+  // load Prime twice. cmd/btw's /btw replaces the fork's built-in one, which
+  // "-opencode.btw" turns off.
+  await Bun.write(join(paths.config, "cli.json"), `${JSON.stringify(cliConfig([...pluginPaths(CMD), "-opencode.btw"]), null, 2)}\n`)
   cpSync(THEME, join(paths.work, ".opencode/themes/prime.json"))
   const agentsPath = join(paths.work, "AGENTS.md")
   await Bun.write(agentsPath, rewriteRoster(await Bun.file(agentsPath).text(), preset))

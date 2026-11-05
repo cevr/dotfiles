@@ -63,7 +63,7 @@ describe.skipIf(!fork)("background questions", () => {
       expect(stdout).toMatch(/screenshot: .*questions-.*-pane\.png/)
 
       // The root's tray counts its own two and its subagent's one, oldest first.
-      expect(lines(read("tray.txt"))).toContain("? 3 open questions · Cache store, Old endpoint, Test runner · /answer")
+      expect(lines(read("tray.txt"))).toContain("? 3 open questions · Cache store, Old endpoint, Test runner · shift+← /answer")
 
       // /answer: the oldest question, the cursor on the assumed choice, a row to type in, the keys.
       const pane = lines(read("pane.txt"))
@@ -128,4 +128,52 @@ describe.skipIf(!fork)("background questions", () => {
       else expect(tools.filter((name) => name === "ask_user_async")).toHaveLength(2)
       console.log(`Questions (${via}) artifacts: ${out}`)
     }, 150_000)
+})
+
+describe.skipIf(!fork)("the /answer pane holds its place", () => {
+  test("shift+← opens it on an empty composer and selects in a full one; the cursor, the arm and typed text hold across readings", async () => {
+    const out = mkdtempSync(join(tmpdir(), "questions-hold-"))
+    const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/questions-hold.ts"], {
+      cwd: join(import.meta.dir, ".."),
+      env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+    const read = (name: string) => lines(readFileSync(join(out, `questions-hold-${name}.txt`), "utf8"))
+    const timeout = join(out, "questions-hold-timeout.txt")
+    if (code !== 0) throw new Error(`questions-hold scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
+
+    // The tray names the hotkey beside the command.
+    expect(read("tray")).toContain("? 1 open question · Cache store · assuming SQLite · shift+← /answer")
+    // With text in the composer shift+← is the composer's: it selected the last character, which typing replaced, and the pane stayed shut.
+    const selecting = read("selecting")
+    expect(selecting).toContain("┃ holdtexZ")
+    expect(selecting.some((line) => line.includes("Question 1/"))).toBe(false)
+    // On an empty composer shift+← opens the pane, on the assumption.
+    expect(read("pane")).toContain("? Question 1/1 · Cache store · asked just now")
+    expect(read("pane")).toContain("▸ SQLite  assumed")
+    expect(read("moved")).toContain("▸ Memcached")
+
+    // The subagent asked (a changed event, a longer list) and two ticks passed: the cursor is still on the third choice.
+    const held = read("held")
+    const at = held.indexOf("Which store should the cache use?")
+    expect(held.some((line) => line.startsWith("? Question 1/2 · Cache store"))).toBe(true)
+    expect(held.slice(at, at + 6)).toEqual(["Which store should the cache use?", "SQLite  assumed", "Redis", "▸ Memcached", "Postgres", "Type your own answer"])
+    // The arm and the typed answer outlast a tick.
+    expect(read("armed")).toContain("ctrl+x again dismisses this question; the agent is not told")
+    expect(read("armed")).toContain("▸ Memcached")
+    expect(read("typed")).toContain("▸ Use Postgres with a TTL")
+
+    // Answered, the pane moves to the next question: on its assumption, nothing typed, nothing armed.
+    const next = read("next")
+    expect(next).toContain("◈ answered · Which store should the cache use? → Use Postgres with a TTL")
+    expect(next.some((line) => line.startsWith("? Question 1/1 · Test runner · from general"))).toBe(true)
+    expect(next).toContain("▸ bun test  assumed")
+    expect(next).toContain("Type your own answer")
+    expect(next).toContain("↑↓ move · enter answer · type your own · ctrl+x dismiss · esc close")
+    expect(read("done")).toContain("? 1 open question · Test runner · assuming bun test · shift+← /answer")
+    console.log(`Questions hold artifacts: ${out}`)
+  }, 150_000)
 })

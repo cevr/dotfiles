@@ -5,15 +5,16 @@
 // and keeps the last reading when a read fails. The pane (pane.tsx) sends an
 // answer or a dismissal; the question leaves the list at once, and a call that
 // fails reads the list again, so the question comes back, with a toast.
-// cmd/questions/tui.tsx registers it on `session.composer.top` and opens the
-// pane from /answer through `Questions`.
+// cmd/questions/setup.ts registers it on `session.composer.top` and opens the
+// pane from /answer and shift+← through `Questions` (questions.ts).
 import type { Plugin } from "@opencode/plugin/tui"
 import { useTerminalDimensions } from "@opentui/solid"
 import { Option, Schema } from "effect"
-import { type Accessor, createEffect, createMemo, createSignal, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, onCleanup, Show } from "solid-js"
 import { CHANGED, Open, type Question, QUESTIONS, Reply } from "../question.ts"
 import { under } from "../tray.ts"
 import { Pane } from "./pane.tsx"
+import type { Questions } from "./questions.tsx"
 import { Tray } from "./tray.tsx"
 
 const decodeOpen = Schema.decodeUnknownOption(Open)
@@ -26,25 +27,6 @@ const POLL_MS = 2000
 const SIDEBAR = 42
 /** The transcript's inset on both sides, and the glyph and its space. */
 const CHROME = 6
-
-/** What the TUI shares between the dock and /answer: the session whose pane is open, and each session's last reading. */
-export interface Questions {
-  readonly pane: Accessor<string | undefined>
-  readonly setPane: (sessionID: string | undefined) => void
-  readonly open: (sessionID: string) => ReadonlyArray<Question>
-  readonly setOpen: (sessionID: string, questions: ReadonlyArray<Question>) => void
-}
-
-export const createQuestions = (): Questions => {
-  const [pane, setPane] = createSignal<string>()
-  const [open, setOpenAll] = createSignal<Readonly<Record<string, ReadonlyArray<Question>>>>({})
-  return {
-    pane,
-    setPane: (sessionID) => setPane(sessionID),
-    open: (sessionID) => open()[sessionID] ?? [],
-    setOpen: (sessionID, questions) => setOpenAll((all) => ({ ...all, [sessionID]: questions })),
-  }
-}
 
 export function Dock(props: { ctx: Plugin.Context; sessionID: string; questions: Questions }) {
   const ctx = props.ctx

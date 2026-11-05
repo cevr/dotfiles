@@ -4,9 +4,11 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
-import { BUILTIN_BTW_OFF, CLAUDE_CACHE_TTL, launcher, mergeCli, mergeServer, poolEntry, roleModels } from "../scripts/daily.ts"
+import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
+import { BUILTIN_BTW_OFF, CLAUDE_CACHE_TTL, launcher, mergeCli, mergeServer, orchestrateEntry, peersOf, pluginDir, poolEntry, roleModels } from "../scripts/daily.ts"
 
 const MODS = "/repo/opencode/mods"
+const CMD = "/repo/opencode/cmd"
 const AUTH = "/home/.local/share/opencode-prime/anthropic-auth"
 
 describe("the server config", () => {
@@ -22,6 +24,13 @@ describe("the server config", () => {
     expect(merged.model).toBe("openai/gpt-6.1-sol")
     expect(merged.autoupdate).toBe(false)
     expect(merged.providers).toEqual({ anthropic: { settings: { cache: { ttl: "1h" } } } })
+  })
+
+  test("a plugin that moved from mods/ to its cmd/ composition root replaces its old entry, never doubles it", () => {
+    expect(anthropicAuthPlugin.endsWith("/opencode/cmd/anthropic-auth")).toBe(true)
+    const existing = { plugins: [`${MODS}/anthropic-auth`, "/elsewhere/plugin"] }
+    const merged = mergeServer(existing, [`${CMD}/anthropic-auth`], {}, [MODS, CMD])
+    expect(merged.plugins).toEqual([`${CMD}/anthropic-auth`, "/elsewhere/plugin"])
   })
 
   test("sets Claude's prompt cache to an hour and keeps the other provider settings", () => {
@@ -57,10 +66,49 @@ describe("the pool's entry", () => {
   })
 })
 
+describe("the pool's fleet", () => {
+  test("on the MacBook and the workbox, paces OpenAI on the ChatGPT account and reads the other host over SSH", () => {
+    expect(poolEntry(`${MODS}/pool`, undefined, { host: "Cristians-MacBook-Pro.local" })).toEqual({
+      package: `${MODS}/pool`,
+      options: {
+        cacheLifeMs: 3_600_000,
+        paced: { openai: "openai" },
+        fleet: { host: "Cristians-MacBook-Pro.local", peers: [{ name: "workbox", ssh: "bite-workbox" }] },
+      },
+    })
+    expect(peersOf("bite-cristian")).toEqual([{ name: "macbook", ssh: "cvr@cristians-macbook-pro" }])
+    expect(peersOf("cristians-macbook-pro")).toEqual([{ name: "workbox", ssh: "bite-workbox" }])
+  })
+
+  test("another host has no peers, and still paces OpenAI", () => {
+    expect(poolEntry(`${MODS}/pool`, "/g", { host: "ci-runner" })).toMatchObject({
+      options: {
+        sources: [{ kind: "gent", dir: "/g" }],
+        paced: { openai: "openai" },
+        fleet: { host: "ci-runner", peers: [] },
+      },
+    })
+  })
+
+  test("orchestrate asks the pool first for a Codex provider's agents, so they pace on every host's spend", () => {
+    const entry = orchestrateEntry(`${MODS}/orchestrate`)
+    expect(entry).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true } } })
+    // It replaces the bare entry an older run wrote, as every entry from our dirs is.
+    expect(mergeServer({ plugins: [`${MODS}/orchestrate`] }, [entry], {}, [MODS]).plugins).toEqual([entry])
+  })
+})
+
 describe("the TUI config", () => {
   test("loads Prime first, sets the Prime theme and keeps the other keys", () => {
     const merged = mergeCli({ theme: { name: "system", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, "/x"] }, [`${MODS}/prime`, `${MODS}/status`], [MODS])
     expect(merged).toEqual({ theme: { name: "prime", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, `${MODS}/status`, "/x"] })
+  })
+
+  test("Prime loads from its cmd/ composition root, and that entry replaces the old mods/prime one", () => {
+    expect(pluginDir("prime").endsWith("/opencode/cmd/prime")).toBe(true)
+    const existing = { theme: { name: "prime", mode: "dark" }, plugins: [`${MODS}/prime`, `${MODS}/status`, "/x"] }
+    const merged = mergeCli(existing, [`${CMD}/prime`, `${CMD}/status`], [MODS, CMD])
+    expect(merged.plugins).toEqual([`${CMD}/prime`, `${CMD}/status`, "/x"])
   })
 })
 

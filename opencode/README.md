@@ -44,6 +44,46 @@ opens; Esc or `q` closes it, and `/pool` from the prompt toggles it.
 model and a scratch home. See [the gamut testbed](testbeds/gamut/README.md).
 It makes no live model request.
 
+## Prime
+
+`cmd/prime` is the Prime look's TUI plugin (`gent.prime`), the composition
+root of `mods/prime`. `daily` loads it first in `cli.json`, with the Prime
+theme. The mod has three parts.
+
+- The domain is the mod's root files, plain TypeScript with no OpenCode,
+  OpenTUI or Solid. It covers what each row says: a tool group's header
+  and tree rows (`group.ts`), a call's preview, counts and time (`call.ts`),
+  a kernel cell's calls (`kernel.ts`), diffs (`diff.ts`), notices
+  (`notice.ts`), a step's end row (`step-end.ts`), the pinned ask
+  (`ask.ts`), subagent navigation (`subagent.ts`), the top bar and dock
+  (`chrome.ts`), and the detail levels with their row gaps (`detail.ts`).
+  `session.ts` holds the session data it reads, typed as plain values.
+- The components are in `tui/`. They read the host only through the `Host`
+  contract in `tui/host.ts`.
+- `opencode/host.ts` builds that `Host` from the plugin context. Each read
+  goes straight to the context, so it stays reactive.
+
+A compaction reads as one line below All, such as
+`◇ Compacted automatically · 171k → 6k tokens · 12.0s` (`compaction.ts`,
+`tui/compaction.tsx`). A manual one says `Compacted`. A failed or cancelled
+one says so in the warning tone, and a running one is the live spinner
+line. The two numbers are the compaction request's own tokens: its prompt
+(the context it compacted), then its output (the summary). The time runs to
+the next message the run writes, because the host keeps no end time on a
+compaction. At All (Ctrl+O) it is the host's whole block, with its rule and
+the summary. This needs the fork's `session.message.compaction` slot. A host
+without the slot draws its own block at every level, but then Prime's
+typecheck fails on the unknown slot name.
+
+`.oxlintrc.json` fences both layers. The domain may import only `effect`,
+`@dotfiles/opencode-subagents/*` and its own root files. `tui/` may not
+import `opencode/` or `@opencode/*`.
+
+`mods/prime/tui.tsx` re-exports `cmd/prime/tui.tsx`. It is there for a
+`cli.json` written before the move, which still loads `mods/prime`. The
+next `bun run daily` replaces that entry with `cmd/prime`, and then the
+shim can go.
+
 ## Orchestrate
 
 `mods/orchestrate` holds the orchestrate skill's rules; its plugin is
@@ -217,11 +257,11 @@ seconds it reads the route's root session's queue over the
 `dotfiles-opencode.queue` RPC (`get({ sessionID })` answers
 `{ revision, items }`) and keeps the answer when its revision moved. An
 item with a `session` shows that subagent's live state (running, blocked,
-done, failed) instead of its own, and a running subagent no item names
-joins the Running group under its call's description. Under a subagent's
-row a second line gives its role, its one-sentence update and its time, as
-the Prime rows do (`  implementor  Check the money… · 1s`). Done items stay
-ten minutes.
+done, failed) as its mark instead of its own state, still one line. The
+section shows only the queue's items: a subagent no item names is not drawn
+there, and no row carries a subagent's role, update or time; Prime's rows
+beneath the composer show the subagents, sidebar open or closed. Done items
+stay ten minutes.
 
 The model, in the domain files at `mods/queue`'s root:
 
@@ -238,7 +278,7 @@ The model, in the domain files at `mods/queue`'s root:
   `memory/` holds the one the seam test uses.
 - `opencode/subagents.ts` maps the shared subagent rows
   (`@dotfiles/opencode-subagents`: `read` from the TUI's data, then its rows)
-  to the board's subagents, every row kept so a linked item outlives the
+  to each session's live state, every row kept so a linked item outlives the
   shared linger.
 
 ## Git
@@ -677,12 +717,16 @@ The TUI plugin draws, above the composer (the `session.composer.top` slot),
 one line while the session or any of its subagents has questions open:
 
 ```
-? 3 open questions · Cache store, Old endpoint, Test runner · /answer
+? 3 open questions · Cache store, Old endpoint, Test runner · shift+← /answer
 ```
 
-With one question it reads `? 1 open question · <header> · assuming <assume> · /answer`;
-parts drop from the right as the width shrinks. `/answer` opens the pane in
-the line's place, on the oldest question:
+With one question it reads `? 1 open question · <header> · assuming <assume> · shift+← /answer`;
+parts drop from the right as the width shrinks, the hotkey last but one. `/answer`,
+or shift+← on an empty composer, opens the pane in the line's place, on the
+oldest question. shift+← is also the composer's select-left: with text in the
+composer the key stays the composer's and selects (the hotkey's layer sits
+above the textarea's and hands the key on); with no question open it does
+nothing.
 
 ```
 ? Question 1/3 · Cache store · asked just now
@@ -697,6 +741,10 @@ The cursor starts on the assumption (a row of its own at the top when no
 choice names it); typing answers in your own words. Enter answers, `ctrl+x`
 twice dismisses (the agent is not told), Esc closes. A subagent's question
 names it: `· from general ·`. The pane closes with the last question.
+The cursor, the typed answer and a first `ctrl+x` stay while the questions
+are read again; they start over only when another question takes the top
+(the shown one was answered, dismissed, withdrawn or asked again, which gives
+it a new id): the pane then shows the next oldest, on its assumption.
 
 An answer goes to the session that asked as a synthetic user message,
 steered, so a running session reads it at its next step and an idle one wakes:
@@ -726,11 +774,14 @@ The model (the domain files at the root of `mods/questions`): `question.ts`
 is the `Questions` aggregate, deciding `Ask`, `Answer`, `Dismiss` and
 `Delivered`; `ask.ts` the tool's input, description and receipt; `reply.ts`
 the answer's message; `tray.ts` and `choices.ts` the line and the pane;
+`hotkey.ts` when shift+← opens the pane;
 `model.ts` the `QuestionsModel` that keeps the sheets and sends the answers.
 It asks the `QuestionStore`, `Courier` and `Changes` contracts in
 `service.ts`, implemented in `opencode/` and `memory/`, with the laws in
 `laws.ts`. `tests/questions.test.ts` runs `scenarios/questions.ts` in real
-OpenCode, direct and from a kernel cell.
+OpenCode, direct and from a kernel cell, and `scenarios/questions-hold.ts`
+for the hotkey and the pane holding its place across readings;
+`cmd/questions/tui.test.ts` checks the hotkey's binding on a stand-in TUI.
 
 Where it departs from gent: a subagent may ask (gent refuses it in a child
 session), and its question shows in its parent's tray; ids are per session,
@@ -741,6 +792,139 @@ Under `daily`, orchestrate's roles (planner, implementor, verifier, worker)
 are not allowed `ask_user_async`: a role answers to the session that started
 it, which decides what reaches the owner. So in practice the root sessions
 ask, and a subagent asks only outside orchestrate's roles.
+
+## Wakes
+
+`mods/wake` lets a session set itself an alarm or poll a command and be woken
+by it, ported from gent's `wake`. Its plugins are `cmd/wake` (`server.ts` and
+`tui.tsx`). The server takes options: `backstop` (`"cron"`, the default, or
+`"off"`, which holds the OS jobs in memory, for scenarios and tests), and
+`bun` and `opencode`, those programs by path (default the `bun` on PATH, else
+`~/.bun/bin/bun`, and `~/.local/bin/opencode`).
+
+The server adds four direct tools (a kernel cell calls them as
+`tools.wake(...)` and so on):
+
+- `wake({ afterSeconds | at, everySeconds?, mode?, note, newSession? })` sets
+  an alarm on this session, at most a year ahead. `everySeconds` (at least 60)
+  repeats it until cancelled. `mode: "notify"` fires without starting a turn:
+  the session reads it at its next turn, and the user sees it meanwhile.
+  `newSession: { directory?, prompt }` starts a fresh session there at the
+  time instead, with `prompt` as its first message.
+- `monitor({ command, cwd?, intervalSeconds?, until?, timeoutSeconds?, note })`
+  runs `command` every `intervalSeconds` (default 30) until its stdout matches
+  the regular expression `until` (without it, until it exits 0), or until
+  `timeoutSeconds` (default 1800, at most 86400) pass, and then wakes the
+  session with the outcome and the last output.
+- `wake_cancel({ id })` cancels one; `wake_list({})` lists the pending ones
+  and the notices not yet read.
+
+The receipt names the id and the time:
+
+```
+Alarm w5tap1r set: it wakes this session at 2026-11-05T15:11:40.891Z (in 3s).
+End your turn now unless there is other work: the alarm starts a new turn with your note.
+```
+
+A fire goes to the session as a synthetic user message, steered, so a running
+session reads it at its next step and an idle one wakes (a notice does not
+wake it):
+
+```
+⏰ Wake w5tap1r fired: the alarm you set at 2026-11-05T15:11:37.891Z, due 2026-11-05T15:11:40.891Z.
+Note: ALPHA: check that the build finished
+```
+
+A monitor's says `⏰ Monitor <id> matched: `<command>` printed a match for /…/ after N checks.`
+(or `timed out`), where and how often it checked, the note, and the last 2000
+characters of its output. A fire that went a minute or more after its time
+says so: `It fired 2m late: no OpenCode server was running at <time>, so it
+went when one started.` The transcript draws a fire as one notice,
+`◈ wake <id> · <note>` (`notice`, `monitor <id> matched`, `· 2m late ·`); its
+metadata is `{ source: "wake", id, kind, mode, setAt, tick, firedAt, lateMs }`.
+
+The TUI plugin draws, above the composer (the `session.composer.top` slot),
+one line while the session on screen has entries pending or notices unread:
+
+```
+⏰ 2 wakes · 1 monitor · next 14:30 · 1 notice
+```
+
+`next` is the soonest alarm in local time (a weekday or a date when not
+today); with only monitors it reads `until <deadline>`. Parts drop from the
+right as the width shrinks. It reads the wakes RPC (`dotfiles-opencode.wake`,
+`pending`) on its `changed` event and every 2 seconds.
+
+Entries are kept in the plugin's storage (OpenCode's database). On start, and
+after a reload, the plugin arms its directory's entries and fires at once the
+ones that came due meanwhile. A fire is recorded under its message id before
+it is sent and settled after, so a reload or a resend delivers it once; a
+fire that failed goes again 30 seconds later, and one whose session went is
+dropped. A deleted session's entries go, with their checks and OS jobs. At
+most 20 entries wait per session.
+
+A monitor's check runs as its own process: `/bin/sh -c <command>` in a new
+process group, without `BASH_ENV` or `ENV` (so no shell startup file runs),
+at most 60 seconds per check, keeping the last 64 KB of its output. Cancel,
+the deadline and a deleted session kill its group.
+
+### The OS backstop
+
+A timer fires only while a server runs, so each entry also registers an OS
+job through `Bun.cron`, titled `opencode-wake-<id>`: a launchd agent on macOS
+(`~/Library/LaunchAgents/bun.cron.opencode-wake-<id>.plist`) or a crontab
+line marked `# bun-cron: opencode-wake-<id>` on Linux; no other crontab line
+is touched. A job runs at the first whole minute at or after the entry's time
+(an alarm's, or a monitor's deadline). A repeat whose period cron can say
+exactly (minutes dividing an hour, hours dividing a day, a day, a week) gets
+a recurring job; any other entry gets a one-shot for its minute, set again
+after each fire.
+
+The job runs `cmd/wake/backstop.ts` with a bare environment, carrying only
+`HOME`, the `XDG_*_HOME` variables, `OPENCODE_CONFIG_DIR` and `OPENCODE_DB`.
+It reads `$XDG_STATE_HOME/opencode/service.json` and probes the service; when
+nothing answers it runs `~/.local/bin/opencode service start` and waits for
+it. Then it calls the wakes RPC's `due({ id })` in the entry's directory, and
+the server fires the entry, as its own timer would have, under the same
+recorded message id: a job that runs after the timer fired delivers nothing.
+The server removes the job once the entry fired or went; a job whose entry
+is already gone has nothing to fire. A fire at or past the job's minute
+(often the start the job itself brought up, which fires the late entry
+before the job's call lands) removes the job a few seconds later, since
+removing a running launchd job kills it mid-call. Each run appends a line to
+`$XDG_STATE_HOME/opencode-wake/backstop.log`. On start the plugin removes the
+`opencode-wake-*` jobs that no entry names.
+
+The job calls the server rather than `opencode run --session`: `run` would
+add a prompt of its own, under an id the entry never recorded, so a fire the
+timer also sent would arrive twice. When a job cannot be registered the tool
+still sets the entry and says so (`No OS backstop was set (…): it fires only
+while an OpenCode server runs.`).
+
+The model (the domain files at the root of `mods/wake`): `wake.ts` is the
+entries and the RPC, `message.ts` the letters and receipts, `tools.ts` the
+tools' inputs and descriptions, `tray.ts` the line, `backstop.ts` the jobs'
+names and schedules, `model.ts` the `WakesModel` that keeps, arms, fires and
+settles. It asks the `WakeStore`, `Courier`, `Checks`, `Backstop` and
+`Changes` contracts in `service.ts`, with the laws in `laws.ts`, implemented
+in `opencode/` (the plugin's storage, the session inbox), `process/` (the
+checks), `cron/` (Bun.cron and the job's side) and `memory/`.
+`tests/wake.test.ts` runs `scenarios/wake.ts` (an alarm, a notice, a monitor,
+a cancel and a plugin reload) and `scenarios/wake-downtime.ts` (an alarm due
+while the server was stopped) in real OpenCode.
+
+Where it departs from gent: a fire that went late still starts a turn and
+says how late (gent turns an alarm more than 10 minutes late into a notice);
+there is no automatic resume of the turn the alarm interrupted; the monitor's
+period is `intervalSeconds` (gent's `everySeconds`); tool names take `_`
+where gent's take `.`, which Anthropic refuses; the OS backstop and
+`newSession` are new.
+
+A subagent, and so each of orchestrate's roles, is refused: a role answers to
+the session that started it and ends with it, so it waits on CI with a
+background shell, and its parent (or the root) sets the wake. The root
+sessions, the orchestrator included, use them for every wake-up; `okra
+schedule` is no longer needed for that.
 
 ## The code kernel
 
@@ -886,17 +1070,56 @@ retry the same agent and description; admission is checked again. A waiter
 never reserves a stale slot.
 
 Cost of this choice: this is quota pacing, without Claude Code's calibrated
-per-role cost prediction, fair ticket queue, cross-host reservations or
-Sabbath-adjusted working-hour budget. Quota updates can lag a wave of starts.
-The OpenAI provider is not pooled. A new subagent on it asks the Codex
-account's pace instead: the orchestrate skill's `budget.ts --codex --admit
---model <id> --role <role>`, the admission the Claude-side Codex bridge asks
-before each turn. A hold denies the call with the same background waiter,
-timed to the hold's `opens about` time. Only the script's own `admit`/`hold`
-answer counts; anything else fails open. That budget measures Codex's own
-transcripts, so OpenCode's GPT tokens reach it only through the account's
-weekly use. The orchestrate mod's `codex` option names the providers and
-the script; `false` turns it off.
+per-role cost prediction, fair ticket queue or Sabbath-adjusted working-hour
+budget.
+
+A provider the pool measures but does not place goes in the pool's `paced`
+option (daily sets `paced: { openai: "openai" }`). OpenAI's pace is then the
+ChatGPT account's own usage, the same numbers Codex CLI's `/status` shows:
+the `wham/usage` endpoint, then the `x-codex-primary/secondary-*` headers and
+`codex.rate_limits` frames on each response
+(`mods/pool/chatgpt/usage.ts`). The account counts every place it is spent,
+this host or another, OpenCode or Codex CLI. Its requests are never placed,
+and its token is never stored or shown. A new subagent on a Codex provider
+takes that pace when the orchestrate mod's `codex.pool` is set (daily sets
+`codex: { pool: true }`). When the pool has no reading (`measured: false`),
+or without `codex.pool`, it asks the orchestrate skill's
+`budget.ts --codex --admit --model <id> --role <role>` as before.
+That script reads only this host's `~/.codex` transcripts. A hold denies the
+call with the same background waiter. The orchestrate mod's `codex` option
+names the providers, the script and `pool`; `false` turns it off.
+
+### The fleet
+
+A reading lags the agents just admitted, on every host spending the same
+accounts. The pool's `fleet` option closes that gap. Each host records the
+subagents orchestrate admits (`started`). It reads its peers' reports every
+`pollSeconds` (30), and its pace charges each start in the fleet
+`startCost` (0.005 of one account's week) for `settleMinutes` (10). The
+hold names the extra: `the pool's weekly pace is over (90.0% spent across 2
+accounts, +30.0% for 3 agents started in the last 10 min)`. It opens when the
+oldest start settles. A report also carries the host's readings. A peer's
+newer reading of a login this pool lists (the same credential id, such as
+`gent:<label>`) replaces the older one.
+
+The transport is SSH over the tailnet. No port opens, and no token or
+password crosses. A host reads a peer by running
+`ssh -o BatchMode=yes <dest> 'bun run -'` with
+`mods/pool/ssh/report.ts` on stdin. On the peer, report.ts asks its own
+server on loopback (`~/.local/state/opencode/service.json`) for the pool's
+`report` and prints it. daily configures the peers: the Mac reads
+`bite-workbox`, and the workbox reads `cvr@cristians-macbook-pro`.
+
+OpenCode runs the plugin once per directory it serves. The fleet is kept in
+the plugin's storage, which belongs to the host, so every instance counts
+the same starts, and a peer is read by one instance per half `pollSeconds`.
+A peer that cannot be read is logged once, and the pace goes on without its
+new starts. The /pool pane's Fleet section names it: `workbox ·
+unreachable since <time>: <message>; the pace goes on without it`.
+
+Gaps: a reading merges only for credential ids both hosts list. An
+OpenCode-signed login has a different connection id on each host. A ChatGPT
+header reading is credited to the provider's active connection.
 
 `bun run agents` copies role prompts from the orchestrate skill and reads
 the Claude-family effort from its role table: planner `high`, implementor

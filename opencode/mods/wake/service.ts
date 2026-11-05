@@ -1,0 +1,106 @@
+// The contracts the wakes need from outside: somewhere to keep the entries and
+// notices, a way into a session, a way to run a monitor's command, the OS
+// backstop that fires an entry when no server runs, and word of a change. What
+// every implementation owes is in laws.ts.
+import { Context, type Effect, Schema } from "effect"
+import type { Job, Schedule } from "./backstop.ts"
+import type { Letter } from "./message.ts"
+import type { Check, Entry, Notice } from "./wake.ts"
+
+/** The host would not take the fire into the session; `gone` when the session no longer exists. */
+export class DeliveryRefused extends Schema.TaggedError<DeliveryRefused>()("DeliveryRefused", {
+  sessionID: Schema.String,
+  message: Schema.String,
+  gone: Schema.Boolean,
+}) {}
+
+/** The OS scheduler would not take, drop or list a job; `message` says why. */
+export class BackstopRefused extends Schema.TaggedError<BackstopRefused>()("BackstopRefused", { message: Schema.String }) {}
+
+/**
+ * The entries and notices, across every directory's server.
+ * - `entries` lists every entry that reads; `ids` every entry's id, readable or not.
+ * - `read` gives one entry, or undefined when none (or none that reads).
+ * - `write` replaces an entry whole; `remove` forgets it, and removing none is no failure.
+ * - Notices go by their delivery id the same way.
+ */
+export class WakeStore extends Context.Service<
+  WakeStore,
+  {
+    readonly entries: Effect.Effect<ReadonlyArray<Entry>>
+    readonly ids: Effect.Effect<ReadonlyArray<string>>
+    readonly read: (id: string) => Effect.Effect<Entry | undefined>
+    readonly write: (entry: Entry) => Effect.Effect<void>
+    readonly remove: (id: string) => Effect.Effect<void>
+    readonly notices: Effect.Effect<ReadonlyArray<Notice>>
+    readonly writeNotice: (notice: Notice) => Effect.Effect<void>
+    readonly removeNotice: (delivery: string) => Effect.Effect<void>
+  }
+>()("dotfiles-opencode/wake/WakeStore") {}
+
+/** A session a `newSession` alarm starts: its minted id, where, and its first prompt under the fire's message id. */
+export interface Start {
+  readonly sessionID: string
+  readonly directory: string
+  readonly delivery: string
+  readonly text: string
+}
+
+/**
+ * The way into a session.
+ * - `newDelivery`: an id for one fire's message, minted before it is sent.
+ *   Ids are distinct and later ones sort after earlier ones.
+ * - `newSession`: an id for a session a fire starts, minted before it starts.
+ * - `deliver`: the letter into the session under that id as a steer; with
+ *   `resume` an idle session wakes to read it, without it the message waits
+ *   for the session's next turn. Delivering an id twice puts one message in the
+ *   session. A session that does not exist refuses with `gone`.
+ * - `start`: the session under its minted id with the text as its first
+ *   prompt, which starts a turn. Starting the same id and delivery twice makes
+ *   one session with one prompt.
+ * - `parentOf`: the session's parent, undefined for a root session or one
+ *   that does not exist.
+ */
+export class Courier extends Context.Service<
+  Courier,
+  {
+    readonly newDelivery: Effect.Effect<string>
+    readonly newSession: Effect.Effect<string>
+    readonly deliver: (sessionID: string, delivery: string, letter: Letter, resume: boolean) => Effect.Effect<void, DeliveryRefused>
+    readonly start: (start: Start) => Effect.Effect<void, DeliveryRefused>
+    readonly parentOf: (sessionID: string) => Effect.Effect<string | undefined>
+  }
+>()("dotfiles-opencode/wake/Courier") {}
+
+/**
+ * A monitor's check: `command` run once in `cwd`, owned by the caller, and
+ * stopped past `timeoutMs` or when the caller is interrupted. It never fails;
+ * a command that could not start reads as a failed check that says why. The
+ * command runs in a plain `/bin/sh`, reading no shell startup files, with no
+ * stdin, and its output is kept to a bounded tail.
+ */
+export class Checks extends Context.Service<Checks, { readonly run: (command: string, cwd: string, timeoutMs: number) => Effect.Effect<Check> }>()(
+  "dotfiles-opencode/wake/Checks",
+) {}
+
+/**
+ * The OS jobs that fire entries when no server runs.
+ * - `register`: the job titled `job.title` on `schedule`, which reaches the
+ *   entry's server, starting OpenCode when none runs; registering a title
+ *   again replaces its job.
+ * - `remove`: drops the job; removing none is no failure.
+ * - `titles`: every wake job's title (those starting `opencode-wake-`), and none of anything else's.
+ */
+export class Backstop extends Context.Service<
+  Backstop,
+  {
+    readonly register: (job: Job, schedule: Schedule) => Effect.Effect<void, BackstopRefused>
+    readonly remove: (title: string) => Effect.Effect<void, BackstopRefused>
+    readonly titles: Effect.Effect<ReadonlyArray<string>, BackstopRefused>
+  }
+>()("dotfiles-opencode/wake/Backstop") {}
+
+/** Word that a session's wakes changed, so whatever shows them reads again. */
+export class Changes extends Context.Service<Changes, { readonly changed: (sessionID: string) => Effect.Effect<void> }>()(
+  "dotfiles-opencode/wake/Changes",
+) {}

@@ -576,6 +576,130 @@
     },
     {
       "files": [
+        "mods/wake/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
+                "message": "The wake domain fence: the wakes' domain files import effect, their own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders (memory/, opencode/, process/, cron/)."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "mods/wake/tui/**"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "../memory/**",
+                  "../opencode/**",
+                  "../process/**",
+                  "../cron/**",
+                  "../laws.ts",
+                  "../model.ts"
+                ],
+                "message": "The wake UI fence: the tray imports the wakes domain, never the server's model, an implementation (memory/, opencode/, process/, cron/) or the laws; every read goes through the wakes RPC."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "mods/anthropic-auth/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!@dotfiles/decider/*",
+                  "!./*.ts",
+                  "!bun:test",
+                  "!@dotfiles/opencode-pool/quota"
+                ],
+                "message": "The Anthropic auth domain fence: its domain files import effect, @dotfiles/decider/*, the mod's own root files, the pool's quota protocol (@dotfiles/opencode-pool/quota) and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of the mod's folders. (`*/**/effect` takes back what `!effect` lets through: any path ending in `effect`, such as @opencode/plugin/effect.)"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "mods/prime/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!@dotfiles/opencode-subagents/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
+                "message": "The Prime domain fence: its domain files import effect, the subagent rows' domain (@dotfiles/opencode-subagents/*), the mod's own root files and bun:test only; never @opencode/*, @opentui/*, solid-js, node:*, bun or one of the mod's folders. (`*/**/effect` takes back what `!effect` lets through: any path ending in `effect`, such as @opencode/plugin/effect.)"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "mods/prime/tui/**"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "../opencode/**",
+                  "@opencode/**"
+                ],
+                "message": "The Prime UI fence: the components read the host through tui/host.ts and import the Prime domain, never OpenCode (@opencode/*) or its implementation of the contract (opencode/); cmd/prime/tui.tsx builds the Host."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
         "mods/skills/*.ts"
       ],
       "rules": {
@@ -614,33 +738,6 @@
                   "../model.ts"
                 ],
                 "message": "The skills UI fence: the popup reads the catalog over the RPC; it imports the domain's catalog and mention files, never the scan (filesystem/) or the server's model."
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "files": [
-        "mods/anthropic-auth/*.ts"
-      ],
-      "rules": {
-        "no-restricted-imports": [
-          "error",
-          {
-            "patterns": [
-              {
-                "group": [
-                  "*",
-                  "!effect",
-                  "!effect/*",
-                  "*/**/effect",
-                  "!@dotfiles/decider/*",
-                  "!./*.ts",
-                  "!bun:test",
-                  "!@dotfiles/opencode-pool/quota"
-                ],
-                "message": "The Anthropic auth domain fence: its domain files import effect, @dotfiles/decider/*, the mod's own root files, the pool's quota protocol (@dotfiles/opencode-pool/quota) and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of the mod's folders. (`*/**/effect` takes back what `!effect` lets through: any path ending in `effect`, such as @opencode/plugin/effect.)"
               }
             ]
           }

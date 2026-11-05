@@ -20,7 +20,7 @@ const launch = (child: string, description: string): Message => ({
 })
 
 describe("fromFamily", () => {
-  test("maps every shared row, stopped ones long past their linger included, to the board's subagents", () => {
+  test("gives every shared row's live state by session, stopped ones long past their linger included", () => {
     const now = 1_000_000
     const family = {
       root: "root",
@@ -34,13 +34,13 @@ describe("fromFamily", () => {
         session("unknown", { title: "Unknown", time: { created: 6 } }),
       ],
     }
-    expect(fromFamily(family, now)).toEqual([
-      { session: "run", description: "Fix money parsing", live: { state: "running" }, role: "implementor", update: "Check the money parser first.", elapsed: 65_000 },
-      { session: "ask", description: "Ask", live: { state: "blocked" }, role: "worker", update: "waiting on permission: edit src/a.ts", elapsed: now - 2 },
-      { session: "old", description: "Old", live: { state: "done", since: 5 }, role: "verifier", update: "done · 0 steps" },
-      { session: "gone", description: "Gone", live: { state: "failed", since: 6 }, role: "worker", update: "cancelled" },
-      { session: "bad", description: "Bad", live: { state: "failed", since: 7 }, role: "worker", update: "failed" },
-      { session: "unknown", description: "Unknown", live: { state: "done" }, role: "subagent", update: "idle" },
+    expect([...fromFamily(family)]).toEqual([
+      ["run", { state: "running" }],
+      ["ask", { state: "blocked" }],
+      ["old", { state: "done", since: 5 }],
+      ["gone", { state: "failed", since: 6 }],
+      ["bad", { state: "failed", since: 7 }],
+      ["unknown", { state: "done" }],
     ])
   })
 })
