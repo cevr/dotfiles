@@ -118,6 +118,11 @@ when the login is held, or has a quota window at its share while another
 login has room. Load, live sessions and pace place only a run whose cache is
 gone.
 
+A fork (`session.fork`, as `/btw` makes) sends its source's cache key, so
+its first request reads the source's cache on the login that holds it. A
+session with no cache of its own goes where its fork source's cache lives
+(`cmd/pool/server.ts` reads the session's `fork`; `rank`'s `cacheOf`).
+
 The model, in the domain files at `mods/pool`'s root:
 
 - Facts: `LoginsListed`, `RequestPlaced`, `RequestRefused` (with its hold),
@@ -278,6 +283,71 @@ read where it is. It takes no options. The model has no aggregate:
   asks the host. `process/` runs git with no optional locks and no index
   refresh, so a read never takes the agent's `index.lock`. It also runs `gh`
   and looks up programs on PATH.
+
+## Btw
+
+`mods/btw` ports gent's `/btw`; its plugin is `cmd/btw` (`tui.tsx`, with no
+server half). `/btw <question>` (alias `/side`, or the palette's "Ask on the
+side") forks the session on screen as it is now, a running turn included,
+and asks the fork the question in the session's panel, beside the
+transcript. The session keeps working and its transcript gets nothing:
+
+```
+btw: Why is the check slow?
+
+Why is the check slow?
+It sleeps on purpose, to hold the session busy.
+
+ask › a follow-up
+enter open · ctrl+s bring back · esc close
+```
+
+In the pane, Enter asks the line as a follow-up (one at a time, once the
+fork has answered); Enter on an empty line opens the fork as the session on
+screen; ctrl+s brings the newest answer back into the session once, as a
+steered message its model reads at its next step (an idle session wakes on
+it), drawn as one notice row (`◈ btw · <question>`); Esc closes the pane.
+`/btw` alone opens the session's last fork again (Enter picks it from the
+slash list, a second Enter runs it); `/btw <question>` always forks afresh.
+
+The fork is an OpenCode session of its own, titled `btw: <question>`, kept
+like any other. It copies the session's history, so its request is the
+session's request with a hidden note (what the fork is, and that an
+unanswered request above is not its work) and the question after it, with
+the session's cache key: it reads the session's prompt cache, and with the
+pool on, it goes out on the login that holds it. The note goes with the
+fork's first question only.
+
+The pane reads the fork from the server's message list
+(`opencode/readings.ts`), when it opens, after each question, and a moment
+after each host event about the fork while it is open. The TUI's own
+message cache keeps only the sessions it retains (on screen, in tabs, viewed
+last) and evicts a fork's. The fork's built-in `/btw` (`opencode.btw`, an
+ephemeral answer in a dialog) is off: `daily` and gamut list
+`-opencode.btw` in `cli.json`.
+
+The model, in the domain files at `mods/btw`'s root:
+
+- Commands: `RecordFork`, `FollowUp` and `BringBack`; facts `ForkOpened`,
+  `FollowUpAsked` and `ReplyBroughtBack`; rejections `NoFork`, `ForkBusy`,
+  `NoReply`, `AlreadyBroughtBack`, `QuestionEmpty` and `QuestionTooLong`.
+- Aggregate: `SideQuestion` (`side-question.ts`), one per session: the fork
+  its `/btw` opened last and the replies brought back from it. `model.ts`
+  holds the handlers (`Btw`: `ask`, `followUp`, `bringBack`, `read`).
+- Values: the question, its note and the fork's name (`question.ts`), the
+  fork's own turns (`turns.ts`: its messages made after it), the pane's rows
+  and hints (`pane.ts`) and the bring-back message (`bring-back.ts`).
+- Contracts: the host's sessions (`Forks`), what a fork reads as
+  (`ForkReadings`) and where each side question is kept (`SideQuestions`),
+  in `service.ts` with their laws in `laws.ts`. `opencode/` implements them
+  over the TUI plugin's client, session status and durable storage (key
+  `side-questions`, the last 200 sessions); `memory/` holds the ones the
+  tests use. `tui/` is the controller and the pane.
+
+From gent: the note is a hidden synthetic message, not part of the prompt;
+the bring-back carries the question and the answer, since OpenCode has no
+tool that reads another session; the pane is the host's session panel, not
+a dock. `tests/btw.test.ts` runs `scenarios/btw.ts`.
 
 ## Herdr
 

@@ -289,6 +289,54 @@
           }
         ]
       }
+    },
+    {
+      "files": ["mods/btw/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
+                "message": "The btw domain fence: btw's domain files import effect, @dotfiles/decider/*, btw's own root files and bun:test only; never @opencode/*, solid-js, node:*, bun, a vendor package or one of btw's folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/btw/opencode/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!../*.ts", "!./*.ts", "!../memory/*.ts", "!bun:test"],
+                "message": "The btw host fence: opencode/ talks to the host through its own narrowed Sessions, SessionData and Entry, so it imports effect, the domain's root files, its own files, the memory World its tests stand on and bun:test only; never @opencode/* or a renderer."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/btw/tui/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["../opencode/**", "../laws.ts"],
+                "message": "The btw UI fence: the pane and its controller import the btw domain, never an implementation (opencode/) or the laws; cmd/btw/tui.tsx picks the implementations."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }
