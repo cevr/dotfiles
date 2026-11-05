@@ -23,7 +23,8 @@ build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`mods/anthropic-auth`), the pool (on
 the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists), orchestrate, the guard, the kernel, status, the queue, git and idle compaction, the role
-models and `autoupdate: false`, and into `cli.json` Prime, status, the queue and the
+models, a one-hour prompt cache for Claude
+(`providers.anthropic.settings.cache.ttl: "1h"`) and `autoupdate: false`, and into `cli.json` Prime, status, the queue and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork
 change.
 
