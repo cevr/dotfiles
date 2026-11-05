@@ -73,3 +73,23 @@ export const lifetimeMs = (terms: CacheTerms): number | undefined => {
   const family = familyOf(terms.providerID, terms.modelID)
   return family === undefined ? undefined : DEFAULT_TTL_MS[family]
 }
+
+/** What the catalog says of one model's lifetime: how long, and whether its or its provider's settings name it. */
+export interface ModelLifetime {
+  readonly lifetimeMs?: number
+  /** The model's or provider's `settings.cache.ttl` names the lifetime, rather than the family's default. */
+  readonly configured?: boolean
+}
+
+/**
+ * The lifetime an agent's requests on a model ask for. An agent's own
+ * `request.settings.cacheTTL` (an orchestration role's "5m") replaces a
+ * lifetime the model's or provider's settings name, and nothing else: on a
+ * model with no setting the provider's default stands, and a value that is
+ * no duration changes nothing (the fork's rule,
+ * packages/core/src/session/agent-cache.ts:17-20).
+ */
+export const agentLifetimeMs = (model: ModelLifetime | undefined, agentTtl: string | undefined): number | undefined => {
+  const own = agentTtl === undefined ? undefined : parseTtl(agentTtl)
+  return model?.configured === true && own !== undefined ? own : model?.lifetimeMs
+}

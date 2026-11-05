@@ -10,6 +10,12 @@
 // run status, its waiting permissions and questions, its messages, and the
 // parent's subagent call and stop notice. Nothing is guessed: a stopped row
 // with no evidence of how it ended reads `idle`.
+//
+// A subagent that ended its turn to wait on its own background work is not
+// done: the host wakes it when that work stops, and only then hands its
+// answer back. While it waits its row runs, saying what it waits on:
+//
+//   ◆ implementor  Fix money parsing   ⠋ waiting on bun test · 1m 12s
 import { canonical, firstSentence, running, runningUpdate } from "./activity.ts"
 import type { Call, Family, Message, Session } from "./family.ts"
 
@@ -81,6 +87,39 @@ function reason(text: string): string {
   return firstSentence(body.split("\n")[0] ?? "").replace(/^Subagent failed( \(sessionID: [^)]*\))?:?\s*/, "")
 }
 
+/** Every call of some messages' steps, the tools a kernel call's cell called included. */
+function calls(messages: ReadonlyArray<Message>): ReadonlyArray<Call> {
+  return messages.flatMap((message) =>
+    message.type === "assistant" ? message.parts.flatMap((part) => (part.type === "call" ? [part, ...(part.calls ?? [])] : [])) : [],
+  )
+}
+
+const named = (value: unknown) => (typeof value === "string" ? value.split("\n")[0]?.trim() || undefined : undefined)
+
+/**
+ * What a session's own background work it still waits on: each shell command
+ * it moved to the background (a shell call whose result names its shell)
+ * with no stop notice for that shell yet, and each subagent it started in the
+ * background with no stop notice for it yet; by command or description.
+ */
+export function waitingOn(messages: ReadonlyArray<Message>): ReadonlyArray<string> {
+  const stopped = new Set(messages.flatMap((message) => (message.type === "shell" ? [message.shellID] : message.type === "notice" ? [message.childID] : [])))
+  return calls(messages).flatMap((call) => {
+    if (call.status !== "completed") return []
+    const tool = canonical(call.tool)
+    const shell = call.metadata.shellID
+    if (tool === "shell" && typeof shell === "string" && !stopped.has(shell)) return [named(call.input.command) ?? "a shell command"]
+    const child = call.metadata.sessionID
+    if (tool === "subagent" && call.input.background === true && typeof child === "string" && !stopped.has(child))
+      return [named(call.input.description) ?? named(call.input.agent) ?? "a subagent"]
+    return []
+  })
+}
+
+/** Whether the parent still waits on the subagent: its foreground call still runs, or its background one sent no stop notice yet. */
+const pending = ({ call, notice }: ReturnType<typeof launch>) =>
+  call !== undefined && notice === undefined && (call.input.background === true || running(call))
+
 type Ending = { readonly state: State; readonly at?: number; readonly why?: string }
 
 const when = (at: number | undefined) => (at === undefined ? {} : { at })
@@ -126,6 +165,11 @@ export function subagents(family: Family, rootSessionID: string): Row[] {
     const question = session.questions[0]
     if (question !== undefined) return { ...base, state: "blocked", update: `waiting on question: ${question}`, since }
     if (session.running) return { ...base, state: "running", update: runningUpdate(session.messages), since }
+    const waits = waitingOn(session.messages)
+    if (waits.length > 0 || pending(found)) {
+      const what = waits.length > 1 ? `${waits[0]} +${waits.length - 1}` : waits[0]
+      return { ...base, state: "running", update: what === undefined ? "waiting" : `waiting on ${what}`, since }
+    }
     const end = ending(session, found)
     const steps = session.messages.filter((message) => message.type === "assistant").length
     const update =

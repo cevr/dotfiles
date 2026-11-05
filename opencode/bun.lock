@@ -111,6 +111,9 @@
     "mods/cache": {
       "name": "@dotfiles/opencode-cache",
       "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-pool": "workspace:*",
+      },
     },
     "mods/git": {
       "name": "@dotfiles/opencode-git",

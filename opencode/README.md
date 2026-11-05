@@ -109,9 +109,11 @@ how long, how many tries and what the endpoint last said. A successful
 refresh ends both (`alerts.ts`, `gent/store.ts`).
 
 A prompt cache is per login, so a session moved to another login writes its
-whole prompt again. While a session's cache lives (`cacheLifeMs` from its
-newest request or priced step; default 5 minutes, and `daily` sets it from
-the TTL it gives Claude), its next run stays on that login. It leaves only
+whole prompt again. While a session's cache lives (from its newest request
+or priced step, for its agent's own `request.settings.cacheTTL` when it sets
+one, such as the roles' 5 minutes, else `cacheLifeMs`: default 5 minutes, and
+`daily` sets it from the TTL it gives Claude), its next run stays on that
+login. It leaves only
 when the login is held, or has a quota window at its share while another
 login has room. Load, live sessions and pace place only a run whose cache is
 gone.
@@ -317,19 +319,24 @@ $0.10) ends on a row such as:
 ◌ cache miss · 48k tokens · $0.17 · expired during a 4s shell call
 ```
 
-The causes are a model switch, a prefix that changed inside the cache
-lifetime (only on a provider that writes its cache, such as Anthropic), and,
-past the lifetime, the response itself, a tool call, an approval wait, a
-pause, a subagent's report or idle time between turns. The lifetime is the
-model's or provider's `settings.cache.ttl`, else 5 minutes for Anthropic and
-30 minutes for OpenAI. A provider with neither counts only model switches. A
+The causes are a model switch; inside the cache lifetime (only on a provider
+that writes its cache, such as Anthropic) the pool moving the step to
+another login, a compaction (its summary request, or the step after it
+re-reading the new summary) or a prefix that changed; and, past the
+lifetime, the response itself, a tool call, an approval wait, a pause, a
+subagent's report or idle time between turns. The lifetime is the one the
+previous request's agent asked for: its own `request.settings.cacheTTL`
+(the roles' 5 minutes) over a model or provider `settings.cache.ttl`, as the
+fork applies it, else that setting, else 5 minutes for Anthropic and 30
+minutes for OpenAI. A provider with neither counts only model switches. A
 miss is priced at the cache-write rate for the tokens the request wrote back
 and the input rate for the rest, less the read rate it would have paid.
 
 The sidebar shows `Cache 91% · missed $0.42`: the share of prompt tokens
 read from the cache, and the sum of every miss, for the session and its
-subagents. Everything comes from the session's messages in the TUI; there is
-no server half. Approval waits are seen only while the TUI runs, so a wait
+subagents. Everything comes from the session's messages and the location's
+agents in the TUI, and the login of each step from the pool's `logins` RPC;
+there is no server half. Approval waits are seen only while the TUI runs, so a wait
 from before it opened reads as the tool call it held up.
 
 ## Guard

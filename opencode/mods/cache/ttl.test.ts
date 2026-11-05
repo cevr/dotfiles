@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { DEFAULT_TTL_MS, familyOf, lifetimeMs, parseTtl } from "./ttl.ts"
+import { agentLifetimeMs, DEFAULT_TTL_MS, familyOf, lifetimeMs, parseTtl } from "./ttl.ts"
 
 describe("parseTtl", () => {
   test("reads models.dev's duration format", () => {
@@ -37,5 +37,19 @@ describe("lifetimeMs", () => {
   test("a model of no known family and no setting has no lifetime; a setting that does not parse is skipped", () => {
     expect(lifetimeMs({ providerID: "deepseek", modelID: "deepseek-chat" })).toBeUndefined()
     expect(lifetimeMs({ providerID: "deepseek", modelID: "deepseek-chat", modelTtl: "soon", providerTtl: "10m" })).toBe(600_000)
+  })
+})
+
+describe("agentLifetimeMs", () => {
+  const HOUR = 3_600_000
+  test("an agent's own lifetime replaces one the model's or provider's settings name", () => {
+    expect(agentLifetimeMs({ lifetimeMs: HOUR, configured: true }, "5m")).toBe(300_000)
+    expect(agentLifetimeMs({ lifetimeMs: HOUR, configured: true }, undefined)).toBe(HOUR)
+  })
+
+  test("on a model whose lifetime is its family's default, or with a value that is no duration, nothing changes", () => {
+    expect(agentLifetimeMs({ lifetimeMs: DEFAULT_TTL_MS.openai }, "5m")).toBe(DEFAULT_TTL_MS.openai)
+    expect(agentLifetimeMs({ lifetimeMs: HOUR, configured: true }, "soon")).toBe(HOUR)
+    expect(agentLifetimeMs(undefined, "5m")).toBeUndefined()
   })
 })

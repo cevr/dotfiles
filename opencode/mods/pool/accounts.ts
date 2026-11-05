@@ -44,15 +44,37 @@ export const OTHER_WINDOW_SHARE = 0.95
 
 /** What the pool's rules read from its settings. */
 export interface Rules {
-  /** How long a session's prompt cache lives on the account it last used: the provider's cache lifetime. */
+  /**
+   * How long a session's prompt cache lives on the account it last used: the
+   * provider's cache lifetime. A mark that carries its agent's own lifetime
+   * (`Mark.lifeMs`) lives that long instead.
+   */
   readonly cacheLifeMs: number
 }
 
 /** The rules of a pool told nothing: Anthropic's default cache lifetime. */
 export const DEFAULT_RULES: Rules = { cacheLifeMs: CACHE_LIFE_MS }
 
-/** Whether a mark of a session's cache, made at `at`, still lives at `now`. */
-export const cacheLives = (rules: Rules, at: number, now: number): boolean => now - at < rules.cacheLifeMs
+/** Whether a mark of a session's cache still lives at `now`: for its own lifetime, else the provider's. */
+export const cacheLives = (rules: Rules, mark: Mark, now: number): boolean => now - mark.at < (mark.lifeMs ?? rules.cacheLifeMs)
+
+const UNIT_MS = { ms: 1, s: 1_000, m: MINUTE, h: 60 * MINUTE, d: 24 * 60 * MINUTE } as const
+
+/**
+ * An agent's own prompt-cache lifetime in ms, from the `request.settings.cacheTTL`
+ * a plugin sets on it ("5m", "1h", models.dev's duration format; the fork
+ * applies it in packages/core/src/session/agent-cache.ts). Undefined for
+ * anything else: the agent then keeps its provider's lifetime.
+ */
+export const ttlMs = (ttl: unknown): number | undefined => {
+  if (typeof ttl !== "string") return undefined
+  const match = /^(\d+)(ms|s|m|h|d)$/.exec(ttl)
+  if (match === null) return undefined
+  const [, amount = "", unit = ""] = match
+  const scale = unit === "ms" || unit === "s" || unit === "m" || unit === "h" || unit === "d" ? UNIT_MS[unit] : undefined
+  const life = scale === undefined ? undefined : Number(amount) * scale
+  return life === undefined || life <= 0 ? undefined : life
+}
 
 /** What a model request is for; a session's newest request of each kind has its own account. */
 export const RequestKind = Schema.Literals(["primary", "compaction", "title", "generate"])
@@ -65,11 +87,18 @@ export const Step = Schema.Struct({
   credentialID: Schema.String,
   /** USD. */
   cost: Schema.Number,
+  /** The assistant message the step wrote, when the host named it; a ledger from before has none. */
+  messageID: Schema.optionalKey(Schema.String),
 })
 export type Step = typeof Step.Type
 
-/** Where a session's run, or its cache, is, and since when (epoch ms). */
-export const Mark = Schema.Struct({ credentialID: Schema.String, at: Schema.Number })
+/**
+ * Where a session's run, or its cache, is, and since when (epoch ms). A cache's
+ * mark carries `lifeMs` when the agent that made the request keeps its cache
+ * for its own lifetime (an orchestration role's 5 minutes); without it the
+ * cache lives the provider's lifetime (`Rules.cacheLifeMs`).
+ */
+export const Mark = Schema.Struct({ credentialID: Schema.String, at: Schema.Number, lifeMs: Schema.optionalKey(Schema.Number) })
 export type Mark = typeof Mark.Type
 
 /** The key of a session's newest request of a kind. */
@@ -105,7 +134,7 @@ const noRoom = (reading: QuotaReading | undefined): boolean =>
 const liveSessions = (state: AccountPoolState, now: number, rules: Rules): Map<string, string> => {
   const where = new Map<string, string>()
   for (const [sessionID, mark] of Object.entries(state.recent))
-    if (cacheLives(rules, mark.at, now)) where.set(sessionID, mark.credentialID)
+    if (cacheLives(rules, mark, now)) where.set(sessionID, mark.credentialID)
   for (const [sessionID, mark] of Object.entries(state.runs))
     if (now - mark.at < PIN_IDLE_MS) where.set(sessionID, mark.credentialID)
   return where
@@ -132,7 +161,7 @@ export const rank = (state: AccountPoolState, sessionID: string, now: number, ru
     }
   }
   const cache = state.recent[sessionID]
-  const preferred = cache !== undefined && cacheLives(rules, cache.at, now) ? cache.credentialID : undefined
+  const preferred = cache !== undefined && cacheLives(rules, cache, now) ? cache.credentialID : undefined
   return rankPlacement({
     slots: [slot(first), ...others.map(slot)],
     spent,

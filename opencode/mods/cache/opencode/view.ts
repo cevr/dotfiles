@@ -16,7 +16,15 @@
 //   previous marker belongs to one turn (session-message.ts, `Idle`);
 // - a `synthetic` message whose `metadata.source` is `subagent` is a
 //   background subagent's report;
-// - a completed `compaction` message rewrote the context;
+// - an assistant message names the `agent` that ran it (session-message.ts,
+//   `Assistant.agent`); an agent (agent.ts, `Info`) carries
+//   `request.settings.cacheTTL` when a plugin gave it its own cache lifetime
+//   (the orchestration roles' "5m", cmd/orchestrate/server.ts), which the
+//   fork applies only over a lifetime the model's or provider's settings name
+//   (packages/core/src/session/agent-cache.ts:17-20);
+// - a completed `compaction` message rewrote the context; it carries its
+//   summary request's `model` and `tokens` (`CompactionCompleted`) and when it
+//   started (`time.created`);
 // - a session (session.ts) carries `tokens`, every step's usage summed, and
 //   `location`; a model (model.ts, `Info`) carries `cost` (USD per million
 //   tokens, by context tier) and `settings.cache.ttl`, as a provider
@@ -26,7 +34,7 @@ import type { Hits } from "../line.ts"
 import type { ModelTerms } from "../ledger.ts"
 import type { Opener, Span, Step, Timeline } from "../miss.ts"
 import type { Rate } from "../price.ts"
-import { familyOf, lifetimeMs } from "../ttl.ts"
+import { familyOf, lifetimeMs, parseTtl } from "../ttl.ts"
 
 const Tokens = Schema.Struct({
   input: Schema.Number,
@@ -51,6 +59,7 @@ export interface Reads<Location> {
     readonly message: { list(sessionID: string): ReadonlyArray<unknown> }
   }
   readonly location: {
+    readonly agent: { list(location?: Location): ReadonlyArray<unknown> | undefined }
     readonly model: { list(location?: Location): ReadonlyArray<unknown> | undefined }
     readonly provider: { list(location?: Location): ReadonlyArray<unknown> | undefined }
   }
@@ -66,6 +75,7 @@ const decodeTool = Schema.decodeUnknownOption(Tool)
 const Assistant = Schema.Struct({
   type: Schema.Literal("assistant"),
   id: Schema.String,
+  agent: Schema.optional(Schema.String),
   model: Schema.Struct({ providerID: Schema.String, id: Schema.String }),
   content: Schema.Array(Schema.Unknown),
   finish: Schema.optional(Schema.String),
@@ -75,6 +85,17 @@ const Assistant = Schema.Struct({
   time: Schema.Struct({ created: Schema.Number, streamed: Schema.optional(Schema.Number), completed: Schema.optional(Schema.Number) }),
 })
 const decodeAssistant = Schema.decodeUnknownOption(Assistant)
+
+/** A completed compaction with its summary request's usage. */
+const Compacted = Schema.Struct({
+  type: Schema.Literal("compaction"),
+  id: Schema.String,
+  status: Schema.Literal("completed"),
+  model: Schema.Struct({ providerID: Schema.String, id: Schema.String }),
+  tokens: Tokens,
+  time: Schema.Struct({ created: Schema.Number }),
+})
+const decodeCompacted = Schema.decodeUnknownOption(Compacted)
 
 const Other = Schema.Struct({
   type: Schema.String,
@@ -92,10 +113,22 @@ const OPEN_FINISHES = new Set(["tool-calls", "unknown"])
 
 const modelKey = (providerID: string, modelID: string) => `${providerID}/${modelID}`
 
-/** A session's steps and compactions, oldest first, from the messages the TUI holds. */
-export const timeline = (messages: ReadonlyArray<unknown>): Timeline => {
+const promptOf = (tokens: typeof Tokens.Type) => ({
+  promptTokens: tokens.input + tokens.cache.read + tokens.cache.write,
+  cacheReadTokens: tokens.cache.read,
+  cacheWriteTokens: tokens.cache.write,
+})
+
+/**
+ * A session's steps and compactions, oldest first, from the messages the TUI
+ * holds. `logins` names the pool login each assistant message went out on,
+ * by its id, as far as the pool recorded it. A compaction's summary request
+ * runs as the agent of the step before it.
+ */
+export const timeline = (messages: ReadonlyArray<unknown>, logins: ReadonlyMap<string, string> = new Map()): Timeline => {
   let opener: Opener = { id: "start", kind: "other" }
   let opening = true
+  let agent: string | undefined
   return messages.flatMap((value): Timeline => {
     const assistant = decodeAssistant(value)
     if (Option.isSome(assistant)) {
@@ -107,27 +140,41 @@ export const timeline = (messages: ReadonlyArray<unknown>): Timeline => {
         return [{ name: tool.value.name, at, ms: Math.max(0, tool.value.time.completed - at) }]
       })
       const tokens = message.tokens
+      const login = logins.get(message.id)
+      agent = message.agent ?? agent
       const step: Step = {
         type: "step",
         id: message.id,
         model: modelKey(message.model.providerID, message.model.id),
         startedAt: message.time.created,
         endedAt: message.time.streamed ?? message.time.completed ?? message.time.created,
-        ...(tokens === undefined
-          ? {}
-          : {
-              usage: {
-                promptTokens: tokens.input + tokens.cache.read + tokens.cache.write,
-                cacheReadTokens: tokens.cache.read,
-                cacheWriteTokens: tokens.cache.write,
-              },
-            }),
+        ...(tokens === undefined ? {} : { usage: promptOf(tokens) }),
         tools,
         opener,
         closes: (message.finish !== undefined && !OPEN_FINISHES.has(message.finish)) || message.error !== undefined || message.retry !== undefined,
+        ...(message.agent === undefined ? {} : { agent: message.agent }),
+        ...(login === undefined ? {} : { login }),
       }
       opening = false
       return [step]
+    }
+    const compacted = decodeCompacted(value)
+    if (Option.isSome(compacted)) {
+      const { id, model, tokens, time } = compacted.value
+      const request: Step = {
+        type: "step",
+        id,
+        model: modelKey(model.providerID, model.id),
+        startedAt: time.created,
+        endedAt: time.created,
+        usage: promptOf(tokens),
+        tools: [],
+        opener,
+        closes: false,
+        ...(agent === undefined ? {} : { agent }),
+        compaction: true,
+      }
+      return [request, { type: "compaction" }]
     }
     const other = decodeOther(value)
     if (Option.isNone(other)) return []
@@ -214,6 +261,7 @@ export const catalog = (models: ReadonlyArray<unknown>, providers: ReadonlyArray
         ...(fromProvider === undefined ? {} : { providerTtl: fromProvider }),
       })
       const family = familyOf(model.providerID, model.id)
+      const configured = [modelTtl, fromProvider].some((ttl) => ttl !== undefined && parseTtl(ttl) !== undefined)
       const rates = model.cost.map(
         (cost): Rate => ({
           ...(cost.tier === undefined ? {} : { tier: cost.tier.size }),
@@ -225,6 +273,7 @@ export const catalog = (models: ReadonlyArray<unknown>, providers: ReadonlyArray
       const terms: ModelTerms = {
         ...(family === undefined ? {} : { family }),
         ...(lifetime === undefined ? {} : { lifetimeMs: lifetime }),
+        ...(configured ? { configured } : {}),
         rates,
       }
       return [[modelKey(model.providerID, model.id), terms] as const]
@@ -237,3 +286,23 @@ export const sessionCatalog = <Location>(reads: Reads<Location>, sessionID: stri
   const location = reads.session.get(sessionID)?.location
   return catalog(reads.location.model.list(location) ?? [], reads.location.provider.list(location) ?? [])
 }
+
+const AgentInfo = Schema.Struct({
+  id: Schema.String,
+  request: Schema.optional(Schema.Struct({ settings: Schema.optional(Schema.Struct({ cacheTTL: Schema.optional(Schema.Unknown) })) })),
+})
+const decodeAgent = Schema.decodeUnknownOption(AgentInfo)
+
+/** Each agent's own cache lifetime (`request.settings.cacheTTL`), by its id; an agent that sets none is absent. */
+export const agentTtls = (agents: ReadonlyArray<unknown>): ReadonlyMap<string, string> =>
+  new Map(
+    agents.flatMap((value) => {
+      const agent = decodeAgent(value)
+      const ttl = Option.isSome(agent) ? agent.value.request?.settings?.cacheTTL : undefined
+      return Option.isSome(agent) && typeof ttl === "string" ? [[agent.value.id, ttl] as const] : []
+    }),
+  )
+
+/** The agents' own cache lifetimes in the location a session runs in. */
+export const sessionAgentTtls = <Location>(reads: Reads<Location>, sessionID: string): ReadonlyMap<string, string> =>
+  agentTtls(reads.location.agent.list(reads.session.get(sessionID)?.location) ?? [])
