@@ -1,6 +1,7 @@
-// The AccountPool aggregate's stories: a request is placed on the run's pin
-// or the best account, a reading or a refusal holds an account, a step counts
-// on its account, a run ends, and the ledger forgets what has expired.
+// The AccountPool aggregate's stories: a request is placed on the run's pin,
+// the account its cache is on, or the best account; a reading or a refusal
+// holds an account, a step counts on its account, a run ends, a restored pool
+// keeps each cache where it was, and the ledger forgets what has expired.
 import { describe, test } from "bun:test"
 import { Effect } from "effect"
 import * as Story from "@dotfiles/decider/story"
@@ -18,19 +19,24 @@ import {
   ReleaseRun,
   RequestPlaced,
   RequestRefused,
+  restored,
   RunReleased,
   StepRecorded,
   TakeReading,
+  type Event,
+  type LedgerState,
 } from "./account-pool.ts"
-import { CACHE_LIFE_MS, DEFAULT_HOLD_MS, PIN_IDLE_MS, WINDOW_MS, type RequestKind } from "./accounts.ts"
+import { CACHE_LIFE_MS, DEFAULT_HOLD_MS, DEFAULT_RULES, PIN_IDLE_MS, WINDOW_MS, type RequestKind } from "./accounts.ts"
 import type { QuotaReading } from "./quota.ts"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const T0 = 1_800_000_000_000
 
-const story = Story.make(AccountPool)
+const story = Story.make(AccountPool(DEFAULT_RULES))
 const run = (...steps: Parameters<typeof story>) => Effect.runPromise(story(...steps))
+/** A pool whose caches live an hour, as Claude's do when `bun run daily` asks for it. */
+const hourStory = Story.make(AccountPool({ cacheLifeMs: HOUR }))
 
 const accounts = (...credentials: ReadonlyArray<string>) => Story.given(LoginsListed.make({ credentials }))
 const reading = (fields: Partial<QuotaReading> = {}): QuotaReading => ({ at: T0, windows: [], ...fields })
@@ -133,7 +139,7 @@ describe("a request is placed", () => {
       // a carries s3, b carries s2: a tie, and s1's cache is on a.
       ...placed("s1", "a", T0),
       ...stepped("s3", "a", 1, T0),
-      // a now scores 2 (s3 live, one mean session of load), b 1: within one session, s1 stays by its cache.
+      // a now scores 2 (s3 live, one mean session of load), b 1: s1 stays by its cache.
       ...placed("s1", "a", T0),
       ...released("s1"),
       Story.clock(T0 + CACHE_LIFE_MS),
@@ -171,6 +177,105 @@ describe("a request is placed", () => {
       Story.clock(T0 + HOUR),
       // The window has reset: a has room, and no run, so it goes before b.
       ...placed("s2", "a", T0 + HOUR),
+    ))
+})
+
+describe("a session's cache keeps its account", () => {
+  /** A priced step already taken: the session's cache is on `credentialID` from `at`, with no run. */
+  const took = (sessionID: string, credentialID: string, cost: number, at: number): Event =>
+    StepRecorded.make({ step: { at, sessionID, credentialID, cost } })
+
+  test("while it lives, a new run stays on the cache's account, however much better another scores", () =>
+    run(
+      accounts("a", "b"),
+      Story.given(
+        took("s1", "a", 5, T0),
+        RequestPlaced.make({ sessionID: "s2", kind: "primary", credentialID: "a", at: T0 }),
+        RequestPlaced.make({ sessionID: "s3", kind: "primary", credentialID: "a", at: T0 }),
+        took("s4", "b", 1, T0),
+      ),
+      Story.clock(T0 + MINUTE),
+      // A unit is $3: a scores 5/3 + 2 live, b 1/3 + 1 live, more than a session apart; s1's cache is on a.
+      ...placed("s1", "a", T0 + MINUTE),
+    ))
+
+  test("for the pool's cache life, then the run is placed by load", () =>
+    Effect.runPromise(
+      hourStory(
+        accounts("a", "b"),
+        Story.given(took("s1", "a", 5, T0), took("s2", "b", 1, T0)),
+        // Half an hour on, past Anthropic's default 5 minutes: s1's cache still lives on a, and b scores better.
+        Story.clock(T0 + 30 * MINUTE),
+        ...placed("s1", "a", T0 + 30 * MINUTE),
+        ...released("s1"),
+        // An hour after its last request the cache is gone: s1 goes where the load is lower.
+        Story.clock(T0 + 90 * MINUTE),
+        ...placed("s1", "b", T0 + 90 * MINUTE),
+      ),
+    ))
+
+  test("it leaves an account that is held", () => {
+    const refusal = reading({ refusal: { kind: "rate-limit", until: T0 + HOUR } })
+    return run(
+      accounts("a", "b"),
+      Story.given(took("s1", "a", 1, T0)),
+      Story.clock(T0 + MINUTE),
+      Story.when(TakeReading.make({ credentialID: "a", reading: refusal })),
+      Story.then(ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "rate-limit", until: T0 + HOUR, at: T0 + MINUTE } })),
+      ...placed("s1", "b", T0 + MINUTE),
+    )
+  })
+
+  test("it leaves an account with no room while another has room, and stays when none has", () => {
+    const full = reading({ windows: [{ name: "5h", utilization: 0.95, resetAt: T0 + HOUR }] })
+    return run(
+      accounts("a", "b", "c"),
+      Story.given(took("s1", "a", 1, T0), took("s2", "a", 1, T0)),
+      Story.clock(T0 + MINUTE),
+      ...read("a", full),
+      ...read("b", full),
+      ...read("c", full),
+      // Every account is at its share: s1 stays where its cache is.
+      ...placed("s1", "a", T0 + MINUTE),
+      ...released("s1"),
+      ...read("c", reading()),
+      // c has room again: s2 leaves a for it.
+      ...placed("s2", "c", T0 + MINUTE),
+    )
+  })
+})
+
+describe("a restored pool", () => {
+  const ledger: LedgerState = {
+    holds: {},
+    readings: {},
+    steps: [
+      { at: T0, sessionID: "s1", credentialID: "a", cost: 5 },
+      { at: T0, sessionID: "s2", credentialID: "b", cost: 1 },
+    ],
+    recent: { s1: { credentialID: "a", at: T0 }, s2: { credentialID: "b", at: T0 } },
+  }
+  const restoredStory = Story.make({ ...AccountPool(DEFAULT_RULES), initial: restored(ledger) })
+
+  test("keeps a session on the account its cache is on while it lives", () =>
+    Effect.runPromise(
+      restoredStory(
+        accounts("a", "b"),
+        Story.clock(T0 + MINUTE),
+        // b scores better (1/3 + s2's cache against 5/3), but s1's cache is on a.
+        ...placed("s1", "a", T0 + MINUTE),
+      ),
+    ))
+
+  test("drops a cache that no longer lives at its first prune, and places that session by load", () =>
+    Effect.runPromise(
+      restoredStory(
+        accounts("a", "b"),
+        Story.clock(T0 + CACHE_LIFE_MS),
+        Story.when(PruneLedger.make({})),
+        Story.then(LedgerPruned.make({ steps: [], holds: [], runs: [], caches: ["s1", "s2"] })),
+        ...placed("s1", "b", T0 + CACHE_LIFE_MS),
+      ),
     ))
 })
 

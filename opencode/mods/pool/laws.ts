@@ -33,6 +33,8 @@ const reading = (at: number, utilization: number): QuotaReading => ({
 const hold = { kind: "rate-limit", until: 2_000, at: 1_000 } as const
 const step = (at: number, sessionID = "ses_law") => ({ at, sessionID, credentialID: "cred-a", cost: 0.25 })
 
+const EMPTY = { holds: {}, readings: {}, steps: [], recent: {} }
+
 /** `layer` makes a fresh, empty ledger each time it is called. */
 export const ledgerLaws = (name: string, layer: () => Layer.Layer<Ledger>) =>
   describe(`${name} keeps the Ledger laws`, () => {
@@ -40,7 +42,7 @@ export const ledgerLaws = (name: string, layer: () => Layer.Layer<Ledger>) =>
       check(
         layer(),
         Effect.gen(function* () {
-          expect(yield* (yield* Ledger).restore(pool)).toEqual({ holds: {}, readings: {}, steps: [] })
+          expect(yield* (yield* Ledger).restore(pool)).toEqual(EMPTY)
         }),
       ))
 
@@ -96,17 +98,32 @@ export const ledgerLaws = (name: string, layer: () => Layer.Layer<Ledger>) =>
         }),
       ))
 
-    test("events the ledger does not keep leave it as it was", () =>
+    test("restores where each session's cache is: its newest request or priced step; a pruned cache is gone", () =>
       check(
         layer(),
         Effect.gen(function* () {
           const ledger = yield* Ledger
           yield* ledger.record(pool, [
-            LoginsListed.make({ credentials: ["cred-a"] }),
-            RequestPlaced.make({ sessionID: "ses_law", kind: "primary", credentialID: "cred-a", at: 1_000 }),
-            RunReleased.make({ sessionID: "ses_law" }),
+            RequestPlaced.make({ sessionID: "ses_law", kind: "primary", credentialID: "cred-b", at: 500 }),
+            StepRecorded.make({ step: step(1_000) }),
+            RequestPlaced.make({ sessionID: "ses_other", kind: "title", credentialID: "cred-b", at: 1_200 }),
+            RequestPlaced.make({ sessionID: "ses_gone", kind: "primary", credentialID: "cred-a", at: 100 }),
           ])
-          expect(yield* ledger.restore(pool)).toEqual({ holds: {}, readings: {}, steps: [] })
+          yield* ledger.record(pool, [LedgerPruned.make({ steps: [], holds: [], runs: [], caches: ["ses_gone"] })])
+          expect((yield* ledger.restore(pool)).recent).toEqual({
+            ses_law: { credentialID: "cred-a", at: 1_000 },
+            ses_other: { credentialID: "cred-b", at: 1_200 },
+          })
+        }),
+      ))
+
+    test("events the ledger does not keep leave it as it was", () =>
+      check(
+        layer(),
+        Effect.gen(function* () {
+          const ledger = yield* Ledger
+          yield* ledger.record(pool, [LoginsListed.make({ credentials: ["cred-a"] }), RunReleased.make({ sessionID: "ses_law" })])
+          expect(yield* ledger.restore(pool)).toEqual(EMPTY)
         }),
       ))
 
@@ -116,7 +133,7 @@ export const ledgerLaws = (name: string, layer: () => Layer.Layer<Ledger>) =>
         Effect.gen(function* () {
           const ledger = yield* Ledger
           yield* ledger.record(pool, [RequestRefused.make({ credentialID: "cred-a", hold }), StepRecorded.make({ step: step(1_000) })])
-          expect(yield* ledger.restore(other)).toEqual({ holds: {}, readings: {}, steps: [] })
+          expect(yield* ledger.restore(other)).toEqual(EMPTY)
         }),
       ))
   })

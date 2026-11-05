@@ -29,7 +29,7 @@ test("a storage that fails restores an empty ledger, and a write to it is lost w
       const ledger = yield* Ledger
       const pool = PoolId.make("broken")
       yield* ledger.record(pool, [RequestRefused.make({ credentialID: "cred-a", hold: { kind: "rate-limit", until: 2, at: 1 } })])
-      expect(yield* ledger.restore(pool)).toEqual({ holds: {}, readings: {}, steps: [] })
+      expect(yield* ledger.restore(pool)).toEqual({ holds: {}, readings: {}, steps: [], recent: {} })
     }).pipe(
       Effect.provide(
         OpenCodeLedger.layer({

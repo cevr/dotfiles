@@ -1,10 +1,13 @@
-// The pools' ledger in the plugin's storage, one key per hold, reading and
-// priced step under the pool's integration id: `<pool>/hold/<credentialID>`,
-// `<pool>/reading/<credentialID>` and `<pool>/step/<at, 15 digits>/<sessionID>`.
-// A previous process wrote the same keys, so the format stays as it is.
+// The pools' ledger in the plugin's storage, one key per hold, reading, priced
+// step and session cache under the pool's integration id:
+// `<pool>/hold/<credentialID>`, `<pool>/reading/<credentialID>`,
+// `<pool>/step/<at, 15 digits>/<sessionID>` and `<pool>/cache/<sessionID>`
+// (where the session last sent a request, and when). A previous process wrote
+// the same keys, so the format stays as it is; a ledger from before caches
+// were kept has no cache key and restores none.
 import { Effect, Layer, Option, Schema } from "effect"
 import type { Event, LedgerState, PoolId } from "../account-pool.ts"
-import { Step } from "../accounts.ts"
+import { Mark, Step } from "../accounts.ts"
 import { QuotaReading } from "../quota.ts"
 import { Ledger } from "../service.ts"
 import { Hold } from "../status.ts"
@@ -26,6 +29,7 @@ export const PAGE = 500
 const holdKey = (credentialID: string) => `hold/${credentialID}`
 const readingKey = (credentialID: string) => `reading/${credentialID}`
 const stepKey = (step: Step) => `step/${String(step.at).padStart(15, "0")}/${step.sessionID}`
+const cacheKey = (sessionID: string) => `cache/${sessionID}`
 
 type Write = { readonly _tag: "Put"; readonly key: string; readonly value: Schema.Json } | { readonly _tag: "Remove"; readonly key: string }
 
@@ -42,12 +46,20 @@ const writesOf = (event: Event): ReadonlyArray<Write> => {
       ]
     case "RequestRefused":
       return [put(holdKey(event.credentialID), event.hold)]
-    case "StepRecorded":
-      return [put(stepKey(event.step), event.step)]
-    case "LedgerPruned":
-      return [...event.steps.map((step) => remove(stepKey(step))), ...event.holds.map((credentialID) => remove(holdKey(credentialID)))]
-    case "LoginsListed":
     case "RequestPlaced":
+      return [put(cacheKey(event.sessionID), { credentialID: event.credentialID, at: event.at })]
+    case "StepRecorded":
+      return [
+        put(stepKey(event.step), event.step),
+        put(cacheKey(event.step.sessionID), { credentialID: event.step.credentialID, at: event.step.at }),
+      ]
+    case "LedgerPruned":
+      return [
+        ...event.steps.map((step) => remove(stepKey(step))),
+        ...event.holds.map((credentialID) => remove(holdKey(credentialID))),
+        ...event.caches.map((sessionID) => remove(cacheKey(sessionID))),
+      ]
+    case "LoginsListed":
     case "RunReleased":
       return []
   }
@@ -56,12 +68,14 @@ const writesOf = (event: Event): ReadonlyArray<Write> => {
 const decodeHold = Schema.decodeUnknownOption(Hold)
 const decodeReading = Schema.decodeUnknownOption(QuotaReading)
 const decodeStep = Schema.decodeUnknownOption(Step)
+const decodeMark = Schema.decodeUnknownOption(Mark)
 
 /** The ledger the entries hold; an entry that does not decode is left out. */
 const ledgerOf = (entries: ReadonlyArray<{ readonly key: string; readonly value: unknown }>): LedgerState => {
   const holds: Record<string, Hold> = {}
   const readings: Record<string, QuotaReading> = {}
   const steps: Array<Step> = []
+  const recent: Record<string, Mark> = {}
   for (const { key, value } of entries) {
     const [kind, id] = key.split("/", 2)
     if (id === undefined) continue
@@ -74,9 +88,12 @@ const ledgerOf = (entries: ReadonlyArray<{ readonly key: string; readonly value:
     } else if (kind === "step") {
       const step = Option.getOrUndefined(decodeStep(value))
       if (step !== undefined) steps.push(step)
+    } else if (kind === "cache") {
+      const mark = Option.getOrUndefined(decodeMark(value))
+      if (mark !== undefined) recent[id] = mark
     }
   }
-  return { holds, readings, steps }
+  return { holds, readings, steps, recent }
 }
 
 export const layer = (storage: Storage) =>

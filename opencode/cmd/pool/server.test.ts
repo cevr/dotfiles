@@ -11,7 +11,7 @@ import { join } from "node:path"
 import { Effect, Layer, Queue, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
-import { WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
+import { CACHE_LIFE_MS, WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
 import * as LedgerTest from "@dotfiles/opencode-pool/memory/ledger"
 import * as LoginsTest from "@dotfiles/opencode-pool/memory/logins"
 import * as QuotaTest from "@dotfiles/opencode-pool/memory/quota"
@@ -200,7 +200,7 @@ describe("the options", () => {
   test("take their defaults when absent or undefined", () =>
     scenario(
       Effect.gen(function* () {
-        const plugin = yield* start({ providers: undefined, sweepMinutes: undefined, sources: undefined })
+        const plugin = yield* start({ providers: undefined, sweepMinutes: undefined, sources: undefined, cacheLifeMs: undefined })
         expect(yield* plugin.request()).toBe("cred-a")
         expect(plugin.transforms).toEqual([])
       }),
@@ -215,6 +215,8 @@ describe("the options", () => {
       [{ sources: [{ kind: "other", dir: "/x" }] }, '["sources"][0]["kind"]'],
       [{ sources: [{ kind: "gent", dir: "" }] }, '["sources"][0]["dir"]'],
       [{ sources: [{ kind: "gent", dir: "/x", tokenURL: 7 }] }, '["sources"][0]["tokenURL"]'],
+      [{ cacheLifeMs: "1h" }, '["cacheLifeMs"]'],
+      [{ cacheLifeMs: 0 }, '["cacheLifeMs"]'],
     ]
     for (const [options, path] of malformed) {
       const exit = await Effect.runPromise(Effect.exit(Effect.scoped(start(options))))
@@ -285,7 +287,8 @@ describe("the hooks", () => {
         yield* plugin.respond(529)
         expect(yield* plugin.retry({ retry: true, delay: 2000 })).toEqual({ retry: true, delay: 2000 })
         expect(yield* plugin.request()).toBe("cred-a")
-        expect([...state.storage.keys()]).toEqual([])
+        // Only where the session's cache is: no hold.
+        expect([...state.storage.keys()]).toEqual(["anthropic/cache/ses_1"])
       }),
     ))
 
@@ -346,8 +349,57 @@ describe("the hooks", () => {
     ))
 })
 
+describe("a session's cache", () => {
+  /** Two sessions, each on its own login, then idle: s1's login carries more load, so b scores better. */
+  const loaded = (plugin: Effect.Success<ReturnType<typeof start>>) =>
+    Effect.gen(function* () {
+      expect(yield* plugin.request("s1")).toBe("cred-a")
+      expect(yield* plugin.request("s2")).toBe("cred-b")
+      yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "s1", cost: 5 } })
+      yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "s2", cost: 1 } })
+      yield* plugin.idle("s1")
+      yield* plugin.idle("s2")
+    })
+
+  test("keeps the session on its login for the cache life the options give, then load places it", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const plugin = yield* start({ sweepMinutes: 0, cacheLifeMs: HOUR })
+        yield* loaded(plugin)
+        yield* TestClock.adjust(HOUR / 2)
+        expect(yield* plugin.request("s1")).toBe("cred-a")
+        yield* plugin.idle("s1")
+        yield* TestClock.adjust(HOUR)
+        expect(yield* plugin.request("s1")).toBe("cred-b")
+      }),
+    ))
+
+  test("survives a restart: the new process keeps the session on its cache's login", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        yield* loaded(yield* start(undefined, state))
+        yield* TestClock.adjust(CACHE_LIFE_MS - 1)
+        const next = yield* start(undefined, state)
+        expect(yield* next.request("s1")).toBe("cred-a")
+      }),
+    ))
+
+  test("that died before a restart is dropped from the ledger, and load places the session", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        yield* loaded(yield* start(undefined, state))
+        yield* TestClock.adjust(CACHE_LIFE_MS)
+        const next = yield* start(undefined, state)
+        expect([...state.storage.keys()].filter((key) => key.includes("/cache/"))).toEqual([])
+        expect(yield* next.request("s1")).toBe("cred-b")
+      }),
+    ))
+})
+
 describe("the ledger", () => {
-  test("keeps holds, readings and priced steps under the pool's id, and a new process reads them back", () =>
+  test("keeps holds, readings, priced steps and caches under the pool's id, and a new process reads them back", () =>
     onTestClock(
       Effect.gen(function* () {
         yield* TestClock.adjust(HOUR)
@@ -357,6 +409,7 @@ describe("the ledger", () => {
         yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "s1", cost: 0.25 } })
         yield* plugin.publish({ credentialID: "cred-b", reading: { at: HOUR, windows: [], refusal: { kind: "usage-limit", until: 3 * HOUR } } })
         expect([...state.storage.keys()].sort()).toEqual([
+          "anthropic/cache/s1",
           "anthropic/hold/cred-b",
           "anthropic/reading/cred-b",
           `anthropic/step/${String(HOUR).padStart(15, "0")}/s1`,

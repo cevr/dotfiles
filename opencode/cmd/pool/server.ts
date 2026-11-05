@@ -17,6 +17,11 @@
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `providers`: provider id to integration id, default `{ anthropic: "anthropic" }`.
  * - `sweepMinutes`: how often to read each login's usage; 0 turns it off. Default 10.
+ * - `cacheLifeMs`: how long a session's prompt cache lives on the login it last
+ *   used, in ms: the provider's cache lifetime (`settings.cache.ttl`). While it
+ *   lives the session stays on that login unless the login is held or out of
+ *   room. Default 5 minutes, Anthropic's default; `bun run daily` sets it from
+ *   the lifetime it gives Claude.
  * - `sources`: other stores whose logins join a pool beside OpenCode's own, read
  *   in place, never copied. Default none. `[{ kind: "gent", dir: "~/.local/share/opencode-prime/pool-auth" }]`
  *   adds the Claude accounts gent signed in to (`@dotfiles/opencode-pool/gent/store`) to the
@@ -29,6 +34,7 @@
 import { Integration, Plugin } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
+import { CACHE_LIFE_MS } from "@dotfiles/opencode-pool/accounts"
 import { GentSource, registerCredentialSource } from "@dotfiles/opencode-pool/gent/store"
 import * as Model from "@dotfiles/opencode-pool/model"
 import * as LedgerLive from "@dotfiles/opencode-pool/opencode/ledger"
@@ -64,6 +70,7 @@ export const Options = Schema.Struct({
     withDefault<Readonly<Record<string, PoolId>>>({ anthropic: PoolId.make("anthropic") }),
   ),
   sweepMinutes: Schema.Finite.pipe(withDefault(10)),
+  cacheLifeMs: Schema.Finite.check(Schema.isGreaterThan(0)).pipe(withDefault(CACHE_LIFE_MS)),
   sources: Schema.Array(GentStoreOption).pipe(withDefault<ReadonlyArray<typeof GentStoreOption.Type>>([])),
 })
 export type Options = typeof Options.Type
@@ -130,7 +137,7 @@ export const make = (
       // The plugin's context carries the host's loggers.
       const sources = gentSources(options, yield* Effect.context<never>())
       const services = yield* Layer.build(
-        Model.layer({ providers: options.providers }).pipe(Layer.provideMerge(externals(ctx, options, sources))),
+        Model.layer({ providers: options.providers, cacheLifeMs: options.cacheLifeMs }).pipe(Layer.provideMerge(externals(ctx, options, sources))),
       )
       const pool = Context.get(services, Model.Pool)
 

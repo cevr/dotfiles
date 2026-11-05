@@ -1,6 +1,7 @@
 // The placement ranking, one case per rule: held accounts last, accounts at
 // their share after those with room, then by score and weekly reset, and the
-// account a session's cache is on kept within one session.
+// account a session's cache is on kept unless it is held or out of room while
+// another has room.
 import { describe, expect, test } from "bun:test"
 import { rankPlacement, type PlacementSlot } from "./placement.ts"
 
@@ -68,14 +69,26 @@ describe("rankPlacement", () => {
     expect(ranked[0]).toBe("b")
   })
 
-  test("the preferred account stays within one session of the best score, and not beyond", () => {
-    const within = rankPlacement({ slots: [slot("a", { live: 1 }), slot("b")], spent: 0, sessions: 0, preferred: "a" })
-    expect(within[0]).toBe("a")
-    const beyond = rankPlacement({ slots: [slot("a", { live: 2 }), slot("b")], spent: 0, sessions: 0, preferred: "a" })
-    expect(beyond[0]).toBe("b")
+  test("the preferred account stays however much better another scores", () => {
+    const ranked = rankPlacement({ slots: [slot("a", { live: 4, load: 30 }), slot("b")], spent: 10, sessions: 5, preferred: "a" })
+    expect(ranked).toEqual(["a", "b"])
   })
 
-  test("the preferred account at its share gives way to one with room", () => {
+  test("the preferred account stays whatever the pace says", () => {
+    // a is over its pace and b below its own, which would put b first for a run with no cache.
+    const over = [slot("a", { sustainable: 1, live: 3 }), slot("b", { sustainable: 4 })] as const
+    expect(rankPlacement({ slots: [...over], spent: 0, sessions: 0 })[0]).toBe("b")
+    expect(rankPlacement({ slots: [...over], spent: 0, sessions: 0, preferred: "a" })[0]).toBe("a")
+    // A pace that sustains no run on a is not a quota window at its share.
+    expect(rankPlacement({ slots: [slot("a", { sustainable: 0 }), slot("b")], spent: 0, sessions: 0, preferred: "a" })[0]).toBe("a")
+  })
+
+  test("a held preferred account gives way", () => {
+    const ranked = rankPlacement({ slots: [slot("a", { held: true }), slot("b", { live: 3 })], spent: 0, sessions: 0, preferred: "a" })
+    expect(ranked).toEqual(["b", "a"])
+  })
+
+  test("the preferred account at its share gives way to one with room, and stays when none has room", () => {
     const ranked = rankPlacement({
       slots: [slot("a", { noRoom: true }), slot("b")],
       spent: 0,
@@ -83,5 +96,22 @@ describe("rankPlacement", () => {
       preferred: "a",
     })
     expect(ranked[0]).toBe("b")
+    const full = rankPlacement({
+      slots: [slot("a", { noRoom: true, live: 3 }), slot("b", { noRoom: true })],
+      spent: 0,
+      sessions: 0,
+      preferred: "a",
+    })
+    expect(full[0]).toBe("a")
+  })
+
+  test("a preferred account at its share gives way to the best account with room, not one below a pace with none", () => {
+    const ranked = rankPlacement({
+      slots: [slot("a", { noRoom: true }), slot("b", { noRoom: true, sustainable: 4 }), slot("c", { live: 2 })],
+      spent: 0,
+      sessions: 0,
+      preferred: "a",
+    })
+    expect(ranked[0]).toBe("c")
   })
 })

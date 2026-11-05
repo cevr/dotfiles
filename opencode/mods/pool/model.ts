@@ -20,14 +20,14 @@ import {
   type Event,
   type PoolId,
 } from "./account-pool.ts"
-import { held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, type RequestKind } from "./accounts.ts"
+import { held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, type RequestKind, type Rules } from "./accounts.ts"
 import { poolPace, UNPOOLED, type Pace } from "./pace.ts"
 import type { QuotaReading } from "./quota.ts"
 import { Ledger, Logins, Quota, type LoginsUnavailable } from "./service.ts"
 import type { PoolsStatus, SessionAnswer, SessionQuery } from "./status.ts"
 
-/** The pool's settings, from the plugin's options. */
-export interface Config {
+/** The pool's settings, from the plugin's options: its rules (the cache life) and the providers it pools. */
+export interface Config extends Rules {
   /** Each pooled provider, by id, to the pool (its integration) whose logins it uses. */
   readonly providers: Readonly<Record<string, PoolId>>
 }
@@ -77,6 +77,8 @@ export const layer = (config: Config) =>
       const logins = yield* Logins
       const quota = yield* Quota
       const ledger = yield* Ledger
+      const rules: Rules = { cacheLifeMs: config.cacheLifeMs }
+      const decider = AccountPool(rules)
 
       /**
        * Have the aggregate decide a command against the pool's state, fold
@@ -86,8 +88,8 @@ export const layer = (config: Config) =>
       const send = (pool: SynchronizedRef.SynchronizedRef<AccountPoolState>, id: PoolId, command: Command) =>
         SynchronizedRef.modifyEffect(pool, (state) =>
           Clock.currentTimeMillis.pipe(
-            Effect.flatMap((now) => AccountPool.decide(state, command, now)),
-            Effect.map((events): readonly [ReadonlyArray<Event>, AccountPoolState] => [events, fold(AccountPool, events, state)]),
+            Effect.flatMap((now) => decider.decide(state, command, now)),
+            Effect.map((events): readonly [ReadonlyArray<Event>, AccountPoolState] => [events, fold(decider, events, state)]),
           ),
         ).pipe(Effect.tap((events) => (events.length === 0 ? Effect.void : ledger.record(id, events))))
 
@@ -192,7 +194,7 @@ export const layer = (config: Config) =>
       const session = Effect.fn("Pool.session")(function* (query: SessionQuery) {
         const where = query.providerID === undefined ? yield* newest(query.sessionID) : pooled(query.providerID)
         if (where === undefined) return {}
-        const found = sessionAccount(yield* SynchronizedRef.get(where.pool), query.sessionID, yield* Clock.currentTimeMillis)
+        const found = sessionAccount(yield* SynchronizedRef.get(where.pool), query.sessionID, yield* Clock.currentTimeMillis, rules)
         if (found === undefined) return {}
         return { account: { pool: where.id, label: yield* logins.label(where.id, found.credentialID), ...found } }
       })
@@ -221,13 +223,13 @@ export const layer = (config: Config) =>
         yield* refresh(where, false)
         for (const credentialID of (yield* SynchronizedRef.get(where.pool)).credentials) yield* pull(where, credentialID)
         const now = yield* Clock.currentTimeMillis
-        return poolPace(status(yield* SynchronizedRef.get(where.pool), now), now)
+        return poolPace(status(yield* SynchronizedRef.get(where.pool), now, rules), now)
       })
 
       const poolsStatus = Effect.gen(function* () {
         const answer: Record<string, PoolsStatus[string]> = {}
         for (const { id, pool } of every) {
-          const accounts = status(yield* SynchronizedRef.get(pool), yield* Clock.currentTimeMillis)
+          const accounts = status(yield* SynchronizedRef.get(pool), yield* Clock.currentTimeMillis, rules)
           const sources = yield* logins.sources(id)
           answer[id] = { accounts, ...(sources.length === 0 ? {} : { sources }) }
         }

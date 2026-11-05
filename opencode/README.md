@@ -22,7 +22,7 @@ so a new terminal runs it, and `opencode2` stays the stock release. As a `latest
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`mods/anthropic-auth`), the pool (on
-the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists), orchestrate, the guard, the kernel, status, the queue, git and idle compaction, the role
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git and idle compaction, the role
 models, a one-hour prompt cache for Claude
 (`providers.anthropic.settings.cache.ttl: "1h"`) and `autoupdate: false`, and into `cli.json` Prime, status, the queue and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork
@@ -91,12 +91,20 @@ as the call log, and no command needs the folded state.
 `mods/pool` pools a provider's OAuth logins; its plugin is `cmd/pool`. It chooses the login each
 request goes out on, holds a login its provider refuses, and turns a refused
 primary request into an immediate retry on another login. Its options are
-`providers`, `sweepMinutes` and `sources`. An absent option takes its
+`providers`, `sweepMinutes`, `cacheLifeMs` and `sources`. An absent option takes its
 default. A malformed one stops the plugin at setup, with a message that
 names it. Other mods read it over its `dotfiles-opencode.pool` RPC
 (`status.ts`, `@dotfiles/opencode-pool/status`): orchestrate asks `pace`, and the `/pool`
 pane draws `status`, and the sidebar asks `session` for the login a session
 is on (or would go out on next), by its label.
+
+A prompt cache is per login, so a session moved to another login writes its
+whole prompt again. While a session's cache lives (`cacheLifeMs` from its
+newest request or priced step; default 5 minutes, and `daily` sets it from
+the TTL it gives Claude), its next run stays on that login. It leaves only
+when the login is held, or has a quota window at its share while another
+login has room. Load, live sessions and pace place only a run whose cache is
+gone.
 
 The model, in the domain files at `mods/pool`'s root:
 
@@ -128,10 +136,10 @@ The model, in the domain files at `mods/pool`'s root:
   usage sweep a read that never refreshes (`peek`).
 
 The aggregate stores folded state, not events: no one reads its history.
-The ledger keeps its holds, readings and priced steps under
-`<pool>/hold/<id>`, `<pool>/reading/<id>` and `<pool>/step/<at>/<session>`,
-the keys earlier processes wrote, so a new process starts where the last
-one stopped. Decisions read Effect's `Clock`; the seam tests move it with
+The ledger keeps its holds, readings, priced steps and session caches under
+`<pool>/hold/<id>`, `<pool>/reading/<id>`, `<pool>/step/<at>/<session>` and
+`<pool>/cache/<session>`, so a new process starts where the last one
+stopped. A ledger from before caches were kept restores none. Decisions read Effect's `Clock`; the seam tests move it with
 `TestClock`.
 
 ## Status

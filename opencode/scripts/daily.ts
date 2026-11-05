@@ -59,17 +59,35 @@ export const roleModels = (catalog: Catalog): Record<string, string> => {
   return { planner: claude, implementor: claude, verifier: newest("openai", "gpt-sol") }
 }
 
+/** The prompt-cache lifetimes Anthropic offers, as `settings.cache.ttl` writes them, in ms. */
+const ANTHROPIC_CACHE_TTLS = { "5m": 5 * 60_000, "1h": 60 * 60_000 } as const
+
+/** The prompt-cache lifetime daily sets for Claude (`providers.anthropic.settings.cache.ttl`). */
+export const CLAUDE_CACHE_TTL: keyof typeof ANTHROPIC_CACHE_TTLS = "1h"
+
+/**
+ * The same lifetime in ms, for the pool's `cacheLifeMs`: while a session's cache lives the pool
+ * keeps it on the login the cache is on, so the two must agree.
+ */
+export const CLAUDE_CACHE_LIFE_MS: number = ANTHROPIC_CACHE_TTLS[CLAUDE_CACHE_TTL]
+
+/**
+ * The pool's plugin entry: Claude's cache lifetime, and gent's store as a source of logins when
+ * `gent` (its directory) exists.
+ */
+export const poolEntry = (pool: string, gent: string | undefined): PluginEntry => ({
+  package: pool,
+  options: { cacheLifeMs: CLAUDE_CACHE_LIFE_MS, ...(gent === undefined ? {} : { sources: [{ kind: "gent", dir: gent }] }) },
+})
+
+const record = (value: unknown): Json => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Json) : {})
+
 /**
  * The global server config with ours merged in: our plugins (any entry from `owned` dirs is
  * replaced, every other entry kept, ours first so the auth plugin precedes the pool), each
  * role's model (its other fields kept), and auto-update off so the stock release never
  * replaces the fork.
  */
-/** The prompt-cache lifetime daily sets for Claude (`providers.anthropic.settings.cache.ttl`). */
-export const CLAUDE_CACHE_TTL = "1h"
-
-const record = (value: unknown): Json => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Json) : {})
-
 export const mergeServer = (
   existing: Json,
   plugins: ReadonlyArray<PluginEntry>,
@@ -164,7 +182,7 @@ if (import.meta.main) {
   const pool = pluginDir("pool")
   const server: PluginEntry[] = [
     auth,
-    existsSync(gent) ? { package: pool, options: { sources: [{ kind: "gent", dir: gent }] } } : pool,
+    poolEntry(pool, existsSync(gent) ? gent : undefined),
     pluginDir("orchestrate"),
     pluginDir("guard"),
     pluginDir("kernel"),

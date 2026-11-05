@@ -7,8 +7,9 @@ import type { QuotaReading } from "./quota.ts"
 import type { SourceStatus } from "./status.ts"
 
 /**
- * Where a pool keeps what the next process needs: its holds, readings and
- * priced steps. A failed read starts the pool empty; a failed write is lost.
+ * Where a pool keeps what the next process needs: its holds, readings,
+ * priced steps and the account each session's cache is on. A failed read
+ * starts the pool empty; a failed write is lost.
  */
 export class Ledger extends Context.Service<
   Ledger,
