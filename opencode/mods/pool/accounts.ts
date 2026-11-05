@@ -5,10 +5,15 @@
 //
 // - A run (a session from its first request until it goes idle) is pinned to
 //   one account. It leaves that account only when the account is held.
-// - A new run is placed by `rankPlacement`: held accounts last, accounts at
-//   their share after those with room, then by recorded load and live
-//   sessions, and equal accounts by the soonest weekly reset. The account
-//   where the session's cache still lives is kept within one session.
+// - A new run of a session whose prompt cache still lives (for the pool's
+//   cache life since its last request or step) stays on the cache's account:
+//   moving it would write the whole prompt again on another account, since a
+//   cache belongs to one account. It leaves only when that account is held,
+//   or has no room while another account has. Load, live sessions and pace
+//   never move it.
+// - Any other new run is placed by `rankPlacement`: held accounts last,
+//   accounts at their share after those with room, then by recorded load and
+//   live sessions, and equal accounts by the soonest weekly reset.
 // - An account is held until the time its refusal names: a plan limit until
 //   its window resets, a rate limit for its `retry-after`, a rejected token
 //   until the host refreshes it, a failed sign-in for as long as the provider
@@ -23,7 +28,10 @@ const MINUTE = 60_000
 
 /** The window load and sessions are counted over. */
 export const WINDOW_MS = 7 * 24 * 60 * MINUTE
-/** How long a session's prompt cache lives on the account it last used. */
+/**
+ * How long a session's prompt cache lives on the account it last used, unless
+ * the pool is told otherwise (`Rules`): Anthropic's default lifetime.
+ */
 export const CACHE_LIFE_MS = 5 * MINUTE
 /** A pin with no request for this long belongs to a run that stopped without going idle. */
 export const PIN_IDLE_MS = 30 * MINUTE
@@ -33,6 +41,18 @@ export const DEFAULT_HOLD_MS = 5 * MINUTE
 export const FIVE_HOUR_SHARE = 0.9
 /** The share of any other window a pool spends before the account has no room. */
 export const OTHER_WINDOW_SHARE = 0.95
+
+/** What the pool's rules read from its settings. */
+export interface Rules {
+  /** How long a session's prompt cache lives on the account it last used: the provider's cache lifetime. */
+  readonly cacheLifeMs: number
+}
+
+/** The rules of a pool told nothing: Anthropic's default cache lifetime. */
+export const DEFAULT_RULES: Rules = { cacheLifeMs: CACHE_LIFE_MS }
+
+/** Whether a mark of a session's cache, made at `at`, still lives at `now`. */
+export const cacheLives = (rules: Rules, at: number, now: number): boolean => now - at < rules.cacheLifeMs
 
 /** What a model request is for; a session's newest request of each kind has its own account. */
 export const RequestKind = Schema.Literals(["primary", "compaction", "title", "generate"])
@@ -82,23 +102,23 @@ const noRoom = (reading: QuotaReading | undefined): boolean =>
   reading !== undefined && reading.windows.some((window) => window.utilization >= shareOf(window.name))
 
 /** Each session whose run, or cache, is on an account now. */
-const liveSessions = (state: AccountPoolState, now: number): Map<string, string> => {
+const liveSessions = (state: AccountPoolState, now: number, rules: Rules): Map<string, string> => {
   const where = new Map<string, string>()
   for (const [sessionID, mark] of Object.entries(state.recent))
-    if (now - mark.at < CACHE_LIFE_MS) where.set(sessionID, mark.credentialID)
+    if (cacheLives(rules, mark.at, now)) where.set(sessionID, mark.credentialID)
   for (const [sessionID, mark] of Object.entries(state.runs))
     if (now - mark.at < PIN_IDLE_MS) where.set(sessionID, mark.credentialID)
   return where
 }
 
 /** The accounts in placement order for a new run of `sessionID`; none when the pool has no account. */
-export const rank = (state: AccountPoolState, sessionID: string, now: number): ReadonlyArray<string> => {
+export const rank = (state: AccountPoolState, sessionID: string, now: number, rules: Rules): ReadonlyArray<string> => {
   const [first, ...others] = state.credentials
   if (first === undefined) return []
   const steps = state.steps.filter((step) => now - step.at < WINDOW_MS)
   const spent = steps.reduce((total, step) => total + step.cost, 0)
   const sessions = new Set(steps.filter((step) => step.cost > 0).map((step) => step.sessionID)).size
-  const where = liveSessions(state, now)
+  const where = liveSessions(state, now, rules)
   const slot = (credentialID: string): PlacementSlot<string> => {
     const reading = freshReading(state, credentialID, now)
     const weekly = reading?.windows.find((window) => window.name === "7d")
@@ -112,7 +132,7 @@ export const rank = (state: AccountPoolState, sessionID: string, now: number): R
     }
   }
   const cache = state.recent[sessionID]
-  const preferred = cache !== undefined && now - cache.at < CACHE_LIFE_MS ? cache.credentialID : undefined
+  const preferred = cache !== undefined && cacheLives(rules, cache.at, now) ? cache.credentialID : undefined
   return rankPlacement({
     slots: [slot(first), ...others.map(slot)],
     spent,
@@ -150,9 +170,10 @@ export const sessionAccount = (
   state: AccountPoolState,
   sessionID: string,
   now: number,
+  rules: Rules,
 ): Omit<SessionAccount, "pool" | "label"> | undefined => {
   const placed = placedOn(state, sessionID, "primary")
-  const credentialID = placed ?? rank(state, sessionID, now)[0]
+  const credentialID = placed ?? rank(state, sessionID, now, rules)[0]
   if (credentialID === undefined) return undefined
   const hold = state.holds[credentialID]
   const reading = freshReading(state, credentialID, now)
@@ -165,8 +186,8 @@ export const sessionAccount = (
 }
 
 /** Each account as the status method reports it. */
-export const status = (state: AccountPoolState, now: number): ReadonlyArray<AccountStatus> => {
-  const where = liveSessions(state, now)
+export const status = (state: AccountPoolState, now: number, rules: Rules): ReadonlyArray<AccountStatus> => {
+  const where = liveSessions(state, now, rules)
   return state.credentials.map((credentialID) => {
     const hold = state.holds[credentialID]
     const reading = state.readings[credentialID]

@@ -10,14 +10,14 @@
  * session on the provider (`spent / sessions`). With no recorded price, or no
  * session counted, the score is the live sessions alone.
  *
- * The preferred account (where the run's cache lives) stays while it is below
- * pace, has room when the best account has, and is within one session of the
- * best eligible account's score. With no known pace, the pace rule is off. With none eligible, the preferred
- * account, else the pool's first.
+ * The preferred account (where the run's prompt cache still lives) is the
+ * choice unless it is held, or it has no room (a quota window at its share)
+ * while another eligible account has room. Its score and pace never move it:
+ * a move writes the whole prompt again on the new account. Load, live
+ * sessions and pace place only a run whose cache is gone, or one that left a
+ * held or full account (then the first eligible account, or the first with
+ * room). With none eligible, the preferred account, else the pool's first.
  */
-
-/** How far the preferred account's score may sit above the best one's, in sessions. */
-export const PLACEMENT_HYSTERESIS_SESSIONS = 1
 
 /** What placement reads of one account. */
 export interface PlacementSlot<Slot> {
@@ -46,7 +46,7 @@ export interface PlacementTable<Slot> {
   readonly spent: number
   /** Distinct sessions with a priced step on the provider in the window. */
   readonly sessions: number
-  /** Where the run's cache lives, if anywhere. */
+  /** Where the run's prompt cache still lives, if anywhere. */
   readonly preferred?: Slot
 }
 
@@ -57,7 +57,6 @@ export function rankPlacement<Slot>(table: PlacementTable<Slot>): readonly [Slot
   const score = (entry: PlacementSlot<Slot>) => (unit === undefined ? 0 : entry.load / unit) + entry.live
   const underPace = (entry: PlacementSlot<Slot>) => entry.sustainable !== undefined && entry.live < entry.sustainable
   const noRoom = (entry: PlacementSlot<Slot>) => entry.noRoom || entry.sustainable === 0
-  const paced = table.slots.some((entry) => entry.sustainable !== undefined)
   // Infinity puts a missing weekly reading last; equal resets keep pool order.
   const byWeeklyReset = (left: PlacementSlot<Slot>, right: PlacementSlot<Slot>) => {
     const leftReset = left.weeklyResetAt ?? Infinity
@@ -79,17 +78,16 @@ export function rankPlacement<Slot>(table: PlacementTable<Slot>): readonly [Slot
       if (byScore !== 0) return byScore
       return byWeeklyReset(left, right)
     })
+  // A held account is not eligible, so `kept` is unset when its hold moves the run. Room here is
+  // the quota's alone (`entry.noRoom`), never `noRoom` above, which counts pace too.
   const kept = table.preferred === undefined ? undefined : eligible.find((entry) => entry.slot === table.preferred)
-  const low = eligible[0]
+  const roomed = eligible.find((entry) => !entry.noRoom)
   const choice =
-    low === undefined
-      ? (table.preferred ?? table.slots[0].slot)
-      : kept !== undefined &&
-          (!paced || underPace(kept)) &&
-          !(noRoom(kept) && !noRoom(low)) &&
-          score(kept) <= score(low) + PLACEMENT_HYSTERESIS_SESSIONS
-        ? kept.slot
-        : low.slot
+    kept !== undefined
+      ? kept.noRoom && roomed !== undefined
+        ? roomed.slot
+        : kept.slot
+      : (eligible[0]?.slot ?? table.preferred ?? table.slots[0].slot)
   const rest = [
     ...eligible.map((entry) => entry.slot),
     ...table.slots.filter((entry) => entry.held).map((entry) => entry.slot),

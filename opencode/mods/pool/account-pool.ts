@@ -2,16 +2,17 @@
 // accounts it has, which are held and why, the readings and priced steps
 // placement reads, and where each session's run and cache are.
 //
-// The holds, readings and steps are its ledger: the next process reads them
-// back (the Ledger contract in service.ts). Pins, caches and placements are
-// this process's own.
+// The holds, readings, steps and caches are its ledger: the next process reads
+// them back (the Ledger contract in service.ts), so a restart moves no session
+// off the account its cache is on. Pins and placements are this process's own.
 //
-// The AccountPool decider, and each command it decides with its events and
-// rejections, in the order a request meets them.
+// The AccountPool decider, made for the pool's rules (its cache life), and
+// each command it decides with its events and rejections, in the order a
+// request meets them.
 import { Effect, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import {
-  CACHE_LIFE_MS,
+  cacheLives,
   DEFAULT_HOLD_MS,
   held,
   Mark,
@@ -20,6 +21,7 @@ import {
   placedOn,
   rank,
   RequestKind,
+  type Rules,
   Step,
   stepIdentity,
   WINDOW_MS,
@@ -48,16 +50,21 @@ export const AccountPoolState = Schema.Struct({
 export type AccountPoolState = typeof AccountPoolState.Type
 
 /** The part of the state the ledger keeps between processes. */
-export type LedgerState = Pick<AccountPoolState, "holds" | "readings" | "steps">
+export type LedgerState = Pick<AccountPoolState, "holds" | "readings" | "steps" | "recent">
 
 export const empty: AccountPoolState = { credentials: [], holds: {}, readings: {}, steps: [], runs: {}, recent: {}, placed: {} }
 
-/** A pool that starts from the ledger a previous process wrote. */
+/**
+ * A pool that starts from the ledger a previous process wrote, each session's
+ * cache where it was. Its first PruneLedger drops what has expired since (a
+ * cache older than the cache life among it), from the ledger too.
+ */
 export const restored = (ledger: LedgerState): AccountPoolState => ({
   ...empty,
   holds: ledger.holds,
   readings: ledger.readings,
   steps: [...ledger.steps].sort((left, right) => left.at - right.at),
+  recent: ledger.recent,
 })
 
 // ── ListLogins ──
@@ -87,7 +94,8 @@ const listLogins = (state: AccountPoolState, command: ListLogins): Effect.Effect
 
 // ── PlaceRequest ──
 // A model request of a session goes out: on the run's pin while its account
-// is not held, else on the first account of a new placement.
+// is not held, else on the first account of a new placement, which keeps the
+// account its cache is on while the cache lives.
 
 export const PlaceRequest = Schema.TaggedStruct("PlaceRequest", {
   sessionID: Schema.String,
@@ -115,6 +123,7 @@ export declare namespace PlaceRequest {
 }
 
 const placeRequest = (
+  rules: Rules,
   state: AccountPoolState,
   command: PlaceRequest,
   now: number,
@@ -127,7 +136,7 @@ const placeRequest = (
     !held(state, pin.credentialID, now)
       ? pin.credentialID
       : undefined
-  const choice = pinned ?? rank(state, command.sessionID, now)[0]
+  const choice = pinned ?? rank(state, command.sessionID, now, rules)[0]
   if (choice === undefined) return Effect.fail(new NoAccount({ sessionID: command.sessionID, kind: command.kind }))
   return Effect.succeed([
     RequestPlaced.make({ sessionID: command.sessionID, kind: command.kind, credentialID: choice, at: now }),
@@ -291,11 +300,16 @@ export declare namespace PruneLedger {
 }
 
 /** Nothing when nothing has expired. */
-const pruneLedger = (state: AccountPoolState, _command: PruneLedger, now: number): Effect.Effect<ReadonlyArray<LedgerPruned>> => {
+const pruneLedger = (
+  rules: Rules,
+  state: AccountPoolState,
+  _command: PruneLedger,
+  now: number,
+): Effect.Effect<ReadonlyArray<LedgerPruned>> => {
   const steps = state.steps.filter((step) => now - step.at >= WINDOW_MS)
   const holds = Object.entries(state.holds).flatMap(([credentialID, hold]) => (hold.until > now ? [] : [credentialID]))
   const runs = Object.entries(state.runs).flatMap(([sessionID, mark]) => (now - mark.at >= PIN_IDLE_MS ? [sessionID] : []))
-  const caches = Object.entries(state.recent).flatMap(([sessionID, mark]) => (now - mark.at >= CACHE_LIFE_MS ? [sessionID] : []))
+  const caches = Object.entries(state.recent).flatMap(([sessionID, mark]) => (cacheLives(rules, mark.at, now) ? [] : [sessionID]))
   if (steps.length + holds.length + runs.length + caches.length === 0) return Effect.succeed([])
   return Effect.succeed([LedgerPruned.make({ steps, holds, runs, caches })])
 }
@@ -311,14 +325,15 @@ const without = <A>(record: Readonly<Record<string, A>>, keys: ReadonlyArray<str
   return Object.fromEntries(Object.entries(record).filter(([key]) => !drop.has(key)))
 }
 
-export const AccountPool: Decider<AccountPoolState, Command, Event, Rejection> = {
+/** The pool's aggregate under `rules`: how long a session's cache lives decides where its next run goes. */
+export const AccountPool = (rules: Rules): Decider<AccountPoolState, Command, Event, Rejection> => ({
   initial: empty,
   decide: (state, command, now) => {
     switch (command._tag) {
       case "ListLogins":
         return listLogins(state, command)
       case "PlaceRequest":
-        return placeRequest(state, command, now)
+        return placeRequest(rules, state, command, now)
       case "TakeReading":
         return takeReading(state, command, now)
       case "RefuseRequest":
@@ -328,7 +343,7 @@ export const AccountPool: Decider<AccountPoolState, Command, Event, Rejection> =
       case "ReleaseRun":
         return releaseRun(state, command)
       case "PruneLedger":
-        return pruneLedger(state, command, now)
+        return pruneLedger(rules, state, command, now)
     }
   },
   evolve: (state, event) => {
@@ -372,4 +387,4 @@ export const AccountPool: Decider<AccountPoolState, Command, Event, Rejection> =
       }
     }
   },
-}
+})

@@ -3,7 +3,8 @@ import { describe, expect, test } from "bun:test"
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { CLAUDE_CACHE_TTL, launcher, mergeCli, mergeServer, roleModels } from "../scripts/daily.ts"
+import { parseTTL } from "../mods/idle-compact/cache.ts"
+import { CLAUDE_CACHE_TTL, launcher, mergeCli, mergeServer, poolEntry, roleModels } from "../scripts/daily.ts"
 
 const MODS = "/repo/opencode/mods"
 const AUTH = "/home/.local/share/opencode-prime/anthropic-auth"
@@ -35,6 +36,23 @@ describe("the server config", () => {
     expect(merged.providers).toEqual({
       openai: { settings: { reasoningEffort: "high" } },
       anthropic: { name: "Claude", settings: { timeout: 60_000, cache: { ttl: "1h" } } },
+    })
+  })
+})
+
+describe("the pool's entry", () => {
+  test("gives the pool the cache lifetime the config gives Claude, so a session stays on its cache's login as long as the cache lives", () => {
+    const entry = poolEntry(`${MODS}/pool`, undefined)
+    const ttl = (mergeServer({}, [entry], {}, [MODS]).providers as { anthropic: { settings: { cache: { ttl: string } } } }).anthropic.settings.cache.ttl
+    expect(entry).toEqual({ package: `${MODS}/pool`, options: { cacheLifeMs: 3_600_000 } })
+    // The ttl as OpenCode's cache settings write it, read by the cache mods' own parser.
+    expect(parseTTL(ttl)).toMatchObject({ _tag: "Some", value: 3_600_000 })
+  })
+
+  test("adds gent's store as a source when it has one", () => {
+    expect(poolEntry(`${MODS}/pool`, "/home/.local/share/gent/auth")).toEqual({
+      package: `${MODS}/pool`,
+      options: { cacheLifeMs: 3_600_000, sources: [{ kind: "gent", dir: "/home/.local/share/gent/auth" }] },
     })
   })
 })
