@@ -12,26 +12,26 @@
 // The kernel call itself stays in the group where the operations cannot stand
 // for it: a cell that called no tool, a cell still computing with no tool
 // running, and a cell that failed with no failed tool.
-import type { Call } from "./group"
-import type { ToolPart } from "./view"
+import type { Call } from "./call.ts"
+import type { Fields, ToolContent, ToolPart, ToolState } from "./session.ts"
 
 /** One recorded operation, as the kernel writes it. */
 type Operation = {
   readonly tool: string
   readonly status: "running" | "completed" | "error"
-  readonly input?: Record<string, unknown>
+  readonly input?: Fields
   readonly output?: string
   readonly error?: string
-  readonly metadata?: Record<string, unknown>
+  readonly metadata?: Fields
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+const isRecord = (value: unknown): value is Fields =>
   typeof value === "object" && value !== null && !Array.isArray(value)
 
 /** The operations a kernel call recorded so far: live while it runs, kept once it ends. */
 export function operations(part: ToolPart): Operation[] {
   if (part.state.status === "streaming") return []
-  const recorded = isRecord(part.state.metadata) ? part.state.metadata.operations : undefined
+  const recorded = part.state.metadata?.operations
   if (!Array.isArray(recorded)) return []
   return recorded.flatMap((value): Operation[] => {
     if (!isRecord(value) || typeof value.tool !== "string") return []
@@ -51,22 +51,23 @@ export function operations(part: ToolPart): Operation[] {
 
 /** An operation as a call of its own tool, in the kernel call's slot. */
 function asPart(kernel: ToolPart, operation: Operation): ToolPart {
-  const content = operation.output === undefined ? [] : [{ type: "text", text: operation.output }]
-  const state = {
-    ...kernel.state,
-    status: operation.status,
-    input: operation.input ?? {},
-    metadata: operation.metadata ?? {},
-    content,
-    ...(operation.status === "error" ? { error: { message: operation.error ?? "failed" } } : {}),
-  }
-  return { ...kernel, name: operation.tool, state } as unknown as ToolPart
+  const content: ReadonlyArray<ToolContent> = operation.output === undefined ? [] : [{ type: "text", text: operation.output }]
+  const input = operation.input ?? {}
+  const metadata = operation.metadata ?? {}
+  // The error has a message and no type, so the row's error name is its head, else `error`.
+  const state: ToolState =
+    operation.status === "running"
+      ? { status: "running", input, metadata }
+      : operation.status === "error"
+        ? { status: "error", input, metadata, content, error: { message: operation.error ?? "failed" } }
+        : { status: "completed", input, metadata, content }
+  return { ...kernel, name: operation.tool, state }
 }
 
 /** The kernel call's error message, for a tool it left running. */
 function kernelError(part: ToolPart): string {
-  const error = (part.state as { error?: { message?: unknown } }).error
-  return typeof error?.message === "string" && error.message ? error.message : "cancelled"
+  const message = part.state.status === "error" ? part.state.error.message : undefined
+  return typeof message === "string" && message ? message : "cancelled"
 }
 
 /**

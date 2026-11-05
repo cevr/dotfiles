@@ -3,36 +3,29 @@
 // row opens its session on click and brightens under the pointer; inside a
 // subagent the current one is marked. They show whether or not the host shows
 // the session's sidebar, which carries only the queue.
-import type { Plugin } from "@opencode/plugin/tui"
+import { columns, format, spinner, type Columns, type Kind } from "@dotfiles/opencode-subagents/line"
+import { subagents, visible, type Row as SubagentRow, type Tone } from "@dotfiles/opencode-subagents/subagent-row"
 import type { BoxRenderable, RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, Show, type Accessor } from "solid-js"
-import { useNow } from "./clock"
-import { useSessionLink } from "./link"
-import { columns, format, spinner, type Columns, type Kind } from "@dotfiles/opencode-subagents/line"
-import { read } from "@dotfiles/opencode-subagents/opencode/view"
-import { subagents, visible, type Row as SubagentRow, type Tone } from "@dotfiles/opencode-subagents/subagent-row"
-import { capped, moreLine } from "./rows"
-
-type Context = Plugin.Context
+import { capped, moreLine } from "../rows.ts"
+import { working as familyWorking } from "../subagent.ts"
+import { useNow } from "./clock.ts"
+import type { Host } from "./host.ts"
+import { useSessionLink } from "./link.ts"
 
 /**
  * Which sessions of `sessionID`'s family work now: the host runs them, or
- * their subagent row runs or is blocked. A subagent that ended its turn to
- * wait on its own background work is idle to the host, yet still working.
+ * their subagent row runs or is blocked (subagent.ts).
  */
-export function working(data: Context["data"], sessionID: string): (id: string) => boolean {
-  const family = read(data, sessionID)
-  const live = new Set(
-    subagents(family, family.root).flatMap((row) => (row.state === "running" || row.state === "blocked" ? [row.id] : [])),
-  )
-  return (id) => data.session.status(id) === "running" || live.has(id)
+export function working(host: Host, sessionID: string): (id: string) => boolean {
+  return familyWorking(host.subagents(sessionID), (id) => host.status(id) === "running")
 }
 
 /** The rows for `sessionID`'s family; `child` when the route is one of the subagents, which is then marked. */
-export function SubagentRows(props: { context: Context; sessionID: string; child: boolean }) {
+export function SubagentRows(props: { host: Host; sessionID: string; child: boolean }) {
   const all = createMemo(() => {
-    const family = read(props.context.data, props.sessionID)
+    const family = props.host.subagents(props.sessionID)
     return subagents(family, family.root)
   })
   // The clock ticks while a row runs, waits or lingers in view, and settles once none does.
@@ -61,7 +54,7 @@ export function SubagentRows(props: { context: Context; sessionID: string; child
         <For each={shown().rows}>
           {(row) => (
             <Row
-              context={props.context}
+              host={props.host}
               row={row}
               width={width()}
               columns={cols()}
@@ -73,7 +66,7 @@ export function SubagentRows(props: { context: Context; sessionID: string; child
         </For>
         <Show when={moreLine(shown().more, props.child)}>
           {(line) => (
-            <text wrapMode="none" truncate fg={props.context.theme.text.faint}>
+            <text wrapMode="none" truncate fg={props.host.theme().text.faint}>
               {line()}
             </text>
           )}
@@ -84,7 +77,7 @@ export function SubagentRows(props: { context: Context; sessionID: string; child
 }
 
 function Row(props: {
-  context: Context
+  host: Host
   row: SubagentRow
   width: number
   columns: Columns
@@ -92,8 +85,8 @@ function Row(props: {
   marked: boolean
   marking: boolean
 }) {
-  const theme = () => props.context.theme
-  const link = useSessionLink(props.context, () => (props.marked ? undefined : props.row.id))
+  const theme = () => props.host.theme()
+  const link = useSessionLink(props.host, () => (props.marked ? undefined : props.row.id))
   const segments = createMemo(() =>
     format(props.row, props.width, {
       columns: props.columns,

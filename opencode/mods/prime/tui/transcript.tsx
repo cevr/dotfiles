@@ -1,20 +1,20 @@
 // Transcript rows in the Prime look: the user prompt behind fx's heavy `┃` rail (bold text, no band),
 // reasoning only at All (fx keeps thinking out of the inline view), and plain assistant text.
-import type { Plugin } from "@opencode/plugin/tui"
-import type { TranscriptOverlayInput } from "@opencode/plugin/tui/context"
 import { RGBA, type BoxRenderable } from "@opentui/core"
 import { createMemo, createSignal, Show, type Accessor } from "solid-js"
-import { governingAsk, oneLine } from "./ask"
-import type { Detail } from "./view"
+import { governingAsk, oneLine } from "../ask.ts"
+import type { Detail } from "../detail.ts"
+import { attachedLine, promptText } from "../prompt.ts"
+import { words } from "../session.ts"
+import type { Host, Overlay, Palette } from "./host.ts"
 
-type Context = Plugin.Context
-export type PartProps = { context: Context; sessionID: string; messageID: string; partID: string }
+export type PartProps = { host: Host; sessionID: string; messageID: string; partID: string }
 
 /** Transcript rows sit one column in from the inset; bands reach the inset. */
 export const GUTTER = 1
 
 export function usePart(props: PartProps) {
-  return createMemo(() => props.context.data.session.part.get(props.sessionID, props.messageID, props.partID))
+  return createMemo(() => props.host.part(props.sessionID, props.messageID, props.partID))
 }
 
 /** OpenTUI border characters with only the vertical drawn: fx's heavy user-turn rail. */
@@ -40,25 +40,14 @@ const USER_RAIL = {
  * composer are. What came with the prompt (files, skills, agents) is one
  * muted line under the text.
  */
-export function UserBand(props: { context: Context; sessionID: string; messageID: string }) {
+export function UserBand(props: { host: Host; sessionID: string; messageID: string }) {
   const message = createMemo(() => {
-    const found = props.context.data.session.message.get(props.sessionID, props.messageID)
+    const found = props.host.message(props.sessionID, props.messageID)
     return found?.type === "user" ? found : undefined
   })
-  const text = createMemo(() => message()?.text.trim() ?? "")
-  const attached = createMemo(() => {
-    const found = message()
-    if (!found) return ""
-    return [
-      ...(found.files ?? []).map((file) => {
-        const label = file.mime === "application/x-directory" ? "dir" : file.mime.startsWith("image/") ? "image" : "file"
-        return `${label} ${file.name ?? (file.source.type === "uri" ? file.source.uri : "attachment")}`
-      }),
-      ...(found.skills ?? []).map((skill) => `skill ${skill.name}`),
-      ...(found.agents ?? []).map((agent) => `agent ${agent.name}`),
-    ].join(" · ")
-  })
-  const theme = () => props.context.theme
+  const text = createMemo(() => promptText(message()))
+  const attached = createMemo(() => attachedLine(message()))
+  const theme = () => props.host.theme()
   return (
     <Show when={text() || attached()}>
       <box
@@ -90,13 +79,12 @@ export function ReasoningLine(props: PartProps & { detail: Accessor<Detail> }) {
   const part = usePart(props)
   const content = createMemo(() => {
     const item = part()
-    if (item?.type !== "reasoning") return ""
-    return item.text.replace("[REDACTED]", "").trim()
+    return item?.type === "reasoning" ? words(item.text) : ""
   })
   return (
     <Show when={props.detail() === "all" && content()}>
       <box paddingLeft={GUTTER}>
-        <text fg={props.context.theme.text.faint} wrapMode="word">
+        <text fg={props.host.theme().text.faint} wrapMode="word">
           {content()}
         </text>
       </box>
@@ -111,10 +99,10 @@ export function AssistantText(props: PartProps) {
     return item?.type === "text" ? item.text.trim() : ""
   })
   const streaming = createMemo(() => {
-    const message = props.context.data.session.message.get(props.sessionID, props.messageID)
+    const message = props.host.message(props.sessionID, props.messageID)
     return message?.type === "assistant" && message.time.completed === undefined
   })
-  const Markdown = props.context.ui.Markdown
+  const Markdown = props.host.Markdown
   return (
     <Show when={content()}>
       <box paddingLeft={GUTTER} flexShrink={0}>
@@ -122,6 +110,18 @@ export function AssistantText(props: PartProps) {
       </box>
     </Show>
   )
+}
+
+/**
+ * The pin's fill: the terminal's own background, opaque. A cell drawn on a
+ * transparent background keeps the character under it, and the Prime theme's
+ * background is transparent (the terminal's), so the pin fills with the
+ * terminal's default colour instead, which looks the same; a theme with an
+ * opaque background fills with that.
+ */
+function cover(theme: Palette) {
+  const base = theme.background.base
+  return base.a >= 1 ? base : RGBA.defaultBackground()
 }
 
 /**
@@ -133,28 +133,14 @@ export function AssistantText(props: PartProps) {
  * top row the pin covers moves on with a one-row scroll and the transcript's
  * own first row is the splash's blank margin.
  */
-/**
- * The pin's fill: the terminal's own background, opaque. A cell drawn on a
- * transparent background keeps the character under it, and the Prime theme's
- * background is transparent (the terminal's), so the pin fills with the
- * terminal's default colour instead, which looks the same; a theme with an
- * opaque background fills with that.
- */
-function cover(theme: Context["theme"]) {
-  const base = theme.background.base
-  return base.a >= 1 ? base : RGBA.defaultBackground()
-}
-
-export function PinnedAsk(props: { context: Context; input: TranscriptOverlayInput }) {
+export function PinnedAsk(props: { host: Host; input: Overlay }) {
   const ask = createMemo(() =>
-    props.input.away
-      ? governingAsk(props.context.data.session.message.list(props.input.sessionID), props.input.messages)
-      : undefined,
+    props.input.away ? governingAsk(props.host.messages(props.input.sessionID), props.input.messages) : undefined,
   )
   // Unmeasured, the text keeps its length and the host's truncate cuts it.
   const [width, setWidth] = createSignal(Infinity)
   const [hover, setHover] = createSignal(false)
-  const theme = () => props.context.theme
+  const theme = () => props.host.theme()
   return (
     <Show when={ask()}>
       {(found) => (

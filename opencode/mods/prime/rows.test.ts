@@ -1,7 +1,7 @@
 // How many subagent rows the dock draws, and the line that counts the rest.
 // The rows themselves are tested in mods/subagents.
 import { describe, expect, test } from "bun:test"
-import { capped, moreLine } from "../src/rows"
+import { capped, moreLine } from "./rows.ts"
 
 describe("the rows beneath the composer", () => {
   test("a list over the cap shows the first rows in order and counts the rest", () => {

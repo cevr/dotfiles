@@ -1,24 +1,22 @@
 // A kernel call in the transcript: drawn as the tool calls its cell made, as
 // fx draws calls, and never as its code.
 import { describe, expect, test } from "bun:test"
-import { canonical, headerRuns, rows, subject, verb, type Call } from "../src/group"
-import { cellCalls, expand, toolsInCode } from "../src/kernel"
-import type { ToolPart } from "../src/view"
+import { canonical, type Call } from "./call.ts"
+import { headerRuns, rows, subject, verb } from "./group.ts"
+import { cellCalls, expand, toolsInCode } from "./kernel.ts"
+import type { Fields, ToolPart, ToolState } from "./session.ts"
 
-const kernel = (status: "completed" | "running" | "error", operations: unknown[] | undefined, code = "await sh(`ls`)"): ToolPart =>
-  ({
-    type: "tool",
-    id: "call_k",
-    name: "kernel",
-    time: { created: 0 },
-    state: {
-      status,
-      input: { code },
-      content: [],
-      ...(operations === undefined ? {} : { metadata: { operations } }),
-      ...(status === "error" ? { error: { message: "TypeError: x is undefined" } } : {}),
-    },
-  }) as unknown as ToolPart
+const kernel = (status: "completed" | "running" | "error", operations: unknown[] | undefined, code = "await sh(`ls`)"): ToolPart => {
+  const input = { code }
+  const metadata: Fields = operations === undefined ? {} : { operations }
+  const state: ToolState =
+    status === "running"
+      ? { status, input, metadata }
+      : status === "error"
+        ? { status, input, content: [], error: { message: "TypeError: x is undefined" }, ...(operations === undefined ? {} : { metadata }) }
+        : { status, input, content: [], ...(operations === undefined ? {} : { metadata }) }
+  return { type: "tool", id: "call_k", name: "kernel", time: { created: 0 }, state }
+}
 
 const op = (tool: string, input: Record<string, unknown>, status = "completed", metadata?: Record<string, unknown>) => ({
   tool,
