@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { skillFilesLaws, type Placed, type Root } from "../laws.ts"
@@ -48,5 +48,28 @@ describe("filesystem SkillFiles folders", () => {
     const local = folders({ directory: "/h/code/app", home: "/h", config: "/h/.config/opencode" }).local
     expect(local).not.toContain("/h/.claude/skills")
     expect(local).toContain("/h/code/.claude/skills")
+  })
+})
+
+describe("filesystem SkillFiles over linked folders", () => {
+  test("a dotfiles checkout linked in as both global folders reads once, as global, from inside the checkout", async () => {
+    const found = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const dir = yield* scratch
+          const home = join(dir, "home")
+          const dotfiles = join(home, "dotfiles")
+          mkdirSync(join(dotfiles, "skills", "review"), { recursive: true })
+          writeFileSync(join(dotfiles, "skills", "review", "SKILL.md"), "---\nname: review\ndescription: Reviews a change\n---\nRead the diff.\n")
+          for (const at of [".claude", ".agents"]) {
+            mkdirSync(join(home, at), { recursive: true })
+            symlinkSync(join(dotfiles, "skills"), join(home, at, "skills"))
+          }
+          const { SkillFiles } = yield* Effect.promise(() => import("../service.ts"))
+          return yield* SkillFiles.use((files) => files.scan).pipe(Effect.provide(layer({ directory: dotfiles, home, config: join(home, ".config", "opencode") })))
+        }),
+      ),
+    )
+    expect(found.map((skill) => [skill.id, skill.tier])).toEqual([["review", "global"]])
   })
 })

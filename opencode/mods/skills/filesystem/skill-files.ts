@@ -128,16 +128,22 @@ const ancestors = (start: string): ReadonlyArray<string> => {
 
 /** The folders each tier reads, in order. */
 export const folders = (roots: Roots): { readonly local: ReadonlyArray<string>; readonly global: ReadonlyArray<string> } => {
-  const global = [join(roots.config, "skills"), join(roots.config, "skill"), join(roots.home, ".claude", "skills"), join(roots.home, ".agents", "skills")]
-  const globalRoots = [roots.config, join(roots.home, ".claude"), join(roots.home, ".agents")].map(real)
-  const insideGlobal = (folder: string) => {
-    const path = real(folder)
-    return globalRoots.some((root) => path === root || path.startsWith(root + sep))
-  }
+  // One folder linked in under two names (`~/.claude/skills` and `~/.agents/skills` both
+  // pointing at a dotfiles checkout) is read once, and a home-directory ancestor's folder that
+  // is, or links to, a global one stays global.
+  const global = uniqBy([join(roots.config, "skills"), join(roots.config, "skill"), join(roots.home, ".claude", "skills"), join(roots.home, ".agents", "skills")], real)
+  const globalRoots = [roots.config, join(roots.home, ".claude"), join(roots.home, ".agents"), ...global].flatMap((root) => [resolve(root), real(root)])
+  const insideGlobal = (folder: string) =>
+    [resolve(folder), real(folder)].some((path) => globalRoots.some((root) => path === root || path.startsWith(root + sep)))
   const local = ancestors(roots.directory)
     .flatMap((directory) => [".opencode/skills", ".opencode/skill", ".claude/skills", ".agents/skills"].map((folder) => join(directory, folder)))
     .filter((folder) => !insideGlobal(folder))
   return { local, global }
+}
+
+const uniqBy = <A>(items: ReadonlyArray<A>, key: (item: A) => string): ReadonlyArray<A> => {
+  const seen = new Set<string>()
+  return items.filter((item) => !seen.has(key(item)) && Boolean(seen.add(key(item))))
 }
 
 /** Reads the folders of both tiers afresh on every scan. */
