@@ -79,8 +79,10 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
   }, 300_000)
 
   test("a streaming thought is a one-node group headed Thinking, its glyph in the accent", () => {
-    expect(slice(frames.streaming, "  ● Thinking", 2)).toEqual(["  ● Thinking", "  └ thinking  Planning the check"])
-    expect(fg(frames.streaming, "  ● Thinking", 2)).toBe(ACCENT)
+    // The glyph blinks ● / ○; the frame may catch either.
+    const lead = frames.streaming.lines.some((line) => line.startsWith("  ○ Thinking")) ? "  ○ Thinking" : "  ● Thinking"
+    expect(slice(frames.streaming, lead, 2)).toEqual([lead, "  └ thinking  Planning the check"])
+    expect(fg(frames.streaming, lead, 2)).toBe(ACCENT)
   })
 
   test("a step that thinks, then makes two calls, is one tree: the thought is its first node", () => {

@@ -91,7 +91,9 @@ export default OpenCodeDriver.use(
       })
       const until = (name: string, ready: (frame: string) => boolean) =>
         ui.capture().pipe(
-          Effect.flatMap((frame) => (ready(text(frame)) ? Effect.void : Effect.fail("pending"))),
+          // Under load the host's startup panel can still sit beneath the transcript; a
+          // frame is ready only once it has gone.
+          Effect.flatMap((frame) => (ready(text(frame)) && !text(frame).includes("Finishing startup") ? Effect.void : Effect.fail("pending"))),
           Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 300 }),
           Effect.tapError(() =>
             ui.capture().pipe(Effect.map((frame) => writeFileSync(`${out}/${name}.timeout.txt`, text(frame)))),
