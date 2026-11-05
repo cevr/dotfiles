@@ -124,9 +124,9 @@ export default OpenCodeDriver.use(
       // ui.waitFor reads the last render buffer without rendering and can time
       // out on text already on screen (anomalyco/opencode#61681, fixed on our
       // fork); capture() renders first, so this works on any OpenCode.
-      const until = (name: string, ready: (frame: string) => boolean) =>
+      const until = (name: string, ready: (frame: Frame) => boolean) =>
         ui.capture().pipe(
-          Effect.flatMap((frame) => (ready(text(frame)) ? Effect.void : Effect.fail("pending"))),
+          Effect.flatMap((frame) => (ready(frame) ? Effect.void : Effect.fail("pending"))),
           Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 200 }),
           Effect.tapError(() =>
             ui.capture().pipe(Effect.map((frame) => writeFileSync(`${out}/${name}.timeout.txt`, text(frame)))),
@@ -143,11 +143,22 @@ export default OpenCodeDriver.use(
       yield* ui.submit(ASK)
       // Prime's dock counts running subagents; hold the reviewer until it shows.
       yield* until(`${label}-running`, (frame) =>
-        process.env.SCENARIO_PRIME ? frame.includes("◆ 1 subagent") : frame.includes("code-reviewer"),
+        process.env.SCENARIO_PRIME ? text(frame).includes("◆ 1 subagent") : text(frame).includes("code-reviewer"),
       )
       yield* save(`${label}-running`)
       yield* Deferred.succeed(review, undefined)
-      yield* until(label, (frame) => frame.includes("reviewer approved") && !frame.includes("Executing"))
+      yield* until(label, (frame) => text(frame).includes("reviewer approved") && !text(frame).includes("Executing"))
+      // Each run fetches the Python grammar afresh from GitHub, and the diff is
+      // highlighted only once it lands, which can be after the turn settles. Wait
+      // for the diff's `def` to be its own syntax span; on a timeout, save anyway
+      // so the colour assertions report it.
+      yield* until(`${label}-highlight`, (frame) =>
+        frame.lines.every(
+          (line) =>
+            !/^\s+1\s+def fetch\(/.test(line.spans.map((span) => span.text).join("")) ||
+            line.spans.some((span) => span.text === "def"),
+        ),
+      ).pipe(Effect.ignore)
       yield* Effect.sleep("500 millis")
       yield* save(label)
       // SCENARIO_CYCLE=1 presses Ctrl+O twice: Details -> All -> Overview.
