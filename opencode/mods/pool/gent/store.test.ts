@@ -6,7 +6,7 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { Context, Effect, Logger } from "effect"
 import {
@@ -14,6 +14,7 @@ import {
   GENT_USER_AGENT,
   GentCredentialError,
   GentSource,
+  gentSignInCommand,
   REFRESH_AHEAD_MS,
   REFRESH_GAP_MS,
   REFRESH_JITTER_MS,
@@ -29,7 +30,7 @@ afterAll(() => rmSync(root, { recursive: true, force: true }))
 const token = (kind: string) => `fake-${kind}-${randomBytes(12).toString("hex")}`
 
 /** What the fake endpoint answers one trade. */
-type Answer = "rotate" | "rate-limited" | "unavailable" | "unreachable"
+type Answer = "rotate" | "rate-limited" | "unavailable" | "unreachable" | "refused"
 
 interface Trade {
   /** The fake clock when the trade went out. */
@@ -75,6 +76,7 @@ const bench = (answer: () => Answer = () => "rotate", options: { lockPolls?: num
     if (kind === "unreachable") return Promise.reject(new TypeError("fetch failed"))
     if (kind === "rate-limited") return new Response("<html>Error 1015</html>", { status: 429, headers: { server: "cloudflare" } })
     if (kind === "unavailable") return new Response("down", { status: 503 })
+    if (kind === "refused") return Response.json({ error: "invalid_grant", error_description: "Refresh token not found or invalid" }, { status: 400 })
     const next = { access_token: token("access"), refresh_token: token("refresh"), expires_in: 8 * 3600 }
     tokens.push(next.access_token, next.refresh_token)
     return Response.json(next)
@@ -289,5 +291,123 @@ describe("logging", () => {
       { level: "Info", text: expect.stringContaining('gent refresh "beta": unavailable') },
     ])
     for (const { text } of logs) for (const secret of tokens) expect(text).not.toContain(secret)
+  })
+})
+
+describe("a login whose refresh token the endpoint refused is lost until its file changes", () => {
+  const lost = (source: GentSource) => Effect.runPromise(source.lost)
+
+  test("a refusal lists the login, since its first refusal, with the command that signs it in again", async () => {
+    let answer: Answer = "refused"
+    const { dir, source, clock, signIn } = bench(() => answer)
+    signIn("alpha", clock.now - 1000)
+    signIn("beta", clock.now + 8 * HOUR)
+    const first = clock.now
+    expect((await failure(source.resolve(id("alpha")))).kind).toBe("rejected")
+    const entry = {
+      credentialID: id("alpha"),
+      label: "alpha",
+      since: first,
+      command: `GENT_AUTH_DIRECTORY=${dir} gent auth login anthropic --method "Sign in to a Claude account" --slot alpha`,
+    }
+    expect(await lost(source)).toEqual([entry])
+
+    // Refused again later: still the first refusal.
+    clock.now += MINUTE
+    expect((await failure(source.resolve(id("alpha")))).kind).toBe("rejected")
+    expect(await lost(source)).toEqual([entry])
+
+    // The owner signs in again in gent: the file holds another login.
+    answer = "rotate"
+    signIn("alpha", clock.now + 8 * HOUR)
+    expect(await lost(source)).toEqual([])
+  })
+
+  test("our own refresh, gent's, or a removed label clears it", async () => {
+    let answer: Answer = "refused"
+    const { dir, source, clock, signIn } = bench(() => answer)
+    signIn("alpha", clock.now - 1000)
+    signIn("beta", clock.now - 1000)
+    signIn("gamma", clock.now - 1000)
+    for (const label of ["alpha", "beta", "gamma"]) {
+      expect((await failure(source.resolve(id(label)))).kind).toBe("rejected")
+      clock.now += REFRESH_GAP_MS
+    }
+    expect((await lost(source)).map((login) => login.label)).toEqual(["alpha", "beta", "gamma"])
+
+    answer = "rotate"
+    await source.resolve(id("alpha"))
+    // gent refreshed beta in its own process: another login in the file.
+    signIn("beta", clock.now + 8 * HOUR)
+    rmSync(join(dir, ".slots/anthropic/gamma"))
+    expect(await lost(source)).toEqual([])
+  })
+
+  test("the command names no store for gent's own directory, and the home directory as ~", () => {
+    expect(gentSignInCommand(join(homedir(), ".gent/auth"), "work")).toBe(
+      'gent auth login anthropic --method "Sign in to a Claude account" --slot work',
+    )
+    expect(gentSignInCommand(join(homedir(), ".local/share/opencode-prime/pool-auth"), "work")).toBe(
+      'GENT_AUTH_DIRECTORY=~/.local/share/opencode-prime/pool-auth gent auth login anthropic --method "Sign in to a Claude account" --slot work',
+    )
+    expect(gentSignInCommand("/tmp/a store", "work")).toStartWith("GENT_AUTH_DIRECTORY='/tmp/a store' gent auth login")
+  })
+})
+
+describe("a run of trades the endpoint fails is recorded with its cause", () => {
+  const record = (source: GentSource) => Effect.runPromise(source.refreshes)
+
+  test("a 429 starts the run with its status and server; a paused trade extends it and keeps the cause", async () => {
+    let answer: Answer = "rate-limited"
+    const { source, clock, signIn } = bench(() => answer)
+    expect(await record(source)).toEqual({ failures: 0, pausedUntil: 0 })
+    signIn("alpha", clock.now - 1000)
+    const start = clock.now
+    await failure(source.resolve(id("alpha")))
+    const cause = { status: 429, server: "cloudflare" }
+    expect(await record(source)).toEqual({
+      failingSince: start,
+      lastFailureAt: start,
+      failures: 1,
+      cause,
+      pausedUntil: start + 5 * MINUTE,
+    })
+
+    clock.now += MINUTE
+    await failure(source.resolve(id("alpha")))
+    expect(await record(source)).toEqual({
+      failingSince: start,
+      lastFailureAt: start + MINUTE,
+      failures: 2,
+      cause,
+      pausedUntil: start + 5 * MINUTE,
+    })
+
+    // The pause ends and a trade refreshes: the run is over.
+    answer = "rotate"
+    clock.now = start + 5 * MINUTE
+    await source.resolve(id("alpha"))
+    expect(await record(source)).toEqual({ failures: 0, pausedUntil: start + 5 * MINUTE })
+  })
+
+  test("a 5xx names its status, no answer names none, and a refusal ends the run", async () => {
+    let answer: Answer = "unavailable"
+    const { source, clock, signIn, tokens } = bench(() => answer)
+    signIn("alpha", clock.now - 1000)
+    await failure(source.resolve(id("alpha")))
+    expect((await record(source)).cause).toEqual({ status: 503 })
+
+    answer = "unreachable"
+    clock.now += REFRESH_GAP_MS
+    await failure(source.resolve(id("alpha")))
+    expect(await record(source)).toMatchObject({ failures: 2, cause: {} })
+
+    answer = "refused"
+    clock.now += REFRESH_GAP_MS
+    await failure(source.resolve(id("alpha")))
+    const after = await record(source)
+    expect(after).toEqual({ failures: 0, pausedUntil: 0 })
+    const said = JSON.stringify([after, await Effect.runPromise(source.lost)])
+    for (const secret of tokens) expect(said).not.toContain(secret)
   })
 })

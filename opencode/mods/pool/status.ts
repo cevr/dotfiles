@@ -1,6 +1,7 @@
 // The pool's own RPC, which other mods read: orchestrate asks `pace` before a
 // new agent starts, the status pane draws `status`, and the status sidebar
-// draws `session`, the account one session is on. The definition is the
+// draws `session`, the account one session is on, and `alerts`, the logins
+// that need a sign-in and a token endpoint that keeps failing. The definition is the
 // wire contract, kept byte for byte; the schemas below are the shapes its
 // methods answer with. No answer carries a secret.
 import { Schema } from "effect"
@@ -20,6 +21,7 @@ export const POOL_STATUS = {
       },
       output: { type: "object" },
     },
+    alerts: { input: { type: "object" }, output: { type: "object" } },
   },
   events: {},
 } as const
@@ -94,3 +96,47 @@ export type SessionAccount = typeof SessionAccount.Type
 /** The session method's answer: no `account` when the provider is not pooled or the pool has none to name. */
 export const SessionAnswer = Schema.Struct({ account: Schema.optionalKey(SessionAccount) })
 export type SessionAnswer = typeof SessionAnswer.Type
+
+/** What the token endpoint said when it last failed a trade: its status, `server` and `retry-after`; none when it did not answer. */
+export const RefreshCause = Schema.Struct({
+  status: Schema.optionalKey(Schema.Number),
+  server: Schema.optionalKey(Schema.String),
+  retryAfter: Schema.optionalKey(Schema.String),
+})
+export type RefreshCause = typeof RefreshCause.Type
+
+/**
+ * A pooled login whose refresh token the token endpoint refused: it serves
+ * nothing until its owner signs in again, with `command`, in the store that
+ * holds it. `since` is the first refusal (epoch ms).
+ */
+export const LostLogin = Schema.Struct({
+  pool: Schema.String,
+  credentialID: Schema.String,
+  label: Schema.String,
+  since: Schema.Number,
+  command: Schema.String,
+})
+export type LostLogin = typeof LostLogin.Type
+
+/**
+ * An outside store none of whose refreshes has gone through for a sustained
+ * while: every trade since `since` failed as unavailable, the last at
+ * `lastAt`, the endpoint's last word `cause`.
+ */
+export const RefreshOutage = Schema.Struct({
+  pool: Schema.String,
+  dir: Schema.String,
+  since: Schema.Number,
+  lastAt: Schema.Number,
+  failures: Schema.Number,
+  cause: Schema.optionalKey(RefreshCause),
+})
+export type RefreshOutage = typeof RefreshOutage.Type
+
+/** The alerts method's answer: every pool's lost logins and refresh outages. No token. */
+export const Alerts = Schema.Struct({
+  lost: Schema.Array(LostLogin),
+  outages: Schema.Array(RefreshOutage),
+})
+export type Alerts = typeof Alerts.Type

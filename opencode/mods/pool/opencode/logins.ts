@@ -4,6 +4,7 @@
 // and a login is marked as needing a sign-in only when that changes.
 import { Clock, Effect, Layer } from "effect"
 import type { PoolId } from "../account-pool.ts"
+import type { RefreshRecord, StoreLostLogin } from "../alerts.ts"
 import type { GentListing, GentSource } from "../gent/store.ts"
 import { Logins, LoginsUnavailable } from "../service.ts"
 import type { SourceStatus } from "../status.ts"
@@ -38,6 +39,10 @@ export interface Store {
   readonly listing: Effect.Effect<GentListing, { readonly message: string }>
   /** The store's own name for one of its logins; none for a login it does not hold. */
   readonly label: (credentialID: string) => string | undefined
+  /** Its logins the token endpoint refused and their files still hold. */
+  readonly lost: Effect.Effect<ReadonlyArray<StoreLostLogin>>
+  /** How its trades have gone since the endpoint last answered one. */
+  readonly refreshes: Effect.Effect<RefreshRecord>
 }
 
 const isLogin = <C extends Connection>(connection: C): connection is C & { readonly id: string } =>
@@ -107,6 +112,10 @@ export const layer = <C extends Connection>(integration: Integration<C>, stores:
             }
             return credentialID
           }),
+        refreshes: (pool: PoolId) =>
+          Effect.forEach(stores(pool), (store) =>
+            Effect.all({ lost: store.lost, record: store.refreshes }).pipe(Effect.map(({ lost, record }) => ({ dir: store.dir, lost, record }))),
+          ),
       })
     }),
   )
@@ -116,4 +125,6 @@ export const gentStore = (source: GentSource): Store => ({
   dir: source.dir,
   listing: source.listing,
   label: (credentialID) => source.label(credentialID),
+  lost: source.lost,
+  refreshes: source.refreshes,
 })

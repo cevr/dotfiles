@@ -24,12 +24,15 @@ import { held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, t
 import { poolPace, UNPOOLED, type Pace } from "./pace.ts"
 import type { QuotaReading } from "./quota.ts"
 import { Ledger, Logins, Quota, type LoginsUnavailable } from "./service.ts"
-import type { PoolsStatus, SessionAnswer, SessionQuery } from "./status.ts"
+import type { Alerts, LostLogin, PoolsStatus, RefreshOutage, SessionAnswer, SessionQuery } from "./status.ts"
+import { OUTAGE_AFTER_MS, outage } from "./alerts.ts"
 
 /** The pool's settings, from the plugin's options: its rules (the cache life) and the providers it pools. */
 export interface Config extends Rules {
   /** Each pooled provider, by id, to the pool (its integration) whose logins it uses. */
   readonly providers: Readonly<Record<string, PoolId>>
+  /** How long every refresh from an outside store must fail before it is an outage; default `OUTAGE_AFTER_MS`. */
+  readonly refreshOutageMs?: number
 }
 
 /** The pools a config names: each integration once, in the order the providers name them. */
@@ -67,6 +70,8 @@ export class Pool extends Context.Service<
     readonly status: Effect.Effect<PoolsStatus, LoginsUnavailable>
     /** The account a session is on, with its label, hold and reading; nothing when the pool has none to name. */
     readonly session: (query: SessionQuery) => Effect.Effect<SessionAnswer>
+    /** Every pool's logins that need a sign-in again, and its outside stores whose refreshes are out. */
+    readonly alerts: Effect.Effect<Alerts>
   }
 >()("dotfiles-opencode/pool/Pool") {}
 
@@ -236,6 +241,20 @@ export const layer = (config: Config) =>
         return answer
       }).pipe(Effect.withSpan("Pool.status"))
 
-      return { place, responded, retry, release, stepEnded, follow, sweep, pace, status: poolsStatus, session }
+      const alerts = Effect.gen(function* () {
+        const lost: Array<LostLogin> = []
+        const outages: Array<RefreshOutage> = []
+        for (const { id } of every) {
+          const now = yield* Clock.currentTimeMillis
+          for (const store of yield* logins.refreshes(id)) {
+            lost.push(...store.lost.map((login) => ({ pool: id, ...login })))
+            const out = outage(store.record, now, config.refreshOutageMs ?? OUTAGE_AFTER_MS)
+            if (out !== undefined) outages.push({ pool: id, dir: store.dir, ...out })
+          }
+        }
+        return { lost, outages }
+      }).pipe(Effect.withSpan("Pool.alerts"))
+
+      return { place, responded, retry, release, stepEnded, follow, sweep, pace, status: poolsStatus, session, alerts }
     }),
   )

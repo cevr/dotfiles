@@ -33,6 +33,8 @@ test("an outside store's login is named by the store's own label", () => {
     dir: "/gent",
     listing: Effect.succeed({ accounts: ["gent:claude-max-2"], skipped: [] }),
     label: (credentialID) => (credentialID.startsWith("gent:") ? credentialID.slice("gent:".length) : undefined),
+    lost: Effect.succeed([]),
+    refreshes: Effect.succeed({ failures: 0, pausedUntil: 0 }),
   }
   return Effect.runPromise(
     Effect.gen(function* () {
@@ -50,6 +52,26 @@ test("an outside store's login is named by the store's own label", () => {
           () => [store],
         ),
       ),
+    ),
+  )
+})
+
+test("each outside store reports its lost logins and its run of failed refreshes, under its directory", () => {
+  const pool = PoolId.make("anthropic")
+  const lost = { credentialID: "gent:work", label: "work", since: 5, command: "gent auth login anthropic --slot work" }
+  const record = { failingSince: 1, lastFailureAt: 4, failures: 3, cause: { status: 429 }, pausedUntil: 9 }
+  const store: OpenCodeLogins.Store = {
+    dir: "/gent",
+    listing: Effect.succeed({ accounts: ["gent:work"], skipped: [] }),
+    label: () => undefined,
+    lost: Effect.succeed([lost]),
+    refreshes: Effect.succeed(record),
+  }
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      expect(yield* (yield* Logins).refreshes(pool)).toEqual([{ dir: "/gent", lost: [lost], record }])
+    }).pipe(
+      Effect.provide(OpenCodeLogins.layer<OpenCodeLogins.Connection>({ connections: () => Effect.succeed([]), status: () => Effect.void }, () => [store])),
     ),
   )
 })

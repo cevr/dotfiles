@@ -11,8 +11,8 @@
  * provider's auth plugin over the quota RPC: a reading after each response,
  * the readings it publishes, and a sweep of the usage endpoint every few
  * minutes. Other mods read the pool over its own RPC
- * (`@dotfiles/opencode-pool/status`): `pace`, `status`, and `session`, the
- * account one session is on, named by its login's label.
+ * (`@dotfiles/opencode-pool/status`): `pace`, `status`, `session`, the
+ * account one session is on, named by its login's label, and `alerts`.
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `providers`: provider id to integration id, default `{ anthropic: "anthropic" }`.
@@ -30,11 +30,21 @@
  *   `tokenURL` points a source's refresh elsewhere, for tests. The `anthropic`
  *   provider is then available without a login of OpenCode's own, as a
  *   configured provider is (unless the config disables it).
+ * - `refreshOutageMinutes`: how long every refresh from a source must fail
+ *   (a 429, a 5xx, no answer) before the `alerts` method names it as an
+ *   outage. Default 10.
+ *
+ * `alerts` names every gent login whose refresh token the token endpoint
+ * refused, with the command that signs it in again, until its file holds
+ * another login, and every source whose refreshes are out, with the
+ * endpoint's last status, `server` and `retry-after`. The status mod's TUI
+ * shows them in the sidebar and as a toast.
  */
 import { Integration, Plugin } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS } from "@dotfiles/opencode-pool/accounts"
+import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
 import { GentSource, registerCredentialSource } from "@dotfiles/opencode-pool/gent/store"
 import * as Model from "@dotfiles/opencode-pool/model"
 import * as LedgerLive from "@dotfiles/opencode-pool/opencode/ledger"
@@ -72,6 +82,7 @@ export const Options = Schema.Struct({
   sweepMinutes: Schema.Finite.pipe(withDefault(10)),
   cacheLifeMs: Schema.Finite.check(Schema.isGreaterThan(0)).pipe(withDefault(CACHE_LIFE_MS)),
   sources: Schema.Array(GentStoreOption).pipe(withDefault<ReadonlyArray<typeof GentStoreOption.Type>>([])),
+  refreshOutageMinutes: Schema.Finite.check(Schema.isGreaterThan(0)).pipe(withDefault(OUTAGE_AFTER_MS / 60_000)),
 })
 export type Options = typeof Options.Type
 
@@ -137,7 +148,11 @@ export const make = (
       // The plugin's context carries the host's loggers.
       const sources = gentSources(options, yield* Effect.context<never>())
       const services = yield* Layer.build(
-        Model.layer({ providers: options.providers, cacheLifeMs: options.cacheLifeMs }).pipe(Layer.provideMerge(externals(ctx, options, sources))),
+        Model.layer({
+          providers: options.providers,
+          cacheLifeMs: options.cacheLifeMs,
+          refreshOutageMs: options.refreshOutageMinutes * 60_000,
+        }).pipe(Layer.provideMerge(externals(ctx, options, sources))),
       )
       const pool = Context.get(services, Model.Pool)
 
@@ -214,6 +229,7 @@ export const make = (
           // A malformed question names no session: it has no account to name.
           session: (input) =>
             Option.match(decodeSessionQuery(input), { onNone: () => Effect.succeed({}), onSome: pool.session }),
+          alerts: () => pool.alerts,
         })
         .pipe(Effect.orDie)
     }),

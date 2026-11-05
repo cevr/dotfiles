@@ -374,12 +374,75 @@ function pauseFor(retryAfter: string | null, now: number): number {
   return Number.isFinite(at) && at > now ? at - now : ENDPOINT_PAUSE_MS
 }
 
+/** What the token endpoint said when it last failed a trade from a store: never a token. */
+export interface GentRefreshCause {
+  /** Its HTTP status; none when it did not answer (transport, timeout). */
+  readonly status?: number
+  /** Its `server` header: the edge (Cloudflare) or Anthropic. */
+  readonly server?: string
+  /** Its `retry-after` header, as sent. */
+  readonly retryAfter?: string
+}
+
+/**
+ * How a store's trades have gone since the last one the endpoint answered: a
+ * run of `unavailable` trades (a 429, a 5xx, no answer, a pause) from
+ * `failingSince` to `lastFailureAt`, and the cause of the last one that went
+ * out. A refresh, or a refusal (the endpoint answered), ends the run.
+ */
+export interface GentRefreshRecord {
+  readonly failingSince?: number
+  readonly lastFailureAt?: number
+  readonly failures: number
+  readonly cause?: GentRefreshCause
+  /** Until when (epoch ms) the endpoint asked the store to wait; 0 when it never did. */
+  readonly pausedUntil: number
+}
+
+/** A login whose refresh token the token endpoint refused, still in its file: it needs a sign-in in gent. */
+export interface GentLostLogin {
+  readonly credentialID: string
+  readonly label: string
+  /** When (epoch ms) the endpoint first refused that refresh token. */
+  readonly since: number
+  /** The command that signs it in again in gent, for this store. */
+  readonly command: string
+}
+
+/** gent's own auth directory, when `GENT_AUTH_DIRECTORY` names none. */
+const GENT_DEFAULT_DIR = "~/.gent/auth"
+
+/** `dir` as the owner types it: `~` for the home directory. */
+const tildeOf = (dir: string) => {
+  const home = homedir()
+  return dir === home ? "~" : dir.startsWith(`${home}/`) ? `~${dir.slice(home.length)}` : dir
+}
+
+const shellQuote = (text: string) => (/^[\w@%+=:,./~-]+$/.test(text) ? text : `'${text.replaceAll("'", `'\\''`)}'`)
+
+/**
+ * The command that signs `label` in again in gent, over the store at `dir`
+ * (absolute): gent's sign-in to a Claude account into that slot
+ * (gent's apps/tui/docs/cli.md), naming the store unless it is gent's own.
+ */
+export const gentSignInCommand = (dir: string, label: string): string => {
+  const store = resolve(expandHome(dir)) === resolve(expandHome(GENT_DEFAULT_DIR)) ? "" : `GENT_AUTH_DIRECTORY=${shellQuote(tildeOf(dir))} `
+  return `${store}gent auth login anthropic --method "Sign in to a Claude account" --slot ${label}`
+}
+
 /** One store's state in this process: refreshes held for a write, and tokens a provider rejected. */
 interface StoreState {
   /** Per label: tokens a refresh got whose write failed, and the refresh token they replace. */
   readonly pending: Map<string, { readonly next: Tokens; readonly replaces: string }>
   /** Per label: the refresh token of the login whose access token a provider rejected. */
   readonly rejected: Map<string, string>
+  /** Per label: the refresh token the token endpoint refused, and since when; it stands while the file holds it. */
+  readonly refused: Map<string, { readonly refresh: string; readonly since: number }>
+  /** The run of failed trades this store is in, if any, and the last cause the endpoint gave. */
+  failingSince: number | undefined
+  lastFailureAt: number | undefined
+  failures: number
+  cause: GentRefreshCause | undefined
   /** The tail of this process's queue for the lock: one refresh at a time per store. */
   queue: Promise<unknown>
   /** Until when (epoch ms) the token endpoint asked this store to wait; no refresh goes out before. */
@@ -396,7 +459,18 @@ const stateOf = (dir: string): StoreState => {
   const states = (global[STATES] ??= new Map())
   let state = states.get(dir)
   if (state === undefined) {
-    state = { pending: new Map(), rejected: new Map(), queue: Promise.resolve(), pausedUntil: 0, lastTradeAt: -Infinity }
+    state = {
+      pending: new Map(),
+      rejected: new Map(),
+      refused: new Map(),
+      failingSince: undefined,
+      lastFailureAt: undefined,
+      failures: 0,
+      cause: undefined,
+      queue: Promise.resolve(),
+      pausedUntil: 0,
+      lastTradeAt: -Infinity,
+    }
     states.set(dir, state)
   }
   return state
@@ -552,6 +626,36 @@ export class GentSource {
     if (stored && stored.access === access) this.state.rejected.set(label, stored.refresh)
   }
 
+  /**
+   * The logins that need a sign-in in gent: each whose file still holds the
+   * refresh token the token endpoint refused. One whose file holds another
+   * login now (refreshed here or by gent, or signed in again) or none is
+   * forgotten; one whose file cannot be read stays.
+   */
+  readonly lost: Effect.Effect<ReadonlyArray<GentLostLogin>> = Effect.suspend(() =>
+    Effect.gen({ self: this }, function* (this: GentSource) {
+      const lost: Array<GentLostLogin> = []
+      for (const [label, refused] of [...this.state.refused].sort(([a], [b]) => a.localeCompare(b))) {
+        const stored = yield* this.read(label).pipe(Effect.orElseSucceed((): Stored | "unread" => "unread"))
+        if (stored !== "unread" && stored?.refresh !== refused.refresh) {
+          this.state.refused.delete(label)
+          continue
+        }
+        lost.push({ credentialID: GentSource.id(label), label, since: refused.since, command: gentSignInCommand(this.dir, label) })
+      }
+      return lost
+    }),
+  )
+
+  /** How this store's trades have gone since the endpoint last answered one. */
+  readonly refreshes: Effect.Effect<GentRefreshRecord> = Effect.sync(() => ({
+    ...(this.state.failingSince === undefined ? {} : { failingSince: this.state.failingSince }),
+    ...(this.state.lastFailureAt === undefined ? {} : { lastFailureAt: this.state.lastFailureAt }),
+    failures: this.state.failures,
+    ...(this.state.cause === undefined ? {} : { cause: this.state.cause }),
+    pausedUntil: this.state.pausedUntil,
+  }))
+
   private labelOf(credentialID: string): string | undefined {
     if (!credentialID.startsWith(GENT_PREFIX)) return undefined
     const label = credentialID.slice(GENT_PREFIX.length)
@@ -700,7 +804,40 @@ export class GentSource {
         Effect.tap((next) => Effect.logInfo(`gent refresh "${label}": refreshed, expires ${new Date(next.expires).toISOString()}`)),
         Effect.tapError((error) => Effect.logInfo(`gent refresh "${label}": ${error.kind}: ${error.message}`)),
       )
-    })
+    }).pipe(
+      Effect.tap(() => Effect.sync(() => this.answered(label, undefined))),
+      Effect.tapError((error) =>
+        Effect.sync(() => {
+          if (error.kind === "unavailable") this.failed()
+          else if (error.kind === "rejected") this.answered(label, refreshToken)
+        }),
+      ),
+    )
+  }
+
+  /** A trade the endpoint answered ends the store's run of failures; a refusal marks the login lost until its file changes. */
+  private answered(label: string, refused: string | undefined) {
+    const state = this.state
+    state.failingSince = undefined
+    state.lastFailureAt = undefined
+    state.failures = 0
+    state.cause = undefined
+    if (refused === undefined) state.refused.delete(label)
+    else if (state.refused.get(label)?.refresh !== refused) state.refused.set(label, { refresh: refused, since: this.now() })
+  }
+
+  /** A trade that could not happen now extends the store's run of failures. */
+  private failed() {
+    const state = this.state
+    const now = this.now()
+    state.failingSince ??= now
+    state.lastFailureAt = now
+    state.failures += 1
+  }
+
+  /** What the endpoint said when it failed the trade that just went out. */
+  private caused(cause: GentRefreshCause) {
+    this.state.cause = cause
   }
 
   private post(label: string, refreshToken: string): Effect.Effect<Tokens, GentCredentialError> {
@@ -728,8 +865,17 @@ export class GentSource {
             body: await response.text(),
           }
         },
-        catch: () => unavailable("the token endpoint did not answer"),
+        catch: () => {
+          this.caused({})
+          return unavailable("the token endpoint did not answer")
+        },
       })
+      if (status === 429 || status >= 500)
+        this.caused({
+          status,
+          ...(server === null ? {} : { server }),
+          ...(retryAfter === null ? {} : { retryAfter }),
+        })
       if (status === 429) {
         // A rate limit holds the whole store, so the other accounts do not keep it going.
         const before = this.state.pausedUntil

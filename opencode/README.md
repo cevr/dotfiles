@@ -93,12 +93,20 @@ as the call log, and no command needs the folded state.
 `mods/pool` pools a provider's OAuth logins; its plugin is `cmd/pool`. It chooses the login each
 request goes out on, holds a login its provider refuses, and turns a refused
 primary request into an immediate retry on another login. Its options are
-`providers`, `sweepMinutes`, `cacheLifeMs` and `sources`. An absent option takes its
+`providers`, `sweepMinutes`, `cacheLifeMs`, `sources` and `refreshOutageMinutes`. An absent option takes its
 default. A malformed one stops the plugin at setup, with a message that
 names it. Other mods read it over its `dotfiles-opencode.pool` RPC
 (`status.ts`, `@dotfiles/opencode-pool/status`): orchestrate asks `pace`, and the `/pool`
 pane draws `status`, and the sidebar asks `session` for the login a session
-is on (or would go out on next), by its label.
+is on (or would go out on next), by its label, and `alerts` for gent's lost logins
+and failing refreshes.
+
+A gent login is lost while its file holds a refresh token the token endpoint
+refused; `alerts` names it with the gent command that signs it in again. A
+gent store's refreshes are failing when every one has failed for
+`refreshOutageMinutes` (default 10), a paused trade included; `alerts` names
+how long, how many tries and what the endpoint last said. A successful
+refresh ends both (`alerts.ts`, `gent/store.ts`).
 
 A prompt cache is per login, so a session moved to another login writes its
 whole prompt again. While a session's cache lives (`cacheLifeMs` from its
@@ -158,7 +166,11 @@ every two seconds. It keeps the last good reading when a read fails or does
 not decode, and it draws the rows `pane.ts` projects. It also adds a Pool
 section to the session sidebar (`tui/sidebar.tsx`, lines from `sidebar.ts`):
 the session's login, its week and 5h use and when each resets, or nothing
-when the session's provider is not pooled.
+when the session's provider is not pooled. The pool's alerts come first in
+that section, whatever the provider: `tui/alerts.tsx` asks the pool's
+`alerts` every five seconds, and toasts each new one once, for ten seconds,
+with an OS notification when the TUI config allows them (`alert.ts` holds
+the text).
 
 The model, in the domain files at `mods/status`'s root, has no aggregate,
 because status decides nothing. It holds a view, values and contracts:

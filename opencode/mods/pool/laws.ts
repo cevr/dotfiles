@@ -200,6 +200,16 @@ export const loginsLaws = (name: string, layer: (world: LoginsWorld) => Layer.La
         }),
       ))
 
+    test("a pool with no outside store reports no refreshes, whether or not its logins can be read", () =>
+      check(
+        layer(world),
+        Effect.gen(function* () {
+          const logins = yield* Logins
+          expect(yield* logins.refreshes(pool)).toEqual([])
+          expect(yield* logins.refreshes(missing)).toEqual([])
+        }),
+      ))
+
     test("marking a login, listed or not, never fails", () =>
       check(
         layer(world),

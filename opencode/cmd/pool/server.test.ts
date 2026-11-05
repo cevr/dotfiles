@@ -5,7 +5,7 @@
 // storage. tests/pool-failover.test.ts and tests/pool-gent-opencode.test.ts
 // run it in OpenCode.
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect, Layer, Queue, Schema, Stream } from "effect"
@@ -18,7 +18,8 @@ import * as QuotaTest from "@dotfiles/opencode-pool/memory/quota"
 import type { Pace } from "@dotfiles/opencode-pool/pace"
 import type { QuotaReading } from "@dotfiles/opencode-pool/quota"
 import type { PublishedReading } from "@dotfiles/opencode-pool/service"
-import type { PoolsStatus, SessionAnswer } from "@dotfiles/opencode-pool/status"
+import { GentSource } from "@dotfiles/opencode-pool/gent/store"
+import type { Alerts, PoolsStatus, SessionAnswer } from "@dotfiles/opencode-pool/status"
 import Pool, { CREDENTIAL_HEADER, live, make } from "./server.ts"
 
 const HOUR = 3_600_000
@@ -180,7 +181,10 @@ const start = (
     /** A host event or a published reading, taken in before the test goes on. */
     const emit = (event: SessionEvent) => Queue.offer(events, event).pipe(Effect.andThen(settle))
     const publish = (reading: PublishedReading) => Queue.offer(published, reading).pipe(Effect.andThen(settle))
-    return { request, respond, retry, idle, pace, status, session, emit, publish, transforms, quotaIDs, statuses, rpc }
+    const alerts = Effect.gen(function* () {
+      return (yield* (yield* method("alerts"))({})) as Alerts
+    })
+    return { request, respond, retry, idle, pace, status, session, alerts, emit, publish, transforms, quotaIDs, statuses, rpc }
   })
 
 /** Let the plugin's background fibers take in what was just offered: a real moment, on the test clock too. */
@@ -609,4 +613,90 @@ describe("on the live adapters", () => {
       }),
     ).finally(() => rmSync(dir, { recursive: true, force: true }))
   })
+})
+
+describe("the alerts RPC", () => {
+  /** A gent store with one expired login, and a source over it that trades at a fake endpoint answering `status`. */
+  const store = (status: number, headers: Record<string, string> = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), "pool-alerts-"))
+    mkdirSync(join(dir, ".slots/anthropic"), { recursive: true })
+    const login = { access: "fake-access-alerts", refresh: "fake-refresh-alerts" }
+    writeFileSync(
+      join(dir, ".slots/anthropic/work"),
+      JSON.stringify({ _tag: "Oauth", type: "oauth", ...login, expires: Date.now() - 1000, accountId: null, metadata: { owner: "gent" } }),
+      { mode: 0o600 },
+    )
+    // A second source over the directory shares the plugin's state for it, as every copy in the process does.
+    const trader = new GentSource({
+      dir,
+      fetch: async () => Response.json({ error: "refused" }, { status, headers }),
+    })
+    const trade = Effect.promise(() => trader.resolve("gent:work").then(() => "served", () => "failed"))
+    return { dir, login, trade }
+  }
+
+  test("names a gent login the endpoint refused, with the command that signs it in again, and never its token", () => {
+    const { dir, login, trade } = store(400)
+    return scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "gent", dir }] }, world(), live)
+        expect(yield* plugin.alerts).toEqual({ lost: [], outages: [] })
+        expect(yield* trade).toBe("failed")
+        const alerts = yield* plugin.alerts
+        expect(alerts).toEqual({
+          lost: [
+            {
+              pool: "anthropic",
+              credentialID: "gent:work",
+              label: "work",
+              since: expect.any(Number),
+              command: `GENT_AUTH_DIRECTORY=${dir} gent auth login anthropic --method "Sign in to a Claude account" --slot work`,
+            },
+          ],
+          outages: [],
+        })
+        expect(JSON.stringify(alerts)).not.toContain(login.access)
+        expect(JSON.stringify(alerts)).not.toContain(login.refresh)
+      }),
+    ).finally(() => rmSync(dir, { recursive: true, force: true }))
+  })
+
+  test("names a store whose refreshes have failed for refreshOutageMinutes, with the endpoint's status, server and retry-after", () => {
+    const { dir, trade } = store(429, { server: "cloudflare", "retry-after": "600" })
+    return scenario(
+      Effect.gen(function* () {
+        // A threshold of 30 ms: one 429 that pauses the store for ten minutes is out once it passes.
+        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "gent", dir }], refreshOutageMinutes: 0.0005 }, world(), live)
+        expect(yield* trade).toBe("failed")
+        yield* Effect.promise(() => new Promise((done) => setTimeout(done, 50)))
+        expect(yield* plugin.alerts).toEqual({
+          lost: [],
+          outages: [
+            {
+              pool: "anthropic",
+              dir,
+              since: expect.any(Number),
+              lastAt: expect.any(Number),
+              failures: 1,
+              cause: { status: 429, server: "cloudflare", retryAfter: "600" },
+            },
+          ],
+        })
+      }),
+    ).finally(() => rmSync(dir, { recursive: true, force: true }))
+  })
+
+  test("a refreshOutageMinutes that is not a positive number stops the plugin", async () => {
+    for (const refreshOutageMinutes of [0, -1, "10"]) {
+      const exit = await Effect.runPromise(Effect.exit(Effect.scoped(start({ sweepMinutes: 0, refreshOutageMinutes }))))
+      expect(exit._tag).toBe("Failure")
+    }
+  })
+
+  test("a pool with no gent store has no alerts", () =>
+    scenario(
+      Effect.gen(function* () {
+        expect(yield* (yield* start()).alerts).toEqual({ lost: [], outages: [] })
+      }),
+    ))
 })

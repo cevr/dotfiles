@@ -3,6 +3,7 @@
 // implementation owes.
 import { Context, type Effect, Schema, type Stream } from "effect"
 import type { Event, LedgerState, PoolId } from "./account-pool.ts"
+import type { StoreRefreshes } from "./alerts.ts"
 import type { QuotaReading } from "./quota.ts"
 import type { SourceStatus } from "./status.ts"
 
@@ -49,6 +50,12 @@ export class Logins extends Context.Service<
      * (one not listed yet) is named by its id.
      */
     readonly label: (pool: PoolId, credentialID: string) => Effect.Effect<string>
+    /**
+     * What each outside store of the pool reports of its refreshes: the logins
+     * whose refresh token the token endpoint refused and that their files still
+     * hold, and its run of failed trades. Never a token.
+     */
+    readonly refreshes: (pool: PoolId) => Effect.Effect<ReadonlyArray<StoreRefreshes>>
   }
 >()("dotfiles-opencode/pool/Logins") {}
 

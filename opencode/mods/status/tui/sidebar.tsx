@@ -1,5 +1,6 @@
-// The session sidebar's Pool section: the account this session is on, its
-// weekly and 5-hour use, and when each resets. Thin: it asks the pool's
+// The session sidebar's Pool section: the pool's alerts first (a login to sign
+// in again, failing refreshes; tui/alerts.tsx watches them), then the account
+// this session is on, its weekly and 5-hour use, and when each resets. Thin: it asks the pool's
 // `session` RPC about the prompt's model's provider when it mounts, when that
 // provider changes, when a step of the session starts or ends, and every 10
 // seconds, and draws the lines sidebar.ts projects. An answer that fails or
@@ -8,14 +9,16 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { Option, Schema } from "effect"
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
+import { alertLines } from "../alert.ts"
 import { SidebarAnswer, sidebarLines, type Tone } from "../sidebar.ts"
+import type { AlertFeed } from "./alerts.tsx"
 
 const decode = Schema.decodeUnknownOption(SidebarAnswer)
 
 /** How often the section reads the pool between the session's steps. */
 const REFRESH_MS = 10_000
 
-export function PoolSidebar(props: { ctx: Plugin.Context; sessionID: string }) {
+export function PoolSidebar(props: { ctx: Plugin.Context; sessionID: string; alerts: AlertFeed }) {
   const ctx = props.ctx
   const provider = createMemo(() => ctx.ui.model.current()?.providerID)
   const [answer, setAnswer] = createSignal<SidebarAnswer>({})
@@ -53,7 +56,8 @@ export function PoolSidebar(props: { ctx: Plugin.Context; sessionID: string }) {
     clearInterval(timer)
     for (const stop of unsubscribe) stop()
   })
-  const lines = createMemo(() => sidebarLines(answer(), now()))
+  // The pool's alerts come first, whichever provider the session is on.
+  const lines = createMemo(() => [...alertLines(props.alerts.answer(), props.alerts.at()), ...sidebarLines(answer(), now())])
   const theme = () => ctx.theme
   const colour = (tone: Tone) =>
     tone === "error"
