@@ -23,12 +23,12 @@ bun run gamut login anthropic            # add one Claude subscription login (on
    scratch root, renames `.gitignore.fixture`, runs `bun install`, and commits
    it with git.
 2. Writes the run's `opencode.json` (the preset's models per agent; the
-   orchestrate (`cmd/orchestrate`) and status plugins,
+   orchestrate (`cmd/orchestrate`) and status (`cmd/status`) plugins,
    with worker/implementor/planner/verifier models bound to the preset;
    for a Claude preset, the Anthropic auth plugin and
    then `cmd/pool` as server plugins; other presets load an empty pool), `config/cli.json` (our TUI
-   plugins, those whose `package.json` exports `./tui`, by absolute path,
-   `mods/prime` first, and the Prime theme), and the roster block of the
+   plugins, those in `mods/` and `cmd/` whose `package.json` exports `./tui`, by
+   absolute path, `mods/prime` first, and the Prime theme), and the roster block of the
    fixture's `AGENTS.md`.
 3. Gives OpenCode a home, database and config directory of the run's own. Its
    environment is built from an allowlist: the terminal basics and the proxy

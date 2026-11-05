@@ -31,7 +31,7 @@ Show one table: item, size, idle age, tier, command, and how the item comes back
 
 | Tier | What | Ask |
 |---|---|---|
-| A | Regenerable: package caches, build output, idle `node_modules`, DerivedData, old DeviceSupport, unavailable simulators, updater leftovers, old CLI versions, agent leftovers, inlined transcript images | Per category. Recommend removal. |
+| A | Regenerable: package caches, build output, idle `node_modules`, DerivedData, old DeviceSupport, unavailable simulators, updater leftovers, old CLI versions, Bun WebView profiles, agent leftovers, inlined transcript images | Per category. Recommend removal. |
 | B | Costly to get back: simulator runtimes, Android SDK and emulators, Docker images and volumes, local AI models | Per item. Say what it costs to get back. |
 | C | User data: worktrees, renders, bundles, scratch folders that git ignores, loose folders, big personal files | Per item. Never pre-select removal. For a worktree, show its dirty and unpushed counts. |
 

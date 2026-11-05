@@ -96,7 +96,7 @@ names it. Other mods read it over its `dotfiles-opencode.pool` RPC
 (`status.ts`, `@dotfiles/opencode-pool/status`): orchestrate asks `pace`, and the `/pool`
 pane draws `status`.
 
-The model (`src/domain/`):
+The model, in the domain files at `mods/pool`'s root:
 
 - Facts: `LoginsListed`, `RequestPlaced`, `RequestRefused` (with its hold),
   `ReadingTaken` (with the hold it sets, if any), `StepRecorded` (a priced
@@ -130,27 +130,32 @@ one stopped. Decisions read Effect's `Clock`; the seam tests move it with
 
 ## Status
 
-`mods/status` draws the `/pool` pane. Its server plugin answers the
-`dotfiles-opencode.status` RPC (`src/domain/Status.ts`) with the live
+`mods/status` draws the `/pool` pane; its plugins are `cmd/status`
+(`server.ts` and `tui.tsx`). Its server plugin answers the
+`dotfiles-opencode.status` RPC (`status.ts`) with the live
 agents from orchestrate's call log and the units of each orchestrate run,
 which the orchestrate skill's status script derives. Its options are `log`
 and `statusScript`. An absent option takes its default. A malformed one
 stops the plugin at setup, with a message that names it. The TUI plugin
-(`src/Status.tui.tsx`) reads this RPC and the pool's every two seconds. It
-keeps the last good reading when a read fails or does not decode, and it
-draws the rows `src/domain/Pane.ts` projects.
+registers the pane (`tui/pane.tsx`), which reads this RPC and the pool's
+every two seconds. It keeps the last good reading when a read fails or does
+not decode, and it draws the rows `pane.ts` projects.
 
-The model (`src/domain/`) has no aggregate, because status decides nothing.
-It holds a view, values and externals:
+The model, in the domain files at `mods/status`'s root, has no aggregate,
+because status decides nothing. It holds a view, values and contracts:
 
-- View: `AgentCalls` (`Agents/AgentCalls.view.ts`), a fold of the call
+- View: `AgentCalls` (`agent-calls.ts`), a fold of the call
   log's `call` and `done` lines keyed by session and call id. A call is live
   until it returns `completed` or `error`.
-- Values: the status script's table as units (`RunTable.ts`), the pane's
-  rows (`Pane.ts`) and the RPC's shapes (`Status.ts`).
-- Externals: the call log (`CallLog`) and the runs with their status
-  script tables (`RunTables`). Each one is a `Context.Service` in `domain/`,
-  with a live layer and a test layer in `host/`.
+- Values: the status script's table as units (`run-table.ts`), the pane's
+  rows (`pane.ts`) and the RPC's shapes (`status.ts`).
+- Handler: `Status.snapshot` (`model.ts`), which reads both halves on their
+  own and names the half it could not read.
+- Contracts: the call log (`CallLog`) and the runs with their status
+  script tables (`RunTables`), each a `Context.Service` in `service.ts`,
+  with what every implementation owes in `laws.ts`. `filestore/` reads the
+  call log's JSONL file; `process/` runs `git` and the status script;
+  `memory/` holds the in-memory ones the seam test uses.
 
 Status stores nothing. Each RPC call reads the call log and the runs again.
 

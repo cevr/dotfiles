@@ -5,7 +5,8 @@
 import { readdir } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 import { Effect, Layer, Option } from "effect"
-import { RunTables, RunsUnreadable, type RunTable } from "../domain/Runs/RunTables.external.ts"
+import type { RunTable } from "../run-table.ts"
+import { RunTables, RunsUnreadable } from "../service.ts"
 
 /** How long one command may run. */
 const TIMEOUT_MS = 20_000
@@ -49,20 +50,4 @@ export const layer = (script: string) =>
         { concurrency: "unbounded" },
       )
     }),
-  })
-
-/** The runs in the test: each repository directory's tables (a directory absent here is outside any repository), or why they cannot be read. */
-export interface TestRuns {
-  readonly tables: Map<string, ReadonlyArray<RunTable>>
-  failure?: string
-}
-
-export const layerTest = (runs: TestRuns) =>
-  Layer.succeed(RunTables, {
-    list: (directory: string) =>
-      Effect.suspend(() =>
-        runs.failure === undefined
-          ? Effect.succeed(runs.tables.get(directory) ?? [])
-          : Effect.fail(new RunsUnreadable({ message: runs.failure })),
-      ),
   })

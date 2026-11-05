@@ -3,9 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "The /pool pane's context: the live subagents from orchestrate's call log, each orchestrate run's units, and what the pane draws from them and the pool's status.",
   "exports": {
-    "./server": "./src/Status.plugin.ts",
-    "./tui": "./src/Status.tui.tsx"
+    "./tui/*": "./tui/*.tsx",
+    "./*": "./*.ts"
   },
   "dependencies": {
     "@dotfiles/decider": "workspace:*",

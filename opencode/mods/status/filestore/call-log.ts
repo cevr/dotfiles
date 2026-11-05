@@ -4,9 +4,8 @@
 // the writer has not finished), is skipped.
 import { readFile } from "node:fs/promises"
 import { Effect, Layer } from "effect"
-import type { Event } from "../domain/Agents/AgentCalls.view.ts"
-import { AgentCalled, AgentReturned } from "../domain/Agents/AgentCalls.view.ts"
-import { CallLog, CallLogUnreadable } from "../domain/Agents/CallLog.external.ts"
+import { AgentCalled, AgentReturned, type Event } from "../agent-calls.ts"
+import { CallLog, CallLogUnreadable } from "../service.ts"
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 const text = (value: unknown) => (typeof value === "string" ? value : undefined)
@@ -48,7 +47,7 @@ const eventOf = (row: unknown): ReadonlyArray<Event> => {
 }
 
 /** The events a log's text records, in order. */
-export const eventsOf = (log: string): ReadonlyArray<Event> => log.split("\n").flatMap((line) => eventOf(parsed(line)))
+const eventsOf = (log: string): ReadonlyArray<Event> => log.split("\n").flatMap((line) => eventOf(parsed(line)))
 
 const messageOf = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
 const isNotFound = (cause: unknown) => isRecord(cause) && cause.code === "ENOENT"
@@ -62,20 +61,5 @@ export const layer = (file: string) =>
       ),
       Effect.map(eventsOf),
       Effect.withSpan("CallLog.events"),
-    ),
-  })
-
-/** The log in the test: its text (absent: no file yet), or the reason it cannot be read. Read again on every call. */
-export interface TestLog {
-  text?: string
-  failure?: string
-}
-
-export const layerTest = (log: TestLog) =>
-  Layer.succeed(CallLog, {
-    events: Effect.suspend(() =>
-      log.failure === undefined
-        ? Effect.succeed(eventsOf(log.text ?? ""))
-        : Effect.fail(new CallLogUnreadable({ message: log.failure })),
     ),
   })

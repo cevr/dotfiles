@@ -67,6 +67,38 @@
       }
     },
     {
+      "files": ["mods/status/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
+                "message": "The status domain fence: status's domain files import effect, @dotfiles/decider/*, status's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of status's folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/status/tui/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["../filestore/**", "../process/**", "../memory/**"],
+                "message": "The status UI fence: the pane's components import the status domain, never an implementation (filestore/, process/, memory/)."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["mods/herdr/*.ts"],
       "rules": {
         "no-restricted-imports": [

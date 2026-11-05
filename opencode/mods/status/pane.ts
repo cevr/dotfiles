@@ -1,13 +1,13 @@
 // What the /pool pane draws, as text: each pool account with its hold and its
 // 5-hour and 7-day windows, each running agent with its role and what it was
 // asked, and each run's units. The pane reads the pool's RPC
-// (dotfiles-opencode.pool) and this mod's (Status.ts) and draws these rows.
+// (dotfiles-opencode.pool) and this mod's (status.ts) and draws these rows.
 import { Schema } from "effect"
-import type { AgentCall, Unit } from "./Status.ts"
+import type { AgentCall, Unit } from "./status.ts"
 
 /**
  * One pool account, as much of the pool's status answer as the pane draws.
- * The pool's `AccountStatus` (pool/src/domain/PoolStatus.ts) carries these
+ * The pool's `AccountStatus` (`@dotfiles/opencode-pool/status`) carries these
  * fields and more; the pane reads only these, so it needs no import of the
  * pool's model.
  */

@@ -3,10 +3,10 @@
 // call; a `done` line adds its child and how it ended. A background call's
 // `done` with status `running` means its child still owns work, so it stays
 // live. The log is another program's, so its lines arrive here already
-// decoded (host/CallLog.ts); the fold keeps the order calls first appeared in.
+// decoded (filestore/call-log.ts); the fold keeps the order calls first appeared in.
 import { HashMap, Option, Schema } from "effect"
 import type { Fold } from "@dotfiles/decider/decider"
-import type { AgentCall } from "../Status.ts"
+import type { AgentCall } from "./status.ts"
 
 /** A `call` line: a subagent call started. */
 export const AgentCalled = Schema.TaggedStruct("AgentCalled", {

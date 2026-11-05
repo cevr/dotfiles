@@ -1,7 +1,7 @@
 // The status script's table as units: its rows, never its header or rule, and
 // never a row with no unit or no state.
 import { describe, expect, test } from "bun:test"
-import { unitsOf } from "../src/domain/RunTable.ts"
+import { unitsOf } from "./run-table.ts"
 
 describe("unitsOf", () => {
   test("each row is a unit; the header and the rule are not", () => {

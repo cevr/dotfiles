@@ -887,14 +887,14 @@ const prepareAndLaunch = async (
 
   const plugins: ReadonlyArray<PluginEntry> = [
     join(CMD, "orchestrate"),
-    { package: join(PLUGINS, "status"), options: { log: join(paths.home, ".cache/orchestrate/opencode-agents.jsonl"), statusScript: join(homedir(), ".claude/skills/orchestrate/scripts/status.ts") } },
+    { package: join(CMD, "status"), options: { log: join(paths.home, ".cache/orchestrate/opencode-agents.jsonl"), statusScript: join(homedir(), ".claude/skills/orchestrate/scripts/status.ts") } },
     ...(usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin, gentStore) : [poolPlugin]),
   ]
   await Bun.write(
     join(paths.work, "opencode.json"),
     `${JSON.stringify(projectConfig(preset, simPort, plugins), null, 2)}\n`,
   )
-  await Bun.write(join(paths.config, "cli.json"), `${JSON.stringify(cliConfig(pluginPaths(PLUGINS)), null, 2)}\n`)
+  await Bun.write(join(paths.config, "cli.json"), `${JSON.stringify(cliConfig([...pluginPaths(PLUGINS), ...pluginPaths(CMD)]), null, 2)}\n`)
   cpSync(THEME, join(paths.work, ".opencode/themes/prime.json"))
   const agentsPath = join(paths.work, "AGENTS.md")
   await Bun.write(agentsPath, rewriteRoster(await Bun.file(agentsPath).text(), preset))

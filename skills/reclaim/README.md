@@ -13,3 +13,5 @@ cp -R /tmp/reclaim-src/skills/reclaim ~/.claude/skills/reclaim
 Then ask Claude Code to "reclaim disk space", or run `/reclaim`. The survey alone: `bun ~/.claude/skills/reclaim/scripts/survey.ts` (`--roots` for code folders other than `~/Developer`).
 
 To keep transcripts small every week, schedule `bun ~/.claude/skills/reclaim/scripts/cull-transcript-images.ts`. It replaces images inlined in Claude Code and Codex transcripts with a short note.
+
+Bun's WebView leaves a headless Chrome profile (`.<id>.bun-chrome`) in the temp folder after each run, and a Chrome whose Bun process died keeps running. `bun ~/.claude/skills/reclaim/scripts/bun-webview-leftovers.ts --apply` stops those orphans and deletes the profiles nothing uses; without `--apply` it only counts. Schedule it daily to keep them from piling up.

@@ -1,8 +1,10 @@
 /**
  * The status mod's server half: an OpenCode server plugin answering the
- * status RPC (domain/Status.ts) the /pool pane reads. The composition root:
- * it decodes the options, builds the status model (domain/Status.model.ts) on
- * the call log and the runs (host/), and registers the RPC.
+ * status RPC (`@dotfiles/opencode-status/status`) the /pool pane reads. The
+ * composition root: it decodes the options, builds the status model
+ * (`@dotfiles/opencode-status/model`) on the call log (its `filestore/`
+ * implementation) and the runs (its `process/` implementation), and registers
+ * the RPC.
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `log`: orchestrate's call log, default `~/.cache/orchestrate/opencode-agents.jsonl`.
@@ -13,12 +15,11 @@ import { Plugin } from "@opencode/plugin/effect"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Context, Effect, Layer, Schema } from "effect"
-import type { CallLog } from "./domain/Agents/CallLog.external.ts"
-import type { RunTables } from "./domain/Runs/RunTables.external.ts"
-import * as Model from "./domain/Status.model.ts"
-import { STATUS } from "./domain/Status.ts"
-import * as CallLogFile from "./host/CallLog.ts"
-import * as RunScript from "./host/RunTables.ts"
+import * as CallLogFile from "@dotfiles/opencode-status/filestore/call-log"
+import * as Model from "@dotfiles/opencode-status/model"
+import * as RunScript from "@dotfiles/opencode-status/process/run-tables"
+import type { CallLog, RunTables } from "@dotfiles/opencode-status/service"
+import { STATUS } from "@dotfiles/opencode-status/status"
 
 /**
  * An option that takes `fallback` when absent. A present value must decode.

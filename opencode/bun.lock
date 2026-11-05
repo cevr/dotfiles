@@ -51,6 +51,13 @@
         "@dotfiles/opencode-pool": "workspace:*",
       },
     },
+    "cmd/status": {
+      "name": "@dotfiles/opencode-cmd-status",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-status": "workspace:*",
+      },
+    },
     "decider": {
       "name": "@dotfiles/decider",
       "version": "0.0.0",
@@ -118,6 +125,8 @@
     "@dotfiles/opencode-cmd-orchestrate": ["@dotfiles/opencode-cmd-orchestrate@workspace:cmd/orchestrate"],
 
     "@dotfiles/opencode-cmd-pool": ["@dotfiles/opencode-cmd-pool@workspace:cmd/pool"],
+
+    "@dotfiles/opencode-cmd-status": ["@dotfiles/opencode-cmd-status@workspace:cmd/status"],
 
     "@dotfiles/opencode-herdr": ["@dotfiles/opencode-herdr@workspace:mods/herdr"],
 
