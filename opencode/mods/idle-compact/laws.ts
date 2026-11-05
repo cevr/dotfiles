@@ -28,7 +28,14 @@ export interface WorldSession {
 /** The host's state the implementation is set up with. */
 export interface World {
   readonly sessions: Readonly<Record<string, WorldSession>>
-  readonly models: ReadonlyArray<{ readonly providerID: string; readonly modelID: string; readonly window: number; readonly ttl?: string }>
+  readonly models: ReadonlyArray<{
+    readonly providerID: string
+    readonly modelID: string
+    readonly window: number
+    readonly ttl?: string
+    /** USD per million tokens, as the catalog lists them; absent when it lists none. */
+    readonly cost?: { readonly input: number; readonly output: number; readonly read: number; readonly write: number }
+  }>
   /** Sessions whose compaction the host refuses. */
   readonly refuse?: ReadonlyArray<string>
 }
@@ -55,11 +62,22 @@ const WORLD: World = {
     configured: { messages: [request(1_000, { input: 10, read: 90_000, write: 0 }, "anthropic", "claude-long")] },
     unknown: { messages: [request(1_000, { input: 10, read: 90_000, write: 0 }, "acme", "acme-1")] },
     refused: { messages: [] },
+    resumed: {
+      messages: [
+        { kind: "compaction" },
+        { kind: "user" },
+        request(5_000, { input: 10, read: 0, write: 40_000 }),
+        { kind: "user" },
+        request(9_000, { input: 10, read: 40_000, write: 9_000 }),
+      ],
+    },
+    priced: { messages: [request(1_000, { input: 10, read: 150_000, write: 0 }, "anthropic", "claude-priced")] },
   },
   models: [
     { providerID: "anthropic", modelID: "claude-x", window: 200_000 },
     { providerID: "anthropic", modelID: "claude-long", window: 1_000_000, ttl: "1h" },
     { providerID: "openai", modelID: "gpt-5.6", window: 400_000 },
+    { providerID: "anthropic", modelID: "claude-priced", window: 1_000_000, ttl: "1h", cost: { input: 4, output: 20, read: 0.2, write: 5 } },
   ],
   refuse: ["refused"],
 }
@@ -110,6 +128,26 @@ export const sessionsLaws = (name: string, bench: (world: World) => Effect.Effec
             Option.some([5_000, 8_010, Option.some(30 * 60_000)]),
           )
           expect(Option.isNone((yield* facts("fresh")).last)).toBe(true)
+        }),
+      ))
+
+    test("the first request after a compaction is told apart from later ones: it only loaded the summary", () =>
+      check(bench, () =>
+        Effect.gen(function* () {
+          expect((yield* facts("again")).onSummary).toBe(true)
+          expect((yield* facts("resumed")).onSummary).toBe(false)
+          expect((yield* facts("idle")).onSummary).toBe(false)
+          expect((yield* facts("compacted")).onSummary).toBe(false)
+        }),
+      ))
+
+    test("a request on a model the catalog prices carries its prices, Anthropic's told; an unpriced one carries none", () =>
+      check(bench, () =>
+        Effect.gen(function* () {
+          expect(Option.map((yield* facts("priced")).last, (last) => last.price)).toEqual(
+            Option.some({ rates: [{ input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 }], anthropic: true }),
+          )
+          expect(Option.map((yield* facts("idle")).last, (last) => last.price)).toEqual(Option.some(undefined))
         }),
       ))
 

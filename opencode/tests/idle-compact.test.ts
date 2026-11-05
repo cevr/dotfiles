@@ -1,7 +1,9 @@
 // Idle compaction in real OpenCode (the fork, through its SDK) on the scripted
 // model, on a 20 s cache and a 5 s margin: a large session that goes idle is
 // not compacted while its cache has time left, and is compacted through
-// OpenCode's own compaction once the cache is 5 s from expiring. The rule and
+// OpenCode's own compaction once the cache is 5 s from expiring, and so is one
+// whose background shell outlives the cache, before the shell's notice wakes
+// it. The rule and
 // its timer are tested beside their code in mods/idle-compact and
 // cmd/idle-compact.
 import { afterAll, describe, expect, test } from "bun:test"
@@ -9,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./idle-compact/run.ts"
-import { ANSWER, EARLY_MS, MARGIN_SECONDS, SUMMARY, TTL_SECONDS } from "./idle-compact/sim.ts"
+import { ANSWER, BACKGROUND_SECONDS, EARLY_MS, MARGIN_SECONDS, SUMMARY, TTL_SECONDS } from "./idle-compact/sim.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/idle-compact.test.ts: the OpenCode run skips. Set OPENCODE_DEV to the fork.")
@@ -19,12 +21,12 @@ const scratch = mkdtempSync(join(tmpdir(), "idle-compact-e2e-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** One run of real OpenCode in a scratch home; see tests/idle-compact/run.ts. */
-const run = async (name: string): Promise<Result> => {
+const run = async (name: string, options: { readonly background?: boolean } = {}): Promise<Result> => {
   const base = join(scratch, name)
   const home = join(base, "home")
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
-  writeFileSync(file, JSON.stringify({ base, fork: resolve(fork ?? ""), plugin: join(ROOT, "cmd/idle-compact") } satisfies Spec))
+  writeFileSync(file, JSON.stringify({ base, fork: resolve(fork ?? ""), plugin: join(ROOT, "cmd/idle-compact"), ...options } satisfies Spec))
   const child = Bun.spawn([process.execPath, join(import.meta.dir, "idle-compact/run.ts"), file], {
     env: {
       PATH: process.env.PATH ?? "",
@@ -105,6 +107,31 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
     async () => {
       const [compaction] = compactions((await idle()).late)
       expect(compaction?.reason).toBe("manual")
+    },
+    120_000,
+  )
+
+  test(
+    "a session idle behind a background shell that outlives its cache is compacted a margin from expiry, before the shell's notice wakes it",
+    async () => {
+      const result = await run("background", { background: true })
+      const compaction = result.seen.find((item) => item.kind === "compaction")
+      expect(compaction).toBeDefined()
+      // The cache's last refresh: the turn's last request before the compaction, the one after the shell started.
+      const turns = result.seen.filter((item) => item.kind === "turn")
+      const refreshed = turns.filter((item) => item.at < (compaction?.at ?? 0)).at(-1)
+      expect(turns.filter((item) => item.at < (compaction?.at ?? 0))).toHaveLength(2)
+      const due = (refreshed?.at ?? 0) + (TTL_SECONDS - MARGIN_SECONDS) * 1_000
+      expect(compaction?.at).toBeGreaterThanOrEqual(due)
+      expect(compaction?.at).toBeLessThan(due + 5_000)
+      // The shell was still running then: its notice woke the session afterwards, onto the summary.
+      const wake = turns.find((item) => item.at > (compaction?.at ?? 0))
+      expect(wake).toBeDefined()
+      expect(wake?.at).toBeGreaterThanOrEqual((turns[0]?.at ?? 0) + BACKGROUND_SECONDS * 1_000)
+      expect(result.seen.filter((item) => item.kind === "compaction")).toHaveLength(1)
+      const [summary] = compactions(result.late)
+      expect(summary?.status).toBe("completed")
+      expect(JSON.stringify(result.late)).toContain(`sleep ${BACKGROUND_SECONDS}`)
     },
     120_000,
   )

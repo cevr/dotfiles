@@ -7,7 +7,8 @@
 //   `time.idle` the end of the last completed one (session.ts:44-50); it runs
 //   while busy is later than idle.
 // - child: `Session.Info.parentID` (session.ts:34).
-// - busy: the session's children (`session.list({ parentID })`) that run.
+// - busy: the session's children (`session.list({ parentID })`) that run,
+//   for the log.
 // - last: the newest assistant message with usage after the last compaction
 //   (`Session.Message.Assistant`, session-message.ts:222-246): `tokens.input +
 //   tokens.cache.read + tokens.cache.write` is the prompt, `time.created` the
@@ -15,13 +16,21 @@
 //   it saw it), `model` the model it ran on.
 // - compacted: a compaction message (session-message.ts:248-289), of any
 //   status, after that assistant message, or with none after it.
+// - onSummary: that assistant message is the only one after the last
+//   compaction. The context starts at the latest completed compaction, of any
+//   reason (`session.context`, packages/core/src/session/store.ts:194, history
+//   "latest"), and the summary request records no assistant message of its own
+//   (its usage is the compaction message's `tokens`).
 // - ttl and window: the model's catalog entry (`model.list`, schema
 //   model.ts:114-140) and its provider's (`provider.get`): `settings.cache.ttl`
 //   and `limit`.
+// - price: the model's catalog entry's `cost` (schema model.ts:92-104,130),
+//   USD per million tokens, an entry per context tier.
 import type { Plugin } from "@opencode/plugin/effect"
 import { DateTime, Effect, Layer, Option } from "effect"
 import { ttlOf } from "../cache.ts"
 import type { Facts, LastRequest } from "../idle.ts"
+import type { Rate } from "../price.ts"
 import { CompactionRefused, Sessions, SessionUnreadable } from "../service.ts"
 
 /** A session, as idle compaction reads it. Times in epoch ms. */
@@ -60,6 +69,8 @@ export interface ModelView {
   readonly ttl?: string | undefined
   /** The model's input window in tokens; 0 when unknown. */
   readonly window: number
+  /** The model's catalog prices; none or empty when it lists none. */
+  readonly rates?: ReadonlyArray<Rate> | undefined
 }
 
 /** The host's reads and its compaction. */
@@ -86,17 +97,20 @@ export const messageOf = (cause: unknown): string => {
 export const running = (session: SessionView): boolean =>
   session.busy !== undefined && (session.idle === undefined || session.busy > session.idle)
 
-/** The newest assistant message with usage, and whether a compaction came after it. */
+/**
+ * The newest assistant message with usage, whether a compaction came after it,
+ * and whether it is the only one after the last compaction.
+ */
 export const lastRequest = (messages: ReadonlyArray<MessageView>) => {
-  let compacted = false
+  const used = (message: MessageView) => message.type === "assistant" && message.tokens !== undefined
+  const boundary = messages.findLastIndex((message) => message.type === "compaction")
+  const since = messages.slice(boundary + 1).filter(used).length
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
-    if (message === undefined) continue
-    if (message.type === "compaction") compacted = true
-    if (message.type === "assistant" && message.tokens !== undefined)
-      return { message: Option.some({ ...message, tokens: message.tokens }), compacted }
+    if (message?.type === "assistant" && message.tokens !== undefined)
+      return { message: Option.some({ ...message, tokens: message.tokens }), compacted: index < boundary, onSummary: boundary >= 0 && since === 1 }
   }
-  return { message: Option.none(), compacted }
+  return { message: Option.none(), compacted: boundary >= 0, onSummary: false }
 }
 
 export const layer = (host: Host) =>
@@ -118,6 +132,7 @@ export const layer = (host: Host) =>
               Effect.orElseSucceed(() => undefined),
               Effect.map((model) => {
                 const { input, cache } = message.tokens
+                const rates = model?.rates ?? []
                 return Option.some({
                   startedAt: message.created,
                   prompt: input + cache.read + cache.write,
@@ -129,6 +144,9 @@ export const layer = (host: Host) =>
                     configured: model?.ttl,
                   }),
                   window: model === undefined || model.window <= 0 ? Option.none() : Option.some(model.window),
+                  ...(rates.length === 0
+                    ? {}
+                    : { price: { rates, anthropic: (model?.canonical ?? message.model.providerID) === "anthropic" } }),
                 })
               }),
             ),
@@ -139,6 +157,7 @@ export const layer = (host: Host) =>
           busy: children.filter(running).map((child) => `subagent ${child.title ?? child.id}`),
           last,
           compacted: found.compacted,
+          onSummary: found.onSummary,
         } satisfies Facts
       }),
       compact: (sessionID) =>
@@ -216,6 +235,15 @@ export const fromContext = (ctx: Plugin.Context) =>
           ttl: model.settings?.cache?.ttl ?? Option.getOrUndefined(provider)?.data.settings?.cache?.ttl,
           // As the fork's compaction reads it: the input limit within the context window.
           window: input && context ? Math.min(input, context) : input || context,
+          rates: model.cost.map(
+            (cost): Rate => ({
+              tier: cost.tier?.size,
+              input: cost.input,
+              output: cost.output,
+              cacheRead: cost.cache.read,
+              cacheWrite: cost.cache.write,
+            }),
+          ),
         }
       }),
     roots: ctx.session.list({ parentID: null, order: "desc", limit: RECENT }).pipe(Effect.map((page) => page.data.map(sessionView))),

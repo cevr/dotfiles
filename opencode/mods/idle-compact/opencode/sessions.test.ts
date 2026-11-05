@@ -44,7 +44,16 @@ const host = (world: World, compacted: Array<string>): Host => {
       Effect.succeed(
         world.models
           .filter((model) => model.providerID === ref.providerID && model.modelID === ref.id)
-          .map((model) => ({ providerID: model.providerID, modelID: model.modelID, window: model.window, ttl: model.ttl }))[0],
+          .map((model) => ({
+            providerID: model.providerID,
+            modelID: model.modelID,
+            window: model.window,
+            ttl: model.ttl,
+            rates:
+              model.cost === undefined
+                ? []
+                : [{ input: model.cost.input, output: model.cost.output, cacheRead: model.cost.read, cacheWrite: model.cost.write }],
+          }))[0],
       ),
     roots: Effect.succeed(
       Object.entries(world.sessions)
