@@ -94,6 +94,8 @@ const USAGE_MAX_BYTES = 64 * 1024
  * so the retry fails without a network call until the owner signs in again.
  */
 const SIGNIN_RETRY_MS = 30 * 60_000
+/** How old a sourced login's usage reading may get before a sweep refreshes its token to read it. */
+const USAGE_REFRESH_AFTER_MS = 30 * 60_000
 const AMBIGUOUS_CONNECTION = 'Ambiguous OAuth connection'
 
 // setup() is location-scoped while the credential store is process-global.
@@ -941,8 +943,12 @@ export default Plugin.define({
 
     /**
      * The login a usage read goes out on. A credential a source keeps is read
-     * only with the token the source holds now (`peek`): a sweep never makes
-     * the source refresh, and a credential whose token is due one is skipped.
+     * with the token the source holds now (`peek`), so a sweep doesn't make
+     * every source refresh at once. A credential with no good token is skipped
+     * while its reading is recent; one with no reading for
+     * USAGE_REFRESH_AFTER_MS is resolved (the source refreshes it, spacing its
+     * trades), since an unread login drops out of the pool's pace and the pace
+     * then judges the pool by the accounts it happened to use.
      */
     const usageLogin = async (
       credentialID: string,
@@ -950,7 +956,13 @@ export default Plugin.define({
       const source = credentialSource(INTEGRATION_ID, credentialID)
       if (source === undefined) return resolveOAuth(credentialID)
       const credential = await peekSourced(source, credentialID)
-      if (credential === undefined) return 'skip'
+      if (credential === undefined) {
+        const read = readings.get(credentialID)
+        const fresh = read !== undefined && read.windows.length > 0 && Date.now() - read.at < USAGE_REFRESH_AFTER_MS
+        if (fresh || (read?.refusal?.until ?? 0) > Date.now()) return 'skip'
+        // A failed resolve has published its refusal; the sweep keeps that reading.
+        return resolveOAuth(credentialID).catch(() => 'skip' as const)
+      }
       return {
         connection: { type: 'credential', id: credentialID },
         credential,
