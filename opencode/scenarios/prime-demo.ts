@@ -153,14 +153,19 @@ export default OpenCodeDriver.use(
       // Each run fetches the Python grammar afresh from GitHub, and the diff is
       // highlighted only once it lands, which can be after the turn settles. Wait
       // for the diff's `def` to be its own syntax span; on a timeout, save anyway
-      // so the colour assertions report it.
-      yield* until(`${label}-highlight`, (frame) =>
-        frame.lines.every(
-          (line) =>
-            !/^\s+1\s+def fetch\(/.test(line.spans.map((span) => span.text).join("")) ||
-            line.spans.some((span) => span.text === "def"),
-        ),
-      ).pipe(Effect.ignore)
+      // so the colour assertions report it. Diff rows sit behind the tree rail (`│`);
+      // a frame without the diff on screen isn't held up.
+      const diffRows = [
+        { row: /^[\s│]+1\s+def fetch\(/, keyword: "def" },
+        { row: /^[\s│]+2 \+\s+for /, keyword: "for" },
+      ]
+      yield* until(`${label}-highlight`, (frame) => {
+        const rows = frame.lines.map((line) => ({ text: line.spans.map((span) => span.text).join(""), spans: line.spans }))
+        const shown = rows.filter((row) => diffRows.some((diff) => diff.row.test(row.text)))
+        return shown.every((row) =>
+          diffRows.every((diff) => !diff.row.test(row.text) || row.spans.some((span) => span.text === diff.keyword)),
+        )
+      }).pipe(Effect.ignore)
       yield* Effect.sleep("500 millis")
       yield* save(label)
       // SCENARIO_CYCLE=1 presses Ctrl+O twice: Details -> All -> Overview.
