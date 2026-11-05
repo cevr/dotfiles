@@ -47,7 +47,7 @@ interface EditedAgent {
   description?: string
   system?: string
   permissions: Array<unknown>
-  request: { settings: { compactionWindow?: number } }
+  request: { settings: { compactionWindow?: number; cacheTTL?: string } }
 }
 
 /**
@@ -313,9 +313,12 @@ describe("the agents", () => {
           system: definitions.planner.system,
           mode: "subagent",
           permissions: definitions.planner.permissions,
-          request: { settings: { compactionWindow: 300_000 } },
+          request: { settings: { compactionWindow: 300_000, cacheTTL: "5m" } },
         })
         expect(agents.worker!.request.settings.compactionWindow).toBe(200_000)
+        // Roles cache for five minutes; the main agent keeps the provider's lifetime.
+        expect(agents.worker!.request.settings.cacheTTL).toBe("5m")
+        expect(agents.build!.request.settings.cacheTTL).toBeUndefined()
 
         // The keep-list joins the summary prompt, leaving the system (and so the cached prefix) as it was.
         const system: Array<unknown> = []

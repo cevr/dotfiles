@@ -8,6 +8,13 @@ export const WORKER = "worker"
 export const ROLES = ["planner", "implementor", "verifier", WORKER] as const
 export type Role = (typeof ROLES)[number]
 
+/**
+ * The prompt-cache lifetime each role runs with (the fork's per-agent `request.settings.cacheTTL`). A role works
+ * in one burst and then stops, so a five-minute write (1.25x input) beats the main session's one-hour write (2x):
+ * a role rarely comes back to a prefix after five idle minutes. The main session keeps the provider's lifetime.
+ */
+export const ROLE_CACHE_TTL = "5m"
+
 export const isRole = (name: string): name is Role => (ROLES as readonly string[]).includes(name)
 
 /** A role as OpenCode agent fields, and the reasoning effort it runs at. */

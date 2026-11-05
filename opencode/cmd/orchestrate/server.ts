@@ -46,7 +46,7 @@ import * as ModelsLive from "@dotfiles/opencode-orchestrate/opencode/models"
 import * as PoolPaceLive from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
 import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
-import { definitions, ROLES } from "@dotfiles/opencode-orchestrate/role"
+import { definitions, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, Place, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
 import {
   CompactionWindows,
@@ -203,6 +203,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
             item.mode = definition.mode
             item.permissions.push(...definition.permissions.map((rule) => ({ ...rule })))
             item.request.settings.compactionWindow = sizes[role]
+            item.request.settings.cacheTTL = ROLE_CACHE_TTL
           })
         }
       })

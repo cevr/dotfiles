@@ -47,7 +47,9 @@ It makes no live model request.
 ## Orchestrate
 
 `mods/orchestrate` holds the orchestrate skill's rules; its plugin is
-`cmd/orchestrate`. It defines the role agents and their compaction windows,
+`cmd/orchestrate`. It defines the role agents, their compaction windows and
+their five-minute prompt cache (`ROLE_CACHE_TTL`, through the fork's per-agent
+`request.settings.cacheTTL`; the main session keeps the provider's hour),
 routes each subagent call to a role, holds new starts on the pace, and stops
 agent work over the Sabbath. Its options are `windows`, `log`, `now`,
 `place`, `fullAgent` and `codex`. An absent option takes its default. A
