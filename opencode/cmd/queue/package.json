@@ -1,0 +1,14 @@
+{
+  "name": "@dotfiles/opencode-cmd-queue",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The queue's OpenCode plugins, the queue tool and RPC (server) and the sidebar's Queue section (tui): the composition root of @dotfiles/opencode-queue.",
+  "exports": {
+    "./server": "./server.ts",
+    "./tui": "./tui.tsx"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-queue": "workspace:*"
+  }
+}

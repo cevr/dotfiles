@@ -22,8 +22,8 @@ so a new terminal runs it, and `opencode2` stays the stock release. As a `latest
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`mods/anthropic-auth`), the pool (on
-the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists), orchestrate, the kernel and status, the role
-models and `autoupdate: false`, and into `cli.json` Prime, status and the
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists), orchestrate, the kernel, status and the queue, the role
+models and `autoupdate: false`, and into `cli.json` Prime, status, the queue and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork
 change.
 
@@ -162,6 +162,50 @@ because status decides nothing. It holds a view, values and contracts:
   `memory/` holds the in-memory ones the seam test uses.
 
 Status stores nothing. Each RPC call reads the call log and the runs again.
+
+## Queue
+
+`mods/queue` is the agent's live queue, shown in the session sidebar; its
+plugins are `cmd/queue` (`server.ts` and `tui.tsx`). The server plugin adds
+the `queue` tool: `set` replaces the calling session's list, `upsert` and
+`remove` patch it by id, and the answer is the list as it now stands. An
+item has an id, one line of text, a state (`needs-you`, `running`,
+`waiting`, `scheduled`, `next`, `done`), an owner (`mine` or `other` with
+`who`), an optional `at` (required when scheduled), `detail`, and `session`:
+the subagent session doing the work. The tool is a direct one, so a kernel
+cell calls it as `tools.queue(...)`. Such a call leaves no tool part in the
+transcript, so the queue is kept in a store, not read from parts. Its one
+option is `dir`, default `$XDG_STATE_HOME/opencode-queue`. A deleted
+session's queue goes.
+
+The TUI plugin appends the Queue section to `sidebar.content`. Every two
+seconds it reads the route's root session's queue over the
+`dotfiles-opencode.queue` RPC (`get({ sessionID })` answers
+`{ revision, items }`) and keeps the answer when its revision moved. An
+item with a `session` shows that subagent's live state (running, blocked,
+done, failed) instead of its own, and a running subagent no item names
+joins the Running group under its call's description. Under a subagent's
+row a second line gives its role, its one-sentence update and its time, as
+the Prime rows do (`  implementor  Check the money… · 1s`). Done items stay
+ten minutes.
+
+The model, in the domain files at `mods/queue`'s root:
+
+- Aggregate: `Queue` (`queue.ts`), deciding `SetQueue` and `PatchQueue` into
+  `QueueChanged` with the list it leads to, or refusing with `InvalidItem`,
+  `UnknownState`, `DuplicateItem`, `UnknownItem` or `UnclearChange`. A change
+  that leaves the list as it is records nothing.
+- Values: an item and its checks (`item.ts`), the board the sidebar draws
+  (`board.ts`), the tool's text (`description.ts`).
+- Handler: `QueueModel` (`model.ts`), which serializes a session's changes and
+  stores the folded list with the next revision.
+- Contract: `QueueStore` in `service.ts`, with what every implementation owes
+  in `laws.ts`. `filestore/` keeps a JSON file per session, written whole;
+  `memory/` holds the one the seam test uses.
+- `opencode/subagents.ts` maps the shared subagent rows
+  (`@dotfiles/opencode-subagents`: `read` from the TUI's data, then its rows)
+  to the board's subagents, every row kept so a linked item outlives the
+  shared linger.
 
 ## Git
 

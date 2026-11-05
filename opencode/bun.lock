@@ -65,6 +65,13 @@
         "@dotfiles/opencode-pool": "workspace:*",
       },
     },
+    "cmd/queue": {
+      "name": "@dotfiles/opencode-cmd-queue",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-queue": "workspace:*",
+      },
+    },
     "cmd/status": {
       "name": "@dotfiles/opencode-cmd-status",
       "version": "0.0.0",
@@ -129,6 +136,14 @@
         "@dotfiles/opencode-subagents": "workspace:*",
       },
     },
+    "mods/queue": {
+      "name": "@dotfiles/opencode-queue",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-subagents": "workspace:*",
+      },
+    },
     "mods/status": {
       "name": "@dotfiles/opencode-status",
       "version": "0.0.0",
@@ -159,6 +174,8 @@
 
     "@dotfiles/opencode-cmd-pool": ["@dotfiles/opencode-cmd-pool@workspace:cmd/pool"],
 
+    "@dotfiles/opencode-cmd-queue": ["@dotfiles/opencode-cmd-queue@workspace:cmd/queue"],
+
     "@dotfiles/opencode-cmd-status": ["@dotfiles/opencode-cmd-status@workspace:cmd/status"],
 
     "@dotfiles/opencode-git": ["@dotfiles/opencode-git@workspace:mods/git"],
@@ -174,6 +191,8 @@
     "@dotfiles/opencode-pool": ["@dotfiles/opencode-pool@workspace:mods/pool"],
 
     "@dotfiles/opencode-prime": ["@dotfiles/opencode-prime@workspace:mods/prime"],
+
+    "@dotfiles/opencode-queue": ["@dotfiles/opencode-queue@workspace:mods/queue"],
 
     "@dotfiles/opencode-status": ["@dotfiles/opencode-status@workspace:mods/status"],
 
