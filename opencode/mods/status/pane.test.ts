@@ -2,7 +2,7 @@
 // running agents named by their call, unit lines, and which read failed.
 import { describe, expect, test } from "bun:test"
 import { Option, Schema } from "effect"
-import { accountRows, agentRows, PanePools, stamp, unavailable, unitLine } from "../src/domain/Pane.ts"
+import { accountRows, agentRows, PanePools, stamp, unavailable, unitLine } from "./pane.ts"
 
 const now = Date.parse("2026-11-04T15:00:00Z")
 

@@ -1,15 +1,15 @@
-// The status mod's TUI half: /pool, a host-owned panel showing the account
-// pool, the running agents and the orchestrate runs. A thin host: it reads
-// the pool's RPC and the status RPC every 2 seconds, takes the running child
-// sessions from the same collection Prime's dock counts, and draws the rows
-// domain/Pane.ts projects from them. An answer that fails or does not decode
-// keeps the last reading and says so.
-import { Plugin } from "@opencode/plugin/tui"
+// The /pool pane: the account pool, the running agents and the orchestrate
+// runs. Thin: it reads the pool's RPC and the status RPC every 2 seconds,
+// takes the running child sessions from the same collection Prime's dock
+// counts, and draws the rows pane.ts projects from them. An answer that fails
+// or does not decode keeps the last reading and says so. cmd/status/tui.tsx
+// registers it.
+import type { Plugin } from "@opencode/plugin/tui"
 import { Option, Schema } from "effect"
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
-import { accountRows, agentRows, PanePools, stamp, unavailable, unitLine } from "./domain/Pane.ts"
-import { Snapshot, STATUS } from "./domain/Status.ts"
+import { accountRows, agentRows, PanePools, stamp, unavailable, unitLine } from "../pane.ts"
+import { Snapshot, STATUS } from "../status.ts"
 
 const decodePools = Schema.decodeUnknownOption(PanePools)
 const decodeSnapshot = Schema.decodeUnknownOption(Snapshot)
@@ -20,7 +20,7 @@ const answer = <A,>(result: PromiseSettledResult<unknown>, decode: (input: unkno
 
 type PanelInput = { readonly focused: boolean; readonly close: () => void }
 
-function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: PanelInput }) {
+export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: PanelInput }) {
   const ctx = props.ctx
   // The pane holds focus once open; Esc or q hands it back to the prompt.
   ctx.keymap.layer(() => ({
@@ -115,28 +115,3 @@ function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: PanelInput
     </scrollbox>
   )
 }
-
-export default Plugin.define({
-  id: "dotfiles-opencode.status",
-  setup(ctx) {
-    ctx.keymap.layer(() => ({
-      mode: "global",
-      commands: [
-        {
-          id: "dotfiles-opencode.pool.open",
-          title: "Account pool, agents and runs",
-          slash: { name: "pool" },
-          run() {
-            // /pool toggles, as /diff does.
-            if (ctx.ui.panel.current()?.name === "pool") ctx.ui.panel.close()
-            else ctx.ui.panel.open("pool")
-          },
-        },
-      ],
-    }))
-    ctx.ui.slot({
-      append: "session.panel",
-      render: (input) => (input.name === "pool" ? <Pane ctx={ctx} sessionID={input.sessionID} panel={input} /> : null),
-    })
-  },
-})
