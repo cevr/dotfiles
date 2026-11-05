@@ -165,6 +165,17 @@ const sessionView = (session: SessionInfo): SessionView => ({
   idle: millis(session.time.idle),
 })
 
+/**
+ * The host's `session.compact` with the fork's `reason`, which the compaction
+ * message records (packages/schema/src/session-inbox.ts CompactionPayload).
+ * Idle compaction asks for `auto`: the plugin compacts on its own, not at the
+ * user's word. A host without `reason` ignores the key and records `manual`;
+ * the plugin context is taken as this shape so it compiles against either.
+ */
+interface CompactHost {
+  compact(input: { readonly sessionID: SessionID; readonly reason?: "auto" | "manual" }): ReturnType<Plugin.Context["session"]["compact"]>
+}
+
 /** How many recent main sessions the plugin looks at when it starts. */
 const RECENT = 50
 
@@ -208,5 +219,8 @@ export const fromContext = (ctx: Plugin.Context) =>
         }
       }),
     roots: ctx.session.list({ parentID: null, order: "desc", limit: RECENT }).pipe(Effect.map((page) => page.data.map(sessionView))),
-    compact: (sessionID) => ctx.session.compact({ sessionID: sessionID as SessionID }),
+    compact: (sessionID) => {
+      const host: CompactHost = ctx.session
+      return host.compact({ sessionID: sessionID as SessionID, reason: "auto" })
+    },
   })

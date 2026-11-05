@@ -48,10 +48,19 @@ const run = async (name: string): Promise<Result> => {
   return JSON.parse(readFileSync(result, "utf8")) as Result
 }
 
+/** The idle run, shared by the tests that read it. */
+let idleRun: Promise<Result> | undefined
+const idle = () => (idleRun ??= run("idle"))
+
+// Whether the checkout's compaction request takes a `reason` the compaction message records.
+const recordsReason = (dir: string) =>
+  readFileSync(join(dir, "packages/schema/src/session-inbox.ts"), "utf8").includes("reason: SessionMessage.CompactionReason")
+
 interface Message {
   readonly type: string
   readonly status?: string
   readonly summary?: string
+  readonly reason?: string
 }
 const messagesOf = (context: unknown): ReadonlyArray<Message> => (Array.isArray(context) ? (context as Message[]) : [])
 const compactions = (context: unknown) => messagesOf(context).filter((message) => message.type === "compaction")
@@ -60,7 +69,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   test(
     "an idle session is not compacted while its cache has time left, and is compacted once it is a margin from expiring",
     async () => {
-      const result = await run("idle")
+      const result = await idle()
       const turn = result.seen.find((item) => item.kind === "turn")
       expect(turn).toBeDefined()
       // Ten seconds in, with five left before the margin: the session sat idle and nothing compacted it.
@@ -78,6 +87,24 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(compaction?.summary).toContain(SUMMARY)
       // No turn came after the prompt's: the compaction ran on its own.
       expect(result.seen.filter((item) => item.kind === "turn")).toHaveLength(1)
+    },
+    120_000,
+  )
+
+  test.skipIf(!fork || !recordsReason(fork))(
+    "the idle compaction is recorded as automatic",
+    async () => {
+      const [compaction] = compactions((await idle()).late)
+      expect(compaction?.reason).toBe("auto")
+    },
+    120_000,
+  )
+
+  test.skipIf(!fork || recordsReason(fork))(
+    "a host without a compaction reason records the idle compaction as manual",
+    async () => {
+      const [compaction] = compactions((await idle()).late)
+      expect(compaction?.reason).toBe("manual")
     },
     120_000,
   )

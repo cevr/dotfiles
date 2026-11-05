@@ -20,10 +20,11 @@
  * - `session.deleted`: the session is forgotten. Disposing the plugin ends every timer.
  * - At start: the recent main sessions, idle before the plugin ran, are decided.
  *
- * The compaction is OpenCode's manual one (an inbox item the runner runs with
- * `reason: "manual"`), so the transcript shows a plain compaction: the plugin
- * API has no way to label it. Orchestrate's `compaction` hook still adds what
- * every compaction keeps.
+ * The compaction is OpenCode's requested one (an inbox item the runner runs),
+ * asked for with `reason: "auto"` so the compaction message records it as
+ * automatic; a host without the fork's `reason` records `manual`
+ * (`@dotfiles/opencode-idle-compact/opencode/sessions`). Orchestrate's
+ * `compaction` hook still adds what every compaction keeps.
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `ttlSeconds`: a cache lifetime for every model, over the providers' own; default none.
