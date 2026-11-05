@@ -56,12 +56,42 @@ theme. The mod has three parts.
   a kernel cell's calls (`kernel.ts`), diffs (`diff.ts`), notices
   (`notice.ts`), a step's end row (`step-end.ts`), the pinned ask
   (`ask.ts`), subagent navigation (`subagent.ts`), the top bar and dock
-  (`chrome.ts`), and the detail levels with their row gaps (`detail.ts`).
+  (`chrome.ts`), the dock's wake item (`wakes.ts`), the goal line
+  (`goal.ts`), and the detail levels with their row gaps (`detail.ts`).
   `session.ts` holds the session data it reads, typed as plain values.
 - The components are in `tui/`. They read the host only through the `Host`
   contract in `tui/host.ts`.
 - `opencode/host.ts` builds that `Host` from the plugin context. Each read
-  goes straight to the context, so it stays reactive.
+  goes straight to the context, so it stays reactive. The wakes come from
+  the wake mod's RPC (`opencode/wakes.ts`, ids from its protocol file
+  `@dotfiles/opencode-wake/wake`, decoded with Prime's own schema).
+
+The dock under the composer counts the session's work:
+
+```
+◆ 0 subagents  ·  ▸ 1 shell  ·  ⏰ 1 wake · next 14:30
+```
+
+The wake item shows only while the session has wakes pending or notices
+unread, in the success colour while any is pending (the warning colour with
+only notices); its parts drop from the right as the row narrows. It is read
+again on the wake mod's `changed` event and every 2 seconds.
+
+A session goal (the fork's `/goal`) shows only as one line right above the
+composer, in its state's colour, and nowhere while there is no goal
+(`goal.ts`, `GoalLine` in `tui/chrome.tsx`):
+
+```
+● goal · ship the dock · 2↻ · /goal pause · /goal cancel        (active, success)
+‖ goal paused · Paused by the user · /goal resume · /goal cancel  (paused, warning)
+✓ goal met · ship the dock                                        (met, muted, gone after 10 s)
+```
+
+`N↻` counts the continuations sent since the goal was set or last resumed.
+The objective truncates first, then the commands drop, then the count. The
+continuations themselves draw no rows (the host hides a synthetic message
+without a description). `tests/prime-goal.test.ts` runs
+`scenarios/prime-goal.ts` for the dock and the goal line.
 
 A compaction reads as one line below All, such as
 `◇ Compacted automatically · 171k → 6k tokens · 12.0s` (`compaction.ts`,
@@ -791,8 +821,8 @@ ask, and a subagent asks only outside orchestrate's roles.
 ## Wakes
 
 `mods/wake` lets a session set itself an alarm or poll a command and be woken
-by it, ported from gent's `wake`. Its plugins are `cmd/wake` (`server.ts` and
-`tui.tsx`). The server takes options: `backstop` (`"cron"`, the default, or
+by it, ported from gent's `wake`. Its plugin is `cmd/wake` (`server.ts`;
+Prime's dock draws the pending wakes). The server takes options: `backstop` (`"cron"`, the default, or
 `"off"`, which holds the OS jobs in memory, for scenarios and tests), and
 `bun` and `opencode`, those programs by path (default the `bun` on PATH, else
 `~/.bun/bin/bun`, and `~/.local/bin/opencode`).
@@ -838,8 +868,8 @@ went when one started.` The transcript draws a fire as one notice,
 `◈ wake <id> · <note>` (`notice`, `monitor <id> matched`, `· 2m late ·`); its
 metadata is `{ source: "wake", id, kind, mode, setAt, tick, firedAt, lateMs }`.
 
-The TUI plugin draws, above the composer (the `session.composer.top` slot),
-one line while the session on screen has entries pending or notices unread:
+Prime's dock (see Prime) shows, after the shells, one item while the session
+on screen has entries pending or notices unread:
 
 ```
 ⏰ 2 wakes · 1 monitor · next 14:30 · 1 notice
@@ -898,7 +928,7 @@ while an OpenCode server runs.`).
 
 The model (the domain files at the root of `mods/wake`): `wake.ts` is the
 entries and the RPC, `message.ts` the letters and receipts, `tools.ts` the
-tools' inputs and descriptions, `tray.ts` the line, `backstop.ts` the jobs'
+tools' inputs and descriptions, `backstop.ts` the jobs'
 names and schedules, `model.ts` the `WakesModel` that keeps, arms, fires and
 settles. It asks the `WakeStore`, `Courier`, `Checks`, `Backstop` and
 `Changes` contracts in `service.ts`, with the laws in `laws.ts`, implemented

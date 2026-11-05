@@ -4,8 +4,10 @@
 // so every read stays reactive inside a Solid computation.
 import type { Family } from "@dotfiles/opencode-subagents/family"
 import type { RGBA } from "@opentui/core"
-import type { JSX } from "solid-js"
+import type { Accessor, JSX } from "solid-js"
 import type { CurrentModel, Usage } from "../chrome.ts"
+import type { Goal } from "../goal.ts"
+import type { Wakes } from "../wakes.ts"
 import type { Message, Part, Session } from "../session.ts"
 
 /** The colours the look draws in: a narrowed copy of the host's resolved theme. */
@@ -59,8 +61,14 @@ export interface Host {
   cost(sessionID: string): number
   status(sessionID: string): "idle" | "running"
   usage(sessionID: string): Usage | undefined
-  /** Whether `/goal` set a goal on the session. */
-  hasGoal(sessionID: string): boolean
+  /** The goal `/goal` set on the session, if any. */
+  goal(sessionID: string): Goal | undefined
+  /**
+   * The wakes pending and notices unread for the session the accessor names,
+   * kept current while the calling component lives; undefined until the
+   * first reading, or with no session.
+   */
+  wakes(sessionID: Accessor<string | undefined>): Accessor<Wakes | undefined>
   /** Every session of the session's family. */
   familyIDs(sessionID: string): ReadonlyArray<string>
   /** The session's family as the subagent rows read it. */

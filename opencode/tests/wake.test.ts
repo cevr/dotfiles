@@ -1,7 +1,8 @@
-// Public UI seam: real OpenCode, the real wake plugins (server and tray), and
-// a scripted model. scenarios/wake.ts drives an alarm, a notice, a monitor, a
-// cancel and a plugin reload; scenarios/wake-downtime.ts stops the server past
-// an alarm's time and starts it again. What fired is read off the frames, the
+// Public UI seam: real OpenCode, the real wake server plugin, Prime (whose
+// dock counts the wakes) and a scripted model. scenarios/wake.ts drives an
+// alarm, a notice, a monitor, a cancel and a plugin reload;
+// scenarios/wake-downtime.ts stops the server past an alarm's time and starts
+// it again. What fired is read off the frames, the
 // model's requests and the transcripts.
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
@@ -10,7 +11,12 @@ import { join } from "node:path"
 
 /** The frame's lines, without the sidebar's column. */
 const lines = (frame: string): ReadonlyArray<string> => frame.split("\n").map((line) => line.slice(0, 108).trim())
-const trayOf = (frame: string) => lines(frame).find((line) => line.startsWith("⏰"))
+/** The dock's wake item: Prime's dock line from its `⏰` on, after the subagents and shells. */
+const trayOf = (frame: string) => {
+  const dock = lines(frame).find((line) => /^◆ \d+ subagents?  ·  ▸ \d+ shells?/.test(line))
+  const at = dock?.indexOf("⏰") ?? -1
+  return at < 0 ? undefined : dock?.slice(at).split("  ·  ")[0]
+}
 
 interface Request {
   readonly session?: "root" | "title"

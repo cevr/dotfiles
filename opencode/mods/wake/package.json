@@ -5,7 +5,6 @@
   "type": "module",
   "description": "Wakes: alarms and monitors a session sets on itself. A fire wakes the session with the agent's note (or leaves a notice for its next turn), from the server's timer or, when no server runs, from an OS job (Bun.cron) that starts OpenCode.",
   "exports": {
-    "./tui/*": "./tui/*.tsx",
     "./*": "./*.ts"
   }
 }

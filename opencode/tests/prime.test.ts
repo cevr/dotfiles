@@ -196,7 +196,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       " ┃",
       expect.stringMatching(/^ ← manage {20,}gpt-sim-model · 64k \(24%\)$/),
       ` ${"─".repeat(104)}`,
-      " ◆ 0 subagents  ·  ▸ 0 shells  ·  goal",
+      " ◆ 0 subagents  ·  ▸ 0 shells",
     ])
     // The composer is fx's bare rail: drawn in the text colour, with no fill behind it.
     expect(cellAt(details, hint + 1, 1).fg).toBe(TEXT)
@@ -211,7 +211,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     expect(running.text).toMatch(/^ {2}[○●] Running code-reviewer$/m)
     expect(running.text).not.toMatch(/[├└] Running code-reviewer/)
     expect(running.text).toMatch(/^ {2}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Executing · \d+s$/m)
-    expect(running.text).toMatch(row(" ◆ 1 subagent  ·  ▸ 0 shells  ·  goal"))
+    expect(running.text).toMatch(row(" ◆ 1 subagent  ·  ▸ 0 shells"))
     expect(running.text).not.toContain("Agent message")
     expect(running.text).not.toContain("reviewer approved")
     // The loader is the transcript's last row, a blank row under the running group (Prime's loader: a spacer, then the spinner).

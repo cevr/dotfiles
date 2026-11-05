@@ -221,6 +221,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/opencode-subagents": "workspace:*",
+        "@dotfiles/opencode-wake": "workspace:*",
       },
     },
     "mods/questions": {

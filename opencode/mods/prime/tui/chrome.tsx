@@ -1,8 +1,11 @@
 // The frame around the transcript in the Prime look: a one-line top bar, a
-// text splash, the detail-mode hint above the editor, and the tray, rule,
-// activity line and a live row per subagent under it. The words are
+// text splash, the detail-mode hint and the goal line above the editor, and
+// the tray, rule, dock line (subagents, shells, wakes) and a live row
+// per subagent under it. The words are
 // chrome.ts's; this file draws them.
-import { createMemo, createSignal, onCleanup, Show, type Accessor } from "solid-js"
+import type { BoxRenderable } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/solid"
+import { createEffect, createMemo, createSignal, onCleanup, Show, type Accessor } from "solid-js"
 import {
   cost,
   plural,
@@ -16,9 +19,12 @@ import {
 } from "../chrome.ts"
 import { elapsed } from "../clock.ts"
 import { detailHint, type Detail } from "../detail.ts"
+import { GOAL_LINGER_MS, goalLine, goalShown, type Goal } from "../goal.ts"
 import { navigationHint, neighbour, othersWorking, subagentOrder, topTitle } from "../subagent.ts"
+import { WAKE_GLYPH, wakeItem } from "../wakes.ts"
 import type { Host } from "./host.ts"
 import { SubagentRows, working } from "./live.tsx"
+import { toneColor } from "./tone.ts"
 import { GUTTER } from "./transcript.tsx"
 
 /**
@@ -117,6 +123,34 @@ export function ModeHint(props: { host: Host; sessionID: string; detail: Accesso
   )
 }
 
+/**
+ * The session's goal while it shows (goal.ts `goalShown`): a met goal is
+ * dropped once its moment passes, by a timer set for that moment.
+ */
+function useGoal(host: Host, sessionID: () => string | undefined): Accessor<Goal | undefined> {
+  const [now, setNow] = createSignal(Date.now())
+  const goal = createMemo(() => {
+    const id = sessionID()
+    return id ? host.goal(id) : undefined
+  })
+  createEffect(() => {
+    const current = goal()
+    if (current?.status !== "complete") return
+    const left = current.updatedAt + GOAL_LINGER_MS - Date.now()
+    if (left <= 0) return setNow(Date.now())
+    const timer = setTimeout(() => setNow(Date.now()), left)
+    onCleanup(() => clearTimeout(timer))
+  })
+  return createMemo(() => {
+    const current = goal()
+    return goalShown(current, now()) ? current : undefined
+  })
+}
+
+/** The cells a dock item takes: its text, the wake glyph two wide. */
+const cellsOf = (text: string) => [...text].length + (text.includes(WAKE_GLYPH) ? 1 : 0)
+const DOCK_SEP = "  ·  "
+
 export function Dock(props: { host: Host; sessionID?: string }) {
   const theme = () => props.host.theme()
   const usage = createMemo(() => (props.sessionID ? usageLabel(props.host.usage(props.sessionID)) : undefined))
@@ -128,10 +162,21 @@ export function Dock(props: { host: Host; sessionID?: string }) {
     return othersWorking(props.host.familyIDs(id), id, working(props.host, id))
   })
   const shells = createMemo(() => (props.sessionID ? props.host.shells(props.sessionID) : 0))
-  const goal = createMemo(() => (props.sessionID ? props.host.hasGoal(props.sessionID) : false))
+  const wakes = props.host.wakes(() => props.sessionID)
+  const terminal = useTerminalDimensions()
+  const [measured, setMeasured] = createSignal<number>()
+  const subagentText = () => `◆ ${plural(subagents(), "subagent")}`
+  const shellText = () => `▸ ${plural(shells(), "shell")}`
+  // The wake item takes what the row has left after the other items.
+  const wake = createMemo(() => {
+    const reading = wakes()
+    if (!reading) return undefined
+    const others = cellsOf(subagentText()) + DOCK_SEP.length * 2 + cellsOf(shellText())
+    return wakeItem(reading, (measured() ?? terminal().width - 2) - others)
+  })
   // The count opens the host's Subagents picker, as Down on an empty prompt does.
   const [pickerHover, setPickerHover] = createSignal(false)
-  const sep = () => <span style={{ fg: theme().text.faint }}>{"  ·  "}</span>
+  const sep = () => <span style={{ fg: theme().text.faint }}>{DOCK_SEP}</span>
   return (
     <box flexDirection="column" flexGrow={1} flexShrink={1}>
       <box flexDirection="row" justifyContent="space-between" height={1}>
@@ -143,7 +188,14 @@ export function Dock(props: { host: Host; sessionID?: string }) {
         </text>
       </box>
       <box height={1} border={["top"]} borderColor={theme().border.base} />
-      <box flexDirection="row" height={1}>
+      <box
+        flexDirection="row"
+        height={1}
+        onSizeChange={function (this: BoxRenderable) {
+          const value = this.width
+          queueMicrotask(() => setMeasured(value))
+        }}
+      >
         <box
           flexShrink={0}
           onMouseOver={() => setPickerHover(true)}
@@ -160,18 +212,20 @@ export function Dock(props: { host: Host; sessionID?: string }) {
                     : theme().text.muted,
               }}
             >
-              ◆ {plural(subagents(), "subagent")}
+              {subagentText()}
             </span>
           </text>
         </box>
         <text wrapMode="none" truncate fg={theme().text.faint}>
           {sep()}
-          <span style={{ fg: shells() ? theme().text.feedback.success.base : theme().text.muted }}>
-            ▸ {plural(shells(), "shell")}
-          </span>
-          {sep()}
-          <Show when={goal()} fallback={<span style={{ fg: theme().text.muted }}>goal</span>}>
-            <span style={{ fg: theme().text.feedback.warning.base }}>goal</span>
+          <span style={{ fg: shells() ? theme().text.feedback.success.base : theme().text.muted }}>{shellText()}</span>
+          <Show when={wake()}>
+            {(item) => (
+              <>
+                {sep()}
+                <span style={{ fg: toneColor(theme(), item().tone) }}>{item().text}</span>
+              </>
+            )}
           </Show>
         </text>
       </box>
@@ -180,6 +234,43 @@ export function Dock(props: { host: Host; sessionID?: string }) {
         {(id) => <SubagentRows host={props.host} sessionID={id()} child={false} />}
       </Show>
     </box>
+  )
+}
+
+/**
+ * The goal line right above the composer while the session has a goal, in
+ * its state's colour (goal.ts): what it is after, the rounds sent and the
+ * commands that pause, resume or cancel it. Nothing without a goal.
+ */
+export function GoalLine(props: { host: Host; sessionID: string }) {
+  const theme = () => props.host.theme()
+  const goal = useGoal(props.host, () => props.sessionID)
+  const terminal = useTerminalDimensions()
+  const [measured, setMeasured] = createSignal<number>()
+  const line = createMemo(() => {
+    const shown = goal()
+    return shown ? goalLine(shown, (measured() ?? terminal().width - 2) - GUTTER) : undefined
+  })
+  return (
+    <Show when={line()}>
+      {(shown) => (
+        <box
+          flexDirection="row"
+          flexShrink={0}
+          paddingLeft={GUTTER}
+          onSizeChange={function (this: BoxRenderable) {
+            const value = this.width
+            queueMicrotask(() => setMeasured(value))
+          }}
+        >
+          <text wrapMode="none" truncate fg={theme().text.faint}>
+            <span style={{ fg: toneColor(theme(), shown().tone) }}>{shown().lead}</span>
+            <span style={{ fg: shown().tone === "muted" ? theme().text.muted : theme().text.base }}>{shown().body}</span>
+            {shown().rest}
+          </text>
+        </box>
+      )}
+    </Show>
   )
 }
 

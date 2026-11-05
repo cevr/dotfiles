@@ -12,7 +12,7 @@ import { Plugin } from "@opencode/plugin/tui"
 import { nextDetail, rowGap, type Detail } from "@dotfiles/opencode-prime/detail"
 import { host } from "@dotfiles/opencode-prime/opencode/host"
 import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
-import { Dock, ModeHint, Splash, TopBar, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
+import { Dock, GoalLine, ModeHint, Splash, TopBar, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
 import { SubagentRows } from "@dotfiles/opencode-prime/tui/live"
 import { Completion, StepEnd } from "@dotfiles/opencode-prime/tui/notice"
 import { ToolRow } from "@dotfiles/opencode-prime/tui/tools"
@@ -80,6 +80,11 @@ export default Plugin.define({
     context.ui.slot({
       append: "session.composer.top",
       render: (input) => <ModeHint host={h} sessionID={input.sessionID} detail={detail} />,
+    })
+    // The goal line sits right above the composer while the session has a goal (tui/chrome.tsx).
+    context.ui.slot({
+      append: "session.composer.top",
+      render: (input) => <GoalLine host={h} sessionID={input.sessionID} />,
     })
     // Inside a subagent the host's picker takes the prompt's place, and the
     // dock with it: the family's rows sit above the picker instead.

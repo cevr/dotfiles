@@ -9,6 +9,7 @@
     "./*": "./*.ts"
   },
   "dependencies": {
-    "@dotfiles/opencode-subagents": "workspace:*"
+    "@dotfiles/opencode-subagents": "workspace:*",
+    "@dotfiles/opencode-wake": "workspace:*"
   }
 }

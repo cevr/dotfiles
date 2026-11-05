@@ -5,6 +5,7 @@
 import { read } from "@dotfiles/opencode-subagents/opencode/view"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { Host } from "../tui/host.ts"
+import { readWakes } from "./wakes.ts"
 
 export function host(context: Plugin.Context): Host {
   const data = context.data
@@ -19,7 +20,8 @@ export function host(context: Plugin.Context): Host {
     cost: (sessionID) => data.session.cost(sessionID),
     status: (sessionID) => data.session.status(sessionID),
     usage: (sessionID) => data.session.usage(sessionID),
-    hasGoal: (sessionID) => data.session.goal(sessionID) !== undefined,
+    goal: (sessionID) => data.session.goal(sessionID),
+    wakes: (sessionID) => readWakes(context, sessionID),
     familyIDs: (sessionID) => data.session.family(sessionID),
     subagents: (sessionID) => read(data, sessionID),
     shells: (sessionID) =>
