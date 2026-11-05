@@ -1,9 +1,8 @@
 // Runs scenarios/prime-sidebar.ts with the Prime look and the orchestrate
 // plugin against an OpenCode checkout and asserts that the live subagent rows
-// beneath the composer step aside while the session's sidebar shows: wide,
-// the sidebar holds the session and the dock only counts the worker; narrow,
-// the worker's row is back under the count. A checkout without the fork's
-// `ui.sidebar.visible` keeps the rows at every width. It needs OPENCODE_DEV.
+// beneath the composer stay while the session's sidebar shows: wide, the
+// sidebar holds the session and the worker's row is under the dock's count;
+// narrow, with no sidebar, it is there too. It needs OPENCODE_DEV.
 import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -15,9 +14,7 @@ if (!fork) console.warn("tests/prime-sidebar.test.ts: skipped. Set OPENCODE_DEV 
 const root = join(import.meta.dir, "..")
 const names = ["wide", "narrow", "wide-again"] as const
 const frames: Record<(typeof names)[number], ReadonlyArray<string>> = { wide: [], narrow: [], "wide-again": [] }
-// Whether the checkout's plugin API has ui.sidebar; the scenario's widths are 160 and 106.
-const reports = (dir: string) =>
-  readFileSync(join(dir, "packages/plugin/src/tui/context.ts"), "utf8").includes("readonly sidebar: {")
+// The scenario's widths are 160 and 106.
 const WIDE = 160
 const SIDEBAR = 42
 const ROW = /^ ◆ worker  Fix money parsing  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] /
@@ -54,12 +51,9 @@ describe.skipIf(!fork)("the subagent rows beside the sidebar in the Prime look (
     }
   })
 
-  test.skipIf(!fork || !reports(fork))("wide, no subagent row sits beneath the composer", () => {
-    for (const frame of [frames.wide, frames["wide-again"]]) expect(composer(frame).some((line) => ROW.test(line))).toBe(false)
-  })
-
-  test.skipIf(!fork || reports(fork))("a host without ui.sidebar keeps the row beneath the composer when wide", () => {
-    for (const frame of [frames.wide, frames["wide-again"]]) expect(composer(frame)[1]).toMatch(ROW)
+  test("wide, with the sidebar open, the worker's row stays beneath the composer", () => {
+    for (const frame of [frames.wide, frames["wide-again"]])
+      expect(composer(frame)[1]?.trimEnd()).toMatch(new RegExp(`${ROW.source}Check the money parser first\\. · \\d+s$`))
   })
 
   test("narrow, there is no sidebar and the worker's row is back under the count", () => {

@@ -5,24 +5,25 @@ import { trayLine, truncate, under, width } from "./tray.ts"
 const question = (id: string, extra: Partial<Question> = {}): Question => ({ id, sessionID: "ses_a", question: `Question ${id}?`, assume: "yes", askedAt: 0, ...extra })
 const port = question("q1", { header: "Port", assume: "8080" })
 
-test("one question shows its label, its assumption and the command", () => {
-  expect(trayLine([port], 80)).toBe("1 open question · Port · assuming 8080 · /answer")
-  expect(trayLine([question("q2")], 80)).toBe("1 open question · Question q2? · assuming yes · /answer")
+test("one question shows its label, its assumption, the hotkey and the command", () => {
+  expect(trayLine([port], 80)).toBe("1 open question · Port · assuming 8080 · shift+← /answer")
+  expect(trayLine([question("q2")], 80)).toBe("1 open question · Question q2? · assuming yes · shift+← /answer")
 })
 
 test("several questions show the count and every label", () => {
-  expect(trayLine([port, question("q2", { header: "Flag" })], 80)).toBe("2 open questions · Port, Flag · /answer")
+  expect(trayLine([port, question("q2", { header: "Flag" })], 80)).toBe("2 open questions · Port, Flag · shift+← /answer")
 })
 
-test("as the width shrinks, the assumption drops, then the label is cut, then only count and command stay", () => {
-  const line = "1 open question · Port · assuming a very long assumption · /answer"
+test("as the width shrinks, the assumption drops, then the label is cut, then the hotkey, till only count and command stay", () => {
+  const line = "1 open question · Port · assuming a very long assumption · shift+← /answer"
   const long = question("q1", { header: "Port", assume: "a very long assumption" })
   expect(trayLine([long], width(line))).toBe(line)
-  expect(trayLine([long], width(line) - 1)).toBe("1 open question · Port · /answer")
+  expect(trayLine([long], width(line) - 1)).toBe("1 open question · Port · shift+← /answer")
   const wordy = question("q1", { question: "Which port should the dev server listen on?", assume: "8080" })
-  expect(trayLine([wordy], 45)).toBe("1 open question · Which port shoul… · /answer")
-  expect(width(trayLine([wordy], 45))).toBe(45)
-  expect(trayLine([wordy], 30)).toBe("1 open question · /answer")
+  expect(trayLine([wordy], 53)).toBe("1 open question · Which port shoul… · shift+← /answer")
+  expect(width(trayLine([wordy], 53))).toBe(53)
+  expect(trayLine([wordy], 33)).toBe("1 open question · shift+← /answer")
+  expect(trayLine([wordy], 32)).toBe("1 open question · /answer")
 })
 
 test("truncate keeps text that fits and marks a cut", () => {

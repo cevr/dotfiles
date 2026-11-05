@@ -4,9 +4,11 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
-import { BUILTIN_BTW_OFF, CLAUDE_CACHE_TTL, launcher, mergeCli, mergeServer, orchestrateEntry, peersOf, poolEntry, roleModels } from "../scripts/daily.ts"
+import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
+import { BUILTIN_BTW_OFF, CLAUDE_CACHE_TTL, launcher, mergeCli, mergeServer, orchestrateEntry, peersOf, pluginDir, poolEntry, roleModels } from "../scripts/daily.ts"
 
 const MODS = "/repo/opencode/mods"
+const CMD = "/repo/opencode/cmd"
 const AUTH = "/home/.local/share/opencode-prime/anthropic-auth"
 
 describe("the server config", () => {
@@ -22,6 +24,13 @@ describe("the server config", () => {
     expect(merged.model).toBe("openai/gpt-6.1-sol")
     expect(merged.autoupdate).toBe(false)
     expect(merged.providers).toEqual({ anthropic: { settings: { cache: { ttl: "1h" } } } })
+  })
+
+  test("a plugin that moved from mods/ to its cmd/ composition root replaces its old entry, never doubles it", () => {
+    expect(anthropicAuthPlugin.endsWith("/opencode/cmd/anthropic-auth")).toBe(true)
+    const existing = { plugins: [`${MODS}/anthropic-auth`, "/elsewhere/plugin"] }
+    const merged = mergeServer(existing, [`${CMD}/anthropic-auth`], {}, [MODS, CMD])
+    expect(merged.plugins).toEqual([`${CMD}/anthropic-auth`, "/elsewhere/plugin"])
   })
 
   test("sets Claude's prompt cache to an hour and keeps the other provider settings", () => {
@@ -93,6 +102,13 @@ describe("the TUI config", () => {
   test("loads Prime first, sets the Prime theme and keeps the other keys", () => {
     const merged = mergeCli({ theme: { name: "system", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, "/x"] }, [`${MODS}/prime`, `${MODS}/status`], [MODS])
     expect(merged).toEqual({ theme: { name: "prime", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, `${MODS}/status`, "/x"] })
+  })
+
+  test("Prime loads from its cmd/ composition root, and that entry replaces the old mods/prime one", () => {
+    expect(pluginDir("prime").endsWith("/opencode/cmd/prime")).toBe(true)
+    const existing = { theme: { name: "prime", mode: "dark" }, plugins: [`${MODS}/prime`, `${MODS}/status`, "/x"] }
+    const merged = mergeCli(existing, [`${CMD}/prime`, `${CMD}/status`], [MODS, CMD])
+    expect(merged.plugins).toEqual([`${CMD}/prime`, `${CMD}/status`, "/x"])
   })
 })
 

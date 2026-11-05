@@ -68,7 +68,7 @@ export default OpenCodeDriver.use(
       animations: false,
       tabs: { mode: "off" },
       theme: { name: "prime", mode: "dark" },
-      plugins: [`${root}/mods/prime`, `${root}/cmd/btw`, "-opencode.btw"],
+      plugins: [`${root}/cmd/prime`, `${root}/cmd/btw`, "-opencode.btw"],
     },
     tui: { viewport: { cols: 144, rows: 44 } },
     project: { git: true, files: { ".opencode/themes/prime.json": readFileSync(`${root}/themes/prime.json`, "utf8") } },

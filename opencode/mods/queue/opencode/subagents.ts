@@ -1,14 +1,13 @@
-// The subagents of a root session, as the board takes them, from the shared
-// subagent rows (@dotfiles/opencode-subagents): `read` gives the family from
-// the TUI's data, `subagents` its rows (role, unit, state, one-sentence
-// update), `visible` how long each running one has taken. Every row is kept,
-// not only the ones the shared list would still show, because a queue item
-// linked to a subagent keeps its state long after the shared list's linger.
-// Read inside a Solid computation, every read here is reactive.
+// The live state of each subagent of a root session, by session id, as the
+// board takes it, from the shared subagent rows (@dotfiles/opencode-subagents):
+// `read` gives the family from the TUI's data, `subagents` its rows. Every row
+// is kept, not only the ones the shared list would still show, because a queue
+// item linked to a subagent keeps its state long after the shared list's
+// linger. Read inside a Solid computation, every read here is reactive.
 import type { Family } from "@dotfiles/opencode-subagents/family"
 import { read, type Reads } from "@dotfiles/opencode-subagents/opencode/view"
-import { subagents as rowsOf, visible, type Row } from "@dotfiles/opencode-subagents/subagent-row"
-import type { Live, Subagent } from "../board.ts"
+import { subagents as rowsOf, type Row } from "@dotfiles/opencode-subagents/subagent-row"
+import type { Live } from "../board.ts"
 
 export type { Reads }
 
@@ -29,22 +28,8 @@ const liveOf = (row: Row): Live => {
   }
 }
 
-/** Every subagent of `family` under its root at `now`, as the board takes them. */
-export const fromFamily = (family: Family, now: number): ReadonlyArray<Subagent> => {
-  const all = rowsOf(family, family.root)
-  const timed = new Map(visible(all, now, { linger: Infinity }).map((row) => [row.id, row.elapsed]))
-  return all.map((row) => {
-    const elapsed = timed.get(row.id)
-    return {
-      session: row.id,
-      description: row.unit,
-      live: liveOf(row),
-      role: row.role,
-      update: row.update,
-      ...(elapsed === undefined ? {} : { elapsed }),
-    }
-  })
-}
+/** The live state of every subagent of `family` under its root, by session id. */
+export const fromFamily = (family: Family): ReadonlyMap<string, Live> => new Map(rowsOf(family, family.root).map((row) => [row.id, liveOf(row)]))
 
-/** Every subagent under `root`, read from the TUI's data. */
-export const subagents = (reads: Reads, root: string, now: number): ReadonlyArray<Subagent> => fromFamily(read(reads, root), now)
+/** The live state of every subagent under `root`, read from the TUI's data. */
+export const liveStates = (reads: Reads, root: string): ReadonlyMap<string, Live> => fromFamily(read(reads, root))

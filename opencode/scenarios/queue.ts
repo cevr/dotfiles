@@ -5,7 +5,8 @@
 // model starts a background implementor, sets the queue with an item linked
 // to its session, starts a second (untyped, so orchestrate's worker) that no
 // item names, and later marks one item done. Each subagent thinks one thought
-// and waits, so its row's update is that thought.
+// and waits. The sidebar draws only the items; Prime's rows beneath the
+// composer draw both subagents.
 // Run: OPENCODE_DEV=<opencode checkout> SCENARIO_OUT=out QUEUE_VIA=kernel bunx opencode-drive run scenarios/queue.ts
 //
 // It writes, under SCENARIO_OUT, `queue-<via>-set.txt` (the frame after the
@@ -70,7 +71,7 @@ export default OpenCodeDriver.use(
       animations: false,
       tabs: { mode: "off" },
       theme: { name: "prime", mode: "dark" },
-      plugins: [`${root}/mods/prime`, `${root}/cmd/queue`],
+      plugins: [`${root}/cmd/prime`, `${root}/cmd/queue`],
     },
     tui: { viewport: { cols: 150, rows: 50 } },
     project: { git: true, files: { ".opencode/themes/prime.json": readFileSync(`${root}/themes/prime.json`, "utf8") } },
@@ -123,10 +124,9 @@ export default OpenCodeDriver.use(
       yield* until(
         (frame) =>
           frame.includes("Queue fixture ready") &&
-          frame.includes("● Forgotten worker") &&
           frame.includes("● Money parsing worker") &&
-          frame.includes("  implementor  Check the") &&
-          frame.includes("  worker       Read the"),
+          /^ ◆ implementor +Fix money parsing /m.test(frame) &&
+          /^ ◆ worker +Forgotten worker /m.test(frame),
       )
       writeFileSync(`${out}/${label}-set.txt`, text(yield* ui.capture()))
       yield* ui.submit("queue-patch")
