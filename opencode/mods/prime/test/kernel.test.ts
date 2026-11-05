@@ -59,6 +59,15 @@ describe("a kernel call", () => {
     expect(computing.map((call) => call.tool)).toEqual(["read", "kernel"])
   })
 
+  test("once the cell has ended, a tool it left running ends with it: never a row running for hours", () => {
+    // An interrupted cell, or one whose kernel stopped under it, never closes its record.
+    const interrupted = drawn(kernel("error", [op("shell", { command: "git push" }), op("shell", { command: "ssh box 'git pull'" }, "running")]))
+    expect(header(interrupted)).toBe("Ran 2 commands · 1 failed")
+    expect(rows(interrupted).map((row) => row.outcome)).toEqual(["done", "failed"])
+    expect(interrupted.map((call) => call.tool)).toEqual(["shell", "shell"])
+    expect(rows(drawn(kernel("completed", [op("read", { path: "a.ts" }, "running")]))).map((row) => row.outcome)).toEqual(["done"])
+  })
+
   test("a cell that failed with no failed tool keeps its own failed row", () => {
     const calls = drawn(kernel("error", [op("read", { path: "a.ts" })]))
     expect(rows(calls).map((row) => row.outcome)).toEqual(["done", "failed"])
