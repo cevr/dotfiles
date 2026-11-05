@@ -70,6 +70,14 @@ import { Context, Effect, Logger, Schema } from "effect"
 /** The token endpoint Claude Code and the Anthropic auth plugin refresh at, and Claude Code's public client id. */
 export const GENT_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 export const GENT_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+/**
+ * The `user-agent` a trade names, Claude Code's own (the Anthropic auth
+ * plugin's refresh sends it too). It is set outright: OpenCode's binary
+ * compiles in a default `opencode/<channel>/<version>/cli`, and the token
+ * endpoint's edge answers that agent, as it does `curl/*`, with a 429 every
+ * time while it trades for any other.
+ */
+export const GENT_USER_AGENT = "axios/1.13.6"
 /** The prefix of a gent account's credential id in the pool. */
 export const GENT_PREFIX = "gent:"
 
@@ -704,7 +712,7 @@ export class GentSource {
         try: async () => {
           const response = await this.fetch(this.tokenURL, {
             method: "POST",
-            headers: { "content-type": "application/x-www-form-urlencoded" },
+            headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": GENT_USER_AGENT },
             body: new URLSearchParams({
               grant_type: "refresh_token",
               client_id: GENT_CLIENT_ID,
