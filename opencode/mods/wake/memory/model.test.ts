@@ -1,0 +1,456 @@
+// The wakes model over the memory doubles, on the test clock: what a server
+// does with an alarm or a monitor from the tool call to the fire, through a
+// reload, a stop, and the OS backstop's call.
+import { describe, expect, test } from "bun:test"
+import { Context, Effect, Exit, Layer, Logger, Scope } from "effect"
+import { TestClock } from "effect/testing"
+import { oneShot, titleOf } from "../backstop.ts"
+import { alarm as alarmFixture } from "../laws.ts"
+import * as Model from "../model.ts"
+import { RETRY_MS, WakesModel } from "../model.ts"
+import { Changes } from "../service.ts"
+import type { Alarm, Entry } from "../wake.ts"
+import * as MemoryBackstop from "./backstop.ts"
+import * as MemoryChecks from "./checks.ts"
+import * as MemoryCourier from "./courier.ts"
+import * as MemoryStore from "./store.ts"
+
+const DIR = "/work/app"
+const SECOND = 1000
+const MINUTE = 60 * SECOND
+
+/** Lets the fibers a clock move woke run to their next wait. */
+const settle = Effect.promise(() => new Promise<void>((done) => setTimeout(done, 2)))
+
+const now = TestClock.testClockWith((clock) => Effect.sync(() => clock.currentTimeMillisUnsafe()))
+
+/** Moves the test clock to `at`, letting each timer due on the way fire. */
+const until = (at: number) =>
+  Effect.gen(function* () {
+    const current = yield* now
+    if (at > current) yield* TestClock.adjust(at - current)
+    yield* settle
+  })
+
+/** The externals one OpenCode keeps across its servers' lives: the storage, the sessions, the scheduler, the commands. */
+const world = (...sessionIDs: ReadonlyArray<string>) => ({
+  store: MemoryStore.empty(),
+  sessions: MemoryCourier.empty(...sessionIDs),
+  jobs: MemoryBackstop.empty(),
+  checks: MemoryChecks.empty(),
+  changed: [] as Array<string>,
+})
+type World = ReturnType<typeof world>
+
+/** A server's wakes over `w`: built in its own scope, so closing it is a reload or a stop. */
+const server = (w: World, directory = DIR) =>
+  Effect.gen(function* () {
+    const scope = yield* Scope.make()
+    const layer = Model.layer({ directory, settleMs: 5 * SECOND }).pipe(
+      Layer.provide(MemoryStore.layer(w.store)),
+      Layer.provide(MemoryCourier.layer(w.sessions)),
+      Layer.provide(MemoryChecks.layer(w.checks)),
+      Layer.provide(MemoryBackstop.layer(w.jobs)),
+      Layer.provide(Layer.succeed(Changes, { changed: (sessionID) => Effect.sync(() => void w.changed.push(sessionID)) })),
+    )
+    const model = Context.get(yield* Layer.buildWithScope(layer, scope), WakesModel)
+    return { model, stop: Scope.close(scope, Exit.void) }
+  })
+
+const run = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) =>
+  Effect.runPromise(Effect.scoped(body.pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([])))))
+
+const inbox = (w: World, sessionID = "ses_a") => w.sessions.inboxes.get(sessionID) ?? []
+const texts = (w: World, sessionID = "ses_a") => inbox(w, sessionID).map((message) => message.letter.text)
+
+describe("an alarm", () => {
+  test("wakes its session at its time with the note, then goes with its OS job", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const { model } = yield* server(w)
+        const placed = yield* model.wake("ses_a", { afterSeconds: 3, note: "Check CI run 42: green means merge." })
+        expect(placed.warning).toBeUndefined()
+        expect(w.jobs.jobs.get(titleOf(placed.entry.id))?.schedule).toEqual(oneShot(3 * SECOND))
+        yield* until(2900)
+        expect(inbox(w)).toEqual([])
+        yield* until(3 * SECOND)
+        expect(inbox(w)).toHaveLength(1)
+        expect(inbox(w)[0]?.resume).toBe(true)
+        expect(texts(w)[0]).toContain(`⏰ Wake ${placed.entry.id} fired`)
+        expect(texts(w)[0]).toContain("Note: Check CI run 42: green means merge.")
+        expect(texts(w)[0]).not.toContain("late")
+        expect(w.store.entries.size).toBe(0)
+        expect(w.jobs.jobs.size).toBe(0)
+        expect(w.changed.filter((sessionID) => sessionID === "ses_a").length).toBeGreaterThanOrEqual(2)
+      }),
+    ))
+
+  test("in notify mode starts no turn and leaves a notice until the session reads it", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const { model } = yield* server(w)
+        const placed = yield* model.wake("ses_a", { afterSeconds: 60, mode: "notify", note: "The build should be done." })
+        yield* until(MINUTE)
+        expect(inbox(w).map((message) => message.resume)).toEqual([false])
+        const [notice] = [...w.store.notices.values()]
+        expect(notice?.wakeID).toBe(placed.entry.id)
+        expect(notice?.delivery).toBe(inbox(w)[0]?.id ?? "")
+        expect((yield* model.pending(["ses_a"])).notices).toHaveLength(1)
+        yield* model.read(notice?.delivery ?? "")
+        expect((yield* model.pending(["ses_a"])).notices).toEqual([])
+      }),
+    ))
+
+  test("a repeat fires every period, keeping its recurring job; one the cron fields cannot say gets a fresh one-shot each time", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const { model } = yield* server(w)
+        const minutely = yield* model.wake("ses_a", { afterSeconds: 60, everySeconds: 60, note: "poll" })
+        const odd = yield* model.wake("ses_a", { afterSeconds: 90, everySeconds: 90, note: "odd" })
+        expect(w.jobs.jobs.get(titleOf(minutely.entry.id))?.schedule.recurring).toBe(true)
+        yield* until(3 * MINUTE)
+        expect(texts(w).filter((text) => text.includes(minutely.entry.id))).toHaveLength(3)
+        expect(texts(w).filter((text) => text.includes(odd.entry.id))).toHaveLength(2)
+        expect(texts(w)[0]).toContain("It repeats every 1m; the next is due")
+        const next = w.store.entries.get(odd.entry.id)
+        expect(next?.kind === "alarm" ? next.dueAt : undefined).toBe(270 * SECOND)
+        expect(next?.firing).toBeUndefined()
+        expect(w.jobs.jobs.get(titleOf(odd.entry.id))?.schedule).toEqual(oneShot(270 * SECOND))
+      }),
+    ))
+
+  test("a newSession alarm starts a session in its directory with the prompt", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const { model } = yield* server(w)
+        yield* model.wake("ses_a", { afterSeconds: 5, note: "nightly", newSession: { directory: "/work/other", prompt: "Summarise the builds." } })
+        yield* until(5 * SECOND)
+        const [[sessionID, started]] = [...w.sessions.started.entries()]
+        expect(sessionID).toMatch(/^ses_/)
+        expect(started?.directory).toBe("/work/other")
+        expect(started?.prompts).toHaveLength(1)
+        expect(started?.prompts[0]?.text.split("\n")[0]).toBe("Summarise the builds.")
+        expect(inbox(w)).toEqual([])
+        expect(w.store.entries.size).toBe(0)
+      }),
+    ))
+
+  test("a refused fire goes again after a wait under the same id; a gone session drops the entry", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const { model } = yield* server(w)
+        w.sessions.refusing.set("ses_a", "busy")
+        const placed = yield* model.wake("ses_a", { afterSeconds: 1, note: "n" })
+        yield* until(SECOND)
+        const recorded = w.store.entries.get(placed.entry.id)?.firing
+        expect(recorded).toBeDefined()
+        w.sessions.refusing.delete("ses_a")
+        yield* until(SECOND + RETRY_MS - 1)
+        expect(inbox(w)).toEqual([])
+        yield* until(SECOND + RETRY_MS)
+        expect(inbox(w).map((message) => message.id)).toEqual([recorded?.delivery ?? ""])
+        const lost = yield* model.wake("ses_a", { afterSeconds: 1, note: "n" })
+        w.sessions.inboxes.delete("ses_a")
+        yield* until((yield* now) + SECOND)
+        expect(w.store.entries.has(lost.entry.id)).toBe(false)
+        expect(w.jobs.jobs.has(titleOf(lost.entry.id))).toBe(false)
+      }),
+    ))
+
+  test("with no OS scheduler it still fires while the server runs, and says it is unguarded", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const { model } = yield* server(w)
+        w.jobs.refusing = "no OS scheduler is supported on aix"
+        const placed = yield* model.wake("ses_a", { afterSeconds: 1, note: "n" })
+        expect(placed.warning).toContain("No OS backstop was set (no OS scheduler is supported on aix)")
+        yield* until(SECOND)
+        expect(inbox(w)).toHaveLength(1)
+      }),
+    ))
+})
+
+describe("a monitor", () => {
+  test("checks on its interval and wakes on the first match, with the last output", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        w.checks.answers.set("gh pr checks 7", [MemoryChecks.check(1, "pending"), MemoryChecks.check(0, "booting\nall green")])
+        const { model } = yield* server(w)
+        const placed = yield* model.monitor("ses_a", { command: "gh pr checks 7", intervalSeconds: 5, until: "green", note: "merge it" })
+        yield* settle
+        expect(w.checks.runs).toEqual([{ command: "gh pr checks 7", cwd: DIR }])
+        expect(inbox(w)).toEqual([])
+        yield* until(5 * SECOND)
+        expect(texts(w)).toHaveLength(1)
+        expect(texts(w)[0]).toContain(`⏰ Monitor ${placed.entry.id} matched`)
+        expect(texts(w)[0]).toContain("after 2 checks")
+        expect(texts(w)[0]).toContain("booting\nall green")
+        expect(w.store.entries.size).toBe(0)
+        expect(w.jobs.jobs.size).toBe(0)
+      }),
+    ))
+
+  test("wakes at its deadline when nothing matched", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        w.checks.answers.set("false", [MemoryChecks.check(1, "", "nope")])
+        const { model } = yield* server(w)
+        yield* model.monitor("ses_a", { command: "false", intervalSeconds: 3, timeoutSeconds: 10, note: "give up" })
+        yield* until(9 * SECOND)
+        expect(inbox(w)).toEqual([])
+        yield* until(10 * SECOND)
+        expect(texts(w)).toHaveLength(1)
+        expect(texts(w)[0]).toContain("timed out")
+        expect(texts(w)[0]).toContain("nope")
+      }),
+    ))
+})
+
+describe("setting and cancelling", () => {
+  test("cancel stops a wake and drops its job; an unknown id is refused, naming what is pending", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const { model } = yield* server(w)
+        const placed = yield* model.wake("ses_a", { afterSeconds: 3, note: "n" })
+        const kept = yield* model.wake("ses_a", { afterSeconds: 3, note: "kept" })
+        expect(yield* model.cancel("ses_a", placed.entry.id)).toEqual([placed.entry.id])
+        expect(w.jobs.jobs.has(titleOf(placed.entry.id))).toBe(false)
+        const refused = yield* Effect.flip(model.cancel("ses_a", "w999999"))
+        expect(refused.reason).toBe(`No pending wake w999999 in this session. Pending: ${kept.entry.id}.`)
+        expect(yield* model.cancel("ses_a")).toEqual([kept.entry.id])
+        yield* until(10 * SECOND)
+        expect(inbox(w)).toEqual([])
+      }),
+    ))
+
+  test("a subagent is refused; a full session is refused", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a", "ses_child")
+        w.sessions.parents.set("ses_child", "ses_a")
+        const { model } = yield* server(w)
+        const refused = yield* Effect.flip(model.wake("ses_child", { afterSeconds: 3, note: "n" }))
+        expect(refused.reason).toContain("background shell")
+        expect(w.store.entries.size).toBe(0)
+        for (let index = 0; index < Model.MAX_PENDING; index += 1) yield* model.wake("ses_a", { afterSeconds: 60, note: `n${index}` })
+        expect((yield* Effect.flip(model.wake("ses_a", { afterSeconds: 60, note: "one more" }))).reason).toContain("20 wakes pending")
+      }),
+    ))
+
+  test("a deleted session's entries, notices and jobs go", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a", "ses_b")
+        const { model } = yield* server(w)
+        yield* model.wake("ses_a", { afterSeconds: 3, note: "n" })
+        const other = yield* model.wake("ses_b", { afterSeconds: 3, note: "n" })
+        yield* model.forget("ses_a")
+        expect([...w.store.entries.keys()]).toEqual([other.entry.id])
+        expect([...w.jobs.jobs.keys()]).toEqual([titleOf(other.entry.id)])
+        yield* until(3 * SECOND)
+        expect(inbox(w)).toEqual([])
+        expect(inbox(w, "ses_b")).toHaveLength(1)
+      }),
+    ))
+})
+
+describe("across a reload or a stop", () => {
+  test("a reload re-arms what was set, and it fires once", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const first = yield* server(w)
+        yield* first.model.wake("ses_a", { afterSeconds: 10, note: "n" })
+        yield* until(4 * SECOND)
+        yield* first.stop
+        const second = yield* server(w)
+        yield* second.model.start
+        yield* until(20 * SECOND)
+        expect(inbox(w)).toHaveLength(1)
+        expect(texts(w)[0]).not.toContain("late")
+      }),
+    ))
+
+  test("a fire recorded but cut short by the reload goes again under its id, and the session reads it once", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const first = yield* server(w)
+        const placed = yield* first.model.wake("ses_a", { afterSeconds: 1, note: "n" })
+        w.sessions.refusing.set("ses_a", "reloading")
+        yield* until(SECOND)
+        const firing = w.store.entries.get(placed.entry.id)?.firing
+        expect(firing).toBeDefined()
+        yield* first.stop
+        // The message had reached the session before the reload cut the fire short of settling.
+        w.sessions.refusing.delete("ses_a")
+        w.sessions.inboxes.get("ses_a")?.push({ id: firing?.delivery ?? "", letter: { text: firing?.text ?? "", description: "", metadata: {} }, resume: true })
+        const second = yield* server(w)
+        yield* second.model.start
+        yield* until(2 * MINUTE)
+        expect(inbox(w).map((message) => message.id)).toEqual([firing?.delivery ?? ""])
+        expect(w.store.entries.size).toBe(0)
+      }),
+    ))
+
+  test("a fire that settled before the reload does not fire again", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const first = yield* server(w)
+        yield* first.model.wake("ses_a", { afterSeconds: 1, note: "n" })
+        yield* until(2 * SECOND)
+        yield* first.stop
+        const second = yield* server(w)
+        yield* second.model.start
+        yield* until(2 * MINUTE)
+        expect(inbox(w)).toHaveLength(1)
+      }),
+    ))
+
+  test("a wake due while no server ran fires on start and says how late", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const first = yield* server(w)
+        const placed = yield* first.model.wake("ses_a", { afterSeconds: 60, note: "Check the deploy." })
+        yield* first.stop
+        yield* until(2 * 60 * MINUTE + MINUTE)
+        expect(inbox(w)).toEqual([])
+        const second = yield* server(w)
+        yield* second.model.start
+        yield* settle
+        expect(texts(w)).toHaveLength(1)
+        expect(texts(w)[0]).toContain(`⏰ Wake ${placed.entry.id} fired`)
+        expect(texts(w)[0]).toContain("It fired 2h late: no OpenCode server was running at 1970-01-01T00:01:00.000Z, so it went when one started.")
+        expect(texts(w)[0]).toContain("Note: Check the deploy.")
+      }),
+    ))
+
+  test("a late fire on start keeps its OS job until the job's own run had time to end", () =>
+    run(
+      Effect.gen(function* () {
+        // The start the job brought up fires the wake before the job's due call lands; removing the job then would kill it mid-call.
+        const w = world("ses_a")
+        const first = yield* server(w)
+        const placed = yield* first.model.wake("ses_a", { afterSeconds: 30, note: "Check the deploy." })
+        yield* first.stop
+        yield* until(MINUTE + 5 * SECOND)
+        const second = yield* server(w)
+        yield* second.model.start
+        yield* settle
+        expect(texts(w)).toHaveLength(1)
+        expect(w.jobs.jobs.has(titleOf(placed.entry.id))).toBe(true)
+        expect(yield* second.model.due(placed.entry.id)).toEqual({ outcome: "gone" })
+        expect(texts(w)).toHaveLength(1)
+        yield* until(MINUTE + 11 * SECOND)
+        expect(w.jobs.jobs.has(titleOf(placed.entry.id))).toBe(false)
+      }),
+    ))
+
+  test("a repeat missed for hours fires once on start and moves to its next tick ahead", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const first = yield* server(w)
+        const placed = yield* first.model.wake("ses_a", { afterSeconds: 60, everySeconds: 3600, note: "hourly" })
+        yield* first.stop
+        yield* until(5 * 60 * MINUTE + 30 * MINUTE)
+        const second = yield* server(w)
+        yield* second.model.start
+        yield* settle
+        expect(texts(w)).toHaveLength(1)
+        const next = w.store.entries.get(placed.entry.id)
+        expect(next?.kind === "alarm" ? next.dueAt : undefined).toBe(6 * 60 * MINUTE + MINUTE)
+      }),
+    ))
+
+  test("start drops the OS jobs whose entry went, registers a missing one, and arms only its own directory's entries", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a", "ses_b")
+        const own: Alarm = { ...alarmFixture, id: "w0000aa", sessionID: "ses_a", directory: DIR, setAt: 0, dueAt: MINUTE }
+        const elsewhere: Entry = { ...own, id: "w0000bb", sessionID: "ses_b", directory: "/work/other" }
+        w.store.entries.set(own.id, own)
+        w.store.entries.set(elsewhere.id, elsewhere)
+        const job = (id: string) => ({ job: { id, title: titleOf(id), directory: DIR }, schedule: oneShot(MINUTE) })
+        w.jobs.jobs.set(titleOf("w0000zz"), job("w0000zz"))
+        w.jobs.jobs.set(titleOf(elsewhere.id), job(elsewhere.id))
+        w.jobs.jobs.set("nightly-report", job("nightly"))
+        const { model } = yield* server(w)
+        yield* model.start
+        expect([...w.jobs.jobs.keys()].toSorted()).toEqual(["nightly-report", titleOf(own.id), titleOf(elsewhere.id)].toSorted())
+        yield* until(2 * MINUTE)
+        expect(inbox(w)).toHaveLength(1)
+        expect(inbox(w, "ses_b")).toEqual([])
+        expect(w.store.entries.has(elsewhere.id)).toBe(true)
+      }),
+    ))
+})
+
+describe("the OS backstop's due call", () => {
+  test("fires a due alarm once, and drops its job after the job's run had time to end", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const first = yield* server(w)
+        const placed = yield* first.model.wake("ses_a", { afterSeconds: 60, note: "n" })
+        yield* first.stop
+        yield* until(MINUTE)
+        // The OS job started OpenCode, whose server had not armed it yet.
+        const { model } = yield* server(w)
+        expect(yield* model.due(placed.entry.id)).toEqual({ outcome: "fired" })
+        expect(inbox(w)).toHaveLength(1)
+        expect(w.jobs.jobs.has(titleOf(placed.entry.id))).toBe(true)
+        yield* until(MINUTE + 5 * SECOND)
+        expect(w.jobs.jobs.has(titleOf(placed.entry.id))).toBe(false)
+        yield* model.start
+        expect(yield* model.due(placed.entry.id)).toEqual({ outcome: "gone" })
+        yield* until(2 * MINUTE)
+        expect(inbox(w)).toHaveLength(1)
+      }),
+    ))
+
+  test("a racing timer and due call deliver one message", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const { model } = yield* server(w)
+        const placed = yield* model.wake("ses_a", { afterSeconds: 60, note: "n" })
+        yield* TestClock.adjust(MINUTE)
+        const outcome = yield* model.due(placed.entry.id)
+        yield* settle
+        expect(["fired", "gone"]).toContain(outcome.outcome)
+        expect(inbox(w)).toHaveLength(1)
+      }),
+    ))
+
+  test("answers pending before its time, for a monitor, and for another directory's entry; gone for an unknown id, dropping its job", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        w.checks.answers.set("true", [MemoryChecks.check(1)])
+        const { model } = yield* server(w)
+        const early = yield* model.wake("ses_a", { afterSeconds: 120, note: "n" })
+        const watching = yield* model.monitor("ses_a", { command: "true", note: "n" })
+        w.store.entries.set("w0000cc", { ...early.entry, id: "w0000cc", directory: "/work/other" })
+        expect(yield* model.due(early.entry.id)).toEqual({ outcome: "pending" })
+        expect(yield* model.due(watching.entry.id)).toEqual({ outcome: "pending" })
+        expect(yield* model.due("w0000cc")).toEqual({ outcome: "pending" })
+        w.jobs.jobs.set(titleOf("w0000zz"), { job: { id: "w0000zz", title: titleOf("w0000zz"), directory: DIR }, schedule: oneShot(0) })
+        expect(yield* model.due("w0000zz")).toEqual({ outcome: "gone" })
+        yield* until(5 * SECOND)
+        expect(w.jobs.jobs.has(titleOf("w0000zz"))).toBe(false)
+        expect(inbox(w)).toEqual([])
+      }),
+    ))
+})

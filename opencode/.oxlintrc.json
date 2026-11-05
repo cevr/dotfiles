@@ -576,6 +576,56 @@
     },
     {
       "files": [
+        "mods/wake/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
+                "message": "The wake domain fence: the wakes' domain files import effect, their own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders (memory/, opencode/, process/, cron/)."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "mods/wake/tui/**"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "../memory/**",
+                  "../opencode/**",
+                  "../process/**",
+                  "../cron/**",
+                  "../laws.ts",
+                  "../model.ts"
+                ],
+                "message": "The wake UI fence: the tray imports the wakes domain, never the server's model, an implementation (memory/, opencode/, process/, cron/) or the laws; every read goes through the wakes RPC."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
         "mods/anthropic-auth/*.ts"
       ],
       "rules": {

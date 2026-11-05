@@ -686,6 +686,139 @@ are not allowed `ask_user_async`: a role answers to the session that started
 it, which decides what reaches the owner. So in practice the root sessions
 ask, and a subagent asks only outside orchestrate's roles.
 
+## Wakes
+
+`mods/wake` lets a session set itself an alarm or poll a command and be woken
+by it, ported from gent's `wake`. Its plugins are `cmd/wake` (`server.ts` and
+`tui.tsx`). The server takes options: `backstop` (`"cron"`, the default, or
+`"off"`, which holds the OS jobs in memory, for scenarios and tests), and
+`bun` and `opencode`, those programs by path (default the `bun` on PATH, else
+`~/.bun/bin/bun`, and `~/.local/bin/opencode`).
+
+The server adds four direct tools (a kernel cell calls them as
+`tools.wake(...)` and so on):
+
+- `wake({ afterSeconds | at, everySeconds?, mode?, note, newSession? })` sets
+  an alarm on this session, at most a year ahead. `everySeconds` (at least 60)
+  repeats it until cancelled. `mode: "notify"` fires without starting a turn:
+  the session reads it at its next turn, and the user sees it meanwhile.
+  `newSession: { directory?, prompt }` starts a fresh session there at the
+  time instead, with `prompt` as its first message.
+- `monitor({ command, cwd?, intervalSeconds?, until?, timeoutSeconds?, note })`
+  runs `command` every `intervalSeconds` (default 30) until its stdout matches
+  the regular expression `until` (without it, until it exits 0), or until
+  `timeoutSeconds` (default 1800, at most 86400) pass, and then wakes the
+  session with the outcome and the last output.
+- `wake_cancel({ id })` cancels one; `wake_list({})` lists the pending ones
+  and the notices not yet read.
+
+The receipt names the id and the time:
+
+```
+Alarm w5tap1r set: it wakes this session at 2026-11-05T15:11:40.891Z (in 3s).
+End your turn now unless there is other work: the alarm starts a new turn with your note.
+```
+
+A fire goes to the session as a synthetic user message, steered, so a running
+session reads it at its next step and an idle one wakes (a notice does not
+wake it):
+
+```
+⏰ Wake w5tap1r fired: the alarm you set at 2026-11-05T15:11:37.891Z, due 2026-11-05T15:11:40.891Z.
+Note: ALPHA: check that the build finished
+```
+
+A monitor's says `⏰ Monitor <id> matched: `<command>` printed a match for /…/ after N checks.`
+(or `timed out`), where and how often it checked, the note, and the last 2000
+characters of its output. A fire that went a minute or more after its time
+says so: `It fired 2m late: no OpenCode server was running at <time>, so it
+went when one started.` The transcript draws a fire as one notice,
+`◈ wake <id> · <note>` (`notice`, `monitor <id> matched`, `· 2m late ·`); its
+metadata is `{ source: "wake", id, kind, mode, setAt, tick, firedAt, lateMs }`.
+
+The TUI plugin draws, above the composer (the `session.composer.top` slot),
+one line while the session on screen has entries pending or notices unread:
+
+```
+⏰ 2 wakes · 1 monitor · next 14:30 · 1 notice
+```
+
+`next` is the soonest alarm in local time (a weekday or a date when not
+today); with only monitors it reads `until <deadline>`. Parts drop from the
+right as the width shrinks. It reads the wakes RPC (`dotfiles-opencode.wake`,
+`pending`) on its `changed` event and every 2 seconds.
+
+Entries are kept in the plugin's storage (OpenCode's database). On start, and
+after a reload, the plugin arms its directory's entries and fires at once the
+ones that came due meanwhile. A fire is recorded under its message id before
+it is sent and settled after, so a reload or a resend delivers it once; a
+fire that failed goes again 30 seconds later, and one whose session went is
+dropped. A deleted session's entries go, with their checks and OS jobs. At
+most 20 entries wait per session.
+
+A monitor's check runs as its own process: `/bin/sh -c <command>` in a new
+process group, without `BASH_ENV` or `ENV` (so no shell startup file runs),
+at most 60 seconds per check, keeping the last 64 KB of its output. Cancel,
+the deadline and a deleted session kill its group.
+
+### The OS backstop
+
+A timer fires only while a server runs, so each entry also registers an OS
+job through `Bun.cron`, titled `opencode-wake-<id>`: a launchd agent on macOS
+(`~/Library/LaunchAgents/bun.cron.opencode-wake-<id>.plist`) or a crontab
+line marked `# bun-cron: opencode-wake-<id>` on Linux; no other crontab line
+is touched. A job runs at the first whole minute at or after the entry's time
+(an alarm's, or a monitor's deadline). A repeat whose period cron can say
+exactly (minutes dividing an hour, hours dividing a day, a day, a week) gets
+a recurring job; any other entry gets a one-shot for its minute, set again
+after each fire.
+
+The job runs `cmd/wake/backstop.ts` with a bare environment, carrying only
+`HOME`, the `XDG_*_HOME` variables, `OPENCODE_CONFIG_DIR` and `OPENCODE_DB`.
+It reads `$XDG_STATE_HOME/opencode/service.json` and probes the service; when
+nothing answers it runs `~/.local/bin/opencode service start` and waits for
+it. Then it calls the wakes RPC's `due({ id })` in the entry's directory, and
+the server fires the entry, as its own timer would have, under the same
+recorded message id: a job that runs after the timer fired delivers nothing.
+The server removes the job once the entry fired or went; a job whose entry
+is already gone has nothing to fire. A fire at or past the job's minute
+(often the start the job itself brought up, which fires the late entry
+before the job's call lands) removes the job a few seconds later, since
+removing a running launchd job kills it mid-call. Each run appends a line to
+`$XDG_STATE_HOME/opencode-wake/backstop.log`. On start the plugin removes the
+`opencode-wake-*` jobs that no entry names.
+
+The job calls the server rather than `opencode run --session`: `run` would
+add a prompt of its own, under an id the entry never recorded, so a fire the
+timer also sent would arrive twice. When a job cannot be registered the tool
+still sets the entry and says so (`No OS backstop was set (…): it fires only
+while an OpenCode server runs.`).
+
+The model (the domain files at the root of `mods/wake`): `wake.ts` is the
+entries and the RPC, `message.ts` the letters and receipts, `tools.ts` the
+tools' inputs and descriptions, `tray.ts` the line, `backstop.ts` the jobs'
+names and schedules, `model.ts` the `WakesModel` that keeps, arms, fires and
+settles. It asks the `WakeStore`, `Courier`, `Checks`, `Backstop` and
+`Changes` contracts in `service.ts`, with the laws in `laws.ts`, implemented
+in `opencode/` (the plugin's storage, the session inbox), `process/` (the
+checks), `cron/` (Bun.cron and the job's side) and `memory/`.
+`tests/wake.test.ts` runs `scenarios/wake.ts` (an alarm, a notice, a monitor,
+a cancel and a plugin reload) and `scenarios/wake-downtime.ts` (an alarm due
+while the server was stopped) in real OpenCode.
+
+Where it departs from gent: a fire that went late still starts a turn and
+says how late (gent turns an alarm more than 10 minutes late into a notice);
+there is no automatic resume of the turn the alarm interrupted; the monitor's
+period is `intervalSeconds` (gent's `everySeconds`); tool names take `_`
+where gent's take `.`, which Anthropic refuses; the OS backstop and
+`newSession` are new.
+
+A subagent, and so each of orchestrate's roles, is refused: a role answers to
+the session that started it and ends with it, so it waits on CI with a
+background shell, and its parent (or the root) sets the wake. The root
+sessions, the orchestrator included, use them for every wake-up; `okra
+schedule` is no longer needed for that.
+
 ## The code kernel
 
 `mods/kernel` gives the model a `kernel` tool, `{ code, reset? }`, ported

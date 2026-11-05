@@ -120,6 +120,13 @@
         "@dotfiles/opencode-status": "workspace:*",
       },
     },
+    "cmd/wake": {
+      "name": "@dotfiles/opencode-cmd-wake",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-wake": "workspace:*",
+      },
+    },
     "decider": {
       "name": "@dotfiles/decider",
       "version": "0.0.0",
@@ -229,6 +236,10 @@
       "name": "@dotfiles/opencode-subagents",
       "version": "0.0.0",
     },
+    "mods/wake": {
+      "name": "@dotfiles/opencode-wake",
+      "version": "0.0.0",
+    },
   },
   "packages": {
     "@dotfiles/decider": ["@dotfiles/decider@workspace:decider"],
@@ -267,6 +278,8 @@
 
     "@dotfiles/opencode-cmd-status": ["@dotfiles/opencode-cmd-status@workspace:cmd/status"],
 
+    "@dotfiles/opencode-cmd-wake": ["@dotfiles/opencode-cmd-wake@workspace:cmd/wake"],
+
     "@dotfiles/opencode-git": ["@dotfiles/opencode-git@workspace:mods/git"],
 
     "@dotfiles/opencode-guard": ["@dotfiles/opencode-guard@workspace:mods/guard"],
@@ -292,6 +305,8 @@
     "@dotfiles/opencode-status": ["@dotfiles/opencode-status@workspace:mods/status"],
 
     "@dotfiles/opencode-subagents": ["@dotfiles/opencode-subagents@workspace:mods/subagents"],
+
+    "@dotfiles/opencode-wake": ["@dotfiles/opencode-wake@workspace:mods/wake"],
 
     "@effect/platform-node": ["@effect/platform-node@4.0.1", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.1", "undici": "^8.11.2" }, "peerDependencies": { "effect": "^4.0.1", "redis": ">=5.0.0 <7.0.0" } }, "sha512-FT0Fu5LO0/XP9zBpj0HqrtJNLluK4StNKqf6TSulUsjp8FPBsDVXGJiDuyoN5J2yVMT7tgvhxSwaDcObWVRIaQ=="],
 

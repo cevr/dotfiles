@@ -1,0 +1,15 @@
+{
+  "name": "@dotfiles/opencode-cmd-wake",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Wakes' OpenCode plugins, the wake, monitor, wake_cancel and wake_list tools and RPC (server), the tray line (tui), and the OS job's script (backstop): the composition root of @dotfiles/opencode-wake.",
+  "exports": {
+    "./server": "./server.ts",
+    "./tui": "./tui.tsx",
+    "./backstop": "./backstop.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-wake": "workspace:*"
+  }
+}
