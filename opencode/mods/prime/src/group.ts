@@ -3,7 +3,7 @@
 // tree row per run of one tool under it.
 import type { Plugin } from "@opencode/plugin/tui"
 import type { SessionPart } from "@opencode/plugin/tui/context"
-import { expand } from "./kernel"
+import { expand, toolsInCode } from "./kernel"
 import { editedFiles, errorName, toolInput, toolMetadata, toolPreview, subagentName, type ToolPart } from "./view"
 
 /** A session message, as the plugin API lists them. */
@@ -279,6 +279,12 @@ export function rows(calls: ReadonlyArray<Call>): Row[] {
 /** A row's subject: what its calls touched, as one line. */
 export function subject(row: Row): string {
   const first = row.calls[0]!
+  // Cells that recorded no calls (kernel.ts): their count, and the tools their code names, once each.
+  if (row.tool === "kernel") {
+    const names = [...new Set(row.calls.flatMap((part) => toolsInCode(String(toolInput(part).code ?? ""))))]
+    const cells = row.calls.length === 1 ? "a cell" : `${row.calls.length} cells`
+    return names.length > 0 ? `${cells} calling ${names.join(", ")}` : cells
+  }
   if (row.tool === "read") return row.calls.map((part) => toolPreview("read", toolInput(part))).join(", ")
   if (row.tool === "grep") {
     const input = toolInput(first)

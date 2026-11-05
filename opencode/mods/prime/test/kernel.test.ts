@@ -66,9 +66,12 @@ describe("a kernel call", () => {
 
   test("with nothing recorded it names the tools its code calls, never the code", () => {
     expect(lines(drawn(kernel("completed", undefined, "const r = await tools.read({ path })\nawait tools.shell({ command: 'ls' })")))).toEqual([
-      "Ran cell calling read, shell",
+      "Ran a cell calling read, shell",
     ])
-    expect(lines(drawn(kernel("completed", undefined, "console.log(await sh2(`git status`))")))).toEqual(["Ran cell"])
+    expect(lines(drawn(kernel("completed", undefined, "console.log(await sh2(`git status`))")))).toEqual(["Ran a cell"])
+    // Record-less cells side by side fold into one row: their count, and each tool once.
+    const folded = [kernel("completed", undefined, "tools.shell(a)"), kernel("completed", undefined, "x"), kernel("completed", undefined, "tools.write(b); tools.shell(c)")]
+    expect(lines(folded.flatMap(drawn))).toEqual(["Ran 3 cells calling shell, write"])
     expect(toolsInCode("tools.read(a); tools.read(b); xtools.no(c)")).toEqual(["read"])
   })
 })

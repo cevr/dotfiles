@@ -462,7 +462,7 @@ while it runs and kept in its result, also when the cell fails; it stops
 changing once the call ends. Prime draws a kernel call as these calls, with
 fx's header and rows (`Read 2 files · ran 2 commands`, `├ Read a.ts, b.ts`),
 never as its code; a call with no record names the tools its code calls
-(`Ran cell calling read, shell`).
+(`Ran a cell calling read, shell`; record-less cells side by side fold into `Ran 3 cells calling shell, write`).
 
 The model (the domain files at the root of `mods/kernel`):
 
