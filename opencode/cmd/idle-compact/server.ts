@@ -36,6 +36,11 @@
  * at the model's catalog prices (`.../price`), and not again after a
  * compaction until a request beyond the first on top of its summary.
  *
+ * OpenCode runs a copy of the plugin for each location (directory and
+ * workspace) it serves. Every copy hears every session's events, but a
+ * session's hooks reach only its own location's copy, so that copy alone
+ * decides for it (`Sessions.serves`); the others drop it without a word.
+ *
  * Each decision is logged: scheduled, compacting, or not and why, with what
  * compacting costs and avoids; at info, but at debug for a session that could not
  * compact whatever its cache (no request, too small, uncached) or sits at or

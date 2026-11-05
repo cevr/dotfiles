@@ -21,6 +21,9 @@ export type WorldMessage =
   | { readonly kind: "compaction" }
 
 export interface WorldSession {
+  /** Where it runs; `/work`, in no workspace, when absent. */
+  readonly directory?: string
+  readonly workspaceID?: string
   readonly parentID?: string
   readonly title?: string
   readonly running?: boolean
@@ -29,6 +32,8 @@ export interface WorldSession {
 
 /** The host's state the implementation is set up with. */
 export interface World {
+  /** The location the implementation serves, as one copy of the plugin: `/work`, in no workspace. */
+  readonly location: { readonly directory: string; readonly workspaceID?: string }
   readonly sessions: Readonly<Record<string, WorldSession>>
   readonly models: ReadonlyArray<{
     readonly providerID: string
@@ -61,6 +66,7 @@ const request = (
 ) => ({ kind: "request", startedAt, ...tokens, providerID, modelID, ...(agent === undefined ? {} : { agent }) }) as const
 
 const WORLD: World = {
+  location: { directory: "/work" },
   sessions: {
     idle: { title: "Idle", messages: [{ kind: "user" }, request(1_000, { input: 2_000, read: 70_000, write: 3_000 })] },
     compacted: { messages: [request(1_000, { input: 10, read: 90_000, write: 0 }), { kind: "compaction" }] },
@@ -93,6 +99,10 @@ const WORLD: World = {
     // A model whose catalog or provider read fails, and one the catalog does not have, on Anthropic.
     unreadable: { messages: [request(1_000, { input: 10, read: 90_000, write: 0 }, "anthropic", "claude-unreadable")] },
     lost: { messages: [request(1_000, { input: 10, read: 90_000, write: 0 }, "anthropic", "claude-lost")] },
+    // The same location written with a trailing separator; another directory; this directory in a workspace.
+    trailing: { directory: "/work/", messages: [] },
+    elsewhere: { directory: "/other", messages: [request(1_000, { input: 10, read: 90_000, write: 0 })] },
+    workspace: { directory: "/work", workspaceID: "wrk_1", messages: [] },
   },
   models: [
     { providerID: "anthropic", modelID: "claude-x", window: 200_000 },
@@ -238,13 +248,31 @@ export const sessionsLaws = (name: string, bench: (world: World) => Effect.Effec
         }),
       ))
 
-    test("recent lists the main sessions only", () =>
+    test("recent lists the main sessions of its location only", () =>
       check(bench, () =>
         Effect.gen(function* () {
           const recent = yield* (yield* Sessions).recent
           expect(recent).toContain("idle")
+          expect(recent).toContain("trailing")
           expect(recent).not.toContain("worker")
           expect(recent).not.toContain("done")
+          expect(recent).not.toContain("elsewhere")
+          expect(recent).not.toContain("workspace")
+        }),
+      ))
+
+    test("it serves the sessions of its own location: the same directory, however written, in the same workspace", () =>
+      check(bench, () =>
+        Effect.gen(function* () {
+          const sessions = yield* Sessions
+          expect(yield* sessions.serves("idle")).toBe(true)
+          expect(yield* sessions.serves("worker")).toBe(true)
+          expect(yield* sessions.serves("trailing")).toBe(true)
+          expect(yield* sessions.serves("elsewhere")).toBe(false)
+          expect(yield* sessions.serves("workspace")).toBe(false)
+          const error = yield* Effect.flip(sessions.serves("gone"))
+          expect(error).toBeInstanceOf(SessionUnreadable)
+          expect(error.sessionID).toBe("gone")
         }),
       ))
   })

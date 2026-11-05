@@ -5,6 +5,9 @@
  * child process whose HOME and XDG dirs are a scratch dir:
  * `bun tests/idle-compact/run.ts <spec.json>`.
  *
+ * It keeps the plugin's log lines and the host's loads of it (one per
+ * directory it serves).
+ *
  * It sends one prompt, lets the session sit idle, and reads the session's
  * context twice: `early`, `EARLY_MS` after the turn's request came (before the
  * compaction is due), and `late`, once a compaction message has run or
@@ -15,6 +18,11 @@
  * shell running past the cache's expiry, and `late` is read once a request
  * came after the compaction (the shell's notice waking the session) or
  * `WAKE_MS` has passed.
+ *
+ * With `others`, the host opens that many other directories first, so it
+ * runs a copy of the plugin for each of them too, as it does for every
+ * directory it serves; the prompt waits until every copy has made its first
+ * look, so the session's only decisions are the turn's.
  *
  * @module
  */
@@ -27,12 +35,21 @@ export interface Spec {
   readonly fork: string
   readonly plugin: string
   readonly background?: boolean
+  readonly others?: number
+}
+
+/** A log line of the run: the plugin's own (`idle-compact: …`) or the host's `loading plugin` for it. */
+export interface Line {
+  readonly message: string
+  readonly sessionID?: string
+  readonly trigger?: string
 }
 
 export interface Result {
   readonly early: unknown
   readonly late: unknown
   readonly seen: ReadonlyArray<Seen>
+  readonly log: ReadonlyArray<Line>
 }
 
 const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
@@ -69,6 +86,7 @@ interface Embedded {
     readonly prompt: (input: { sessionID: string; text: string }) => Promise<unknown>
     readonly context: (input: { sessionID: string }) => Promise<unknown>
   }
+  readonly location: { readonly get: (input: { location: { directory: string } }) => Promise<unknown> }
   readonly experimental: { readonly session: { readonly wait: (input: { sessionID: string }) => Promise<void> } }
   readonly close: () => Promise<void>
 }
@@ -76,8 +94,23 @@ interface Sdk {
   readonly OpenCode: { readonly create: (options: Record<string, unknown>) => Promise<Embedded> }
 }
 const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
+const log: Array<Line> = []
 const opencode = await OpenCode.create({
   events: { persist: true },
+  log: {
+    level: "info",
+    emit: (entry: { readonly message: string; readonly attributes?: Readonly<Record<string, unknown>> }) => {
+      const attributes = entry.attributes ?? {}
+      // The host logs its load as an object, `{ msg: "loading plugin", id }`, which the SDK formats into the message.
+      const loads = entry.message.includes("loading plugin") && entry.message.includes("idle-compact")
+      if (!loads && !entry.message.startsWith("idle-compact")) return
+      log.push({
+        message: loads ? "loading plugin" : entry.message,
+        ...(typeof attributes["sessionID"] === "string" ? { sessionID: attributes["sessionID"] } : {}),
+        ...(typeof attributes["trigger"] === "string" ? { trigger: attributes["trigger"] } : {}),
+      })
+    },
+  },
   config: { directory: config, project: false, content: JSON.stringify(content) },
 })
 
@@ -91,6 +124,16 @@ const compacted = (messages: unknown) =>
 
 try {
   const session = await opencode.sessions.create({ location: { directory: work } })
+  if (spec.others !== undefined) {
+    await opencode.location.get({ location: { directory: work } })
+    for (let index = 0; index < spec.others; index += 1) {
+      const directory = join(spec.base, `other-${index}`)
+      mkdirSync(directory, { recursive: true })
+      await opencode.location.get({ location: { directory } })
+    }
+    // Past each copy's first look, which waits for the catalog to settle (cmd/idle-compact/server.ts SETTLE).
+    await sleep(3_000)
+  }
   await opencode.sessions.prompt({ sessionID: session.id, text: spec.background ? BACKGROUND_TASK : TASK })
   await opencode.experimental.session.wait({ sessionID: session.id })
   const turn = sim.seen.findLast((item) => item.kind === "turn")?.at ?? Date.now()
@@ -109,7 +152,7 @@ try {
   }
   if (spec.background) await opencode.experimental.session.wait({ sessionID: session.id })
   late = await opencode.sessions.context({ sessionID: session.id })
-  const result: Result = { early, late, seen: sim.seen }
+  const result: Result = { early, late, seen: sim.seen, log }
   writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
 } finally {
   await opencode.close()

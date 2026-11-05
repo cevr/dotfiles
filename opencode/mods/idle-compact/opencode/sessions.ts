@@ -34,6 +34,17 @@
 //   unresolved (`LastRequest.unresolved`) and none is guessed.
 // - price: the model's catalog entry's `cost` (schema model.ts:92-104,130),
 //   USD per million tokens, an entry per context tier.
+//
+// Whose session it is: the fork runs one copy of the plugin per location
+// (`ctx.location`: directory and workspace), and hands a session's hooks only
+// to the copy of its own location: the session's services are its location's
+// (`locations.get(session.location)`, packages/core/src/effect/
+// app-node-builder.ts:15, the ref made canonical in location-services.ts:73),
+// hooks among them (`PluginHooks.node` is a location node, plugin/hooks.ts).
+// Its events reach every copy. So a copy serves the sessions whose
+// `location` is its own, compared as the fork compares them: the directory
+// normalized, with no trailing separator, and the same workspace.
+import { posix } from "node:path"
 import { Agent, type Plugin } from "@opencode/plugin/effect"
 import { DateTime, Effect, Layer, Option } from "effect"
 import { parseTTL, ttlOf } from "../cache.ts"
@@ -41,12 +52,27 @@ import type { Facts, LastRequest } from "../idle.ts"
 import type { Rate } from "../price.ts"
 import { CompactionRefused, Sessions, SessionUnreadable } from "../service.ts"
 
+/** Where a session runs, or which sessions a copy of the plugin serves: a directory, within a workspace or not. */
+export interface Place {
+  readonly directory: string
+  readonly workspaceID?: string | undefined
+}
+
+/** A directory as the fork keys a location by it: normalized, without a trailing separator. */
+const canonical = (directory: string) => {
+  const normalized = posix.normalize(directory)
+  return normalized.length > 1 && normalized.endsWith("/") ? normalized.slice(0, -1) : normalized
+}
+
+/** Whether two places are one location. */
+export const samePlace = (a: Place, b: Place): boolean =>
+  canonical(a.directory) === canonical(b.directory) && (a.workspaceID ?? undefined) === (b.workspaceID ?? undefined)
+
 /** A session, as idle compaction reads it. Times in epoch ms. */
-export interface SessionView {
+export interface SessionView extends Place {
   readonly id: string
   readonly parentID?: string | undefined
   readonly title?: string | undefined
-  readonly directory: string
   readonly busy?: number | undefined
   readonly idle?: number | undefined
 }
@@ -83,8 +109,10 @@ export interface ModelView {
   readonly rates?: ReadonlyArray<Rate> | undefined
 }
 
-/** The host's reads and its compaction. */
+/** The host's reads and its compaction, as one copy of the plugin sees them. */
 export interface Host {
+  /** The location this copy of the plugin runs for. */
+  readonly location: Place
   readonly session: (sessionID: string) => Effect.Effect<SessionView, unknown>
   readonly messages: (sessionID: string) => Effect.Effect<ReadonlyArray<MessageView>, unknown>
   readonly children: (sessionID: string) => Effect.Effect<ReadonlyArray<SessionView>, unknown>
@@ -98,6 +126,7 @@ export interface Host {
   ) => Effect.Effect<ModelView | undefined, unknown>
   /** The agent's own cache lifetime (`request.settings.cacheTTL`), undefined when it sets none; fails when the agent cannot be read. */
   readonly agentTTL: (agentID: string, directory: string) => Effect.Effect<string | undefined, unknown>
+  /** The recent main sessions, newest first; those of other locations may be among them. */
   readonly roots: Effect.Effect<ReadonlyArray<SessionView>, unknown>
   readonly compact: (sessionID: string) => Effect.Effect<void, unknown>
 }
@@ -155,6 +184,11 @@ export const layer = (host: Host) =>
   Layer.succeed(
     Sessions,
     Sessions.of({
+      serves: (sessionID) =>
+        host.session(sessionID).pipe(
+          Effect.map((session) => samePlace(session, host.location)),
+          Effect.mapError((cause) => new SessionUnreadable({ sessionID, message: messageOf(cause) })),
+        ),
       facts: Effect.fn("Sessions.facts")(function* (sessionID: string) {
         const unreadable = (cause: unknown) => new SessionUnreadable({ sessionID, message: messageOf(cause) })
         const [session, messages, children] = yield* Effect.all(
@@ -203,7 +237,7 @@ export const layer = (host: Host) =>
       compact: (sessionID) =>
         host.compact(sessionID).pipe(Effect.mapError((cause) => new CompactionRefused({ sessionID, message: messageOf(cause) }))),
       recent: host.roots.pipe(
-        Effect.map((sessions) => sessions.map((session) => session.id)),
+        Effect.map((sessions) => sessions.filter((session) => samePlace(session, host.location)).map((session) => session.id)),
         Effect.mapError((cause) => new SessionUnreadable({ sessionID: "*", message: messageOf(cause) })),
       ),
     }),
@@ -220,6 +254,7 @@ const sessionView = (session: SessionInfo): SessionView => ({
   parentID: session.parentID,
   title: session.title,
   directory: session.location.directory,
+  workspaceID: session.location.workspaceID,
   busy: millis(session.time.busy),
   idle: millis(session.time.idle),
 })
@@ -235,12 +270,13 @@ interface CompactHost {
   compact(input: { readonly sessionID: SessionID; readonly reason?: "auto" | "manual" }): ReturnType<Plugin.Context["session"]["compact"]>
 }
 
-/** How many recent main sessions the plugin looks at when it starts. */
+/** How many recent main sessions of its directory the plugin looks at when it starts. */
 const RECENT = 50
 
 /** The host's reads and compaction through the plugin context. */
 export const fromContext = (ctx: Plugin.Context) =>
   layer({
+    location: { directory: ctx.location.directory, workspaceID: ctx.location.workspaceID },
     session: (sessionID) => ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map(sessionView)),
     messages: (sessionID) =>
       ctx.session.context({ sessionID: sessionID as SessionID }).pipe(
@@ -293,7 +329,7 @@ export const fromContext = (ctx: Plugin.Context) =>
           return typeof ttl === "string" ? ttl : undefined
         }),
       ),
-    roots: ctx.session.list({ parentID: null, order: "desc", limit: RECENT }).pipe(Effect.map((page) => page.data.map(sessionView))),
+    roots: ctx.session.list({ parentID: null, directory: ctx.location.directory, order: "desc", limit: RECENT }).pipe(Effect.map((page) => page.data.map(sessionView))),
     compact: (sessionID) => {
       const host: CompactHost = ctx.session
       return host.compact({ sessionID: sessionID as SessionID, reason: "auto" })

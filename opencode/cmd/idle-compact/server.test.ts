@@ -5,9 +5,11 @@
 // background work running or not, not after a new request started, not twice
 // for one cache, not back to back without new work, not while it runs (a
 // foreground subagent included), and only when it costs less than expiry.
+// "One copy per location" runs several copies on one host, as the fork does,
+// and checks that a session's idle window gets one decision and one compaction.
 // tests/idle-compact.test.ts runs it in OpenCode, on a scripted model.
 import { describe, expect, test } from "bun:test"
-import { Effect, Exit, Logger, Queue, References, Schema, type Scope, Stream } from "effect"
+import { Effect, Exit, Logger, PubSub, References, Schema, type Scope, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { type Host as SessionsHost, layer as sessionsLayer, type MessageView, type ModelView } from "@dotfiles/opencode-idle-compact/opencode/sessions"
 import IdleCompact, { make, Options } from "./server.ts"
@@ -24,6 +26,8 @@ const HOUR = 60 * MINUTE
 
 /** One session of the world: its times, in test-clock ms, and its context. */
 interface WorldSession {
+  /** Where it runs; `/work` when absent. */
+  directory?: string
   parentID?: string
   title?: string
   busy?: number
@@ -44,8 +48,9 @@ const world = () => {
   /** The catalog as the host reads it now: a reload changes it. */
   const catalog = { models: [...MODELS], agents: new Map<string, string | undefined>([["build", undefined]]), unreadable: false }
   const compactions: Array<string> = []
-  const view = (id: string, session: WorldSession) => ({ id, directory: "/work", ...session })
+  const view = (id: string, session: WorldSession) => ({ id, ...session, directory: session.directory ?? "/work" })
   const host: SessionsHost = {
+    location: { directory: "/work" },
     session: (id) => {
       const session = sessions.get(id)
       return session === undefined ? Effect.fail(new Error(`no session ${id}`)) : Effect.succeed(view(id, session))
@@ -72,11 +77,19 @@ type World = ReturnType<typeof world>
 /** Let the plugin's fibers take in what was just offered: a real moment, on the test clock too. */
 const settle = Effect.promise(() => new Promise<void>((done) => setTimeout(done, 5)))
 
-/** The plugin started on a stand-in host over `state`, and the host's moves. */
-const start = (state: World, options: Record<string, unknown> = {}) =>
+/**
+ * The plugin started on a stand-in host over `state`, and the host's moves. `at` places it as one copy of several on
+ * one host: the copy for `directory` (`/work` by default), hearing the host-wide `bus`, its own when none is given.
+ * Its hooks are its location's, so `hook` and `turn` drive only this copy's.
+ */
+const start = (
+  state: World,
+  options: Record<string, unknown> = {},
+  at: { readonly directory?: string; readonly bus?: PubSub.PubSub<HostEvent> } = {},
+) =>
   Effect.gen(function* () {
     const hooks: Record<string, Array<Hook>> = {}
-    const events = yield* Queue.unbounded<HostEvent>()
+    const events = at.bus ?? (yield* PubSub.unbounded<HostEvent>())
     const host = {
       options,
       session: {
@@ -86,18 +99,18 @@ const start = (state: World, options: Record<string, unknown> = {}) =>
             return { dispose: Effect.void }
           }),
       },
-      event: { subscribe: () => Stream.fromQueue(events) },
+      event: { subscribe: () => Stream.fromPubSub(events) },
     } as unknown as Host
-    yield* make(() => sessionsLayer(state.host)).effect(host)
+    yield* make(() => sessionsLayer({ ...state.host, location: { directory: at.directory ?? "/work" } })).effect(host)
     yield* settle
 
     const hook = Effect.fn(function* (name: string, event: Record<string, unknown>) {
       for (const callback of hooks[name] ?? []) yield* callback(event)
     })
-    const emit = (type: string, sessionID: string) => Queue.offer(events, { type, data: { sessionID } }).pipe(Effect.andThen(settle))
+    const emit = (type: string, sessionID: string) => PubSub.publish(events, { type, data: { sessionID } }).pipe(Effect.andThen(settle))
     /** The host publishes a catalog change, as it does once a reload is applied. */
     const publish = (type: "provider.updated" | "model.updated" | "agent.updated") =>
-      Queue.offer(events, { type, data: {} }).pipe(Effect.andThen(settle))
+      PubSub.publish(events, { type, data: {} }).pipe(Effect.andThen(settle))
     const now = TestClock.testClockWith((clock) => Effect.sync(() => clock.currentTimeMillisUnsafe()))
 
     /**
@@ -637,6 +650,74 @@ describe("the idle compaction plugin", () => {
         yield* plugin.until(15_000)
         expect(state.compactions).toEqual(["ses_1"])
       }),
+    ))
+})
+
+describe("one copy per location", () => {
+  /** The idle-compact lines at info for `sessionID`: what the owner reads in the log. */
+  const decisions = (sessionID: string) =>
+    logs
+      .filter((line) => line.level === "Info" && line.message.startsWith("idle-compact") && line.annotations["sessionID"] === sessionID)
+      .map((line) => [line.message, line.annotations["trigger"]])
+
+  test("six copies on one host, as the fork runs them: each idle session gets one decision, one compaction, from its own location's copy", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        // Already idle when the copies start: the resume looks at it.
+        state.session("ses_resumed", {
+          directory: "/a",
+          busy: 0,
+          idle: 10_000,
+          messages: [
+            { type: "assistant", created: 0, tokens: { input: 1_000, cache: { read: 90_000, write: 0 } }, model: { providerID: "anthropic", id: "claude-x" }, agent: "build" },
+          ],
+        })
+        const bus = yield* PubSub.unbounded<HostEvent>()
+        const work = yield* start(state, {}, { directory: "/work", bus })
+        for (const directory of ["/a", "/b", "/c", "/d", "/e"]) yield* start(state, {}, { directory, bus })
+        // A turn in /work: its hooks reach /work's copy, its events every copy.
+        yield* work.turn("ses_1")
+        yield* work.until(4 * MINUTE)
+        expect(state.compactions.toSorted()).toEqual(["ses_1", "ses_resumed"])
+        expect(decisions("ses_1")).toEqual([
+          ["idle-compact: compaction scheduled", "settled"],
+          ["idle-compact: compacting the idle session before its cache expires", "timer"],
+        ])
+        expect(decisions("ses_resumed")).toEqual([
+          ["idle-compact: compaction scheduled", "resume"],
+          ["idle-compact: compacting the idle session before its cache expires", "timer"],
+        ])
+        // Settling again before the host runs it: still the one copy, and the cache is not asked twice.
+        yield* work.emit("session.execution.succeeded", "ses_1")
+        yield* work.until(HOUR)
+        expect(state.compactions.toSorted()).toEqual(["ses_1", "ses_resumed"])
+        expect(decisions("ses_1").at(-1)).toEqual(["idle-compact: not compacting", "settled"])
+        expect(decisions("ses_1")).toHaveLength(3)
+      }),
+    ))
+
+  test("a session of a location with no copy is no copy's to decide", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        state.session("ses_far", { directory: "/far" })
+        const bus = yield* PubSub.unbounded<HostEvent>()
+        const work = yield* start(state, {}, { directory: "/work", bus })
+        // Its events reach the copy; its hooks would go to /far's copy, which the host has not loaded.
+        yield* work.emit("session.execution.started", "ses_far")
+        state.sessions.get("ses_far")?.messages.push({
+          type: "assistant",
+          created: yield* work.now,
+          tokens: { input: 1_000, cache: { read: 90_000, write: 2_000 } },
+          model: { providerID: "anthropic", id: "claude-x" },
+          agent: "build",
+        })
+        yield* work.emit("session.execution.succeeded", "ses_far")
+        yield* work.until(HOUR)
+        expect(state.compactions).toEqual([])
+        expect(logs.filter((line) => line.annotations["sessionID"] === "ses_far")).toEqual([])
+      }).pipe(Effect.provideService(References.MinimumLogLevel, "Debug")),
     ))
 })
 

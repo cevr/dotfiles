@@ -10,10 +10,19 @@ const host = (world: World, compacted: Array<string>): Host => {
   const view = (id: string): SessionView | undefined => {
     const session = world.sessions[id]
     if (session === undefined) return undefined
-    return { id, parentID: session.parentID, title: session.title, directory: "/work", busy: 2, idle: session.running ? 1 : 3 }
+    return {
+      id,
+      parentID: session.parentID,
+      title: session.title,
+      directory: session.directory ?? "/work",
+      workspaceID: session.workspaceID,
+      busy: 2,
+      idle: session.running ? 1 : 3,
+    }
   }
   const missing = (id: string) => Effect.fail(new Error(`no session ${id}`))
   return {
+    location: world.location,
     session: (id) => {
       const found = view(id)
       return found === undefined ? missing(id) : Effect.succeed(found)

@@ -3,9 +3,9 @@
 // not compacted while its cache has time left, and is compacted through
 // OpenCode's own compaction once the cache is 5 s from expiring, and so is one
 // whose background shell outlives the cache, before the shell's notice wakes
-// it. The rule and
-// its timer are tested beside their code in mods/idle-compact and
-// cmd/idle-compact.
+// it. With other directories open, so the host runs a copy of the plugin for
+// each, the session is still compacted once. The rule and its timer are tested
+// beside their code in mods/idle-compact and cmd/idle-compact.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -21,7 +21,7 @@ const scratch = mkdtempSync(join(tmpdir(), "idle-compact-e2e-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** One run of real OpenCode in a scratch home; see tests/idle-compact/run.ts. */
-const run = async (name: string, options: { readonly background?: boolean } = {}): Promise<Result> => {
+const run = async (name: string, options: { readonly background?: boolean; readonly others?: number } = {}): Promise<Result> => {
   const base = join(scratch, name)
   const home = join(base, "home")
   mkdirSync(home, { recursive: true })
@@ -107,6 +107,29 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
     async () => {
       const [compaction] = compactions((await idle()).late)
       expect(compaction?.reason).toBe("manual")
+    },
+    120_000,
+  )
+
+  test(
+    "with copies of the plugin for other directories on the host, the idle session is compacted once, by its own directory's",
+    async () => {
+      const result = await run("copies", { others: 2 })
+      const turn = result.seen.find((item) => item.kind === "turn")
+      const summaries = result.seen.filter((item) => item.kind === "compaction")
+      expect(summaries).toHaveLength(1)
+      const due = (turn?.at ?? 0) + (TTL_SECONDS - MARGIN_SECONDS) * 1_000
+      expect(summaries[0]?.at).toBeGreaterThanOrEqual(due)
+      expect(summaries[0]?.at).toBeLessThan(due + 5_000)
+      expect(compactions(result.late)).toHaveLength(1)
+      // Three copies ran, and the idle window got one decision: one line scheduling it, one compacting it (the
+      // compaction's own end is decided after, as not compacting).
+      expect(result.log.filter((line) => line.message === "loading plugin")).toHaveLength(3)
+      const session = result.log.find((line) => line.message === "idle-compact: compaction scheduled")?.sessionID
+      expect(result.log.filter((line) => line.sessionID === session && line.message !== "idle-compact: not compacting").map((line) => [line.message, line.trigger])).toEqual([
+        ["idle-compact: compaction scheduled", "settled"],
+        ["idle-compact: compacting the idle session before its cache expires", "timer"],
+      ])
     },
     120_000,
   )

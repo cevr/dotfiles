@@ -26,6 +26,12 @@
 //
 // A cache compacts once: the start of the request that wrote it is kept, and
 // a second decision for it reads as already compacted.
+//
+// One copy decides: the host runs a copy of the plugin per location, and every
+// copy hears every session's events. Each decision first asks whether the
+// session is this copy's (`Sessions.serves`); one of another location is
+// dropped without a word, so a session's idle window gets one decision, one
+// line and at most one compaction, from the copy its hooks reach.
 import { Clock, Context, Effect, Fiber, Layer, Option, Scope } from "effect"
 import { billFor, Decision, due, type Facts, type Policy, type Reason, thresholdOf } from "./idle.ts"
 import { Sessions } from "./service.ts"
@@ -116,8 +122,28 @@ export const layer = (policy: Policy) =>
         }
       }
 
+      /** The session is not this copy's to decide, or not at all: its timer ends and it is forgotten. */
+      const drop = (sessionID: string) =>
+        Effect.suspend(() => {
+          const state = watches.get(sessionID)
+          watches.delete(sessionID)
+          return state === undefined ? Effect.void : cancel(state)
+        })
+
       const decide: (sessionID: string, trigger: Trigger) => Effect.Effect<void> = Effect.fn("IdleCompactor.decide")(
         function* (sessionID, trigger) {
+          // Another location's session is its own copy's to decide.
+          const served = yield* Effect.result(sessions.serves(sessionID))
+          // Every copy reads this: at debug, so the info log keeps one line per decision.
+          if (served._tag === "Failure")
+            return yield* cancel(watch(sessionID)).pipe(
+              Effect.andThen(
+                Effect.logDebug("idle-compact: not compacting").pipe(
+                  Effect.annotateLogs({ sessionID, trigger, reason: "unreadable", error: served.failure.message }),
+                ),
+              ),
+            )
+          if (!served.success) return yield* drop(sessionID)
           const state = watch(sessionID)
           const generation = state.generation
           const read = yield* Effect.result(sessions.facts(sessionID))
@@ -229,12 +255,7 @@ export const layer = (policy: Policy) =>
         woke: wake,
         background: (sessionID, jobs) => Effect.sync(() => void (watch(sessionID).jobs = jobs)),
         settled: (sessionID) => decide(sessionID, "settled"),
-        forget: (sessionID) =>
-          Effect.suspend(() => {
-            const state = watches.get(sessionID)
-            watches.delete(sessionID)
-            return state === undefined ? Effect.void : cancel(state)
-          }),
+        forget: drop,
         resume: (trigger) =>
           sessions.recent.pipe(
             Effect.flatMap((ids) => Effect.forEach(ids, (sessionID) => decide(sessionID, trigger), { discard: true })),
