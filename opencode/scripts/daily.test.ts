@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
-import { BUILTIN_BTW_OFF, CLAUDE_CACHE_TTL, launcher, mergeCli, mergeServer, orchestrateEntry, peersOf, pluginDir, poolEntry, roleModels } from "../scripts/daily.ts"
+import { BUILTIN_BTW_OFF, CLAUDE_CACHE_TTL, launcher, mergeCli, mergeServer, orchestrateEntry, peersOf, pluginDir, poolEntry, roleModels } from "./daily.ts"
 
 const MODS = "/repo/opencode/mods"
 const CMD = "/repo/opencode/cmd"

@@ -70,7 +70,7 @@ describe("a worker", () => {
     scenario(
       Effect.gen(function* () {
         const workers = yield* started()
-        const slow: Cell["call"] = (_name, input) => Effect.sleep("800 millis").pipe(Effect.as<Json>(input))
+        const slow: Cell["call"] = (_name, input) => Effect.sleep("500 millis").pipe(Effect.as<Json>(input))
         const result = yield* workers.evaluate(first, cell("await tools.slow({ n: 1 })", [{ id: "slow", description: "waits" }], slow))
         expect(result.ok).toBe(true)
         expect(result.display).toContain("n: 1")
