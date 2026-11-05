@@ -1,7 +1,7 @@
 // How a step that ended badly reads in the transcript: gent's session rows,
 // from the error and retry the host keeps on the assistant message.
 import { describe, expect, test } from "bun:test"
-import { ERROR_LINES, stepEndRow } from "../src/view"
+import { ERROR_LINES, stepEndRow } from "./step-end.ts"
 
 describe("a step's end row", () => {
   test("a step that ended well draws nothing", () => {

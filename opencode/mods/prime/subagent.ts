@@ -1,7 +1,9 @@
 // Moving between a session and its subagents, without rendering: which
 // session a subagent call opens, the order ←/→ walks, and the words that say
-// how to get around.
-import type { ToolPart } from "./view"
+// how to get around, and which subagents work now.
+import type { Family } from "@dotfiles/opencode-subagents/family"
+import { subagents } from "@dotfiles/opencode-subagents/subagent-row"
+import type { ToolPart } from "./session.ts"
 
 /** A session as navigation reads it: its id, its parent, its title, when it was made. */
 export type SessionNode = {
@@ -87,4 +89,21 @@ export function topTitle(
 ): { readonly parent?: string; readonly title: string } {
   const title = session?.title ?? ""
   return session?.parentID && parent?.title ? { parent: parent.title, title } : { title }
+}
+
+/**
+ * Which sessions of a family work now: the host runs them (`running`), or
+ * their subagent row runs or is blocked. A subagent that ended its turn to
+ * wait on its own background work is idle to the host, yet still working.
+ */
+export function working(family: Family, running: (id: string) => boolean): (id: string) => boolean {
+  const live = new Set(
+    subagents(family, family.root).flatMap((row) => (row.state === "running" || row.state === "blocked" ? [row.id] : [])),
+  )
+  return (id) => running(id) || live.has(id)
+}
+
+/** How many of `order` other than `current` work now: in a subagent its running siblings, in a session its running subagents. */
+export function othersWorking(order: ReadonlyArray<string>, current: string | undefined, works: (id: string) => boolean): number {
+  return order.filter((id) => id !== current && works(id)).length
 }

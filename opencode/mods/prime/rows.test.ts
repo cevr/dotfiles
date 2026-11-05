@@ -1,7 +1,8 @@
 // How many subagent rows the dock draws, and the line that counts the rest.
-// The rows themselves are tested in mods/subagents.
+// The rows themselves are tested in mods/subagents; whether the sidebar
+// shows them is the host's, tested in opencode/host.test.ts.
 import { describe, expect, test } from "bun:test"
-import { capped, moreLine, sidebarShown } from "../src/rows"
+import { capped, moreLine } from "./rows.ts"
 
 describe("the rows beneath the composer", () => {
   test("a list over the cap shows the first rows in order and counts the rest", () => {
@@ -15,13 +16,5 @@ describe("the rows beneath the composer", () => {
     expect(moreLine(3, false)).toBe("+3 more · ↓ to see all")
     expect(moreLine(3, true)).toBe("+3 more")
     expect(moreLine(0, false)).toBe("")
-  })
-
-  test("the rows step aside while the host shows the sidebar, and always show on a host that cannot say", () => {
-    const shown = new Set(["wide"])
-    const host = { sidebar: { visible: (sessionID: string) => shown.has(sessionID) } }
-    expect(sidebarShown(host, "wide")).toBe(true)
-    expect(sidebarShown(host, "narrow")).toBe(false)
-    expect(sidebarShown({}, "wide")).toBe(false)
   })
 })
