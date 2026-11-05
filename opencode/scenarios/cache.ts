@@ -3,6 +3,11 @@
 // costs $3 per million input tokens, $3.75 to write the cache and $0.30 to read
 // it, and its cache lives 2s; the shell call takes 4s, so the second request
 // writes back the 48k prefix the first one cached.
+// With CACHE_ROLE_TTL set the model's cache lives an hour and a fixture server
+// plugin gives the build agent its own CACHE_ROLE_TTL
+// (`request.settings.cacheTTL`, as cmd/orchestrate does for its roles; the
+// config's `agents` merges only a request's headers and body): the miss is an
+// expiry only by the agent's lifetime.
 // Run: OPENCODE_DEV=<opencode checkout> bunx opencode-drive run scenarios/cache.ts
 //
 // It writes, under SCENARIO_OUT: the finished turn with its miss row and the
@@ -19,6 +24,10 @@ const text = (frame: Frame) => frame.lines.map((l) => l.spans.map((s) => s.text)
 const ASK = "Run the slow check."
 const COMMAND = "sleep 4 && echo checked"
 const DONE = "The check passed."
+const ROLE_TTL = process.env.CACHE_ROLE_TTL
+const roleFixture = `export default {id: "fixture.role-ttl", async setup(ctx) {
+  await ctx.agent.transform((editor) => editor.update("build", (agent) => { agent.request.settings.cacheTTL = ${JSON.stringify(ROLE_TTL ?? "")} }));
+}}`
 
 // The first request writes its 48k prompt to the cache; the second, after the
 // cache expired, reads none of it and writes all 50k again.
@@ -45,7 +54,7 @@ export default OpenCodeDriver.use(
             "gpt-sim-model": {
               limit: { context: 262_144, output: 16_000 },
               cost: [{ input: 3, output: 15, cache: { read: 0.3, write: 3.75 } }],
-              settings: { cache: { ttl: "2s" } },
+              settings: { cache: { ttl: ROLE_TTL === undefined ? "2s" : "1h" } },
             },
           },
         },
@@ -59,7 +68,18 @@ export default OpenCodeDriver.use(
     },
     // Wide enough for the sidebar to show beside the transcript.
     tui: { viewport: { cols: 144, rows: 40 } },
-    project: { git: true, files: { ".opencode/themes/prime.json": readFileSync(`${process.cwd()}/themes/prime.json`, "utf8") } },
+    project: {
+      git: true,
+      files: {
+        ".opencode/themes/prime.json": readFileSync(`${process.cwd()}/themes/prime.json`, "utf8"),
+        ...(ROLE_TTL === undefined
+          ? {}
+          : {
+              ".opencode/plugins/fixture/package.json": JSON.stringify({ name: "fixture-role-ttl", type: "module", exports: { "./server": "./server.ts" } }),
+              ".opencode/plugins/fixture/server.ts": roleFixture,
+            }),
+      },
+    },
   },
   ({ ui, llm }) =>
     Effect.gen(function* () {

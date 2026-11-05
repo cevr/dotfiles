@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { catalog, descendants, hits, sessionCatalog, timeline, type Reads } from "./view.ts"
+import { agentTtls, catalog, descendants, hits, sessionAgentTtls, sessionCatalog, timeline, type Reads } from "./view.ts"
 
 /** An assistant message as the fork's TUI holds it (packages/schema/src/session-message.ts, `Assistant`, encoded). */
 const assistant = (id: string, at: number, extra: Record<string, unknown> = {}) => ({
@@ -28,6 +28,7 @@ describe("timeline", () => {
       tools: [{ name: "shell", at: 1_400, ms: 8_000 }],
       opener: { id: "start", kind: "other" },
       closes: false,
+      agent: "build",
     })
   })
 
@@ -56,6 +57,44 @@ describe("timeline", () => {
       "compaction",
     ])
   })
+
+  test("a completed compaction with its usage is its summary request, run as the agent before it, then the marker", () => {
+    const entries = timeline([
+      assistant("msg_a", 10, { agent: "worker", finish: "stop" }),
+      {
+        type: "compaction",
+        id: "msg_compact",
+        status: "completed",
+        reason: "auto",
+        summary: "…",
+        model: { providerID: "anthropic", id: "claude-sonnet-4-5" },
+        tokens: { input: 2_000, output: 500, reasoning: 0, cache: { read: 0, write: 50_000 } },
+        time: { created: 70 },
+      },
+    ])
+    expect(entries.slice(1)).toEqual([
+      {
+        type: "step",
+        id: "msg_compact",
+        model: "anthropic/claude-sonnet-4-5",
+        startedAt: 70,
+        endedAt: 70,
+        usage: { promptTokens: 52_000, cacheReadTokens: 0, cacheWriteTokens: 50_000 },
+        tools: [],
+        opener: { id: "start", kind: "other" },
+        closes: false,
+        agent: "worker",
+        compaction: true,
+      },
+      { type: "compaction" },
+    ])
+  })
+
+  test("a step names the login the pool sent it on, when the pool recorded one", () => {
+    const [first, second] = timeline([assistant("msg_a", 10), assistant("msg_b", 20)], new Map([["msg_b", "cred_2"]]))
+    expect(first !== undefined && "login" in first).toBe(false)
+    expect(second).toMatchObject({ id: "msg_b", login: "cred_2" })
+  })
 })
 
 describe("catalog", () => {
@@ -83,8 +122,28 @@ describe("catalog", () => {
       ],
     })
     expect(terms.get("simulation/gpt-sim-model")?.lifetimeMs).toBe(2_000)
-    expect(terms.get("ollama/local")).toEqual({ lifetimeMs: 600_000, rates: [] })
+    expect(terms.get("ollama/local")).toEqual({ lifetimeMs: 600_000, configured: true, rates: [] })
     expect(terms.has("undefined/broken")).toBe(false)
+  })
+
+  test("a lifetime is configured only when the model's or its provider's settings name one that parses", () => {
+    const terms = catalog(models, [{ id: "ollama", settings: { cache: { ttl: "soon" } } }])
+    expect(terms.get("anthropic/claude-sonnet-4-5")?.configured).toBeUndefined()
+    expect(terms.get("simulation/gpt-sim-model")?.configured).toBe(true)
+    expect(terms.get("ollama/local")?.configured).toBeUndefined()
+  })
+})
+
+describe("agentTtls", () => {
+  test("each agent's own cache lifetime by its id; an agent without one is absent", () => {
+    const ttls = agentTtls([
+      { id: "worker", request: { settings: { cacheTTL: "5m" } } },
+      { id: "build", request: { settings: {} } },
+      { id: "plan" },
+      { id: "odd", request: { settings: { cacheTTL: 300 } } },
+      { name: "broken" },
+    ])
+    expect([...ttls]).toEqual([["worker", "5m"]])
   })
 })
 
@@ -104,6 +163,7 @@ describe("the family reads", () => {
       message: { list: () => [] },
     },
     location: {
+      agent: { list: () => [{ id: "worker", request: { settings: { cacheTTL: "5m" } } }] },
       model: {
         list: (location) => {
           asked.push(location)
@@ -126,5 +186,9 @@ describe("the family reads", () => {
   test("the catalog of the session's own location", () => {
     expect([...sessionCatalog(reads, "ses_child").keys()]).toEqual(["anthropic/claude-sonnet-4-5"])
     expect(asked).toEqual([{ directory: "/repo" }])
+  })
+
+  test("the agents' lifetimes of the session's own location", () => {
+    expect(sessionAgentTtls(reads, "ses_child").get("worker")).toBe("5m")
   })
 })

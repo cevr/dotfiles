@@ -100,15 +100,22 @@ const listLogins = (state: AccountPoolState, command: ListLogins): Effect.Effect
 export const PlaceRequest = Schema.TaggedStruct("PlaceRequest", {
   sessionID: Schema.String,
   kind: RequestKind,
+  /** How long the request's cache lives when its agent keeps its own lifetime (ms); else the provider's. */
+  cacheLifeMs: Schema.optionalKey(Schema.Number),
 })
 export interface PlaceRequest extends Schema.Schema.Type<typeof PlaceRequest> {}
 
-/** The request goes out on `credentialID`; the session's run is pinned there from `at` (epoch ms). */
+/**
+ * The request goes out on `credentialID`; the session's run is pinned there
+ * from `at` (epoch ms), and its cache lives there for `cacheLifeMs` when its
+ * agent keeps its own lifetime, else for the provider's.
+ */
 export const RequestPlaced = Schema.TaggedStruct("RequestPlaced", {
   sessionID: Schema.String,
   kind: RequestKind,
   credentialID: Schema.String,
   at: Schema.Number,
+  cacheLifeMs: Schema.optionalKey(Schema.Number),
 })
 export interface RequestPlaced extends Schema.Schema.Type<typeof RequestPlaced> {}
 
@@ -139,7 +146,13 @@ const placeRequest = (
   const choice = pinned ?? rank(state, command.sessionID, now, rules)[0]
   if (choice === undefined) return Effect.fail(new NoAccount({ sessionID: command.sessionID, kind: command.kind }))
   return Effect.succeed([
-    RequestPlaced.make({ sessionID: command.sessionID, kind: command.kind, credentialID: choice, at: now }),
+    RequestPlaced.make({
+      sessionID: command.sessionID,
+      kind: command.kind,
+      credentialID: choice,
+      at: now,
+      ...(command.cacheLifeMs === undefined ? {} : { cacheLifeMs: command.cacheLifeMs }),
+    }),
   ])
 }
 
@@ -236,10 +249,13 @@ export const RecordStep = Schema.TaggedStruct("RecordStep", {
   sessionID: Schema.String,
   /** USD, as the host reported it; not a price when it is not a finite number at least 0. */
   cost: Schema.Number,
+  /** The assistant message the step wrote, as the host's event names it. */
+  messageID: Schema.optionalKey(Schema.String),
 })
 export interface RecordStep extends Schema.Schema.Type<typeof RecordStep> {}
 
-export const StepRecorded = Schema.TaggedStruct("StepRecorded", { step: Step })
+/** The step, and the lifetime of the session's cache it refreshed when its agent keeps its own (ms). */
+export const StepRecorded = Schema.TaggedStruct("StepRecorded", { step: Step, cacheLifeMs: Schema.optionalKey(Schema.Number) })
 export interface StepRecorded extends Schema.Schema.Type<typeof StepRecorded> {}
 
 export declare namespace RecordStep {
@@ -252,10 +268,16 @@ const recordStep = (
   command: RecordStep,
   now: number,
 ): Effect.Effect<ReadonlyArray<StepRecorded>> => {
-  const { sessionID, cost } = command
+  const { sessionID, cost, messageID } = command
   const credentialID = placedOn(state, sessionID, "primary") ?? state.runs[sessionID]?.credentialID
   if (credentialID === undefined || !Number.isFinite(cost) || cost < 0) return Effect.succeed([])
-  return Effect.succeed([StepRecorded.make({ step: { at: now, sessionID, credentialID, cost } })])
+  const lifeMs = state.recent[sessionID]?.lifeMs
+  return Effect.succeed([
+    StepRecorded.make({
+      step: { at: now, sessionID, credentialID, cost, ...(messageID === undefined ? {} : { messageID }) },
+      ...(lifeMs === undefined ? {} : { cacheLifeMs: lifeMs }),
+    }),
+  ])
 }
 
 // ── ReleaseRun ──
@@ -309,7 +331,7 @@ const pruneLedger = (
   const steps = state.steps.filter((step) => now - step.at >= WINDOW_MS)
   const holds = Object.entries(state.holds).flatMap(([credentialID, hold]) => (hold.until > now ? [] : [credentialID]))
   const runs = Object.entries(state.runs).flatMap(([sessionID, mark]) => (now - mark.at >= PIN_IDLE_MS ? [sessionID] : []))
-  const caches = Object.entries(state.recent).flatMap(([sessionID, mark]) => (cacheLives(rules, mark.at, now) ? [] : [sessionID]))
+  const caches = Object.entries(state.recent).flatMap(([sessionID, mark]) => (cacheLives(rules, mark, now) ? [] : [sessionID]))
   if (steps.length + holds.length + runs.length + caches.length === 0) return Effect.succeed([])
   return Effect.succeed([LedgerPruned.make({ steps, holds, runs, caches })])
 }
@@ -324,6 +346,9 @@ const without = <A>(record: Readonly<Record<string, A>>, keys: ReadonlyArray<str
   const drop = new Set(keys)
   return Object.fromEntries(Object.entries(record).filter(([key]) => !drop.has(key)))
 }
+
+/** A cache's mark, with its agent's own lifetime when it has one. */
+export const cacheMark = (mark: Mark, lifeMs: number | undefined): Mark => (lifeMs === undefined ? mark : { ...mark, lifeMs })
 
 /** The pool's aggregate under `rules`: how long a session's cache lives decides where its next run goes. */
 export const AccountPool = (rules: Rules): Decider<AccountPoolState, Command, Event, Rejection> => ({
@@ -355,7 +380,7 @@ export const AccountPool = (rules: Rules): Decider<AccountPoolState, Command, Ev
         return {
           ...state,
           runs: { ...state.runs, [event.sessionID]: mark },
-          recent: { ...state.recent, [event.sessionID]: mark },
+          recent: { ...state.recent, [event.sessionID]: cacheMark(mark, event.cacheLifeMs) },
           placed: { ...state.placed, [placedKey(event.sessionID, event.kind)]: event.credentialID },
         }
       }
@@ -371,7 +396,10 @@ export const AccountPool = (rules: Rules): Decider<AccountPoolState, Command, Ev
         return {
           ...state,
           steps: [...state.steps, event.step],
-          recent: { ...state.recent, [event.step.sessionID]: { credentialID: event.step.credentialID, at: event.step.at } },
+          recent: {
+            ...state.recent,
+            [event.step.sessionID]: cacheMark({ credentialID: event.step.credentialID, at: event.step.at }, event.cacheLifeMs),
+          },
         }
       case "RunReleased":
         return { ...state, runs: without(state.runs, [event.sessionID]) }

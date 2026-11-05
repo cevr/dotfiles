@@ -24,7 +24,17 @@ import { held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, t
 import { poolPace, UNPOOLED, type Pace } from "./pace.ts"
 import type { QuotaReading } from "./quota.ts"
 import { Ledger, Logins, Quota, type LoginsUnavailable } from "./service.ts"
-import type { Alerts, LostLogin, PoolsStatus, RefreshOutage, SessionAnswer, SessionQuery } from "./status.ts"
+import type {
+  Alerts,
+  LoginsQuery,
+  LostLogin,
+  PoolsStatus,
+  RefreshOutage,
+  SessionAnswer,
+  SessionLogins,
+  SessionQuery,
+  StepLogin,
+} from "./status.ts"
 import { OUTAGE_AFTER_MS, outage } from "./alerts.ts"
 
 /** The pool's settings, from the plugin's options: its rules (the cache life) and the providers it pools. */
@@ -46,6 +56,8 @@ export class Pool extends Context.Service<
       readonly providerID: string
       readonly sessionID: string
       readonly kind: RequestKind
+      /** How long the request's cache lives when its agent keeps its own lifetime (ms); else the provider's. */
+      readonly cacheLifeMs?: number
     }) => Effect.Effect<string | undefined>
     /** A response came back. A refusal (401 or 429) holds the login it went out on. */
     readonly responded: (input: {
@@ -58,8 +70,8 @@ export class Pool extends Context.Service<
     readonly retry: (input: { readonly providerID: string; readonly sessionID: string }) => Effect.Effect<boolean>
     /** A session went idle: its run ends in every pool. */
     readonly release: (sessionID: string) => Effect.Effect<void>
-    /** A step of a session ended with its price, in USD as the host reported it. */
-    readonly stepEnded: (sessionID: string, cost: number) => Effect.Effect<void>
+    /** A step of a session ended with its price, in USD as the host reported it, writing the assistant message `messageID`. */
+    readonly stepEnded: (sessionID: string, cost: number, messageID?: string) => Effect.Effect<void>
     /** Take in the readings each pool's auth plugin publishes, as they come, until interrupted. */
     readonly follow: Effect.Effect<void>
     /** Read every login's usage, and forget what has expired. */
@@ -72,6 +84,8 @@ export class Pool extends Context.Service<
     readonly session: (query: SessionQuery) => Effect.Effect<SessionAnswer>
     /** Every pool's logins that need a sign-in again, and its outside stores whose refreshes are out. */
     readonly alerts: Effect.Effect<Alerts>
+    /** The login each recorded step of a session went out on, oldest first. */
+    readonly logins: (query: LoginsQuery) => Effect.Effect<SessionLogins>
   }
 >()("dotfiles-opencode/pool/Pool") {}
 
@@ -137,11 +151,17 @@ export const layer = (config: Config) =>
         readonly providerID: string
         readonly sessionID: string
         readonly kind: RequestKind
+        readonly cacheLifeMs?: number
       }) {
         const where = pooled(input.providerID)
         if (where === undefined) return undefined
         yield* refresh(where, false).pipe(Effect.ignore)
-        const events = yield* send(where.pool, where.id, PlaceRequest.make({ sessionID: input.sessionID, kind: input.kind })).pipe(
+        const command = PlaceRequest.make({
+          sessionID: input.sessionID,
+          kind: input.kind,
+          ...(input.cacheLifeMs === undefined ? {} : { cacheLifeMs: input.cacheLifeMs }),
+        })
+        const events = yield* send(where.pool, where.id, command).pipe(
           Effect.catchTag("NoAccount", () => Effect.succeed([])),
         )
         return events.flatMap((event) => (event._tag === "RequestPlaced" ? [event.credentialID] : []))[0]
@@ -189,11 +209,22 @@ export const layer = (config: Config) =>
         return latest === undefined || latest.at < 0 ? undefined : latest.where
       })
 
-      const stepEnded = Effect.fn("Pool.stepEnded")(function* (sessionID: string, cost: number) {
+      const stepEnded = Effect.fn("Pool.stepEnded")(function* (sessionID: string, cost: number, messageID?: string) {
         // The step's event names no model: it belongs to the pool that placed the session's newest request.
         const where = yield* newest(sessionID)
         if (where === undefined) return
-        yield* apply(where.pool, where.id, RecordStep.make({ sessionID, cost }))
+        yield* apply(where.pool, where.id, RecordStep.make({ sessionID, cost, ...(messageID === undefined ? {} : { messageID }) }))
+      })
+
+      const sessionLogins = Effect.fn("Pool.logins")(function* (query: LoginsQuery) {
+        const steps: Array<StepLogin & { readonly at: number }> = []
+        for (const { id, pool } of every)
+          for (const step of (yield* SynchronizedRef.get(pool)).steps)
+            if (step.sessionID === query.sessionID && step.messageID !== undefined)
+              steps.push({ pool: id, messageID: step.messageID, credentialID: step.credentialID, at: step.at })
+        return {
+          steps: steps.sort((left, right) => left.at - right.at).map(({ at: _at, ...step }) => step),
+        } satisfies SessionLogins
       })
 
       const session = Effect.fn("Pool.session")(function* (query: SessionQuery) {
@@ -255,6 +286,6 @@ export const layer = (config: Config) =>
         return { lost, outages }
       }).pipe(Effect.withSpan("Pool.alerts"))
 
-      return { place, responded, retry, release, stepEnded, follow, sweep, pace, status: poolsStatus, session, alerts }
+      return { place, responded, retry, release, stepEnded, follow, sweep, pace, status: poolsStatus, session, alerts, logins: sessionLogins }
     }),
   )

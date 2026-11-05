@@ -2,11 +2,13 @@
 // step and session cache under the pool's integration id:
 // `<pool>/hold/<credentialID>`, `<pool>/reading/<credentialID>`,
 // `<pool>/step/<at, 15 digits>/<sessionID>` and `<pool>/cache/<sessionID>`
-// (where the session last sent a request, and when). A previous process wrote
+// (where the session last sent a request, and when, with its agent's own cache
+// lifetime when it has one). A step names the assistant message it wrote,
+// once the host names it. A previous process wrote
 // the same keys, so the format stays as it is; a ledger from before caches
 // were kept has no cache key and restores none.
 import { Effect, Layer, Option, Schema } from "effect"
-import type { Event, LedgerState, PoolId } from "../account-pool.ts"
+import { cacheMark, type Event, type LedgerState, type PoolId } from "../account-pool.ts"
 import { Mark, Step } from "../accounts.ts"
 import { QuotaReading } from "../quota.ts"
 import { Ledger } from "../service.ts"
@@ -47,11 +49,11 @@ const writesOf = (event: Event): ReadonlyArray<Write> => {
     case "RequestRefused":
       return [put(holdKey(event.credentialID), event.hold)]
     case "RequestPlaced":
-      return [put(cacheKey(event.sessionID), { credentialID: event.credentialID, at: event.at })]
+      return [put(cacheKey(event.sessionID), cacheMark({ credentialID: event.credentialID, at: event.at }, event.cacheLifeMs))]
     case "StepRecorded":
       return [
         put(stepKey(event.step), event.step),
-        put(cacheKey(event.step.sessionID), { credentialID: event.step.credentialID, at: event.step.at }),
+        put(cacheKey(event.step.sessionID), cacheMark({ credentialID: event.step.credentialID, at: event.step.at }, event.cacheLifeMs)),
       ]
     case "LedgerPruned":
       return [

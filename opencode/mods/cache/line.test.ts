@@ -24,6 +24,9 @@ describe("missText", () => {
       [
         [{ _tag: "ModelSwitch" }, "cache miss · 48k tokens · $0.31 · after a model switch"],
         [{ _tag: "PrefixChanged" }, "cache miss · 48k tokens · $0.31 · prefix changed inside the cache lifetime"],
+        [{ _tag: "Compaction", request: false }, "cache miss · 48k tokens · $0.31 · a compaction rewrote the prefix"],
+        [{ _tag: "Compaction", request: true }, "cache miss · 48k tokens · $0.31 · the compaction request missed the cached prefix"],
+        [{ _tag: "LoginMoved" }, "cache miss · 48k tokens · $0.31 · the pool moved it to another login"],
         [{ _tag: "Response", ms: 360_000 }, "cache miss · 48k tokens · $0.31 · expired during a 6m response"],
         [{ _tag: "Tool", toolName: "shell", ms: 360_000 }, "cache miss · 48k tokens · $0.31 · expired during a 6m shell call"],
         [{ _tag: "Approval", ms: 420_000 }, "cache miss · 48k tokens · $0.31 · expired waiting 7m for approval"],

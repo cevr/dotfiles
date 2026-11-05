@@ -12,7 +12,9 @@
  * the readings it publishes, and a sweep of the usage endpoint every few
  * minutes. Other mods read the pool over its own RPC
  * (`@dotfiles/opencode-pool/status`): `pace`, `status`, `session`, the
- * account one session is on, named by its login's label, and `alerts`.
+ * account one session is on, named by its login's label, `alerts`, and
+ * `logins`, the login each of a session's recorded steps went out on (by its
+ * assistant message), which the cache mod reads to name a step the pool moved.
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `providers`: provider id to integration id, default `{ anthropic: "anthropic" }`.
@@ -21,7 +23,9 @@
  *   used, in ms: the provider's cache lifetime (`settings.cache.ttl`). While it
  *   lives the session stays on that login unless the login is held or out of
  *   room. Default 5 minutes, Anthropic's default; `bun run daily` sets it from
- *   the lifetime it gives Claude.
+ *   the lifetime it gives Claude. A request whose agent sets its own lifetime
+ *   (`request.settings.cacheTTL`, read through `ctx.agent.get`) keeps the
+ *   session there for that lifetime instead.
  * - `sources`: other stores whose logins join a pool beside OpenCode's own, read
  *   in place, never copied. Default none. `[{ kind: "gent", dir: "~/.local/share/opencode-prime/pool-auth" }]`
  *   adds the Claude accounts gent signed in to (`@dotfiles/opencode-pool/gent/store`) to the
@@ -40,10 +44,10 @@
  * endpoint's last status, `server` and `retry-after`. The status mod's TUI
  * shows them in the sidebar and as a toast.
  */
-import { Integration, Plugin } from "@opencode/plugin/effect"
+import { Agent, Integration, Plugin } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
-import { CACHE_LIFE_MS } from "@dotfiles/opencode-pool/accounts"
+import { CACHE_LIFE_MS, ttlMs } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
 import { GentSource, registerCredentialSource } from "@dotfiles/opencode-pool/gent/store"
 import * as Model from "@dotfiles/opencode-pool/model"
@@ -52,7 +56,7 @@ import * as LoginsLive from "@dotfiles/opencode-pool/opencode/logins"
 import * as QuotaLive from "@dotfiles/opencode-pool/opencode/quota"
 import { quotaProtocol } from "@dotfiles/opencode-pool/quota"
 import type { Ledger, Logins, Quota } from "@dotfiles/opencode-pool/service"
-import { POOL_STATUS, SessionQuery } from "@dotfiles/opencode-pool/status"
+import { LoginsQuery, POOL_STATUS, SessionQuery } from "@dotfiles/opencode-pool/status"
 
 export { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 
@@ -175,8 +179,25 @@ export const make = (
             })
         })
 
+      // An agent that keeps its own cache lifetime (an orchestration role's 5 minutes, set as its
+      // `request.settings.cacheTTL`) holds its session on a login only that long. An agent the
+      // host cannot name keeps the provider's lifetime.
+      const agentCacheLife = (agentID: string) =>
+        ctx.agent.get({ agentID: Agent.ID.make(agentID) }).pipe(
+          Effect.map((agent) => ttlMs(agent.data.request.settings?.["cacheTTL"])),
+          Effect.orElseSucceed(() => undefined),
+        )
+
       yield* ctx.session.hook("model.request", (event) =>
-        pool.place({ providerID: event.model.providerID, sessionID: event.sessionID, kind: event.kind }).pipe(
+        agentCacheLife(event.agent).pipe(
+          Effect.flatMap((cacheLifeMs) =>
+            pool.place({
+              providerID: event.model.providerID,
+              sessionID: event.sessionID,
+              kind: event.kind,
+              ...(cacheLifeMs === undefined ? {} : { cacheLifeMs }),
+            }),
+          ),
           Effect.map((credentialID) => {
             if (credentialID !== undefined) event.headers[CREDENTIAL_HEADER] = credentialID
           }),
@@ -206,7 +227,9 @@ export const make = (
       yield* Effect.forkScoped(
         ctx.event.subscribe({ types: ["session.step.ended", "session.idle"] }).pipe(
           Stream.runForEach((event) =>
-            event.type === "session.idle" ? pool.release(event.data.sessionID) : pool.stepEnded(event.data.sessionID, Number(event.data.cost)),
+            event.type === "session.idle"
+              ? pool.release(event.data.sessionID)
+              : pool.stepEnded(event.data.sessionID, Number(event.data.cost), event.data.assistantMessageID),
           ),
           Effect.ignoreCause,
         ),
@@ -230,12 +253,15 @@ export const make = (
           session: (input) =>
             Option.match(decodeSessionQuery(input), { onNone: () => Effect.succeed({}), onSome: pool.session }),
           alerts: () => pool.alerts,
+          // A malformed question names no session: it has no steps.
+          logins: (input) => Option.match(decodeLoginsQuery(input), { onNone: () => Effect.succeed({ steps: [] }), onSome: pool.logins }),
         })
         .pipe(Effect.orDie)
     }),
   })
 
 const decodeSessionQuery = Schema.decodeUnknownOption(SessionQuery)
+const decodeLoginsQuery = Schema.decodeUnknownOption(LoginsQuery)
 
 const providerOf = (input: unknown) =>
   typeof input === "object" && input !== null && "providerID" in input ? String(input.providerID) : ""
