@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { agentLine, board, line, LINGER_MS, roleWidth, type Subagent, when } from "./board.ts"
+import { board, line, LINGER_MS, type Live, when } from "./board.ts"
 import type { Item } from "./item.ts"
 
 // Local times, so the expectations hold in any time zone.
@@ -29,7 +29,7 @@ describe("board", () => {
         item("you", "needs-you"),
         item("n2", "next"),
       ],
-      [],
+      new Map(),
       NOW,
     )
     expect(rows.map((row) => row.key)).toEqual(["you", "r", "w", "soon", "late", "n1", "n2", "d"])
@@ -39,19 +39,19 @@ describe("board", () => {
 
   test("a done item lingers, then drops off the board", () => {
     const done = [item("d", "done", { doneAt: NOW })]
-    expect(board(done, [], NOW + LINGER_MS - 1).map((row) => row.key)).toEqual(["d"])
-    expect(board(done, [], NOW + LINGER_MS)).toEqual([])
-    expect(board(done, [], NOW + 60_000, 30_000)).toEqual([])
+    expect(board(done, new Map(), NOW + LINGER_MS - 1).map((row) => row.key)).toEqual(["d"])
+    expect(board(done, new Map(), NOW + LINGER_MS)).toEqual([])
+    expect(board(done, new Map(), NOW + 60_000, 30_000)).toEqual([])
   })
 
   test("an item linked to a subagent shows its live state, not the item's", () => {
-    const subagents: ReadonlyArray<Subagent> = [
-      { session: "ses_run", description: "Fix money parsing", live: { state: "running" } },
-      { session: "ses_ask", description: "Ask", live: { state: "blocked" } },
-      { session: "ses_ok", description: "Ok", live: { state: "done", since: NOW - 1000 } },
-      { session: "ses_old", description: "Old", live: { state: "done", since: NOW - LINGER_MS } },
-      { session: "ses_bad", description: "Bad", live: { state: "failed", since: NOW - 10 * LINGER_MS } },
-    ]
+    const live = new Map<string, Live>([
+      ["ses_run", { state: "running" }],
+      ["ses_ask", { state: "blocked" }],
+      ["ses_ok", { state: "done", since: NOW - 1000 }],
+      ["ses_old", { state: "done", since: NOW - LINGER_MS }],
+      ["ses_bad", { state: "failed", since: NOW - 10 * LINGER_MS }],
+    ])
     const rows = board(
       [
         item("run", "next", { session: "ses_run" }),
@@ -61,7 +61,7 @@ describe("board", () => {
         item("bad", "running", { session: "ses_bad" }),
         item("unseen", "waiting", { session: "ses_elsewhere" }),
       ],
-      subagents,
+      live,
       NOW,
     )
     expect(rows.map((row) => [row.key, row.group, row.mark])).toEqual([
@@ -73,23 +73,18 @@ describe("board", () => {
     ])
   })
 
-  test("running and blocked subagents no item names join the board under their description", () => {
+  test("the board is the queue's items only: a subagent no item names draws no row, and a linked row is one line", () => {
     const rows = board(
-      [item("mine", "running", { session: "ses_a" })],
-      [
-        { session: "ses_a", description: "Named", live: { state: "running" } },
-        { session: "ses_b", description: "Forgotten worker", live: { state: "running" } },
-        { session: "ses_c", description: "Waiting on a permission", live: { state: "blocked" } },
-        { session: "ses_d", description: "Finished", live: { state: "done" } },
-        { session: "ses_e", description: "Failed", live: { state: "failed" } },
-      ],
+      [item("mine", "next", { session: "ses_a" })],
+      new Map<string, Live>([
+        ["ses_a", { state: "running" }],
+        ["ses_b", { state: "running" }],
+        ["ses_c", { state: "blocked" }],
+      ]),
       NOW,
     )
-    expect(rows).toEqual([
-      { key: "session:ses_c", group: "needs-you", mark: "blocked", text: "Waiting on a permission" },
-      { key: "mine", group: "running", mark: "running", text: "mine" },
-      { key: "session:ses_b", group: "running", mark: "running", text: "Forgotten worker" },
-    ])
+    expect(rows).toEqual([{ key: "mine", group: "running", mark: "running", text: "mine" }])
+    expect(board([], new Map<string, Live>([["ses_b", { state: "running" }]]), NOW)).toEqual([])
   })
 })
 
@@ -101,34 +96,5 @@ describe("line", () => {
     expect(line({ key: "d", group: "running", mark: "running", text: "A very long description of the worker's task", detail: "pane 3" }, 20)).toBe(
       "● A very long descr…",
     )
-  })
-})
-
-describe("a subagent's role and update", () => {
-  test("a linked row and an unnamed running subagent carry the role, the update and the time", () => {
-    const rows = board(
-      [item("money", "next", { session: "ses_a", text: "Money parsing worker" })],
-      [
-        { session: "ses_a", description: "Fix money parsing", live: { state: "running" }, role: "implementor", update: "editing src/money.ts", elapsed: 65_000 },
-        { session: "ses_b", description: "Forgotten worker", live: { state: "running" }, role: "worker", update: "starting" },
-        { session: "ses_c", description: "No role known", live: { state: "running" } },
-      ],
-      NOW,
-    )
-    expect(rows.map((row) => row.agent)).toEqual([
-      { role: "implementor", update: "editing src/money.ts", elapsed: 65_000 },
-      { role: "worker", update: "starting" },
-      undefined,
-    ])
-    expect(roleWidth(rows)).toBe(11)
-  })
-
-  test("the second line pads the role to the board's widest and lets the update give way first", () => {
-    const agent = { role: "worker", update: "editing src/money.ts", elapsed: 65_000 }
-    expect(agentLine(agent, 37, 11)).toBe("  worker       editing src/… · 1m 05s")
-    expect(agentLine(agent, 37)).toBe("  worker  editing src/money… · 1m 05s")
-    expect(agentLine(agent, 60)).toBe("  worker  editing src/money.ts · 1m 05s")
-    expect(agentLine({ role: "implementor", update: "editing src/money.ts" }, 30)).toBe("  implementor  editing src/mo…")
-    expect(agentLine({ role: "implementor", update: "editing", elapsed: 1000 }, 18)).toBe("  implementor")
   })
 })

@@ -650,6 +650,53 @@
           }
         ]
       }
+    },
+    {
+      "files": [
+        "mods/prime/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!@dotfiles/opencode-subagents/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
+                "message": "The Prime domain fence: its domain files import effect, the subagent rows' domain (@dotfiles/opencode-subagents/*), the mod's own root files and bun:test only; never @opencode/*, @opentui/*, solid-js, node:*, bun or one of the mod's folders. (`*/**/effect` takes back what `!effect` lets through: any path ending in `effect`, such as @opencode/plugin/effect.)"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "mods/prime/tui/**"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "../opencode/**",
+                  "@opencode/**"
+                ],
+                "message": "The Prime UI fence: the components read the host through tui/host.ts and import the Prime domain, never OpenCode (@opencode/*) or its implementation of the contract (opencode/); cmd/prime/tui.tsx builds the Host."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }

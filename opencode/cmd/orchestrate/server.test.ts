@@ -33,6 +33,8 @@ type Hook = (event: Record<string, unknown>) => Effect.Effect<void, { readonly _
 interface World {
   readonly sessions?: Readonly<Record<string, Session>>
   readonly pool?: Readonly<Record<string, Pace>>
+  /** The providers the pool is told a new agent started on, in order. */
+  readonly started?: Array<string>
   readonly codex?: (model: string, role: string) => Pace | undefined
   readonly model?: { readonly providerID: string; readonly id: string }
   readonly variants?: ReadonlyArray<string>
@@ -81,7 +83,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       CallLogTest.layer(lines),
       SessionsTest.layer(world.sessions ?? {}),
       ModelsTest.layer(world.model, world.variants),
-      PoolPaceTest.layer(world.pool ?? {}),
+      PoolPaceTest.layer(world.pool ?? {}, world.started),
       CodexAdmissionTest.layer(world.codex ?? (() => undefined)),
       CompactionWindowsTest.layer(world.compactJson),
     )
@@ -282,6 +284,59 @@ describe("the pace", () => {
         expect(asked).toHaveLength(2)
       }),
     ))
+
+  test("with `codex.pool`, a Codex provider's agent takes the pool's pace when the pool measures the account, and the script is not asked", () =>
+    scenario(
+      Effect.gen(function* () {
+        const asked: Array<string> = []
+        const codex = (model: string, role: string): Pace => {
+          asked.push(`${model} ${role}`)
+          return { ok: true, measured: true, reason: "room" }
+        }
+        const reason = "the pool's weekly pace is over (80.0% spent across 1 accounts)"
+        const held = yield* start(
+          { now: WEDNESDAY, codex: { pool: true } },
+          { codex, pool: { openai: { ok: false, measured: true, reason, retryAt: now + 120_000 } } },
+        )
+        const refused = (yield* held.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5#high" })).refused
+        expect(refused?.message).toStartWith(`orchestrate: the Codex account's pace holds this agent. ${reason}. Run`)
+        expect(refused?.message).toContain(`--wait ${now + 120_000}\``)
+        // A pool that has no measure of it (no ChatGPT login read) leaves it to the script.
+        const unmeasured = yield* start({ now: WEDNESDAY, codex: { pool: true } }, { codex, pool: { openai: { ok: true, measured: false, reason: "no pooled account readings" } } })
+        expect((yield* unmeasured.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5" })).refused).toBeUndefined()
+        const open = yield* start({ now: WEDNESDAY, codex: { pool: true } }, { codex, pool: { openai: { ok: true, measured: true, reason: "within" } } })
+        expect((yield* open.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5" })).refused).toBeUndefined()
+        expect(asked).toEqual(["gpt-5 verifier"])
+        // Without `codex.pool` the script alone answers: the pool's hold is not asked.
+        const scripted = yield* start({ now: WEDNESDAY }, { codex, pool: { openai: { ok: false, measured: true, reason, retryAt: now + 120_000 } } })
+        expect((yield* scripted.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5" })).refused).toBeUndefined()
+        expect(asked).toEqual(["gpt-5 verifier", "gpt-5 verifier"])
+      }),
+    ))
+
+  test("each new agent that starts is told to the pool by its provider; a held one, a follow-up or a Sabbath refusal is not", () =>
+    scenario(
+      Effect.gen(function* () {
+        const started: Array<string> = []
+        const plugin = yield* start(
+          { now: WEDNESDAY },
+          {
+            started,
+            model: { providerID: "anthropic", id: "claude" },
+            sessions: { child: { parentID: "root", agent: "worker" } },
+            pool: { sim: { ok: false, measured: true, reason: "held", retryAt: now + 60_000 } },
+          },
+        )
+        expect((yield* plugin.call("subagent", "root", { agent: "explore" })).refused).toBeUndefined()
+        expect((yield* plugin.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5" })).refused).toBeUndefined()
+        expect((yield* plugin.call("subagent", "root", { agent: "explore", model: "sim/model" })).refused).toBeDefined()
+        expect((yield* plugin.call("subagent", "root", { sessionID: "child", prompt: "more" })).refused).toBeUndefined()
+        expect(started).toEqual(["anthropic", "openai"])
+        const friday = yield* start({ now: FRIDAY_EVENING }, { started })
+        yield* friday.call("subagent", "root", { agent: "explore" })
+        expect(started).toEqual(["anthropic", "openai"])
+      }),
+    ))
 })
 
 describe("the agents", () => {
@@ -363,6 +418,7 @@ describe("the options", () => {
       codex: { providers: ["openai", "sim"], script: CODEX_BUDGET },
     })
     expect(decode({ codex: false }).codex).toBe(false)
+    expect(decode({ codex: { pool: true } }).codex).toEqual({ ...defaults.codex, pool: true })
   })
 
   test("a malformed option stops the plugin at setup, naming the option", async () => {

@@ -1,8 +1,9 @@
 // The tray line above the composer: how many questions are open, the one
-// question's label and assumption (or every label), and the command that
-// answers them. Optional parts drop from the right as the width shrinks, and
+// question's label and assumption (or every label), and the hotkey and the
+// command that open the pane. Optional parts drop from the right as the width shrinks, and
 // a last one is cut to fit. Also which sessions' questions a session's tray
 // shows: its own and its subagents', at any depth.
+import { HOTKEY_LABEL } from "./hotkey.ts"
 import type { Question } from "./question.ts"
 
 export const GLYPH = "?"
@@ -33,11 +34,18 @@ export const fitParts = (head: string, optional: ReadonlyArray<string>, tail: st
   return join([truncate(first, room)])
 }
 
-/** The line after the glyph, in at most `max` columns. */
+/** The ways to open the pane, last on the line: the hotkey and the command. */
+export const OPENERS = `${HOTKEY_LABEL} ${COMMAND}`
+
+/** The line after the glyph, in at most `max` columns; the hotkey goes last, when even the count and both openers do not fit. */
 export const trayLine = (questions: ReadonlyArray<Question>, max: number): string => {
   const only = questions.length === 1 ? questions[0] : undefined
-  if (only !== undefined) return fitParts("1 open question", [labelOf(only), `assuming ${only.assume}`], COMMAND, max)
-  return fitParts(`${questions.length} open questions`, [questions.map(labelOf).join(", ")], COMMAND, max)
+  const fit = (tail: string) =>
+    only !== undefined
+      ? fitParts("1 open question", [labelOf(only), `assuming ${only.assume}`], tail, max)
+      : fitParts(`${questions.length} open questions`, [questions.map(labelOf).join(", ")], tail, max)
+  const line = fit(OPENERS)
+  return width(line) <= max ? line : fit(COMMAND)
 }
 
 /** A session as the tray reads its family. */

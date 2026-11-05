@@ -12,8 +12,11 @@ import {
   RunReleased,
   StepRecorded,
 } from "./account-pool.ts"
+import { fold } from "@dotfiles/decider/decider"
+import { type Event as FleetEvent, Fleet, PeerMissed, PeerReported, PollClaimed, StartRecorded, StartsExpired } from "./fleet.ts"
 import type { QuotaReading } from "./quota.ts"
-import { Ledger, Logins, Quota, type PublishedReading } from "./service.ts"
+import { FleetStore, Ledger, Logins, Peers, Quota, type PublishedReading } from "./service.ts"
+import type { Report } from "./status.ts"
 
 const pool = PoolId.make("law-pool")
 const other = PoolId.make("law-other")
@@ -272,4 +275,144 @@ export const quotaLaws = (name: string, layer: (world: QuotaWorld) => Layer.Laye
           ])
         }),
       ))
+  })
+
+// ── Peers ──
+
+/** Each peer, in the config's order: what it reports now, or that it cannot be read and why. */
+export type PeersWorld = ReadonlyArray<{ readonly name: string; readonly answer: Report | { readonly down: string } }>
+
+const peerReport = (host: string, at: number): Report => ({
+  host,
+  at,
+  starts: [{ providerID: "anthropic", at: at - 60_000 }],
+  readings: [{ pool: "anthropic", credentialID: "gent:alpha", reading: reading(at - 30_000, 0.4) }],
+})
+
+export const peersLaws = (name: string, layer: (world: PeersWorld) => Layer.Layer<Peers>) =>
+  describe(`${name} keeps the Peers laws`, () => {
+    const world: PeersWorld = [
+      { name: "workbox", answer: peerReport("bite-cristian", 1_800_000_000_000) },
+      { name: "laptop", answer: { down: "no route to host" } },
+      { name: "studio", answer: peerReport("studio.local", 1_800_000_100_000) },
+    ]
+
+    test("names the peers in the config's order", () =>
+      check(
+        layer(world),
+        Effect.gen(function* () {
+          expect((yield* Peers).names).toEqual(["workbox", "laptop", "studio"])
+        }),
+      ))
+
+    test("answers each peer's report as it gave it", () =>
+      check(
+        layer(world),
+        Effect.gen(function* () {
+          const peers = yield* Peers
+          expect(yield* peers.report("workbox")).toEqual(peerReport("bite-cristian", 1_800_000_000_000))
+          expect(yield* peers.report("studio")).toEqual(peerReport("studio.local", 1_800_000_100_000))
+        }),
+      ))
+
+    test("a peer that cannot be read, or one it does not list, fails as unreachable, naming the peer", () =>
+      check(
+        layer(world),
+        Effect.gen(function* () {
+          const peers = yield* Peers
+          const down = yield* Effect.flip(peers.report("laptop"))
+          expect(down._tag).toBe("PeerUnreachable")
+          expect(down.peer).toBe("laptop")
+          expect(down.message.length).toBeGreaterThan(0)
+          expect((yield* Effect.flip(peers.report("nowhere"))).peer).toBe("nowhere")
+        }),
+      ))
+  })
+
+// ── FleetStore ──
+
+/**
+ * `host` makes a fresh, empty host each time it is called; the function it
+ * answers makes one more plugin instance on that host, over the same storage.
+ */
+export const fleetStoreLaws = (name: string, host: () => () => Layer.Layer<FleetStore>) =>
+  describe(`${name} keeps the FleetStore laws`, () => {
+    const T0 = 1_800_000_000_000
+    const start = (at: number, providerID = "anthropic") => StartRecorded.make({ start: { providerID, at } })
+    /** Fold `events` into what `store` reads now, and record them there. */
+    const record = (store: FleetStore["Service"], events: ReadonlyArray<FleetEvent>) =>
+      Effect.gen(function* () {
+        const state = fold(Fleet, events, yield* store.read)
+        yield* store.record(events, state)
+        return state
+      })
+
+    test("a host never recorded reads an empty fleet", () =>
+      check(
+        host()(),
+        Effect.gen(function* () {
+          expect(yield* (yield* FleetStore).read).toEqual({ starts: [], peers: {} })
+        }),
+      ))
+
+    test("reads back the starts it recorded, oldest first, and each peer as it last recorded it", () =>
+      check(
+        host()(),
+        Effect.gen(function* () {
+          const store = yield* FleetStore
+          const report = peerReport("bite-cristian", T0)
+          yield* record(store, [start(T0 + 2_000, "openai"), start(T0 + 1_000), start(T0 + 1_000)])
+          yield* record(store, [PeerReported.make({ peer: "workbox", report, at: T0 }), PollClaimed.make({ peer: "workbox", at: T0 + 5 })])
+          yield* record(store, [PeerMissed.make({ peer: "laptop/2", at: T0, message: "no route to host" })])
+          expect(yield* store.read).toEqual({
+            starts: [
+              { providerID: "anthropic", at: T0 + 1_000 },
+              { providerID: "anthropic", at: T0 + 1_000 },
+              { providerID: "openai", at: T0 + 2_000 },
+            ],
+            peers: {
+              workbox: { report, seenAt: T0, polledAt: T0 + 5 },
+              "laptop/2": { missed: { since: T0, message: "no route to host" } },
+            },
+          })
+        }),
+      ))
+
+    test("every instance on the host reads the starts each one records, even recorded at once", () => {
+      const instance = host()
+      const first = instance()
+      const second = instance()
+      return Effect.runPromise(
+        Effect.gen(function* () {
+          const [one, two] = yield* Effect.all([FleetStore.pipe(Effect.provide(first)), FleetStore.pipe(Effect.provide(second))])
+          // Both read the same fleet, then both record: neither start is lost.
+          const before = yield* Effect.all([one.read, two.read])
+          yield* Effect.all(
+            [
+              one.record([start(T0)], fold(Fleet, [start(T0)], before[0])),
+              two.record([start(T0, "openai")], fold(Fleet, [start(T0, "openai")], before[1])),
+            ],
+            { concurrency: "unbounded" },
+          )
+          for (const store of [one, two])
+            expect([...(yield* store.read).starts].sort((left, right) => left.providerID.localeCompare(right.providerID))).toEqual([
+              { providerID: "anthropic", at: T0 },
+              { providerID: "openai", at: T0 },
+            ])
+        }),
+      )
+    })
+
+    test("the starts that expired are gone for every instance, the later ones kept", () => {
+      const instance = host()
+      return Effect.runPromise(
+        Effect.gen(function* () {
+          const one = yield* FleetStore.pipe(Effect.provide(instance()))
+          const two = yield* FleetStore.pipe(Effect.provide(instance()))
+          yield* record(one, [start(T0), start(T0 + 1), start(T0 + 2)])
+          yield* record(two, [StartsExpired.make({ before: T0 + 1 })])
+          expect((yield* one.read).starts).toEqual([{ providerID: "anthropic", at: T0 + 2 }])
+        }),
+      )
+    })
   })

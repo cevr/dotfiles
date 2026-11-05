@@ -177,6 +177,16 @@ export const poolPaceLaws = (name: string, layer: (world: PoolPaceWorld) => Laye
           expect(yield* (yield* PoolPace).pace("google")).toBeUndefined()
         }),
       ))
+
+    test("telling it of a new agent never fails, for a provider it has no answer for too", () =>
+      check(
+        layer({ anthropic: held }),
+        Effect.gen(function* () {
+          const pool = yield* PoolPace
+          yield* pool.started("anthropic")
+          yield* pool.started("google")
+        }),
+      ))
   })
 
 // ── CodexAdmission ──

@@ -34,13 +34,18 @@ export function Pane(props: {
   const [now, setNow] = createSignal(Date.now())
   let input: InputRenderable | undefined
 
+  // Which question shows, by its session and id. Every reading (each tick and
+  // `changed` event) hands the pane new question objects; this memo's value is
+  // a string, so it changes only when another question takes the top, and the
+  // cursor, the typed text and the arm hold across readings of the same one.
+  const shown = createMemo(() => {
+    const current = question()
+    return current === undefined ? "" : `${current.sessionID}/${current.id}`
+  })
   // A new question starts on its assumption, with nothing typed and nothing armed.
   createEffect(
     on(
-      () => {
-        const current = question()
-        return current === undefined ? "" : `${current.sessionID}/${current.id}`
-      },
+      shown,
       () => {
         setCursor(choices().assumed)
         setTyped("")

@@ -2,9 +2,12 @@
 // new agent starts, the status pane draws `status`, and the status sidebar
 // draws `session`, the account one session is on, and `alerts`, the logins
 // that need a sign-in and a token endpoint that keeps failing; the cache mod
-// reads `logins`, the login each of a session's steps went out on. The definition is the
-// wire contract, kept byte for byte; the schemas below are the shapes its
-// methods answer with. No answer carries a secret.
+// reads `logins`, the login each of a session's steps went out on. Orchestrate
+// tells it each new agent it `started`; the pool on another host of ours reads
+// `report`, this host's recent starts and readings, and the status pane draws
+// `fleet`, the peers it reads. The definition is the wire contract, kept byte
+// for byte; the schemas below are the shapes its methods answer with. No
+// answer carries a secret.
 import { Schema } from "effect"
 import { QuotaReading, RefusalKind } from "./quota.ts"
 
@@ -27,6 +30,9 @@ export const POOL_STATUS = {
       input: { type: "object", properties: { sessionID: { type: "string" } }, required: ["sessionID"] },
       output: { type: "object" },
     },
+    started: { input: { type: "object", properties: { providerID: { type: "string" } }, required: ["providerID"] }, output: { type: "object" } },
+    report: { input: { type: "object" }, output: { type: "object" } },
+    fleet: { input: { type: "object" }, output: { type: "object" } },
   },
   events: {},
 } as const
@@ -168,3 +174,51 @@ export type StepLogin = typeof StepLogin.Type
  */
 export const SessionLogins = Schema.Struct({ steps: Schema.Array(StepLogin) })
 export type SessionLogins = typeof SessionLogins.Type
+
+/** The started method's question: a new agent was admitted on `providerID`. */
+export const StartedQuery = Schema.Struct({ providerID: Schema.String })
+export type StartedQuery = typeof StartedQuery.Type
+
+/** A new agent admitted on `providerID` at `at` (epoch ms). */
+export const Start = Schema.Struct({ providerID: Schema.String, at: Schema.Number })
+export type Start = typeof Start.Type
+
+/** A reading of one login of the pool `pool`, as the host that took it holds it. */
+export const SharedReading = Schema.Struct({ pool: Schema.String, credentialID: Schema.String, reading: QuotaReading })
+export type SharedReading = typeof SharedReading.Type
+
+/**
+ * The report method's answer, what a peer host reads of this one: the agents
+ * it admitted in the last few minutes (their spend may not show in a reading
+ * yet) and its newest readings, at `at` on `host`. Never a token.
+ */
+export const Report = Schema.Struct({
+  host: Schema.String,
+  at: Schema.Number,
+  starts: Schema.Array(Start),
+  readings: Schema.Array(SharedReading),
+})
+export type Report = typeof Report.Type
+
+/**
+ * One peer host as the fleet method reports it: the host its last report came
+ * from and when, the agents it admitted that still count, and, while it cannot
+ * be read, since when and why.
+ */
+export const PeerStatus = Schema.Struct({
+  name: Schema.String,
+  host: Schema.optionalKey(Schema.String),
+  seenAt: Schema.optionalKey(Schema.Number),
+  starts: Schema.Number,
+  missed: Schema.optionalKey(Schema.Struct({ since: Schema.Number, message: Schema.String })),
+})
+export type PeerStatus = typeof PeerStatus.Type
+
+/** The fleet method's answer: this host, its own starts that still count, and each peer. */
+export const FleetStatus = Schema.Struct({
+  host: Schema.String,
+  starts: Schema.Number,
+  settleMinutes: Schema.Number,
+  peers: Schema.Array(PeerStatus),
+})
+export type FleetStatus = typeof FleetStatus.Type

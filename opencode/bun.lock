@@ -99,6 +99,13 @@
         "@dotfiles/opencode-pool": "workspace:*",
       },
     },
+    "cmd/prime": {
+      "name": "@dotfiles/opencode-cmd-prime",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-prime": "workspace:*",
+      },
+    },
     "cmd/questions": {
       "name": "@dotfiles/opencode-cmd-questions",
       "version": "0.0.0",
@@ -271,6 +278,8 @@
     "@dotfiles/opencode-cmd-orchestrate": ["@dotfiles/opencode-cmd-orchestrate@workspace:cmd/orchestrate"],
 
     "@dotfiles/opencode-cmd-pool": ["@dotfiles/opencode-cmd-pool@workspace:cmd/pool"],
+
+    "@dotfiles/opencode-cmd-prime": ["@dotfiles/opencode-cmd-prime@workspace:cmd/prime"],
 
     "@dotfiles/opencode-cmd-questions": ["@dotfiles/opencode-cmd-questions@workspace:cmd/questions"],
 

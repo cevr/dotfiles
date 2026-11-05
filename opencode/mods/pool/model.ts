@@ -1,9 +1,12 @@
 // The pool model's handlers: each gathers what one moment of a request needs
 // from the outside systems (the provider's logins, its quota, the ledger), has
 // the AccountPool aggregate decide it, and writes what changed to the ledger.
+// The Fleet aggregate (fleet.ts) keeps this host's starts and its peers'
+// reports, which the pace counts, in the FleetStore every instance of the
+// plugin on the host shares.
 // The aggregate is the one decision entry point, so the stories run exactly
 // what these do. The plugin calls these and nothing else.
-import { Clock, Context, Effect, Layer, Stream, SynchronizedRef } from "effect"
+import { Clock, Context, Effect, Layer, Semaphore, Stream, SynchronizedRef } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import {
   AccountPool,
@@ -18,14 +21,18 @@ import {
   type AccountPoolState,
   type Command,
   type Event,
-  type PoolId,
+  PoolId,
 } from "./account-pool.ts"
 import { held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, type RequestKind, type Rules } from "./accounts.ts"
+import * as FleetModel from "./fleet.ts"
 import { poolPace, UNPOOLED, type Pace } from "./pace.ts"
 import type { QuotaReading } from "./quota.ts"
-import { Ledger, Logins, Quota, type LoginsUnavailable } from "./service.ts"
+import { FleetStore, Ledger, Logins, Peers, Quota, type LoginsUnavailable } from "./service.ts"
 import type {
   Alerts,
+  FleetStatus,
+  Report,
+  SharedReading,
   LoginsQuery,
   LostLogin,
   PoolsStatus,
@@ -43,10 +50,47 @@ export interface Config extends Rules {
   readonly providers: Readonly<Record<string, PoolId>>
   /** How long every refresh from an outside store must fail before it is an outage; default `OUTAGE_AFTER_MS`. */
   readonly refreshOutageMs?: number
+  /**
+   * Providers whose pace a pool measures without placing their requests: the
+   * provider's own login chooses the account (OpenAI's ChatGPT login), and the
+   * pool only reads its quota. A provider in `providers` is placed as well.
+   */
+  readonly paced?: Readonly<Record<string, PoolId>>
+  /** This host in the fleet, and what an admitted agent costs the pace until it settles; default `DEFAULT_FLEET`. */
+  readonly fleet?: FleetConfig
 }
 
-/** The pools a config names: each integration once, in the order the providers name them. */
-export const poolsOf = (config: Config): ReadonlyArray<PoolId> => [...new Set(Object.values(config.providers))]
+export interface FleetConfig {
+  /** This host's name in its reports. */
+  readonly host: string
+  /** How long an admitted agent counts on the pace before its spend shows in a reading (ms). */
+  readonly settleMs: number
+  /** What it counts meanwhile: a share of one account's week, 0 to 1. */
+  readonly startCost: number
+  /** How often the host reads each peer (ms): the plugin's instances on the host share the reads. */
+  readonly pollMs: number
+}
+
+/**
+ * Ten minutes covers a reading's lag: the auth plugin reads after each
+ * response and the sweep every ten minutes. Half a percentage point of one
+ * account's week is about an agent's first ten minutes: the orchestrate
+ * skill's Codex budget measures 0.4 to 0.6 %/h per role.
+ */
+export const DEFAULT_FLEET: FleetConfig = { host: "this host", settleMs: 10 * 60_000, startCost: 0.005, pollMs: 30_000 }
+
+/** The pool whose quota paces a provider: the one it is placed through, else the one it is only measured through. */
+const measuredBy = (config: Config, providerID: string): PoolId | undefined =>
+  Object.hasOwn(config.providers, providerID)
+    ? config.providers[providerID]
+    : config.paced !== undefined && Object.hasOwn(config.paced, providerID)
+      ? config.paced[providerID]
+      : undefined
+
+/** The pools a config names: each integration once, in the order the providers name them, then the paced ones. */
+export const poolsOf = (config: Config): ReadonlyArray<PoolId> => [
+  ...new Set([...Object.values(config.providers), ...Object.values(config.paced ?? {})]),
+]
 
 export class Pool extends Context.Service<
   Pool,
@@ -88,6 +132,18 @@ export class Pool extends Context.Service<
     readonly alerts: Effect.Effect<Alerts>
     /** The login each recorded step of a session went out on, oldest first. */
     readonly logins: (query: LoginsQuery) => Effect.Effect<SessionLogins>
+    /** A new agent was admitted on the provider: it counts on the pace, here and on the peers, until it settles. */
+    readonly started: (providerID: string) => Effect.Effect<void>
+    /** What this host tells a peer: its starts that still count and its readings. */
+    readonly report: Effect.Effect<Report>
+    /**
+     * Read every peer not read in the last half `pollMs` by any instance on
+     * the host. One that cannot be read is logged when it stops answering, and
+     * the pace goes on without it.
+     */
+    readonly poll: Effect.Effect<void>
+    /** This host's starts and each peer, for the pane. */
+    readonly fleet: Effect.Effect<FleetStatus>
   }
 >()("dotfiles-opencode/pool/Pool") {}
 
@@ -98,8 +154,13 @@ export const layer = (config: Config) =>
       const logins = yield* Logins
       const quota = yield* Quota
       const ledger = yield* Ledger
+      const peers = yield* Peers
+      const fleetStore = yield* FleetStore
       const rules: Rules = { cacheLifeMs: config.cacheLifeMs }
       const decider = AccountPool(rules)
+      const fleetConfig = config.fleet ?? DEFAULT_FLEET
+      // The fleet is decided one command at a time in this instance; another instance's write between a read and a record loses nothing, a start being a key of its own.
+      const fleetLock = yield* Semaphore.make(1)
 
       /**
        * Have the aggregate decide a command against the pool's state, fold
@@ -125,12 +186,13 @@ export const layer = (config: Config) =>
         pools.set(id, pool)
       }
 
-      const pooled = (providerID: string) => {
-        const id = config.providers[providerID]
+      const poolOf = (id: PoolId | undefined) => {
         const pool = id === undefined ? undefined : pools.get(id)
         return id === undefined || pool === undefined ? undefined : { id, pool }
       }
-      type Pooled = NonNullable<ReturnType<typeof pooled>>
+      /** The pool a provider's requests are placed through, if it has one. */
+      const pooled = (providerID: string) => poolOf(Object.hasOwn(config.providers, providerID) ? config.providers[providerID] : undefined)
+      type Pooled = NonNullable<ReturnType<typeof poolOf>>
       const every = [...pools].map(([id, pool]): Pooled => ({ id, pool }))
 
       /** The provider's logins, read again when the list is old (or `force`d). */
@@ -257,14 +319,111 @@ export const layer = (config: Config) =>
         { discard: true },
       ).pipe(Effect.withSpan("Pool.sweep"))
 
+      /** Have the Fleet aggregate decide a command against the host's fleet, and record what it decides. */
+      const sendFleet = (command: FleetModel.Command) =>
+        Effect.gen(function* () {
+          const state = yield* fleetStore.read
+          const events = yield* FleetModel.Fleet.decide(state, command, yield* Clock.currentTimeMillis)
+          if (events.length > 0) yield* fleetStore.record(events, fold(FleetModel.Fleet, events, state))
+          return events
+        }).pipe(fleetLock.withPermits(1))
+
       const pace = Effect.fn("Pool.pace")(function* (providerID: string) {
-        const where = pooled(providerID)
-        if (where === undefined) return UNPOOLED
-        yield* refresh(where, false)
-        for (const credentialID of (yield* SynchronizedRef.get(where.pool)).credentials) yield* pull(where, credentialID)
+        const paced = poolOf(measuredBy(config, providerID))
+        if (paced === undefined) return UNPOOLED
+        yield* refresh(paced, false)
+        const fleet = yield* fleetStore.read
+        // A peer's newer readings of the same logins count here too, whichever instance on the host read the peer.
+        yield* mergeReports(fleet)
+        for (const credentialID of (yield* SynchronizedRef.get(paced.pool)).credentials) yield* pull(paced, credentialID)
         const now = yield* Clock.currentTimeMillis
-        return poolPace(status(yield* SynchronizedRef.get(where.pool), now, rules), now)
+        // Every start in the fleet on a provider this pool paces counts, whichever host admitted it.
+        const starts = FleetModel.inflight(fleet, now, fleetConfig.settleMs)
+          .filter((start) => measuredBy(config, start.providerID) === paced.id)
+          .map((start) => start.at)
+        return poolPace(status(yield* SynchronizedRef.get(paced.pool), now, rules), now, {
+          starts,
+          cost: fleetConfig.startCost,
+          settleMs: fleetConfig.settleMs,
+        })
       })
+
+      const started = (providerID: string) => sendFleet(FleetModel.RecordStart.make({ providerID })).pipe(Effect.asVoid)
+
+      const report = Effect.gen(function* () {
+        const readings: Array<SharedReading> = []
+        for (const { id, pool } of every) {
+          const state = yield* SynchronizedRef.get(pool)
+          for (const credentialID of state.credentials) {
+            const reading = state.readings[credentialID]
+            if (reading !== undefined) readings.push({ pool: id, credentialID, reading })
+          }
+        }
+        return FleetModel.report(yield* fleetStore.read, fleetConfig.host, yield* Clock.currentTimeMillis, fleetConfig.settleMs, readings)
+      }).pipe(Effect.withSpan("Pool.report"))
+
+      /**
+       * A peer's reading of a login this pool lists, when it is newer than the
+       * one held: the accounts are the same, and a reading is account-wide.
+       */
+      const merge = Effect.fn(function* (shared: SharedReading) {
+        const target = poolOf(PoolId.make(shared.pool))
+        if (target === undefined) return
+        // The list is read again only when it is old: a pool that has not listed its logins yet does now.
+        yield* refresh(target, false).pipe(Effect.ignore)
+        const state = yield* SynchronizedRef.get(target.pool)
+        if (!state.credentials.includes(shared.credentialID)) return
+        const held = state.readings[shared.credentialID]
+        if (held !== undefined && held.at >= shared.reading.at) return
+        yield* apply(target.pool, target.id, TakeReading.make({ credentialID: shared.credentialID, reading: shared.reading }))
+      })
+
+      const mergeReports = (fleet: FleetModel.FleetState) =>
+        Effect.forEach(Object.values(fleet.peers), (peer) => Effect.forEach(peer.report?.readings ?? [], merge, { discard: true }), {
+          discard: true,
+        })
+
+      const pollPeer = (peer: string) =>
+        peers.report(peer).pipe(
+          Effect.matchEffect({
+            onFailure: (error) =>
+              sendFleet(FleetModel.MissPeer.make({ peer, message: error.message })).pipe(
+                Effect.tap((events) =>
+                  events.length === 0
+                    ? Effect.void
+                    : Effect.logWarning(`pool fleet: ${peer} cannot be read (${error.message}); the pace goes on without its new starts`),
+                ),
+                Effect.asVoid,
+              ),
+            onSuccess: (answer) =>
+              Effect.gen(function* () {
+                const missed = (yield* fleetStore.read).peers[peer]?.missed
+                yield* sendFleet(FleetModel.TakeReport.make({ peer, report: answer }))
+                if (missed !== undefined) yield* Effect.logInfo(`pool fleet: ${peer} answers again`)
+                yield* Effect.forEach(answer.readings, merge, { discard: true })
+              }),
+          }),
+        )
+
+      const poll = Effect.forEach(
+        peers.names,
+        (peer) =>
+          sendFleet(FleetModel.ClaimPoll.make({ peer, everyMs: fleetConfig.pollMs / 2 })).pipe(
+            Effect.flatMap((claimed) => (claimed.length === 0 ? Effect.void : pollPeer(peer))),
+          ),
+        { concurrency: "unbounded", discard: true },
+      ).pipe(Effect.withSpan("Pool.poll"))
+
+      const fleetStatus = Effect.gen(function* () {
+        const state = yield* fleetStore.read
+        const now = yield* Clock.currentTimeMillis
+        return {
+          host: fleetConfig.host,
+          starts: FleetModel.ownStarts(state, now, fleetConfig.settleMs).length,
+          settleMinutes: fleetConfig.settleMs / 60_000,
+          peers: FleetModel.peers(state, peers.names, now, fleetConfig.settleMs),
+        } satisfies FleetStatus
+      }).pipe(Effect.withSpan("Pool.fleet"))
 
       const poolsStatus = Effect.gen(function* () {
         const answer: Record<string, PoolsStatus[string]> = {}
@@ -290,6 +449,23 @@ export const layer = (config: Config) =>
         return { lost, outages }
       }).pipe(Effect.withSpan("Pool.alerts"))
 
-      return { place, responded, retry, release, stepEnded, follow, sweep, pace, status: poolsStatus, session, alerts, logins: sessionLogins }
+      return {
+        place,
+        responded,
+        retry,
+        release,
+        stepEnded,
+        follow,
+        sweep,
+        pace,
+        status: poolsStatus,
+        session,
+        alerts,
+        logins: sessionLogins,
+        started,
+        report,
+        poll,
+        fleet: fleetStatus,
+      }
     }),
   )

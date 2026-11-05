@@ -75,7 +75,7 @@ export default OpenCodeDriver.use(
       animations: false,
       tabs: { mode: "off" },
       theme: { name: "prime", mode: "dark" },
-      plugins: [`${root}/mods/prime`, `${root}/cmd/questions`],
+      plugins: [`${root}/cmd/prime`, `${root}/cmd/questions`],
     },
     tui: { viewport: { cols: 150, rows: 50 } },
     project: { git: true, files: { ".opencode/themes/prime.json": readFileSync(`${root}/themes/prime.json`, "utf8") } },

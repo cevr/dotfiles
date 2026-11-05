@@ -3,9 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The Prime Agent look for OpenCode's session screen, as a TUI plugin.",
+  "description": "The Prime Agent look for OpenCode's session screen: the rows' words as plain values, the Solid components that draw them, and the host contract they read through.",
   "exports": {
-    "./tui": "./src/index.tsx"
+    "./tui": "./tui.tsx",
+    "./tui/*": "./tui/*.tsx",
+    "./*": "./*.ts"
   },
   "dependencies": {
     "@dotfiles/opencode-subagents": "workspace:*"

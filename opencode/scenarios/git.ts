@@ -48,7 +48,7 @@ const git = (cwd: string, ...args: ReadonlyArray<string>) =>
 export default OpenCodeDriver.use({
   opencode: { dev: process.env.OPENCODE_DEV!, env: { PATH: `${bin}:${process.env.PATH ?? ""}` } },
   config: { plugins: [{ package: `${root}/cmd/git` }] },
-  tuiConfig: { animations: false, tabs: { mode: "off" }, theme: { name: theme, mode: "dark" }, plugins: [`${root}/mods/prime`, `${root}/cmd/git`] },
+  tuiConfig: { animations: false, tabs: { mode: "off" }, theme: { name: theme, mode: "dark" }, plugins: [`${root}/cmd/prime`, `${root}/cmd/git`] },
   tui: { viewport: { cols: Number(process.env.SCENARIO_COLS ?? 144), rows: 50 } },
   project: { git: true, files: {
     ".opencode/themes/prime.json": readFileSync(`${root}/themes/prime.json`, "utf8"),
