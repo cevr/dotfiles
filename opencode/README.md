@@ -621,12 +621,16 @@ The TUI plugin draws, above the composer (the `session.composer.top` slot),
 one line while the session or any of its subagents has questions open:
 
 ```
-? 3 open questions · Cache store, Old endpoint, Test runner · /answer
+? 3 open questions · Cache store, Old endpoint, Test runner · shift+← /answer
 ```
 
-With one question it reads `? 1 open question · <header> · assuming <assume> · /answer`;
-parts drop from the right as the width shrinks. `/answer` opens the pane in
-the line's place, on the oldest question:
+With one question it reads `? 1 open question · <header> · assuming <assume> · shift+← /answer`;
+parts drop from the right as the width shrinks, the hotkey last but one. `/answer`,
+or shift+← on an empty composer, opens the pane in the line's place, on the
+oldest question. shift+← is also the composer's select-left: with text in the
+composer the key stays the composer's and selects (the hotkey's layer sits
+above the textarea's and hands the key on); with no question open it does
+nothing.
 
 ```
 ? Question 1/3 · Cache store · asked just now
@@ -641,6 +645,10 @@ The cursor starts on the assumption (a row of its own at the top when no
 choice names it); typing answers in your own words. Enter answers, `ctrl+x`
 twice dismisses (the agent is not told), Esc closes. A subagent's question
 names it: `· from general ·`. The pane closes with the last question.
+The cursor, the typed answer and a first `ctrl+x` stay while the questions
+are read again; they start over only when another question takes the top
+(the shown one was answered, dismissed, withdrawn or asked again, which gives
+it a new id): the pane then shows the next oldest, on its assumption.
 
 An answer goes to the session that asked as a synthetic user message,
 steered, so a running session reads it at its next step and an idle one wakes:
@@ -670,11 +678,14 @@ The model (the domain files at the root of `mods/questions`): `question.ts`
 is the `Questions` aggregate, deciding `Ask`, `Answer`, `Dismiss` and
 `Delivered`; `ask.ts` the tool's input, description and receipt; `reply.ts`
 the answer's message; `tray.ts` and `choices.ts` the line and the pane;
+`hotkey.ts` when shift+← opens the pane;
 `model.ts` the `QuestionsModel` that keeps the sheets and sends the answers.
 It asks the `QuestionStore`, `Courier` and `Changes` contracts in
 `service.ts`, implemented in `opencode/` and `memory/`, with the laws in
 `laws.ts`. `tests/questions.test.ts` runs `scenarios/questions.ts` in real
-OpenCode, direct and from a kernel cell.
+OpenCode, direct and from a kernel cell, and `scenarios/questions-hold.ts`
+for the hotkey and the pane holding its place across readings;
+`cmd/questions/tui.test.ts` checks the hotkey's binding on a stand-in TUI.
 
 Where it departs from gent: a subagent may ask (gent refuses it in a child
 session), and its question shows in its parent's tray; ids are per session,
