@@ -3,7 +3,7 @@
 // row opens its session on click and brightens under the pointer; inside a
 // subagent the current one is marked. They show whether or not the host shows
 // the session's sidebar, which carries only the queue.
-import { columns, format, spinner, type Columns, type Kind } from "@dotfiles/opencode-subagents/line"
+import { columns, format, spinner, stateTone, type Columns, type Kind } from "@dotfiles/opencode-subagents/line"
 import { subagents, visible, type Row as SubagentRow, type Tone } from "@dotfiles/opencode-subagents/subagent-row"
 import type { BoxRenderable, RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
@@ -16,7 +16,7 @@ import { useSessionLink } from "./link.ts"
 
 /**
  * Which sessions of `sessionID`'s family work now: the host runs them, or
- * their subagent row runs or is blocked (subagent.ts).
+ * their subagent row is live (subagent.ts).
  */
 export function working(host: Host, sessionID: string): (id: string) => boolean {
   return familyWorking(host.subagents(sessionID), (id) => host.status(id) === "running")
@@ -28,7 +28,7 @@ export function SubagentRows(props: { host: Host; sessionID: string; child: bool
     const family = props.host.subagents(props.sessionID)
     return subagents(family, family.root)
   })
-  // The clock ticks while a row runs, waits or lingers in view, and settles once none does.
+  // The clock ticks while a row works, waits or lingers in view, and settles once none does.
   // Whether rows are live depends on the clock, so the clock follows a signal set after both
   // exist: Solid may run useNow's effect at once, before a later `const` is initialised.
   const [active, setActive] = createSignal(false)
@@ -103,20 +103,21 @@ function Row(props: {
     if (tone === "general") return theme().text.muted
     return theme().text.base
   }
-  const leadColor = (): RGBA => {
-    const state = props.row.state
-    if (state === "running" || state === "done") return theme().text.feedback.success.base
-    if (state === "failed") return theme().text.feedback.error.base
-    if (state === "blocked" || state === "cancelled") return theme().text.feedback.warning.base
+  // The state shows only as the leading diamond, so its colour carries it (line.ts, `stateTone`).
+  const stateColor = (): RGBA => {
+    const tone = stateTone(props.row.state)
+    if (tone === "success") return theme().text.feedback.success.base
+    if (tone === "warning") return theme().text.feedback.warning.base
+    if (tone === "error") return theme().text.feedback.error.base
     return theme().text.muted
   }
   const bright = () => link.hover() || props.marked
   const color = (kind: Kind): RGBA => {
-    if (kind === "lead") return leadColor()
+    if (kind === "lead") return stateColor()
     if (kind === "role") return roleColor(props.row.tone)
-    if (kind === "spinner") return theme().hue.accent[300]
     if (kind === "mark") return theme().text.base
-    if (kind === "faint") return theme().text.faint
+    if (kind === "faint" || kind === "model") return theme().text.faint
+    if (kind === "stale") return theme().text.feedback.warning.base
     if (kind === "update" && props.row.state === "blocked") return theme().text.feedback.warning.base
     if (kind === "update" && props.row.state === "failed") return theme().text.feedback.error.base
     return bright() ? theme().text.base : theme().text.muted

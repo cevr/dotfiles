@@ -17,7 +17,7 @@ const frames: Record<(typeof names)[number], ReadonlyArray<string>> = { wide: []
 // The scenario's widths are 160 and 106.
 const WIDE = 160
 const SIDEBAR = 42
-const ROW = /^ ◆ worker  Fix money parsing  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] /
+const ROW = /^ [◇◈◆] worker gpt  Fix money parsing  /
 
 /** The composer area: from the dock's count line to the end, left of the sidebar column. */
 function composer(frame: ReadonlyArray<string>): ReadonlyArray<string> {

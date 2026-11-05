@@ -47,6 +47,7 @@ describe("board", () => {
   test("an item linked to a subagent shows its live state, not the item's", () => {
     const live = new Map<string, Live>([
       ["ses_run", { state: "running" }],
+      ["ses_hold", { state: "waiting" }],
       ["ses_ask", { state: "blocked" }],
       ["ses_ok", { state: "done", since: NOW - 1000 }],
       ["ses_old", { state: "done", since: NOW - LINGER_MS }],
@@ -55,6 +56,7 @@ describe("board", () => {
     const rows = board(
       [
         item("run", "next", { session: "ses_run" }),
+        item("hold", "running", { session: "ses_hold" }),
         item("ask", "running", { session: "ses_ask" }),
         item("ok", "running", { session: "ses_ok" }),
         item("old", "running", { session: "ses_old" }),
@@ -67,6 +69,7 @@ describe("board", () => {
     expect(rows.map((row) => [row.key, row.group, row.mark])).toEqual([
       ["ask", "needs-you", "blocked"],
       ["run", "running", "running"],
+      ["hold", "waiting", "waiting"],
       ["unseen", "waiting", "waiting"],
       ["ok", "done", "done"],
       ["bad", "done", "failed"],

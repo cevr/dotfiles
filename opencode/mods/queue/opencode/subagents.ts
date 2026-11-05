@@ -15,8 +15,10 @@ export type { Reads }
 const liveOf = (row: Row): Live => {
   const since = row.ended === undefined ? {} : { since: row.ended }
   switch (row.state) {
-    case "running":
+    case "working":
       return { state: "running" }
+    case "waiting":
+      return { state: "waiting" }
     case "blocked":
       return { state: "blocked" }
     case "failed":

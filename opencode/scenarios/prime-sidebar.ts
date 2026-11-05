@@ -88,7 +88,7 @@ export default OpenCodeDriver.use(
           console.log("screenshot:", yield* ui.screenshot(name))
         })
       const running = (frame: string) => frame.includes("◆ 1 subagent ")
-      const row = (frame: string) => frame.includes(`◆ worker  ${WORKER.description}`)
+      const row = (frame: string) => frame.includes(`worker gpt  ${WORKER.description}`)
       // The sidebar titles the session in its own column, right of the transcript.
       const sidebar = (frame: string) => frame.split("\n").some((line) => line.indexOf(TITLE) >= WIDE.cols - 42)
 

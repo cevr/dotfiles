@@ -125,8 +125,8 @@ export default OpenCodeDriver.use(
         (frame) =>
           frame.includes("Queue fixture ready") &&
           frame.includes("● Money parsing worker") &&
-          /^ ◆ implementor +Fix money parsing /m.test(frame) &&
-          /^ ◆ worker +Forgotten worker /m.test(frame),
+          /^ [◇◈◆] implementor gpt +Fix money parsing /m.test(frame) &&
+          /^ [◇◈◆] worker +gpt +Forgotten worker /m.test(frame),
       )
       writeFileSync(`${out}/${label}-set.txt`, text(yield* ui.capture()))
       yield* ui.submit("queue-patch")

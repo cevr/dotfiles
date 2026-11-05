@@ -1,7 +1,9 @@
 // What a subagent is doing, in a few words: its running call as the Prime
-// transcript's tree row says it (`running bun test`, `editing src/money.ts`),
-// else the first sentence it last wrote or thought.
+// transcript's tree row says it (`running bun test`, `editing src/money.ts`;
+// a shell call by its own description, else in a few words, never its whole
+// one-liner), else the latest sentence it wrote, thought or put in its queue.
 import type { Call, Message } from "./family.ts"
+import { brief, waitsInput } from "./shell.ts"
 
 /** The host's name for a tool, whatever the model called it (the host's `canonicalToolName`). */
 export function canonical(name: string): string {
@@ -69,18 +71,51 @@ const VERBS: Readonly<Record<string, readonly [running: string, past: string]>> 
 /** Whether a call still runs: streaming its input or running. */
 export const running = (call: Call) => call.status === "streaming" || call.status === "running"
 
+const described = (call: Call) => text(call.input.description)?.replace(/\s+/g, " ").trim() || undefined
+
+/** The tool a kernel cell runs now: the latest of its record's calls still running. */
+const inner = (call: Call) => (canonical(call.tool) === "kernel" ? call.calls?.findLast(running) : undefined)
+
 /**
- * What a call does or did, in the tense of its status: `running sh
- * check.sh`, `edited src/money.ts`. A kernel cell reads as its first line of
- * code, a leading comment's words when it opens with one.
+ * Whether a call, while it runs, only waits: a shell call whose description
+ * or command waits (shell.ts), or a kernel cell running one.
+ */
+export function waiting(call: Call): boolean {
+  if (!running(call)) return false
+  const nested = inner(call)
+  if (nested) return waiting(nested)
+  return waits(call)
+}
+
+/** Whether a call is one that only waits, whatever its status: a shell call whose description or command waits. */
+export const waits = (call: Call) => canonical(call.tool) === "shell" && waitsInput(call.input)
+
+/**
+ * What a call does or did, in the tense of its status: `running bun test`,
+ * `edited src/money.ts`. A shell call reads as its own description when it
+ * gave one, a wait as what it waits on (`polling gate.log`, `sleep 600`),
+ * else its main command in a few words. A kernel cell reads as its
+ * description, else the tool it runs now, else its first line of code, a
+ * leading comment's words when it opens with one.
  */
 export function activity(call: Call): string {
   const tool = canonical(call.tool)
   if (tool === "kernel") {
+    const nested = inner(call)
+    if (described(call) === undefined && nested) return activity(nested)
+    if (described(call)) return described(call) ?? ""
     const code = text(call.input.code) ?? ""
     const first = code.split("\n").find((line) => line.trim()) ?? ""
     return `kernel: ${first.trim().replace(/^\/\/\s*|^\/\*\s*|\s*\*\/$/g, "")}`.trimEnd()
   }
+  if (tool === "shell") {
+    const own = described(call)
+    if (own) return own
+    const short = brief(text(call.input.command) ?? "")
+    if (waitsInput(call.input)) return short
+    return [running(call) ? "running" : "ran", short].filter(Boolean).join(" ")
+  }
+  if (tool === "queue") return said(call) ?? "updated its queue"
   const verbs = VERBS[tool]
   const verb = verbs ? (running(call) ? verbs[0] : verbs[1]) : tool
   return [verb, subject(tool, call.input)].filter(Boolean).join(" ")
@@ -93,22 +128,86 @@ export function firstSentence(prose: string): string {
   return end ? flat.slice(0, end.index + 1) : flat
 }
 
+const isQueue = (call: Call) => canonical(call.tool) === "queue"
+
 /**
- * The update while a subagent runs: its newest step's running call (the
- * latest when several run), else the first sentence of its latest words,
- * else its latest ended call; `starting` before it has done anything.
+ * The one line a `queue` call says about the work: the text of the item it
+ * set or upserted that runs or waits, else of its first one.
+ */
+export function said(call: Call): string | undefined {
+  const items = [...list(call.input.set), ...list(call.input.upsert)].flatMap((item) =>
+    item !== null && typeof item === "object" && !Array.isArray(item) ? [Object.fromEntries(Object.entries(item))] : [],
+  )
+  const live = items.find((item) => item.state === "running" || item.state === "waiting") ?? items[0]
+  const line = text(live?.text)?.replace(/\s+/g, " ").trim()
+  return line ? firstSentence(line) : undefined
+}
+
+const list = (value: unknown): ReadonlyArray<unknown> => (Array.isArray(value) ? value : [])
+
+/** Something a subagent wrote or did: its words, its queue's update, or another call; `index` its place among them. */
+export type Said =
+  | { readonly type: "sentence"; readonly text: string; readonly at?: number; readonly index: number }
+  | { readonly type: "call"; readonly call: Call; readonly index: number }
+
+/** Everything a session's steps wrote or did, in order: each step's words and calls (a kernel call as one, its queue updates after it). */
+export function sayings(messages: ReadonlyArray<Message>): ReadonlyArray<Said> {
+  const out: Said[] = []
+  for (const message of messages) {
+    if (message.type !== "assistant") continue
+    for (const part of message.parts) {
+      const index = out.length
+      if (part.type === "words") {
+        const words = part.text.replace("[REDACTED]", "").trim()
+        if (words) out.push({ type: "sentence", text: firstSentence(words), ...(part.at === undefined ? {} : { at: part.at }), index })
+        continue
+      }
+      const at = part.started === undefined ? {} : { at: part.started }
+      const queued = isQueue(part) && part.status === "completed" ? said(part) : undefined
+      out.push(queued === undefined ? { type: "call", call: part, index } : { type: "sentence", text: queued, ...at, index })
+      // A kernel cell's own queue updates follow the cell.
+      for (const nested of part.calls ?? []) {
+        const text = isQueue(nested) && nested.status === "completed" ? said(nested) : undefined
+        if (text !== undefined) out.push({ type: "sentence", text, ...at, index: out.length })
+      }
+    }
+  }
+  return out
+}
+
+/** The latest sentence it wrote, thought or put in its queue, if any. */
+export const lastSentence = (all: ReadonlyArray<Said>) => all.findLast((item) => item.type === "sentence")
+
+/** When it last wrote or did anything, if the data says: the newest time among its words and calls. */
+export function lastHeard(messages: ReadonlyArray<Message>): number | undefined {
+  const times = messages.flatMap((message) =>
+    message.type === "assistant"
+      ? message.parts.flatMap((part) => (part.type === "words" ? [part.at] : [part.started, part.completed]))
+      : [],
+  )
+  const known = times.filter((time): time is number => time !== undefined)
+  return known.length === 0 ? undefined : Math.max(...known)
+}
+
+/** The call a subagent runs now: its newest step's latest running call. */
+export function liveCall(messages: ReadonlyArray<Message>): Call | undefined {
+  const newest = messages.findLast((message) => message.type === "assistant")
+  return newest?.type === "assistant" ? newest.parts.findLast((part): part is Call => part.type === "call" && running(part)) : undefined
+}
+
+/**
+ * The update while a subagent's turn runs: the call it runs now, unless it
+ * wrote a sentence after starting it; else its latest sentence (words,
+ * thought or queue item); else its latest ended call; `starting` before it
+ * has done anything.
  */
 export function runningUpdate(messages: ReadonlyArray<Message>): string {
-  const steps = messages.flatMap((message) => (message.type === "assistant" ? [message.parts] : []))
-  const calls = (parts: (typeof steps)[number]) => parts.flatMap((part) => (part.type === "call" ? [part] : []))
-  const newest = steps.at(-1)
-  const live = newest && calls(newest).findLast(running)
-  if (live) return activity(live)
-  for (const parts of steps.toReversed())
-    for (const part of parts.toReversed()) {
-      const words = part.type === "words" ? part.text.replace("[REDACTED]", "").trim() : ""
-      if (words) return firstSentence(words)
-    }
-  const ended = steps.flatMap(calls).at(-1)
-  return ended ? activity(ended) : "starting"
+  const all = sayings(messages)
+  const live = liveCall(messages)
+  const sentence = lastSentence(all)
+  const at = live ? all.findIndex((item) => item.type === "call" && item.call === live) : -1
+  if (live && !(sentence && sentence.index > at)) return activity(live)
+  if (sentence?.type === "sentence") return sentence.text
+  const ended = all.findLast((item) => item.type === "call")
+  return ended?.type === "call" ? activity(ended.call) : "starting"
 }

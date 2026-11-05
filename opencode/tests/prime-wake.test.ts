@@ -1,7 +1,7 @@
 // Runs scenarios/prime-wake.ts with the Prime look and the orchestrate plugin
 // against an OpenCode checkout: a worker moves a three-second shell command
-// to the background and ends its turn. While it waits its live row runs and
-// says what it waits on; once the shell's notice wakes it, the answer it
+// to the background and ends its turn. While it waits its live row reads
+// waiting (its still symbol) with what it said last; once the shell's notice wakes it, the answer it
 // writes then is the one its parent gets, as a background worker's stop
 // notice and as a foreground call's result. It needs OPENCODE_DEV, the fork
 // whose subagent jobs wait for their child's own background work.
@@ -26,8 +26,6 @@ function rows(frame: ReadonlyArray<string>): ReadonlyArray<string> {
   return (blank < 0 ? after : after.slice(0, blank)).map((line) => line.trim())
 }
 
-const SPIN = "[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]"
-
 describe.skipIf(!fork)("a worker waiting on its own background shell (OPENCODE_DEV)", () => {
   beforeAll(async () => {
     const out = mkdtempSync(join(tmpdir(), "prime-wake-"))
@@ -46,11 +44,11 @@ describe.skipIf(!fork)("a worker waiting on its own background shell (OPENCODE_D
     for (const name of names) frames[name] = readFileSync(join(out, `wake-${name}.txt`), "utf8").split("\n")
   }, 300_000)
 
-  test("a background worker that ended its turn to wait on its shell reads running, waiting on that command, and counts", () => {
+  test("a background worker that ended its turn to wait on its shell reads waiting, by its still symbol and what it said after starting the shell, and counts", () => {
     expect(frames["bg-waiting"].join("\n")).toContain("Worker started.")
     // The dock counts it among the working subagents, though the host has it idle.
     expect(frames["bg-waiting"].some((line) => line.includes("◆ 1 subagent  ·"))).toBe(true)
-    expect(rows(frames["bg-waiting"])).toEqual([expect.stringMatching(new RegExp(`^◆ worker  Run the slow check  ${SPIN} waiting on sleep 3 · \\d+s$`))])
+    expect(rows(frames["bg-waiting"])).toEqual([expect.stringMatching(/^◈ worker gpt  Run the slow check  Waiting for the check\. · \d+s$/)])
   })
 
   test("the parent's stop notice carries the answer the worker wrote after its shell finished, not its waiting line", () => {
@@ -59,9 +57,9 @@ describe.skipIf(!fork)("a worker waiting on its own background shell (OPENCODE_D
     expect(frame).not.toContain("Root heard too early.")
   })
 
-  test("in the foreground the same: the row waits on the command while the call runs, and the call's result is the later answer", () => {
+  test("in the foreground the same: the row waits while the call runs, and the call's result is the later answer", () => {
     expect(rows(frames["fg-waiting"])).toContainEqual(
-      expect.stringMatching(new RegExp(`^◆ worker  Check it in the foreground  ${SPIN} waiting on sleep 3 · \\d+s$`)),
+      expect.stringMatching(/^◈ worker gpt  Check it in the foreground  Waiting for the check\. · \d+s$/),
     )
     const frame = frames["fg-done"].join("\n")
     expect(frame).toContain("Root heard: the foreground check passed.")

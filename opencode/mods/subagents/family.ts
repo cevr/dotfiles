@@ -16,6 +16,8 @@ export type Session = {
   readonly title?: string
   /** The agent the session runs as, when the session says. */
   readonly agent?: string
+  /** The model it runs on, by id as its latest step says, else as the session says (`claude-opus-5-5`). */
+  readonly model?: string
   /** How its last run ended, when the session says: `succeeded`, `failed` or `interrupted`. */
   readonly outcome?: string
   readonly time: {
@@ -63,7 +65,10 @@ export type Message =
     }
 
 /** A part of an assistant step: its words (text or reasoning), or a tool call. */
-export type Part = { readonly type: "words"; readonly text: string } | Call
+export type Part = Words | Call
+
+/** Words the model wrote or thought, with when, if the data says (the reasoning's end, else its step's). */
+export type Words = { readonly type: "words"; readonly text: string; readonly at?: number }
 
 /** A tool call, by the name the model called it. */
 export type Call = {
@@ -74,6 +79,8 @@ export type Call = {
   readonly metadata: Readonly<Record<string, unknown>>
   /** A failed call's error message. */
   readonly error?: string
+  /** When it started running (else when its input started), if the data says. */
+  readonly started?: number
   readonly completed?: number
   /**
    * A kernel call's record of the tools its cell called, in the order they

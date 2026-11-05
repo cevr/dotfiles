@@ -77,6 +77,16 @@ describe("read", () => {
     expect(family.sessions[0]).not.toHaveProperty("parentID")
   })
 
+  test("the model is the latest step's, else the session's", () => {
+    const step = (id: string) => ({ type: "assistant", agent: "worker", model: { id, providerID: "anthropic" }, content: [] })
+    const models = reads({
+      root: { info: { id: "root", time: { created: 0 } } },
+      a: { info: { id: "a", parentID: "root", model: { id: "gpt-6.1-sol" }, time: { created: 1 } }, messages: [step("claude-sonnet-4-5"), step("claude-opus-5-5")] },
+      b: { info: { id: "b", parentID: "root", model: { id: "gpt-6.1-sol" }, time: { created: 2 } } },
+    })
+    expect(read(models, "root").sessions.map((session) => session.model)).toEqual([undefined, "claude-opus-5-5", "gpt-6.1-sol"])
+  })
+
   test("assistant steps with their words and calls, and the subagent stop notices; nothing else", () => {
     expect(family.sessions[0]?.messages).toEqual([
       {
@@ -84,9 +94,9 @@ describe("read", () => {
         agent: "build",
         parts: [
           { type: "words", text: "Start them." },
-          { type: "call", tool: "subagent", status: "completed", input: { description: "Fix CSV" }, metadata: { sessionID: "a" }, completed: 2 },
-          { type: "call", tool: "bash", status: "streaming", input: {}, metadata: {} },
-          { type: "call", tool: "bash", status: "error", input: {}, metadata: {}, error: "nope" },
+          { type: "call", tool: "subagent", status: "completed", input: { description: "Fix CSV" }, metadata: { sessionID: "a" }, started: 1, completed: 2 },
+          { type: "call", tool: "bash", status: "streaming", input: {}, metadata: {}, started: 3 },
+          { type: "call", tool: "bash", status: "error", input: {}, metadata: {}, error: "nope", started: 3 },
         ],
       },
       { type: "notice", childID: "a", state: "completed", at: 9, text: "done" },
@@ -133,13 +143,14 @@ describe("a session's background work", () => {
       {
         type: "assistant",
         parts: [
-          { type: "call", tool: "shell", status: "completed", input: { command: "sleep 2", background: true }, metadata: { status: "running", shellID: "sh_1" }, completed: 3 },
+          { type: "call", tool: "shell", status: "completed", input: { command: "sleep 2", background: true }, metadata: { status: "running", shellID: "sh_1" }, started: 2, completed: 3 },
           {
             type: "call",
             tool: "kernel",
             status: "completed",
             input: { code: "await tools.shell({ command: 'bun test', background: true })" },
             metadata: expect.objectContaining({ operations: expect.any(Array) }),
+            started: 4,
             completed: 5,
             calls: [
               { type: "call", tool: "shell", status: "completed", input: { command: "bun test", background: true }, metadata: { shellID: "sh_2" } },
@@ -149,6 +160,41 @@ describe("a session's background work", () => {
         ],
       },
       { type: "shell", shellID: "sh_1", state: "completed", at: 6 },
+    ])
+  })
+})
+
+describe("when a step's words and calls happened", () => {
+  const world = reads({
+    root: { info: { id: "root", time: { created: 0 } } },
+    a: {
+      info: { id: "a", parentID: "root", time: { created: 1 } },
+      messages: [
+        {
+          type: "assistant",
+          time: { created: 10, streamed: 12, completed: 20 },
+          content: [
+            { type: "reasoning", text: "Think.", time: { created: 11, completed: 13 } },
+            { type: "text", text: "Say." },
+            { type: "tool", name: "bash", time: { created: 14, ran: 15 }, state: { status: "running", input: { command: "sleep 9" }, metadata: {} } },
+          ],
+        },
+        { type: "assistant", time: { created: 30 }, content: [{ type: "text", text: "Live." }] },
+      ],
+    },
+  })
+
+  test("a thought by its own end, words by their step's end (else its start), a call by when it ran", () => {
+    expect(read(world, "a").sessions[1]?.messages).toEqual([
+      {
+        type: "assistant",
+        parts: [
+          { type: "words", text: "Think.", at: 13 },
+          { type: "words", text: "Say.", at: 20 },
+          { type: "call", tool: "bash", status: "running", input: { command: "sleep 9" }, metadata: {}, started: 15 },
+        ],
+      },
+      { type: "assistant", parts: [{ type: "words", text: "Live.", at: 30 }] },
     ])
   })
 })

@@ -281,8 +281,8 @@ The TUI plugin appends the Queue section to `sidebar.content`. Every two
 seconds it reads the route's root session's queue over the
 `dotfiles-opencode.queue` RPC (`get({ sessionID })` answers
 `{ revision, items }`) and keeps the answer when its revision moved. An
-item with a `session` shows that subagent's live state (running, blocked,
-done, failed) as its mark instead of its own state, still one line. The
+item with a `session` shows that subagent's live state (running, waiting,
+blocked, done, failed) as its mark instead of its own state, still one line. The
 section shows only the queue's items: a subagent no item names is not drawn
 there, and no row carries a subagent's role, update or time; Prime's rows
 beneath the composer show the subagents, sidebar open or closed. Done items

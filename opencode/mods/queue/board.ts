@@ -9,6 +9,7 @@ import type { Item } from "./item.ts"
 /** A subagent session's state, as the TUI sees it. `since` (epoch ms) is when it finished. */
 export type Live =
   | { readonly state: "running" }
+  | { readonly state: "waiting" }
   | { readonly state: "blocked" }
   | { readonly state: "done"; readonly since?: number }
   | { readonly state: "failed"; readonly since?: number }
@@ -67,6 +68,8 @@ const placed = (item: Item, live: Live | undefined): { readonly group: Group; re
   switch (live.state) {
     case "running":
       return { group: "running", mark: "running" }
+    case "waiting":
+      return { group: "waiting", mark: "waiting" }
     case "blocked":
       return { group: "needs-you", mark: "blocked" }
     case "done":

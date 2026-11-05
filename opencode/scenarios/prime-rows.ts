@@ -1,12 +1,13 @@
 // The live subagent rows beneath the composer in the Prime look, with the
 // orchestrate plugin routing untyped calls to its worker role: two background
-// workers think, run a shell command, and one finishes while the other keeps
-// waiting. Replayed against OpenCode with a scripted model.
+// workers think, then one works (a shell command it describes) while the
+// other waits (a poll loop that sleeps), and one finishes while the other
+// goes on. Replayed against OpenCode with a scripted model.
 // Run: OPENCODE_DEV=<opencode checkout> OPENCODE_DRIVE_MEDIA_DIR=<dir> bunx opencode-drive run scenarios/prime-rows.ts
 //
 // It writes, under SCENARIO_OUT:
 // - `rows-thinking`: both workers are mid-thought;
-// - `rows-shell`: both run their shell command;
+// - `rows-shell`: one works on its described shell command, side by side with one waiting on its poll loop;
 // - `rows-done`: the first has finished, the second waits;
 // - `rows-dropped`: the finished one's row has gone, past its linger.
 // Each frame is a `.txt` of its text and a `.json` of its styled lines.
@@ -22,9 +23,34 @@ const text = (frame: Frame) => frame.lines.map((l) => l.spans.map((s) => s.text)
 const ASK = "Fix the two failing modules, one worker each."
 const STARTED = "Two workers are on it."
 // Each worker thinks, runs one shell command, then the first answers and the second waits.
-const WORKERS = [
-  { id: "call_fix_a", description: "Fix money parsing", thought: "Check the money parser first. Then run the tests.", prompt: "Worker brief A.", shell: "call_sleep_a", finishes: true },
-  { id: "call_fix_b", description: "Fix CSV quoting", thought: "Check the CSV writer first. Then run the tests.", prompt: "Worker brief B.", shell: "call_sleep_b", finishes: false },
+// The first's command works and says what it does; the second's only polls for a file that never comes.
+const WORKERS: ReadonlyArray<{
+  id: string
+  description: string
+  thought: string
+  prompt: string
+  shell: string
+  input: Record<string, string>
+  finishes: boolean
+}> = [
+  {
+    id: "call_fix_a",
+    description: "Fix money parsing",
+    thought: "Check the money parser first. Then run the tests.",
+    prompt: "Worker brief A.",
+    shell: "call_sleep_a",
+    input: { command: "sleep 4 && ls", description: "Run the money tests" },
+    finishes: true,
+  },
+  {
+    id: "call_fix_b",
+    description: "Fix CSV quoting",
+    thought: "Check the CSV writer first. Then run the tests.",
+    prompt: "Worker brief B.",
+    shell: "call_sleep_b",
+    input: { command: "for i in 1 2 3 4; do [ -f out/csv.done ] && break; sleep 1; done" },
+    finishes: false,
+  },
 ]
 
 export default OpenCodeDriver.use(
@@ -62,7 +88,7 @@ export default OpenCodeDriver.use(
             Stream.concat(hold(think)),
             Stream.concat(
               Stream.make(
-                Llm.toolCall({ index: 0, id: worker.shell, name: "shell", input: { command: "sleep 4" } }),
+                Llm.toolCall({ index: 0, id: worker.shell, name: "shell", input: worker.input }),
                 Llm.finish("tool-calls"),
               ),
             ),
@@ -98,21 +124,25 @@ export default OpenCodeDriver.use(
           writeFileSync(`${out}/${name}.json`, JSON.stringify(frame))
           console.log("screenshot:", yield* ui.screenshot(name))
         })
-      const rows = (frame: string, needle: string) => frame.split("\n").filter((line) => line.includes(needle)).length
+      const rows = (frame: string, needle: string | RegExp) =>
+        frame.split("\n").filter((line) => (typeof needle === "string" ? line.includes(needle) : needle.test(line))).length
 
       yield* ui.submit(ASK)
-      yield* until("rows-thinking", (frame) => frame.includes(STARTED) && rows(frame, "first. · ") === 2)
+      yield* until("rows-thinking", (frame) => frame.includes(STARTED) && rows(frame, /[◇◈◆] worker .+  Check the .+ first\. · \d+s$/) === 2)
       yield* save("rows-thinking")
 
       yield* Deferred.succeed(think, undefined)
-      yield* until("rows-shell", (frame) => rows(frame, "running sleep 4") === 2)
+      yield* until(
+        "rows-shell",
+        (frame) => rows(frame, /[◇◈◆] worker .+  Run the money tests · \d+s$/) === 1 && rows(frame, /◈ worker .+  polling out\/csv\.done · \d+s$/) === 1,
+      )
       yield* save("rows-shell")
 
-      yield* until("rows-done", (frame) => rows(frame, "✓ worker") === 1)
+      yield* until("rows-done", (frame) => rows(frame, /◆ worker .+  2 steps$/) === 1)
       yield* save("rows-done")
 
       // A finished row lingers for 30 seconds, then drops.
-      yield* until("rows-dropped", (frame) => rows(frame, "✓ worker") === 0, 450)
+      yield* until("rows-dropped", (frame) => rows(frame, /  2 steps$/) === 0, 450)
       yield* save("rows-dropped")
 
       yield* Deferred.succeed(end, undefined)

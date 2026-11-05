@@ -69,16 +69,16 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
     const dock = frames.started.findIndex((line) => line.includes("◆ 3 subagents"))
     const rows = frames.started.slice(dock + 1, dock + 4).map((line) => line.trim())
     WORKERS.forEach((worker, index) =>
-      expect(rows[index]).toMatch(new RegExp(`^◆ general  ${worker.title} +[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] .+ · \\d+s$`)),
+      expect(rows[index]).toMatch(new RegExp(`^[◇◈◆] general gpt  ${worker.title} +.+ · \\d+s$`)),
     )
   })
 
   test("inside a subagent the rows sit above the picker and mark the one shown", () => {
     for (const frame of [frames.clicked, frames.child, frames.sibling]) {
       const worker = shown(frame)
-      const rows = frame.filter((line) => /^ (›| ) ◆ general  /.test(line))
+      const rows = frame.filter((line) => /^ (›| ) \S general gpt  /.test(line))
       expect(rows).toHaveLength(WORKERS.length)
-      expect(rows.filter((line) => line.startsWith(" › "))).toEqual([expect.stringContaining(`◆ general  ${worker?.title ?? "?"}`)])
+      expect(rows.filter((line) => line.startsWith(" › "))).toEqual([expect.stringContaining(`general gpt  ${worker?.title ?? "?"}`)])
     }
   })
 

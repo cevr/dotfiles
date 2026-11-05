@@ -73,8 +73,8 @@ describe.skipIf(!fork)("the Queue section of the sidebar", () => {
       expect(column.some((line) => line.includes("Forgotten worker"))).toBe(false)
       expect(column.every((line) => [...line].length <= 37)).toBe(true)
       // Both subagents are Prime's rows beneath the composer, with the sidebar open.
-      expect(set).toMatch(/^ ◆ implementor +Fix money parsing /m)
-      expect(set).toMatch(/^ ◆ worker +Forgotten worker /m)
+      expect(set).toMatch(/^ [◇◈◆] implementor gpt +Fix money parsing /m)
+      expect(set).toMatch(/^ [◇◈◆] worker +gpt +Forgotten worker /m)
 
       const patched = readFileSync(join(out, `queue-${via}-patched.txt`), "utf8")
       expect(patched).toContain("✓ Close old Claude panes")

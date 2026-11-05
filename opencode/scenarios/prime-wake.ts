@@ -127,7 +127,7 @@ export default OpenCodeDriver.use(
           console.log("screenshot:", yield* ui.screenshot(name))
         })
       const waiting = (frame: string, worker: Worker) =>
-        frame.split("\n").some((line) => line.includes(worker.description) && line.includes("waiting on sleep 3"))
+        frame.split("\n").some((line) => line.includes(`◈ worker gpt  ${worker.description}  ${WAITING} · `))
       const heard = (frame: string, worker: Worker) => frame.includes(worker.heard) || frame.includes(TOO_EARLY)
 
       yield* ui.submit(ASK)

@@ -28,6 +28,13 @@ describe("fromFamily", () => {
         session("root", { parentID: undefined, messages: [launch("run", "Fix money parsing"), notice("old", "completed", 5), notice("gone", "cancelled", 6)] }),
         session("run", { agent: "implementor", time: { created: 1, busy: now - 65_000 }, running: true, messages: [thought("Check the money parser first. Then test.")] }),
         session("ask", { agent: "worker", title: "Ask", time: { created: 2 }, running: true, permissions: ["edit src/a.ts"] }),
+        session("hold", {
+          agent: "worker",
+          title: "Hold",
+          time: { created: 2 },
+          running: true,
+          messages: [{ type: "assistant", parts: [{ type: "call", tool: "bash", status: "running", input: { command: "sleep 60" }, metadata: {} }] }],
+        }),
         session("old", { agent: "verifier", title: "Old", time: { created: 3 } }),
         session("gone", { agent: "worker", title: "Gone", time: { created: 4 } }),
         session("bad", { agent: "worker", title: "Bad", outcome: "failed", time: { created: 5, idle: 7 } }),
@@ -37,6 +44,7 @@ describe("fromFamily", () => {
     expect([...fromFamily(family)]).toEqual([
       ["run", { state: "running" }],
       ["ask", { state: "blocked" }],
+      ["hold", { state: "waiting" }],
       ["old", { state: "done", since: 5 }],
       ["gone", { state: "failed", since: 6 }],
       ["bad", { state: "failed", since: 7 }],

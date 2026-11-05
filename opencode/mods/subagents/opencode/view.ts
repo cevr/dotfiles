@@ -12,6 +12,7 @@ export type SessionInfo = {
   readonly parentID?: string | null
   readonly title?: string
   readonly agent?: string
+  readonly model?: { readonly id: string }
   readonly outcome?: string
   readonly time?: { readonly created: number; readonly busy?: number; readonly idle?: number; readonly updated?: number }
 }
@@ -61,16 +62,26 @@ function operation(value: unknown): Call | undefined {
   }
 }
 
-/** A part of an assistant message: its words, or a tool call; undefined for any other part. */
-function part(value: unknown): Part | undefined {
+/**
+ * A part of an assistant message: its words, or a tool call; undefined for
+ * any other part. `step` is when its message last moved (its end, else its
+ * first output, else its start): a text part carries no time of its own.
+ */
+function part(value: unknown, step: number | undefined): Part | undefined {
   const fields = record(value)
-  if (fields.type === "text" || fields.type === "reasoning") return { type: "words", text: string(fields.text) ?? "" }
+  if (fields.type === "text" || fields.type === "reasoning") {
+    const own = record(fields.time)
+    const at = number(own.completed) ?? number(own.created) ?? step
+    return { type: "words", text: string(fields.text) ?? "", ...(at === undefined ? {} : { at }) }
+  }
   if (fields.type !== "tool") return undefined
   const state = record(fields.state)
   const status = STATUSES.find((known) => known === state.status)
   if (status === undefined) return undefined
   const error = string(record(state.error).message)
-  const completed = number(record(fields.time).completed)
+  const time = record(fields.time)
+  const started = number(time.ran) ?? number(time.created)
+  const completed = number(time.completed)
   // A streaming call has no metadata yet; a running one carries its live progress (a subagent's sessionID).
   const metadata = status === "streaming" ? {} : record(state.metadata)
   const calls = list(metadata.operations).flatMap((item) => operation(item) ?? [])
@@ -81,6 +92,7 @@ function part(value: unknown): Part | undefined {
     input: record(state.input),
     metadata,
     ...(error === undefined ? {} : { error }),
+    ...(started === undefined ? {} : { started }),
     ...(completed === undefined ? {} : { completed }),
     ...(calls.length === 0 ? {} : { calls }),
   }
@@ -95,7 +107,9 @@ function message(value: unknown): Message | undefined {
   const fields = record(value)
   if (fields.type === "assistant") {
     const agent = string(fields.agent)
-    const parts = list(fields.content).flatMap((item) => part(item) ?? [])
+    const time = record(fields.time)
+    const step = number(time.completed) ?? number(time.streamed) ?? number(time.created)
+    const parts = list(fields.content).flatMap((item) => part(item, step) ?? [])
     return { type: "assistant", ...(agent === undefined ? {} : { agent }), parts }
   }
   if (fields.type !== "synthetic") return undefined
@@ -110,14 +124,25 @@ function message(value: unknown): Message | undefined {
   return { type: "notice", childID, state, at, text: string(fields.text) ?? "" }
 }
 
+/** The model the latest assistant step ran on, by id. */
+const stepModel = (items: ReadonlyArray<unknown>): string | undefined =>
+  items.flatMap((item) => {
+    const fields = record(item)
+    const id = fields.type === "assistant" ? string(record(fields.model).id) : undefined
+    return id ? [id] : []
+  }).at(-1)
+
 function session(reads: Reads, id: string): Session {
   const info = reads.session.get(id)
   const time = info?.time
+  const items = reads.session.message.list(id)
+  const model = stepModel(items) ?? info?.model?.id
   return {
     id,
     ...(info?.parentID ? { parentID: info.parentID } : {}),
     ...(info?.title === undefined ? {} : { title: info.title }),
     ...(info?.agent === undefined ? {} : { agent: info.agent }),
+    ...(model ? { model } : {}),
     ...(info?.outcome === undefined ? {} : { outcome: info.outcome }),
     time: {
       created: time?.created ?? 0,
@@ -130,7 +155,7 @@ function session(reads: Reads, id: string): Session {
       [request.action, request.resources[0]].filter(Boolean).join(" "),
     ),
     questions: (reads.session.form.list(id) ?? []).map((form) => form.title),
-    messages: reads.session.message.list(id).flatMap((item) => message(item) ?? []),
+    messages: items.flatMap((item) => message(item) ?? []),
   }
 }
 
