@@ -15,7 +15,7 @@ describe("whollyDisabled", () => {
 
 describe("callable", () => {
   test("leaves out the code tools, the hooked tools and those the rules deny, by their permission", () => {
-    const tools = [{ id: "read" }, { id: "kernel" }, { id: "execute" }, { id: "subagent" }, { id: "edit" }, { id: "write", permission: "edit" }]
+    const tools = [{ id: "read" }, { id: "kernel" }, { id: "execute" }, { id: "subagent" }, { id: "shell" }, { id: "bash" }, { id: "edit" }, { id: "write", permission: "edit" }]
     expect([...callable(tools, []).keys()]).toEqual(["read", "edit", "write"])
     expect([...callable(tools, [{ action: "edit", resource: "*", effect: "deny" }]).keys()]).toEqual(["read"])
   })

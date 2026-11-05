@@ -155,6 +155,7 @@ if (import.meta.main) {
     auth,
     existsSync(gent) ? { package: pool, options: { sources: [{ kind: "gent", dir: gent }] } } : pool,
     pluginDir("orchestrate"),
+    pluginDir("guard"),
     pluginDir("kernel"),
     pluginDir("status"),
   ]
