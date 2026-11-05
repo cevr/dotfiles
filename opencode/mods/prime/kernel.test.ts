@@ -2,12 +2,17 @@
 // fx draws calls, and never as its code.
 import { describe, expect, test } from "bun:test"
 import { canonical, type Call } from "./call.ts"
-import { headerRuns, rows, subject, verb } from "./group.ts"
+import { alone, headerRuns, levelRows, rows, subject, verb } from "./group.ts"
 import { cellCalls, expand, toolsInCode } from "./kernel.ts"
 import type { Fields, ToolPart, ToolState } from "./session.ts"
 
-const kernel = (status: "completed" | "running" | "error", operations: unknown[] | undefined, code = "await sh(`ls`)"): ToolPart => {
-  const input = { code }
+const kernel = (
+  status: "completed" | "running" | "error",
+  operations: unknown[] | undefined,
+  code = "await sh(`ls`)",
+  description?: unknown,
+): ToolPart => {
+  const input: Fields = description === undefined ? { code } : { code, description }
   const metadata: Fields = operations === undefined ? {} : { operations }
   const state: ToolState =
     status === "running"
@@ -93,6 +98,48 @@ describe("a kernel call", () => {
   test("the kernel call left after its recorded calls counts as code while it computes, and only as a failure once it ends", () => {
     expect(header(drawn(kernel("running", [op("read", { path: "a.ts" })])))).toBe("Read 1 file · running code")
     expect(header(drawn(kernel("error", [op("read", { path: "a.ts" })])))).toBe("Read 1 file · 1 failed")
+  })
+})
+
+describe("a kernel call's description", () => {
+  const ops = [op("shell", { command: "git merge skill-dollar" }), op("shell", { command: "bun test" }), op("read", { path: "notes.md" })]
+
+  test("is the header, in the normal text colour, over the rows the cell's calls draw", () => {
+    const calls = drawn(kernel("completed", ops, "await tools.shell(a)", "Merge the skill-dollar worker"))
+    expect(headerRuns(calls)).toEqual([{ text: "Merge the skill-dollar worker", tone: "base" }])
+    expect(lines(calls)).toEqual(["Ran git merge skill-dollar, bun test", "Read notes.md"])
+  })
+
+  test("without one, the header counts what the cell did, as before", () => {
+    const calls = drawn(kernel("completed", ops))
+    expect(headerRuns(calls)).toEqual([{ text: "Ran 2 commands · read 1 file", tone: "muted" }])
+    expect(calls.every((call) => call.cell === undefined)).toBe(true)
+  })
+
+  test("a blank or non-text one counts as none; a multi-line one is one line", () => {
+    expect(header(drawn(kernel("completed", ops, "x", "   ")))).toBe("Ran 2 commands · read 1 file")
+    expect(header(drawn(kernel("completed", ops, "x", 42)))).toBe("Ran 2 commands · read 1 file")
+    expect(header(drawn(kernel("completed", ops, "x", "Merge the\n  worker ")))).toBe("Merge the worker")
+  })
+
+  test("is cut to the width, an ellipsis marking the cut, keeping the failures whole", () => {
+    const failing = [op("read", { path: "a.ts" }), { ...op("read", { path: "x.md" }, "error"), error: "File not found: x.md" }]
+    const runs = headerRuns(drawn(kernel("completed", failing, "x", "Merge the skill-dollar worker")), 20)
+    expect(runs.map((run) => run.text)).toEqual(["Merge th…", " · ", "1 failed"])
+    expect(runs.map((run) => run.text).join("")).toHaveLength(20)
+    expect(runs.map((run) => run.tone)).toEqual(["base", "muted", "error"])
+  })
+
+  test("heads even a group of one row; without one, that row is the group's line alone", () => {
+    const one = [op("shell", { command: "git merge skill-dollar" })]
+    const described = drawn(kernel("completed", one, "x", "Merge the skill-dollar worker"))
+    expect(alone(described, levelRows(described, "details"), "details")).toBe(false)
+    const plain = drawn(kernel("completed", one))
+    expect(alone(plain, levelRows(plain, "details"), "details")).toBe(true)
+    // A cell that recorded nothing still has its description over its own row.
+    const bare = drawn(kernel("completed", undefined, "const x = 1", "Count the lines"))
+    expect(header(bare)).toBe("Count the lines")
+    expect(lines(bare)).toEqual(["Ran a cell"])
   })
 })
 

@@ -4,8 +4,11 @@
 import { toolsInCode } from "./kernel.ts"
 import type { Fields, ToolPart } from "./session.ts"
 
-/** A call with its canonical tool name. */
-export type Call = { readonly tool: string; readonly part: ToolPart }
+/**
+ * A call with its canonical tool name, and, for a kernel cell's call or a
+ * call the cell made, the cell's own description of what it does (kernel.ts).
+ */
+export type Call = { readonly tool: string; readonly part: ToolPart; readonly cell?: string }
 
 /** The host's name for a tool, whatever the model called it (the host's `canonicalToolName`). */
 export function canonical(name: string) {

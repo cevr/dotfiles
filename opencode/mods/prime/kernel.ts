@@ -71,12 +71,28 @@ function kernelError(part: ToolPart): string {
 }
 
 /**
- * A call as the group draws it: a kernel call as the calls its cell made
- * (`canonical` names their tools), any other call as itself.
+ * The model's own words for what a cell does (the kernel input's optional
+ * `description`), on one line; none while the input streams in, for a call
+ * made without one, or for a blank one.
  */
-export function expand(call: Call, canonical: (name: string) => string): Call[] {
-  if (call.tool !== "kernel") return [call]
-  const part = call.part
+export function cellDescription(part: ToolPart): string | undefined {
+  if (part.state.status === "streaming") return undefined
+  const given = part.state.input.description
+  const line = typeof given === "string" ? given.replace(/\s+/g, " ").trim() : ""
+  return line || undefined
+}
+
+/**
+ * A call as the group draws it: a kernel call as the calls its cell made
+ * (`canonical` names their tools), any other call as itself. Each call a
+ * cell stands as carries the cell's description, for the group's header.
+ */
+export function expand(kernel: Call, canonical: (name: string) => string): Call[] {
+  if (kernel.tool !== "kernel") return [kernel]
+  const part = kernel.part
+  const described = cellDescription(part)
+  const cell = described === undefined ? {} : { cell: described }
+  const call: Call = { ...kernel, ...cell }
   const status = part.state.status
   // A cell that ended (interrupted, or its kernel stopped under it) may never close its record:
   // a tool it left running ends as the cell did.
@@ -88,7 +104,7 @@ export function expand(call: Call, canonical: (name: string) => string): Call[] 
         : { ...operation, status: "completed" },
   )
   if (recorded.length === 0) return [call]
-  const calls = recorded.map((operation) => ({ tool: canonical(operation.tool), part: asPart(part, operation) }))
+  const calls = recorded.map((operation): Call => ({ tool: canonical(operation.tool), part: asPart(part, operation), ...cell }))
   const computing = (status === "running" || status === "streaming") && !recorded.some((operation) => operation.status === "running")
   const failedAlone = status === "error" && !recorded.some((operation) => operation.status === "error")
   return computing || failedAlone ? [...calls, call] : calls

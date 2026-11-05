@@ -4,9 +4,17 @@ import { Schema } from "effect"
 import { MAX_DISPLAY_CHARS } from "./limits.ts"
 import { catalog, IMAGE_NOTE, type Reached } from "./tools.ts"
 
-/** The kernel tool's input. */
+/**
+ * The kernel tool's input. `description` is the model's own label for the
+ * cell, which the transcript shows as the call's header; it is optional, so
+ * a call made before it existed still decodes.
+ */
 export const KernelInput = Schema.Struct({
   code: Schema.String.annotate({ description: "TypeScript to run at the kernel's top level" }),
+  description: Schema.optional(Schema.String).annotate({
+    description:
+      'A few words in the present tense saying what this cell does, shown to the user as its header, e.g. "Merge the skill-dollar worker". Give one whenever the cell calls tools or changes anything; leave it out for a quick computation.',
+  }),
   reset: Schema.optional(Schema.Boolean).annotate({ description: "Drop every binding and start an empty kernel first" }),
 })
 export interface KernelInput extends Schema.Schema.Type<typeof KernelInput> {}
@@ -31,6 +39,8 @@ export const description = (limits: Limits, tools?: ReadonlyArray<Reached>) => `
 What persists: top-level bindings (let, const, var, function, class) stay defined for the next kernel call in this session. They also survive a kernel restart: top-level imports and function and class declarations (const f = () => … included) run again from their source, each name at its latest version; then data comes back, cycles included: primitives and BigInt, plain objects, arrays, Map, Set, Date, RegExp, Buffer, typed arrays, errors (type, name, message) and instances of those classes, up to 16 MiB per binding and 256 MiB in all. Closures made inside a function, instances of classes with #private members, promises and other live objects do not. The result names each binding it dropped and why. reset: true starts an empty kernel.
 
 The result is what the code printed (console.log and friends), then the value of its last expression. Top-level await works.
+
+Describing a call: description is a few words in the present tense saying what the cell does ("Merge the skill-dollar worker", "Run the failing tests"); the user sees it as the call's header, over the tool calls the cell made. Give one whenever the cell calls tools or changes anything; leave it out for a quick computation.
 
 ${ATTACH}
 

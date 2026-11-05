@@ -1,7 +1,32 @@
 // The kernel tool's description, as the model reads it.
 import { describe, expect, test } from "bun:test"
-import { description } from "./description.ts"
+import { Schema } from "effect"
+import { description, KernelInput } from "./description.ts"
 import { IMAGE_NOTE } from "./tools.ts"
+
+describe("the input", () => {
+  const decode = Schema.decodeUnknownSync(KernelInput)
+
+  test("takes a short description of what the cell does", () => {
+    expect(decode({ code: "1", description: "Merge the skill-dollar worker" })).toEqual({
+      code: "1",
+      description: "Merge the skill-dollar worker",
+    })
+  })
+
+  test("decodes a call made before the description existed", () => {
+    expect(decode({ code: "await tools.shell({ command: 'ls' })", reset: true })).toEqual({
+      code: "await tools.shell({ command: 'ls' })",
+      reset: true,
+    })
+  })
+
+  test("says, to the model, what the description is for and gives an example", () => {
+    const field = Schema.toJsonSchemaDocument(KernelInput).schema
+    expect(JSON.stringify(field)).toContain("Merge the skill-dollar worker")
+    expect(description({ timeoutMs: 30_000, viewChars: 8_000 })).toContain("the user sees it as the call's header")
+  })
+})
 
 describe("the description", () => {
   test("as the runtime, says the kernel is the only tool and lists the others; as a direct tool, lists none", () => {

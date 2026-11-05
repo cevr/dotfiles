@@ -953,8 +953,11 @@ schedule` is no longer needed for that.
 
 ## The code kernel
 
-`mods/kernel` gives the model a `kernel` tool, `{ code, reset? }`, ported
-from gent's `cell`. It runs TypeScript in one Bun process per session, so
+`mods/kernel` gives the model a `kernel` tool, `{ code, description?, reset? }`, ported
+from gent's `cell`. `description` is a few words in the present tense saying
+what the cell does (`Merge the skill-dollar worker`), for the transcript;
+the tool's input schema and its text ask for one whenever a cell calls tools
+or changes anything. It is optional, so calls made before it still decode. It runs TypeScript in one Bun process per session, so
 top-level bindings persist from call to call, and returns what the code
 printed, then its last expression's value. Its options are `idleMs`,
 `timeoutMs`, `viewChars`, `codeOnly` and `denyExecute` (below). An absent
@@ -1022,6 +1025,11 @@ changing once the call ends. Prime draws a kernel call as these calls, with
 fx's header and rows (`Read 2 files · ran 2 commands`, `├ Read a.ts, b.ts`),
 never as its code; a call with no record names the tools its code calls
 (`Ran a cell calling read, shell`; record-less cells side by side fold into `Ran 3 cells calling shell, write`).
+A cell that gave a `description` has it as its group's header instead of the
+counts, in the normal text colour and cut to the width (the failures and
+cancels after it), over the same rows, even when it made one call; a cell
+without one draws as above. `tests/prime-kernel.test.ts` runs
+`scenarios/prime-kernel.ts` for both.
 
 The model (the domain files at the root of `mods/kernel`):
 

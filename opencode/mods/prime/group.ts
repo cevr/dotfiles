@@ -152,8 +152,16 @@ function tallies(call: Call): Array<{ readonly kind: Kind; readonly units: numbe
   return [{ kind: which, units: which.key === "edit" ? Math.max(1, editedFiles(call.part).length) : 1 }]
 }
 
-/** One stretch of the header or a row, with the tone it is drawn in. */
-export type Run = { readonly text: string; readonly tone: "muted" | "error" | "warning" }
+/** One stretch of the header or a row, with the tone it is drawn in: `base` is the normal text colour. */
+export type Run = { readonly text: string; readonly tone: "base" | "muted" | "error" | "warning" }
+
+/**
+ * What the group's kernel cells say they do (`Call.cell`), in order and once
+ * each; empty when no cell gave a description.
+ */
+export function cellWords(calls: ReadonlyArray<Call>): string {
+  return [...new Set(calls.flatMap((call) => (call.cell === undefined ? [] : [call.cell])))].join(" · ")
+}
 
 /** `text` cut to `width` columns, an ellipsis marking the cut. */
 export function truncate(text: string, width: number) {
@@ -168,6 +176,10 @@ export function truncate(text: string, width: number) {
  * still running, then the failures and the cancels. Only the first phrase is
  * capitalised. Wider than `width` columns, kinds drop from the right; the
  * first kind, the failures and the cancels stay.
+ *
+ * A group whose kernel cell described itself (`cellWords`) reads as that
+ * description instead, in the normal text colour, cut to what the failures
+ * and the cancels leave of `width`; the rows beneath name what it ran.
  */
 export function headerRuns(calls: ReadonlyArray<Call>, width = Number.POSITIVE_INFINITY): Run[] {
   const counts = (running: boolean) => {
@@ -199,6 +211,13 @@ export function headerRuns(calls: ReadonlyArray<Call>, width = Number.POSITIVE_I
     ...(failed ? [{ text: `${failed} failed`, tone: "error" as const }] : []),
     ...(cancelled ? [{ text: `${cancelled} cancelled`, tone: "warning" as const }] : []),
   ]
+  const joined = (runs: ReadonlyArray<Run>) =>
+    runs.flatMap((part, index) => (index === 0 ? [part] : [{ text: " · ", tone: "muted" as const }, part]))
+  const described = cellWords(calls)
+  if (described) {
+    const room = width - tail.reduce((sum, part) => sum + 3 + part.text.length, 0)
+    return joined([{ text: truncate(described, Math.max(1, room)), tone: "base" }, ...tail])
+  }
   const parts = (kept: number): Run[] => [
     ...(kept > 0 ? [{ text: phrases.slice(0, kept).join(" · "), tone: "muted" as const }] : []),
     ...tail,
@@ -206,7 +225,7 @@ export function headerRuns(calls: ReadonlyArray<Call>, width = Number.POSITIVE_I
   const text = (kept: number) => parts(kept).map((part) => part.text).join(" · ")
   let kept = phrases.length
   while (kept > 1 && text(kept).length > width) kept--
-  return parts(kept).flatMap((part, index) => (index === 0 ? [part] : [{ text: " · ", tone: "muted" as const }, part]))
+  return joined(parts(kept))
 }
 
 /** One tree row: a run of calls to one tool with one outcome, named by its first call. */
@@ -261,6 +280,15 @@ export function levelRows(calls: ReadonlyArray<Call>, detail: Detail): Row[] {
 /** The group's last command row once it has ended: the one row whose output shows at Details. */
 export function lastCommand(shown: ReadonlyArray<Row>, running: boolean): Row | undefined {
   return running ? undefined : shown.findLast((row) => row.tool === "shell")
+}
+
+/**
+ * Whether a group's one row stands alone as its line, with no header: a
+ * group of one row below the overview, unless a kernel cell in it described
+ * itself, whose description heads the row.
+ */
+export function alone(calls: ReadonlyArray<Call>, shown: ReadonlyArray<Row>, detail: Detail) {
+  return detail !== "overview" && shown.length === 1 && !cellWords(calls)
 }
 
 /** A tree row's place: its connector (none for a row alone) and whether its body keeps the rail. */

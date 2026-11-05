@@ -34,6 +34,7 @@ import { elapsed } from "../clock.ts"
 import type { Detail } from "../detail.ts"
 import { diffRows, diffSign, numberWidth, type DiffRow } from "../diff.ts"
 import {
+  alone,
   branch,
   callBody,
   edits,
@@ -87,8 +88,8 @@ export function ToolRow(props: PartProps & { tool: string; detail: Accessor<Deta
   const shown = createMemo((): Row[] => levelRows(run(), props.detail()))
   const running = createMemo(() => run().some((call) => outcome(call.part) === "running"))
   const now = useNow(running)
-  // One row needs no header: the row is the group's line.
-  const single = createMemo(() => props.detail() !== "overview" && shown().length === 1)
+  // One row needs no header, the row is the group's line, unless a cell's description heads it.
+  const single = createMemo(() => alone(run(), shown(), props.detail()))
   const glyph = createMemo((): Lead => {
     const lead = groupLead(run(), now())
     return { char: lead.char, color: toneColor(props.host.theme(), lead.tone) }
