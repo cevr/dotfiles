@@ -1,6 +1,6 @@
 // The pinned ask: which prompt governs the top of the view, and its one line.
 import { describe, expect, test } from "bun:test"
-import { governingAsk, isAsk, oneLine, type Message } from "../src/ask"
+import { governingAsk, isAsk, oneLine, type Message } from "./ask.ts"
 
 const user = (id: string, text = `ask ${id}`): Message => ({ id, type: "user", text })
 const other = (id: string, type: string): Message => ({ id, type })

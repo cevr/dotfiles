@@ -1,39 +1,43 @@
 // The fx-style tool-call group, without rendering: a step's run of calls
 // reads as one header (`Read 3 files · ran 2 commands · 1 failed`) with one
 // tree row per run of one tool under it.
-import type { Plugin } from "@opencode/plugin/tui"
-import type { SessionPart } from "@opencode/plugin/tui/context"
-import { cellCalls, expand, operations, toolsInCode } from "./kernel"
+import { close, stretch } from "./burst.ts"
 import {
+  background,
+  canonical,
   editedFiles,
+  errorText,
+  outcome,
+  subagentName,
   toolInput,
   toolMetadata,
   toolOutput,
   toolPreview,
-  subagentName,
+  type Call,
   type EditedFile,
-  type ToolPart,
-} from "./view"
-
-/** A session message, as the plugin API lists them. */
-type SessionMessageInfo = ReturnType<Plugin.Context["data"]["session"]["message"]["list"]>[number]
+  type Outcome,
+} from "./call.ts"
+import { blink } from "./clock.ts"
+import type { Detail } from "./detail.ts"
+import { cellCalls, expand, operations, toolsInCode } from "./kernel.ts"
+import { words, type Message, type Part, type ToolPart } from "./session.ts"
 
 /** Whether a part draws a transcript row: a call, or text or reasoning with words in it. */
-function drawn(part: SessionPart) {
-  if (part.type === "tool") return true
-  if (!("text" in part) || typeof part.text !== "string") return false
-  return part.text.replace("[REDACTED]", "").trim() !== ""
+function drawn(part: Part) {
+  return part.type === "tool" || words(part.text) !== ""
 }
 
-/** The longest pause between two subagent events that still reads as one burst. */
-export const BURST_MS = 60_000
+/** Whether a part ends a run: answer text with words in it. Reasoning and blank text do not. */
+function answer(part: Part | undefined) {
+  return part?.type === "text" && words(part.text) !== ""
+}
 
 /**
  * Whether the transcript row just above a run is a call of another step. The
  * host gives each call its own row, so row gaps cannot tell two steps' groups
  * apart; the group's header adds the blank row between them itself.
  */
-export function followsCall(messages: ReadonlyArray<SessionMessageInfo>, messageID: string, firstPartID: string): boolean {
+export function followsCall(messages: ReadonlyArray<Message>, messageID: string, firstPartID: string): boolean {
   const at = messages.findIndex((message) => message.id === messageID)
   const message = messages[at]
   if (message?.type !== "assistant") return false
@@ -45,41 +49,6 @@ export function followsCall(messages: ReadonlyArray<SessionMessageInfo>, message
   return previous.content.filter(drawn).at(-1)?.type === "tool"
 }
 
-/** How a call stands: still running (or streaming its input), ended well, ended with a warning, failed, or cut short. */
-export type Outcome = "running" | "done" | "warning" | "failed" | "cancelled"
-
-/** Whether a call that ended in error was cut short (the turn's interrupt, a cancel): the host's `aborted` errors. */
-function cut(part: ToolPart) {
-  if (part.state.status !== "error") return false
-  const type = (part.state.error as { type?: unknown } | undefined)?.type
-  return type === "aborted" || type === "tool.interrupted"
-}
-
-export function outcome(part: ToolPart): Outcome {
-  if (part.state.status === "streaming" || part.state.status === "running") return "running"
-  if (part.state.status === "error") return cut(part) ? "cancelled" : "failed"
-  // A command that exits nonzero ended, but not well.
-  const exit = toolMetadata(part).exit
-  if (typeof exit === "number" && exit !== 0) return "warning"
-  return "done"
-}
-
-/** The host's name for a tool, whatever the model called it (the host's `canonicalToolName`). */
-export function canonical(name: string) {
-  if (name === "bash") return "shell"
-  if (name === "task") return "subagent"
-  if (name === "apply_patch") return "patch"
-  return name
-}
-
-/** A call with its canonical tool name. */
-export type Call = { readonly tool: string; readonly part: ToolPart }
-
-/** Whether a part ends a run: answer text with words in it. Reasoning and blank text do not. */
-function answer(part: SessionPart) {
-  return part.type === "text" && typeof part.text === "string" && part.text.replace("[REDACTED]", "").trim() !== ""
-}
-
 /**
  * The run of tool calls around `partID`: one step's calls, as gent draws a
  * run without `acrossSteps`, so each model step (a kernel cell, a batch of
@@ -89,7 +58,7 @@ function answer(part: SessionPart) {
  * calls its cell made (kernel.ts). Empty when `partID` is no tool call of
  * message `at`.
  */
-export function toolRun(messages: ReadonlyArray<SessionMessageInfo>, at: number, partID: string): Call[] {
+export function toolRun(messages: ReadonlyArray<Message>, at: number, partID: string): Call[] {
   const message = messages[at]
   if (message?.type !== "assistant") return []
   const content = message.content
@@ -97,16 +66,16 @@ export function toolRun(messages: ReadonlyArray<SessionMessageInfo>, at: number,
   if (index < 0) return []
   // Back to the start of the run, then forward to its end, both within the step.
   let start = index
-  while (start > 0 && !answer(content[start - 1]!)) start--
+  while (start > 0 && !answer(content[start - 1])) start--
   let end = index
-  while (end < content.length - 1 && !answer(content[end + 1]!)) end++
+  while (end < content.length - 1 && !answer(content[end + 1])) end++
   return content
     .slice(start, end + 1)
     .flatMap((part) => (part.type === "tool" ? expand({ tool: canonical(part.name), part }, canonical) : []))
 }
 
 /** Whether a message is a step that only starts background agents: every row it draws is such a launch. */
-function launches(message: SessionMessageInfo | undefined): boolean {
+function launches(message: Message | undefined): boolean {
   if (message?.type !== "assistant") return false
   const shown = message.content.filter(drawn)
   return (
@@ -115,27 +84,12 @@ function launches(message: SessionMessageInfo | undefined): boolean {
   )
 }
 
-/** Whether `next` starts within the burst window of `previous` ending. */
-function close(previous: SessionMessageInfo, next: SessionMessageInfo) {
-  const end = "completed" in previous.time && typeof previous.time.completed === "number" ? previous.time.completed : previous.time.created
-  return next.time.created - end <= BURST_MS
-}
-
-/** The stretch of messages around `at` that `joins` links pairwise. */
-function stretch<T>(items: ReadonlyArray<T>, at: number, joins: (previous: T, next: T) => boolean) {
-  let start = at
-  while (start > 0 && joins(items[start - 1]!, items[start]!)) start--
-  let end = at
-  while (end < items.length - 1 && joins(items[end]!, items[end + 1]!)) end++
-  return items.slice(start, end + 1)
-}
-
 /**
  * The calls a call's group draws: its step's run, or, for a step that only
  * starts background agents, every such step next to it in the transcript,
  * each starting within the burst window of the one before.
  */
-export function groupRun(messages: ReadonlyArray<SessionMessageInfo>, messageID: string, partID: string): Call[] {
+export function groupRun(messages: ReadonlyArray<Message>, messageID: string, partID: string): Call[] {
   const at = messages.findIndex((message) => message.id === messageID)
   const message = messages[at]
   if (message?.type !== "assistant") return []
@@ -149,47 +103,10 @@ export function groupRun(messages: ReadonlyArray<SessionMessageInfo>, messageID:
   )
 }
 
-/** Whether a message is a subagent's notice that it finished well. */
-function finished(message: SessionMessageInfo | undefined): boolean {
-  if (message?.type !== "synthetic") return false
-  return message.metadata?.source === "subagent" && message.metadata?.state === "completed"
-}
-
-/**
- * The finished-worker notices a notice folds with: the ones next to it, each
- * within the burst window of the one before. Empty for any other message.
- */
-export function noticeBurst(messages: ReadonlyArray<SessionMessageInfo>, messageID: string): SessionMessageInfo[] {
-  const at = messages.findIndex((message) => message.id === messageID)
-  if (!finished(messages[at])) return []
-  return stretch(messages, at, (previous, next) => finished(previous) && finished(next) && close(previous, next))
-}
-
-const titlecase = (word: string) => word.charAt(0).toUpperCase() + word.slice(1)
-
-/** A burst's line: the host's `↳ Worker finished · task` for one, a count of agents and every task for several. */
-export function completionWords(burst: ReadonlyArray<SessionMessageInfo>) {
-  const agent = (message: SessionMessageInfo) =>
-    message.type === "synthetic" && typeof message.metadata?.agent === "string" ? message.metadata.agent : "subagent"
-  const task = (message: SessionMessageInfo) =>
-    message.type === "synthetic" ? (message.description ?? "").replace(/\s+/g, " ").trim() : ""
-  const first = burst[0]
-  if (!first) return { heading: "", suffix: "" }
-  const suffix = burst.map(task).filter(Boolean).join(", ")
-  if (burst.length === 1) return { heading: `↳ ${titlecase(agent(first))} finished`, suffix }
-  // Counted as agents, as the launch group's header counts them.
-  return { heading: `↳ ${burst.length} agents finished`, suffix }
-}
-
 type Kind = { readonly key: string; readonly past: string; readonly running: string; readonly unit: (count: number) => string }
 
 const plural = (word: string) => (count: number) => `${count} ${word}${count === 1 ? "" : "s"}`
 const times = (word: string) => (count: number) => `${word} ${count}×`
-
-/** Whether a subagent call runs in the background: it returns at once, and the agent's reply comes later. */
-export function background(part: ToolPart) {
-  return toolInput(part).background === true
-}
 
 /** What a call does, in words: one kind per tool family, as gent's header names them. */
 export function kind(tool: string, part?: ToolPart): Kind {
@@ -254,20 +171,17 @@ export function truncate(text: string, width: number) {
  */
 export function headerRuns(calls: ReadonlyArray<Call>, width = Number.POSITIVE_INFINITY): Run[] {
   const counts = (running: boolean) => {
-    const order: string[] = []
     const totals = new Map<string, { kind: Kind; count: number }>()
     for (const call of calls) {
       if ((outcome(call.part) === "running") !== running) continue
       for (const tally of tallies(call)) {
         const entry = totals.get(tally.kind.key)
         if (entry) entry.count += tally.units
-        else {
-          order.push(tally.kind.key)
-          totals.set(tally.kind.key, { kind: tally.kind, count: tally.units })
-        }
+        else totals.set(tally.kind.key, { kind: tally.kind, count: tally.units })
       }
     }
-    return order.map((key) => totals.get(key)!)
+    // A Map keeps the order its keys were first set in: the order the kinds ran in.
+    return [...totals.values()]
   }
   const phrase = (entry: { kind: Kind; count: number }, running: boolean, first: boolean) => {
     const verb = running ? entry.kind.running : entry.kind.past
@@ -299,9 +213,14 @@ export function headerRuns(calls: ReadonlyArray<Call>, width = Number.POSITIVE_I
 export type Row = {
   readonly tool: string
   readonly outcome: Outcome
-  readonly calls: ReadonlyArray<ToolPart>
+  readonly calls: readonly [ToolPart, ...ToolPart[]]
   /** The call the row is drawn under: its first. */
   readonly owner: string
+}
+
+/** A row of one call. */
+function single(call: Call): Row {
+  return { tool: call.tool, outcome: outcome(call.part), calls: [call.part], owner: call.part.id }
 }
 
 /**
@@ -318,9 +237,30 @@ export function rows(calls: ReadonlyArray<Call>): Row[] {
     // Each agent keeps its own row: it is a worker to follow, not one of a batch of reads.
     if (last && same && last.outcome === state && !alone && call.tool !== "subagent")
       result[result.length - 1] = { ...last, calls: [...last.calls, call.part] }
-    else result.push({ tool: call.tool, outcome: state, calls: [call.part], owner: call.part.id })
+    else result.push(single(call))
   }
   return result
+}
+
+/** Whether a row ended badly: the collapsed level draws a line for each. */
+export function ended(row: Row) {
+  return row.outcome === "failed" || row.outcome === "warning" || row.outcome === "cancelled"
+}
+
+/**
+ * The tree rows a group shows at a level, in order: a row per call at All,
+ * a row per run of one tool at Details, and only the rows that ended badly
+ * at the overview.
+ */
+export function levelRows(calls: ReadonlyArray<Call>, detail: Detail): Row[] {
+  if (detail === "all") return calls.map(single)
+  const all = rows(calls)
+  return detail === "overview" ? all.filter(ended) : all
+}
+
+/** The group's last command row once it has ended: the one row whose output shows at Details. */
+export function lastCommand(shown: ReadonlyArray<Row>, running: boolean): Row | undefined {
+  return running ? undefined : shown.findLast((row) => row.tool === "shell")
 }
 
 /** A tree row's place: its connector (none for a row alone) and whether its body keeps the rail. */
@@ -337,6 +277,22 @@ export function branch(index: number, count: number, alone: boolean): Branch {
   if (alone) return { rail: false }
   const last = index >= count - 1
   return { connector: last ? "└" : "├", rail: !last }
+}
+
+/** The tone a group's glyph is drawn in. */
+export type LeadTone = "error" | "accent" | "warning" | "muted"
+
+/**
+ * The group's glyph: `✗` when a call failed, a blinking `○`/`●` while one
+ * runs, else `●`, warning-coloured after a nonzero exit or a cancel (a cut
+ * call is no failure, as in gent).
+ */
+export function groupLead(calls: ReadonlyArray<Call>, now: number): { readonly char: string; readonly tone: LeadTone } {
+  const states = calls.map((call) => outcome(call.part))
+  if (states.includes("failed")) return { char: "✗", tone: "error" }
+  if (states.includes("running")) return { char: blink(now) ? "○" : "●", tone: "accent" }
+  if (states.includes("warning") || states.includes("cancelled")) return { char: "●", tone: "warning" }
+  return { char: "●", tone: "muted" }
 }
 
 /**
@@ -378,7 +334,7 @@ export function listed(subjects: ReadonlyArray<string>, width = Number.POSITIVE_
 
 /** A row's subject: what its calls touched, as one line of at most `width` columns' worth of subjects. */
 export function subject(row: Row, width = Number.POSITIVE_INFINITY): string {
-  const first = row.calls[0]!
+  const first = row.calls[0]
   // Cells that recorded no calls (kernel.ts): their count, and the tools their code spells out, once each.
   if (row.tool === "kernel") {
     const names = [...new Set(row.calls.flatMap((part) => toolsInCode(String(toolInput(part).code ?? ""))))]
@@ -411,9 +367,18 @@ export function subject(row: Row, width = Number.POSITIVE_INFINITY): string {
 export function rowEnding(row: Row): Run | undefined {
   if (row.outcome === "cancelled") return { text: "cancelled", tone: "warning" }
   if (row.outcome !== "failed" && row.outcome !== "warning") return undefined
-  const exit = toolMetadata(row.calls[0]!).exit
+  const exit = toolMetadata(row.calls[0]).exit
   if (typeof exit === "number" && exit !== 0) return { text: `exit ${exit}`, tone: "error" }
   return { text: "failed", tone: "error" }
+}
+
+/**
+ * The columns a row's subjects get: what the verb, the running timer and
+ * the ending leave of `width`, each of the last two behind a ` · `.
+ */
+export function subjectRoom(row: Row, width: number, timer: string) {
+  const tail = [timer, rowEnding(row)?.text ?? ""].filter(Boolean).reduce((sum, text) => sum + 3 + text.length, 0)
+  return width - verb(row).length - 1 - tail
 }
 
 /** The narrowest reason a failure line still draws: a word's start and the ellipsis. */
@@ -430,7 +395,7 @@ export function failureRuns(row: Row, width = Number.POSITIVE_INFINITY): Run[] {
   const head = `${verb(row)} ${subject(row)}`.trim()
   if (!ending) return [{ text: truncate(head, width), tone: "muted" }]
   const tail = ` · ${ending.text}`
-  const reason = (errorText(row.calls[0]!).split("\n")[0] ?? "").trim()
+  const reason = (errorText(row.calls[0]).split("\n")[0] ?? "").trim()
   const room = width - head.length - tail.length - 3
   const shown: Run[] = [
     { text: truncate(head, Math.max(verb(row).length, width - tail.length)), tone: "muted" },
@@ -448,14 +413,12 @@ export function verb(row: Row) {
   return row.outcome === "running" ? which.running : which.past
 }
 
+/** Whether a row draws its edited files and their counts in place of a subject. */
+export function edits(row: Row) {
+  return row.tool === "patch" || row.tool === "edit"
+}
+
 /** The edited files of an edit row, with their line counts. */
 export function rowFiles(row: Row) {
   return row.calls.flatMap((part) => editedFiles(part))
-}
-
-/** The full error text of a failed call, for the lines under its row. */
-export function errorText(part: ToolPart): string {
-  if (part.state.status !== "error") return ""
-  const error = part.state.error as { message?: unknown } | undefined
-  return typeof error?.message === "string" ? error.message : ""
 }

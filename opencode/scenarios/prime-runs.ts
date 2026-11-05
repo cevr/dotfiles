@@ -31,7 +31,7 @@ export default OpenCodeDriver.use(
       animations: false,
       tabs: { mode: "off" },
       theme: { name: "prime", mode: "dark" },
-      plugins: [`${root}/mods/prime`],
+      plugins: [`${root}/cmd/prime`],
     },
     tui: { viewport: { cols: 106, rows: 48 } },
     project: {

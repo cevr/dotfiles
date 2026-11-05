@@ -44,6 +44,46 @@ opens; Esc or `q` closes it, and `/pool` from the prompt toggles it.
 model and a scratch home. See [the gamut testbed](testbeds/gamut/README.md).
 It makes no live model request.
 
+## Prime
+
+`cmd/prime` is the Prime look's TUI plugin (`gent.prime`), the composition
+root of `mods/prime`. `daily` loads it first in `cli.json`, with the Prime
+theme. The mod has three parts.
+
+- The domain is the mod's root files, plain TypeScript with no OpenCode,
+  OpenTUI or Solid. It covers what each row says: a tool group's header
+  and tree rows (`group.ts`), a call's preview, counts and time (`call.ts`),
+  a kernel cell's calls (`kernel.ts`), diffs (`diff.ts`), notices
+  (`notice.ts`), a step's end row (`step-end.ts`), the pinned ask
+  (`ask.ts`), subagent navigation (`subagent.ts`), the top bar and dock
+  (`chrome.ts`), and the detail levels with their row gaps (`detail.ts`).
+  `session.ts` holds the session data it reads, typed as plain values.
+- The components are in `tui/`. They read the host only through the `Host`
+  contract in `tui/host.ts`.
+- `opencode/host.ts` builds that `Host` from the plugin context. Each read
+  goes straight to the context, so it stays reactive.
+
+A compaction reads as one line below All, such as
+`◇ Compacted automatically · 171k → 6k tokens · 12.0s` (`compaction.ts`,
+`tui/compaction.tsx`). A manual one says `Compacted`. A failed or cancelled
+one says so in the warning tone, and a running one is the live spinner
+line. The two numbers are the compaction request's own tokens: its prompt
+(the context it compacted), then its output (the summary). The time runs to
+the next message the run writes, because the host keeps no end time on a
+compaction. At All (Ctrl+O) it is the host's whole block, with its rule and
+the summary. This needs the fork's `session.message.compaction` slot. A host
+without the slot draws its own block at every level, but then Prime's
+typecheck fails on the unknown slot name.
+
+`.oxlintrc.json` fences both layers. The domain may import only `effect`,
+`@dotfiles/opencode-subagents/*` and its own root files. `tui/` may not
+import `opencode/` or `@opencode/*`.
+
+`mods/prime/tui.tsx` re-exports `cmd/prime/tui.tsx`. It is there for a
+`cli.json` written before the move, which still loads `mods/prime`. The
+next `bun run daily` replaces that entry with `cmd/prime`, and then the
+shim can go.
+
 ## Orchestrate
 
 `mods/orchestrate` holds the orchestrate skill's rules; its plugin is
@@ -217,11 +257,11 @@ seconds it reads the route's root session's queue over the
 `dotfiles-opencode.queue` RPC (`get({ sessionID })` answers
 `{ revision, items }`) and keeps the answer when its revision moved. An
 item with a `session` shows that subagent's live state (running, blocked,
-done, failed) instead of its own, and a running subagent no item names
-joins the Running group under its call's description. Under a subagent's
-row a second line gives its role, its one-sentence update and its time, as
-the Prime rows do (`  implementor  Check the money… · 1s`). Done items stay
-ten minutes.
+done, failed) as its mark instead of its own state, still one line. The
+section shows only the queue's items: a subagent no item names is not drawn
+there, and no row carries a subagent's role, update or time; Prime's rows
+beneath the composer show the subagents, sidebar open or closed. Done items
+stay ten minutes.
 
 The model, in the domain files at `mods/queue`'s root:
 
@@ -238,7 +278,7 @@ The model, in the domain files at `mods/queue`'s root:
   `memory/` holds the one the seam test uses.
 - `opencode/subagents.ts` maps the shared subagent rows
   (`@dotfiles/opencode-subagents`: `read` from the TUI's data, then its rows)
-  to the board's subagents, every row kept so a linked item outlives the
+  to each session's live state, every row kept so a linked item outlives the
   shared linger.
 
 ## Git

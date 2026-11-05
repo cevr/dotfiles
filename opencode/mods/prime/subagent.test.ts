@@ -1,11 +1,10 @@
 // Moving between a session and its subagents: the child a call opens, the
 // order ←/→ walks, and the hints.
 import { describe, expect, test } from "bun:test"
-import { navigationHint, neighbour, subagentOrder, subagentSession, topTitle, type SessionNode } from "../src/subagent"
-import type { ToolPart } from "../src/view"
+import type { ToolPart, ToolState } from "./session.ts"
+import { navigationHint, neighbour, subagentOrder, subagentSession, topTitle, type SessionNode } from "./subagent.ts"
 
-const part = (state: Record<string, unknown>) =>
-  ({ type: "tool", id: "call_1", name: "subagent", time: { created: 0 }, state }) as unknown as ToolPart
+const part = (state: ToolState): ToolPart => ({ type: "tool", id: "call_1", name: "subagent", time: { created: 0 }, state })
 
 describe("the session a subagent call opens", () => {
   test("is the metadata's sessionID: live while the call runs, final once it returns or fails", () => {

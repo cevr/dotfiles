@@ -64,7 +64,7 @@ export default OpenCodeDriver.use(
       animations: false,
       tabs: { mode: "off" },
       theme: { name: "prime", mode: "dark" },
-      plugins: [`${process.cwd()}/mods/prime`, `${process.cwd()}/cmd/cache`],
+      plugins: [`${process.cwd()}/cmd/prime`, `${process.cwd()}/cmd/cache`],
     },
     // Wide enough for the sidebar to show beside the transcript.
     tui: { viewport: { cols: 144, rows: 40 } },

@@ -1,37 +1,35 @@
 // The fx-style tool group's words, from calls as OpenCode stores them.
 import { describe, expect, test } from "bun:test"
+import { BURST_MS } from "./burst.ts"
+import { canonical, toolInput, type Call } from "./call.ts"
 import {
-  BURST_MS,
   branch,
   callBody,
-  canonical,
-  completionWords,
   failureRuns,
   followsCall,
   groupRun,
   hasBody,
   headerRuns,
   listed,
-  noticeBurst,
   rowEnding,
   rows,
   subject,
   toolRun,
   verb,
-  type Call,
-} from "../src/group"
-import { toolInput, type ToolPart } from "../src/view"
+} from "./group.ts"
+import { completionWords, noticeBurst } from "./notice.ts"
+import type { AssistantMessage, Fields, Message, Part, SyntheticMessage, ToolPart, ToolState } from "./session.ts"
 
 let ids = 0
 function call(
   name: string,
-  input: Record<string, unknown>,
+  input: Fields,
   state: "completed" | "running" | "error" = "completed",
-  metadata: Record<string, unknown> = {},
+  metadata: Fields = {},
 ): ToolPart {
   const id = `call_${++ids}`
   const time = { created: 0, ...(state === "running" ? {} : { completed: 1 }) }
-  if (state === "running") return { type: "tool", id, name, time, state: { status: "running", input } } as unknown as ToolPart
+  if (state === "running") return { type: "tool", id, name, time, state: { status: "running", input, metadata: {} } }
   if (state === "error")
     return {
       type: "tool",
@@ -39,14 +37,27 @@ function call(
       name,
       time,
       state: { status: "error", input, error: { type: "tool.error", message: "File not found: x.md" } },
-    } as unknown as ToolPart
-  return { type: "tool", id, name, time, state: { status: "completed", input, content: [], metadata } } as unknown as ToolPart
+    }
+  return { type: "tool", id, name, time, state: { status: "completed", input, content: [], metadata } }
 }
 /** A call the turn's interrupt cut short, as the host ends it. */
-function cut(name: string, input: Record<string, unknown>, type = "aborted"): ToolPart {
-  const part = call(name, input, "error") as unknown as { state: Record<string, unknown> }
-  return { ...part, state: { ...part.state, error: { type, message: "Tool execution aborted" } } } as unknown as ToolPart
+function cut(name: string, input: Fields, type = "aborted"): ToolPart {
+  const part = call(name, input, "error")
+  return { ...part, state: { status: "error", input, error: { type, message: "Tool execution aborted" } } }
 }
+/** The call `part` with its state changed to `state`. */
+const restated = (part: ToolPart, state: (input: Fields, metadata: Fields) => ToolState): ToolPart => ({
+  ...part,
+  state: state(toolInput(part), part.state.status === "completed" ? (part.state.metadata ?? {}) : {}),
+})
+/** A model step of `content`, made at `created`. */
+const step = (id: string, content: ReadonlyArray<Part>, time: AssistantMessage["time"] = { created: 0 }): AssistantMessage => ({
+  type: "assistant",
+  id,
+  time,
+  content,
+})
+const user = (id: string, text: string): Message => ({ type: "user", id, text, time: { created: 0 } })
 const calls = (...parts: ToolPart[]): Call[] => parts.map((part) => ({ tool: canonical(part.name), part }))
 const words = (list: Call[]) => headerRuns(list).map((run) => run.text).join("")
 const edit = (path: string, additions: number, deletions: number) =>
@@ -94,7 +105,8 @@ describe("cancels and width, as gent's activityHeaderRuns", () => {
     expect(runs.at(-1)).toEqual({ text: "2 cancelled", tone: "warning" })
     const tree = rows(list)
     expect(tree.map((row) => row.outcome)).toEqual(["done", "cancelled", "cancelled"])
-    expect(rowEnding(tree[1]!)).toEqual({ text: "cancelled", tone: "warning" })
+    const [, second] = tree
+    expect(second && rowEnding(second)).toEqual({ text: "cancelled", tone: "warning" })
   })
 
   test("narrow, kinds drop from the right; the first kind and the failures stay", () => {
@@ -116,18 +128,21 @@ describe("cancels and width, as gent's activityHeaderRuns", () => {
     expect(listed(["a.ts", "b.ts", "c.ts"], 13)).toBe("a.ts, b.ts +1")
     expect(listed(["a-long-name.ts", "b.ts"], 4)).toBe("a-long-name.ts +1")
     const reads = rows(calls(call("read", { path: "a.ts" }), call("read", { path: "b.ts" }), call("read", { path: "c.ts" })))
-    expect(subject(reads[0]!, 13)).toBe("a.ts, b.ts +1")
+    const [first] = reads
+    expect(first && subject(first, 13)).toBe("a.ts, b.ts +1")
   })
 
   test("a failure's collapsed line: verb and subject, its ending, then the reason while it fits", () => {
     const [failed] = rows(calls(call("read", { path: "x.md" }, "error")))
-    const line = (width?: number) => failureRuns(failed!, width).map((run) => run.text).join("")
+    expect(failed).toBeDefined()
+    if (!failed) return
+    const line = (width?: number) => failureRuns(failed, width).map((run) => run.text).join("")
     expect(line()).toBe("Read x.md · failed · File not found: x.md")
     expect(line(28)).toBe("Read x.md · failed · File n…")
     expect(line(18)).toBe("Read x.md · failed")
-    expect(failureRuns(failed!).find((run) => run.text === "failed")?.tone).toBe("error")
+    expect(failureRuns(failed).find((run) => run.text === "failed")?.tone).toBe("error")
     const [exited] = rows(calls(call("bash", { command: "pytest" }, "completed", { exit: 1 })))
-    expect(failureRuns(exited!).map((run) => run.text).join("")).toBe("Ran pytest · exit 1")
+    expect(exited && failureRuns(exited).map((run) => run.text).join("")).toBe("Ran pytest · exit 1")
   })
 })
 
@@ -147,7 +162,9 @@ describe("the tree rows", () => {
       "Ran pytest [warning]",
       "Ran pytest -x [warning]",
     ])
-    expect(tree[0]!.owner).toBe(list[0]!.part.id)
+    const [row] = tree
+    const [owner] = list
+    expect(row?.owner).toBe(owner?.part.id)
   })
 
   test("a background subagent call reads as started, and does not fold with a foreground one", () => {
@@ -162,12 +179,14 @@ describe("the tree rows", () => {
 
   test("a running call reads in the running tense; a subagent names its agent and task", () => {
     const tree = rows(calls(call("task", { agent: "code-reviewer", prompt: "Review the diff." }, "running")))
-    expect(`${verb(tree[0]!)} ${subject(tree[0]!)}`).toBe("Running code-reviewer · Review the diff.")
+    const [row] = tree
+    expect(row && `${verb(row)} ${subject(row)}`).toBe("Running code-reviewer · Review the diff.")
   })
 
   test("a subagent with a description reads as that description alone, without its prompt", () => {
     const tree = rows(calls(call("subagent", { agent: "general", description: "Fix money parsing", prompt: "Task 1: a long brief." })))
-    expect(`${verb(tree[0]!)} ${subject(tree[0]!)}`).toBe("Ran Fix money parsing")
+    const [row] = tree
+    expect(row && `${verb(row)} ${subject(row)}`).toBe("Ran Fix money parsing")
   })
 })
 
@@ -189,34 +208,32 @@ describe("the tree's connectors and rail, at every level", () => {
 
 describe("what hangs under a call at the all level", () => {
   /** A finished call with `output` as its text content. */
-  const said = (part: ToolPart, output: string) => {
-    const done = part as unknown as { state: Record<string, unknown> }
-    return { ...done, state: { ...done.state, content: [{ type: "text", text: output }] } } as unknown as ToolPart
-  }
-  const [patch] = calls(said(edit("src/net.py", 1, 1), "Success. Updated src/net.py"))
-  const [reply] = calls(said(call("task", { agent: "code-reviewer", prompt: "Review." }), "Approved."))
-  const [started] = calls(said(call("subagent", { description: "fix-a", prompt: "A", background: true }), "Started."))
-  const [missing] = calls(call("read", { path: "x.md" }, "error"))
+  const said = (part: ToolPart, output: string) =>
+    restated(part, (input, metadata) => ({ status: "completed", input, metadata, content: [{ type: "text", text: output }] }))
+  const one = (part: ToolPart): Call => ({ tool: canonical(part.name), part })
+  const patch = one(said(edit("src/net.py", 1, 1), "Success. Updated src/net.py"))
+  const reply = one(said(call("task", { agent: "code-reviewer", prompt: "Review." }), "Approved."))
+  const started = one(said(call("subagent", { description: "fix-a", prompt: "A", background: true }), "Started."))
+  const missing = one(call("read", { path: "x.md" }, "error"))
 
   test("a patch hangs its files' diffs, never its output", () => {
-    const body = callBody(patch!)
+    const body = callBody(patch)
     expect(body.files.map((file) => file.path)).toEqual(["src/net.py"])
     expect(body.output).toBe("")
     expect(hasBody(body)).toBe(true)
   })
 
   test("a foreground agent that finished hangs its Agent message line and its reply; a background launch only its output", () => {
-    expect(callBody(reply!)).toEqual({ files: [], reply: true, output: "Approved." })
-    expect(callBody(started!)).toEqual({ files: [], reply: false, output: "Started." })
+    expect(callBody(reply)).toEqual({ files: [], reply: true, output: "Approved." })
+    expect(callBody(started)).toEqual({ files: [], reply: false, output: "Started." })
   })
 
   test("a failed read with no output hangs nothing, so no rail is drawn under it", () => {
-    expect(hasBody(callBody(missing!))).toBe(false)
+    expect(hasBody(callBody(missing))).toBe(false)
   })
 })
 
 describe("a run, as one step's group", () => {
-  const step = (id: string, content: unknown[]) => ({ type: "assistant", id, time: { created: 0 }, content }) as never
   const ids = (run: Call[]) => run.map((item) => item.part.id)
 
   test("is one step's calls: reasoning and blank text between them do not end it, the step's edge does", () => {
@@ -234,7 +251,7 @@ describe("a run, as one step's group", () => {
     const [a, b, c] = [call("read", { path: "a" }), call("read", { path: "b" }), call("read", { path: "c" })]
     const messages = [
       step("m1", [a, { type: "text", text: "Found it." }, b]),
-      { type: "user", id: "u1", text: "go on" } as never,
+      user("u1", "go on"),
       step("m2", [c]),
     ]
     expect(ids(toolRun(messages, 0, a.id))).toEqual([a.id])
@@ -244,7 +261,6 @@ describe("a run, as one step's group", () => {
 })
 
 describe("a message between two calls starts a new group", () => {
-  const step = (id: string, content: unknown[]) => ({ type: "assistant", id, time: { created: 0 }, content }) as never
   const ids = (run: Call[]) => run.map((item) => item.part.id)
 
   test("a one-line intermediate text in the next step splits the calls into two groups", () => {
@@ -255,15 +271,15 @@ describe("a message between two calls starts a new group", () => {
   })
 
   test("a user message, a steer, a synthetic notice or a compaction between calls splits them", () => {
-    const between = [
+    const between: Message[] = [
       { type: "user", id: "x", text: "also read the notes", time: { created: 0 } },
       { type: "synthetic", id: "x", text: "Shell finished", metadata: { source: "shell" }, time: { created: 0 } },
       { type: "synthetic", id: "x", text: "Notice", metadata: { source: "subagent", state: "completed" }, time: { created: 0 } },
-      { type: "compaction", id: "x", time: { created: 0 } },
+      { type: "compaction", id: "x", status: "completed", reason: "auto", summary: "", time: { created: 0 } },
     ]
     for (const message of between) {
       const [a, b] = [call("read", { path: "a" }), call("read", { path: "b" })]
-      const messages = [step("m1", [a]), message as never, step("m2", [b])]
+      const messages = [step("m1", [a]), message, step("m2", [b])]
       expect(ids(groupRun(messages, "m1", a.id))).toEqual([a.id])
       expect(ids(groupRun(messages, "m2", b.id))).toEqual([b.id])
     }
@@ -279,9 +295,10 @@ describe("a message between two calls starts a new group", () => {
 
   test("each kernel cell, one per step, is a group of its own, the running one the newest", () => {
     const cell = (status: "completed" | "running", command: string) => {
-      const part = call("kernel", { code: "await tools.shell({})" }) as unknown as { state: Record<string, unknown> }
       const operations = [{ tool: "shell", status, input: { command } }]
-      return { ...part, state: { ...part.state, status, metadata: { operations } } } as unknown as ToolPart
+      return restated(call("kernel", { code: "await tools.shell({})" }), (input) =>
+        status === "running" ? { status, input, metadata: { operations } } : { status, input, content: [], metadata: { operations } },
+      )
     }
     const [first, second, live] = [cell("completed", "git status"), cell("completed", "bun test"), cell("running", "bun run gate")]
     const messages = [step("m1", [first]), step("m2", [second]), step("m3", [{ type: "reasoning", text: "Gate." }, live])]
@@ -306,7 +323,7 @@ describe("a message between two calls starts a new group", () => {
 })
 
 describe("the blank row between groups", () => {
-  const assistant = (id: string, content: unknown[]) => ({ type: "assistant", id, content }) as never
+  const assistant = (id: string, content: ReadonlyArray<Part>) => step(id, content)
   const [a, b, c] = [call("read", { path: "a" }), call("bash", { command: "ls" }), call("read", { path: "c" })]
 
   test("opens a group whose row above is another step's call", () => {
@@ -316,7 +333,7 @@ describe("the blank row between groups", () => {
 
   test("not after prose, a user message, or empty text that draws nothing", () => {
     expect(followsCall([assistant("m1", [{ type: "text", text: "Looking." }, a])], "m1", a.id)).toBe(false)
-    expect(followsCall([{ type: "user", id: "u1", text: "go" } as never, assistant("m2", [b])], "m2", b.id)).toBe(false)
+    expect(followsCall([user("u1", "go"), assistant("m2", [b])], "m2", b.id)).toBe(false)
     const messages = [assistant("m1", [a, { type: "text", text: "  " }]), assistant("m2", [{ type: "reasoning", text: "" }, b])]
     expect(followsCall(messages, "m2", b.id)).toBe(true)
   })
@@ -329,17 +346,17 @@ describe("the blank row between groups", () => {
 })
 
 describe("subagent launches across steps", () => {
-  const step = (id: string, created: number, content: unknown[]) =>
-    ({ type: "assistant", id, time: { created, completed: created + 500 }, content }) as never
+  const launchStep = (id: string, created: number, content: ReadonlyArray<Part>) =>
+    step(id, content, { created, completed: created + 500 })
   const launch = (description: string) =>
     call("subagent", { agent: "general", description, prompt: "A long brief.", background: true })
 
   test("steps that only start agents, close in time, read as one group with a row per agent", () => {
     const [a, b, c] = [launch("fix-a"), launch("fix-b"), launch("fix-c")]
     const messages = [
-      step("m1", 0, [a]),
-      step("m2", 3_000, [{ type: "reasoning", text: "" }, b]),
-      step("m3", 6_000, [c]),
+      launchStep("m1", 0, [a]),
+      launchStep("m2", 3_000, [{ type: "reasoning", text: "" }, b]),
+      launchStep("m3", 6_000, [c]),
     ]
     for (const [id, part] of [["m1", a], ["m2", b], ["m3", c]] as const)
       expect(groupRun(messages, id, part.id).map((item) => item.part.id)).toEqual([a.id, b.id, c.id])
@@ -350,8 +367,8 @@ describe("subagent launches across steps", () => {
 
   test("a pause past the window, prose, shown reasoning or another call keeps launch steps apart", () => {
     const [a, b] = [launch("fix-a"), launch("fix-b")]
-    const apart = (second: unknown[], at = 3_000) =>
-      groupRun([step("m1", 0, [a]), step("m2", at, second)], "m1", a.id).map((item) => item.part.id)
+    const apart = (second: ReadonlyArray<Part>, at = 3_000) =>
+      groupRun([launchStep("m1", 0, [a]), launchStep("m2", at, second)], "m1", a.id).map((item) => item.part.id)
     expect(apart([b], 500 + BURST_MS + 1)).toEqual([a.id])
     expect(apart([{ type: "text", text: "Now the CSV fix." }, b])).toEqual([a.id])
     expect(apart([{ type: "reasoning", text: "The CSV fix is separate." }, b])).toEqual([a.id])
@@ -361,26 +378,25 @@ describe("subagent launches across steps", () => {
 
   test("only launch steps join across steps: other calls, and a launch beside them, keep to their step", () => {
     const [a, b] = [call("read", { path: "a" }), call("read", { path: "b" })]
-    expect(groupRun([step("m1", 0, [a]), step("m2", 1_000, [b])], "m2", b.id).map((item) => item.part.id)).toEqual([b.id])
+    expect(groupRun([launchStep("m1", 0, [a]), launchStep("m2", 1_000, [b])], "m2", b.id).map((item) => item.part.id)).toEqual([b.id])
     const started = launch("fix-a")
     const read = call("read", { path: "c" })
-    expect(groupRun([step("m1", 0, [started]), step("m2", 1_000, [read])], "m2", read.id).map((item) => item.part.id)).toEqual([read.id])
+    expect(groupRun([launchStep("m1", 0, [started]), launchStep("m2", 1_000, [read])], "m2", read.id).map((item) => item.part.id)).toEqual([read.id])
     const foreground = call("subagent", { description: "review", prompt: "R" })
     const later = launch("fix-a")
-    expect(groupRun([step("m1", 0, [foreground]), step("m2", 1_000, [later])], "m2", later.id)).toHaveLength(1)
+    expect(groupRun([launchStep("m1", 0, [foreground]), launchStep("m2", 1_000, [later])], "m2", later.id)).toHaveLength(1)
   })
 })
 
 describe("completion notices", () => {
-  const done = (id: string, created: number, description: string, metadata: Record<string, unknown> = {}) =>
-    ({
+  const done = (id: string, created: number, description: string, metadata: Fields = {}): SyntheticMessage => ({
       type: "synthetic",
       id,
       text: "Notice",
       description,
       metadata: { source: "subagent", state: "completed", agent: "worker", childID: `ses_${id}`, ...metadata },
       time: { created },
-    }) as never
+    })
   const ids = (burst: ReadonlyArray<{ id: string }>) => burst.map((message) => message.id)
 
   test("finished workers next to each other, close in time, fold into the first notice", () => {
@@ -400,7 +416,7 @@ describe("completion notices", () => {
     const shell = done("n2", 1_000, "bun test", { source: "shell" })
     expect(ids(noticeBurst([done("n1", 0, "fix-a"), shell], "n1"))).toEqual(["n1"])
     expect(ids(noticeBurst([done("n1", 0, "fix-a"), done("n2", BURST_MS + 1, "fix-b")], "n2"))).toEqual(["n2"])
-    const text = { type: "assistant", id: "m1", time: { created: 500 }, content: [{ type: "text", text: "One down." }] } as never
+    const text = step("m1", [{ type: "text", text: "One down." }], { created: 500 })
     expect(ids(noticeBurst([done("n1", 0, "fix-a"), text, done("n2", 1_000, "fix-b")], "n2"))).toEqual(["n2"])
   })
 

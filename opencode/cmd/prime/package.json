@@ -1,0 +1,13 @@
+{
+  "name": "@dotfiles/opencode-cmd-prime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Prime mod's OpenCode TUI plugin: the composition root of @dotfiles/opencode-prime.",
+  "exports": {
+    "./tui": "./tui.tsx"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-prime": "workspace:*"
+  }
+}
