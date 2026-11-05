@@ -4024,19 +4024,44 @@ describe('credential choice, wire extras and quota readings', () => {
       }
     })
 
-    test('a source without peek is not swept: its credential is never resolved for a usage read', async () => {
+    test('a sourced credential with no reading and no good token is resolved to read it, once its reading is recent it is skipped', async () => {
+      const access = `fixture-sourced-${crypto.randomUUID()}`
+      const { ctx, rpcHandlers, source, remove } = withSource(
+        async () => ({ access, expires: Date.now() + HOUR }),
+        async () => undefined,
+      )
+      const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () =>
+        Response.json({
+          five_hour: { utilization: 10, resets_at: null },
+          seven_day: { utilization: 20, resets_at: null },
+        })) as unknown as typeof fetch)
+      try {
+        await plugin.setup(ctx as any)
+        const usage = rpcHandlers.get('credential-quota.anthropic')!.usage!
+        const first = (await usage({ credentialID: 'src:one' })) as any
+        // Unread, so the sweep has the source refresh it: an unread login would drop out of the pool's pace.
+        expect(source.resolve).toHaveBeenCalledTimes(1)
+        expect(first.reading.windows).toContainEqual({ name: '7d', utilization: 0.2 })
+        await usage({ credentialID: 'src:one' })
+        expect(source.resolve).toHaveBeenCalledTimes(1)
+        expect(fetchSpy).toHaveBeenCalledTimes(1)
+      } finally {
+        fetchSpy.mockRestore()
+        remove()
+      }
+    })
+
+    test('a source without peek is resolved for an unread usage read', async () => {
       const { ctx, rpcHandlers, source, remove } = withSource(async () => ({
         access: `fixture-sourced-${crypto.randomUUID()}`,
         expires: Date.now() + HOUR,
       }))
-      const fetchSpy = spyOn(globalThis, 'fetch')
+      const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () =>
+        Response.json({ five_hour: { utilization: 10, resets_at: null }, seven_day: { utilization: 20, resets_at: null } })) as unknown as typeof fetch)
       try {
         await plugin.setup(ctx as any)
-        const answered = (await rpcHandlers.get('credential-quota.anthropic')!
-          .usage!({ credentialID: 'src:one' })) as any
-        expect(answered.reading).toBeNull()
-        expect(fetchSpy).not.toHaveBeenCalled()
-        expect(source.resolve).not.toHaveBeenCalled()
+        await rpcHandlers.get('credential-quota.anthropic')!.usage!({ credentialID: 'src:one' })
+        expect(source.resolve).toHaveBeenCalledTimes(1)
       } finally {
         fetchSpy.mockRestore()
         remove()
