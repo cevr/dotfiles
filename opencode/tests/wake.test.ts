@@ -11,11 +11,11 @@ import { join } from "node:path"
 
 /** The frame's lines, without the sidebar's column. */
 const lines = (frame: string): ReadonlyArray<string> => frame.split("\n").map((line) => line.slice(0, 108).trim())
-/** The dock's wake item: Prime's dock line from its `⏰` on, after the subagents and shells. */
+/** The dock's wake item: Prime's dock line after the subagents and shells, or undefined without one. */
 const trayOf = (frame: string) => {
-  const dock = lines(frame).find((line) => /^◆ \d+ subagents?  ·  ▸ \d+ shells?/.test(line))
-  const at = dock?.indexOf("⏰") ?? -1
-  return at < 0 ? undefined : dock?.slice(at).split("  ·  ")[0]
+  const dock = lines(frame).find((line) => /^◆ \d+ subagents?  ·  \d+ shells?/.test(line))
+  const item = dock?.split("  ·  ").slice(2).join("  ·  ")
+  return item ? item : undefined
 }
 
 interface Request {
@@ -68,7 +68,7 @@ describe.skipIf(!fork)("wakes", () => {
     const fired = wakes(sessions)
 
     // The alarm: the tray counts it while it waits; its fire is one notice row, and the model answers it.
-    expect(trayOf(read("pending.txt"))).toMatch(/^⏰ 1 wake · next \d\d:\d\d$/)
+    expect(trayOf(read("pending.txt"))).toMatch(/^1 wake$/)
     const alpha = lines(read("alpha.txt"))
     expect(alpha.some((line) => /^◈ wake w[0-9a-z]+ · ALPHA: check that the build finished$/.test(line))).toBe(true)
     expect(alpha).toContain("Woke on alpha.")
@@ -80,7 +80,7 @@ describe.skipIf(!fork)("wakes", () => {
 
     // The notice: drawn at its time and counted in the tray, but it starts no turn; the next turn reads it.
     expect(lines(read("notice.txt")).some((line) => /^◈ notice w[0-9a-z]+ · BETA: glance at the deploy$/.test(line))).toBe(true)
-    expect(trayOf(read("notice.txt"))).toBe("⏰ 1 notice")
+    expect(trayOf(read("notice.txt"))).toBe("1 notice")
     const sawBeta = root.findIndex((request) => request.text.includes("Note: BETA"))
     expect(sawBeta).toBeGreaterThan(0)
     expect(root[sawBeta]?.text).toContain("step-after-notice")
@@ -89,7 +89,7 @@ describe.skipIf(!fork)("wakes", () => {
     expect(trayOf(read("after-notice.txt"))).toBeUndefined()
 
     // The monitor: counted with its deadline while it polls, then a wake with the match, the note and the last output.
-    expect(trayOf(read("monitor-pending.txt"))).toMatch(/^⏰ 1 monitor · until \d\d:\d\d$/)
+    expect(trayOf(read("monitor-pending.txt"))).toMatch(/^1 monitor$/)
     expect(lines(read("gamma.txt")).some((line) => /^◈ monitor w[0-9a-z]+ matched · GAMMA: the service is up$/.test(line))).toBe(true)
     const gamma = root.find((request) => request.text.includes("Note: GAMMA"))?.text ?? ""
     expect(gamma).toMatch(/⏰ Monitor w[0-9a-z]+ matched: `.*` printed a match for \/\^READY\$\/ after \d+ checks\./)
@@ -102,7 +102,7 @@ describe.skipIf(!fork)("wakes", () => {
     expect(fired.some((message) => textOf(message).includes("DELTA"))).toBe(false)
 
     // The reload: the plugin activated twice, the second time before the alarm was due, and the alarm fired once, from the second.
-    expect(trayOf(read("reload-pending.txt"))).toMatch(/^⏰ 1 wake · next \d\d:\d\d$/)
+    expect(trayOf(read("reload-pending.txt"))).toMatch(/^1 wake$/)
     const revisions = readFileSync(join(out, "wake-plugin.log"), "utf8").trim().split("\n")
     expect(revisions.map((line) => line.split(" ").slice(0, 2).join(" "))).toEqual(["rev 1", "rev 2"])
     const reloadedAt = Number(revisions[1]?.split(" ")[2])
@@ -124,7 +124,7 @@ describe.skipIf(!fork)("wakes", () => {
       OPENCODE_DRIVE_DB: join(out, "opencode.db"),
     }))
     expect(stdout).toMatch(/screenshot: .*wake-downtime-late\.png/)
-    expect(trayOf(read("pending.txt"))).toMatch(/^⏰ 1 wake · next \d\d:\d\d$/)
+    expect(trayOf(read("pending.txt"))).toMatch(/^1 wake$/)
 
     const stopped = Number(read("stopped.txt"))
     const started = Number(read("started.txt"))

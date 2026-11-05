@@ -70,7 +70,7 @@ export default defineScript({
           writeFileSync(`${out}/wake-downtime-${name}.json`, JSON.stringify(frame))
           console.log("screenshot:", yield* ui.screenshot(`wake-downtime-${name}`))
         })
-      const tray = (frame: string) => frame.split("\n").find((line) => line.includes("⏰")) ?? ""
+      const tray = (frame: string) => frame.split("\n").map((line) => line.trim()).find((line) => /^◆ \d+ subagents?  ·  \d+ shells?/.test(line))?.split("  ·  ").slice(2).join("  ·  ").split(" ".repeat(4))[0] ?? ""
 
       yield* server.launch()
       const tui = yield* tuis.launch("before")

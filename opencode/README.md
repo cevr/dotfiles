@@ -69,7 +69,7 @@ theme. The mod has three parts.
 The dock under the composer counts the session's work:
 
 ```
-◆ 0 subagents  ·  ▸ 1 shell  ·  ⏰ 1 wake · next 14:30
+◆ 0 subagents  ·  1 shell  ·  1 wake
 ```
 
 The wake item shows only while the session has wakes pending or notices
@@ -872,7 +872,7 @@ Prime's dock (see Prime) shows, after the shells, one item while the session
 on screen has entries pending or notices unread:
 
 ```
-⏰ 2 wakes · 1 monitor · next 14:30 · 1 notice
+2 wakes · 1 monitor · 1 notice
 ```
 
 `next` is the soonest alarm in local time (a weekday or a date when not

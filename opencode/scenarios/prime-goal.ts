@@ -103,7 +103,7 @@ export default OpenCodeDriver.use(
 
       // A background shell and a wake: the dock counts both, and shows no goal.
       yield* ui.submit("prime-goal-fixture")
-      yield* until((frame) => frame.includes("Shell and wake set.") && frame.includes("▸ 1 shell") && frame.includes("⏰ 1 wake") && idle(frame))
+      yield* until((frame) => frame.includes("Shell and wake set.") && frame.includes("1 shell  ·  1 wake") && idle(frame))
       yield* keep("dock")
 
       // The goal: two continued rounds, then the reviewer waits on the shell and the session idles, the goal active.

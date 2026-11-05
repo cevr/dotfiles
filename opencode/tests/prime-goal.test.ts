@@ -26,7 +26,7 @@ const hex = (rgba: Rgba) => `#${rgba.slice(0, 3).map((value) => value.toString(1
 /** The line with the needle, without the sidebar's column. */
 const lineOf = (saved: Saved, needle: string | RegExp) =>
   saved.lines.map((line) => line.slice(0, 108).trim()).find((line) => (typeof needle === "string" ? line.includes(needle) : needle.test(line)))
-const DOCK = /^◆ \d+ subagents?  ·  ▸ \d+ shells?/
+const DOCK = /^◆ \d+ subagents?  ·  \d+ shells?/
 /** The foreground of the first cell of `needle` on the first line matching `on` (or holding the needle). */
 function fg(saved: Saved, needle: string, on: string | RegExp = needle) {
   const y = saved.lines.findIndex((line) => (typeof on === "string" ? line.includes(on) : on.test(line.trim())))
@@ -65,9 +65,9 @@ describe.skipIf(!fork)("Prime's dock and goal line", () => {
 
   test("the dock: shells, then the wakes in the success colour; no goal before one is set", () => {
     const dock = frames.dock
-    expect(lineOf(dock, DOCK)).toMatch(/^◆ 0 subagents  ·  ▸ 1 shell  ·  ⏰ 1 wake · next \d\d:\d\d$/)
-    expect(fg(dock, "⏰", DOCK)).toBe(SUCCESS)
-    expect(fg(dock, "▸ 1 shell", DOCK)).toBe(SUCCESS)
+    expect(lineOf(dock, DOCK)).toMatch(/^◆ 0 subagents  ·  1 shell  ·  1 wake$/)
+    expect(fg(dock, "1 wake", DOCK)).toBe(SUCCESS)
+    expect(fg(dock, "1 shell", DOCK)).toBe(SUCCESS)
     // (The session's title, "Goal dock fixture", is the only goal-ish text.)
     expect(dock.lines.some((line) => /[●‖✓◎] goal|\/goal/i.test(line))).toBe(false)
   })
@@ -80,7 +80,7 @@ describe.skipIf(!fork)("Prime's dock and goal line", () => {
     expect(active.lines[at + 1]!.slice(0, 108).trim()).toBe("┃")
     expect(fg(active, "● goal")).toBe(SUCCESS)
     expect(fg(active, "ship the goal dock", "● goal")).toBe(TEXT)
-    expect(lineOf(active, DOCK)).toMatch(/^◆ 0 subagents  ·  ▸ 1 shell  ·  ⏰ 1 wake · next \d\d:\d\d$/)
+    expect(lineOf(active, DOCK)).toMatch(/^◆ 0 subagents  ·  1 shell  ·  1 wake$/)
   })
 
   test("paused: the reason and how to resume or cancel, in the warning colour", () => {
@@ -88,7 +88,7 @@ describe.skipIf(!fork)("Prime's dock and goal line", () => {
     expect(lineOf(paused, "goal paused")).toBe("‖ goal paused · Paused by the user · /goal resume · /goal cancel")
     expect(lineOf(paused, "● goal")).toBeUndefined()
     expect(fg(paused, "‖ goal paused")).toBe(WARNING)
-    expect(lineOf(paused, DOCK)).toMatch(/^◆ 0 subagents  ·  ▸ 1 shell  ·  ⏰ 1 wake · next \d\d:\d\d$/)
+    expect(lineOf(paused, DOCK)).toMatch(/^◆ 0 subagents  ·  1 shell  ·  1 wake$/)
   })
 
   test("resumed: active again, the round count from the resume", () => {
@@ -101,7 +101,7 @@ describe.skipIf(!fork)("Prime's dock and goal line", () => {
   test("cancelled: the goal line is gone; the dock is unchanged", () => {
     const cancelled = frames.cancelled
     expect(lineOf(cancelled, /^[●‖✓] goal/)).toBeUndefined()
-    expect(lineOf(cancelled, DOCK)).toMatch(/^◆ 0 subagents  ·  ▸ 1 shell  ·  ⏰ 1 wake · next \d\d:\d\d$/)
+    expect(lineOf(cancelled, DOCK)).toMatch(/^◆ 0 subagents  ·  1 shell  ·  1 wake$/)
   })
 
   test("goal continuations draw no rows: one row per round's command and answer, no continuation text", () => {

@@ -21,7 +21,7 @@ import { elapsed } from "../clock.ts"
 import { detailHint, type Detail } from "../detail.ts"
 import { GOAL_LINGER_MS, goalLine, goalShown, type Goal } from "../goal.ts"
 import { navigationHint, neighbour, othersWorking, subagentOrder, topTitle } from "../subagent.ts"
-import { WAKE_GLYPH, wakeItem } from "../wakes.ts"
+import { wakeItem } from "../wakes.ts"
 import type { Host } from "./host.ts"
 import { SubagentRows, working } from "./live.tsx"
 import { toneColor } from "./tone.ts"
@@ -147,8 +147,8 @@ function useGoal(host: Host, sessionID: () => string | undefined): Accessor<Goal
   })
 }
 
-/** The cells a dock item takes: its text, the wake glyph two wide. */
-const cellsOf = (text: string) => [...text].length + (text.includes(WAKE_GLYPH) ? 1 : 0)
+/** The cells a dock item takes. */
+const cellsOf = (text: string) => [...text].length
 const DOCK_SEP = "  ·  "
 
 export function Dock(props: { host: Host; sessionID?: string }) {
@@ -166,7 +166,7 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   const terminal = useTerminalDimensions()
   const [measured, setMeasured] = createSignal<number>()
   const subagentText = () => `◆ ${plural(subagents(), "subagent")}`
-  const shellText = () => `▸ ${plural(shells(), "shell")}`
+  const shellText = () => plural(shells(), "shell")
   // The wake item takes what the row has left after the other items.
   const wake = createMemo(() => {
     const reading = wakes()

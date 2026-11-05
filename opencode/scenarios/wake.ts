@@ -136,7 +136,7 @@ export default OpenCodeDriver.use(
           writeFileSync(`${out}/wake-${name}.json`, JSON.stringify(frame))
           if (screenshot) console.log("screenshot:", yield* ui.screenshot(`wake-${name}`))
         })
-      const tray = (frame: string) => frame.split("\n").find((line) => line.includes("⏰")) ?? ""
+      const tray = (frame: string) => frame.split("\n").map((line) => line.trim()).find((line) => /^◆ \d+ subagents?  ·  \d+ shells?/.test(line))?.split("  ·  ").slice(2).join("  ·  ").split(" ".repeat(4))[0] ?? ""
 
       // A 3 s alarm wakes the idle session with its note.
       yield* ui.submit("step-wake")
