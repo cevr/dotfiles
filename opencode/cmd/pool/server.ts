@@ -11,7 +11,8 @@
  * provider's auth plugin over the quota RPC: a reading after each response,
  * the readings it publishes, and a sweep of the usage endpoint every few
  * minutes. Other mods read the pool over its own RPC
- * (`@dotfiles/opencode-pool/status`).
+ * (`@dotfiles/opencode-pool/status`): `pace`, `status`, and `session`, the
+ * account one session is on, named by its login's label.
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `providers`: provider id to integration id, default `{ anthropic: "anthropic" }`.
@@ -26,7 +27,7 @@
  *   configured provider is (unless the config disables it).
  */
 import { Integration, Plugin } from "@opencode/plugin/effect"
-import { Context, Effect, Layer, Schedule, Schema, Stream } from "effect"
+import { Context, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { GentSource, registerCredentialSource } from "@dotfiles/opencode-pool/gent/store"
 import * as Model from "@dotfiles/opencode-pool/model"
@@ -35,7 +36,7 @@ import * as LoginsLive from "@dotfiles/opencode-pool/opencode/logins"
 import * as QuotaLive from "@dotfiles/opencode-pool/opencode/quota"
 import { quotaProtocol } from "@dotfiles/opencode-pool/quota"
 import type { Ledger, Logins, Quota } from "@dotfiles/opencode-pool/service"
-import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
+import { POOL_STATUS, SessionQuery } from "@dotfiles/opencode-pool/status"
 
 export { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 
@@ -198,10 +199,15 @@ export const make = (
         .register(POOL_STATUS, {
           pace: (input) => pool.pace(providerOf(input)).pipe(Effect.orDie),
           status: () => pool.status.pipe(Effect.orDie),
+          // A malformed question names no session: it has no account to name.
+          session: (input) =>
+            Option.match(decodeSessionQuery(input), { onNone: () => Effect.succeed({}), onSome: pool.session }),
         })
         .pipe(Effect.orDie)
     }),
   })
+
+const decodeSessionQuery = Schema.decodeUnknownOption(SessionQuery)
 
 const providerOf = (input: unknown) =>
   typeof input === "object" && input !== null && "providerID" in input ? String(input.providerID) : ""

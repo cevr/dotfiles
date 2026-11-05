@@ -18,7 +18,7 @@ import * as QuotaTest from "@dotfiles/opencode-pool/memory/quota"
 import type { Pace } from "@dotfiles/opencode-pool/pace"
 import type { QuotaReading } from "@dotfiles/opencode-pool/quota"
 import type { PublishedReading } from "@dotfiles/opencode-pool/service"
-import type { PoolsStatus } from "@dotfiles/opencode-pool/status"
+import type { PoolsStatus, SessionAnswer } from "@dotfiles/opencode-pool/status"
 import Pool, { CREDENTIAL_HEADER, live, make } from "./server.ts"
 
 const HOUR = 3_600_000
@@ -174,10 +174,13 @@ const start = (
     const status = Effect.gen(function* () {
       return (yield* (yield* method("status"))({})) as PoolsStatus
     })
+    const session = Effect.fn(function* (query: unknown) {
+      return (yield* (yield* method("session"))(query)) as SessionAnswer
+    })
     /** A host event or a published reading, taken in before the test goes on. */
     const emit = (event: SessionEvent) => Queue.offer(events, event).pipe(Effect.andThen(settle))
     const publish = (reading: PublishedReading) => Queue.offer(published, reading).pipe(Effect.andThen(settle))
-    return { request, respond, retry, idle, pace, status, emit, publish, transforms, quotaIDs, statuses, rpc }
+    return { request, respond, retry, idle, pace, status, session, emit, publish, transforms, quotaIDs, statuses, rpc }
   })
 
 /** Let the plugin's background fibers take in what was just offered: a real moment, on the test clock too. */
@@ -458,6 +461,40 @@ describe("the RPC", () => {
       }),
     ))
 
+  test("session names the login a session is on by its label, with its reading, and nothing for an unpooled provider", () =>
+    scenario(
+      Effect.gen(function* () {
+        const state = world()
+        const plugin = yield* start(undefined, state)
+        // Before any request the pool has listed no login: nothing to name.
+        expect(yield* plugin.session({ sessionID: "ses_1", providerID: "anthropic" })).toEqual({})
+        expect(yield* plugin.request("ses_0")).toBe("cred-a")
+        // Listed now: a session with no request yet sees the pool's pick for it.
+        expect(yield* plugin.session({ sessionID: "ses_1", providerID: "anthropic" })).toMatchObject({
+          account: { pool: "anthropic", credentialID: "cred-b", label: "Anthropic 2", on: "next" },
+        })
+        expect(yield* plugin.request("ses_1")).toBe("cred-b")
+        const at = Date.now()
+        yield* plugin.publish({ credentialID: "cred-b", reading: { at, windows: [{ name: "7d", utilization: 0.41, resetAt: at + HOUR }] } })
+        const placed: SessionAnswer = {
+          account: {
+            pool: "anthropic",
+            credentialID: "cred-b",
+            label: "Anthropic 2",
+            on: "placed",
+            reading: { at, windows: [{ name: "7d", utilization: 0.41, resetAt: at + HOUR }] },
+          },
+        }
+        expect(yield* plugin.session({ sessionID: "ses_1", providerID: "anthropic" })).toEqual(placed)
+        // Without a provider: the pool its newest request went through.
+        expect(yield* plugin.session({ sessionID: "ses_1" })).toEqual(placed)
+        expect(yield* plugin.session({ sessionID: "ses_1", providerID: "openai" })).toEqual({})
+        expect(yield* plugin.session({ sessionID: "ses_never" })).toEqual({})
+        expect(yield* plugin.session({ providerID: "anthropic" })).toEqual({})
+        expect(JSON.stringify(yield* plugin.session({ sessionID: "ses_1" }))).not.toContain("token")
+      }),
+    ))
+
   test("pace on a pool whose logins cannot be read fails, and the hooks and status go on", () =>
     scenario(
       Effect.gen(function* () {
@@ -479,6 +516,8 @@ describe("on the live adapters", () => {
         const plugin = yield* start(undefined, state, live)
         expect(yield* plugin.request("ses_1")).toBe("cred-a")
         expect(yield* plugin.request("ses_2")).toBe("cred-b")
+        // The integration's label names the login a session is on.
+        expect((yield* plugin.session({ sessionID: "ses_2", providerID: "anthropic" })).account?.label).toBe("Anthropic 2")
         state.readings.set("cred-a", { at: Date.now(), windows: [], refusal: { kind: "signin", until: Date.now() + 30 * 60_000 } })
         yield* plugin.respond(401)
         expect(state.storage.has("anthropic/hold/cred-a")).toBe(true)

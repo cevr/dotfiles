@@ -126,6 +126,8 @@ export const ledgerLaws = (name: string, layer: () => Layer.Layer<Ledger>) =>
 /** The logins a Logins implementation reads, for the laws: each readable pool's, in order. No outside store. */
 export interface LoginsWorld {
   readonly logins: ReadonlyMap<PoolId, ReadonlyArray<string>>
+  /** The name the integration shows for a login, by its id; a login absent here has none. */
+  readonly labels: ReadonlyMap<string, string>
 }
 
 export const loginsLaws = (name: string, layer: (world: LoginsWorld) => Layer.Layer<Logins>) =>
@@ -135,7 +137,21 @@ export const loginsLaws = (name: string, layer: (world: LoginsWorld) => Layer.La
         [pool, ["cred-a", "cred-b"]],
         [other, []],
       ]),
+      labels: new Map([["cred-a", "Claude OAuth • 0123ABCD"]]),
     }
+
+    test("names a listed login by its label, and a login without one, or not listed, by its id", () =>
+      check(
+        layer(world),
+        Effect.gen(function* () {
+          const logins = yield* Logins
+          yield* logins.list(pool, true)
+          expect(yield* logins.label(pool, "cred-a")).toBe("Claude OAuth • 0123ABCD")
+          expect(yield* logins.label(pool, "cred-b")).toBe("cred-b")
+          expect(yield* logins.label(pool, "cred-unknown")).toBe("cred-unknown")
+          expect(yield* logins.label(missing, "cred-a")).toBe("cred-a")
+        }),
+      ))
 
     test("lists a pool's logins in order, read now or from the recent list", () =>
       check(

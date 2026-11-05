@@ -20,11 +20,11 @@ import {
   type Event,
   type PoolId,
 } from "./account-pool.ts"
-import { held, lastPlacedAt, placedOn, shouldFailOver, status, type RequestKind } from "./accounts.ts"
+import { held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, type RequestKind } from "./accounts.ts"
 import { poolPace, UNPOOLED, type Pace } from "./pace.ts"
 import type { QuotaReading } from "./quota.ts"
 import { Ledger, Logins, Quota, type LoginsUnavailable } from "./service.ts"
-import type { PoolsStatus } from "./status.ts"
+import type { PoolsStatus, SessionAnswer, SessionQuery } from "./status.ts"
 
 /** The pool's settings, from the plugin's options. */
 export interface Config {
@@ -65,6 +65,8 @@ export class Pool extends Context.Service<
     readonly pace: (providerID: string) => Effect.Effect<Pace, LoginsUnavailable>
     /** Each pool's accounts, holds and readings, and its outside stores. */
     readonly status: Effect.Effect<PoolsStatus, LoginsUnavailable>
+    /** The account a session is on, with its label, hold and reading; nothing when the pool has none to name. */
+    readonly session: (query: SessionQuery) => Effect.Effect<SessionAnswer>
   }
 >()("dotfiles-opencode/pool/Pool") {}
 
@@ -170,15 +172,29 @@ export const layer = (config: Config) =>
       const release = (sessionID: string) =>
         Effect.forEach(every, ({ id, pool }) => apply(pool, id, ReleaseRun.make({ sessionID })), { discard: true })
 
-      const stepEnded = Effect.fn("Pool.stepEnded")(function* (sessionID: string, cost: number) {
-        // The step's event names no model: it belongs to the pool that placed the session's newest request.
+      /** The pool that placed the session's newest request, if any did. */
+      const newest = Effect.fn(function* (sessionID: string) {
         let latest: { readonly where: Pooled; readonly at: number } | undefined
         for (const where of every) {
           const at = lastPlacedAt(yield* SynchronizedRef.get(where.pool), sessionID) ?? -1
           if (latest === undefined || at > latest.at) latest = { where, at }
         }
-        if (latest === undefined || latest.at < 0) return
-        yield* apply(latest.where.pool, latest.where.id, RecordStep.make({ sessionID, cost }))
+        return latest === undefined || latest.at < 0 ? undefined : latest.where
+      })
+
+      const stepEnded = Effect.fn("Pool.stepEnded")(function* (sessionID: string, cost: number) {
+        // The step's event names no model: it belongs to the pool that placed the session's newest request.
+        const where = yield* newest(sessionID)
+        if (where === undefined) return
+        yield* apply(where.pool, where.id, RecordStep.make({ sessionID, cost }))
+      })
+
+      const session = Effect.fn("Pool.session")(function* (query: SessionQuery) {
+        const where = query.providerID === undefined ? yield* newest(query.sessionID) : pooled(query.providerID)
+        if (where === undefined) return {}
+        const found = sessionAccount(yield* SynchronizedRef.get(where.pool), query.sessionID, yield* Clock.currentTimeMillis)
+        if (found === undefined) return {}
+        return { account: { pool: where.id, label: yield* logins.label(where.id, found.credentialID), ...found } }
       })
 
       const follow = Effect.forEach(
@@ -218,6 +234,6 @@ export const layer = (config: Config) =>
         return answer
       }).pipe(Effect.withSpan("Pool.status"))
 
-      return { place, responded, retry, release, stepEnded, follow, sweep, pace, status: poolsStatus }
+      return { place, responded, retry, release, stepEnded, follow, sweep, pace, status: poolsStatus, session }
     }),
   )

@@ -16,7 +16,7 @@
 import { Schema } from "effect"
 import type { AccountPoolState } from "./account-pool.ts"
 import { rankPlacement, type PlacementSlot } from "./placement.ts"
-import type { AccountStatus } from "./status.ts"
+import type { AccountStatus, SessionAccount } from "./status.ts"
 import type { QuotaReading } from "./quota.ts"
 
 const MINUTE = 60_000
@@ -137,6 +137,31 @@ export const shouldFailOver = (state: AccountPoolState, sessionID: string, now: 
   const account = placedOn(state, sessionID, "primary")
   if (account === undefined || !held(state, account, now)) return false
   return state.credentials.some((credentialID) => credentialID !== account && !held(state, credentialID, now))
+}
+
+/**
+ * The account a session is on, as the session method reports it (without the
+ * login's label, which its store holds): where its newest primary request went
+ * out, else, before it has sent one, the pool's pick for its first (`rank`).
+ * The reading counts a window that has reset since as empty. None when the
+ * pool has no account.
+ */
+export const sessionAccount = (
+  state: AccountPoolState,
+  sessionID: string,
+  now: number,
+): Omit<SessionAccount, "pool" | "label"> | undefined => {
+  const placed = placedOn(state, sessionID, "primary")
+  const credentialID = placed ?? rank(state, sessionID, now)[0]
+  if (credentialID === undefined) return undefined
+  const hold = state.holds[credentialID]
+  const reading = freshReading(state, credentialID, now)
+  return {
+    credentialID,
+    on: placed === undefined ? "next" : "placed",
+    ...(hold !== undefined && hold.until > now ? { hold } : {}),
+    ...(reading === undefined ? {} : { reading }),
+  }
 }
 
 /** Each account as the status method reports it. */
