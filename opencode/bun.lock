@@ -93,6 +93,13 @@
         "@dotfiles/opencode-pool": "workspace:*",
       },
     },
+    "cmd/questions": {
+      "name": "@dotfiles/opencode-cmd-questions",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-questions": "workspace:*",
+      },
+    },
     "cmd/queue": {
       "name": "@dotfiles/opencode-cmd-queue",
       "version": "0.0.0",
@@ -186,6 +193,13 @@
         "@dotfiles/opencode-subagents": "workspace:*",
       },
     },
+    "mods/questions": {
+      "name": "@dotfiles/opencode-questions",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+      },
+    },
     "mods/queue": {
       "name": "@dotfiles/opencode-queue",
       "version": "0.0.0",
@@ -236,6 +250,8 @@
 
     "@dotfiles/opencode-cmd-pool": ["@dotfiles/opencode-cmd-pool@workspace:cmd/pool"],
 
+    "@dotfiles/opencode-cmd-questions": ["@dotfiles/opencode-cmd-questions@workspace:cmd/questions"],
+
     "@dotfiles/opencode-cmd-queue": ["@dotfiles/opencode-cmd-queue@workspace:cmd/queue"],
 
     "@dotfiles/opencode-cmd-status": ["@dotfiles/opencode-cmd-status@workspace:cmd/status"],
@@ -257,6 +273,8 @@
     "@dotfiles/opencode-pool": ["@dotfiles/opencode-pool@workspace:mods/pool"],
 
     "@dotfiles/opencode-prime": ["@dotfiles/opencode-prime@workspace:mods/prime"],
+
+    "@dotfiles/opencode-questions": ["@dotfiles/opencode-questions@workspace:mods/questions"],
 
     "@dotfiles/opencode-queue": ["@dotfiles/opencode-queue@workspace:mods/queue"],
 

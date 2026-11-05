@@ -1,16 +1,29 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "ignorePatterns": ["**/node_modules/**", "testbeds/gamut/fixture/**", "out/**", "media/**"],
+  "ignorePatterns": [
+    "**/node_modules/**",
+    "testbeds/gamut/fixture/**",
+    "out/**",
+    "media/**"
+  ],
   "overrides": [
     {
-      "files": ["decider/*.ts"],
+      "files": [
+        "decider/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!bun:test", "!./*.ts"],
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!bun:test",
+                  "!./*.ts"
+                ],
                 "message": "The decider kit imports effect and its own files only."
               }
             ]
@@ -19,14 +32,23 @@
       }
     },
     {
-      "files": ["mods/kernel/*.ts"],
+      "files": [
+        "mods/kernel/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!@dotfiles/decider/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
                 "message": "The kernel domain fence: the kernel's domain files import effect, @dotfiles/decider/*, the kernel's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of the kernel's folders."
               }
             ]
@@ -35,14 +57,23 @@
       }
     },
     {
-      "files": ["mods/pool/*.ts"],
+      "files": [
+        "mods/pool/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!@dotfiles/decider/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
                 "message": "The pool domain fence: the pool's domain files import effect, @dotfiles/decider/*, the pool's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of the pool's folders."
               }
             ]
@@ -51,14 +82,24 @@
       }
     },
     {
-      "files": ["mods/orchestrate/*.ts"],
+      "files": [
+        "mods/orchestrate/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!./agents.json", "!bun:test"],
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!@dotfiles/decider/*",
+                  "!./*.ts",
+                  "!./agents.json",
+                  "!bun:test"
+                ],
                 "message": "The orchestrate domain fence: orchestrate's domain files import effect, @dotfiles/decider/*, orchestrate's own root files (and the generated agents.json) and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of orchestrate's folders."
               }
             ]
@@ -67,14 +108,23 @@
       }
     },
     {
-      "files": ["mods/status/*.ts"],
+      "files": [
+        "mods/status/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!@dotfiles/decider/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
                 "message": "The status domain fence: status's domain files import effect, @dotfiles/decider/*, status's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of status's folders."
               }
             ]
@@ -83,14 +133,20 @@
       }
     },
     {
-      "files": ["mods/status/tui/**"],
+      "files": [
+        "mods/status/tui/**"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["../filestore/**", "../process/**", "../memory/**"],
+                "group": [
+                  "../filestore/**",
+                  "../process/**",
+                  "../memory/**"
+                ],
                 "message": "The status UI fence: the pane's components import the status domain, never an implementation (filestore/, process/, memory/)."
               }
             ]
@@ -99,14 +155,23 @@
       }
     },
     {
-      "files": ["mods/herdr/*.ts"],
+      "files": [
+        "mods/herdr/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!@dotfiles/decider/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
                 "message": "The herdr domain fence: the herdr reporter's domain files import effect, @dotfiles/decider/*, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
               }
             ]
@@ -115,14 +180,22 @@
       }
     },
     {
-      "files": ["mods/guard/*.ts"],
+      "files": [
+        "mods/guard/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
                 "message": "The guard domain fence: the guard's domain files import effect, the guard's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of the guard's folders."
               }
             ]
@@ -131,14 +204,22 @@
       }
     },
     {
-      "files": ["mods/idle-compact/*.ts"],
+      "files": [
+        "mods/idle-compact/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
                 "message": "The idle-compaction domain fence: its domain files import effect, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or its opencode/ folder."
               }
             ]
@@ -147,14 +228,22 @@
       }
     },
     {
-      "files": ["mods/mail/*.ts"],
+      "files": [
+        "mods/mail/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
                 "message": "The mail domain fence: its domain files import effect, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or its opencode/ folder."
               }
             ]
@@ -163,14 +252,20 @@
       }
     },
     {
-      "files": ["mods/subagents/*.ts"],
+      "files": [
+        "mods/subagents/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!./*.ts", "!bun:test"],
+                "group": [
+                  "*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
                 "message": "The subagents fence: the row model is plain TypeScript over a plain view; its root files import each other and bun:test only, never effect, @opencode/*, @opentui/*, solid-js, node:*, bun or its opencode/ folder."
               }
             ]
@@ -179,14 +274,21 @@
       }
     },
     {
-      "files": ["mods/subagents/opencode/*.ts"],
+      "files": [
+        "mods/subagents/opencode/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!../*.ts", "!./*.ts", "!bun:test"],
+                "group": [
+                  "*",
+                  "!../*.ts",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
                 "message": "The subagents reader fence: opencode/ reads the TUI's data through its own narrowed Reads, so it imports the model's root files, its own files and bun:test only; never @opencode/* or a renderer."
               }
             ]
@@ -195,14 +297,22 @@
       }
     },
     {
-      "files": ["mods/cache/*.ts"],
+      "files": [
+        "mods/cache/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
                 "message": "The cache domain fence: the fold, causes and pricing import effect, the cache mod's own root files and bun:test only; never @opencode/*, solid-js, node:*, bun or one of its folders."
               }
             ]
@@ -211,14 +321,23 @@
       }
     },
     {
-      "files": ["mods/cache/opencode/*.ts"],
+      "files": [
+        "mods/cache/opencode/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!../*.ts", "!./*.ts", "!bun:test"],
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!../*.ts",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
                 "message": "The cache reader fence: opencode/ reads the TUI's data through its own narrowed Reads, so it imports effect, the domain's root files, its own files and bun:test only; never @opencode/* or a renderer."
               }
             ]
@@ -227,14 +346,22 @@
       }
     },
     {
-      "files": ["mods/git/*.ts"],
+      "files": [
+        "mods/git/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
                 "message": "The git domain fence: git's domain files import effect, git's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of git's folders."
               }
             ]
@@ -243,14 +370,20 @@
       }
     },
     {
-      "files": ["mods/git/tui/**"],
+      "files": [
+        "mods/git/tui/**"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["../process/**", "../opencode/**", "../laws.ts"],
+                "group": [
+                  "../process/**",
+                  "../opencode/**",
+                  "../laws.ts"
+                ],
                 "message": "The git UI fence: the sidebar and the pane import the git domain, never an implementation (process/, opencode/) or the laws; every read goes through the git RPC."
               }
             ]
@@ -259,14 +392,24 @@
       }
     },
     {
-      "files": ["mods/queue/*.ts"],
+      "files": [
+        "mods/queue/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!@dotfiles/opencode-subagents/*", "!./*.ts", "!bun:test"],
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!@dotfiles/decider/*",
+                  "!@dotfiles/opencode-subagents/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
                 "message": "The queue domain fence: the queue's domain files import effect, @dotfiles/decider/*, the shared subagent rows' root files (@dotfiles/opencode-subagents/*, not its opencode/ reader), their own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
               }
             ]
@@ -275,14 +418,19 @@
       }
     },
     {
-      "files": ["mods/queue/tui/**"],
+      "files": [
+        "mods/queue/tui/**"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["../filestore/**", "../memory/**"],
+                "group": [
+                  "../filestore/**",
+                  "../memory/**"
+                ],
                 "message": "The queue UI fence: the sidebar section imports the queue domain and the TUI's data reader (opencode/), never a store (filestore/, memory/)."
               }
             ]
@@ -291,14 +439,23 @@
       }
     },
     {
-      "files": ["mods/btw/*.ts"],
+      "files": [
+        "mods/btw/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!@dotfiles/decider/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
                 "message": "The btw domain fence: btw's domain files import effect, @dotfiles/decider/*, btw's own root files and bun:test only; never @opencode/*, solid-js, node:*, bun, a vendor package or one of btw's folders."
               }
             ]
@@ -307,14 +464,24 @@
       }
     },
     {
-      "files": ["mods/btw/opencode/*.ts"],
+      "files": [
+        "mods/btw/opencode/*.ts"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["*", "!effect", "!effect/*", "!../*.ts", "!./*.ts", "!../memory/*.ts", "!bun:test"],
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!../*.ts",
+                  "!./*.ts",
+                  "!../memory/*.ts",
+                  "!bun:test"
+                ],
                 "message": "The btw host fence: opencode/ talks to the host through its own narrowed Sessions, SessionData and Entry, so it imports effect, the domain's root files, its own files, the memory World its tests stand on and bun:test only; never @opencode/* or a renderer."
               }
             ]
@@ -323,15 +490,68 @@
       }
     },
     {
-      "files": ["mods/btw/tui/**"],
+      "files": [
+        "mods/btw/tui/**"
+      ],
       "rules": {
         "no-restricted-imports": [
           "error",
           {
             "patterns": [
               {
-                "group": ["../opencode/**", "../laws.ts"],
+                "group": [
+                  "../opencode/**",
+                  "../laws.ts"
+                ],
                 "message": "The btw UI fence: the pane and its controller import the btw domain, never an implementation (opencode/) or the laws; cmd/btw/tui.tsx picks the implementations."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "mods/questions/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "!@dotfiles/decider/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
+                "message": "The questions domain fence: the questions' domain files import effect, @dotfiles/decider/*, their own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "mods/questions/tui/**"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "../memory/**",
+                  "../opencode/**",
+                  "../laws.ts",
+                  "../model.ts"
+                ],
+                "message": "The questions UI fence: the tray and the pane import the questions domain, never the server's model, an implementation (memory/, opencode/) or the laws; every read and answer goes through the questions RPC."
               }
             ]
           }

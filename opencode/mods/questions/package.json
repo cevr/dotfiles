@@ -1,0 +1,14 @@
+{
+  "name": "@dotfiles/opencode-questions",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Background questions: the agent asks with ask_user_async and carries on, on a stated assumption; the user answers later from the tray's /answer pane, and the answer arrives in the session as a message.",
+  "exports": {
+    "./tui/*": "./tui/*.tsx",
+    "./*": "./*.ts"
+  },
+  "dependencies": {
+    "@dotfiles/decider": "workspace:*"
+  }
+}

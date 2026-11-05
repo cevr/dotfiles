@@ -22,9 +22,9 @@ so a new terminal runs it, and `opencode2` stays the stock release. As a `latest
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`mods/anthropic-auth`), the pool (on
-the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction and session mail, the role
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail and background questions, the role
 models, a one-hour prompt cache for Claude
-(`providers.anthropic.settings.cache.ttl: "1h"`) and `autoupdate: false`, and into `cli.json` Prime, status, the queue and the
+(`providers.anthropic.settings.cache.ttl: "1h"`) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork
 change.
 
@@ -592,6 +592,99 @@ asks the `Sessions` contract in `service.ts`, implemented in `opencode/`, with
 the laws in `laws.ts`. `tests/mail.test.ts` runs two exchanges in real
 OpenCode: a ping and its answer between two idle sessions, and a message
 steered into a running one.
+
+## Background questions
+
+`mods/questions` lets an agent ask the owner something without stopping,
+ported from gent's `ask_user_async`. Its plugins are `cmd/questions`
+(`server.ts` and `tui.tsx`); neither takes options.
+
+The server adds the `ask_user_async` tool, a direct tool (a kernel cell calls
+it as `tools.ask_user_async(...)`):
+
+- `ask_user_async({ questions?, withdraw? })` asks 1-3 questions, each
+  `{ question, header?, options?, assume }`: a header of at most 30
+  characters, at most 4 choices with distinct labels, and the assumption the
+  agent works on meanwhile. It returns at once:
+
+  ```
+  Asked in the background; nobody has answered yet:
+  - q1: Which database should the cache use? · assuming SQLite
+  Continue on your assumption now. An answer arrives as a message in this session if the user gives one; if it differs from your assumption, revise the work that rests on it.
+  ```
+
+- Ids are `q1`, `q2`, … per session. Asking the same text again replaces the
+  open question; `withdraw: ["q1"]` takes questions back; at most 8 stay open
+  and a ninth drops the oldest. The receipt names each of these.
+
+The TUI plugin draws, above the composer (the `session.composer.top` slot),
+one line while the session or any of its subagents has questions open:
+
+```
+? 3 open questions · Cache store, Old endpoint, Test runner · /answer
+```
+
+With one question it reads `? 1 open question · <header> · assuming <assume> · /answer`;
+parts drop from the right as the width shrinks. `/answer` opens the pane in
+the line's place, on the oldest question:
+
+```
+? Question 1/3 · Cache store · asked just now
+Which database should the cache use?
+▸ SQLite  assumed · one file, no server
+  Redis
+  Type your own answer
+↑↓ move · enter answer · type your own · ctrl+x dismiss · esc close
+```
+
+The cursor starts on the assumption (a row of its own at the top when no
+choice names it); typing answers in your own words. Enter answers, `ctrl+x`
+twice dismisses (the agent is not told), Esc closes. A subagent's question
+names it: `· from general ·`. The pane closes with the last question.
+
+An answer goes to the session that asked as a synthetic user message,
+steered, so a running session reads it at its next step and an idle one wakes:
+
+```
+Answer to your background question q1 (asked 2026-11-05T12:54:12.125Z):
+Q: Which database should the cache use?
+You assumed: SQLite
+A: Redis
+This differs from your assumption: revise the work that rests on it, and say what you changed.
+```
+
+(or `This is what you assumed: carry on.`). The transcript draws it as one
+notice, `◈ answered · <question> → <answer>`; its metadata is
+`{ source: "questions", answers: [{ id, question, header?, assume, answer, matches }] }`.
+The answer is recorded with the message's id before it is sent, so one that
+did not go (the server stopped) goes again under the same id when the TUI
+next reads or the plugin starts, and the session reads it once. A deleted
+session's questions go.
+
+The questions are kept in the plugin's storage (OpenCode's database), one
+sheet per session. The TUI reads them over the `dotfiles-opencode.questions`
+RPC (`open`, `answer`, `dismiss`), again on its `changed` event and every 2
+seconds.
+
+The model (the domain files at the root of `mods/questions`): `question.ts`
+is the `Questions` aggregate, deciding `Ask`, `Answer`, `Dismiss` and
+`Delivered`; `ask.ts` the tool's input, description and receipt; `reply.ts`
+the answer's message; `tray.ts` and `choices.ts` the line and the pane;
+`model.ts` the `QuestionsModel` that keeps the sheets and sends the answers.
+It asks the `QuestionStore`, `Courier` and `Changes` contracts in
+`service.ts`, implemented in `opencode/` and `memory/`, with the laws in
+`laws.ts`. `tests/questions.test.ts` runs `scenarios/questions.ts` in real
+OpenCode, direct and from a kernel cell.
+
+Where it departs from gent: a subagent may ask (gent refuses it in a child
+session), and its question shows in its parent's tray; ids are per session,
+not `<call>:<n>`, since every call from one kernel cell shares the cell's id;
+`withdraw` is new; questions outlive a restart.
+
+Under `daily`, orchestrate's roles (planner, implementor, verifier, worker)
+are not allowed `ask_user_async`: a role answers to the session that started
+it, which decides what reaches the owner. So in practice the root sessions
+ask, and a subagent asks only outside orchestrate's roles.
 
 ## The code kernel
 

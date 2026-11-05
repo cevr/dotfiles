@@ -1,0 +1,14 @@
+{
+  "name": "@dotfiles/opencode-cmd-questions",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Background questions' OpenCode plugins, the ask_user_async tool and RPC (server) and the tray and /answer pane (tui): the composition root of @dotfiles/opencode-questions.",
+  "exports": {
+    "./server": "./server.ts",
+    "./tui": "./tui.tsx"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-questions": "workspace:*"
+  }
+}
