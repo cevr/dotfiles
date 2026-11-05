@@ -5,10 +5,9 @@
   "type": "module",
   "description": "The orchestrate rules for OpenCode: role subagents in place of the general one, a compaction window per role, and no agent work on the Sabbath.",
   "exports": {
-    "./server": "./src/Orchestrate.plugin.ts"
+    "./*": "./*.ts"
   },
   "dependencies": {
-    "@dotfiles/decider": "workspace:*",
-    "@dotfiles/opencode-pool": "workspace:*"
+    "@dotfiles/decider": "workspace:*"
   }
 }

@@ -45,14 +45,14 @@ It makes no live model request.
 
 ## Orchestrate
 
-`mods/orchestrate` holds the orchestrate skill's rules. It defines the role
-agents and their compaction windows, routes each subagent call to a role,
-holds new starts on the pace, and stops agent work over the Sabbath. Its
-options are `windows`, `log`, `now`, `place`, `fullAgent` and `codex`. An
-absent option takes its default. A malformed one stops the plugin at setup,
-with a message that names it.
+`mods/orchestrate` holds the orchestrate skill's rules; its plugin is
+`cmd/orchestrate`. It defines the role agents and their compaction windows,
+routes each subagent call to a role, holds new starts on the pace, and stops
+agent work over the Sabbath. Its options are `windows`, `log`, `now`,
+`place`, `fullAgent` and `codex`. An absent option takes its default. A
+malformed one stops the plugin at setup, with a message that names it.
 
-The model (the domain files at `mods/pool/`):
+The model (the domain files at `mods/orchestrate/`):
 
 - Facts: `SubagentStarted` (the agent, why it was routed there, and its
   model) and `SubagentFinished` (the child session and how it ended).
@@ -63,18 +63,24 @@ The model (the domain files at `mods/pool/`):
 - Rejections: `SabbathRest` (when work resumes) and `PaceHeld` (whose pace,
   the reason, and when to retry). The call log records each one as a
   `denied` line.
-- Aggregate: `ToolCall`, keyed by the session and call id. Every command
-  goes through its `decide`. A kernel cell's tool calls share the outer
-  call's id, so `decide` never reads state.
-- Values: the Sabbath (`Sabbath.ts`), role routing (`Role.ts`), the
-  compaction windows (`Compaction.ts`) and the pace answers (`Pace.ts`).
+- Aggregate: `ToolCall`, keyed by the session and call id, with its
+  commands, facts and their rejections in `tool-call.ts`. Every command
+  goes through its `decide`; `model.ts` holds the handlers. A kernel cell's
+  tool calls share the outer call's id, so `decide` never reads state.
+- Values: the Sabbath and `SabbathRest` (`sabbath.ts`), role routing
+  (`role.ts`, over `agents.json`), the compaction windows (`compaction.ts`)
+  and the pace answers and `PaceHeld` (`pace.ts`).
 - Views: the call log, `~/.cache/orchestrate/opencode-agents.jsonl`. It has
-  one line per fact or rejection (`CallLine.ts`), and the status pane reads
+  one line per fact or rejection (`call-line.ts`), and the status pane reads
   it.
-- Externals: the pool's pace (`PoolPace`), the Codex admission script
+- Contracts: the pool's pace (`PoolPace`), the Codex admission script
   (`CodexAdmission`), sessions, models, the compaction windows file and the
-  call log. Each one is a `Context.Service` in `domain/`, with a live layer
-  and a test layer in `host/`.
+  call log, each a `Context.Service` in `service.ts`, with what every
+  implementation owes in `laws.ts`. They are implemented in `filestore/`
+  (the call log and compact.json), `opencode/` (sessions, models and the
+  pool's pace over OpenCode's plugin context and RPC) and `codex/` (the
+  admission script); `memory/` holds the doubles the plugin's seam test
+  runs on.
 
 The aggregate stores events, not state. The status pane reads the history
 as the call log, and no command needs the folded state.
