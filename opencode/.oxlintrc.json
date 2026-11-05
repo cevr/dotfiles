@@ -289,6 +289,38 @@
           }
         ]
       }
+    },
+    {
+      "files": ["mods/questions/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
+                "message": "The questions domain fence: the questions' domain files import effect, @dotfiles/decider/*, their own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/questions/tui/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["../memory/**", "../opencode/**", "../laws.ts", "../model.ts"],
+                "message": "The questions UI fence: the tray and the pane import the questions domain, never the server's model, an implementation (memory/, opencode/) or the laws; every read and answer goes through the questions RPC."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }
