@@ -1,0 +1,10 @@
+{
+  "name": "@dotfiles/opencode-guard",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The guard for OpenCode: a shell call that loses work for good (rm -rf of home, root or a repository, git reset --hard, a wide forced git clean) is refused.",
+  "exports": {
+    "./*": "./*.ts"
+  }
+}

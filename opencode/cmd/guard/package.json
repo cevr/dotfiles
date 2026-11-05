@@ -1,0 +1,13 @@
+{
+  "name": "@dotfiles/opencode-cmd-guard",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The guard's OpenCode server plugin: the composition root of @dotfiles/opencode-guard.",
+  "exports": {
+    "./server": "./server.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-guard": "workspace:*"
+  }
+}

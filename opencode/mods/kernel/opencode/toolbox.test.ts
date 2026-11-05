@@ -52,11 +52,11 @@ describe("the registry's bridge", () => {
       execute: (input) => Effect.succeed({ content: `got ${JSON.stringify(input)}` }),
     }
     const reached = await Effect.runPromise(
-      Toolbox.use((toolbox) => toolbox.reach([{ action: "bash", resource: "*", effect: "deny" }])).pipe(
+      Toolbox.use((toolbox) => toolbox.reach([{ action: "glob", resource: "*", effect: "deny" }])).pipe(
         Effect.provide(
           OpenCodeToolbox.layer({
             _tag: "Registry",
-            list: Effect.succeed([strict, { ...strict, id: "bash", description: "runs" }]),
+            list: Effect.succeed([strict, { ...strict, id: "glob", description: "finds" }]),
           }),
         ),
       ),

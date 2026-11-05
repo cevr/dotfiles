@@ -236,6 +236,40 @@ and no work) unless `HERDR_ENV=1` and both `HERDR_PANE_ID` and
 `HERDR_SOCKET_PATH` are set. The server runs as a background service outside
 any pane, so only the TUI can report.
 
+## Guard
+
+`cmd/guard` is a server plugin that refuses a shell command that loses work
+for good, as Claude Code's `claude/hooks/guard-destructive.ts` does. It runs
+in the tool registry's `execute.before` hook for `shell` (and `bash`), so it
+sees a direct call and a kernel cell's `tools.shell`, which the runtime runs
+through the same hooks. The model reads the refusal as the tool's error:
+`guard-destructive: <reason>.`
+
+It refuses:
+
+- a recursive `rm` (with or without `-f`) of the root, your home or a
+  directory holding it, the directory the command runs in or one above it, a
+  `.git` directory, or a repository's root;
+- `git reset --hard`;
+- a forced `git clean` that also takes directories or ignored files (`-d`,
+  `-x`, `-X`), unless it is a dry run.
+
+A force-push passes. Paths resolve against the session's directory, the
+call's `workdir` and each `cd` before the command, with `~` and `$HOME`
+expanded. It reads every command of a line (after `;`, `&&`, `||`, `|`, a
+newline or a subshell), skips `sudo`, `env`, `VAR=1`, `nohup` and `command`
+prefixes, takes neither quoted text nor a heredoc body for a command, and reads the script of
+`sh -c`, `bash -c` and `eval`, as gent's guard floor does. When it cannot
+tell where a call runs, or whether a path is a repository, it refuses. Its
+one option, `home`, defaults to the user's home.
+
+The model (the domain files at the root of `mods/guard`): `verdict.ts`
+decides a command from where it runs and which of its targets are
+repositories, and `shell-line.ts` reads a command line. `model.ts` asks the
+contracts in `service.ts`: `RepoRoots` (`filesystem/`: a path holding `.git`)
+and `SessionDirectories` (`opencode/`: the session's directory), with
+`memory/` implementations for tests and the laws in `laws.ts`.
+
 ## The code kernel
 
 `mods/kernel` gives the model a `kernel` tool, `{ code, reset? }`, ported
@@ -290,7 +324,8 @@ attach(path) to see it" }`, never as base64.
 
 Without `codeOnly` a cell's call runs the tool's own `execute` and skips
 those hooks, which only the registry triggers, so the kernel then offers no
-`subagent`; start agents with the direct tool. `denyExecute` reaches agents
+`subagent` and no `shell` (the guard's hook); start agents and run commands
+with the direct tools. `denyExecute` reaches agents
 that plugins define; an agent defined only in a config file arrives after the
 plugins' transforms and keeps code mode. A call made inside a cell shows as
 the kernel's row in the transcript, not as its own tool row.

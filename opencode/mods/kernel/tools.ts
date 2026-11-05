@@ -33,9 +33,11 @@ export const CODE_TOOLS: ReadonlySet<string> = new Set(["kernel", "execute"])
 /**
  * Tools a cell never reaches because their policy lives in `execute.before`
  * hooks a cell's call skips: `subagent` passes orchestrate's role guard, the
- * pace hold and the Sabbath stop there. Start agents with the direct tool.
+ * pace hold and the Sabbath stop there; `shell` (`bash` before the rename)
+ * passes the guard that refuses a command that loses work for good. Start
+ * agents and run commands with the direct tools.
  */
-export const HOOKED_TOOLS: ReadonlySet<string> = new Set(["subagent"])
+export const HOOKED_TOOLS: ReadonlySet<string> = new Set(["subagent", "shell", "bash"])
 
 /** OpenCode's permission wildcard: `*` is any text, `?` one character, a trailing ` *` optional. */
 export const wildcard = (input: string, pattern: string): boolean => {

@@ -115,6 +115,22 @@
       }
     },
     {
+      "files": ["mods/guard/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!./*.ts", "!bun:test"],
+                "message": "The guard domain fence: the guard's domain files import effect, the guard's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of the guard's folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["mods/subagents/*.ts"],
       "rules": {
         "no-restricted-imports": [

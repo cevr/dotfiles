@@ -21,6 +21,13 @@
         "typescript": "^7",
       },
     },
+    "cmd/guard": {
+      "name": "@dotfiles/opencode-cmd-guard",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-guard": "workspace:*",
+      },
+    },
     "cmd/herdr": {
       "name": "@dotfiles/opencode-cmd-herdr",
       "version": "0.0.0",
@@ -71,6 +78,10 @@
     },
     "mods/anthropic-auth": {
       "name": "@dotfiles/opencode-anthropic-auth",
+      "version": "0.0.0",
+    },
+    "mods/guard": {
+      "name": "@dotfiles/opencode-guard",
       "version": "0.0.0",
     },
     "mods/herdr": {
@@ -140,6 +151,8 @@
 
     "@dotfiles/opencode-anthropic-auth": ["@dotfiles/opencode-anthropic-auth@workspace:mods/anthropic-auth"],
 
+    "@dotfiles/opencode-cmd-guard": ["@dotfiles/opencode-cmd-guard@workspace:cmd/guard"],
+
     "@dotfiles/opencode-cmd-herdr": ["@dotfiles/opencode-cmd-herdr@workspace:cmd/herdr"],
 
     "@dotfiles/opencode-cmd-kernel": ["@dotfiles/opencode-cmd-kernel@workspace:cmd/kernel"],
@@ -151,6 +164,8 @@
     "@dotfiles/opencode-cmd-queue": ["@dotfiles/opencode-cmd-queue@workspace:cmd/queue"],
 
     "@dotfiles/opencode-cmd-status": ["@dotfiles/opencode-cmd-status@workspace:cmd/status"],
+
+    "@dotfiles/opencode-guard": ["@dotfiles/opencode-guard@workspace:mods/guard"],
 
     "@dotfiles/opencode-herdr": ["@dotfiles/opencode-herdr@workspace:mods/herdr"],
 
