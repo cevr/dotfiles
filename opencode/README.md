@@ -79,11 +79,6 @@ typecheck fails on the unknown slot name.
 `@dotfiles/opencode-subagents/*` and its own root files. `tui/` may not
 import `opencode/` or `@opencode/*`.
 
-`mods/prime/tui.tsx` re-exports `cmd/prime/tui.tsx`. It is there for a
-`cli.json` written before the move, which still loads `mods/prime`. The
-next `bun run daily` replaces that entry with `cmd/prime`, and then the
-shim can go.
-
 ## Orchestrate
 
 `mods/orchestrate` holds the orchestrate skill's rules; its plugin is

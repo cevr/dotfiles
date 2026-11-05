@@ -201,9 +201,9 @@ describe("the run's config", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-    const ours = pluginPaths(join(root, "mods"))
-    expect(ours[0]).toBe(join(root, "mods/prime"))
-    expect(ours).not.toContain(join(root, "mods/pool"))
+    const ours = pluginPaths(join(root, "cmd"))
+    expect(ours[0]).toBe(join(root, "cmd/prime"))
+    expect(ours).not.toContain(join(root, "cmd/pool"))
   })
 
   test("a Claude run loads the auth plugin, then the pool, from the project config", () => {
