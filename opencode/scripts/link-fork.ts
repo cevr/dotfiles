@@ -26,6 +26,7 @@ if (!existsSync(path.join(target, "@opencode/plugin"))) {
   process.exit(1)
 }
 
+const forkModules = path.join("packages", "tui", "node_modules") + path.sep
 const root = path.resolve(import.meta.dir, "..")
 const children = (dir: string) => (existsSync(dir) ? readdirSync(dir).map((name) => path.join(dir, name)) : [])
 const packages = [...children(path.join(root, "mods")), ...children(path.join(root, "cmd")), path.join(root, "decider")].filter(
@@ -50,7 +51,8 @@ const merge = (from: string, into: string) => {
     const current = linkOf(link)
     if (current === undefined) symlinkSync(source, link)
     else if (current === "real" && name.startsWith("@") && lstatSync(link).isDirectory()) merge(source, link)
-    else if (current !== "real" && current !== source && current.startsWith(target)) {
+    // A link into this fork, or into another checkout's packages/tui/node_modules, is ours to repoint.
+    else if (current !== "real" && current !== source && current.includes(forkModules)) {
       rmSync(link)
       symlinkSync(source, link)
     }

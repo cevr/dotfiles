@@ -22,8 +22,8 @@ so a new terminal runs it, and `opencode2` stays the stock release. As a `latest
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`mods/anthropic-auth`), the pool (on
-the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists), orchestrate, the guard, the kernel, status and idle compaction, the role
-models and `autoupdate: false`, and into `cli.json` Prime, status and the
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists), orchestrate, the guard, the kernel, status, the queue, git and idle compaction, the role
+models and `autoupdate: false`, and into `cli.json` Prime, status, the queue and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork
 change.
 
@@ -163,6 +163,93 @@ because status decides nothing. It holds a view, values and contracts:
 
 Status stores nothing. Each RPC call reads the call log and the runs again.
 
+## Queue
+
+`mods/queue` is the agent's live queue, shown in the session sidebar; its
+plugins are `cmd/queue` (`server.ts` and `tui.tsx`). The server plugin adds
+the `queue` tool: `set` replaces the calling session's list, `upsert` and
+`remove` patch it by id, and the answer is the list as it now stands. An
+item has an id, one line of text, a state (`needs-you`, `running`,
+`waiting`, `scheduled`, `next`, `done`), an owner (`mine` or `other` with
+`who`), an optional `at` (required when scheduled), `detail`, and `session`:
+the subagent session doing the work. The tool is a direct one, so a kernel
+cell calls it as `tools.queue(...)`. Such a call leaves no tool part in the
+transcript, so the queue is kept in a store, not read from parts. Its one
+option is `dir`, default `$XDG_STATE_HOME/opencode-queue`. A deleted
+session's queue goes.
+
+The TUI plugin appends the Queue section to `sidebar.content`. Every two
+seconds it reads the route's root session's queue over the
+`dotfiles-opencode.queue` RPC (`get({ sessionID })` answers
+`{ revision, items }`) and keeps the answer when its revision moved. An
+item with a `session` shows that subagent's live state (running, blocked,
+done, failed) instead of its own, and a running subagent no item names
+joins the Running group under its call's description. Under a subagent's
+row a second line gives its role, its one-sentence update and its time, as
+the Prime rows do (`  implementor  Check the money… · 1s`). Done items stay
+ten minutes.
+
+The model, in the domain files at `mods/queue`'s root:
+
+- Aggregate: `Queue` (`queue.ts`), deciding `SetQueue` and `PatchQueue` into
+  `QueueChanged` with the list it leads to, or refusing with `InvalidItem`,
+  `UnknownState`, `DuplicateItem`, `UnknownItem` or `UnclearChange`. A change
+  that leaves the list as it is records nothing.
+- Values: an item and its checks (`item.ts`), the board the sidebar draws
+  (`board.ts`), the tool's text (`description.ts`).
+- Handler: `QueueModel` (`model.ts`), which serializes a session's changes and
+  stores the folded list with the next revision.
+- Contract: `QueueStore` in `service.ts`, with what every implementation owes
+  in `laws.ts`. `filestore/` keeps a JSON file per session, written whole;
+  `memory/` holds the one the seam test uses.
+- `opencode/subagents.ts` maps the shared subagent rows
+  (`@dotfiles/opencode-subagents`: `read` from the TUI's data, then its rows)
+  to the board's subagents, every row kept so a linked item outlives the
+  shared linger.
+
+## Git
+
+`mods/git` ports gent's `@gent/git`; its plugins are `cmd/git` (`server.ts`
+and `tui.tsx`). The TUI plugin adds a Git section to the session sidebar
+(`tui/sidebar.tsx`, lines from `sidebar.ts`):
+
+```
+Git
+main · ↑1 ↓2 origin/main
+3 files +40 −12
+#123 Title · open · checks ✓ · review required
+```
+
+It reads when it mounts, when a step of the session ends and every 10
+seconds. A directory in no checkout has no section. A checkout git could not
+read is one muted note. The pull request row needs `gh`. Without `gh`, with
+`gh` signed out, or with no GitHub remote, there is no row. `/git` opens a
+pane (`tui/pane.tsx`, rows from `pane.ts`) that lists the changed files and
+the pull request. In the pane, ↑ and ↓ pick a file. Enter hands the terminal
+to `hunk diff --watch <base> -- <path>`, or to `git --paginate diff` when
+hunk is not on PATH, and the pane says so. The plugin API has no handover,
+so the pane suspends the renderer, runs the command and resumes, as
+OpenCode's external editor does.
+
+The server plugin answers the `dotfiles-opencode.git` RPC (`git.ts`):
+`checkout`, `pullRequest` and `review`, each for one session. It reads the
+session's directory from OpenCode on every call, so a session that moves is
+read where it is. It takes no options. The model has no aggregate:
+
+- Values: the checkout (`checkout.ts`), parsed from `git status
+  --porcelain=v2 --branch -z` and `git diff --numstat -z` against `HEAD`, or
+  the empty tree on an unborn branch, with untracked files counted up to 200
+  files of 512 KiB each. Also the pull request (`pull-request.ts`) from
+  `gh pr view --json`, and the review command (`review.ts`).
+- Handler: `Git` (`model.ts`). It keeps `gh`'s answers by the checkout's
+  root, branch, upstream and ahead and behind counts, for 60 seconds, or 30
+  seconds after a failure. It does not ask again when `gh` is missing.
+- Contracts: `SessionDirectories`, `Checkouts`, `PullRequests` and
+  `Programs` in `service.ts`, with their laws in `laws.ts`. `opencode/`
+  asks the host. `process/` runs git with no optional locks and no index
+  refresh, so a read never takes the agent's `index.lock`. It also runs `gh`
+  and looks up programs on PATH.
+
 ## Herdr
 
 `cmd/herdr` is a TUI plugin that tells [herdr](https://herdr.dev) what the
@@ -191,6 +278,32 @@ state waits, and a failure is never shown. The plugin is inactive (no socket
 and no work) unless `HERDR_ENV=1` and both `HERDR_PANE_ID` and
 `HERDR_SOCKET_PATH` are set. The server runs as a background service outside
 any pane, so only the TUI can report.
+
+## Cache
+
+`cmd/cache` is a TUI plugin that shows when a request paid again for a
+prompt prefix the previous request had cached, why, and what it cost. It
+ports gent's `@gent/cache`. A turn that lost a large prefix (20k tokens or
+$0.10) ends on a row such as:
+
+```
+◌ cache miss · 48k tokens · $0.17 · expired during a 4s shell call
+```
+
+The causes are a model switch, a prefix that changed inside the cache
+lifetime (only on a provider that writes its cache, such as Anthropic), and,
+past the lifetime, the response itself, a tool call, an approval wait, a
+pause, a subagent's report or idle time between turns. The lifetime is the
+model's or provider's `settings.cache.ttl`, else 5 minutes for Anthropic and
+30 minutes for OpenAI. A provider with neither counts only model switches. A
+miss is priced at the cache-write rate for the tokens the request wrote back
+and the input rate for the rest, less the read rate it would have paid.
+
+The sidebar shows `Cache 91% · missed $0.42`: the share of prompt tokens
+read from the cache, and the sum of every miss, for the session and its
+subagents. Everything comes from the session's messages in the TUI; there is
+no server half. Approval waits are seen only while the TUI runs, so a wait
+from before it opened reads as the tool call it held up.
 
 ## Guard
 

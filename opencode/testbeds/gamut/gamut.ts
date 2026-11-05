@@ -888,6 +888,7 @@ const prepareAndLaunch = async (
   const plugins: ReadonlyArray<PluginEntry> = [
     join(CMD, "orchestrate"),
     { package: join(CMD, "status"), options: { log: join(paths.home, ".cache/orchestrate/opencode-agents.jsonl"), statusScript: join(homedir(), ".claude/skills/orchestrate/scripts/status.ts") } },
+    { package: join(CMD, "queue"), options: { dir: join(paths.home, ".local/state/opencode-queue") } },
     ...(usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin, gentStore) : [poolPlugin]),
   ]
   await Bun.write(

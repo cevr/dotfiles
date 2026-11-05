@@ -1,0 +1,14 @@
+{
+  "name": "@dotfiles/opencode-cmd-git",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The git mod's OpenCode plugins, the git RPC (server) and the sidebar's Git section and the /git pane (tui): the composition root of @dotfiles/opencode-git.",
+  "exports": {
+    "./server": "./server.ts",
+    "./tui": "./tui.tsx"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-git": "workspace:*"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@dotfiles/opencode-queue",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The agent's live queue: what runs, waits, is scheduled, comes next or needs the owner, kept per session by the agent and shown in the sidebar.",
+  "exports": {
+    "./tui/*": "./tui/*.tsx",
+    "./*": "./*.ts"
+  },
+  "dependencies": {
+    "@dotfiles/decider": "workspace:*",
+    "@dotfiles/opencode-subagents": "workspace:*"
+  }
+}

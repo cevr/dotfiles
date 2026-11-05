@@ -1,0 +1,71 @@
+// Real OpenCode with the Prime look and the real cache mod (cmd/cache), a
+// scripted model priced like Sonnet whose cache lives 2s: scenarios/cache.ts
+// runs one turn whose 4s shell call outlives the cache, so the second request
+// writes back the 48k prefix the first one cached. The turn ends on a row that
+// names the miss, its cost and its cause, and the sidebar sums the session.
+import { describe, expect, test } from "bun:test"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+const fork = process.env.OPENCODE_DEV
+if (!fork) console.warn("tests/cache.test.ts: skipped. Set OPENCODE_DEV to the fork.")
+
+type Rgba = readonly [number, number, number, number]
+type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string; fg: Rgba }> }> }
+
+/** Prime's `text.feedback.warning` and `text.muted`. */
+const WARNING = "#f59e0b"
+const MUTED = "#a1a1aa"
+
+const hex = (rgba: Rgba) => `#${rgba.slice(0, 3).map((value) => value.toString(16).padStart(2, "0")).join("")}`
+
+/** The foreground of the cell at column `x` of line `y`. */
+const fgAt = (frame: Frame, y: number, x: number): string => {
+  let start = 0
+  for (const span of frame.lines[y]?.spans ?? []) {
+    if (x < start + span.text.length) return hex(span.fg)
+    start += span.text.length
+  }
+  return `no cell at ${y}:${x}`
+}
+
+describe.skipIf(!fork)("the cache mod in a real TUI", () => {
+  test("a shell call that outlives the cache ends its turn on a priced miss row, and the sidebar sums it", async () => {
+    const out = mkdtempSync(join(tmpdir(), "cache-scenario-"))
+    try {
+      const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/cache.ts"], {
+        cwd: join(import.meta.dir, ".."),
+        env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+      const timeout = join(out, "cache.timeout.txt")
+      if (code !== 0)
+        throw new Error(`the cache scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
+      const text = readFileSync(join(out, "cache.txt"), "utf8")
+      const frame: Frame = JSON.parse(readFileSync(join(out, "cache.json"), "utf8"))
+      const lines = text.split("\n")
+
+      // One miss: the first request had nothing cached before it. 48k missed
+      // tokens, all re-written: 48,000 × ($3.75 − $0.30) / 1M = $0.1656.
+      const rows = lines.flatMap((line, y) => (line.includes("cache miss") ? [y] : []))
+      expect(rows, text).toHaveLength(1)
+      const [y = -1] = rows
+      expect(lines[y], text).toMatch(/^ {2}◌ cache miss · 48k tokens · \$0\.17 · expired during a [45]s shell call(?: {2,}.*)?$/)
+      // It closes the turn: under the final answer.
+      expect(y, text).toBeGreaterThan(lines.findIndex((line) => line.includes("The check passed.")))
+      const glyph = (lines[y] ?? "").indexOf("◌")
+      expect(fgAt(frame, y, glyph)).toBe(WARNING)
+      expect(fgAt(frame, y, glyph + 2)).toBe(MUTED)
+
+      // The sidebar: nothing read back from the cache, $0.17 lost.
+      const sidebar = lines.findIndex((line) => line.trimEnd().endsWith("Cache 0% · missed $0.17"))
+      expect(sidebar, text).toBeGreaterThan(-1)
+      expect(fgAt(frame, sidebar, (lines[sidebar] ?? "").indexOf("Cache 0%"))).toBe(MUTED)
+    } finally {
+      rmSync(out, { recursive: true, force: true })
+    }
+  }, 150_000)
+})

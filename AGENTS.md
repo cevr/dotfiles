@@ -56,3 +56,4 @@
 - Put the quickest or most blocking item first.
 - After a big task, add the automations worth setting up as items too.
 - **"In the queue"** is the last section. List what runs now: background agents, Codex threads, latched turns, waits and monitors, each with its state. Then list what comes next: your next steps, and dated items with their date. Mark each item as yours or another session's.
+- In OpenCode, keep the `queue` tool current as items change (it shows in the sidebar); the end-of-turn sections stay.
