@@ -169,8 +169,10 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       // The planner's second turn went on from the summary.
       expect(messages("planner").at(-2)?.type).toBe("assistant")
       expect(compactions("worker")).toEqual([])
-      // The compaction request carried the keep-list; no other request did.
-      const keeping = result.seen.filter((request) => request.system.includes(KEEP))
+      // The compaction request carried the keep-list in its summary prompt, not its system, so its prefix is the
+      // normal request's and stays cached; no other request carried it.
+      expect(result.seen.filter((request) => request.system.includes(KEEP))).toEqual([])
+      const keeping = result.seen.filter((request) => request.last.includes(KEEP))
       expect(keeping.length).toBe(1)
       expect(keeping[0]!.task).toBe("planner: first")
       expect(keeping[0]!.last).toContain("You MUST summarize the conversation")
