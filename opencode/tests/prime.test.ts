@@ -14,7 +14,8 @@ if (!fork)
   )
 
 type Rgba = readonly [number, number, number, number]
-type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string; fg: Rgba; bg: Rgba }> }> }
+/** A span's `attributes` is OpenTUI's text attribute bit set; bit 0 is bold. */
+type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string; fg: Rgba; bg: Rgba; attributes?: number }> }> }
 type Saved = { text: string; lines: ReadonlyArray<string>; frame: Frame }
 
 const root = join(import.meta.dir, "..")
@@ -108,18 +109,39 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     }
   })
 
-  test("the user prompt is a full-width band", () => {
-    const details = frames.details
-    expect(details.text).toMatch(row("   Fix the flaky retry test in src/net.py and have a reviewer check it."))
-    expect(cell(details, "Fix the flaky").bg).toBe(BAND)
-    const band = indexOf(details, row("   Fix the flaky retry test in src/net.py and have a reviewer check it."))
-    // The band's own padding rows sit above and below the text in the band colour,
-    // from the inset (column 1) to the last column before the right inset.
-    for (const y of [band - 1, band, band + 1]) {
-      expect(cellAt(details, y, 0).bg).not.toBe(BAND)
-      expect(cellAt(details, y, 1).bg).toBe(BAND)
-      expect(cellAt(details, y, 104).bg).toBe(BAND)
+  test("the user prompt is fx's user card: a heavy rail on every row, bold text, no band", () => {
+    for (const saved of Object.values(frames)) {
+      const first = indexOf(saved, /^ ┃ Fix the flaky retry test in src\/net\.py and have a reviewer check it\. It fails/)
+      expect(first).toBeGreaterThan(0)
+      // The prompt wraps at the viewport; the rail runs down the wrapped row too.
+      expect(saved.lines[first + 1]).toMatch(/^ ┃ \S.*always on the last attempt\.$/)
+      for (const y of [first, first + 1]) {
+        // The rail is the text colour, as the rail composer's is; nothing sits on a band.
+        expect(cellAt(saved, y, 1).fg).toBe(TEXT)
+        for (const x of [0, 1, 3, 104]) expect(cellAt(saved, y, x).bg).not.toBe(BAND)
+      }
+      expect(cellAt(saved, first, 3).fg).toBe(TEXT)
+      // The rail ends with the prompt: no padding rows above or below it.
+      expect(saved.lines[first - 1]).not.toContain("┃")
+      expect(saved.lines[first + 2]).not.toContain("┃")
     }
+    // fx and gent draw what the reader typed in bold.
+    const y = indexOf(frames.details, /^ ┃ Fix the flaky/)
+    const span = frames.details.frame.lines[y]!.spans.find((item) => item.text.startsWith("Fix the flaky"))
+    expect((span?.attributes ?? 0) & 1).toBe(1)
+  })
+
+  test("one blank row parts the prompt from what follows, at every level but Overview", () => {
+    const prompt = (saved: Saved) => indexOf(saved, /^ ┃ \S.*always on the last attempt\.$/)
+    expect(frames.details.lines.slice(prompt(frames.details) + 1, prompt(frames.details) + 3)).toEqual([
+      "",
+      "  Reading the retry test and its helper.",
+    ])
+    expect(frames.all.lines.slice(prompt(frames.all) + 1, prompt(frames.all) + 3)).toEqual([
+      "",
+      "  Look at the test first, then spawn a reviewer.",
+    ])
+    expect(frames.overview.lines[prompt(frames.overview) + 1]).toBe("  Reading the retry test and its helper.")
   })
 
   test("Details: as in fx, a run of calls between answers is one group across steps; a lone call is one line", () => {
@@ -132,14 +154,16 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       "  The backoff loop exits one attempt early. Patching it.",
       "  ✗ Edited 1 file · ran 1 agent · searched 1 pattern · read 1 file · 1 failed",
       "  ├ Edited src/net.py +1 / -1",
-      "   1   def fetch(url, retries=3):",
-      "   2 -     for i in range(retries - 1):",
-      "   2 +     for i in range(retries):",
-      "   3           try:",
+      // What hangs under a row that has rows after it keeps the tree's rail, as fx's continuation rows do.
+      "  │   1   def fetch(url, retries=3):",
+      "  │   2 -     for i in range(retries - 1):",
+      "  │   2 +     for i in range(retries):",
+      "  │   3           try:",
       "  ├ Ran code-reviewer",
-      "    │ ✉ Agent message · ↓ code-reviewer",
+      "  │ │ ✉ Agent message · ↓ code-reviewer",
       "  ├ Searched /retries/ in src",
-      "  └ Read out/traces.jsonl · File not found",
+      // A row ends in gent's failure word; the reason is the output under it.
+      "  └ Read out/traces.jsonl · failed",
       "    │ File not found: out/traces.jsonl",
       "  The fix is in. 1 file changed, reviewer approved.",
     ]
@@ -229,7 +253,8 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       "  ● Ran 1 command",
       "  The backoff loop exits one attempt early. Patching it.",
       "  ✗ Edited 1 file · ran 1 agent · searched 1 pattern · read 1 file · 1 failed",
-      "  └ Read out/traces.jsonl · File not found",
+      // gent's failure row: what failed, its failure word, then the reason.
+      "  └ Read out/traces.jsonl · failed · File not found: out/traces.jsonl",
       "  The fix is in. 1 file changed, reviewer approved.",
     ]
     const first = indexOf(overview, row(rows[0]!))
@@ -250,7 +275,8 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     expect(cell(details, "● Ran printf").fg).toBe(MUTED)
     expect(cell(details, "✗ Edited").fg).toBe(ERROR)
     expect(cell(details, "· 1 failed", 2).fg).toBe(ERROR)
-    expect(cell(details, "File not found").fg).toBe(ERROR)
+    expect(cell(details, "traces.jsonl · failed", "traces.jsonl · ".length).fg).toBe(ERROR)
+    expect(cell(details, "│ File not found").fg).not.toBe(ERROR)
     expect(cell(details, "├ Searched").fg).toBe(MUTED)
     expect(cell(details, "✉ Agent").fg).toBe(SUCCESS)
     expect(cell(details, "+1 / -1").fg).toBe(DIFF.added)

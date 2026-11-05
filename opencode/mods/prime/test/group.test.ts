@@ -4,10 +4,13 @@ import {
   BURST_MS,
   canonical,
   completionWords,
+  failureRuns,
   followsCall,
   groupRun,
   headerRuns,
+  listed,
   noticeBurst,
+  rowEnding,
   rows,
   subject,
   toolRun,
@@ -35,6 +38,11 @@ function call(
       state: { status: "error", input, error: { type: "tool.error", message: "File not found: x.md" } },
     } as unknown as ToolPart
   return { type: "tool", id, name, time, state: { status: "completed", input, content: [], metadata } } as unknown as ToolPart
+}
+/** A call the turn's interrupt cut short, as the host ends it. */
+function cut(name: string, input: Record<string, unknown>, type = "aborted"): ToolPart {
+  const part = call(name, input, "error") as unknown as { state: Record<string, unknown> }
+  return { ...part, state: { ...part.state, error: { type, message: "Tool execution aborted" } } } as unknown as ToolPart
 }
 const calls = (...parts: ToolPart[]): Call[] => parts.map((part) => ({ tool: canonical(part.name), part }))
 const words = (list: Call[]) => headerRuns(list).map((run) => run.text).join("")
@@ -72,6 +80,51 @@ describe("the group header", () => {
       "Edited 2 files",
     )
     expect(words(calls(call("todowrite", {}), call("todowrite", {})))).toBe("todowrite 2×")
+  })
+})
+
+describe("cancels and width, as gent's activityHeaderRuns", () => {
+  test("a cut call is no failure: the header counts it as cancelled, in the warning tone, and its row stands alone", () => {
+    const list = calls(call("read", { path: "a.ts" }), cut("bash", { command: "sleep 9" }), cut("bash", { command: "sleep 8" }, "tool.interrupted"))
+    const runs = headerRuns(list)
+    expect(runs.map((run) => run.text).join("")).toBe("Ran 2 commands · read 1 file · 2 cancelled")
+    expect(runs.at(-1)).toEqual({ text: "2 cancelled", tone: "warning" })
+    const tree = rows(list)
+    expect(tree.map((row) => row.outcome)).toEqual(["done", "cancelled", "cancelled"])
+    expect(rowEnding(tree[1]!)).toEqual({ text: "cancelled", tone: "warning" })
+  })
+
+  test("narrow, kinds drop from the right; the first kind and the failures stay", () => {
+    const list = calls(
+      call("read", { path: "a.ts" }),
+      call("read", { path: "b.ts" }),
+      call("bash", { command: "ls" }),
+      call("grep", { pattern: "x" }),
+      call("read", { path: "x.md" }, "error"),
+    )
+    const at = (width: number) => headerRuns(list, width).map((run) => run.text).join("")
+    expect(at(200)).toBe("Read 3 files · ran 1 command · searched 1 pattern · 1 failed")
+    expect(at(40)).toBe("Read 3 files · ran 1 command · 1 failed")
+    expect(at(10)).toBe("Read 3 files · 1 failed")
+  })
+
+  test("a row's subjects fit the width, then +N counts the rest; the first always shows", () => {
+    expect(listed(["a.ts", "b.ts", "c.ts"])).toBe("a.ts, b.ts, c.ts")
+    expect(listed(["a.ts", "b.ts", "c.ts"], 13)).toBe("a.ts, b.ts +1")
+    expect(listed(["a-long-name.ts", "b.ts"], 4)).toBe("a-long-name.ts +1")
+    const reads = rows(calls(call("read", { path: "a.ts" }), call("read", { path: "b.ts" }), call("read", { path: "c.ts" })))
+    expect(subject(reads[0]!, 13)).toBe("a.ts, b.ts +1")
+  })
+
+  test("a failure's collapsed line: verb and subject, its ending, then the reason while it fits", () => {
+    const [failed] = rows(calls(call("read", { path: "x.md" }, "error")))
+    const line = (width?: number) => failureRuns(failed!, width).map((run) => run.text).join("")
+    expect(line()).toBe("Read x.md · failed · File not found: x.md")
+    expect(line(28)).toBe("Read x.md · failed · File n…")
+    expect(line(18)).toBe("Read x.md · failed")
+    expect(failureRuns(failed!).find((run) => run.text === "failed")?.tone).toBe("error")
+    const [exited] = rows(calls(call("bash", { command: "pytest" }, "completed", { exit: 1 })))
+    expect(failureRuns(exited!).map((run) => run.text).join("")).toBe("Ran pytest · exit 1")
   })
 })
 

@@ -13,22 +13,25 @@
 // - all: a row per call with its counts and time, whole diffs and output.
 import type { Plugin } from "@opencode/plugin/tui"
 import type { RGBA } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/solid"
 import { createMemo, For, Match, Show, Switch, type Accessor, type JSX } from "solid-js"
 import { useNow } from "./clock"
 import {
   background,
   errorText,
+  failureRuns,
   followsCall,
   groupRun,
   headerRuns,
   outcome,
+  rowEnding,
   rowFiles,
-  rowReason,
   rows,
   subject,
   verb,
   type Call,
   type Row,
+  type Run,
 } from "./group"
 import { useSessionLink } from "./link"
 import { subagentSession } from "./subagent"
@@ -56,6 +59,24 @@ type Context = Plugin.Context
 const HEAD_LINES = 5
 /** Where output and diffs hang under a tree row: past the connector and its space. */
 const UNDER = GUTTER + 2
+/** The columns a header or a row has after its glyph or connector: the transcript's insets, the gutter, the lead and its space, and the terminal's last column, kept free as gent keeps it. */
+const LEAD_COLUMNS = 2 + GUTTER + 2 + 1
+
+/** The columns a group's line has for its words. */
+function useLineWidth() {
+  const terminal = useTerminalDimensions()
+  return () => Math.max(10, terminal().width - LEAD_COLUMNS)
+}
+
+/** A run's colour: hue only where the reader must look, a failure in the error colour and a cancel in the warning colour. */
+function toneColor(context: Context, tone: Run["tone"]) {
+  if (tone === "error") return context.theme.text.feedback.error.base
+  if (tone === "warning") return context.theme.text.feedback.warning.base
+  return context.theme.text.muted
+}
+
+/** Whether a row ended badly: the collapsed level draws a line for each. */
+const ended = (row: Row) => row.outcome === "failed" || row.outcome === "warning" || row.outcome === "cancelled"
 
 export function ToolRow(props: PartProps & { tool: string; detail: Accessor<Detail> }) {
   const run = createMemo((): Call[] => {
@@ -75,7 +96,7 @@ export function ToolRow(props: PartProps & { tool: string; detail: Accessor<Deta
     if (detail === "all")
       return run().map((call) => ({ tool: call.tool, outcome: outcome(call.part), calls: [call.part], owner: call.part.id }))
     const all = rows(run())
-    return detail === "overview" ? all.filter((row) => row.outcome === "failed" || row.outcome === "warning") : all
+    return detail === "overview" ? all.filter(ended) : all
   })
   const running = createMemo(() => run().some((call) => outcome(call.part) === "running"))
   const now = useNow(running)
@@ -95,6 +116,7 @@ export function ToolRow(props: PartProps & { tool: string; detail: Accessor<Deta
                 context={props.context}
                 row={row}
                 lead={single() ? glyph() : { char: index() === shown().length - 1 ? "└" : "├" }}
+                rail={!single() && index() < shown().length - 1}
                 detail={props.detail()}
                 lastCommand={!running() && row === shown().findLast((item) => item.tool === "shell")}
                 now={now}
@@ -110,77 +132,100 @@ export function ToolRow(props: PartProps & { tool: string; detail: Accessor<Deta
 /** What leads a line: the group's glyph, or a tree connector (muted when it has no colour). */
 type Lead = { readonly char: string; readonly color?: RGBA }
 
-/** The group's glyph: `✗` when a call failed, a blinking `○`/`●` while one runs, else `●` (warning-coloured after a nonzero exit). */
+/**
+ * The group's glyph: `✗` when a call failed, a blinking `○`/`●` while one
+ * runs, else `●`, warning-coloured after a nonzero exit or a cancel (a cut
+ * call is no failure, as in gent).
+ */
 function groupGlyph(context: Context, calls: Call[], now: number): Lead {
   const theme = context.theme
   const states = calls.map((call) => outcome(call.part))
   if (states.includes("failed")) return { char: "✗", color: theme.text.feedback.error.base }
   if (states.includes("running")) return { char: Math.floor(now / 500) % 2 ? "○" : "●", color: theme.hue.accent[300] }
-  if (states.includes("warning")) return { char: "●", color: theme.text.feedback.warning.base }
+  if (states.includes("warning") || states.includes("cancelled")) return { char: "●", color: theme.text.feedback.warning.base }
   return { char: "●", color: theme.text.muted }
 }
 
 function Header(props: { context: Context; calls: Call[]; glyph: Lead }) {
   const theme = () => props.context.theme
+  const width = useLineWidth()
   return (
     <box paddingLeft={GUTTER}>
       <text wrapMode="none" truncate fg={theme().text.muted}>
         <span style={{ fg: props.glyph.color ?? theme().text.muted }}>{props.glyph.char}</span>{" "}
-        <For each={headerRuns(props.calls)}>
-          {(run) => (
-            <span style={{ fg: run.tone === "error" ? theme().text.feedback.error.base : theme().text.muted }}>
-              {run.text}
-            </span>
-          )}
-        </For>
+        <Runs context={props.context} runs={headerRuns(props.calls, width())} />
       </text>
     </box>
   )
+}
+
+/** A line drawn in runs, each in its tone's colour; it goes inside a `<text>`. */
+function Runs(props: { context: Context; runs: ReadonlyArray<Run> }) {
+  return <For each={[...props.runs]}>{(run) => <span style={{ fg: toneColor(props.context, run.tone) }}>{run.text}</span>}</For>
 }
 
 function TreeRow(props: {
   context: Context
   row: Row
   lead: Lead
+  /** Whether rows follow under this one: what hangs under it keeps the tree's `│` rail. */
+  rail: boolean
   detail: Detail
   lastCommand: boolean
   now: Accessor<number>
 }) {
   const theme = () => props.context.theme
   const part = () => props.row.calls[0]!
+  const width = useLineWidth()
   const lead = () => <span style={{ fg: props.lead.color ?? theme().text.muted }}>{props.lead.char}</span>
   // A subagent's row opens its session.
   const link = useSessionLink(props.context, () => (props.row.tool === "subagent" ? subagentSession(part()) : undefined))
+  const timer = createMemo(() => {
+    if (props.row.outcome !== "running") return ""
+    const ms = props.now() - startOf(part())
+    return ms >= 1000 ? elapsed(ms) : ""
+  })
+  const ending = createMemo(() => rowEnding(props.row))
+  // The subjects get what the verb, the timer and the ending leave of the line; the rest is counted.
+  const room = createMemo(() => {
+    const tail = [timer(), ending()?.text ?? ""].filter(Boolean).reduce((sum, text) => sum + 3 + text.length, 0)
+    return width() - verb(props.row).length - 1 - tail
+  })
   return (
     <Switch>
       <Match when={props.detail === "all"}>
         <CallRow context={props.context} lead={props.lead.color ? undefined : props.lead.char} tool={props.row.tool} part={part()} />
+      </Match>
+      <Match when={props.detail === "overview"}>
+        <box paddingLeft={GUTTER} {...link.handlers}>
+          <text wrapMode="none" truncate fg={theme().text.muted}>
+            {lead()} <Runs context={props.context} runs={failureRuns(props.row, width())} />
+          </text>
+        </box>
       </Match>
       <Match when={true}>
         <box flexDirection="column" flexShrink={0}>
           <box paddingLeft={GUTTER} {...link.handlers}>
             <text wrapMode="none" truncate fg={link.hover() ? theme().text.base : theme().text.muted}>
               {lead()} {verb(props.row)}{" "}
-              <Show when={props.row.tool === "patch" || props.row.tool === "edit"} fallback={subject(props.row)}>
+              <Show when={props.row.tool === "patch" || props.row.tool === "edit"} fallback={subject(props.row, room())}>
                 <EditCounts context={props.context} row={props.row} />
               </Show>
-              <Show when={props.row.outcome === "running" && props.now() - startOf(part()) >= 1000}>
+              <Show when={timer()}>
                 {" · "}
-                {elapsed(props.now() - startOf(part()))}
+                {timer()}
               </Show>
-              <Show when={props.row.outcome === "failed" || props.row.outcome === "warning" ? rowReason(props.row) : undefined}>
-                {(reason) => (
+              <Show when={ending()}>
+                {(run) => (
                   <>
                     {" · "}
-                    <span style={{ fg: theme().text.feedback.error.base }}>{reason()}</span>
+                    <span style={{ fg: toneColor(props.context, run().tone) }}>{run().text}</span>
                   </>
                 )}
               </Show>
             </text>
           </box>
-          <Show when={props.detail === "details"}>
-            <RowBody context={props.context} row={props.row} lastCommand={props.lastCommand} />
-          </Show>
+          <RowBody context={props.context} row={props.row} lastCommand={props.lastCommand} rail={props.rail} />
         </box>
       </Match>
     </Switch>
@@ -216,30 +261,80 @@ function EditCounts(props: { context: Context; row: Row }) {
  * reason, the last command's output, a subagent's reply (a background
  * agent's reply comes later, in its own row).
  */
-function RowBody(props: { context: Context; row: Row; lastCommand: boolean }) {
+function RowBody(props: { context: Context; row: Row; lastCommand: boolean; rail: boolean }) {
   const part = () => props.row.calls[0]!
+  // Everything under the row hangs past the connector, beside the tree's rail while rows follow.
   return (
     <Switch>
       <Match when={props.row.outcome === "failed" ? errorText(part()) : undefined}>
-        {(text) => <Head context={props.context} text={text()} />}
+        {(text) => (
+          <Hang context={props.context} rail={props.rail}>
+            <Head context={props.context} text={text()} inset={0} />
+          </Hang>
+        )}
       </Match>
       <Match when={props.row.tool === "patch" || props.row.tool === "edit"}>
-        <For each={rowFiles(props.row)}>
-          {(file) => <DiffBands context={props.context} path={file.path} rows={diffRows(file.patch, 1)} />}
-        </For>
+        <Hang context={props.context} rail={props.rail}>
+          <For each={rowFiles(props.row)}>
+            {(file) => <DiffBands context={props.context} path={file.path} rows={diffRows(file.patch, 1)} />}
+          </For>
+        </Hang>
       </Match>
       <Match when={props.row.tool === "shell" && (props.lastCommand || props.row.outcome === "warning")}>
-        <Head context={props.context} text={toolOutput(part())} />
+        <Hang context={props.context} rail={props.rail}>
+          <Head context={props.context} text={toolOutput(part())} inset={0} />
+        </Hang>
       </Match>
       <Match when={props.row.tool === "subagent" && props.row.outcome === "done" && !background(part())}>
-        <AgentMessage context={props.context} from={subagentName(toolInput(part()))} />
+        <Hang context={props.context} rail={props.rail}>
+          <AgentMessage context={props.context} from={subagentName(toolInput(part()))} inset={0} />
+        </Hang>
       </Match>
     </Switch>
   )
 }
 
-/** The first lines of some output under a `│ ` gutter, then how many lines the rest is. */
-function Head(props: { context: Context; text: string }) {
+/**
+ * What hangs under a tree row, under its words: fx keeps the tree's rail
+ * (`│`) beside it while rows follow, and blank past the last row.
+ */
+function Hang(props: { context: Context; rail: boolean; children: JSX.Element }) {
+  return (
+    <box flexDirection="row" paddingLeft={GUTTER} flexShrink={0}>
+      <box width={2} flexShrink={0} flexDirection="column">
+        <Show when={props.rail}>
+          <box
+            flexGrow={1}
+            border={["left"]}
+            borderColor={props.context.theme.text.muted}
+            customBorderChars={{ ...NO_BORDER, vertical: "│" }}
+          />
+        </Show>
+      </box>
+      <box flexDirection="column" flexGrow={1} flexShrink={1}>
+        {props.children}
+      </box>
+    </box>
+  )
+}
+
+/** OpenTUI border characters with none drawn: a box sets the one it wants. */
+const NO_BORDER = {
+  topLeft: "",
+  bottomLeft: "",
+  vertical: "",
+  topRight: "",
+  bottomRight: "",
+  horizontal: " ",
+  bottomT: "",
+  topT: "",
+  cross: "",
+  leftT: "",
+  rightT: "",
+}
+
+/** The first lines of some output under a `│ ` gutter, then how many lines the rest is; `inset` columns in (past a connector by default). */
+function Head(props: { context: Context; text: string; inset?: number }) {
   const theme = () => props.context.theme
   const lines = createMemo(() => {
     const trimmed = props.text.replace(/\n+$/, "")
@@ -252,7 +347,7 @@ function Head(props: { context: Context; text: string }) {
     </text>
   )
   return (
-    <box flexDirection="column" paddingLeft={UNDER} flexShrink={0}>
+    <box flexDirection="column" paddingLeft={props.inset ?? UNDER} flexShrink={0}>
       <For each={lines().slice(0, HEAD_LINES)}>{(line) => gutter(line)}</For>
       <Show when={lines().length > HEAD_LINES}>
         {gutter(<span style={{ fg: theme().text.faint }}>… +{lines().length - HEAD_LINES} lines (ctrl+o)</span>)}
@@ -263,10 +358,10 @@ function Head(props: { context: Context; text: string }) {
 
 // A subagent's answer, as Prime shows agent mail: a green envelope, then the
 // direction (`↓` received) and the sender, under the tree's gutter.
-function AgentMessage(props: { context: Context; from: string }) {
+function AgentMessage(props: { context: Context; from: string; inset?: number }) {
   const theme = () => props.context.theme
   return (
-    <box paddingLeft={UNDER}>
+    <box paddingLeft={props.inset ?? UNDER}>
       <text wrapMode="none" truncate fg={theme().text.muted}>
         <span style={{ fg: theme().text.faint }}>│ </span>
         <span style={{ fg: theme().text.feedback.success.base }}>✉ </span>

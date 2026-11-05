@@ -16,7 +16,9 @@ type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string }> }> 
 const text = (frame: Frame) => frame.lines.map((l) => l.spans.map((s) => s.text).join("").trimEnd()).join("\n")
 
 // The parent's prompt and the reviewer's task; a request without the first is the subagent's own.
-const ASK = "Fix the flaky retry test in src/net.py and have a reviewer check it."
+// Long enough to wrap at the 106-column viewport, so the user rail shows on a wrapped row too.
+const ASK =
+  "Fix the flaky retry test in src/net.py and have a reviewer check it. It fails about one run in five on CI, always on the last attempt."
 const REVIEW = "Review the diff in src/net.py."
 // The last turn's usage: 64k of the 262k window below, as in Prime's tray.
 const USAGE = { prompt_tokens: 63_000, completion_tokens: 1_000, total_tokens: 64_000 }

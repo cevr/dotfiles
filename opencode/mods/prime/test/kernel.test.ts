@@ -2,7 +2,7 @@
 // fx draws calls, and never as its code.
 import { describe, expect, test } from "bun:test"
 import { canonical, headerRuns, rows, subject, verb, type Call } from "../src/group"
-import { expand, toolsInCode } from "../src/kernel"
+import { cellCalls, expand, toolsInCode } from "../src/kernel"
 import type { ToolPart } from "../src/view"
 
 const kernel = (status: "completed" | "running" | "error", operations: unknown[] | undefined, code = "await sh(`ls`)"): ToolPart =>
@@ -73,5 +73,44 @@ describe("a kernel call", () => {
     const folded = [kernel("completed", undefined, "tools.shell(a)"), kernel("completed", undefined, "x"), kernel("completed", undefined, "tools.write(b); tools.shell(c)")]
     expect(lines(folded.flatMap(drawn))).toEqual(["Ran 3 cells calling shell, write"])
     expect(toolsInCode("tools.read(a); tools.read(b); xtools.no(c)")).toEqual(["read"])
+  })
+
+  test("a record-less cell's header counts the calls its code spells out, else says it ran code", () => {
+    expect(header(drawn(kernel("completed", undefined, "await tools.read({ path })\nawait tools.read({ path: b })\nawait Bun.$`git status`")))).toBe(
+      "Read 2 files · ran 1 command",
+    )
+    expect(header(drawn(kernel("completed", undefined, "const x = 1 + 1")))).toBe("Ran code")
+    expect(header(drawn(kernel("running", undefined, "while (true) {}")))).toBe("Running code")
+  })
+
+  test("the kernel call left after its recorded calls counts as code while it computes, and only as a failure once it ends", () => {
+    expect(header(drawn(kernel("running", [op("read", { path: "a.ts" })])))).toBe("Read 1 file · running code")
+    expect(header(drawn(kernel("error", [op("read", { path: "a.ts" })])))).toBe("Read 1 file · 1 failed")
+  })
+})
+
+describe("the calls a cell's code spells out (gent's cellCalls)", () => {
+  test("tools by name and by key, Bun's shell, spawn, files, globs and fetches, in source order", () => {
+    const code = [
+      'const t = await tools["web-search"]({ q })',
+      "await Bun.$`git log --oneline -5 | head`",
+      'Bun.spawn(["bun", "test", "--watch"])',
+      'const text = await Bun.file("src/a.ts").text()',
+      'await Bun.write("out.txt", text)',
+      'new Bun.Glob("**/*.ts")',
+      'await fetch("https://example.com/x")',
+      "await tools.edit({ path })",
+    ].join("\n")
+    expect(cellCalls(code)).toEqual([
+      { tool: "web-search", detail: "" },
+      { tool: "shell", detail: "git log --oneline" },
+      { tool: "shell", detail: "bun test --watch" },
+      { tool: "read", detail: "src/a.ts" },
+      { tool: "write", detail: "out.txt" },
+      { tool: "glob", detail: "**/*.ts" },
+      { tool: "webfetch", detail: "https://example.com/x" },
+      { tool: "edit", detail: "" },
+    ])
+    expect(cellCalls("const sh = (x) => x; xtools.no(1)")).toEqual([])
   })
 })

@@ -75,8 +75,49 @@ export function expand(call: Call, canonical: (name: string) => string): Call[] 
   return computing || failedAlone ? [...calls, call] : calls
 }
 
-/** The tools a cell's code calls by name (`tools.read(`), in order and once each: a kernel row's words when it recorded none. */
+/** A call a cell's code spells out: the tool it stands for, and its argument when the code names one. */
+export type CellCall = { readonly tool: string; readonly detail: string }
+
+const quoted = `["'\`]([^"'\`]+)["'\`]`
+
+/** `["a", "b"]` as the words `a b`. */
+const argv = (list: string) => Array.from(list.matchAll(/["'`]([^"'`]*)["'`]/g), (match) => match[1] ?? "").join(" ")
+
+/** A command's first words, before any pipe or chain. */
+const shellHead = (command: string) => (command.split(/\n|\||&&|;/)[0] ?? "").trim().split(/\s+/).slice(0, 3).join(" ")
+
+/**
+ * The calls a cell's code spells out, after gent's `cellCalls` (fx's cell
+ * intent): `tools.<name>(` and `tools["<name>"](`, Bun's shell and spawn,
+ * file reads and writes, globs and fetches. The tool names are the host's
+ * (`shell`, `read`, `write`, `glob`, `webfetch`).
+ */
+const CELL_PATTERNS: ReadonlyArray<readonly [RegExp, (match: RegExpExecArray) => CellCall]> = [
+  [/\btools\.([A-Za-z_$][\w$]*)\s*\(/g, (match) => ({ tool: match[1] ?? "", detail: "" })],
+  [new RegExp(`\\btools\\[\\s*${quoted}\\s*\\]\\s*\\(`, "g"), (match) => ({ tool: match[1] ?? "", detail: "" })],
+  [/Bun\.\$`([^`]*)`/g, (match) => ({ tool: "shell", detail: shellHead(match[1] ?? "") })],
+  [
+    /Bun\.spawn(?:Sync)?\(\s*(?:\{\s*cmd:\s*)?\[\s*((?:["'`][^"'`]*["'`]\s*,?\s*)+)\]/g,
+    (match) => ({ tool: "shell", detail: shellHead(argv(match[1] ?? "")) }),
+  ],
+  [new RegExp(`Bun\\.file\\(\\s*${quoted}`, "g"), (match) => ({ tool: "read", detail: match[1] ?? "" })],
+  [new RegExp(`Bun\\.write\\(\\s*${quoted}`, "g"), (match) => ({ tool: "write", detail: match[1] ?? "" })],
+  [new RegExp(`new Bun\\.Glob\\(\\s*${quoted}`, "g"), (match) => ({ tool: "glob", detail: match[1] ?? "" })],
+  [new RegExp(`\\bfetch\\(\\s*${quoted}`, "g"), (match) => ({ tool: "webfetch", detail: match[1] ?? "" })],
+]
+
+/** The calls a cell's code spells out, in source order: a kernel call's words when it recorded none. */
+export function cellCalls(code: string): CellCall[] {
+  const found: Array<{ readonly index: number; readonly call: CellCall }> = []
+  for (const [pattern, toCall] of CELL_PATTERNS)
+    for (const match of code.matchAll(pattern)) {
+      const call = toCall(match)
+      if (call.tool) found.push({ index: match.index, call })
+    }
+  return found.toSorted((a, b) => a.index - b.index).map((entry) => entry.call)
+}
+
+/** The tools a cell's code spells out (`cellCalls`), in order and once each. */
 export function toolsInCode(code: string): string[] {
-  const names = [...code.matchAll(/\btools\.([A-Za-z_$][\w$]*)\s*\(/g)].map((match) => match[1]!)
-  return [...new Set(names)]
+  return [...new Set(cellCalls(code).map((call) => call.tool))]
 }

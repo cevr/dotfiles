@@ -6,7 +6,7 @@ import type { TranscriptRowKind } from "@opencode/plugin/tui/context"
 import { createSignal, Show } from "solid-js"
 import { Dock, ModeHint, Splash, TopBar, useFamily, Working } from "./chrome"
 import { SubagentRows } from "./live"
-import { Completion } from "./notice"
+import { Completion, StepEnd } from "./notice"
 import { ToolRow } from "./tools"
 import { AssistantText, ReasoningLine, UserBand } from "./transcript"
 import { nextDetail, type Detail } from "./view"
@@ -22,7 +22,10 @@ export function rowGap(detail: Detail, row: { kind: TranscriptRowKind; previous?
   if (call(row.kind) && call(row.previous)) return 0
   // Notices stack like calls; a folded notice draws nothing, so it must add no gap either.
   if (row.kind === "notice" && row.previous === "notice") return 0
-  if (row.kind === "reasoning" && row.previous === "user") return 0
+  // A turn that opens with a thought opens with the host's reasoning group,
+  // which draws nothing below All: there it takes no gap, so the row after it
+  // keeps the prompt's one blank row and no second one.
+  if (row.kind === "group" && row.previous === "user") return detail === "all" ? 1 : 0
   // Below All a thought draws nothing (transcript.tsx), so it takes no gap, and
   // a call after it stacks on the run it belongs to.
   if (detail !== "all" && row.kind === "reasoning") return 0
@@ -71,8 +74,12 @@ export default Plugin.define({
       replace: "session.message.completion",
       render: (input) => <Completion context={context} sessionID={input.sessionID} messageID={input.messageID} />,
     })
-    // Prime closes a turn with nothing: no agent, model or duration line.
-    context.ui.slot({ replace: "session.message.assistant.footer", render: () => null })
+    // Prime closes a turn with no agent, model or duration line; a step that
+    // ended badly draws its retry, interrupt or error row (notice.tsx).
+    context.ui.slot({
+      replace: "session.message.assistant.footer",
+      render: (input) => <StepEnd context={context} sessionID={input.sessionID} messageID={input.messageID} detail={detail} />,
+    })
     context.ui.slot({
       append: "session.composer.top",
       render: (input) => <ModeHint context={context} sessionID={input.sessionID} detail={detail} />,

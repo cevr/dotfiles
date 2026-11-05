@@ -1,11 +1,16 @@
-// A background worker's completion line. Workers that finish together read as
-// one line (`↳ 3 workers finished · fix-a, fix-b, fix-c`); the first notice of
-// the burst draws it and the rest draw nothing.
+// Session rows that are no call: a background worker's completion line, and
+// how a step ended badly. Workers that finish together read as one line
+// (`↳ 3 workers finished · fix-a, fix-b, fix-c`); the first notice of the
+// burst draws it and the rest draw nothing. A step's end draws gent's session
+// row: `↻` a retry, `■` an interrupt, `✗` an error, and nothing for a step
+// that ended well (Prime closes a turn with no agent, model or duration line).
 import type { Plugin } from "@opencode/plugin/tui"
-import { createMemo, Show } from "solid-js"
+import { createMemo, Show, type Accessor } from "solid-js"
+import { useNow } from "./clock"
 import { completionWords, noticeBurst } from "./group"
 import { useSessionLink } from "./link"
 import { GUTTER } from "./transcript"
+import { stepEndRow, type Detail } from "./view"
 
 type Context = Plugin.Context
 
@@ -58,6 +63,42 @@ export function Completion(props: { context: Context; sessionID: string; message
           </Show>
         </text>
       </box>
+    </Show>
+  )
+}
+
+/** Where a session row's glyph sits: the column a group's glyph sits in. */
+const GLYPH = GUTTER
+
+export function StepEnd(props: { context: Context; sessionID: string; messageID: string; detail: Accessor<Detail> }) {
+  const message = createMemo(() => {
+    const found = props.context.data.session.message.get(props.sessionID, props.messageID)
+    return found?.type === "assistant" ? found : undefined
+  })
+  // A pending retry counts down; nothing else ticks.
+  const now = useNow(() => message()?.retry !== undefined)
+  const row = createMemo(() => {
+    const found = message()
+    return found ? stepEndRow({ error: found.error, retry: found.retry }, now(), props.detail()) : undefined
+  })
+  const color = (tone: "muted" | "warning" | "error") => {
+    const theme = props.context.theme
+    if (tone === "error") return theme.text.feedback.error.base
+    if (tone === "warning") return theme.text.feedback.warning.base
+    return theme.text.muted
+  }
+  return (
+    <Show when={row()}>
+      {(shown) => (
+        <box marginTop={1} paddingLeft={GLYPH} flexDirection="row" flexShrink={0}>
+          <text width={2} flexShrink={0} fg={color(shown().tone)}>
+            {shown().glyph}
+          </text>
+          <text flexGrow={1} flexShrink={1} wrapMode="word" fg={color(shown().tone)}>
+            {shown().text}
+          </text>
+        </box>
+      )}
     </Show>
   )
 }
