@@ -4,11 +4,10 @@
 // AgentCalls view, and the runs' tables parse into units.
 import { Context, Effect, Layer, Result } from "effect"
 import { fold } from "@dotfiles/decider/decider"
-import { AgentCalls, live } from "./Agents/AgentCalls.view.ts"
-import { CallLog } from "./Agents/CallLog.external.ts"
-import { unitsOf } from "./RunTable.ts"
-import { RunTables } from "./Runs/RunTables.external.ts"
-import type { Snapshot } from "./Status.ts"
+import { AgentCalls, live } from "./agent-calls.ts"
+import { unitsOf } from "./run-table.ts"
+import { CallLog, RunTables } from "./service.ts"
+import type { Snapshot } from "./status.ts"
 
 export class Status extends Context.Service<
   Status,

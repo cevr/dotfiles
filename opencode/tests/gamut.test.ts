@@ -511,7 +511,7 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
       expect(work).not.toBe("")
       const config = JSON.parse(readFileSync(join(work, "opencode.json"), "utf8"))
       const packages = config.plugins.map((entry: string | { package: string }) => typeof entry === "string" ? entry : entry.package)
-      for (const dir of ["cmd/orchestrate", "mods/status", "cmd/pool"]) expect(packages).toContain(join(root, dir))
+      for (const dir of ["cmd/orchestrate", "cmd/status", "cmd/pool"]) expect(packages).toContain(join(root, dir))
       expect(config.agents.worker.model).toBe(config.agents.general.model)
       expect(config.agents.verifier.model).toBe(config.agents.build.model)
 

@@ -1,4 +1,4 @@
-// The plugin seam: the composition root on a stand-in host. On test layers it
+// The plugin seam: the composition root on a stand-in host. On memory layers it
 // checks the status RPC's answer and its errors; on the live adapters it
 // checks how they read a real call log file and real runs in a git
 // repository through a status script. tests/status.test.ts runs it, with the
@@ -8,32 +8,33 @@ import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFile
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect, Layer, Schema } from "effect"
-import { Snapshot, STATUS } from "../src/domain/Status.ts"
-import * as CallLog from "../src/host/CallLog.ts"
-import * as RunTables from "../src/host/RunTables.ts"
-import Status, { live, make, Options } from "../src/Status.plugin.ts"
+import { AgentCalled, AgentReturned } from "@dotfiles/opencode-status/agent-calls"
+import * as CallLog from "@dotfiles/opencode-status/memory/call-log"
+import * as RunTables from "@dotfiles/opencode-status/memory/run-tables"
+import { Snapshot, STATUS } from "@dotfiles/opencode-status/status"
+import Status, { live, make, Options } from "./server.ts"
 
 type Host = Parameters<(typeof Status)["effect"]>[0]
 type Handler = (input: unknown) => Effect.Effect<unknown>
 
 const REPO = "/repo"
 
-/** What the test layers hold: the call log's text and the runs by directory, and a failure for either. */
+/** What the memory layers hold: the call log's events and the runs by directory, and a failure for either. */
 interface World {
-  readonly log: CallLog.TestLog
-  readonly runs: RunTables.TestRuns
+  readonly log: CallLog.MemoryLog
+  readonly runs: RunTables.MemoryRuns
 }
 
-const world = (): World => ({ log: {}, runs: { tables: new Map() } })
+const world = (): World => ({ log: { events: [] }, runs: { tables: new Map() } })
 
-/** The outside systems as test layers over `state`. */
-const testLayers = (state: World) => () => Layer.merge(CallLog.layerTest(state.log), RunTables.layerTest(state.runs))
+/** The outside systems as memory layers over `state`. */
+const testLayers = (state: World) => () => Layer.merge(CallLog.layer(state.log), RunTables.layer(state.runs))
 
 const line = (row: Record<string, unknown>) => `${JSON.stringify(row)}\n`
 
 /**
  * The plugin started on a stand-in host in `directory`, and its status RPC.
- * `externals` picks the adapters: the test layers over `state` by default.
+ * `externals` picks the adapters: the memory layers over `state` by default.
  */
 const start = (
   options: Record<string, unknown> = {},
@@ -96,12 +97,12 @@ describe("the status RPC", () => {
     scenario(
       Effect.gen(function* () {
         const state = world()
-        state.log.text = [
-          line({ kind: "call", sessionID: "ses_1", callID: "a", agent: "worker", description: "implementor pane r1" }),
-          line({ kind: "done", sessionID: "ses_1", callID: "a", child: "ses_a", status: "running" }),
-          line({ kind: "call", sessionID: "ses_1", callID: "b", agent: "worker" }),
-          line({ kind: "done", sessionID: "ses_1", callID: "b", status: "completed" }),
-        ].join("")
+        state.log.events.push(
+          AgentCalled.make({ sessionID: "ses_1", callID: "a", agent: "worker", description: "implementor pane r1" }),
+          AgentReturned.make({ sessionID: "ses_1", callID: "a", child: "ses_a", status: "running" }),
+          AgentCalled.make({ sessionID: "ses_1", callID: "b", agent: "worker" }),
+          AgentReturned.make({ sessionID: "ses_1", callID: "b", status: "completed" }),
+        )
         state.runs.tables.set(REPO, [
           { name: "port", table: "| Unit | State | Round | Since |\n| --- | --- | --- | --- |\n| wake | implement | 1 | 2026-11-04T15:00Z |\n" },
           { name: "empty", table: "| Unit | State | Round | Since |\n" },
@@ -125,7 +126,7 @@ describe("the status RPC", () => {
         const state = world()
         const plugin = yield* start({}, state)
         expect(yield* plugin.status).toEqual({ agents: [], runs: [], errors: [] })
-        state.log.text = line({ kind: "call", sessionID: "ses_1", callID: "a", agent: "worker" })
+        state.log.events.push(AgentCalled.make({ sessionID: "ses_1", callID: "a", agent: "worker" }))
         expect((yield* plugin.status).agents).toEqual([{ sessionID: "ses_1", callID: "a", agent: "worker" }])
       }),
     ))
@@ -134,7 +135,7 @@ describe("the status RPC", () => {
     scenario(
       Effect.gen(function* () {
         const state = world()
-        state.log.text = line({ kind: "call", sessionID: "ses_1", callID: "a", agent: "worker" })
+        state.log.events.push(AgentCalled.make({ sessionID: "ses_1", callID: "a", agent: "worker" }))
         state.runs.tables.set(REPO, [{ name: "port", table: "| wake | plan | 1 | t |" }])
         const plugin = yield* start({}, state)
         state.log.failure = "EACCES: permission denied"
@@ -163,10 +164,9 @@ const scratch = Effect.acquireRelease(
 )
 
 const git = (cwd: string, ...args: ReadonlyArray<string>) =>
-  Effect.promise(async () => {
-    const run = Bun.spawn(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore" })
-    if ((await run.exited) !== 0) throw new Error(`git ${args.join(" ")} failed`)
-  })
+  Effect.promise(() => Bun.spawn(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore" }).exited).pipe(
+    Effect.flatMap((code) => (code === 0 ? Effect.void : Effect.die(new Error(`git ${args.join(" ")} failed`)))),
+  )
 
 /** A git repository at `dir` with one commit. */
 const repository = (dir: string) =>

@@ -1,0 +1,14 @@
+{
+  "name": "@dotfiles/opencode-cmd-status",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The status mod's OpenCode plugins, the status RPC (server) and the /pool pane (tui): the composition root of @dotfiles/opencode-status.",
+  "exports": {
+    "./server": "./server.ts",
+    "./tui": "./tui.tsx"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-status": "workspace:*"
+  }
+}

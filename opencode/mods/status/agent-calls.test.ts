@@ -4,7 +4,7 @@
 // another program's log lines), so its cases fold events directly.
 import { describe, expect, test } from "bun:test"
 import { fold } from "@dotfiles/decider/decider"
-import { AgentCalled, AgentCalls, AgentReturned, live } from "../src/domain/Agents/AgentCalls.view.ts"
+import { AgentCalled, AgentCalls, AgentReturned, live } from "./agent-calls.ts"
 
 const called = (sessionID: string, callID: string, agent = "worker", fields: { description?: string; child?: string } = {}) =>
   AgentCalled.make({ sessionID, callID, agent, ...fields })
