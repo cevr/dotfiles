@@ -140,8 +140,13 @@ const liveSessions = (state: AccountPoolState, now: number, rules: Rules): Map<s
   return where
 }
 
-/** The accounts in placement order for a new run of `sessionID`; none when the pool has no account. */
-export const rank = (state: AccountPoolState, sessionID: string, now: number, rules: Rules): ReadonlyArray<string> => {
+/**
+ * The accounts in placement order for a new run of `sessionID`; none when the
+ * pool has no account. The account the session's cache is on comes first
+ * while it lives; with none, the account `cacheOf`'s cache is on (a fork
+ * reads its source's cache).
+ */
+export const rank = (state: AccountPoolState, sessionID: string, now: number, rules: Rules, cacheOf?: string): ReadonlyArray<string> => {
   const [first, ...others] = state.credentials
   if (first === undefined) return []
   const steps = state.steps.filter((step) => now - step.at < WINDOW_MS)
@@ -160,8 +165,11 @@ export const rank = (state: AccountPoolState, sessionID: string, now: number, ru
       ...(weekly?.resetAt === undefined ? {} : { weeklyResetAt: weekly.resetAt }),
     }
   }
-  const cache = state.recent[sessionID]
-  const preferred = cache !== undefined && cacheLives(rules, cache, now) ? cache.credentialID : undefined
+  const liveCache = (owner: string | undefined) => {
+    const cache = owner === undefined ? undefined : state.recent[owner]
+    return cache !== undefined && cacheLives(rules, cache, now) ? cache.credentialID : undefined
+  }
+  const preferred = liveCache(sessionID) ?? liveCache(cacheOf)
   return rankPlacement({
     slots: [slot(first), ...others.map(slot)],
     spent,

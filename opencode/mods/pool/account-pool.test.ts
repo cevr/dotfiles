@@ -199,6 +199,24 @@ describe("a session's cache keeps its account", () => {
       ...placed("s1", "a", T0 + MINUTE),
     ))
 
+  test("a fork with no cache of its own goes where its source's cache lives, then by load once that is gone", () =>
+    run(
+      accounts("a", "b"),
+      Story.given(took("s1", "a", 5, T0), took("s2", "b", 1, T0)),
+      Story.clock(T0 + MINUTE),
+      // b scores better, but the fork reads s1's cache, which is on a.
+      Story.when(PlaceRequest.make({ sessionID: "fork", kind: "primary", cacheOf: "s1" })),
+      Story.then(RequestPlaced.make({ sessionID: "fork", kind: "primary", credentialID: "a", at: T0 + MINUTE })),
+      ...released("fork"),
+      // Its own cache, now on a, comes before the source's.
+      Story.when(PlaceRequest.make({ sessionID: "fork", kind: "primary", cacheOf: "s2" })),
+      Story.then(RequestPlaced.make({ sessionID: "fork", kind: "primary", credentialID: "a", at: T0 + MINUTE })),
+      // A fork of a session whose cache is gone is placed by load.
+      Story.clock(T0 + MINUTE + CACHE_LIFE_MS),
+      Story.when(PlaceRequest.make({ sessionID: "fork2", kind: "primary", cacheOf: "s1" })),
+      Story.then(RequestPlaced.make({ sessionID: "fork2", kind: "primary", credentialID: "b", at: T0 + MINUTE + CACHE_LIFE_MS })),
+    ))
+
   test("for the pool's cache life, then the run is placed by load", () =>
     Effect.runPromise(
       hourStory(

@@ -27,6 +27,13 @@
         "@dotfiles/opencode-anthropic-auth": "workspace:*",
       },
     },
+    "cmd/btw": {
+      "name": "@dotfiles/opencode-cmd-btw",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-btw": "workspace:*",
+      },
+    },
     "cmd/cache": {
       "name": "@dotfiles/opencode-cmd-cache",
       "version": "0.0.0",
@@ -92,6 +99,13 @@
         "@dotfiles/opencode-pool": "workspace:*",
       },
     },
+    "cmd/questions": {
+      "name": "@dotfiles/opencode-cmd-questions",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-questions": "workspace:*",
+      },
+    },
     "cmd/queue": {
       "name": "@dotfiles/opencode-cmd-queue",
       "version": "0.0.0",
@@ -115,6 +129,13 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/opencode-pool": "workspace:*",
+      },
+    },
+    "mods/btw": {
+      "name": "@dotfiles/opencode-btw",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
       },
     },
     "mods/cache": {
@@ -181,6 +202,13 @@
         "@dotfiles/opencode-subagents": "workspace:*",
       },
     },
+    "mods/questions": {
+      "name": "@dotfiles/opencode-questions",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+      },
+    },
     "mods/queue": {
       "name": "@dotfiles/opencode-queue",
       "version": "0.0.0",
@@ -207,9 +235,13 @@
 
     "@dotfiles/opencode-anthropic-auth": ["@dotfiles/opencode-anthropic-auth@workspace:mods/anthropic-auth"],
 
+    "@dotfiles/opencode-btw": ["@dotfiles/opencode-btw@workspace:mods/btw"],
+
     "@dotfiles/opencode-cache": ["@dotfiles/opencode-cache@workspace:mods/cache"],
 
     "@dotfiles/opencode-cmd-anthropic-auth": ["@dotfiles/opencode-cmd-anthropic-auth@workspace:cmd/anthropic-auth"],
+
+    "@dotfiles/opencode-cmd-btw": ["@dotfiles/opencode-cmd-btw@workspace:cmd/btw"],
 
     "@dotfiles/opencode-cmd-cache": ["@dotfiles/opencode-cmd-cache@workspace:cmd/cache"],
 
@@ -228,6 +260,8 @@
     "@dotfiles/opencode-cmd-orchestrate": ["@dotfiles/opencode-cmd-orchestrate@workspace:cmd/orchestrate"],
 
     "@dotfiles/opencode-cmd-pool": ["@dotfiles/opencode-cmd-pool@workspace:cmd/pool"],
+
+    "@dotfiles/opencode-cmd-questions": ["@dotfiles/opencode-cmd-questions@workspace:cmd/questions"],
 
     "@dotfiles/opencode-cmd-queue": ["@dotfiles/opencode-cmd-queue@workspace:cmd/queue"],
 
@@ -250,6 +284,8 @@
     "@dotfiles/opencode-pool": ["@dotfiles/opencode-pool@workspace:mods/pool"],
 
     "@dotfiles/opencode-prime": ["@dotfiles/opencode-prime@workspace:mods/prime"],
+
+    "@dotfiles/opencode-questions": ["@dotfiles/opencode-questions@workspace:mods/questions"],
 
     "@dotfiles/opencode-queue": ["@dotfiles/opencode-queue@workspace:mods/queue"],
 

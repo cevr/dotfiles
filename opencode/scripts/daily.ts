@@ -29,6 +29,9 @@ const THEME = resolve(import.meta.dir, "../themes/prime.json")
 type PluginEntry = string | { readonly package: string; readonly options?: Record<string, unknown> }
 type Json = Record<string, unknown>
 
+/** Turns off the fork's built-in /btw (`opencode.btw`), so /btw is the btw mod's (cmd/btw). */
+export const BUILTIN_BTW_OFF = "-opencode.btw"
+
 const packageOf = (entry: unknown): string | undefined =>
   typeof entry === "string" ? entry : typeof entry === "object" && entry !== null && "package" in entry ? String(entry.package) : undefined
 
@@ -116,11 +119,15 @@ export const mergeServer = (
   }
 }
 
-/** The TUI config with ours merged in: our plugins first (Prime before the rest), the Prime theme. */
+/**
+ * The TUI config with ours merged in: our plugins first (Prime before the rest), the Prime theme.
+ * An entry of ours that names no directory (`-opencode.btw` turns a built-in off) replaces its
+ * earlier copy.
+ */
 export const mergeCli = (existing: Json, plugins: ReadonlyArray<string>, owned: ReadonlyArray<string>): Json => {
   const others = (Array.isArray(existing.plugins) ? existing.plugins : []).filter((entry) => {
     const path = packageOf(entry)
-    return path === undefined || !owned.some((dir) => path === dir || path.startsWith(`${dir}/`))
+    return path === undefined || (!plugins.includes(path) && !owned.some((dir) => path === dir || path.startsWith(`${dir}/`)))
   })
   const theme = typeof existing.theme === "object" && existing.theme !== null ? existing.theme : {}
   return { ...existing, theme: { ...theme, name: "prime" }, plugins: [...plugins, ...others] }
@@ -191,6 +198,7 @@ if (import.meta.main) {
     pluginDir("git"),
     pluginDir("idle-compact"),
     pluginDir("mail"),
+    pluginDir("questions"),
   ]
   // Earlier runs loaded the auth plugin through a loader directory here; its entry is replaced too.
   const loader = join(share, "anthropic-auth")
@@ -199,7 +207,7 @@ if (import.meta.main) {
   const config = join(home, ".config/opencode")
   const models = roleModels(await loadCatalog(fork))
   writeJson(join(config, "opencode.json"), mergeServer(readJson(join(config, "opencode.json")), server, models, owned))
-  writeJson(join(config, "cli.json"), mergeCli(readJson(join(config, "cli.json")), [pluginDir("prime"), pluginDir("status"), pluginDir("queue"), pluginDir("herdr"), pluginDir("git"), pluginDir("cache")], owned))
+  writeJson(join(config, "cli.json"), mergeCli(readJson(join(config, "cli.json")), [pluginDir("prime"), pluginDir("status"), pluginDir("queue"), pluginDir("herdr"), pluginDir("git"), pluginDir("cache"), pluginDir("questions"), pluginDir("btw"), BUILTIN_BTW_OFF], owned))
   mkdirSync(join(config, "themes"), { recursive: true })
   copyFileSync(THEME, join(config, "themes/prime.json"))
 

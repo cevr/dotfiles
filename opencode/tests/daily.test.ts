@@ -4,7 +4,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
-import { CLAUDE_CACHE_TTL, launcher, mergeCli, mergeServer, poolEntry, roleModels } from "../scripts/daily.ts"
+import { BUILTIN_BTW_OFF, CLAUDE_CACHE_TTL, launcher, mergeCli, mergeServer, poolEntry, roleModels } from "../scripts/daily.ts"
 
 const MODS = "/repo/opencode/mods"
 const AUTH = "/home/.local/share/opencode-prime/anthropic-auth"
@@ -61,6 +61,13 @@ describe("the TUI config", () => {
   test("loads Prime first, sets the Prime theme and keeps the other keys", () => {
     const merged = mergeCli({ theme: { name: "system", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, "/x"] }, [`${MODS}/prime`, `${MODS}/status`], [MODS])
     expect(merged).toEqual({ theme: { name: "prime", mode: "dark" }, session: { sidebar: "auto" }, plugins: [`${MODS}/prime`, `${MODS}/status`, "/x"] })
+  })
+})
+
+describe("the TUI config's built-in /btw", () => {
+  test("is turned off once, however many runs merged it", () => {
+    const once = mergeCli({ plugins: ["/x"] }, [`${MODS}/btw`, BUILTIN_BTW_OFF], [MODS])
+    expect(mergeCli(once, [`${MODS}/btw`, BUILTIN_BTW_OFF], [MODS]).plugins).toEqual([`${MODS}/btw`, BUILTIN_BTW_OFF, "/x"])
   })
 })
 

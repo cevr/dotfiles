@@ -58,6 +58,8 @@ export class Pool extends Context.Service<
       readonly kind: RequestKind
       /** How long the request's cache lives when its agent keeps its own lifetime (ms); else the provider's. */
       readonly cacheLifeMs?: number
+      /** The session whose cache the request reads when the session has none of its own: a fork's source. */
+      readonly cacheOf?: string
     }) => Effect.Effect<string | undefined>
     /** A response came back. A refusal (401 or 429) holds the login it went out on. */
     readonly responded: (input: {
@@ -152,6 +154,7 @@ export const layer = (config: Config) =>
         readonly sessionID: string
         readonly kind: RequestKind
         readonly cacheLifeMs?: number
+        readonly cacheOf?: string
       }) {
         const where = pooled(input.providerID)
         if (where === undefined) return undefined
@@ -160,6 +163,7 @@ export const layer = (config: Config) =>
           sessionID: input.sessionID,
           kind: input.kind,
           ...(input.cacheLifeMs === undefined ? {} : { cacheLifeMs: input.cacheLifeMs }),
+          ...(input.cacheOf === undefined ? {} : { cacheOf: input.cacheOf }),
         })
         const events = yield* send(where.pool, where.id, command).pipe(
           Effect.catchTag("NoAccount", () => Effect.succeed([])),

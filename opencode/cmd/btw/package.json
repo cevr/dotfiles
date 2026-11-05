@@ -1,0 +1,13 @@
+{
+  "name": "@dotfiles/opencode-cmd-btw",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The btw mod's OpenCode TUI plugin: the composition root of @dotfiles/opencode-btw.",
+  "exports": {
+    "./tui": "./tui.tsx"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-btw": "workspace:*"
+  }
+}

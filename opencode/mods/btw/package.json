@@ -1,0 +1,14 @@
+{
+  "name": "@dotfiles/opencode-btw",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "/btw: a side question forked off a session into its own pane, answered beside the session without touching its transcript, with follow-ups and a key that brings the answer back.",
+  "exports": {
+    "./tui/*": "./tui/*.tsx",
+    "./*": "./*.ts"
+  },
+  "dependencies": {
+    "@dotfiles/decider": "workspace:*"
+  }
+}

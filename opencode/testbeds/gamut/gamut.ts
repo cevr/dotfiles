@@ -895,7 +895,8 @@ const prepareAndLaunch = async (
     join(paths.work, "opencode.json"),
     `${JSON.stringify(projectConfig(preset, simPort, plugins), null, 2)}\n`,
   )
-  await Bun.write(join(paths.config, "cli.json"), `${JSON.stringify(cliConfig([...pluginPaths(PLUGINS), ...pluginPaths(CMD)]), null, 2)}\n`)
+  // cmd/btw's /btw replaces the fork's built-in one, which "-opencode.btw" turns off.
+  await Bun.write(join(paths.config, "cli.json"), `${JSON.stringify(cliConfig([...pluginPaths(PLUGINS), ...pluginPaths(CMD), "-opencode.btw"]), null, 2)}\n`)
   cpSync(THEME, join(paths.work, ".opencode/themes/prime.json"))
   const agentsPath = join(paths.work, "AGENTS.md")
   await Bun.write(agentsPath, rewriteRoster(await Bun.file(agentsPath).text(), preset))
