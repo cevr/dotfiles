@@ -1,6 +1,7 @@
 // Who works on what, how it stands, what it says, and which rows show.
 import { describe, expect, test } from "bun:test"
 import type { Call, Message, Part, Session } from "./family.ts"
+import { columns, format } from "./line.ts"
 import { LINGER_MS, rows, subagents, visible, waitingOn, type Row } from "./subagent-row.ts"
 
 const call = (tool: string, input: Record<string, unknown>, over: Partial<Call> = {}): Call => ({
@@ -54,6 +55,54 @@ describe("a row's role, unit and order", () => {
       ["general", "general", "subagent"],
       ["planner", "planner", "Plan it"],
       ["code-reviewer", "other", "subagent"],
+    ])
+  })
+
+  test("a worker or general child whose description names an orchestrate step reads as that role, the role word out of its unit", () => {
+    const children = [
+      ["a", "worker", "pkg-lower implementor"],
+      ["b", "worker", "closure-flake verifier r1 (Opus)"],
+      ["c", "general", "planner hsdaily r1"],
+      ["d", "implementor", "implementor hsdaily r2"],
+      ["e", "worker", "Fix the verifier's timeout"],
+      ["f", "worker", "Fix money parsing"],
+      ["g", "verifier", "implementor pkg-lower r1"],
+      ["h", "explore", "verifier pkg-lower r1"],
+    ] as const
+    const world = family(
+      session("root", { messages: [step(children.map(([id, , description]) => launch(id, { agent: "general", description })))] }),
+      ...children.map(([id, agent], index) => session(id, { parentID: "root", agent, time: { created: index } })),
+    )
+    expect(subagents(world, "root").map((row) => [row.role, row.tone, row.unit])).toEqual([
+      ["implementor", "implementor", "pkg-lower"],
+      ["verifier", "verifier", "closure-flake r1 (Opus)"],
+      ["planner", "planner", "hsdaily r1"],
+      ["implementor", "implementor", "hsdaily r2"],
+      ["worker", "worker", "Fix the verifier's timeout"],
+      ["worker", "worker", "Fix money parsing"],
+      ["verifier", "verifier", "implementor pkg-lower r1"],
+      ["explore", "other", "verifier pkg-lower r1"],
+    ])
+  })
+
+  test("the workbox's worker lanes draw as the steps they run (ergo's dock)", () => {
+    const lanes = [
+      ["p", "pkg-lower implementor"],
+      ["c", "closure-flake verifier r1 (Opus)"],
+      ["g", "gate-test-disk verifier r1 (Opus)"],
+    ] as const
+    const world = family(
+      session("root", { messages: [step(lanes.map(([id, description]) => launch(id, { agent: "general", description })))] }),
+      ...lanes.map(([id], index) =>
+        session(id, { parentID: "root", agent: "worker", model: "claude-opus-5-5", time: { created: index, busy: 0 }, running: true }),
+      ),
+    )
+    const shown = rows(world, "root", 0)
+    const cols = columns(shown)
+    expect(shown.map((row) => format(row, 80, { columns: cols, spinner: "◆" }).map((segment) => segment.text).join(""))).toEqual([
+      "◆ implementor opus 5.5  pkg-lower                 starting · 0s",
+      "◆ verifier    opus 5.5  closure-flake r1 (Opus)   starting · 0s",
+      "◆ verifier    opus 5.5  gate-test-disk r1 (Opus)  starting · 0s",
     ])
   })
 

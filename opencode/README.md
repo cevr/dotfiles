@@ -72,6 +72,18 @@ The dock under the composer counts the session's work:
 ◆ 0 subagents  ·  1 shell  ·  1 wake
 ```
 
+Beneath it, one row per subagent (`mods/subagents`) names the orchestrate
+step it runs by the role's noun, as the skill and the agents name it, not a
+gerund: the state is the leading diamond, so `implementing` beside a done
+diamond would contradict it. A worker started before the guard routed by
+the description reads as the role its description names, the role word
+dropped from the unit; any other worker reads `worker`:
+
+```
+◈ implementor opus  pkg-lower                  (was: ◈ worker opus  pkg-lower implementor)
+◈ verifier    opus  closure-flake r1 (Opus)    (was: ◈ worker opus  closure-flake verifier r1 (Opus))
+```
+
 The wake item shows only while the session has wakes pending or notices
 unread, in the success colour while any is pending (the warning colour with
 only notices); its parts drop from the right as the row narrows. It is read
@@ -152,6 +164,21 @@ The model (the domain files at `mods/orchestrate/`):
 
 The aggregate stores events, not state. The status pane reads the history
 as the call log, and no command needs the folded state.
+
+The route (`role.ts`): a role or any other agent asked by name runs as
+asked, and a former role name as its role. An untyped or general call runs
+as the lean worker (under `fullAgent`, as the general agent). A call that
+would run as the worker (untyped, general or `worker`) and whose
+`description` names an orchestrate step runs as that role, reason
+`described`, at the role's effort and pace: the orchestrator meant the role,
+and only the role agent carries the protocol and the effort. The form
+(`described.ts`) is the skill's, the role first (`verifier auth r1`), or the
+role after a one-word lowercase unit slug with only a round and a note
+behind it (`pkg-lower implementor`, `closure-flake verifier r1 (Opus)`).
+A role mentioned in prose (`Fix the verifier's timeout`, `Planner prompt
+rewrite`) names none. A follow-up asking no particular agent (none, a
+general one, or `worker`) keeps its child's agent (`continued`), and a
+follow-up never changes agent by its description.
 
 ## Pool
 

@@ -99,11 +99,37 @@ describe("the guard's routing", () => {
       Story.then(started({ agent: "verifier", reason: "continued", child: "child-1" })),
     ))
 
+  test("a follow-up asking for a general agent or the worker keeps its child's too", () =>
+    run(
+      Story.clock(WEDNESDAY),
+      Story.when(start("general", { child: "child-1", childAgent: "verifier", description: "gate-test-disk implementor (resume)" })),
+      Story.then(
+        started({ asked: "general", agent: "verifier", reason: "continued", child: "child-1", description: "gate-test-disk implementor (resume)" }),
+      ),
+    ))
+
   test("a follow-up naming an agent is routed as any call", () =>
     run(
       Story.clock(WEDNESDAY),
-      Story.when(start("general", { child: "child-1" })),
-      Story.then(started({ asked: "general", agent: "worker", reason: "general", child: "child-1" })),
+      Story.when(start("planner", { child: "child-1", childAgent: "worker" })),
+      Story.then(started({ asked: "planner", agent: "planner", reason: "kept", child: "child-1" })),
+    ))
+
+  test("a follow-up whose child's agent is unknown never changes agent by its description", () =>
+    run(
+      Story.clock(WEDNESDAY),
+      Story.when(start("general", { child: "child-1", description: "verifier sso r3 (resume)" })),
+      Story.then(started({ asked: "general", agent: "worker", reason: "general", child: "child-1", description: "verifier sso r3 (resume)" })),
+    ))
+
+  test("role work asked of a general agent runs as the role its description names", () =>
+    run(
+      Story.clock(WEDNESDAY),
+      Story.when(start("general", { description: "closure-flake verifier r1 (Opus)", background: true })),
+      Story.then(
+        started({ asked: "general", agent: "verifier", reason: "described", background: true, description: "closure-flake verifier r1 (Opus)" }),
+      ),
+      Story.state(Started.make({ agent: "verifier" })),
     ))
 })
 

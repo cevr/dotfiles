@@ -6,5 +6,8 @@
   "description": "The subagent rows: which role works on which unit, how it stands and what it does now, for each subagent of a session family, read from OpenCode's TUI data.",
   "exports": {
     "./*": "./*.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-orchestrate": "workspace:*"
   }
 }

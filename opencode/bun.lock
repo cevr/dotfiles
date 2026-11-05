@@ -254,6 +254,9 @@
     "mods/subagents": {
       "name": "@dotfiles/opencode-subagents",
       "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-orchestrate": "workspace:*",
+      },
     },
     "mods/wake": {
       "name": "@dotfiles/opencode-wake",

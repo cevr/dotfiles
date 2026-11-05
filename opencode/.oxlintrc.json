@@ -273,9 +273,10 @@
                 "group": [
                   "*",
                   "!./*.ts",
+                  "!@dotfiles/opencode-orchestrate/described",
                   "!bun:test"
                 ],
-                "message": "The subagents fence: the row model is plain TypeScript over a plain view; its root files import each other and bun:test only, never effect, @opencode/*, @opentui/*, solid-js, node:*, bun or its opencode/ folder."
+                "message": "The subagents fence: the row model is plain TypeScript over a plain view; its root files import each other, orchestrate's plain step form (@dotfiles/opencode-orchestrate/described) and bun:test only, never effect, @opencode/*, @opentui/*, solid-js, node:*, bun or its opencode/ folder."
               }
             ]
           }
