@@ -1,8 +1,9 @@
 // The frame around the transcript in the Prime look: a one-line top bar, a
-// text splash, the detail-mode hint above the editor, and the tray, rule and
-// activity line under it.
+// text splash, the detail-mode hint above the editor, and the tray, rule,
+// activity line and a live row per subagent under it.
 import type { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal, onCleanup, Show, type Accessor } from "solid-js"
+import { SubagentRows } from "./live"
 import { navigationHint, neighbour, subagentOrder, topTitle } from "./subagent"
 import { compactTokens, detailHint, elapsed, type Detail } from "./view"
 import { GUTTER } from "./transcript"
@@ -188,6 +189,10 @@ export function Dock(props: { context: Context; sessionID?: string }) {
           </Show>
         </text>
       </box>
+      {/* A row per subagent under the count; inside a subagent they sit above its picker (index.tsx). */}
+      <Show when={props.sessionID && !data.session.get(props.sessionID)?.parentID ? props.sessionID : undefined}>
+        {(id) => <SubagentRows context={props.context} sessionID={id()} child={false} />}
+      </Show>
     </box>
   )
 }

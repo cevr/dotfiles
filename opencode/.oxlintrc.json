@@ -129,6 +129,38 @@
           }
         ]
       }
+    },
+    {
+      "files": ["mods/subagents/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!./*.ts", "!bun:test"],
+                "message": "The subagents fence: the row model is plain TypeScript over a plain view; its root files import each other and bun:test only, never effect, @opencode/*, @opentui/*, solid-js, node:*, bun or its opencode/ folder."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/subagents/opencode/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!../*.ts", "!./*.ts", "!bun:test"],
+                "message": "The subagents reader fence: opencode/ reads the TUI's data through its own narrowed Reads, so it imports the model's root files, its own files and bun:test only; never @opencode/* or a renderer."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }
