@@ -20,7 +20,7 @@ import {
   verb,
   type Call,
 } from "../src/group"
-import type { ToolPart } from "../src/view"
+import { toolInput, type ToolPart } from "../src/view"
 
 let ids = 0
 function call(
@@ -215,18 +215,18 @@ describe("what hangs under a call at the all level", () => {
   })
 })
 
-describe("a run, as fx draws one group", () => {
+describe("a run, as one step's group", () => {
   const step = (id: string, content: unknown[]) => ({ type: "assistant", id, time: { created: 0 }, content }) as never
   const ids = (run: Call[]) => run.map((item) => item.part.id)
 
-  test("spans a turn's steps: reasoning and blank text between calls do not end it", () => {
-    const [a, b, c] = [call("read", { path: "a" }), call("bash", { command: "ls" }), call("read", { path: "c" })]
+  test("is one step's calls: reasoning and blank text between them do not end it, the step's edge does", () => {
+    const [a, b, c, d] = [call("read", { path: "a" }), call("bash", { command: "ls" }), call("read", { path: "c" }), call("read", { path: "d" })]
     const messages = [
-      step("m1", [{ type: "text", text: "Looking." }, a, { type: "reasoning", text: "Next the tests." }]),
-      step("m2", [{ type: "reasoning", text: "Run them." }, { type: "text", text: " " }, b]),
-      step("m3", [c]),
+      step("m1", [{ type: "text", text: "Looking." }, a, { type: "reasoning", text: "Next the tests." }, { type: "text", text: " " }, b]),
+      step("m2", [{ type: "reasoning", text: "Run them." }, c, d]),
     ]
-    for (const [at, part] of [[0, a], [1, b], [2, c]] as const) expect(ids(toolRun(messages, at, part.id))).toEqual([a.id, b.id, c.id])
+    for (const [at, part] of [[0, a], [0, b]] as const) expect(ids(toolRun(messages, at, part.id))).toEqual([a.id, b.id])
+    for (const [at, part] of [[1, c], [1, d]] as const) expect(ids(toolRun(messages, at, part.id))).toEqual([c.id, d.id])
     expect(toolRun(messages, 0, "text:0")).toEqual([])
   })
 
@@ -240,6 +240,68 @@ describe("a run, as fx draws one group", () => {
     expect(ids(toolRun(messages, 0, a.id))).toEqual([a.id])
     expect(ids(toolRun(messages, 0, b.id))).toEqual([b.id])
     expect(ids(toolRun(messages, 2, c.id))).toEqual([c.id])
+  })
+})
+
+describe("a message between two calls starts a new group", () => {
+  const step = (id: string, content: unknown[]) => ({ type: "assistant", id, time: { created: 0 }, content }) as never
+  const ids = (run: Call[]) => run.map((item) => item.part.id)
+
+  test("a one-line intermediate text in the next step splits the calls into two groups", () => {
+    const [a, b] = [call("bash", { command: "pytest" }), call("apply_patch", { patchText: "" })]
+    const messages = [step("m1", [a]), step("m2", [{ type: "text", text: "Patching it." }, b])]
+    expect(ids(groupRun(messages, "m1", a.id))).toEqual([a.id])
+    expect(ids(groupRun(messages, "m2", b.id))).toEqual([b.id])
+  })
+
+  test("a user message, a steer, a synthetic notice or a compaction between calls splits them", () => {
+    const between = [
+      { type: "user", id: "x", text: "also read the notes", time: { created: 0 } },
+      { type: "synthetic", id: "x", text: "Shell finished", metadata: { source: "shell" }, time: { created: 0 } },
+      { type: "synthetic", id: "x", text: "Notice", metadata: { source: "subagent", state: "completed" }, time: { created: 0 } },
+      { type: "compaction", id: "x", time: { created: 0 } },
+    ]
+    for (const message of between) {
+      const [a, b] = [call("read", { path: "a" }), call("read", { path: "b" })]
+      const messages = [step("m1", [a]), message as never, step("m2", [b])]
+      expect(ids(groupRun(messages, "m1", a.id))).toEqual([a.id])
+      expect(ids(groupRun(messages, "m2", b.id))).toEqual([b.id])
+    }
+  })
+
+  test("a step's parallel calls share one group; the next step starts its own, with nothing drawn between", () => {
+    const [a, b, c] = [call("read", { path: "a" }), call("bash", { command: "ls" }), call("bash", { command: "pwd" })]
+    const messages = [step("m1", [a, b]), step("m2", [{ type: "reasoning", text: "Now the listing." }, c])]
+    expect(ids(groupRun(messages, "m1", b.id))).toEqual([a.id, b.id])
+    expect(words(groupRun(messages, "m1", a.id))).toBe("Read 1 file · ran 1 command")
+    expect(ids(groupRun(messages, "m2", c.id))).toEqual([c.id])
+  })
+
+  test("each kernel cell, one per step, is a group of its own, the running one the newest", () => {
+    const cell = (status: "completed" | "running", command: string) => {
+      const part = call("kernel", { code: "await tools.shell({})" }) as unknown as { state: Record<string, unknown> }
+      const operations = [{ tool: "shell", status, input: { command } }]
+      return { ...part, state: { ...part.state, status, metadata: { operations } } } as unknown as ToolPart
+    }
+    const [first, second, live] = [cell("completed", "git status"), cell("completed", "bun test"), cell("running", "bun run gate")]
+    const messages = [step("m1", [first]), step("m2", [second]), step("m3", [{ type: "reasoning", text: "Gate." }, live])]
+    expect(groupRun(messages, "m1", first.id).map((item) => toolInput(item.part).command)).toEqual(["git status"])
+    expect(groupRun(messages, "m2", second.id).map((item) => toolInput(item.part).command)).toEqual(["bun test"])
+    const run = groupRun(messages, "m3", live.id)
+    expect(rows(run).map((row) => `${verb(row)} ${subject(row)} [${row.outcome}]`)).toEqual(["Running bun run gate [running]"])
+  })
+
+  test("a running call after text is a group of its own: its row is the group's line, in the running tense", () => {
+    const [a, long] = [call("bash", { command: "printf ok" }), call("bash", { command: "sleep 600" }, "running")]
+    const messages = [step("m1", [a]), step("m2", [{ type: "text", text: "Running the long suite." }, long])]
+    const run = groupRun(messages, "m2", long.id)
+    expect(ids(run)).toEqual([long.id])
+    const tree = rows(run)
+    expect(tree.map((row) => `${verb(row)} ${subject(row)} [${row.outcome}]`)).toEqual(["Running sleep 600 [running]"])
+    // One row is the group's line: no header above it and no connector before it.
+    expect(branch(0, tree.length, true)).toEqual({ rail: false })
+    // The earlier group keeps only its own call; the running one is not drawn under it.
+    expect(ids(groupRun(messages, "m1", a.id))).toEqual([a.id])
   })
 })
 
@@ -297,9 +359,9 @@ describe("subagent launches across steps", () => {
     expect(apart([b])).toEqual([a.id, b.id])
   })
 
-  test("other calls join across steps, but a launch burst stays a group of its own", () => {
+  test("only launch steps join across steps: other calls, and a launch beside them, keep to their step", () => {
     const [a, b] = [call("read", { path: "a" }), call("read", { path: "b" })]
-    expect(groupRun([step("m1", 0, [a]), step("m2", 1_000, [b])], "m2", b.id).map((item) => item.part.id)).toEqual([a.id, b.id])
+    expect(groupRun([step("m1", 0, [a]), step("m2", 1_000, [b])], "m2", b.id).map((item) => item.part.id)).toEqual([b.id])
     const started = launch("fix-a")
     const read = call("read", { path: "c" })
     expect(groupRun([step("m1", 0, [started]), step("m2", 1_000, [read])], "m2", read.id).map((item) => item.part.id)).toEqual([read.id])

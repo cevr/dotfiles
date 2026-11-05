@@ -81,41 +81,28 @@ function answer(part: SessionPart) {
 }
 
 /**
- * The run of tool calls around `partID`, as fx draws one group: it spans the
- * steps of a turn, so reasoning and blank text between calls do not end it;
- * answer text, a message that is no step (a prompt, a notice) or a step that
- * only starts background agents (that burst is a group of its own) does. Each
- * kernel call stands as the calls its cell made (kernel.ts). Empty when
- * `partID` is no tool call of message `at`.
+ * The run of tool calls around `partID`: one step's calls, as gent draws a
+ * run without `acrossSteps`, so each model step (a kernel cell, a batch of
+ * parallel calls) is a group of its own and the newest call is always a line
+ * at the transcript's end. Within the step, reasoning and blank text between
+ * calls do not end the run; answer text does. Each kernel call stands as the
+ * calls its cell made (kernel.ts). Empty when `partID` is no tool call of
+ * message `at`.
  */
 export function toolRun(messages: ReadonlyArray<SessionMessageInfo>, at: number, partID: string): Call[] {
   const message = messages[at]
   if (message?.type !== "assistant") return []
-  const index = message.content.findIndex((part) => part.type === "tool" && part.id === partID)
+  const content = message.content
+  const index = content.findIndex((part) => part.type === "tool" && part.id === partID)
   if (index < 0) return []
-  const parts: ToolPart[] = []
-  // Back to the start of the run, then forward to its end.
-  back: for (let step = at, from = index; step >= 0; step--) {
-    const current = messages[step]
-    if (current?.type !== "assistant" || (step !== at && launches(current))) break
-    const content = current.content
-    for (let i = step === at ? from : content.length - 1; i >= 0; i--) {
-      const part = content[i]!
-      if (answer(part)) break back
-      if (part.type === "tool") parts.unshift(part)
-    }
-  }
-  forward: for (let step = at; step < messages.length; step++) {
-    const current = messages[step]
-    if (current?.type !== "assistant" || (step !== at && launches(current))) break
-    const content = current.content
-    for (let i = step === at ? index + 1 : 0; i < content.length; i++) {
-      const part = content[i]!
-      if (answer(part)) break forward
-      if (part.type === "tool") parts.push(part)
-    }
-  }
-  return parts.flatMap((part) => expand({ tool: canonical(part.name), part }, canonical))
+  // Back to the start of the run, then forward to its end, both within the step.
+  let start = index
+  while (start > 0 && !answer(content[start - 1]!)) start--
+  let end = index
+  while (end < content.length - 1 && !answer(content[end + 1]!)) end++
+  return content
+    .slice(start, end + 1)
+    .flatMap((part) => (part.type === "tool" ? expand({ tool: canonical(part.name), part }, canonical) : []))
 }
 
 /** Whether a message is a step that only starts background agents: every row it draws is such a launch. */
