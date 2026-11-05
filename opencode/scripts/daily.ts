@@ -190,6 +190,7 @@ if (import.meta.main) {
     pluginDir("queue"),
     pluginDir("git"),
     pluginDir("idle-compact"),
+    pluginDir("mail"),
   ]
   // Earlier runs loaded the auth plugin through a loader directory here; its entry is replaced too.
   const loader = join(share, "anthropic-auth")
