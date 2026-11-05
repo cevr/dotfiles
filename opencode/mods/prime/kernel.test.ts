@@ -2,7 +2,7 @@
 // fx draws calls, and never as its code.
 import { describe, expect, test } from "bun:test"
 import { canonical, type Call } from "./call.ts"
-import { alone, headerRuns, levelRows, rows, subject, verb } from "./group.ts"
+import { alone, headerRuns, levelNodes, rows, subject, verb } from "./group.ts"
 import { cellCalls, expand, toolsInCode } from "./kernel.ts"
 import type { Fields, ToolPart, ToolState } from "./session.ts"
 
@@ -133,9 +133,10 @@ describe("a kernel call's description", () => {
   test("heads even a group of one row; without one, that row is the group's line alone", () => {
     const one = [op("shell", { command: "git merge skill-dollar" })]
     const described = drawn(kernel("completed", one, "x", "Merge the skill-dollar worker"))
-    expect(alone(described, levelRows(described, "details"), "details")).toBe(false)
+    const nodes = (calls: Call[]) => levelNodes(calls.map((call) => ({ type: "call" as const, call })), "details")
+    expect(alone(described, nodes(described), "details")).toBe(false)
     const plain = drawn(kernel("completed", one))
-    expect(alone(plain, levelRows(plain, "details"), "details")).toBe(true)
+    expect(alone(plain, nodes(plain), "details")).toBe(true)
     // A cell that recorded nothing still has its description over its own row.
     const bare = drawn(kernel("completed", undefined, "const x = 1", "Count the lines"))
     expect(header(bare)).toBe("Count the lines")

@@ -1,0 +1,74 @@
+// `bun run accept`: the acceptance tests (tests/*.test.ts), most of which run
+// real OpenCode from OPENCODE_DEV on a scripted model, every file at once
+// across the cores, without ANTHROPIC_BASE_URL.
+// `bun run accept:affected [base]`: only the files that reach a file changed
+// since `base` (default: where HEAD left origin/main), committed or not, as
+// scripts/reach.ts derives it; a change to a shared input (root manifest, lock
+// file, configs, these scripts) runs them all. A change to the OpenCode
+// checkout itself is outside this repository: run `bun run accept` after one.
+//
+// Usage: bun scripts/accept.ts [--affected [base]] [--list] [--parallel=N] [-- <bun test flags>]
+// --list prints the files it would run and exits.
+import { mkdirSync } from "node:fs"
+import path from "node:path"
+import { $ } from "bun"
+import { acceptanceTests, load, packageOf, reach, ROOT, SHARED } from "./reach.ts"
+
+const argv = process.argv.slice(2)
+const rest = argv.includes("--") ? argv.slice(argv.indexOf("--") + 1) : []
+const own = argv.includes("--") ? argv.slice(0, argv.indexOf("--")) : argv
+const affected = own.includes("--affected")
+const parallel = own.find((arg) => arg.startsWith("--parallel"))
+const CACHE = path.join(ROOT, "node_modules/.cache/gate")
+mkdirSync(CACHE, { recursive: true })
+
+if (!process.env.OPENCODE_DEV) console.warn("accept: OPENCODE_DEV is not set, so the real-OpenCode tests skip. Point it at the fork.")
+
+const workspace = await load()
+let files = acceptanceTests(workspace)
+
+if (affected) {
+  const named = own[own.indexOf("--affected") + 1]
+  const base =
+    named !== undefined && !named.startsWith("--")
+      ? named
+      : (await $`git merge-base HEAD origin/main`.cwd(ROOT).quiet().nothrow().text()).trim() || "HEAD"
+  const diff = await $`git diff --name-only --relative ${base}`.cwd(ROOT).quiet().text()
+  const untracked = await $`git ls-files --others --exclude-standard`.cwd(ROOT).quiet().text()
+  const changed = [...new Set([...diff.split("\n"), ...untracked.split("\n")].filter((file) => file !== ""))]
+  if (changed.some((file) => SHARED.includes(file))) console.log(`accept: a shared input changed since ${base.slice(0, 12)}; running every file`)
+  else {
+    const memo = new Map<string, ReadonlyArray<string>>()
+    files = files.filter((file) => {
+      const reached = reach(workspace, [file], memo)
+      const packages = new Set([...reached].flatMap((each) => packageOf(each) ?? []))
+      // A deleted file is gone from the checkout; its package still counts.
+      return changed.some((each) => reached.has(each) || (packageOf(each) !== undefined && packages.has(packageOf(each)!)))
+    })
+    console.log(`accept: ${files.length} of ${acceptanceTests(workspace).length} files reach the ${changed.length} files changed since ${base.slice(0, 12)}`)
+  }
+  if (files.length === 0) process.exit(0)
+}
+if (own.includes("--list")) {
+  for (const file of files) console.log(file)
+  process.exit(0)
+}
+
+const env = { ...process.env }
+delete env.ANTHROPIC_BASE_URL
+const timings = path.join(CACHE, "accept-timings.json")
+const child = Bun.spawn(
+  [
+    process.execPath,
+    "test",
+    parallel ?? "--parallel",
+    "--timeout",
+    "300000",
+    `--timings=${timings}`,
+    "--update-timings",
+    ...rest,
+    ...files.map((file) => `./${file}`),
+  ],
+  { cwd: ROOT, env, stdout: "inherit", stderr: "inherit" },
+)
+process.exit(await child.exited)

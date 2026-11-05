@@ -1,12 +1,14 @@
 // The fx-style tool-call group, without rendering: a step's run of calls
 // reads as one header (`Read 3 files · ran 2 commands · 1 failed`) with one
-// tree row per run of one tool under it.
+// tree row per run of one tool under it, and each of the step's thoughts as
+// a `thinking` node in its place in the tree.
 import { close, stretch } from "./burst.ts"
 import {
   background,
   canonical,
   editedFiles,
   errorText,
+  latched,
   movedToBackground,
   outcome,
   subagentName,
@@ -21,7 +23,7 @@ import {
 import { blink } from "./clock.ts"
 import type { Detail } from "./detail.ts"
 import { cellCalls, expand, operations, toolsInCode } from "./kernel.ts"
-import { words, type Message, type Part, type ToolPart } from "./session.ts"
+import { words, type AssistantMessage, type Message, type Part, type ToolPart, type WordsPart } from "./session.ts"
 
 /** Whether a part draws a transcript row: a call, or text or reasoning with words in it. */
 function drawn(part: Part) {
@@ -34,45 +36,100 @@ function answer(part: Part | undefined) {
 }
 
 /**
- * Whether the transcript row just above a run is a call of another step. The
- * host gives each call its own row, so row gaps cannot tell two steps' groups
- * apart; the group's header adds the blank row between them itself.
+ * The host's id for part `index` of a step: a call's own id, and
+ * `text:<n>`/`reasoning:<n>` (the nth part of that type) for words, as the
+ * host's slots name them.
  */
-export function followsCall(messages: ReadonlyArray<Message>, messageID: string, firstPartID: string): boolean {
-  const at = messages.findIndex((message) => message.id === messageID)
-  const message = messages[at]
-  if (message?.type !== "assistant") return false
-  const start = message.content.findIndex((part) => part.type === "tool" && part.id === firstPartID)
-  const before = message.content.slice(0, Math.max(0, start)).filter(drawn).at(-1)
-  if (before) return before.type === "tool"
-  const previous = messages[at - 1]
-  if (previous?.type !== "assistant") return false
-  return previous.content.filter(drawn).at(-1)?.type === "tool"
+export function partKey(content: ReadonlyArray<Part>, index: number): string {
+  const part = content[index]
+  if (!part) return ""
+  if (part.type === "tool") return part.id
+  return `${part.type}:${content.slice(0, index).filter((item) => item.type === part.type).length}`
+}
+
+/** Where the part the host names `key` sits in a step's content; -1 when it is none of them. */
+function indexOfKey(content: ReadonlyArray<Part>, key: string) {
+  return content.findIndex((_, index) => partKey(content, index) === key)
 }
 
 /**
- * The run of tool calls around `partID`: one step's calls, as gent draws a
- * run without `acrossSteps`, so each model step (a kernel cell, a batch of
- * parallel calls) is a group of its own and the newest call is always a line
- * at the transcript's end. Within the step, reasoning and blank text between
- * calls do not end the run; answer text does. Each kernel call stands as the
- * calls its cell made (kernel.ts). Empty when `partID` is no tool call of
- * message `at`.
+ * Whether the transcript row just above a group, whose first node is part
+ * `firstKey`, is a node of another group: a call or a thought. The host gives
+ * each part its own row, so row gaps cannot tell two steps' groups apart; the
+ * group's header adds the blank row between them itself.
  */
-export function toolRun(messages: ReadonlyArray<Message>, at: number, partID: string): Call[] {
+export function followsGroup(messages: ReadonlyArray<Message>, messageID: string, firstKey: string): boolean {
+  const at = messages.findIndex((message) => message.id === messageID)
+  const message = messages[at]
+  if (message?.type !== "assistant") return false
+  const start = indexOfKey(message.content, firstKey)
+  const before = message.content.slice(0, Math.max(0, start)).filter(drawn).at(-1)
+  if (before) return before.type !== "text"
+  const previous = messages[at - 1]
+  if (previous?.type !== "assistant") return false
+  const last = previous.content.filter(drawn).at(-1)
+  return last !== undefined && last.type !== "text"
+}
+
+/** A thought of a step, as its group's `thinking` node: the host's id for it, its words, and whether it still streams. */
+export type Thought = { readonly id: string; readonly text: string; readonly streaming: boolean }
+
+/** One node of a group's tree, in the order the step made them: a call, or a thought. */
+export type Entry = { readonly type: "call"; readonly call: Call } | { readonly type: "thought"; readonly thought: Thought }
+
+/** The calls among a group's entries. */
+export function entryCalls(entries: ReadonlyArray<Entry>): Call[] {
+  return entries.flatMap((entry) => (entry.type === "call" ? [entry.call] : []))
+}
+
+/** The host's id for the part an entry draws under. */
+export function entryKey(entry: Entry) {
+  return entry.type === "call" ? entry.call.part.id : entry.thought.id
+}
+
+/** A thought streams while its step does and the host has not ended it. */
+function streams(message: AssistantMessage, part: WordsPart) {
+  return message.time.completed === undefined && part.time?.completed === undefined
+}
+
+/** The entries of a step's content: each call (a kernel call as its cell's calls), and each thought with words in it. */
+function entriesOf(message: AssistantMessage, from = 0, to = message.content.length - 1): Entry[] {
+  return message.content.slice(from, to + 1).flatMap((part, offset): Entry[] => {
+    if (part.type === "tool") return expand({ tool: canonical(part.name), part }, canonical).map((call) => ({ type: "call", call }))
+    if (part.type !== "reasoning" || words(part.text) === "") return []
+    const thought = { id: partKey(message.content, from + offset), text: part.text, streaming: streams(message, part) }
+    return [{ type: "thought", thought }]
+  })
+}
+
+/**
+ * The run around part `key` (a call, or a thought with words in it): one
+ * step's calls and thoughts, as gent draws a run without `acrossSteps`, so
+ * each model step (a kernel cell, a batch of parallel calls) is a group of
+ * its own and the newest call is always a line at the transcript's end.
+ * Within the step, thoughts and blank text between calls do not end the run;
+ * answer text does. Each kernel call stands as the calls its cell made
+ * (kernel.ts). Empty when `key` is no call or thought with words of message
+ * `at`.
+ */
+export function stepEntries(messages: ReadonlyArray<Message>, at: number, key: string): Entry[] {
   const message = messages[at]
   if (message?.type !== "assistant") return []
   const content = message.content
-  const index = content.findIndex((part) => part.type === "tool" && part.id === partID)
-  if (index < 0) return []
+  const index = indexOfKey(content, key)
+  const part = content[index]
+  if (!part || part.type === "text" || (part.type === "reasoning" && words(part.text) === "")) return []
   // Back to the start of the run, then forward to its end, both within the step.
   let start = index
   while (start > 0 && !answer(content[start - 1])) start--
   let end = index
   while (end < content.length - 1 && !answer(content[end + 1])) end++
-  return content
-    .slice(start, end + 1)
-    .flatMap((part) => (part.type === "tool" ? expand({ tool: canonical(part.name), part }, canonical) : []))
+  return entriesOf(message, start, end)
+}
+
+/** The calls of the run around call `partID` of message `at` (`stepEntries`, less its thoughts). */
+export function toolRun(messages: ReadonlyArray<Message>, at: number, partID: string): Call[] {
+  return entryCalls(stepEntries(messages, at, partID))
 }
 
 /** Whether a message is a step that only starts background agents: every row it draws is such a launch. */
@@ -81,27 +138,29 @@ function launches(message: Message | undefined): boolean {
   const shown = message.content.filter(drawn)
   return (
     shown.length > 0 &&
-    shown.every((part) => part.type === "tool" && canonical(part.name) === "subagent" && background(part))
+    shown.every((part) => part.type === "tool" && canonical(part.name) === "subagent" && (background(part) || latched(part)))
   )
 }
 
 /**
- * The calls a call's group draws: its step's run, or, for a step that only
+ * The entries a part's group draws: its step's run, or, for a step that only
  * starts background agents, every such step next to it in the transcript,
  * each starting within the burst window of the one before.
  */
-export function groupRun(messages: ReadonlyArray<Message>, messageID: string, partID: string): Call[] {
+export function groupEntries(messages: ReadonlyArray<Message>, messageID: string, key: string): Entry[] {
   const at = messages.findIndex((message) => message.id === messageID)
   const message = messages[at]
   if (message?.type !== "assistant") return []
-  if (!launches(message)) return toolRun(messages, at, partID)
-  if (toolRun(messages, at, partID).length === 0) return []
+  const own = stepEntries(messages, at, key)
+  if (!launches(message) || own.length === 0) return own
   return stretch(messages, at, (previous, next) => launches(previous) && launches(next) && close(previous, next)).flatMap(
-    (step) =>
-      step.type === "assistant"
-        ? step.content.flatMap((part) => (part.type === "tool" ? [{ tool: canonical(part.name), part }] : []))
-        : [],
+    (step) => (step.type === "assistant" ? entriesOf(step) : []),
   )
+}
+
+/** The calls a call's group draws (`groupEntries`, less its thoughts). */
+export function groupRun(messages: ReadonlyArray<Message>, messageID: string, partID: string): Call[] {
+  return entryCalls(groupEntries(messages, messageID, partID))
 }
 
 type Kind = { readonly key: string; readonly past: string; readonly running: string; readonly unit: (count: number) => string }
@@ -125,6 +184,8 @@ export function kind(tool: string, part?: ToolPart): Kind {
   if (tool === "shell_read") return { key: "shell_read", past: "Read", running: "Reading", unit: plural("shell output") }
   if (tool === "shell_kill") return { key: "shell_kill", past: "Killed", running: "Killing", unit: plural("command") }
   if (tool === "kernel") return { key: "kernel", past: "Ran", running: "Running", unit: plural("cell") }
+  if (tool === "subagent" && part && latched(part))
+    return { key: "subagent-latch", past: "Latched", running: "Latching", unit: plural("agent") }
   if (tool === "subagent" && part && background(part))
     return { key: "subagent-start", past: "Started", running: "Starting", unit: plural("agent") }
   if (tool === "subagent") return { key: "subagent", past: "Ran", running: "Running", unit: plural("agent") }
@@ -158,8 +219,8 @@ function tallies(call: Call): Array<{ readonly kind: Kind; readonly units: numbe
   return [{ kind: which, units: which.key === "edit" ? Math.max(1, editedFiles(call.part).length) : 1 }]
 }
 
-/** One stretch of the header or a row, with the tone it is drawn in: `base` is the normal text colour. */
-export type Run = { readonly text: string; readonly tone: "base" | "muted" | "error" | "warning" }
+/** One stretch of the header or a row, with the tone it is drawn in: `base` is the normal text colour, `faint` the dimmest. */
+export type Run = { readonly text: string; readonly tone: "base" | "muted" | "faint" | "error" | "warning" }
 
 /**
  * What the group's kernel cells say they do (`Call.cell`), in order and once
@@ -273,14 +334,51 @@ export function ended(row: Row) {
 }
 
 /**
- * The tree rows a group shows at a level, in order: a row per call at All,
- * a row per run of one tool at Details, and only the rows that ended badly
- * at the overview.
+ * The tree rows a group's calls show at a level, in order: a row per call
+ * at All, a row per run of one tool at Details, and only the rows that ended
+ * badly at the overview.
  */
 export function levelRows(calls: ReadonlyArray<Call>, detail: Detail): Row[] {
   if (detail === "all") return calls.map(single)
   const all = rows(calls)
   return detail === "overview" ? all.filter(ended) : all
+}
+
+/** One node of a group's tree as a level draws it: a row of calls, or a thought. */
+export type Node = { readonly type: "row"; readonly row: Row } | { readonly type: "thought"; readonly thought: Thought }
+
+/**
+ * The nodes a group shows at a level, in the order the step made them: each
+ * thought where it came, with the rows of the calls between (`levelRows`; a
+ * thought ends a fold of calls to one tool). The overview shows no thought.
+ */
+export function levelNodes(entries: ReadonlyArray<Entry>, detail: Detail): Node[] {
+  if (detail === "overview") return levelRows(entryCalls(entries), detail).map((row) => ({ type: "row", row }))
+  const nodes: Node[] = []
+  let calls: Call[] = []
+  const flush = () => {
+    nodes.push(...levelRows(calls, detail).map((row): Node => ({ type: "row", row })))
+    calls = []
+  }
+  for (const entry of entries) {
+    if (entry.type === "call") calls.push(entry.call)
+    else {
+      flush()
+      nodes.push({ type: "thought", thought: entry.thought })
+    }
+  }
+  flush()
+  return nodes
+}
+
+/** The host's id for the part a node draws under: a row's first call, a thought's own. */
+export function nodeOwner(node: Node) {
+  return node.type === "row" ? node.row.owner : node.thought.id
+}
+
+/** The rows among a group's nodes. */
+export function nodeRows(nodes: ReadonlyArray<Node>): Row[] {
+  return nodes.flatMap((node) => (node.type === "row" ? [node.row] : []))
 }
 
 /** The group's last command row once it has ended: the one row whose output shows at Details. */
@@ -289,12 +387,56 @@ export function lastCommand(shown: ReadonlyArray<Row>, running: boolean): Row | 
 }
 
 /**
- * Whether a group's one row stands alone as its line, with no header: a
- * group of one row below the overview, unless a kernel cell in it described
- * itself, whose description heads the row.
+ * Whether a group's one node stands alone as its line, with no header: a
+ * group of one row of calls below the overview, unless a kernel cell in it
+ * described itself, whose description heads the row. A thought never stands
+ * alone: a group of one thought keeps its header over a `└ thinking` node,
+ * so a thought always reads as a node of a tree.
  */
-export function alone(calls: ReadonlyArray<Call>, shown: ReadonlyArray<Row>, detail: Detail) {
-  return detail !== "overview" && shown.length === 1 && !cellWords(calls)
+export function alone(calls: ReadonlyArray<Call>, shown: ReadonlyArray<Node>, detail: Detail) {
+  return detail !== "overview" && shown.length === 1 && shown[0]?.type === "row" && !cellWords(calls)
+}
+
+/**
+ * The header's words for a group's entries: the calls' header
+ * (`headerRuns`), as before thoughts were drawn, for a thought is no action
+ * the header counts. A group of thoughts alone (a step that thought, then
+ * answered, or whose calls have not arrived yet) reads `Thinking` while one
+ * streams, then `Thought`: what the step did, in the tense the call verbs
+ * use.
+ */
+export function groupHeader(entries: ReadonlyArray<Entry>, width = Number.POSITIVE_INFINITY): Run[] {
+  const calls = entryCalls(entries)
+  if (calls.length > 0) return headerRuns(calls, width)
+  return [{ text: thinking(entries) ? "Thinking" : "Thought", tone: "muted" }]
+}
+
+/** Whether one of a group's thoughts still streams. */
+export function thinking(entries: ReadonlyArray<Entry>) {
+  return entries.some((entry) => entry.type === "thought" && entry.thought.streaming)
+}
+
+/**
+ * Whether a group draws at a level: always below the overview; at the
+ * overview, which shows no thought, only a group with calls.
+ */
+export function groupShows(entries: ReadonlyArray<Entry>, detail: Detail) {
+  return entries.length > 0 && (detail !== "overview" || entries.some((entry) => entry.type === "call"))
+}
+
+/** The label a thought node shows, as a call row shows its verb. */
+export const THOUGHT_LABEL = "thinking"
+
+/**
+ * A thought folded to the one line its node shows below All: its first line
+ * with words, the markdown emphasis it opens with dropped.
+ */
+export function thoughtLine(text: string) {
+  const first = words(text)
+    .split("\n")
+    .map((line) => line.replace(/\*\*|__/g, "").trim())
+    .find((line) => line !== "")
+  return first ?? ""
 }
 
 /** A tree row's place: its connector (none for a row alone) and whether its body keeps the rail. */
@@ -318,13 +460,17 @@ export type LeadTone = "error" | "accent" | "warning" | "muted"
 
 /**
  * The group's glyph: `✗` when a call failed, a blinking `○`/`●` while one
- * runs, else `●`, warning-coloured after a nonzero exit or a cancel (a cut
+ * runs or a thought streams (`streaming`), else `●`, warning-coloured after a nonzero exit or a cancel (a cut
  * call is no failure, as in gent).
  */
-export function groupLead(calls: ReadonlyArray<Call>, now: number): { readonly char: string; readonly tone: LeadTone } {
+export function groupLead(
+  calls: ReadonlyArray<Call>,
+  now: number,
+  streaming = false,
+): { readonly char: string; readonly tone: LeadTone } {
   const states = calls.map((call) => outcome(call.part))
   if (states.includes("failed")) return { char: "✗", tone: "error" }
-  if (states.includes("running")) return { char: blink(now) ? "○" : "●", tone: "accent" }
+  if (states.includes("running") || streaming) return { char: blink(now) ? "○" : "●", tone: "accent" }
   if (states.includes("warning") || states.includes("cancelled")) return { char: "●", tone: "warning" }
   return { char: "●", tone: "muted" }
 }
@@ -342,7 +488,7 @@ export function callBody(call: Call): {
 } {
   return {
     files: editedFiles(call.part),
-    reply: call.tool === "subagent" && call.part.state.status === "completed" && !background(call.part),
+    reply: call.tool === "subagent" && call.part.state.status === "completed" && !background(call.part) && !latched(call.part),
     output: call.tool === "patch" ? "" : toolOutput(call.part),
   }
 }

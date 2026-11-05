@@ -105,6 +105,27 @@ continuations themselves draw no rows (the host hides a synthetic message
 without a description). `tests/prime-goal.test.ts` runs
 `scenarios/prime-goal.ts` for the dock and the goal line.
 
+A model step's tool calls are one group: a header over a `├`/`└` tree,
+ended early by answer text. The step's thought is the tree's first node, its
+label in a tool name's colour and its first line faint; at All (Ctrl+O) the
+whole thought hangs under it. A step that only thinks is a one-node group
+headed `Thought` (`Thinking` while it streams, the glyph blinking in the
+accent). The Overview shows no thoughts. A finished worker's notice is a
+group too, its result the body:
+
+```
+● Read 1 file · ran 1 command
+├ thinking  Planning the check
+├ Read money.py
+└ Ran printf '1 passed\n'
+
+● General finished · Fix CSV quoting
+└ CSV quoting fixed.
+  Quoted fields keep their commas.
+```
+
+`tests/prime-thoughts.test.ts` runs `scenarios/prime-thoughts.ts` for both.
+
 A compaction reads as one line below All, such as
 `◇ Compacted automatically · 171k → 6k tokens · 12.0s` (`compaction.ts`,
 `tui/compaction.tsx`). A manual one says `Compacted`. A failed or cancelled
@@ -1317,11 +1338,28 @@ effort on whichever model it gets. No generated prompt is edited by hand.
 
 ```sh
 export OPENCODE_DEV=~/Developer/personal/.rifts/opencode/prime-look
-bun run lint
-bun run typecheck
-bun run agents -- --check
-bun run test
+bun run gate              # lint, agents --check, typecheck and unit tests at once
+bun run accept:affected   # the real-OpenCode tests that reach what changed
+bun run accept            # all of them, in parallel
 ```
+
+`bun run gate` (`scripts/gate.ts`) links the fork, then runs four legs at
+once: oxlint, `bun run agents -- --check`, `bun check` over the root and
+every `mods/*` and `cmd/*` project, and the unit tests (every `*.test.ts`
+outside `tests/`) with `bun test --parallel`. A unit test file that passed is
+skipped while the key over what it reaches is unchanged: its package, the
+packages its `package.json` depends on, and the shared inputs (the root
+manifest, lock file, bunfig, tsconfig, the gate's scripts, Bun's version and
+the fork's commit, diff and lock file). `scripts/reach.ts` derives that
+reach; `bun scripts/gate.ts --all` ignores the cache.
+
+The acceptance tests in `tests/` run real OpenCode, so they are not in the
+gate. `bun run accept` runs them all in parallel; `bun run accept:affected
+[base]` runs those that reach a file changed since `base` (default: the merge
+base with origin/main), following the scenarios, run scripts and plugin
+paths they name, and all of them when a shared input changed. A fork change
+is outside this repository: run `bun run accept` after one. `bun run test`
+still runs every file one after another.
 
 `bun run lint` is oxlint: its errors are the layout fence (`.oxlintrc.json`,
 one import override per context; see `ARCHITECTURE.md`), and its warnings are

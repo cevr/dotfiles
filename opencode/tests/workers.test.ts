@@ -1,6 +1,6 @@
 // Runs scenarios/prime-workers.ts with the Prime look against an OpenCode checkout
 // and asserts on its frames: three background workers started in three steps
-// read as one group, and their completion notices, landing together, as one line.
+// read as one group, and their completion notices, landing together, as one group.
 // It needs OPENCODE_DEV, the fork with the plugin hook points.
 import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
@@ -44,13 +44,16 @@ describe.skipIf(!fork)("background workers in the Prime look (OPENCODE_DEV)", ()
     ])
   })
 
-  test("workers that finish together read as one completion line, in the order they finished", () => {
+  test("workers that finish together read as one group, a node per worker, in the order they finished", () => {
     const done = frames.finished.filter((line) => line.includes("finished"))
-    expect(done).toHaveLength(1)
-    expect(done[0]).toMatch(/^ {4}↳ 3 agents finished · (Fix money parsing|Fix CSV quoting|Fix month padding)(, |$)/)
-    for (const task of ["Fix money parsing", "Fix CSV quoting", "Fix month padding"]) expect(done[0]).toContain(task)
-    // The folded notices draw nothing and add no blank rows: the parent's reply is one blank row below.
+    expect(done).toEqual(["  ● 3 agents finished"])
     const at = frames.finished.indexOf(done[0]!)
-    expect(frames.finished.slice(at + 1, at + 3)).toEqual(["", "  Noted."])
+    const nodes = frames.finished.slice(at + 1, at + 4)
+    expect(nodes.map((line) => line.slice(0, 4))).toEqual(["  ├ ", "  ├ ", "  └ "])
+    // Each node is its task, then its answer's first line.
+    for (const line of nodes) expect(line).toMatch(/^ {2}[├└] (Fix money parsing|Fix CSV quoting|Fix month padding) · \1: done\.$/)
+    for (const task of ["Fix money parsing", "Fix CSV quoting", "Fix month padding"]) expect(nodes.join("\n")).toContain(task)
+    // The folded notices draw nothing and add no blank rows: the parent's reply is one blank row below.
+    expect(frames.finished.slice(at + 4, at + 6)).toEqual(["", "  Noted."])
   })
 })

@@ -1,11 +1,9 @@
-// Transcript rows in the Prime look: the user prompt behind fx's heavy `┃` rail (bold text, no band),
-// reasoning only at All (fx keeps thinking out of the inline view), and plain assistant text.
+// Transcript rows in the Prime look: the user prompt behind fx's heavy `┃` rail (bold text, no band)
+// and plain assistant text. A thought is a node of its step's group (tools.tsx).
 import { RGBA, type BoxRenderable } from "@opentui/core"
-import { createMemo, createSignal, Show, type Accessor } from "solid-js"
+import { createMemo, createSignal, Show } from "solid-js"
 import { governingAsk, oneLine } from "../ask.ts"
-import type { Detail } from "../detail.ts"
 import { attachedLine, promptText } from "../prompt.ts"
-import { words } from "../session.ts"
 import type { Host, Overlay, Palette } from "./host.ts"
 
 export type PartProps = { host: Host; sessionID: string; messageID: string; partID: string }
@@ -70,23 +68,6 @@ export function UserBand(props: { host: Host; sessionID: string; messageID: stri
             {attached()}
           </text>
         </Show>
-      </box>
-    </Show>
-  )
-}
-
-export function ReasoningLine(props: PartProps & { detail: Accessor<Detail> }) {
-  const part = usePart(props)
-  const content = createMemo(() => {
-    const item = part()
-    return item?.type === "reasoning" ? words(item.text) : ""
-  })
-  return (
-    <Show when={props.detail() === "all" && content()}>
-      <box paddingLeft={GUTTER}>
-        <text fg={props.host.theme().text.faint} wrapMode="word">
-          {content()}
-        </text>
       </box>
     </Show>
   )

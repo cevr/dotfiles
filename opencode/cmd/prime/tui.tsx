@@ -15,8 +15,8 @@ import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
 import { Dock, GoalLine, ModeHint, Splash, TopBar, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
 import { SubagentRows } from "@dotfiles/opencode-prime/tui/live"
 import { Completion, StepEnd } from "@dotfiles/opencode-prime/tui/notice"
-import { ToolRow } from "@dotfiles/opencode-prime/tui/tools"
-import { AssistantText, PinnedAsk, ReasoningLine, UserBand } from "@dotfiles/opencode-prime/tui/transcript"
+import { GroupRow, ToolRow } from "@dotfiles/opencode-prime/tui/tools"
+import { AssistantText, PinnedAsk, UserBand } from "@dotfiles/opencode-prime/tui/transcript"
 import { createSignal, Show } from "solid-js"
 
 export default Plugin.define({
@@ -50,9 +50,10 @@ export default Plugin.define({
       replace: "session.message.user",
       render: (input) => <UserBand host={h} sessionID={input.sessionID} messageID={input.messageID} />,
     })
+    // A thought is a node of its step's group, as its calls are (tui/tools.tsx).
     context.ui.slot({
       replace: "session.part.reasoning",
-      render: (input) => <ReasoningLine host={h} {...input} detail={detail} />,
+      render: (input) => <GroupRow host={h} {...input} detail={detail} />,
     })
     context.ui.slot({
       replace: "session.part.text",
@@ -64,7 +65,7 @@ export default Plugin.define({
     })
     context.ui.slot({
       replace: "session.message.completion",
-      render: (input) => <Completion host={h} sessionID={input.sessionID} messageID={input.messageID} />,
+      render: (input) => <Completion host={h} sessionID={input.sessionID} messageID={input.messageID} detail={detail} />,
     })
     // Prime closes a turn with no agent, model or duration line; a step that
     // ended badly draws its retry, interrupt or error row (tui/notice.tsx).

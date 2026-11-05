@@ -33,6 +33,12 @@ interface Added {
 const DIR = "/work/app"
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
 const settle = (ms = 20) => Effect.promise(() => new Promise<void>((done) => setTimeout(done, ms)))
+/** Waits, a few ms at a time, until `done` holds or `ms` pass. */
+const until = (done: () => boolean, ms = 3_000) =>
+  Effect.gen(function* () {
+    const by = Date.now() + ms
+    while (!done() && Date.now() < by) yield* settle(10)
+  })
 
 interface Doubles {
   readonly store: MemoryStore.MemoryWakes
@@ -205,7 +211,9 @@ describe("the plugin's events and start", () => {
         if (answer.outcome !== "latched") return yield* Effect.die(new Error(answer.reason))
         expect((yield* plugin.pending("ses_root")).entries.map((entry) => [entry.kind, entry.note, entry.child])).toEqual([["latch", "Add the export", answer.child]])
         expect(yield* plugin.call("wake_list", {})).toContain(`- ${answer.id}: latch`)
-        yield* settle(1400)
+        // The wakes look again no sooner than MIN_RECHECK_MS (1 s) after a latch.
+        yield* until(() => plugin.doubles.opener.asked.length > 0)
+        yield* settle()
         expect(plugin.doubles.opener.asked.map((asked) => asked.id)).toEqual([answer.id])
         expect((yield* plugin.pending("ses_root")).entries).toEqual([])
         expect(yield* plugin.latched({ sessionID: "ses_root" })).toMatchObject({ outcome: "refused" })

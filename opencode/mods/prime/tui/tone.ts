@@ -3,12 +3,13 @@
 import type { RGBA } from "@opentui/core"
 import type { Palette } from "./host.ts"
 
-/** A failure in the error colour, a cancel or warning in the warning colour, a good end in the success colour, `base` in the normal text colour, the rest muted. */
+/** A failure in the error colour, a cancel or warning in the warning colour, a good end in the success colour, `base` in the normal text colour, `faint` the dimmest, the rest muted. */
 export function toneColor(
   theme: Palette,
-  tone: "base" | "muted" | "error" | "warning" | "success" | "info" | "accent",
+  tone: "base" | "muted" | "faint" | "error" | "warning" | "success" | "info" | "accent",
 ): RGBA {
   if (tone === "base") return theme.text.base
+  if (tone === "faint") return theme.text.faint
   if (tone === "error") return theme.text.feedback.error.base
   if (tone === "warning") return theme.text.feedback.warning.base
   if (tone === "success") return theme.text.feedback.success.base

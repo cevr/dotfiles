@@ -111,9 +111,11 @@ export default OpenCodeDriver.use(
         if (s.includes(AGAIN)) return lead(WORKERS.foreground, s, {}, "Running it.")
         return lead(WORKERS.background, s, { background: true }, STARTED)
       })
+      // Under load the host's startup panel can still sit beneath the rows; a
+      // frame is ready only once it has gone.
       const until = (name: string, ready: (frame: string) => boolean, times = 300) =>
         ui.capture().pipe(
-          Effect.flatMap((frame) => (ready(text(frame)) ? Effect.void : Effect.fail("pending"))),
+          Effect.flatMap((frame) => (ready(text(frame)) && !text(frame).includes("Finishing startup") ? Effect.void : Effect.fail("pending"))),
           Effect.retry({ schedule: Schedule.spaced("100 millis"), times }),
           Effect.tapError(() =>
             ui.capture().pipe(Effect.map((frame) => writeFileSync(`${out}/${name}.timeout.txt`, text(frame)))),

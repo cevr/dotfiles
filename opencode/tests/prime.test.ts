@@ -30,6 +30,8 @@ const BAND = "#1a1a1f"
 /** The theme's `text.base` and `text.muted`. */
 const TEXT = "#f4f4f5"
 const MUTED = "#a1a1aa"
+/** The theme's `text.faint`. */
+const FAINT = "#71717a"
 /** The theme's `markdown.text`: assistant prose is a step dimmer than `text.base`. */
 const PROSE = "#d8d8dc"
 /** The theme's `syntax.keyword`. */
@@ -133,13 +135,14 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
 
   test("one blank row parts the prompt from what follows, at every level but Overview", () => {
     const prompt = (saved: Saved) => indexOf(saved, /^ ┃ \S.*always on the last attempt\.$/)
+    // The first step thought, then answered: its thought is a one-node group under the prompt.
     expect(frames.details.lines.slice(prompt(frames.details) + 1, prompt(frames.details) + 3)).toEqual([
       "",
-      "  Reading the retry test and its helper.",
+      "  ● Thought",
     ])
     expect(frames.all.lines.slice(prompt(frames.all) + 1, prompt(frames.all) + 3)).toEqual([
       "",
-      "  Look at the test first, then spawn a reviewer.",
+      "  ● Thought",
     ])
     expect(frames.overview.lines[prompt(frames.overview) + 1]).toBe("  Reading the retry test and its helper.")
   })
@@ -147,6 +150,9 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
   test("Details: each model step is a group of its own; a step's calls share its header; a lone call is one line", () => {
     const details = frames.details
     const rows = [
+      // A step that thought, then answered: a one-node tree, its thought folded to a line, faint.
+      "  ● Thought",
+      "  └ thinking  Look at the test first, then spawn a reviewer.",
       "  Reading the retry test and its helper.",
       "  ● Ran printf 'test_net.py F\\n1 failed\\n'",
       "    │ test_net.py F",
@@ -174,15 +180,18 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     })
     expect(at).toEqual([...at].sort((a, b) => a - b))
     // Each step's group stacks tight; the next step's group opens a blank row below it.
-    expect(at.slice(5, 10)).toEqual(Array.from({ length: 5 }, (_, index) => at[5]! + index))
-    expect(at.slice(12, 16)).toEqual(Array.from({ length: 4 }, (_, index) => at[12]! + index))
-    expect(details.lines[at[10]! - 1]).toBe("")
+    expect(at[1]).toBe(at[0]! + 1)
+    expect(at.slice(7, 12)).toEqual(Array.from({ length: 5 }, (_, index) => at[7]! + index))
+    expect(at.slice(14, 18)).toEqual(Array.from({ length: 4 }, (_, index) => at[14]! + index))
     expect(details.lines[at[12]! - 1]).toBe("")
+    expect(details.lines[at[14]! - 1]).toBe("")
     // Answer text and a group sit a blank row apart.
-    expect(details.lines[at[5]! - 1]).toBe("")
-    expect(details.lines[at[16]! - 1]).toBe("")
-    // Thinking stays out of the inline view, as in fx.
-    expect(details.text).not.toContain("Look at the test first")
+    expect(details.lines[at[2]! - 1]).toBe("")
+    expect(details.lines[at[7]! - 1]).toBe("")
+    expect(details.lines[at[18]! - 1]).toBe("")
+    // The thought's label reads as a call row's verb does; its words are faint.
+    expect(cell(details, "└ thinking", 2).fg).toBe(MUTED)
+    expect(cell(details, "Look at the test first").fg).toBe(FAINT)
     // Details keeps the diff's far context and the agent's reply collapsed.
     expect(details.text).not.toContain("backoff(i)")
     expect(details.text).not.toContain("Approved: the loop")
@@ -259,8 +268,13 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     const last = at[12]!
     for (const line of all.lines.slice(first, last + 1)) expect(line).toMatch(/^ {2}[├│└](?: |$)/)
     expect(all.lines[last + 1]).toBe("")
-    // All opens the thoughts the other levels hide.
-    expect(all.text).toMatch(row("  Look at the test first, then spawn a reviewer."))
+    // All opens the thought whole, hung under its node as a call's body hangs.
+    const thought = indexOf(all, row("  └ thinking"))
+    expect(all.lines.slice(thought - 1, thought + 2)).toEqual([
+      "  ● Thought",
+      "  └ thinking",
+      "    Look at the test first, then spawn a reviewer.",
+    ])
     // The subagent's result envelope never shows.
     expect(all.text).not.toContain("<subagent")
   })
