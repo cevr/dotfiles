@@ -28,8 +28,8 @@ bun run gamut login anthropic            # add one Claude subscription login (on
    with worker/implementor/planner/verifier models bound to the preset;
    for a Claude preset, the Anthropic auth plugin and
    then `cmd/pool` as server plugins; other presets load an empty pool), `config/cli.json` (our TUI
-   plugins, those in `mods/` and `cmd/` whose `package.json` exports `./tui`, by
-   absolute path, `mods/prime` first, and the Prime theme), and the roster block of the
+   plugins, those in `cmd/` whose `package.json` exports `./tui`, by
+   absolute path, `cmd/prime` first, and the Prime theme), and the roster block of the
    fixture's `AGENTS.md`.
 3. Gives OpenCode a home, database and config directory of the run's own. Its
    environment is built from an allowlist: the terminal basics and the proxy

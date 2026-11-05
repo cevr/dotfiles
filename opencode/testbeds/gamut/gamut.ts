@@ -894,9 +894,7 @@ const prepareAndLaunch = async (
     join(paths.work, "opencode.json"),
     `${JSON.stringify(projectConfig(preset, simPort, plugins), null, 2)}\n`,
   )
-  // Every TUI plugin is a cmd/ composition root, Prime first; mods/prime's
-  // old `./tui` entry only forwards to cmd/prime, so loading mods/ too would
-  // load Prime twice. cmd/btw's /btw replaces the fork's built-in one, which
+  // Every TUI plugin is a cmd/ composition root, Prime first. cmd/btw's /btw replaces the fork's built-in one, which
   // "-opencode.btw" turns off.
   await Bun.write(join(paths.config, "cli.json"), `${JSON.stringify(cliConfig([...pluginPaths(CMD), "-opencode.btw"]), null, 2)}\n`)
   cpSync(THEME, join(paths.work, ".opencode/themes/prime.json"))
