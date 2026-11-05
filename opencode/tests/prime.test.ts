@@ -122,23 +122,22 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     }
   })
 
-  test("Details: each step's calls are one fx group; a lone call is one line, a run is a header over a tree", () => {
+  test("Details: as in fx, a run of calls between answers is one group across steps; a lone call is one line", () => {
     const details = frames.details
     const rows = [
-      "  Look at the test first, then spawn a reviewer.",
       "  Reading the retry test and its helper.",
       "  ● Ran printf 'test_net.py F\\n1 failed\\n'",
       "    │ test_net.py F",
       "    │ 1 failed",
       "  The backoff loop exits one attempt early. Patching it.",
-      "  ● Edited src/net.py +1 / -1",
+      "  ✗ Edited 1 file · ran 1 agent · searched 1 pattern · read 1 file · 1 failed",
+      "  ├ Edited src/net.py +1 / -1",
       "   1   def fetch(url, retries=3):",
       "   2 -     for i in range(retries - 1):",
       "   2 +     for i in range(retries):",
       "   3           try:",
-      "  ● Ran code-reviewer",
+      "  ├ Ran code-reviewer",
       "    │ ✉ Agent message · ↓ code-reviewer",
-      "  ✗ Searched 1 pattern · read 1 file · 1 failed",
       "  ├ Searched /retries/ in src",
       "  └ Read out/traces.jsonl · File not found",
       "    │ File not found: out/traces.jsonl",
@@ -149,12 +148,13 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       return indexOf(details, row(line))
     })
     expect(at).toEqual([...at].sort((a, b) => a - b))
-    // A row's output and diff hang straight under it; the tree's rows stack tight.
-    expect(at.slice(6, 11)).toEqual(Array.from({ length: 5 }, (_, index) => at[6]! + index))
-    expect(at.slice(13, 17)).toEqual(Array.from({ length: 4 }, (_, index) => at[13]! + index))
-    // Groups from different steps sit a blank row apart.
-    expect(details.lines[at[11]! - 1]).toBe("")
-    expect(details.lines[at[13]! - 1]).toBe("")
+    // The group spans three steps and their thoughts, its rows stacked tight under one header.
+    expect(at.slice(5, 16)).toEqual(Array.from({ length: 11 }, (_, index) => at[5]! + index))
+    // Answer text and a group sit a blank row apart.
+    expect(details.lines[at[5]! - 1]).toBe("")
+    expect(details.lines[at[16]! - 1]).toBe("")
+    // Thinking stays out of the inline view, as in fx.
+    expect(details.text).not.toContain("Look at the test first")
     // Details keeps the diff's far context and the agent's reply collapsed.
     expect(details.text).not.toContain("backoff(i)")
     expect(details.text).not.toContain("Approved: the loop")
@@ -178,7 +178,8 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
 
   test("while the reviewer runs: a running group, the Executing line and one subagent", () => {
     const running = frames.running
-    expect(running.text).toMatch(/^ {2}[○●] Running code-reviewer$/m)
+    expect(running.text).toMatch(/^ {2}[○●] Edited 1 file · running 1 agent$/m)
+    expect(running.text).toMatch(row("  └ Running code-reviewer"))
     expect(running.text).toMatch(/^ {2}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Executing · \d+s$/m)
     expect(running.text).toMatch(row(" ◆ 1 subagent  ·  ▸ 0 shells  ·  goal"))
     expect(running.text).not.toContain("Agent message")
@@ -190,8 +191,9 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     const spinner = running.lines[executing]!.trim()[0]!
     expect(cell(running, spinner).fg).toBe(ACCENT)
     // The running group's glyph blinks in the accent.
-    const glyph = running.lines[executing - 2]!.trim()[0]!
-    expect(cell(running, `${glyph} Running code-reviewer`).fg).toBe(ACCENT)
+    const header = running.lines.find((line) => line.includes("· running 1 agent"))!
+    const glyph = header.trim()[0]!
+    expect(cell(running, `${glyph} Edited 1 file`).fg).toBe(ACCENT)
     expect(cell(running, "◆ 1 subagent").fg).toBe(SUCCESS)
   })
 
@@ -205,12 +207,14 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       "   6               backoff(i)",
       "    │ ✉ Agent message · ↓ code-reviewer",
       "    ╰─ Approved: the loop now makes every attempt.",
-      "  ✗ Searched 1 pattern · read 1 file · 1 failed",
+      "  ✗ Edited 1 file · ran 1 agent · searched 1 pattern · read 1 file · 1 failed",
       "  ├ ✓ grep · retries in src · ↑ 1 ↓ 5 lines · <t>",
       "    ╰─ Found 2 matches",
       "  └ ✗ read · out/traces.jsonl · ↑ 1 lines · <t> · File not found",
     ])
       expect(all.text).toMatch(row(line))
+    // All opens the thoughts the other levels hide.
+    expect(all.text).toMatch(row("  Look at the test first, then spawn a reviewer."))
     // The subagent's result envelope never shows.
     expect(all.text).not.toContain("<subagent")
   })
@@ -224,9 +228,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       "  Reading the retry test and its helper.",
       "  ● Ran 1 command",
       "  The backoff loop exits one attempt early. Patching it.",
-      "  ● Edited 1 file",
-      "  ● Ran 1 agent",
-      "  ✗ Searched 1 pattern · read 1 file · 1 failed",
+      "  ✗ Edited 1 file · ran 1 agent · searched 1 pattern · read 1 file · 1 failed",
       "  └ Read out/traces.jsonl · File not found",
       "  The fix is in. 1 file changed, reviewer approved.",
     ]
@@ -246,7 +248,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     expect(cell(details, "Reading the retry test").fg).toBe(PROSE)
     // A settled group's glyph is muted; a failed one is the error colour, as is its failure count and reason.
     expect(cell(details, "● Ran printf").fg).toBe(MUTED)
-    expect(cell(details, "✗ Searched").fg).toBe(ERROR)
+    expect(cell(details, "✗ Edited").fg).toBe(ERROR)
     expect(cell(details, "· 1 failed", 2).fg).toBe(ERROR)
     expect(cell(details, "File not found").fg).toBe(ERROR)
     expect(cell(details, "├ Searched").fg).toBe(MUTED)

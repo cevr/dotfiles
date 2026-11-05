@@ -449,8 +449,20 @@ those hooks, which only the registry triggers, so the kernel then offers no
 `subagent` and no `shell` (the guard's hook); start agents and run commands
 with the direct tools. `denyExecute` reaches agents
 that plugins define; an agent defined only in a config file arrives after the
-plugins' transforms and keeps code mode. A call made inside a cell shows as
-the kernel's row in the transcript, not as its own tool row.
+plugins' transforms and keeps code mode.
+
+Each kernel call records the calls its cell made through `tools.*`, in order,
+as `metadata.operations` (`operations.ts`): each one's tool, its input's scalar
+fields (strings cut to 400 characters), whether it is running, completed or
+failed (with why), the head of its output (2,000 characters) and the result
+metadata a transcript reads (`exit`, edited `files` with patches cut to 4,000
+characters, a subagent's `sessionID`). At most 100 are kept and the rest
+counted in `dropped`. The record is published through the call's progress
+while it runs and kept in its result, also when the cell fails; it stops
+changing once the call ends. Prime draws a kernel call as these calls, with
+fx's header and rows (`Read 2 files · ran 2 commands`, `├ Read a.ts, b.ts`),
+never as its code; a call with no record names the tools its code calls
+(`Ran cell calling read, shell`).
 
 The model (the domain files at the root of `mods/kernel`):
 

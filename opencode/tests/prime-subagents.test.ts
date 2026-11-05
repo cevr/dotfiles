@@ -32,7 +32,8 @@ function expectSubagent(frame: ReadonlyArray<string>, worker: (typeof WORKERS)[n
   const text = frame.join("\n")
   expect(text).toContain("You are a subagent spawned by another session.")
   expect(text).toContain(worker.brief)
-  expect(text).toContain(`Check ${worker.title.toLowerCase()} first.`)
+  // Its thought stays hidden below All, as in the main session.
+  expect(text).not.toContain(`Check ${worker.title.toLowerCase()} first.`)
   expect(text).toContain(`Looking at ${worker.title.toLowerCase()}.`)
   expect(text).toContain(`● Ran printf '${worker.brief}\\n'`)
   expect(text).toMatch(/Executing · \d+s/)

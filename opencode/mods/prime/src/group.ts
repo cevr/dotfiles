@@ -3,6 +3,7 @@
 // tree row per run of one tool under it.
 import type { Plugin } from "@opencode/plugin/tui"
 import type { SessionPart } from "@opencode/plugin/tui/context"
+import { expand } from "./kernel"
 import { editedFiles, errorName, toolInput, toolMetadata, toolPreview, subagentName, type ToolPart } from "./view"
 
 /** A session message, as the plugin API lists them. */
@@ -58,15 +59,47 @@ export function canonical(name: string) {
 /** A call with its canonical tool name. */
 export type Call = { readonly tool: string; readonly part: ToolPart }
 
-/** The run of tool calls next to each other in a message that holds `partID`; empty when it is not a tool call. */
-export function toolRun(content: ReadonlyArray<SessionPart>, partID: string): Call[] {
-  const at = content.findIndex((part) => part.type === "tool" && part.id === partID)
-  if (at < 0) return []
-  let start = at
-  while (start > 0 && content[start - 1]!.type === "tool") start--
-  let end = at
-  while (end < content.length - 1 && content[end + 1]!.type === "tool") end++
-  return (content.slice(start, end + 1) as ToolPart[]).map((part) => ({ tool: canonical(part.name), part }))
+/** Whether a part ends a run: answer text with words in it. Reasoning and blank text do not. */
+function answer(part: SessionPart) {
+  return part.type === "text" && typeof part.text === "string" && part.text.replace("[REDACTED]", "").trim() !== ""
+}
+
+/**
+ * The run of tool calls around `partID`, as fx draws one group: it spans the
+ * steps of a turn, so reasoning and blank text between calls do not end it;
+ * answer text, a message that is no step (a prompt, a notice) or a step that
+ * only starts background agents (that burst is a group of its own) does. Each
+ * kernel call stands as the calls its cell made (kernel.ts). Empty when
+ * `partID` is no tool call of message `at`.
+ */
+export function toolRun(messages: ReadonlyArray<SessionMessageInfo>, at: number, partID: string): Call[] {
+  const message = messages[at]
+  if (message?.type !== "assistant") return []
+  const index = message.content.findIndex((part) => part.type === "tool" && part.id === partID)
+  if (index < 0) return []
+  const parts: ToolPart[] = []
+  // Back to the start of the run, then forward to its end.
+  back: for (let step = at, from = index; step >= 0; step--) {
+    const current = messages[step]
+    if (current?.type !== "assistant" || (step !== at && launches(current))) break
+    const content = current.content
+    for (let i = step === at ? from : content.length - 1; i >= 0; i--) {
+      const part = content[i]!
+      if (answer(part)) break back
+      if (part.type === "tool") parts.unshift(part)
+    }
+  }
+  forward: for (let step = at; step < messages.length; step++) {
+    const current = messages[step]
+    if (current?.type !== "assistant" || (step !== at && launches(current))) break
+    const content = current.content
+    for (let i = step === at ? index + 1 : 0; i < content.length; i++) {
+      const part = content[i]!
+      if (answer(part)) break forward
+      if (part.type === "tool") parts.push(part)
+    }
+  }
+  return parts.flatMap((part) => expand({ tool: canonical(part.name), part }, canonical))
 }
 
 /** Whether a message is a step that only starts background agents: every row it draws is such a launch. */
@@ -103,8 +136,8 @@ export function groupRun(messages: ReadonlyArray<SessionMessageInfo>, messageID:
   const at = messages.findIndex((message) => message.id === messageID)
   const message = messages[at]
   if (message?.type !== "assistant") return []
-  if (!launches(message)) return toolRun(message.content, partID)
-  if (toolRun(message.content, partID).length === 0) return []
+  if (!launches(message)) return toolRun(messages, at, partID)
+  if (toolRun(messages, at, partID).length === 0) return []
   return stretch(messages, at, (previous, next) => launches(previous) && launches(next) && close(previous, next)).flatMap(
     (step) =>
       step.type === "assistant"

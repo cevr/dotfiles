@@ -23,6 +23,10 @@ export function rowGap(detail: Detail, row: { kind: TranscriptRowKind; previous?
   // Notices stack like calls; a folded notice draws nothing, so it must add no gap either.
   if (row.kind === "notice" && row.previous === "notice") return 0
   if (row.kind === "reasoning" && row.previous === "user") return 0
+  // Below All a thought draws nothing (transcript.tsx), so it takes no gap, and
+  // a call after it stacks on the run it belongs to.
+  if (detail !== "all" && row.kind === "reasoning") return 0
+  if (detail !== "all" && row.previous === "reasoning" && call(row.kind)) return 0
   return 1
 }
 

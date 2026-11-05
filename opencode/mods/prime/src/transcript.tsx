@@ -1,5 +1,5 @@
 // Transcript rows in the Prime look: a full-width band for the user prompt (its markdown, as Prime's user block renders it),
-// one dim line of reasoning, and plain assistant text.
+// reasoning only at All (fx keeps thinking out of the inline view), and plain assistant text.
 import type { Plugin } from "@opencode/plugin/tui"
 import { createMemo, Show, type Accessor } from "solid-js"
 import type { Detail } from "./view"
@@ -49,10 +49,10 @@ export function ReasoningLine(props: PartProps & { detail: Accessor<Detail> }) {
     return item.text.replace("[REDACTED]", "").trim()
   })
   return (
-    <Show when={props.detail() !== "overview" && content()}>
+    <Show when={props.detail() === "all" && content()}>
       <box paddingLeft={GUTTER}>
-        <text fg={props.context.theme.text.faint} wrapMode={props.detail() === "all" ? "word" : "none"} truncate>
-          {props.detail() === "all" ? content() : content().split("\n")[0]}
+        <text fg={props.context.theme.text.faint} wrapMode="word">
+          {content()}
         </text>
       </box>
     </Show>

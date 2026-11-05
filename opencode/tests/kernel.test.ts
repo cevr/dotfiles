@@ -49,7 +49,12 @@ const run = async (name: string, spec: Pick<Spec, "task" | "denyExecute" | "code
 interface ToolPart {
   readonly type: "tool"
   readonly name: string
-  readonly state: { readonly status: string; readonly input: { readonly code?: string }; readonly content?: ReadonlyArray<{ readonly text?: string }> }
+  readonly state: {
+    readonly status: string
+    readonly input: { readonly code?: string }
+    readonly content?: ReadonlyArray<{ readonly text?: string }>
+    readonly metadata?: { readonly operations?: ReadonlyArray<{ readonly tool: string; readonly status: string; readonly input: Record<string, unknown> }> }
+  }
 }
 const toolParts = (messages: unknown): ToolPart[] =>
   (messages as Array<{ type: string; content?: Array<{ type: string }> }>)
@@ -75,6 +80,11 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(texts[0]!.endsWith("\n4")).toBe(true)
       // The second call read the binding the first one made.
       expect(texts[1]).toBe("kept!")
+      // Each call keeps the tools its cell called, for the transcript: the read, and nothing for the second.
+      expect(calls[0]!.state.metadata?.operations?.map(({ tool, status, input }) => ({ tool, status, input }))).toEqual([
+        { tool: "read", status: "completed", input: { path: file } },
+      ])
+      expect(calls[1]!.state.metadata?.operations).toBeUndefined()
       // The model saw both results and finished.
       const turns = result.seen.filter((request) => request.task === KERNEL_TASK)
       expect(turns.map((request) => request.last).slice(1)).toEqual(texts)

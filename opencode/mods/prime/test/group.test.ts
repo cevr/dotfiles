@@ -115,12 +115,32 @@ describe("the tree rows", () => {
   })
 })
 
-test("a run is the tool calls next to each other around a call", () => {
-  const [a, b, c] = [call("read", { path: "a" }), call("bash", { command: "ls" }), call("read", { path: "c" })]
-  const content = [{ type: "text", text: "x" }, a, b, { type: "reasoning", text: "y" }, c] as never
-  expect(toolRun(content, b.id).map((item) => item.part.id)).toEqual([a.id, b.id])
-  expect(toolRun(content, c.id).map((item) => item.tool)).toEqual(["read"])
-  expect(toolRun(content, "text:0")).toEqual([])
+describe("a run, as fx draws one group", () => {
+  const step = (id: string, content: unknown[]) => ({ type: "assistant", id, time: { created: 0 }, content }) as never
+  const ids = (run: Call[]) => run.map((item) => item.part.id)
+
+  test("spans a turn's steps: reasoning and blank text between calls do not end it", () => {
+    const [a, b, c] = [call("read", { path: "a" }), call("bash", { command: "ls" }), call("read", { path: "c" })]
+    const messages = [
+      step("m1", [{ type: "text", text: "Looking." }, a, { type: "reasoning", text: "Next the tests." }]),
+      step("m2", [{ type: "reasoning", text: "Run them." }, { type: "text", text: " " }, b]),
+      step("m3", [c]),
+    ]
+    for (const [at, part] of [[0, a], [1, b], [2, c]] as const) expect(ids(toolRun(messages, at, part.id))).toEqual([a.id, b.id, c.id])
+    expect(toolRun(messages, 0, "text:0")).toEqual([])
+  })
+
+  test("answer text, a prompt or a notice ends it", () => {
+    const [a, b, c] = [call("read", { path: "a" }), call("read", { path: "b" }), call("read", { path: "c" })]
+    const messages = [
+      step("m1", [a, { type: "text", text: "Found it." }, b]),
+      { type: "user", id: "u1", text: "go on" } as never,
+      step("m2", [c]),
+    ]
+    expect(ids(toolRun(messages, 0, a.id))).toEqual([a.id])
+    expect(ids(toolRun(messages, 0, b.id))).toEqual([b.id])
+    expect(ids(toolRun(messages, 2, c.id))).toEqual([c.id])
+  })
 })
 
 describe("the blank row between groups", () => {
@@ -177,9 +197,12 @@ describe("subagent launches across steps", () => {
     expect(apart([b])).toEqual([a.id, b.id])
   })
 
-  test("other calls stay in their own step's group", () => {
+  test("other calls join across steps, but a launch burst stays a group of its own", () => {
     const [a, b] = [call("read", { path: "a" }), call("read", { path: "b" })]
-    expect(groupRun([step("m1", 0, [a]), step("m2", 1_000, [b])], "m2", b.id).map((item) => item.part.id)).toEqual([b.id])
+    expect(groupRun([step("m1", 0, [a]), step("m2", 1_000, [b])], "m2", b.id).map((item) => item.part.id)).toEqual([a.id, b.id])
+    const started = launch("fix-a")
+    const read = call("read", { path: "c" })
+    expect(groupRun([step("m1", 0, [started]), step("m2", 1_000, [read])], "m2", read.id).map((item) => item.part.id)).toEqual([read.id])
     const foreground = call("subagent", { description: "review", prompt: "R" })
     const later = launch("fix-a")
     expect(groupRun([step("m1", 0, [foreground]), step("m2", 1_000, [later])], "m2", later.id)).toHaveLength(1)

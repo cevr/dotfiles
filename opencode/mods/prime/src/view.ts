@@ -1,6 +1,7 @@
 // Pure helpers for the Prime look: what one transcript row says, without
 // any rendering.
 import type { SessionPart } from "@opencode/plugin/tui/context"
+import { toolsInCode } from "./kernel"
 
 /** One tool call of an assistant message. */
 export type ToolPart = Extract<SessionPart, { type: "tool" }>
@@ -62,6 +63,12 @@ export function toolSource(tool: string, input: Record<string, unknown>) {
 }
 
 export function toolPreview(tool: string, input: Record<string, unknown>) {
+  // A cell is named by the tools its code calls, never by its code: the
+  // calls it recorded draw in its place when it has them (kernel.ts).
+  if (tool === "kernel") {
+    const names = toolsInCode(text(input.code) ?? "")
+    return names.length > 0 ? `cell calling ${names.join(", ")}` : "cell"
+  }
   if (tool === "patch") {
     const files = [...toolSource(tool, input).matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)].map(
       (match) => match[1],

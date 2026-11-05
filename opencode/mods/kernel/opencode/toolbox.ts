@@ -17,6 +17,7 @@
 import type { Plugin, Tool } from "@opencode/plugin/effect"
 import { Cause, Effect, JsonSchema, Layer, Schema, SchemaRepresentation } from "effect"
 import type { Json, Listing } from "../frame.ts"
+import { silent, type Journal } from "../operations.ts"
 import { Toolbox, type CellTools } from "../service.ts"
 import { CallFailed, callable, cellValue, messageOf, notATool, reachable, type ContentPart, type Reached, type Registered } from "../tools.ts"
 
@@ -24,6 +25,7 @@ import { CallFailed, callable, cellValue, messageOf, notATool, reachable, type C
 export interface ToolResult {
   readonly output?: unknown
   readonly content?: string | ReadonlyArray<ContentPart>
+  readonly metadata?: Record<string, unknown>
 }
 
 /** A registered tool, its `execute` bound to the kernel call's context. */
@@ -110,14 +112,14 @@ const registryValue = (tool: RegistryTool, result: ToolResult): Effect.Effect<Js
 }
 
 /** A cell's tools without the runtime: each registered tool's own `execute`. */
-const fromRegistry = (tools: ReadonlyMap<string, RegistryTool>): CellTools => ({
+const fromRegistry = (tools: ReadonlyMap<string, RegistryTool>, journal: Journal): CellTools => ({
   listing: [...tools.values()].map((tool): Listing => ({ id: tool.id, description: tool.description })),
   call: (id, input) => {
     const tool = tools.get(id)
     if (tool === undefined) return Effect.fail(new CallFailed({ message: notATool(id, tools.keys()) }))
     return asCallFailed(
       decodeInput(tool, input).pipe(
-        Effect.flatMap((decoded) => tool.execute(decoded)),
+        Effect.flatMap((decoded) => journal.around(id, decoded, tool.execute(decoded))),
         Effect.flatMap((result) => registryValue(tool, result)),
       ),
     )
@@ -125,7 +127,7 @@ const fromRegistry = (tools: ReadonlyMap<string, RegistryTool>): CellTools => ({
 })
 
 /** A cell's tools while the kernel is the runtime: every other tool, run by the registry with its hooks. */
-const fromRuntime = (runtime: Runtime): CellTools => {
+const fromRuntime = (runtime: Runtime, journal: Journal): CellTools => {
   const tools = reachable(runtime.tools)
   const names = new Set(tools.map((tool) => tool.name))
   return {
@@ -133,20 +135,21 @@ const fromRuntime = (runtime: Runtime): CellTools => {
     call: (id, input) => {
       if (!names.has(id)) return Effect.fail(new CallFailed({ message: notATool(id, names) }))
       return asCallFailed(
-        runtime.call(id, input).pipe(Effect.flatMap(cellValue)),
+        journal.around(id, input, runtime.call(id, input)).pipe(Effect.flatMap(cellValue)),
       )
     },
   }
 }
 
-export const layer = (source: Source) =>
+/** The toolbox over `source`; `journal` records each call a cell makes (../operations.ts). */
+export const layer = (source: Source, journal: Journal = silent) =>
   Layer.succeed(
     Toolbox,
     Toolbox.of({
       reach: (rules) =>
         source._tag === "Runtime"
-          ? Effect.succeed(fromRuntime(source.runtime))
-          : source.list.pipe(Effect.map((all) => fromRegistry(callable(all, rules)))),
+          ? Effect.succeed(fromRuntime(source.runtime, journal))
+          : source.list.pipe(Effect.map((all) => fromRegistry(callable(all, rules), journal))),
     }),
   )
 
@@ -161,12 +164,12 @@ const registered = (tool: Tool.Info & { readonly id: string }, context: Tool.Con
 })
 
 /** A kernel call's tools: the runtime's while the kernel is it, else the registry's, each run with the call's context. */
-export const forCall = (ctx: Plugin.Context, context: Tool.Context) => {
-  if (context.runtime !== undefined) return layer({ _tag: "Runtime", runtime: context.runtime })
+export const forCall = (ctx: Plugin.Context, context: Tool.Context, journal: Journal = silent) => {
+  if (context.runtime !== undefined) return layer({ _tag: "Runtime", runtime: context.runtime }, journal)
   // Inner tools must not replace the kernel call's own progress.
   const inner: Tool.Context = { ...context, progress: () => Effect.void }
   return layer({
     _tag: "Registry",
     list: ctx.tool.list().pipe(Effect.map((tools) => tools.map((tool) => registered(tool, inner)))),
-  })
+  }, journal)
 }

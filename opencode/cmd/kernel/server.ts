@@ -42,6 +42,7 @@ import { description, KernelInput } from "@dotfiles/opencode-kernel/description"
 import type { Reply } from "@dotfiles/opencode-kernel/attachment"
 import * as FileStoreFiles from "@dotfiles/opencode-kernel/filestore/files"
 import * as Model from "@dotfiles/opencode-kernel/model"
+import * as Operations from "@dotfiles/opencode-kernel/operations"
 import type { Files, Sessions, Snapshots, Workers } from "@dotfiles/opencode-kernel/service"
 import { KernelSessionId } from "@dotfiles/opencode-kernel/session"
 import * as OpenCodeSessions from "@dotfiles/opencode-kernel/opencode/sessions"
@@ -119,14 +120,24 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
           options: options.codeOnly
             ? { codemode: false, runtime: { describe: (tools) => description(options, tools) } }
             : { codemode: false },
-          execute: (input, context) =>
-            kernel
+          execute: (input, context) => {
+            // The tools the cell calls, live in the call's metadata and kept in its result's, so the
+            // transcript draws what the cell did (../../mods/kernel/operations.ts). The journal closes
+            // before the call settles: the host refuses progress after that.
+            const journal = Operations.journal((metadata) => context.progress(metadata))
+            return kernel
               .run({ session: KernelSessionId.make(context.sessionID), agent: context.agent, code: input.code, reset: input.reset === true })
               .pipe(
-                Effect.provide(OpenCodeToolbox.forCall(ctx, context)),
+                Effect.provide(OpenCodeToolbox.forCall(ctx, context, journal)),
+                Effect.ensuring(journal.close),
                 Effect.mapError((unreadable) => new Tool.Error({ message: unreadable.message, error: unreadable })),
-                Effect.flatMap((reply) => (reply.ok ? Effect.succeed({ content: contentOf(reply) }) : Effect.fail(new Tool.Error({ message: reply.text })))),
-              ),
+                Effect.flatMap((reply) =>
+                  reply.ok
+                    ? Effect.succeed({ content: contentOf(reply), metadata: journal.metadata() })
+                    : Effect.fail(new Tool.Error({ message: reply.text })),
+                ),
+              )
+          },
         })
       })
 
