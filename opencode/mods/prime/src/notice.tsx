@@ -2,8 +2,9 @@
 // one line (`↳ 3 workers finished · fix-a, fix-b, fix-c`); the first notice of
 // the burst draws it and the rest draw nothing.
 import type { Plugin } from "@opencode/plugin/tui"
-import { createMemo, createSignal, Show } from "solid-js"
+import { createMemo, Show } from "solid-js"
 import { completionWords, noticeBurst } from "./group"
+import { useSessionLink } from "./link"
 import { GUTTER } from "./transcript"
 
 type Context = Plugin.Context
@@ -39,27 +40,17 @@ export function Completion(props: { context: Context; sessionID: string; message
     const id = metadata().childID
     return burst().length === 1 && metadata().source === "subagent" && typeof id === "string" ? id : undefined
   })
-  const [hover, setHover] = createSignal(false)
+  const link = useSessionLink(props.context, child)
   const color = createMemo(() => {
     const theme = props.context.theme
     if (metadata().state === "error") return theme.text.feedback.error.base
     if (metadata().state === "cancelled") return theme.text.feedback.warning.base
-    if (hover() && child()) return theme.text.base
+    if (link.hover()) return theme.text.base
     return theme.text.feedback.info.base
   })
   return (
     <Show when={burst()[0]?.id === props.messageID}>
-      <box
-        paddingLeft={UNDER}
-        onMouseOver={() => child() && setHover(true)}
-        onMouseOut={() => setHover(false)}
-        onMouseUp={() => {
-          // A drag that selected text is a copy, not a click.
-          if (props.context.renderer.getSelection()?.getSelectedText()) return
-          const id = child()
-          if (id) props.context.ui.router.navigate({ type: "session", sessionID: id })
-        }}
-      >
+      <box paddingLeft={UNDER} {...link.handlers}>
         <text wrapMode="none" truncate>
           <span style={{ fg: color() }}>{words().heading}</span>
           <Show when={words().suffix}>

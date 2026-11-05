@@ -30,6 +30,8 @@ import {
   type Call,
   type Row,
 } from "./group"
+import { useSessionLink } from "./link"
+import { subagentSession } from "./subagent"
 import { GUTTER, type PartProps } from "./transcript"
 import {
   countLabel,
@@ -147,6 +149,8 @@ function TreeRow(props: {
   const theme = () => props.context.theme
   const part = () => props.row.calls[0]!
   const lead = () => <span style={{ fg: props.lead.color ?? theme().text.muted }}>{props.lead.char}</span>
+  // A subagent's row opens its session.
+  const link = useSessionLink(props.context, () => (props.row.tool === "subagent" ? subagentSession(part()) : undefined))
   return (
     <Switch>
       <Match when={props.detail === "all"}>
@@ -154,8 +158,8 @@ function TreeRow(props: {
       </Match>
       <Match when={true}>
         <box flexDirection="column" flexShrink={0}>
-          <box paddingLeft={GUTTER}>
-            <text wrapMode="none" truncate fg={theme().text.muted}>
+          <box paddingLeft={GUTTER} {...link.handlers}>
+            <text wrapMode="none" truncate fg={link.hover() ? theme().text.base : theme().text.muted}>
               {lead()} {verb(props.row)}{" "}
               <Show when={props.row.tool === "patch" || props.row.tool === "edit"} fallback={subject(props.row)}>
                 <EditCounts context={props.context} row={props.row} />
@@ -298,13 +302,14 @@ function CallRow(props: { context: Context; lead?: string; tool: string; part: T
   const output = createMemo(() => toolOutput(props.part))
   const tail = createMemo(() => [counts(), duration(props.part)].filter(Boolean).join(" · "))
   const sep = () => <span style={{ fg: theme().text.faint }}> · </span>
+  const link = useSessionLink(props.context, () => (props.tool === "subagent" ? subagentSession(props.part) : undefined))
   return (
     <box flexDirection="column" flexShrink={0}>
-      <box flexDirection="row" paddingLeft={GUTTER}>
+      <box flexDirection="row" paddingLeft={GUTTER} {...link.handlers}>
         <text flexShrink={0} wrapMode="none">
           <Show when={props.lead}>{(lead) => <span style={{ fg: theme().text.muted }}>{lead()} </span>}</Show>
           <Glyph context={props.context} part={props.part} />
-          <span style={{ fg: theme().text.muted }}>{props.tool}</span>
+          <span style={{ fg: link.hover() ? theme().text.base : theme().text.muted }}>{props.tool}</span>
           <Show when={preview()}>{sep()}</Show>
         </text>
         <text flexShrink={1} wrapMode="none" truncate fg={theme().text.faint}>

@@ -4,7 +4,7 @@
 import { Plugin } from "@opencode/plugin/tui"
 import type { TranscriptRowKind } from "@opencode/plugin/tui/context"
 import { createSignal } from "solid-js"
-import { Dock, ModeHint, Splash, TopBar, Working } from "./chrome"
+import { Dock, ModeHint, Splash, TopBar, useFamily, Working } from "./chrome"
 import { Completion } from "./notice"
 import { ToolRow } from "./tools"
 import { AssistantText, ReasoningLine, UserBand } from "./transcript"
@@ -70,7 +70,7 @@ export default Plugin.define({
     context.ui.slot({ replace: "session.message.assistant.footer", render: () => null })
     context.ui.slot({
       append: "session.composer.top",
-      render: () => <ModeHint context={context} detail={detail} />,
+      render: (input) => <ModeHint context={context} sessionID={input.sessionID} detail={detail} />,
     })
     // Prime's loader is the transcript's last row, straight under the newest output.
     context.ui.slot({
@@ -94,6 +94,48 @@ export default Plugin.define({
           run() {
             setDetail(nextDetail)
           },
+        },
+      ],
+    }))
+
+    // In a subagent the host keeps its Subagents picker open in place of the
+    // prompt, and the picker's ←/→ switch its tabs. Above it, ↑ goes back to
+    // the parent and ←/→ move to the other running subagents; with none
+    // running, ←/→ fall through to the tabs.
+    const route = () => {
+      const current = context.ui.router.current()
+      return current.type === "session" ? current.sessionID : undefined
+    }
+    const family = useFamily(context, route)
+    const go = (sessionID: string | undefined) => {
+      if (!sessionID) return false
+      context.ui.router.navigate({ type: "session", sessionID })
+    }
+    context.keymap.layer(() => ({
+      mode: "composer",
+      priority: 2,
+      enabled: family.child,
+      commands: [
+        {
+          id: "prime.subagent.parent",
+          title: "Go to parent session",
+          group: "Session",
+          bind: "up",
+          run: () => go(family.parentID()),
+        },
+        {
+          id: "prime.subagent.next",
+          title: "Go to next subagent",
+          group: "Session",
+          bind: "right",
+          run: () => go(family.step(1)),
+        },
+        {
+          id: "prime.subagent.previous",
+          title: "Go to previous subagent",
+          group: "Session",
+          bind: "left",
+          run: () => go(family.step(-1)),
         },
       ],
     }))

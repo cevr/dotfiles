@@ -3,20 +3,57 @@
 // activity line under it.
 import type { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal, onCleanup, Show, type Accessor } from "solid-js"
+import { navigationHint, neighbour, subagentOrder, topTitle } from "./subagent"
 import { compactTokens, detailHint, elapsed, type Detail } from "./view"
 import { GUTTER } from "./transcript"
 
 type Context = Plugin.Context
 
+/**
+ * Where a session sits among its subagents: whether it is one, its parent,
+ * the subagent ←/→ moves to, and how many others run. Plain reads, so a
+ * keymap can use them outside a component; reactive inside one.
+ */
+export function useFamily(context: Context, sessionID: () => string | undefined) {
+  const data = context.data
+  const parentID = () => {
+    const id = sessionID()
+    return (id ? data.session.get(id)?.parentID : undefined) ?? undefined
+  }
+  const running = (id: string) => data.session.status(id) === "running"
+  const order = () => {
+    const id = sessionID()
+    return id ? subagentOrder(data.session.list(), id) : []
+  }
+  return {
+    parentID,
+    child: () => parentID() !== undefined,
+    /** In a subagent, the other subagents running; in a session, its running subagents. */
+    others: () => order().filter((id) => id !== sessionID() && running(id)).length,
+    step: (by: 1 | -1) => {
+      const id = sessionID()
+      return id ? neighbour(order(), id, by, running) : undefined
+    },
+  }
+}
+
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
 
 export function TopBar(props: { context: Context; sessionID: string }) {
-  const title = createMemo(() => props.context.data.session.get(props.sessionID)?.title ?? "")
-  const cost = createMemo(() => money.format(props.context.data.session.cost(props.sessionID)))
+  const data = props.context.data
+  // A subagent's title reads behind its parent's.
+  const title = createMemo(() => {
+    const session = data.session.get(props.sessionID)
+    return topTitle(session, session?.parentID ? data.session.get(session.parentID) : undefined)
+  })
+  const cost = createMemo(() => money.format(data.session.cost(props.sessionID)))
   return (
     <box height={1} flexShrink={0} flexDirection="row" justifyContent="center">
       <text wrapMode="none" truncate fg={props.context.theme.text.base}>
-        {title()}
+        <Show when={title().parent}>
+          {(parent) => <span style={{ fg: props.context.theme.text.muted }}>{parent()} › </span>}
+        </Show>
+        {title().title}
         <span style={{ fg: props.context.theme.text.faint }}>
           {"  "}
           {cost()}
@@ -34,9 +71,16 @@ function modelLabel(context: Context) {
 
 export function Splash(props: { context: Context; sessionID: string }) {
   const theme = () => props.context.theme
+  const session = createMemo(() => props.context.data.session.get(props.sessionID))
   const cwd = createMemo(() => {
-    const directory = props.context.data.session.get(props.sessionID)?.location.directory
+    const directory = session()?.location.directory
     return directory ? props.context.ui.format.path(directory) : ""
+  })
+  // A subagent runs its own agent and model, not the prompt's.
+  const agent = createMemo(() => (session()?.parentID ? session()?.agent : undefined))
+  const model = createMemo(() => {
+    const own = session()?.parentID ? session()?.model : undefined
+    return own ? `${own.providerID}/${own.id}` : modelLabel(props.context)
   })
   const line = (label: string, value: string) => (
     <text wrapMode="none" truncate fg={theme().text.base}>
@@ -47,16 +91,23 @@ export function Splash(props: { context: Context; sessionID: string }) {
   return (
     <box flexDirection="column" flexShrink={0} paddingLeft={GUTTER} marginTop={1}>
       {line("opencode", `v${props.context.app.version}`)}
-      {line("model", modelLabel(props.context))}
+      <Show when={agent()}>{(name) => line("agent", name())}</Show>
+      {line("model", model())}
       {line("cwd", cwd())}
     </box>
   )
 }
 
-export function ModeHint(props: { context: Context; detail: Accessor<Detail> }) {
+/** The hints above the composer: how to move among subagents on the left, the detail mode on the right. */
+export function ModeHint(props: { context: Context; sessionID: string; detail: Accessor<Detail> }) {
+  const family = useFamily(props.context, () => props.sessionID)
+  const navigation = createMemo(() => navigationHint({ child: family.child(), others: family.others() }))
   return (
-    <box flexDirection="row" justifyContent="flex-end" marginTop={1} flexShrink={0}>
-      <text wrapMode="none" fg={props.context.theme.text.faint}>
+    <box flexDirection="row" justifyContent="space-between" marginTop={1} flexShrink={0}>
+      <text wrapMode="none" truncate fg={props.context.theme.text.faint} paddingLeft={GUTTER}>
+        {navigation()}
+      </text>
+      <text wrapMode="none" flexShrink={0} fg={props.context.theme.text.faint}>
         {detailHint(props.detail())}
       </text>
     </box>
@@ -90,6 +141,8 @@ export function Dock(props: { context: Context; sessionID?: string }) {
       .length
   })
   const goal = createMemo(() => (props.sessionID ? data.session.goal(props.sessionID) : undefined))
+  // The count opens the host's Subagents picker, as Down on an empty prompt does.
+  const [pickerHover, setPickerHover] = createSignal(false)
   const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
   const sep = () => <span style={{ fg: theme().text.faint }}>{"  ·  "}</span>
   return (
@@ -103,19 +156,38 @@ export function Dock(props: { context: Context; sessionID?: string }) {
         </text>
       </box>
       <box height={1} border={["top"]} borderColor={theme().border.base} />
-      <text wrapMode="none" truncate fg={theme().text.faint} paddingLeft={GUTTER}>
-        <span style={{ fg: subagents() ? theme().text.feedback.success.base : theme().text.muted }}>
-          ◆ {plural(subagents(), "subagent")}
-        </span>
-        {sep()}
-        <span style={{ fg: shells() ? theme().text.feedback.success.base : theme().text.muted }}>
-          ▸ {plural(shells(), "shell")}
-        </span>
-        {sep()}
-        <Show when={goal()} fallback={<span style={{ fg: theme().text.muted }}>goal</span>}>
-          <span style={{ fg: theme().text.feedback.warning.base }}>goal</span>
-        </Show>
-      </text>
+      <box flexDirection="row" height={1}>
+        <box
+          flexShrink={0}
+          onMouseOver={() => setPickerHover(true)}
+          onMouseOut={() => setPickerHover(false)}
+          onMouseUp={() => props.context.keymap.dispatch("session.child.first")}
+        >
+          <text wrapMode="none">
+            <span
+              style={{
+                fg: pickerHover()
+                  ? theme().text.base
+                  : subagents()
+                    ? theme().text.feedback.success.base
+                    : theme().text.muted,
+              }}
+            >
+              ◆ {plural(subagents(), "subagent")}
+            </span>
+          </text>
+        </box>
+        <text wrapMode="none" truncate fg={theme().text.faint}>
+          {sep()}
+          <span style={{ fg: shells() ? theme().text.feedback.success.base : theme().text.muted }}>
+            ▸ {plural(shells(), "shell")}
+          </span>
+          {sep()}
+          <Show when={goal()} fallback={<span style={{ fg: theme().text.muted }}>goal</span>}>
+            <span style={{ fg: theme().text.feedback.warning.base }}>goal</span>
+          </Show>
+        </text>
+      </box>
     </box>
   )
 }
