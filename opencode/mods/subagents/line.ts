@@ -24,10 +24,13 @@ export type Kind = "mark" | "lead" | "role" | "model" | "unit" | "update" | "tim
 export type Segment = { readonly text: string; readonly kind: Kind }
 
 /**
- * The frames a working row's diamond turns through, one each 100 ms: empty,
- * half, full, half. Each is one cell, from the Geometric Shapes block.
+ * The frames a working row's diamond turns through, one each `SPIN_MS`: full,
+ * then empty, a slow pulse. Each is one cell, from the Geometric Shapes block.
  */
-export const SPINNER = "◇◈◆◈"
+export const SPINNER = "◆◇"
+
+/** How long each spinner frame holds: a 1.2 s pulse, calm beside the 100 ms clock. */
+export const SPIN_MS = 600
 
 /**
  * The diamond each state leads with when it stands still, one cell wide,
@@ -67,9 +70,9 @@ export function glyph(state: State, frame?: string): string {
 /** A live row's last update is stale this long after it, and named then. */
 export const STALE_MS = 5 * 60_000
 
-/** The spinner frame at `ms`: one frame each 100 ms. */
+/** The spinner frame at `ms`: one frame each `SPIN_MS`. */
 export function spinner(ms: number): string {
-  return Array.from(SPINNER)[Math.floor(Math.max(0, ms) / 100) % SPINNER.length] ?? ""
+  return Array.from(SPINNER)[Math.floor(Math.max(0, ms) / SPIN_MS) % SPINNER.length] ?? ""
 }
 
 /** A span of time, as precise as it is worth: `12s`, `1m 05s` under ten minutes, `37m` under an hour, then `1h 08m`. */

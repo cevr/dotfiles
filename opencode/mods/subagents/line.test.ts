@@ -43,7 +43,7 @@ describe("the state diamonds", () => {
       const code = symbol.codePointAt(0) ?? 0
       expect(code >= 0x25a0 && code <= 0x25ff).toBe(true)
     }
-    expect(Array.from(SPINNER)).toEqual(["◇", "◈", "◆", "◈"])
+    expect(Array.from(SPINNER)).toEqual(["◆", "◇"])
   })
 
   test("still, every state differs from every other by diamond and colour", () => {
@@ -60,10 +60,10 @@ describe("the state diamonds", () => {
     })
   })
 
-  test("the diamond turns, one frame each 100 ms, only for a working row", () => {
+  test("the diamond pulses full then empty, 600 ms each, only for a working row", () => {
     expect(glyph("working", "◇")).toBe("◇")
     expect(glyph("waiting", "◇")).toBe(SYMBOLS.waiting)
-    expect([0, 100, 200, 300, 400].map((ms) => format(row({ elapsed: ms }), 80)[0]?.text)).toEqual(["◇ ", "◈ ", "◆ ", "◈ ", "◇ "])
+    expect([0, 599, 600, 1199, 1200].map((ms) => format(row({ elapsed: ms }), 80)[0]?.text)).toEqual(["◆ ", "◆ ", "◇ ", "◇ ", "◆ "])
     expect(format(row({ state: "waiting", elapsed: 250 }), 80)[0]?.text).toBe("◈ ")
   })
 })
