@@ -10,7 +10,7 @@ import { mkdtempSync, realpathSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Tool } from "@opencode/plugin/effect"
-import { Cause, Effect, Exit, Layer, Queue, Schema, type Scope, Stream } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Schema, Scope, Stream } from "effect"
 import type { Json } from "@dotfiles/opencode-kernel/frame"
 import type { Reached, Rule } from "@dotfiles/opencode-kernel/tools"
 import * as FileStoreFiles from "@dotfiles/opencode-kernel/filestore/files"
@@ -400,6 +400,26 @@ describe("as the runtime", () => {
           ["subagent", { prompt: "x" }],
           ["read", { path: "a" }],
         ])
+      }),
+    ))
+
+  // A cell that pulls new plugin code reloads the plugin under itself: the host
+  // closes the old plugin's scope while that cell's call is still open.
+  test("a call in flight when the plugin stops fails, naming why, instead of waiting forever", () =>
+    scenario(
+      Effect.gen(function* () {
+        const reached = yield* Deferred.make<void>()
+        const runtime: Runtime = {
+          tools: [{ name: "shell", description: "Run a command", input: {} }],
+          call: () => Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never)),
+        }
+        const plugin = yield* Scope.make()
+        const { fail } = yield* start({}, { tools: [readTool] }).pipe(Effect.provideService(Scope.Scope, plugin))
+        const call = yield* Effect.forkChild(fail("await tools.shell({ command: 'git pull' })", { runtime }))
+        yield* Deferred.await(reached)
+        yield* Scope.close(plugin, Exit.void)
+        const message = yield* Fiber.join(call).pipe(Effect.timeoutOption("5 seconds"))
+        expect(Option.getOrUndefined(message)).toContain("reloaded or shut down its plugins")
       }),
     ))
 })
