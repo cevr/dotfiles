@@ -1,16 +1,19 @@
-// Tool calls as fx draws them, in Prime's colours: a step's run of calls is
-// one group, a `●` header naming what it did (`Read 3 files · ran 2 commands
-// · 1 failed`) and a `├`/`└` tree row per run of one tool under it. Steps
-// that only start background agents, close in time, share one group.
+// Tool calls as fx draws them, in Prime's colours: a step's run of calls and
+// thoughts is one group, a `●` header naming what it did (`Read 3 files ·
+// ran 2 commands · 1 failed`, `Thought` for thoughts alone) and a `├`/`└`
+// tree under it: a `thinking` node per thought where it came, and a row per
+// run of one tool. Steps that only start background agents, close in time,
+// share one group.
 //
-// The host renders each call in its own slot, so each call draws its share:
-// the run's first call draws the header, and every call draws the rows it
-// owns. A group of one row is that row alone, behind the group's glyph.
-// Ctrl+O picks how much of the tree shows:
-// - overview: the header, and a row per failure;
-// - details: a row per run of one tool, an edit's diff, and the head of a
-//   failure's or the last command's output;
-// - all: a row per call with its counts and time, whole diffs and output.
+// The host renders each call and thought in its own slot, so each part draws
+// its share: the run's first part draws the header, and every part draws the
+// nodes it owns. A group of one row of calls is that row alone, behind the
+// group's glyph. Ctrl+O picks how much of the tree shows:
+// - overview: the header, and a row per failure; no thought;
+// - details: a thought's first line, a row per run of one tool, an edit's
+//   diff, and the head of a failure's or the last command's output;
+// - all: a thought whole, a row per call with its counts and time, whole
+//   diffs and output.
 import type { RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createMemo, For, Match, Show, Switch, type Accessor, type JSX } from "solid-js"
@@ -38,24 +41,34 @@ import {
   branch,
   callBody,
   edits,
+  entryCalls,
+  entryKey,
   failureRuns,
-  followsCall,
+  followsGroup,
+  groupEntries,
+  groupHeader,
   groupLead,
-  groupRun,
+  groupShows,
   hasBody,
-  headerRuns,
   lastCommand,
-  levelRows,
+  levelNodes,
+  nodeOwner,
+  nodeRows,
   rowEnding,
   rowFiles,
   subject,
   subjectRoom,
+  thinking,
+  THOUGHT_LABEL,
+  thoughtLine,
   verb,
   type Branch,
+  type Entry,
+  type Node,
   type Row,
   type Run,
 } from "../group.ts"
-import type { ToolPart } from "../session.ts"
+import { words, type ToolPart } from "../session.ts"
 import { subagentSession } from "../subagent.ts"
 import { useNow } from "./clock.ts"
 import type { Host } from "./host.ts"
@@ -74,44 +87,70 @@ function useLineWidth() {
   return () => Math.max(10, terminal().width - LEAD_COLUMNS)
 }
 
-export function ToolRow(props: PartProps & { tool: string; detail: Accessor<Detail> }) {
-  const run = createMemo((): Call[] => groupRun(props.host.messages(props.sessionID), props.messageID, props.partID))
-  const first = createMemo(() => run()[0]?.part.id === props.partID)
-  // Two steps' groups stack as adjacent call rows; the later one opens with a blank row.
+/**
+ * A part's share of its group: a call's rows, or a thought's `thinking`
+ * node, and, for the group's first part, its header. The host draws calls
+ * and thoughts in slots of their own; both draw through this.
+ */
+export function GroupRow(props: PartProps & { detail: Accessor<Detail> }) {
+  const entries = createMemo((): Entry[] => groupEntries(props.host.messages(props.sessionID), props.messageID, props.partID))
+  const run = createMemo((): Call[] => entryCalls(entries()))
+  const first = createMemo(() => {
+    const head = entries()[0]
+    return head !== undefined && entryKey(head) === props.partID
+  })
+  // Two steps' groups stack as adjacent rows; the later one opens with a blank row.
   const apart = createMemo(
     () =>
       first() &&
       props.detail() !== "overview" &&
-      followsCall(props.host.messages(props.sessionID), props.messageID, props.partID),
+      followsGroup(props.host.messages(props.sessionID), props.messageID, props.partID),
   )
-  // The rows the tree shows at this level, in order; the connector depends on the whole list.
-  const shown = createMemo((): Row[] => levelRows(run(), props.detail()))
-  const running = createMemo(() => run().some((call) => outcome(call.part) === "running"))
+  // The nodes the tree shows at this level, in order; the connector depends on the whole list.
+  const shown = createMemo((): Node[] => levelNodes(entries(), props.detail()))
+  const rowsShown = createMemo(() => nodeRows(shown()))
+  const running = createMemo(() => run().some((call) => outcome(call.part) === "running") || thinking(entries()))
   const now = useNow(running)
   // One row needs no header, the row is the group's line, unless a cell's description heads it.
   const single = createMemo(() => alone(run(), shown(), props.detail()))
   const glyph = createMemo((): Lead => {
-    const lead = groupLead(run(), now())
+    const lead = groupLead(run(), now(), thinking(entries()))
     return { char: lead.char, color: toneColor(props.host.theme(), lead.tone) }
   })
   return (
-    <Show when={run().length > 0}>
+    <Show when={groupShows(entries(), props.detail())}>
       <box flexDirection="column" flexShrink={0} paddingTop={apart() ? 1 : 0}>
         <Show when={first() && !single()}>
-          <Header host={props.host} calls={run()} glyph={glyph()} />
+          <Header host={props.host} runs={(width) => groupHeader(entries(), width)} glyph={glyph()} />
         </Show>
         <For each={shown()}>
-          {(row, index) => (
-            <Show when={row.owner === props.partID}>
-              <TreeRow
-                host={props.host}
-                row={row}
-                branch={branch(index(), shown().length, single())}
-                glyph={glyph()}
-                detail={props.detail()}
-                lastCommand={row === lastCommand(shown(), running())}
-                now={now}
-              />
+          {(node, index) => (
+            <Show when={nodeOwner(node) === props.partID}>
+              <Switch>
+                <Match when={node.type === "thought" ? node.thought : undefined}>
+                  {(thought) => (
+                    <ThoughtNode
+                      host={props.host}
+                      text={thought().text}
+                      branch={branch(index(), shown().length, false)}
+                      detail={props.detail()}
+                    />
+                  )}
+                </Match>
+                <Match when={node.type === "row" ? node.row : undefined}>
+                  {(row) => (
+                    <TreeRow
+                      host={props.host}
+                      row={row()}
+                      branch={branch(index(), shown().length, single())}
+                      glyph={glyph()}
+                      detail={props.detail()}
+                      lastCommand={row() === lastCommand(rowsShown(), running())}
+                      now={now}
+                    />
+                  )}
+                </Match>
+              </Switch>
             </Show>
           )}
         </For>
@@ -120,17 +159,49 @@ export function ToolRow(props: PartProps & { tool: string; detail: Accessor<Deta
   )
 }
 
+/** A call's share of its group (`GroupRow`), as the tool slot draws it. */
+export const ToolRow = GroupRow
+
+/**
+ * A thought as a node of its step's tree: `├ thinking  <first line>` below
+ * All, the label in the call rows' colour and the words faint; at All the
+ * label alone, with the whole thought hung under it as a call's body hangs.
+ */
+function ThoughtNode(props: { host: Host; text: string; branch: Branch; detail: Detail }) {
+  const theme = () => props.host.theme()
+  return (
+    <box flexDirection="column" flexShrink={0}>
+      <box paddingLeft={GUTTER}>
+        <text wrapMode="none" truncate fg={theme().text.muted}>
+          {props.branch.connector ?? ""} {THOUGHT_LABEL}
+          <Show when={props.detail !== "all"}>
+            {"  "}
+            <span style={{ fg: theme().text.faint }}>{thoughtLine(props.text)}</span>
+          </Show>
+        </text>
+      </box>
+      <Show when={props.detail === "all"}>
+        <Hang host={props.host} rail={props.branch.rail}>
+          <text fg={theme().text.faint} wrapMode="word">
+            {words(props.text)}
+          </text>
+        </Hang>
+      </Show>
+    </box>
+  )
+}
+
 /** What leads a line: the group's glyph, or a tree connector (muted when it has no colour). */
 type Lead = { readonly char: string; readonly color?: RGBA }
 
-function Header(props: { host: Host; calls: Call[]; glyph: Lead }) {
+function Header(props: { host: Host; runs: (width: number) => Run[]; glyph: Lead }) {
   const theme = () => props.host.theme()
   const width = useLineWidth()
   return (
     <box paddingLeft={GUTTER}>
       <text wrapMode="none" truncate fg={theme().text.muted}>
         <span style={{ fg: props.glyph.color ?? theme().text.muted }}>{props.glyph.char}</span>{" "}
-        <Runs host={props.host} runs={headerRuns(props.calls, width())} />
+        <Runs host={props.host} runs={props.runs(width())} />
       </text>
     </box>
   )

@@ -3,21 +3,32 @@ import { describe, expect, test } from "bun:test"
 import { BURST_MS } from "./burst.ts"
 import { canonical, toolInput, type Call } from "./call.ts"
 import {
+  alone,
   branch,
   callBody,
+  entryCalls,
+  entryKey,
   failureRuns,
-  followsCall,
+  followsGroup,
+  groupEntries,
+  groupHeader,
+  groupLead,
   groupRun,
+  groupShows,
   hasBody,
   headerRuns,
+  levelNodes,
   listed,
+  nodeOwner,
   rowEnding,
   rows,
   subject,
+  thinking,
+  thoughtLine,
   toolRun,
   verb,
 } from "./group.ts"
-import { completionWords, noticeBurst } from "./notice.ts"
+import { noticeApart, noticeBurst, noticeGroup, noticeLines, noticeResult } from "./notice.ts"
 import type { AssistantMessage, Fields, Message, Part, SyntheticMessage, ToolPart, ToolState } from "./session.ts"
 
 let ids = 0
@@ -328,20 +339,20 @@ describe("the blank row between groups", () => {
 
   test("opens a group whose row above is another step's call", () => {
     const messages = [assistant("m1", [{ type: "text", text: "Looking." }, a]), assistant("m2", [b])]
-    expect(followsCall(messages, "m2", b.id)).toBe(true)
+    expect(followsGroup(messages, "m2", b.id)).toBe(true)
   })
 
   test("not after prose, a user message, or empty text that draws nothing", () => {
-    expect(followsCall([assistant("m1", [{ type: "text", text: "Looking." }, a])], "m1", a.id)).toBe(false)
-    expect(followsCall([user("u1", "go"), assistant("m2", [b])], "m2", b.id)).toBe(false)
+    expect(followsGroup([assistant("m1", [{ type: "text", text: "Looking." }, a])], "m1", a.id)).toBe(false)
+    expect(followsGroup([user("u1", "go"), assistant("m2", [b])], "m2", b.id)).toBe(false)
     const messages = [assistant("m1", [a, { type: "text", text: "  " }]), assistant("m2", [{ type: "reasoning", text: "" }, b])]
-    expect(followsCall(messages, "m2", b.id)).toBe(true)
+    expect(followsGroup(messages, "m2", b.id)).toBe(true)
   })
 
   test("within a message, a run after another run's calls opens apart", () => {
     const messages = [assistant("m1", [a, { type: "text", text: "" }, c])]
-    expect(followsCall(messages, "m1", c.id)).toBe(true)
-    expect(followsCall(messages, "m1", a.id)).toBe(false)
+    expect(followsGroup(messages, "m1", c.id)).toBe(true)
+    expect(followsGroup(messages, "m1", a.id)).toBe(false)
   })
 })
 
@@ -403,10 +414,16 @@ describe("completion notices", () => {
     const messages = [done("n1", 0, "fix-a"), done("n2", 2_000, "fix-b"), done("n3", 4_000, "fix-c")]
     expect(ids(noticeBurst(messages, "n1"))).toEqual(["n1", "n2", "n3"])
     expect(ids(noticeBurst(messages, "n3"))).toEqual(["n1", "n2", "n3"])
-    expect(completionWords(noticeBurst(messages, "n1"))).toEqual({
-      heading: "↳ 3 agents finished",
-      suffix: "fix-a, fix-b, fix-c",
-    })
+    const group = noticeGroup(messages, "n1")!
+    expect(group.drawn).toBe(true)
+    expect(noticeGroup(messages, "n2")!.drawn).toBe(false)
+    expect(group.header.map((run) => run.text).join("")).toBe("3 agents finished")
+    // A node per worker, each opening its own session.
+    expect(group.nodes.map((node) => [node.label, node.child])).toEqual([
+      ["fix-a", "ses_n1"],
+      ["fix-b", "ses_n2"],
+      ["fix-c", "ses_n3"],
+    ])
   })
 
   test("a failure, a shell, a pause or a row between stands alone", () => {
@@ -419,8 +436,180 @@ describe("completion notices", () => {
     const text = step("m1", [{ type: "text", text: "One down." }], { created: 500 })
     expect(ids(noticeBurst([done("n1", 0, "fix-a"), text, done("n2", 1_000, "fix-b")], "n2"))).toEqual(["n2"])
   })
+})
 
-  test("one notice reads as the host's line, naming its agent", () => {
-    expect(completionWords([done("n1", 0, "fix-a")])).toEqual({ heading: "↳ Worker finished", suffix: "fix-a" })
+describe("a notice as a tool-call group", () => {
+  const notice = (id: string, text: string, metadata: Fields, description = "Fix money parsing"): SyntheticMessage => ({
+    type: "synthetic",
+    id,
+    text,
+    description,
+    metadata,
+    time: { created: 0 },
+  })
+  const envelope = (state: string, body: string) =>
+    `<subagent sessionID="ses_1" state="${state}" description="Fix money parsing">\n${body}\n</subagent>`
+  const worker = (state: string, body: string, id = "n1") =>
+    notice(id, envelope(state, body), { source: "subagent", state, agent: "worker", childID: `ses_${id}` })
+  const header = (group: ReturnType<typeof noticeGroup>) => group!.header.map((run) => run.text).join("")
+  const drawn = (lines: ReturnType<typeof noticeLines>) => lines.map((line) => `${line.lead} ${line.runs.map((run) => run.text).join("")}`)
+
+  test("its answer is what the envelope holds", () => {
+    expect(noticeResult(envelope("completed", "Fixed.\nAll green."))).toBe("Fixed.\nAll green.")
+    expect(noticeResult(`The following shell command was executed by the user:\n<shell id="s" state="completed" command="ls">\na\nb\n</shell>`)).toBe("a\nb")
+    expect(noticeResult("User shell command failed to start:\nls")).toBe("User shell command failed to start:\nls")
+  })
+
+  test("a finished worker reads as a group: a muted ● header naming it and its task, its answer the tree", () => {
+    const group = noticeGroup([worker("completed", "Fixed money parsing.\nAll green.")], "n1")!
+    expect(group.glyph).toEqual({ char: "●", tone: "muted" })
+    expect(header(group)).toBe("Worker finished · Fix money parsing")
+    expect(group.header.map((run) => run.tone)).toEqual(["muted", "muted", "muted"])
+    expect(group.child).toBe("ses_n1")
+    expect(drawn(noticeLines(group, "details"))).toEqual(["└ Fixed money parsing.", "  All green."])
+    // The overview keeps the header alone, as a group that ended well.
+    expect(noticeLines(group, "overview")).toEqual([])
+  })
+
+  test("a failure and a cancel say so in their tone, the glyph too, and keep their reason at the overview", () => {
+    const failed = noticeGroup([worker("error", "Subagent failed")], "n1")!
+    expect(failed.glyph).toEqual({ char: "✗", tone: "error" })
+    expect(header(failed)).toBe("Worker failed · Fix money parsing")
+    expect(failed.header[1]).toEqual({ text: "failed", tone: "error" })
+    expect(drawn(noticeLines(failed, "overview"))).toEqual(["└ Subagent failed"])
+    const cancelled = noticeGroup([worker("cancelled", "Subagent cancelled")], "n1")!
+    expect(cancelled.glyph).toEqual({ char: "●", tone: "warning" })
+    expect(cancelled.header[1]).toEqual({ text: "cancelled", tone: "warning" })
+    const shell = noticeGroup([notice("s1", "<shell id=\"s\" state=\"error\" command=\"bun test\">\n1 fail\n</shell>", { source: "shell", state: "error" }, "bun test")], "s1")!
+    expect(header(shell)).toBe("Shell failed · bun test")
+  })
+
+  test("below All a long answer shows its head and counts the rest; All shows it whole", () => {
+    const body = Array.from({ length: 9 }, (_, index) => `line ${index + 1}`).join("\n")
+    const group = noticeGroup([worker("completed", body)], "n1")!
+    expect(drawn(noticeLines(group, "details"))).toEqual([
+      "└ line 1",
+      "  line 2",
+      "  line 3",
+      "  line 4",
+      "  line 5",
+      "  … +4 lines (ctrl+o)",
+    ])
+    expect(noticeLines(group, "details").at(-1)!.runs[0]!.tone).toBe("faint")
+    expect(noticeLines(group, "all")).toHaveLength(9)
+  })
+
+  test("a burst is a node per worker: its task, then its answer's first line, faint; All hangs the rest beside the rail", () => {
+    const messages = [worker("completed", "A done.\nmore", "n1"), worker("completed", "B done.", "n2")]
+    const group = noticeGroup(messages, "n1")!
+    expect(drawn(noticeLines(group, "details"))).toEqual(["├ Fix money parsing · A done.", "└ Fix money parsing · B done."])
+    expect(noticeLines(group, "details")[0]!.runs.map((run) => run.tone)).toEqual(["muted", "faint"])
+    expect(noticeLines(group, "details").map((line) => line.child)).toEqual(["ses_n1", "ses_n2"])
+    expect(drawn(noticeLines(group, "all"))).toEqual(["├ Fix money parsing · A done.", "│ more", "└ Fix money parsing · B done."])
+  })
+
+  test("a notice right under another notice's group opens a blank row; one under anything else does not", () => {
+    const shell = notice("s1", "<shell id=\"s\" state=\"completed\" command=\"ls\">\nok\n</shell>", { source: "shell", state: "completed" }, "ls")
+    expect(noticeApart([shell, worker("completed", "ok")], "n1")).toBe(true)
+    expect(noticeApart([step("m1", [{ type: "text", text: "Waiting." }]), worker("completed", "ok")], "n1")).toBe(false)
+    // A folded notice's group is drawn by the burst's first, which looks above the burst.
+    expect(noticeApart([worker("completed", "a", "n1"), worker("completed", "b", "n2")], "n2")).toBe(false)
+  })
+})
+
+describe("thoughts as nodes of their step's tree", () => {
+  const thought = (text: string, completed?: number): Part => ({
+    type: "reasoning",
+    text,
+    time: { created: 0, ...(completed === undefined ? {} : { completed }) },
+  })
+  /** Each node as a line: `thinking <first line>` or `<verb> <subject>`. */
+  const tree = (entries: ReturnType<typeof groupEntries>, detail: "overview" | "details" | "all" = "details") => {
+    const nodes = levelNodes(entries, detail)
+    return nodes.map((node, index) => {
+      const lead = branch(index, nodes.length, alone(entryCalls(entries), nodes, detail)).connector ?? "●"
+      return node.type === "thought" ? `${lead} thinking ${thoughtLine(node.thought.text)}` : `${lead} ${verb(node.row)} ${subject(node.row)}`
+    })
+  }
+
+  test("a step that thought, then made two calls, is one tree: the thought first, the calls down it", () => {
+    const [a, b] = [call("read", { path: "a.ts" }), call("bash", { command: "bun test" })]
+    const messages = [step("m1", [thought("**Plan**\nRead a.ts, then test.", 1), a, b], { created: 0, completed: 2 })]
+    // Every part of the run draws through the same group: the thought by the host's `reasoning:0`.
+    for (const key of ["reasoning:0", a.id, b.id]) expect(groupEntries(messages, "m1", key).map(entryKey)).toEqual(["reasoning:0", a.id, b.id])
+    const entries = groupEntries(messages, "m1", "reasoning:0")
+    expect(tree(entries)).toEqual(["├ thinking Plan", "├ Read a.ts", "└ Ran bun test"])
+    // The header stays the calls' header: a thought is no action it counts.
+    expect(groupHeader(entries).map((run) => run.text).join("")).toBe("Read 1 file · ran 1 command")
+    expect(levelNodes(entries, "details").map(nodeOwner)).toEqual(["reasoning:0", a.id, b.id])
+  })
+
+  test("a step that thought, then answered, is a one-node tree under `Thought`, ending in └; `Thinking` while it streams", () => {
+    const done = [step("m1", [thought("Check the test first.", 1), { type: "text", text: "Reading it." }], { created: 0, completed: 2 })]
+    const entries = groupEntries(done, "m1", "reasoning:0")
+    expect(tree(entries)).toEqual(["└ thinking Check the test first."])
+    expect(groupHeader(entries)).toEqual([{ text: "Thought", tone: "muted" }])
+    expect(alone([], levelNodes(entries, "details"), "details")).toBe(false)
+    const live = [step("m1", [thought("Check the")], { created: 0 })]
+    const streaming = groupEntries(live, "m1", "reasoning:0")
+    expect(groupHeader(streaming)).toEqual([{ text: "Thinking", tone: "muted" }])
+    expect(thinking(streaming)).toBe(true)
+    expect(groupLead([], 0, thinking(streaming)).tone).toBe("accent")
+    // Answer text ends the run: the text and the thought before it do not join a later call's group.
+    const [c] = [call("read", { path: "c" })]
+    const after = [step("m1", [thought("Think.", 1), { type: "text", text: "Now reading." }, c], { created: 0, completed: 2 })]
+    expect(groupEntries(after, "m1", c.id).map(entryKey)).toEqual([c.id])
+  })
+
+  test("a redacted or empty thought draws no node and joins no group", () => {
+    const a = call("read", { path: "a" })
+    const messages = [step("m1", [thought("[REDACTED]", 1), thought("  ", 1), a], { created: 0, completed: 2 })]
+    expect(groupEntries(messages, "m1", "reasoning:0")).toEqual([])
+    expect(groupEntries(messages, "m1", "reasoning:1")).toEqual([])
+    expect(groupEntries(messages, "m1", a.id).map(entryKey)).toEqual([a.id])
+  })
+
+  test("a thought between calls to one tool keeps them apart; the overview shows no thought, and a thought alone not at all", () => {
+    const [a, b] = [call("read", { path: "a" }), call("read", { path: "b" })]
+    const entries = groupEntries([step("m1", [a, thought("Then b.", 1), b], { created: 0, completed: 2 })], "m1", a.id)
+    expect(tree(entries)).toEqual(["├ Read a", "├ thinking Then b.", "└ Read b"])
+    expect(tree(entries, "overview")).toEqual([])
+    expect(groupShows(entries, "overview")).toBe(true)
+    const lone = groupEntries([step("m1", [thought("Hm.", 1)], { created: 0, completed: 2 })], "m1", "reasoning:0")
+    expect(groupShows(lone, "overview")).toBe(false)
+    expect(groupShows(lone, "details")).toBe(true)
+  })
+
+  test("a group after another step's thought opens with a blank row, as after its calls", () => {
+    const a = call("read", { path: "a" })
+    const messages = [step("m1", [thought("Hm.", 1)]), step("m2", [thought("Next.", 1), a])]
+    expect(followsGroup(messages, "m2", "reasoning:0")).toBe(true)
+    expect(followsGroup([user("u1", "go"), messages[1]!], "m2", "reasoning:0")).toBe(false)
+  })
+
+  test("the folded line is the thought's first line with words", () => {
+    expect(thoughtLine("\n\n**Weighing it**\n\nThe loop exits early.")).toBe("Weighing it")
+    expect(thoughtLine("[REDACTED]")).toBe("")
+  })
+})
+
+describe("a latched subagent call", () => {
+  const latchedCall = () =>
+    call("subagent", { agent: "worker", description: "Fix money parsing", prompt: "Brief." }, "completed", { sessionID: "ses_c", status: "latched" })
+
+  test("reads as latched, not ran, and hangs no reply", () => {
+    const part = latchedCall()
+    const run: Call[] = [{ tool: "subagent", part }]
+    expect(headerRuns(run).map((item) => item.text).join("")).toBe("Latched 1 agent")
+    expect(rows(run).map((row) => `${verb(row)} ${subject(row)}`)).toEqual(["Latched Fix money parsing"])
+    expect(callBody(run[0]!).reply).toBe(false)
+  })
+
+  test("joins the launches next to it, as a background start does", () => {
+    const launch = call("subagent", { agent: "general", description: "fix-a", prompt: "A.", background: true })
+    const part = latchedCall()
+    const messages = [step("m1", [launch], { created: 0, completed: 500 }), step("m2", [part], { created: 1_000, completed: 1_500 })]
+    expect(groupRun(messages, "m2", part.id).map((item) => item.part.id)).toEqual([launch.id, part.id])
+    expect(headerRuns(groupRun(messages, "m2", part.id)).map((item) => item.text).join("")).toBe("Started 1 agent · latched 1 agent")
   })
 })

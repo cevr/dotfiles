@@ -61,6 +61,16 @@ export function background(part: ToolPart) {
   return toolInput(part).background === true
 }
 
+/**
+ * Whether a subagent call was latched: held, its start kept for later
+ * (orchestrate's latched answer, `metadata.status: "latched"`), so it
+ * answered at once, as a background start does, and its reply comes later.
+ */
+export function latched(part: ToolPart) {
+  const status = toolMetadata(part).status
+  return status === "latched" || /^The subagent is latched\b/.test(toolOutput(part))
+}
+
 /** The glyph and tone of the all level's one-call row: `✓` done, `✗` failed, a warning `✓`, `◆` while it runs or was cut. */
 export function callGlyph(part: ToolPart): { readonly char: string; readonly tone: "success" | "error" | "warning" } {
   const state = outcome(part)

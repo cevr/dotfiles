@@ -93,6 +93,27 @@ continuations themselves draw no rows (the host hides a synthetic message
 without a description). `tests/prime-goal.test.ts` runs
 `scenarios/prime-goal.ts` for the dock and the goal line.
 
+A model step's tool calls are one group: a header over a `├`/`└` tree,
+ended early by answer text. The step's thought is the tree's first node, its
+label in a tool name's colour and its first line faint; at All (Ctrl+O) the
+whole thought hangs under it. A step that only thinks is a one-node group
+headed `Thought` (`Thinking` while it streams, the glyph blinking in the
+accent). The Overview shows no thoughts. A finished worker's notice is a
+group too, its result the body:
+
+```
+● Read 1 file · ran 1 command
+├ thinking  Planning the check
+├ Read money.py
+└ Ran printf '1 passed\n'
+
+● General finished · Fix CSV quoting
+└ CSV quoting fixed.
+  Quoted fields keep their commas.
+```
+
+`tests/prime-thoughts.test.ts` runs `scenarios/prime-thoughts.ts` for both.
+
 A compaction reads as one line below All, such as
 `◇ Compacted automatically · 171k → 6k tokens · 12.0s` (`compaction.ts`,
 `tui/compaction.tsx`). A manual one says `Compacted`. A failed or cancelled

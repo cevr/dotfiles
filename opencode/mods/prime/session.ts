@@ -41,8 +41,12 @@ export type ToolPart = {
   readonly time: { readonly created: number; readonly ran?: number; readonly completed?: number }
 }
 
-/** Answer text or a thought of an assistant step. */
-export type WordsPart = { readonly type: "text" | "reasoning"; readonly text: string }
+/** Answer text or a thought of an assistant step; a thought carries when it started and, once it ended, when it ended. */
+export type WordsPart = {
+  readonly type: "text" | "reasoning"
+  readonly text: string
+  readonly time?: { readonly created: number; readonly completed?: number }
+}
 
 /** One part of an assistant step. */
 export type Part = WordsPart | ToolPart
