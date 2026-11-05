@@ -1,8 +1,9 @@
 // The contracts the kernel needs from outside: the worker processes, the store
-// of each session's bindings, OpenCode's sessions and agents, and the tools of
-// the call at hand. Each states its failures; `laws.ts` states what every
-// implementation owes.
+// of each session's bindings, OpenCode's sessions and agents, the tools of the
+// call at hand, and the files a cell attaches. Each states its failures;
+// `laws.ts` states what every implementation owes.
 import { Context, type Effect, Schema } from "effect"
+import type { FileTooLarge, FileUnreadable } from "./attachment.ts"
 import type { Evaluation, Json, Listing, Snapshot, SnapshotBinding } from "./frame.ts"
 import type { KernelSessionId } from "./session.ts"
 import type { CallFailed, Rule } from "./tools.ts"
@@ -108,3 +109,18 @@ export class Toolbox extends Context.Service<
     readonly reach: (rules: ReadonlyArray<Rule>) => Effect.Effect<CellTools>
   }
 >()("dotfiles-opencode/kernel/Toolbox") {}
+
+// ── Files ──
+
+/**
+ * The files a cell attaches (attachment.ts), read after the cell. A path that
+ * names no regular file, or one that cannot be read, fails `FileUnreadable`
+ * with the reason; a file over `limit` bytes fails `FileTooLarge` unread.
+ */
+export class Files extends Context.Service<
+  Files,
+  {
+    /** The bytes of the regular file at `path`, an absolute path, when it holds at most `limit` of them. */
+    readonly read: (path: string, limit: number) => Effect.Effect<Uint8Array, FileUnreadable | FileTooLarge>
+  }
+>()("dotfiles-opencode/kernel/Files") {}

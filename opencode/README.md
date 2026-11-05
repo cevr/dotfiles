@@ -180,6 +180,18 @@ and live objects such as promises are not stored: the call names each one it
 left out and why. The worker is the running OpenCode binary acting as Bun
 (`BUN_BE_BUN=1`), so it needs no separate Bun install.
 
+To look at an image, a cell calls `attach(...paths)`, as Prime Agent's
+`attach_image`: each path, resolved against the session's directory, is
+recorded (32 per cell at most), and the call answers "attached N images: …".
+Only the paths cross the worker's pipe. After the cell the plugin reads each
+file, sniffs PNG, JPEG, GIF or WebP from its first bytes, and adds it to the
+result as a `data:` URI file part after the text; OpenCode resizes it to the
+model's limits. A missing file, a non-image or one over 20 MB is a
+`[not attached: <path>: <reason>]` line in the text. A cell that throws
+attaches nothing. An image in a nested tool's result (`tools.read` on a PNG)
+reaches the cell as `{ type: "image", mime, name?, note: "not shown; call
+attach(path) to see it" }`, never as base64.
+
 | Option | Default | Effect |
 | --- | --- | --- |
 | `idleMs` | `1800000` (30 min) | Kill a session's worker after this long without a call. Its stored bindings stay. |
@@ -199,7 +211,8 @@ The model (the domain files at the root of `mods/kernel`):
 
 - Facts: `KernelReset`, `KernelStarted` (with the bindings it restored),
   `CellRan` (the cell's output, its display, the bindings it bound that the
-  store left out, and whether its bindings were stored), `KernelLost` (why
+  store left out, whether its bindings were stored, and the files it
+  attached), `KernelLost` (why
   the worker went) and `KernelStopped` (idle or deleted).
 - Commands: `ResetKernel`, `StartKernel`, `RecordCell`, `LoseKernel` and
   `StopKernel`. A cell that throws and a worker that dies are facts, not
@@ -212,13 +225,17 @@ The model (the domain files at the root of `mods/kernel`):
   `[not kept across restarts: …]`), then the output, cut to `viewChars`.
 - Values: the tool's description and input (`description.ts`), the tools a
   cell reaches and how the model reads them (`tools.ts`), the output's head
-  and tail (`output.ts`), the limits (`limits.ts`), and the worker protocol:
+  and tail (`output.ts`), the limits (`limits.ts`), an attached image, why a
+  path was not attached and the reply they make (`attachment.ts`), and the
+  worker protocol:
   its frames as schemas (`frame.ts`) and their framing on the pipes
   (`wire.ts`).
 - Contracts (`service.ts`, with their laws in `laws.ts`): the worker
   processes (`Workers`), the stored bindings (`Snapshots`), sessions and
-  agents' rules (`Sessions`), and the call's tools (`Toolbox`, provided per
-  call: the runtime's, else the registry's). `worker/` implements `Workers`;
+  agents' rules (`Sessions`), the attached files' bytes (`Files`), and the
+  call's tools (`Toolbox`, provided per call: the runtime's, else the
+  registry's). `worker/` implements `Workers`; `filestore/` implements
+  `Files` over `node:fs`;
   `opencode/` implements `Snapshots`, `Sessions` and `Toolbox` over the
   plugin context; `memory/` holds the in-memory `Sessions` the seam test
   uses. `cmd/kernel/server.ts` is the plugin and the only composition root.

@@ -66,6 +66,24 @@ describe("a call", () => {
       Story.state(LiveKernel.make({})),
     ))
 
+  test("runs its cell; the files it attached travel with it to the answer", () =>
+    run(
+      Story.given(KernelStarted.make({ session })),
+      Story.when(RecordCell.make({ session, ok: true, output: "", display: "", bindings: [], attached: ["/w/a.png", "/w/b.jpg"], omitted: [] })),
+      Story.then(cell({ attached: ["/w/a.png", "/w/b.jpg"] })),
+      Story.view(CellAnswer, {
+        notes: [],
+        outcome: { _tag: "Ran", ok: true, output: "", display: "", attached: ["/w/a.png", "/w/b.jpg"] },
+      }),
+    ))
+
+  test("runs its cell; a cell that attached nothing says nothing of attachments", () =>
+    run(
+      Story.given(KernelStarted.make({ session })),
+      Story.when(RecordCell.make({ session, ok: true, output: "", display: "1", bindings: [], attached: [], omitted: [] })),
+      Story.then(cell({ display: "1" })),
+    ))
+
   test("whose worker died after its cell stores nothing, and the next call starts a new one", () =>
     run(
       Story.given(KernelStarted.make({ session })),

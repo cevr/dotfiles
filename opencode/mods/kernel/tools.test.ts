@@ -2,7 +2,8 @@
 // model reads them, and what a tool's result is to the cell.
 import { describe, expect, test } from "bun:test"
 import { Effect, Exit } from "effect"
-import { callable, catalog, notATool, plain, reachable, textOf, typeOf, whollyDisabled } from "./tools.ts"
+import type { Json } from "./frame.ts"
+import { callable, catalog, cellValue, contentValue, IMAGE_NOTE, notATool, plain, reachable, textOf, typeOf, whollyDisabled, withoutImages } from "./tools.ts"
 
 describe("whollyDisabled", () => {
   test("follows the last matching rule, as the registry does", () => {
@@ -69,5 +70,55 @@ describe("a tool's result to a cell", () => {
     expect(Effect.runSync(plain(undefined))).toBeNull()
     const refused = Effect.runSyncExit(plain(1n))
     expect(Exit.isFailure(refused) && refused.cause.reasons.some((reason) => reason._tag === "Fail" && reason.error._tag === "CallFailed")).toBe(true)
+  })
+})
+
+describe("an image in a tool's result", () => {
+  const marker = (name?: string) => ({ type: "image", mime: "image/png", ...(name === undefined ? {} : { name }), note: IMAGE_NOTE })
+
+  test("is a marker at any depth of an output: base64 content or a data URI, named by its name or file URL", () => {
+    expect(
+      withoutImages({
+        page: { type: "file", mime: "image/png", encoding: "base64", content: "AAAA", uri: "file:///w/a.png" },
+        list: [{ type: "file", mime: "image/png", uri: "data:image/png;base64,AAAA", name: "b.png" }],
+        inline: { mime: "image/png", uri: "data:image/png;base64,AAAA" },
+      }),
+    ).toEqual({ page: marker("/w/a.png"), list: [marker("b.png")], inline: marker() })
+  })
+
+  test("leaves text, a linked image and a non-image file alone", () => {
+    const kept: Json = [
+      { type: "file", mime: "text/plain", encoding: "base64", content: "AAAA" },
+      { type: "file", mime: "image/png", uri: "https://example.com/a.png" },
+      { mime: "image/png", encoding: "utf8", content: "not base64" },
+      "image/png",
+    ]
+    expect(withoutImages(kept)).toEqual(kept)
+  })
+
+  test("in a result without an output turns its content into a list; without an image the text stays as it was", () => {
+    expect(contentValue([{ type: "text", text: "a" }, { type: "text", text: "b" }])).toBe("a\nb")
+    expect(contentValue("plain")).toBe("plain")
+    expect(contentValue(undefined)).toBeNull()
+    expect(
+      contentValue([
+        { type: "text", text: "Image read successfully" },
+        { type: "file", mime: "image/png", uri: "data:image/png;base64,AAAA", name: "shot.png" },
+        { type: "file", mime: "application/pdf", uri: "data:application/pdf;base64,AAAA", name: "doc.pdf" },
+      ]),
+    ).toEqual([
+      { type: "text", text: "Image read successfully" },
+      { type: "file", mime: "image/png", uri: "data:image/png;base64,AAAA", name: "shot.png" },
+      { type: "file", mime: "application/pdf", name: "doc.pdf" },
+    ])
+  })
+
+  test("reaches the cell as its marker, from the output or the content", async () => {
+    const image = { type: "file", mime: "image/png", uri: "data:image/png;base64,AAAA", name: "shot.png" }
+    expect(await Effect.runPromise(cellValue({ output: image }))).toEqual(marker("shot.png"))
+    expect(await Effect.runPromise(cellValue({ content: [{ type: "text", text: "read" }, image] }))).toEqual([
+      { type: "text", text: "read" },
+      marker("shot.png"),
+    ])
   })
 })

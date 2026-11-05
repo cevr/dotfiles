@@ -2,7 +2,7 @@
 // The words are the model's contract: they change only on purpose.
 import { Schema } from "effect"
 import { MAX_DISPLAY_CHARS } from "./limits.ts"
-import { catalog, type Reached } from "./tools.ts"
+import { catalog, IMAGE_NOTE, type Reached } from "./tools.ts"
 
 /** The kernel tool's input. */
 export const KernelInput = Schema.Struct({
@@ -23,12 +23,16 @@ const DIRECT_TOOLS = "Calling tools: `await tools.<id>(input)` runs any other to
 
 const RUNTIME_TOOLS = "Calling tools: the kernel is your only tool. Every other tool is a function on `tools`, listed below with its input: `await tools.<name>(input)` runs it and resolves to its result (its output, or its text). Read files, edit, run commands and start subagents from here. Permissions apply and a refused or failed call throws; catch it to continue. Run independent calls together with Promise.all, and print only what you need to read."
 
+const ATTACH = `Seeing images: \`attach(...paths: string[])\` shows image files (PNG, JPEG, GIF, WebP; a relative path is under the working directory) to you after this call, the way a pasted image is. An image a tool returns reaches your code as \`${JSON.stringify({ type: "image", mime: "image/png", name: "<path>", note: IMAGE_NOTE })}\`, not as its data.`
+
 /** What the model reads about the kernel; `tools` when it is the runtime, which reaches them. */
 export const description = (limits: Limits, tools?: ReadonlyArray<Reached>) => `Run TypeScript in a persistent kernel: one Bun process for this session.
 
 What persists: top-level bindings (let, const, var, function, class) stay defined for the next kernel call in this session. They also survive a kernel restart: top-level imports and function and class declarations (const f = () => … included) run again from their source, each name at its latest version; then data comes back, cycles included: primitives and BigInt, plain objects, arrays, Map, Set, Date, RegExp, Buffer, typed arrays, errors (type, name, message) and instances of those classes, up to 16 MiB per binding and 256 MiB in all. Closures made inside a function, instances of classes with #private members, promises and other live objects do not. The result names each binding it dropped and why. reset: true starts an empty kernel.
 
 The result is what the code printed (console.log and friends), then the value of its last expression. Top-level await works.
+
+${ATTACH}
 
 ${tools === undefined ? DIRECT_TOOLS : RUNTIME_TOOLS}
 

@@ -1,6 +1,7 @@
 // The tools a cell reaches, as plain values: which ones its permission rules
 // leave it, how the model reads them, the words for a tool it does not have,
-// and the value a tool's result is to the cell.
+// and the value a tool's result is to the cell, with each image it returned
+// as a marker.
 //
 // A cell sees the session's tools less the code tools (`kernel` itself and
 // code mode's `execute`). Without the runtime it also skips the tools whose
@@ -120,10 +121,13 @@ export const catalog = (tools: ReadonlyArray<Reached>): string =>
     })
     .join("\n\n")
 
-/** One part of a tool result's content: only text parts carry words for a cell. */
+/** One part of a tool result's content: text, or a file (`uri` a data URI or a link). */
 export interface ContentPart {
   readonly type: string
   readonly text?: string
+  readonly mime?: string
+  readonly uri?: string
+  readonly name?: string
 }
 
 /** A result's text parts joined, else null: what a result without an output is to a cell. */
@@ -146,3 +150,75 @@ export const plain = (value: unknown): Effect.Effect<Json, CallFailed> =>
     },
     catch: (cause) => new CallFailed({ message: messageOf(cause) }),
   })
+
+// ── Images in a tool's result ──
+
+/** What a marker tells the cell to do to see the image. */
+export const IMAGE_NOTE = "not shown; call attach(path) to see it"
+
+/**
+ * What a cell gets in place of an image a tool returned (the read tool's image
+ * output, a file part of a result's content): its type and, when the result
+ * named one, its path. The base64 would only be text to the model, and over
+ * about 1 MiB it would not fit the reply frame.
+ */
+export interface ImageMarker {
+  readonly type: "image"
+  readonly mime: string
+  readonly name?: string
+  readonly note: typeof IMAGE_NOTE
+}
+
+type JsonRecord = { readonly [key: string]: Json }
+const isJsonRecord = (value: Json): value is JsonRecord => typeof value === "object" && value !== null && !Array.isArray(value)
+
+/** An image inline in a result: an image type with base64 content (the read tool's output) or a data URI (a file part). */
+const isInlineImage = (value: JsonRecord): boolean =>
+  typeof value.mime === "string" &&
+  value.mime.startsWith("image/") &&
+  ((value.encoding === "base64" && typeof value.content === "string") || (typeof value.uri === "string" && value.uri.startsWith("data:")))
+
+/** The path an image came from: its name, else its link as a path (a `file:` URL) or as it is; a data URI names none. */
+const imageName = (value: JsonRecord): string | undefined => {
+  if (typeof value.name === "string" && value.name !== "") return value.name
+  if (typeof value.uri !== "string" || value.uri.startsWith("data:")) return undefined
+  if (!value.uri.startsWith("file:")) return value.uri
+  try {
+    return decodeURIComponent(new URL(value.uri).pathname)
+  } catch {
+    return value.uri
+  }
+}
+
+/** `value` with every image inline in it, at any depth, replaced by its marker. */
+export const withoutImages = (value: Json): Json => {
+  if (Array.isArray(value)) return value.map(withoutImages)
+  if (!isJsonRecord(value)) return value
+  if (isInlineImage(value)) {
+    const name = imageName(value)
+    const marker: ImageMarker = { type: "image", mime: String(value.mime), ...(name === undefined ? {} : { name }), note: IMAGE_NOTE }
+    return { ...marker }
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, withoutImages(item)]))
+}
+
+/**
+ * A result without an output as a cell gets it: its text, as `textOf`, unless
+ * its content holds an image; then the content as a list, text parts as
+ * `{ type: "text", text }`, each image as its marker, any other file as its
+ * type and name without its data.
+ */
+export const contentValue = (content: string | ReadonlyArray<ContentPart> | undefined): unknown => {
+  const parts = typeof content === "string" || content === undefined ? [] : content
+  const image = (part: ContentPart) => part.type === "file" && part.mime?.startsWith("image/") === true
+  if (!parts.some(image)) return textOf(content)
+  return parts.map((part) => {
+    if (part.type === "text") return { type: "text", text: part.text ?? "" }
+    if (image(part)) return part
+    return { type: part.type, ...(part.mime === undefined ? {} : { mime: part.mime }), ...(part.name === undefined ? {} : { name: part.name }) }
+  })
+}
+
+/** A tool's result as a cell gets it: its output, else its content, as plain data with each image a marker. */
+export const cellValue = (result: { readonly output?: unknown; readonly content?: string | ReadonlyArray<ContentPart> }): Effect.Effect<Json, CallFailed> =>
+  plain(result.output === undefined ? contentValue(result.content) : result.output).pipe(Effect.map(withoutImages))

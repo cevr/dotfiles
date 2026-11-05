@@ -28,6 +28,15 @@ describe("the answer", () => {
     expect(answer([cell({ ok: false, display: "TypeError: boom" })])).toEqual({ ok: false, text: "TypeError: boom" })
   })
 
+  test("carries the files a cell attached; a cell that threw attaches nothing", () => {
+    expect(answer([cell({ display: "attached 1 image: a.png", attached: ["/w/a.png"] })])).toEqual({
+      ok: true,
+      text: "attached 1 image: a.png",
+      attached: ["/w/a.png"],
+    })
+    expect(answer([cell({ ok: false, display: "Error: after", attached: ["/w/a.png"] })])).toEqual({ ok: false, text: "Error: after" })
+  })
+
   test("keeps the head and tail of long output, within the view", () => {
     const { text } = answer([cell({ display: `${"a".repeat(300)}END` })], 100)
     expect(text.length).toBeLessThan(160)

@@ -8,7 +8,13 @@ import type { Event } from "./session.ts"
 /** How the call ended: the cell ran (and threw or not), or the worker was lost under it. */
 export type Outcome =
   | { readonly _tag: "Pending" }
-  | { readonly _tag: "Ran"; readonly ok: boolean; readonly output: string; readonly display: string }
+  | {
+      readonly _tag: "Ran"
+      readonly ok: boolean
+      readonly output: string
+      readonly display: string
+      readonly attached: ReadonlyArray<string>
+    }
   | { readonly _tag: "Lost"; readonly message: string }
 
 export interface CellAnswerState {
@@ -31,7 +37,10 @@ export const CellAnswer: Fold<CellAnswerState, Event> = {
           event.unkept.length === 0
             ? state
             : note(state, `[not kept across restarts: ${event.unkept.map((item) => `${item.name} (${item.reason})`).join(", ")}]`)
-        return { ...noted, outcome: { _tag: "Ran", ok: event.ok, output: event.output, display: event.display } }
+        return {
+          ...noted,
+          outcome: { _tag: "Ran", ok: event.ok, output: event.output, display: event.display, attached: event.attached ?? [] },
+        }
       }
       case "KernelLost":
         return { ...state, outcome: { _tag: "Lost", message: event.message } }
@@ -41,10 +50,15 @@ export const CellAnswer: Fold<CellAnswerState, Event> = {
   },
 }
 
-/** The answer the model reads: `ok` false is the tool's error. */
+/**
+ * The answer the model reads: `ok` false is the tool's error. `attached` is
+ * set when a cell that did not throw attached files: the images to show after
+ * the text (attachment.ts). A cell that threw attaches nothing.
+ */
 export interface Answer {
   readonly ok: boolean
   readonly text: string
+  readonly attached?: ReadonlyArray<string>
 }
 
 /**
@@ -57,5 +71,7 @@ export const read = (state: CellAnswerState, viewChars: number): Answer => {
   if (outcome._tag === "Lost") return { ok: false, text: [...notes, outcome.message].join("\n") }
   const parts = outcome._tag === "Ran" ? [...notes, outcome.output.trimEnd(), outcome.display] : [...notes]
   const text = parts.filter((part) => part !== "").join("\n")
-  return { ok: outcome._tag === "Ran" ? outcome.ok : true, text: viewOf(text === "" ? "(no output)" : text, viewChars) }
+  const ok = outcome._tag === "Ran" ? outcome.ok : true
+  const attached = outcome._tag === "Ran" && ok && outcome.attached.length > 0 ? { attached: outcome.attached } : {}
+  return { ok, text: viewOf(text === "" ? "(no output)" : text, viewChars), ...attached }
 }

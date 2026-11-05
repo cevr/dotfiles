@@ -2,10 +2,11 @@
 // suites. Each implementation's test beside it runs the suite over its Layer.
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer, type Scope } from "effect"
+import { FileTooLarge } from "./attachment.ts"
 import type { Json, SnapshotBinding } from "./frame.ts"
-import { Sessions, Snapshots, Toolbox, Workers, type Cell } from "./service.ts"
+import { Files, Sessions, Snapshots, Toolbox, Workers, type Cell } from "./service.ts"
 import { KernelSessionId } from "./session.ts"
-import { CallFailed, notATool, type Rule } from "./tools.ts"
+import { CallFailed, IMAGE_NOTE, notATool, type Rule } from "./tools.ts"
 
 const first = KernelSessionId.make("ses_law_first")
 const second = KernelSessionId.make("ses_law_second")
@@ -151,6 +152,22 @@ export const toolboxLaws = (name: string, layer: (tools: ReadonlyArray<LawTool>)
           expect(yield* Effect.flip(reached.call("nope", {}))).toEqual(new CallFailed({ message: notATool("nope", ["echo", "broken"]) }))
         }),
       ))
+
+    test("an image in a tool's value reaches the cell as a marker naming its path, not as base64", () =>
+      check(
+        layer([
+          {
+            id: "look",
+            description: "returns an image",
+            answer: () =>
+              Effect.succeed({ type: "file", mime: "image/png", encoding: "base64", content: "iVBORw0KGgo=", uri: "file:///w/a%20shot.png" }),
+          },
+        ]),
+        Effect.gen(function* () {
+          const reached = yield* (yield* Toolbox).reach([])
+          expect(yield* reached.call("look", {})).toEqual({ type: "image", mime: "image/png", name: "/w/a shot.png", note: IMAGE_NOTE })
+        }),
+      ))
   })
 
 // ── Workers ──
@@ -232,6 +249,24 @@ export const workersLaws = (name: string, layer: () => Layer.Layer<Workers>, dir
         }),
       ))
 
+    test("a cell's attach records each path once, resolved against the worker's directory, and answers what it attached", () =>
+      check(
+        layer(),
+        Effect.gen(function* () {
+          const workers = yield* Workers
+          yield* workers.start(first, directory)
+          const result = yield* workers.evaluate(first, cell('attach("shot.png", "/abs/b.jpg", "shot.png")'))
+          expect(result.display).toBe("attached 3 images: shot.png, /abs/b.jpg, shot.png")
+          // The worker's directory as the system names it (macOS puts /private before /var).
+          expect(result.attached).toHaveLength(2)
+          expect(result.attached[0]).toMatch(/^\/.*\/shot\.png$/)
+          expect(result.attached[0]?.endsWith(`${directory.split("/").at(-1)}/shot.png`)).toBe(true)
+          expect(result.attached[1]).toBe("/abs/b.jpg")
+          expect((yield* workers.evaluate(first, cell("1"))).attached).toEqual([])
+          expect((yield* workers.evaluate(first, cell("attach(1)"))).ok).toBe(false)
+        }),
+      ))
+
     test("a cell that is interrupted kills its worker", () =>
       check(
         layer(),
@@ -244,6 +279,53 @@ export const workersLaws = (name: string, layer: () => Layer.Layer<Workers>, dir
           })
           expect(hung).toBe("interrupted")
           expect(yield* workers.alive(first)).toBe(false)
+        }),
+      ))
+  })
+
+// ── Files ──
+
+/** Where the Files laws read: `put` writes a file and answers its absolute path; `folder` is a directory, `missing` names nothing. */
+export interface FilesWorld {
+  readonly put: (name: string, bytes: Uint8Array) => Effect.Effect<string>
+  readonly folder: string
+  readonly missing: string
+}
+
+export const filesLaws = (name: string, layer: () => Layer.Layer<Files>, world: FilesWorld) =>
+  describe(`${name} keeps the Files laws`, () => {
+    test("reads a file's bytes, up to the limit itself", () =>
+      check(
+        layer(),
+        Effect.gen(function* () {
+          const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
+          const path = yield* world.put("seven.bin", bytes)
+          expect(yield* (yield* Files).read(path, 7)).toEqual(bytes)
+        }),
+      ))
+
+    test("a file over the limit fails FileTooLarge with its size and the limit", () =>
+      check(
+        layer(),
+        Effect.gen(function* () {
+          const path = yield* world.put("eleven.bin", new Uint8Array(11))
+          expect(yield* Effect.flip((yield* Files).read(path, 10))).toEqual(new FileTooLarge({ path, bytes: 11, limit: 10 }))
+        }),
+      ))
+
+    test("a missing path or a directory fails FileUnreadable, naming the path and why", () =>
+      check(
+        layer(),
+        Effect.gen(function* () {
+          const files = yield* Files
+          for (const path of [world.missing, world.folder]) {
+            const failed = yield* Effect.flip(files.read(path, 1_000))
+            expect(failed._tag).toBe("FileUnreadable")
+            if (failed._tag === "FileUnreadable") {
+              expect(failed.path).toBe(path)
+              expect(failed.reason.length).toBeGreaterThan(0)
+            }
+          }
         }),
       ))
   })
