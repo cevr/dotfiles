@@ -11,6 +11,7 @@ import { join } from "node:path"
 import { Context, Effect, Logger } from "effect"
 import {
   GENT_PREFIX,
+  GENT_USER_AGENT,
   GentCredentialError,
   GentSource,
   REFRESH_AHEAD_MS,
@@ -35,6 +36,9 @@ interface Trade {
   readonly at: number
   readonly refresh: string
 }
+
+/** The `user-agent` of every trade the fake endpoint saw, in order. */
+const agents: Array<string | null> = []
 
 interface Bench {
   readonly dir: string
@@ -66,6 +70,7 @@ const bench = (answer: () => Answer = () => "rotate", options: { lockPolls?: num
   const fetch = async (_url: string, init: RequestInit): Promise<Response> => {
     const refresh = new URLSearchParams(String(init.body)).get("refresh_token") ?? ""
     trades.push({ at: clock.now, refresh })
+    agents.push(new Headers(init.headers).get("user-agent"))
     const kind = answer()
     if (kind === "unreachable") return Promise.reject(new TypeError("fetch failed"))
     if (kind === "rate-limited") return new Response("<html>Error 1015</html>", { status: 429, headers: { server: "cloudflare" } })
@@ -146,6 +151,14 @@ describe("a token is refreshed ahead of its expiry", () => {
     expect(refreshed.access).not.toBe(due.access)
     expect(trades).toEqual([{ at: clock.now, refresh: due.refresh }])
     expect(refreshed.expires).toBe(clock.now + 8 * HOUR)
+  })
+
+  test("a trade names Claude Code's user agent, never the host's default", async () => {
+    const { source, clock, signIn } = bench()
+    signIn("alpha", clock.now)
+    const from = agents.length
+    await source.resolve(id("alpha"))
+    expect(agents.slice(from)).toEqual([GENT_USER_AGENT])
   })
 })
 
