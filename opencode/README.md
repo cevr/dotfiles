@@ -349,6 +349,62 @@ the bring-back carries the question and the answer, since OpenCode has no
 tool that reads another session; the pane is the host's session panel, not
 a dock. `tests/btw.test.ts` runs `scenarios/btw.ts`.
 
+## Skills
+
+`mods/skills` ports gent's `$` skill mentions; its plugins are
+`cmd/skills` (`server.ts` and `tui.tsx`). Typing `$` at the start of a word
+in the composer opens a popup of the skills, beside `/` for commands and `@`
+for files, which stay as they were. Typing filters it, and Enter inserts
+`$<id>` and attaches the skill, as an `@` mention of it does:
+
+```
+$deploy Ship to production                                       global
+$review Review this project's change                              local
+$review:global Review any change, the user's way      global · shadowed
+$
+```
+
+Skills have two tiers, as in gent. A local skill is the project's: a
+`.opencode/skills`, `.opencode/skill`, `.claude/skills` or `.agents/skills`
+folder in the working directory or a parent. A global skill is the user's:
+OpenCode's config directory, `~/.claude/skills`, `~/.agents/skills`. When
+both hold one id, the local copy wins `$<id>` and the global one stays
+reachable as `$<id>:global` (`$<id>:local` names the local one); the popup
+lists both, the global one marked shadowed. The skill tool loads either
+copy by `<id>:local` or `<id>:global`. A skill a plugin, a URL or a
+configured path adds shows without a tier.
+
+On send, each `$<id>`, `$<id>:local` or `$<id>:global` token that names a
+skill attaches it, so the turn carries its instructions without a skill
+tool call; picking from the popup and typing the token out do the same. The
+token stays in the text. A `$` inside a word (`a$b`), before a digit (`$5`),
+inside a code span or a fenced block, or before a name no skill has, stays
+plain text.
+
+How it is built:
+
+- Rules, Effect-free so the TUI reads them too: `mention.ts` finds the
+  tokens, `tier.ts` the tiers and what to register for an id both hold,
+  `catalog.ts` the popup's entries and rows, what a token resolves to and
+  the skills RPC (`SKILLS`, `catalog`).
+- `model.ts` (`SkillsModel`) holds the latest scan and answers the catalog,
+  the registry edits and the attachments; the scan is the `SkillFiles`
+  contract in `service.ts` (laws in `laws.ts`), implemented in
+  `filesystem/skill-files.ts` by OpenCode's discovery rules.
+- The server registers a skill transform (`<id>:local`, `<id>:global`, and
+  the local copy under `<id>`), a `prompt` hook that attaches the tokens'
+  skills, and the RPC; `skill.updated` rescans. The TUI asks the RPC for the
+  catalog, because only the server knows the user's folders.
+- The popup needs the fork's `ui.autocomplete` (a plugin trigger in the
+  composer). Without it there is no popup; typed tokens still attach.
+
+From gent: the skill comes in the prompt as an attachment rather than an
+instruction to call the skill tool. OpenCode keeps one skill per id and which
+copy holds a plain id two of them share depends on the order its skill
+plugins register, so the plain id is held for the local copy only when this
+plugin's transform runs last; `$<id>` itself always attaches `<id>:local`.
+`tests/skills.test.ts` runs `scenarios/skills.ts`.
+
 ## Herdr
 
 `cmd/herdr` is a TUI plugin that tells [herdr](https://herdr.dev) what the

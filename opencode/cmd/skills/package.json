@@ -1,0 +1,14 @@
+{
+  "name": "@dotfiles/opencode-cmd-skills",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "`$<skill>`'s OpenCode plugins, the tier edits, the prompt hook and the catalog RPC (server) and the composer's `$` popup (tui): the composition root of @dotfiles/opencode-skills.",
+  "exports": {
+    "./server": "./server.ts",
+    "./tui": "./tui.tsx"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-skills": "workspace:*"
+  }
+}

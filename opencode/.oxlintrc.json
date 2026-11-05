@@ -576,6 +576,52 @@
     },
     {
       "files": [
+        "mods/skills/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
+                "message": "The skills domain fence: the skills domain files import effect, their own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of their folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "mods/skills/tui/**"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "../filesystem/**",
+                  "../model.ts"
+                ],
+                "message": "The skills UI fence: the popup reads the catalog over the RPC; it imports the domain's catalog and mention files, never the scan (filesystem/) or the server's model."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
         "mods/anthropic-auth/*.ts"
       ],
       "rules": {
