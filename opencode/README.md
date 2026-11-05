@@ -457,9 +457,9 @@ To answer, call the message tool with { "to": "ses_…", "text": "…" }; answer
 session; the header's second line then names it. The answer line asks for a
 reply only when the message asks for something, so two sessions do not answer
 each other forever. The transcript shows the message as one line,
-`◈ ✉ from <sender> · <first 80 characters>`: the host draws every plugin
-synthetic message with its `◈` icon and the message's description, and the
-plugin API has no per-source icon, so the envelope follows it. The message's
+`✉ from <sender> · <first 80 characters>`: the fork draws a synthetic
+message whose metadata source is `mail` with the `✉` icon, then the
+message's description. The message's
 metadata is `{ source: "mail", from, replyTo }`. Each delivery is logged at
 info as `mail: <sender> → <receiver>`, annotated with both ids, the reply
 session, the delivery and the text's first 200 characters.

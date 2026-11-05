@@ -80,18 +80,18 @@ describe.skipIf(!fork)("session mail", () => {
     expect(bFirst).toContain("mail-ping: answer me")
     expect(receipts(a)[0]).toBe(`Delivered to session "Mail B" (${b.id}). It was idle and is now reading it.`)
     expect(letters(b).map((letter) => [letter.description, letter.metadata?.from])).toEqual([
-      ["✉ from Mail A · mail-ping: answer me", { sessionID: a.id, title: "Mail A" }],
+      ["from Mail A · mail-ping: answer me", { sessionID: a.id, title: "Mail A" }],
     ])
 
     // B answered at that id; A, idle by then, woke and read it.
     expect(receipts(b)).toEqual([`Delivered to session "Mail A" (${a.id}). It was idle and is now reading it.`])
-    expect(letters(a).map((letter) => letter.description)).toEqual(["✉ from Mail B · mail-pong"])
+    expect(letters(a).map((letter) => letter.description)).toEqual(["from Mail B · mail-pong"])
     const texts = a.messages.flatMap(parts).flatMap((part) => (part.type === "text" && part.text !== undefined ? [part.text] : []))
     expect(texts.slice(0, 2)).toEqual(["A sent the ping", "A got the pong"])
 
     // The transcript draws the letter as one notice row, between A's turns.
     const exchange = readFileSync(join(out, "mail-exchange.txt"), "utf8")
-    const row = exchange.indexOf("◈ ✉ from Mail B · mail-pong")
+    const row = exchange.indexOf("✉ from Mail B · mail-pong")
     expect(row).toBeGreaterThan(exchange.indexOf("A sent the ping"))
     expect(row).toBeLessThan(exchange.indexOf("A got the pong"))
     expect(exchange).not.toContain("It is not the user speaking")

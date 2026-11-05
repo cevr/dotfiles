@@ -1,7 +1,7 @@
 // A message from one session to another, and the `message` tool that sends
 // it. The receiver reads the text as a synthetic message under a header that
 // names the sender and the session to answer; the transcript shows one line,
-// `✉ from <sender> · <excerpt>`. Delivered as a steer, a running receiver reads
+// `from <sender> · <excerpt>`. Delivered as a steer, a running receiver reads
 // it at its next step; an idle one is woken to read it, unless the sender
 // says not to, and then it waits for the session's next turn.
 import { Schema } from "effect"
@@ -78,7 +78,7 @@ export const header = (from: Party, replyTo: Party): ReadonlyArray<string> => {
 /** The letter `from` sends with `body`, answered at `replyTo`. */
 export const compose = (from: Party, replyTo: Party, body: string): Letter => ({
   text: [...header(from, replyTo), "", body.trim()].join("\n"),
-  description: `✉ from ${nameOf(from)} · ${excerpt(body, LINE_EXCERPT)}`,
+  description: `from ${nameOf(from)} · ${excerpt(body, LINE_EXCERPT)}`,
   metadata: {
     source: "mail",
     from: { sessionID: from.id, title: nameOf(from) },
