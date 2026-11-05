@@ -1,0 +1,13 @@
+#!/bin/bash
+# Installs the OpenCode workspace when a merge or pull changes its lock file.
+# A new workspace package is unresolvable until it is installed, and the
+# running OpenCode server hot-reloads plugins from this checkout.
+
+lock=opencode/bun.lock
+git diff --quiet ORIG_HEAD HEAD -- "$lock" 2>/dev/null && exit 0
+
+root="$(git rev-parse --show-toplevel)"
+echo "post-merge: $lock changed; running bun install in opencode/"
+if ! (cd "$root/opencode" && bun install --frozen-lockfile); then
+  echo "post-merge: bun install failed; run it in $root/opencode by hand" >&2
+fi

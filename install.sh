@@ -11,6 +11,9 @@ ln -sf "$DOTFILES_DIR/zshrc" ~/.zshrc
 ln -sf "$DOTFILES_DIR/gitconfig" ~/.gitconfig
 ln -sf "$DOTFILES_DIR/gitignore_global" ~/.gitignore_global
 
+# Git hooks for this checkout (post-merge installs the OpenCode workspace)
+git -C "$DOTFILES_DIR" config core.hooksPath githooks
+
 # Ghostty
 mkdir -p ~/Library/Application\ Support/com.mitchellh.ghostty
 ln -sf "$DOTFILES_DIR/ghostty/config" ~/Library/Application\ Support/com.mitchellh.ghostty/config
