@@ -273,7 +273,9 @@ export const layer = (config: Config) =>
               {
                 cwd: directory,
                 // A compiled OpenCode binary is Bun inside; this makes it act as `bun`.
-                env: { ...process.env, BUN_BE_BUN: "1" },
+                // The host's BUN_OPTIONS stay with the host: a dev host runs with `--conditions=browser`,
+                // which would resolve the worker's oxc-parser to its WASM build.
+                env: { ...process.env, BUN_OPTIONS: undefined, BUN_BE_BUN: "1" },
                 stdio: ["ignore", "pipe", "ignore", "pipe", "pipe"],
                 // Its own process group, so a kill takes the processes a cell started.
                 detached: true,
