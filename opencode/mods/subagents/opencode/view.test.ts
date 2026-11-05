@@ -93,3 +93,62 @@ describe("read", () => {
     ])
   })
 })
+
+describe("a session's background work", () => {
+  const world = reads({
+    root: { info: { id: "root", time: { created: 0 } } },
+    a: {
+      info: { id: "a", parentID: "root", time: { created: 1 } },
+      messages: [
+        {
+          type: "assistant",
+          content: [
+            { type: "tool", name: "shell", time: { created: 2, completed: 3 }, state: { status: "completed", input: { command: "sleep 2", background: true }, metadata: { status: "running", shellID: "sh_1" } } },
+            {
+              type: "tool",
+              name: "kernel",
+              time: { created: 4, completed: 5 },
+              state: {
+                status: "completed",
+                input: { code: "await tools.shell({ command: 'bun test', background: true })" },
+                metadata: {
+                  operations: [
+                    { tool: "shell", status: "completed", input: { command: "bun test", background: true }, output: "moved", metadata: { shellID: "sh_2" } },
+                    { tool: "read", status: "error", input: { path: "x" }, error: "missing" },
+                    { tool: 7, status: "completed", input: {} },
+                  ],
+                },
+              },
+            },
+          ],
+        },
+        { type: "synthetic", time: { created: 6 }, text: "<shell>", metadata: { source: "shell", shellID: "sh_1", jobID: "sh_1", state: "completed" } },
+        { type: "synthetic", time: { created: 7 }, text: "<shell>", metadata: { source: "shell", state: "completed" } },
+      ],
+    },
+  })
+
+  test("a kernel call carries the tools its cell called, and a shell's stop notice names its shell", () => {
+    expect(read(world, "a").sessions[1]?.messages).toEqual([
+      {
+        type: "assistant",
+        parts: [
+          { type: "call", tool: "shell", status: "completed", input: { command: "sleep 2", background: true }, metadata: { status: "running", shellID: "sh_1" }, completed: 3 },
+          {
+            type: "call",
+            tool: "kernel",
+            status: "completed",
+            input: { code: "await tools.shell({ command: 'bun test', background: true })" },
+            metadata: expect.objectContaining({ operations: expect.any(Array) }),
+            completed: 5,
+            calls: [
+              { type: "call", tool: "shell", status: "completed", input: { command: "bun test", background: true }, metadata: { shellID: "sh_2" } },
+              { type: "call", tool: "read", status: "error", input: { path: "x" }, metadata: {}, error: "missing" },
+            ],
+          },
+        ],
+      },
+      { type: "shell", shellID: "sh_1", state: "completed", at: 6 },
+    ])
+  })
+})

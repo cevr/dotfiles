@@ -1,8 +1,9 @@
 // The family the rows read, from the TUI's own data: the root of the route's
 // session and every session under it, each with its agent, run status,
-// waiting permissions and questions, assistant steps, and the stop notices
-// its background subagents sent it. Read inside a Solid computation, every
-// read here is reactive.
+// waiting permissions and questions, assistant steps (a kernel call with the
+// tools its cell called), and the stop notices its background subagents and
+// shell commands sent it. Read inside a Solid computation, every read here is
+// reactive.
 import type { Call, Family, Message, Part, Session } from "../family.ts"
 
 /** A session as `context.data.session.get` returns it, narrowed to what a row reads. */
@@ -43,6 +44,23 @@ const list = (value: unknown): ReadonlyArray<unknown> => (Array.isArray(value) ?
 
 const STATUSES = ["streaming", "running", "completed", "error"] as const
 
+/** One tool a kernel cell called, from the kernel call's record (mods/kernel/operations.ts); undefined when it is not one. */
+function operation(value: unknown): Call | undefined {
+  const fields = record(value)
+  const tool = string(fields.tool)
+  const status = STATUSES.find((known) => known === fields.status)
+  if (tool === undefined || status === undefined) return undefined
+  const error = string(fields.error)
+  return {
+    type: "call",
+    tool,
+    status,
+    input: record(fields.input),
+    metadata: record(fields.metadata),
+    ...(error === undefined ? {} : { error }),
+  }
+}
+
 /** A part of an assistant message: its words, or a tool call; undefined for any other part. */
 function part(value: unknown): Part | undefined {
   const fields = record(value)
@@ -53,20 +71,26 @@ function part(value: unknown): Part | undefined {
   if (status === undefined) return undefined
   const error = string(record(state.error).message)
   const completed = number(record(fields.time).completed)
+  // A streaming call has no metadata yet; a running one carries its live progress (a subagent's sessionID).
+  const metadata = status === "streaming" ? {} : record(state.metadata)
+  const calls = list(metadata.operations).flatMap((item) => operation(item) ?? [])
   const call: Call = {
     type: "call",
     tool: string(fields.name) ?? "",
     status,
     input: record(state.input),
-    // A streaming call has no metadata yet; a running one carries its live progress (a subagent's sessionID).
-    metadata: status === "streaming" ? {} : record(state.metadata),
+    metadata,
     ...(error === undefined ? {} : { error }),
     ...(completed === undefined ? {} : { completed }),
+    ...(calls.length === 0 ? {} : { calls }),
   }
   return call
 }
 
-/** An assistant step, or a background subagent's stop notice; undefined for any other message. */
+/**
+ * An assistant step, a background subagent's stop notice, or a background
+ * shell's stop notice; undefined for any other message.
+ */
 function message(value: unknown): Message | undefined {
   const fields = record(value)
   if (fields.type === "assistant") {
@@ -76,10 +100,14 @@ function message(value: unknown): Message | undefined {
   }
   if (fields.type !== "synthetic") return undefined
   const metadata = record(fields.metadata)
-  const childID = string(metadata.childID)
   const state = string(metadata.state)
-  if (metadata.source !== "subagent" || childID === undefined || state === undefined) return undefined
-  return { type: "notice", childID, state, at: number(record(fields.time).created) ?? 0, text: string(fields.text) ?? "" }
+  const at = number(record(fields.time).created) ?? 0
+  if (state === undefined) return undefined
+  const shellID = string(metadata.shellID)
+  if (metadata.source === "shell" && shellID !== undefined) return { type: "shell", shellID, state, at }
+  const childID = string(metadata.childID)
+  if (metadata.source !== "subagent" || childID === undefined) return undefined
+  return { type: "notice", childID, state, at, text: string(fields.text) ?? "" }
 }
 
 function session(reads: Reads, id: string): Session {

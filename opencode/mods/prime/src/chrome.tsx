@@ -3,7 +3,7 @@
 // activity line and a live row per subagent under it.
 import type { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal, onCleanup, Show, type Accessor } from "solid-js"
-import { SubagentRows } from "./live"
+import { SubagentRows, working } from "./live"
 import { navigationHint, neighbour, subagentOrder, topTitle } from "./subagent"
 import { compactTokens, detailHint, elapsed, type Detail } from "./view"
 import { GUTTER } from "./transcript"
@@ -21,7 +21,11 @@ export function useFamily(context: Context, sessionID: () => string | undefined)
     const id = sessionID()
     return (id ? data.session.get(id)?.parentID : undefined) ?? undefined
   }
-  const running = (id: string) => data.session.status(id) === "running"
+  // Running as its row reads it: one waiting on its own background work counts.
+  const running = () => {
+    const id = sessionID()
+    return id ? working(data, id) : () => false
+  }
   const order = () => {
     const id = sessionID()
     return id ? subagentOrder(data.session.list(), id) : []
@@ -30,10 +34,13 @@ export function useFamily(context: Context, sessionID: () => string | undefined)
     parentID,
     child: () => parentID() !== undefined,
     /** In a subagent, the other subagents running; in a session, its running subagents. */
-    others: () => order().filter((id) => id !== sessionID() && running(id)).length,
+    others: () => {
+      const runs = running()
+      return order().filter((id) => id !== sessionID() && runs(id)).length
+    },
     step: (by: 1 | -1) => {
       const id = sessionID()
-      return id ? neighbour(order(), id, by, running) : undefined
+      return id ? neighbour(order(), id, by, running()) : undefined
     },
   }
 }
@@ -134,7 +141,9 @@ export function Dock(props: { context: Context; sessionID?: string }) {
   const subagents = createMemo(() => {
     if (!props.sessionID) return 0
     const id = props.sessionID
-    return data.session.family(id).filter((child) => child !== id && data.session.status(child) === "running").length
+    // A subagent waiting on its own background work is idle to the host but counts, as its row runs.
+    const runs = working(props.context.data, id)
+    return data.session.family(id).filter((child) => child !== id && runs(child)).length
   })
   const shells = createMemo(() => {
     if (!props.sessionID) return 0

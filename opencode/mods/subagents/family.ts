@@ -36,9 +36,10 @@ export type Session = {
 }
 
 /**
- * The messages a row reads: an assistant step with its parts, and the notice
- * a parent gets when a background subagent stops. Other messages are left
- * out.
+ * The messages a row reads: an assistant step with its parts, the notice a
+ * parent gets when a background subagent stops, and the notice a session
+ * gets when one of its background shell commands stops. Other messages are
+ * left out.
  */
 export type Message =
   | { readonly type: "assistant"; readonly agent?: string; readonly parts: ReadonlyArray<Part> }
@@ -51,6 +52,14 @@ export type Message =
       readonly at: number
       /** The notice's body: the subagent's answer, or why it failed. */
       readonly text: string
+    }
+  | {
+      readonly type: "shell"
+      /** The background shell that stopped, as its call's result named it. */
+      readonly shellID: string
+      /** As the host says it: `completed`, `error` or `cancelled`. */
+      readonly state: string
+      readonly at: number
     }
 
 /** A part of an assistant step: its words (text or reasoning), or a tool call. */
@@ -66,4 +75,11 @@ export type Call = {
   /** A failed call's error message. */
   readonly error?: string
   readonly completed?: number
+  /**
+   * A kernel call's record of the tools its cell called, in the order they
+   * started (mods/kernel/operations.ts). Each one's metadata is the record's
+   * brief of its result (an exit code, a subagent's session, a background
+   * shell's ID); none carries a time.
+   */
+  readonly calls?: ReadonlyArray<Call>
 }

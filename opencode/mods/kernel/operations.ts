@@ -3,7 +3,8 @@
 // (a helper defined in an earlier cell runs the commands), so the record is
 // the calls themselves, in the order they started: each one's tool, its input,
 // how it ended, the head of its output and the result metadata the transcript
-// reads (an exit code, edited files, a subagent's session).
+// reads (an exit code, edited files, a subagent's session, a background
+// shell's ID).
 //
 // The record is published while the call runs and kept as its result's
 // metadata, so it is bounded: at most `MAX_OPERATIONS` operations, each
@@ -36,7 +37,7 @@ export interface Operation {
   readonly output?: string
   /** Why it failed. */
   readonly error?: string
-  /** The result metadata the transcript reads: `exit`, `files` (patches cut), `sessionID`. */
+  /** The result metadata the transcript reads: `exit`, `files` (patches cut), `sessionID`, `shellID`. */
   readonly metadata?: Record<string, unknown>
 }
 
@@ -77,6 +78,8 @@ export const briefMetadata = (metadata: unknown): Record<string, unknown> | unde
   const brief: Record<string, unknown> = {}
   if (typeof metadata.exit === "number") brief.exit = metadata.exit
   if (typeof metadata.sessionID === "string") brief.sessionID = metadata.sessionID
+  // A shell command moved to the background names its shell, whose stop notice names it too.
+  if (typeof metadata.shellID === "string") brief.shellID = metadata.shellID
   if (Array.isArray(metadata.files))
     brief.files = metadata.files.slice(0, 20).flatMap((file) => {
       if (!isRecord(file)) return []
