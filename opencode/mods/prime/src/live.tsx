@@ -16,6 +16,19 @@ import { capped, moreLine, sidebarShown } from "./rows"
 
 type Context = Plugin.Context
 
+/**
+ * Which sessions of `sessionID`'s family work now: the host runs them, or
+ * their subagent row runs or is blocked. A subagent that ended its turn to
+ * wait on its own background work is idle to the host, yet still working.
+ */
+export function working(data: Context["data"], sessionID: string): (id: string) => boolean {
+  const family = read(data, sessionID)
+  const live = new Set(
+    subagents(family, family.root).flatMap((row) => (row.state === "running" || row.state === "blocked" ? [row.id] : [])),
+  )
+  return (id) => data.session.status(id) === "running" || live.has(id)
+}
+
 /** The rows for `sessionID`'s family; `child` when the route is one of the subagents, which is then marked. */
 export function SubagentRows(props: { context: Context; sessionID: string; child: boolean }) {
   const all = createMemo(() => {

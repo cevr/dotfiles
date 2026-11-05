@@ -3,6 +3,8 @@
 // runs one turn whose 4s shell call outlives the cache, so the second request
 // writes back the 48k prefix the first one cached. The turn ends on a row that
 // names the miss, its cost and its cause, and the sidebar sums the session.
+// Run again with the model's cache living an hour and the build agent asking
+// for 2s of its own, the same miss is an expiry by the agent's lifetime.
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -64,6 +66,31 @@ describe.skipIf(!fork)("the cache mod in a real TUI", () => {
       const sidebar = lines.findIndex((line) => line.trimEnd().endsWith("Cache 0% · missed $0.17"))
       expect(sidebar, text).toBeGreaterThan(-1)
       expect(fgAt(frame, sidebar, (lines[sidebar] ?? "").indexOf("Cache 0%"))).toBe(MUTED)
+    } finally {
+      rmSync(out, { recursive: true, force: true })
+    }
+  }, 150_000)
+
+  test("an agent's own 2s cache lifetime expires the prefix its model would keep an hour", async () => {
+    const out = mkdtempSync(join(tmpdir(), "cache-role-scenario-"))
+    try {
+      const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/cache.ts"], {
+        cwd: join(import.meta.dir, ".."),
+        env: { ...process.env, CACHE_ROLE_TTL: "2s", SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+      const timeout = join(out, "cache.timeout.txt")
+      if (code !== 0)
+        throw new Error(`the cache scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
+      const text = readFileSync(join(out, "cache.txt"), "utf8")
+      const lines = text.split("\n")
+      // By the model's hour the miss would read "prefix changed"; by the agent's 2s it expired.
+      const rows = lines.filter((line) => line.includes("cache miss"))
+      expect(rows, text).toHaveLength(1)
+      expect(rows[0], text).toMatch(/^ {2}◌ cache miss · 48k tokens · \$0\.17 · expired during a [45]s shell call(?: {2,}.*)?$/)
+      expect(lines.some((line) => line.trimEnd().endsWith("Cache 0% · missed $0.17")), text).toBe(true)
     } finally {
       rmSync(out, { recursive: true, force: true })
     }

@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test"
 import { fold } from "@dotfiles/decider/decider"
 import { AccountPool, LoginsListed, ReadingTaken, RequestPlaced, restored, StepRecorded, type Event } from "./account-pool.ts"
-import { DEFAULT_RULES, held, rank, sessionAccount, shouldFailOver, status, WINDOW_MS } from "./accounts.ts"
+import { cacheLives, DEFAULT_RULES, held, rank, sessionAccount, shouldFailOver, status, ttlMs, WINDOW_MS } from "./accounts.ts"
 
 const HOUR = 3_600_000
 const T0 = 1_800_000_000_000
@@ -31,6 +31,35 @@ describe("an account", () => {
 
   test("a new run ranks the accounts with the held one last", () => {
     expect(rank(pool(holdOn("a", T0 + HOUR)), "s1", T0, DEFAULT_RULES)).toEqual(["b", "a"])
+  })
+})
+
+describe("a session's cache", () => {
+  const MINUTE = 60_000
+  const hourly = { cacheLifeMs: HOUR }
+
+  test("lives its agent's own lifetime when its mark carries one, else the provider's", () => {
+    expect(cacheLives(hourly, { credentialID: "a", at: T0, lifeMs: 5 * MINUTE }, T0 + 5 * MINUTE - 1)).toBe(true)
+    expect(cacheLives(hourly, { credentialID: "a", at: T0, lifeMs: 5 * MINUTE }, T0 + 5 * MINUTE)).toBe(false)
+    expect(cacheLives(hourly, { credentialID: "a", at: T0 }, T0 + HOUR - 1)).toBe(true)
+  })
+
+  test("keeps the role's lifetime through a priced step, which moves only its time", () => {
+    const decider = AccountPool(hourly)
+    const role = fold(decider, [
+      LoginsListed.make({ credentials: ["a", "b"] }),
+      RequestPlaced.make({ sessionID: "s1", kind: "primary", credentialID: "a", at: T0, cacheLifeMs: 5 * MINUTE }),
+      StepRecorded.make({ step: { at: T0 + MINUTE, sessionID: "s1", credentialID: "a", cost: 1 }, cacheLifeMs: 5 * MINUTE }),
+    ])
+    expect(role.recent["s1"]).toEqual({ credentialID: "a", at: T0 + MINUTE, lifeMs: 5 * MINUTE })
+    // A new run stays on a while the role's cache lives, against a's load; then load places it on b.
+    expect(rank(role, "s1", T0 + 6 * MINUTE - 1, hourly)[0]).toBe("a")
+    expect(rank(role, "s1", T0 + 6 * MINUTE, hourly)[0]).toBe("b")
+  })
+
+  test("an agent's cacheTTL reads in models.dev's duration format; anything else is none", () => {
+    expect([ttlMs("5m"), ttlMs("1h"), ttlMs("30s"), ttlMs("250ms")]).toEqual([5 * MINUTE, HOUR, 30_000, 250])
+    expect([ttlMs(undefined), ttlMs(5), ttlMs("5 minutes"), ttlMs("0m")]).toEqual([undefined, undefined, undefined, undefined])
   })
 })
 

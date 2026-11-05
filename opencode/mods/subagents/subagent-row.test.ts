@@ -1,7 +1,7 @@
 // Who works on what, how it stands, what it says, and which rows show.
 import { describe, expect, test } from "bun:test"
 import type { Call, Message, Part, Session } from "./family.ts"
-import { LINGER_MS, rows, subagents, visible, type Row } from "./subagent-row.ts"
+import { LINGER_MS, rows, subagents, visible, waitingOn, type Row } from "./subagent-row.ts"
 
 const call = (tool: string, input: Record<string, unknown>, over: Partial<Call> = {}): Call => ({
   type: "call",
@@ -163,5 +163,57 @@ describe("which rows show", () => {
       ["b", "done", undefined],
     ])
     expect(rows(world, "root", 10 + LINGER_MS).map((value) => value.id)).toEqual(["a"])
+  })
+})
+
+describe("a subagent waiting on its own background work", () => {
+  const one = (child: Partial<Session> = {}, root: Partial<Session> = {}) =>
+    subagents(family(session("root", root), session("a", { parentID: "root", agent: "worker", time: { created: 1, busy: 100 }, ...child })), "root")[0]
+  const backgrounded = (command: string, shellID: string) =>
+    call("shell", { command, background: true }, { metadata: { status: "running", shellID } })
+  const shellNotice = (shellID: string, at: number): Message => ({ type: "shell", shellID, state: "completed", at })
+  const kernel = (...calls: ReadonlyArray<Call>) => call("kernel", { code: "// run it" }, { calls })
+
+  test("a background shell with no stop notice yet keeps it running, saying what it waits on, even after its first turn succeeded", () => {
+    const waiting = one({ outcome: "succeeded", time: { created: 1, busy: 100, idle: 200 }, messages: [step([backgrounded("sleep 2 && echo ok", "sh_1")]), step([words("Waiting.")])] })
+    expect(waiting).toMatchObject({ state: "running", update: "waiting on sleep 2 && echo ok", since: 100 })
+    expect(waiting).not.toHaveProperty("ended")
+    expect(visible(waiting ? [waiting] : [], 1_000).map((row) => row.elapsed)).toEqual([900])
+  })
+
+  test("its shell's stop notice ends the wait; then it ends as before", () => {
+    expect(
+      one({ outcome: "succeeded", time: { created: 1, idle: 900 }, messages: [step([backgrounded("sleep 2", "sh_1")]), shellNotice("sh_1", 800), step([words("Done.")])] }),
+    ).toMatchObject({ state: "done", ended: 900 })
+  })
+
+  test("a shell a kernel cell moved to the background counts the same, by the record's shell ID", () => {
+    expect(one({ messages: [step([kernel(call("shell", { command: "bun test" }, { metadata: { shellID: "sh_2" } }))])] })).toMatchObject({
+      state: "running",
+      update: "waiting on bun test",
+    })
+    expect(
+      one({ outcome: "succeeded", messages: [step([kernel(call("shell", { command: "bun test" }, { metadata: { shellID: "sh_2" } }))]), shellNotice("sh_2", 5)] }),
+    ).toMatchObject({ state: "done" })
+  })
+
+  test("a foreground shell, a failed one and one still running are no wait", () => {
+    expect(waitingOn([step([call("shell", { command: "ls" }, { metadata: { status: "completed", exit: 0 } })])])).toEqual([])
+    expect(waitingOn([step([call("shell", { command: "ls" }, { status: "error", metadata: { shellID: "sh_3" } })])])).toEqual([])
+    expect(waitingOn([step([call("shell", { command: "ls" }, { status: "running", metadata: { shellID: "sh_4" } })])])).toEqual([])
+  })
+
+  test("its own background subagent waits until that subagent's stop notice; several waits read as the first and a count", () => {
+    const messages = [step([launch("g", { description: "Check the parser" }), backgrounded("bun test", "sh_5")])]
+    expect(waitingOn(messages)).toEqual(["Check the parser", "bun test"])
+    expect(one({ messages })).toMatchObject({ state: "running", update: "waiting on Check the parser +1" })
+    expect(waitingOn([...messages, notice("g", "completed", 9), shellNotice("sh_5", 9)])).toEqual([])
+  })
+
+  test("the parent still waiting on it keeps it running: a foreground call still running, a background one with no stop notice", () => {
+    const foreground = { messages: [step([call("subagent", { description: "x" }, { status: "running", metadata: { sessionID: "a" } })])] }
+    expect(one({ outcome: "succeeded" }, foreground)).toMatchObject({ state: "running", update: "waiting" })
+    expect(one({ outcome: "succeeded" }, { messages: [step([launch("a", {})])] })).toMatchObject({ state: "running", update: "waiting" })
+    expect(one({ outcome: "succeeded" }, { messages: [step([launch("a", {})]), notice("a", "completed", 50)] })).toMatchObject({ state: "done", ended: 50 })
   })
 })

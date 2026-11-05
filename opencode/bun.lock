@@ -64,6 +64,13 @@
         "oxc-parser": "0.157.0",
       },
     },
+    "cmd/mail": {
+      "name": "@dotfiles/opencode-cmd-mail",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-mail": "workspace:*",
+      },
+    },
     "cmd/orchestrate": {
       "name": "@dotfiles/opencode-cmd-orchestrate",
       "version": "0.0.0",
@@ -104,6 +111,9 @@
     "mods/cache": {
       "name": "@dotfiles/opencode-cache",
       "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-pool": "workspace:*",
+      },
     },
     "mods/git": {
       "name": "@dotfiles/opencode-git",
@@ -136,6 +146,10 @@
       "optionalPeers": [
         "oxc-parser",
       ],
+    },
+    "mods/mail": {
+      "name": "@dotfiles/opencode-mail",
+      "version": "0.0.0",
     },
     "mods/orchestrate": {
       "name": "@dotfiles/opencode-orchestrate",
@@ -198,6 +212,8 @@
 
     "@dotfiles/opencode-cmd-kernel": ["@dotfiles/opencode-cmd-kernel@workspace:cmd/kernel"],
 
+    "@dotfiles/opencode-cmd-mail": ["@dotfiles/opencode-cmd-mail@workspace:cmd/mail"],
+
     "@dotfiles/opencode-cmd-orchestrate": ["@dotfiles/opencode-cmd-orchestrate@workspace:cmd/orchestrate"],
 
     "@dotfiles/opencode-cmd-pool": ["@dotfiles/opencode-cmd-pool@workspace:cmd/pool"],
@@ -215,6 +231,8 @@
     "@dotfiles/opencode-idle-compact": ["@dotfiles/opencode-idle-compact@workspace:mods/idle-compact"],
 
     "@dotfiles/opencode-kernel": ["@dotfiles/opencode-kernel@workspace:mods/kernel"],
+
+    "@dotfiles/opencode-mail": ["@dotfiles/opencode-mail@workspace:mods/mail"],
 
     "@dotfiles/opencode-orchestrate": ["@dotfiles/opencode-orchestrate@workspace:mods/orchestrate"],
 

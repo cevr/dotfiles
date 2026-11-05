@@ -1,0 +1,13 @@
+{
+  "name": "@dotfiles/opencode-cmd-mail",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Session mail's OpenCode server plugin, the sessions and message tools: the composition root of @dotfiles/opencode-mail.",
+  "exports": {
+    "./server": "./server.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-mail": "workspace:*"
+  }
+}

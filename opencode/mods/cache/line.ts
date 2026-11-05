@@ -39,6 +39,10 @@ export const causeText = (cause: Cause): string => {
       return "after a model switch"
     case "PrefixChanged":
       return "prefix changed inside the cache lifetime"
+    case "Compaction":
+      return cause.request ? "the compaction request missed the cached prefix" : "a compaction rewrote the prefix"
+    case "LoginMoved":
+      return "the pool moved it to another login"
     case "Response":
       return `expired during a ${formatAge(cause.ms)} response`
     case "Tool":

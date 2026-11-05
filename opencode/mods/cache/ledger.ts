@@ -3,12 +3,11 @@
 import { scan, resolve, type Miss, type Span, type Timeline } from "./miss.ts"
 import { missCostUsd, rateFor, writeRate, type Rate } from "./price.ts"
 import { missText, showsRow } from "./line.ts"
-import type { CacheFamily } from "./ttl.ts"
+import { agentLifetimeMs, type CacheFamily, type ModelLifetime } from "./ttl.ts"
 
 /** What the catalog says of one model: its cache family and lifetime, and its prices. */
-export interface ModelTerms {
+export interface ModelTerms extends ModelLifetime {
   readonly family?: CacheFamily
-  readonly lifetimeMs?: number
   readonly rates: ReadonlyArray<Rate>
 }
 
@@ -23,22 +22,27 @@ export interface Judged {
 /**
  * A session's misses, each judged by the terms of the model its step ran on
  * (`terms` answers by `providerID/modelID`; a model it does not know has no
- * lifetime and no price, so only a model switch counts and costs nothing).
+ * lifetime and no price, so only a model switch counts and costs nothing)
+ * and the cache lifetime the previous request's agent asked for (`agentTtl`
+ * answers an agent's own `cacheTTL` by its id: a 5-minute role idle for 6
+ * minutes expired, though its provider keeps an hour).
  */
 export const judge = (
   timeline: Timeline,
   waits: ReadonlyArray<Span>,
   terms: (model: string) => ModelTerms | undefined,
+  agentTtl: (agent: string) => string | undefined = () => undefined,
 ): ReadonlyArray<Judged> =>
   scan(timeline, waits).flatMap((scanned) => {
     const model = terms(scanned.model)
-    const miss = resolve(scanned, model?.lifetimeMs)
+    const lifetime = agentLifetimeMs(model, scanned.agent === undefined ? undefined : agentTtl(scanned.agent))
+    const miss = resolve(scanned, lifetime)
     if (miss === undefined) return []
     const rate = rateFor(model?.rates ?? [], miss.usage.promptTokens)
     const costUsd =
       rate === undefined
         ? 0
-        : missCostUsd({ missedTokens: miss.missedTokens, cacheWriteTokens: miss.usage.cacheWriteTokens }, rate, writeRate(rate, model?.family, model?.lifetimeMs))
+        : missCostUsd({ missedTokens: miss.missedTokens, cacheWriteTokens: miss.usage.cacheWriteTokens }, rate, writeRate(rate, model?.family, lifetime))
     return [showsRow(miss, costUsd) ? { miss, costUsd, row: missText(miss, costUsd) } : { miss, costUsd }]
   })
 

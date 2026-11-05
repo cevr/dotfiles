@@ -1,7 +1,8 @@
 // The pool's own RPC, which other mods read: orchestrate asks `pace` before a
 // new agent starts, the status pane draws `status`, and the status sidebar
 // draws `session`, the account one session is on, and `alerts`, the logins
-// that need a sign-in and a token endpoint that keeps failing. The definition is the
+// that need a sign-in and a token endpoint that keeps failing; the cache mod
+// reads `logins`, the login each of a session's steps went out on. The definition is the
 // wire contract, kept byte for byte; the schemas below are the shapes its
 // methods answer with. No answer carries a secret.
 import { Schema } from "effect"
@@ -22,6 +23,10 @@ export const POOL_STATUS = {
       output: { type: "object" },
     },
     alerts: { input: { type: "object" }, output: { type: "object" } },
+    logins: {
+      input: { type: "object", properties: { sessionID: { type: "string" } }, required: ["sessionID"] },
+      output: { type: "object" },
+    },
   },
   events: {},
 } as const
@@ -140,3 +145,26 @@ export const Alerts = Schema.Struct({
   outages: Schema.Array(RefreshOutage),
 })
 export type Alerts = typeof Alerts.Type
+
+/** The logins method's question: the login each step of `sessionID` went out on. */
+export const LoginsQuery = Schema.Struct({ sessionID: Schema.String })
+export type LoginsQuery = typeof LoginsQuery.Type
+
+/**
+ * One priced step of a session: the assistant message it wrote and the login
+ * (credential id, never a token) its request went out on, in the pool `pool`.
+ */
+export const StepLogin = Schema.Struct({
+  pool: Schema.String,
+  messageID: Schema.String,
+  credentialID: Schema.String,
+})
+export type StepLogin = typeof StepLogin.Type
+
+/**
+ * The logins method's answer: each step of the session the pools recorded in
+ * their window, oldest first. A step from before the pool named its message is
+ * left out.
+ */
+export const SessionLogins = Schema.Struct({ steps: Schema.Array(StepLogin) })
+export type SessionLogins = typeof SessionLogins.Type

@@ -19,7 +19,7 @@ import type { Pace } from "@dotfiles/opencode-pool/pace"
 import type { QuotaReading } from "@dotfiles/opencode-pool/quota"
 import type { PublishedReading } from "@dotfiles/opencode-pool/service"
 import { GentSource } from "@dotfiles/opencode-pool/gent/store"
-import type { Alerts, PoolsStatus, SessionAnswer } from "@dotfiles/opencode-pool/status"
+import type { Alerts, PoolsStatus, SessionAnswer, SessionLogins } from "@dotfiles/opencode-pool/status"
 import Pool, { CREDENTIAL_HEADER, live, make } from "./server.ts"
 
 const HOUR = 3_600_000
@@ -40,7 +40,7 @@ const model = { providerID: "anthropic", id: "claude-haiku-4-5" }
 
 interface SessionEvent {
   readonly type: "session.step.ended" | "session.idle"
-  readonly data: { readonly sessionID: string; readonly cost?: number }
+  readonly data: { readonly sessionID: string; readonly cost?: number; readonly assistantMessageID?: string }
 }
 
 /**
@@ -54,12 +54,15 @@ interface World {
   readonly integration: LoginsTest.Integration
   /** The plugin's storage, by key. */
   readonly storage: Map<string, Schema.Json>
+  /** Each agent's own prompt-cache lifetime (`request.settings.cacheTTL`), by agent id; an agent absent here is unknown to the host. */
+  readonly agents: Map<string, string | undefined>
 }
 
 const world = (): World => ({
   readings: new Map(),
   integration: { connections: new Map([[ANTHROPIC, CONNECTIONS]]), marks: [] },
   storage: new Map(),
+  agents: new Map([["build", undefined]]),
 })
 
 /** The outside systems as test layers over `state`. */
@@ -114,6 +117,13 @@ const start = (
           }),
       },
       event: { subscribe: () => Stream.fromQueue(events) },
+      agent: {
+        get: ({ agentID }: { readonly agentID: string }) => {
+          if (!state.agents.has(agentID)) return Effect.fail(new Error(`Agent not found: ${agentID}`))
+          const cacheTTL = state.agents.get(agentID)
+          return Effect.succeed({ location: {}, data: { id: agentID, request: { settings: cacheTTL === undefined ? {} : { cacheTTL } } } })
+        },
+      },
       integration: {
         get: ({ integrationID }: { readonly integrationID: PoolId }) => {
           const connections = state.integration.connections.get(integrationID)
@@ -144,9 +154,9 @@ const start = (
     yield* make(externals === "test" ? testLayers(state, published) : externals).effect(host)
 
     /** One model request of a session: the login the pool names on it. */
-    const request = Effect.fn(function* (sessionID = "ses_1", providerID = "anthropic", kind = "primary") {
+    const request = Effect.fn(function* (sessionID = "ses_1", providerID = "anthropic", kind = "primary", agent = "build") {
       const headers: Record<string, string> = {}
-      yield* (yield* registered(hooks, "model.request"))({ sessionID, agent: "build", model: { ...model, providerID }, kind, headers })
+      yield* (yield* registered(hooks, "model.request"))({ sessionID, agent, model: { ...model, providerID }, kind, headers })
       return headers[CREDENTIAL_HEADER]
     })
     const respond = Effect.fn(function* (status: number, sessionID = "ses_1") {
@@ -184,7 +194,10 @@ const start = (
     const alerts = Effect.gen(function* () {
       return (yield* (yield* method("alerts"))({})) as Alerts
     })
-    return { request, respond, retry, idle, pace, status, session, alerts, emit, publish, transforms, quotaIDs, statuses, rpc }
+    const logins = Effect.fn(function* (query: unknown) {
+      return (yield* (yield* method("logins"))(query)) as SessionLogins
+    })
+    return { request, respond, retry, idle, pace, status, session, alerts, logins, emit, publish, transforms, quotaIDs, statuses, rpc }
   })
 
 /** Let the plugin's background fibers take in what was just offered: a real moment, on the test clock too. */
@@ -389,6 +402,66 @@ describe("a session's cache", () => {
       }),
     ))
 
+  /** The provider gives an hour; the implementor role keeps its own five minutes, as orchestrate sets it. */
+  const roles = () => {
+    const state = world()
+    state.agents.set("implementor", "5m")
+    return state
+  }
+
+  test("of a role that keeps its own 5-minute lifetime lets the session go after 5 minutes, though the provider's is an hour", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const plugin = yield* start({ sweepMinutes: 0, cacheLifeMs: HOUR }, roles())
+        expect(yield* plugin.request("s1", "anthropic", "primary", "implementor")).toBe("cred-a")
+        expect(yield* plugin.request("s2")).toBe("cred-b")
+        yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "s1", cost: 5 } })
+        yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "s2", cost: 1 } })
+        yield* plugin.idle("s1")
+        yield* plugin.idle("s2")
+        // Inside its five minutes the role stays on its cache's login, against the load.
+        yield* TestClock.adjust(CACHE_LIFE_MS - 1)
+        expect(yield* plugin.request("s1", "anthropic", "primary", "implementor")).toBe("cred-a")
+        yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "s1", cost: 0 } })
+        yield* plugin.idle("s1")
+        // Its step kept the role's lifetime: five minutes after it, load places the session.
+        yield* TestClock.adjust(CACHE_LIFE_MS)
+        expect((yield* plugin.status).anthropic?.accounts.map((account) => account.live)).toEqual([0, 1])
+        expect(yield* plugin.request("s1", "anthropic", "primary", "implementor")).toBe("cred-b")
+      }),
+    ))
+
+  test("of a main session keeps the provider's hour, and an agent the host cannot name keeps it too", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const plugin = yield* start({ sweepMinutes: 0, cacheLifeMs: HOUR }, roles())
+        expect(yield* plugin.request("s1")).toBe("cred-a")
+        expect(yield* plugin.request("s2", "anthropic", "primary", "ghost")).toBe("cred-b")
+        yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "s1", cost: 5 } })
+        yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "s2", cost: 1 } })
+        yield* plugin.idle("s1")
+        yield* plugin.idle("s2")
+        yield* TestClock.adjust(HOUR - 1)
+        expect((yield* plugin.status).anthropic?.accounts.map((account) => account.live)).toEqual([1, 1])
+        expect(yield* plugin.request("s1")).toBe("cred-a")
+        expect(yield* plugin.request("s2", "anthropic", "primary", "ghost")).toBe("cred-b")
+      }),
+    ))
+
+  test("of a role survives a restart with its own lifetime: dropped once its five minutes pass", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = roles()
+        const first = yield* start({ sweepMinutes: 0, cacheLifeMs: HOUR }, state)
+        expect(yield* first.request("s1", "anthropic", "primary", "implementor")).toBe("cred-a")
+        yield* first.emit({ type: "session.step.ended", data: { sessionID: "s1", cost: 5 } })
+        expect(state.storage.get("anthropic/cache/s1")).toEqual({ credentialID: "cred-a", at: 0, lifeMs: CACHE_LIFE_MS })
+        yield* TestClock.adjust(CACHE_LIFE_MS)
+        yield* start({ sweepMinutes: 0, cacheLifeMs: HOUR }, state)
+        expect([...state.storage.keys()].filter((key) => key.includes("/cache/"))).toEqual([])
+      }),
+    ))
+
   test("that died before a restart is dropped from the ledger, and load places the session", () =>
     onTestClock(
       Effect.gen(function* () {
@@ -485,6 +558,39 @@ describe("the sweep", () => {
 })
 
 describe("the RPC", () => {
+  test("logins names the login each step of a session went out on, by its message, in the ledger too", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        const plugin = yield* start(undefined, state)
+        // The ledger keys a step by its millisecond: each step here ends in its own.
+        const step = (sessionID: string, assistantMessageID?: string) =>
+          plugin
+            .emit({ type: "session.step.ended", data: { sessionID, cost: 1, ...(assistantMessageID === undefined ? {} : { assistantMessageID }) } })
+            .pipe(Effect.andThen(TestClock.adjust("1 second")))
+        expect(yield* plugin.request("s1")).toBe("cred-a")
+        yield* step("s1", "msg_1")
+        // A 429 holds cred-a: the session's next request moves to cred-b.
+        yield* plugin.respond(429, "s1")
+        expect(yield* plugin.request("s1")).toBe("cred-b")
+        yield* step("s1", "msg_2")
+        // A step whose event names no message is left out; so is another session's.
+        yield* step("s1")
+        expect(yield* plugin.request("s2")).toBe("cred-b")
+        yield* step("s2", "msg_3")
+        expect(yield* plugin.logins({ sessionID: "s1" })).toEqual({
+          steps: [
+            { pool: "anthropic", messageID: "msg_1", credentialID: "cred-a" },
+            { pool: "anthropic", messageID: "msg_2", credentialID: "cred-b" },
+          ],
+        })
+        expect(yield* plugin.logins({ session: "s1" })).toEqual({ steps: [] })
+        // A new process reads the steps' messages back from the ledger.
+        const next = yield* start(undefined, state)
+        expect((yield* next.logins({ sessionID: "s1" })).steps.map((step) => step.messageID)).toEqual(["msg_1", "msg_2"])
+      }),
+    ))
+
   test("pace admits unpooled models, holds the measured pool and picks up newer quota readings", () =>
     scenario(
       Effect.gen(function* () {

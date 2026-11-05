@@ -10,7 +10,7 @@ const step = (
   id: string,
   at: number,
   usage: { prompt: number; read: number; write?: number } | undefined,
-  options: { model?: string; opener?: Opener; tools?: ReadonlyArray<Span>; endedAt?: number } = {},
+  options: { model?: string; opener?: Opener; tools?: ReadonlyArray<Span>; endedAt?: number; agent?: string; login?: string; compaction?: true } = {},
 ): Step => ({
   type: "step",
   id,
@@ -21,6 +21,9 @@ const step = (
   tools: options.tools ?? [],
   opener: options.opener ?? PROMPT,
   closes: false,
+  ...(options.agent === undefined ? {} : { agent: options.agent }),
+  ...(options.login === undefined ? {} : { login: options.login }),
+  ...(options.compaction === undefined ? {} : { compaction: options.compaction }),
 })
 
 /** The cause of the one miss `timeline` has, by a lifetime of `lifetime`. */
@@ -47,8 +50,24 @@ describe("scan", () => {
     expect(scan([step("a", 0, { prompt: 40_000, read: 0 }), step("b", 1_000, { prompt: 40_000, read: 0 })])).toEqual([])
   })
 
-  test("a step after a compaction is new content, not a re-bill", () => {
-    expect(scan([step("a", 0, { prompt: 40_000, read: 0, write: 40_000 }), { type: "compaction" }, step("b", 1_000, { prompt: 8_000, read: 0, write: 8_000 })])).toEqual([])
+  test("the first step to report after a compaction is marked: its prefix is the summary", () => {
+    const found = scan([step("a", 0, { prompt: 40_000, read: 0, write: 40_000 }), { type: "compaction" }, step("b", 1_000, { prompt: 8_000, read: 0, write: 8_000 })])
+    expect(found.map((miss) => [miss.stepID, miss.missedTokens, miss.compaction])).toEqual([["b", 8_000, "after"]])
+  })
+
+  test("a compaction's summary request is a request: the step after it times from it and reads its cache", () => {
+    const found = scan([
+      step("a", 0, { prompt: 40_000, read: 0, write: 40_000 }, { agent: "build" }),
+      step("summary", MINUTE, { prompt: 41_000, read: 40_000, write: 1_000 }, { compaction: true }),
+      { type: "compaction" },
+      step("b", 2 * MINUTE, { prompt: 6_000, read: 0, write: 6_000 }, { agent: "build" }),
+    ])
+    expect(found.map((miss) => [miss.stepID, miss.sinceRefreshMs, miss.compaction])).toEqual([["b", MINUTE, "after"]])
+  })
+
+  test("a miss names the agent of the request it is timed from", () => {
+    const [miss] = scan([step("a", 0, { prompt: 40_000, read: 0, write: 40_000 }, { agent: "worker" }), step("b", MINUTE, { prompt: 40_000, read: 0, write: 40_000 }, { agent: "build" })])
+    expect(miss?.agent).toBe("worker")
   })
 
   test("a step with no usage still refreshed the cache: the lifetime runs from its start", () => {
@@ -128,5 +147,49 @@ describe("causes", () => {
       step("b", 9 * MINUTE, { prompt: 41_000, read: 0, write: 41_000 }, { opener: { id: "msg_next", kind: "prompt" } }),
     ]
     expect(causeOf(timeline)).toEqual({ _tag: "Idle", ms: 9 * MINUTE })
+  })
+
+  test("inside the lifetime, the step after a compaction re-read the new summary, not a changed prefix", () => {
+    const timeline: Timeline = [step("a", 0, { prompt: 40_000, read: 0, write: 40_000 }), { type: "compaction" }, step("b", MINUTE, { prompt: 8_000, read: 0, write: 8_000 })]
+    expect(causeOf(timeline)).toEqual({ _tag: "Compaction", request: false })
+    // Past the lifetime the lapse says why.
+    expect(causeOf(timeline, 30_000)).toEqual({ _tag: "Paused", ms: MINUTE })
+  })
+
+  test("inside the lifetime, a compaction's summary request that missed the cached conversation", () => {
+    const timeline: Timeline = [
+      step("a", 0, { prompt: 40_000, read: 0, write: 40_000 }),
+      step("summary", MINUTE, { prompt: 41_000, read: 0, write: 41_000 }, { compaction: true }),
+      { type: "compaction" },
+      step("b", 2 * MINUTE, { prompt: 6_000, read: 0, write: 6_000 }),
+    ]
+    expect(scan(timeline).map((miss) => [miss.stepID, resolve(miss, FIVE_MINUTES)?.cause])).toEqual([
+      ["summary", { _tag: "Compaction", request: true }],
+      ["b", { _tag: "Compaction", request: false }],
+    ])
+  })
+
+  test("inside the lifetime, a step the pool sent on another login than the cached one", () => {
+    const timeline = [
+      step("a", 0, { prompt: 40_000, read: 0, write: 40_000 }, { login: "cred_1" }),
+      step("b", MINUTE, { prompt: 40_000, read: 0, write: 40_000 }, { login: "cred_2" }),
+    ]
+    expect(causeOf(timeline)).toEqual({ _tag: "LoginMoved" })
+    // The login moved across a compaction: the move is the cause named.
+    expect(causeOf([timeline[0] ?? expect.unreachable(), { type: "compaction" }, timeline[1] ?? expect.unreachable()])).toEqual({ _tag: "LoginMoved" })
+    // Past the lifetime the cache was gone on either login: the lapse says why.
+    expect(causeOf(timeline, 30_000)).toEqual({ _tag: "Paused", ms: MINUTE })
+    // A step whose login the pool did not record is no evidence of a move.
+    expect(causeOf([step("a", 0, { prompt: 40_000, read: 0, write: 40_000 }, { login: "cred_1" }), step("b", MINUTE, { prompt: 40_000, read: 0, write: 40_000 })])).toEqual({
+      _tag: "PrefixChanged",
+    })
+  })
+
+  test("a model switch outranks a login move", () => {
+    const timeline = [
+      step("a", 0, { prompt: 40_000, read: 0, write: 40_000 }, { login: "cred_1" }),
+      step("b", MINUTE, { prompt: 40_000, read: 0, write: 40_000 }, { login: "cred_2", model: "anthropic/claude-opus-4-5" }),
+    ]
+    expect(causeOf(timeline)).toEqual({ _tag: "ModelSwitch" })
   })
 })
