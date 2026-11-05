@@ -454,26 +454,38 @@ interface StoreState {
 /** Shared by every setup in the process, whichever copy of this module it loaded. */
 const STATES = Symbol.for("dotfiles-opencode.pool.gent-stores")
 
+const freshState = (): StoreState => ({
+  pending: new Map(),
+  rejected: new Map(),
+  refused: new Map(),
+  failingSince: undefined,
+  lastFailureAt: undefined,
+  failures: 0,
+  cause: undefined,
+  queue: Promise.resolve(),
+  pausedUntil: 0,
+  lastTradeAt: -Infinity,
+})
+
+/**
+ * The store's state in this process. It outlives a hot reload, so a state an
+ * older copy of this module made may lack fields this copy added: those are
+ * filled in, and what the older copy kept (its queue, pause, pending writes)
+ * stays.
+ */
 const stateOf = (dir: string): StoreState => {
-  const global = globalThis as unknown as Record<symbol, Map<string, StoreState> | undefined>
+  const global = globalThis as unknown as Record<symbol, Map<string, Partial<StoreState>> | undefined>
   const states = (global[STATES] ??= new Map())
-  let state = states.get(dir)
-  if (state === undefined) {
-    state = {
-      pending: new Map(),
-      rejected: new Map(),
-      refused: new Map(),
-      failingSince: undefined,
-      lastFailureAt: undefined,
-      failures: 0,
-      cause: undefined,
-      queue: Promise.resolve(),
-      pausedUntil: 0,
-      lastTradeAt: -Infinity,
-    }
+  const kept = states.get(dir)
+  if (kept === undefined) {
+    const state = freshState()
     states.set(dir, state)
+    return state
   }
-  return state
+  const defaults = freshState() as unknown as Record<string, unknown>
+  const target = kept as Record<string, unknown>
+  for (const key of Object.keys(defaults)) if (!(key in target)) target[key] = defaults[key]
+  return kept as StoreState
 }
 
 /**
