@@ -1,0 +1,10 @@
+{
+  "name": "@dotfiles/opencode-herdr",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenCode's state in herdr: idle, working or blocked for the session a TUI shows, its title and what runs now, over herdr's socket.",
+  "exports": {
+    "./*": "./*.ts"
+  }
+}

@@ -21,6 +21,13 @@
         "typescript": "^7",
       },
     },
+    "cmd/herdr": {
+      "name": "@dotfiles/opencode-cmd-herdr",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-herdr": "workspace:*",
+      },
+    },
     "cmd/kernel": {
       "name": "@dotfiles/opencode-cmd-kernel",
       "version": "0.0.0",
@@ -50,6 +57,10 @@
     },
     "mods/anthropic-auth": {
       "name": "@dotfiles/opencode-anthropic-auth",
+      "version": "0.0.0",
+    },
+    "mods/herdr": {
+      "name": "@dotfiles/opencode-herdr",
       "version": "0.0.0",
     },
     "mods/kernel": {
@@ -100,11 +111,15 @@
 
     "@dotfiles/opencode-anthropic-auth": ["@dotfiles/opencode-anthropic-auth@workspace:mods/anthropic-auth"],
 
+    "@dotfiles/opencode-cmd-herdr": ["@dotfiles/opencode-cmd-herdr@workspace:cmd/herdr"],
+
     "@dotfiles/opencode-cmd-kernel": ["@dotfiles/opencode-cmd-kernel@workspace:cmd/kernel"],
 
     "@dotfiles/opencode-cmd-orchestrate": ["@dotfiles/opencode-cmd-orchestrate@workspace:cmd/orchestrate"],
 
     "@dotfiles/opencode-cmd-pool": ["@dotfiles/opencode-cmd-pool@workspace:cmd/pool"],
+
+    "@dotfiles/opencode-herdr": ["@dotfiles/opencode-herdr@workspace:mods/herdr"],
 
     "@dotfiles/opencode-kernel": ["@dotfiles/opencode-kernel@workspace:mods/kernel"],
 

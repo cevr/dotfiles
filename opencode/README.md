@@ -154,6 +154,35 @@ It holds a view, values and externals:
 
 Status stores nothing. Each RPC call reads the call log and the runs again.
 
+## Herdr
+
+`cmd/herdr` is a TUI plugin that tells [herdr](https://herdr.dev) what the
+session on screen is doing, so its pane shows working, blocked and idle like
+Claude's. It ports gent's `@gent/herdr` reporter. It judges the current
+route's root session and every subagent it started:
+
+- `blocked` while a permission (first) or a question waits, with a short
+  message such as `Permission: shell bun test`;
+- `working` while the root or any subagent runs or holds queued input, so
+  kernel cells and background workers count;
+- `idle` otherwise, and `unknown` off a session (the home screen).
+
+Each state report uses source `dotfiles:opencode` and agent `opencode`. It
+carries the root session's id and `resume_argv`
+`["opencode", "-s", <root id>]`, so herdr reopens the session after a restart.
+A `pane.report_metadata` report sets the pane's title to the session's title.
+It also sets the working label to what runs now, such as
+`kernel: <first line of the cell>`, `shell: <command>` or `3 subagents`, in
+60 characters or fewer. That metadata has a 10-minute ttl and is refreshed
+every 5 minutes. Closing the TUI releases the pane.
+
+Reports go straight to `HERDR_SOCKET_PATH` from the TUI process, in the
+background. Each request has a 500 ms timeout and one retry. Only the newest
+state waits, and a failure is never shown. The plugin is inactive (no socket
+and no work) unless `HERDR_ENV=1` and both `HERDR_PANE_ID` and
+`HERDR_SOCKET_PATH` are set. The server runs as a background service outside
+any pane, so only the TUI can report.
+
 ## The code kernel
 
 `mods/kernel` gives the model a `kernel` tool, `{ code, reset? }`, ported

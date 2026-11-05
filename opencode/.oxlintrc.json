@@ -65,6 +65,22 @@
           }
         ]
       }
+    },
+    {
+      "files": ["mods/herdr/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "!@dotfiles/decider/*", "!./*.ts", "!bun:test"],
+                "message": "The herdr domain fence: the herdr reporter's domain files import effect, @dotfiles/decider/*, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }
