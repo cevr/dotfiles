@@ -33,6 +33,9 @@ export interface Config {
 }
 
 const STOPPED = "The kernel was stopped"
+/** Why a cell fails when the plugin stops under it: OpenCode reloaded its plugins (new plugin code landed) or shut down. */
+export const UNLOADED =
+  "The kernel stopped while this cell ran: OpenCode reloaded or shut down its plugins. Steps after the call in flight did not run; the next call starts from the stored bindings"
 
 /** A cell in flight: its output, and what settles it. */
 interface Running {
@@ -76,9 +79,11 @@ const end = (handle: Handle, reason: string): Effect.Effect<void> =>
     handle.timer = undefined
     for (const waiting of handle.waiting.values()) Deferred.doneUnsafe(waiting, Effect.fail(ended))
     handle.waiting.clear()
-    if (handle.running !== undefined) {
-      Deferred.doneUnsafe(handle.running.evaluated, Effect.fail(ended))
-      Deferred.doneUnsafe(handle.running.outputDone, Effect.fail(ended))
+    // Read once: settling `evaluated` can resume the cell, which clears `handle.running`.
+    const running = handle.running
+    if (running !== undefined) {
+      Deferred.doneUnsafe(running.evaluated, Effect.fail(ended))
+      Deferred.doneUnsafe(running.outputDone, Effect.fail(ended))
     }
     try {
       void Promise.resolve(handle.writer.end()).catch(() => undefined)
@@ -139,11 +144,13 @@ export const layer = (config: Config) =>
     Effect.gen(function* () {
       const root = yield* Effect.scope
       const handles = new Map<KernelSessionId, Handle>()
-      // Every worker dies with the plugin.
+      // Every worker dies with the plugin, and whatever waited on one fails: the
+      // watchers that would end a handle live in its scope, which closes first.
       yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          for (const handle of handles.values()) if (handle.ended === undefined) killGroup(handle.process)
+        Effect.suspend(() => {
+          const open = [...handles.values()]
           handles.clear()
+          return Effect.forEach(open, (handle) => kill(handle, UNLOADED), { discard: true })
         }),
       )
 

@@ -5,6 +5,10 @@
 // never shows. The calls keep the kernel call's part id: the host gives the
 // kernel call one slot, and its rows draw there.
 //
+// A cell that ended never shows a tool still running: an interrupted cell, or
+// one whose kernel stopped under it, leaves its record open, and the open call
+// takes the cell's outcome.
+//
 // The kernel call itself stays in the group where the operations cannot stand
 // for it: a cell that called no tool, a cell still computing with no tool
 // running, and a cell that failed with no failed tool.
@@ -59,6 +63,12 @@ function asPart(kernel: ToolPart, operation: Operation): ToolPart {
   return { ...kernel, name: operation.tool, state } as unknown as ToolPart
 }
 
+/** The kernel call's error message, for a tool it left running. */
+function kernelError(part: ToolPart): string {
+  const error = (part.state as { error?: { message?: unknown } }).error
+  return typeof error?.message === "string" && error.message ? error.message : "cancelled"
+}
+
 /**
  * A call as the group draws it: a kernel call as the calls its cell made
  * (`canonical` names their tools), any other call as itself.
@@ -66,10 +76,18 @@ function asPart(kernel: ToolPart, operation: Operation): ToolPart {
 export function expand(call: Call, canonical: (name: string) => string): Call[] {
   if (call.tool !== "kernel") return [call]
   const part = call.part
-  const recorded = operations(part)
+  const status = part.state.status
+  // A cell that ended (interrupted, or its kernel stopped under it) may never close its record:
+  // a tool it left running ends as the cell did.
+  const recorded = operations(part).map((operation): Operation =>
+    operation.status !== "running" || status === "running" || status === "streaming"
+      ? operation
+      : status === "error"
+        ? { ...operation, status: "error", error: kernelError(part) }
+        : { ...operation, status: "completed" },
+  )
   if (recorded.length === 0) return [call]
   const calls = recorded.map((operation) => ({ tool: canonical(operation.tool), part: asPart(part, operation) }))
-  const status = part.state.status
   const computing = (status === "running" || status === "streaming") && !recorded.some((operation) => operation.status === "running")
   const failedAlone = status === "error" && !recorded.some((operation) => operation.status === "error")
   return computing || failedAlone ? [...calls, call] : calls

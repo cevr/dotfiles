@@ -6,7 +6,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import type { BoxRenderable, RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createMemo, createSignal, For, Show, type Accessor } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Show, type Accessor } from "solid-js"
 import { useNow } from "./clock"
 import { useSessionLink } from "./link"
 import { columns, format, spinner, type Columns, type Kind } from "@dotfiles/opencode-subagents/line"
@@ -24,8 +24,12 @@ export function SubagentRows(props: { context: Context; sessionID: string; child
   })
   const hidden = createMemo(() => sidebarShown(props.context.ui, props.sessionID))
   // The clock ticks while a row runs, waits or lingers in view, and settles once none does.
-  const now = useNow(() => live())
+  // Whether rows are live depends on the clock, so the clock follows a signal set after both
+  // exist: Solid may run useNow's effect at once, before a later `const` is initialised.
+  const [active, setActive] = createSignal(false)
+  const now = useNow(active)
   const live = createMemo(() => !hidden() && visible(all(), now()).length > 0)
+  createEffect(() => setActive(live()))
   const current = () => (props.child ? { current: props.sessionID } : {})
   const shown = createMemo(() => capped(visible(all(), now(), current())))
   const cols = createMemo(() => columns(shown().rows))
