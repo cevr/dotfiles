@@ -1,4 +1,5 @@
-// Wakes: alarms and monitors a session sets on itself, and the notices a
+// Wakes: alarms and monitors a session sets on itself, the latches
+// orchestrate keeps for its held subagent starts (latch.ts), and the notices a
 // `notify` fire leaves for the owner. An entry is kept from the moment it is
 // set until its fire reached the session; the fire is recorded on the entry,
 // with the id of the message that carries it, before it is sent, so a fire
@@ -6,6 +7,7 @@
 // session reads it once. Also the wakes' RPC, which the TUI and the OS
 // backstop call.
 import { Schema } from "effect"
+import { Latch } from "./latch.ts"
 
 /** `wake`: the fire starts a turn. `notify`: it waits for the session's next turn and shows to the owner meanwhile. */
 export const Mode = Schema.Literals(["wake", "notify"])
@@ -66,8 +68,13 @@ export const Monitor = Schema.Struct({
 })
 export type Monitor = typeof Monitor.Type
 
-export const Entry = Schema.Union([Alarm, Monitor])
+export const Entry = Schema.Union([Alarm, Monitor, Latch])
 export type Entry = typeof Entry.Type
+
+/** An entry that fires a letter into its session: an alarm or a monitor. A latch opens instead. */
+export type Fired = Alarm | Monitor
+
+export const fires = (entry: Entry): entry is Fired => entry.kind !== "latch"
 
 /** A `notify` fire the session has not read yet: the owner's tray shows it until the session's next turn takes it. */
 export const Notice = Schema.Struct({
@@ -233,8 +240,8 @@ export const nextDueAt = (dueAt: number, everySeconds: number, now: number): num
   return dueAt + (missed + 1) * every
 }
 
-/** When an entry next needs its server: an alarm's due time, a monitor's deadline. */
-export const dueOf = (entry: Entry): number => (entry.kind === "alarm" ? entry.dueAt : entry.deadline)
+/** When an entry next needs its server: an alarm's due time, a monitor's deadline, the time a latch says it opens. */
+export const dueOf = (entry: Entry): number => (entry.kind === "alarm" ? entry.dueAt : entry.kind === "monitor" ? entry.deadline : entry.opensAt)
 
 /** What a check of a monitor's command found. */
 export interface Check {
@@ -268,6 +275,7 @@ const text = { type: "string" } as const
  * The wakes' RPC.
  * - `pending({ sessionIDs })`: what those sessions have pending, and their unread notices.
  * - `due({ id })`: the OS backstop's call when its job fires: fire the entry if it is due and not yet fired. `Due` says what happened.
+ * - `latch(LatchAsk)`: keep a held subagent start as a latch of the asking session, with its child session made unprompted. `Latched` says its id and child, or why not.
  * - `changed({ sessionID })`: published after every change to a session's wakes.
  */
 export const WAKES = {
@@ -275,6 +283,7 @@ export const WAKES = {
   methods: {
     pending: { input: object({ sessionIDs: { type: "array", items: text } }, ["sessionIDs"]), output: { type: "object" } },
     due: { input: object({ id: text }, ["id"]), output: { type: "object" } },
+    latch: { input: { type: "object" }, output: { type: "object" } },
   },
   events: {
     changed: { schema: { type: "object", properties: { sessionID: text }, required: ["sessionID"] } },
@@ -284,14 +293,17 @@ export const WAKES = {
 /** One pending entry as the tray reads it. */
 export const Shown = Schema.Struct({
   id: Schema.String,
-  kind: Schema.Literals(["alarm", "monitor"]),
+  kind: Schema.Literals(["alarm", "monitor", "latch"]),
   sessionID: Schema.String,
   mode: Mode,
+  /** A latch's: its subagent's description. */
   note: Schema.String,
-  /** An alarm's due time; a monitor's deadline. */
+  /** An alarm's due time; a monitor's deadline; when a latch opens. */
   dueAt: Schema.Number,
   everySeconds: Schema.optional(Schema.Number),
   command: Schema.optional(Schema.String),
+  /** A latch's child session. */
+  child: Schema.optional(Schema.String),
 })
 export type Shown = typeof Shown.Type
 
@@ -299,9 +311,10 @@ export const shownOf = (entry: Entry): Shown => ({
   id: entry.id,
   kind: entry.kind,
   sessionID: entry.sessionID,
-  mode: entry.mode,
-  note: entry.note,
+  mode: entry.kind === "latch" ? "wake" : entry.mode,
+  note: entry.kind === "latch" ? entry.subagent.description : entry.note,
   dueAt: dueOf(entry),
+  ...(entry.kind === "latch" ? { child: entry.child } : {}),
   ...(entry.kind === "alarm" && entry.everySeconds !== undefined ? { everySeconds: entry.everySeconds } : {}),
   ...(entry.kind === "monitor" ? { command: entry.command } : {}),
 })

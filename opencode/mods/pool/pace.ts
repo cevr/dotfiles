@@ -3,7 +3,8 @@
 // cost/agent estimates exclude OpenCode. Here 99% of the weekly allowance is
 // spent evenly, with 5 percentage points of leeway. No tokens or USD are
 // mistaken for provider quota. This is less predictive than the shared queue.
-// A waiter wakes at retryAt and the tool rechecks; it never grants a stale slot.
+// A held start latches until retryAt (orchestrate's latch, a wake of its
+// parent's), and is decided again then; nothing grants a stale slot.
 //
 // A reading lags the agents just admitted, on this host and on the others of
 // the fleet (fleet.ts): each start that has not settled yet is charged a fixed

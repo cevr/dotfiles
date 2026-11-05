@@ -20,10 +20,17 @@
 //   makes one session; its location is `{ directory }` (Location.PublicRef).
 // - no such session: the host fails with `Session.NotFoundError`
 //   (packages/core/src/session/error.ts:10).
-import type { Plugin } from "@opencode/plugin/effect"
+// - a latch's child: `Session.create` with `parentID`, `title`, `agent` and
+//   `model` makes the child the subagent tool would, and no turn starts until
+//   a prompt. A child takes its parent's metadata unless the creator gives its
+//   own, so the mark is written over the parent's. `session.update` replaces
+//   the metadata whole, so a mark is merged into what the session has; the TUI
+//   reads the change from `session.metadata.updated`.
+import { Model, type Plugin } from "@opencode/plugin/effect"
 import { Effect, Layer } from "effect"
+import { MARK_KEY, type Mark } from "../latch.ts"
 import type { Letter } from "../message.ts"
-import { Courier, DeliveryRefused, type Start } from "../service.ts"
+import { type Child, Courier, DeliveryRefused, type Start } from "../service.ts"
 
 /** A synthetic message, as the host's `session.synthetic` takes it. */
 export interface Synthetic {
@@ -39,9 +46,22 @@ export interface Synthetic {
 /** The host's sessions. Each fails with a `Session.NotFoundError` for a session it does not have. */
 export interface Host {
   readonly synthetic: (input: Synthetic) => Effect.Effect<unknown, unknown>
-  readonly create: (input: { readonly id: string; readonly directory: string }) => Effect.Effect<unknown, unknown>
+  readonly create: (input: Created) => Effect.Effect<unknown, unknown>
   readonly prompt: (input: { readonly sessionID: string; readonly id: string; readonly text: string }) => Effect.Effect<unknown, unknown>
-  readonly get: (sessionID: string) => Effect.Effect<{ readonly parentID?: string | undefined }, unknown>
+  readonly get: (sessionID: string) => Effect.Effect<{ readonly parentID?: string | undefined; readonly metadata?: Readonly<Record<string, unknown>> | undefined }, unknown>
+  readonly update: (input: { readonly sessionID: string; readonly metadata: Record<string, unknown> }) => Effect.Effect<unknown, unknown>
+}
+
+/** A session as the host's `session.create` takes it: a fire's fresh session, or a latch's child. */
+export interface Created {
+  readonly id: string
+  readonly directory: string
+  readonly parentID?: string
+  readonly title?: string
+  readonly agent?: string
+  /** `provider/id#variant`. */
+  readonly model?: string
+  readonly metadata?: Record<string, unknown>
 }
 
 export const messageOf = (cause: unknown): string => {
@@ -106,16 +126,57 @@ export const layer = (host: Host, mintMessage: () => string = minter("msg_"), mi
         Effect.map((session) => session.parentID),
         Effect.orElseSucceed(() => undefined),
       ),
+    child: (child: Child) =>
+      host.get(child.parentID).pipe(
+        Effect.mapError(refusal(child.parentID)),
+        Effect.flatMap((parent) =>
+          host
+            .create({
+              id: child.sessionID,
+              directory: child.directory,
+              parentID: child.parentID,
+              title: child.title,
+              agent: child.agent,
+              ...(child.model === undefined ? {} : { model: child.model }),
+              metadata: { ...parent.metadata, [MARK_KEY]: { ...child.mark } },
+            })
+            .pipe(Effect.mapError((cause) => new DeliveryRefused({ sessionID: child.sessionID, message: messageOf(cause), gone: false }))),
+        ),
+        Effect.asVoid,
+      ),
+    mark: (sessionID: string, mark: Mark | undefined) =>
+      host.get(sessionID).pipe(
+        Effect.flatMap((session) => {
+          const { [MARK_KEY]: _, ...rest } = session.metadata ?? {}
+          return host.update({ sessionID, metadata: mark === undefined ? rest : { ...rest, [MARK_KEY]: { ...mark } } })
+        }),
+        Effect.ignore,
+      ),
   })
 
 type Ids = Parameters<Plugin.Context["session"]["synthetic"]>[0]
-type Directory = NonNullable<NonNullable<Parameters<Plugin.Context["session"]["create"]>[0]>["location"]>["directory"]
+type Create = NonNullable<Parameters<Plugin.Context["session"]["create"]>[0]>
+type Directory = NonNullable<Create["location"]>["directory"]
+type Agent = NonNullable<Create["agent"]>
+type Metadata = NonNullable<Create["metadata"]>
 
 /** The host's sessions through the plugin context. */
 export const fromContext = (ctx: Plugin.Context) =>
   layer({
     synthetic: (input) => ctx.session.synthetic({ ...input, sessionID: input.sessionID as Ids["sessionID"], id: input.id as Ids["id"] }),
-    create: (input) => ctx.session.create({ id: input.id as Ids["sessionID"], location: { directory: input.directory as Directory } }),
+    create: (input) =>
+      Effect.try(() => (input.model === undefined ? undefined : Model.Ref.parse(input.model))).pipe(Effect.flatMap((model) =>
+        ctx.session.create({
+          id: input.id as Ids["sessionID"],
+          location: { directory: input.directory as Directory },
+          ...(input.parentID === undefined ? {} : { parentID: input.parentID as Ids["sessionID"] }),
+          ...(input.title === undefined ? {} : { title: input.title }),
+          ...(input.agent === undefined ? {} : { agent: input.agent as Agent }),
+          ...(model === undefined ? {} : { model }),
+          ...(input.metadata === undefined ? {} : { metadata: input.metadata as Metadata }),
+        }),
+      )),
     prompt: (input) => ctx.session.prompt({ sessionID: input.sessionID as Ids["sessionID"], id: input.id as Ids["id"], text: input.text }),
     get: (sessionID) => ctx.session.get({ sessionID: sessionID as Ids["sessionID"] }),
+    update: (input) => ctx.session.update({ sessionID: input.sessionID as Ids["sessionID"], metadata: input.metadata as Metadata }),
   })

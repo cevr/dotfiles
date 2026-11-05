@@ -7,10 +7,16 @@
 // are serialized; a delivery and a monitor's check run outside the lock. A
 // server arms only the entries of its own directory: plugins run once per
 // directory, the store is shared.
+//
+// A latch (latch.ts) is armed the same way, but at its time it asks the
+// opener to decide it again, and is settled by the answer: opened goes, held
+// waits for its new time, failed goes and tells the parent. Its child's mark
+// follows each change.
 import { Clock, Context, Duration, Effect, FiberMap, FiberSet, Layer, Random, Semaphore } from "effect"
 import { idOfTitle, minuteOf, type Schedule, scheduleOf, titleOf } from "./backstop.ts"
-import { alarmLetter, freshPrompt, type Letter, monitorLetter, type Outcome, unguarded } from "./message.ts"
-import { Backstop, Changes, Checks, Courier, type DeliveryRefused, WakeStore } from "./service.ts"
+import { type Latch, type LatchAsk, type Mark, markOf } from "./latch.ts"
+import { alarmLetter, freshPrompt, latchFailedLetter, type Letter, monitorLetter, type Outcome, unguarded } from "./message.ts"
+import { Backstop, Changes, Checks, Courier, type DeliveryRefused, Opener, WakeStore } from "./service.ts"
 import {
   type Alarm,
   type AlarmAsk,
@@ -18,7 +24,9 @@ import {
   type Check,
   type Due,
   type Entry,
+  type Fired as FiredEntry,
   type Firing,
+  fires,
   matched,
   type Monitor,
   type MonitorAsk,
@@ -43,6 +51,10 @@ export interface Config {
 export const MAX_PENDING = 20
 /** A refused fire goes again after this long. */
 export const RETRY_MS = 30_000
+/** An opener that could not be asked (its plugin still loading, say) is asked again after this long. */
+export const OPEN_RETRY_MS = 5_000
+/** A latch is asked again no sooner than this after an answer. */
+export const MIN_RECHECK_MS = 1_000
 /** A monitor's one check is stopped past this long. */
 export const CHECK_TIMEOUT_MS = 60_000
 /** The longest one sleep: a timer far ahead wakes daily to look again, since the runtime's timers stop at about 24.8 days. */
@@ -67,7 +79,9 @@ export class WakesModel extends Context.Service<
   {
     readonly wake: (sessionID: string, ask: AlarmAsk) => Effect.Effect<Placed<Alarm>, WakeRejected>
     readonly monitor: (sessionID: string, ask: MonitorAsk) => Effect.Effect<Placed<Monitor>, WakeRejected>
-    /** Cancel `id`, or every entry of the session when none is named; an unread notice named goes too. The ids that went. */
+    /** Keep a held subagent start as a latch of `ask.sessionID`, its child made unprompted: the latch's id and child. */
+    readonly latch: (ask: LatchAsk) => Effect.Effect<{ readonly id: string; readonly child: string }, WakeRejected>
+    /** Cancel `id`, or every entry of the session when none is named; an unread notice named goes too, and a latch's child reads cancelled. The ids that went. */
     readonly cancel: (sessionID: string, id?: string) => Effect.Effect<ReadonlyArray<string>, WakeRejected>
     readonly list: (sessionID: string) => Effect.Effect<Listed>
     /** What the trays of `sessionIDs` show. */
@@ -76,7 +90,7 @@ export class WakesModel extends Context.Service<
     readonly due: (id: string) => Effect.Effect<Due>
     /** Arm this directory's entries (each one past due fires now, and says how late) and drop the OS jobs whose entry is gone. */
     readonly start: Effect.Effect<void>
-    /** A deleted session's entries and notices go, and their OS jobs. */
+    /** A deleted session's entries and notices go, and their OS jobs; so does a latch whose child it was. */
     readonly forget: (sessionID: string) => Effect.Effect<void>
     /** The session read the notice delivered under `delivery`. */
     readonly read: (delivery: string) => Effect.Effect<void>
@@ -110,7 +124,7 @@ const advanced = (alarm: Alarm, dueAt: number): Alarm => ({
   ...(alarm.newSession === undefined ? {} : { newSession: alarm.newSession }),
 })
 
-const withFiring = (entry: Entry, firing: Firing): Entry => (entry.kind === "alarm" ? { ...entry, firing } : { ...entry, firing })
+const withFiring = (entry: FiredEntry, firing: Firing): FiredEntry => (entry.kind === "alarm" ? { ...entry, firing } : { ...entry, firing })
 
 const ID_SPACE = 36 ** 6
 
@@ -123,6 +137,7 @@ export const layer = (config: Config) =>
       const checks = yield* Checks
       const backstop = yield* Backstop
       const changes = yield* Changes
+      const opener = yield* Opener
       const lock = yield* Semaphore.make(1)
       const locked = lock.withPermits(1)
       const timers = yield* FiberMap.make<string>()
@@ -167,11 +182,11 @@ export const layer = (config: Config) =>
       // ── Firing ──
 
       /** Record the fire on the entry (once: a fire recorded before is kept), and a `notify`'s notice, under the lock; undefined when there is no entry or nothing to fire. */
-      const record = (id: string, make: (entry: Entry, now: number) => Made | undefined) =>
+      const record = (id: string, make: (entry: FiredEntry, now: number) => Made | undefined) =>
         locked(
           Effect.gen(function* () {
             const entry = yield* store.read(id)
-            if (entry === undefined) return undefined
+            if (entry === undefined || !fires(entry)) return undefined
             if (entry.firing !== undefined) return { entry, firing: entry.firing }
             const now = yield* Clock.currentTimeMillis
             const made = make(entry, now)
@@ -204,7 +219,7 @@ export const layer = (config: Config) =>
         )
 
       /** Send the recorded fire into its session, or start the session it names. */
-      const send = (entry: Entry, firing: Firing): Effect.Effect<void, DeliveryRefused> =>
+      const send = (entry: FiredEntry, firing: Firing): Effect.Effect<void, DeliveryRefused> =>
         entry.kind === "alarm" && entry.newSession !== undefined && firing.session !== undefined
           ? courier.start({ sessionID: firing.session, directory: entry.newSession.directory, delivery: firing.delivery, text: firing.text })
           : courier.deliver(entry.sessionID, firing.delivery, { text: firing.text, description: firing.description, metadata: firing.metadata }, entry.mode === "wake")
@@ -214,7 +229,7 @@ export const layer = (config: Config) =>
         locked(
           Effect.gen(function* () {
             const entry = yield* store.read(id)
-            if (entry === undefined || entry.firing?.delivery !== firing.delivery) return "done" as const
+            if (entry === undefined || !fires(entry) || entry.firing?.delivery !== firing.delivery) return "done" as const
             if (entry.kind === "alarm" && entry.everySeconds !== undefined) {
               const next = advanced(entry, nextDueAt(firing.tick, entry.everySeconds, firing.firedAt))
               yield* store.write(next)
@@ -243,7 +258,7 @@ export const layer = (config: Config) =>
         )
 
       /** Record, send and settle one fire. */
-      const fire = (id: string, make: (entry: Entry, now: number) => Made | undefined, defer: boolean): Effect.Effect<Fired> =>
+      const fire = (id: string, make: (entry: FiredEntry, now: number) => Made | undefined, defer: boolean): Effect.Effect<Fired> =>
         Effect.gen(function* () {
           const recorded = yield* record(id, make)
           if (recorded === undefined) return "gone" as const
@@ -260,7 +275,7 @@ export const layer = (config: Config) =>
           return yield* settle(id, recorded.firing, defer)
         })
 
-      const alarmFire = (entry: Entry, now: number): Made | undefined => {
+      const alarmFire = (entry: FiredEntry, now: number): Made | undefined => {
         if (entry.kind !== "alarm") return undefined
         const next = entry.everySeconds === undefined ? undefined : nextDueAt(entry.dueAt, entry.everySeconds, now)
         return {
@@ -272,7 +287,7 @@ export const layer = (config: Config) =>
 
       const monitorFire =
         (outcome: Outcome, count: number, last: Check | undefined) =>
-        (entry: Entry, now: number): Made | undefined =>
+        (entry: FiredEntry, now: number): Made | undefined =>
           entry.kind === "monitor" ? { letter: monitorLetter(entry, outcome, count, last, now), tick: outcome === "matched" ? now : entry.deadline } : undefined
 
       // ── Timers ──
@@ -325,7 +340,74 @@ export const layer = (config: Config) =>
           }
         })
 
-      const timerOf = (entry: Entry) => (entry.kind === "alarm" ? runAlarm(entry.id) : runMonitor(entry.id))
+      // ── Latches ──
+
+      /** What an answer did to a latch, under the lock: it went (`opened`, `failed`), it waits again (`held`), or it was gone already. */
+      type Settled =
+        | { readonly outcome: "opened"; readonly latch: Latch }
+        | { readonly outcome: "held"; readonly latch: Latch; readonly before: Latch }
+        | { readonly outcome: "failed"; readonly latch: Latch; readonly message: string }
+        | { readonly outcome: "gone" }
+
+      /** A latch's timer: wait for its time, ask the opener, and settle by the answer; held goes round again at its new time. */
+      const runLatch = (id: string): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          for (;;) {
+            const entry = yield* store.read(id)
+            if (entry?.kind !== "latch") return
+            yield* sleepUntil(entry.recheckAt)
+            const opened = yield* opener.open(entry).pipe(
+              Effect.catchTag("OpenerUnavailable", (unavailable) =>
+                Effect.logWarning("wake: the opener could not be asked; the latch asks again", { id, message: unavailable.message }).pipe(Effect.as(undefined)),
+              ),
+            )
+            if (opened === undefined) {
+              yield* Effect.sleep(Duration.millis(OPEN_RETRY_MS))
+              continue
+            }
+            const settled = yield* locked(
+              Effect.gen(function* (): Effect.fn.Return<Settled> {
+                const current = yield* store.read(id)
+                if (current?.kind !== "latch") return { outcome: "gone" }
+                if (opened.outcome === "held") {
+                  const now = yield* Clock.currentTimeMillis
+                  const next: Latch = {
+                    ...current,
+                    hold: opened.hold,
+                    reason: opened.reason,
+                    opensAt: opened.opensAt,
+                    recheckAt: Math.max(Math.min(opened.recheckAt, opened.opensAt), now + MIN_RECHECK_MS),
+                  }
+                  yield* store.write(next)
+                  return { outcome: "held", latch: next, before: current }
+                }
+                yield* store.remove(id)
+                yield* dropJob(id, opened.outcome === "opened")
+                return opened.outcome === "opened" ? { outcome: "opened", latch: current } : { outcome: "failed", latch: current, message: opened.message }
+              }),
+            )
+            if (settled.outcome === "gone") return
+            yield* changes.changed(settled.latch.sessionID)
+            if (settled.outcome === "held") {
+              yield* courier.mark(settled.latch.child, markOf(settled.latch))
+              if (minuteOf(settled.latch.opensAt) !== minuteOf(settled.before.opensAt)) yield* guard(settled.latch)
+              continue
+            }
+            if (settled.outcome === "opened") {
+              yield* courier.mark(settled.latch.child, undefined)
+              return
+            }
+            yield* courier.mark(settled.latch.child, { ...markOf(settled.latch), failed: settled.message })
+            const now = yield* Clock.currentTimeMillis
+            const delivery = yield* courier.newDelivery
+            yield* courier.deliver(settled.latch.sessionID, delivery, latchFailedLetter(settled.latch, settled.message, now), true).pipe(
+              Effect.catchTag("DeliveryRefused", (refused) => Effect.logWarning("wake: a latch's failure did not reach its parent", { id, message: refused.message })),
+            )
+            return
+          }
+        })
+
+      const timerOf = (entry: Entry) => (entry.kind === "alarm" ? runAlarm(entry.id) : entry.kind === "monitor" ? runMonitor(entry.id) : runLatch(entry.id))
       const arm = (entry: Entry, onlyIfMissing = false) => FiberMap.run(timers, entry.id, timerOf(entry), { onlyIfMissing }).pipe(Effect.asVoid)
       const disarm = (id: string) => FiberMap.remove(timers, id)
 
@@ -344,7 +426,7 @@ export const layer = (config: Config) =>
           if ((yield* courier.parentOf(sessionID)) !== undefined) return yield* new WakeRejected({ reason: SUBAGENT })
           const entry = yield* locked(
             Effect.gen(function* () {
-              const mine = ofSessions(yield* store.entries, [sessionID])
+              const mine = ofSessions(yield* store.entries, [sessionID]).filter(fires)
               if (mine.length >= MAX_PENDING)
                 return yield* new WakeRejected({ reason: `this session has ${mine.length} wakes pending, the most it takes; cancel one with wake_cancel first` })
               const made = make({ id: yield* newID, sessionID, directory: config.directory, now: yield* Clock.currentTimeMillis })
@@ -359,13 +441,14 @@ export const layer = (config: Config) =>
           return { entry, now: entry.setAt, ...(warning === undefined ? {} : { warning }) }
         })
 
-      /** Drop entries (their timers and jobs) and notices; the ids that went. */
-      const drop = (entries: ReadonlyArray<Entry>, notices: ReadonlyArray<Notice>) =>
+      /** Drop entries (their timers and jobs) and notices; the ids that went. With `cancelledAt`, a latch's child reads cancelled. */
+      const drop = (entries: ReadonlyArray<Entry>, notices: ReadonlyArray<Notice>, cancelledAt?: number) =>
         Effect.gen(function* () {
           for (const entry of entries) {
             yield* disarm(entry.id)
             yield* store.remove(entry.id)
             yield* dropJob(entry.id, false)
+            if (entry.kind === "latch" && cancelledAt !== undefined) yield* courier.mark(entry.child, { ...markOf(entry), cancelledAt } satisfies Mark)
           }
           for (const notice of notices) yield* store.removeNotice(notice.delivery)
           return [...entries.map((entry) => entry.id), ...notices.map((notice) => notice.wakeID)]
@@ -374,6 +457,54 @@ export const layer = (config: Config) =>
       return {
         wake: (sessionID, ask) => set(sessionID, (place) => alarmOf(ask, place)),
         monitor: (sessionID, ask) => set(sessionID, (place) => monitorOf(ask, place)),
+        latch: (ask) =>
+          Effect.gen(function* () {
+            const child = yield* courier.newSession
+            const latch = yield* locked(
+              Effect.gen(function* () {
+                const now = yield* Clock.currentTimeMillis
+                const made: Latch = {
+                  kind: "latch",
+                  id: yield* newID,
+                  sessionID: ask.sessionID,
+                  directory: config.directory,
+                  setAt: now,
+                  child,
+                  subagent: ask.subagent,
+                  hold: ask.hold,
+                  reason: ask.reason,
+                  opensAt: ask.opensAt,
+                  recheckAt: Math.max(Math.min(ask.recheckAt, ask.opensAt), now + MIN_RECHECK_MS),
+                  context: ask.context,
+                }
+                yield* store.write(made)
+                return made
+              }),
+            )
+            // The child is made after the latch is kept: a latch whose child never came reads failed when it opens, and tells the parent.
+            const unmade = yield* courier
+              .child({
+                sessionID: child,
+                parentID: ask.sessionID,
+                directory: config.directory,
+                title: ask.subagent.description,
+                agent: ask.subagent.agent,
+                model: ask.subagent.model,
+                mark: markOf(latch),
+              })
+              .pipe(
+                Effect.as(undefined),
+                Effect.catchTag("DeliveryRefused", (refused) => Effect.succeed(refused)),
+              )
+            if (unmade !== undefined) {
+              yield* locked(store.remove(latch.id))
+              return yield* new WakeRejected({ reason: `the latched subagent's session could not be made: ${unmade.message}` })
+            }
+            yield* changes.changed(ask.sessionID)
+            yield* guard(latch)
+            yield* arm(latch)
+            return { id: latch.id, child }
+          }),
         cancel: (sessionID, id) =>
           Effect.gen(function* () {
             const gone = yield* locked(
@@ -384,7 +515,7 @@ export const layer = (config: Config) =>
                   const pending = ofSessions(yield* store.entries, [sessionID]).map((entry) => entry.id)
                   return yield* new WakeRejected({ reason: `No pending wake ${id} in this session. Pending: ${pending.length === 0 ? "none" : pending.join(", ")}.` })
                 }
-                return yield* drop(entries, notices)
+                return yield* drop(entries, notices, yield* Clock.currentTimeMillis)
               }),
             )
             if (gone.length > 0) yield* changes.changed(sessionID)
@@ -417,7 +548,7 @@ export const layer = (config: Config) =>
             }
             if (entry.directory !== config.directory) return { outcome: "pending" as const }
             const now = yield* Clock.currentTimeMillis
-            if (entry.kind === "monitor" || (entry.firing === undefined && entry.dueAt > now + 1000)) {
+            if (entry.kind !== "alarm" || (entry.firing === undefined && entry.dueAt > now + 1000)) {
               yield* arm(entry, true)
               return { outcome: "pending" as const }
             }
@@ -446,10 +577,16 @@ export const layer = (config: Config) =>
           Effect.gen(function* () {
             const gone = yield* locked(
               Effect.gen(function* () {
-                return yield* drop(ofSessions(yield* store.entries, [sessionID]), ofSessions(yield* store.notices, [sessionID]))
+                const entries = yield* store.entries
+                const children = entries.filter((entry) => entry.kind === "latch" && entry.child === sessionID && entry.sessionID !== sessionID)
+                return {
+                  owners: [...new Set(children.map((entry) => entry.sessionID))],
+                  ids: yield* drop([...ofSessions(entries, [sessionID]), ...children], ofSessions(yield* store.notices, [sessionID])),
+                }
               }),
             )
-            if (gone.length > 0) yield* changes.changed(sessionID)
+            if (gone.ids.length > 0) yield* changes.changed(sessionID)
+            for (const owner of gone.owners) yield* changes.changed(owner)
           }),
         read: (delivery) =>
           Effect.gen(function* () {

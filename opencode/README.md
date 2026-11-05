@@ -115,7 +115,7 @@ import `opencode/` or `@opencode/*`.
 `cmd/orchestrate`. It defines the role agents, their compaction windows and
 their five-minute prompt cache (`ROLE_CACHE_TTL`, through the fork's per-agent
 `request.settings.cacheTTL`; the main session keeps the provider's hour),
-routes each subagent call to a role, holds new starts on the pace, and stops
+routes each subagent call to a role, latches new starts the pace holds, and stops
 agent work over the Sabbath. Its options are `windows`, `log`, `now`,
 `place`, `fullAgent` and `codex`. An absent option takes its default. A
 malformed one stops the plugin at setup, with a message that names it.
@@ -123,14 +123,18 @@ malformed one stops the plugin at setup, with a message that names it.
 The model (the domain files at `mods/orchestrate/`):
 
 - Facts: `SubagentStarted` (the agent, why it was routed there, and its
-  model) and `SubagentFinished` (the child session and how it ended).
-- Commands: `StartSubagent`, `UseTool` (any other tool call) and
-  `FinishSubagent`. Each one is decided only from inputs gathered
-  beforehand: the clock, the place, the asked agent, the child's agent, the
-  role's model and the pace hold.
-- Rejections: `SabbathRest` (when work resumes) and `PaceHeld` (whose pace,
-  the reason, and when to retry). The call log records each one as a
-  `denied` line.
+  model), `SubagentLatched` (a held start kept to start later: what holds
+  it, why, when it opens and when it is decided again) and
+  `SubagentFinished` (the child session and how it ended).
+- Commands: `StartSubagent`, `OpenLatch` (a latched start decided again at
+  its time), `UseTool` (any other tool call) and `FinishSubagent`. Each one
+  is decided only from inputs gathered beforehand: the clock, the place, the
+  asked agent, the child's agent and latch, the role's model and the pace
+  hold.
+- Rejections: `SabbathRest` (when work resumes) and `StillLatched` (a
+  follow-up to a child whose latch has not opened). `PaceHeld` (whose pace,
+  the reason, and when it opens) refuses a held start only when no latch can
+  be kept for it. The call log records each one as a `denied` line.
 - Aggregate: `ToolCall`, keyed by the session and call id, with its
   commands, facts and their rejections in `tool-call.ts`. Every command
   goes through its `decide`; `model.ts` holds the handlers. A kernel cell's
@@ -142,11 +146,12 @@ The model (the domain files at `mods/orchestrate/`):
   one line per fact or rejection (`call-line.ts`), and the status pane reads
   it.
 - Contracts: the pool's pace (`PoolPace`), the Codex admission script
-  (`CodexAdmission`), sessions, models, the compaction windows file and the
-  call log, each a `Context.Service` in `service.ts`, with what every
+  (`CodexAdmission`), sessions, models, the latches (`Latches`: the wakes
+  keep a latch, and a latched child starts through the subagent tool), the
+  compaction windows file and the call log, each a `Context.Service` in `service.ts`, with what every
   implementation owes in `laws.ts`. They are implemented in `filestore/`
-  (the call log and compact.json), `opencode/` (sessions, models and the
-  pool's pace over OpenCode's plugin context and RPC) and `codex/` (the
+  (the call log and compact.json), `opencode/` (sessions, models, the
+  latches and the pool's pace over OpenCode's plugin context and RPC) and `codex/` (the
   admission script); `memory/` holds the doubles the plugin's seam test
   runs on.
 
@@ -281,8 +286,8 @@ The TUI plugin appends the Queue section to `sidebar.content`. Every two
 seconds it reads the route's root session's queue over the
 `dotfiles-opencode.queue` RPC (`get({ sessionID })` answers
 `{ revision, items }`) and keeps the answer when its revision moved. An
-item with a `session` shows that subagent's live state (running, waiting,
-blocked, done, failed) as its mark instead of its own state, still one line. The
+item with a `session` shows that subagent's live state (running, waiting
+(a latched one too), blocked, done, failed) as its mark instead of its own state, still one line. The
 section shows only the queue's items: a subagent no item names is not drawn
 there, and no row carries a subagent's role, update or time; Prime's rows
 beneath the composer show the subagents, sidebar open or closed. Done items
@@ -868,8 +873,39 @@ went when one started.` The transcript draws a fire as one notice,
 `◈ wake <id> · <note>` (`notice`, `monitor <id> matched`, `· 2m late ·`); its
 metadata is `{ source: "wake", id, kind, mode, setAt, tick, firedAt, lateMs }`.
 
+### Latches
+
+A latch is a third kind of entry: a subagent start that orchestrate's pace
+or the Sabbath holds (see [Pace and effort](#pace-and-effort)). Orchestrate
+asks the server's `latch` RPC with the routed call (agent, description,
+prompt, model), what holds it, its reason, `opensAt` and `recheckAt`. The
+server keeps the entry under the parent, then makes the child session
+(`parentID` the parent, the agent, the description as its title) without
+prompting it, and marks the child's `latch` metadata, which the subagent
+rows read. At `recheckAt` (never sooner than a second from now, never later
+than `opensAt`) it asks orchestrate's opener (`dotfiles-opencode.wake.opener`,
+`open`) to decide it again:
+
+- `held`: it waits again, with the answer's reason and times, and its mark
+  says so.
+- `opened`: the entry goes; orchestrate has started the subagent in the
+  background on the child, and its result wakes the parent as any
+  background subagent's does.
+- `failed`: the entry goes, the mark reads failed, and the parent gets a
+  letter saying why.
+
+An opener that cannot be asked (orchestrate not loaded yet) is asked again 5
+seconds later. A latch survives a restart or downtime as an alarm does: it
+is kept in storage, armed on start, fired at once when overdue, and has an
+OS job at `opensAt`. Latches do not count toward the 20 pending entries.
+`wake_list` lists one as
+`<id>: latch · the worker subagent "<description>" (sessionID: <child>) · held by the pace: <reason> · opens <time> (in 6s)`;
+`wake_cancel` drops it, and its child's mark reads cancelled. A deleted
+parent or child takes it.
+
 Prime's dock (see Prime) shows, after the shells, one item while the session
-on screen has entries pending or notices unread:
+on screen has alarms or monitors pending or notices unread. A latch is not
+counted there: it shows as its subagent's row instead.
 
 ```
 2 wakes · 1 monitor · 1 notice
@@ -929,14 +965,16 @@ while an OpenCode server runs.`).
 The model (the domain files at the root of `mods/wake`): `wake.ts` is the
 entries and the RPC, `message.ts` the letters and receipts, `tools.ts` the
 tools' inputs and descriptions, `backstop.ts` the jobs'
-names and schedules, `model.ts` the `WakesModel` that keeps, arms, fires and
-settles. It asks the `WakeStore`, `Courier`, `Checks`, `Backstop` and
-`Changes` contracts in `service.ts`, with the laws in `laws.ts`, implemented
+names and schedules, `latch.ts` the latches, their RPC and the child's mark,
+`model.ts` the `WakesModel` that keeps, arms, fires, opens and settles. It asks the `WakeStore`, `Courier`, `Checks`, `Backstop`,
+`Opener` and `Changes` contracts in `service.ts`, with the laws in `laws.ts`, implemented
 in `opencode/` (the plugin's storage, the session inbox), `process/` (the
 checks), `cron/` (Bun.cron and the job's side) and `memory/`.
 `tests/wake.test.ts` runs `scenarios/wake.ts` (an alarm, a notice, a monitor,
 a cancel and a plugin reload) and `scenarios/wake-downtime.ts` (an alarm due
-while the server was stopped) in real OpenCode.
+while the server was stopped) in real OpenCode; `tests/prime-latch.test.ts`
+runs `scenarios/prime-latch.ts` (a latch held, held again, opened, and its
+result waking the parent).
 
 Where it departs from gent: a fire that went late still starts a turn and
 says how late (gent turns an alarm more than 10 minutes late into a notice);
@@ -1097,10 +1135,30 @@ cannot measure OpenCode's load or estimate its agent costs. Instead, this
 pool reads provider quotas, including spend by other harnesses on the same
 accounts. It holds new starts when pooled weekly use exceeds a 99% even
 weekly allowance plus five percentage points of leeway, or all available
-accounts have no short/weekly-window room. The result names a background
-`shell` command running `scripts/pace.ts --wait <epoch-ms>`. When it exits,
-retry the same agent and description; admission is checked again. A waiter
-never reserves a stale slot.
+accounts have no short/weekly-window room.
+
+A held start latches; it is not refused. The wakes keep the latch (a
+`latch` entry, see [Wakes](#wakes)) and make its child session at once,
+with the agent and the description as its title, but send it nothing. The
+call answers at once, foreground or background, and a kernel cell's
+`tools.subagent` gets the same answer as a value: the subagent is latched,
+why, when it opens (UTC and local time), its session and latch ids, and
+that its result will wake the parent. At its time the wakes ask
+`openLatch`, which decides it again on the same rules. Still held, it
+latches again with the hold's new reason and time. Admitted, it starts in
+the background on the child, with the original agent, description, prompt
+and model, and its result wakes the parent as a background subagent's
+does. A pace hold is decided again at the time it opens or within
+`PACE_POLL_MS` (120 seconds), whichever is sooner; the Sabbath's at the
+time work resumes. A follow-up to a latched child is refused
+(`StillLatched`) until it opens. `wake_list` shows a latch, and
+`wake_cancel` cancels it. With no wakes plugin to keep a latch, the call is
+refused with the hold's reason and the time it opens (`PaceHeld`).
+
+With the `now` option the rules run on that fixed clock, the pace's times
+included, while the wakes keep the system's. A latch's times are moved onto
+the system's clock by how far the fixed clock is behind it when they are
+handed over.
 
 Cost of this choice: this is quota pacing, without Claude Code's calibrated
 per-role cost prediction, fair ticket queue or Sabbath-adjusted working-hour
@@ -1118,8 +1176,8 @@ takes that pace when the orchestrate mod's `codex.pool` is set (daily sets
 `codex: { pool: true }`). When the pool has no reading (`measured: false`),
 or without `codex.pool`, it asks the orchestrate skill's
 `budget.ts --codex --admit --model <id> --role <role>` as before.
-That script reads only this host's `~/.codex` transcripts. A hold denies the
-call with the same background waiter. The orchestrate mod's `codex` option
+That script reads only this host's `~/.codex` transcripts. A hold latches
+the call the same way. The orchestrate mod's `codex` option
 names the providers, the script and `pool`; `false` turns it off.
 
 ### The fleet

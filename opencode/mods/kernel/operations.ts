@@ -80,6 +80,8 @@ export const briefMetadata = (metadata: unknown): Record<string, unknown> | unde
   if (typeof metadata.sessionID === "string") brief.sessionID = metadata.sessionID
   // A shell command moved to the background names its shell, whose stop notice names it too.
   if (typeof metadata.shellID === "string") brief.shellID = metadata.shellID
+  // A latched subagent's call answers at once; its child starts when the latch opens (orchestrate).
+  if (metadata.status === "latched") brief.status = "latched"
   if (Array.isArray(metadata.files))
     brief.files = metadata.files.slice(0, 20).flatMap((file) => {
       if (!isRecord(file)) return []

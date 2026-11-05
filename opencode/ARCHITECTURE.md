@@ -11,17 +11,17 @@ The orchestrate mod, as the example:
 ```text
 opencode/
   mods/orchestrate/         @dotfiles/opencode-orchestrate: the context; exports "./*": "./*.ts"
-    tool-call.ts            ToolCallId; the ToolCall decider; StartSubagent, UseTool, FinishSubagent and their events
+    tool-call.ts            ToolCallId; the ToolCall decider; StartSubagent, OpenLatch, UseTool, FinishSubagent, their events and StillLatched
     sabbath.ts              the Sabbath clock and the SabbathRest rejection
-    pace.ts                 the pace values and the PaceHeld rejection
+    pace.ts                 the pace values and the PaceHeld rejection (a hold no latch could keep)
     role.ts                 roles and their agents
     errors.ts               failures several concepts share (only when they exist)
-    service.ts              the contracts: CallLog, Sessions, Models, PoolPace, CodexAdmission, CompactionWindows
+    service.ts              the contracts: CallLog, Sessions, Models, PoolPace, CodexAdmission, Latches, CompactionWindows
     laws.ts                 what every implementation of a contract owes, as a shared test suite
     model.ts                the handlers: gather inputs through contracts, send each command to its aggregate, record the outcome
     tool-call.test.ts       stories, over test Layers declared here
     filestore/              CallLog over the JSONL file, CompactionWindows over compact.json  → @dotfiles/opencode-orchestrate/filestore/call-log
-    opencode/               Sessions, Models and PoolPace over OpenCode's plugin context and RPC
+    opencode/               Sessions, Models, PoolPace and Latches (the wakes' latch RPC) over OpenCode's plugin context and RPC
     codex/                  CodexAdmission over the Codex budget script
     memory/                 in-memory implementations, for the cmd tests and the laws
   cmd/orchestrate/          @dotfiles/opencode-cmd-orchestrate: the plugin OpenCode loads
@@ -40,7 +40,7 @@ opencode/
 - **`cmd/<plugin>` is the only composition root**, one workspace package per plugin OpenCode loads, named `@dotfiles/opencode-cmd-<plugin>`. OpenCode finds a local plugin's parts through its `package.json` `exports`, so the entries are named for those parts: `server.ts` for the server plugin, `tui.tsx` for the TUI plugin. Those exports are for OpenCode's loader; no code imports a `cmd/` package. The entry decodes options, picks one implementation per contract, builds the Layer once and registers the hooks, so swapping a store is a one-line change there.
 - **Packages and subpaths.** The workspaces are `mods/*`, `cmd/*` and `decider`. A context exports its files by path, `"exports": { "./*": "./*.ts" }`, which also reaches its folders, so an import names the concept it reaches (`@dotfiles/opencode-orchestrate/filestore/call-log`). Write no barrel files. Inside a package, import with relative paths and the `.ts` extension; across packages, by package name. A package lists each workspace package it imports as `"workspace:*"`.
 - **Vendor packages.** A vendor package an implementation folder uses (the kernel's `oxc-parser`) is an optional peer of the context and a dev dependency, so the folder typechecks; the `cmd/` package that binds that implementation lists it as a dependency. The host's own modules (`effect`, `@opencode/plugin`, `@opentui/*`, `solid-js`) are not listed: OpenCode provides them at run time, and `scripts/link-fork.ts` links them from the fork for tooling.
-- **Contexts meet through contracts.** A mod imports another mod only through a contract or protocol file it names for that purpose (pool's `status.ts`, which orchestrate and status read), never its implementations or model.
+- **Contexts meet through contracts.** A mod imports another mod only through a contract or protocol file it names for that purpose (pool's `status.ts`, which orchestrate and status read; wake's `latch.ts`, the latch RPC and opener orchestrate serves), never its implementations or model.
 - **`decider/`** (`@dotfiles/decider`) is the shared non-domain kit: `decider.ts` (`Fold`, `Decider`, `fold`) and `story.ts` (`make(decider)(given, clock, when, then, rejected, state, view)`), with their tests beside them. Nothing domain-specific goes there.
 - **Tests sit beside their code** (`tool-call.test.ts`, `filestore/call-log.test.ts`, `cmd/orchestrate/server.test.ts`). The real-OpenCode acceptance tests stay in `opencode/tests/`, because they run several plugins together.
 - **The fence is oxlint** (`.oxlintrc.json`, `bun run lint`): one `no-restricted-imports` override per context on `mods/<mod>/*.ts`, the domain files only. They import `effect`, `@dotfiles/decider/*`, their own root files, and another context's contract files; never `@opencode/*`, `node:*`, `bun`, a vendor package, or one of their own folders (`./*/**`). The domain's tests and `laws.ts` may also import `bun:test`. A second override per UI folder keeps it off the implementations. Before trusting a new override, add a file that breaks it and watch `oxlint` fail. `tests/layout.test.ts` checks what is not an import: no file or folder in a context named by its kind.

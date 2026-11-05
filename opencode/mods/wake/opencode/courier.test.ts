@@ -4,15 +4,27 @@
 // session it does not have.
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
+import { type Mark, MARK_KEY } from "../latch.ts"
 import { courierLaws, type Received } from "../laws.ts"
 import { Courier } from "../service.ts"
-import { layer, minter, type Host, type Synthetic } from "./courier.ts"
+import { type Created, layer, minter, type Host, type Synthetic } from "./courier.ts"
 
 interface Session {
   readonly directory: string
   readonly parentID?: string
+  readonly title?: string
+  readonly agent?: string
+  readonly model?: string
+  metadata?: Record<string, unknown>
   readonly inbox: Array<Received>
   readonly prompts: Array<{ readonly id: string; readonly text: string }>
+}
+
+/** A session as the host's create makes it: a child takes its parent's metadata unless it is given its own. */
+const made = (sessions: Map<string, Session>, input: Created): Session => {
+  const { id: _, metadata, ...rest } = input
+  const inherited = metadata ?? (input.parentID === undefined ? undefined : sessions.get(input.parentID)?.metadata)
+  return { ...rest, ...(inherited === undefined ? {} : { metadata: inherited }), inbox: [], prompts: [] }
 }
 
 const missing = (sessionID: string) => ({ _tag: "Session.NotFoundError", sessionID })
@@ -27,7 +39,7 @@ const host = (sessions: Map<string, Session>, calls: Array<Synthetic>): Host => 
         session.inbox.push({ id: input.id, letter: { text: input.text, description: input.description, metadata: input.metadata as Received["letter"]["metadata"] }, resume: input.resume })
       return Effect.void
     }),
-  create: ({ id, directory }) => Effect.sync(() => void (sessions.has(id) || sessions.set(id, { directory, inbox: [], prompts: [] }))),
+  create: (input) => Effect.sync(() => void (sessions.has(input.id) || sessions.set(input.id, made(sessions, input)))),
   prompt: ({ sessionID, id, text }) =>
     Effect.suspend(() => {
       const session = sessions.get(sessionID)
@@ -38,7 +50,14 @@ const host = (sessions: Map<string, Session>, calls: Array<Synthetic>): Host => 
   get: (sessionID) =>
     Effect.suspend(() => {
       const session = sessions.get(sessionID)
-      return session === undefined ? Effect.fail(missing(sessionID)) : Effect.succeed(session.parentID === undefined ? {} : { parentID: session.parentID })
+      return session === undefined ? Effect.fail(missing(sessionID)) : Effect.succeed(session)
+    }),
+  update: ({ sessionID, metadata }) =>
+    Effect.suspend(() => {
+      const session = sessions.get(sessionID)
+      if (session === undefined) return Effect.fail(missing(sessionID))
+      session.metadata = metadata
+      return Effect.void
     }),
 })
 
@@ -55,9 +74,42 @@ courierLaws(
           const session = sessions.get(sessionID)
           return session === undefined ? undefined : { directory: session.directory, prompts: session.prompts }
         }),
+      inspect: (sessionID) =>
+        Effect.sync(() => {
+          const session = sessions.get(sessionID)
+          return session === undefined
+            ? undefined
+            : {
+                parentID: session.parentID,
+                title: session.title,
+                agent: session.agent,
+                model: session.model,
+                mark: session.metadata?.[MARK_KEY] as Mark | undefined,
+                prompts: session.prompts.length,
+              }
+        }),
     }
   }),
 )
+
+describe("a latch's child through the host", () => {
+  const mark: Mark = { hold: "sabbath", reason: "It is the Sabbath", opensAt: 2, at: 1 }
+
+  test("keeps the parent's metadata beside its mark, and a mark keeps the child's other metadata", async () => {
+    const sessions = new Map<string, Session>([["ses_root", { directory: "/", metadata: { owner: "cvr" }, inbox: [], prompts: [] }]])
+    const courier = layer(host(sessions, []))
+    await Effect.runPromise(
+      Courier.use((service) =>
+        Effect.gen(function* () {
+          yield* service.child({ sessionID: "ses_child", parentID: "ses_root", directory: "/", title: "T", agent: "worker", mark })
+          expect(sessions.get("ses_child")?.metadata).toEqual({ owner: "cvr", [MARK_KEY]: mark })
+          yield* service.mark("ses_child", undefined)
+          expect(sessions.get("ses_child")?.metadata).toEqual({ owner: "cvr" })
+        }),
+      ).pipe(Effect.provide(courier)),
+    )
+  })
+})
 
 describe("delivering through the host", () => {
   test("a wake goes as a steer that wakes the session; a notice as one that does not", async () => {

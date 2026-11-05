@@ -1,12 +1,27 @@
 // The ToolCall aggregate's stories: a subagent starts as the agent the guard
-// routes it to, or the Sabbath or the pace refuses it; another tool call in a
-// subagent is refused over the Sabbath; a subagent call finishes.
+// routes it to, or latches while the Sabbath or the pace holds it; a latch is
+// decided again when it opens; a follow-up is refused over the Sabbath or
+// while its child is latched; another tool call in a subagent is refused over
+// the Sabbath; a subagent call finishes.
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import * as Story from "@dotfiles/decider/story"
-import { PaceHeld } from "./pace.ts"
 import { explain, KNOWLTON, resumesAt, SabbathRest } from "./sabbath.ts"
-import { FinishSubagent, Finished, StartSubagent, Started, SubagentFinished, SubagentStarted, ToolCall, UseTool } from "./tool-call.ts"
+import {
+  FinishSubagent,
+  Finished,
+  Latched,
+  OpenLatch,
+  PACE_POLL_MS,
+  StartSubagent,
+  Started,
+  StillLatched,
+  SubagentFinished,
+  SubagentLatched,
+  SubagentStarted,
+  ToolCall,
+  UseTool,
+} from "./tool-call.ts"
 
 /** Friday 30 October 2026, 19:00 in Knowlton (EDT): after sunset, in the Sabbath. */
 const FRIDAY_EVENING = "2026-10-30T23:00:00Z"
@@ -22,6 +37,10 @@ const call = { sessionID: "root", callID: "call-1" }
 const start = (asked: unknown, fields: Partial<StartSubagent> = {}) =>
   StartSubagent.make({ call, from: "build", asked, background: false, fullAgent: false, place: KNOWLTON, ...fields })
 const started = (fields: Omit<SubagentStarted, "_tag" | "call" | "from">) => SubagentStarted.make({ call, from: "build", ...fields })
+const latched = (fields: Omit<SubagentLatched, "_tag" | "call" | "from">) => SubagentLatched.make({ call, from: "build", ...fields })
+/** The latch for a planner's start, at its time, with what the guard gathered then. */
+const open = (fields: Partial<OpenLatch> = {}) =>
+  OpenLatch.make({ call, from: "build", agent: "planner", reason: "kept", child: "child-1", place: KNOWLTON, started: false, ...fields })
 
 describe("a subagent starts", () => {
   test("as the role it asks for, on its model, and finishes", () =>
@@ -116,11 +135,26 @@ describe("the Sabbath", () => {
     expect(rest.why).toBe(explain(rest.resumesAt, KNOWLTON))
   })
 
-  test("no subagent starts, whatever it asks or its pace says", () =>
+  test("a new subagent latches until work resumes, whatever its pace says", () =>
     run(
       Story.clock(FRIDAY_EVENING),
-      Story.when(start("planner", { hold: { whose: "pool", reason: "held" } })),
-      Story.rejected(rest),
+      Story.when(start("planner", { hold: { whose: "pool", reason: "held" }, description: "plan" })),
+      Story.then(
+        latched({ asked: "planner", agent: "planner", reason: "kept", description: "plan", hold: "sabbath", why: rest.why, opensAt: rest.resumesAt, recheckAt: rest.resumesAt }),
+      ),
+      Story.state(Latched.make({ agent: "planner", opensAt: rest.resumesAt })),
+    ))
+
+  test("a follow-up is refused, not latched", () =>
+    run(Story.clock(FRIDAY_EVENING), Story.when(start(undefined, { child: "child-1", childAgent: "verifier" })), Story.rejected(rest)))
+
+  test("a latch that opens over the Sabbath latches again until work resumes", () =>
+    run(
+      Story.clock(FRIDAY_EVENING),
+      Story.when(open()),
+      Story.then(
+        latched({ agent: "planner", reason: "kept", child: "child-1", background: true, hold: "sabbath", why: rest.why, opensAt: rest.resumesAt, recheckAt: rest.resumesAt }),
+      ),
     ))
 
   test("a running subagent's next tool call is refused", () =>
@@ -140,24 +174,78 @@ describe("the Sabbath", () => {
 describe("the pace", () => {
   const now = Date.parse(WEDNESDAY)
 
-  test("the pool's hold refuses a new agent until the time it names", () =>
+  test("the pool's hold latches a new agent until the time it names, asked again every two minutes", () =>
     run(
       Story.clock(now),
       Story.when(start("planner", { hold: { whose: "pool", reason: "all pool accounts are held", retryAt: now + 300_000 } })),
-      Story.rejected(new PaceHeld({ whose: "pool", reason: "all pool accounts are held", retryAt: now + 300_000 })),
+      Story.then(
+        latched({
+          asked: "planner",
+          agent: "planner",
+          reason: "kept",
+          hold: "pace",
+          whose: "pool",
+          why: "all pool accounts are held",
+          opensAt: now + 300_000,
+          recheckAt: now + PACE_POLL_MS,
+        }),
+      ),
     ))
 
-  test("the Codex account's hold, past its time, waits a second", () =>
+  test("the Codex account's hold, past its time, opens in a second", () =>
     run(
       Story.clock(now),
       Story.when(start("verifier", { hold: { whose: "codex", reason: "weekly pace", retryAt: now - 5_000 } })),
-      Story.rejected(new PaceHeld({ whose: "codex", reason: "weekly pace", retryAt: now + 1_000 })),
+      Story.then(
+        latched({ asked: "verifier", agent: "verifier", reason: "kept", hold: "pace", whose: "codex", why: "weekly pace", opensAt: now + 1_000, recheckAt: now + 1_000 }),
+      ),
     ))
 
-  test("a hold that names no time waits a minute", () =>
+  test("a hold that names no time opens in a minute", () =>
     run(
       Story.clock(now),
       Story.when(start(undefined, { hold: { whose: "pool", reason: "no room" } })),
-      Story.rejected(new PaceHeld({ whose: "pool", reason: "no room", retryAt: now + 60_000 })),
+      Story.then(latched({ agent: "worker", reason: "untyped", hold: "pace", whose: "pool", why: "no room", opensAt: now + 60_000, recheckAt: now + 60_000 })),
+    ))
+})
+
+describe("a latch", () => {
+  const now = Date.parse(WEDNESDAY)
+
+  test("still held when it opens, it latches again with the new reason and time", () =>
+    run(
+      Story.clock(now),
+      Story.when(open({ model: "anthropic/claude-opus#high", hold: { whose: "pool", reason: "anthropic is at 95%", retryAt: now + 900_000 } })),
+      Story.then(
+        latched({
+          agent: "planner",
+          reason: "kept",
+          model: "anthropic/claude-opus#high",
+          child: "child-1",
+          background: true,
+          hold: "pace",
+          whose: "pool",
+          why: "anthropic is at 95%",
+          opensAt: now + 900_000,
+          recheckAt: now + PACE_POLL_MS,
+        }),
+      ),
+    ))
+
+  test("admitted when it opens, it starts on its child in the background", () =>
+    run(
+      Story.clock(now),
+      Story.when(open({ model: "anthropic/claude-opus#high", description: "plan the unit" })),
+      Story.then(started({ agent: "planner", reason: "kept", model: "anthropic/claude-opus#high", child: "child-1", background: true, description: "plan the unit" })),
+      Story.state(Started.make({ agent: "planner" })),
+    ))
+
+  test("a child that already ran starts nothing again", () => run(Story.clock(now), Story.when(open({ started: true })), Story.then()))
+
+  test("a follow-up to a child still latched is refused, with when it opens", () =>
+    run(
+      Story.clock(now),
+      Story.when(start("planner", { child: "child-1", childLatched: now + 300_000 })),
+      Story.rejected(new StillLatched({ child: "child-1", opensAt: now + 300_000 })),
     ))
 })

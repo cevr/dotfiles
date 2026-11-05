@@ -30,11 +30,29 @@ export type Session = {
   }
   /** Whether the host runs it now. */
   readonly running: boolean
+  /**
+   * The latch a held start waits on, when the session is a latched child (the
+   * wakes' mark in its metadata, mods/wake latch.ts): what holds it, why, when
+   * it opens and when it latched (epoch ms), and, once it will not open, when
+   * it was cancelled or why it failed.
+   */
+  readonly latch?: Latch
   /** Its waiting permission requests, each as `action resource`. */
   readonly permissions: ReadonlyArray<string>
   /** Its waiting questions, by title. */
   readonly questions: ReadonlyArray<string>
   readonly messages: ReadonlyArray<Message>
+}
+
+/** A latched child's latch, as its row reads it. */
+export type Latch = {
+  /** `pace` or `sabbath`. */
+  readonly hold: string
+  readonly reason: string
+  readonly opensAt: number
+  readonly at: number
+  readonly cancelledAt?: number
+  readonly failed?: string
 }
 
 /**

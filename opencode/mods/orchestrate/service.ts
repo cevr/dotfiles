@@ -1,10 +1,11 @@
 // The contracts the orchestrate model needs from outside, each with what its
 // implementations owe (laws.ts). Implementations live in the folders named
 // after their dependency: filestore/, opencode/, codex/ and memory/.
-import { Context, type Effect } from "effect"
+import { Context, type Effect, Schema } from "effect"
 import type { CallLine } from "./call-line.ts"
 import type { Windows } from "./compaction.ts"
 import type { ModelRef, Pace } from "./pace.ts"
+import type { Hold } from "./tool-call.ts"
 
 /** Where the call log's lines go, in order. Appending never fails: a lost line costs the pane a row, not the call. */
 export class CallLog extends Context.Service<
@@ -20,6 +21,10 @@ export class Sessions extends Context.Service<
     readonly parentOf: (sessionID: string) => Effect.Effect<string | undefined>
     /** The agent the session runs as. */
     readonly agentOf: (sessionID: string) => Effect.Effect<string | undefined>
+    /** Whether the session has run a turn, or is running one. A session it cannot read has not. */
+    readonly startedOf: (sessionID: string) => Effect.Effect<boolean>
+    /** When the session, a latched child that will still open, opens (epoch ms); none once it opened, was cancelled or failed. */
+    readonly latchOf: (sessionID: string) => Effect.Effect<number | undefined>
   }
 >()("dotfiles-opencode/orchestrate/Sessions") {}
 
@@ -71,3 +76,61 @@ export class CompactionWindows extends Context.Service<
   CompactionWindows,
   { readonly read: Effect.Effect<Windows> }
 >()("dotfiles-opencode/orchestrate/CompactionWindows") {}
+
+/** A held subagent start, as the latch keeps it: the call as it was routed, what holds it, and when it is decided again. */
+export interface LatchRequest {
+  /** The parent: the session that made the call, whom the subagent's answer wakes. */
+  readonly parent: string
+  readonly from: string
+  readonly messageID: string
+  readonly callID: string
+  readonly agent: string
+  readonly description: string
+  readonly prompt: string
+  /** `provider/id#variant`: the model the child is made on and opened on. */
+  readonly model?: string
+  readonly hold: Hold
+  readonly why: string
+  /** Epoch ms on the system's clock, as the wakes keep time, even under a fixed `now`. */
+  readonly opensAt: number
+  /** Epoch ms on the system's clock, like `opensAt`. */
+  readonly recheckAt: number
+  /** Kept with the latch and handed back when it opens. */
+  readonly context: { readonly [key: string]: Schema.Json }
+}
+
+/** A latched start, opening: the parent's call, and the child to prompt in the background. */
+export interface LatchStart {
+  readonly parent: string
+  readonly from: string
+  readonly messageID: string
+  readonly callID: string
+  readonly child: string
+  readonly agent: string
+  readonly description: string
+  readonly prompt: string
+  readonly model?: string
+}
+
+/** The latch could not be kept: no wakes to keep it, or they would not. */
+export class LatchRefused extends Schema.TaggedError<LatchRefused>()("LatchRefused", { reason: Schema.String }) {}
+
+/** The latched child could not be started. */
+export class StartFailed extends Schema.TaggedError<StartFailed>()("StartFailed", { message: Schema.String }) {}
+
+/**
+ * Where a held start latches, and how a latched one starts.
+ * - `latch`: keep the request as a latch of its parent, with its child
+ *   session made and not prompted: the latch's id and child. The keeper
+ *   decides it again at `recheckAt` through the orchestrate model's `openLatch`.
+ * - `start`: prompt the latched child in the background with the request's
+ *   prompt, as the subagent tool starts a background subagent; its answer
+ *   wakes the parent.
+ */
+export class Latches extends Context.Service<
+  Latches,
+  {
+    readonly latch: (request: LatchRequest) => Effect.Effect<{ readonly id: string; readonly child: string }, LatchRefused>
+    readonly start: (start: LatchStart) => Effect.Effect<void, StartFailed>
+  }
+>()("dotfiles-opencode/orchestrate/Latches") {}
