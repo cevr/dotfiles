@@ -120,7 +120,11 @@ The model, in the domain files at `mods/pool`'s root:
   implementation owes in `laws.ts`. `opencode/` implements them over the
   plugin's integration, RPC and storage; `memory/` holds the in-memory
   ones the seam tests use. `gent/store.ts` reads and refreshes gent's
-  store in place, under gent's lock, byte-compatible with gent.
+  store in place, under gent's lock, byte-compatible with gent. It
+  refreshes a token five minutes (plus up to two, fixed per label) before
+  it expires, serves a still-good token when the refresh cannot happen
+  now, spaces trades from one store three seconds apart, and gives the
+  usage sweep a read that never refreshes (`peek`).
 
 The aggregate stores folded state, not events: no one reads its history.
 The ledger keeps its holds, readings and priced steps under

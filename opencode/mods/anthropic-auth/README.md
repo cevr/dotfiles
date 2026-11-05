@@ -11,6 +11,11 @@ commit 38b7c06, which adds to upstream's `v2/main`:
 - tokens taken from a registered credential source (the pool's login store);
 - a failed refresh that carries a retry time holds the credential as
   rate-limited instead of signed out;
+- (here, after the fork) a sourced credential that fails with a retry time
+  answers its request as a retryable 429 (`retry-after`, `x-should-retry`)
+  instead of failing the hook, so the session retries on another login;
+  the usage sweep reads a sourced credential only through the source's
+  `peek`, never a refresh, and skips a source without one;
 - Claude Code's per-model beta set and session header.
 
 The code is ours from here; edit it in place. Its tests are `test/`; the

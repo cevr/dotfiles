@@ -3721,6 +3721,9 @@ describe('credential choice, wire extras and quota readings', () => {
 
     function withSource(
       resolve: (id: string) => Promise<{ access: string; expires: number }>,
+      peek?: (
+        id: string,
+      ) => Promise<{ access: string; expires: number } | undefined>,
     ) {
       const mocked = twoAccounts()
       const rejected: Array<[string, string]> = []
@@ -3728,6 +3731,7 @@ describe('credential choice, wire extras and quota readings', () => {
         owns: (id: string) => id.startsWith('src:'),
         resolve: mock(resolve),
         rejected: (id: string, access: string) => rejected.push([id, access]),
+        ...(peek === undefined ? {} : { peek: mock(peek) }),
       }
       const sources = registry().get('anthropic') ?? new Set()
       registry().set('anthropic', sources)
@@ -3777,7 +3781,7 @@ describe('credential choice, wire extras and quota readings', () => {
       }
     })
 
-    test("a source's passing failure holds the credential as rate-limited until its retryAt, and the request fails", async () => {
+    test("a source's passing failure holds the credential as rate-limited until its retryAt, and the request answers a retryable 429", async () => {
       const retryAt = Date.now() + 60_000
       const { ctx, sessionHooks, rpcEvents, remove } = withSource(async () => {
         throw Object.assign(new Error('token endpoint unavailable'), {
@@ -3793,16 +3797,78 @@ describe('credential choice, wire extras and quota readings', () => {
           request: messagesRequest({ 'x-opencode-credential-id': 'src:one' }),
         }
 
-        await expect(sessionHooks.get('http.request')!(event)).rejects.toThrow(
-          'token endpoint unavailable',
-        )
+        // The hook does not throw: a thrown hook error ends the turn.
+        await sessionHooks.get('http.request')!(event)
         expect(event.request.headers.has('authorization')).toBe(false)
+        expect(event.request.url).toBe('data:text/plain,')
         expect(rpcEvents.at(-1)!.payload).toEqual({
           credentialID: 'src:one',
           reading: expect.objectContaining({
             refusal: { kind: 'rate-limit', until: retryAt },
           }),
         })
+
+        // The request goes nowhere; its answer is Anthropic's rate limit.
+        const sent: Request = event.request
+        const response = await answer(
+          sessionHooks,
+          sent,
+          await fetch(sent),
+        )
+        expect(response.status).toBe(429)
+        expect(response.headers.get('x-should-retry')).toBe('true')
+        const retryAfter = Number(response.headers.get('retry-after'))
+        expect(retryAfter).toBeGreaterThanOrEqual(59)
+        expect(retryAfter).toBeLessThanOrEqual(60)
+        const body = await response.json()
+        expect(body.error.type).toBe('rate_limit_error')
+        expect(body.error.message).not.toMatch(
+          /quota|usage limit|budget|insufficient|token endpoint/i,
+        )
+      } finally {
+        remove()
+      }
+    })
+
+    test('a refused request waits for the soonest refused login, at most fifteen minutes', async () => {
+      let retryAt = Date.now() + 2 * HOUR
+      const { ctx, sessionHooks, remove } = withSource(async () => {
+        throw Object.assign(new Error('token endpoint paused'), { retryAt })
+      })
+      const retryAfterOf = async (credentialID: string) => {
+        const sent = await send(sessionHooks, {
+          'x-opencode-credential-id': credentialID,
+        })
+        const response = await answer(sessionHooks, sent, await fetch(sent))
+        return Number(response.headers.get('retry-after'))
+      }
+      try {
+        await plugin.setup(ctx as any)
+        expect(await retryAfterOf('src:one')).toBe(15 * 60)
+
+        // Another login refused until sooner sets the wait.
+        retryAt = Date.now() + 90_000
+        expect(await retryAfterOf('src:two')).toBeLessThanOrEqual(90)
+        retryAt = Date.now() + 10 * 60_000
+        expect(await retryAfterOf('src:three')).toBeLessThanOrEqual(90)
+      } finally {
+        remove()
+      }
+    })
+
+    test("a refused request's answer publishes no second refusal", async () => {
+      const { ctx, sessionHooks, rpcEvents, remove } = withSource(async () => {
+        throw Object.assign(new Error('busy'), { retryAt: Date.now() + 5_000 })
+      })
+      try {
+        await plugin.setup(ctx as any)
+        const sent = await send(sessionHooks, {
+          'x-opencode-credential-id': 'src:one',
+        })
+        const events = rpcEvents.length
+        await answer(sessionHooks, sent, await fetch(sent))
+        // The refusal was published once, when the request was refused.
+        expect(rpcEvents).toHaveLength(events)
       } finally {
         remove()
       }
@@ -3893,10 +3959,10 @@ describe('credential choice, wire extras and quota readings', () => {
 
     test("the usage read uses the source's token", async () => {
       const access = `fixture-sourced-${crypto.randomUUID()}`
-      const { ctx, rpcHandlers, remove } = withSource(async () => ({
-        access,
-        expires: Date.now() + HOUR,
-      }))
+      const { ctx, rpcHandlers, source, remove } = withSource(
+        async () => ({ access, expires: Date.now() + HOUR }),
+        async () => ({ access, expires: Date.now() + HOUR }),
+      )
       const seen: Request[] = []
       const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (
         input: string | URL | Request,
@@ -3918,6 +3984,59 @@ describe('credential choice, wire extras and quota readings', () => {
           { name: '5h', utilization: 0.1 },
           { name: '7d', utilization: 0.2 },
         ])
+        // Read with the token the source holds: the sweep never makes it refresh.
+        expect(source.peek).toHaveBeenCalledWith('src:one')
+        expect(source.resolve).not.toHaveBeenCalled()
+      } finally {
+        fetchSpy.mockRestore()
+        remove()
+      }
+    })
+
+    test('the usage read skips a sourced credential whose token is due a refresh, keeping its reading', async () => {
+      const retryAt = Date.now() + 60_000
+      const { ctx, sessionHooks, rpcHandlers, source, remove } = withSource(
+        async () => {
+          throw Object.assign(new Error('token endpoint paused'), { retryAt })
+        },
+        async () => undefined,
+      )
+      try {
+        await plugin.setup(ctx as any)
+        // A refused request leaves a reading behind.
+        await send(sessionHooks, { 'x-opencode-credential-id': 'src:one' })
+        source.resolve.mockClear()
+        const fetchSpy = spyOn(globalThis, 'fetch')
+        try {
+          const answered = (await rpcHandlers.get('credential-quota.anthropic')!
+            .usage!({ credentialID: 'src:one' })) as any
+          expect(fetchSpy).not.toHaveBeenCalled()
+          expect(source.resolve).not.toHaveBeenCalled()
+          expect(answered.reading.refusal).toEqual({
+            kind: 'rate-limit',
+            until: retryAt,
+          })
+        } finally {
+          fetchSpy.mockRestore()
+        }
+      } finally {
+        remove()
+      }
+    })
+
+    test('a source without peek is not swept: its credential is never resolved for a usage read', async () => {
+      const { ctx, rpcHandlers, source, remove } = withSource(async () => ({
+        access: `fixture-sourced-${crypto.randomUUID()}`,
+        expires: Date.now() + HOUR,
+      }))
+      const fetchSpy = spyOn(globalThis, 'fetch')
+      try {
+        await plugin.setup(ctx as any)
+        const answered = (await rpcHandlers.get('credential-quota.anthropic')!
+          .usage!({ credentialID: 'src:one' })) as any
+        expect(answered.reading).toBeNull()
+        expect(fetchSpy).not.toHaveBeenCalled()
+        expect(source.resolve).not.toHaveBeenCalled()
       } finally {
         fetchSpy.mockRestore()
         remove()

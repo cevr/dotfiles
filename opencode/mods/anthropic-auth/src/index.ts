@@ -17,6 +17,7 @@ import {
 import {
   type CredentialSource,
   credentialSource,
+  peekSourced,
   resolveSourced,
   retryAtOf,
 } from './credential-sources.ts'
@@ -109,6 +110,64 @@ const blockedRefreshTokenFilter = new Uint8Array(BLOCKED_REFRESH_FILTER_BYTES)
 // Ownership is therefore process-wide; alias leases stay setup-local.
 const transformedRequests = new WeakSet<Request>()
 let activeResponseTransforms = 0
+
+/**
+ * The longest `retry-after` a refused request answers with: OpenCode's own
+ * cap on a provider's (`RETRY_AFTER_MAX` in its model retry).
+ */
+const MAX_REFUSED_RETRY_AFTER_S = 15 * 60
+/** Where a refused request goes: nowhere. Fetching it answers at once, offline. */
+const REFUSED_URL = 'data:text/plain,'
+/**
+ * Requests the request hook refused, and the `retry-after` (seconds) each
+ * answers with. The hook cannot answer a request itself, so it sends one to
+ * `REFUSED_URL` and the response hook answers it. Process-wide, as
+ * `transformedRequests` is.
+ */
+const refusedRequests = new WeakMap<Request, number>()
+
+/** `until` as a `retry-after`: whole seconds from `now`, at least one, at most the cap. */
+function retryAfterSeconds(until: number, now: number): number {
+  return Math.min(
+    MAX_REFUSED_RETRY_AFTER_S,
+    Math.max(1, Math.ceil((until - now) / 1000)),
+  )
+}
+
+/** A request that goes nowhere in place of `request`, answered as a 429 by the response hook. */
+function refusedRequest(request: Request, retryAfter: number): Request {
+  const refused = new Request(REFUSED_URL, {
+    method: 'GET',
+    signal: request.signal,
+  })
+  refusedRequests.set(refused, retryAfter)
+  return refused
+}
+
+/**
+ * What a refused request answers: Anthropic's rate-limit error, which
+ * OpenCode retries after `retry-after` (`x-should-retry` says so outright).
+ * Its words name no quota, so it is never read as an exhausted plan.
+ */
+function refusedResponse(retryAfter: number): Response {
+  return new Response(
+    JSON.stringify({
+      type: 'error',
+      error: {
+        type: 'rate_limit_error',
+        message: `The pooled Anthropic login cannot be used for ${retryAfter}s (its token could not be refreshed now); the request is retried`,
+      },
+    }),
+    {
+      status: 429,
+      headers: {
+        'content-type': 'application/json',
+        'retry-after': String(retryAfter),
+        'x-should-retry': 'true',
+      },
+    },
+  )
+}
 
 function acquireResponseTransform(): () => void {
   if (activeResponseTransforms >= MAX_ACTIVE_RESPONSE_TRANSFORMS) {
@@ -544,6 +603,19 @@ export default Plugin.define({
     }
 
     /**
+     * The soonest a refused login is free again: `until`, or an earlier end of
+     * another refusal. A login no refusal holds is the pool's to fail over to.
+     */
+    const earliestRelease = (until: number, now: number): number => {
+      let earliest = until
+      for (const reading of readings.values()) {
+        const end = reading.refusal?.until
+        if (end !== undefined && end > now && end < earliest) earliest = end
+      }
+      return earliest
+    }
+
+    /**
      * The OAuth login to send a request on: the chosen credential when
      * another plugin named one, else the integration's active connection.
      * A credential a registered source keeps comes from that source, which
@@ -867,11 +939,31 @@ export default Plugin.define({
       })
     })
 
+    /**
+     * The login a usage read goes out on. A credential a source keeps is read
+     * only with the token the source holds now (`peek`): a sweep never makes
+     * the source refresh, and a credential whose token is due one is skipped.
+     */
+    const usageLogin = async (
+      credentialID: string,
+    ): Promise<ResolvedOAuth | 'skip' | undefined> => {
+      const source = credentialSource(INTEGRATION_ID, credentialID)
+      if (source === undefined) return resolveOAuth(credentialID)
+      const credential = await peekSourced(source, credentialID)
+      if (credential === undefined) return 'skip'
+      return {
+        connection: { type: 'credential', id: credentialID },
+        credential,
+        source,
+      }
+    }
+
     /** Read the usage endpoint for one credential now: the pool's sweep. */
     const readUsage = async (
       credentialID: string,
     ): Promise<QuotaReading | undefined> => {
-      const active = await resolveOAuth(credentialID)
+      const active = await usageLogin(credentialID)
+      if (active === 'skip') return readings.get(credentialID)
       if (!active) return undefined
       const url = anthropicApiUrl(USAGE_PATH)
       if (!isTrustedAnthropicUrl(url)) return undefined
@@ -960,7 +1052,25 @@ export default Plugin.define({
       if (event.model.providerID !== INTEGRATION_ID) return
       const choice = takeCredentialChoice(event.request)
       event.request = choice.request
-      const active = await resolveOAuth(choice.credentialID)
+      let active: ResolvedOAuth | undefined
+      try {
+        active = await resolveOAuth(choice.credentialID)
+      } catch (error) {
+        // A sourced credential that passes on its own (a held refresh, a busy
+        // store) is refused until then; the request fails as a retryable 429,
+        // so the session retries and the pool places it on another login.
+        const until =
+          choice.credentialID !== undefined &&
+          credentialSource(INTEGRATION_ID, choice.credentialID) !== undefined
+            ? retryAtOf(error)
+            : undefined
+        if (until === undefined) throw error
+        event.request = refusedRequest(
+          event.request,
+          retryAfterSeconds(earliestRelease(until, Date.now()), Date.now()),
+        )
+        return
+      }
       if (!setupActive || !active) return
       const { credential } = active
       const connectionDescription = describeConnection(active.connection)
@@ -1077,8 +1187,16 @@ export default Plugin.define({
     })
 
     await ctx.session.hook('http.response', async (event) => {
-      if (!setupActive) return
       if (event.model.providerID !== INTEGRATION_ID) return
+      // A refused request went nowhere: it answers as Anthropic's rate limit
+      // does, whichever setup refused it.
+      const refused = refusedRequests.get(event.request)
+      if (refused !== undefined) {
+        await event.response.body?.cancel()
+        event.response = refusedResponse(refused)
+        return
+      }
+      if (!setupActive) return
       if (!hasTransformedOAuthShape(event.request)) return
       const ownedDirectly = transformedRequests.has(event.request)
       let lease: AliasLease | undefined

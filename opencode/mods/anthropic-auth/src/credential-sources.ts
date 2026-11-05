@@ -31,6 +31,42 @@ export interface CredentialSource {
   readonly resolve: (credentialID: string) => Promise<SourcedCredential>
   /** The provider rejected `access` (a 401): the source refreshes it next time if it still holds it. */
   readonly rejected?: (credentialID: string, access: string) => void
+  /**
+   * The token the source holds now while it is good, else none; never
+   * refreshes. The usage sweep reads through it, so a sweep never makes a
+   * source refresh. A source without it is not swept: its credentials keep
+   * the readings their responses give.
+   */
+  readonly peek?: (credentialID: string) => Promise<SourcedCredential | undefined>
+}
+
+/**
+ * The token a source holds for `credentialID` without a refresh: none when
+ * the source has no `peek`, holds no good token, fails, or answers without a
+ * usable token.
+ */
+export async function peekSourced(
+  source: CredentialSource,
+  credentialID: string,
+): Promise<SourcedCredential | undefined> {
+  if (typeof source.peek !== 'function') return undefined
+  const credential: unknown = await source
+    .peek(credentialID)
+    .catch(() => undefined)
+  return usable(credential)
+}
+
+const usable = (credential: unknown): SourcedCredential | undefined => {
+  const value = credential as Partial<SourcedCredential> | null | undefined
+  if (
+    typeof value?.access !== 'string' ||
+    value.access === '' ||
+    typeof value.expires !== 'number' ||
+    !Number.isFinite(value.expires)
+  ) {
+    return undefined
+  }
+  return { access: value.access, expires: value.expires }
 }
 
 /** The source that owns `credentialID` among the integration's registered sources. */
@@ -59,17 +95,11 @@ export async function resolveSourced(
   source: CredentialSource,
   credentialID: string,
 ): Promise<SourcedCredential> {
-  const credential: unknown = await source.resolve(credentialID)
-  const value = credential as Partial<SourcedCredential> | null
-  if (
-    typeof value?.access !== 'string' ||
-    value.access === '' ||
-    typeof value.expires !== 'number' ||
-    !Number.isFinite(value.expires)
-  ) {
+  const credential = usable(await source.resolve(credentialID))
+  if (credential === undefined) {
     throw new Error('The credential source answered without a usable token')
   }
-  return { access: value.access, expires: value.expires }
+  return credential
 }
 
 /** When a source's failure says the credential may be tried again (epoch ms), if it says. */

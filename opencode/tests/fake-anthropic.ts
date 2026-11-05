@@ -361,7 +361,14 @@ export const startFakeAnthropic = (options: FakeAnthropicOptions): FakeAnthropic
     const body = await tokenBody(request)
     const entry = [...current].find(([, account]) => account.refresh === body.refresh_token)
     const answer = entry === undefined ? undefined : (options.token?.(entry[0]) ?? { kind: "rotate" as const })
-    const status = entry === undefined || answer?.kind === "rejected" ? 400 : answer?.kind === "unavailable" ? 503 : 200
+    const status =
+      entry === undefined || answer?.kind === "rejected"
+        ? 400
+        : answer?.kind === "unavailable"
+          ? 503
+          : answer?.kind === "rate-limited"
+            ? 429
+            : 200
     record(request, path, entry?.[0], status)
     if (body.grant_type !== "refresh_token" || entry === undefined || answer?.kind === "rejected") {
       return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 })
