@@ -14,12 +14,9 @@ import { useNow } from "./clock.ts"
 import type { Host } from "./host.ts"
 import { useSessionLink } from "./link.ts"
 
-/**
- * Which sessions of `sessionID`'s family work now: the host runs them, or
- * their subagent row is live (subagent.ts).
- */
+/** Which subagents of `sessionID`'s family work now, as the host's live state says (subagent.ts). */
 export function working(host: Host, sessionID: string): (id: string) => boolean {
-  return familyWorking(host.subagents(sessionID), (id) => host.status(id) === "running")
+  return familyWorking(host.subagents(sessionID))
 }
 
 /** The rows for `sessionID`'s family; `child` when the route is one of the subagents, which is then marked. */

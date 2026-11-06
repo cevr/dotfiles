@@ -7,6 +7,7 @@ const session = (id: string, over: Partial<Session> = {}): Session => ({
   parentID: "root",
   time: { created: 0 },
   running: false,
+  shells: [],
   permissions: [],
   questions: [],
   messages: [],

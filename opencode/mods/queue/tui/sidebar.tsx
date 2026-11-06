@@ -54,7 +54,7 @@ export function QueueSection(props: { ctx: Plugin.Context; sessionID: string }) 
   const rows = createMemo(() => {
     const current = queue()
     const items = current?.root === root() ? current.snapshot.items : []
-    return board(items, liveStates(ctx.data, root()), now())
+    return board(items, liveStates(ctx.data, root(), ctx.location), now())
   })
   const theme = () => ctx.theme
   const colour = (mark: Mark) => {

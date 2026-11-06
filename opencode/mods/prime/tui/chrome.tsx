@@ -37,7 +37,7 @@ export function useFamily(host: Host, sessionID: () => string | undefined) {
     const id = sessionID()
     return (id ? host.session(id)?.parentID : undefined) ?? undefined
   }
-  // Running as its row reads it: one waiting on its own background work counts.
+  // Working as the host's live state says, as its row reads it: one waiting on its own running shell or subagent counts.
   const running = () => {
     const id = sessionID()
     return id ? working(host, id) : () => false
@@ -158,7 +158,7 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   const subagents = createMemo(() => {
     if (!props.sessionID) return 0
     const id = props.sessionID
-    // A subagent waiting on its own background work is idle to the host but counts, as its row runs.
+    // A subagent waiting on a shell or subagent of its own that still runs is idle to the host but counts, as its row does.
     return othersWorking(props.host.familyIDs(id), id, working(props.host, id))
   })
   const shells = createMemo(() => (props.sessionID ? props.host.shells(props.sessionID) : 0))

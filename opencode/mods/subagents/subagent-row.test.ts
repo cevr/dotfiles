@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test"
 import type { Call, Message, Part, Session } from "./family.ts"
 import { columns, format } from "./line.ts"
-import { latchUpdate, LINGER_MS, rows, subagents, visible, waitingOn, type Row } from "./subagent-row.ts"
+import { latchUpdate, LINGER_MS, rows, subagents, visible, type Row } from "./subagent-row.ts"
 
 const call = (tool: string, input: Record<string, unknown>, over: Partial<Call> = {}): Call => ({
   type: "call",
@@ -22,6 +22,7 @@ const session = (id: string, over: Partial<Session> = {}): Session => ({
   id,
   time: { created: 0 },
   running: false,
+  shells: [],
   permissions: [],
   questions: [],
   messages: [],
@@ -243,8 +244,11 @@ describe("a latched subagent", () => {
 
   test("once it opens it is a subagent like any other: running works, and a finished one ends as its notice says", () => {
     expect(latched(pace, { running: true, time: { created: AT, busy: AT + 10 } })).toMatchObject({ state: "working", since: AT + 10 })
-    // Its parent's latched call counts as a background one: no stop notice yet keeps it waiting.
-    expect(latched(pace, { time: { created: AT, busy: AT + 10, idle: AT + 20 }, outcome: "succeeded" }, { messages: [step([answered])] })).toMatchObject({ state: "waiting" })
+    // Once it stopped with nothing of its own running, the parent's call with no stop notice yet keeps nothing live.
+    expect(latched(pace, { time: { created: AT, busy: AT + 10, idle: AT + 20 }, outcome: "succeeded" }, { messages: [step([answered])] })).toMatchObject({
+      state: "done",
+      ended: AT + 20,
+    })
     expect(
       latched(pace, { time: { created: AT, busy: AT + 10, idle: AT + 20 }, outcome: "succeeded" }, { messages: [step([answered]), notice("a", "completed", AT + 21)] }),
     ).toMatchObject({ state: "done", ended: AT + 21 })
@@ -303,66 +307,75 @@ describe("which rows show", () => {
 })
 
 describe("a subagent waiting on its own background work", () => {
-  const one = (child: Partial<Session> = {}, root: Partial<Session> = {}) =>
-    subagents(family(session("root", root), session("a", { parentID: "root", agent: "worker", time: { created: 1, busy: 100 }, ...child })), "root")[0]
+  const one = (child: Partial<Session> = {}, root: Partial<Session> = {}, more: ReadonlyArray<Session> = []) =>
+    subagents(family(session("root", root), session("a", { parentID: "root", agent: "worker", time: { created: 1, busy: 100 }, ...child }), ...more), "root")[0]
   const backgrounded = (command: string, shellID: string) =>
     call("shell", { command, background: true }, { metadata: { status: "running", shellID } })
   const shellNotice = (shellID: string, at: number): Message => ({ type: "shell", shellID, state: "completed", at })
   const kernel = (...calls: ReadonlyArray<Call>) => call("kernel", { code: "// run it" }, { calls })
+  const runs = (...ids: ReadonlyArray<string>) => ({ shells: ids.map((id) => ({ id, command: "sleep 999" })) })
 
-  test("a background shell with no stop notice yet keeps it waiting from when its turn ended, even after that turn succeeded", () => {
-    const waiting = one({ outcome: "succeeded", time: { created: 1, busy: 100, idle: 200 }, messages: [step([backgrounded("sleep 2 && echo ok", "sh_1")])] })
+  test("a background shell the host's registry lists as running keeps it waiting from when its turn ended, even after that turn succeeded", () => {
+    const waiting = one({ outcome: "succeeded", time: { created: 1, busy: 100, idle: 200 }, messages: [step([backgrounded("sleep 2 && echo ok", "sh_1")])], ...runs("sh_1") })
     expect(waiting).toMatchObject({ state: "waiting", update: "sleep 2", since: 200 })
     expect(waiting).not.toHaveProperty("ended")
     expect(visible(waiting ? [waiting] : [], 1_000).map((row) => row.elapsed)).toEqual([800])
   })
 
+  test("a background shell the registry no longer lists has ended, with no stop notice: the row ends as its session did", () => {
+    // Killed by PID or by shell_kill, or lost to a restart: no notice ever comes.
+    const killed = one({ outcome: "succeeded", time: { created: 1, busy: 100, idle: 200 }, messages: [step([backgrounded("sleep 999", "sh_1")])] })
+    expect(killed).toMatchObject({ state: "done", ended: 200, update: "1 step" })
+    expect(visible(killed ? [killed] : [], 200 + LINGER_MS)).toEqual([])
+    // A shell of another session's keeps nothing of this one live.
+    expect(one({ outcome: "succeeded", messages: [step([backgrounded("sleep 999", "sh_1")])] }, runs("sh_1"))).toMatchObject({ state: "done" })
+  })
+
   test("it says what it waits on by the shell call's description, else in a few words; a sentence written after starting it wins", () => {
     const gate = (over: Record<string, unknown> = {}) =>
       call("shell", { command: "cd /w && flock /home/x/gate.lock ./scripts/gate.sh", background: true, ...over }, { metadata: { shellID: "sh_9" } })
-    expect(one({ messages: [step([gate()])] })).toMatchObject({ update: "flock gate.lock ./scripts/gate.sh" })
-    expect(one({ messages: [step([gate({ description: "Run the gate under the lock" })])] })).toMatchObject({ update: "Run the gate under the lock" })
-    expect(one({ messages: [step([words("Start the gate.")]), step([gate()]), step([words("Queued behind the shared gate lock. Back when it runs.")])] })).toMatchObject({
-      update: "Queued behind the shared gate lock.",
-    })
-    expect(one({ messages: [step([words("Start the gate.")]), step([gate()])] })).toMatchObject({ update: "flock gate.lock ./scripts/gate.sh" })
+    const running = runs("sh_9")
+    expect(one({ messages: [step([gate()])], ...running })).toMatchObject({ update: "flock gate.lock ./scripts/gate.sh" })
+    expect(one({ messages: [step([gate({ description: "Run the gate under the lock" })])], ...running })).toMatchObject({ update: "Run the gate under the lock" })
+    expect(
+      one({ messages: [step([words("Start the gate.")]), step([gate()]), step([words("Queued behind the shared gate lock. Back when it runs.")])], ...running }),
+    ).toMatchObject({ update: "Queued behind the shared gate lock." })
+    expect(one({ messages: [step([words("Start the gate.")]), step([gate()])], ...running })).toMatchObject({ update: "flock gate.lock ./scripts/gate.sh" })
   })
 
-  test("its shell's stop notice ends the wait; then it ends as before", () => {
+  test("a running shell no call names reads by the registry's own words", () => {
+    expect(one({ shells: [{ id: "sh_7", command: "cd /w && bun run gate", description: "Run the gate" }] })).toMatchObject({ state: "waiting", update: "Run the gate" })
+    expect(one({ shells: [{ id: "sh_7", command: "cd /w && bun run gate" }] })).toMatchObject({ state: "waiting", update: "bun run gate" })
+  })
+
+  test("its shell's stop notice and the registry agree: then it ends as before", () => {
     expect(
       one({ outcome: "succeeded", time: { created: 1, idle: 900 }, messages: [step([backgrounded("sleep 2", "sh_1")]), shellNotice("sh_1", 800), step([words("Done.")])] }),
     ).toMatchObject({ state: "done", ended: 900 })
   })
 
   test("a shell a kernel cell moved to the background counts the same, by the record's shell ID", () => {
-    expect(one({ messages: [step([kernel(call("shell", { command: "bun test" }, { metadata: { shellID: "sh_2" } }))])] })).toMatchObject({
-      state: "waiting",
-      update: "bun test",
-    })
-    expect(
-      one({ outcome: "succeeded", messages: [step([kernel(call("shell", { command: "bun test" }, { metadata: { shellID: "sh_2" } }))]), shellNotice("sh_2", 5)] }),
-    ).toMatchObject({ state: "done" })
+    const cell = step([kernel(call("shell", { command: "bun test" }, { metadata: { shellID: "sh_2" } }))])
+    expect(one({ messages: [cell], ...runs("sh_2") })).toMatchObject({ state: "waiting", update: "bun test" })
+    expect(one({ outcome: "succeeded", messages: [cell] })).toMatchObject({ state: "done" })
   })
 
-  test("a foreground shell, a failed one and one still running are no wait", () => {
-    expect(waitingOn([step([call("shell", { command: "ls" }, { metadata: { status: "completed", exit: 0 } })])])).toEqual([])
-    expect(waitingOn([step([call("shell", { command: "ls" }, { status: "error", metadata: { shellID: "sh_3" } })])])).toEqual([])
-    expect(waitingOn([step([call("shell", { command: "ls" }, { status: "running", metadata: { shellID: "sh_4" } })])])).toEqual([])
-  })
-
-  test("its own background subagent waits until that subagent's stop notice; several waits read as the first and a count", () => {
+  test("its own subagent that works keeps it waiting, recursively; several waits read as the first and a count", () => {
     const messages = [step([launch("g", { description: "Check the parser" }), backgrounded("bun test", "sh_5")])]
-    expect(waitingOn(messages)).toEqual(["Check the parser", "bun test"])
-    expect(one({ messages })).toMatchObject({ state: "waiting", update: "Check the parser +1" })
-    expect(waitingOn([...messages, notice("g", "completed", 9), shellNotice("sh_5", 9)])).toEqual([])
+    const grandchild = (over: Partial<Session> = {}) => session("g", { parentID: "a", agent: "worker", title: "g title", time: { created: 2 }, ...over })
+    expect(one({ messages, ...runs("sh_5") }, {}, [grandchild({ running: true })])).toMatchObject({ state: "waiting", update: "Check the parser +1" })
+    // Its grandchild itself waits on a running shell of its own: still work, so the child waits.
+    expect(one({ messages }, {}, [grandchild(runs("sh_8"))])).toMatchObject({ state: "waiting", update: "Check the parser" })
+    // A stopped grandchild with no notice, and no shell running: nothing waits.
+    expect(one({ outcome: "succeeded", messages }, {}, [grandchild({ outcome: "succeeded" })])).toMatchObject({ state: "done" })
   })
 
-  test("the parent still waiting on it keeps it waiting: a foreground call still running, a background one with no stop notice", () => {
+  test("the parent's call with no stop notice keeps nothing live: a stopped child ends as its session did", () => {
     const foreground = { messages: [step([call("subagent", { description: "x" }, { status: "running", metadata: { sessionID: "a" } })])] }
-    expect(one({ outcome: "succeeded" }, foreground)).toMatchObject({ state: "waiting", update: "" })
-    expect(one({ outcome: "succeeded", messages: [step([words("Done. All green.")])] }, { messages: [step([launch("a", {})])] })).toMatchObject({
-      state: "waiting",
-      update: "Done.",
+    expect(one({ outcome: "succeeded", time: { created: 1, idle: 40 } }, foreground)).toMatchObject({ state: "done", ended: 40 })
+    expect(one({ outcome: "succeeded", time: { created: 1, idle: 40 }, messages: [step([words("Done. All green.")])] }, { messages: [step([launch("a", {})])] })).toMatchObject({
+      state: "done",
+      ended: 40,
     })
     expect(one({ outcome: "succeeded" }, { messages: [step([launch("a", {})]), notice("a", "completed", 50)] })).toMatchObject({ state: "done", ended: 50 })
   })
