@@ -22,6 +22,7 @@ so a new terminal runs it, and `opencode2` stays the stock release. As a `latest
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`cmd/anthropic-auth`), the pool (on
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the cache and the web tools, the role
 the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the rift tool and tool names, the role
 models, a one-hour prompt cache for Claude
 (`providers.anthropic.settings.cache.ttl: "1h"`) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions and the
@@ -1094,6 +1095,61 @@ then, and a renamed call would pass them unseen. Every other unknown name gets
 OpenCode's own answer. A kernel cell's `tools.<name>` misses are the kernel's
 to answer: they never reach the registry's hooks. The rule is `nearest` in
 `mods/tool-names/near-miss.ts`.
+
+## Web
+
+`cmd/web` is a server plugin that makes the built-in `websearch` and
+`webfetch` tools work where they failed. It replaces neither tool: it adds a
+search provider and wraps webfetch's execute through the tool transform.
+
+**websearch.** The built-in tool asks a consent form when no provider is
+chosen. In a subagent nobody answers it, and after a minute the call fails
+`Web search cancelled` (measured over 7 days: 7 of 7 calls on the workbox,
+7 of 51 on the Mac, all in subagents). The plugin registers a provider, `web`,
+that asks the host's providers by id in `order` (a query by id never asks the
+form) and answers with the first that has results; a provider that fails or
+finds nothing passes to the next. `web` becomes the default unless the config
+chose one (`websearch` in `opencode.json`, a provider id or `false`). That
+default also outranks a choice saved from an earlier form, so a saved choice
+that now fails no longer breaks search. No key is needed: each built-in
+provider answers without one (probed on both hosts); with `EXA_API_KEY`,
+`TAVILY_API_KEY` and the rest set, the host sends the key. When every provider
+fails, the tool's error names each one's failure (`Unable to search the web
+for <query>: every web search provider failed: exa: HTTP 429; ...`).
+
+**webfetch.** The built-in runs first, untouched; the plugin acts only on its
+failure:
+
+- a PDF (`Unsupported fetched file content type: application/pdf`, or a
+  generic binary type from a `.pdf` path) is fetched again, up to `pdfMB`, and
+  answered as its text through `pdftotext -layout` (Homebrew's `poppler`,
+  `poppler-utils` on Linux), cut to `cutKB` with a note; without pdftotext the
+  error says what to install;
+- a body over the built-in's 5 MB limit is fetched again, only its first
+  `cutKB`, and answered under a first line `[webfetch: the body cut to the
+  first 512 KB of 6.2 MB. For the rest, download it (curl ...) and read the
+  file in parts.]`; cut HTML is reduced to its text unless the call asked for
+  `html`;
+- a 404 or 410 fails with what to do instead of guessing again: for a
+  `raw.githubusercontent.com` or GitHub blob URL, `okra repo fetch
+  <owner/repo>` and read the checkout; elsewhere, websearch for the real page
+  or `okra repo fetch`.
+
+Any other failure (a timeout, a 406, a 500) is the built-in's. The refetch
+follows redirects without the built-in's per-redirect permission check, which
+matters only to a config that denies some webfetch URLs.
+
+Options: `order` (default `exa, parallel, tavily, firecrawl, tinyfish`),
+`cutKB` (512), `pdfMB` (50).
+
+The model (the domain files at the root of `mods/web`): `search.ts` holds the
+order and the default, `fetch.ts` reads the built-in's failure and writes the
+words the agent reads, and `model.ts` handles both over the contracts in
+`service.ts`: `Pages` (`http/`), `PdfText` (`process/`) and `SearchProviders`
+(`opencode/`), with `memory/` implementations and the laws in `laws.ts`.
+`tests/web.test.ts` proves it in real OpenCode: a choice of a failing provider
+saved from the form, then a subagent's search that asks no form and answers
+from the next provider, and a PDF, a 6 MB body and a 404 from a loopback site.
 
 ## Idle compaction
 

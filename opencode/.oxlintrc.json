@@ -845,6 +845,31 @@
           }
         ]
       }
+    },
+    {
+      "files": [
+        "mods/web/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
+                "message": "The web domain fence: the web mod's domain files import effect, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }
