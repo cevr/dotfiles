@@ -140,6 +140,13 @@ describe("lifetime", () => {
   test("a body with no marker is cached by its provider: OpenAI's 30 minutes", () => {
     expect(lifetime({ input: [] })).toEqual({ ttlMs: 1_800_000, explicit: false })
   })
+
+  test("an OpenAI body's request-level lifetime names its cache's, the pool's header over it", () => {
+    expect(lifetime({ messages: [], prompt_cache_options: { ttl: "2s" } })).toEqual({ ttlMs: 2_000, explicit: false })
+    expect(lifetime({ input: [], prompt_cache_retention: "24h" })).toEqual({ ttlMs: 86_400_000, explicit: false })
+    expect(lifetime({ input: [], prompt_cache_retention: "in_memory" })).toEqual({ ttlMs: 1_800_000, explicit: false })
+    expect(lifetime({ messages: [], prompt_cache_options: { ttl: "2s" } }, "1h")).toEqual({ ttlMs: 3_600_000, explicit: false })
+  })
 })
 
 test("hash tells apart texts that differ in one character", () => {

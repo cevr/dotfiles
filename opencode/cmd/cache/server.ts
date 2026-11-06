@@ -12,10 +12,13 @@
  * sums it), and the TUI reads a session's causes over the
  * `dotfiles-opencode.cache` RPC.
  *
+ * - `model.request` (a primary or compaction request): the pool's credential
+ *   and cache-lifetime headers, kept for the session's next `http.request`
+ *   (the auth plugin strips them before this plugin's `http.request` runs).
  * - `http.request` (a primary or compaction request): the body is read from a
- *   copy of the request and fingerprinted; the login is the pool's credential
- *   header, the lifetime the body's cache markers' `ttl` (the pool's
- *   cache-lifetime header wins). The request itself is sent as it was.
+ *   copy of the request and fingerprinted; the login is the pool's credential,
+ *   the lifetime the body's cache markers' `ttl` (the pool's cache-lifetime
+ *   header wins). The request itself is sent as it was.
  * - `session.step.ended`, `session.step.failed`, `session.compaction.ended`:
  *   the waiting request is judged with the usage the event carries, or dropped.
  *
@@ -85,26 +88,42 @@ export const make = (ledger: (options: Options) => Layer.Layer<RequestLog>) =>
       const recorder = Context.get(services, Model.Recorder)
 
       // A title's or a generate call's request runs on its own prompt, outside the conversation's cache.
-      yield* ctx.session.hook("http.request", (event) =>
-        event.kind !== "primary" && event.kind !== "compaction"
-          ? Effect.void
-          : bodyOf(event.request).pipe(
-              Effect.flatMap((body) => {
-                const found = segments(body)
-                if (found.length === 0) return Effect.void
-                const login = event.request.headers.get(CREDENTIAL_HEADER)?.trim()
-                const kind: "primary" | "compaction" = event.kind === "compaction" ? "compaction" : "primary"
-                return recorder.sent(event.sessionID, {
-                  kind,
-                  agent: event.agent,
-                  model: `${event.model.providerID}/${event.model.id}`,
-                  ...(login === undefined || login === "" ? {} : { login }),
-                  ttlMs: lifetime(body, event.request.headers.get(CACHE_TTL_HEADER)?.trim() || undefined).ttlMs,
-                  segments: found,
-                })
-              }),
-            ),
+      const conversational = (kind: string) => kind === "primary" || kind === "compaction"
+      // The pool names a request's login and lifetime in `model.request`, which runs for every plugin before any
+      // `http.request`; the auth plugin's `http.request`, set up before this one, strips both headers. So they are
+      // read here, after the pool's (set up before this one too), and joined to the session's next request.
+      const placed = new Map<string, { readonly login?: string; readonly ttl?: string }>()
+      const nonEmpty = (value: string | undefined) => (value === undefined || value.trim() === "" ? undefined : value.trim())
+      yield* ctx.session.hook("model.request", (event) =>
+        Effect.sync(() => {
+          if (!conversational(event.kind)) return
+          const login = nonEmpty(event.headers[CREDENTIAL_HEADER])
+          const ttl = nonEmpty(event.headers[CACHE_TTL_HEADER])
+          placed.set(event.sessionID, { ...(login === undefined ? {} : { login }), ...(ttl === undefined ? {} : { ttl }) })
+        }),
       )
+      yield* ctx.session.hook("http.request", (event) => {
+        if (!conversational(event.kind)) return Effect.void
+        const pool = placed.get(event.sessionID)
+        placed.delete(event.sessionID)
+        return bodyOf(event.request).pipe(
+          Effect.flatMap((body) => {
+            const found = segments(body)
+            if (found.length === 0) return Effect.void
+            // Headers still on the request: this hook ran before the auth plugin's, or no auth plugin strips them.
+            const login = nonEmpty(event.request.headers.get(CREDENTIAL_HEADER) ?? undefined) ?? pool?.login
+            const ttl = nonEmpty(event.request.headers.get(CACHE_TTL_HEADER) ?? undefined) ?? pool?.ttl
+            return recorder.sent(event.sessionID, {
+              kind: event.kind === "compaction" ? "compaction" : "primary",
+              agent: event.agent,
+              model: `${event.model.providerID}/${event.model.id}`,
+              ...(login === undefined ? {} : { login }),
+              ttlMs: lifetime(body, ttl).ttlMs,
+              segments: found,
+            })
+          }),
+        )
+      })
 
       yield* Effect.forkScoped(
         ctx.event.subscribe({ types: [...EVENTS] }).pipe(

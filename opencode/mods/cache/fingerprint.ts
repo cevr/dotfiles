@@ -183,18 +183,29 @@ const markerTtls = (value: unknown, found: Array<string | undefined>): void => {
   }
 }
 
+/** An OpenAI body's request-level cache lifetime, when it names one that parses. */
+const requestTtl = (body: unknown): number | undefined => {
+  if (!isRecord(body)) return undefined
+  const options = body["prompt_cache_options"]
+  const ttl = isRecord(options) && typeof options["ttl"] === "string" ? options["ttl"] : body["prompt_cache_retention"]
+  return typeof ttl === "string" ? parseTtl(ttl) : undefined
+}
+
 /**
  * The lifetime a body's cache markers ask for: the longest `ttl` of its
  * `cache_control` markers, Anthropic's 5 minutes for a marker that names none;
  * `override`, a lifetime another plugin has the request written for (the
  * pool's `x-opencode-cache-ttl`), wins. A body with no marker is cached by its
- * provider's own rules, OpenAI's 30 minutes.
+ * provider's own rules: the request-level lifetime an OpenAI body names
+ * (`prompt_cache_options.ttl`, or `prompt_cache_retention: "24h"`, as the
+ * fork's packages/ai/src/protocols/utils/cache.ts writes a configured
+ * `cache.ttl`), else OpenAI's 30 minutes.
  */
 export const lifetime = (body: unknown, override?: string): Lifetime => {
   const found: Array<string | undefined> = []
   markerTtls(body, found)
   const named = override === undefined ? undefined : parseTtl(override)
-  if (found.length === 0) return { ttlMs: named ?? DEFAULT_TTL_MS.openai, explicit: false }
+  if (found.length === 0) return { ttlMs: named ?? requestTtl(body) ?? DEFAULT_TTL_MS.openai, explicit: false }
   const longest = Math.max(...found.map((ttl) => (ttl === undefined ? undefined : parseTtl(ttl)) ?? DEFAULT_TTL_MS.anthropic))
   return { ttlMs: named ?? longest, explicit: true }
 }
