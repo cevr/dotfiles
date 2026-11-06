@@ -125,6 +125,14 @@ const PEER = new RegExp(
     String.raw`^You (?:were|are being) restarted\b|^OpenCode was (?:rebuilt|restarted|updated)\b`,
     String.raw`^You are taking over a [\w ]+ session\b|^You are a subagent spawned by\b`,
     String.raw`\bStarted by wake w\d+`,
+    // probe prompts a script sends a model to test it
+    String.raw`^"?Reply with exactly\b`,
+    String.raw`\bNonce \d+`,
+    // the PR-checker monitor, and the wake mod's alarm, monitor and wake-up notices
+    String.raw`A review or checker state changed`,
+    String.raw`^\[wake-up `,
+    String.raw`^⏰ ?(?:Wake|Monitor|Alarm|Latch)\b`,
+    String.raw`^Alarm w[0-9a-z]{6}\b`,
   ].join('|'),
 );
 
