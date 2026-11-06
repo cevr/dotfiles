@@ -6,7 +6,9 @@
  * `bun tests/idle-compact/run.ts <spec.json>`.
  *
  * It keeps the plugin's log lines and the host's loads of it (one per
- * directory it serves).
+ * directory it serves), and when each model request started as the host saw
+ * it: read in the host's `model.request` hook, where the plugin reads the
+ * cache's last refresh, by a hook registered before the plugin's.
  *
  * It sends one prompt, lets the session sit idle, and reads the session's
  * context twice: `early`, `EARLY_MS` after the turn's request came (before the
@@ -45,10 +47,18 @@ export interface Line {
   readonly trigger?: string
 }
 
+/** A model request's start as the host saw it, in epoch ms: no later than the plugin's clock read for it. */
+export interface Started {
+  readonly kind: "primary" | "compaction" | "title" | "generate"
+  readonly at: number
+}
+
 export interface Result {
   readonly early: unknown
   readonly late: unknown
+  /** The requests as the sim got them, each after its trip from the host. */
   readonly seen: ReadonlyArray<Seen>
+  readonly started: ReadonlyArray<Started>
   readonly log: ReadonlyArray<Line>
 }
 
@@ -95,7 +105,14 @@ interface Sdk {
 }
 const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
 const log: Array<Line> = []
+const started: Array<Started> = []
+/** The host's hook context, as much as the clock uses. */
+interface Hooks {
+  readonly session: { readonly hook: (name: "model.request", callback: (event: { readonly kind: Started["kind"] }) => void) => Promise<unknown> }
+}
 const opencode = await OpenCode.create({
+  // The host activates its SDK plugins ahead of the config's (its boot order), so this hook runs before the plugin's.
+  plugins: [{ id: "request-clock", setup: (context: Hooks) => context.session.hook("model.request", (event) => void started.push({ kind: event.kind, at: Date.now() })) }],
   events: { persist: true },
   log: {
     level: "info",
@@ -152,7 +169,7 @@ try {
   }
   if (spec.background) await opencode.experimental.session.wait({ sessionID: session.id })
   late = await opencode.sessions.context({ sessionID: session.id })
-  const result: Result = { early, late, seen: sim.seen, log }
+  const result: Result = { early, late, seen: sim.seen, started, log }
   writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
 } finally {
   await opencode.close()
