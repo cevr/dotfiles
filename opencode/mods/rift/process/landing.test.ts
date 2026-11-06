@@ -2,9 +2,9 @@
 // bare origin, a warm source, an integration clone and two Rift clones on
 // their branches. The lock file is a Bun workspace's, so installs need no
 // network.
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { Landing } from "../service.ts"
@@ -175,6 +175,47 @@ describe("process Landing", () => {
     expect(ran.code).toBe(3)
     expect(ran.log).toBe(join(made.scratch, "logs", "integrate.gate.log"))
     expect(ran.output).toBe(" 3 pass\noops\n")
+  })
+
+  test("the gate and acceptance run always go through the guard's launcher: niced, and in a scope under MemoryMax=12G on systemd", () => {
+    expect(ProcessLanding.checkArgv("bun run gate", "/l/gate.log", false)).toEqual(["nice", "-n", "10", "sh", "-c", 'sh -c "$1" >"$2" 2>&1', "rift-land", "bun run gate", "/l/gate.log"])
+    expect(ProcessLanding.checkArgv("bun run gate", "/l/gate.log", true)).toEqual([
+      "nice", "-n", "10",
+      "systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=12G", "-p", "CPUWeight=20", "--",
+      "sh", "-c", 'sh -c "$1" >"$2" 2>&1', "rift-land", "bun run gate", "/l/gate.log",
+    ])
+  })
+
+  /** One check of `command` in a bare scratch directory, under the layer's `options`. */
+  const checkIn = (options: Partial<ProcessLanding.Options>, command: string) => {
+    const scratch = mkdtempSync(join(tmpdir(), "rift-check-"))
+    scratches.push(scratch)
+    const layer = ProcessLanding.layer({ logs: join(scratch, "logs"), ...options })
+    return { scratch, ran: Effect.runPromise(Effect.flatMap(Landing, (landing) => landing.check(scratch, "gate", command, {})).pipe(Effect.provide(layer))) }
+  }
+
+  test("on the Mac a check runs niced alone, ten more than the caller", async () => {
+    const own = Number(sh(tmpdir(), "sh", "-c", "ps -o nice= -p $$"))
+    const { ran } = checkIn({ platform: "darwin", probe: ["/nonexistent/loop-probe-x"] }, "ps -o nice= -p $$")
+    expect(Number((await ran).output.trim())).toBe(Math.min(process.platform === "darwin" ? 20 : 19, own + 10))
+  })
+
+  test("on a systemd host a check runs in a user scope with its limits; a failed probe runs it niced alone", async () => {
+    // A stand-in systemd-run on PATH records its arguments and runs the command after `--`.
+    const bin = mkdtempSync(join(tmpdir(), "rift-systemd-"))
+    scratches.push(bin)
+    write(bin, "systemd-run", '#!/bin/sh\necho "$@" > "$(dirname "$0")/asked"\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n')
+    sh(bin, "chmod", "755", join(bin, "systemd-run"))
+    const env = { PATH: `${bin}:${process.env.PATH ?? ""}` }
+
+    const scoped = checkIn({ platform: "linux", probe: ["true"], env }, "echo ran")
+    expect((await scoped.ran).output).toBe("ran\n")
+    expect(readFileSync(join(bin, "asked"), "utf8")).toBe(`--user --scope --quiet --collect -p MemoryMax=12G -p CPUWeight=20 -- sh -c sh -c "$1" >"$2" 2>&1 rift-land echo ran ${join(scoped.scratch, "logs", `${basename(scoped.scratch)}.gate.log`)}\n`)
+
+    rmSync(join(bin, "asked"))
+    const refused = checkIn({ platform: "linux", probe: ["false"], env }, "echo ran")
+    expect((await refused.ran).output).toBe("ran\n")
+    expect(existsSync(join(bin, "asked"))).toBe(false)
   })
 
   test("push sends HEAD to main when it holds origin's newest main, and refuses when main moved", async () => {
