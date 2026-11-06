@@ -1072,8 +1072,8 @@ describe("the units' logs", () => {
     ))
 })
 
-describe("an idle root with ready units", () => {
-  const LINE = "idle with units ready: closure-flake, pkg-lower; start them or name what you wait on."
+describe("an idle root with units to move or a batch to land", () => {
+  const LINE = "idle with units in plan, implement or verify: closure-flake, pkg-lower; start them or name what you wait on."
   const world = {
     sessions: { root: {}, child: { parentID: "root" } },
     steps: { root: ["closure-flake"] },
@@ -1112,6 +1112,31 @@ describe("an idle root with ready units", () => {
         yield* settle
         yield* plugin.idle("root")
         yield* eventually(() => expect(plugin.nudges).toHaveLength(3))
+      }),
+    ))
+
+  test("ready units from the status plugin: their batch, due by count or by the oldest's log time, is landed by name; short of both, no nudge", () =>
+    scenario(
+      Effect.gen(function* () {
+        const ready = (units: ReadonlyArray<{ readonly unit: string; readonly since?: string }>) =>
+          start({ now: WEDNESDAY }, { ...world, runs: [{ name: "p5", units: [{ unit: "closure-flake", state: "merged abc1234" }, ...units.map((unit) => ({ ...unit, state: "ready" }))] }] })
+        const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString().slice(0, 16) + "Z"
+        const three = yield* ready([{ unit: "lexer" }, { unit: "parser" }, { unit: "docs" }])
+        const old = yield* ready([{ unit: "lexer", since: minutesAgo(45) }])
+        const fresh = yield* ready([{ unit: "lexer", since: minutesAgo(5) }, { unit: "parser" }])
+        for (const plugin of [three, old, fresh]) yield* plugin.idle("root")
+        yield* eventually(() =>
+          expect(three.nudges.map((nudge) => nudge.text)).toEqual([
+            'idle with a batch due (3 ready): lexer, parser, docs; land it with rift({ action: "land", rifts: ["p5/lexer", "p5/parser", "p5/docs"] }).',
+          ]),
+        )
+        // The log's time is to the minute, so the age is 45 or, across a minute's turn, 46.
+        yield* eventually(() =>
+          expect(old.nudges.map((nudge) => nudge.text)).toEqual([
+            expect.stringMatching(/^idle with a batch due \(lexer ready 4[56] min\): lexer; land it with rift\(\{ action: "land", rifts: \["p5\/lexer"\] \}\)\.$/),
+          ]),
+        )
+        expect(fresh.nudges).toEqual([])
       }),
     ))
 

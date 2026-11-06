@@ -436,7 +436,7 @@ through `agents.json`) to stop at its first compaction, write a handoff file
 (the task, what is done, what is next) and end with `compacted: <path>. Start
 a fresh worker from this handoff; do not continue this session.`
 
-### An idle root with ready work
+### An idle root with work to do
 
 A root session owns an orchestrate run once it starts a step (`<role> <unit>
 r<N>`) of one of the run's units, as the call log records it. When such a root
@@ -445,11 +445,22 @@ in `plan`, `implement` or `verify` (the status mod's `STATUS` RPC, over the
 skill's `status.ts`), it is steered once with one line:
 
 ```
-idle with units ready: alpha, beta; start them or name what you wait on.
+idle with units in plan, implement or verify: alpha, beta; start them or name what you wait on.
 ```
 
-Units from more than one run read `run/unit`; past eight the rest are
-counted. The line is a steered synthetic message carrying the metadata key
+Units in `ready` wait for their batch (the orchestrate skill's Land a batch).
+Once the batch is due, at 3 ready units or the oldest ready for 30 minutes by
+its `log.md` time, the line says to land it, naming each unit's Rift by its
+branch `<run>/<unit>`, which the rift tool finds:
+
+```
+idle with a batch due (3 ready): gamma, delta, eps; land it with rift({ action: "land", rifts: ["p1/gamma", "p1/delta", "p1/eps"] }).
+```
+
+With both, the batch follows the first line as `… A batch due (…): …`. A
+spec's or plan's own `Batch cadence` is not read: the nudge keeps the
+defaults. Units from more than one run read `run/unit`; past eight the rest
+are counted (the land call names every one). The line is a steered synthetic message carrying the metadata key
 `dotfiles-opencode.orchestrate.idle`, so its own arrival is not new input.
 
 Once per idle period: after a nudge the root is not nudged again until new

@@ -564,10 +564,17 @@ export type RunsWorld = ReadonlyArray<Run> | "unreadable"
 export const runsLaws = (name: string, layer: (world: RunsWorld) => Layer.Layer<Runs>) =>
   describe(`${name} keeps the Runs laws`, () => {
     const runs: ReadonlyArray<Run> = [
-      { name: "p1", units: [{ unit: "alpha", state: "implement" }, { unit: "beta", state: "merged 1234567" }] },
+      {
+        name: "p1",
+        units: [
+          { unit: "alpha", state: "implement" },
+          { unit: "beta", state: "merged 1234567" },
+          { unit: "gamma", state: "ready", since: "2026-11-06T10:00Z" },
+        ],
+      },
       { name: "p2", units: [] },
     ]
-    test("the runs, each with its units' states, in order", () =>
+    test("the runs, each with its units' states and the time each entered it, in order", () =>
       check(
         layer(runs),
         Effect.gen(function* () {
@@ -629,10 +636,10 @@ export const steerLaws = (
       await check(
         probe.layer,
         Effect.gen(function* () {
-          yield* (yield* Steer).nudge("root", "idle with units ready: alpha; start them or name what you wait on.")
+          yield* (yield* Steer).nudge("root", "idle with units in plan, implement or verify: alpha; start them or name what you wait on.")
         }),
       )
-      expect(probe.sent()).toEqual([{ sessionID: "root", line: "idle with units ready: alpha; start them or name what you wait on." }])
+      expect(probe.sent()).toEqual([{ sessionID: "root", line: "idle with units in plan, implement or verify: alpha; start them or name what you wait on." }])
     })
 
     test("a nudge the host refuses fails, saying why", () =>

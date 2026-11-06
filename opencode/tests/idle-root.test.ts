@@ -9,13 +9,13 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-const LINE = "idle with units ready: alpha, beta; start them or name what you wait on."
+const LINE = "idle with units in plan, implement or verify: alpha, beta; start them or name what you wait on."
 
 const count = (text: string, part: string) => text.split(part).length - 1
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/idle-root.test.ts: skipped. Set OPENCODE_DEV to the fork.")
-describe.skipIf(!fork)("an idle root with ready units", () => {
+describe.skipIf(!fork)("an idle root with units to move", () => {
   test("is steered once, after its planner ends and the owner's draft clears, and names its wait", async () => {
     const out = mkdtempSync(join(tmpdir(), "idle-root-"))
     const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/idle-root.ts"], {
