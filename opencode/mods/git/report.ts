@@ -154,6 +154,35 @@ const names = (checks: ReadonlyArray<Check>, most = 12): string => {
 }
 
 /**
+ * Each failing check on its lines, `  ✗ name [workflow] · failure · url`, with
+ * the tests and log excerpt `failures` read for it.
+ */
+export const failingLines = (checks: ReadonlyArray<Check>, failures: ReadonlyArray<JobFailure> = []): ReadonlyArray<string> => {
+  const lines: Array<string> = []
+  for (const check of groups(checks).fail) {
+    lines.push(`  ✗ ${check.name}${check.workflow === undefined ? "" : ` [${check.workflow}]`} · ${spoken(check.word)}${check.url === undefined ? "" : ` · ${check.url}`}`)
+    const failure = failures.find((each) => each.check === check.name)
+    if (failure === undefined) continue
+    if (failure.tests.length > 0) lines.push(`    failing tests: ${failure.tests.join(" | ")}`)
+    if (failure.note !== undefined) lines.push(`    log: ${failure.note}`)
+    if (failure.excerpt.length > 0) {
+      lines.push("    log excerpt:")
+      for (const line of failure.excerpt) lines.push(`      ${line}`)
+    }
+  }
+  return lines
+}
+
+/** How many failing jobs' logs one answer or notice reads at most. */
+export const MOST_LOGS = 3
+
+/** The failing checks whose logs an answer reads: those with an Actions job, at most MOST_LOGS. */
+export const logsToRead = (checks: ReadonlyArray<Check>): ReadonlyArray<Check> =>
+  groups(checks)
+    .fail.filter((check) => check.jobId !== undefined)
+    .slice(0, MOST_LOGS)
+
+/**
  * The report as the tool answers it, one block per request: the head, the
  * checks at the head (each failing one with its tests and log excerpt from
  * `failures`), the review, the threads, the reviewers asked and mergeability.
@@ -171,17 +200,7 @@ export const reportText = (report: Report, failures: ReadonlyArray<JobFailure> =
     grouped.cancelled.length > 0 ? `${grouped.cancelled.length} cancelled` : "",
   ].filter((part) => part.length > 0)
   lines.push(`checks at ${short(report.head)}: ${counts.length === 0 ? "none" : counts.join(" · ")} (${verdict(report.checks)})`)
-  for (const check of grouped.fail) {
-    lines.push(`  ✗ ${check.name}${check.workflow === undefined ? "" : ` [${check.workflow}]`} · ${spoken(check.word)}${check.url === undefined ? "" : ` · ${check.url}`}`)
-    const failure = failures.find((each) => each.check === check.name)
-    if (failure === undefined) continue
-    if (failure.tests.length > 0) lines.push(`    failing tests: ${failure.tests.join(" | ")}`)
-    if (failure.note !== undefined) lines.push(`    log: ${failure.note}`)
-    if (failure.excerpt.length > 0) {
-      lines.push("    log excerpt:")
-      for (const line of failure.excerpt) lines.push(`      ${line}`)
-    }
-  }
+  lines.push(...failingLines(report.checks, failures))
   if (grouped.pending.length > 0) lines.push(`  … pending: ${names(grouped.pending)}`)
   if (grouped.cancelled.length > 0) lines.push(`  ⊘ cancelled: ${names(grouped.cancelled)}`)
   const reviews = report.reviews.map((review) => `${review.author} ${spoken(review.state)}`)
