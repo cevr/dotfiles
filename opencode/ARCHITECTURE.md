@@ -16,11 +16,11 @@ opencode/
     pace.ts                 the pace values and the PaceHeld rejection (a hold no latch could keep)
     role.ts                 roles and their agents
     errors.ts               failures several concepts share (only when they exist)
-    service.ts              the contracts: CallLog, Sessions, Models, PoolPace, CodexAdmission, Latches, CompactionWindows
+    service.ts              the contracts: CallLog, Sessions, Models, PoolPace, CodexAdmission, Latches
     laws.ts                 what every implementation of a contract owes, as a shared test suite
     model.ts                the handlers: gather inputs through contracts, send each command to its aggregate, record the outcome
     tool-call.test.ts       stories, over test Layers declared here
-    filestore/              CallLog over the JSONL file, CompactionWindows over compact.json  → @dotfiles/opencode-orchestrate/filestore/call-log
+    filestore/              CallLog over the JSONL file  → @dotfiles/opencode-orchestrate/filestore/call-log
     opencode/               Sessions, Models, PoolPace and Latches (the wakes' latch RPC) over OpenCode's plugin context and RPC
     codex/                  CodexAdmission over the Codex budget script
     memory/                 in-memory implementations, for the cmd tests and the laws

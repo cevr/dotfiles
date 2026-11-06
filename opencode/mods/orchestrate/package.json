@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The orchestrate rules for OpenCode: role subagents in place of the general one, a compaction window per role, and no agent work on the Sabbath.",
+  "description": "The orchestrate rules for OpenCode: role subagents in place of the general one, one compaction window for every role, and no agent work on the Sabbath.",
   "exports": {
     "./*": "./*.ts"
   },

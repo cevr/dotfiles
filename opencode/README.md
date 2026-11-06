@@ -274,7 +274,9 @@ server has `POST /api/shell/:id/kill` and `GET /api/shell?exited=true`.
 ## Orchestrate
 
 `mods/orchestrate` holds the orchestrate skill's rules; its plugin is
-`cmd/orchestrate`. It defines the role agents, their compaction windows and
+`cmd/orchestrate`. It defines the role agents, the one compaction window
+every role and primary agent runs at (400k tokens, `WINDOW` in
+`compaction.ts`; a model whose own window is smaller compacts at its own) and
 their five-minute prompt cache (`ROLE_CACHE_TTL`, the per-agent
 `request.settings.cacheTTL` that `cmd/anthropic-auth`'s `http.request` hook
 writes over the provider-configured lifetime, raised by the pool to the provider's hour once a
@@ -282,7 +284,7 @@ role's session outlives it; the main session keeps the provider's hour),
 routes each subagent call to a role, starts a new Opus start the pace holds on
 Codex instead, latches one both hold, writes each role's start and hand-back to its unit's
 `log.md`, stops agent work over the Sabbath, and resumes the subagents a restart cut. Its
-options are `windows`, `log`, `now`, `place`, `fullAgent`, `codex`, `unitLog` and `resume`.
+options are `log`, `now`, `place`, `fullAgent`, `codex`, `unitLog` and `resume`.
 An absent option takes its default. A
 malformed one stops the plugin at setup, with a message that names it.
 
@@ -308,7 +310,7 @@ The model (the domain files at `mods/orchestrate/`):
   goes through its `decide`; `model.ts` holds the handlers. A kernel cell's
   tool calls share the outer call's id, so `decide` never reads state.
 - Values: the Sabbath and `SabbathRest` (`sabbath.ts`), role routing
-  (`role.ts`, over `agents.json`), the compaction windows (`compaction.ts`)
+  (`role.ts`, over `agents.json`), the compaction window and keep-list (`compaction.ts`),
   the pace answers and `PaceHeld` (`pace.ts`), and a unit's moves on a role's
   start and hand-back (`unit-log.ts`).
 - Views: the call log, `~/.cache/orchestrate/opencode-agents.jsonl`. It has
@@ -317,10 +319,9 @@ The model (the domain files at `mods/orchestrate/`):
 - Contracts: the pool's pace (`PoolPace`), the Codex admission script
   (`CodexAdmission`), sessions, models, the latches (`Latches`: the wakes
   keep a latch, and a latched child starts through the subagent tool), the
-  restart's reads and resumes (`Restarts`, below), the
-  compaction windows file, the call log and the units' logs (`UnitLogs`), each a `Context.Service` in `service.ts`, with what every
+  restart's reads and resumes (`Restarts`, below), the call log and the units' logs (`UnitLogs`), each a `Context.Service` in `service.ts`, with what every
   implementation owes in `laws.ts`. They are implemented in `filestore/`
-  (the call log, compact.json, and the units' logs through the skill's log.ts), `opencode/` (sessions, models, the
+  (the call log, and the units' logs through the skill's log.ts), `opencode/` (sessions, models, the
   latches, the restarts and the pool's pace over OpenCode's plugin context and RPC) and `codex/` (the
   admission script); `memory/` holds the doubles the plugin's seam test
   runs on.
@@ -1232,7 +1233,7 @@ absent option takes its default; a malformed one stops the plugin.
 
 The compaction is OpenCode's requested one, asked for with the fork's
 `reason: "auto"`, so the transcript records it as automatic; a host without
-`reason` records it as manual. Orchestrate's compaction windows trigger the
+`reason` records it as manual. Orchestrate's compaction window triggers the
 fork's automatic compaction inside a request as the context nears the
 window; idle compaction runs only between requests,
 so the two never run at once, and orchestrate's `compaction` hook adds what it
@@ -1902,7 +1903,7 @@ its source checkout so the gent pool integration tests run instead of
 skipping.
 
 The deterministic acceptance seams are the session API (the guard, compaction
-per role, the Sabbath, held starts and subagent pace), the pool RPC and quota
+at the agents' window, the Sabbath, held starts and subagent pace), the pool RPC and quota
 calculation, the generated agent config, `bun run daily`'s config merge, and
 opencode-drive frames (`scenarios/pool.ts`). The pane scenario covers
 populated, loading, empty and failed-refresh states, and closing it.
@@ -1911,4 +1912,5 @@ populated, loading, empty and failed-refresh states, and closing it.
 
 The status mod's burn forecast, approaching-limit warning, login toasts,
 project labels, account rotation and adaptive compaction tuning are not
-ported. The existing role compaction windows and Sabbath guard remain.
+ported: OpenCode compacts every role and primary agent at one fixed 400k
+window, read from no tuner. The Sabbath guard remains.

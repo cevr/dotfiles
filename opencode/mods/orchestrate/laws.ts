@@ -3,13 +3,11 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer, type Scope } from "effect"
 import type { CallLine } from "./call-line.ts"
-import { DEFAULTS, type Windows } from "./compaction.ts"
 import { type ModelRef, type Pace, paceOfReply } from "./pace.ts"
 import { type Holds, NO_HOLDS, type Run } from "./idle.ts"
 import {
   CallLog,
   CodexAdmission,
-  CompactionWindows,
   type LatchRequest,
   Latches,
   type LatchStart,
@@ -433,32 +431,6 @@ export const latchesLaws = (name: string, layer: (world: LatchesWorld) => Layer.
           expect(failed.message).toContain("Unknown agent: implementor")
         }),
       )
-    })
-  })
-
-// ── CompactionWindows ──
-
-/** compact.json's text, or no file. */
-export type WindowsWorld = string | undefined
-
-export const compactionWindowsLaws = (name: string, layer: (world: WindowsWorld) => Layer.Layer<CompactionWindows>) =>
-  describe(`${name} keeps the CompactionWindows laws`, () => {
-    const read = (world: WindowsWorld) =>
-      check(
-        layer(world),
-        Effect.gen(function* () {
-          return yield* (yield* CompactionWindows).read
-        }),
-      )
-
-    test("compact.json's windows, capped, and the defaults for the kinds it leaves out", async () => {
-      const tuned: Windows = { ...DEFAULTS, planner: 50_000, worker: 150_000, root: 600_000 }
-      expect(await read(JSON.stringify({ windows: { planner: 50_000, worker: 150_000, root: 600_000, verifier: 900_000 } }))).toEqual(tuned)
-    })
-
-    test("no file, or a broken one, gives the defaults", async () => {
-      expect(await read(undefined)).toEqual(DEFAULTS)
-      expect(await read("{")).toEqual(DEFAULTS)
     })
   })
 
