@@ -35,6 +35,16 @@
  *   `paced` option), its answer is the ChatGPT account's own measure, counting
  *   every host and harness on the account, and the script answers only when
  *   the pool cannot. Without it the script alone answers.
+ * - `unitLog`: the orchestrate skill's log.ts that writes each unit's moves,
+ *   default `~/.claude/skills/orchestrate/scripts/log.ts`.
+ *
+ * - Unit logs: a role's start (planner, implementor, verifier, by its call's
+ *   `<role> <unit> r<N>` description) and its hand-back (the first line of its
+ *   last answer when its session goes idle) move its unit in
+ *   `<run dir>/<unit>/log.md` through log.ts `--current`. The unit dir is the
+ *   one a path in the prompt or the hand-back names, else the one
+ *   `tmp/orchestrate/<run>/<unit>` in the session's checkout; none found, or a
+ *   move already logged, writes nothing.
  *
  * - Latch: a new subagent the Sabbath or the pace holds latches instead of
  *   being refused. The call answers at once, as a background subagent's
@@ -71,6 +81,7 @@ import * as CodexAdmissionLive from "@dotfiles/opencode-orchestrate/codex/admiss
 import { KEEP, ROOT } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogLive from "@dotfiles/opencode-orchestrate/filestore/call-log"
 import * as CompactionWindowsLive from "@dotfiles/opencode-orchestrate/filestore/compaction-windows"
+import * as UnitLogsLive from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import * as Model from "@dotfiles/opencode-orchestrate/model"
 import * as LatchesLive from "@dotfiles/opencode-orchestrate/opencode/latches"
 import * as ModelsLive from "@dotfiles/opencode-orchestrate/opencode/models"
@@ -87,6 +98,7 @@ import {
   type Models,
   type PoolPace,
   type Sessions,
+  type UnitLogs,
 } from "@dotfiles/opencode-orchestrate/service"
 import type { Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
 
@@ -94,6 +106,8 @@ export const DEFAULT_WINDOWS = join(homedir(), ".cache/orchestrate/compact.json"
 export const DEFAULT_LOG = join(homedir(), ".cache/orchestrate/opencode-agents.jsonl")
 /** The orchestrate skill's Codex admission: `admit: …` exit 0, `hold: …[; opens about <time>Z]` exit 1. */
 export const CODEX_BUDGET = join(homedir(), ".claude/skills/orchestrate/scripts/budget.ts")
+/** The orchestrate skill's log.ts, the units' logs' one writer. */
+export const UNIT_LOG = join(homedir(), ".claude/skills/orchestrate/scripts/log.ts")
 
 const SUBAGENT = "subagent"
 
@@ -130,11 +144,12 @@ export const Options = Schema.Struct({
   place: Place.pipe(withDefault<Place>(KNOWLTON)),
   fullAgent: Schema.Boolean.pipe(withDefault(false)),
   codex: Schema.Union([Schema.Literal(false), Codex]).pipe(withDefault<false | typeof Codex.Type>(CODEX_DEFAULT)),
+  unitLog: Schema.String.pipe(withDefault(UNIT_LOG)),
 })
 export type Options = typeof Options.Type
 
 /** The outside systems the model runs on. */
-export type Externals = CallLog | Sessions | Models | PoolPace | CodexAdmission | CompactionWindows | Latches
+export type Externals = CallLog | Sessions | Models | PoolPace | CodexAdmission | CompactionWindows | Latches | UnitLogs
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 
@@ -142,16 +157,20 @@ type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start): Layer.Layer<Externals> =>
   Layer.mergeAll(
     CallLogLive.layer(options.log),
-    SessionsLive.layer((sessionID) =>
-      ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
-        Effect.map((session) => ({
-          ...(session.parentID === undefined ? {} : { parentID: session.parentID }),
-          ...(session.agent === undefined ? {} : { agent: session.agent }),
-          started: session.time.busy !== undefined || session.outcome !== undefined,
-          ...(session.metadata?.[MARK_KEY] === undefined ? {} : { latch: session.metadata[MARK_KEY] }),
-        })),
-      ),
+    SessionsLive.layer(
+      (sessionID) =>
+        ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
+          Effect.map((session) => ({
+            ...(session.parentID === undefined ? {} : { parentID: session.parentID }),
+            ...(session.agent === undefined ? {} : { agent: session.agent }),
+            started: session.time.busy !== undefined || session.outcome !== undefined,
+            ...(session.metadata?.[MARK_KEY] === undefined ? {} : { latch: session.metadata[MARK_KEY] }),
+            directory: session.location.directory,
+          })),
+        ),
+      (sessionID) => ctx.session.context({ sessionID: sessionID as SessionID }),
     ),
+    UnitLogsLive.layer(options.unitLog),
     ModelsLive.layer({
       session: (sessionID) =>
         ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
@@ -427,6 +446,9 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
           }),
         )
       })
+
+      // A role's subagent that goes idle may have handed back: its unit moves in the run's log.
+      yield* ctx.session.hook("experimental.idle", (event) => orchestrate.handBack({ sessionID: event.sessionID }))
 
       yield* ctx.tool.hook("execute.after", (event) => {
         if (event.tool !== SUBAGENT) return Effect.void

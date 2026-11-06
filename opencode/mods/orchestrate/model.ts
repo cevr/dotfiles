@@ -13,6 +13,10 @@
 // and, admitted, starts it. With no wakes to keep it, the call is refused with
 // the hold's reason and time.
 //
+// A role's start, and its hand-back when it goes idle, move its unit in the
+// run's log (unit-log.ts, through UnitLogs): the orchestrator need not log
+// them, and a run with no unit dir found writes nothing.
+//
 // The wakes keep the system's time. With a fixed `now`, every time the rules
 // read or write (the Sabbath's, a pace's) is on that fixed clock, so the
 // times a latch hands the wakes are moved onto the system's by how far the
@@ -22,7 +26,9 @@ import * as CallLine from "./call-line.ts"
 import { namesModel, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
 import { codexFallback, effort, isRole, Reason } from "./role.ts"
 import { resumesAt, SabbathRest, type Place } from "./sabbath.ts"
-import { CallLog, CodexAdmission, Latches, Models, PoolPace, Sessions } from "./service.ts"
+import { CallLog, CodexAdmission, Latches, Models, PoolPace, Sessions, UnitLogs } from "./service.ts"
+import { handBackOf, startOf, type Transition, unitDirsIn } from "./unit-log.ts"
+import { isStep } from "./described.ts"
 import {
   continues,
   type Fallback,
@@ -123,6 +129,11 @@ export class Orchestrate extends Context.Service<
       readonly child?: string
       readonly status: Status
     }) => Effect.Effect<void>
+    /**
+     * A session went idle: when it is a role's subagent whose last answer opens
+     * with its hand-back line, its unit moves as the machine says (unit-log.ts).
+     */
+    readonly handBack: (input: { readonly sessionID: string }) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/orchestrate/Orchestrate") {}
 
@@ -138,6 +149,34 @@ export const layer = (config: Config) =>
       const pool = yield* PoolPace
       const codex = yield* CodexAdmission
       const latches = yield* Latches
+      const units = yield* UnitLogs
+
+      /** Move `unit` in the first of `directories` (or a path `named`) that has it; none found writes nothing. */
+      const move = Effect.fnUntraced(function* (transition: Transition, named: ReadonlyArray<string>, directories: ReadonlyArray<string | undefined>) {
+        for (const directory of [...new Set(directories)]) {
+          const dir = yield* units.find({ unit: transition.unit, named, ...(directory === undefined ? {} : { directory }) })
+          if (dir !== undefined) return yield* units.append(dir, transition)
+        }
+      })
+
+      /** A role's start moves its unit, found from the paths its prompt names or under its parent's checkout. */
+      const moveOnStart = Effect.fnUntraced(function* (started: SubagentStarted, prompt: unknown) {
+        const transition = startOf(started.agent, started.description)
+        if (transition === undefined) return
+        const text = typeof prompt === "string" ? prompt : undefined
+        yield* move(transition, unitDirsIn(text, transition.unit), [yield* sessions.directoryOf(started.call.sessionID)])
+      })
+
+      const handBack = Effect.fn("Orchestrate.handBack")(function* ({ sessionID }: { readonly sessionID: string }) {
+        const agent = yield* sessions.agentOf(sessionID)
+        if (agent === undefined || !isStep(agent)) return
+        const parent = yield* sessions.parentOf(sessionID)
+        if (parent === undefined) return
+        const said = handBackOf(agent, yield* sessions.lastWordsOf(sessionID))
+        if (said?.transition === undefined) return
+        const directories = [yield* sessions.directoryOf(sessionID), yield* sessions.directoryOf(parent)]
+        yield* move(said.transition, unitDirsIn(said.file, said.transition.unit), directories)
+      })
 
       /** The Sabbath clock, which also times a held agent's retry. */
       const sabbathNow = config.now === undefined ? Clock.currentTimeMillis : Effect.succeed(config.now)
@@ -333,6 +372,7 @@ export const layer = (config: Config) =>
         // A new agent counts on the pace of the provider it started on, here and on the owner's other hosts, until its spend shows.
         const ran = started === undefined || paced === undefined ? undefined : (parseModel(started.model) ?? paced.ref)
         if (ran !== undefined) yield* pool.started(ran.providerID)
+        if (started !== undefined) yield* moveOnStart(started, fields.prompt)
         return Option.fromNullishOr(started)
       })
 
@@ -399,6 +439,7 @@ export const layer = (config: Config) =>
             Effect.catchTag("StartFailed", (failed) => Effect.succeed(failed)),
           )
         yield* finish({ call, child: latch.child, status: failed === undefined ? "running" : "error" })
+        if (failed === undefined) yield* moveOnStart(started, latch.prompt)
         return failed === undefined ? { outcome: "opened" } : { outcome: "failed", message: failed.message }
       })
 
@@ -427,7 +468,7 @@ export const layer = (config: Config) =>
         yield* decide(FinishSubagent.make(input), now, SUBAGENT).pipe(Effect.catchTags({ SabbathRest: Effect.die, StillLatched: Effect.die }))
       })
 
-      return { startSubagent, openLatch, useTool, finishSubagent: finish }
+      return { startSubagent, openLatch, useTool, finishSubagent: finish, handBack }
     }),
   )
 

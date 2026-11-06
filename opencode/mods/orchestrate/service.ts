@@ -6,12 +6,29 @@ import type { CallLine } from "./call-line.ts"
 import type { Windows } from "./compaction.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
 import type { Hold } from "./tool-call.ts"
+import type { Transition } from "./unit-log.ts"
 
 /** Where the call log's lines go, in order. Appending never fails: a lost line costs the pane a row, not the call. */
 export class CallLog extends Context.Service<
   CallLog,
   { readonly append: (line: CallLine) => Effect.Effect<void> }
 >()("dotfiles-opencode/orchestrate/CallLog") {}
+
+/**
+ * The units' logs (each `<run dir>/<unit>/log.md`), written through the orchestrate skill's log.ts.
+ * - `find`: the unit's dir: the first of `named` (paths the prompt or the hand-back named, maybe relative to
+ *   `directory` or `~/`) that is a directory, else the one `<directory>/tmp/orchestrate/<run>/<unit>` there is.
+ *   None when neither finds exactly one.
+ * - `append`: move the unit as the transition says, from its current state; a move already logged, or one
+ *   log.ts refuses, writes nothing. Never fails: a lost line costs the timing a row, not the call.
+ */
+export class UnitLogs extends Context.Service<
+  UnitLogs,
+  {
+    readonly find: (input: { readonly unit: string; readonly named: ReadonlyArray<string>; readonly directory?: string }) => Effect.Effect<string | undefined>
+    readonly append: (unitDir: string, transition: Transition) => Effect.Effect<void>
+  }
+>()("dotfiles-opencode/orchestrate/UnitLogs") {}
 
 /** What the host knows about a session. A session it cannot read answers undefined. */
 export class Sessions extends Context.Service<
@@ -25,6 +42,10 @@ export class Sessions extends Context.Service<
     readonly startedOf: (sessionID: string) => Effect.Effect<boolean>
     /** When the session, a latched child that will still open, opens (epoch ms); none once it opened, was cancelled or failed. */
     readonly latchOf: (sessionID: string) => Effect.Effect<number | undefined>
+    /** The directory the session works in. */
+    readonly directoryOf: (sessionID: string) => Effect.Effect<string | undefined>
+    /** The text of the session's last answer: its newest assistant message's text parts, joined. */
+    readonly lastWordsOf: (sessionID: string) => Effect.Effect<string | undefined>
   }
 >()("dotfiles-opencode/orchestrate/Sessions") {}
 

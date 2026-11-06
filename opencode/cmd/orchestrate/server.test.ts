@@ -5,6 +5,9 @@
 // windows. tests/orchestrate.test.ts and tests/prime-latch.test.ts run it in
 // OpenCode.
 import { describe, expect, test } from "bun:test"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { Effect, Layer, Schema } from "effect"
 import { type Latch, type LatchAsk, Opened } from "@dotfiles/opencode-wake/latch"
 import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
@@ -15,14 +18,17 @@ import * as CompactionWindowsTest from "@dotfiles/opencode-orchestrate/memory/co
 import * as ModelsTest from "@dotfiles/opencode-orchestrate/memory/models"
 import * as PoolPaceTest from "@dotfiles/opencode-orchestrate/memory/pool-pace"
 import * as SessionsTest from "@dotfiles/opencode-orchestrate/memory/sessions"
+import * as FileUnitLogs from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import * as OpenCodeLatches from "@dotfiles/opencode-orchestrate/opencode/latches"
 import * as OpenCodePoolPace from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
-import type { Session } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
 import type { Offered } from "@dotfiles/opencode-orchestrate/service"
-import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, DEFAULT_WINDOWS, make, Options } from "./server.ts"
+import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, DEFAULT_WINDOWS, make, Options, UNIT_LOG } from "./server.ts"
+
+/** The orchestrate skill's log.ts in this checkout: the units' logs are written for real, in scratch dirs. */
+const LOG_SCRIPT = join(import.meta.dir, "../../../skills/orchestrate/scripts/log.ts")
 
 /** Friday 30 October 2026, 19:00 in Knowlton (EDT): after sunset, in the Sabbath. */
 const FRIDAY_EVENING = "2026-10-30T23:00:00Z"
@@ -35,7 +41,7 @@ type Hook = (event: Record<string, unknown>) => Effect.Effect<void, { readonly _
 
 /** The outside systems' state for one test. */
 interface World {
-  readonly sessions?: Readonly<Record<string, Session>>
+  readonly sessions?: Readonly<Record<string, SessionsTest.Session>>
   readonly pool?: Readonly<Record<string, Pace>>
   /** The pool's `pace` RPC itself, in place of `pool`'s answers: one that fails, hangs or answers no pace. */
   readonly poolAsk?: OpenCodePoolPace.Ask
@@ -137,6 +143,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       CodexAdmissionTest.layer(world.codex ?? (() => undefined)),
       CompactionWindowsTest.layer(world.compactJson),
       OpenCodeLatches.layer(keep, start),
+      FileUnitLogs.layer(LOG_SCRIPT),
     )
     yield* make((_ctx, _options, start) => externals(start)).effect(host)
 
@@ -182,7 +189,11 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       for (const line of lines) expect(Number.isFinite(Date.parse(line.at))).toBe(true)
       return lines.map(({ at: _, ...line }) => JSON.stringify(line))
     }
-    return { call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent }
+    /** A session going idle, through the `experimental.idle` hooks. */
+    const idle = Effect.fn(function* (sessionID: string) {
+      for (const hook of hooks["experimental.idle"] ?? []) yield* hook({ sessionID, background: [] })
+    })
+    return { call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle }
   })
 
 const scenario = <A, E>(body: Effect.Effect<A, E, import("effect").Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
@@ -859,6 +870,109 @@ describe("Opus first, Codex second", () => {
     ))
 })
 
+describe("the units' logs", () => {
+  /** A scratch checkout, removed with the test's scope. */
+  const checkout = Effect.acquireRelease(
+    Effect.sync(() => mkdtempSync(join(tmpdir(), "orchestrate-checkout-"))),
+    (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
+  )
+  /** A unit's moves, without their times. */
+  const moves = (dir: string) =>
+    existsSync(join(dir, "log.md"))
+      ? readFileSync(join(dir, "log.md"), "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => line.replace(/^\S+Z /, ""))
+      : []
+
+  test("each role's start and hand-back move its unit in the run's log, once each", () =>
+    scenario(
+      Effect.gen(function* () {
+        const work = yield* checkout
+        const auth = join(work, "tmp/orchestrate/web/auth")
+        mkdirSync(auth, { recursive: true })
+        const handBack = (role: string, line: string) => ({ parentID: "root", agent: role, directory: work, lastWords: `${line}\nGate green; the request names the head.` })
+        const plugin = yield* start(
+          { now: WEDNESDAY },
+          {
+            sessions: {
+              root: { directory: work },
+              planner: handBack("planner", `planner auth r1: ready ${auth}/spec.md`),
+              implementor: handBack("implementor", `implementor auth r1: ready ${auth}/round-1-request.md`),
+              verifier: handBack("verifier", `verifier auth r1: changes ${auth}/round-1-findings.md`),
+              worker: handBack("worker", `implementor auth r1: blocked ${auth}/blocked.md`),
+              busy: { parentID: "root", agent: "implementor", directory: work, lastWords: "Running the gate now." },
+              lead: { agent: "implementor", directory: work, lastWords: `implementor auth r2: blocked ${auth}/blocked.md` },
+            },
+          },
+        )
+        // The planner's prompt names the unit dir; the implementor's names none, so the checkout's runs are searched.
+        yield* plugin.call("subagent", "root", { agent: "planner", description: "planner auth r1", prompt: `Write ${auth}/spec.md from the template.` })
+        yield* plugin.idle("planner")
+        yield* plugin.call("subagent", "root", { agent: "implementor", description: "implementor auth r1", prompt: "Build the spec." })
+        yield* plugin.idle("busy")
+        yield* plugin.idle("implementor")
+        // The verifier's start finds the move its implementor's hand-back made.
+        yield* plugin.call("subagent", "root", { agent: "general", description: "verifier auth r1", prompt: `Verify ${auth}/round-1-request.md.` })
+        yield* plugin.idle("verifier")
+        yield* plugin.idle("verifier")
+        // Neither a main session, even one running as a role, nor a worker moves a unit, whatever it writes.
+        yield* plugin.idle("root")
+        yield* plugin.idle("lead")
+        yield* plugin.idle("worker")
+        yield* plugin.call("subagent", "root", { agent: "worker", description: "implementor auth r1", prompt: "x" })
+        yield* plugin.call("subagent", "root", { sessionID: "implementor", description: "implementor auth r2", prompt: `Fix ${auth}/round-1-findings.md.` })
+        expect(moves(auth)).toEqual([
+          "new → plan r1",
+          "plan → implement r1 spec.md",
+          "implement → verify r1 round-1-request.md ready",
+          "verify → implement r2 round-1-findings.md changes",
+        ])
+      }),
+    ))
+
+  test("a start whose unit dir is not found, or names no round, writes nothing and runs as ever", () =>
+    scenario(
+      Effect.gen(function* () {
+        const work = yield* checkout
+        const elsewhere = join(work, "notes/auth")
+        mkdirSync(join(work, "tmp/orchestrate/web/auth"), { recursive: true })
+        mkdirSync(join(work, "tmp/orchestrate/api/auth"), { recursive: true })
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: { root: { directory: work } } })
+        // Two runs hold an `auth` unit: the search finds none.
+        const call = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier auth r1", prompt: "x" })
+        expect(call).toEqual({ refused: undefined, input: { agent: "verifier", description: "verifier auth r1", prompt: "x" } })
+        yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier auth", prompt: `Verify ${elsewhere}/round-1-request.md` })
+        for (const dir of ["tmp/orchestrate/web/auth", "tmp/orchestrate/api/auth", "notes/auth"]) expect(existsSync(join(work, dir, "log.md"))).toBe(false)
+        // A path the prompt names finds it.
+        mkdirSync(elsewhere, { recursive: true })
+        yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier auth r1", prompt: `Verify ${elsewhere}/round-1-request.md` })
+        expect(moves(elsewhere)).toEqual(["new → verify r1 round-1-request.md"])
+      }),
+    ))
+
+  test("a latched role moves its unit when its latch opens and it starts, not when it latches", () =>
+    scenario(
+      Effect.gen(function* () {
+        const work = yield* checkout
+        const auth = join(work, "tmp/orchestrate/web/auth")
+        mkdirSync(auth, { recursive: true })
+        const now = Date.parse(WEDNESDAY)
+        const model = { providerID: "anthropic", id: "claude" }
+        const held = { anthropic: { ok: false, measured: true, reason: "all pool accounts are held", retryAt: now + 600_000 } }
+        const kept: Array<LatchAsk & { readonly child: string }> = []
+        const sessions = { root: { directory: work } }
+        const plugin = yield* start({ now: WEDNESDAY }, { model, pool: held, kept, sessions })
+        yield* plugin.call("subagent", "root", { agent: "planner", description: "planner auth r1", prompt: "Plan it." })
+        expect(moves(auth)).toEqual([])
+        const later = yield* start({ now: WEDNESDAY }, { model, sessions })
+        const latch = { kind: "latch", id: "w000001", directory: work, setAt: now, ...kept[0]!, child: kept[0]!.child }
+        expect(yield* later.open(latch)).toEqual({ outcome: "opened" })
+        expect(moves(auth)).toEqual(["new → plan r1"])
+      }),
+    ))
+})
+
 describe("the agents", () => {
   test("each role gets its definition and window, each primary agent root's; compaction keeps the files", () =>
     scenario(
@@ -917,6 +1031,7 @@ describe("the options", () => {
     place: KNOWLTON,
     fullAgent: false,
     codex: { providers: ["openai"], script: CODEX_BUDGET },
+    unitLog: UNIT_LOG,
   }
 
   test("each absent option takes its default; an undefined one is absent", () => {
@@ -936,6 +1051,7 @@ describe("the options", () => {
       place,
       fullAgent: true,
       codex: { providers: ["openai", "sim"], script: CODEX_BUDGET },
+      unitLog: UNIT_LOG,
     })
     expect(decode({ codex: false }).codex).toBe(false)
     expect(decode({ codex: { pool: true } }).codex).toEqual({ ...defaults.codex, pool: true })

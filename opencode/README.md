@@ -273,8 +273,9 @@ their five-minute prompt cache (`ROLE_CACHE_TTL`, through the fork's per-agent
 `request.settings.cacheTTL`, raised by the pool to the provider's hour once a
 role's session outlives it; the main session keeps the provider's hour),
 routes each subagent call to a role, starts a new Opus start the pace holds on
-Codex instead, latches one both hold, and stops agent work over the Sabbath. Its options are `windows`, `log`, `now`,
-`place`, `fullAgent` and `codex`. An absent option takes its default. A
+Codex instead, latches one both hold, writes each role's start and hand-back to its unit's
+`log.md`, and stops agent work over the Sabbath. Its options are `windows`, `log`, `now`,
+`place`, `fullAgent`, `codex` and `unitLog`. An absent option takes its default. A
 malformed one stops the plugin at setup, with a message that names it.
 
 The model (the domain files at `mods/orchestrate/`):
@@ -299,16 +300,17 @@ The model (the domain files at `mods/orchestrate/`):
   tool calls share the outer call's id, so `decide` never reads state.
 - Values: the Sabbath and `SabbathRest` (`sabbath.ts`), role routing
   (`role.ts`, over `agents.json`), the compaction windows (`compaction.ts`)
-  and the pace answers and `PaceHeld` (`pace.ts`).
+  the pace answers and `PaceHeld` (`pace.ts`), and a unit's moves on a role's
+  start and hand-back (`unit-log.ts`).
 - Views: the call log, `~/.cache/orchestrate/opencode-agents.jsonl`. It has
   one line per fact or rejection (`call-line.ts`), and the status pane reads
   it.
 - Contracts: the pool's pace (`PoolPace`), the Codex admission script
   (`CodexAdmission`), sessions, models, the latches (`Latches`: the wakes
   keep a latch, and a latched child starts through the subagent tool), the
-  compaction windows file and the call log, each a `Context.Service` in `service.ts`, with what every
+  compaction windows file, the call log and the units' logs (`UnitLogs`), each a `Context.Service` in `service.ts`, with what every
   implementation owes in `laws.ts`. They are implemented in `filestore/`
-  (the call log and compact.json), `opencode/` (sessions, models, the
+  (the call log, compact.json, and the units' logs through the skill's log.ts), `opencode/` (sessions, models, the
   latches and the pool's pace over OpenCode's plugin context and RPC) and `codex/` (the
   admission script); `memory/` holds the doubles the plugin's seam test
   runs on.
@@ -336,6 +338,18 @@ the role's own (the model it would run on, at any variant or none, with or
 without its provider) runs as if it named none, reason `model-dropped`: at
 the role's effort, with the Codex fallback and the latch. Any other model a
 call names runs as named, with no fallback.
+
+The units' logs (`unit-log.ts`): a role's start moves its unit, by the
+call's `<role> <unit> r<N>` description, to `plan`, `implement` or
+`verify`; its hand-back, the first line of its last answer when its session
+goes idle (the fork's `experimental.idle` hook), moves it as the machine
+says (implementor `ready` to `verify`, verifier `accepted` or `stuck` to
+`decide`, `changes` to `implement` the next round, any `blocked` to
+`blocked`; a planner's `ready` waits for the orchestrator). Each move goes
+through the skill's `log.ts --current` into `<run dir>/<unit>/log.md`, the
+unit dir being the one a path in the prompt or the hand-back names, else the
+one `tmp/orchestrate/<run>/<unit>` in the session's checkout. None found, a
+move the orchestrator already logged, or one log.ts refuses writes nothing.
 
 ## Pool
 

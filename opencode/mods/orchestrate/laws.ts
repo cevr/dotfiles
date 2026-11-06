@@ -5,7 +5,7 @@ import { Effect, Layer, type Scope } from "effect"
 import type { CallLine } from "./call-line.ts"
 import { DEFAULTS, type Windows } from "./compaction.ts"
 import { type ModelRef, type Pace, paceOfReply } from "./pace.ts"
-import { CallLog, CodexAdmission, CompactionWindows, type LatchRequest, Latches, type LatchStart, Models, type Offered, PoolPace, Sessions } from "./service.ts"
+import { CallLog, CodexAdmission, CompactionWindows, type LatchRequest, Latches, type LatchStart, Models, type Offered, PoolPace, Sessions, UnitLogs } from "./service.ts"
 
 const check = <A, E, R>(layer: Layer.Layer<R>, body: Effect.Effect<A, E, R>) =>
   Effect.runPromise(body.pipe(Effect.provide(layer)))
@@ -69,14 +69,25 @@ export const callLogLaws = (name: string, make: Effect.Effect<CallLogProbe, neve
 
 /** The sessions a host knows, by id; any other cannot be read. */
 export type SessionsWorld = Readonly<
-  Record<string, { readonly parentID?: string; readonly agent?: string; readonly started?: boolean; readonly latch?: unknown }>
+  Record<
+    string,
+    {
+      readonly parentID?: string
+      readonly agent?: string
+      readonly started?: boolean
+      readonly latch?: unknown
+      readonly directory?: string
+      /** The text its last answer wrote. */
+      readonly lastWords?: string
+    }
+  >
 >
 
 export const sessionsLaws = (name: string, layer: (world: SessionsWorld) => Layer.Layer<Sessions>) =>
   describe(`${name} keeps the Sessions laws`, () => {
     const world: SessionsWorld = {
-      root: { agent: "build" },
-      child: { parentID: "root", agent: "verifier" },
+      root: { agent: "build", directory: "/work" },
+      child: { parentID: "root", agent: "verifier", lastWords: "verifier auth r1: accepted /work/tmp/orchestrate/web/auth/round-1-findings.md" },
       blank: { parentID: "", agent: "" },
       ran: { parentID: "root", agent: "worker", started: true },
       latched: { parentID: "root", agent: "worker", latch: { hold: "pace", reason: "held", opensAt: 9_000, at: 1_000 } },
@@ -136,6 +147,20 @@ export const sessionsLaws = (name: string, layer: (world: SessionsWorld) => Laye
           expect(yield* sessions.agentOf("missing")).toBeUndefined()
           expect(yield* sessions.startedOf("missing")).toBe(false)
           expect(yield* sessions.latchOf("missing")).toBeUndefined()
+          expect(yield* sessions.directoryOf("missing")).toBeUndefined()
+          expect(yield* sessions.lastWordsOf("missing")).toBeUndefined()
+        }),
+      ))
+
+    test("a session's directory and last words are what the host knows; none when it has none", () =>
+      check(
+        layer(world),
+        Effect.gen(function* () {
+          const sessions = yield* Sessions
+          expect(yield* sessions.directoryOf("root")).toBe("/work")
+          expect(yield* sessions.lastWordsOf("child")).toBe("verifier auth r1: accepted /work/tmp/orchestrate/web/auth/round-1-findings.md")
+          expect(yield* sessions.directoryOf("child")).toBeUndefined()
+          expect(yield* sessions.lastWordsOf("root")).toBeUndefined()
         }),
       ))
   })
@@ -408,4 +433,76 @@ export const compactionWindowsLaws = (name: string, layer: (world: WindowsWorld)
       expect(await read(undefined)).toEqual(DEFAULTS)
       expect(await read("{")).toEqual(DEFAULTS)
     })
+  })
+
+// ── UnitLogs ──
+
+/** Units' logs under test: a scratch checkout, a way to make a dir in it, and each unit's moves read back. */
+export interface UnitLogsProbe {
+  readonly layer: Layer.Layer<UnitLogs>
+  /** The checkout's absolute path. */
+  readonly checkout: string
+  /** Make `<checkout>/<path>` a directory; its absolute path. */
+  readonly make: (path: string) => Effect.Effect<string>
+  /** The moves in a unit's log, `<from> → <to> r<N>[ note]`, oldest first. */
+  readonly moves: (unitDir: string) => Effect.Effect<ReadonlyArray<string>>
+}
+
+/** `make` gives a fresh, empty checkout within the test's scope. */
+export const unitLogsLaws = (name: string, make: Effect.Effect<UnitLogsProbe, never, Scope.Scope>) =>
+  describe(`${name} keeps the UnitLogs laws`, () => {
+    const scoped = (body: (probe: UnitLogsProbe) => Effect.Effect<void, never, UnitLogs>) =>
+      Effect.runPromise(Effect.scoped(Effect.flatMap(make, (probe) => body(probe).pipe(Effect.provide(probe.layer)))))
+
+    test("a unit is found at a path named for it, absolute or relative to the directory, else under the checkout's runs", () =>
+      scoped((probe) =>
+        Effect.gen(function* () {
+          const logs = yield* UnitLogs
+          const auth = yield* probe.make("tmp/orchestrate/web/auth")
+          const elsewhere = yield* probe.make("notes/auth")
+          expect(yield* logs.find({ unit: "auth", named: ["/nonexistent/loop-probe-x/auth", elsewhere], directory: probe.checkout })).toBe(elsewhere)
+          expect(yield* logs.find({ unit: "auth", named: ["notes/auth"], directory: probe.checkout })).toBe(elsewhere)
+          expect(yield* logs.find({ unit: "auth", named: [], directory: probe.checkout })).toBe(auth)
+          expect(yield* logs.find({ unit: "auth", named: ["notes/auth"] })).toBeUndefined()
+        }),
+      ))
+
+    test("no unit is found when nothing names it and the checkout has none, or two runs have one", () =>
+      scoped((probe) =>
+        Effect.gen(function* () {
+          const logs = yield* UnitLogs
+          expect(yield* logs.find({ unit: "auth", named: [], directory: probe.checkout })).toBeUndefined()
+          expect(yield* logs.find({ unit: "auth", named: [], directory: "/nonexistent/loop-probe-x" })).toBeUndefined()
+          yield* probe.make("tmp/orchestrate/web/auth")
+          yield* probe.make("tmp/orchestrate/api/auth")
+          expect(yield* logs.find({ unit: "auth", named: [], directory: probe.checkout })).toBeUndefined()
+        }),
+      ))
+
+    test("a move goes from the unit's current state; one already logged, or one the machine refuses, writes nothing", () =>
+      scoped((probe) =>
+        Effect.gen(function* () {
+          const logs = yield* UnitLogs
+          const dir = yield* probe.make("tmp/orchestrate/web/auth")
+          yield* logs.append(dir, { unit: "auth", to: "plan", round: 1, note: "" })
+          yield* logs.append(dir, { unit: "auth", to: "implement", round: 1, note: "spec.md" })
+          yield* logs.append(dir, { unit: "auth", to: "implement", round: 1, note: "spec.md" })
+          yield* logs.append(dir, { unit: "auth", to: "verify", round: 1, note: "round-1-request.md ready" })
+          yield* logs.append(dir, { unit: "auth", to: "implement", round: 2, note: "round-1-findings.md changes" })
+          yield* logs.append(dir, { unit: "auth", to: "verify", round: 1, note: "late" })
+          expect(yield* probe.moves(dir)).toEqual([
+            "new → plan r1",
+            "plan → implement r1 spec.md",
+            "implement → verify r1 round-1-request.md ready",
+            "verify → implement r2 round-1-findings.md changes",
+          ])
+        }),
+      ))
+
+    test("a move for a dir that is gone fails nothing", () =>
+      scoped(() =>
+        Effect.gen(function* () {
+          yield* (yield* UnitLogs).append("/nonexistent/loop-probe-x/auth", { unit: "auth", to: "plan", round: 1, note: "" })
+        }),
+      ))
   })
