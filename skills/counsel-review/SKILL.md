@@ -9,12 +9,12 @@ The other model family reviews the change against the same criteria as `code-rev
 
 A PR someone else asked you to review runs `code-review`'s Requested review instead, in this session. A **direct reviewer** (a prompt that says *Review directly*: you are the other family) skips §1 and §2: it does the discovery itself by `code-review` Phases 2–3, on the packet it was given, then applies §3 to §5.
 
-Read `../code-review/SKILL.md` and `../counsel/SKILL.md` first. The criteria live in `../code-review/references/review-contract.md` and `../code-review/references/test-audit.md`.
+Read `../code-review/SKILL.md` first. The criteria live in `../code-review/references/review-contract.md` and `../code-review/references/test-audit.md`.
 
 Send the packet (§2) the first way that works:
 
-1. **The codex mod** (Claude Code, when `mcp__codex__start` is listed). One Codex thread per checkpoint: round one starts it, and rounds two and three go to the same thread with `mcp__codex__send`, so it keeps what it read. The answer arrives as a message when the turn ends: set no timer and do not poll.
-2. **`okra counsel`** (from Codex, or when the mod's tools are missing). Run `command -v okra` first.
+1. **The codex mod** (Claude Code, when `mcp__codex__start` is listed): `model: "sol"`, `sandbox: "read-only"`, no `role`. One Codex thread per checkpoint: round one starts it, and rounds two and three go to the same thread with `mcp__codex__send`, so it keeps what it read. The answer arrives as a message when the turn ends: set no timer and do not poll.
+2. **`okra counsel -f <packet>`** (from Codex, or when the mod's tools are missing). Run `command -v okra` first. It writes `/tmp/counsel/<slug>/`: read stdout, then `<target>.md`, then `manifest.json` and `<target>.stderr` when it exits 1 (the other agent gave no answer).
 3. **The other family's CLI directly.** From Claude: `codex exec -s read-only -o "$out" - < "$prompt_path"`. From Codex: `claude -p --permission-mode plan < "$prompt_path" > "$out"`. The review stays cross-model.
 4. **A fresh subagent** with no context from this session, given only the packet and told to run `code-review`. Label the report a same-family review.
 
@@ -39,7 +39,7 @@ Include every applicable item:
 
 Tell it: the review is read-only; attack each candidate and hunt for missed blockers; cite full paths and line numbers; say "no blocker" when there is none.
 
-Invoke each path as [`counsel`](../counsel/SKILL.md) says, at its deep setting (`effort: "max"` through the mod, `--deep` through `okra counsel`), with the description `counsel-review <checkpoint> r<N>`. Set no short time limit.
+Invoke each path at its deep setting (`effort: "max"` through the mod, `--deep` through `okra counsel`), with the description `counsel-review <checkpoint> r<N>`. Set no short time limit.
 
 ## 3. Validate
 
