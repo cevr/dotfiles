@@ -19,7 +19,7 @@
 // fixed clock is behind it at that moment. Without one, they move by nothing.
 import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
 import * as CallLine from "./call-line.ts"
-import { PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
+import { namesModel, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
 import { codexFallback, effort, isRole, Reason } from "./role.ts"
 import { resumesAt, SabbathRest, type Place } from "./sabbath.ts"
 import { CallLog, CodexAdmission, Latches, Models, PoolPace, Sessions } from "./service.ts"
@@ -253,8 +253,13 @@ export const layer = (config: Config) =>
         const childAgent = child !== undefined && continues(base) ? yield* sessions.agentOf(child) : undefined
         const childLatched = child === undefined ? undefined : yield* sessions.latchOf(child)
         const routed = routeOf({ ...base, ...(childAgent ? { childAgent } : {}) })
+        const asks = typeof fields.model === "string" && fields.model !== "" ? fields.model : undefined
+        // A new role start naming the role's own model (any variant or none) runs as if it named none: the
+        // orchestrator meant the role, and only an unnamed start gets the role's effort, the fallback and the latch.
+        const bound = asks !== undefined && child === undefined && isRole(routed.agent) ? yield* models.base(call.sessionID, routed.agent) : undefined
+        const dropped = asks !== undefined && bound !== undefined && namesModel(asks, bound) ? asks : undefined
         // A new role subagent runs at the role's effort, as a variant of the model it would run on.
-        let model = typeof fields.model === "string" && fields.model !== "" ? fields.model : undefined
+        let model = dropped === undefined ? asks : undefined
         const level = isRole(routed.agent) ? effort(routed.agent) : undefined
         if (child === undefined && level !== undefined && level !== "" && model === undefined) {
           const variant = yield* models.variant(call.sessionID, routed.agent, level)
@@ -271,7 +276,7 @@ export const layer = (config: Config) =>
         // The model it would run on, named; with a fallback the command names it so the log says what was held.
         const primary = model ?? (paced?.ref === undefined ? undefined : `${paced.ref.providerID}/${paced.ref.id}`)
         // A model the call named is kept as asked: only a role's own model falls back.
-        const named = typeof fields.model === "string" && fields.model !== ""
+        const named = asks !== undefined && dropped === undefined
         const offered =
           hold !== undefined && !named && paced?.ref !== undefined ? yield* fallbackOf(call.sessionID, paced.ref, routed.agent, base.description) : undefined
         const fallback = offered?.fallback
@@ -281,6 +286,7 @@ export const layer = (config: Config) =>
           ...base,
           ...(childAgent ? { childAgent } : {}),
           ...(fallback !== undefined && primary !== undefined ? { model: primary, fallback } : model === undefined ? {} : { model }),
+          ...(dropped === undefined ? {} : { dropped }),
           ...(hold === undefined ? {} : { hold }),
           ...(childLatched === undefined ? {} : { childLatched }),
         })

@@ -48,7 +48,7 @@
  *   since a pace may open early. With no wakes plugin the held call is
  *   refused with the hold's reason and the time it opens.
  * - Opus first, Codex second: a new agent the pace holds on its own model
- *   (the newest Opus), that named no model, starts at once on the newest
+ *   (the newest Opus), that named no model (or named its own: dropped, `model-dropped`), starts at once on the newest
  *   Codex model for its role when the Codex pace has room: sol (the verifier
  *   at medium, the rest at high), or luna at max for a step whose description
  *   ends `(light)`, `(direct)` or `(mechanical)`. The call log's line says
@@ -413,6 +413,8 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
             // Run the call as the guard routed it, on the role's model when one was chosen.
             const input: Record<string, unknown> = { ...event.input, agent: routed.agent }
             if (routed.model !== undefined) input.model = routed.model
+            // A role's own model, named, was dropped: with no variant chosen, the role runs on its own model.
+            else if (routed.reason === "model-dropped") delete input.model
             // A fallback's answer tells the parent where it ran and why.
             if (outcome.value._tag === "SubagentStarted" && outcome.value.fallback !== undefined)
               notes.set(noteKey(event.sessionID, event.id, event.input), fallbackNote(outcome.value))

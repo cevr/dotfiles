@@ -260,6 +260,30 @@ describe("the guard", () => {
       }),
     ))
 
+  test("a new role start naming the role's own model, at any variant or none, runs at the role's effort; its line says model-dropped", () =>
+    scenario(
+      Effect.gen(function* () {
+        const model = { providerID: "anthropic", id: "claude-opus-5-5" }
+        const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium", "high"], sessions: { child: { parentID: "root", agent: "verifier" } } })
+        for (const named of ["anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5#max", "claude-opus-5-5"])
+          expect((yield* plugin.call("subagent", "root", { agent: "verifier", model: named })).input).toEqual({ agent: "verifier", model: "anthropic/claude-opus-5-5#medium" })
+        // A described role too; the worker, with no effort of its own, runs on its own model with the name dropped.
+        const described = { agent: "general", model: "anthropic/claude-opus-5-5", description: "pkg-lower implementor r2" }
+        expect((yield* plugin.call("subagent", "root", described)).input).toEqual({ ...described, agent: "implementor", model: "anthropic/claude-opus-5-5#medium" })
+        expect((yield* plugin.call("subagent", "root", { agent: "worker", model: "anthropic/claude-opus-5-5#low" })).input).toEqual({ agent: "worker" })
+        expect(plugin.logged().map((line) => (JSON.parse(line) as { reason: string }).reason)).toEqual(Array(5).fill("model-dropped"))
+        // A different model, a non-role agent and a follow-up keep the model they name.
+        expect((yield* plugin.call("subagent", "root", { agent: "verifier", model: "anthropic/claude-sonnet" })).input).toEqual({ agent: "verifier", model: "anthropic/claude-sonnet" })
+        expect((yield* plugin.call("subagent", "root", { agent: "explore", model: "anthropic/claude-opus-5-5" })).input).toEqual({ agent: "explore", model: "anthropic/claude-opus-5-5" })
+        expect((yield* plugin.call("subagent", "root", { sessionID: "child", model: "anthropic/claude-opus-5-5" })).input).toEqual({
+          sessionID: "child",
+          model: "anthropic/claude-opus-5-5",
+          agent: "verifier",
+        })
+        expect(plugin.logged().slice(5).map((line) => (JSON.parse(line) as { reason: string }).reason)).toEqual(["kept", "kept", "continued"])
+      }),
+    ))
+
   test("role work asked of a general agent runs as its described role, at the role's effort, and its line says why", () =>
     scenario(
       Effect.gen(function* () {
@@ -749,10 +773,29 @@ describe("Opus first, Codex second", () => {
       Effect.gen(function* () {
         const asked: Array<string> = []
         const plugin = yield* start({ now: WEDNESDAY }, { model, others: codexOffered, codex: admits(asked), pool: held })
-        const call = yield* plugin.call("subagent", "root", { agent: "verifier", model: "anthropic/claude-opus", prompt: "x" })
-        expect(call.input).toMatchObject({ model: "anthropic/claude-opus", sessionID: "ses_latched1" })
+        const call = yield* plugin.call("subagent", "root", { agent: "verifier", model: "anthropic/claude-opus-4", prompt: "x" })
+        expect(call.input).toMatchObject({ model: "anthropic/claude-opus-4", sessionID: "ses_latched1" })
         expect(asked).toEqual([])
         expect(plugin.kept[0]!.context).toEqual({ reason: "kept" })
+      }),
+    ))
+
+  test("a role call naming the role's own model runs as if it named none: held, it falls back to Codex, its line says model-dropped", () =>
+    scenario(
+      Effect.gen(function* () {
+        const asked: Array<string> = []
+        const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked), pool: held })
+        const call = yield* plugin.call("subagent", "root", { agent: "verifier", model: "anthropic/claude-opus", description: "verifier sso r1", prompt: "x" })
+        expect(call.input).toEqual({ agent: "verifier", description: "verifier sso r1", prompt: "x", model: "openai/gpt-6.1-sol#medium" })
+        expect(asked).toEqual(["gpt-6.1-sol verifier"])
+        expect(plugin.kept).toEqual([])
+        expect(plugin.logged()).toEqual([
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"verifier","agent":"verifier","reason":"model-dropped","model":"openai/gpt-6.1-sol#medium","description":"verifier sso r1","fallback":"anthropic/claude-opus#medium held: all pool accounts are held","pace":{"ok":false,"measured":true,"reason":"all pool accounts are held"},"fallbackCodex":{"ok":true,"measured":true,"reason":"scripted room"}}',
+        ])
+        // Held on both, it latches as an unnamed start does, and the latch keeps the reason.
+        const both = yield* start({ now: WEDNESDAY }, { model, others: codexOffered, codex: () => ({ ok: false, measured: true, reason: "5h pace", retryAt: now + 900_000 }), pool: held })
+        yield* both.call("subagent", "root", { agent: "planner", model: "claude-opus#high", prompt: "x" })
+        expect(both.kept[0]!.context).toEqual({ reason: "model-dropped", models: { primary: "anthropic/claude-opus", fallback: "openai/gpt-6.1-sol#high" } })
       }),
     ))
 

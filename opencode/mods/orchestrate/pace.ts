@@ -54,6 +54,15 @@ export const parseModel = (model: unknown): ModelRef | undefined => {
   return { providerID: model.slice(0, slash), id: model.slice(slash + 1).split("#")[0]! }
 }
 
+/**
+ * Whether `model` names `ref` at any variant or none: `provider/id[#variant]`,
+ * or the bare `id[#variant]` an orchestrator writes without its provider.
+ */
+export const namesModel = (model: string, ref: ModelRef): boolean => {
+  const parsed = parseModel(model)
+  return parsed === undefined ? model.split("#")[0] === ref.id : parsed.providerID === ref.providerID && parsed.id === ref.id
+}
+
 /** A model at a variant, as the subagent tool takes it. */
 export const formatModel = (model: ModelRef, variant: string) => `${model.providerID}/${model.id}#${variant}`
 

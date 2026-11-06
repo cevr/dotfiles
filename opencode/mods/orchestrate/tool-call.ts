@@ -66,6 +66,11 @@ export const StartSubagent = Schema.TaggedStruct("StartSubagent", {
   childAgent: Schema.optionalKey(Schema.String),
   /** The model it runs on: the input's, else the role's at its effort, when that model offers it. */
   model: Schema.optionalKey(Schema.String),
+  /**
+   * The model a new role start named that is the role's own (any variant or none): dropped, so the start runs
+   * as if it named none, at the role's effort, with the Codex fallback and the latch. Its reason is `model-dropped`.
+   */
+  dropped: Schema.optionalKey(Schema.String),
   background: Schema.Boolean,
   description: Schema.optionalKey(Schema.String),
   /** The full-agent escape: an untyped or general call runs as asked. */
@@ -209,7 +214,8 @@ const decideStart = (
   if (resumes !== undefined && command.child !== undefined) return Effect.fail(new SabbathRest({ resumesAt: resumes, place: command.place }))
   if (command.child !== undefined && command.childLatched !== undefined)
     return Effect.fail(new StillLatched({ child: command.child, opensAt: command.childLatched }))
-  const { agent, reason } = routeOf(command)
+  const { agent, reason: routed } = routeOf(command)
+  const reason: Reason = command.dropped !== undefined && command.child === undefined ? "model-dropped" : routed
   const fields = {
     call: command.call,
     from: command.from,

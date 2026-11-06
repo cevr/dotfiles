@@ -63,6 +63,15 @@ describe("a subagent starts", () => {
       Story.state(Finished.make({ status: "running" })),
     ))
 
+  test("a new start whose named model was the role's own says so: model-dropped; a follow-up keeps its reason", () =>
+    run(
+      Story.clock(WEDNESDAY),
+      Story.when(start("verifier", { model: "anthropic/claude-opus#medium", dropped: "anthropic/claude-opus" })),
+      Story.then(started({ asked: "verifier", agent: "verifier", reason: "model-dropped", model: "anthropic/claude-opus#medium" })),
+      Story.when(start(undefined, { child: "child-1", childAgent: "verifier", dropped: "anthropic/claude-opus" })),
+      Story.then(started({ agent: "verifier", reason: "continued", child: "child-1" })),
+    ))
+
   test("a finish the log never saw start is recorded all the same", () =>
     run(
       Story.when(FinishSubagent.make({ call, status: "error" })),

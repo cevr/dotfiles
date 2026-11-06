@@ -331,6 +331,12 @@ rewrite`) names none. A follow-up asking no particular agent (none, a
 general one, or `worker`) keeps its child's agent (`continued`), and a
 follow-up never changes agent by its description.
 
+A new start routed to a role (asked by name or described) whose `model` is
+the role's own (the model it would run on, at any variant or none, with or
+without its provider) runs as if it named none, reason `model-dropped`: at
+the role's effort, with the Codex fallback and the latch. Any other model a
+call names runs as named, with no fallback.
+
 ## Pool
 
 `mods/pool` pools a provider's OAuth logins; its plugin is `cmd/pool`. It chooses the login each
