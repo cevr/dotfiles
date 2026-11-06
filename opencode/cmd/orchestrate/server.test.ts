@@ -5,7 +5,7 @@
 // windows. tests/orchestrate.test.ts and tests/prime-latch.test.ts run it in
 // OpenCode.
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Queue, Schema, Stream } from "effect"
 import { type Latch, type LatchAsk, Opened } from "@dotfiles/opencode-wake/latch"
 import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import { KEEP } from "@dotfiles/opencode-orchestrate/compaction"
@@ -16,12 +16,17 @@ import * as ModelsTest from "@dotfiles/opencode-orchestrate/memory/models"
 import * as PoolPaceTest from "@dotfiles/opencode-orchestrate/memory/pool-pace"
 import * as SessionsTest from "@dotfiles/opencode-orchestrate/memory/sessions"
 import * as OpenCodeLatches from "@dotfiles/opencode-orchestrate/opencode/latches"
+import { type Holds, MARK, NO_HOLDS, type Run } from "@dotfiles/opencode-orchestrate/idle"
+import * as StepLogTest from "@dotfiles/opencode-orchestrate/memory/step-log"
+import { RECHECK_MS } from "@dotfiles/opencode-orchestrate/model"
 import * as OpenCodePoolPace from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
+import * as OpenCodeRuns from "@dotfiles/opencode-orchestrate/opencode/runs"
 import type { Session } from "@dotfiles/opencode-orchestrate/opencode/sessions"
+import * as OpenCodeSteer from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
-import type { Offered } from "@dotfiles/opencode-orchestrate/service"
+import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, DEFAULT_WINDOWS, make, Options } from "./server.ts"
 
 /** Friday 30 October 2026, 19:00 in Knowlton (EDT): after sunset, in the Sabbath. */
@@ -51,6 +56,14 @@ interface World {
   readonly refuse?: string
   /** The latches the wakes kept, in order. */
   readonly kept?: Array<LatchAsk & { readonly child: string }>
+  /** The units each session started steps of, as the call log keeps them. */
+  readonly steps?: Readonly<Record<string, ReadonlyArray<string>>>
+  /** The runs the status plugin answers. */
+  readonly runs?: ReadonlyArray<Run>
+  /** What the other plugins hold, by session. */
+  readonly holds?: Readonly<Record<string, Holds>>
+  /** The host refuses every nudge with this. */
+  readonly refuseNudge?: string
 }
 
 /** A tool as the host's tool editor hands it out: only what the plugin touches. */
@@ -87,6 +100,8 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     const transforms: Array<(editor: unknown) => void> = []
     const toolTransforms: Array<(editor: unknown) => void> = []
     const rpc: Record<string, Record<string, (input: unknown) => Effect.Effect<unknown>>> = {}
+    // The host's event stream, which the test publishes into.
+    const published = yield* Queue.unbounded<Record<string, unknown>>()
     const register = (name: string, callback: Hook) =>
       Effect.sync(() => {
         ;(hooks[name] ??= []).push(callback)
@@ -103,6 +118,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
         reload: () => Effect.void,
       },
       session: { hook: register },
+      event: { subscribe: () => Stream.fromQueue(published) },
       tool: {
         hook: register,
         transform: (callback: (editor: unknown) => void) =>
@@ -137,7 +153,12 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       CodexAdmissionTest.layer(world.codex ?? (() => undefined)),
       CompactionWindowsTest.layer(world.compactJson),
       OpenCodeLatches.layer(keep, start),
+      StepLogTest.layer(world.steps ?? {}),
+      OpenCodeRuns.layer(() => Effect.succeed({ agents: [], runs: world.runs ?? [], errors: [] })),
+      Layer.succeed(RootHolds, { of: (sessionID: string) => Effect.succeed(world.holds?.[sessionID] ?? NO_HOLDS) }),
+      OpenCodeSteer.layer((input) => (world.refuseNudge === undefined ? Effect.sync(() => void nudges.push(input)) : Effect.fail(new Error(world.refuseNudge)))),
     )
+    const nudges: Array<OpenCodeSteer.Synthetic> = []
     yield* make((_ctx, _options, start) => externals(start)).effect(host)
 
     // The subagent tool, as the host's editor holds it after the plugin's transform: it records each run.
@@ -182,8 +203,40 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       for (const line of lines) expect(Number.isFinite(Date.parse(line.at))).toBe(true)
       return lines.map(({ at: _, ...line }) => JSON.stringify(line))
     }
-    return { call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent }
+    /** The session ends its turn with nothing pending: the host's `experimental.idle` hook, with what still runs for it. */
+    const idle = Effect.fn(function* (sessionID: string, background: ReadonlyArray<unknown> = []) {
+      for (const hook of hooks["experimental.idle"] ?? []) yield* hook({ sessionID, background })
+    })
+    /** An input reaching a session's inbox: the owner's prompt, or a synthetic message with `metadata`. */
+    const enqueue = (sessionID: string, item: { readonly type: "user" } | { readonly type: "synthetic"; readonly metadata?: Record<string, unknown> }) =>
+      Queue.offer(published, {
+        type: "session.inbox.enqueued",
+        data: { sessionID, item: item.type === "user" ? { type: "user", payload: {} } : { type: "synthetic", payload: { text: "x", metadata: item.metadata } } },
+      })
+    /** An owner's TUI reporting a draft over the idle RPC. */
+    const draft = (input: unknown) => {
+      const handler = rpc["dotfiles-opencode.orchestrate.idle"]?.draft
+      return handler === undefined ? Effect.die(new Error("no idle RPC")) : handler(input)
+    }
+    return { call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, draft, nudges }
   })
+
+/** Waits for the plugin's background work: `check` passes within a second. */
+const eventually = (check: () => void) =>
+  Effect.gen(function* () {
+    for (let n = 0; n < 100; n += 1) {
+      try {
+        check()
+        return
+      } catch {
+        yield* Effect.sleep("10 millis")
+      }
+    }
+    check()
+  })
+
+/** Lets the plugin's background work run, for a check that nothing happened. */
+const settle = Effect.sleep("100 millis")
 
 const scenario = <A, E>(body: Effect.Effect<A, E, import("effect").Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
 
@@ -835,6 +888,112 @@ describe("Opus first, Codex second", () => {
         expect(codexLater.ran[0]!.input).toMatchObject({ model: "openai/gpt-6.1-sol#high" })
         expect(codexStarted).toEqual(["openai"])
         expect(codexLater.logged()[0]).toContain('"fallback":"anthropic/claude-opus held: all pool accounts are held"')
+      }),
+    ))
+})
+
+describe("an idle root with ready units", () => {
+  const LINE = "idle with units ready: closure-flake, pkg-lower; start them or name what you wait on."
+  const world = {
+    sessions: { root: {}, child: { parentID: "root" } },
+    steps: { root: ["closure-flake"] },
+    runs: [
+      {
+        name: "p5",
+        units: [
+          { unit: "closure-flake", state: "implement" },
+          { unit: "pkg-lower", state: "plan" },
+          { unit: "parser", state: "merged abc1234" },
+        ],
+      },
+      { name: "theirs", units: [{ unit: "audio", state: "plan" }] },
+    ],
+  }
+
+  test("is steered once with one marked line; going idle again does not nudge again until new input", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, world)
+        yield* plugin.idle("root")
+        yield* eventually(() =>
+          expect(plugin.nudges).toEqual([{ sessionID: "root", text: LINE, description: LINE, metadata: { [MARK]: true }, delivery: "steer", resume: true }]),
+        )
+        // The nudge's own arrival is not new input; the root answers it and goes idle again.
+        yield* plugin.enqueue("root", { type: "synthetic", metadata: { [MARK]: true } })
+        yield* plugin.idle("root")
+        yield* settle
+        expect(plugin.nudges).toHaveLength(1)
+        // A worker's notice or the owner's prompt is new input: the next idle period nudges again.
+        yield* plugin.enqueue("root", { type: "synthetic", metadata: { other: true } })
+        yield* settle
+        yield* plugin.idle("root")
+        yield* eventually(() => expect(plugin.nudges).toHaveLength(2))
+        yield* plugin.enqueue("root", { type: "user" })
+        yield* settle
+        yield* plugin.idle("root")
+        yield* eventually(() => expect(plugin.nudges).toHaveLength(3))
+      }),
+    ))
+
+  test("a subagent's session, work still running, the Sabbath, or a run that is not its: no nudge", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, world)
+        yield* plugin.idle("child")
+        yield* plugin.idle("root", [{ kind: "shell", sessionID: "root", shellID: "sh_1", command: "bun test" }])
+        const stranger = yield* start({ now: WEDNESDAY }, { ...world, steps: { root: ["audio-x"] } })
+        yield* stranger.idle("root")
+        const friday = yield* start({ now: FRIDAY_EVENING }, world)
+        yield* friday.idle("root")
+        yield* settle
+        expect([plugin.nudges, stranger.nudges, friday.nudges]).toEqual([[], [], []])
+      }),
+    ))
+
+  test("a wake, a question to the owner or a named wait holds it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const held = (holds: Partial<Holds>) => start({ now: WEDNESDAY }, { ...world, holds: { root: { ...NO_HOLDS, ...holds } } })
+        const plugins = [yield* held({ wakes: 1 }), yield* held({ questions: 1 }), yield* held({ needsYou: ["Pick a format"] }), yield* held({ waits: ["owner review"] })]
+        for (const plugin of plugins) yield* plugin.idle("root")
+        yield* settle
+        expect(plugins.map((plugin) => plugin.nudges.length)).toEqual([0, 0, 0, 0])
+      }),
+    ))
+
+  test("while the owner drafts to it, it waits; a draft that ends with no input nudges it, one that is sent does not", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, world)
+        expect(yield* plugin.draft({ sessionID: "root", client: "tui-1", drafting: true })).toEqual({ ok: true })
+        yield* plugin.idle("root")
+        yield* settle
+        expect(plugin.nudges).toEqual([])
+        yield* plugin.draft({ sessionID: "root", client: "tui-1", drafting: false })
+        yield* Effect.sleep(RECHECK_MS / 2)
+        expect(plugin.nudges).toEqual([])
+        yield* eventually(() => expect(plugin.nudges.map((nudge) => nudge.text)).toEqual([LINE]))
+
+        const sent = yield* start({ now: WEDNESDAY }, world)
+        yield* sent.draft({ sessionID: "root", client: "tui-1", drafting: true })
+        yield* sent.idle("root")
+        yield* sent.draft({ sessionID: "root", client: "tui-1", drafting: false })
+        yield* sent.enqueue("root", { type: "user" })
+        yield* Effect.sleep(RECHECK_MS + 200)
+        expect(sent.nudges).toEqual([])
+        // A report that is not one is refused without a word.
+        expect(yield* sent.draft({ sessionID: "root" })).toEqual({ ok: false })
+      }),
+    ))
+
+  test("a nudge the host refuses is not tried again in that idle period", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { ...world, refuseNudge: "session busy" })
+        yield* plugin.idle("root")
+        yield* plugin.idle("root")
+        yield* settle
+        expect(plugin.nudges).toEqual([])
       }),
     ))
 })

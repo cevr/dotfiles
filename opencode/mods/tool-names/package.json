@@ -1,0 +1,10 @@
+{
+  "name": "@dotfiles/opencode-tool-names",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Tool names for OpenCode: a call of a tool name a model nearly got right (by case or one edit, or of a provider's alias) is answered with the real name.",
+  "exports": {
+    "./*": "./*.ts"
+  }
+}
