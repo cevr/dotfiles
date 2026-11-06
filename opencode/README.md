@@ -691,6 +691,37 @@ and no work) unless `HERDR_ENV=1` and both `HERDR_PANE_ID` and
 `HERDR_SOCKET_PATH` are set. The server runs as a background service outside
 any pane, so only the TUI can report.
 
+## Recover
+
+`cmd/recover` is a TUI plugin that returns a session whose directory is gone
+(a removed rift or worktree) to where it was before. When the session on
+screen is idle and its directory no longer exists, it reads the session's
+location-switched messages (every applied move appends one, naming where the
+session went and where it left; the oldest one's previous location is where
+the session was made), newest first, and moves the session to the newest of
+those locations that still exists, through the same `session.move` route the
+host's "Choose directory" calls. A toast says so:
+
+```
+Moved to ~/Developer/repo: ~/.rifts/repo/feature no longer exists
+```
+
+With no such location, the host's own "Session location unavailable" prompt
+stays. A failed read or move toasts `Failed to return session` and leaves the
+prompt. A directory that exists is looked at again on the next visit; a
+missing one is tried once per session and directory. The host draws its
+prompt for the moment before the move lands. The TUI checks the directories
+on its own machine, as `daily` runs it beside its server.
+
+The model (the domain files at the root of `mods/recover`): `recover.ts`
+picks the location (`recoverTarget`) and words the toast, and `model.ts`'s
+`recover` reads and moves through the contracts in `service.ts`: `Sessions`
+(`opencode/`: the TUI client's message list and move) and `Directories`
+(`filesystem/`, with its laws in `laws.ts`); `memory/` holds the world the
+model's test runs on. `tests/recover.test.ts` runs `scenarios/recover.ts`:
+a session moved into a folder that is then removed goes back where it was
+made when the TUI opens it.
+
 ## Cache
 
 `cmd/cache` is a TUI plugin that shows when a request paid again for a
