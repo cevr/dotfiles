@@ -2,15 +2,32 @@
 // model, beside the kernel. `git reset --hard` is refused as a direct shell
 // call and as a kernel cell's `tools.shell` call; the work repository's HEAD
 // and its dirty file stay as they were, and a harmless command still runs.
+// A heavy command runs niced through a launcher while its command reads as
+// written, and a kill by a pattern that matches the server is refused.
 // Every shell call runs in a git repository the run makes in a scratch dir.
 // The guard on its own is tested beside its code in mods/guard and cmd/guard.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { getPriority, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { DIRTY, git, KEPT_FILE } from "./guard/repo.ts"
 import type { Result, Spec } from "./guard/run.ts"
-import { CELL_TASK, CHILD_SLEEP, DIRECT_TASK, DONE, HARMLESS, HARMLESS_FILE, HARMLESS_OUT, RESET, ROOT_SLEEP, SLEEP_TASK } from "./guard/sim.ts"
+import {
+  CELL_TASK,
+  CHILD_SLEEP,
+  DIRECT_TASK,
+  DONE,
+  HARMLESS,
+  HARMLESS_FILE,
+  HARMLESS_OUT,
+  HEAVY_NICE,
+  killByPattern,
+  LIGHT_NICE,
+  POLICY_TASK,
+  RESET,
+  ROOT_SLEEP,
+  SLEEP_TASK,
+} from "./guard/sim.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/guard.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
@@ -74,6 +91,9 @@ const said = (part: ToolPart | undefined): string =>
     ? ""
     : [...(part.state.content ?? []).map((item) => item.text ?? ""), ...(part.state.error === undefined ? [] : [JSON.stringify(part.state.error)])].join("\n")
 
+/** The niceness a shell call printed: the last line of its output, after the shell tool's status line. */
+const niceness = (part: ToolPart | undefined): number => Number(said(part).trim().split("\n").at(-1))
+
 const REFUSAL = "guard-destructive: `git reset --hard` discards uncommitted work; stash it (`git stash -u`) or commit first."
 
 /** The work repository is as the run left it before the prompt, and the harmless command ran in it. */
@@ -131,6 +151,34 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(said(childSleep)).toContain("guard-sleep: `sleep 60` would hold this subagent's turn for 60 s doing nothing")
       expect(said(childSleep)).toContain("wait\\\", id, ms })")
       expect(said(childSleep)).not.toContain("child slept")
+    },
+    RUN_MS,
+  )
+
+  test(
+    "a heavy command runs niced under its command as written, a light one at the run's niceness, and a kill by a pattern that matches the server is refused",
+    async () => {
+      const result = await run("policy", { task: POLICY_TASK, codeOnly: false })
+      const [heavy, light, kill, ...rest] = toolParts(result.messages)
+      expect(rest).toEqual([])
+      // The run's process, and so OpenCode's shells, start at this test's niceness; the guard adds 10, up to 19.
+      const base = getPriority()
+      expect(light?.state.input.command).toBe(LIGHT_NICE)
+      expect(light?.state.status).toBe("completed")
+      expect(niceness(light)).toBe(base)
+      // The model's call and the tool part show the command as the model wrote it: only the program that runs it changed.
+      expect(heavy?.state.input.command).toBe(HEAVY_NICE)
+      expect(heavy?.state.status).toBe("completed")
+      expect(niceness(heavy)).toBe(Math.min(base + 10, 19))
+      const launchers = join(scratch, "policy/home/.cache/opencode/guard-launchers")
+      // One launcher, named as the shell it stands in for, so OpenCode reads the command in that shell's dialect.
+      const written = readdirSync(launchers).flatMap((hash) => readdirSync(join(launchers, hash)))
+      expect(written).toHaveLength(1)
+      expect(written[0]).toMatch(/^(ba|z|da|k)?sh$/)
+      expect(kill?.name).toBe("shell")
+      expect(kill?.state.input.command).toBe(killByPattern(join(scratch, "policy/spec.json")))
+      expect(kill?.state.status).toBe("error")
+      expect(said(kill)).toContain("would also kill the OpenCode server this session runs on")
     },
     RUN_MS,
   )
