@@ -3,7 +3,7 @@
 // `<pool>/hold/<credentialID>`, `<pool>/reading/<credentialID>`,
 // `<pool>/step/<at, 15 digits>/<sessionID>` and `<pool>/cache/<sessionID>`
 // (where the session last sent a request, and when, with its agent's own cache
-// lifetime when it has one). A step names the assistant message it wrote,
+// lifetime when it has one and whether the session outlived it). A step names the assistant message it wrote,
 // once the host names it. A previous process wrote
 // the same keys, so the format stays as it is; a ledger from before caches
 // were kept has no cache key and restores none.
@@ -49,11 +49,11 @@ const writesOf = (event: Event): ReadonlyArray<Write> => {
     case "RequestRefused":
       return [put(holdKey(event.credentialID), event.hold)]
     case "RequestPlaced":
-      return [put(cacheKey(event.sessionID), cacheMark({ credentialID: event.credentialID, at: event.at }, event.cacheLifeMs))]
+      return [put(cacheKey(event.sessionID), cacheMark({ credentialID: event.credentialID, at: event.at }, event))]
     case "StepRecorded":
       return [
         put(stepKey(event.step), event.step),
-        put(cacheKey(event.step.sessionID), cacheMark({ credentialID: event.step.credentialID, at: event.step.at }, event.cacheLifeMs)),
+        put(cacheKey(event.step.sessionID), cacheMark({ credentialID: event.step.credentialID, at: event.step.at }, event)),
       ]
     case "LedgerPruned":
       return [

@@ -76,6 +76,13 @@ export const ttlMs = (ttl: unknown): number | undefined => {
   return life === undefined || life <= 0 ? undefined : life
 }
 
+/** A lifetime in ms as `ttlMs` reads it: in its largest whole unit ("1h", "5m", "90s"). */
+export const ttlOf = (ms: number): string => {
+  const units = ["d", "h", "m", "s"] as const
+  const unit = units.find((name) => ms % UNIT_MS[name] === 0)
+  return unit === undefined ? `${ms}ms` : `${ms / UNIT_MS[unit]}${unit}`
+}
+
 /** What a model request is for; a session's newest request of each kind has its own account. */
 export const RequestKind = Schema.Literals(["primary", "compaction", "title", "generate"])
 export type RequestKind = typeof RequestKind.Type
@@ -95,11 +102,57 @@ export type Step = typeof Step.Type
 /**
  * Where a session's run, or its cache, is, and since when (epoch ms). A cache's
  * mark carries `lifeMs` when the agent that made the request keeps its cache
- * for its own lifetime (an orchestration role's 5 minutes); without it the
- * cache lives the provider's lifetime (`Rules.cacheLifeMs`).
+ * for its own lifetime (an orchestration role's 5 minutes, or the provider's
+ * once the session outlived that); without it the cache lives the provider's
+ * lifetime (`Rules.cacheLifeMs`). `outlived` marks a session that came back
+ * after its agent's lifetime had passed but before the provider's had
+ * (`requestCache`).
  */
-export const Mark = Schema.Struct({ credentialID: Schema.String, at: Schema.Number, lifeMs: Schema.optionalKey(Schema.Number) })
+export const Mark = Schema.Struct({
+  credentialID: Schema.String,
+  at: Schema.Number,
+  lifeMs: Schema.optionalKey(Schema.Number),
+  outlived: Schema.optionalKey(Schema.Boolean),
+})
 export type Mark = typeof Mark.Type
+
+/** The lifetime a request's cache is written for, and whether its session has outlived its agent's own. */
+export interface RequestCache {
+  /** Absent when the agent keeps no lifetime of its own: the cache lives the provider's. */
+  readonly lifeMs?: number
+  readonly outlived?: boolean
+}
+
+/**
+ * The lifetime the request of a session whose agent keeps `declared` (ms)
+ * writes its cache for, given the session's last cache mark.
+ *
+ * An agent's short lifetime (an orchestration role's 5 minutes) pays off only
+ * while the session's requests follow each other closely. A session that comes
+ * back after its own lifetime has passed but before the provider's has (a long
+ * shell command, a wait, a resumed role) is `outlived`: its cache had expired,
+ * and it would have read it at the provider's lifetime. From its next request
+ * on it asks for the provider's lifetime, for as long as each request follows
+ * the last within it. The request that came back still writes at the agent's
+ * own: most sessions that come back once go on without another long pause, and
+ * the provider's lifetime costs more to write.
+ */
+export const requestCache = (rules: Rules, last: Mark | undefined, declared: number | undefined, now: number): RequestCache => {
+  if (declared === undefined) return {}
+  if (declared >= rules.cacheLifeMs || last === undefined) return { lifeMs: declared }
+  const gap = now - last.at
+  if (gap >= rules.cacheLifeMs) return { lifeMs: declared }
+  if (last.outlived === true) return { lifeMs: rules.cacheLifeMs, outlived: true }
+  return gap >= declared ? { lifeMs: declared, outlived: true } : { lifeMs: declared }
+}
+
+/**
+ * Whether a cache mark is kept at `now`: while it lives, and at least for the
+ * provider's lifetime, so a session that outlives its agent's shorter one is
+ * known when it comes back (`requestCache`).
+ */
+export const markKept = (rules: Rules, mark: Mark, now: number): boolean =>
+  now - mark.at < Math.max(mark.lifeMs ?? rules.cacheLifeMs, rules.cacheLifeMs)
 
 /** The key of a session's newest request of a kind. */
 export const placedKey = (sessionID: string, kind: RequestKind) => `${sessionID}:${kind}`

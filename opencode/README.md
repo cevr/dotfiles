@@ -270,7 +270,8 @@ server has `POST /api/shell/:id/kill` and `GET /api/shell?exited=true`.
 `mods/orchestrate` holds the orchestrate skill's rules; its plugin is
 `cmd/orchestrate`. It defines the role agents, their compaction windows and
 their five-minute prompt cache (`ROLE_CACHE_TTL`, through the fork's per-agent
-`request.settings.cacheTTL`; the main session keeps the provider's hour),
+`request.settings.cacheTTL`, raised by the pool to the provider's hour once a
+role's session outlives it; the main session keeps the provider's hour),
 routes each subagent call to a role, starts a new Opus start the pace holds on
 Codex instead, latches one both hold, and stops agent work over the Sabbath. Its options are `windows`, `log`, `now`,
 `place`, `fullAgent` and `codex`. An absent option takes its default. A
@@ -359,6 +360,20 @@ login. It leaves only
 when the login is held, or has a quota window at its share while another
 login has room. Load, live sessions and pace place only a run whose cache is
 gone.
+
+An agent's own lifetime shorter than `cacheLifeMs` (the roles' 5 minutes)
+pays only while its session's requests follow each other closely. A session
+that comes back after its own lifetime but within `cacheLifeMs` (a long shell
+command, a wait, a role resumed) has outlived it: from its next request on,
+the pool gives it `cacheLifeMs` for as long as each request follows the last
+within it (`requestCache` in `accounts.ts`). The pool names that lifetime on
+the request (`x-opencode-cache-ttl: 1h`), and the auth plugin strips the
+header and writes it on every cache breakpoint of the body. A session's cache
+mark is kept at least `cacheLifeMs` (`markKept`), so the pool knows the
+session when it comes back. Over 43 hours of role steps this saved about $19
+of $538 on the Mac and $189 of $898 on the workbox against five minutes
+throughout; an hour throughout saved $177 on the workbox and cost $43 on the
+Mac.
 
 A fork (`session.fork`, as `/btw` makes) sends its source's cache key, so
 its first request reads the source's cache on the login that holds it. A

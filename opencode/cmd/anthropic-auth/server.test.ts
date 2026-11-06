@@ -3496,6 +3496,69 @@ describe('credential choice, wire extras and quota readings', () => {
     expect(ctx.integration.connection.active).not.toHaveBeenCalled()
   })
 
+  describe('the cache-lifetime header', () => {
+    const fiveMinutes = { type: 'ephemeral', ttl: '5m' }
+    /** A role's request: its breakpoints at five minutes, and a tool input that only looks like one. */
+    const roleRequest = (headers: Record<string, string>) =>
+      new Request('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify({
+          model: model.id,
+          tools: [{ name: 'bash', input_schema: { type: 'object' }, cache_control: fiveMinutes }],
+          system: [{ type: 'text', text: 'You are a role.', cache_control: fiveMinutes }],
+          messages: [
+            {
+              role: 'assistant',
+              content: [{ type: 'tool_use', id: 't1', name: 'bash', input: { cache_control: fiveMinutes } }],
+            },
+            {
+              role: 'user',
+              content: [
+                { type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'done', cache_control: fiveMinutes }] },
+                { type: 'text', text: 'go on', cache_control: fiveMinutes },
+              ],
+            },
+          ],
+        }),
+      })
+    const sendRole = async (sessionHooks: SessionHooks, headers: Record<string, string>) => {
+      const event: RequestEvent = { sessionID: 'ses_one', model, kind: 'primary', request: roleRequest(headers) }
+      await sessionHooks.get('http.request')(event)
+      const sent = event.request as Request
+      return { sent, body: await sent.clone().json() }
+    }
+    const breakpoints = (body: any) => [
+      body.tools[0].cache_control,
+      body.system.at(-1).cache_control,
+      body.messages[1].content[0].content[0].cache_control,
+      body.messages[1].content[1].cache_control,
+    ]
+
+    test('writes every cache breakpoint for the lifetime it names, never a tool input, and is stripped', async () => {
+      const { ctx, sessionHooks } = twoAccounts()
+      await plugin.setup(ctx)
+
+      const { sent, body } = await sendRole(sessionHooks, { 'x-opencode-cache-ttl': '1h' })
+
+      expect(sent.headers.has('x-opencode-cache-ttl')).toBe(false)
+      expect(breakpoints(body)).toEqual(Array(4).fill({ type: 'ephemeral', ttl: '1h' }))
+      expect(body.messages[0].content[0].input).toEqual({ cache_control: fiveMinutes })
+    })
+
+    test('leaves the breakpoints as they came without it, or with a lifetime Anthropic does not take', async () => {
+      const { ctx, sessionHooks } = twoAccounts()
+      await plugin.setup(ctx)
+
+      const cases: ReadonlyArray<Record<string, string>> = [{}, { 'x-opencode-cache-ttl': '2h' }]
+      for (const headers of cases) {
+        const { sent, body } = await sendRole(sessionHooks, headers)
+        expect(sent.headers.has('x-opencode-cache-ttl')).toBe(false)
+        expect(breakpoints(body)).toEqual(Array(4).fill(fiveMinutes))
+      }
+    })
+  })
+
   test('without the header, sends on the active connection', async () => {
     const { ctx, sessionHooks, accessOf } = twoAccounts()
     await plugin.setup(ctx)

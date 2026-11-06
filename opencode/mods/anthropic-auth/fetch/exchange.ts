@@ -29,6 +29,7 @@ import {
   refusedResponse,
   routed,
   setOAuthHeaders,
+  takeCacheTTL,
   takeCredentialChoice,
 } from "./request.ts"
 import { createStrippedStream } from "./response-stream.ts"
@@ -87,8 +88,9 @@ const credentialIDOf = (connection: { readonly type: string; readonly id?: strin
 
 /**
  * `http.request`: send a request for the `anthropic` provider on its login,
- * as Claude Code would. A login refused for a while sends the request
- * nowhere; the response hook answers it as a retryable 429.
+ * as Claude Code would, its cache written for the lifetime another plugin
+ * named (`CACHE_TTL_HEADER`) when it named one. A login refused for a while
+ * sends the request nowhere; the response hook answers it as a retryable 429.
  */
 export const onRequest =
   (exchange: Exchange) =>
@@ -98,7 +100,8 @@ export const onRequest =
       if (!exchange.active()) return
       if (event.model.providerID !== INTEGRATION_ID) return
       const choice = takeCredentialChoice(event.request)
-      event.request = choice.request
+      const cache = takeCacheTTL(choice.request)
+      event.request = cache.request
       const login = yield* auth.login(choice.credentialID).pipe(
         Effect.catchTag("LoginRefused", (refused) =>
           Effect.sync(() => {
@@ -145,7 +148,7 @@ export const onRequest =
         : undefined
       if (!exchange.active()) return
       const aliases = new ToolNameAliasTable({ maxEntries: MAX_REQUEST_ALIAS_ENTRIES, maxBytes: MAX_REQUEST_ALIAS_BYTES })
-      const rewrittenBody = bodyText === undefined ? undefined : rewriteRequestBody(bodyText, version, aliases)
+      const rewrittenBody = bodyText === undefined ? undefined : rewriteRequestBody(bodyText, version, aliases, cache.ttl)
       if (rewrittenBody !== undefined && Result.isFailure(rewrittenBody)) {
         aliases.dispose()
         return yield* rewrittenBody.failure

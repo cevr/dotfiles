@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test"
 import { fold } from "@dotfiles/decider/decider"
 import { AccountPool, LoginsListed, ReadingTaken, RequestPlaced, restored, StepRecorded, type Event } from "./account-pool.ts"
-import { cacheLives, DEFAULT_RULES, held, rank, sessionAccount, shouldFailOver, status, ttlMs, WINDOW_MS } from "./accounts.ts"
+import { cacheLives, DEFAULT_RULES, held, rank, sessionAccount, shouldFailOver, status, ttlMs, ttlOf, WINDOW_MS } from "./accounts.ts"
 
 const HOUR = 3_600_000
 const T0 = 1_800_000_000_000
@@ -60,6 +60,11 @@ describe("a session's cache", () => {
   test("an agent's cacheTTL reads in models.dev's duration format; anything else is none", () => {
     expect([ttlMs("5m"), ttlMs("1h"), ttlMs("30s"), ttlMs("250ms")]).toEqual([5 * MINUTE, HOUR, 30_000, 250])
     expect([ttlMs(undefined), ttlMs(5), ttlMs("5 minutes"), ttlMs("0m")]).toEqual([undefined, undefined, undefined, undefined])
+  })
+
+  test("a lifetime writes back in its largest whole unit, as ttlMs reads it", () => {
+    expect([HOUR, 5 * MINUTE, 90_000, 250, 36 * HOUR].map(ttlOf)).toEqual(["1h", "5m", "90s", "250ms", "36h"])
+    for (const ms of [HOUR, 5 * MINUTE, 90_000, 250]) expect(ttlMs(ttlOf(ms))).toBe(ms)
   })
 })
 

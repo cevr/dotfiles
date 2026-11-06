@@ -12,7 +12,9 @@ export type Role = (typeof ROLES)[number]
 /**
  * The prompt-cache lifetime each role runs with (the fork's per-agent `request.settings.cacheTTL`). A role works
  * in one burst and then stops, so a five-minute write (1.25x input) beats the main session's one-hour write (2x):
- * a role rarely comes back to a prefix after five idle minutes. The main session keeps the provider's lifetime.
+ * a role rarely comes back to a prefix after five idle minutes. One that does (a long shell command or wait, a
+ * resumed role) has outlived it: the pool asks for the provider's lifetime from its next request on
+ * (`requestCache` in `@dotfiles/opencode-pool/accounts`). The main session keeps the provider's lifetime.
  */
 export const ROLE_CACHE_TTL = "5m"
 

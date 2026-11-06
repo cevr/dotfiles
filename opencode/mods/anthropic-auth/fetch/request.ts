@@ -1,9 +1,10 @@
 // The Request and Response values the hooks build: the OAuth headers Claude
-// Code sends, the credential another plugin chose, and the refused request
+// Code sends, the credential and cache lifetime another plugin chose, and the refused request
 // that answers as a retryable 429 without leaving the process.
 import { betaHeader, REQUIRED_BETAS } from "../betas.ts"
 import type { Endpoint } from "../endpoint.ts"
 import { refusedBody, refusedHeaders } from "../quota.ts"
+import { type CacheTTL, isCacheTTL } from "../request-body.ts"
 import { formatUserAgent } from "../version.ts"
 
 /**
@@ -12,6 +13,25 @@ import { formatUserAgent } from "../version.ts"
  * integration. It never reaches Anthropic.
  */
 export const CREDENTIAL_HEADER = "x-opencode-credential-id"
+
+/**
+ * The request header another plugin sets in `model.request` to write the
+ * request's cache for another lifetime than the one it carries: the pool's,
+ * once a session has outlived its agent's own. It never reaches Anthropic.
+ */
+export const CACHE_TTL_HEADER = "x-opencode-cache-ttl"
+
+/** The request without the cache-lifetime header, and the lifetime it named when Anthropic accepts it. */
+export function takeCacheTTL(request: Request): {
+  readonly request: Request
+  readonly ttl: CacheTTL | undefined
+} {
+  const named = request.headers.get(CACHE_TTL_HEADER)?.trim()
+  if (named === undefined) return { request, ttl: undefined }
+  const headers = new Headers(request.headers)
+  headers.delete(CACHE_TTL_HEADER)
+  return { request: new Request(request, { headers }), ttl: isCacheTTL(named) ? named : undefined }
+}
 
 /** Where a refused request goes: nowhere. Fetching it answers at once, offline. */
 export const REFUSED_URL = "data:text/plain,"

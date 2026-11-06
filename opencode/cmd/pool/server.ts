@@ -25,7 +25,10 @@
  *   room. Default 5 minutes, Anthropic's default; `bun run daily` sets it from
  *   the lifetime it gives Claude. A request whose agent sets its own lifetime
  *   (`request.settings.cacheTTL`, read through `ctx.agent.get`) keeps the
- *   session there for that lifetime instead.
+ *   session there for that lifetime instead, until the session comes back
+ *   after that lifetime but within this one: its requests from then on ask for
+ *   this lifetime (`CACHE_TTL_HEADER`, which the auth plugin writes on the
+ *   request's cache breakpoints) while each follows the last within it.
  * - `sources`: other stores whose logins join a pool beside OpenCode's own, read
  *   in place, never copied. Default none. `[{ kind: "gent", dir: "~/.local/share/opencode-prime/pool-auth" }]`
  *   adds the Claude accounts gent signed in to (`@dotfiles/opencode-pool/gent/store`) to the
@@ -75,7 +78,7 @@ import { hostname } from "node:os"
 import { Agent, Integration, Plugin } from "@opencode/plugin/effect"
 import { Clock, Context, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
-import { CACHE_LIFE_MS, ttlMs } from "@dotfiles/opencode-pool/accounts"
+import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
 import * as ChatGPT from "@dotfiles/opencode-pool/chatgpt/usage"
 import { GentSource, registerCredentialSource } from "@dotfiles/opencode-pool/gent/store"
@@ -95,6 +98,14 @@ type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 
 /** The request header that names the login a request goes out on. Its auth plugin strips it. */
 export const CREDENTIAL_HEADER = "x-opencode-credential-id"
+
+/**
+ * The request header that names the lifetime a request's cache is written for
+ * ("1h") when it is not the one its agent keeps: the provider's, once the
+ * session has outlived its agent's own. Its auth plugin strips it and sets the
+ * lifetime on the request's cache breakpoints.
+ */
+export const CACHE_TTL_HEADER = "x-opencode-cache-ttl"
 
 /**
  * An option that takes `fallback` when absent. A present value must decode.
@@ -291,8 +302,9 @@ export const make = (
         })
 
       // An agent that keeps its own cache lifetime (an orchestration role's 5 minutes, set as its
-      // `request.settings.cacheTTL`) holds its session on a login only that long. An agent the
-      // host cannot name keeps the provider's lifetime.
+      // `request.settings.cacheTTL`) holds its session on a login only that long, until the session
+      // outlives it: the pool then gives it the provider's lifetime, which the request asks for
+      // through CACHE_TTL_HEADER. An agent the host cannot name keeps the provider's lifetime.
       const agentCacheLife = (agentID: string) =>
         ctx.agent.get({ agentID: Agent.ID.make(agentID) }).pipe(
           Effect.map((agent) => ttlMs(agent.data.request.settings?.["cacheTTL"])),
@@ -311,17 +323,23 @@ export const make = (
       yield* ctx.session.hook("model.request", (event) =>
         Effect.all([agentCacheLife(event.agent), cacheOf(event.sessionID)]).pipe(
           Effect.flatMap(([cacheLifeMs, source]) =>
-            pool.place({
-              providerID: event.model.providerID,
-              sessionID: event.sessionID,
-              kind: event.kind,
-              ...(cacheLifeMs === undefined ? {} : { cacheLifeMs }),
-              ...(source === undefined ? {} : { cacheOf: source }),
-            }),
+            pool
+              .place({
+                providerID: event.model.providerID,
+                sessionID: event.sessionID,
+                kind: event.kind,
+                ...(cacheLifeMs === undefined ? {} : { cacheLifeMs }),
+                ...(source === undefined ? {} : { cacheOf: source }),
+              })
+              .pipe(
+                Effect.map((placed) => {
+                  if (placed === undefined) return
+                  event.headers[CREDENTIAL_HEADER] = placed.credentialID
+                  if (placed.cacheLifeMs !== undefined && placed.cacheLifeMs !== cacheLifeMs)
+                    event.headers[CACHE_TTL_HEADER] = ttlOf(placed.cacheLifeMs)
+                }),
+              ),
           ),
-          Effect.map((credentialID) => {
-            if (credentialID !== undefined) event.headers[CREDENTIAL_HEADER] = credentialID
-          }),
         ),
       )
 

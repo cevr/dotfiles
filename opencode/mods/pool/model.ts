@@ -87,6 +87,12 @@ const measuredBy = (config: Config, providerID: string): PoolId | undefined =>
       ? config.paced[providerID]
       : undefined
 
+/** Where a request goes out, and the lifetime its cache is written for when its agent keeps its own (ms). */
+export interface Placed {
+  readonly credentialID: string
+  readonly cacheLifeMs?: number
+}
+
 /** The pools a config names: each integration once, in the order the providers name them, then the paced ones. */
 export const poolsOf = (config: Config): ReadonlyArray<PoolId> => [
   ...new Set([...Object.values(config.providers), ...Object.values(config.paced ?? {})]),
@@ -95,16 +101,21 @@ export const poolsOf = (config: Config): ReadonlyArray<PoolId> => [
 export class Pool extends Context.Service<
   Pool,
   {
-    /** A model request goes out: the login it goes out on, or none when the provider is not pooled or lists no login. */
+    /**
+     * A model request goes out: the login it goes out on, and the lifetime its
+     * cache is written for when its agent keeps its own (the provider's once
+     * the session has outlived it); none when the provider is not pooled or
+     * lists no login.
+     */
     readonly place: (input: {
       readonly providerID: string
       readonly sessionID: string
       readonly kind: RequestKind
-      /** How long the request's cache lives when its agent keeps its own lifetime (ms); else the provider's. */
+      /** How long its agent keeps the request's cache when it keeps its own lifetime (ms); else the provider's. */
       readonly cacheLifeMs?: number
       /** The session whose cache the request reads when the session has none of its own: a fork's source. */
       readonly cacheOf?: string
-    }) => Effect.Effect<string | undefined>
+    }) => Effect.Effect<Placed | undefined>
     /** A response came back. A refusal (401 or 429) holds the login it went out on. */
     readonly responded: (input: {
       readonly providerID: string
@@ -230,7 +241,11 @@ export const layer = (config: Config) =>
         const events = yield* send(where.pool, where.id, command).pipe(
           Effect.catchTag("NoAccount", () => Effect.succeed([])),
         )
-        return events.flatMap((event) => (event._tag === "RequestPlaced" ? [event.credentialID] : []))[0]
+        return events.flatMap((event): ReadonlyArray<Placed> =>
+          event._tag === "RequestPlaced"
+            ? [{ credentialID: event.credentialID, ...(event.cacheLifeMs === undefined ? {} : { cacheLifeMs: event.cacheLifeMs }) }]
+            : [],
+        )[0]
       })
 
       const responded = Effect.fn("Pool.responded")(function* (input: {

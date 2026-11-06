@@ -22,9 +22,10 @@ import type { QuotaReading } from "@dotfiles/opencode-pool/quota"
 import type { PublishedReading } from "@dotfiles/opencode-pool/service"
 import { GentSource } from "@dotfiles/opencode-pool/gent/store"
 import type { Alerts, FleetStatus, PoolsStatus, Report, SessionAnswer, SessionLogins } from "@dotfiles/opencode-pool/status"
-import Pool, { CREDENTIAL_HEADER, live, make } from "./server.ts"
+import Pool, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, live, make } from "./server.ts"
 
-const HOUR = 3_600_000
+const MINUTE = 60_000
+const HOUR = 60 * MINUTE
 const ANTHROPIC = PoolId.make("anthropic")
 
 type Host = Parameters<(typeof Pool)["effect"]>[0]
@@ -179,12 +180,14 @@ const start = (
     } as unknown as Host
     yield* make(externals === "test" ? testLayers(state, published) : externals).effect(host)
 
-    /** One model request of a session: the login the pool names on it. */
-    const request = Effect.fn(function* (sessionID = "ses_1", providerID = "anthropic", kind = "primary", agent = "build") {
+    /** One model request of a session: the headers the pool sets on it. */
+    const send = Effect.fn(function* (sessionID = "ses_1", providerID = "anthropic", kind = "primary", agent = "build") {
       const headers: Record<string, string> = {}
       yield* (yield* registered(hooks, "model.request"))({ sessionID, agent, model: { ...model, providerID }, kind, headers })
-      return headers[CREDENTIAL_HEADER]
+      return headers
     })
+    /** One model request of a session: the login the pool names on it. */
+    const request = (...args: Parameters<typeof send>) => send(...args).pipe(Effect.map((headers) => headers[CREDENTIAL_HEADER]))
     const respond = Effect.fn(function* (status: number, sessionID = "ses_1") {
       yield* (yield* registered(hooks, "http.response"))({
         sessionID,
@@ -248,6 +251,7 @@ const start = (
       yield* (yield* registered(hooks, "experimental.ws.receive"))({ sessionID, agent: "build", model: { ...model, providerID }, kind: "primary", frame })
     })
     return {
+      send,
       request,
       respond,
       retry,
@@ -533,17 +537,77 @@ describe("a session's cache", () => {
       }),
     ))
 
-  test("of a role survives a restart with its own lifetime: dropped once its five minutes pass", () =>
+  test("of a role survives a restart with its own lifetime: it holds the session five minutes, and its mark is kept the provider's hour", () =>
     onTestClock(
       Effect.gen(function* () {
         const state = roles()
         const first = yield* start({ sweepMinutes: 0, cacheLifeMs: HOUR }, state)
         expect(yield* first.request("s1", "anthropic", "primary", "implementor")).toBe("cred-a")
         yield* first.emit({ type: "session.step.ended", data: { sessionID: "s1", cost: 5 } })
+        yield* first.idle("s1")
         expect(state.storage.get("anthropic/cache/s1")).toEqual({ credentialID: "cred-a", at: 0, lifeMs: CACHE_LIFE_MS })
         yield* TestClock.adjust(CACHE_LIFE_MS)
+        const second = yield* start({ sweepMinutes: 0, cacheLifeMs: HOUR }, state)
+        // Kept, though it no longer holds the session: the status counts only another session live.
+        expect(state.storage.has("anthropic/cache/s1")).toBe(true)
+        yield* second.request("other")
+        const live = (yield* second.status).anthropic?.accounts.map((account) => account.live) ?? []
+        expect(live.reduce((total, count) => total + count, 0)).toBe(1)
+        yield* TestClock.adjust(HOUR - CACHE_LIFE_MS)
         yield* start({ sweepMinutes: 0, cacheLifeMs: HOUR }, state)
-        expect([...state.storage.keys()].filter((key) => key.includes("/cache/"))).toEqual([])
+        expect(state.storage.has("anthropic/cache/s1")).toBe(false)
+      }),
+    ))
+
+  test("of a role that comes back after its five minutes, within the hour, asks for the hour from its next request on", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = roles()
+        const plugin = yield* start({ sweepMinutes: 0, cacheLifeMs: HOUR }, state)
+        const step = (cost: number) => plugin.emit({ type: "session.step.ended", data: { sessionID: "s1", cost } })
+        const role = () => plugin.send("s1", "anthropic", "primary", "implementor")
+        expect((yield* role())[CACHE_TTL_HEADER]).toBeUndefined()
+        yield* step(1)
+        // Back inside its five minutes: the role's own lifetime pays off.
+        yield* TestClock.adjust(CACHE_LIFE_MS - 1)
+        expect((yield* role())[CACHE_TTL_HEADER]).toBeUndefined()
+        yield* step(1)
+        // Back after a ten-minute shell command: its cache had expired. This request still writes for five minutes ...
+        yield* TestClock.adjust(10 * MINUTE)
+        expect((yield* role())[CACHE_TTL_HEADER]).toBeUndefined()
+        yield* step(1)
+        // ... and every one after asks for the hour, which keeps the session on its login that long.
+        yield* TestClock.adjust(MINUTE)
+        const raised = yield* role()
+        expect(raised[CACHE_TTL_HEADER]).toBe("1h")
+        yield* step(1)
+        // The ledger keeps it, so a restart goes on asking for the hour.
+        expect(state.storage.get("anthropic/cache/s1")).toMatchObject({ lifeMs: HOUR, outlived: true })
+        yield* plugin.idle("s1")
+        expect(yield* plugin.request("s2")).toBe("cred-b")
+        yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "s2", cost: 0 } })
+        yield* TestClock.adjust(30 * MINUTE)
+        const later = yield* role()
+        expect(later[CACHE_TTL_HEADER]).toBe("1h")
+        expect(later[CREDENTIAL_HEADER]).toBe(raised[CREDENTIAL_HEADER])
+        yield* step(1)
+        // An hour without a request starts over at the role's own lifetime.
+        yield* TestClock.adjust(HOUR)
+        expect((yield* role())[CACHE_TTL_HEADER]).toBeUndefined()
+      }),
+    ))
+
+  test("of a main session never names a lifetime: its agent keeps the provider's", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const plugin = yield* start({ sweepMinutes: 0, cacheLifeMs: HOUR }, roles())
+        expect((yield* plugin.send("s1"))[CACHE_TTL_HEADER]).toBeUndefined()
+        yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "s1", cost: 1 } })
+        yield* TestClock.adjust(10 * MINUTE)
+        expect((yield* plugin.send("s1"))[CACHE_TTL_HEADER]).toBeUndefined()
+        yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "s1", cost: 1 } })
+        yield* TestClock.adjust(MINUTE)
+        expect((yield* plugin.send("s1"))[CACHE_TTL_HEADER]).toBeUndefined()
       }),
     ))
 

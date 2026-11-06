@@ -16,6 +16,9 @@ commit 38b7c06, which adds to upstream's `v2/main`:
   instead of failing the hook, so the session retries on another login;
   the usage sweep reads a sourced credential only through the source's
   `peek`, never a refresh, and skips a source without one;
+- (here) a seam for the pool to name a request's cache lifetime
+  (`x-opencode-cache-ttl`, `5m` or `1h`), written on every cache breakpoint
+  of the body;
 - Claude Code's per-model beta set and session header.
 
 The code is ours from here; edit it in place. The package and release tests

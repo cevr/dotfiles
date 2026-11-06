@@ -263,6 +263,89 @@ describe("a session's cache keeps its account", () => {
   })
 })
 
+describe("a session whose agent keeps a shorter cache lifetime than the provider's", () => {
+  const ROLE = 5 * MINUTE
+  /** A role's request at `at`, placed on `credentialID`, writing its cache for `lifeMs`, `outlived` once the session outlived its own. */
+  const role = (credentialID: string, at: number, lifeMs: number, outlived = false) =>
+    [
+      Story.clock(at),
+      Story.when(PlaceRequest.make({ sessionID: "s1", kind: "primary", cacheLifeMs: ROLE })),
+      Story.then(
+        RequestPlaced.make({
+          sessionID: "s1",
+          kind: "primary",
+          credentialID,
+          at,
+          cacheLifeMs: lifeMs,
+          ...(outlived ? { outlived: true } : {}),
+        }),
+      ),
+    ] as const
+  /** The step that request ended with, refreshing its cache for the same lifetime. */
+  const roleStep = (credentialID: string, at: number, lifeMs: number, outlived = false) =>
+    [
+      Story.when(RecordStep.make({ sessionID: "s1", cost: 0 })),
+      Story.then(
+        StepRecorded.make({
+          step: { at, sessionID: "s1", credentialID, cost: 0 },
+          cacheLifeMs: lifeMs,
+          ...(outlived ? { outlived: true } : {}),
+        }),
+      ),
+      ...released("s1"),
+    ] as const
+
+  test("keeps its own while it comes back within it, and the provider's from the request after one that outlived it", () =>
+    Effect.runPromise(
+      hourStory(
+        accounts("a", "b"),
+        Story.given(StepRecorded.make({ step: { at: T0, sessionID: "s2", credentialID: "b", cost: 0 } })),
+        ...role("a", T0, ROLE),
+        ...roleStep("a", T0, ROLE),
+        // Back within its five minutes.
+        ...role("a", T0 + 4 * MINUTE, ROLE),
+        ...roleStep("a", T0 + 4 * MINUTE, ROLE),
+        // Back twenty minutes on: the cache had expired, so load places it (b has s2 live, a none), and it still writes for five minutes.
+        ...role("a", T0 + 24 * MINUTE, ROLE, true),
+        ...roleStep("a", T0 + 24 * MINUTE, ROLE, true),
+        // From the next request on it writes for the hour, even one that comes back within five minutes.
+        ...role("a", T0 + 25 * MINUTE, HOUR, true),
+        ...roleStep("a", T0 + 25 * MINUTE, HOUR, true),
+        // And the hour keeps it on its cache's account, though b scores better now.
+        Story.given(StepRecorded.make({ step: { at: T0 + 25 * MINUTE, sessionID: "s9", credentialID: "a", cost: 10 } })),
+        ...role("a", T0 + 70 * MINUTE, HOUR, true),
+        ...roleStep("a", T0 + 70 * MINUTE, HOUR, true),
+        // An hour without a request: the mark is gone, and the session starts over at its own lifetime, placed by load.
+        ...role("b", T0 + 130 * MINUTE, ROLE),
+      ),
+    ))
+
+  test("of the provider's default never outlives it: nothing is longer to give", () =>
+    run(
+      accounts("a"),
+      ...role("a", T0, ROLE),
+      ...role("a", T0 + 30 * MINUTE, ROLE),
+      ...role("a", T0 + 31 * MINUTE, ROLE),
+    ))
+
+  test("has its mark kept for the provider's lifetime, though its cache no longer holds the session", () =>
+    Effect.runPromise(
+      hourStory(
+        accounts("a"),
+        ...role("a", T0, ROLE),
+        Story.clock(T0 + ROLE),
+        Story.when(PruneLedger.make({})),
+        Story.then(),
+        Story.clock(T0 + PIN_IDLE_MS),
+        Story.when(PruneLedger.make({})),
+        Story.then(LedgerPruned.make({ steps: [], holds: [], runs: ["s1"], caches: [] })),
+        Story.clock(T0 + HOUR),
+        Story.when(PruneLedger.make({})),
+        Story.then(LedgerPruned.make({ steps: [], holds: [], runs: [], caches: ["s1"] })),
+      ),
+    ))
+})
+
 describe("a restored pool", () => {
   const ledger: LedgerState = {
     holds: {},
