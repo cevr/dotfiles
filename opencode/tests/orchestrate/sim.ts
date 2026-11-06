@@ -21,6 +21,12 @@ export const ROOT_TASK = "orchestrate"
 export const UNTYPED_TASK = "task-untyped"
 export const REVIEW_TASK = "task-review"
 export const SUMMARY = "## Objective\n- sim summary"
+/** A root task that calls one foreground subagent on `HANG_TASK`, then closes. */
+export const RESTART_TASK = "restart-root"
+/** The same, for the root the user interrupts. */
+export const ESCAPE_TASK = "escape-root"
+/** A subagent task whose first request hangs until the sim is released: the turn a shutdown cuts. */
+export const HANG_TASK = "task-hang"
 
 interface ChatMessage {
   readonly role: string
@@ -85,6 +91,10 @@ export const reply = (request: ChatRequest): Reply => {
       }
     return { kind: "text", text: "root: both subagents answered" }
   }
+  if ((task === RESTART_TASK || task === ESCAPE_TASK) && offersSubagent) {
+    if (results === 0) return { kind: "tool", name: "subagent", input: { description: `${task} child`, prompt: HANG_TASK } }
+    return { kind: "text", text: "root: the subagent is back" }
+  }
   return { kind: "text", text: `sim: ${lastLine(last) || "nothing"}` }
 }
 
@@ -131,6 +141,9 @@ const events = (answer: Reply, model: string, id: string, promptTokens: number):
 export const serve = (promptTokens = 100) => {
   const seen: Seen[] = []
   let served = 0
+  // Hanging requests, and whether a hang task's first request still hangs.
+  let hanging = 0
+  let released = false
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -150,10 +163,25 @@ export const serve = (promptTokens = 100) => {
         tools: (body.tools ?? []).map((tool) => tool.function?.name ?? ""),
       })
       served += 1
+      const task = lastLine(text(messages.find((message) => message.role === "user")?.content))
+      if (task === HANG_TASK && lastLine(text(messages.at(-1)?.content)) === HANG_TASK && !released) {
+        hanging += 1
+        // An open stream that never ends: the request runs until the server's shutdown cuts it.
+        return new Response(new ReadableStream({ start: () => {} }), { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } })
+      }
       return new Response(events(reply(body), body.model ?? "sim", `sim${served}`, promptTokens), {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       })
     },
   })
-  return { server, seen }
+  return {
+    server,
+    seen,
+    /** How many requests hang now or did. */
+    hanging: () => hanging,
+    /** From now on a hang task answers. */
+    release: () => {
+      released = true
+    },
+  }
 }

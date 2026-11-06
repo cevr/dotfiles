@@ -11,15 +11,20 @@
  * - `subagents`: the root session runs the sim's `orchestrate` task, which
  *   calls `subagent` with no agent and then with `orchestrate-reviewer`.
  * - `compaction`: a planner session and a worker session, two prompts each.
+ * - `restart`: on a database file, two roots each call a foreground
+ *   subagent whose model request hangs; the user interrupts the second root,
+ *   then OpenCode shuts down while the first waits, and starts again on the
+ *   same database. The run ends once the first root's child answered after
+ *   the plugin resumed it, or after a minute.
  *
  * @module
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { ROOT_TASK, serve } from "./sim.ts"
+import { ESCAPE_TASK, RESTART_TASK, ROOT_TASK, serve } from "./sim.ts"
 
 export interface Spec {
-  readonly scenario: "subagents" | "compaction"
+  readonly scenario: "subagents" | "compaction" | "restart"
   readonly base: string
   readonly fork: string
   readonly plugin: string
@@ -31,6 +36,8 @@ export interface Spec {
   /** The Codex admission's answer: the sim provider is paced as Codex, and each call's arguments land in codex-args.jsonl. */
   readonly codex?: "admit" | "hold"
   readonly promptTokens?: number
+  /** The plugin's `resume.backoffMs`: the waits before it resumes a subagent a restart cut. */
+  readonly resumeBackoffMs?: ReadonlyArray<number>
 }
 
 export interface Child {
@@ -89,7 +96,19 @@ const content = {
       },
     },
   },
-  plugins: [{ package: spec.plugin, options: { windows: windowsFile, log: logFile, now: spec.now, ...codexOption } }, ...(spec.pace !== undefined ? [{ package: pacePlugin }] : [])],
+  plugins: [
+    {
+      package: spec.plugin,
+      options: {
+        windows: windowsFile,
+        log: logFile,
+        now: spec.now,
+        ...codexOption,
+        ...(spec.resumeBackoffMs === undefined ? {} : { resume: { backoffMs: spec.resumeBackoffMs } }),
+      },
+    },
+    ...(spec.pace !== undefined ? [{ package: pacePlugin }] : []),
+  ],
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
@@ -106,6 +125,7 @@ interface Embedded {
     readonly list: (input: { parentID: string; directory: string }) => Promise<{ data: ReadonlyArray<SessionInfo> }>
     readonly prompt: (input: { sessionID: string; text: string }) => Promise<unknown>
     readonly context: (input: { sessionID: string }) => Promise<unknown>
+    readonly interrupt: (input: { sessionID: string }) => Promise<unknown>
   }
   readonly experimental: { readonly session: { readonly wait: (input: { sessionID: string }) => Promise<void> } }
   readonly close: () => Promise<void>
@@ -114,10 +134,14 @@ interface Sdk {
   readonly OpenCode: { readonly create: (options: Record<string, unknown>) => Promise<Embedded> }
 }
 const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
-const opencode = await OpenCode.create({
-  events: { persist: true },
-  config: { directory: config, project: false, content: JSON.stringify(content) },
-})
+/** One OpenCode; the restart scenario keeps its database in a file, so a second one starts on what the first left. */
+const open = () =>
+  OpenCode.create({
+    events: { persist: true },
+    config: { directory: config, project: false, content: JSON.stringify(content) },
+    ...(spec.scenario === "restart" ? { database: { path: join(spec.base, "opencode.db") } } : {}),
+  })
+let opencode = await open()
 
 const location = { directory: work }
 const turn = async (sessionID: string, text: string) => {
@@ -125,10 +149,60 @@ const turn = async (sessionID: string, text: string) => {
   await opencode.experimental.session.wait({ sessionID })
 }
 const messages = (sessionID: string) => opencode.sessions.context({ sessionID })
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+/** Polls `ready` every 100 ms for `ms` at most; whether it held. */
+const until = async (ready: () => Promise<boolean> | boolean, ms: number) => {
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(100)) if (await ready()) return true
+  return false
+}
+const childrenOf = async (parentID: string) => (await opencode.sessions.list({ parentID, directory: work })).data.map((item) => item.id)
+const readLog = (): Result["log"] => {
+  try {
+    return readFileSync(logFile, "utf8")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+  } catch {
+    return []
+  }
+}
 
 let result: Result
 try {
-  if (spec.scenario === "subagents") {
+  if (spec.scenario === "restart") {
+    const root = await opencode.sessions.create({ location })
+    const escaped = await opencode.sessions.create({ location })
+    await opencode.sessions.prompt({ sessionID: root.id, text: RESTART_TASK })
+    await opencode.sessions.prompt({ sessionID: escaped.id, text: ESCAPE_TASK })
+    if (!(await until(() => sim.hanging() >= 2, 30_000))) throw new Error(`the children did not start: ${sim.hanging()} hang`)
+    // The user's Escape on the second root, then a shutdown while the first waits on its child.
+    await opencode.sessions.interrupt({ sessionID: escaped.id })
+    await opencode.experimental.session.wait({ sessionID: escaped.id })
+    const [child] = await childrenOf(root.id)
+    const [escapedChild] = await childrenOf(escaped.id)
+    if (child === undefined || escapedChild === undefined) throw new Error("a root made no child")
+    await opencode.close()
+    sim.release()
+    opencode = await open()
+    // Resumed, answered after the resume prompt, and its parent told.
+    const answered = async () => {
+      const list = (await messages(child)) as ReadonlyArray<{ type: string; text?: string; time?: { completed?: unknown } }>
+      const resumed = list.findIndex((message) => message.type === "user" && message.text?.startsWith("Your turn ended when OpenCode restarted") === true)
+      return resumed >= 0 && list.slice(resumed + 1).some((message) => message.type === "assistant" && message.time?.completed !== undefined)
+    }
+    const done = await until(answered, 60_000)
+    if (done) {
+      await opencode.experimental.session.wait({ sessionID: child })
+      await opencode.experimental.session.wait({ sessionID: root.id })
+    }
+    // A late resume of the interrupted child would show by now.
+    await sleep(1_000)
+    const sessions: Result["sessions"] = {}
+    for (const [name, id] of [["root", root.id], ["child", child], ["escaped", escaped.id], ["escapedChild", escapedChild]] as const)
+      sessions[name] = { messages: await messages(id) }
+    const children = [...(await childrenOf(root.id)), ...(await childrenOf(escaped.id))].map((id) => ({ id }))
+    result = { children, sessions, seen: sim.seen, log: [] }
+  } else if (spec.scenario === "subagents") {
     const root = await opencode.sessions.create({ location })
     await turn(root.id, ROOT_TASK)
     const page = await opencode.sessions.list({ parentID: root.id, directory: work })
@@ -154,14 +228,7 @@ try {
     }
     result = { children: [], sessions, seen: sim.seen, log: [] }
   }
-  let log: Result["log"] = []
-  try {
-    log = readFileSync(logFile, "utf8")
-      .split("\n")
-      .filter((line) => line !== "")
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-  } catch {}
-  writeFileSync(join(spec.base, "result.json"), JSON.stringify({ ...result, log }, null, 2))
+  writeFileSync(join(spec.base, "result.json"), JSON.stringify({ ...result, log: readLog() }, null, 2))
 } finally {
   await opencode.close()
   sim.server.stop(true)
