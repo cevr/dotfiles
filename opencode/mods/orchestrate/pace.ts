@@ -45,7 +45,12 @@ export class PaceHeld extends Schema.TaggedError<PaceHeld>()("PaceHeld", {
 export interface ModelRef {
   readonly providerID: string
   readonly id: string
+  /** The variant the host runs it at, when it names one (a session's or an agent's model). */
+  readonly variant?: string
 }
+
+/** A model as the subagent tool takes it: `provider/id`, with `#variant` when it names one. */
+export const formatRef = (model: ModelRef) => `${model.providerID}/${model.id}${model.variant === undefined ? "" : `#${model.variant}`}`
 
 /** The provider and model a `provider/id#variant` string names; undefined without a provider. */
 export const parseModel = (model: unknown): ModelRef | undefined => {

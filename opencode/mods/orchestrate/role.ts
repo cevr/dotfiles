@@ -108,6 +108,36 @@ export const route = (
   return step ? { agent: step.role, reason: "described" } : routed
 }
 
+/** The effort a worker runs at only for mechanical work. */
+export const WORKER_CEILING = "max"
+
+/** A step the orchestrator marks as mechanical ends its description with this note, such as `rename sweep (mechanical)`. */
+const MECHANICAL = /\(mechanical\)\s*$/i
+
+/**
+ * The model a call runs on with the worker's ceiling applied: a worker on a
+ * model at `#max` runs on that model at its own default effort instead (the
+ * variant dropped), unless its description ends `(mechanical)`; `lowered`
+ * names the variant it dropped. Any other agent, model or variant is as asked.
+ *
+ * Lowered, not refused (dream 2026-11-06, candidate 2): a worker inherits
+ * its parent's variant when the call names no model, so a root at max would
+ * have every worker refused; and a refused call costs a turn and teaches the
+ * parent to add `(mechanical)` to get through. The parent reads why in the
+ * answer instead (cmd/orchestrate `effortNote`).
+ */
+export const capEffort = (
+  agent: string,
+  description: string | undefined,
+  model: string | undefined,
+): { readonly model: string | undefined; readonly lowered?: string } => {
+  if (agent !== WORKER || model === undefined) return { model }
+  const at = model.indexOf("#")
+  if (at === -1 || model.slice(at + 1) !== WORKER_CEILING) return { model }
+  if (description !== undefined && MECHANICAL.test(description)) return { model }
+  return { model: model.slice(0, at), lowered: WORKER_CEILING }
+}
+
 /** A step the orchestrator marks as plain work ends its description with one of these notes, such as `pkg-lower implementor (mechanical)`. */
 const LIGHT = /\((?:light|direct|mechanical)\)\s*$/i
 

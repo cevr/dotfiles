@@ -66,6 +66,8 @@ export type CallLine =
       readonly description?: string
       /** It runs on the Codex fallback, and why: `<first model> held: <reason>`. */
       readonly fallback?: string
+      /** A worker asked for this variant (`max`) and runs at its model's default. */
+      readonly lowered?: string
     } & Admissions)
   | {
       readonly kind: "done"
@@ -89,6 +91,8 @@ export type CallLine =
       readonly description?: string
       /** It latched on the Codex fallback, which opens first, and why. */
       readonly fallback?: string
+      /** A worker asked for this variant (`max`) and latched at its model's default. */
+      readonly lowered?: string
     } & Admissions & {
       readonly hold: Hold
       readonly why: string
@@ -119,6 +123,7 @@ export const started = (event: SubagentStarted, at: string, asked?: Asked): Call
   ...(event.background === undefined ? {} : { background: event.background }),
   ...(event.description === undefined ? {} : { description: event.description }),
   ...(event.fallback === undefined ? {} : { fallback: event.fallback }),
+  ...(event.lowered === undefined ? {} : { lowered: event.lowered }),
   ...admissions(asked),
 })
 
@@ -136,6 +141,7 @@ export const latched = (event: SubagentLatched, at: string, asked?: Asked): Call
   ...(event.child === undefined ? {} : { child: event.child }),
   ...(event.description === undefined ? {} : { description: event.description }),
   ...(event.fallback === undefined ? {} : { fallback: event.fallback }),
+  ...(event.lowered === undefined ? {} : { lowered: event.lowered }),
   ...admissions(asked),
   hold: event.hold,
   why: event.why,
