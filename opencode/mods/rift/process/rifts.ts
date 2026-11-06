@@ -9,6 +9,7 @@ import { dirname, join } from "node:path"
 import { Effect, Layer } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
 import type { Workspace } from "../workspace.ts"
+import { commands, lines } from "./command.ts"
 
 export interface Options {
   /** Make and remove Rifts with `workrift` (the workbox). */
@@ -17,46 +18,8 @@ export interface Options {
   readonly env?: Readonly<Record<string, string>>
 }
 
-interface Ran {
-  readonly code: number
-  readonly stdout: string
-  readonly stderr: string
-}
-
-const lines = (text: string): ReadonlyArray<string> =>
-  text
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter((line) => line !== "")
-
 export const layer = (options: Options) => {
-  const env = { ...process.env, ...options.env }
-
-  /** Runs `argv` in `cwd`; never fails, so a caller can read a non-zero exit. */
-  const spawn = (argv: ReadonlyArray<string>, cwd: string, extra: Readonly<Record<string, string>> = {}) =>
-    Effect.tryPromise({
-      try: async (): Promise<Ran> => {
-        const child = Bun.spawn([...argv], { cwd, env: { ...env, ...extra }, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
-        const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
-        return { code: await child.exited, stdout, stderr }
-      },
-      catch: (cause) => new RiftFailed({ operation: argv.slice(0, 2).join(" "), message: cause instanceof Error ? cause.message : String(cause) }),
-    })
-
-  /** Runs `argv` and answers its output, or fails with what it said. */
-  const run = (argv: ReadonlyArray<string>, cwd: string, extra: Readonly<Record<string, string>> = {}) =>
-    spawn(argv, cwd, extra).pipe(
-      Effect.flatMap((ran) =>
-        ran.code === 0
-          ? Effect.succeed(ran.stdout)
-          : Effect.fail(
-              new RiftFailed({
-                operation: argv.slice(0, 2).join(" "),
-                message: (ran.stderr.trim() || ran.stdout.trim() || `exit ${ran.code}`).split("\n").slice(-20).join("\n"),
-              }),
-            ),
-      ),
-    )
+  const { spawn, run } = commands(options.env)
 
   const git = (path: string, ...args: ReadonlyArray<string>) => run(["git", "-C", path, ...args], path)
 
@@ -138,9 +101,12 @@ export const layer = (options: Options) => {
     return { ...base, git: true, branch: branch === "" ? undefined : branch, head, uncommitted, unpushed, stashes } satisfies Workspace
   })
 
-  const remove = Effect.fn("Rifts.remove")(function* (path: string) {
+  const remove = Effect.fn("Rifts.remove")(function* (path: string, removeOptions?: { readonly withChildren?: boolean }) {
     const from = existing(dirname(path))
-    yield* options.workrift ? run(["workrift", "remove", path], from) : run(["rift", "remove", path], from)
+    // `rift remove` always trashes the subtree; workrift asks for --with-children first.
+    yield* options.workrift
+      ? run(["workrift", "remove", ...(removeOptions?.withChildren === true ? ["--with-children"] : []), path], from)
+      : run(["rift", "remove", path], from)
   })
 
   return Layer.succeed(Rifts, Rifts.of({ source, create, list, inspect, remove }))

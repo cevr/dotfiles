@@ -65,8 +65,17 @@ export const layer = (state: World) =>
         if (workspace === undefined) return yield* new RiftFailed({ operation: "rift", message: `${path} is not a Rift workspace (no .rift marker)` })
         return workspace
       }),
-      remove: Effect.fn("Rifts.remove")(function* (path: string) {
-        if (!state.rifts.delete(path)) return yield* new RiftFailed({ operation: "rift remove", message: `${path} is not a Rift workspace` })
+      remove: Effect.fn("Rifts.remove")(function* (path: string, options?: { readonly withChildren?: boolean }) {
+        const workspace = state.rifts.get(path)
+        if (workspace === undefined) return yield* new RiftFailed({ operation: "rift remove", message: `${path} is not a Rift workspace` })
+        if (workspace.children.length > 0 && options?.withChildren !== true)
+          return yield* new RiftFailed({ operation: "workrift remove", message: `${path} has child workspaces; pass --with-children to trash them too` })
+        // Rift trashes the whole subtree.
+        const drop = (each: string): void => {
+          for (const child of state.rifts.get(each)?.children ?? []) drop(child)
+          state.rifts.delete(each)
+        }
+        drop(path)
       }),
     }),
   )
