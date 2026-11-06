@@ -19,8 +19,8 @@
 // fixed clock is behind it at that moment. Without one, they move by nothing.
 import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
 import * as CallLine from "./call-line.ts"
-import { PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
-import { codexFallback, effort, isRole, Reason } from "./role.ts"
+import { formatRef, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
+import { codexFallback, effort, isRole, Reason, WORKER } from "./role.ts"
 import { resumesAt, SabbathRest, type Place } from "./sabbath.ts"
 import { CallLog, CodexAdmission, Latches, Models, PoolPace, Sessions } from "./service.ts"
 import {
@@ -260,6 +260,9 @@ export const layer = (config: Config) =>
           const variant = yield* models.variant(call.sessionID, routed.agent, level)
           if (variant) model = variant
         }
+        // A new worker that names no model runs on the one it inherits, at that model's variant: the aggregate caps it.
+        const runsOn = child === undefined && model === undefined && routed.agent === WORKER ? yield* models.base(call.sessionID, routed.agent) : undefined
+        const inherited = runsOn === undefined ? undefined : formatRef(runsOn)
         // A new agent's pace; over the Sabbath only its model, for the latch.
         const paced =
           child === undefined
@@ -281,6 +284,7 @@ export const layer = (config: Config) =>
           ...base,
           ...(childAgent ? { childAgent } : {}),
           ...(fallback !== undefined && primary !== undefined ? { model: primary, fallback } : model === undefined ? {} : { model }),
+          ...(inherited === undefined ? {} : { inherited }),
           ...(hold === undefined ? {} : { hold }),
           ...(childLatched === undefined ? {} : { childLatched }),
         })

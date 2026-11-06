@@ -150,6 +150,26 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   )
 
   test(
+    "worker ceiling: under a root at max, the untyped worker runs at its model's default and the parent is told why; the verifier at medium",
+    async () => {
+      const result = await run("ceiling", { scenario: "subagents", now: WEDNESDAY, rootModel: { providerID: "sim", id: "sim-model", variant: "max" } })
+      const byAgent = Object.fromEntries(result.children.map((child) => [child.agent, child]))
+      // The host names a model asked with no variant at its `default`.
+      expect(byAgent.worker!.model).toEqual({ id: "sim-model", providerID: "sim", variant: "default" })
+      expect(byAgent.verifier!.model).toEqual({ id: "sim-model", providerID: "sim", variant: "medium" })
+      const calls = result.log.filter((line) => line.kind === "call")
+      expect(calls.map(({ agent, model, lowered }) => ({ agent, model, lowered }))).toEqual([
+        { agent: "worker", model: "sim/sim-model", lowered: "max" },
+        { agent: "verifier", model: "sim/sim-model#medium", lowered: undefined },
+      ])
+      expect(JSON.stringify(result.root!.messages)).toContain(
+        "orchestrate: this worker runs on sim/sim-model at the model's default effort, not max: a worker runs at max only when its description ends `(mechanical)`.",
+      )
+    },
+    RUN_MS,
+  )
+
+  test(
     "compaction: a planner session over its 50k window compacts; a worker session at 100k does not",
     async () => {
       // 40k tokens of input on every reply: over the planner's ceiling (50k less the 16k reserve), under the worker's.
@@ -169,13 +189,20 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       // The planner's second turn went on from the summary.
       expect(messages("planner").at(-2)?.type).toBe("assistant")
       expect(compactions("worker")).toEqual([])
-      // The compaction request carried the keep-list in its summary prompt, not its system, so its prefix is the
-      // normal request's and stays cached; no other request carried it.
+      // The compaction request carried the keep-list after the conversation, right before the summary prompt, not
+      // in its system, so its prefix is the normal request's and stays cached; no other request carried it.
       expect(result.seen.filter((request) => request.system.includes(KEEP))).toEqual([])
-      const keeping = result.seen.filter((request) => request.last.includes(KEEP))
+      const texts = (request: (typeof result.seen)[number]) => request.messages.map((message) => JSON.stringify(message.content ?? ""))
+      const keeping = result.seen.filter((request) => texts(request).some((text) => text.includes(KEEP)))
       expect(keeping.length).toBe(1)
-      expect(keeping[0]!.task).toBe("planner: first")
-      expect(keeping[0]!.last).toContain("You MUST summarize the conversation")
+      const compaction = keeping[0]!
+      expect(compaction.task).toBe("planner: first")
+      expect(compaction.last).toContain("You MUST summarize the conversation")
+      expect(texts(compaction).at(-2)).toContain(KEEP)
+      // Every message the planner's request before it sent opens the compaction request unchanged.
+      const before = result.seen[result.seen.indexOf(compaction) - 1]!
+      expect(before.task).toBe("planner: first")
+      expect(compaction.messages.slice(0, before.messages.length)).toEqual([...before.messages])
       expect(JSON.stringify(messages("planner"))).toContain(SUMMARY.split("\n")[1]!)
     },
     RUN_MS,

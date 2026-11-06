@@ -20,8 +20,8 @@
 //   `Assistant.agent`); an agent (agent.ts, `Info`) carries
 //   `request.settings.cacheTTL` when a plugin gave it its own cache lifetime
 //   (the orchestration roles' "5m", cmd/orchestrate/server.ts), which the
-//   fork applies only over a lifetime the model's or provider's settings name
-//   (packages/core/src/session/agent-cache.ts:17-20);
+//   auth plugin applies only over a lifetime the model's or provider's settings
+//   name (`rewriteRequestBody` in mods/anthropic-auth/request-body.ts);
 // - a completed `compaction` message rewrote the context; it carries its
 //   summary request's `model` and `tokens` (`CompactionCompleted`) and when it
 //   started (`time.created`);

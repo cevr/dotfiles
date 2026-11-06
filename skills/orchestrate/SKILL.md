@@ -73,13 +73,17 @@ The same message states, in one sentence, the premise every earlier fix assumed 
 
 ## Roles on each host
 
-| Role | Claude Code orchestrator | Codex orchestrator | Effort | Context |
-| --- | --- | --- | --- | --- |
-| planner | `Agent` on Opus | `spawn_agent`, the newest sol | high | fresh per unit |
-| implementor | `Agent` on Opus | `spawn_agent`, the newest luna; a UI unit: the newest sol | Opus medium, luna max | kept for round 2 only; fresh from round 3 or after its first compaction |
-| verifier | `Agent` on Opus | `spawn_agent`, the newest sol | medium; max for a `deep` unit's round 1 | fresh per round: a new thread or agent, never `send` |
+| Role | OpenCode orchestrator | Claude Code orchestrator | Codex orchestrator | Effort | Context |
+| --- | --- | --- | --- | --- | --- |
+| planner | `subagent`, `agent: "planner"` | `Agent` on Opus | `spawn_agent`, the newest sol | high | fresh per unit |
+| implementor | `subagent`, `agent: "implementor"` | `Agent` on Opus | `spawn_agent`, the newest luna; a UI unit: the newest sol | Opus medium, luna max | kept for round 2 only; fresh from round 3 or after its first compaction |
+| verifier | `subagent`, `agent: "verifier"` | `Agent` on Opus | `spawn_agent`, the newest sol | medium; max for a `deep` unit's round 1 | fresh per round: a new thread or agent, never `send` |
 
-Every `Agent` call passes `run_in_background: true`, `subagent_type: "<role>"`, and the row's model and effort. On an OpenCode host the `Agent` call is the `subagent` tool, and it passes `agent: "<role>"`, never `general` or `worker`, which run without the role's protocol and effort, and no `model`: the config binds every role to Opus and the orchestrate mod picks the Codex fallback; end a `direct`, `light` or mechanical implementor's description with `(light)`, `(direct)` or `(mechanical)` so its fallback is luna ([`references/hosts.md`](references/hosts.md), OpenCode). Every `Agent` call and `mcp__codex__start` has a `description` that starts like the hand-back line, `<role> <unit> r<N>`: the model eval joins the worker to its unit by it. Round 2 reaches the same implementor by `SendMessage` (Codex thread: `mcp__codex__send`; Codex host: `send_input`).
+**OpenCode.** Every role is a background `subagent` call with `agent: "<role>"`, never `general` or `worker`, which run without the role's protocol and effort, and no `model`: the config binds every role to Opus, and the orchestrate mod picks the Codex fallback. End a `direct`, `light` or mechanical implementor's description with `(light)`, `(direct)` or `(mechanical)`, so its fallback is luna ([`references/hosts.md`](references/hosts.md), OpenCode). Round 2 reaches the same implementor by a `subagent` call with its `sessionID`.
+
+**Claude Code and Codex.** Every `Agent` call passes `run_in_background: true`, `subagent_type: "<role>"`, and the row's model and effort. Round 2 reaches the same implementor by `SendMessage` (Codex thread: `mcp__codex__send`; Codex host: `send_input`).
+
+On every host, each role call (`subagent`, `Agent`, `mcp__codex__start`, `spawn_agent`) has a `description` that starts like the hand-back line, `<role> <unit> r<N>`: the model eval joins the worker to its unit by it.
 
 **One effort policy.** The Effort column is each role's baseline, and the role agents for both hosts carry it (`scripts/agents.ts`). A verifier runs at `medium`, and at `max` only for a `deep` unit's round 1: pass `effort: "max"` to that one call (`mcp__codex__start`, `Agent` or `spawn_agent`). Round 2 on is a delta review of the fix commits, so a whole deep pass again costs a long review for little. An agent that renders or judges renders or looks (a look prototype, a visual critique, an image judge) runs at max. Raise a step for the hardest unit, and lower the implementor's a step for routine work (a rename sweep, a docs-only unit). Change effort, never the model: Opus stays Opus until it is held.
 
@@ -109,7 +113,7 @@ Done when the run dir exists, you know which host column you use, and the host c
    - **From tickets.** Work that arrives as `to-tickets` tickets is already split: each ticket is a unit, its blocking edges are the dependencies, and the ready frontier starts first. Its spec quotes the ticket as the Done line, and the merge names the ticket so the tracker closes it. Before the first wave, one read-only exploration agent reads the code and docs the tickets touch and writes shared notes to `<run dir>/notes/`, outside every workspace; every planner reads them.
 3. **Defaults.** Decide by `~/Developer/personal/dotfiles/principles/`, and ask only what the plan cannot settle. These apply unless the user says otherwise:
    - **Run to the end.**
-   - **Pace, not a count.** Claude agents run at the account pool's pace and Codex turns at the Codex account's; the budget alone sets how many run at once ([`references/pace.md`](references/pace.md)). A held `Agent` call moves to Codex at once (Models); only when Codex holds too, run both waiters in the background and go on. An OpenCode subagent needs neither: the mod falls back to Codex itself, and a latched one starts by itself and its result wakes you. A heavy agent (every implementor and verifier) starts only while the load (`sysctl -n vm.loadavg` or `uptime`) is under the core count. Time the gate once before the first wave; while a gate waits longer than twice its own run, start no new unit, and make gate speed the next unit.
+   - **Pace, not a count.** Claude agents run at the account pool's pace and Codex turns at the Codex account's; the budget alone sets how many run at once ([`references/pace.md`](references/pace.md)). On OpenCode the mod falls back to Codex itself, and a latched subagent starts by itself and its result wakes you. On Claude Code a held `Agent` call moves to Codex at once (Models); only when Codex holds too, run both waiters in the background and go on. A heavy agent (every implementor and verifier) starts only while the load (`sysctl -n vm.loadavg` or `uptime`) is under the core count. Time the gate once before the first wave; while a gate waits longer than twice its own run, start no new unit, and make gate speed the next unit.
    - **The round gate has a time budget.** Each leg of the gate a round runs (a property suite, a lab or e2e leg) finishes in under a minute. A slower leg leaves the round gate and runs once at merge, and making it fast is a tooling unit.
    - **Pilot first.** The first unit runs alone through decide before the first wave fans out, so a flaw in the spec template, the gate or the acceptance check costs one edit instead of one per unit.
    - **You decide small, reversible open points**, and record each one.
@@ -185,8 +189,8 @@ Stop the old implementor.
 
 ## 4. Between messages
 
-- **Wait.** End your turn and let workers wake you. Spec the next units while you wait. To wait on an outside event (the owner's answer, a lab change), run one background Bash until-loop that exits on the event, and re-arm it only after an event.
-- **Stop finished agents.** TaskStop an agent at its final hand-back.
+- **Wait.** End your turn and let workers wake you. Spec the next units while you wait. To wait on an outside event (the owner's answer, a lab change), set one `monitor({ command, until, note })` on OpenCode, or run one background Bash until-loop on Claude Code, that ends on the event, and re-arm it only after an event.
+- **Stop finished agents.** On OpenCode a subagent stops when its turn ends. On Claude Code, TaskStop an agent at its final hand-back.
 - **Owner direction** goes, the same turn, into the file that owns it: `NORTH_STAR.md` for scope and standing rules, the project's skill for craft and voice, `AGENTS.md` for the stack.
 - **After your own compaction.** Re-read this file, `protocol.md` and `plan.md`, and run `status.ts`, before any other action.
 - **Host move.** When the run moves host, rewrite the run's shared rules file for the new host in place; never keep an override file that every agent maps by hand.

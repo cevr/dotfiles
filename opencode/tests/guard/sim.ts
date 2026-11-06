@@ -11,11 +11,21 @@
  * - The task `guard cell` (the kernel is the runtime): one `kernel` call whose
  *   cell tries `tools.shell` with `git reset --hard` and then runs the
  *   harmless command through it, then a closing line.
+ * - The task `guard sleep`: a foreground `subagent` call whose child (the
+ *   task `guard sleep in a subagent`) makes a `shell` call opening with
+ *   `sleep 60`, then the root's own `shell` call opening with `sleep 30`,
+ *   moved to the background after a second, then a closing line.
  * - Anything else: one line.
  *
  * @module
  */
 
+export const SLEEP_TASK = "guard sleep"
+export const SLEEP_CHILD_TASK = "guard sleep in a subagent"
+/** The subagent's opening sleep, which the guard refuses. */
+export const CHILD_SLEEP = "sleep 60 && echo child slept"
+/** The root's, which runs. */
+export const ROOT_SLEEP = "sleep 30 && echo root slept"
 export const DIRECT_TASK = "guard direct"
 export const CELL_TASK = "guard cell"
 export const DONE = "sim: guard done"
@@ -66,6 +76,12 @@ const text = (content: unknown): string => {
 const firstUser = (messages: ReadonlyArray<ChatMessage>) => text(messages.find((message) => message.role === "user")?.content).trim()
 
 const SCRIPTS: Readonly<Record<string, ReadonlyArray<Reply>>> = {
+  [SLEEP_TASK]: [
+    { kind: "tool", name: "subagent", input: { agent: "general", description: "Sleep probe", prompt: SLEEP_CHILD_TASK } },
+    // The root's own sleep runs: it moves to the background after a second, so the run does not wait it out.
+    { kind: "tool", name: "shell", input: { command: ROOT_SLEEP, description: "Sleep in the root", timeout: 1_000 } },
+  ],
+  [SLEEP_CHILD_TASK]: [{ kind: "tool", name: "shell", input: { command: CHILD_SLEEP, description: "Sleep in the subagent" } }],
   [DIRECT_TASK]: [
     { kind: "tool", name: "shell", input: { command: RESET, description: "Reset the work tree" } },
     { kind: "tool", name: "kernel", input: { code: DIRECT_CELL } },
