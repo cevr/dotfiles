@@ -10,6 +10,7 @@
  */
 import { Plugin } from "@opencode/plugin/tui"
 import { nextDetail, rowGap, type Detail } from "@dotfiles/opencode-prime/detail"
+import { goals } from "@dotfiles/opencode-prime/opencode/goal"
 import { host } from "@dotfiles/opencode-prime/opencode/host"
 import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
 import { Dock, GoalLine, ModeHint, Splash, TopBar, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
@@ -22,7 +23,8 @@ import { createSignal, Show } from "solid-js"
 export default Plugin.define({
   id: "gent.prime",
   setup(context) {
-    const h = host(context)
+    const goal = goals(context)
+    const h = host(context, goal.read)
     const [detail, setDetail] = createSignal<Detail>("details")
 
     context.ui.layout({
@@ -160,5 +162,6 @@ export default Plugin.define({
         },
       ],
     }))
+    return () => goal.stop()
   },
 })

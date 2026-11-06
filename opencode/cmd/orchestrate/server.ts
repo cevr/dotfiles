@@ -10,7 +10,9 @@
  * - Guard: a subagent call with no agent, or with the general agent, runs as the
  *   lean `worker`; a former role name (`orchestrate-*`, `orchestrate-reviewer`)
  *   runs as the role. A new role subagent runs at the role's reasoning effort,
- *   as a variant of the model it would run on, when that model has one. Each
+ *   as a variant of the model it would run on, when that model has one. A
+ *   worker asked or inheriting `#max` runs at its model's default effort
+ *   unless its description ends `(mechanical)`, and its answer says so. Each
  *   call is a line in a JSONL log a status pane can read.
  * - Compaction: each role compacts at its own window, and the primary agents
  *   at root's, from the orchestrate tuner's compact.json, else the defaults.
@@ -77,7 +79,7 @@ import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { Latch, MARK_KEY, type Opened, OPENER } from "@dotfiles/opencode-wake/latch"
 import { WAKES } from "@dotfiles/opencode-wake/wake"
 import * as CodexAdmissionLive from "@dotfiles/opencode-orchestrate/codex/admission"
-import { KEEP, ROOT } from "@dotfiles/opencode-orchestrate/compaction"
+import { keepMessage, ROOT } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogLive from "@dotfiles/opencode-orchestrate/filestore/call-log"
 import * as CompactionWindowsLive from "@dotfiles/opencode-orchestrate/filestore/compaction-windows"
 import * as Model from "@dotfiles/opencode-orchestrate/model"
@@ -270,6 +272,10 @@ const SubagentOutput = Schema.Struct({
 const fallbackNote = (started: { readonly model?: string; readonly fallback?: string }) =>
   `orchestrate: this agent runs on ${started.model ?? "its fallback model"}, the Codex fallback (${started.fallback}).`
 
+/** What the parent reads first in a lowered worker's answer: the effort it runs at, and why. */
+const effortNote = (started: { readonly model?: string; readonly lowered?: string }) =>
+  `orchestrate: this worker runs on ${started.model ?? "its model"} at the model's default effort, not ${started.lowered}: a worker runs at ${started.lowered} only when its description ends \`(mechanical)\`. Bulk model work (a critique of many images, a sweep) is a script, not a worker at ${started.lowered}.`
+
 /** A started fallback's note, by the call it answers: a kernel cell's calls share one id, so the description is part of the key. */
 const noteKey = (sessionID: string, callID: string, input: unknown) =>
   `${sessionID}/${callID}/${isObject(input) && typeof input.description === "string" ? input.description : ""}`
@@ -367,14 +373,14 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
       })
       yield* Effect.forkScoped(Effect.forever(Effect.sleep(REREAD).pipe(Effect.andThen(Effect.ignoreCause(ctx.agent.reload())))))
 
-      // The keep-list goes into the summary prompt, the last user message, so the compaction request keeps the
-      // conversation's cached prefix (system, tools and messages as the normal request sends them). A host without
-      // the summary prompt (before fork 5970ea5dc4) takes it as a system part, which costs the cache but still works.
+      // The keep-list goes after the conversation as its own user message, which the host's summary prompt follows,
+      // so the compaction request keeps the conversation's cached prefix (system, tools and messages as the normal
+      // request sends them). An addition to `system` would sit before every message and cost the whole cache. The
+      // host's history fallback (a conversation too large to send whole) drops what follows the kept tail, so on that
+      // path the summary goes without the keep-list.
       yield* ctx.session.hook("compaction", (event) =>
         Effect.sync(() => {
-          const prompt = (event as { experimental?: { prompt?: Array<string> } }).experimental?.prompt
-          if (Array.isArray(prompt)) prompt.push(KEEP)
-          else event.system.push({ type: "text", text: KEEP })
+          event.messages.push(keepMessage())
         }),
       )
 
@@ -448,9 +454,14 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
             // Run the call as the guard routed it, on the role's model when one was chosen.
             const input: Record<string, unknown> = { ...event.input, agent: routed.agent }
             if (routed.model !== undefined) input.model = routed.model
-            // A fallback's answer tells the parent where it ran and why.
-            if (outcome.value._tag === "SubagentStarted" && outcome.value.fallback !== undefined)
-              notes.set(noteKey(event.sessionID, event.id, event.input), fallbackNote(outcome.value))
+            // A fallback's answer tells the parent where it ran and why; a lowered worker's, at what effort and why.
+            if (outcome.value._tag === "SubagentStarted") {
+              const said = [
+                ...(outcome.value.fallback === undefined ? [] : [fallbackNote(outcome.value)]),
+                ...(outcome.value.lowered === undefined ? [] : [effortNote(outcome.value)]),
+              ]
+              if (said.length > 0) notes.set(noteKey(event.sessionID, event.id, event.input), said.join("\n"))
+            }
             // A latched call names its child, whose answer the subagent tool gives back at once.
             if (outcome.value._tag === "LatchedStart") {
               latched.set(outcome.value.child, latchedResult(outcome.value, options.place))

@@ -38,6 +38,8 @@ export interface Spec {
   readonly promptTokens?: number
   /** The plugin's `resume.backoffMs`: the waits before it resumes a subagent a restart cut. */
   readonly resumeBackoffMs?: ReadonlyArray<number>
+  /** The root session's model, such as the sim model at `max`; the config's default when absent. */
+  readonly rootModel?: Child["model"]
 }
 
 export interface Child {
@@ -120,7 +122,7 @@ interface SessionInfo {
 }
 interface Embedded {
   readonly sessions: {
-    readonly create: (input: { location: { directory: string }; agent?: string }) => Promise<SessionInfo>
+    readonly create: (input: { location: { directory: string }; agent?: string; model?: Child["model"] }) => Promise<SessionInfo>
     readonly get: (input: { sessionID: string }) => Promise<SessionInfo>
     readonly list: (input: { parentID: string; directory: string }) => Promise<{ data: ReadonlyArray<SessionInfo> }>
     readonly prompt: (input: { sessionID: string; text: string }) => Promise<unknown>
@@ -203,7 +205,7 @@ try {
     const children = [...(await childrenOf(root.id)), ...(await childrenOf(escaped.id))].map((id) => ({ id }))
     result = { children, sessions, seen: sim.seen, log: [] }
   } else if (spec.scenario === "subagents") {
-    const root = await opencode.sessions.create({ location })
+    const root = await opencode.sessions.create({ location, ...(spec.rootModel ? { model: spec.rootModel } : {}) })
     await turn(root.id, ROOT_TASK)
     const page = await opencode.sessions.list({ parentID: root.id, directory: work })
     const children = await Promise.all(page.data.map((item) => opencode.sessions.get({ sessionID: item.id })))

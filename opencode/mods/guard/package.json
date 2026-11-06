@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The guard for OpenCode: a shell call that loses work for good (rm -rf of home, root or a repository, git reset --hard, a wide forced git clean) is refused.",
+  "description": "The guard for OpenCode: a shell call that loses work for good (rm -rf of home, root or a repository, git reset --hard, a wide forced git clean) is refused, and so is a subagent's foreground call that opens with a sleep of 30 s or more.",
   "exports": {
     "./*": "./*.ts"
   }

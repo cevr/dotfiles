@@ -28,7 +28,7 @@ export const ESCAPE_TASK = "escape-root"
 /** A subagent task whose first request hangs until the sim is released: the turn a shutdown cuts. */
 export const HANG_TASK = "task-hang"
 
-interface ChatMessage {
+export interface ChatMessage {
   readonly role: string
   readonly content?: unknown
 }
@@ -45,6 +45,8 @@ export interface Seen {
   readonly task: string
   readonly last: string
   readonly tools: ReadonlyArray<string>
+  /** The request's messages as sent, for prefix checks. */
+  readonly messages: ReadonlyArray<ChatMessage>
 }
 
 type Reply =
@@ -161,6 +163,7 @@ export const serve = (promptTokens = 100) => {
         task: lastLine(text(messages.find((message) => message.role === "user")?.content)),
         last: text(messages.at(-1)?.content),
         tools: (body.tools ?? []).map((tool) => tool.function?.name ?? ""),
+        messages,
       })
       served += 1
       const task = lastLine(text(messages.find((message) => message.role === "user")?.content))

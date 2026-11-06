@@ -63,6 +63,63 @@ describe("a subagent starts", () => {
       Story.state(Finished.make({ status: "running" })),
     ))
 
+  test("a worker asked at max runs at its model's default, and says it was lowered", () =>
+    run(
+      Story.clock(WEDNESDAY),
+      Story.when(start("general", { model: "anthropic/claude-opus#max", description: "Critique the stills" })),
+      Story.then(
+        started({ asked: "general", agent: "worker", reason: "general", model: "anthropic/claude-opus", description: "Critique the stills", lowered: "max" }),
+      ),
+    ))
+
+  test("a worker that inherits max runs at its model's default; one that inherits another effort runs as it would", () =>
+    run(
+      Story.clock(WEDNESDAY),
+      Story.when(start(undefined, { inherited: "anthropic/claude-opus#max", description: "Check the export" })),
+      Story.then(started({ agent: "worker", reason: "untyped", model: "anthropic/claude-opus", description: "Check the export", lowered: "max" })),
+      Story.when(start(undefined, { inherited: "anthropic/claude-opus#high", description: "Check the export" })),
+      Story.then(started({ agent: "worker", reason: "untyped", description: "Check the export" })),
+    ))
+
+  test("a worker at max runs at max for mechanical work, and a role at max runs as asked", () =>
+    run(
+      Story.clock(WEDNESDAY),
+      Story.when(start("worker", { model: "anthropic/claude-opus#max", description: "Rename the rows (mechanical)" })),
+      Story.then(started({ asked: "worker", agent: "worker", reason: "kept", model: "anthropic/claude-opus#max", description: "Rename the rows (mechanical)" })),
+      Story.when(start("verifier", { model: "anthropic/claude-opus#max", description: "verifier deep-1 r1" })),
+      Story.then(started({ asked: "verifier", agent: "verifier", reason: "kept", model: "anthropic/claude-opus#max", description: "verifier deep-1 r1" })),
+      // A worker call whose description names a step runs as that role, at the effort it asked.
+      Story.when(start("general", { model: "anthropic/claude-opus#max", description: "verifier deep-1 r1" })),
+      Story.then(started({ asked: "general", agent: "verifier", reason: "described", model: "anthropic/claude-opus#max", description: "verifier deep-1 r1" })),
+    ))
+
+  test("a held worker asked at max latches at its model's default", () =>
+    run(
+      Story.clock(WEDNESDAY),
+      Story.when(
+        start("general", {
+          model: "anthropic/claude-opus#max",
+          description: "Critique the stills",
+          hold: { whose: "pool", reason: "anthropic is at 95%", retryAt: Date.parse(WEDNESDAY) + 600_000 },
+        }),
+      ),
+      Story.then(
+        latched({
+          asked: "general",
+          agent: "worker",
+          reason: "general",
+          model: "anthropic/claude-opus",
+          description: "Critique the stills",
+          lowered: "max",
+          hold: "pace",
+          whose: "pool",
+          why: "anthropic is at 95%",
+          opensAt: Date.parse(WEDNESDAY) + 600_000,
+          recheckAt: Date.parse(WEDNESDAY) + PACE_POLL_MS,
+        }),
+      ),
+    ))
+
   test("a finish the log never saw start is recorded all the same", () =>
     run(
       Story.when(FinishSubagent.make({ call, status: "error" })),

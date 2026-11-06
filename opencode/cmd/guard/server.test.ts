@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Exit, Layer, type Scope } from "effect"
 import * as MemoryRepoRoots from "@dotfiles/opencode-guard/memory/repo-roots"
 import * as MemorySessionDirectories from "@dotfiles/opencode-guard/memory/session-directories"
+import * as MemorySubagents from "@dotfiles/opencode-guard/memory/subagents"
 import Guard, { make } from "./server.ts"
 
 type Host = Parameters<(typeof Guard)["effect"]>[0]
@@ -18,6 +19,8 @@ const HOME = "/Users/owner"
 interface World {
   readonly sessions?: Readonly<Record<string, string>>
   readonly repos?: MemoryRepoRoots.World
+  /** Each session's parent; default `ses_1` a root and `ses_child` its subagent. */
+  readonly parents?: Readonly<Record<string, string | undefined>>
 }
 
 /** The plugin started on a stand-in host, and a call through the hooks it registered. */
@@ -35,7 +38,11 @@ const start = (options: Record<string, unknown> = { home: HOME }, world: World =
       },
     } as unknown as Host
     yield* make(() =>
-      Layer.mergeAll(MemorySessionDirectories.layer(world.sessions ?? { ses_1: "/work/app" }), MemoryRepoRoots.layer(world.repos ?? { repos: ["/work/app"] })),
+      Layer.mergeAll(
+        MemorySessionDirectories.layer(world.sessions ?? { ses_1: "/work/app", ses_child: "/work/app" }),
+        MemoryRepoRoots.layer(world.repos ?? { repos: ["/work/app"] }),
+        MemorySubagents.layer(world.parents ?? { ses_1: undefined, ses_child: "ses_1" }),
+      ),
     ).effect(host)
 
     /** One tool call through the `execute.before` hooks: the refusal's message, or undefined when it may run. */
@@ -90,6 +97,25 @@ describe("the guard plugin", () => {
         expect(yield* call("shell", { command: "rm -rf src", workdir: ".." })).toBeUndefined()
         expect(yield* call("shell", { command: "rm -rf app", workdir: "/work" })).toContain("would delete the repository at /work/app")
         expect(yield* call("shell", JSON.stringify({ command: "git clean -fdx" }))).toContain("deletes untracked files for good")
+      }),
+    ))
+
+  test("refuses a subagent's foreground sleep of 30 s or more in the guard's words, under either tool name, and lets the root's run", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { call } = yield* start()
+        const refused = yield* call("shell", { command: "sleep 60 && tail -5 build.log" }, "ses_child")
+        expect(refused).toStartWith("Tool.Error: guard-sleep: `sleep 60` would hold this subagent's turn for 60 s doing nothing")
+        expect(refused).toContain('shell({ action: "wait", id, ms })')
+        expect(refused).toEndWith("wake and monitor are the root session's, not a subagent's.")
+        expect(yield* call("bash", { command: "sleep 45; gh run view" }, "ses_child")).toStartWith("Tool.Error: guard-sleep: `sleep 45`")
+        expect(yield* call("shell", JSON.stringify({ command: "sleep 90" }), "ses_child")).toStartWith("Tool.Error: guard-sleep:")
+        expect(yield* call("shell", { command: "sleep 60 && tail -5 build.log" })).toBeUndefined()
+        expect(yield* call("shell", { command: "sleep 60", background: true }, "ses_child")).toBeUndefined()
+        expect(yield* call("shell", { command: "sleep 10 && ls" }, "ses_child")).toBeUndefined()
+        // A malformed `background` is no background, and never hides a destructive call.
+        expect(yield* call("shell", { command: "sleep 60", background: "yes" }, "ses_child")).toStartWith("Tool.Error: guard-sleep:")
+        expect(yield* call("shell", { command: "git reset --hard", background: "yes" })).toContain("guard-destructive:")
       }),
     ))
 

@@ -139,6 +139,20 @@ export type Session = {
   readonly time?: { readonly created: number }
 }
 
+/**
+ * One part of an assistant step, by the `partID` a `session.part.*` slot
+ * receives: a tool call by its call id, text and a thought by their ordinal
+ * among the step's parts of that kind (`text:2`, `reasoning:0`).
+ */
+export function partOf(message: Message | undefined, partID: string): Part | undefined {
+  if (message?.type !== "assistant") return undefined
+  const tool = message.content.find((part) => part.type === "tool" && part.id === partID)
+  if (tool) return tool
+  const match = /^(text|reasoning):(\d+)$/.exec(partID)
+  if (!match) return undefined
+  return message.content.filter((part) => part.type === match[1])[Number(match[2])]
+}
+
 /** A part's words as the transcript shows them: the provider's redaction marker dropped, trimmed. */
 export function words(text: string): string {
   return text.replace("[REDACTED]", "").trim()
