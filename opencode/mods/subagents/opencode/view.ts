@@ -156,7 +156,7 @@ const field = (value: unknown, key: string): unknown =>
   value !== null && typeof value === "object" ? Reflect.get(value, key) : undefined
 
 /** The model the latest assistant step ran on, by id: read from the newest item back, so older steps go unread. */
-const stepModel = (items: ReadonlyArray<unknown>): string | undefined => {
+export const stepModel = (items: ReadonlyArray<unknown>): string | undefined => {
   for (let index = items.length - 1; index >= 0; index--) {
     const item = items[index]
     if (field(item, "type") !== "assistant") continue
@@ -167,7 +167,7 @@ const stepModel = (items: ReadonlyArray<unknown>): string | undefined => {
 }
 
 /** The running shells of the registry, by the session that started each. */
-function shellsBySession(listed: ReadonlyArray<ShellInfo>): ReadonlyMap<string, ReadonlyArray<Shell>> {
+export function shellsBySession(listed: ReadonlyArray<ShellInfo>): ReadonlyMap<string, ReadonlyArray<Shell>> {
   const by = new Map<string, Shell[]>()
   for (const shell of listed) {
     const owner = string(shell.metadata.sessionID)
@@ -187,16 +187,29 @@ function shellsBySession(listed: ReadonlyArray<ShellInfo>): ReadonlyMap<string, 
  */
 export type Convert = (item: unknown) => Message | undefined
 
-function session(
+/** What a session's message items give its `Session`: each item read through `convert`, and the model its latest step ran on. */
+export type Transcript = { readonly messages: ReadonlyArray<Message>; readonly model?: string }
+
+/** A session's transcript from its message items. */
+export const transcript = (items: ReadonlyArray<unknown>, convert: Convert): Transcript => {
+  const model = stepModel(items)
+  return { messages: items.flatMap((item) => convert(item) ?? []), ...(model ? { model } : {}) }
+}
+
+/**
+ * Session `id` from the host's reads, its messages and step model given as
+ * `read` (`transcript`): a TUI keeps the transcript in a memo of its own, so
+ * a change to the session's status or shells does not re-read its messages.
+ */
+export function sessionOf(
   reads: Pick<Reads, "session">,
   id: string,
-  shells: ReadonlyMap<string, ReadonlyArray<Shell>>,
-  convert: Convert,
+  shells: ReadonlyArray<Shell>,
+  { messages, model: stepped }: Transcript,
 ): Session {
   const info = reads.session.get(id)
   const time = info?.time
-  const items = reads.session.message.list(id)
-  const model = stepModel(items) ?? info?.model?.id
+  const model = stepped ?? info?.model?.id
   const latch = latchOf(info?.metadata?.latch)
   return {
     id,
@@ -213,13 +226,19 @@ function session(
     },
     ...(latch === undefined ? {} : { latch }),
     running: reads.session.status(id) === "running",
-    shells: shells.get(id) ?? [],
+    shells,
     permissions: (reads.session.permission.list(id) ?? []).map((request) =>
       [request.action, request.resources[0]].filter(Boolean).join(" "),
     ),
     questions: (reads.session.form.list(id) ?? []).map((form) => form.title),
-    messages: items.flatMap((item) => convert(item) ?? []),
+    messages,
   }
+}
+
+/** The sessions of `root`'s family, the root first when the host's family list leaves it out. */
+export const familyOf = (reads: Pick<Reads, "session">, root: string): ReadonlyArray<string> => {
+  const ids = reads.session.family(root)
+  return ids.includes(root) ? ids : [root, ...ids]
 }
 
 /**
@@ -234,7 +253,11 @@ export const read = <Location>(
   convert: Convert = message,
 ): Family => {
   const root = reads.session.root(sessionID)
-  const ids = reads.session.family(root)
   const shells = shellsBySession(reads.shell.list(location))
-  return { root, sessions: (ids.includes(root) ? ids : [root, ...ids]).map((id) => session(reads, id, shells, convert)) }
+  return {
+    root,
+    sessions: familyOf(reads, root).map((id) =>
+      sessionOf(reads, id, shells.get(id) ?? [], transcript(reads.session.message.list(id), convert)),
+    ),
+  }
 }

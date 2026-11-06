@@ -97,3 +97,78 @@ test("a family reader reads what `read` reads, and keeps up with the store", () 
   family.stream("root", 3, " on it")
   expect(view()).toEqual(["Work on it", "Child"])
 })
+
+/** A root with `children` children of `steps` steps each, in a Solid store, counting each session's reads of its messages and info. */
+function brood(children: number, steps: number) {
+  const step = (id: string, text: string): Item => ({ type: "assistant", id, content: [{ type: "text", text }] })
+  const ids = Array.from({ length: children }, (_, i) => `child${i}`)
+  const [store, setStore] = createStore<{ messages: Record<string, Item[]> }>({
+    messages: Object.fromEntries([
+      ["root", [step("r0", "Root")]],
+      ...ids.map((id) => [id, Array.from({ length: steps }, (_, i) => step(`${id}-${i}`, `${id} step ${i}`))] as const),
+    ]),
+  })
+  const counted: string[] = []
+  const reads: Reads<string> = {
+    session: {
+      get: (id) => (counted.push(`get ${id}`), { id, parentID: id === "root" ? null : "root", time: { created: 0 } }),
+      root: () => "root",
+      family: () => ["root", ...ids],
+      status: () => "running",
+      permission: { list: () => [] },
+      form: { list: () => [] },
+      message: { list: (id) => (counted.push(`list ${id}`), store.messages[id] ?? []) },
+    },
+    shell: { list: () => [] },
+  }
+  const stream = (session: string, at: number, more: string) =>
+    setStore(produce((draft) => void (draft.messages[session]![at]!.content[0]!.text += more)))
+  /** The reads since the last look. */
+  const reads_ = () => counted.splice(0)
+  return { reads, stream, counted: reads_ }
+}
+
+test("a token in one child re-reads that child alone, once for all the views that read the family", () => {
+  const family = brood(20, 50)
+  const reader = familyReader()
+  const seen: Array<ReturnType<typeof read>> = []
+  // Three views, as the dock's count, the rows and the queue's sidebar each read the family.
+  const views = createRoot(() =>
+    [0, 1, 2].map(() =>
+      createMemo(() => {
+        const read = reader(family.reads, "child3")
+        seen.push(read)
+        return newest(read)
+      }),
+    ),
+  )
+  views.forEach((view) => view())
+  family.counted()
+  const before = seen.at(-1)!
+  family.stream("child7", 49, " more")
+  expect(views.map((view) => view()[8])).toEqual(["child7 step 49 more", "child7 step 49 more", "child7 step 49 more"])
+  expect(family.counted().toSorted()).toEqual(["get child7", "list child7"])
+  const after = seen.at(-1)!
+  // The three views read one family object, which keeps every other session as it was.
+  expect(seen.slice(-3).every((read) => read === after)).toBe(true)
+  after.sessions.forEach((session, index) => {
+    if (session.id === "child7") expect(session).not.toBe(before.sessions[index])
+    else expect(session).toBe(before.sessions[index]!)
+  })
+})
+
+test("a family no view reads any more stops reading the store", async () => {
+  const family = brood(3, 2)
+  const reader = familyReader()
+  let dispose = () => {}
+  const view = createRoot((end) => {
+    dispose = end
+    return createMemo(() => newest(reader(family.reads, "root")))
+  })
+  view()
+  dispose()
+  await Promise.resolve()
+  family.counted()
+  family.stream("child1", 1, " more")
+  expect(family.counted()).toEqual([])
+})
