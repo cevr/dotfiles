@@ -67,6 +67,11 @@ export const StartSubagent = Schema.TaggedStruct("StartSubagent", {
   childAgent: Schema.optionalKey(Schema.String),
   /** The model it runs on: the input's, else the role's at its effort, when that model offers it. */
   model: Schema.optionalKey(Schema.String),
+  /**
+   * The model a new role start named that is the role's own (any variant or none): dropped, so the start runs
+   * as if it named none, at the role's effort, with the Codex fallback and the latch. Its reason is `model-dropped`.
+   */
+  dropped: Schema.optionalKey(Schema.String),
   /** The model, with its variant, a new worker that names none runs on (the agent's own, else its parent's): gathered for the worker's ceiling. */
   inherited: Schema.optionalKey(Schema.String),
   background: Schema.Boolean,
@@ -216,7 +221,8 @@ const decideStart = (
   if (resumes !== undefined && command.child !== undefined) return Effect.fail(new SabbathRest({ resumesAt: resumes, place: command.place }))
   if (command.child !== undefined && command.childLatched !== undefined)
     return Effect.fail(new StillLatched({ child: command.child, opensAt: command.childLatched }))
-  const { agent, reason } = routeOf(command)
+  const { agent, reason: routed } = routeOf(command)
+  const reason: Reason = command.dropped !== undefined && command.child === undefined ? "model-dropped" : routed
   // The worker's ceiling: a worker at max, asked or inherited, runs at its model's default unless its work is mechanical.
   const capped = capEffort(agent, command.description, command.model ?? command.inherited)
   const model = capped.lowered === undefined ? command.model : capped.model

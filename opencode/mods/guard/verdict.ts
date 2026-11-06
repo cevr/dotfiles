@@ -21,7 +21,7 @@
 // contract (service.ts) about each path `repoCandidates` names.
 import { Schema } from "effect"
 import { basename, resolve, within } from "./path.ts"
-import { expandWord, runningWords, shortFlags, simpleCommands, type Word } from "./shell-line.ts"
+import { expandWord, runningWords, SHELLS, shellScript, shortFlags, simpleCommands, type Word } from "./shell-line.ts"
 
 /** The call may run. */
 export const Allow = Schema.TaggedStruct("Allow", {})
@@ -57,9 +57,6 @@ type Finding =
 
 const NARROWER = "name a narrower path"
 const TRASH = "use `trash` on what you mean to remove"
-
-/** Shells whose `-c` script is a command line of its own. */
-const SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "ksh"])
 
 /** How deep `sh -c` and `eval` are followed; a deeper line is not read. */
 const MAX_DEPTH = 4
@@ -113,21 +110,6 @@ const rmFindings = (command: string, args: ReadonlyArray<Word>, runsIn: string, 
     else findings.push({ _tag: "RmTarget", command, path })
   }
   return findings
-}
-
-/** The script a shell runs with `-c`: the first word after its options, when one of them holds `c`. */
-const shellScript = (args: ReadonlyArray<Word>): string | undefined => {
-  let command = false
-  for (const word of args) {
-    if (word.text === "--") continue
-    if (/^-[^-]/.test(word.text) || /^\+[^+]/.test(word.text)) {
-      if (word.text.startsWith("-") && word.text.includes("c")) command = true
-      continue
-    }
-    if (word.text.startsWith("--")) continue
-    return command ? word.text : undefined
-  }
-  return undefined
 }
 
 /**

@@ -15,6 +15,10 @@
  *   task `guard sleep in a subagent`) makes a `shell` call opening with
  *   `sleep 60`, then the root's own `shell` call opening with `sleep 30`,
  *   moved to the background after a second, then a closing line.
+ * - The task `guard policy`: a `shell` call of a heavy line that prints its
+ *   shell's niceness, the same print from a light line, and a `pkill -f` by
+ *   the run's own spec file path (a pattern only the run's process, the
+ *   OpenCode server, matches), then a closing line.
  * - Anything else: one line.
  *
  * @module
@@ -26,6 +30,13 @@ export const SLEEP_CHILD_TASK = "guard sleep in a subagent"
 export const CHILD_SLEEP = "sleep 60 && echo child slept"
 /** The root's, which runs. */
 export const ROOT_SLEEP = "sleep 30 && echo root slept"
+export const POLICY_TASK = "guard policy"
+/** A heavy line (it opens with `tsc`) that prints its shell's niceness. `tsc` need not be installed: the guard reads the words. */
+export const HEAVY_NICE = "tsc --version >/dev/null 2>&1; ps -o nice= -p $$"
+/** The same print from a light line. */
+export const LIGHT_NICE = "ps -o nice= -p $$"
+/** A kill by a pattern that matches the run's own process, the OpenCode server: `pattern` is its spec file's path. */
+export const killByPattern = (pattern: string) => `pkill -f '${pattern}'`
 export const DIRECT_TASK = "guard direct"
 export const CELL_TASK = "guard cell"
 export const DONE = "sim: guard done"
@@ -75,7 +86,13 @@ const text = (content: unknown): string => {
 
 const firstUser = (messages: ReadonlyArray<ChatMessage>) => text(messages.find((message) => message.role === "user")?.content).trim()
 
-const SCRIPTS: Readonly<Record<string, ReadonlyArray<Reply>>> = {
+/** Each task's calls, in order; `killPattern` is the pattern of the policy task's kill. */
+const scripts = (killPattern: string): Readonly<Record<string, ReadonlyArray<Reply>>> => ({
+  [POLICY_TASK]: [
+    { kind: "tool", name: "shell", input: { command: HEAVY_NICE, description: "Niceness of a heavy command" } },
+    { kind: "tool", name: "shell", input: { command: LIGHT_NICE, description: "Niceness of a light command" } },
+    { kind: "tool", name: "shell", input: { command: killByPattern(killPattern), description: "Kill by pattern" } },
+  ],
   [SLEEP_TASK]: [
     { kind: "tool", name: "subagent", input: { agent: "general", description: "Sleep probe", prompt: SLEEP_CHILD_TASK } },
     // The root's own sleep runs: it moves to the background after a second, so the run does not wait it out.
@@ -88,9 +105,9 @@ const SCRIPTS: Readonly<Record<string, ReadonlyArray<Reply>>> = {
     { kind: "tool", name: "shell", input: { command: HARMLESS, description: "Run a harmless command" } },
   ],
   [CELL_TASK]: [{ kind: "tool", name: "kernel", input: { code: CELL } }],
-}
+})
 
-const reply = (request: ChatRequest): Reply => {
+const reply = (request: ChatRequest, killPattern: string): Reply => {
   const messages = request.messages ?? []
   const system = messages
     .filter((message) => message.role === "system")
@@ -98,7 +115,7 @@ const reply = (request: ChatRequest): Reply => {
     .join("\n")
   if (system.includes("You name conversations")) return { kind: "text", text: "Guard run" }
   const task = firstUser(messages)
-  const script = Object.entries(SCRIPTS).find(([name]) => task.endsWith(name))?.[1]
+  const script = Object.entries(scripts(killPattern)).find(([name]) => task.endsWith(name))?.[1]
   if (script === undefined) return { kind: "text", text: "sim: nothing to do" }
   return script[messages.filter((message) => message.role === "tool").length] ?? { kind: "text", text: DONE }
 }
@@ -122,8 +139,8 @@ const events = (answer: Reply, model: string, id: string): string => {
   return [...list.map((event) => `data: ${JSON.stringify(event)}\n\n`), "data: [DONE]\n\n"].join("")
 }
 
-/** Serves the scripted model. */
-export const serve = () => {
+/** Serves the scripted model; `killPattern` is the pattern the policy task kills by: one that matches only the run's own process. */
+export const serve = (killPattern: string) => {
   const seen: Seen[] = []
   let served = 0
   const server = Bun.serve({
@@ -135,7 +152,7 @@ export const serve = () => {
       const body = (await request.json()) as ChatRequest
       seen.push({ task: firstUser(body.messages ?? []), tools: (body.tools ?? []).map((tool) => tool.function?.name ?? "") })
       served += 1
-      return new Response(events(reply(body), body.model ?? "sim", `sim${served}`), {
+      return new Response(events(reply(body, killPattern), body.model ?? "sim", `sim${served}`), {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       })
     },

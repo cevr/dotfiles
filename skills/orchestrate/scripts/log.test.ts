@@ -103,3 +103,19 @@ test('a unit too big for a round is stuck(size): logged, timed as stuck, and sho
   bun('log.ts', dir, 'decide', 'stuck(size)', 'r2');
   expect(bun('status.ts', join(dir, '..')).out).toContain('| auth | stuck(size) | 2 |');
 });
+
+test('--current moves from the current state, and writes nothing when the unit is already there in that round', () => {
+  const dir = unitDir();
+  const log = () => readFileSync(join(dir, 'log.md'), 'utf8').trim().split('\n').map((line) => line.slice(18));
+  expect(bun('log.ts', '--current', dir, 'plan', 'r1').code).toBe(0);
+  expect(bun('log.ts', '--current', dir, 'implement', 'r1', 'spec.md').code).toBe(0);
+  // The orchestrator logged the move first: the plugin's line for it writes nothing.
+  bun('log.ts', dir, 'implement', 'verify', 'r1', 'round-1-request.md');
+  const again = bun('log.ts', '--current', dir, 'verify', 'r1', 'round-1-request.md ready');
+  expect([again.code, again.out]).toEqual([0, 'unchanged: the unit is in verify r1\n']);
+  expect(bun('log.ts', '--current', dir, 'implement', 'r2', 'round-1-findings.md changes').code).toBe(0);
+  // A late line for an older round is refused, as from the orchestrator.
+  expect(bun('log.ts', '--current', dir, 'verify', 'r1').code).toBe(1);
+  expect(log()).toEqual(['new → plan r1', 'plan → implement r1 spec.md', 'implement → verify r1 round-1-request.md', 'verify → implement r2 round-1-findings.md changes']);
+  expect(bun('log.ts', '--current', '/nonexistent/loop-probe-x', 'plan', 'r1').code).toBe(2);
+});

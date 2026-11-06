@@ -238,7 +238,7 @@
     },
     {
       "files": [
-        "mods/web/*.ts"
+        "mods/rift/*.ts"
       ],
       "rules": {
         "no-restricted-imports": [
@@ -254,7 +254,32 @@
                   "!./*.ts",
                   "!bun:test"
                 ],
-                "message": "The web domain fence: the web mod's domain files import effect, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
+                "message": "The rift domain fence: the rift tool's domain files import effect, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "mods/tool-names/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
+                "message": "The tool-names domain fence: its domain files import effect, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
               }
             ]
           }
@@ -790,6 +815,31 @@
                   "../model.ts"
                 ],
                 "message": "The skills UI fence: the popup reads the catalog over the RPC; it imports the domain's catalog and mention files, never the scan (filesystem/) or the server's model."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "mods/web/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
+                "message": "The web domain fence: the web mod's domain files import effect, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
               }
             ]
           }

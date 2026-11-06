@@ -23,6 +23,7 @@ build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`cmd/anthropic-auth`), the pool (on
 the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the cache and the web tools, the role
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the rift tool and tool names, the role
 models, a one-hour prompt cache for Claude
 (`providers.anthropic.settings.cache.ttl: "1h"`) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork
@@ -279,8 +280,10 @@ their five-minute prompt cache (`ROLE_CACHE_TTL`, the per-agent
 writes over the provider-configured lifetime, raised by the pool to the provider's hour once a
 role's session outlives it; the main session keeps the provider's hour),
 routes each subagent call to a role, starts a new Opus start the pace holds on
-Codex instead, latches one both hold, and stops agent work over the Sabbath. Its options are `windows`, `log`, `now`,
-`place`, `fullAgent` and `codex`. An absent option takes its default. A
+Codex instead, latches one both hold, writes each role's start and hand-back to its unit's
+`log.md`, stops agent work over the Sabbath, and resumes the subagents a restart cut. Its
+options are `windows`, `log`, `now`, `place`, `fullAgent`, `codex`, `unitLog` and `resume`.
+An absent option takes its default. A
 malformed one stops the plugin at setup, with a message that names it.
 
 The model (the domain files at `mods/orchestrate/`):
@@ -306,22 +309,65 @@ The model (the domain files at `mods/orchestrate/`):
   tool calls share the outer call's id, so `decide` never reads state.
 - Values: the Sabbath and `SabbathRest` (`sabbath.ts`), role routing
   (`role.ts`, over `agents.json`), the compaction windows (`compaction.ts`)
-  and the pace answers and `PaceHeld` (`pace.ts`).
+  the pace answers and `PaceHeld` (`pace.ts`), and a unit's moves on a role's
+  start and hand-back (`unit-log.ts`).
 - Views: the call log, `~/.cache/orchestrate/opencode-agents.jsonl`. It has
   one line per fact or rejection (`call-line.ts`), and the status pane reads
   it.
 - Contracts: the pool's pace (`PoolPace`), the Codex admission script
   (`CodexAdmission`), sessions, models, the latches (`Latches`: the wakes
   keep a latch, and a latched child starts through the subagent tool), the
-  compaction windows file and the call log, each a `Context.Service` in `service.ts`, with what every
+  restart's reads and resumes (`Restarts`, below), the
+  compaction windows file, the call log and the units' logs (`UnitLogs`), each a `Context.Service` in `service.ts`, with what every
   implementation owes in `laws.ts`. They are implemented in `filestore/`
-  (the call log and compact.json), `opencode/` (sessions, models, the
-  latches and the pool's pace over OpenCode's plugin context and RPC) and `codex/` (the
+  (the call log, compact.json, and the units' logs through the skill's log.ts), `opencode/` (sessions, models, the
+  latches, the restarts and the pool's pace over OpenCode's plugin context and RPC) and `codex/` (the
   admission script); `memory/` holds the doubles the plugin's seam test
   runs on.
 
 The aggregate stores events, not state. The status pane reads the history
 as the call log, and no command needs the folded state.
+
+### Resuming after a restart
+
+OpenCode continues a root session and a background subagent that a shutdown
+cut mid-turn by itself, at its next start (a `restart` notice in each). It
+leaves a foreground subagent: the parent's call to it ends `Tool execution
+interrupted (sessionID: …)`, and the child stays cut until the parent calls it
+again by hand. When the plugin starts (a server start, or a plugin reload,
+which cuts nothing but finds a cut an earlier start left), it waits 10 s so
+OpenCode's own recovery lands first, then reads its location's subagent
+sessions active in the last 6 hours (`restart.ts`, through the `Restarts`
+contract, `opencode/restarts.ts`):
+
+- Cut: the last step ended aborted and no turn end followed (a shutdown
+  writes no `idle` marker). Resumed.
+- Interrupted (an `idle` marker `interrupted` after the aborted step): the
+  user's Escape or a parent's cancel, left alone, unless the parent's call
+  to it was cut by the same shutdown (the parent's own turn has no
+  `interrupted` after that call, or was itself cut through its parent).
+  The shutdown reaches a foreground child through its parent's call, which
+  cancels it, so this is the common case.
+- Anything else (ended, running, continued by a prompt or OpenCode's own
+  notice, cut before the window or after the start, a root session): left.
+
+Each cut child is prompted, in the background through the subagent tool, in
+its parent's call to it: `Your turn ended when OpenCode restarted; continue
+where you left off. Any shell you had running was cut by the restart; rerun
+the ones you still need.` Its result wakes the parent as a background
+subagent's does. A turn resumed in a row waits longer each time (10 s, 2 min,
+10 min, the `resume.backoffMs` option); past three it is left to the parent.
+Each child is checked again just before its resume, so one its parent or
+OpenCode continued meanwhile is not resumed twice, and a reload finds the
+resumed ones continued. Each resume is a `resumed` line in the call log
+(`{ kind, at, sessionID: parent, callID, child, agent, description, cause:
+"restart", attempt }`). The parent gets one steered notice per restart
+(`◈ Subagents resumed after a restart`) naming the children resumed and the
+ones left, with why; it wakes the parent only when none was resumed. Over the
+Sabbath nothing is resumed. `resume: false` turns it off.
+
+A crash (no graceful shutdown) leaves a step unfinished rather than aborted,
+which reads the same as a step that runs, so it is left to the parent.
 
 The route (`role.ts`): a role or any other agent asked by name runs as
 asked, and a former role name as its role. An untyped or general call runs
@@ -337,6 +383,24 @@ A role mentioned in prose (`Fix the verifier's timeout`, `Planner prompt
 rewrite`) names none. A follow-up asking no particular agent (none, a
 general one, or `worker`) keeps its child's agent (`continued`), and a
 follow-up never changes agent by its description.
+
+A new start routed to a role (asked by name or described) whose `model` is
+the role's own (the model it would run on, at any variant or none, with or
+without its provider) runs as if it named none, reason `model-dropped`: at
+the role's effort, with the Codex fallback and the latch. Any other model a
+call names runs as named, with no fallback.
+
+The units' logs (`unit-log.ts`): a role's start moves its unit, by the
+call's `<role> <unit> r<N>` description, to `plan`, `implement` or
+`verify`; its hand-back, the first line of its last answer when its session
+goes idle (the fork's `experimental.idle` hook), moves it as the machine
+says (implementor `ready` to `verify`, verifier `accepted` or `stuck` to
+`decide`, `changes` to `implement` the next round, any `blocked` to
+`blocked`; a planner's `ready` waits for the orchestrator). Each move goes
+through the skill's `log.ts --current` into `<run dir>/<unit>/log.md`, the
+unit dir being the one a path in the prompt or the hand-back names, else the
+one `tmp/orchestrate/<run>/<unit>` in the session's checkout. None found, a
+move the orchestrator already logged, or one log.ts refuses writes nothing.
 
 The worker's ceiling (`capEffort` in `role.ts`): a call that runs as the
 worker on a model at `#max`, asked by the call or inherited (a new worker
@@ -867,8 +931,18 @@ expanded. It reads every command of a line (after `;`, `&&`, `||`, `|`, a
 newline or a subshell), skips `sudo`, `env`, `VAR=1`, `nohup` and `command`
 prefixes, takes neither quoted text nor a heredoc body for a command, and reads the script of
 `sh -c`, `bash -c` and `eval`, as gent's guard floor does. When it cannot
-tell where a call runs, or whether a path is a repository, it refuses. Its
-one option, `home`, defaults to the user's home.
+tell where a call runs, or whether a path is a repository, it refuses.
+
+It refuses a kill by pattern that would reach OpenCode: `pkill`, `killall`
+and `kill $(pgrep …)` (with `-f`, `-i`, `-x` read as those tools read them)
+whose pattern matches this server's process or one whose name or program
+starts with `opencode` (a TUI, another server). It lists the processes with
+`ps -A -ww` for such a call only, and refuses when it cannot list them or
+cannot read the pattern as a regular expression. `kill -1`, which signals
+every process you own, is refused outright. The reason names the
+alternative: find the PID you mean (`pgrep -fl <pattern>`, `ps`) and
+`kill <pid>`. A kill by PID, signal 0, `pkill -P`/`-F` and a `pgrep` that
+only lists pass.
 
 It also refuses a subagent's foreground shell call that opens by sleeping 30
 seconds or more (`sleep 60`, `sleep 60 && tail log`, `sleep 1m; gh run
@@ -885,10 +959,111 @@ a parent) is its contract.
 
 The model (the domain files at the root of `mods/guard`): `verdict.ts`
 decides a command from where it runs and which of its targets are
-repositories, and `shell-line.ts` reads a command line. `model.ts` asks the
-contracts in `service.ts`: `RepoRoots` (`filesystem/`: a path holding `.git`)
-and `SessionDirectories` (`opencode/`: the session's directory), with
-`memory/` implementations for tests and the laws in `laws.ts`.
+repositories, `kill.ts` decides a kill from the process table, `sleep.ts` a
+subagent's sleep, `heavy.ts` and `launcher.ts` pick and write a heavy
+command's launcher, and `shell-line.ts` reads a command line. `model.ts`
+asks the contracts in `service.ts`: `RepoRoots` (`filesystem/`: a path
+holding `.git`), `SessionDirectories` and `Subagents` (`opencode/`),
+`Processes` (`process/`: `ps`), `Launchers` (`filesystem/`) and `Scopes`
+(`process/`: the `systemd-run` probe), with `memory/` implementations for
+tests and the laws in `laws.ts`.
+
+### Shell policy
+
+A heavy command runs at a lower CPU priority and, on Linux, under a memory
+cap, so one runaway test cannot take the machine and the server down (on
+2026-11-06 one `bun test` on the workbox grew to 38.5 GB and the OpenCode
+server died with it). It is no cap on agents or on load: a light command
+runs as before, and a heavy one runs at once.
+
+A command is heavy when one of its simple commands opens with a pattern of
+the `heavy` option: by default `bun test`, `bun run test`, the gate, check,
+typecheck and accept scripts, `npm`/`pnpm`/`yarn` test, `tsc`, `tsgo`,
+`tsgolint`, `vitest`, `jest`, `playwright test` and `turbo` (`heavy.ts`).
+A pattern's last word also matches its `:` scripts (`bun run test:e2e`);
+`npx`, `bunx`, `pnpm exec`, `timeout` and the script of `sh -c` and `eval`
+are read through. The content of a script file (`bash gate.sh`) is not.
+
+The policy rides the shell's `create.before` hook, which sees every command
+OpenCode spawns, the user's `!` too. For a heavy one it swaps only the shell
+for a launcher of the same file name (`~/.cache/opencode/guard-launchers/<hash>/zsh`),
+which runs `exec nice -n 10 '/bin/zsh' "$@"`; where `systemd-run --user
+--scope` works (probed once), it runs the shell in a transient scope with
+`MemoryMax=12G` and `CPUWeight=20` (`nice` has no effect between cgroups).
+The command, its echo in the transcript and the permission check stay as
+written. The niceness adds to the caller's, up to 19. On a Mac it is `nice`
+alone: there is no memory cap. When a launcher cannot be written, the
+command runs as it would have, and a warning is logged.
+
+Options (all optional; a malformed one stops the plugin and says which):
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `home` | the user's home | the directory `~` and `$HOME` name |
+| `heavy` | the list above | the heavy commands' patterns; `[]` turns the policy off |
+| `nice` | `10` | the niceness added, 0 to 19 |
+| `memoryMax` | `12G` | the scope's `MemoryMax` (`512M`, `12G`, `50%`, `infinity`) |
+| `cpuWeight` | `20` | the scope's `CPUWeight`, 1 to 10000 |
+| `launchers` | `~/.cache/opencode/guard-launchers` | where the launchers are written |
+
+The guard does not strip secrets from a command's environment: the shell
+calls on record carry no API key to strip (the only `env -u` in them drops
+Claude Code's markers).
+
+## Rift
+
+`cmd/rift` is a server plugin that adds the `rift` tool (a direct tool, so a
+kernel cell reaches it as `tools.rift`) and takes OpenCode's worktree tools
+(`opencode_worktree_create`, `_list`, `_remove`) out of the registry: they
+make Git worktrees, and on Rifts they failed (10 times in 7 sessions on the
+workbox in a week). One input, with an `action`:
+
+- `{ action: "create", branch, name?, source? }` makes a Rift of the warm
+  source the session's directory (or `source`) belongs to, on `branch` (the
+  local branch, else `origin/<branch>`, else a new one from the source's
+  HEAD; default: the name), named after the branch as `workrift` names it
+  (`feat/x` → `feat-x`). It answers the Rift's directory and branch and how
+  to move there (`session_move`); it never moves the session itself. On the
+  Mac it runs `rift create <source> --copy-all --name <name>` and switches the
+  branch; on the workbox, `workrift create <branch>` from the session's
+  directory with `WORKRIFT_SOURCE` set, which refreshes the source, imports
+  gh stack metadata and names the Rift itself.
+- `{ action: "list" }` lists the source's Rifts with their branch and their
+  unsaved work (`clean`, or `2 uncommitted, 1 unpushed, 1 stashed`).
+- `{ action: "remove", name | path, force? }` moves a Rift to Rift's trash
+  (`rift remove`, `workrift remove` on the workbox). It refuses a Rift that
+  holds work found nowhere else, and names it: uncommitted changes (untracked
+  files too), stashes, and commits on no remote and in no branch of its
+  source, unless `force: true`. It always refuses a warm source, the Rift the
+  session runs in, and a Rift with Rifts of its own.
+
+There is no `gc` action: `rift gc` empties the trash of every repository at
+once, for good, and the workbox's nightly `workrift prune` already runs it.
+
+The model (the domain files at the root of `mods/rift`): `rift.ts` is the
+tool's input and the words of each answer, `workspace.ts` what a Rift holds
+and the rule for removing one (`removal`), and `model.ts` the handler. The
+contracts are in `service.ts`: `Rifts` (`process/`: the `rift`, `workrift`
+and `git` commands; `memory/` for tests) and `SessionDirectories`
+(`opencode/`), with their laws in `laws.ts`. The plugin's one option,
+`workrift`, defaults to whether `workrift` is on PATH. `tests/rift.test.ts`
+proves the flow in real OpenCode on real Rift; `mods/rift/process` runs the
+laws on `rift` and on the workbox's own `workrift` script (with a no-op
+`flock`), in a scratch HOME. Both need macOS.
+
+## Tool names
+
+`cmd/tool-names` is a server plugin that answers a call of a tool that does
+not exist when its name is a case or one-edit miss (a letter added, dropped,
+changed, or two swapped) of exactly one real tool, or of that tool's alias on
+the Claude login (`mcp_T<base64url>`, `mods/anthropic-auth/tool-alias.ts`):
+`There is no "shll" tool; did you mean "shell"? Call "shell" with the same
+input.` It answers rather than runs the real tool, because other plugins'
+`execute.before` hooks (the guard, orchestrate) have read the wrong name by
+then, and a renamed call would pass them unseen. Every other unknown name gets
+OpenCode's own answer. A kernel cell's `tools.<name>` misses are the kernel's
+to answer: they never reach the registry's hooks. The rule is `nearest` in
+`mods/tool-names/near-miss.ts`.
 
 ## Web
 

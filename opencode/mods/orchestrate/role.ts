@@ -60,9 +60,10 @@ export const RENAMED: Readonly<Record<string, Role>> = {
 /**
  * Why a call runs as the agent it does; `described` is role work asked of the
  * worker, run as the role its description names; `continued` is a follow-up
- * keeping its child's agent.
+ * keeping its child's agent; `model-dropped` is a new role start that named
+ * the role's own model, which runs as if it named none (tool-call.ts).
  */
-export const Reason = Schema.Literals(["untyped", "general", "renamed", "kept", "described", "continued"])
+export const Reason = Schema.Literals(["untyped", "general", "renamed", "kept", "described", "continued", "model-dropped"])
 export type Reason = typeof Reason.Type
 
 /**

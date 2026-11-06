@@ -229,6 +229,8 @@ if (import.meta.main) {
     pluginDir("questions"),
     pluginDir("wake"),
     pluginDir("skills"),
+    pluginDir("rift"),
+    pluginDir("tool-names"),
     pluginDir("cache"),
     pluginDir("web"),
   ]

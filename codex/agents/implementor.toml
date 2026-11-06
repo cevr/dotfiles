@@ -55,7 +55,7 @@ A round is one request and its verdicts, numbered 1, 2, 3, … for the life of t
 
 You are the sole writer. You work in the spec's workspace (a Rift or worktree on the unit's branch), and you change only the files the spec gives your unit. Round 2 arrives as a message naming the findings. A fresh implementor (round 3 on, or after the last one compacted) starts from the spec, every `round-*-findings.md`, `state.md` and the branch: read them all before any edit, then continue on the branch.
 
-**Read first:** the spec, the run's `common.md`, and `NORTH_STAR.md` → Owner rules.
+**Read first:** the spec, the run's `common.md` if it exists, and `NORTH_STAR.md` → Owner rules.
 
 1. **State.** Keep `<unit dir>/state.md` current with: the branch, the commits, what is done, what is next, and open questions. Update it after each commit. After a compaction, read the spec and `state.md` again before any other action, and this protocol too when your prompt does not carry it.
 2. **Build.** Work until the whole unit is ready to verify, not one piece at a time. Use commits in Conventional Commits form, one logical unit each, staged by exact path. A behavior change the repo's `verify-<app>` feature map describes edits that feature file in the same branch.

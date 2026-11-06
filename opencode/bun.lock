@@ -131,6 +131,13 @@
         "@dotfiles/opencode-recover": "workspace:*",
       },
     },
+    "cmd/rift": {
+      "name": "@dotfiles/opencode-cmd-rift",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-rift": "workspace:*",
+      },
+    },
     "cmd/skills": {
       "name": "@dotfiles/opencode-cmd-skills",
       "version": "0.0.0",
@@ -143,6 +150,16 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/opencode-status": "workspace:*",
+      },
+    },
+    "cmd/tool-names": {
+      "name": "@dotfiles/opencode-cmd-tool-names",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-tool-names": "workspace:*",
+      },
+      "devDependencies": {
+        "@dotfiles/opencode-anthropic-auth": "workspace:*",
       },
     },
     "cmd/wake": {
@@ -262,6 +279,10 @@
       "name": "@dotfiles/opencode-recover",
       "version": "0.0.0",
     },
+    "mods/rift": {
+      "name": "@dotfiles/opencode-rift",
+      "version": "0.0.0",
+    },
     "mods/skills": {
       "name": "@dotfiles/opencode-skills",
       "version": "0.0.0",
@@ -280,6 +301,10 @@
       "dependencies": {
         "@dotfiles/opencode-orchestrate": "workspace:*",
       },
+    },
+    "mods/tool-names": {
+      "name": "@dotfiles/opencode-tool-names",
+      "version": "0.0.0",
     },
     "mods/wake": {
       "name": "@dotfiles/opencode-wake",
@@ -329,9 +354,13 @@
 
     "@dotfiles/opencode-cmd-recover": ["@dotfiles/opencode-cmd-recover@workspace:cmd/recover"],
 
+    "@dotfiles/opencode-cmd-rift": ["@dotfiles/opencode-cmd-rift@workspace:cmd/rift"],
+
     "@dotfiles/opencode-cmd-skills": ["@dotfiles/opencode-cmd-skills@workspace:cmd/skills"],
 
     "@dotfiles/opencode-cmd-status": ["@dotfiles/opencode-cmd-status@workspace:cmd/status"],
+
+    "@dotfiles/opencode-cmd-tool-names": ["@dotfiles/opencode-cmd-tool-names@workspace:cmd/tool-names"],
 
     "@dotfiles/opencode-cmd-wake": ["@dotfiles/opencode-cmd-wake@workspace:cmd/wake"],
 
@@ -361,11 +390,15 @@
 
     "@dotfiles/opencode-recover": ["@dotfiles/opencode-recover@workspace:mods/recover"],
 
+    "@dotfiles/opencode-rift": ["@dotfiles/opencode-rift@workspace:mods/rift"],
+
     "@dotfiles/opencode-skills": ["@dotfiles/opencode-skills@workspace:mods/skills"],
 
     "@dotfiles/opencode-status": ["@dotfiles/opencode-status@workspace:mods/status"],
 
     "@dotfiles/opencode-subagents": ["@dotfiles/opencode-subagents@workspace:mods/subagents"],
+
+    "@dotfiles/opencode-tool-names": ["@dotfiles/opencode-tool-names@workspace:mods/tool-names"],
 
     "@dotfiles/opencode-wake": ["@dotfiles/opencode-wake@workspace:mods/wake"],
 

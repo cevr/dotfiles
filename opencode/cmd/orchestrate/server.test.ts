@@ -5,6 +5,9 @@
 // windows. tests/orchestrate.test.ts and tests/prime-latch.test.ts run it in
 // OpenCode.
 import { describe, expect, test } from "bun:test"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { Effect, Layer, Queue, Schema, Stream } from "effect"
 import { type Latch, type LatchAsk, Opened } from "@dotfiles/opencode-wake/latch"
 import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
@@ -14,20 +17,25 @@ import * as CodexAdmissionTest from "@dotfiles/opencode-orchestrate/memory/codex
 import * as CompactionWindowsTest from "@dotfiles/opencode-orchestrate/memory/compaction-windows"
 import * as ModelsTest from "@dotfiles/opencode-orchestrate/memory/models"
 import * as PoolPaceTest from "@dotfiles/opencode-orchestrate/memory/pool-pace"
+import * as RestartsTest from "@dotfiles/opencode-orchestrate/memory/restarts"
 import * as SessionsTest from "@dotfiles/opencode-orchestrate/memory/sessions"
+import * as FileUnitLogs from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import * as OpenCodeLatches from "@dotfiles/opencode-orchestrate/opencode/latches"
 import { type Holds, MARK, NO_HOLDS, type Run } from "@dotfiles/opencode-orchestrate/idle"
 import * as StepLogTest from "@dotfiles/opencode-orchestrate/memory/step-log"
 import { RECHECK_MS } from "@dotfiles/opencode-orchestrate/model"
 import * as OpenCodePoolPace from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
 import * as OpenCodeRuns from "@dotfiles/opencode-orchestrate/opencode/runs"
-import type { Session } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as OpenCodeSteer from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
+import { BACKOFF_MS, NOTICE_TITLE, RESUME_PROMPT, resumePrompt } from "@dotfiles/opencode-orchestrate/restart"
 import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
 import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
-import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, DEFAULT_WINDOWS, make, Options } from "./server.ts"
+import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, DEFAULT_WINDOWS, make, Options, type Resume, UNIT_LOG } from "./server.ts"
+
+/** The orchestrate skill's log.ts in this checkout: the units' logs are written for real, in scratch dirs. */
+const LOG_SCRIPT = join(import.meta.dir, "../../../skills/orchestrate/scripts/log.ts")
 
 /** Friday 30 October 2026, 19:00 in Knowlton (EDT): after sunset, in the Sabbath. */
 const FRIDAY_EVENING = "2026-10-30T23:00:00Z"
@@ -40,7 +48,7 @@ type Hook = (event: Record<string, unknown>) => Effect.Effect<void, { readonly _
 
 /** The outside systems' state for one test. */
 interface World {
-  readonly sessions?: Readonly<Record<string, Session>>
+  readonly sessions?: Readonly<Record<string, SessionsTest.Session>>
   readonly pool?: Readonly<Record<string, Pace>>
   /** The pool's `pace` RPC itself, in place of `pool`'s answers: one that fails, hangs or answers no pace. */
   readonly poolAsk?: OpenCodePoolPace.Ask
@@ -64,6 +72,8 @@ interface World {
   readonly holds?: Readonly<Record<string, Holds>>
   /** The host refuses every nudge with this. */
   readonly refuseNudge?: string
+  /** The sessions a restart may have cut, their transcripts, and the notices told. */
+  readonly restarts?: RestartsTest.MemoryRestarts
 }
 
 /** A tool as the host's tool editor hands it out: only what the plugin touches. */
@@ -143,7 +153,8 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
         kept.push({ ...ask, child })
         return { outcome: "latched", id: `w00000${kept.length}`, child }
       })
-    const externals = (start: OpenCodeLatches.Start) => Layer.mergeAll(
+    const externals = (start: OpenCodeLatches.Start, resume: Resume) => Layer.mergeAll(
+      RestartsTest.layer(world.restarts ?? RestartsTest.empty(), resume),
       CallLogTest.layer(lines),
       SessionsTest.layer(world.sessions ?? {}),
       ModelsTest.layer(world.model, world.variants, world.others),
@@ -153,13 +164,14 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       CodexAdmissionTest.layer(world.codex ?? (() => undefined)),
       CompactionWindowsTest.layer(world.compactJson),
       OpenCodeLatches.layer(keep, start),
+      FileUnitLogs.layer(LOG_SCRIPT),
       StepLogTest.layer(world.steps ?? {}),
       OpenCodeRuns.layer(() => Effect.succeed({ agents: [], runs: world.runs ?? [], errors: [] })),
       Layer.succeed(RootHolds, { of: (sessionID: string) => Effect.succeed(world.holds?.[sessionID] ?? NO_HOLDS) }),
       OpenCodeSteer.layer((input) => (world.refuseNudge === undefined ? Effect.sync(() => void nudges.push(input)) : Effect.fail(new Error(world.refuseNudge)))),
     )
     const nudges: Array<OpenCodeSteer.Synthetic> = []
-    yield* make((_ctx, _options, start) => externals(start)).effect(host)
+    yield* make((_ctx, _options, start, resume) => externals(start, resume)).effect(host)
 
     // The subagent tool, as the host's editor holds it after the plugin's transform: it records each run.
     const ran: Array<Ran> = []
@@ -313,6 +325,30 @@ describe("the guard", () => {
       }),
     ))
 
+  test("a new role start naming the role's own model, at any variant or none, runs at the role's effort; its line says model-dropped", () =>
+    scenario(
+      Effect.gen(function* () {
+        const model = { providerID: "anthropic", id: "claude-opus-5-5" }
+        const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium", "high"], sessions: { child: { parentID: "root", agent: "verifier" } } })
+        for (const named of ["anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5#max", "claude-opus-5-5"])
+          expect((yield* plugin.call("subagent", "root", { agent: "verifier", model: named })).input).toEqual({ agent: "verifier", model: "anthropic/claude-opus-5-5#medium" })
+        // A described role too; the worker, with no effort of its own, runs on its own model with the name dropped.
+        const described = { agent: "general", model: "anthropic/claude-opus-5-5", description: "pkg-lower implementor r2" }
+        expect((yield* plugin.call("subagent", "root", described)).input).toEqual({ ...described, agent: "implementor", model: "anthropic/claude-opus-5-5#medium" })
+        expect((yield* plugin.call("subagent", "root", { agent: "worker", model: "anthropic/claude-opus-5-5#low" })).input).toEqual({ agent: "worker" })
+        expect(plugin.logged().map((line) => (JSON.parse(line) as { reason: string }).reason)).toEqual(Array(5).fill("model-dropped"))
+        // A different model, a non-role agent and a follow-up keep the model they name.
+        expect((yield* plugin.call("subagent", "root", { agent: "verifier", model: "anthropic/claude-sonnet" })).input).toEqual({ agent: "verifier", model: "anthropic/claude-sonnet" })
+        expect((yield* plugin.call("subagent", "root", { agent: "explore", model: "anthropic/claude-opus-5-5" })).input).toEqual({ agent: "explore", model: "anthropic/claude-opus-5-5" })
+        expect((yield* plugin.call("subagent", "root", { sessionID: "child", model: "anthropic/claude-opus-5-5" })).input).toEqual({
+          sessionID: "child",
+          model: "anthropic/claude-opus-5-5",
+          agent: "verifier",
+        })
+        expect(plugin.logged().slice(5).map((line) => (JSON.parse(line) as { reason: string }).reason)).toEqual(["kept", "kept", "continued"])
+      }),
+    ))
+
   test("role work asked of a general agent runs as its described role, at the role's effort, and its line says why", () =>
     scenario(
       Effect.gen(function* () {
@@ -364,7 +400,7 @@ describe("the guard", () => {
         expect((mechanical.input as { model?: string }).model).toBeUndefined()
         expect(plugin.logged()).toEqual([
           '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"general","agent":"worker","reason":"general","model":"anthropic/claude-opus","description":"Critique the stills","lowered":"max","pace":{"ok":true,"measured":false,"reason":"provider is not pooled"}}',
-          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"worker","agent":"worker","reason":"kept","model":"anthropic/claude-opus","description":"Check the export","lowered":"max","pace":{"ok":true,"measured":false,"reason":"provider is not pooled"}}',
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"worker","agent":"worker","reason":"model-dropped","model":"anthropic/claude-opus","description":"Check the export","lowered":"max","pace":{"ok":true,"measured":false,"reason":"provider is not pooled"}}',
           '{"kind":"call","sessionID":"root","callID":"call","from":"build","agent":"worker","reason":"untyped","description":"Rename the rows (mechanical)","pace":{"ok":true,"measured":false,"reason":"provider is not pooled"}}',
         ])
       }),
@@ -825,10 +861,29 @@ describe("Opus first, Codex second", () => {
       Effect.gen(function* () {
         const asked: Array<string> = []
         const plugin = yield* start({ now: WEDNESDAY }, { model, others: codexOffered, codex: admits(asked), pool: held })
-        const call = yield* plugin.call("subagent", "root", { agent: "verifier", model: "anthropic/claude-opus", prompt: "x" })
-        expect(call.input).toMatchObject({ model: "anthropic/claude-opus", sessionID: "ses_latched1" })
+        const call = yield* plugin.call("subagent", "root", { agent: "verifier", model: "anthropic/claude-opus-4", prompt: "x" })
+        expect(call.input).toMatchObject({ model: "anthropic/claude-opus-4", sessionID: "ses_latched1" })
         expect(asked).toEqual([])
         expect(plugin.kept[0]!.context).toEqual({ reason: "kept" })
+      }),
+    ))
+
+  test("a role call naming the role's own model runs as if it named none: held, it falls back to Codex, its line says model-dropped", () =>
+    scenario(
+      Effect.gen(function* () {
+        const asked: Array<string> = []
+        const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked), pool: held })
+        const call = yield* plugin.call("subagent", "root", { agent: "verifier", model: "anthropic/claude-opus", description: "verifier sso r1", prompt: "x" })
+        expect(call.input).toEqual({ agent: "verifier", description: "verifier sso r1", prompt: "x", model: "openai/gpt-6.1-sol#medium" })
+        expect(asked).toEqual(["gpt-6.1-sol verifier"])
+        expect(plugin.kept).toEqual([])
+        expect(plugin.logged()).toEqual([
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"verifier","agent":"verifier","reason":"model-dropped","model":"openai/gpt-6.1-sol#medium","description":"verifier sso r1","fallback":"anthropic/claude-opus#medium held: all pool accounts are held","pace":{"ok":false,"measured":true,"reason":"all pool accounts are held"},"fallbackCodex":{"ok":true,"measured":true,"reason":"scripted room"}}',
+        ])
+        // Held on both, it latches as an unnamed start does, and the latch keeps the reason.
+        const both = yield* start({ now: WEDNESDAY }, { model, others: codexOffered, codex: () => ({ ok: false, measured: true, reason: "5h pace", retryAt: now + 900_000 }), pool: held })
+        yield* both.call("subagent", "root", { agent: "planner", model: "claude-opus#high", prompt: "x" })
+        expect(both.kept[0]!.context).toEqual({ reason: "model-dropped", models: { primary: "anthropic/claude-opus", fallback: "openai/gpt-6.1-sol#high" } })
       }),
     ))
 
@@ -888,6 +943,109 @@ describe("Opus first, Codex second", () => {
         expect(codexLater.ran[0]!.input).toMatchObject({ model: "openai/gpt-6.1-sol#high" })
         expect(codexStarted).toEqual(["openai"])
         expect(codexLater.logged()[0]).toContain('"fallback":"anthropic/claude-opus held: all pool accounts are held"')
+      }),
+    ))
+})
+
+describe("the units' logs", () => {
+  /** A scratch checkout, removed with the test's scope. */
+  const checkout = Effect.acquireRelease(
+    Effect.sync(() => mkdtempSync(join(tmpdir(), "orchestrate-checkout-"))),
+    (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
+  )
+  /** A unit's moves, without their times. */
+  const moves = (dir: string) =>
+    existsSync(join(dir, "log.md"))
+      ? readFileSync(join(dir, "log.md"), "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => line.replace(/^\S+Z /, ""))
+      : []
+
+  test("each role's start and hand-back move its unit in the run's log, once each", () =>
+    scenario(
+      Effect.gen(function* () {
+        const work = yield* checkout
+        const auth = join(work, "tmp/orchestrate/web/auth")
+        mkdirSync(auth, { recursive: true })
+        const handBack = (role: string, line: string) => ({ parentID: "root", agent: role, directory: work, lastWords: `${line}\nGate green; the request names the head.` })
+        const plugin = yield* start(
+          { now: WEDNESDAY },
+          {
+            sessions: {
+              root: { directory: work },
+              planner: handBack("planner", `planner auth r1: ready ${auth}/spec.md`),
+              implementor: handBack("implementor", `implementor auth r1: ready ${auth}/round-1-request.md`),
+              verifier: handBack("verifier", `verifier auth r1: changes ${auth}/round-1-findings.md`),
+              worker: handBack("worker", `implementor auth r1: blocked ${auth}/blocked.md`),
+              busy: { parentID: "root", agent: "implementor", directory: work, lastWords: "Running the gate now." },
+              lead: { agent: "implementor", directory: work, lastWords: `implementor auth r2: blocked ${auth}/blocked.md` },
+            },
+          },
+        )
+        // The planner's prompt names the unit dir; the implementor's names none, so the checkout's runs are searched.
+        yield* plugin.call("subagent", "root", { agent: "planner", description: "planner auth r1", prompt: `Write ${auth}/spec.md from the template.` })
+        yield* plugin.idle("planner")
+        yield* plugin.call("subagent", "root", { agent: "implementor", description: "implementor auth r1", prompt: "Build the spec." })
+        yield* plugin.idle("busy")
+        yield* plugin.idle("implementor")
+        // The verifier's start finds the move its implementor's hand-back made.
+        yield* plugin.call("subagent", "root", { agent: "general", description: "verifier auth r1", prompt: `Verify ${auth}/round-1-request.md.` })
+        yield* plugin.idle("verifier")
+        yield* plugin.idle("verifier")
+        // Neither a main session, even one running as a role, nor a worker moves a unit, whatever it writes.
+        yield* plugin.idle("root")
+        yield* plugin.idle("lead")
+        yield* plugin.idle("worker")
+        yield* plugin.call("subagent", "root", { agent: "worker", description: "implementor auth r1", prompt: "x" })
+        yield* plugin.call("subagent", "root", { sessionID: "implementor", description: "implementor auth r2", prompt: `Fix ${auth}/round-1-findings.md.` })
+        expect(moves(auth)).toEqual([
+          "new → plan r1",
+          "plan → implement r1 spec.md",
+          "implement → verify r1 round-1-request.md ready",
+          "verify → implement r2 round-1-findings.md changes",
+        ])
+      }),
+    ))
+
+  test("a start whose unit dir is not found, or names no round, writes nothing and runs as ever", () =>
+    scenario(
+      Effect.gen(function* () {
+        const work = yield* checkout
+        const elsewhere = join(work, "notes/auth")
+        mkdirSync(join(work, "tmp/orchestrate/web/auth"), { recursive: true })
+        mkdirSync(join(work, "tmp/orchestrate/api/auth"), { recursive: true })
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: { root: { directory: work } } })
+        // Two runs hold an `auth` unit: the search finds none.
+        const call = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier auth r1", prompt: "x" })
+        expect(call).toEqual({ refused: undefined, input: { agent: "verifier", description: "verifier auth r1", prompt: "x" } })
+        yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier auth", prompt: `Verify ${elsewhere}/round-1-request.md` })
+        for (const dir of ["tmp/orchestrate/web/auth", "tmp/orchestrate/api/auth", "notes/auth"]) expect(existsSync(join(work, dir, "log.md"))).toBe(false)
+        // A path the prompt names finds it.
+        mkdirSync(elsewhere, { recursive: true })
+        yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier auth r1", prompt: `Verify ${elsewhere}/round-1-request.md` })
+        expect(moves(elsewhere)).toEqual(["new → verify r1 round-1-request.md"])
+      }),
+    ))
+
+  test("a latched role moves its unit when its latch opens and it starts, not when it latches", () =>
+    scenario(
+      Effect.gen(function* () {
+        const work = yield* checkout
+        const auth = join(work, "tmp/orchestrate/web/auth")
+        mkdirSync(auth, { recursive: true })
+        const now = Date.parse(WEDNESDAY)
+        const model = { providerID: "anthropic", id: "claude" }
+        const held = { anthropic: { ok: false, measured: true, reason: "all pool accounts are held", retryAt: now + 600_000 } }
+        const kept: Array<LatchAsk & { readonly child: string }> = []
+        const sessions = { root: { directory: work } }
+        const plugin = yield* start({ now: WEDNESDAY }, { model, pool: held, kept, sessions })
+        yield* plugin.call("subagent", "root", { agent: "planner", description: "planner auth r1", prompt: "Plan it." })
+        expect(moves(auth)).toEqual([])
+        const later = yield* start({ now: WEDNESDAY }, { model, sessions })
+        const latch = { kind: "latch", id: "w000001", directory: work, setAt: now, ...kept[0]!, child: kept[0]!.child }
+        expect(yield* later.open(latch)).toEqual({ outcome: "opened" })
+        expect(moves(auth)).toEqual(["new → plan r1"])
       }),
     ))
 })
@@ -1046,6 +1204,140 @@ describe("the agents", () => {
     ))
 })
 
+describe("after a restart", () => {
+  type View = RestartsTest.MemorySession["messages"][number]
+  const user = (created: number, text = "Write the export."): View => ({ type: "user", created, text })
+  const aborted = (id: string, created: number, calls: ReadonlyArray<{ readonly id: string; readonly child: string; readonly interrupted?: boolean }> = []): View => ({
+    type: "assistant",
+    id,
+    agent: "build",
+    created,
+    completed: created + 1,
+    error: { type: "aborted" },
+    content: calls.map((call) => ({
+      type: "tool",
+      id: call.id,
+      name: "subagent",
+      state:
+        call.interrupted === false
+          ? { status: "completed", input: { background: true }, metadata: { sessionID: call.child, status: "running" } }
+          : { status: "error", input: {}, error: { type: "aborted", message: `Tool execution interrupted (sessionID: ${call.child})` } },
+    })),
+  })
+  const answered = (id: string, created: number): View => ({ type: "assistant", id, agent: "build", created, completed: created + 1, content: [] })
+  const idle = (created: number, outcome: "succeeded" | "interrupted"): View => ({ type: "idle", created, outcome })
+
+  /** Sessions as the last shutdown left them, `minutes` minutes before now. */
+  const shutdown = () => {
+    const now = Date.now()
+    const ago = (minutes: number) => now - minutes * 60_000
+    const memory = RestartsTest.empty({ directory: "/work" })
+    const session = (id: string, parentID: string | undefined, messages: Array<View>, extra: Partial<RestartsTest.MemorySession> = {}) => {
+      memory.sessions[id] = { id, ...(parentID === undefined ? {} : { parentID }), title: `${id} task`, agent: "implementor", directory: "/work", updated: ago(5), messages, ...extra }
+    }
+    // The root's turn was cut while it waited on a foreground child; OpenCode continued the root itself.
+    session("root", undefined, [
+      user(ago(30)),
+      aborted("msg_root", ago(10), [
+        { id: "call-fg", child: "ses_fg" },
+        { id: "call-bg", child: "ses_bg", interrupted: false },
+      ]),
+      { type: "synthetic", created: ago(4), metadata: { notice: "restart" } },
+      answered("msg_root2", ago(4)),
+      idle(ago(4), "succeeded"),
+    ])
+    // The foreground child: the parent's interrupted call cancelled it.
+    session("ses_fg", "root", [user(ago(29)), aborted("msg_fg", ago(10)), idle(ago(10), "interrupted")])
+    // A background child the shutdown cut, and a shell notice OpenCode's recovery left it.
+    session("ses_bg", "root", [user(ago(29)), aborted("msg_bg", ago(10)), { type: "synthetic", created: ago(4), metadata: { source: "shell" } }])
+    // Resumed after three restarts in a row already: left to its parent.
+    session("ses_thrice", "root", [user(ago(60)), user(ago(40), resumePrompt), user(ago(30), resumePrompt), user(ago(20), `${RESUME_PROMPT} again`), aborted("msg_3", ago(10))])
+    // The owner's Escape on a parent: neither it nor its child is resumed.
+    session("escaped", undefined, [user(ago(30)), aborted("msg_esc", ago(10), [{ id: "call-esc", child: "ses_esc" }]), idle(ago(10), "interrupted")])
+    session("ses_esc", "escaped", [user(ago(29)), aborted("msg_e", ago(10)), idle(ago(10), "interrupted")])
+    // Finished, cut long ago, or of another location: left alone.
+    session("ses_done", "root", [user(ago(29)), answered("msg_d", ago(20)), idle(ago(20), "succeeded")])
+    session("ses_old", "root", [user(ago(500)), aborted("msg_o", ago(420))], { updated: ago(300) })
+    session("ses_away", "root", [user(ago(29)), aborted("msg_a", ago(10))], { directory: "/elsewhere" })
+    return memory
+  }
+
+  /** Waits until `ready` holds, a few seconds at most. */
+  const until = (ready: () => boolean) =>
+    Effect.gen(function* () {
+      for (let tries = 0; tries < 200 && !ready(); tries += 1) yield* Effect.sleep(10)
+    })
+
+  test("the children the shutdown cut are resumed in the background once, each logged, and their parent is told once", () =>
+    scenario(
+      Effect.gen(function* () {
+        const restarts = shutdown()
+        const plugin = yield* start({ now: WEDNESDAY, resume: { backoffMs: [0, 0, 0] } }, { restarts })
+        yield* until(() => restarts.told.length > 0)
+        // Through the subagent tool, in the background on each child, in the parent's call to it, with the prompt as given.
+        expect(plugin.ran.map(({ input, context }) => ({ input, context: { sessionID: context.sessionID, agent: context.agent, messageID: context.messageID, id: context.id } }))).toEqual([
+          {
+            input: { agent: "implementor", description: "ses_fg task", prompt: resumePrompt, sessionID: "ses_fg", background: true },
+            context: { sessionID: "root", agent: "build", messageID: "msg_root", id: "call-fg" },
+          },
+          {
+            input: { agent: "implementor", description: "ses_bg task", prompt: resumePrompt, sessionID: "ses_bg", background: true },
+            context: { sessionID: "root", agent: "build", messageID: "msg_root", id: "call-bg" },
+          },
+        ])
+        expect(plugin.logged()).toEqual([
+          '{"kind":"resumed","sessionID":"root","callID":"call-fg","child":"ses_fg","agent":"implementor","description":"ses_fg task","cause":"restart","attempt":1}',
+          '{"kind":"resumed","sessionID":"root","callID":"call-bg","child":"ses_bg","agent":"implementor","description":"ses_bg task","cause":"restart","attempt":1}',
+        ])
+        expect(restarts.told.map(({ sessionID, description, delivery, resume }) => ({ sessionID, description, delivery, resume }))).toEqual([
+          { sessionID: "root", description: NOTICE_TITLE, delivery: "steer", resume: false },
+        ])
+        expect(restarts.told[0]!.metadata).toEqual({ source: "orchestrate", notice: "resumed", children: ["ses_fg", "ses_bg", "ses_thrice"] })
+        const text = restarts.told[0]!.text
+        expect(text).toContain("Resumed in the background: ses_fg task (sessionID: ses_fg); ses_bg task (sessionID: ses_bg).")
+        expect(text).toContain("Not resumed: ses_thrice task (sessionID: ses_thrice), cut by 3 restarts in a row.")
+        for (const child of ["ses_esc", "ses_done", "ses_old", "ses_away", "ses_thrice"]) expect(text).not.toContain(`Resumed in the background: ${child}`)
+
+        // A second start (a plugin reload) finds them continued: nothing is resumed or told twice.
+        const again = yield* start({ now: WEDNESDAY, resume: { backoffMs: [0, 0, 0] } }, { restarts })
+        yield* Effect.sleep(200)
+        expect(again.ran).toEqual([])
+        expect(again.logged()).toEqual([])
+        expect(restarts.told.length).toBe(1)
+      }),
+    ))
+
+  test("a child left only because its resume failed wakes its parent with why; over the Sabbath nothing is resumed", () =>
+    scenario(
+      Effect.gen(function* () {
+        const failing = shutdown()
+        failing.fail = "Unknown agent: implementor"
+        const plugin = yield* start({ now: WEDNESDAY, resume: { backoffMs: [0, 0, 0] } }, { restarts: failing })
+        yield* until(() => failing.told.length > 0)
+        expect(plugin.logged()).toEqual([])
+        expect(failing.told.map(({ sessionID, resume }) => ({ sessionID, resume }))).toEqual([{ sessionID: "root", resume: true }])
+        expect(failing.told[0]!.text).toContain("Not resumed: ses_fg task (sessionID: ses_fg), it could not be resumed: Unknown agent: implementor.")
+
+        const resting = shutdown()
+        const friday = yield* start({ now: FRIDAY_EVENING, resume: { backoffMs: [0, 0, 0] } }, { restarts: resting })
+        yield* Effect.sleep(200)
+        expect(friday.ran).toEqual([])
+        expect(resting.told).toEqual([])
+      }),
+    ))
+
+  test("`resume: false` resumes nothing", () =>
+    scenario(
+      Effect.gen(function* () {
+        const restarts = shutdown()
+        const plugin = yield* start({ now: WEDNESDAY, resume: false }, { restarts })
+        yield* Effect.sleep(200)
+        expect(plugin.ran).toEqual([])
+        expect(restarts.told).toEqual([])
+      }),
+    ))
+})
+
 describe("the options", () => {
   const decode = Schema.decodeUnknownSync(Options)
   const defaults = {
@@ -1054,12 +1346,17 @@ describe("the options", () => {
     place: KNOWLTON,
     fullAgent: false,
     codex: { providers: ["openai"], script: CODEX_BUDGET },
+    unitLog: UNIT_LOG,
+    resume: { backoffMs: BACKOFF_MS },
   }
 
   test("each absent option takes its default; an undefined one is absent", () => {
     expect(decode({})).toEqual(defaults)
-    expect(decode({ windows: undefined, now: undefined, place: undefined, codex: undefined })).toEqual(defaults)
+    expect(decode({ windows: undefined, now: undefined, place: undefined, codex: undefined, resume: undefined })).toEqual(defaults)
     expect(decode({ codex: {} }).codex).toEqual(defaults.codex)
+    expect(decode({ resume: {} }).resume).toEqual(defaults.resume)
+    expect(decode({ resume: false }).resume).toBe(false)
+    expect(decode({ resume: { backoffMs: [0, 5] } }).resume).toEqual({ backoffMs: [0, 5] })
   })
 
   test("the ones given are read as the plugin uses them", () => {
@@ -1073,6 +1370,8 @@ describe("the options", () => {
       place,
       fullAgent: true,
       codex: { providers: ["openai", "sim"], script: CODEX_BUDGET },
+      unitLog: UNIT_LOG,
+      resume: { backoffMs: BACKOFF_MS },
     })
     expect(decode({ codex: false }).codex).toBe(false)
     expect(decode({ codex: { pool: true } }).codex).toEqual({ ...defaults.codex, pool: true })
@@ -1088,6 +1387,8 @@ describe("the options", () => {
       [{ fullAgent: "yes" }, '["fullAgent"]'],
       [{ codex: true }, '["codex"]'],
       [{ codex: { providers: ["openai", 7] } }, '["codex"]["providers"][1]'],
+      [{ resume: true }, '["resume"]'],
+      [{ resume: { backoffMs: ["10s"] } }, '["resume"]["backoffMs"][0]'],
     ]
     for (const [options, path] of malformed) {
       const exit = await Effect.runPromise(Effect.exit(Effect.scoped(start(options))))
