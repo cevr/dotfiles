@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Layer, type Scope } from "effect"
 import type { CallLine } from "./call-line.ts"
 import { DEFAULTS, type Windows } from "./compaction.ts"
-import type { ModelRef, Pace } from "./pace.ts"
+import { type ModelRef, type Pace, paceOfReply } from "./pace.ts"
 import { CallLog, CodexAdmission, CompactionWindows, type LatchRequest, Latches, type LatchStart, Models, type Offered, PoolPace, Sessions } from "./service.ts"
 
 const check = <A, E, R>(layer: Layer.Layer<R>, body: Effect.Effect<A, E, R>) =>
@@ -31,6 +31,8 @@ const lines: ReadonlyArray<CallLine> = [
     model: "anthropic/claude-haiku#high",
     background: true,
     description: "law",
+    pace: { ok: true, measured: true, reason: "room" },
+    codex: { failOpen: "no admission line (exit 2)" },
   },
   { kind: "done", at: "2026-11-04T15:01:00.000Z", sessionID: "ses_law", callID: "call-1", child: "ses_child", status: "running" },
   { kind: "denied", at: "2026-11-04T15:02:00.000Z", sessionID: "ses_law", callID: "call-2", tool: "subagent", why: "held" },
@@ -234,16 +236,16 @@ export const poolPaceLaws = (name: string, layer: (world: PoolPaceWorld) => Laye
         layer({ anthropic: held, openai: open }),
         Effect.gen(function* () {
           const pool = yield* PoolPace
-          expect(yield* pool.pace("anthropic")).toEqual(held)
-          expect(yield* pool.pace("openai")).toEqual(open)
+          expect(yield* pool.pace("anthropic")).toEqual({ _tag: "Answered", pace: held })
+          expect(yield* pool.pace("openai")).toEqual({ _tag: "Answered", pace: open })
         }),
       ))
 
-    test("a provider the pool has no answer for is unpaced, without failing", () =>
+    test("a provider the pool has no answer for is not held, without failing", () =>
       check(
         layer({ anthropic: held }),
         Effect.gen(function* () {
-          expect(yield* (yield* PoolPace).pace("google")).toBeUndefined()
+          expect(paceOfReply(yield* (yield* PoolPace).pace("google"))?.ok).not.toBe(false)
         }),
       ))
 
@@ -285,15 +287,21 @@ export const codexAdmissionLaws = (name: string, layer: (world: CodexWorld) => L
         layer(world),
         Effect.gen(function* () {
           const codex = yield* CodexAdmission
-          for (const { model, role, answer } of world) expect(yield* codex.admit(model, role)).toEqual(answer)
+          for (const { model, role, answer } of world) {
+            const reply = yield* codex.admit(model, role)
+            if (answer === undefined) expect(reply._tag).toBe("FailedOpen")
+            else expect(reply).toEqual({ _tag: "Answered", pace: answer })
+          }
         }),
       ))
 
-    test("a model and role the script has no answer for is none, and fails open", () =>
+    test("a model and role the script has no answer for fails open, saying why", () =>
       check(
         layer(world),
         Effect.gen(function* () {
-          expect(yield* (yield* CodexAdmission).admit("gpt-5", "verifier")).toBeUndefined()
+          const reply = yield* (yield* CodexAdmission).admit("gpt-5", "verifier")
+          expect(reply._tag).toBe("FailedOpen")
+          expect(reply._tag === "FailedOpen" ? reply.why : "").not.toBe("")
         }),
       ))
   })

@@ -4,7 +4,7 @@
 import { Context, type Effect, Schema } from "effect"
 import type { CallLine } from "./call-line.ts"
 import type { Windows } from "./compaction.ts"
-import type { ModelRef, Pace } from "./pace.ts"
+import type { ModelRef, PaceReply } from "./pace.ts"
 import type { Hold } from "./tool-call.ts"
 
 /** Where the call log's lines go, in order. Appending never fails: a lost line costs the pane a row, not the call. */
@@ -59,12 +59,13 @@ export class Models extends Context.Service<
 
 /**
  * The account pool's pace for one new agent on a provider. No answer (no
- * pool, a timeout, a failure) is undefined, and the agent starts: it fails open.
+ * pool, a timeout, a failure, an answer that is not a pace) is `FailedOpen`
+ * with the cause, and the agent starts: it fails open.
  */
 export class PoolPace extends Context.Service<
   PoolPace,
   {
-    readonly pace: (providerID: string) => Effect.Effect<Pace | undefined>
+    readonly pace: (providerID: string) => Effect.Effect<PaceReply>
     /** A new agent started on the provider: the pool counts it until its spend shows. Telling never fails. */
     readonly started: (providerID: string) => Effect.Effect<void>
   }
@@ -74,11 +75,11 @@ export class PoolPace extends Context.Service<
  * The Codex account's pace for one new agent: the orchestrate skill's
  * admission script, asked with the model id and the role (`none` for a
  * non-role agent). Only the script's own answer holds; anything else is
- * undefined and fails open.
+ * `FailedOpen` with the cause, and fails open.
  */
 export class CodexAdmission extends Context.Service<
   CodexAdmission,
-  { readonly admit: (model: string, role: string) => Effect.Effect<Pace | undefined> }
+  { readonly admit: (model: string, role: string) => Effect.Effect<PaceReply> }
 >()("dotfiles-opencode/orchestrate/CodexAdmission") {}
 
 /**

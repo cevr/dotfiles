@@ -13,6 +13,15 @@ export const Pace = Schema.Struct({
 })
 export interface Pace extends Schema.Schema.Type<typeof Pace> {}
 
+/** A pace's reply to one ask: its answer, or why it gave none (no pool, a timeout, a failure, an undecodable answer). */
+export const Answered = Schema.TaggedStruct("Answered", { pace: Pace })
+export const FailedOpen = Schema.TaggedStruct("FailedOpen", { why: Schema.String })
+export const PaceReply = Schema.Union([Answered, FailedOpen])
+export type PaceReply = typeof PaceReply.Type
+
+/** The pace a reply gives; one that failed open gives none, and the agent starts. */
+export const paceOfReply = (reply: PaceReply): Pace | undefined => (reply._tag === "Answered" ? reply.pace : undefined)
+
 /** Whose pace answered: the account pool's, or the Codex account's. */
 export const Whose = Schema.Literals(["pool", "codex"])
 export type Whose = typeof Whose.Type
@@ -51,18 +60,20 @@ export const formatModel = (model: ModelRef, variant: string) => `${model.provid
 /**
  * The orchestrate skill's Codex admission, read from the script's exit code
  * and last line: `admit: …` with 0, `hold: …[; opens about <date> <hh:mm>Z]`
- * with 1. Anything else is no answer, and fails open.
+ * with 1. Anything else is no answer, and fails open, saying the exit code.
  */
-export const parseAdmission = (code: number | null, out: string): Pace | undefined => {
+export const parseAdmission = (code: number | null, out: string): PaceReply => {
   const line = out.trim().split("\n").pop() ?? ""
-  if (code === 0 && line.startsWith("admit: ")) return { ok: true, measured: true, reason: line.slice(7) }
-  if (code !== 1 || !line.startsWith("hold: ")) return undefined
+  if (code === 0 && line.startsWith("admit: ")) return Answered.make({ pace: { ok: true, measured: true, reason: line.slice(7) } })
+  if (code !== 1 || !line.startsWith("hold: ")) return FailedOpen.make({ why: `no admission line (exit ${code ?? "by signal"})` })
   const opens = /; opens about (\d{4}-\d\d-\d\d) (\d\d:\d\d)Z$/.exec(line)
   const retryAt = opens ? Date.parse(`${opens[1]}T${opens[2]}:00Z`) : undefined
-  return {
-    ok: false,
-    measured: true,
-    reason: opens ? line.slice(6, opens.index) : line.slice(6),
-    ...(retryAt === undefined ? {} : { retryAt }),
-  }
+  return Answered.make({
+    pace: {
+      ok: false,
+      measured: true,
+      reason: opens ? line.slice(6, opens.index) : line.slice(6),
+      ...(retryAt === undefined ? {} : { retryAt }),
+    },
+  })
 }

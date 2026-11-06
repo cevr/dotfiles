@@ -53,12 +53,30 @@ codexAdmissionLaws("the budget script's CodexAdmission", (world) =>
   ),
 )
 
-test("no script fails open", () =>
+const admit = CodexAdmission.use((codex) => codex.admit("gpt-5", "planner"))
+
+test("no script fails open, saying the exit code", () =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const admit = CodexAdmission.use((codex) => codex.admit("gpt-5", "planner"))
-        expect(yield* admit.pipe(Effect.provide(CodexScript.layer(join(yield* scratch, "missing.ts"))))).toBeUndefined()
+        expect(yield* admit.pipe(Effect.provide(CodexScript.layer(join(yield* scratch, "missing.ts"))))).toEqual({
+          _tag: "FailedOpen",
+          why: "no admission line (exit 1)",
+        })
+      }),
+    ),
+  ))
+
+test("a script stopped by a signal, as its timeout stops it, fails open saying so", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const file = join(yield* scratch, "budget.ts")
+        writeFileSync(file, `console.log("checking")\nprocess.kill(process.pid, "SIGTERM")\nawait new Promise(() => {})\n`)
+        expect(yield* admit.pipe(Effect.provide(CodexScript.layer(file)))).toEqual({
+          _tag: "FailedOpen",
+          why: "the script was stopped by SIGTERM (it has 20 s)",
+        })
       }),
     ),
   ))

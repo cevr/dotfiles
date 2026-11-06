@@ -5,9 +5,12 @@ import { Effect } from "effect"
 import * as OpenCodePoolPace from "../opencode/pool-pace.ts"
 import type { Pace } from "../pace.ts"
 
-/** The pool's answer per provider; a provider it has none for is unpaced. */
+/** What the pool answers for a provider it does not hold (the pool mod's `UNPOOLED`). */
+export const UNPOOLED: Pace = { ok: true, measured: false, reason: "provider is not pooled" }
+
+/** The pool's answer per provider; a provider it has none for is unpooled, as the pool answers. */
 export const layer = (answers: Readonly<Record<string, Pace>>, started: Array<string> = []) =>
   OpenCodePoolPace.layer(
-    ({ providerID }) => Effect.succeed(Object.hasOwn(answers, providerID) ? answers[providerID] : undefined),
+    ({ providerID }) => Effect.succeed(Object.hasOwn(answers, providerID) ? answers[providerID] : UNPOOLED),
     ({ providerID }) => Effect.sync(() => started.push(providerID)),
   )

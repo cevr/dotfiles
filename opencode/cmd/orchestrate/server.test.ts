@@ -16,6 +16,7 @@ import * as ModelsTest from "@dotfiles/opencode-orchestrate/memory/models"
 import * as PoolPaceTest from "@dotfiles/opencode-orchestrate/memory/pool-pace"
 import * as SessionsTest from "@dotfiles/opencode-orchestrate/memory/sessions"
 import * as OpenCodeLatches from "@dotfiles/opencode-orchestrate/opencode/latches"
+import * as OpenCodePoolPace from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
 import type { Session } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
@@ -36,6 +37,8 @@ type Hook = (event: Record<string, unknown>) => Effect.Effect<void, { readonly _
 interface World {
   readonly sessions?: Readonly<Record<string, Session>>
   readonly pool?: Readonly<Record<string, Pace>>
+  /** The pool's `pace` RPC itself, in place of `pool`'s answers: one that fails, hangs or answers no pace. */
+  readonly poolAsk?: OpenCodePoolPace.Ask
   /** The providers the pool is told a new agent started on, in order. */
   readonly started?: Array<string>
   readonly codex?: (model: string, role: string) => Pace | undefined
@@ -128,7 +131,9 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       CallLogTest.layer(lines),
       SessionsTest.layer(world.sessions ?? {}),
       ModelsTest.layer(world.model, world.variants, world.others),
-      PoolPaceTest.layer(world.pool ?? {}, world.started),
+      world.poolAsk === undefined
+        ? PoolPaceTest.layer(world.pool ?? {}, world.started)
+        : OpenCodePoolPace.layer(world.poolAsk, () => Effect.succeed({})),
       CodexAdmissionTest.layer(world.codex ?? (() => undefined)),
       CompactionWindowsTest.layer(world.compactJson),
       OpenCodeLatches.layer(keep, start),
@@ -243,7 +248,7 @@ describe("the guard", () => {
           model: "anthropic/claude#high",
         })
         expect(offered.logged()).toEqual([
-          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"orchestrate-planner","agent":"planner","reason":"renamed","model":"anthropic/claude#high"}',
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"orchestrate-planner","agent":"planner","reason":"renamed","model":"anthropic/claude#high","pace":{"ok":true,"measured":false,"reason":"provider is not pooled"}}',
         ])
         // A model the call names is kept; so is the model's own effort when it has no such variant.
         expect((yield* offered.call("subagent", "root", { agent: "planner", model: "openai/gpt#low" })).input).toEqual({
@@ -262,7 +267,7 @@ describe("the guard", () => {
         const input = { agent: "general", description: "closure-flake verifier r1 (Opus)", prompt: "x", background: true }
         expect((yield* plugin.call("subagent", "root", input)).input).toEqual({ ...input, agent: "verifier", model: "anthropic/claude#medium" })
         expect(plugin.logged()).toEqual([
-          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"general","agent":"verifier","reason":"described","model":"anthropic/claude#medium","background":true,"description":"closure-flake verifier r1 (Opus)"}',
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"general","agent":"verifier","reason":"described","model":"anthropic/claude#medium","background":true,"description":"closure-flake verifier r1 (Opus)","pace":{"ok":true,"measured":false,"reason":"provider is not pooled"}}',
         ])
       }),
     ))
@@ -426,6 +431,75 @@ describe("the pace", () => {
     ))
 })
 
+describe("the call line's admission", () => {
+  const model = { providerID: "anthropic", id: "claude" }
+  /** The admission fields of the log's one line. */
+  const admission = (logged: ReadonlyArray<string>) => {
+    expect(logged).toHaveLength(1)
+    const { pace, codex, fallbackPace, fallbackCodex } = JSON.parse(logged[0]!) as Record<string, unknown>
+    return Object.fromEntries(Object.entries({ pace, codex, fallbackPace, fallbackCodex }).filter(([, value]) => value !== undefined))
+  }
+
+  test("a start a measured pace admitted says so", () =>
+    scenario(
+      Effect.gen(function* () {
+        const reason = "weekly pace: 20.0% spent, 57.0% allowed"
+        const plugin = yield* start({ now: WEDNESDAY }, { model, pool: { anthropic: { ok: true, measured: true, reason } } })
+        expect((yield* plugin.call("subagent", "root", { agent: "explore", description: "look" })).refused).toBeUndefined()
+        expect(plugin.logged()).toEqual([
+          `{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"explore","agent":"explore","reason":"kept","description":"look","pace":{"ok":true,"measured":true,"reason":"${reason}"}}`,
+        ])
+      }),
+    ))
+
+  test("each way the pool's pace fails open starts the agent, and the line names the cause", () =>
+    scenario(
+      Effect.gen(function* () {
+        const causes: ReadonlyArray<readonly [OpenCodePoolPace.Ask, string]> = [
+          [() => Effect.fail({ type: "rpc.unavailable", message: "nothing answers" }), "no pool: rpc.unavailable (nothing answers)"],
+          [() => Effect.fail({ type: "rpc.internal", message: "logins cannot be read" }), "error: rpc.internal: logins cannot be read"],
+          [() => Effect.die(new Error("socket closed")), "defect: socket closed"],
+          [() => Effect.succeed({ ok: "yes" }), 'undecodable: {"ok":"yes"}'],
+        ]
+        for (const [poolAsk, why] of causes) {
+          const plugin = yield* start({ now: WEDNESDAY }, { model, poolAsk })
+          expect((yield* plugin.call("subagent", "root", { agent: "explore" })).refused).toBeUndefined()
+          expect(admission(plugin.logged())).toEqual({ pace: { failOpen: why } })
+        }
+      }),
+    ))
+
+  test("the Codex admission is recorded when asked: failed open, and after an unmeasured pool", () =>
+    scenario(
+      Effect.gen(function* () {
+        const silent = yield* start({ now: WEDNESDAY }, {})
+        expect((yield* silent.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5" })).refused).toBeUndefined()
+        expect(admission(silent.logged())).toEqual({ codex: { failOpen: "no admission line (exit 2)" } })
+        const unmeasured = yield* start(
+          { now: WEDNESDAY, codex: { pool: true } },
+          { pool: { openai: { ok: true, measured: false, reason: "no pooled account readings" } }, codex: () => ({ ok: true, measured: true, reason: "room for 3" }) },
+        )
+        expect((yield* unmeasured.call("subagent", "root", { agent: "verifier", model: "openai/gpt-5" })).refused).toBeUndefined()
+        expect(admission(unmeasured.logged())).toEqual({
+          pace: { ok: true, measured: false, reason: "no pooled account readings" },
+          codex: { ok: true, measured: true, reason: "room for 3" },
+        })
+      }),
+    ))
+
+  test("a follow-up, and a start over the Sabbath, ask no pace and record none", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { model, sessions: { child: { parentID: "root", agent: "worker" } } })
+        yield* plugin.call("subagent", "root", { sessionID: "child", prompt: "more" })
+        expect(admission(plugin.logged())).toEqual({})
+        const friday = yield* start({ now: FRIDAY_EVENING }, { model })
+        yield* friday.call("subagent", "root", { agent: "explore", prompt: "x" })
+        expect(admission(friday.logged())).toEqual({})
+      }),
+    ))
+})
+
 describe("a latch", () => {
   const now = Date.parse(WEDNESDAY)
   const held = { anthropic: { ok: false, measured: true, reason: "all pool accounts are held", retryAt: now + 600_000 } }
@@ -495,7 +569,7 @@ describe("a latch", () => {
         // The call returns latched.
         yield* plugin.finish({ status: "completed", result: answer })
         expect(plugin.logged()).toEqual([
-          '{"kind":"latched","sessionID":"root","callID":"call","from":"build","asked":"explore","agent":"explore","reason":"kept","model":"anthropic/claude","child":"ses_latched1","description":"look","hold":"pace","why":"all pool accounts are held","opens":"' +
+          '{"kind":"latched","sessionID":"root","callID":"call","from":"build","asked":"explore","agent":"explore","reason":"kept","model":"anthropic/claude","child":"ses_latched1","description":"look","pace":{"ok":false,"measured":true,"reason":"all pool accounts are held"},"hold":"pace","why":"all pool accounts are held","opens":"' +
             new Date(now + 600_000).toISOString() +
             '"}',
           '{"kind":"done","sessionID":"root","callID":"call","child":"ses_latched1","status":"latched"}',
@@ -565,7 +639,7 @@ describe("a latch", () => {
         ])
         expect(started).toEqual(["anthropic"])
         expect(later.logged()).toEqual([
-          '{"kind":"call","sessionID":"root","callID":"call","from":"build","agent":"explore","reason":"kept","model":"anthropic/claude","child":"ses_latched1","background":true,"description":"look"}',
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","agent":"explore","reason":"kept","model":"anthropic/claude","child":"ses_latched1","background":true,"description":"look","pace":{"ok":true,"measured":false,"reason":"provider is not pooled"}}',
           '{"kind":"done","sessionID":"root","callID":"call","child":"ses_latched1","status":"running"}',
         ])
       }),
@@ -648,7 +722,7 @@ describe("Opus first, Codex second", () => {
         // The pool counts it on the provider it started on.
         expect(started).toEqual(["openai"])
         expect(plugin.logged()).toEqual([
-          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"verifier","agent":"verifier","reason":"kept","model":"openai/gpt-6.1-sol#medium","background":true,"description":"verifier sso r1","fallback":"anthropic/claude-opus#medium held: all pool accounts are held"}',
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"verifier","agent":"verifier","reason":"kept","model":"openai/gpt-6.1-sol#medium","background":true,"description":"verifier sso r1","fallback":"anthropic/claude-opus#medium held: all pool accounts are held","pace":{"ok":false,"measured":true,"reason":"all pool accounts are held"},"fallbackCodex":{"ok":true,"measured":true,"reason":"scripted room"}}',
         ])
         // The parent reads where it ran and why first, once.
         const answer = yield* plugin.runTool(call.input)
@@ -721,7 +795,9 @@ describe("Opus first, Codex second", () => {
           subagent: { model: "openai/gpt-6.1-sol#high" },
           context: { reason: "kept", models: { primary: "anthropic/claude-opus", fallback: "openai/gpt-6.1-sol#high" } },
         })
-        expect(plugin.logged()[0]).toContain('"fallback":"anthropic/claude-opus held: all pool accounts are held","hold":"pace","why":"5h pace"')
+        expect(plugin.logged()[0]).toContain(
+          '"fallback":"anthropic/claude-opus held: all pool accounts are held","pace":{"ok":false,"measured":true,"reason":"all pool accounts are held"},"fallbackCodex":{"ok":false,"measured":true,"reason":"5h pace"},"hold":"pace","why":"5h pace"',
+        )
         const latch = { kind: "latch", id: "w000001", directory: "/work", setAt: now, ...kept[0]!, child: "ses_latched1" }
         // At its time Claude has room: it opens on Opus, switching the child's model.
         const started: Array<string> = []

@@ -1,11 +1,57 @@
 // The call log: one JSON line per started, latched or finished subagent and
 // per refused call, which a status pane reads. Its key order is the format.
+//
+// A new subagent's line says what admitted or held it: each pace asked, by
+// its answer or by why it failed open, so a start a measured pace admitted
+// reads apart from one a broken RPC let through. A follow-up asks no pace.
+import type { PaceReply } from "./pace.ts"
 import type { Reason } from "./role.ts"
 import type { Hold, Status, SubagentFinished, SubagentLatched, SubagentStarted, ToolCallId } from "./tool-call.ts"
 
+/** What one pace said of a new agent, as the log keeps it: its answer, or why it gave none and failed open. */
+export type Admission =
+  | { readonly ok: boolean; readonly measured: boolean; readonly reason: string }
+  | { readonly failOpen: string }
+
+/**
+ * The paces asked for a new agent, each only when asked: the pool's (`pace`)
+ * and the Codex admission script's (`codex`) on its model, and the same on
+ * its Codex fallback when it was offered one.
+ */
+export interface Asked {
+  readonly pace?: PaceReply
+  readonly codex?: PaceReply
+  readonly fallbackPace?: PaceReply
+  readonly fallbackCodex?: PaceReply
+}
+
+/** One reply as the log keeps it. */
+export const admissionOf = (reply: PaceReply): Admission =>
+  reply._tag === "FailedOpen" ? { failOpen: reply.why } : { ok: reply.pace.ok, measured: reply.pace.measured, reason: reply.pace.reason }
+
+/** The line's admission fields, in the format's order; none for a call that asked no pace. */
+const admissions = (asked: Asked | undefined) => ({
+  ...(asked?.pace === undefined ? {} : { pace: admissionOf(asked.pace) }),
+  ...(asked?.codex === undefined ? {} : { codex: admissionOf(asked.codex) }),
+  ...(asked?.fallbackPace === undefined ? {} : { fallbackPace: admissionOf(asked.fallbackPace) }),
+  ...(asked?.fallbackCodex === undefined ? {} : { fallbackCodex: admissionOf(asked.fallbackCodex) }),
+})
+
+/** A line's admission fields. */
+interface Admissions {
+  /** The pool's pace on its model. */
+  readonly pace?: Admission
+  /** The Codex admission on its model. */
+  readonly codex?: Admission
+  /** The pool's pace on its Codex fallback. */
+  readonly fallbackPace?: Admission
+  /** The Codex admission on its Codex fallback. */
+  readonly fallbackCodex?: Admission
+}
+
 /** One line of the call log. `asked` is what the model passed; `agent` is what runs. */
 export type CallLine =
-  | {
+  | ({
       readonly kind: "call"
       readonly at: string
       readonly sessionID: string
@@ -20,7 +66,7 @@ export type CallLine =
       readonly description?: string
       /** It runs on the Codex fallback, and why: `<first model> held: <reason>`. */
       readonly fallback?: string
-    }
+    } & Admissions)
   | {
       readonly kind: "done"
       readonly at: string
@@ -29,7 +75,7 @@ export type CallLine =
       readonly child?: string
       readonly status: Status
     }
-  | {
+  | ({
       readonly kind: "latched"
       readonly at: string
       readonly sessionID: string
@@ -43,11 +89,12 @@ export type CallLine =
       readonly description?: string
       /** It latched on the Codex fallback, which opens first, and why. */
       readonly fallback?: string
+    } & Admissions & {
       readonly hold: Hold
       readonly why: string
       /** ISO 8601: when the hold says it opens. */
       readonly opens: string
-    }
+    })
   | {
       readonly kind: "denied"
       readonly at: string
@@ -57,8 +104,8 @@ export type CallLine =
       readonly why: string
     }
 
-/** A started subagent's line, at `at` (ISO 8601). */
-export const started = (event: SubagentStarted, at: string): CallLine => ({
+/** A started subagent's line, at `at` (ISO 8601), with the paces `asked` for it. */
+export const started = (event: SubagentStarted, at: string, asked?: Asked): CallLine => ({
   kind: "call",
   at,
   sessionID: event.call.sessionID,
@@ -72,10 +119,11 @@ export const started = (event: SubagentStarted, at: string): CallLine => ({
   ...(event.background === undefined ? {} : { background: event.background }),
   ...(event.description === undefined ? {} : { description: event.description }),
   ...(event.fallback === undefined ? {} : { fallback: event.fallback }),
+  ...admissions(asked),
 })
 
-/** A latched subagent's line: what holds it, why, and when it opens. */
-export const latched = (event: SubagentLatched, at: string): CallLine => ({
+/** A latched subagent's line: the paces `asked` for it, what holds it, why, and when it opens. */
+export const latched = (event: SubagentLatched, at: string, asked?: Asked): CallLine => ({
   kind: "latched",
   at,
   sessionID: event.call.sessionID,
@@ -88,6 +136,7 @@ export const latched = (event: SubagentLatched, at: string): CallLine => ({
   ...(event.child === undefined ? {} : { child: event.child }),
   ...(event.description === undefined ? {} : { description: event.description }),
   ...(event.fallback === undefined ? {} : { fallback: event.fallback }),
+  ...admissions(asked),
   hold: event.hold,
   why: event.why,
   opens: new Date(event.opensAt).toISOString(),

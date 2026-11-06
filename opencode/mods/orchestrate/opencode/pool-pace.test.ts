@@ -1,7 +1,9 @@
 // The pool's pace over a stand-in for the pool's RPC: the laws, and the
-// answers that fail open (no pool, a failure, an answer that is not a pace).
+// answers that fail open (no pool, a timeout, a failure, an answer that is
+// not a pace), each saying why.
 import { expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Fiber } from "effect"
+import { TestClock } from "effect/testing"
 import { poolPaceLaws } from "../laws.ts"
 import { PoolPace } from "../service.ts"
 import * as OpenCodePoolPace from "./pool-pace.ts"
@@ -16,12 +18,59 @@ poolPaceLaws("OpenCode's PoolPace", (world) =>
 
 const told = () => Effect.succeed({})
 
-test("an answer that is not a pace, or a failed ask, fails open", () =>
+/** The reply of a pool whose `pace` method is `ask`. */
+const replyOf = (ask: OpenCodePoolPace.Ask) =>
+  PoolPace.use((pool) => pool.pace("anthropic")).pipe(Effect.provide(OpenCodePoolPace.layer(ask, told)))
+
+test("a measured answer is the pool's own", () =>
   Effect.runPromise(
     Effect.gen(function* () {
-      const pace = PoolPace.use((pool) => pool.pace("anthropic"))
-      expect(yield* pace.pipe(Effect.provide(OpenCodePoolPace.layer(() => Effect.succeed({ ok: "yes" }), told)))).toBeUndefined()
-      expect(yield* pace.pipe(Effect.provide(OpenCodePoolPace.layer(() => Effect.fail("no pool"), told)))).toBeUndefined()
-      expect(yield* pace.pipe(Effect.provide(OpenCodePoolPace.layer(() => Effect.die("broken"), told)))).toBeUndefined()
+      expect(yield* replyOf(() => Effect.succeed({ ok: true, measured: true, reason: "weekly pace 20% of 57%" }))).toEqual({
+        _tag: "Answered",
+        pace: { ok: true, measured: true, reason: "weekly pace 20% of 57%" },
+      })
     }),
+  ))
+
+test("no pool plugin fails open, saying so", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      expect(yield* replyOf(() => Effect.fail({ type: "rpc.unavailable", message: "no plugin answers dotfiles-opencode.pool" }))).toEqual({
+        _tag: "FailedOpen",
+        why: "no pool: rpc.unavailable (no plugin answers dotfiles-opencode.pool)",
+      })
+      expect(yield* replyOf(() => Effect.fail({ type: "rpc.method_not_found", message: "" }))).toEqual({
+        _tag: "FailedOpen",
+        why: "no pool: rpc.method_not_found",
+      })
+    }),
+  ))
+
+test("a failed ask fails open with its error, and a defect with its message", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      expect(yield* replyOf(() => Effect.fail({ type: "rpc.internal", message: "logins unavailable" }))).toEqual({
+        _tag: "FailedOpen",
+        why: "error: rpc.internal: logins unavailable",
+      })
+      expect(yield* replyOf(() => Effect.fail(new Error("socket closed")))).toEqual({ _tag: "FailedOpen", why: "error: socket closed" })
+      expect(yield* replyOf(() => Effect.die("broken"))).toEqual({ _tag: "FailedOpen", why: "defect: broken" })
+    }),
+  ))
+
+test("an answer that is not a pace fails open, quoting it", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      expect(yield* replyOf(() => Effect.succeed({ ok: "yes" }))).toEqual({ _tag: "FailedOpen", why: 'undecodable: {"ok":"yes"}' })
+      expect(yield* replyOf(() => Effect.succeed(undefined))).toEqual({ _tag: "FailedOpen", why: "undecodable: undefined" })
+    }),
+  ))
+
+test("a pool that does not answer in 8 seconds fails open as a timeout", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const reply = yield* Effect.forkChild(replyOf(() => Effect.never))
+      yield* TestClock.adjust("8 seconds")
+      expect(yield* Fiber.join(reply)).toEqual({ _tag: "FailedOpen", why: "timeout: no answer in 8 seconds" })
+    }).pipe(Effect.provide(TestClock.layer())),
   ))

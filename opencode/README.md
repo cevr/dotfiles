@@ -1322,6 +1322,8 @@ A new subagent passes `dotfiles-opencode.pool`'s `pace` RPC in the
 pool and unavailable pace RPCs fail open, as the Claude hook does for an
 unreachable host.
 
+To see what admitted a start, read its line in `~/.cache/orchestrate/opencode-agents.jsonl`. A new subagent's `call` or `latched` line carries the pool's answer as `pace: { ok, measured, reason }`, or the cause as `pace: { failOpen: "no pool: …" | "timeout: …" | "error: …" | "undecodable: …" }`. When the Codex admission is asked, its answer goes in `codex` the same way, and a fallback's answers go in `fallbackPace` and `fallbackCodex`. A follow-up asks no pace and records none.
+
 The shared Claude `budget.ts` scans `~/.claude/projects` transcripts, so it
 cannot measure OpenCode's load or estimate its agent costs. Instead, this
 pool reads provider quotas, including spend by other harnesses on the same

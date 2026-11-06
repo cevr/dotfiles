@@ -19,7 +19,7 @@
 // fixed clock is behind it at that moment. Without one, they move by nothing.
 import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
 import * as CallLine from "./call-line.ts"
-import { PaceHeld, parseModel, type ModelRef, type PaceHold } from "./pace.ts"
+import { PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
 import { codexFallback, effort, isRole, Reason } from "./role.ts"
 import { resumesAt, SabbathRest, type Place } from "./sabbath.ts"
 import { CallLog, CodexAdmission, Latches, Models, PoolPace, Sessions } from "./service.ts"
@@ -42,6 +42,9 @@ import {
   type SubagentStarted,
   type ToolCallId,
 } from "./tool-call.ts"
+
+/** The paces a new agent's line records. */
+type Asked = CallLine.Asked
 
 /** The rules' settings, from the plugin's options. */
 export interface Config {
@@ -149,11 +152,13 @@ export const layer = (config: Config) =>
        * was refused. Every command is decided on its own inputs against the
        * aggregate's initial state (see tool-call.ts).
        */
-      const decide = (command: Command, now: number, tool: string) =>
+      const decide = (command: Command, now: number, tool: string, asked?: Asked) =>
         ToolCall.decide(ToolCall.initial, command, now).pipe(
           // A latch is logged once the wakes keep it, with its child; or as the call's refusal when they cannot.
           Effect.tap((events) =>
-            Effect.forEach(events, (event) => (event._tag === "SubagentLatched" && event.child === undefined ? Effect.void : Effect.flatMap(at, (time) => log.append(lineOf(event, time))))),
+            Effect.forEach(events, (event) =>
+              event._tag === "SubagentLatched" && event.child === undefined ? Effect.void : Effect.flatMap(at, (time) => log.append(lineOf(event, time, asked))),
+            ),
           ),
           Effect.tapError((rejection) => deny(command.call, tool, whyOf(rejection))),
         )
@@ -167,19 +172,34 @@ export const layer = (config: Config) =>
        */
       const paceOf = Effect.fnUntraced(function* (sessionID: string, agent: string, model: string | undefined) {
         const ref = parseModel(model) ?? (yield* models.base(sessionID, agent))
-        return { ref, hold: ref === undefined ? undefined : yield* holdOf(ref, agent) }
+        const none: Asked = {}
+        if (ref === undefined) return { ref, hold: undefined, asked: none }
+        const { hold, replies } = yield* holdOf(ref, agent)
+        const asked: Asked = {
+          ...(replies.pool === undefined ? {} : { pace: replies.pool }),
+          ...(replies.codex === undefined ? {} : { codex: replies.codex }),
+        }
+        return { ref, hold, asked }
       })
 
+      /** The hold on a model, if any, with each pace's reply as asked: the pool's, the Codex admission's. */
       const holdOf = Effect.fnUntraced(function* (ref: ModelRef, agent: string) {
         const whose = config.codex?.providers.includes(ref.providerID) ? "codex" : "pool"
-        const pooled = whose === "pool" || config.codex?.pool === true ? yield* pool.pace(ref.providerID) : undefined
-        const pace =
-          whose === "codex" && (pooled === undefined || !pooled.measured)
-            ? yield* codex.admit(ref.id, isRole(agent) ? agent : "none")
-            : pooled
-        if (pace === undefined || pace.ok) return undefined
+        const poolReply = whose === "pool" || config.codex?.pool === true ? yield* pool.pace(ref.providerID) : undefined
+        const pooled = poolReply === undefined ? undefined : paceOfReply(poolReply)
+        const codexReply =
+          whose === "codex" && (pooled === undefined || !pooled.measured) ? yield* codex.admit(ref.id, isRole(agent) ? agent : "none") : undefined
+        const pace = codexReply === undefined ? pooled : paceOfReply(codexReply)
+        const replies = { ...(poolReply === undefined ? {} : { pool: poolReply }), ...(codexReply === undefined ? {} : { codex: codexReply }) }
+        if (pace === undefined || pace.ok) return { hold: undefined, replies }
         const hold: PaceHold = { whose, reason: pace.reason, ...(pace.retryAt === undefined ? {} : { retryAt: pace.retryAt }) }
-        return hold
+        return { hold, replies }
+      })
+
+      /** A fallback's replies, as its line keeps them. */
+      const fallbackAsked = (replies: { readonly pool?: PaceReply; readonly codex?: PaceReply }): Asked => ({
+        ...(replies.pool === undefined ? {} : { fallbackPace: replies.pool }),
+        ...(replies.codex === undefined ? {} : { fallbackCodex: replies.codex }),
       })
 
       /**
@@ -195,9 +215,9 @@ export const layer = (config: Config) =>
         const model = yield* models.newest(sessionID, providers, family, variant)
         const at = parseModel(model)
         if (model === undefined || at === undefined) return undefined
-        const hold = yield* holdOf(at, agent)
+        const { hold, replies } = yield* holdOf(at, agent)
         const fallback: Fallback = { model, ...(hold === undefined ? {} : { hold }) }
-        return fallback
+        return { fallback, asked: fallbackAsked(replies) }
       })
 
       const startSubagent = Effect.fn("Orchestrate.startSubagent")(function* ({
@@ -244,7 +264,7 @@ export const layer = (config: Config) =>
         const paced =
           child === undefined
             ? resting
-              ? { ref: parseModel(model) ?? (yield* models.base(call.sessionID, routed.agent)), hold: undefined }
+              ? { ref: parseModel(model) ?? (yield* models.base(call.sessionID, routed.agent)), hold: undefined, asked: {} }
               : yield* paceOf(call.sessionID, routed.agent, model)
             : undefined
         const hold = paced?.hold
@@ -252,8 +272,11 @@ export const layer = (config: Config) =>
         const primary = model ?? (paced?.ref === undefined ? undefined : `${paced.ref.providerID}/${paced.ref.id}`)
         // A model the call named is kept as asked: only a role's own model falls back.
         const named = typeof fields.model === "string" && fields.model !== ""
-        const fallback =
+        const offered =
           hold !== undefined && !named && paced?.ref !== undefined ? yield* fallbackOf(call.sessionID, paced.ref, routed.agent, base.description) : undefined
+        const fallback = offered?.fallback
+        // What each pace asked said, for the line: a follow-up asked none.
+        const asked: Asked = { ...paced?.asked, ...offered?.asked }
         const command = StartSubagent.make({
           ...base,
           ...(childAgent ? { childAgent } : {}),
@@ -261,7 +284,7 @@ export const layer = (config: Config) =>
           ...(hold === undefined ? {} : { hold }),
           ...(childLatched === undefined ? {} : { childLatched }),
         })
-        const events = yield* decide(command, now, SUBAGENT)
+        const events = yield* decide(command, now, SUBAGENT, asked)
         const latched = events.find((event) => event._tag === "SubagentLatched")
         if (latched !== undefined) {
           // The child is made on the model it latched on, and opened on whichever model admits it first.
@@ -297,7 +320,7 @@ export const layer = (config: Config) =>
               ),
             )
           const event: SubagentLatched = { ...latched, child: kept.child, ...(on === undefined ? {} : { model: on }) }
-          yield* log.append(CallLine.latched(event, yield* at))
+          yield* log.append(CallLine.latched(event, yield* at, asked))
           return Option.some({ _tag: "LatchedStart" as const, id: kept.id, child: kept.child, latched: event })
         }
         const started = events.find((event) => event._tag === "SubagentStarted")
@@ -318,7 +341,9 @@ export const layer = (config: Config) =>
         const primary = kept?.primary ?? latch.model
         const paced = resting || ran ? undefined : yield* paceOf(latch.parent, latch.agent, primary)
         const fallbackAt = parseModel(kept?.fallback)
-        const fallbackHold = paced?.hold !== undefined && fallbackAt !== undefined ? yield* holdOf(fallbackAt, latch.agent) : undefined
+        const fallbackPaced = paced?.hold !== undefined && fallbackAt !== undefined ? yield* holdOf(fallbackAt, latch.agent) : undefined
+        const fallbackHold = fallbackPaced?.hold
+        const asked: Asked = { ...paced?.asked, ...(fallbackPaced === undefined ? {} : fallbackAsked(fallbackPaced.replies)) }
         const fallback: Fallback | undefined =
           kept === undefined || paced?.hold === undefined ? undefined : { model: kept.fallback, ...(fallbackHold === undefined ? {} : { hold: fallbackHold }) }
         const reason = Schema.decodeUnknownOption(Reason)(latch.context.reason)
@@ -341,13 +366,13 @@ export const layer = (config: Config) =>
         ).pipe(Effect.orDie) // An open is never refused: it latches again or starts.
         const latched = events.find((event) => event._tag === "SubagentLatched")
         if (latched !== undefined) {
-          yield* log.append(CallLine.latched(latched, yield* at))
+          yield* log.append(CallLine.latched(latched, yield* at, asked))
           const ahead = yield* skew
           return { outcome: "held", hold: latched.hold, reason: latched.why, opensAt: latched.opensAt + ahead, recheckAt: latched.recheckAt + ahead }
         }
         const started = events.find((event) => event._tag === "SubagentStarted")
         if (started === undefined) return { outcome: "opened" }
-        yield* log.append(CallLine.started(started, yield* at))
+        yield* log.append(CallLine.started(started, yield* at, asked))
         const on = started.model ?? latch.model
         const opened = parseModel(on) ?? paced?.ref
         if (opened !== undefined) yield* pool.started(opened.providerID)
@@ -400,8 +425,12 @@ export const layer = (config: Config) =>
     }),
   )
 
-const lineOf = (event: Event, at: string) =>
-  event._tag === "SubagentStarted" ? CallLine.started(event, at) : event._tag === "SubagentLatched" ? CallLine.latched(event, at) : CallLine.finished(event, at)
+const lineOf = (event: Event, at: string, asked: Asked | undefined) =>
+  event._tag === "SubagentStarted"
+    ? CallLine.started(event, at, asked)
+    : event._tag === "SubagentLatched"
+      ? CallLine.latched(event, at, asked)
+      : CallLine.finished(event, at)
 
 /** A held start that could not latch, as the call's refusal: the Sabbath's rest, or the pace's hold until it opens. */
 const refusalOf = (latched: SubagentLatched, place: Place): SabbathRest | PaceHeld =>
