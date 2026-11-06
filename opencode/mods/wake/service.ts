@@ -1,10 +1,12 @@
 // The contracts the wakes need from outside: somewhere to keep the entries and
 // notices, a way into a session, a way to run a monitor's command, the OS
 // backstop that fires an entry when no server runs, the opener that decides a
-// latch again, and word of a change. What every implementation owes is in
+// latch again, the runner that runs a job outside the server, and word of a
+// change. What every implementation owes is in
 // laws.ts.
 import { Context, type Effect, Schema } from "effect"
 import type { Job, Schedule } from "./backstop.ts"
+import type { JobRecord, JobSpec, Launched } from "./job.ts"
 import type { Latch, Mark, Opened } from "./latch.ts"
 import type { Letter } from "./message.ts"
 import type { Check, Entry, Notice } from "./wake.ts"
@@ -135,6 +137,35 @@ export class Backstop extends Context.Service<
     readonly titles: Effect.Effect<ReadonlyArray<string>, BackstopRefused>
   }
 >()("dotfiles-opencode/wake/Backstop") {}
+
+/** The runner would not launch a job; `message` says why. */
+export class JobRefused extends Schema.TaggedError<JobRefused>()("JobRefused", { message: Schema.String }) {}
+
+/**
+ * Where jobs run: outside the server, so a job outlives it.
+ * - `launch`: start the spec's command under a runner of its own (a systemd
+ *   user unit on Linux, its own session and process group elsewhere), its
+ *   stdout and stderr to the log, `$JOB_DRIP` naming its progress file. The
+ *   runner records the exit beside the spec. It returns at once.
+ * - `read`: the job's spec and run, undefined for an id it never launched.
+ *   A run whose runner is gone without an exit reads `lost`.
+ * - `tail`: the last `chars` characters of the log ("" when none).
+ * - `drip`: the progress written since byte `from`, whole lines only, and
+ *   the offset after them; a line still being written waits.
+ * - `kill`: ask the runner to stop the command (SIGTERM to its process
+ *   group, SIGKILL after a grace); it records the exit as killed. Whether a
+ *   running job was asked; an ended or unknown one is not, and is no failure.
+ */
+export class Runner extends Context.Service<
+  Runner,
+  {
+    readonly launch: (spec: JobSpec) => Effect.Effect<Launched, JobRefused>
+    readonly read: (id: string) => Effect.Effect<JobRecord | undefined>
+    readonly tail: (id: string, chars: number) => Effect.Effect<string>
+    readonly drip: (id: string, from: number) => Effect.Effect<{ readonly text: string; readonly offset: number }>
+    readonly kill: (id: string) => Effect.Effect<boolean>
+  }
+>()("dotfiles-opencode/wake/Runner") {}
 
 /** Word that a session's wakes changed, so whatever shows them reads again. */
 export class Changes extends Context.Service<Changes, { readonly changed: (sessionID: string) => Effect.Effect<void> }>()(

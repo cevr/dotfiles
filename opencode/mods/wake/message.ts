@@ -5,8 +5,9 @@
 // listing the agent reads after a handoff, and the letter a latch that could
 // not open leaves its parent.
 import type { Schema } from "effect"
+import { type JobSpec, type Launched, LOG_TAIL, type Run } from "./job.ts"
 import type { Latch } from "./latch.ts"
-import { type Alarm, type Check, dueOf, type Entry, type Fired, type Fresh, type Monitor, type Notice } from "./wake.ts"
+import { type Alarm, type Check, dueOf, type Entry, type Fired, type Fresh, type Job, type Monitor, type Notice } from "./wake.ts"
 
 /** A fire as the session reads it. */
 export interface Letter {
@@ -120,6 +121,119 @@ export const monitorLetter = (monitor: Monitor, outcome: Outcome, checks: number
   }
 }
 
+// ── Jobs ──
+
+/** What a check, a wait, a kill or a job's letter reads of one job. */
+export interface JobView {
+  readonly spec: JobSpec
+  readonly run: Run
+  readonly log: string
+  readonly unit?: string | undefined
+  /** The log's last LOG_TAIL characters. */
+  readonly logTail: string
+  /** Progress lines not yet delivered (a letter), or the last ones (a check). */
+  readonly progress: string
+}
+
+const commandOf = (spec: JobSpec) => `\`${spec.command}\``
+
+/** How the run stands, after the job's id: `exited 0 after 12m`, `is running (3m so far)`. */
+export const runPhrase = (run: Run, now: number): string => {
+  switch (run.state) {
+    case "starting":
+      return "is starting"
+    case "running":
+      return `is running (${durationOf(now - run.startedAt)} so far)`
+    case "lost":
+      return `was lost: ${run.why}`
+    case "ended": {
+      const took = durationOf(run.exit.endedAt - run.exit.startedAt)
+      if (run.exit.timedOut) return `was stopped at its timeout after ${took}`
+      if (run.exit.killed) return `was killed after ${took}`
+      if (run.exit.exitCode === null) return `was ended by ${run.exit.signal ?? "a signal"} after ${took}`
+      return `exited ${run.exit.exitCode} after ${took}`
+    }
+  }
+}
+
+/** The short form for a transcript row. */
+const runWord = (run: Run): string =>
+  run.state === "ended"
+    ? run.exit.timedOut
+      ? "timed out"
+      : run.exit.killed
+        ? "killed"
+        : run.exit.exitCode === null
+          ? `ended by ${run.exit.signal ?? "a signal"}`
+          : `exited ${run.exit.exitCode}`
+    : run.state
+
+const whereLine = (view: JobView): string => {
+  const ran = view.run.state === "ended" ? ` from ${isoOf(view.run.exit.startedAt)} to ${isoOf(view.run.exit.endedAt)}` : ""
+  return `It ran in ${view.spec.cwd}${ran}${view.spec.heavy ? ", niced (heavy)" : ""}. Log: ${view.log}${view.unit === undefined ? "" : ` (systemd unit ${view.unit})`}.`
+}
+
+const bodyOf = (view: JobView): ReadonlyArray<string> => [
+  ...(view.progress === "" ? [] : ["Progress ($JOB_DRIP):", view.progress]),
+  `Log tail:`,
+  view.logTail.trim() === "" ? "(empty)" : tailOf(view.logTail, LOG_TAIL),
+]
+
+/** The tick a job's letter is for: when it ended, or the fire's time when it was lost. */
+export const jobTick = (run: Run, firedAt: number): number => (run.state === "ended" ? run.exit.endedAt : firedAt)
+
+/** The message a job's end carries: how it ended and after how long, where, how late, the note, its progress and the log's tail. */
+export const jobLetter = (job: Job, view: JobView, firedAt: number): Letter => {
+  const tick = jobTick(view.run, firedAt)
+  const late = lateBy(tick, firedAt)
+  return {
+    text: [
+      `⏰ Job ${job.id} ${runPhrase(view.run, firedAt)}: ${commandOf(view.spec)}.`,
+      whereLine(view),
+      ...(late === undefined ? [] : [`It ended ${durationOf(late)} before this letter: no OpenCode server was running then, so it went when one started.`]),
+      `Note: ${job.note}`,
+      ...bodyOf(view),
+    ].join("\n"),
+    description: rowOf(`job ${job.id} ${runWord(view.run)}`, tick, firedAt, job.note),
+    metadata: metadataOf(job, tick, firedAt, {
+      state: view.run.state,
+      ...(view.run.state === "ended" ? { exitCode: view.run.exit.exitCode, timedOut: view.run.exit.timedOut, killed: view.run.exit.killed } : {}),
+    }),
+  }
+}
+
+/** Progress a running job wrote, delivered without starting a turn. */
+export const dripLetter = (job: Job, lines: string, firedAt: number): Letter => ({
+  text: [`⏰ Job ${job.id} progress (still running: ${commandOf(job)}):`, lines, "This started no turn; the job's end will."].join("\n"),
+  description: `job ${job.id} · ${excerpt(lines.split("\n").at(-1) ?? "", LINE_NOTE)}`,
+  metadata: { source: "wake", id: job.id, kind: "job", mode: "notify", setAt: job.setAt, tick: firedAt, firedAt, lateMs: 0, progress: true },
+})
+
+/** What starting a job answers: its id and log first, then how it runs and what comes back. */
+export const jobReceipt = (job: Job, launched: Launched): string =>
+  [
+    `Job ${job.id} started. Log: ${launched.log}`,
+    `It runs ${commandOf(job)} in ${job.cwd} ${launched.how === "systemd" ? `as the systemd user unit ${launched.unit ?? ""}` : "in its own process group"}${
+      job.heavy ? ", niced" : ""
+    }, outside the OpenCode server, so it outlives a restart; it is stopped if still running after ${durationOf(job.timeoutSeconds * 1000)}.`,
+    ...(launched.warning === undefined ? [] : [launched.warning]),
+    `Lines it appends to $JOB_DRIP (${launched.drip}) reach you as progress at most once a minute, without starting a turn.`,
+    `When it ends, a letter with its exit code, duration, log tail and your note starts a turn here. End your turn now unless there is other work, or wait with job({ action: "wait", id: "${job.id}" }) when nothing else is left; a subagent waits, since its turn's end hands back to its parent.`,
+  ].join("\n")
+
+/** What `check`, `wait` and `kill` answer. */
+export const jobReport = (view: JobView, now: number, said: ReadonlyArray<string> = []): string =>
+  [`Job ${view.spec.id} ${runPhrase(view.run, now)}: ${commandOf(view.spec)}.`, whereLine(view), ...said, `Note: ${view.spec.note}`, ...bodyOf(view)].join("\n")
+
+/** What `list` answers: this session's jobs still kept, and how each stands. */
+export const jobListing = (jobs: ReadonlyArray<{ readonly job: Job; readonly run: Run }>, now: number): string =>
+  jobs.length === 0
+    ? "No jobs are running or waiting to report in this session."
+    : [
+        `Jobs (${jobs.length}):`,
+        ...jobs.map(({ job, run }) => `- ${job.id}: ${runPhrase(run, now)} · ${commandOf(job)} in ${job.cwd} · note: ${excerpt(job.note, LINE_NOTE)}`),
+      ].join("\n")
+
 /** The first prompt of the session a `newSession` alarm starts: what it was asked to do, and where that came from. */
 export const freshPrompt = (alarm: Alarm, fresh: Fresh, tick: number, firedAt: number): string =>
   [
@@ -190,6 +304,8 @@ const listingOf = (entry: Entry, now: number): string => {
       `opens ${inOf(entry.opensAt, now)}`,
       ...(entry.recheckAt < entry.opensAt ? [`asked again ${inOf(entry.recheckAt, now)}`] : []),
     ].join(" · ")
+  if (entry.kind === "job")
+    return `- ${entry.id}: job · \`${entry.command}\` in ${entry.cwd} · started ${isoOf(entry.setAt)} · note: ${entry.note} · job({ action: "check", id: "${entry.id}" }) reads it`
   if (entry.kind === "alarm")
     return [
       `- ${entry.id}: alarm · ${entry.mode} · due ${inOf(entry.dueAt, now)}`,
