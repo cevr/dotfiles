@@ -28,8 +28,9 @@
 //   model-resolver.ts:462,487). Then the agent the request ran under
 //   (`Session.Message.Assistant.agent`, session-message.ts:224; `agent.get`):
 //   its `request.settings.cacheTTL` replaces that lifetime, only when one is
-//   configured (packages/core/src/session/agent-cache.ts:17-20, applied at
-//   session/context.ts:170). When the catalog, the provider or the agent cannot
+//   configured (the anthropic-auth `http.request` hook writes it over the
+//   provider-configured lifetime: `rewriteRequestBody`'s `own` lifetime in
+//   mods/anthropic-auth/request-body.ts). When the catalog, the provider or the agent cannot
 //   be read, or the catalog no longer has the model, the lifetime is
 //   unresolved (`LastRequest.unresolved`) and none is guessed.
 // - price: the model's catalog entry's `cost` (schema model.ts:92-104,130),
@@ -160,9 +161,9 @@ export const lastRequest = (messages: ReadonlyArray<MessageView>) => {
 type AssistantView = Extract<MessageView, { readonly type: "assistant" }>
 
 /**
- * The model a request ran on and the `cache.ttl` it was sent with, as the fork resolves it: the model's or its
- * provider's setting, replaced by the agent's own lifetime when there is one to replace
- * (packages/core/src/session/agent-cache.ts:17-20). `unresolved` says why it is unknown when a read failed or the
+ * The model a request ran on and the `cache.ttl` it was sent with, as the host and the auth plugin resolve it: the
+ * model's or its provider's setting, replaced by the agent's own lifetime when there is one to replace
+ * (`rewriteRequestBody` in mods/anthropic-auth/request-body.ts). `unresolved` says why it is unknown when a read failed or the
  * catalog lost the model.
  */
 const requested = Effect.fn("Sessions.requested")(function* (host: Host, message: AssistantView, directory: string) {
