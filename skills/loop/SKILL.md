@@ -1,6 +1,6 @@
 ---
 name: loop
-description: improve-codebase-architecture judged against the project's NORTH_STAR.md and PRIOR_ART.md — one pass with the user picking and grilling, or autonomous passes until one finds polish only (sweep, review code and tests, apply in isolated workspaces, counsel, live-check, retro).
+description: improve-codebase-architecture judged against the project's NORTH_STAR.md and PRIOR_ART.md — one pass with the user picking and grilling, or autonomous passes until one finds polish only (sweep, review code and tests, apply in isolated workspaces, verify, live-check, retro).
 disable-model-invocation: true
 ---
 
@@ -15,7 +15,7 @@ The project says what good is; this skill says how to loop:
 - **`NORTH_STAR.md`** (repo root): north stars, tiebreaks, owner rules, project passes, live check, rejected candidates. Format: [`NORTH-STAR-FORMAT.md`](NORTH-STAR-FORMAT.md).
 - **`PRIOR_ART.md`** (repo root): what to compare against, by pass, and the comparisons already settled. Format: [`PRIOR-ART-FORMAT.md`](PRIOR-ART-FORMAT.md).
 - **The ledger**, `plans/loop-<date>.md`: the single source of truth for what is done, rejected, carried and open. Layout: [`ledger-template.md`](ledger-template.md).
-- **Pass files** (briefs, reports, logs, counsel prompts) live in `tmp/loop/pass<N>/` in the checkout that holds the run's main (git-ignored). They are scratch and stay on the machine that ran them. Anything a later pass or a session on the other machine needs goes on the ledger.
+- **Pass files** (briefs, reports, logs, risk questions) live in `tmp/loop/pass<N>/` in the checkout that holds the run's main (git-ignored). They are scratch and stay on the machine that ran them. Anything a later pass or a session on the other machine needs goes on the ledger.
 
 Call the Skill tool with "codebase-design" once at the start; its glossary is the vocabulary of every prompt.
 
@@ -78,13 +78,13 @@ An **area** is a set of directories that change together (a package, or a layer 
      - its slots go to Goal, Workspace, Owns and Decided;
      - its work rules go to Work rules;
      - its Report goes into what each round request carries;
-     - the counsel questions ([`prompts/counsel.md`](prompts/counsel.md)) go to Risks.
+     - the risk questions ([`prompts/risks.md`](prompts/risks.md)) go to Risks, and the verifier checks each one directly.
 
      The Gate is the repo's full gate, guards included. A batch accepted on a narrower gate can still fail a guard on main.
    - **Size.** A batch is one concern, about 10 items. An implementor that compacts within its first round is holding too much: split the batch then. Oversized batches make apply agents most of a run's cache reads.
    - **Workspace.** Each batch's workspace and branch follow orchestrate (`<run>/<unit>`; ledger rows from earlier passes name `p<N>-<batch>`). Setup beyond install (a build, a linked git-ignored file, a shared lock for a heavy test) belongs in the project's `AGENTS.md`; a missing step found here goes there.
    - **Cost.** At each hand-back, run `bun ~/.claude/skills/orchestrate/scripts/agent-cost.ts <agent id>` and append its line to the unit's `log.md`. A task notification's token count is the agent's final context, not its spend. The retro (step 11) reads these lines instead of rebuilding them.
-   - The verifier's family, rounds, a batch that builds on another's files (it stacks on that branch) and parallelism are orchestrate's rules; follow them there.
+   - The verifier's model, rounds, a batch that builds on another's files (it stacks on that branch) and parallelism are orchestrate's rules; follow them there.
 
    Done per batch when its unit's verifier accepts it.
 

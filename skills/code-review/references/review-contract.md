@@ -1,6 +1,6 @@
 # Review Contract
 
-Use this contract to define correctness, minimality, and slop, for your own pass and for the Counsel pass. Apply the rules to the changed scope. Do not force a rule when the repository has a stronger local contract.
+Use this contract to define correctness, minimality, and slop. Apply the rules to the changed scope. Do not force a rule when the repository has a stronger local contract.
 
 ## Correctness
 

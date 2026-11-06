@@ -58,7 +58,7 @@ Carried: each decision a batch handed to files it did not own, open until a batc
 | Decision | From (batch) | Files | Status (`open` / `done <hash>` / `rejected: <receipt>`) |
 | -------- | ------------ | ----- | ------------------------------------------------------- |
 
-Counsel defects:
+Verifier defects:
 
 | ID  | Defect | Red test | Status |
 | --- | ------ | -------- | ------ |

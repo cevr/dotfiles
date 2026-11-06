@@ -20,10 +20,10 @@ Skip Phase A only for greenfield work with no surrounding system.
 
 Design it twice: at least two structurally distinct candidates, whole-shape alternatives, not point fixes inside one shape (`exhaust-the-design-space`).
 
-1. **Candidates.** Write one candidate yourself, or in one `worker` for a large design, in its own Rift or a subdirectory of the sketch dir. Get the other from the other model family through `okra counsel -f <prompt.md>` (the **counsel** skill), with [`references/runner-prompt.md`](references/runner-prompt.md), the Phase A grounding and the task. Neither runner sees the other's candidate.
+1. **Candidates.** Write one candidate yourself, or in one `worker` for a large design, in its own Rift or a subdirectory of the sketch dir. Get the other from the other model family through `okra counsel -f <prompt.md>` (the **okra** skill has its flags), with [`references/runner-prompt.md`](references/runner-prompt.md), the Phase A grounding and the task. Neither runner sees the other's candidate.
 2. **Screen.** Check every candidate against [`references/design-red-flags.md`](references/design-red-flags.md). Assume the next contributor is an agent that sees only the files it opened, copies the nearest example and takes the shortest path that compiles. Prefer the design where a change that looks right from one file is right for the whole repo.
 3. **Compare** on interface depth: the capability hidden behind the public surface against the size of that surface (`small-interface-deep-implementation`).
-4. **Synthesize.** Pick a base, graft what the other candidate does better, and record the choice in the rationale's Synthesis decision section ([`references/rationale-template.md`](references/rationale-template.md)). For a seam the owner will live with, send the synthesis back through `okra counsel` once for the other family's judgment before code.
+4. **Synthesize.** Pick a base, graft what the other candidate does better, and record the choice in the rationale's Synthesis decision section ([`references/rationale-template.md`](references/rationale-template.md)).
 
 The synthesis can land as its own commit: scaffold first (`foundational-thinking`). Planned breakage during fill-in is fine (`outcome-oriented-execution`).
 

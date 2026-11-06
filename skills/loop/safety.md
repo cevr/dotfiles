@@ -1,6 +1,6 @@
 # SAFETY
 
-Every loop agent (sweep, apply, counsel, live check) reads this file and `NORTH_STAR.md` → Owner rules in full before any action, and follows both. This is the one copy; each prompt points here instead of carrying the rules. Project-specific safety (a live binary, the owner's data, paid runs) lives in the owner rules.
+Every loop agent (sweep, apply, verify, live check) reads this file and `NORTH_STAR.md` → Owner rules in full before any action, and follows both. This is the one copy; each prompt points here instead of carrying the rules. Project-specific safety (a live binary, the owner's data, paid runs) lives in the owner rules.
 
 SAFETY (mandatory; a heredoc of guard probe text can run `rm -rf ~`):
 

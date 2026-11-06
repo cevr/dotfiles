@@ -4,14 +4,13 @@ description: >
   Review a change yourself for correctness, spec conformance, minimality, slop, and
   test value, then optionally clean it up. Use for "review", "deslop", "clean up",
   "look over", a PR someone requested your review on, stack checkpoints, API design
-  review, performance review, or a test audit. For a second model family's review,
-  use counsel-review, which runs these same criteria.
+  review, performance review, or a test audit.
 allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Skill
 ---
 
 # Code Review
 
-A grounded same-model review against one set of criteria, validated against the source. Cleanup happens only when the user asked for it. `counsel-review` sends the same review to the other model family.
+A grounded review against one set of criteria, validated against the source. Cleanup happens only when the user asked for it.
 
 ## Navigation
 
@@ -20,8 +19,7 @@ What was asked?
 ├─ Review, report only               → Phases 1–4
 ├─ Review and fix ("deslop", "clean up") → Phases 1–6
 ├─ Test audit                        → mode `tests`, references/test-audit.md
-├─ Someone else's PR, review requested → Requested review
-└─ Second model family's opinion     → counsel-review skill
+└─ Someone else's PR, review requested → Requested review
 ```
 
 | Reference | When to read |
