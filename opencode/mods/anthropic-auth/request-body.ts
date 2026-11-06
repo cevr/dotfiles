@@ -42,14 +42,12 @@ const eachBlock = (blocks: unknown, visit: (block: unknown) => void): void => {
 }
 
 /**
- * Write every cache breakpoint of the request for `ttl`: the request's own,
- * each tool's, each system block's, each message block's and each block of a
- * tool result's content. A tool's input is the model's and is never touched.
- * One lifetime throughout keeps Anthropic's rule that longer lifetimes come
- * before shorter ones.
+ * Visit every block of the request that may carry a cache breakpoint: the
+ * request itself, each tool, each system block, each message block and each
+ * block of a tool result's content. A tool's input is the model's and is
+ * never visited.
  */
-function setCacheTTL(parsed: Record<string, unknown>, ttl: CacheTTL): void {
-  const visit = (block: unknown) => setBreakpointTTL(block, ttl)
+function eachBreakpointHolder(parsed: Record<string, unknown>, visit: (block: unknown) => void): void {
   visit(parsed)
   eachBlock(parsed.tools, visit)
   eachBlock(parsed.system, visit)
@@ -63,16 +61,47 @@ function setCacheTTL(parsed: Record<string, unknown>, ttl: CacheTTL): void {
 }
 
 /**
+ * Write every cache breakpoint of the request for `ttl`. One lifetime
+ * throughout keeps Anthropic's rule that longer lifetimes come before shorter
+ * ones.
+ */
+function setCacheTTL(parsed: Record<string, unknown>, ttl: CacheTTL): void {
+  eachBreakpointHolder(parsed, (block) => setBreakpointTTL(block, ttl))
+}
+
+/** Whether a breakpoint of the request names a lifetime: the provider configures one. */
+function hasBreakpointTTL(parsed: Record<string, unknown>): boolean {
+  let found = false
+  eachBreakpointHolder(parsed, (block) => {
+    if (isRecord(block) && isRecord(block.cache_control) && block.cache_control.ttl !== undefined) found = true
+  })
+  return found
+}
+
+/**
+ * The lifetimes a request's cache breakpoints are written for: `named`, the
+ * one another plugin chose for this request (the pool's, `CACHE_TTL_HEADER`),
+ * on every breakpoint; else `own`, the agent's own lifetime
+ * (`request.settings.cacheTTL`, an orchestration role's 5 minutes), only over
+ * a lifetime the provider configures, so a body sent at the provider's default
+ * stays as it came.
+ */
+export interface CacheLifetimes {
+  readonly named?: CacheTTL | undefined
+  readonly own?: CacheTTL | undefined
+}
+
+/**
  * Rewrite the full request body: sanitize system prompt and prefix tool names,
- * and write its cache breakpoints for `ttl` when one is given. A body that is
- * not a JSON object goes out as it came; a tool name with no alias fails the
- * request.
+ * and write its cache breakpoints for the lifetimes given (`CacheLifetimes`).
+ * A body that is not a JSON object goes out as it came; a tool name with no
+ * alias fails the request.
  */
 export function rewriteRequestBody(
   body: string,
   version: string = CLAUDE_CODE_VERSION,
   aliases: ToolNameAliasTable = statelessToolNameAliases(),
-  ttl?: CacheTTL,
+  lifetimes: CacheLifetimes = {},
 ): Result.Result<string, ToolNameRejected> {
   const value = parseJson(body)
   if (!isRecord(value)) return Result.succeed(body)
@@ -93,7 +122,8 @@ export function rewriteRequestBody(
     system.unshift({ type: "text", text: billingHeader })
   }
   parsed.system = system
-  if (ttl !== undefined) setCacheTTL(parsed, ttl)
+  if (lifetimes.named !== undefined) setCacheTTL(parsed, lifetimes.named)
+  else if (lifetimes.own !== undefined && hasBreakpointTTL(parsed)) setCacheTTL(parsed, lifetimes.own)
 
   return prefixToolNames(parsed, alreadyPrefixed, aliases)
 }

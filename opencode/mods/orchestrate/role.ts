@@ -10,7 +10,7 @@ export const ROLES = [...STEPS, WORKER] as const
 export type Role = (typeof ROLES)[number]
 
 /**
- * The prompt-cache lifetime each role runs with (the fork's per-agent `request.settings.cacheTTL`). A role works
+ * The prompt-cache lifetime each role runs with (the per-agent `request.settings.cacheTTL`, which the anthropic-auth `http.request` hook writes over the provider-configured lifetime). A role works
  * in one burst and then stops, so a five-minute write (1.25x input) beats the main session's one-hour write (2x):
  * a role rarely comes back to a prefix after five idle minutes. One that does (a long shell command or wait, a
  * resumed role) has outlived it: the pool asks for the provider's lifetime from its next request on
@@ -107,6 +107,36 @@ export const route = (
   const routed = named(requested, full)
   const step = routed.agent === WORKER ? described(description) : undefined
   return step ? { agent: step.role, reason: "described" } : routed
+}
+
+/** The effort a worker runs at only for mechanical work. */
+export const WORKER_CEILING = "max"
+
+/** A step the orchestrator marks as mechanical ends its description with this note, such as `rename sweep (mechanical)`. */
+const MECHANICAL = /\(mechanical\)\s*$/i
+
+/**
+ * The model a call runs on with the worker's ceiling applied: a worker on a
+ * model at `#max` runs on that model at its own default effort instead (the
+ * variant dropped), unless its description ends `(mechanical)`; `lowered`
+ * names the variant it dropped. Any other agent, model or variant is as asked.
+ *
+ * Lowered, not refused (dream 2026-11-06, candidate 2): a worker inherits
+ * its parent's variant when the call names no model, so a root at max would
+ * have every worker refused; and a refused call costs a turn and teaches the
+ * parent to add `(mechanical)` to get through. The parent reads why in the
+ * answer instead (cmd/orchestrate `effortNote`).
+ */
+export const capEffort = (
+  agent: string,
+  description: string | undefined,
+  model: string | undefined,
+): { readonly model: string | undefined; readonly lowered?: string } => {
+  if (agent !== WORKER || model === undefined) return { model }
+  const at = model.indexOf("#")
+  if (at === -1 || model.slice(at + 1) !== WORKER_CEILING) return { model }
+  if (description !== undefined && MECHANICAL.test(description)) return { model }
+  return { model: model.slice(0, at), lowered: WORKER_CEILING }
 }
 
 /** A step the orchestrator marks as plain work ends its description with one of these notes, such as `pkg-lower implementor (mechanical)`. */

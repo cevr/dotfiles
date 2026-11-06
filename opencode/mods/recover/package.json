@@ -1,0 +1,10 @@
+{
+  "name": "@dotfiles/opencode-recover",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A session whose directory is gone goes back to the newest earlier location that still exists.",
+  "exports": {
+    "./*": "./*.ts"
+  }
+}

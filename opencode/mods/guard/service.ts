@@ -1,5 +1,6 @@
 // The contracts the guard needs from outside: whether a path is a
-// repository's root, and the directory a session's shell runs in. Each states
+// repository's root, the directory a session's shell runs in, and whether a
+// session is a subagent. Each states
 // its failure; `laws.ts` states what every implementation owes.
 import { Context, type Effect, Schema } from "effect"
 
@@ -23,6 +24,15 @@ export class RepoRoots extends Context.Service<
     readonly isRoot: (path: string) => Effect.Effect<boolean, RepoRootUnknown>
   }
 >()("dotfiles-opencode/guard/RepoRoots") {}
+
+/** Which sessions are subagents: a session another session started, as OpenCode records it by its parent. */
+export class Subagents extends Context.Service<
+  Subagents,
+  {
+    /** Whether the session has a parent session. */
+    readonly isSubagent: (sessionID: string) => Effect.Effect<boolean, SessionUnreadable>
+  }
+>()("dotfiles-opencode/guard/Subagents") {}
 
 /** Where each session's tools run. */
 export class SessionDirectories extends Context.Service<

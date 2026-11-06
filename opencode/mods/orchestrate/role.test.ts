@@ -1,6 +1,15 @@
 // The guard's routing: which agent a subagent call runs as.
 import { describe, expect, test } from "bun:test"
-import { codexFallback, route, unspecific } from "./role.ts"
+import { codexFallback, definitions, ROLES, route, unspecific } from "./role.ts"
+
+describe("the agents' prompts", () => {
+  test("the worker, like each role, hands off at its first compaction, and its parent is told to start a fresh one", () => {
+    for (const role of ROLES) expect(definitions[role].system).toContain("At your first compaction")
+    expect(definitions.worker.system).toContain(
+      "end your turn with this result: `compacted: <path of the handoff>. Start a fresh worker from this handoff; do not continue this session.`",
+    )
+  })
+})
 
 describe("the guard's routing", () => {
   test("an untyped or general call runs as the worker; a former role name as the role", () => {

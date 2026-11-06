@@ -48,7 +48,7 @@ interface World {
   /** The providers the pool is told a new agent started on, in order. */
   readonly started?: Array<string>
   readonly codex?: (model: string, role: string) => Pace | undefined
-  readonly model?: { readonly providerID: string; readonly id: string }
+  readonly model?: { readonly providerID: string; readonly id: string; readonly variant?: string }
   readonly variants?: ReadonlyArray<string>
   /** Other models the host offers, such as the Codex fallback's. */
   readonly others?: ReadonlyArray<Offered>
@@ -325,6 +325,29 @@ describe("the guard", () => {
         })
         expect(plugin.logged()).toEqual([
           '{"kind":"call","sessionID":"root","callID":"call","from":"build","agent":"verifier","reason":"continued","child":"child"}',
+        ])
+      }),
+    ))
+
+  test("a worker at max, asked or inherited, runs at its model's default, logged and told to the parent; a mechanical one runs at max", () =>
+    scenario(
+      Effect.gen(function* () {
+        const NOTE =
+          "orchestrate: this worker runs on anthropic/claude-opus at the model's default effort, not max: a worker runs at max only when its description ends `(mechanical)`. Bulk model work (a critique of many images, a sweep) is a script, not a worker at max."
+        // The root session runs at max, so a worker that names no model inherits it.
+        const plugin = yield* start({ now: WEDNESDAY }, { model: { providerID: "anthropic", id: "claude-opus", variant: "max" }, variants: ["high", "max"] })
+        const inherited = yield* plugin.call("subagent", "root", { agent: "general", description: "Critique the stills", prompt: "x" })
+        expect(inherited.input).toEqual({ agent: "worker", description: "Critique the stills", prompt: "x", model: "anthropic/claude-opus" })
+        const answer = yield* plugin.runTool(inherited.input)
+        expect(answer.content).toBe(`${NOTE}\nworking`)
+        const asked = yield* plugin.call("subagent", "root", { agent: "worker", description: "Check the export", prompt: "x", model: "anthropic/claude-opus#max" })
+        expect((asked.input as { model?: string }).model).toBe("anthropic/claude-opus")
+        const mechanical = yield* plugin.call("subagent", "root", { description: "Rename the rows (mechanical)", prompt: "x" })
+        expect((mechanical.input as { model?: string }).model).toBeUndefined()
+        expect(plugin.logged()).toEqual([
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"general","agent":"worker","reason":"general","model":"anthropic/claude-opus","description":"Critique the stills","lowered":"max","pace":{"ok":true,"measured":false,"reason":"provider is not pooled"}}',
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"worker","agent":"worker","reason":"model-dropped","model":"anthropic/claude-opus","description":"Check the export","lowered":"max","pace":{"ok":true,"measured":false,"reason":"provider is not pooled"}}',
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","agent":"worker","reason":"untyped","description":"Rename the rows (mechanical)","pace":{"ok":true,"measured":false,"reason":"provider is not pooled"}}',
         ])
       }),
     ))
@@ -1009,16 +1032,14 @@ describe("the agents", () => {
         expect(agents.worker!.request.settings.cacheTTL).toBe("5m")
         expect(agents.build!.request.settings.cacheTTL).toBeUndefined()
 
-        // The keep-list joins the summary prompt, leaving the system (and so the cached prefix) as it was.
+        // The keep-list follows the conversation as a user message, leaving the system and the messages before it (and
+        // so the cached prefix) as they were.
         const system: Array<unknown> = []
-        const prompt = ["Summarize."]
-        for (const hook of plugin.hooks.compaction ?? []) yield* hook({ system, experimental: { prompt } })
+        const conversation = [{ role: "user", content: [{ type: "text", text: "Fix the parser." }] }]
+        const messages: Array<unknown> = [...conversation]
+        for (const hook of plugin.hooks.compaction ?? []) yield* hook({ system, messages })
         expect(system).toEqual([])
-        expect(prompt).toEqual(["Summarize.", KEEP])
-        // A host without the summary prompt takes it as a system part.
-        const older: Array<unknown> = []
-        for (const hook of plugin.hooks.compaction ?? []) yield* hook({ system: older })
-        expect(older).toEqual([{ type: "text", text: KEEP }])
+        expect(messages).toEqual([...conversation, { role: "user", content: [{ type: "text", text: KEEP }] }])
       }),
     ))
 })

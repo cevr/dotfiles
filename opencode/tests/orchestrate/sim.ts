@@ -30,7 +30,7 @@ export const UNITS_TASK = "units"
 /** A task whose last line is `handback: <line>` answers with that line first. */
 export const HAND_BACK = "handback:"
 
-interface ChatMessage {
+export interface ChatMessage {
   readonly role: string
   readonly content?: unknown
 }
@@ -47,6 +47,8 @@ export interface Seen {
   readonly task: string
   readonly last: string
   readonly tools: ReadonlyArray<string>
+  /** The request's messages as sent, for prefix checks. */
+  readonly messages: ReadonlyArray<ChatMessage>
 }
 
 type Reply =
@@ -168,6 +170,7 @@ export const serve = (promptTokens = 100) => {
         task: lastLine(text(messages.find((message) => message.role === "user")?.content)),
         last: text(messages.at(-1)?.content),
         tools: (body.tools ?? []).map((tool) => tool.function?.name ?? ""),
+        messages,
       })
       served += 1
       return new Response(events(reply(body), body.model ?? "sim", `sim${served}`, promptTokens), {

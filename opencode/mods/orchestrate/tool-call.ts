@@ -19,7 +19,7 @@
 import { Effect, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { PaceHold, Whose } from "./pace.ts"
-import { Reason, route, unspecific } from "./role.ts"
+import { capEffort, Reason, route, unspecific } from "./role.ts"
 import { explain, Place, resumesAt, SabbathRest } from "./sabbath.ts"
 
 // ── The id ──
@@ -37,7 +37,8 @@ export const streamOf = (id: ToolCallId) => `${id.sessionID}/${id.callID}`
 // ── StartSubagent ──
 // Starting a subagent: a new one latches over the Sabbath or when the pace
 // has no room on its model nor on its fallback, a follow-up is refused over the Sabbath or while its child is
-// still latched, and otherwise it runs as the agent the guard routes it to.
+// still latched, and otherwise it runs as the agent the guard routes it to. A
+// worker at max runs at its model's default unless its work is mechanical.
 
 /**
  * The model a held start falls back to: the newest Codex model for its role,
@@ -71,6 +72,8 @@ export const StartSubagent = Schema.TaggedStruct("StartSubagent", {
    * as if it named none, at the role's effort, with the Codex fallback and the latch. Its reason is `model-dropped`.
    */
   dropped: Schema.optionalKey(Schema.String),
+  /** The model, with its variant, a new worker that names none runs on (the agent's own, else its parent's): gathered for the worker's ceiling. */
+  inherited: Schema.optionalKey(Schema.String),
   background: Schema.Boolean,
   description: Schema.optionalKey(Schema.String),
   /** The full-agent escape: an untyped or general call runs as asked. */
@@ -98,6 +101,8 @@ export const SubagentStarted = Schema.TaggedStruct("SubagentStarted", {
   description: Schema.optionalKey(Schema.String),
   /** It runs on the Codex fallback: `<first model> held: <its hold's reason>`. */
   fallback: Schema.optionalKey(Schema.String),
+  /** A worker asked for this variant (`max`) and runs at its model's default: the worker's ceiling (role.ts `capEffort`). */
+  lowered: Schema.optionalKey(Schema.String),
 })
 export interface SubagentStarted extends Schema.Schema.Type<typeof SubagentStarted> {}
 
@@ -122,6 +127,8 @@ export const SubagentLatched = Schema.TaggedStruct("SubagentLatched", {
   description: Schema.optionalKey(Schema.String),
   /** It latched on the Codex fallback, which opens first: `<first model> held: <its hold's reason>`. */
   fallback: Schema.optionalKey(Schema.String),
+  /** A worker asked for this variant (`max`) and latched at its model's default. */
+  lowered: Schema.optionalKey(Schema.String),
   hold: Hold,
   /** The pace's owner, for a pace hold. */
   whose: Schema.optionalKey(Whose),
@@ -216,16 +223,20 @@ const decideStart = (
     return Effect.fail(new StillLatched({ child: command.child, opensAt: command.childLatched }))
   const { agent, reason: routed } = routeOf(command)
   const reason: Reason = command.dropped !== undefined && command.child === undefined ? "model-dropped" : routed
+  // The worker's ceiling: a worker at max, asked or inherited, runs at its model's default unless its work is mechanical.
+  const capped = capEffort(agent, command.description, command.model ?? command.inherited)
+  const model = capped.lowered === undefined ? command.model : capped.model
   const fields = {
     call: command.call,
     from: command.from,
     ...(typeof command.asked === "string" ? { asked: command.asked } : {}),
     agent,
     reason,
-    ...(command.model === undefined ? {} : { model: command.model }),
+    ...(model === undefined ? {} : { model }),
     ...(command.child === undefined ? {} : { child: command.child }),
     ...(command.background ? { background: true as const } : {}),
     ...(command.description === undefined ? {} : { description: command.description }),
+    ...(capped.lowered === undefined ? {} : { lowered: capped.lowered }),
   }
   const rests = resumes === undefined ? undefined : { resumes, place: command.place }
   return Effect.succeed([admit(fields, now, rests, command.hold, command.child === undefined ? command.fallback : undefined)])

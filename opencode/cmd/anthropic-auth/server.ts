@@ -11,7 +11,10 @@
  * - `http.request` sends each `anthropic` request on its login as Claude Code
  *   does: the login another plugin chose (`x-opencode-credential-id`), else
  *   the active one; a credential another plugin keeps comes from it
- *   (`Symbol.for('opencode.credential-sources')`).
+ *   (`Symbol.for('opencode.credential-sources')`). Its cache breakpoints go
+ *   out for the lifetime another plugin named (`x-opencode-cache-ttl`, the
+ *   pool's), else the agent's own `request.settings.cacheTTL` over a lifetime
+ *   the provider configures.
  * - `http.response` turns tool names back, recovers once from a Claude Code
  *   version rejection, names a 429 for what it is and records the quota each
  *   response carries.
@@ -22,7 +25,7 @@
  * `ANTHROPIC_INSECURE` (warned about: a plugin cannot turn TLS off) and
  * `ANTHROPIC_CLAUDE_CODE_VERSION` (the version reported), read at setup.
  */
-import { Credential, Integration, Plugin } from "@opencode/plugin/effect"
+import { Agent, Credential, Integration, Plugin } from "@opencode/plugin/effect"
 import { Clock, Context, Effect, Layer } from "effect"
 import { makeEndpoint } from "@dotfiles/opencode-anthropic-auth/endpoint"
 import { makeAliasLeases, makeConnections, makeOwnership, type Ownership } from "@dotfiles/opencode-anthropic-auth/fetch/ownership"
@@ -35,6 +38,7 @@ import { INTEGRATION_ID, METHOD_ID, METHOD_LABEL, type OAuthCredential } from "@
 import * as IntegrationLive from "@dotfiles/opencode-anthropic-auth/opencode/integration"
 import * as QuotaLive from "@dotfiles/opencode-anthropic-auth/opencode/quota"
 import { quotaProtocol } from "@dotfiles/opencode-anthropic-auth/quota"
+import { isCacheTTL } from "@dotfiles/opencode-anthropic-auth/request-body"
 import { makeRefreshes, type Refreshes } from "@dotfiles/opencode-anthropic-auth/refresh"
 import * as SourcesLive from "@dotfiles/opencode-anthropic-auth/registry/credential-sources"
 import { Entropy, type RefreshFailed } from "@dotfiles/opencode-anthropic-auth/service"
@@ -172,6 +176,14 @@ export const make = (options: Options) =>
         leases,
         connections,
         clock: yield* Clock.Clock,
+        ownCacheTTL: (agentID: string) =>
+          ctx.agent.get({ agentID: Agent.ID.make(agentID) }).pipe(
+            Effect.map((agent) => {
+              const ttl = agent.data.request.settings?.["cacheTTL"]
+              return isCacheTTL(ttl) ? ttl : undefined
+            }),
+            Effect.orElseSucceed(() => undefined),
+          ),
         active: () => active,
       }
       // A request the plugin cannot send fails, as the host's fetch would.
