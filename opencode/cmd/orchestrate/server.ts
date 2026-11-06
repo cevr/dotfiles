@@ -68,7 +68,7 @@ import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { Latch, MARK_KEY, type Opened, OPENER } from "@dotfiles/opencode-wake/latch"
 import { WAKES } from "@dotfiles/opencode-wake/wake"
 import * as CodexAdmissionLive from "@dotfiles/opencode-orchestrate/codex/admission"
-import { KEEP, ROOT } from "@dotfiles/opencode-orchestrate/compaction"
+import { keepMessage, ROOT } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogLive from "@dotfiles/opencode-orchestrate/filestore/call-log"
 import * as CompactionWindowsLive from "@dotfiles/opencode-orchestrate/filestore/compaction-windows"
 import * as Model from "@dotfiles/opencode-orchestrate/model"
@@ -332,14 +332,14 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
       })
       yield* Effect.forkScoped(Effect.forever(Effect.sleep(REREAD).pipe(Effect.andThen(Effect.ignoreCause(ctx.agent.reload())))))
 
-      // The keep-list goes into the summary prompt, the last user message, so the compaction request keeps the
-      // conversation's cached prefix (system, tools and messages as the normal request sends them). A host without
-      // the summary prompt (before fork 5970ea5dc4) takes it as a system part, which costs the cache but still works.
+      // The keep-list goes after the conversation as its own user message, which the host's summary prompt follows,
+      // so the compaction request keeps the conversation's cached prefix (system, tools and messages as the normal
+      // request sends them). An addition to `system` would sit before every message and cost the whole cache. The
+      // host's history fallback (a conversation too large to send whole) drops what follows the kept tail, so on that
+      // path the summary goes without the keep-list.
       yield* ctx.session.hook("compaction", (event) =>
         Effect.sync(() => {
-          const prompt = (event as { experimental?: { prompt?: Array<string> } }).experimental?.prompt
-          if (Array.isArray(prompt)) prompt.push(KEEP)
-          else event.system.push({ type: "text", text: KEEP })
+          event.messages.push(keepMessage())
         }),
       )
 
