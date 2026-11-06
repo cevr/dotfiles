@@ -22,7 +22,7 @@ so a new terminal runs it, and `opencode2` stays the stock release. As a `latest
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`cmd/anthropic-auth`), the pool (on
-the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail and background questions, the role
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the rift tool and tool names, the role
 models, a one-hour prompt cache for Claude
 (`providers.anthropic.settings.cache.ttl: "1h"`) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork
@@ -853,9 +853,9 @@ made when the TUI opens it.
 
 ## Cache
 
-`cmd/cache` is a TUI plugin that shows when a request paid again for a
-prompt prefix the previous request had cached, why, and what it cost. It
-ports gent's `@gent/cache`. A turn that lost a large prefix (20k tokens or
+`cmd/cache` is a TUI and a server plugin that show when a request paid again
+for a prompt prefix the previous request had cached, why, and what it cost.
+The TUI half ports gent's `@gent/cache`. A turn that lost a large prefix (20k tokens or
 $0.10) ends on a row such as:
 
 ```
@@ -875,12 +875,36 @@ minutes for OpenAI. A provider with neither counts only model switches. A
 miss is priced at the cache-write rate for the tokens the request wrote back
 and the input rate for the rest, less the read rate it would have paid.
 
-The sidebar shows `Cache 91% · missed $0.42`: the share of prompt tokens
-read from the cache, and the sum of every miss, for the session and its
-subagents. Everything comes from the session's messages and the location's
-agents in the TUI, and the login of each step from the pool's `logins` RPC;
-there is no server half. Approval waits are seen only while the TUI runs, so a wait
-from before it opened reads as the tool call it held up.
+The sidebar shows `Cache 91% · missed $0.42 · expired`: the share of prompt
+tokens read from the cache, the sum of every miss for the session and its
+subagents, and the cause that cost the most (`expired` for every wait,
+`prefix at system[1] ¶4`, `login moved`, `cache lost`, `compaction`, `model
+switch`). The rows and the sidebar come from the session's messages and the
+location's agents in the TUI, and the login of each step from the pool's
+`logins` RPC. Approval waits are seen only while the TUI runs, so a wait from
+before it opened reads as the tool call it held up.
+
+The server half (`cmd/cache/server.ts`, loaded by `bun run daily` beside the
+other server plugins) keeps the ledger. Its `http.request` hook fingerprints
+each primary and compaction request a session sends (`fingerprint.ts`: each
+tool, each system paragraph, each message part, hashed; the first words of a
+system paragraph, never a message's text), with the pool's login header and
+the lifetime the request asks for (its `cache_control` markers' `ttl`, an
+OpenAI body's `prompt_cache_options.ttl`, the pool's lifetime header over
+both). When the step ends it judges the request against the session's one
+before (`request-log.ts`): `first`, `hit`, `uncached`, `model`, `expired`,
+`login` (with both logins), `compaction`, `prefix` (the first segment that
+changed and about how many tokens in) or `unchanged` (the prompt held and
+the cache lost it anyway). The TUI asks for those causes over the
+`dotfiles-opencode.cache` RPC, so a row inside the lifetime reads `prefix
+changed at system[1] ¶4, 3k tokens in` or `the cache lost an unchanged
+prefix`; without the server half the TUI's own causes stand.
+
+Each judged request is a line of `~/.cache/opencode-cache-ledger/ledger.jsonl`
+(options: `dir`, `host`). `bun scripts/cache-ledger.ts [--since 24h] [--host
+<name>] [--top 10] [--json] [--file <ledger.jsonl>]...` sums it: cache writes
+by cause, by first changed segment, the unexplained part (`login`, `prefix`,
+`unchanged`) per host and day, and the costliest session-hours.
 
 ## Guard
 
@@ -928,6 +952,61 @@ repositories, and `shell-line.ts` reads a command line. `model.ts` asks the
 contracts in `service.ts`: `RepoRoots` (`filesystem/`: a path holding `.git`)
 and `SessionDirectories` (`opencode/`: the session's directory), with
 `memory/` implementations for tests and the laws in `laws.ts`.
+
+## Rift
+
+`cmd/rift` is a server plugin that adds the `rift` tool (a direct tool, so a
+kernel cell reaches it as `tools.rift`) and takes OpenCode's worktree tools
+(`opencode_worktree_create`, `_list`, `_remove`) out of the registry: they
+make Git worktrees, and on Rifts they failed (10 times in 7 sessions on the
+workbox in a week). One input, with an `action`:
+
+- `{ action: "create", branch, name?, source? }` makes a Rift of the warm
+  source the session's directory (or `source`) belongs to, on `branch` (the
+  local branch, else `origin/<branch>`, else a new one from the source's
+  HEAD; default: the name), named after the branch as `workrift` names it
+  (`feat/x` → `feat-x`). It answers the Rift's directory and branch and how
+  to move there (`session_move`); it never moves the session itself. On the
+  Mac it runs `rift create <source> --copy-all --name <name>` and switches the
+  branch; on the workbox, `workrift create <branch>` from the session's
+  directory with `WORKRIFT_SOURCE` set, which refreshes the source, imports
+  gh stack metadata and names the Rift itself.
+- `{ action: "list" }` lists the source's Rifts with their branch and their
+  unsaved work (`clean`, or `2 uncommitted, 1 unpushed, 1 stashed`).
+- `{ action: "remove", name | path, force? }` moves a Rift to Rift's trash
+  (`rift remove`, `workrift remove` on the workbox). It refuses a Rift that
+  holds work found nowhere else, and names it: uncommitted changes (untracked
+  files too), stashes, and commits on no remote and in no branch of its
+  source, unless `force: true`. It always refuses a warm source, the Rift the
+  session runs in, and a Rift with Rifts of its own.
+
+There is no `gc` action: `rift gc` empties the trash of every repository at
+once, for good, and the workbox's nightly `workrift prune` already runs it.
+
+The model (the domain files at the root of `mods/rift`): `rift.ts` is the
+tool's input and the words of each answer, `workspace.ts` what a Rift holds
+and the rule for removing one (`removal`), and `model.ts` the handler. The
+contracts are in `service.ts`: `Rifts` (`process/`: the `rift`, `workrift`
+and `git` commands; `memory/` for tests) and `SessionDirectories`
+(`opencode/`), with their laws in `laws.ts`. The plugin's one option,
+`workrift`, defaults to whether `workrift` is on PATH. `tests/rift.test.ts`
+proves the flow in real OpenCode on real Rift; `mods/rift/process` runs the
+laws on `rift` and on the workbox's own `workrift` script (with a no-op
+`flock`), in a scratch HOME. Both need macOS.
+
+## Tool names
+
+`cmd/tool-names` is a server plugin that answers a call of a tool that does
+not exist when its name is a case or one-edit miss (a letter added, dropped,
+changed, or two swapped) of exactly one real tool, or of that tool's alias on
+the Claude login (`mcp_T<base64url>`, `mods/anthropic-auth/tool-alias.ts`):
+`There is no "shll" tool; did you mean "shell"? Call "shell" with the same
+input.` It answers rather than runs the real tool, because other plugins'
+`execute.before` hooks (the guard, orchestrate) have read the wrong name by
+then, and a renamed call would pass them unseen. Every other unknown name gets
+OpenCode's own answer. A kernel cell's `tools.<name>` misses are the kernel's
+to answer: they never reach the registry's hooks. The rule is `nearest` in
+`mods/tool-names/near-miss.ts`.
 
 ## Idle compaction
 

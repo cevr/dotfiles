@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { judge, missedUsd, turnRows, type ModelTerms } from "./ledger.ts"
+import { costliestCause, judge, missedUsd, refine, turnRows, type ModelTerms } from "./ledger.ts"
 import type { Step, Timeline } from "./miss.ts"
+import type { StepCause } from "./request-log.ts"
 
 const MINUTE = 60_000
 const SONNET = "anthropic/claude-sonnet-4-5"
@@ -54,8 +55,53 @@ describe("judge", () => {
     expect(judge(idle, [], () => ({ ...TERMS, lifetimeMs: HOUR }), roles).map((item) => item.miss.cause)).toEqual([{ _tag: "PrefixChanged" }])
   })
 
+  test("a changed prefix takes the server's judgement of its step; an expiry stands as the fold named it", () => {
+    const HOUR = 60 * MINUTE
+    // An hour's cache: step b's 48k miss falls inside it, so the fold calls it a changed prefix.
+    const hour = (model: string) => (model === SONNET ? { ...TERMS, lifetimeMs: HOUR } : undefined)
+    const causeOf = (server: Record<string, StepCause>) =>
+      judge(TIMELINE, [], hour, () => undefined, (stepID) => server[stepID]).find((item) => item.miss.stepID === "b")?.miss
+    const change = { segment: "system[1] ¶4", offsetTokens: 3_100, head: "Today is Friday" }
+    expect(causeOf({})?.cause).toEqual({ _tag: "PrefixChanged" })
+    expect(causeOf({ b: { messageID: "b", cause: "prefix", change } })?.cause).toEqual({
+      _tag: "PrefixChanged",
+      change: { segment: "system[1] ¶4", offsetTokens: 3_100 },
+    })
+    expect(causeOf({ b: { messageID: "b", cause: "unchanged" } })?.cause).toEqual({ _tag: "Lost" })
+    expect(causeOf({ b: { messageID: "b", cause: "login" } })?.cause).toEqual({ _tag: "LoginMoved" })
+    // The row reads the server's segment.
+    expect(judge(TIMELINE, [], hour, () => undefined, (stepID) => (stepID === "b" ? { messageID: "b", cause: "prefix", change } : undefined))[0]?.row).toBe(
+      "cache miss · 48k tokens · $0.27 · prefix changed at system[1] ¶4, 3k tokens in",
+    )
+    // On the 5-minute cache the 6-minute shell call expired it, whatever the server compared.
+    expect(judge(TIMELINE, [], () => TERMS, () => undefined, () => ({ messageID: "b", cause: "unchanged" }))[0]?.miss.cause).toEqual({
+      _tag: "Tool",
+      toolName: "shell",
+      ms: 6 * MINUTE,
+    })
+  })
+
+  test("refine leaves every cause but a changed prefix alone", () => {
+    expect(refine({ _tag: "Idle", ms: 1 }, { messageID: "b", cause: "login" })).toEqual({ _tag: "Idle", ms: 1 })
+    expect(refine({ _tag: "PrefixChanged" }, { messageID: "b", cause: "compaction" })).toEqual({ _tag: "PrefixChanged" })
+    expect(refine({ _tag: "PrefixChanged" }, undefined)).toEqual({ _tag: "PrefixChanged" })
+  })
+
   test("a model the catalog does not know: no lifetime, no price, so only a switch would count", () => {
     expect(judge(TIMELINE, [], () => undefined)).toEqual([])
+  })
+})
+
+describe("costliestCause", () => {
+  test("the cause whose misses cost a family the most, across its sessions; none when nothing cost", () => {
+    const judged = judge(TIMELINE, [], () => TERMS)
+    // b expired ($0.17), c changed its prefix ($0.02).
+    expect(costliestCause([judged])).toBe("expired")
+    const changed = judge(TIMELINE.slice(1), [], () => TERMS)
+    expect(costliestCause([changed])).toBe("prefix changed")
+    expect(costliestCause([judged, changed, changed])).toBe("expired")
+    expect(costliestCause([judge(TIMELINE, [], () => ({ family: "anthropic", lifetimeMs: 5 * MINUTE, rates: [] }))])).toBeUndefined()
+    expect(costliestCause([])).toBeUndefined()
   })
 })
 

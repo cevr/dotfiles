@@ -2,7 +2,9 @@
 // scripted model priced like Sonnet whose cache lives 2s: scenarios/cache.ts
 // runs one turn whose 4s shell call outlives the cache, so the second request
 // writes back the 48k prefix the first one cached. The turn ends on a row that
-// names the miss, its cost and its cause, and the sidebar sums the session.
+// names the miss, its cost and its cause, the sidebar sums the session and
+// names the cause that cost the most, and the server half's ledger holds a
+// line per request, the second judged expired.
 // Run again with the model's cache living an hour and the build agent asking
 // for 2s of its own, the same miss is an expiry by the agent's lifetime.
 import { describe, expect, test } from "bun:test"
@@ -30,6 +32,19 @@ const fgAt = (frame: Frame, y: number, x: number): string => {
     start += span.text.length
   }
   return `no cell at ${y}:${x}`
+}
+
+/** The server half's ledger lines, by what the scenario decides: cause, lifetime, writes and the missed prefix. */
+const ledgerOf = (out: string) => {
+  const timeout = join(out, "ledger.timeout.txt")
+  if (existsSync(timeout)) throw new Error(readFileSync(timeout, "utf8"))
+  return readFileSync(join(out, "ledger.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((raw) => {
+      const line = JSON.parse(raw) as { cause: string; ttlMs: number; write: number; missed?: number }
+      return { cause: line.cause, ttlMs: line.ttlMs, write: line.write, ...(line.missed === undefined ? {} : { missed: line.missed }) }
+    })
 }
 
 describe.skipIf(!fork)("the cache mod in a real TUI", () => {
@@ -62,10 +77,16 @@ describe.skipIf(!fork)("the cache mod in a real TUI", () => {
       expect(fgAt(frame, y, glyph)).toBe(WARNING)
       expect(fgAt(frame, y, glyph + 2)).toBe(MUTED)
 
-      // The sidebar: nothing read back from the cache, $0.17 lost.
-      const sidebar = lines.findIndex((line) => line.trimEnd().endsWith("Cache 0% · missed $0.17"))
+      // The sidebar: nothing read back from the cache, $0.17 lost, all of it to an expiry.
+      const sidebar = lines.findIndex((line) => line.trimEnd().endsWith("Cache 0% · missed $0.17 · expired"))
       expect(sidebar, text).toBeGreaterThan(-1)
       expect(fgAt(frame, sidebar, (lines[sidebar] ?? "").indexOf("Cache 0%"))).toBe(MUTED)
+
+      // The server half's ledger: the first request, then the second, past the 2s cache, an expiry.
+      expect(ledgerOf(out), text).toEqual([
+        { cause: "first", ttlMs: 2_000, write: 48_000 },
+        { cause: "expired", ttlMs: 2_000, write: 50_000, missed: 48_000 },
+      ])
     } finally {
       rmSync(out, { recursive: true, force: true })
     }
@@ -90,7 +111,14 @@ describe.skipIf(!fork)("the cache mod in a real TUI", () => {
       const rows = lines.filter((line) => line.includes("cache miss"))
       expect(rows, text).toHaveLength(1)
       expect(rows[0], text).toMatch(/^ {2}◌ cache miss · 48k tokens · \$0\.17 · expired during a [45]s shell call(?: {2,}.*)?$/)
-      expect(lines.some((line) => line.trimEnd().endsWith("Cache 0% · missed $0.17")), text).toBe(true)
+      expect(lines.some((line) => line.trimEnd().endsWith("Cache 0% · missed $0.17 · expired")), text).toBe(true)
+      // The server judges by what the request asked for: here the model's hour (only the auth plugin writes an
+      // agent's lifetime into an Anthropic body), so the unchanged prompt the cache lost reads `unchanged`, and the
+      // TUI's expiry stands: the server refines only a changed prefix.
+      expect(ledgerOf(out), text).toEqual([
+        { cause: "first", ttlMs: 3_600_000, write: 48_000 },
+        { cause: "unchanged", ttlMs: 3_600_000, write: 50_000, missed: 48_000 },
+      ])
     } finally {
       rmSync(out, { recursive: true, force: true })
     }
