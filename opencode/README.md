@@ -280,7 +280,8 @@ malformed one stops the plugin at setup, with a message that names it.
 The model (the domain files at `mods/orchestrate/`):
 
 - Facts: `SubagentStarted` (the agent, why it was routed there, its
-  model, and `fallback`, why it runs on Codex, when it does),
+  model, `fallback`, why it runs on Codex, when it does, and `lowered`, the
+  variant a worker asked for and does not run at),
   `SubagentLatched` (a held start kept to start later: what holds it, why,
   when it opens, when it is decided again, and the fallback's hold) and
   `SubagentFinished` (the child session and how it ended).
@@ -330,6 +331,22 @@ A role mentioned in prose (`Fix the verifier's timeout`, `Planner prompt
 rewrite`) names none. A follow-up asking no particular agent (none, a
 general one, or `worker`) keeps its child's agent (`continued`), and a
 follow-up never changes agent by its description.
+
+The worker's ceiling (`capEffort` in `role.ts`): a call that runs as the
+worker on a model at `#max`, asked by the call or inherited (a new worker
+naming no model runs on its agent's model, else its parent's, at that
+model's variant; `StartSubagent.inherited`), runs on that model at its
+default effort instead, unless its description ends `(mechanical)`. The
+call log's line says `lowered: "max"`, and the parent reads first in the
+answer that it runs at the default and why. It lowers rather than refuses: a
+root at max would otherwise have every worker refused, and a refusal costs a
+turn and teaches the parent to add `(mechanical)` to get through. A role is
+never lowered: a verifier at max for a deep unit's round 1 runs at max.
+
+The worker's handoff: like each role, the worker is told (`agents/worker.md`,
+through `agents.json`) to stop at its first compaction, write a handoff file
+(the task, what is done, what is next) and end with `compacted: <path>. Start
+a fresh worker from this handoff; do not continue this session.`
 
 ## Pool
 
