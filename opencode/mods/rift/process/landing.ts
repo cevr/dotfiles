@@ -1,6 +1,7 @@
 // Landing over Git and the shell, run as child processes. The repository's
 // commands come from its warm source's Git config (`rift.gate`,
-// `rift.accept`, `rift.generated`, `rift.regenerate`, the default branch from
+// `rift.accept`, `rift.generated`, `rift.regenerate`, `rift.push`,
+// `rift.pushBranches`, the default branch from
 // `workrift.main` else origin's HEAD) and run through `sh -c`, their output
 // kept in a log under `logs`. A lock file is installed again with its package
 // manager (frozen first, then free, as a merged lock file may need) and
@@ -61,6 +62,17 @@ export const layer = (options: Options) => {
   /** A Git config value, or undefined when unset. */
   const setting = (path: string, key: string) =>
     spawn(["git", "-C", path, "config", "--get", key], path).pipe(Effect.map((ran) => (ran.code === 0 && ran.stdout.trim() !== "" ? ran.stdout.trim() : undefined)))
+  /** A Git config boolean as Git reads it (`yes`, `on`, `1` …), or undefined when unset; a value Git cannot read as one fails. */
+  const flag = (path: string, key: string) =>
+    spawn(["git", "-C", path, "config", "--type=bool", "--get", key], path).pipe(
+      Effect.flatMap((ran) =>
+        ran.code === 0
+          ? Effect.succeed(ran.stdout.trim() === "true")
+          : ran.code === 1
+            ? Effect.succeed(undefined)
+            : Effect.fail(new RiftFailed({ operation: "git config", message: ran.stderr.trim() || `${key} is not a boolean` })),
+      ),
+    )
 
   const config = Effect.fn("Landing.config")(function* (source: string) {
     const named = yield* setting(source, "workrift.main")
@@ -73,6 +85,8 @@ export const layer = (options: Options) => {
       accept: yield* setting(source, "rift.accept"),
       generated: generated.code === 0 ? lines(generated.stdout) : [],
       regenerate: yield* setting(source, "rift.regenerate"),
+      push: (yield* flag(source, "rift.push")) ?? true,
+      pushBranches: (yield* flag(source, "rift.pushBranches")) ?? false,
     } satisfies LandConfig
   })
 
@@ -93,7 +107,8 @@ export const layer = (options: Options) => {
     const previous = yield* trimmed(integration, "rev-parse", "HEAD")
     yield* spawn(["git", "-C", integration, "merge", "--abort"], integration)
     yield* git(integration, "fetch", "-q", "origin")
-    yield* git(integration, "checkout", "-q", "-B", INTEGRATION, `origin/${main}`)
+    // The integration Rift holds no one's work: a gate that rewrote files (a lint fix) leaves nothing behind.
+    yield* git(integration, "checkout", "-q", "-f", "-B", INTEGRATION, `origin/${main}`)
     return { base: yield* trimmed(integration, "rev-parse", "HEAD"), previous } satisfies Started
   })
 
@@ -154,9 +169,14 @@ export const layer = (options: Options) => {
     return yield* trimmed(path, "log", "-1", "--format=%h %s")
   })
 
+  const pushBranch = Effect.fn("Landing.pushBranch")(function* (unit: Unit) {
+    yield* git(unit.path, "push", "-q", "origin", `HEAD:refs/heads/${unit.branch}`)
+    return yield* trimmed(unit.path, "log", "-1", "--format=%h %s")
+  })
+
   const sync = Effect.fn("Landing.sync")(function* (path: string) {
     yield* git(path, "fetch", "-q", "origin")
   })
 
-  return Layer.succeed(Landing, Landing.of({ config, ownChanges, start, merge, install, check, push, sync }))
+  return Layer.succeed(Landing, Landing.of({ config, ownChanges, start, merge, install, check, push, pushBranch, sync }))
 }

@@ -229,6 +229,106 @@ describe("land", () => {
     expect([...quick.rifts.rifts.keys()]).toEqual([INTEGRATE])
   })
 
+  describe("with rift.push false (a repository that lands through pull requests)", () => {
+    const THIRD = "/code/.rifts/app/feat-z"
+    const prs = (pushBranches: boolean, accept: string | undefined = undefined) =>
+      bench(
+        MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), MemoryRifts.clean(OTHER, "feat/y"), MemoryRifts.clean(THIRD, "feat/z")]),
+        MemoryLanding.world({ [SOURCE]: MemoryLanding.config("master", "bite gate", accept, { push: false, pushBranches }) }),
+      )
+    const header = `Checked 3 Rift(s) as one batch in ${INTEGRATE} on master since base0; rift.push is false, so master was not pushed and every Rift stays.`
+
+    test("gates the batch once, pushes no default branch, keeps every Rift, and answers each green with its own branch pushed; a conflict reds only its Rift", async () => {
+      const made = prs(true)
+      made.landing.merges.set("feat/y", { _tag: "Conflict", files: ["src/a.ts"] })
+      made.landing.branchFails.set("feat/z", "! [rejected] feat/z -> feat/z (non-fast-forward)")
+      expect(await call(made, { action: "land", rifts: ["feat-x", "feat-y", "feat-z"] })).toBe(
+        [
+          header,
+          "The gate passed in 3s.",
+          `- feat/x (${FEAT}): green; branch pushed: def5678 tip of feat/x`,
+          `- feat/y (${OTHER}): red; conflicts with the batch: src/a.ts`,
+          `- feat/z (${THIRD}): green; branch not pushed: git push failed: ! [rejected] feat/z -> feat/z (non-fast-forward)`,
+        ].join("\n"),
+      )
+      expect(made.landing.steps).toEqual([`start ${INTEGRATE} master`, "merge feat/x", "merge feat/y", "merge feat/z", "install", `gate ${INTEGRATE}`, "push-branch feat/x", "push-branch feat/z"])
+      expect(made.rifts.rifts.size).toBe(4)
+      expect(made.woken).toEqual([])
+    })
+
+    test("a red gate reds every merged Rift and pushes no branch; without rift.pushBranches a green Rift's branch stays local", async () => {
+      const red = prs(true)
+      red.landing.checks.set(`${INTEGRATE} gate`, { code: 1, output: " 9 pass\n 1 fail\n(fail) orders > total\n" })
+      expect(await call(red, { action: "land", rifts: ["feat-x", "feat-y", "feat-z"] })).toBe(
+        [
+          header,
+          "The gate FAILED (exit 1) in 3s; log: /logs/gate.log. Route each failure to the Rift whose diff it touches.\n   9 pass\n   1 fail\n  (fail) orders > total",
+          `- feat/x (${FEAT}): red; the batch gate failed`,
+          `- feat/y (${OTHER}): red; the batch gate failed`,
+          `- feat/z (${THIRD}): red; the batch gate failed`,
+        ].join("\n"),
+      )
+      expect(red.landing.steps.filter((step) => step.startsWith("push"))).toEqual([])
+      expect(red.rifts.rifts.size).toBe(4)
+
+      const quiet = prs(false)
+      expect(await call(quiet, { action: "land", rifts: ["feat-x"] })).toEndWith(`The gate passed in 3s.\n- feat/x (${FEAT}): green`)
+      expect(quiet.landing.steps.filter((step) => step.startsWith("push"))).toEqual([])
+    })
+
+    test("with an accept check the answer holds the Rifts pending, and the wake answers each Rift and pushes the green branches", async () => {
+      const made = prs(true, "bun run accept")
+      made.landing.merges.set("feat/z", { _tag: "Conflict", files: ["b.ts"] })
+      const [answer] = await calls(made, [{ action: "land", rifts: ["feat-x", "feat-y", "feat-z"] }])
+      expect(answer).toBe(
+        [
+          header,
+          "The gate passed in 3s.",
+          `- feat/x (${FEAT}): pending; the accept check runs`,
+          `- feat/y (${OTHER}): pending; the accept check runs`,
+          `- feat/z (${THIRD}): red; conflicts with the batch: b.ts`,
+          `The accept check runs in the background in ${INTEGRATE}; this session is woken with each Rift's result, and a green Rift's branch is pushed then.`,
+        ].join("\n"),
+      )
+      expect(made.woken).toEqual([
+        {
+          sessionID: "ses_1",
+          notice: {
+            text: [
+              "rift land: the accept check for feat/x, feat/y passed in 3s; master was not pushed.",
+              `- feat/x (${FEAT}): green; branch pushed: def5678 tip of feat/x`,
+              `- feat/y (${OTHER}): green; branch pushed: def5678 tip of feat/y`,
+              `- feat/z (${THIRD}): red; conflicts with the batch: b.ts`,
+            ].join("\n"),
+            description: "rift land · accept passed",
+          },
+        },
+      ])
+      expect(made.landing.steps.slice(-3)).toEqual([`accept ${INTEGRATE} base0`, "push-branch feat/x", "push-branch feat/y"])
+
+      const late = prs(true, "bun run accept")
+      late.landing.checks.set(`${INTEGRATE} accept`, { code: 2, output: "(fail) e2e > checkout\n" })
+      await calls(late, [{ action: "land", rifts: ["feat-x"] }])
+      expect(late.woken[0]?.notice.text).toBe(
+        [
+          "rift land: the accept check for feat/x FAILED (exit 2) in 3s; master was not pushed. Route each failure to the Rift whose diff it touches. Log: /logs/accept.log",
+          "  (fail) e2e > checkout",
+          `- feat/x (${FEAT}): red; the accept check failed`,
+        ].join("\n"),
+      )
+      expect(late.landing.steps.filter((step) => step.startsWith("push"))).toEqual([])
+    })
+
+    test("when every Rift conflicts, no gate runs and each is red", async () => {
+      const made = prs(true)
+      made.landing.merges.set("feat/x", { _tag: "Conflict", files: ["a.ts"] })
+      expect(await call(made, { action: "land", rifts: ["feat-x"] })).toBe(
+        [header.replace("3 Rift(s)", "1 Rift(s)"), "The gate did not run: no Rift merged.", `- feat/x (${FEAT}): red; conflicts with the batch: a.ts`].join("\n"),
+      )
+      expect(made.landing.steps).toEqual([`start ${INTEGRATE} master`, "merge feat/x", "install"])
+    })
+  })
+
   test("refuses before touching a Rift: no Rifts named, an unknown one, its own uncommitted changes, a detached HEAD, the integration Rift, no gate configured", async () => {
     const made = two()
     expect(await call(made, { action: "land" })).toBe('refused: land needs the Rifts to land, in order: { action: "land", rifts: ["feat-x"] }.')

@@ -62,7 +62,8 @@ export class Landing extends Context.Service<
     /**
      * Puts the integration Rift at origin's newest `<main>`, on its own branch:
      * repairs a stale multi-pack index, aborts a merge left in progress,
-     * fetches origin and checks the branch out there afresh.
+     * fetches origin and checks the branch out there afresh, dropping any
+     * tracked change a gate left (the integration Rift holds no one's work).
      */
     readonly start: (integration: string, main: string) => Effect.Effect<Started, RiftFailed>
     /**
@@ -78,6 +79,8 @@ export class Landing extends Context.Service<
     readonly check: (path: string, label: "gate" | "accept", command: string, env: Readonly<Record<string, string>>) => Effect.Effect<Ran, RiftFailed>
     /** Pushes HEAD to `<main>` on origin when it holds origin's newest `<main>`; answers the pushed commit, `<hash> <subject>`. */
     readonly push: (path: string, main: string) => Effect.Effect<string, RiftFailed>
+    /** Pushes the Rift at `unit.path`'s branch to the same branch on origin, never forced; answers the pushed commit, `<hash> <subject>`. */
+    readonly pushBranch: (unit: Unit) => Effect.Effect<string, RiftFailed>
     /** Fetches origin in a landed Rift, so its commits read as pushed. */
     readonly sync: (path: string) => Effect.Effect<void, RiftFailed>
   }

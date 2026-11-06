@@ -7,6 +7,11 @@
 // the batch changed, and wakes the calling session with its result. The
 // repository names its commands in its warm source's Git config
 // (`rift.gate`, `rift.accept`), so the tool knows no repository's checks.
+// A repository that lands through pull requests sets `rift.push` false: the
+// batch is merged, gated and checked the same way, nothing goes to the
+// default branch, every Rift stays, and each one is answered green or red (a
+// conflict reds only its Rift; a red check reds every Rift it ran on), its
+// own branch pushed when green and `rift.pushBranches` is set.
 // This file holds the rules and the words the model reads; model.ts runs the
 // steps.
 import { Schema } from "effect"
@@ -30,6 +35,15 @@ export interface LandConfig {
   readonly generated: ReadonlyArray<string>
   /** `rift.regenerate`: the shell line, run at the repository root, that writes the generated files again. */
   readonly regenerate: string | undefined
+  /**
+   * `rift.push` (default true): whether a green batch is pushed to the
+   * default branch and its Rifts removed. A repository that lands through
+   * pull requests sets it false: the batch is gated and checked, each Rift
+   * answered green or red, and every Rift kept.
+   */
+  readonly push: boolean
+  /** `rift.pushBranches` (default false): with `rift.push` false, push each green Rift's own branch, for its pull request. */
+  readonly pushBranches: boolean
 }
 
 /** Where a batch starts: origin's newest default branch, checked out in the integration Rift. */
@@ -132,6 +146,67 @@ export const acceptedText = (units: ReadonlyArray<Unit>, accept: Ran): string =>
         `rift land: the accept check for ${branches(units)} FAILED (exit ${accept.code}) in ${accept.seconds}s. The batch is already pushed: fix forward. Log: ${accept.log}`,
         digest(accept.output, 20),
       ].join("\n")
+
+/** One Rift's result in a batch that is checked, not pushed (`rift.push` false). */
+export interface Outcome {
+  readonly unit: Unit
+  readonly verdict: "green" | "red" | "pending"
+  /** Why it is red, or what became of its branch. */
+  readonly note?: string
+}
+
+const outcomeLines = (outcomes: ReadonlyArray<Outcome>): ReadonlyArray<string> =>
+  outcomes.map((outcome) => `- ${outcome.unit.branch} (${outcome.unit.path}): ${outcome.verdict}${outcome.note === undefined ? "" : `; ${outcome.note}`}`)
+
+/** A batch checked without a push. */
+export interface Checked {
+  readonly units: ReadonlyArray<Unit>
+  readonly main: string
+  readonly base: string
+  readonly integration: string
+  /** The gate's run; absent when no Rift merged. */
+  readonly gate: Ran | undefined
+  readonly locks: ReadonlyArray<string>
+  readonly outcomes: ReadonlyArray<Outcome>
+  /** The accept check runs in the background and wakes the session with the final outcomes. */
+  readonly accepting: boolean
+  readonly pushBranches: boolean
+}
+
+/** The answer to a land with `rift.push` false. */
+export const checkedText = (checked: Checked): string => {
+  const gate = checked.gate
+  return [
+    `Checked ${checked.units.length} Rift(s) as one batch in ${checked.integration} on ${checked.main} since ${checked.base.slice(0, 9)}; rift.push is false, so ${checked.main} was not pushed and every Rift stays.`,
+    ...(checked.locks.length > 0 ? [`Installed again and committed in the integration Rift: ${checked.locks.join(", ")}.`] : []),
+    gate === undefined
+      ? "The gate did not run: no Rift merged."
+      : gate.code === 0
+        ? `The gate passed in ${gate.seconds}s.`
+        : [
+            `The gate FAILED (exit ${gate.code}) in ${gate.seconds}s; log: ${gate.log}. Route each failure to the Rift whose diff it touches.`,
+            digest(gate.output),
+          ].join("\n"),
+    ...outcomeLines(checked.outcomes),
+    ...(checked.accepting
+      ? [
+          `The accept check runs in the background in ${checked.integration}; this session is woken with each Rift's result${checked.pushBranches ? ", and a green Rift's branch is pushed then" : ""}.`,
+        ]
+      : []),
+  ].join("\n")
+}
+
+/** The wake a background accept check sends for a batch checked without a push. */
+export const checkAcceptedText = (main: string, ran: ReadonlyArray<Unit>, accept: Ran, outcomes: ReadonlyArray<Outcome>): string =>
+  [
+    accept.code === 0
+      ? `rift land: the accept check for ${branches(ran)} passed in ${accept.seconds}s; ${main} was not pushed.`
+      : [
+          `rift land: the accept check for ${branches(ran)} FAILED (exit ${accept.code}) in ${accept.seconds}s; ${main} was not pushed. Route each failure to the Rift whose diff it touches. Log: ${accept.log}`,
+          digest(accept.output, 20),
+        ].join("\n"),
+    ...outcomeLines(outcomes),
+  ].join("\n")
 
 /** What the model reads when a land does not push. */
 export const explainLand = (failure: GateMissing | LandRefused | LandStopped): string => {

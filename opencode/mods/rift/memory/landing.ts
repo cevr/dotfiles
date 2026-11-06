@@ -2,7 +2,7 @@
 // each Rift's own changes, the merge of each branch, the checks, the push,
 // and the steps taken, in order, for the test to read.
 import { Effect, Layer } from "effect"
-import type { LandConfig, Merged, Ran } from "../land.ts"
+import type { LandConfig, Merged, Ran, Unit } from "../land.ts"
 import { Landing, RiftFailed } from "../service.ts"
 
 export interface World {
@@ -18,11 +18,18 @@ export interface World {
   readonly checks: Map<string, { readonly code: number; readonly output: string }>
   /** What Git says when the push fails. */
   pushFails: string | undefined
-  /** The steps taken: `start <path> <main>`, `merge <branch>`, `install`, `gate <path>`, `push <path>`, `sync <path>`, `accept <path> <RIFT_LAND_BASE>`. */
+  /** Each branch whose own push fails, to what Git says. */
+  readonly branchFails: Map<string, string>
+  /** The steps taken: `start <path> <main>`, `merge <branch>`, `install`, `gate <path>`, `push <path>`, `push-branch <branch>`, `sync <path>`, `accept <path> <RIFT_LAND_BASE>`. */
   readonly steps: Array<string>
 }
 
-export const config = (main: string, gate: string | undefined, accept: string | undefined): LandConfig => ({ main, gate, accept, generated: [], regenerate: undefined })
+export const config = (
+  main: string,
+  gate: string | undefined,
+  accept: string | undefined,
+  options: { readonly push?: boolean; readonly pushBranches?: boolean } = {},
+): LandConfig => ({ main, gate, accept, generated: [], regenerate: undefined, push: options.push ?? true, pushBranches: options.pushBranches ?? false })
 
 export const world = (configs: Readonly<Record<string, LandConfig>> = {}): World => ({
   config: new Map(Object.entries(configs)),
@@ -31,6 +38,7 @@ export const world = (configs: Readonly<Record<string, LandConfig>> = {}): World
   installs: [],
   checks: new Map(),
   pushFails: undefined,
+  branchFails: new Map(),
   steps: [],
 })
 
@@ -65,6 +73,12 @@ export const layer = (state: World) =>
         state.steps.push(`push ${path}`)
         if (state.pushFails !== undefined) return yield* new RiftFailed({ operation: "git push", message: state.pushFails })
         return `abc1234 Merge into ${main}`
+      }),
+      pushBranch: Effect.fn("Landing.pushBranch")(function* (unit: Unit) {
+        state.steps.push(`push-branch ${unit.branch}`)
+        const fails = state.branchFails.get(unit.branch)
+        if (fails !== undefined) return yield* new RiftFailed({ operation: "git push", message: fails })
+        return `def5678 tip of ${unit.branch}`
       }),
       sync: (path) => Effect.sync(() => void state.steps.push(`sync ${path}`)),
     }),

@@ -65,7 +65,7 @@ const bench = () => {
   const integration = clone("integrate", "integrate")
   const x = clone("feat-x", "feat/x")
   const y = clone("feat-y", "feat/y")
-  const settings = { main: "main", gate: undefined, accept: undefined, generated: ["gen.txt"], regenerate: "ls pkgs > gen.txt" }
+  const settings = { main: "main", gate: undefined, accept: undefined, generated: ["gen.txt"], regenerate: "ls pkgs > gen.txt", push: true, pushBranches: false }
   const run = <A, E>(use: (landing: typeof Landing.Service) => Effect.Effect<A, E>) =>
     Effect.runPromise(Effect.flatMap(Landing, use).pipe(Effect.provide(ProcessLanding.layer({ logs: join(scratch, "logs"), env: ENV }))))
   return { scratch, origin, source, integration, x, y, settings, run }
@@ -84,9 +84,31 @@ describe("process Landing", () => {
       accept: undefined,
       generated: ["gen.txt", "other.json"],
       regenerate: "ls pkgs > gen.txt",
+      push: true,
+      pushBranches: false,
     })
     sh(made.source, "git", "config", "workrift.main", "trunk")
-    expect((await made.run((landing) => landing.config(made.source))).main).toBe("trunk")
+    // A repository that lands through pull requests: Git's own booleans.
+    sh(made.source, "git", "config", "rift.push", "no")
+    sh(made.source, "git", "config", "rift.pushBranches", "on")
+    expect(await made.run((landing) => landing.config(made.source))).toMatchObject({ main: "trunk", push: false, pushBranches: true })
+    sh(made.source, "git", "config", "rift.push", "maybe")
+    expect((await made.run((landing) => Effect.flip(landing.config(made.source)))).message).toContain("rift.push")
+  })
+
+  test("pushBranch sends a Rift's branch to the same branch on origin, never forced", async () => {
+    const made = bench()
+    addPackage(made.x, "b")
+    const pushed = await made.run((landing) => landing.pushBranch({ path: made.x, branch: "feat/x" }))
+    expect(pushed).toEndWith(" add b")
+    expect(sh(made.origin, "git", "rev-parse", "feat/x")).toBe(sh(made.x, "git", "rev-parse", "HEAD"))
+    // The branch on origin moved on; a rewritten local branch is refused, not forced over it.
+    write(made.y, "y.txt", "y\n")
+    sh(made.y, "git", "add", "y.txt")
+    sh(made.y, "git", "commit", "-q", "-m", "y")
+    const refused = await made.run((landing) => Effect.flip(landing.pushBranch({ path: made.y, branch: "feat/x" })))
+    expect(refused.message).toContain("rejected")
+    expect(sh(made.origin, "git", "rev-parse", "feat/x")).toBe(sh(made.x, "git", "rev-parse", "HEAD"))
   })
 
   test("merges each branch onto origin's main; a conflict in the lock file and the generated files alone is written again and committed", async () => {
@@ -134,10 +156,15 @@ describe("process Landing", () => {
     const made = bench()
     const old = sh(made.integration, "git", "rev-parse", "HEAD")
     addPackage(made.source, "d")
+    write(made.source, "README.md", "next\n")
+    sh(made.source, "git", "commit", "-q", "-am", "next")
     sh(made.source, "git", "push", "-q", "origin", "main")
+    // The last gate rewrote a tracked file the new main changes too (a lint fix); start drops it.
+    write(made.integration, "README.md", "fixed by the gate\n")
     const started = await made.run((landing) => landing.start(made.integration, "main"))
     expect(started).toEqual({ base: sh(made.source, "git", "rev-parse", "HEAD"), previous: old })
     expect(sh(made.integration, "git", "rev-parse", "--abbrev-ref", "HEAD")).toBe("integrate")
+    expect(readFileSync(join(made.integration, "README.md"), "utf8")).toBe("next\n")
     // The lock file matches its packages, so the install leaves it and commits nothing.
     expect(await made.run((landing) => landing.install(made.integration, started.previous))).toEqual([])
   })

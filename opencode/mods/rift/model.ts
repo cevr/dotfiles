@@ -3,7 +3,9 @@
 // and Landing contracts, removing only what `removal` (workspace.ts) allows,
 // and runs the workbox's own scripts through Workbox. A land's accept check
 // runs in the background, in this layer's scope, and wakes the calling
-// session through Notices. The plugin calls this and nothing else.
+// session through Notices. A repository with `rift.push` false is checked,
+// not pushed: each Rift answered green or red, every Rift kept. The plugin
+// calls this and nothing else.
 import { Context, Effect, Layer, Scope, Semaphore } from "effect"
 import {
   GateMissing,
@@ -11,10 +13,14 @@ import {
   LandRefused,
   LandStopped,
   acceptedText,
+  checkAcceptedText,
+  checkedText,
   digest,
   explainLand,
   landedText,
+  type LandConfig,
   type Landed,
+  type Outcome,
   type Unit,
 } from "./land.ts"
 import {
@@ -69,6 +75,12 @@ export class RiftTool extends Context.Service<
     readonly run: (sessionID: string, input: RiftInput) => Effect.Effect<Answer, Failure>
   }
 >()("dotfiles-opencode/rift/RiftTool") {}
+
+/** The outcomes in the order of `units`, the order the land named them. */
+const inOrder = (units: ReadonlyArray<Unit>, outcomes: ReadonlyArray<Outcome>): ReadonlyArray<Outcome> =>
+  units.flatMap((unit) => outcomes.filter((outcome) => outcome.unit.path === unit.path))
+
+const branchList = (units: ReadonlyArray<Unit>): string => units.map((unit) => unit.branch).join(", ")
 
 /** At most `limit` lines, indented, and how many more there are. */
 const some = (lines: ReadonlyArray<string>, limit = 10): string =>
@@ -185,6 +197,49 @@ export const layer = Layer.effect(
           ),
         )
 
+    /** Each Rift green, its own branch pushed when `pushBranches` is set; a refused push is named, never fatal. */
+    const greens = (merged: ReadonlyArray<Unit>, pushBranches: boolean): Effect.Effect<ReadonlyArray<Outcome>> =>
+      Effect.forEach(merged, (unit) =>
+        pushBranches
+          ? landing.pushBranch(unit).pipe(
+              Effect.map((pushed): Outcome => ({ unit, verdict: "green", note: `branch pushed: ${pushed}` })),
+              Effect.catch((failure: RiftFailed) => Effect.succeed<Outcome>({ unit, verdict: "green", note: `branch not pushed: ${failureText(failure)}` })),
+            )
+          : Effect.succeed<Outcome>({ unit, verdict: "green" }),
+      )
+
+    /** A checked batch's accept check in the integration Rift, then the wake with each Rift's result. Runs in the background. */
+    const acceptChecked = (
+      sessionID: string,
+      integration: string,
+      merged: ReadonlyArray<Unit>,
+      reds: ReadonlyArray<Outcome>,
+      units: ReadonlyArray<Unit>,
+      command: string,
+      base: string,
+      config: LandConfig,
+    ) =>
+      accepts
+        .withPermits(1)(landing.check(integration, "accept", command, { RIFT_LAND_BASE: base }))
+        .pipe(
+          Effect.flatMap((ran) =>
+            (ran.code === 0 ? greens(merged, config.pushBranches) : Effect.succeed(merged.map((unit): Outcome => ({ unit, verdict: "red", note: "the accept check failed" })))).pipe(
+              Effect.flatMap((outcomes) =>
+                notices.wake(sessionID, {
+                  text: checkAcceptedText(config.main, merged, ran, inOrder(units, [...outcomes, ...reds])),
+                  description: `rift land · accept ${ran.code === 0 ? "passed" : "failed"}`,
+                }),
+              ),
+            ),
+          ),
+          Effect.catch((failure: RiftFailed) =>
+            notices.wake(sessionID, {
+              text: `rift land: the accept check for ${branchList(merged)} did not run: ${failureText(failure)}. ${config.main} was not pushed; land again.`,
+              description: "rift land · accept did not run",
+            }),
+          ),
+        )
+
     /** The Rift at `path` as a unit of the batch, or why it cannot be one. */
     const unitOf = Effect.fn("RiftTool.unitOf")(function* (path: string, source: string) {
       const workspace = yield* rifts.inspect(path)
@@ -226,13 +281,51 @@ export const layer = Layer.effect(
         const stopped = (step: LandStopped["step"], detail: string, path = integration) => new LandStopped({ path, step, detail })
         const started = yield* landing.start(integration, config.main).pipe(Effect.mapError((failure) => stopped("start", failure.message)))
         const locks: Array<string> = []
+        // A batch that is not pushed checks the Rifts that merge; a conflict reds only its own Rift.
+        const conflicts = new Map<string, ReadonlyArray<string>>()
         for (const unit of units) {
           const merged = yield* landing.merge(integration, unit, config).pipe(Effect.mapError((failure) => stopped("merge", failure.message, unit.path)))
-          if (merged._tag === "Conflict") return yield* stopped("conflict", some(merged.files, 50), unit.path)
+          if (merged._tag === "Conflict") {
+            if (config.push) return yield* stopped("conflict", some(merged.files, 50), unit.path)
+            conflicts.set(unit.path, merged.files)
+            continue
+          }
           locks.push(...merged.regenerated)
         }
+        const merged = units.filter((unit) => !conflicts.has(unit.path))
         locks.push(...(yield* landing.install(integration, started.previous).pipe(Effect.mapError((failure) => stopped("install", failure.message)))))
-        const gate = yield* landing.check(integration, "gate", gateCommand, {})
+        const gate = merged.length === 0 ? undefined : yield* landing.check(integration, "gate", gateCommand, {})
+
+        if (!config.push) {
+          const conflicted = (unit: Unit): Outcome => ({ unit, verdict: "red", note: `conflicts with the batch: ${conflicts.get(unit.path)!.join(", ")}` })
+          const answer = (outcomes: ReadonlyArray<Outcome>) => ({
+            text: checkedText({
+              units,
+              main: config.main,
+              base: started.base,
+              integration,
+              gate,
+              locks: [...new Set(locks)],
+              outcomes: inOrder(units, [...outcomes, ...units.filter((unit) => conflicts.has(unit.path)).map(conflicted)]),
+              accepting,
+              pushBranches: config.pushBranches,
+            }),
+            metadata: { action: "land" as const, source, path: integration, rifts: paths },
+          })
+          if (gate === undefined) return answer([])
+          if (gate.code !== 0) return answer(merged.map((unit) => ({ unit, verdict: "red" as const, note: "the batch gate failed" })))
+          if (config.accept === undefined) return answer(yield* greens(merged, config.pushBranches))
+          busy.set(integration, `the accept check of ${branchList(merged)} runs there`)
+          accepting = true
+          const reds = units.filter((unit) => conflicts.has(unit.path)).map(conflicted)
+          yield* Effect.forkIn(
+            acceptChecked(sessionID, integration, merged, reds, units, config.accept, started.base, config).pipe(Effect.ensuring(Effect.sync(() => busy.delete(integration)))),
+            scope,
+          )
+          return answer(merged.map((unit) => ({ unit, verdict: "pending" as const, note: "the accept check runs" })))
+        }
+
+        if (gate === undefined) return yield* stopped("gate", "no Rift merged")
         if (gate.code !== 0) return yield* stopped("gate", `exit ${gate.code} in ${gate.seconds}s; log: ${gate.log}\n${digest(gate.output)}`)
         const pushed = yield* landing.push(integration, config.main).pipe(Effect.mapError((failure) => stopped("push", failure.message)))
 
