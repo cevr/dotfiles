@@ -22,7 +22,7 @@ so a new terminal runs it, and `opencode2` stays the stock release. As a `latest
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`cmd/anthropic-auth`), the pool (on
-the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail and background questions, the role
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the rift tool and tool names, the role
 models, a one-hour prompt cache for Claude
 (`providers.anthropic.settings.cache.ttl: "1h"`) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork

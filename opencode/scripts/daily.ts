@@ -229,6 +229,8 @@ if (import.meta.main) {
     pluginDir("questions"),
     pluginDir("wake"),
     pluginDir("skills"),
+    pluginDir("rift"),
+    pluginDir("tool-names"),
   ]
   // Earlier runs loaded the auth plugin through a loader directory here; its entry is replaced too.
   const loader = join(share, "anthropic-auth")
