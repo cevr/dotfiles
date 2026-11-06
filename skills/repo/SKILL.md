@@ -105,7 +105,7 @@ fd -e ts ~/.cache/repo/{owner}/{repo}
 
 | Scope             | Tool                             |
 | ----------------- | -------------------------------- |
-| Broad exploration | Explore agent on the cached path |
+| Broad exploration | Explore agent on the cached path (OpenCode: `subagent` with `agent: "explore"`) |
 | Text patterns     | `rg` (ripgrep)                   |
 | Code structures   | `ast-grep`                       |
 | File names        | `fd` or Glob tool                |
@@ -148,7 +148,8 @@ rg "Context" $REPO/packages --type ts -C 2
 ast-grep --pattern 'class $NAME extends Context.Service<$$$>()($$$) { $$$ }' --lang ts $REPO
 
 # 4. Or use Explore agent
-Agent subagent_type="Explore" prompt="Explore $REPO to understand the service pattern..."
+subagent agent="explore" description="explore effect-smol services" prompt="Explore $REPO to understand the service pattern..."   # OpenCode
+Agent subagent_type="Explore" prompt="Explore $REPO to understand the service pattern..."                                          # Claude Code
 ```
 
 ## Gotchas

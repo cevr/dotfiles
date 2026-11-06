@@ -875,16 +875,14 @@ describe("the agents", () => {
         expect(agents.worker!.request.settings.cacheTTL).toBe("5m")
         expect(agents.build!.request.settings.cacheTTL).toBeUndefined()
 
-        // The keep-list joins the summary prompt, leaving the system (and so the cached prefix) as it was.
+        // The keep-list follows the conversation as a user message, leaving the system and the messages before it (and
+        // so the cached prefix) as they were.
         const system: Array<unknown> = []
-        const prompt = ["Summarize."]
-        for (const hook of plugin.hooks.compaction ?? []) yield* hook({ system, experimental: { prompt } })
+        const conversation = [{ role: "user", content: [{ type: "text", text: "Fix the parser." }] }]
+        const messages: Array<unknown> = [...conversation]
+        for (const hook of plugin.hooks.compaction ?? []) yield* hook({ system, messages })
         expect(system).toEqual([])
-        expect(prompt).toEqual(["Summarize.", KEEP])
-        // A host without the summary prompt takes it as a system part.
-        const older: Array<unknown> = []
-        for (const hook of plugin.hooks.compaction ?? []) yield* hook({ system: older })
-        expect(older).toEqual([{ type: "text", text: KEEP }])
+        expect(messages).toEqual([...conversation, { role: "user", content: [{ type: "text", text: KEEP }] }])
       }),
     ))
 })

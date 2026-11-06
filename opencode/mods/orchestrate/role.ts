@@ -10,7 +10,7 @@ export const ROLES = [...STEPS, WORKER] as const
 export type Role = (typeof ROLES)[number]
 
 /**
- * The prompt-cache lifetime each role runs with (the fork's per-agent `request.settings.cacheTTL`). A role works
+ * The prompt-cache lifetime each role runs with (the per-agent `request.settings.cacheTTL`, which the anthropic-auth `http.request` hook writes over the provider-configured lifetime). A role works
  * in one burst and then stops, so a five-minute write (1.25x input) beats the main session's one-hour write (2x):
  * a role rarely comes back to a prefix after five idle minutes. One that does (a long shell command or wait, a
  * resumed role) has outlived it: the pool asks for the provider's lifetime from its next request on

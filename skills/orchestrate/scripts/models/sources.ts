@@ -8,7 +8,7 @@ import { costOf, type Tokens } from './prices.ts';
 
 export type Agent = {
   id: string;
-  harness: 'claude' | 'codex';
+  harness: 'claude' | 'codex' | 'opencode';
   session: string; // the main session that spawned it, or its own id
   model: string;
   effort?: string;

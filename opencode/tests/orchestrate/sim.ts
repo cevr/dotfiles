@@ -22,7 +22,7 @@ export const UNTYPED_TASK = "task-untyped"
 export const REVIEW_TASK = "task-review"
 export const SUMMARY = "## Objective\n- sim summary"
 
-interface ChatMessage {
+export interface ChatMessage {
   readonly role: string
   readonly content?: unknown
 }
@@ -39,6 +39,8 @@ export interface Seen {
   readonly task: string
   readonly last: string
   readonly tools: ReadonlyArray<string>
+  /** The request's messages as sent, for prefix checks. */
+  readonly messages: ReadonlyArray<ChatMessage>
 }
 
 type Reply =
@@ -148,6 +150,7 @@ export const serve = (promptTokens = 100) => {
         task: lastLine(text(messages.find((message) => message.role === "user")?.content)),
         last: text(messages.at(-1)?.content),
         tools: (body.tools ?? []).map((tool) => tool.function?.name ?? ""),
+        messages,
       })
       served += 1
       return new Response(events(reply(body), body.model ?? "sim", `sim${served}`, promptTokens), {

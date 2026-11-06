@@ -86,8 +86,8 @@ export interface ModelLifetime {
  * `request.settings.cacheTTL` (an orchestration role's "5m") replaces a
  * lifetime the model's or provider's settings name, and nothing else: on a
  * model with no setting the provider's default stands, and a value that is
- * no duration changes nothing (the fork's rule,
- * packages/core/src/session/agent-cache.ts:17-20).
+ * no duration changes nothing (the auth plugin's rule,
+ * `rewriteRequestBody` in mods/anthropic-auth/request-body.ts).
  */
 export const agentLifetimeMs = (model: ModelLifetime | undefined, agentTtl: string | undefined): number | undefined => {
   const own = agentTtl === undefined ? undefined : parseTtl(agentTtl)
