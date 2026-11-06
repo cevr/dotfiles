@@ -456,8 +456,7 @@ Status stores nothing. Each RPC call reads the call log and the runs again.
 
 ## Queue
 
-`mods/queue` is the agent's live queue, shown in the session sidebar; its
-plugins are `cmd/queue` (`server.ts` and `tui.tsx`). The server plugin adds
+`mods/queue` is the agent's live queue; its plugins are `cmd/queue` (`server.ts` and `tui.tsx`). The server plugin adds
 the `queue` tool: `set` replaces the calling session's list, `upsert` and
 `remove` patch it by id, and the answer is the list as it now stands. An
 item has an id, one line of text, a state (`needs-you`, `running`,
@@ -469,7 +468,9 @@ transcript, so the queue is kept in a store, not read from parts. Its one
 option is `dir`, default `$XDG_STATE_HOME/opencode-queue`. A deleted
 session's queue goes.
 
-The TUI plugin appends the Queue section to `sidebar.content`. Every two
+The TUI plugin appends the Queue section to `sidebar.content`. It is not
+installed: `scripts/daily.ts` leaves it out of `cli.json` (the owner found the
+section distracting), so the queue is read by the agent and the RPC only. Every two
 seconds it reads the route's root session's queue over the
 `dotfiles-opencode.queue` RPC (`get({ sessionID })` answers
 `{ revision, items }`) and keeps the answer when its revision moved. An
