@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The rift tool for OpenCode: create, list and remove Rift workspaces (workrift on the workbox), refusing to remove one that holds work found nowhere else.",
+  "description": "The rift tool for OpenCode: create, list, remove and land Rift workspaces (workrift on the workbox), refusing to remove one that holds work found nowhere else.",
   "exports": {
     "./*": "./*.ts"
   }
