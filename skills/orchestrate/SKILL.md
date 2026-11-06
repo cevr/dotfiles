@@ -186,6 +186,7 @@ Stop the old implementor.
 ## 4. Between messages
 
 - **Wait.** End your turn and let workers wake you. Spec the next units while you wait. To wait on an outside event (the owner's answer, a lab change), run one background Bash until-loop that exits on the event, and re-arm it only after an event.
+- **Name the wait.** Before you end a turn with units in `plan`, `implement` or `verify` and no agent working on them, start them, or name what they wait on as a `waiting` queue item (`queue` tool) so the owner sees it in the sidebar. On OpenCode, an idle root with ready units and no named wait is steered once: `idle with units ready: …; start them or name what you wait on.`
 - **Stop finished agents.** TaskStop an agent at its final hand-back.
 - **Owner direction** goes, the same turn, into the file that owns it: `NORTH_STAR.md` for scope and standing rules, the project's skill for craft and voice, `AGENTS.md` for the stack.
 - **After your own compaction.** Re-read this file, `protocol.md` and `plan.md`, and run `status.ts`, before any other action.
