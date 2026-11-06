@@ -18,8 +18,10 @@ export class CallLog extends Context.Service<
 /**
  * The units' logs (each `<run dir>/<unit>/log.md`), written through the orchestrate skill's log.ts.
  * - `find`: the unit's dir: the first of `named` (paths the prompt or the hand-back named, maybe relative to
- *   `directory` or `~/`) that is a directory, else the one `<directory>/tmp/orchestrate/<run>/<unit>` there is.
- *   None when neither finds exactly one.
+ *   `directory` or `~/`) that is a unit dir, else the one `<directory>/tmp/orchestrate/<run>/<unit>` unit dir
+ *   there is. A unit dir is a directory that holds a `spec.md` or a `log.md`, or whose parent (its run dir)
+ *   holds a `plan.md`; any other directory named for the unit (a Rift or a checkout called like it) is none,
+ *   so no log.md lands in it. None when neither finds exactly one.
  * - `append`: move the unit as the transition says, from its current state; a move already logged, or one
  *   log.ts refuses, writes nothing. Never fails: a lost line costs the timing a row, not the call.
  */

@@ -28,7 +28,8 @@ test("a launcher runs its shell with the command, at the lower priority", async 
   expect(path).toEndWith("/sh")
   expect(readFileSync(path, "utf8")).toBe(script)
   const base = niceOf(["/bin/sh", "-c", "ps -o nice= -p $$"])
-  expect(niceOf([path, "-c", "ps -o nice= -p $$"])).toBe(Math.min(19, base + 10))
+  // The test may itself run niced: the Mac's `ps` reads the ceiling as 20, Linux's as 19.
+  expect(niceOf([path, "-c", "ps -o nice= -p $$"])).toBe(Math.min(process.platform === "darwin" ? 20 : 19, base + 10))
   expect(Bun.spawnSync([path, "-c", 'printf "%s|%s" "$0" "$1"', "zero", "one two"], { stdout: "pipe" }).stdout.toString()).toBe("zero|one two")
   expect(await install(scratch, "sh", script)).toBe(path)
   expect(await install(scratch, "sh", script.replace("nice -n 10", "nice -n 5"))).not.toBe(path)

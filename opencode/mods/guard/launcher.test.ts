@@ -1,9 +1,19 @@
 // A launcher's text: the shell it execs, under nice alone or in a scope with
 // its limits. filesystem/launchers.test.ts runs one.
 import { expect, test } from "bun:test"
-import { launcherName, launcherScript } from "./launcher.ts"
+import { DEFAULT_LIMITS, heavyArgv, launcherName, launcherScript } from "./launcher.ts"
 
 const limits = { nice: 10, memoryMax: "12G", cpuWeight: 20 }
+
+test("an argv runs niced off systemd, and in a user scope with its limits on systemd", () => {
+  expect(DEFAULT_LIMITS).toEqual(limits)
+  expect(heavyArgv(["sh", "-c", "bun test"], limits, false)).toEqual(["nice", "-n", "10", "sh", "-c", "bun test"])
+  expect(heavyArgv(["sh", "-c", "bun test"], limits, true)).toEqual([
+    "nice", "-n", "10",
+    "systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=12G", "-p", "CPUWeight=20", "--",
+    "sh", "-c", "bun test",
+  ])
+})
 
 test("off systemd, the shell runs at the lower priority", () => {
   expect(launcherScript({ shell: "/bin/zsh", limits, scope: false })).toBe(

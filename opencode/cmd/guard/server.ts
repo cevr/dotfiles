@@ -46,6 +46,7 @@ import { Context, Effect, Layer, Option, Schema } from "effect"
 import * as FilesystemLaunchers from "@dotfiles/opencode-guard/filesystem/launchers"
 import * as FilesystemRepoRoots from "@dotfiles/opencode-guard/filesystem/repo-roots"
 import { DEFAULT_HEAVY } from "@dotfiles/opencode-guard/heavy"
+import { DEFAULT_LIMITS } from "@dotfiles/opencode-guard/launcher"
 import * as Model from "@dotfiles/opencode-guard/model"
 import * as PsProcesses from "@dotfiles/opencode-guard/process/processes"
 import * as ProcessScopes from "@dotfiles/opencode-guard/process/scopes"
@@ -70,9 +71,9 @@ const Int = (min: number, max: number) => Schema.Int.check(Schema.isBetween({ mi
 export const Options = Schema.Struct({
   home: Schema.String.pipe(withDefault(homedir())),
   heavy: Schema.Array(Schema.String).pipe(withDefault<ReadonlyArray<string>>(DEFAULT_HEAVY)),
-  nice: Int(0, 19).pipe(withDefault(10)),
-  memoryMax: Schema.String.check(Schema.isPattern(/^(\d+[KMGT]?|\d+%|infinity)$/)).pipe(withDefault("12G")),
-  cpuWeight: Int(1, 10_000).pipe(withDefault(20)),
+  nice: Int(0, 19).pipe(withDefault(DEFAULT_LIMITS.nice)),
+  memoryMax: Schema.String.check(Schema.isPattern(/^(\d+[KMGT]?|\d+%|infinity)$/)).pipe(withDefault(DEFAULT_LIMITS.memoryMax)),
+  cpuWeight: Int(1, 10_000).pipe(withDefault(DEFAULT_LIMITS.cpuWeight)),
   launchers: Schema.String.pipe(withDefault(join(homedir(), ".cache/opencode/guard-launchers"))),
 })
 export type Options = typeof Options.Type

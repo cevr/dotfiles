@@ -63,6 +63,11 @@ const bench = (workrift: boolean) =>
         plain,
         commit: (path: string) => Effect.sync(() => void sh(path, env, "git", "commit", "-q", "--allow-empty", "-m", "only here")),
         dirty: (path: string) => Effect.sync(() => writeFileSync(join(path, "scratch.txt"), "unsaved\n")),
+        stash: (path: string) =>
+          Effect.sync(() => {
+            writeFileSync(join(path, "README.md"), `stashed in ${path}\n`)
+            sh(path, env, "git", "stash", "push", "-q", "-m", "wip")
+          }),
       }
     }),
     (made) => Effect.sync(() => rmSync(made.scratch, { recursive: true, force: true })),

@@ -1122,7 +1122,8 @@ workbox in a week). One input, with an `action`:
 - `{ action: "remove", name | path, force? }` moves a Rift to Rift's trash
   (`rift remove`, `workrift remove` on the workbox). It refuses a Rift that
   holds work found nowhere else, and names it: uncommitted changes (untracked
-  files too), stashes, and commits on no remote and in no branch of its
+  files too), stash entries the warm source does not also hold (a Rift
+  inherits its source's stash), and commits on no remote and in no branch of its
   source, unless `force: true`. It always refuses a warm source, the Rift the
   session runs in, and a Rift with Rifts of its own. `withChildren: true`
   takes the Rift's own Rifts with it, each still refused while it holds
@@ -1139,7 +1140,13 @@ workbox in a week). One input, with an `action`:
   files and the repository's generated files alone is settled: the Rift's
   side, installed again and regenerated, committed. Any other conflict aborts
   the merge and stops the batch, naming the Rift and the files. Then install
-  each lock file the batch changed (committed when rewritten), run the gate
+  each lock file the batch changed (committed when rewritten), and, when
+  `rift.regenerate` is set, run it once more after every batch, conflict or
+  not: a clean merge can still leave a generated file stale (one Rift
+  changed what another's generated file is written from). What it rewrote
+  among the generated files and the lock files is committed as one `chore:
+  regenerate generated files after landing` (nothing changed, no commit); a
+  failing regenerate stops the batch before the gate. Then run the gate
   once, push to the default branch when it still holds origin's newest, fetch
   in each landed Rift and trash it unless the removal rule keeps it (it says
   why). The accept check then runs once, in the background, one at a time
@@ -1174,20 +1181,34 @@ knows no repository's commands:
 | --- | --- |
 | `rift.gate` | the fast check run before the push; required |
 | `rift.accept` | the slow check run after it, with `RIFT_LAND_BASE` set to the batch's base |
-| `rift.generated` | one value per generated file (repository-relative) whose conflict is settled by writing it again |
-| `rift.regenerate` | the shell line, run at the repository root, that writes them again |
+| `rift.generated` | one value per generated file (repository-relative): its conflict is settled by writing it again, and its rewrite after every batch is committed |
+| `rift.regenerate` | the shell line, run at the repository root, that writes them again: on such a conflict, and after every batch's merges and install, before the gate |
 | `rift.push` | a Git boolean, default true; false checks the batch without pushing the default branch or removing a Rift |
 | `rift.pushBranches` | a Git boolean, default false; with `rift.push` false, push each green Rift's own branch |
 | `workrift.main` | the default branch; else origin's HEAD, else `main` |
 
+The gate and the acceptance run always run heavy, through the guard's
+launcher (`heavyArgv` in `mods/guard/launcher.ts`): `nice -n 10`, and where
+`systemd-run --user --scope` works (Linux with a user systemd), a scope with
+`MemoryMax=12G` and `CPUWeight=20`. On the Mac they run niced alone.
+
 This repository's warm source sets:
 
 ```sh
-git config rift.gate 'cd opencode && OPENCODE_DEV=~/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=~/Developer/personal/.rifts/gent/untrack-local-settings bun run gate'
-git config rift.accept 'cd opencode && env -u ANTHROPIC_BASE_URL OPENCODE_DEV=~/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=~/Developer/personal/.rifts/gent/untrack-local-settings bun run accept:affected "$RIFT_LAND_BASE"'
+git config rift.gate 'cd opencode && OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=$HOME/Developer/personal/.rifts/gent/untrack-local-settings bun run gate'
+git config rift.accept 'cd opencode && env -u ANTHROPIC_BASE_URL OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=$HOME/Developer/personal/.rifts/gent/untrack-local-settings bun run accept:affected "$RIFT_LAND_BASE"'
 git config rift.generated opencode/mods/orchestrate/agents.json
-git config rift.regenerate 'cd opencode && bun scripts/agents.ts'
+for role in planner implementor verifier; do
+  git config --add rift.generated agents/$role.md
+  git config --add rift.generated codex/agents/$role.toml
+done
+git config rift.regenerate 'bun skills/orchestrate/scripts/agents.ts && cd opencode && bun scripts/agents.ts'
 ```
+
+A path in these values is written with `$HOME`, never `~`: `sh` leaves a
+`~` after `=` in a command's argument as it is, so `env OPENCODE_DEV=~/…`
+hands the run a literal `~` directory (the first real land's accept run
+failed on it).
 
 The workbox's Bite warm source, `/workspaces/bite` (origin
 `biteinc/maitred`, default branch `master` from origin's HEAD), lands
@@ -1772,7 +1793,9 @@ for it with `action: "wait"`, since its turn's end hands back to its parent.
   (`cmd/wake/job.ts`): a `systemd-run --user --unit opencode-job-<id>` unit on
   Linux (a detached process when the user manager refuses, with a warning in
   the receipt), a detached session and process group on the Mac. `heavy` runs
-  it under `nice -n 10`; past `timeoutSeconds` (default a day, at most 7) it is
+  it through the guard's launcher (`mods/guard/launcher.ts`): `nice -n 10`,
+  and where `systemd-run --user --scope` works, a scope with `MemoryMax=12G`
+  and `CPUWeight=20`; past `timeoutSeconds` (default a day, at most 7) it is
   stopped with SIGTERM, then SIGKILL 10 s later.
 - Lines the command appends to the file `$JOB_DRIP` names reach the session at
   most once a minute, without starting a turn; the rest ride on the end

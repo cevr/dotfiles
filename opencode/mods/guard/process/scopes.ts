@@ -3,10 +3,11 @@
 // systemd with a reachable bus); asked once, on the first heavy command. On
 // any other system there is none.
 import { Effect, Layer } from "effect"
+import { SCOPE_PROBE } from "../launcher.ts"
 import { Scopes } from "../service.ts"
 
 /** The probe's command line; `platform` and `run` are the machine's unless a test names them. */
-export const PROBE = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "true"] as const
+export const PROBE = SCOPE_PROBE
 
 const runs = (argv: ReadonlyArray<string>) =>
   Effect.promise(async () => {

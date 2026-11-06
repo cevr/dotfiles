@@ -14,13 +14,17 @@ export interface World {
   readonly merges: Map<string, Merged>
   /** The lock files the install after the merges commits. */
   readonly installs: Array<string>
+  /** The generated and lock files `rift.regenerate` rewrites after the install, committed as one commit; none: no commit. */
+  readonly regenerates: Array<string>
+  /** What the regenerate command says when it fails. */
+  regenerateFails: string | undefined
   /** `<path> <gate|accept>` to its exit code and output; absent: 0, `1 pass`. */
   readonly checks: Map<string, { readonly code: number; readonly output: string }>
   /** What Git says when the push fails. */
   pushFails: string | undefined
   /** Each branch whose own push fails, to what Git says. */
   readonly branchFails: Map<string, string>
-  /** The steps taken: `start <path> <main>`, `merge <branch>`, `install`, `gate <path>`, `push <path>`, `push-branch <branch>`, `sync <path>`, `accept <path> <RIFT_LAND_BASE>`. */
+  /** The steps taken: `start <path> <main>`, `merge <branch>`, `install`, `regenerate`, `commit <files>` (what it rewrote, one commit), `gate <path>`, `push <path>`, `push-branch <branch>`, `sync <path>`, `accept <path> <RIFT_LAND_BASE>`. */
   readonly steps: Array<string>
 }
 
@@ -28,14 +32,24 @@ export const config = (
   main: string,
   gate: string | undefined,
   accept: string | undefined,
-  options: { readonly push?: boolean; readonly pushBranches?: boolean } = {},
-): LandConfig => ({ main, gate, accept, generated: [], regenerate: undefined, push: options.push ?? true, pushBranches: options.pushBranches ?? false })
+  options: { readonly push?: boolean; readonly pushBranches?: boolean; readonly generated?: ReadonlyArray<string>; readonly regenerate?: string } = {},
+): LandConfig => ({
+  main,
+  gate,
+  accept,
+  generated: options.generated ?? [],
+  regenerate: options.regenerate,
+  push: options.push ?? true,
+  pushBranches: options.pushBranches ?? false,
+})
 
 export const world = (configs: Readonly<Record<string, LandConfig>> = {}): World => ({
   config: new Map(Object.entries(configs)),
   own: new Map(),
   merges: new Map(),
   installs: [],
+  regenerates: [],
+  regenerateFails: undefined,
   checks: new Map(),
   pushFails: undefined,
   branchFails: new Map(),
@@ -63,6 +77,12 @@ export const layer = (state: World) =>
           state.steps.push("install")
           return state.installs
         }),
+      regenerate: Effect.fn("Landing.regenerate")(function* () {
+        state.steps.push("regenerate")
+        if (state.regenerateFails !== undefined) return yield* new RiftFailed({ operation: "sh -c", message: state.regenerateFails })
+        if (state.regenerates.length > 0) state.steps.push(`commit ${state.regenerates.join(" ")}`)
+        return state.regenerates
+      }),
       check: (path, label, _command, env) =>
         Effect.sync((): Ran => {
           state.steps.push(label === "accept" ? `accept ${path} ${env["RIFT_LAND_BASE"] ?? ""}` : `gate ${path}`)

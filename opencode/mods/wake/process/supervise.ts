@@ -1,7 +1,8 @@
 // A job's runner: the process `bun cmd/wake/job.ts <dir>` that the process
 // runner launches outside the OpenCode server (a systemd user unit, or its own
 // session). It reads the job from <dir>, runs the command under /bin/sh in a
-// process group of its own (`nice -n 10` when heavy), its stdout and stderr to
+// process group of its own (when heavy, through the guard's launcher: `nice -n
+// 10`, and on Linux with a user systemd a scope with `MemoryMax=12G`), its stdout and stderr to
 // <dir>/log, `$JOB_DRIP` naming <dir>/drip and `$JOB_ID` the job; stops it at
 // its timeout or on SIGTERM (TERM to the group, KILL after a grace); records
 // the exit in <dir>/exit.json, atomically; then calls `notify` with the job's
@@ -16,6 +17,7 @@
 // - log, drip, exit.json
 import { closeSync, existsSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
+import { DEFAULT_LIMITS, heavyArgv, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
 import type { Descriptor } from "../backstop.ts"
 import { type JobExit, type JobSpec, KILL_GRACE_MS } from "../job.ts"
 import { STARTUP } from "./checks.ts"
@@ -43,9 +45,21 @@ export const writeAtomic = (file: string, value: unknown, mode = 0o600) => {
   renameSync(temporary, file)
 }
 
-/** The argv a job's command runs as. */
-export const argvOf = (spec: Pick<JobSpec, "command" | "heavy">): ReadonlyArray<string> =>
-  spec.heavy ? ["nice", "-n", "10", "/bin/sh", "-c", spec.command] : ["/bin/sh", "-c", spec.command]
+/** Whether a heavy job can run in a systemd scope: on Linux, when the guard's probe exits 0; never elsewhere. */
+export const scopeAvailable = (platform: string = process.platform, probe: ReadonlyArray<string> = SCOPE_PROBE): boolean => {
+  if (platform !== "linux") return false
+  try {
+    return Bun.spawnSync([...probe], { stdin: "ignore", stdout: "ignore", stderr: "ignore" }).exitCode === 0
+  } catch {
+    return false
+  }
+}
+
+/** The argv a job's command runs as: a heavy one through the guard's launcher (`nice`, and in a scope under its memory cap when `scope`). */
+export const argvOf = (spec: Pick<JobSpec, "command" | "heavy">, scope: boolean): ReadonlyArray<string> => {
+  const argv = ["/bin/sh", "-c", spec.command]
+  return spec.heavy ? heavyArgv(argv, DEFAULT_LIMITS, scope) : argv
+}
 
 const signalGroup = (pid: number, signal: NodeJS.Signals) => {
   try {
@@ -88,7 +102,7 @@ export const supervise = async (dir: string, notify?: (descriptor: Descriptor) =
   const childEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !(STARTUP as ReadonlyArray<string>).includes(name)))
   let child: ReturnType<typeof Bun.spawn>
   try {
-    child = Bun.spawn([...argvOf(job.spec)], {
+    child = Bun.spawn([...argvOf(job.spec, job.spec.heavy && scopeAvailable())], {
       cwd: job.spec.cwd,
       env: { ...childEnv, JOB_DRIP: drip, JOB_ID: job.spec.id },
       stdin: "ignore",

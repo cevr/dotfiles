@@ -3,11 +3,14 @@
 // `rift.accept`, `rift.generated`, `rift.regenerate`, `rift.push`,
 // `rift.pushBranches`, the default branch from
 // `workrift.main` else origin's HEAD) and run through `sh -c`, their output
-// kept in a log under `logs`. A lock file is installed again with its package
+// kept in a log under `logs`; the gate and the acceptance run always run
+// heavy, through the guard's launcher (`checkArgv`). A lock file is installed again with its package
 // manager (frozen first, then free, as a merged lock file may need) and
-// committed when the install rewrote it.
+// committed when the install rewrote it. `rift.regenerate` runs after every
+// batch's merges, and what it rewrote is committed.
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
+import { DEFAULT_LIMITS, heavyArgv, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
 import { Effect, Layer } from "effect"
 import { INTEGRATION, type LandConfig, type Merged, type Ran, type Started, type Unit } from "../land.ts"
 import { Landing, RiftFailed } from "../service.ts"
@@ -18,7 +21,19 @@ export interface Options {
   readonly logs: string
   /** Variables added to every command's environment (a test's scratch HOME). */
   readonly env?: Readonly<Record<string, string>>
+  /** The machine's platform; a test names another. */
+  readonly platform?: string
+  /** The systemd scope probe (the guard's `SCOPE_PROBE`); a test names a stand-in. */
+  readonly probe?: ReadonlyArray<string>
 }
+
+/**
+ * The argv a gate or acceptance run runs as: always heavy, through the
+ * guard's launcher (`nice`, and on a systemd host a user scope under its
+ * memory cap), both streams into `log` in the order they were written.
+ */
+export const checkArgv = (command: string, log: string, scope: boolean): ReadonlyArray<string> =>
+  heavyArgv(["sh", "-c", 'sh -c "$1" >"$2" 2>&1', "rift-land", command, log], DEFAULT_LIMITS, scope)
 
 /** Each lock file, by name, to its installs: the frozen one, then the one that may rewrite it. */
 export const INSTALLS: Readonly<Record<string, readonly [string, string]>> = {
@@ -57,6 +72,17 @@ const same = (left: string, right: string): boolean => {
 
 export const layer = (options: Options) => {
   const { spawn, run } = commands(options.env)
+  /** Whether a systemd scope is available: on Linux, the probe exits 0; asked once, at the first check. */
+  let scoped: boolean | undefined
+  const scope = Effect.suspend(() =>
+    scoped !== undefined || (options.platform ?? process.platform) !== "linux"
+      ? Effect.succeed(scoped ?? false)
+      : spawn(options.probe ?? SCOPE_PROBE, options.logs).pipe(
+          Effect.map((ran) => ran.code === 0),
+          Effect.orElseSucceed(() => false),
+          Effect.tap((available) => Effect.sync(() => void (scoped = available))),
+        ),
+  )
   const git = (path: string, ...args: ReadonlyArray<string>) => run(["git", "-C", path, ...args], path)
   const trimmed = (path: string, ...args: ReadonlyArray<string>) => git(path, ...args).pipe(Effect.map((out) => out.trim()))
   /** A Git config value, or undefined when unset. */
@@ -150,12 +176,24 @@ export const layer = (options: Options) => {
     return committed
   })
 
+  const regenerate = Effect.fn("Landing.regenerate")(function* (integration: string, settings: LandConfig) {
+    if (settings.regenerate === undefined) return []
+    yield* run(["sh", "-c", settings.regenerate], integration)
+    const status = yield* git(integration, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    const files = statusEntries(status)
+      .map((entry) => entry.file)
+      .filter((file) => settings.generated.includes(file) || isLock(file))
+    if (files.length === 0) return []
+    yield* git(integration, "add", "--", ...files)
+    yield* git(integration, "commit", "-q", "-m", "chore: regenerate generated files after landing", "--", ...files)
+    return files
+  })
+
   const check = Effect.fn("Landing.check")(function* (path: string, label: "gate" | "accept", command: string, env: Readonly<Record<string, string>>) {
     mkdirSync(options.logs, { recursive: true })
     const log = join(options.logs, `${basename(path)}.${label}.log`)
     const started = Date.now()
-    // One file for both streams, in the order they were written.
-    const ran = yield* spawn(["sh", "-c", 'sh -c "$1" >"$2" 2>&1', "rift-land", command, log], path, env)
+    const ran = yield* spawn(checkArgv(command, log, yield* scope), path, env)
     const output = existsSync(log) ? readFileSync(log, "utf8") : ran.stderr
     return { code: ran.code, seconds: Math.round((Date.now() - started) / 1000), log, output } satisfies Ran
   })
@@ -178,5 +216,5 @@ export const layer = (options: Options) => {
     yield* git(path, "fetch", "-q", "origin")
   })
 
-  return Layer.succeed(Landing, Landing.of({ config, ownChanges, start, merge, install, check, push, pushBranch, sync }))
+  return Layer.succeed(Landing, Landing.of({ config, ownChanges, start, merge, install, regenerate, check, push, pushBranch, sync }))
 }

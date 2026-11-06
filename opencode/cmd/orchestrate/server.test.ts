@@ -5,7 +5,7 @@
 // windows. tests/orchestrate.test.ts and tests/prime-latch.test.ts run it in
 // OpenCode.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect, Layer, Queue, Schema, Stream } from "effect"
@@ -965,6 +965,7 @@ describe("the units' logs", () => {
         const work = yield* checkout
         const auth = join(work, "tmp/orchestrate/web/auth")
         mkdirSync(auth, { recursive: true })
+        writeFileSync(join(work, "tmp/orchestrate/web/plan.md"), "")
         const handBack = (role: string, line: string) => ({ parentID: "root", agent: role, directory: work, lastWords: `${line}\nGate green; the request names the head.` })
         const plugin = yield* start(
           { now: WEDNESDAY },
@@ -1010,18 +1011,41 @@ describe("the units' logs", () => {
       Effect.gen(function* () {
         const work = yield* checkout
         const elsewhere = join(work, "notes/auth")
-        mkdirSync(join(work, "tmp/orchestrate/web/auth"), { recursive: true })
-        mkdirSync(join(work, "tmp/orchestrate/api/auth"), { recursive: true })
+        for (const run of ["web", "api"]) {
+          mkdirSync(join(work, "tmp/orchestrate", run, "auth"), { recursive: true })
+          writeFileSync(join(work, "tmp/orchestrate", run, "plan.md"), "")
+        }
         const plugin = yield* start({ now: WEDNESDAY }, { sessions: { root: { directory: work } } })
         // Two runs hold an `auth` unit: the search finds none.
         const call = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier auth r1", prompt: "x" })
         expect(call).toEqual({ refused: undefined, input: { agent: "verifier", description: "verifier auth r1", prompt: "x" } })
         yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier auth", prompt: `Verify ${elsewhere}/round-1-request.md` })
         for (const dir of ["tmp/orchestrate/web/auth", "tmp/orchestrate/api/auth", "notes/auth"]) expect(existsSync(join(work, dir, "log.md"))).toBe(false)
-        // A path the prompt names finds it.
+        // A directory named for the unit that holds no spec.md, log.md or run's plan.md is no unit dir.
         mkdirSync(elsewhere, { recursive: true })
         yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier auth r1", prompt: `Verify ${elsewhere}/round-1-request.md` })
+        expect(existsSync(join(elsewhere, "log.md"))).toBe(false)
+        // A path the prompt names finds it once it holds the unit's spec.
+        writeFileSync(join(elsewhere, "spec.md"), "")
+        yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier auth r1", prompt: `Verify ${elsewhere}/round-1-request.md` })
         expect(moves(elsewhere)).toEqual(["new → verify r1 round-1-request.md"])
+      }),
+    ))
+
+  test("an implementor started in a Rift named like its unit, with no unit dir, writes no log.md into the Rift", () =>
+    scenario(
+      Effect.gen(function* () {
+        const work = yield* checkout
+        const rift = join(work, ".rifts/dotfiles/land-fixes")
+        mkdirSync(rift, { recursive: true })
+        writeFileSync(join(rift, "README.md"), "")
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: { root: { directory: rift } } })
+        yield* plugin.call("subagent", "root", {
+          agent: "implementor",
+          description: "implementor land-fixes r1",
+          prompt: `You work in the Rift ${rift}. Commit there.`,
+        })
+        expect(existsSync(join(rift, "log.md"))).toBe(false)
       }),
     ))
 
@@ -1031,6 +1055,7 @@ describe("the units' logs", () => {
         const work = yield* checkout
         const auth = join(work, "tmp/orchestrate/web/auth")
         mkdirSync(auth, { recursive: true })
+        writeFileSync(join(work, "tmp/orchestrate/web/plan.md"), "")
         const now = Date.parse(WEDNESDAY)
         const model = { providerID: "anthropic", id: "claude" }
         const held = { anthropic: { ok: false, measured: true, reason: "all pool accounts are held", retryAt: now + 600_000 } }

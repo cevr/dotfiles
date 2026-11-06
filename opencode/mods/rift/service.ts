@@ -75,6 +75,14 @@ export class Landing extends Context.Service<
     readonly merge: (integration: string, from: Unit, config: LandConfig) => Effect.Effect<Merged, RiftFailed>
     /** Installs each lock file changed since `previous`, and commits each one the install rewrote; answers those. */
     readonly install: (integration: string, previous: string) => Effect.Effect<ReadonlyArray<string>, RiftFailed>
+    /**
+     * Runs `config.regenerate` at the integration Rift's root after the
+     * merges and the install, since a clean merge can leave a generated file
+     * stale, and commits what it changed among `config.generated` and the
+     * lock files as one commit; answers those files, none when nothing
+     * changed. A failing command fails, before the gate.
+     */
+    readonly regenerate: (integration: string, config: LandConfig) => Effect.Effect<ReadonlyArray<string>, RiftFailed>
     /** Runs the repository's `command` (a shell line) in `path`, keeping its output in a log; never fails on its exit code. */
     readonly check: (path: string, label: "gate" | "accept", command: string, env: Readonly<Record<string, string>>) => Effect.Effect<Ran, RiftFailed>
     /** Pushes HEAD to `<main>` on origin when it holds origin's newest `<main>`; answers the pushed commit, `<hash> <subject>`. */
