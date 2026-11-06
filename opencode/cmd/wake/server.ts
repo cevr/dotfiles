@@ -2,8 +2,10 @@
  * Wakes as an OpenCode server plugin. The composition root: it builds the
  * wakes model (`@dotfiles/opencode-wake/model`) on the plugin's storage, the
  * session inbox, owned `/bin/sh` checks and the Bun.cron backstop, registers
- * the `wake`, `monitor`, `wake_cancel` and `wake_list` tools, and answers the
- * wakes RPC (`WAKES`) the tray and the OS jobs call.
+ * the `wake`, `monitor`, `wake_cancel`, `wake_list` and `job` tools, takes
+ * OpenCode's schedule tools (`SCHEDULE_TOOLS`) out of the registry, and
+ * answers the wakes RPC (`WAKES`) the tray, the OS jobs and the schedule
+ * migration (`scripts/migrate-schedules.ts`, over `set`) call.
  *
  * - `wake` sets an alarm and `monitor` a polled command for the calling
  *   session, and return at once; a fire arrives as a synthetic steer that
@@ -60,7 +62,22 @@ import {
   WAKE_DESCRIPTION,
   WakeInput,
 } from "@dotfiles/opencode-wake/tools"
-import { type Cancelled, type Due, type Pending, WAKES, type WakeRejected } from "@dotfiles/opencode-wake/wake"
+import { type Armed, type Cancelled, type Due, type Pending, SetAsk, WAKES, type WakeRejected } from "@dotfiles/opencode-wake/wake"
+
+/**
+ * OpenCode's schedule tools, by their registry ids; the wake tools replace
+ * them. A schedule fires by prompting its session with its whole action, a
+ * real user message each time; a wake or a monitor fires as a short
+ * synthetic notice. They are offered only under `experimental.schedules`,
+ * and removed here for every agent either way.
+ */
+export const SCHEDULE_TOOLS = [
+  "opencode_schedule_create",
+  "opencode_schedule_list",
+  "opencode_schedule_pause",
+  "opencode_schedule_resume",
+  "opencode_schedule_delete",
+] as const
 
 export const Options = Schema.Struct({
   /** `cron` (default): an OS job per entry through Bun.cron. `off`: jobs held in memory, for a server whose wakes must not outlive it. */
@@ -175,6 +192,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
       const wakes = Context.get(services, Model.WakesModel)
 
       yield* ctx.tool.transform((editor) => {
+        for (const id of SCHEDULE_TOOLS) editor.remove(id)
         // Direct tools beside the others, so they are offered without code mode and reached from a kernel cell.
         editor.add({
           name: NAMES.wake,
@@ -256,6 +274,17 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
               Effect.flatMap(({ sessionID, id }) => wakes.cancel(sessionID, id)),
               Effect.map((ids): Cancelled => ({ outcome: "cancelled", ids })),
               Effect.catch((failure) => Effect.succeed<Cancelled>({ outcome: "refused", reason: failure.reason })),
+            ),
+          set: (input) =>
+            Schema.decodeUnknownEffect(SetAsk)(input).pipe(
+              Effect.mapError((error) => ({ reason: `not a wake or a monitor: ${error.message}` })),
+              Effect.flatMap((ask) =>
+                "wake" in ask
+                  ? wakes.wake(ask.sessionID, ask.wake).pipe(Effect.map((placed) => placed.entry.id))
+                  : wakes.monitor(ask.sessionID, ask.monitor).pipe(Effect.map((placed) => placed.entry.id)),
+              ),
+              Effect.map((id): Armed => ({ outcome: "set", id })),
+              Effect.catch((failure) => Effect.succeed<Armed>({ outcome: "refused", reason: failure.reason })),
             ),
         })
         .pipe(Effect.orDie)

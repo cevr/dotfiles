@@ -16,8 +16,8 @@ import * as MemoryCourier from "@dotfiles/opencode-wake/memory/courier"
 import * as MemoryOpener from "@dotfiles/opencode-wake/memory/opener"
 import * as MemoryRunner from "@dotfiles/opencode-wake/memory/runner"
 import * as MemoryStore from "@dotfiles/opencode-wake/memory/store"
-import { Cancelled, Due, Pending, WAKES } from "@dotfiles/opencode-wake/wake"
-import WakePlugin, { make } from "./server.ts"
+import { Armed, Cancelled, Due, Pending, WAKES } from "@dotfiles/opencode-wake/wake"
+import WakePlugin, { make, SCHEDULE_TOOLS } from "./server.ts"
 
 type Host = Parameters<(typeof WakePlugin)["effect"]>[0]
 type Handler = (input: unknown) => Effect.Effect<unknown>
@@ -61,13 +61,15 @@ const start = (
     const emitted: Array<readonly [string, unknown]> = []
     const events = yield* Queue.unbounded<Event>()
     const added = new Map<string, Added>()
+    // The registry's built-in tools before the transform: OpenCode's schedule tools beside one that stays.
+    const builtin = new Set<string>(["shell", ...SCHEDULE_TOOLS])
     const host = {
       options,
       location: { directory: DIR },
       tool: {
-        transform: (callback: (editor: { add: (tool: Added) => void }) => void) =>
+        transform: (callback: (editor: { add: (tool: Added) => void; remove: (id: string) => void }) => void) =>
           Effect.sync(() => {
-            callback({ add: (tool) => void added.set(tool.name, tool) })
+            callback({ add: (tool) => void added.set(tool.name, tool), remove: (id) => void builtin.delete(id) })
             return { dispose: Effect.void }
           }),
       },
@@ -110,8 +112,9 @@ const start = (
     const due = (id: string) => method("due", { id }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Due)), Effect.orDie)
     const latched = (input: unknown) => method("latch", input).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Latched)), Effect.orDie)
     const cancel = (input: unknown) => method("cancel", input).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Cancelled)), Effect.orDie)
+    const set = (input: unknown) => method("set", input).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Armed)), Effect.orDie)
     const inbox = (sessionID = "ses_root") => doubles.sessions.inboxes.get(sessionID) ?? []
-    return { added, call, fail, pending, due, latched, cancel, inbox, emitted, emit: (event: Event) => Queue.offer(events, event).pipe(Effect.andThen(settle())), doubles }
+    return { added, builtin, call, fail, pending, due, latched, cancel, set, inbox, emitted, emit: (event: Event) => Queue.offer(events, event).pipe(Effect.andThen(settle())), doubles }
   })
 
 describe("the wake tools", () => {
@@ -122,6 +125,14 @@ describe("the wake tools", () => {
         expect([...plugin.added.keys()]).toEqual(["wake", "monitor", "wake_cancel", "wake_list", "job"])
         for (const tool of plugin.added.values()) expect(tool.options).toEqual({ codemode: false })
         expect(plugin.added.get("wake")?.description).toContain("even if no OpenCode server is running")
+      }),
+    ))
+
+  test("take OpenCode's schedule tools out of the registry, leaving the other built-in tools", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        expect([...plugin.builtin]).toEqual(["shell"])
       }),
     ))
 
@@ -180,6 +191,49 @@ describe("the wake tools", () => {
           reason: `No pending wake w000000 in this session. Pending: ${second?.id}.`,
         })
         expect(yield* plugin.cancel({ sessionID: "ses_root" })).toMatchObject({ outcome: "refused" })
+      }),
+    ))
+
+  test("the set RPC sets an alarm or a repeating monitor for a session as its tool would, and refuses what the tool refuses", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        const alarm = yield* plugin.set({ sessionID: "ses_root", wake: { afterSeconds: 3600, note: "Read /tmp/p.md and do it." } })
+        const monitor = yield* plugin.set({
+          sessionID: "ses_root",
+          monitor: { command: "gh pr view 7", intervalSeconds: 900, timeoutSeconds: 3 * 86_400, repeat: "change", baseline: "7 OPEN", note: "Reviews changed." },
+        })
+        expect(alarm).toMatchObject({ outcome: "set" })
+        expect(monitor).toMatchObject({ outcome: "set" })
+        const entries = (yield* plugin.pending("ses_root")).entries
+        expect(entries.map((entry) => [entry.kind, entry.note, entry.repeat])).toEqual([
+          ["alarm", "Read /tmp/p.md and do it.", undefined],
+          ["monitor", "Reviews changed.", "change"],
+        ])
+        expect(plugin.emitted).toContainEqual(["changed", { sessionID: "ses_root" }])
+        expect(yield* plugin.set({ sessionID: "ses_child", wake: { afterSeconds: 60, note: "n" } })).toMatchObject({ outcome: "refused", reason: expect.stringContaining("Wait in a background shell") })
+        expect(yield* plugin.set({ sessionID: "ses_root", monitor: { command: "true", repeat: "match", baseline: "x", note: "n" } })).toEqual({
+          outcome: "refused",
+          reason: 'a baseline is for repeat: "change"',
+        })
+        expect(yield* plugin.set({ sessionID: "ses_root" })).toMatchObject({ outcome: "refused", reason: expect.stringContaining("not a wake or a monitor") })
+      }),
+    ))
+
+  test("a repeating monitor wakes the session on each change with a short letter, and stays pending", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        plugin.doubles.checks.answers.set("gh pr list", [MemoryChecks.check(0, "7 REVIEW_REQUIRED"), MemoryChecks.check(0, "7 APPROVED"), MemoryChecks.check(0, "7 APPROVED")])
+        const receipt = yield* plugin.call("monitor", { command: "gh pr list", intervalSeconds: 1, repeat: "change", note: "A review changed." })
+        expect(receipt).toContain("fires each time its matching output changes")
+        expect(receipt).toContain("the first match is the baseline")
+        yield* until(() => plugin.inbox().length > 0)
+        const [letter] = plugin.inbox()
+        expect(letter?.resume).toBe(true)
+        expect(letter?.letter.text).toMatch(/^⏰ Monitor w[0-9a-z]{6} changed \(fire 1\): `gh pr list`\./)
+        expect(letter?.letter.text).toContain("Note: A review changed.\nOutput (exit 0):\n7 APPROVED")
+        expect((yield* plugin.pending("ses_root")).entries.map((entry) => entry.kind)).toEqual(["monitor"])
       }),
     ))
 })
