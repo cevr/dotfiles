@@ -34,5 +34,6 @@ const liveOf = (row: Row): Live => {
 /** The live state of every subagent of `family` under its root, by session id. */
 export const fromFamily = (family: Family): ReadonlyMap<string, Live> => new Map(rowsOf(family, family.root).map((row) => [row.id, liveOf(row)]))
 
-/** The live state of every subagent under `root`, read from the TUI's data. */
-export const liveStates = (reads: Reads, root: string): ReadonlyMap<string, Live> => fromFamily(read(reads, root))
+/** The live state of every subagent under `root`, read from the TUI's data, its running shells from `location`'s registry. */
+export const liveStates = <Location>(reads: Reads<Location>, root: string, location?: Location): ReadonlyMap<string, Live> =>
+  fromFamily(read(reads, root, location))

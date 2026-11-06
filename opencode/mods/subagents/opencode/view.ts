@@ -1,10 +1,11 @@
 // The family the rows read, from the TUI's own data: the root of the route's
-// session and every session under it, each with its agent, run status,
-// waiting permissions and questions, assistant steps (a kernel call with the
+// session and every session under it, each with its agent, run status, the
+// shells the host's shell registry lists as running for it, waiting
+// permissions and questions, assistant steps (a kernel call with the
 // tools its cell called), and the stop notices its background subagents and
 // shell commands sent it. Read inside a Solid computation, every read here is
 // reactive.
-import type { Call, Family, Latch, Message, Part, Session } from "../family.ts"
+import type { Call, Family, Latch, Message, Part, Session, Shell } from "../family.ts"
 
 /** A session as `context.data.session.get` returns it, narrowed to what a row reads. */
 export type SessionInfo = {
@@ -19,11 +20,20 @@ export type SessionInfo = {
   readonly metadata?: Readonly<Record<string, unknown>>
 }
 
+/** A shell command as `context.data.shell.list` returns it, narrowed to what a row reads. */
+export type ShellInfo = {
+  readonly id: string
+  readonly status: string
+  readonly command: string
+  readonly metadata: Readonly<Record<string, unknown>>
+}
+
 /**
  * The reads the family needs from the TUI plugin's `context.data`, narrowed
- * so a test can supply them; `context.data` satisfies it.
+ * so a test can supply them; `context.data` satisfies it. `Location` is the
+ * host's location reference, which the shell registry is kept per.
  */
-export interface Reads {
+export interface Reads<Location = unknown> {
   readonly session: {
     get(sessionID: string): SessionInfo | undefined
     root(sessionID: string): string
@@ -35,6 +45,8 @@ export interface Reads {
     }
     readonly form: { list(sessionID: string): ReadonlyArray<{ readonly title: string }> | undefined }
   }
+  /** The shell commands the host's registry holds for a location: only those in flight, each tagged with its session. */
+  readonly shell: { list(location?: Location): ReadonlyArray<ShellInfo> }
 }
 
 type Fields = Readonly<Record<string, unknown>>
@@ -147,7 +159,19 @@ const stepModel = (items: ReadonlyArray<unknown>): string | undefined =>
     return id ? [id] : []
   }).at(-1)
 
-function session(reads: Reads, id: string): Session {
+/** The running shells of the registry, by the session that started each. */
+function shellsBySession(listed: ReadonlyArray<ShellInfo>): ReadonlyMap<string, ReadonlyArray<Shell>> {
+  const by = new Map<string, Shell[]>()
+  for (const shell of listed) {
+    const owner = string(shell.metadata.sessionID)
+    if (shell.status !== "running" || owner === undefined) continue
+    const description = string(shell.metadata.description)?.trim()
+    by.set(owner, [...(by.get(owner) ?? []), { id: shell.id, command: shell.command, ...(description ? { description } : {}) }])
+  }
+  return by
+}
+
+function session(reads: Pick<Reads, "session">, id: string, shells: ReadonlyMap<string, ReadonlyArray<Shell>>): Session {
   const info = reads.session.get(id)
   const time = info?.time
   const items = reads.session.message.list(id)
@@ -168,6 +192,7 @@ function session(reads: Reads, id: string): Session {
     },
     ...(latch === undefined ? {} : { latch }),
     running: reads.session.status(id) === "running",
+    shells: shells.get(id) ?? [],
     permissions: (reads.session.permission.list(id) ?? []).map((request) =>
       [request.action, request.resources[0]].filter(Boolean).join(" "),
     ),
@@ -176,9 +201,14 @@ function session(reads: Reads, id: string): Session {
   }
 }
 
-/** The family of `sessionID`: its root and every session in the root's family. */
-export const read = (reads: Reads, sessionID: string): Family => {
+/**
+ * The family of `sessionID`: its root and every session in the root's family,
+ * with the shells `location`'s registry runs for each (the host's default
+ * location when none is given).
+ */
+export const read = <Location>(reads: Reads<Location>, sessionID: string, location?: Location): Family => {
   const root = reads.session.root(sessionID)
   const ids = reads.session.family(root)
-  return { root, sessions: (ids.includes(root) ? ids : [root, ...ids]).map((id) => session(reads, id)) }
+  const shells = shellsBySession(reads.shell.list(location))
+  return { root, sessions: (ids.includes(root) ? ids : [root, ...ids]).map((id) => session(reads, id, shells)) }
 }

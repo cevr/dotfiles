@@ -31,6 +31,12 @@ export type Session = {
   /** Whether the host runs it now. */
   readonly running: boolean
   /**
+   * The shell commands the host's shell registry lists as running for it now
+   * (a background one outlives its turn), live like `running`: one the
+   * registry no longer lists has ended, notice or not.
+   */
+  readonly shells: ReadonlyArray<Shell>
+  /**
    * The latch a held start waits on, when the session is a latched child (the
    * wakes' mark in its metadata, mods/wake latch.ts): what holds it, why, when
    * it opens and when it latched (epoch ms), and, once it will not open, when
@@ -42,6 +48,14 @@ export type Session = {
   /** Its waiting questions, by title. */
   readonly questions: ReadonlyArray<string>
   readonly messages: ReadonlyArray<Message>
+}
+
+/** A running shell command, as the host's shell registry lists it. */
+export type Shell = {
+  readonly id: string
+  readonly command: string
+  /** What the call that started it said it does, when it said. */
+  readonly description?: string
 }
 
 /** A latched child's latch, as its row reads it. */

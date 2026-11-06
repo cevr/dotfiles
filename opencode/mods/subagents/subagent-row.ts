@@ -14,17 +14,21 @@
 // `rows(family, rootSessionID, now)` gives the rows worth showing at `now`;
 // `format(row, width)` (line.ts) draws one as a line of coloured segments.
 // Everything is read from the family's data: the child session's agent and
-// run status, its waiting permissions and questions, its messages, and the
-// parent's subagent call and stop notice. Nothing is guessed: a stopped row
-// with no evidence of how it ended reads `idle`.
+// run status, its running shells, its waiting permissions and questions, its
+// messages, and the parent's subagent call and stop notice. Whether a row is
+// live is the host's live state alone (works.ts, as the dock's count and the
+// host's Subagents panel read it); the transcript only supplies the words.
+// Nothing is guessed: a stopped row with no evidence of how it ended reads
+// `idle`.
 //
 // Working and waiting are told apart so a row says whether anything moves:
 // - working: its turn runs and it generates or runs a call that works;
 // - waiting: its turn runs a call that only waits (a sleep or poll loop, or a
 //   shell call whose description says it waits; shell.ts), or its turn ended
-//   while its own background shells or subagents still run, or its parent
-//   still waits on it. The host wakes it when that work stops, and only then
-//   hands its answer back, so it is not done.
+//   while a shell it started still runs (the host's shell registry lists it)
+//   or a subagent under it works. The host wakes it when that work stops, and
+//   only then hands its answer back, so it is not done. A shell the registry
+//   no longer lists has stopped, stop notice or not.
 // - latched: a held start (orchestrate's pace or the Sabbath) kept as a wake
 //   of its parent's: its child is made and not yet prompted, and starts by
 //   itself when the latch opens. Its row says what holds it and when it
@@ -36,6 +40,7 @@ import { canonical, firstSentence, lastHeard, lastSentence, liveCall, running, r
 import type { Call, Family, Latch, Message, Session } from "./family.ts"
 import { modelName, type ModelName } from "./model.ts"
 import { label } from "./shell.ts"
+import { worksNow, type Works } from "./works.ts"
 
 /**
  * How a subagent stands. `working`, `waiting` and `latched` are live (see
@@ -129,26 +134,42 @@ function reason(text: string): string {
 /** A subagent call that does not hold its turn: a background one, or a latched one, which answers at once. */
 const backgrounded = (call: Call) => call.input.background === true || call.metadata.status === "latched"
 
-const named = (value: unknown) => (typeof value === "string" ? value.split("\n")[0]?.trim() || undefined : undefined)
+const firstLine = (value: unknown) => (typeof value === "string" ? value.split("\n")[0]?.trim() || undefined : undefined)
 
 /** One piece of background work a session still waits on: what it is, and the step's call that started it (a kernel cell for its own calls). */
-type Pending = { readonly what: string; readonly by: Call }
+type Pending = { readonly what: string; readonly by?: Call }
 
-function pendingWork(messages: ReadonlyArray<Message>): ReadonlyArray<Pending> {
-  const stopped = new Set(messages.flatMap((message) => (message.type === "shell" ? [message.shellID] : message.type === "notice" ? [message.childID] : [])))
+/**
+ * What a waiting session waits on, in the order it started it: each shell
+ * the host's registry still lists as running for it, by its call's
+ * description or in a few words (shell.ts), and each subagent under it that
+ * works now, by its call's description. The transcript only names the work;
+ * the host says whether it still runs. A running shell no call names (the
+ * call's record lost) reads by the registry's own words; a working child no
+ * call names, by its title.
+ */
+function pendingWork(session: Session, children: ReadonlyArray<Session>, works: (id: string) => Works | undefined): ReadonlyArray<Pending> {
+  const shells = new Map(session.shells.map((shell) => [shell.id, shell]))
+  const busy = new Map(children.filter((child) => works(child.id) !== undefined).map((child) => [child.id, child]))
+  const named = new Set<string>()
   const of = (call: Call): string | undefined => {
     if (call.status !== "completed") return undefined
     const tool = canonical(call.tool)
     const shell = call.metadata.shellID
-    if (tool === "shell" && typeof shell === "string" && !stopped.has(shell)) return label(call.input) || "a shell command"
+    if (tool === "shell" && typeof shell === "string" && shells.has(shell) && !named.has(shell)) {
+      named.add(shell)
+      return label(call.input) || "a shell command"
+    }
     const child = call.metadata.sessionID
-    if (tool === "subagent" && backgrounded(call) && typeof child === "string" && !stopped.has(child))
-      return named(call.input.description) ?? named(call.input.agent) ?? "a subagent"
+    if (tool === "subagent" && typeof child === "string" && busy.has(child) && !named.has(child)) {
+      named.add(child)
+      return firstLine(call.input.description) ?? firstLine(call.input.agent) ?? "a subagent"
+    }
     return undefined
   }
-  return messages.flatMap((message) =>
+  const called = session.messages.flatMap((message) =>
     message.type === "assistant"
-      ? message.parts.flatMap((part) =>
+      ? message.parts.flatMap((part): Pending[] =>
           part.type === "call"
             ? [part, ...(part.calls ?? [])].flatMap((call) => {
                 const what = of(call)
@@ -158,20 +179,14 @@ function pendingWork(messages: ReadonlyArray<Message>): ReadonlyArray<Pending> {
         )
       : [],
   )
+  const unnamed = [
+    ...session.shells.flatMap((shell) =>
+      named.has(shell.id) ? [] : [{ what: label({ command: shell.command, description: shell.description }) || "a shell command" }],
+    ),
+    ...[...busy.values()].flatMap((child) => (named.has(child.id) ? [] : [{ what: firstLine(child.title) ?? "a subagent" }])),
+  ]
+  return [...called, ...unnamed]
 }
-
-/**
- * What a session's own background work it still waits on: each shell command
- * it moved to the background (a shell call whose result names its shell)
- * with no stop notice for that shell yet, and each subagent it started in the
- * background with no stop notice for it yet; a shell by its description or
- * in a few words (shell.ts), a subagent by its description.
- */
-export const waitingOn = (messages: ReadonlyArray<Message>): ReadonlyArray<string> => pendingWork(messages).map((item) => item.what)
-
-/** Whether the parent still waits on the subagent: its foreground call still runs, or its background one sent no stop notice yet. */
-const pending = ({ call, notice }: ReturnType<typeof launch>) =>
-  call !== undefined && notice === undefined && (backgrounded(call) || running(call))
 
 type Ending = { readonly state: State; readonly at?: number; readonly why?: string }
 
@@ -215,7 +230,7 @@ function workingSince(messages: ReadonlyArray<Message>, busy: number): number {
 function waitingUpdate(messages: ReadonlyArray<Message>, pendings: ReadonlyArray<Pending>): string {
   const all = sayings(messages)
   const sentence = lastSentence(all)
-  const started = Math.max(-1, ...pendings.map((item) => all.findIndex((said) => said.type === "call" && said.call === item.by)))
+  const started = Math.max(-1, ...pendings.map((item) => (item.by === undefined ? -1 : all.findIndex((said) => said.type === "call" && said.call === item.by))))
   const first = pendings[0]
   if (sentence?.type === "sentence" && (first === undefined || sentence.index > started)) return sentence.text
   if (first === undefined) return ""
@@ -264,6 +279,10 @@ export type ReadOptions = { readonly timeZone?: string }
 /** Every subagent of the family as a row, in `order`, whatever its state. */
 export function subagents(family: Family, rootSessionID: string, options: ReadOptions = {}): Row[] {
   const byID = new Map(family.sessions.map((session) => [session.id, session]))
+  const children = new Map<string, Session[]>()
+  for (const session of family.sessions)
+    if (session.parentID) children.set(session.parentID, [...(children.get(session.parentID) ?? []), session])
+  const now = worksNow(family)
   return order(family, rootSessionID).map(({ session, depth }): Row => {
     const parent = session.parentID ? (byID.get(session.parentID)?.messages ?? []) : []
     const found = launch(parent, session.id)
@@ -286,11 +305,12 @@ export function subagents(family: Family, rootSessionID: string, options: ReadOp
     const busy = session.time.busy ?? session.time.created
     const heard = lastHeard(session.messages)
     const timed = (since: number) => ({ since, ...(heard === undefined ? {} : { heard }) })
+    const works = now(session.id)
     const permission = session.permissions[0]
     if (permission !== undefined) return { ...base, state: "blocked", update: `permission: ${permission}`.trim(), ...timed(busy) }
     const question = session.questions[0]
     if (question !== undefined) return { ...base, state: "blocked", update: `question: ${question}`, ...timed(busy) }
-    if (session.running) {
+    if (works === "running") {
       const call = liveCall(session.messages)
       const update = runningUpdate(session.messages)
       if (call && waiting(call)) return { ...base, state: "waiting", update, ...timed(call.started ?? busy) }
@@ -298,14 +318,14 @@ export function subagents(family: Family, rootSessionID: string, options: ReadOp
     }
     // A latched child has never run: its latch says how it stands until it opens.
     const latch = session.latch
+    if (works === "latched" && latch !== undefined) return { ...base, state: "latched", update: latchUpdate(latch, options.timeZone), since: latch.at }
     if (latch !== undefined && session.time.busy === undefined && session.outcome === undefined) {
       if (latch.cancelledAt !== undefined) return { ...base, state: "cancelled", update: "", ended: latch.cancelledAt }
       if (latch.failed !== undefined)
         return { ...base, state: "failed", update: firstSentence(latch.failed), ended: session.time.updated ?? latch.at }
-      return { ...base, state: "latched", update: latchUpdate(latch, options.timeZone), since: latch.at }
     }
-    const pendings = pendingWork(session.messages)
-    if (pendings.length > 0 || pending(found)) {
+    if (works === "waiting") {
+      const pendings = pendingWork(session, children.get(session.id) ?? [], now)
       const idle = session.time.idle
       const since = idle !== undefined && idle >= busy ? idle : (heard ?? busy)
       return { ...base, state: "waiting", update: waitingUpdate(session.messages, pendings), ...timed(since) }
