@@ -746,6 +746,37 @@ model's test runs on. `tests/recover.test.ts` runs `scenarios/recover.ts`:
 a session moved into a folder that is then removed goes back where it was
 made when the TUI opens it.
 
+## Escape
+
+`cmd/escape` is a TUI plugin that makes one Escape on a busy session take
+back the prompt just sent. Within the grace (5 s after the session's newest
+prompt with text was sent), Escape with an empty composer stops the run,
+reverts the session to before the prompt and puts its text back in the
+composer: it runs the host's own `session.undo`. Past the grace it
+interrupts (`session.interrupt` with `resume`), and the prompt and its
+partial answer stay. A prompt still waiting in the session's inbox (queued,
+or a steer the model has not read) comes back whatever the grace. When the
+taken-back run called a shell, a toast says
+`Cancelled; shell commands it ran are not undone`: a revert restores files,
+not what a command did outside them.
+
+A draft in the composer (text or an attachment, read from the focused
+editor, `renderer.currentFocusedEditor`) swallows the key while the session
+works, so a half-typed message is never replaced. A permission request or a
+question keeps its own Escape, an idle session's Escape is the host's, and a
+second Escape for the prompt being taken back is swallowed for 10 s. In a
+subagent's view Escape interrupts that subagent before the host's Subagents
+picker closes. Its one option is `grace`, in milliseconds (default 5000; 0
+always interrupts). An absent option takes its default. The grace is timed from when the prompt was sent, so a prompt another client
+sent to the session in the last 5 s can be taken back too.
+
+The decision is `decide` in `mods/escape/escape.ts`, over the view
+`opencode/view.ts` reads from the TUI's data; `cmd/escape/setup.ts` adds the
+two keymap layers on Escape (the base mode at priority 1, above the host's
+`session.interrupt` and below the composer's own Escape layers such as shell
+mode or a plugin panel; the composer mode at priority 2 in a subagent's
+view) and acts. `tests/prime-escape.test.ts` runs `scenarios/prime-escape.ts`.
+
 ## Cache
 
 `cmd/cache` is a TUI plugin that shows when a request paid again for a
