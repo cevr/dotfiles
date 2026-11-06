@@ -52,10 +52,11 @@ import {
   jobOf,
   type LastCheck,
   lastCheckOf,
-  matched,
   type Monitor,
   type MonitorAsk,
+  type MonitorState,
   monitorOf,
+  moved,
   nextDueAt,
   type Notice,
   ofSessions,
@@ -64,6 +65,7 @@ import {
   shown,
   shownOf,
   specOf,
+  stepOf,
   WakeRejected,
 } from "./wake.ts"
 
@@ -151,6 +153,8 @@ interface Made {
   readonly letter: Letter
   readonly tick: number
   readonly fresh?: Alarm["newSession"]
+  /** A repeating monitor's match: the state its check left, kept with the fire, and the monitor goes on once it settles. */
+  readonly again?: MonitorState
 }
 
 const SUBAGENT =
@@ -175,6 +179,12 @@ const advanced = (alarm: Alarm, dueAt: number): Alarm => ({
 
 const withFiring = (entry: FiredEntry, firing: Firing): FiredEntry =>
   entry.kind === "alarm" ? { ...entry, firing } : entry.kind === "monitor" ? { ...entry, firing } : { ...entry, firing }
+
+/** The monitor with no fire recorded. */
+const unfired = (monitor: Monitor): Monitor => {
+  const { firing: _, ...rest } = monitor
+  return rest
+}
 
 const ID_SPACE = 36 ** 6
 
@@ -255,8 +265,11 @@ export const layer = (config: Config) =>
               metadata: { ...made.letter.metadata },
               firedAt: now,
               tick: made.tick,
+              ...(made.again === undefined ? {} : { again: true }),
             }
-            const fired = withFiring(entry, firing)
+            const kept: FiredEntry =
+              made.again !== undefined && entry.kind === "monitor" ? { ...entry, ...made.again, fired: (entry.fired ?? 0) + 1 } : entry
+            const fired = withFiring(kept, firing)
             yield* store.write(fired)
             // A notice is left before the fire is sent: a running turn may read the message, and say so, before the send returns.
             if (entry.mode === "notify")
@@ -289,6 +302,11 @@ export const layer = (config: Config) =>
               yield* store.write(next)
               const schedule = scheduleOf(next)
               if (!schedule.recurring) yield* guard(next, schedule)
+              yield* changes.changed(entry.sessionID)
+              return "again" as const
+            }
+            if (entry.kind === "monitor" && firing.again === true) {
+              yield* store.write(unfired(entry))
               yield* changes.changed(entry.sessionID)
               return "again" as const
             }
@@ -340,9 +358,25 @@ export const layer = (config: Config) =>
       }
 
       const monitorFire =
-        (outcome: Outcome, count: number, last: Check | undefined) =>
+        (outcome: Outcome, count: number, last: Check | undefined, state?: MonitorState) =>
         (entry: FiredEntry, now: number): Made | undefined =>
-          entry.kind === "monitor" ? { letter: monitorLetter(entry, outcome, count, last, now), tick: outcome === "matched" ? now : entry.deadline } : undefined
+          entry.kind === "monitor"
+            ? {
+                letter: monitorLetter(entry, outcome, count, last, now),
+                tick: outcome === "matched" ? now : entry.deadline,
+                ...(outcome === "matched" && entry.repeat !== undefined ? { again: state ?? {} } : {}),
+              }
+            : undefined
+
+      /** Keep what a check that fired nothing left on a repeating monitor; a fire recorded meanwhile keeps its own. */
+      const keepState = (id: string, state: MonitorState) =>
+        locked(
+          Effect.gen(function* () {
+            const current = yield* store.read(id)
+            if (current?.kind !== "monitor" || current.firing !== undefined) return
+            yield* store.write({ ...current, ...state })
+          }),
+        )
 
       // ── Jobs ──
 
@@ -495,11 +529,21 @@ export const layer = (config: Config) =>
           }
         })
 
-      /** A monitor's timer: check, and fire on a match or at the deadline; a fire recorded before goes again first. */
+      /**
+       * A monitor's timer: check, and fire on a match or at the deadline; a fire
+       * recorded before goes again first. A repeating one fires on each match
+       * its `repeat` counts (`stepOf`) and goes on checking until its deadline,
+       * which ends it with a last letter.
+       */
       const runMonitor = (id: string): Effect.Effect<void> =>
         Effect.gen(function* () {
           let count = 0
           let last: Check | undefined
+          /** Wait out the period before the next check, never past the deadline. */
+          const pause = (entry: Monitor) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.flatMap((now) => Effect.sleep(Duration.millis(Math.max(0, Math.min(entry.intervalSeconds * 1000, entry.deadline - now))))),
+            )
           for (;;) {
             const entry = yield* store.read(id)
             if (entry?.kind !== "monitor") return
@@ -512,15 +556,22 @@ export const layer = (config: Config) =>
               last = check
               const after = yield* Clock.currentTimeMillis
               lastChecks.set(id, lastCheckOf(check, after))
-              if (matched(entry, check)) fired = yield* fire(id, monitorFire("matched", count, last), false)
+              const step = stepOf(entry, check)
+              // A one-shot's match at its deadline still counts; a repeat past its deadline only ends.
+              if (step.fire && (entry.repeat === undefined || after < entry.deadline)) fired = yield* fire(id, monitorFire("matched", count, last, step.state), false)
               else if (after >= entry.deadline) fired = yield* fire(id, monitorFire("timed-out", count, last), false)
               else {
-                yield* Effect.sleep(Duration.millis(Math.max(0, Math.min(entry.intervalSeconds * 1000, entry.deadline - after))))
+                if (moved(entry, step.state)) yield* keepState(id, step.state)
+                yield* pause(entry)
                 continue
               }
             }
             if (fired === "refused") {
               yield* Effect.sleep(Duration.millis(RETRY_MS))
+              continue
+            }
+            if (fired === "again") {
+              yield* pause(entry)
               continue
             }
             return

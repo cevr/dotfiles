@@ -27,6 +27,8 @@ export const Firing = Schema.Struct({
   firedAt: Schema.Number,
   /** The due time it fired for (an alarm), or the deadline (a monitor). */
   tick: Schema.Number,
+  /** A repeating monitor's match: once it reached the session the monitor goes on checking. */
+  again: Schema.optional(Schema.Boolean),
 })
 export type Firing = typeof Firing.Type
 
@@ -58,6 +60,16 @@ export const Alarm = Schema.Struct({
 })
 export type Alarm = typeof Alarm.Type
 
+/**
+ * How a monitor goes on after a match. Absent: it fires once and goes.
+ * `match`: it keeps checking and fires on each new match, a match after a
+ * check that did not match. `change`: it keeps checking and fires each time a
+ * matching check's stdout differs from the last matching one's; the first
+ * match is the baseline, and fires nothing.
+ */
+export const Repeat = Schema.Literals(["match", "change"])
+export type Repeat = typeof Repeat.Type
+
 export const Monitor = Schema.Struct({
   kind: Schema.Literal("monitor"),
   ...base,
@@ -65,8 +77,15 @@ export const Monitor = Schema.Struct({
   cwd: Schema.String,
   intervalSeconds: Schema.Number,
   until: Schema.optional(Schema.String),
-  /** Epoch ms: past it the monitor gives up and wakes anyway. */
+  /** Epoch ms: past it the monitor gives up and wakes anyway (a repeating one: it ends, and says so). */
   deadline: Schema.Number,
+  repeat: Schema.optional(Repeat),
+  /** A `match` repeat's: whether its last check matched. */
+  matching: Schema.optional(Schema.Boolean),
+  /** A `change` repeat's: the fingerprint of its last matching stdout. */
+  seen: Schema.optional(Schema.String),
+  /** A repeat's: how many matches it fired. */
+  fired: Schema.optional(Schema.Number),
 })
 export type Monitor = typeof Monitor.Type
 
@@ -120,6 +139,9 @@ export const DEFAULT_INTERVAL_SECONDS = 30
 export const MIN_INTERVAL_SECONDS = 1
 export const DEFAULT_TIMEOUT_SECONDS = 1800
 export const MAX_TIMEOUT_SECONDS = 86_400
+/** A repeating monitor's: it watches for a day unless told otherwise, and at most 30 days. */
+export const DEFAULT_REPEAT_TIMEOUT_SECONDS = 86_400
+export const MAX_REPEAT_TIMEOUT_SECONDS = 30 * 86_400
 /** A note's most characters. */
 export const MAX_NOTE = 2000
 
@@ -149,6 +171,9 @@ export interface MonitorAsk {
   readonly timeoutSeconds?: number | undefined
   readonly mode?: Mode | undefined
   readonly note: string
+  readonly repeat?: Repeat | undefined
+  /** A `change` repeat's baseline: the stdout it starts from, as if a check had printed it. */
+  readonly baseline?: string | undefined
 }
 
 /** Where an entry is set: the session, its server's directory, the id it takes and the time. */
@@ -234,9 +259,11 @@ export const monitorOf = (ask: MonitorAsk, place: Place): Monitor | WakeRejected
   if (ask.until !== undefined && !validPattern(ask.until)) return new WakeRejected({ reason: `until is not a valid regular expression: ${ask.until}` })
   const interval = ask.intervalSeconds ?? DEFAULT_INTERVAL_SECONDS
   if (!finite(interval) || interval < MIN_INTERVAL_SECONDS) return new WakeRejected({ reason: `intervalSeconds must be at least ${MIN_INTERVAL_SECONDS}` })
-  const timeout = ask.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS
-  if (!finite(timeout) || timeout <= 0 || timeout > MAX_TIMEOUT_SECONDS)
-    return new WakeRejected({ reason: `timeoutSeconds must be more than 0 and at most ${MAX_TIMEOUT_SECONDS}` })
+  if (ask.repeat !== undefined && ask.repeat !== "match" && ask.repeat !== "change") return new WakeRejected({ reason: `repeat is "match" or "change", not ${String(ask.repeat)}` })
+  if (ask.baseline !== undefined && ask.repeat !== "change") return new WakeRejected({ reason: 'a baseline is for repeat: "change"' })
+  const most = ask.repeat === undefined ? MAX_TIMEOUT_SECONDS : MAX_REPEAT_TIMEOUT_SECONDS
+  const timeout = ask.timeoutSeconds ?? (ask.repeat === undefined ? DEFAULT_TIMEOUT_SECONDS : DEFAULT_REPEAT_TIMEOUT_SECONDS)
+  if (!finite(timeout) || timeout <= 0 || timeout > most) return new WakeRejected({ reason: `timeoutSeconds must be more than 0 and at most ${most}` })
   if (ask.cwd !== undefined && !ask.cwd.startsWith("/")) return new WakeRejected({ reason: "cwd must be an absolute path" })
   return {
     kind: "monitor",
@@ -251,8 +278,53 @@ export const monitorOf = (ask: MonitorAsk, place: Place): Monitor | WakeRejected
     intervalSeconds: interval,
     ...(ask.until === undefined ? {} : { until: ask.until }),
     deadline: place.now + timeout * 1000,
+    ...(ask.repeat === undefined ? {} : { repeat: ask.repeat }),
+    ...(ask.baseline === undefined ? {} : { seen: fingerprint(ask.baseline) }),
   }
 }
+
+/** A stdout's fingerprint, as a `change` repeat keeps it: FNV-1a over its trimmed text, in hex. */
+export const fingerprint = (stdout: string): string => {
+  let hash = 0x811c9dc5
+  for (const char of stdout.trim()) {
+    hash ^= char.codePointAt(0) ?? 0
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash.toString(16).padStart(8, "0")
+}
+
+/** What a repeat keeps between checks. */
+export interface MonitorState {
+  readonly matching?: boolean
+  readonly seen?: string
+}
+
+/**
+ * What one check does to a monitor: whether it fires, and the state it
+ * leaves. A one-shot fires on a match. A `match` repeat fires on a match
+ * after a check that did not match (or its first). A `change` repeat fires on
+ * a match whose stdout differs from the last match's; the first match only
+ * sets the baseline. A check that does not match leaves a `change` repeat as
+ * it was.
+ */
+export const stepOf = (monitor: Monitor, check: Check): { readonly fire: boolean; readonly state: MonitorState } => {
+  const hit = matched(monitor, check)
+  switch (monitor.repeat) {
+    case undefined:
+      return { fire: hit, state: {} }
+    case "match":
+      return { fire: hit && monitor.matching !== true, state: { matching: hit } }
+    case "change": {
+      if (!hit) return { fire: false, state: monitor.seen === undefined ? {} : { seen: monitor.seen } }
+      const seen = fingerprint(check.stdout)
+      return { fire: monitor.seen !== undefined && monitor.seen !== seen, state: { seen } }
+    }
+  }
+}
+
+/** Whether `state` differs from what the monitor keeps. */
+export const moved = (monitor: Monitor, state: MonitorState): boolean =>
+  (state.matching !== undefined && state.matching !== monitor.matching) || (state.seen !== undefined && state.seen !== monitor.seen)
 
 /** The job as asked. */
 export interface JobAsk {
@@ -352,6 +424,7 @@ const text = { type: "string" } as const
  * - `due({ id })`: the OS backstop's call when its job fires: fire the entry if it is due and not yet fired. `Due` says what happened.
  * - `latch(LatchAsk)`: keep a held subagent start as a latch of the asking session, with its child session made unprompted. `Latched` says its id and child, or why not.
  * - `cancel({ sessionID, id })`: the owner cancels one of the session's entries, as `wake_cancel` does. `Cancelled` says which ids went, or why not.
+ * - `set({ sessionID, wake } | { sessionID, monitor })`: set an alarm or a monitor for that session, as its own `wake` or `monitor` call would (scripts/migrate-schedules.ts uses it). `Armed` says its id, or why not.
  * - `changed({ sessionID })`: published after every change to a session's wakes.
  */
 export const WAKES = {
@@ -361,6 +434,7 @@ export const WAKES = {
     due: { input: object({ id: text }, ["id"]), output: { type: "object" } },
     latch: { input: { type: "object" }, output: { type: "object" } },
     cancel: { input: object({ sessionID: text, id: text }, ["sessionID", "id"]), output: { type: "object" } },
+    set: { input: object({ sessionID: text, wake: { type: "object" }, monitor: { type: "object" } }, ["sessionID"]), output: { type: "object" } },
   },
   events: {
     changed: { schema: { type: "object", properties: { sessionID: text }, required: ["sessionID"] } },
@@ -395,6 +469,8 @@ export const Shown = Schema.Struct({
   intervalSeconds: Schema.optional(Schema.Number),
   /** A monitor's stop pattern. */
   until: Schema.optional(Schema.String),
+  /** A repeating monitor's way of going on. */
+  repeat: Schema.optional(Repeat),
   /** A monitor's newest check since this server started, if it ran one. */
   last: Schema.optional(LastCheck),
   /** A latch's child session. */
@@ -415,7 +491,12 @@ export const shownOf = (entry: Exclude<Entry, Job>): Shown => ({
   ...(entry.kind === "latch" ? { child: entry.child } : {}),
   ...(entry.kind === "alarm" && entry.everySeconds !== undefined ? { everySeconds: entry.everySeconds } : {}),
   ...(entry.kind === "monitor"
-    ? { command: entry.command, intervalSeconds: entry.intervalSeconds, ...(entry.until === undefined ? {} : { until: entry.until }) }
+    ? {
+        command: entry.command,
+        intervalSeconds: entry.intervalSeconds,
+        ...(entry.until === undefined ? {} : { until: entry.until }),
+        ...(entry.repeat === undefined ? {} : { repeat: entry.repeat }),
+      }
     : {}),
 })
 
@@ -437,6 +518,42 @@ export const Cancelled = Schema.Union([
   Schema.Struct({ outcome: Schema.Literal("refused"), reason: Schema.String }),
 ])
 export type Cancelled = typeof Cancelled.Type
+
+/** What `set` takes: the session, and the alarm or the monitor as its tool would. */
+export const SetAsk = Schema.Union([
+  Schema.Struct({
+    sessionID: Schema.String,
+    wake: Schema.Struct({
+      afterSeconds: Schema.optional(Schema.Number),
+      at: Schema.optional(Schema.String),
+      everySeconds: Schema.optional(Schema.Number),
+      mode: Schema.optional(Mode),
+      note: Schema.String,
+    }),
+  }),
+  Schema.Struct({
+    sessionID: Schema.String,
+    monitor: Schema.Struct({
+      command: Schema.String,
+      cwd: Schema.optional(Schema.String),
+      intervalSeconds: Schema.optional(Schema.Number),
+      until: Schema.optional(Schema.String),
+      timeoutSeconds: Schema.optional(Schema.Number),
+      mode: Schema.optional(Mode),
+      note: Schema.String,
+      repeat: Schema.optional(Repeat),
+      baseline: Schema.optional(Schema.String),
+    }),
+  }),
+])
+export type SetAsk = typeof SetAsk.Type
+
+/** What `set` answers: the entry's id, or the refusal its tool would give. */
+export const Armed = Schema.Union([
+  Schema.Struct({ outcome: Schema.Literal("set"), id: Schema.String }),
+  Schema.Struct({ outcome: Schema.Literal("refused"), reason: Schema.String }),
+])
+export type Armed = typeof Armed.Type
 
 /** The event the server publishes on every change: its full type, as the TUI's event stream carries it. */
 export const CHANGED = `rpc.${WAKES.id}.changed`

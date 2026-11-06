@@ -74,6 +74,28 @@ describe("a monitor's letter", () => {
     expect(letter.text).toContain("It gave up 10m late")
     expect(letter.text).toContain("Last output (exit none: the check ran out of time):\n(none)")
   })
+
+  test("a repeat's fire is short: what it saw and which fire, how it goes on, the note and the output's tail, the command only cut", () => {
+    const long = `echo ${"21396 ".repeat(40)}| xargs gh pr view`
+    const letter = monitorLetter({ ...monitor, mode: "wake", repeat: "change", fired: 2, command: long }, "matched", 9, { ...check, stdout: "21396 APPROVED" }, monitor.setAt + 90_000)
+    expect(letter.text.split("\n")).toEqual([
+      `⏰ Monitor w000003 changed (fire 3): \`${excerpt(long, 80)}\`.`,
+      'It keeps checking every 30s until 2023-11-14T22:43:20.000Z; wake_cancel({ id: "w000003" }) stops it.',
+      "Note: The deploy is live: tell the user.",
+      "Output (exit 0):",
+      "21396 APPROVED",
+    ])
+    expect(letter.text.length).toBeLessThan(400)
+    expect(letter.description).toBe("monitor w000003 changed · The deploy is live: tell the user.")
+    expect(letter.metadata).toMatchObject({ outcome: "matched", repeat: "change", fires: 3 })
+    expect(monitorLetter({ ...monitor, repeat: "match" }, "matched", 1, check, monitor.setAt).text).toStartWith("⏰ Monitor w000003 matched (fire 1): ")
+  })
+
+  test("a repeat's end at its deadline says how many fires it made", () => {
+    const letter = monitorLetter({ ...monitor, repeat: "match", fired: 1 }, "timed-out", 60, check, monitor.deadline)
+    expect(letter.text.split("\n")[0]).toBe("⏰ Monitor w000003 ended: its deadline 2023-11-14T22:43:20.000Z passed after 1 fire; `curl -fsS localhost:3000/health`.")
+    expect(letter.description).toBe("monitor w000003 ended · The deploy is live: tell the user.")
+  })
 })
 
 describe("receipts and the listing", () => {
@@ -93,6 +115,14 @@ describe("receipts and the listing", () => {
 
   test("a monitor names its command, pattern and deadline", () => {
     expect(monitorReceipt(monitor, now)).toContain("runs `curl -fsS localhost:3000/health` in /work/app every 30s until its stdout matches /ok/, and gives up at 2023-11-14T22:43:20.000Z (in 30m)")
+  })
+
+  test("a repeating monitor says how it goes on and until when; the listing says it repeats", () => {
+    expect(monitorReceipt({ ...monitor, repeat: "change" }, now).split("\n")[0]).toBe(
+      "Monitor w000003 set: it runs `curl -fsS localhost:3000/health` in /work/app every 30s and fires each time its matching output changes (a match: stdout matches /ok/; the first match is the baseline), until 2023-11-14T22:43:20.000Z (in 30m).",
+    )
+    expect(monitorReceipt({ ...monitor, repeat: "match", until: undefined }, now)).toContain("fires on each new match (a match: exit 0)")
+    expect(listing([{ ...monitor, repeat: "match", fired: 2 }], [], now)).toContain("· until /ok/ · repeats: fires on each new match, 2 so far · ends 2023-11-14T22:43:20.000Z (in 30m) ·")
   })
 
   test("cancel and list", () => {

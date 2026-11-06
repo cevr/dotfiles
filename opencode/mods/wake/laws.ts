@@ -47,6 +47,17 @@ export const monitor: Monitor = {
   deadline: SET + 1_800_000,
 }
 
+export const watching: Monitor = {
+  ...monitor,
+  id: "w000005",
+  mode: "wake",
+  repeat: "change",
+  matching: true,
+  seen: "811c9dc5",
+  fired: 2,
+  firing: { delivery: "msg_w", text: "Monitor", description: "monitor w000005 changed", metadata: { source: "wake" }, firedAt: SET + 60_000, tick: SET + 60_000, again: true },
+}
+
 export const latch: Latch = {
   kind: "latch",
   id: "w000004",
@@ -98,16 +109,17 @@ export const storeLaws = (name: string, make: Effect.Effect<StoreProbe, never, S
       scenario(
         Effect.gen(function* () {
           const run = using(yield* make)
-          for (const entry of [alarm, repeating, monitor, latch]) yield* run((store) => store.write(entry))
+          for (const entry of [alarm, repeating, monitor, watching, latch]) yield* run((store) => store.write(entry))
           expect(yield* run((store) => store.read(alarm.id))).toEqual(alarm)
           expect(yield* run((store) => store.read(repeating.id))).toEqual(repeating)
           expect(yield* run((store) => store.read(monitor.id))).toEqual(monitor)
+          expect(yield* run((store) => store.read(watching.id))).toEqual(watching)
           expect(yield* run((store) => store.read(latch.id))).toEqual(latch)
           const moved = { ...alarm, dueAt: alarm.dueAt + 1 }
           yield* run((store) => store.write(moved))
           expect(yield* run((store) => store.read(alarm.id))).toEqual(moved)
-          expect((yield* run((store) => store.entries)).map((entry) => entry.id).toSorted()).toEqual([alarm.id, repeating.id, monitor.id, latch.id])
-          expect((yield* run((store) => store.ids)).toSorted()).toEqual([alarm.id, repeating.id, monitor.id, latch.id])
+          expect((yield* run((store) => store.entries)).map((entry) => entry.id).toSorted()).toEqual([alarm.id, repeating.id, monitor.id, latch.id, watching.id])
+          expect((yield* run((store) => store.ids)).toSorted()).toEqual([alarm.id, repeating.id, monitor.id, latch.id, watching.id])
         }),
       ))
 

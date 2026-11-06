@@ -241,6 +241,123 @@ describe("a monitor", () => {
     ))
 })
 
+describe("a repeating monitor", () => {
+  const monitorOf = (w: World, id: string) => {
+    const entry = w.store.entries.get(id)
+    return entry?.kind === "monitor" ? entry : undefined
+  }
+
+  test("match: wakes on each new match, not on a match after a match, and keeps checking with its OS job", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const c = MemoryChecks.check
+        w.checks.answers.set("ci", [c(1, "red"), c(0, "green 1"), c(0, "green 1"), c(1, "red"), c(0, "green 2"), c(0, "green 2")])
+        const { model } = yield* server(w)
+        const placed = yield* model.monitor("ses_a", { command: "ci", intervalSeconds: 5, repeat: "match", note: "main is green again" })
+        yield* settle
+        expect(inbox(w)).toEqual([])
+        yield* until(5 * SECOND)
+        expect(texts(w)).toHaveLength(1)
+        expect(texts(w)[0]).toStartWith(`⏰ Monitor ${placed.entry.id} matched (fire 1): \`ci\`.`)
+        expect(texts(w)[0]).toContain("Note: main is green again\nOutput (exit 0):\ngreen 1")
+        yield* until(15 * SECOND)
+        expect(texts(w)).toHaveLength(1)
+        yield* until(20 * SECOND)
+        expect(texts(w)).toHaveLength(2)
+        expect(texts(w)[1]).toContain("(fire 2)")
+        expect(texts(w)[1]).toContain("green 2")
+        yield* until(30 * SECOND)
+        expect(texts(w)).toHaveLength(2)
+        expect(inbox(w).map((message) => message.resume)).toEqual([true, true])
+        expect(monitorOf(w, placed.entry.id)).toMatchObject({ matching: true, fired: 2 })
+        expect(firingOf(w.store.entries.get(placed.entry.id))).toBeUndefined()
+        expect(w.jobs.jobs.has(titleOf(placed.entry.id))).toBe(true)
+      }),
+    ))
+
+  test("change: the first match is the baseline; it wakes when the output changes, not when it stays, nor on a failed check, and the baseline outlives a reload", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const c = MemoryChecks.check
+        w.checks.answers.set("prs", [c(0, "7 PENDING"), c(0, "7 PENDING"), c(0, "7 APPROVED"), c(1, "", "rate limited"), c(0, "7 APPROVED")])
+        const first = yield* server(w)
+        const placed = yield* first.model.monitor("ses_a", { command: "prs", intervalSeconds: 5, repeat: "change", note: "a review changed" })
+        yield* until(5 * SECOND)
+        expect(inbox(w)).toEqual([])
+        yield* until(10 * SECOND)
+        expect(texts(w)).toHaveLength(1)
+        expect(texts(w)[0]).toStartWith(`⏰ Monitor ${placed.entry.id} changed (fire 1)`)
+        expect(texts(w)[0]).toContain("7 APPROVED")
+        yield* until(15 * SECOND)
+        yield* first.stop
+        const second = yield* server(w)
+        yield* second.model.start
+        yield* until(MINUTE)
+        expect(texts(w)).toHaveLength(1)
+        expect(monitorOf(w, placed.entry.id)?.fired).toBe(1)
+      }),
+    ))
+
+  test("a baseline given at set time is the first output it compares with", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        w.checks.answers.set("prs", [MemoryChecks.check(0, "7 APPROVED")])
+        const { model } = yield* server(w)
+        yield* model.monitor("ses_a", { command: "prs", intervalSeconds: 5, repeat: "change", baseline: "7 PENDING\n", note: "a review changed" })
+        yield* settle
+        expect(texts(w)).toHaveLength(1)
+        expect(texts(w)[0]).toContain("changed (fire 1)")
+      }),
+    ))
+
+  test("ends at its deadline with a last letter that counts its fires, then goes with its OS job", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const c = MemoryChecks.check
+        w.checks.answers.set("q", [c(0, "a"), c(0, "b"), c(0, "c")])
+        const { model } = yield* server(w)
+        const placed = yield* model.monitor("ses_a", { command: "q", intervalSeconds: 10, timeoutSeconds: 25, repeat: "change", note: "queue moved" })
+        yield* until(25 * SECOND)
+        expect(texts(w).map((text) => text.split("\n")[0])).toEqual([
+          `⏰ Monitor ${placed.entry.id} changed (fire 1): \`q\`.`,
+          `⏰ Monitor ${placed.entry.id} changed (fire 2): \`q\`.`,
+          `⏰ Monitor ${placed.entry.id} ended: its deadline 1970-01-01T00:00:25.000Z passed after 2 fires; \`q\`.`,
+        ])
+        expect(w.store.entries.size).toBe(0)
+        expect(w.jobs.jobs.size).toBe(0)
+      }),
+    ))
+
+  test("a match fire cut short by a reload goes again under its id once, and the monitor goes on", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const c = MemoryChecks.check
+        w.checks.answers.set("ci", [c(0, "green"), c(1, "red"), c(0, "green again")])
+        const first = yield* server(w)
+        w.sessions.refusing.set("ses_a", "reloading")
+        const placed = yield* first.model.monitor("ses_a", { command: "ci", intervalSeconds: 5, repeat: "match", note: "green" })
+        yield* settle
+        const firing = firingOf(w.store.entries.get(placed.entry.id))
+        expect(firing?.again).toBe(true)
+        yield* first.stop
+        w.sessions.refusing.delete("ses_a")
+        const second = yield* server(w)
+        yield* second.model.start
+        yield* settle
+        expect(inbox(w).map((message) => message.id)).toEqual([firing?.delivery ?? ""])
+        expect(monitorOf(w, placed.entry.id)).toMatchObject({ matching: true, fired: 1 })
+        yield* until(10 * SECOND)
+        expect(texts(w)).toHaveLength(2)
+        expect(texts(w)[1]).toContain("(fire 2)")
+      }),
+    ))
+})
+
 describe("setting and cancelling", () => {
   test("cancel stops a wake and drops its job; an unknown id is refused, naming what is pending", () =>
     run(

@@ -7,7 +7,7 @@
 import type { Schema } from "effect"
 import { type JobSpec, type Launched, LOG_TAIL, type Run } from "./job.ts"
 import type { Latch } from "./latch.ts"
-import { type Alarm, type Check, dueOf, type Entry, type Fired, type Fresh, type Job, type Monitor, type Notice } from "./wake.ts"
+import { type Alarm, type Check, dueOf, type Entry, type Fired, type Fresh, type Job, type Monitor, type Notice, type Repeat } from "./wake.ts"
 
 /** A fire as the session reads it. */
 export interface Letter {
@@ -101,6 +101,7 @@ export type Outcome = "matched" | "timed-out"
 
 /** The message a monitor's end carries: how it ended, after how many checks, the note, and the last output's tail. */
 export const monitorLetter = (monitor: Monitor, outcome: Outcome, checks: number, last: Check | undefined, firedAt: number): Letter => {
+  if (monitor.repeat !== undefined) return repeatLetter(monitor, monitor.repeat, outcome, checks, last, firedAt)
   const done = monitor.until === undefined ? "exited 0" : `printed a match for /${monitor.until}/`
   const head =
     outcome === "matched"
@@ -120,6 +121,40 @@ export const monitorLetter = (monitor: Monitor, outcome: Outcome, checks: number
     metadata: metadataOf(monitor, outcome === "matched" ? firedAt : monitor.deadline, firedAt, { outcome, checks }),
   }
 }
+
+/** How much of a repeating monitor's command its letter names. */
+export const LINE_COMMAND = 80
+
+/**
+ * A repeating monitor's fire, kept short since it comes again: what it saw
+ * (`matched`, `changed`) or that it ended at its deadline, which fire this is,
+ * the note, and the last output's tail; the command only as an excerpt.
+ */
+const repeatLetter = (monitor: Monitor, repeat: Repeat, outcome: Outcome, checks: number, last: Check | undefined, firedAt: number): Letter => {
+  const fires = (monitor.fired ?? 0) + (outcome === "matched" ? 1 : 0)
+  const saw = repeat === "change" ? "changed" : "matched"
+  const head =
+    outcome === "matched"
+      ? `⏰ Monitor ${monitor.id} ${saw} (fire ${fires}): \`${excerpt(monitor.command, LINE_COMMAND)}\`.`
+      : `⏰ Monitor ${monitor.id} ended: its deadline ${isoOf(monitor.deadline)} passed after ${fires} ${fires === 1 ? "fire" : "fires"}; \`${excerpt(monitor.command, LINE_COMMAND)}\`.`
+  const output = last === undefined ? "" : tailOf([last.stdout, last.stderr].filter((part) => part.trim() !== "").join("\n"))
+  return {
+    text: [
+      head,
+      ...(outcome === "matched"
+        ? [`It keeps checking every ${durationOf(monitor.intervalSeconds * 1000)} until ${isoOf(monitor.deadline)}; wake_cancel({ id: "${monitor.id}" }) stops it.`]
+        : lateLine("ended", monitor.deadline, firedAt)),
+      ...noticeLine(monitor),
+      `Note: ${monitor.note}`,
+      ...(last === undefined ? [] : [`Output (exit ${last.timedOut ? "none: the check ran out of time" : last.exitCode}):`, output === "" ? "(none)" : output]),
+    ].join("\n"),
+    description: rowOf(`monitor ${monitor.id} ${outcome === "matched" ? saw : "ended"}`, outcome === "matched" ? firedAt : monitor.deadline, firedAt, monitor.note),
+    metadata: metadataOf(monitor, outcome === "matched" ? firedAt : monitor.deadline, firedAt, { outcome, checks, repeat, fires }),
+  }
+}
+
+const repeatPhrase = (monitor: Monitor) =>
+  monitor.repeat === "change" ? "fires each time its matching output changes" : "fires on each new match"
 
 // ── Jobs ──
 
@@ -282,6 +317,18 @@ export const alarmReceipt = (alarm: Alarm, now: number, warning?: string): strin
 
 /** What the `monitor` tool answers. */
 export const monitorReceipt = (monitor: Monitor, now: number, warning?: string): string =>
+  monitor.repeat === undefined ? onceReceipt(monitor, now, warning) : repeatReceipt(monitor, now, warning)
+
+const repeatReceipt = (monitor: Monitor, now: number, warning?: string): string =>
+  [
+    `Monitor ${monitor.id} set: it runs \`${excerpt(monitor.command, LINE_COMMAND)}\` in ${monitor.cwd} every ${durationOf(monitor.intervalSeconds * 1000)} and ${repeatPhrase(monitor)} (${
+      monitor.until === undefined ? "a match: exit 0" : `a match: stdout matches /${monitor.until}/`
+    }${monitor.repeat === "change" ? (monitor.seen === undefined ? "; the first match is the baseline" : "; it starts from the baseline given") : ""}), until ${inOf(monitor.deadline, now)}.`,
+    ...(warning === undefined ? [] : [warning]),
+    `Each fire carries your note and the output's tail. End your turn now unless there is other work; wake_cancel({ id: "${monitor.id}" }) stops it.`,
+  ].join("\n")
+
+const onceReceipt = (monitor: Monitor, now: number, warning?: string): string =>
   [
     `Monitor ${monitor.id} set: it runs \`${monitor.command}\` in ${monitor.cwd} every ${durationOf(monitor.intervalSeconds * 1000)} until ${
       monitor.until === undefined ? "it exits 0" : `its stdout matches /${monitor.until}/`
@@ -316,7 +363,8 @@ const listingOf = (entry: Entry, now: number): string => {
   return [
     `- ${entry.id}: monitor · ${entry.mode} · \`${entry.command}\` every ${durationOf(entry.intervalSeconds * 1000)}`,
     entry.until === undefined ? "until exit 0" : `until /${entry.until}/`,
-    `gives up ${inOf(entry.deadline, now)}`,
+    ...(entry.repeat === undefined ? [] : [`repeats: ${repeatPhrase(entry)}${entry.fired === undefined ? "" : `, ${entry.fired} so far`}`]),
+    `${entry.repeat === undefined ? "gives up" : "ends"} ${inOf(entry.deadline, now)}`,
     `note: ${entry.note}`,
   ].join(" · ")
 }

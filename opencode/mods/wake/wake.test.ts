@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { alarmOf, dueAtOf, matched, MAX_AHEAD_SECONDS, monitorOf, nextDueAt, WakeRejected } from "./wake.ts"
+import { alarmOf, dueAtOf, fingerprint, matched, MAX_AHEAD_SECONDS, MAX_REPEAT_TIMEOUT_SECONDS, monitorOf, moved, nextDueAt, stepOf, WakeRejected } from "./wake.ts"
 
 const NOW = Date.parse("2026-11-05T14:00:00.250Z")
 const place = { id: "w000001", sessionID: "ses_a", directory: "/work/app", now: NOW }
@@ -84,6 +84,56 @@ describe("monitorOf", () => {
     expect(reason(monitorOf({ ...ask, timeoutSeconds: 0 }, place))).toContain("at most 86400")
     expect(reason(monitorOf({ ...ask, timeoutSeconds: 86_401 }, place))).toContain("at most 86400")
     expect(reason(monitorOf({ ...ask, cwd: "src" }, place))).toContain("absolute")
+  })
+
+  test("a repeat watches a day by default and up to 30 days; a baseline is for a change repeat and is kept as its fingerprint", () => {
+    const ask = { command: "gh pr list", note: "n" }
+    const day = monitorOf({ ...ask, repeat: "match" }, place)
+    expect(day instanceof WakeRejected ? undefined : [day.repeat, day.deadline]).toEqual(["match", NOW + 86_400_000])
+    const month = monitorOf({ ...ask, repeat: "change", timeoutSeconds: MAX_REPEAT_TIMEOUT_SECONDS, baseline: "7 OPEN\n" }, place)
+    expect(month instanceof WakeRejected ? undefined : [month.deadline, month.seen]).toEqual([NOW + MAX_REPEAT_TIMEOUT_SECONDS * 1000, fingerprint("7 OPEN")])
+    expect(reason(monitorOf({ ...ask, repeat: "change", timeoutSeconds: MAX_REPEAT_TIMEOUT_SECONDS + 1 }, place))).toContain(`at most ${MAX_REPEAT_TIMEOUT_SECONDS}`)
+    expect(reason(monitorOf({ ...ask, baseline: "x" }, place))).toBe('a baseline is for repeat: "change"')
+    expect(reason(monitorOf({ ...ask, repeat: "often" as never }, place))).toContain('repeat is "match" or "change"')
+  })
+})
+
+describe("stepOf", () => {
+  const check = (exitCode: number, stdout: string) => ({ exitCode, stdout, stderr: "", timedOut: false })
+  const base = monitorOf({ command: "c", note: "n" }, place)
+  if (base instanceof WakeRejected) throw base
+
+  test("a one-shot fires on a match and keeps nothing", () => {
+    expect(stepOf(base, check(0, "x"))).toEqual({ fire: true, state: {} })
+    expect(stepOf(base, check(1, "x"))).toEqual({ fire: false, state: {} })
+  })
+
+  test("a match repeat fires on a match after a miss, or its first, not on a match after a match", () => {
+    const repeat = { ...base, repeat: "match" as const }
+    expect(stepOf(repeat, check(0, "x"))).toEqual({ fire: true, state: { matching: true } })
+    expect(stepOf({ ...repeat, matching: true }, check(0, "x"))).toEqual({ fire: false, state: { matching: true } })
+    expect(stepOf({ ...repeat, matching: true }, check(1, "x"))).toEqual({ fire: false, state: { matching: false } })
+    expect(stepOf({ ...repeat, matching: false }, check(0, "x"))).toEqual({ fire: true, state: { matching: true } })
+  })
+
+  test("a change repeat takes its first match as the baseline, fires when a match's stdout differs, and a miss leaves it", () => {
+    const repeat = { ...base, repeat: "change" as const }
+    expect(stepOf(repeat, check(0, "a"))).toEqual({ fire: false, state: { seen: fingerprint("a") } })
+    const seen = { ...repeat, seen: fingerprint("a") }
+    expect(stepOf(seen, check(0, " a\n"))).toEqual({ fire: false, state: { seen: fingerprint("a") } })
+    expect(stepOf(seen, check(0, "b"))).toEqual({ fire: true, state: { seen: fingerprint("b") } })
+    expect(stepOf(seen, check(1, "b"))).toEqual({ fire: false, state: { seen: fingerprint("a") } })
+    expect(moved(seen, { seen: fingerprint("a") })).toBe(false)
+    expect(moved(seen, { seen: fingerprint("b") })).toBe(true)
+    expect(moved({ ...base, repeat: "match", matching: true }, { matching: false })).toBe(true)
+  })
+})
+
+describe("fingerprint", () => {
+  test("is the same for the same trimmed text and differs for another", () => {
+    expect(fingerprint("7 OPEN\n")).toBe(fingerprint("7 OPEN"))
+    expect(fingerprint("7 OPEN")).not.toBe(fingerprint("7 MERGED"))
+    expect(fingerprint("")).toMatch(/^[0-9a-f]{8}$/)
   })
 })
 

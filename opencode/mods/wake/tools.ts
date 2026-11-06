@@ -4,7 +4,16 @@
 // Anthropic's API.
 import { Schema } from "effect"
 import { DEFAULT_JOB_TIMEOUT_SECONDS, DEFAULT_WAIT_MS, MAX_JOB_TIMEOUT_SECONDS, MAX_WAIT_MS } from "./job.ts"
-import { DEFAULT_INTERVAL_SECONDS, DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, MIN_EVERY_SECONDS, Mode } from "./wake.ts"
+import {
+  DEFAULT_INTERVAL_SECONDS,
+  DEFAULT_REPEAT_TIMEOUT_SECONDS,
+  DEFAULT_TIMEOUT_SECONDS,
+  MAX_REPEAT_TIMEOUT_SECONDS,
+  MAX_TIMEOUT_SECONDS,
+  MIN_EVERY_SECONDS,
+  Mode,
+  Repeat,
+} from "./wake.ts"
 
 export const NAMES = { wake: "wake", monitor: "monitor", cancel: "wake_cancel", list: "wake_list", job: "job" } as const
 
@@ -37,10 +46,14 @@ export const MonitorInput = Schema.Struct({
   intervalSeconds: Schema.optional(Schema.Number).annotate({ description: `Seconds between checks. Default ${DEFAULT_INTERVAL_SECONDS}.` }),
   until: Schema.optional(Schema.String).annotate({ description: "Regular expression; when it matches the command's stdout (multiline) the monitor is done." }),
   timeoutSeconds: Schema.optional(Schema.Number).annotate({
-    description: `Give up after this long and wake anyway. Default ${DEFAULT_TIMEOUT_SECONDS}, at most ${MAX_TIMEOUT_SECONDS}.`,
+    description: `Give up after this long and wake anyway (a repeat: stop watching, and say so). Default ${DEFAULT_TIMEOUT_SECONDS}, at most ${MAX_TIMEOUT_SECONDS}; with repeat default ${DEFAULT_REPEAT_TIMEOUT_SECONDS}, at most ${MAX_REPEAT_TIMEOUT_SECONDS}.`,
   }),
   mode: Schema.optional(WakeMode),
   note: Schema.String.annotate({ description: "What to do when the monitor wakes you. Arrives verbatim in the wake message." }),
+  repeat: Schema.optional(Repeat).annotate({
+    description:
+      "Keep watching after a match instead of ending. `match`: wake on each new match (a match after a check that did not match). `change`: wake each time a matching check's stdout differs from the last one's; the first match is the baseline. Omit for one wake.",
+  }),
 })
 export type MonitorInput = typeof MonitorInput.Type
 
@@ -66,6 +79,7 @@ export const MONITOR_DESCRIPTION = [
   "- One monitor replaces a loop of shell checks: give the check as a command that exits 0 when done, or an `until` regex on its output, then answer and stop.",
   "- Set intervalSeconds to how fast the thing changes; a CI run needs a check every minute, not every second.",
   "- The wake message carries the last output, so make the command print what you will need to decide the next step.",
+  '- repeat watches something that changes more than once (several PRs\' review states, a queue): `repeat: "change"` wakes you each time the output changes, `repeat: "match"` on each new match; it keeps going until its timeout or wake_cancel. For pull requests prefer the pr tool\'s watch.',
   "- It runs while an OpenCode server runs; if none runs at its deadline, an OS job starts one to finish it.",
 ].join("\n")
 
