@@ -36,12 +36,12 @@ export interface FakeWorld {
   readonly tags?: Readonly<Record<string, string>>
 }
 
-/** Writes the stand-in into `bin/gh` and the world into `world.json` under `dir`; the env to run gh with. */
-export const install = (dir: string, world: FakeWorld) => {
+/** Writes the stand-in (this file, at `source` when bundled elsewhere) into `bin/gh` and the world into `world.json` under `dir`; the env to run gh with. */
+export const install = (dir: string, world: FakeWorld, source: string = import.meta.path) => {
   const bin = join(dir, "bin")
   mkdirSync(bin, { recursive: true })
   const file = join(dir, "world.json")
-  writeFileSync(join(bin, "gh"), `#!${process.execPath}\nconst { main } = await import(${JSON.stringify(import.meta.path)})\nmain()\n`)
+  writeFileSync(join(bin, "gh"), `#!${process.execPath}\nconst { main } = await import(${JSON.stringify(source)})\nmain()\n`)
   chmodSync(join(bin, "gh"), 0o755)
   const put = (next: FakeWorld) => writeFileSync(file, JSON.stringify(next))
   put(world)
