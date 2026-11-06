@@ -11,7 +11,7 @@ import { partOf } from "../session.ts"
 import type { Host } from "../tui/host.ts"
 import { contextUsage } from "../usage.ts"
 import { openShells } from "./shells.ts"
-import { readWakes } from "./wakes.ts"
+import { cancelWake, readWakes } from "./wakes.ts"
 
 /** The Host over `context`, with each session's goal read through `goal` (`goals` in opencode/goal.ts). */
 export function host(context: Plugin.Context, goal: (sessionID: string) => Goal | undefined): Host {
@@ -57,6 +57,11 @@ export function host(context: Plugin.Context, goal: (sessionID: string) => Goal 
       context.keymap.dispatch("session.child.first")
     },
     openShells: (sessionID) => void openShells(context, sessionID),
+    cancelWake: (sessionID, id) => cancelWake(context, sessionID, id),
+    showDetail: (title, message) => void context.ui.dialog.alert({ title, message }),
+    notify: (message, tone) => context.ui.toast.show({ message, variant: tone }),
+    // Priority 1, as the host's own tabs bind theirs; the tab mounts only while it is the active one.
+    composerKeys: (commands) => context.keymap.layer(() => ({ mode: "composer", priority: 1, commands: [...commands()] })),
     Markdown: context.ui.Markdown,
     Code: context.ui.Code,
   }

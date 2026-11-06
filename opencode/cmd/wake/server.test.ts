@@ -16,7 +16,7 @@ import * as MemoryCourier from "@dotfiles/opencode-wake/memory/courier"
 import * as MemoryOpener from "@dotfiles/opencode-wake/memory/opener"
 import * as MemoryRunner from "@dotfiles/opencode-wake/memory/runner"
 import * as MemoryStore from "@dotfiles/opencode-wake/memory/store"
-import { Due, Pending, WAKES } from "@dotfiles/opencode-wake/wake"
+import { Cancelled, Due, Pending, WAKES } from "@dotfiles/opencode-wake/wake"
 import WakePlugin, { make } from "./server.ts"
 
 type Host = Parameters<(typeof WakePlugin)["effect"]>[0]
@@ -109,8 +109,9 @@ const start = (
     const pending = (...sessionIDs: ReadonlyArray<string>) => method("pending", { sessionIDs }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Pending)), Effect.orDie)
     const due = (id: string) => method("due", { id }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Due)), Effect.orDie)
     const latched = (input: unknown) => method("latch", input).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Latched)), Effect.orDie)
+    const cancel = (input: unknown) => method("cancel", input).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Cancelled)), Effect.orDie)
     const inbox = (sessionID = "ses_root") => doubles.sessions.inboxes.get(sessionID) ?? []
-    return { added, call, fail, pending, due, latched, inbox, emitted, emit: (event: Event) => Queue.offer(events, event).pipe(Effect.andThen(settle())), doubles }
+    return { added, call, fail, pending, due, latched, cancel, inbox, emitted, emit: (event: Event) => Queue.offer(events, event).pipe(Effect.andThen(settle())), doubles }
   })
 
 describe("the wake tools", () => {
@@ -160,6 +161,25 @@ describe("the wake tools", () => {
         const id = /- (w[0-9a-z]{6}): alarm/.exec(listed)?.[1] ?? ""
         expect(yield* plugin.call("wake_cancel", { id })).toBe(`Cancelled ${id}.`)
         expect(yield* plugin.call("wake_list", {})).toContain("No alarms, monitors or latches pending.")
+      }),
+    ))
+
+  test("the tray's cancel RPC cancels one entry as wake_cancel does, and says why it refuses", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        yield* plugin.call("wake", { afterSeconds: 600, note: "later" })
+        yield* plugin.call("wake", { afterSeconds: 900, note: "kept" })
+        const [first, second] = (yield* plugin.pending("ses_root")).entries
+        const before = plugin.emitted.length
+        expect(yield* plugin.cancel({ sessionID: "ses_root", id: first?.id ?? "" })).toEqual({ outcome: "cancelled", ids: [first?.id ?? ""] })
+        expect((yield* plugin.pending("ses_root")).entries.map((entry) => entry.note)).toEqual(["kept"])
+        expect(plugin.emitted.slice(before)).toContainEqual(["changed", { sessionID: "ses_root" }])
+        expect(yield* plugin.cancel({ sessionID: "ses_root", id: "w000000" })).toEqual({
+          outcome: "refused",
+          reason: `No pending wake w000000 in this session. Pending: ${second?.id}.`,
+        })
+        expect(yield* plugin.cancel({ sessionID: "ses_root" })).toMatchObject({ outcome: "refused" })
       }),
     ))
 })

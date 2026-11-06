@@ -13,6 +13,7 @@ import { nextDetail, rowGap, type Detail } from "@dotfiles/opencode-prime/detail
 import { goals } from "@dotfiles/opencode-prime/opencode/goal"
 import { host } from "@dotfiles/opencode-prime/opencode/host"
 import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
+import { hints as wakeHints, WakeTab } from "@dotfiles/opencode-prime/tui/composer"
 import { Dock, GoalLine, ModeHint, Splash, TopBar, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
 import { SubagentRows } from "@dotfiles/opencode-prime/tui/live"
 import { Completion, StepEnd } from "@dotfiles/opencode-prime/tui/notice"
@@ -108,6 +109,15 @@ export default Plugin.define({
       replace: "prompt.footer",
       render: (input) => <Dock host={h} sessionID={input.sessionID} />,
     })
+
+    // The composer panel's Wakes and Monitors tabs, after the host's own (the fork's ui.composerTab; an older build has none).
+    for (const [id, title, tab] of [["wakes", "Wakes", "alarm"], ["monitors", "Monitors", "monitor"]] as const)
+      context.ui.composerTab?.({
+        id,
+        title,
+        hints: () => wakeHints,
+        render: (input) => <WakeTab host={h} sessionID={input.sessionID} tab={tab} close={input.close} />,
+      })
 
     context.keymap.layer(() => ({
       mode: "global",

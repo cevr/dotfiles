@@ -16,6 +16,8 @@ export type Palette = {
     readonly base: RGBA
     readonly muted: RGBA
     readonly faint: RGBA
+    /** A list row's text, and the highlighted row's. */
+    readonly action: { readonly primary: { readonly base: RGBA; readonly focused: RGBA } }
     readonly feedback: {
       readonly error: { readonly base: RGBA }
       readonly warning: { readonly base: RGBA }
@@ -32,7 +34,11 @@ export type Palette = {
     readonly background: { readonly added: RGBA; readonly removed: RGBA; readonly context: RGBA }
   }
   readonly border: { readonly base: RGBA }
-  readonly background: { readonly base: RGBA }
+  readonly background: {
+    readonly base: RGBA
+    /** A list row's ground, and the highlighted row's. */
+    readonly action: { readonly primary: { readonly base: RGBA; readonly focused: RGBA } }
+  }
 }
 
 /** Where the reader is in a session's transcript: the input of the host's transcript overlay. */
@@ -45,6 +51,9 @@ export type Overlay = {
   /** Scrolls the transcript so the message's first row is the viewport's top row. */
   readonly reveal: (messageID: string) => void
 }
+
+/** A key a composer tab binds: what it does, in the host's key syntax (`ctrl+d`). */
+export type ComposerKey = { readonly title: string; readonly bind: string; readonly run: () => void }
 
 export interface Host {
   /** The colours of the theme in use. */
@@ -69,6 +78,8 @@ export interface Host {
    * first reading, or with no session.
    */
   wakes(sessionID: Accessor<string | undefined>): Accessor<Wakes | undefined>
+  /** Cancels one of the session's alarms or monitors, as `wake_cancel` does: why not, or undefined once it went. */
+  cancelWake(sessionID: string, id: string): Promise<string | undefined>
   /** Every session of the session's family. */
   familyIDs(sessionID: string): ReadonlyArray<string>
   /** The session's family as the subagent rows read it. */
@@ -91,6 +102,15 @@ export interface Host {
   openSubagents(): void
   /** Opens the list of the session's shell commands, where the reader can read or kill one. */
   openShells(sessionID: string): void
+  /** Shows text in the host's alert dialog until the reader closes it. */
+  showDetail(title: string, message: string): void
+  /** A brief note at the screen's edge, as the host's toasts show. */
+  notify(message: string, tone: "info" | "error"): void
+  /**
+   * Binds keys while the composer panel has the input, for as long as the
+   * calling component lives: a composer tab's own keys.
+   */
+  composerKeys(commands: Accessor<ReadonlyArray<ComposerKey>>): void
 
   /** The host's markdown renderer, for text that reads like the transcript. */
   readonly Markdown: (props: { readonly content: string; readonly streaming?: boolean }) => JSX.Element
