@@ -7,7 +7,7 @@
 // repository lately (`recipients`).
 import { Effect, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
-import { type Check, groups, RepoName, short, verdict } from "./report.ts"
+import { type Check, failingLines, groups, RepoName, short, verdict } from "./report.ts"
 
 /** A read of the default branch: its name, head commit and the checks at it. */
 export interface BranchRead {
@@ -91,13 +91,11 @@ export const branchNotice = (repo: string, read: BranchRead, event: TurnedRed | 
       title: `${repo} ${read.name} is green again`,
       text: `Default branch · ${repo} ${read.name} is green again at ${short(read.head)}.`,
     }
-  const failing = groups(read.checks).fail
   return {
     title: `${repo} ${read.name} turned red`,
     text: [
       `Default branch · ${repo} ${read.name} turned red at ${short(read.head)}: ${event.failing.join(", ")}`,
-      ...failing.flatMap((check) => (check.url === undefined ? [] : [`  ${check.name}: ${check.url}`])),
-      ...(detail === undefined ? [] : ["", detail]),
+      detail ?? failingLines(read.checks).join("\n"),
       "",
       "A red default branch fails every branch built on it; say whether your work caused it before you merge.",
     ].join("\n"),

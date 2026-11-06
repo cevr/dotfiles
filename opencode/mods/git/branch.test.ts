@@ -73,6 +73,6 @@ describe("who hears of it", () => {
     const read = at("b2b2b2b2b2", check("test", "fail"))
     const notice = branchNotice("biteinc/maitred", read, TurnedRed.make({ state: { head: "b2", verdict: "fail", red: true }, failing: ["test"] }))
     expect(notice.title).toBe("biteinc/maitred main turned red")
-    expect(notice.text).toContain("Default branch · biteinc/maitred main turned red at b2b2b2b2: test\n  test: https://ci/test")
+    expect(notice.text).toContain("Default branch · biteinc/maitred main turned red at b2b2b2b2: test\n  ✗ test · fail · https://ci/test")
   })
 })
