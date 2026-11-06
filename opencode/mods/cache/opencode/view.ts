@@ -32,7 +32,7 @@
 import { Option, Schema } from "effect"
 import type { Hits } from "../line.ts"
 import type { ModelTerms } from "../ledger.ts"
-import type { Opener, Span, Step, Timeline } from "../miss.ts"
+import type { Compaction, Opener, Span, Step, Timeline } from "../miss.ts"
 import type { Rate } from "../price.ts"
 import { familyOf, lifetimeMs, parseTtl } from "../ttl.ts"
 
@@ -119,30 +119,42 @@ const promptOf = (tokens: typeof Tokens.Type) => ({
   cacheWriteTokens: tokens.cache.write,
 })
 
+/** A step as one message reads, before its place in the session gives it an opener and a login. */
+export type StepReading = Omit<Step, "opener" | "login">
+
 /**
- * A session's steps and compactions, oldest first, from the messages the TUI
- * holds. `logins` names the pool login each assistant message went out on,
- * by its id, as far as the pool recorded it. A compaction's summary request
- * runs as the agent of the step before it.
+ * What one message brings to the timeline, read from it alone: a step (an
+ * assistant message), a compaction's summary request and the compaction, a
+ * compaction without one, an idle marker, an input that may open a turn, or
+ * nothing. A TUI keeps one per message (tui/ledger.tsx), so a change to one
+ * message reads that message again and no other.
  */
-export const timeline = (messages: ReadonlyArray<unknown>, logins: ReadonlyMap<string, string> = new Map()): Timeline => {
-  let opener: Opener = { id: "start", kind: "other" }
-  let opening = true
-  let agent: string | undefined
-  return messages.flatMap((value): Timeline => {
-    const assistant = decodeAssistant(value)
-    if (Option.isSome(assistant)) {
-      const message = assistant.value
-      const tools = message.content.flatMap((part): ReadonlyArray<Span> => {
-        const tool = decodeTool(part)
-        if (Option.isNone(tool) || tool.value.time.completed === undefined) return []
-        const at = tool.value.time.ran ?? tool.value.time.created
-        return [{ name: tool.value.name, at, ms: Math.max(0, tool.value.time.completed - at) }]
-      })
-      const tokens = message.tokens
-      const login = logins.get(message.id)
-      agent = message.agent ?? agent
-      const step: Step = {
+export type Reading =
+  | { readonly kind: "step"; readonly step: StepReading }
+  | { readonly kind: "summary"; readonly step: Omit<StepReading, "agent"> }
+  | { readonly kind: "compaction" }
+  | { readonly kind: "idle"; readonly opener: Opener }
+  | { readonly kind: "input"; readonly opener: Opener }
+  | { readonly kind: "none" }
+
+const NONE: Reading = { kind: "none" }
+const COMPACTION: Reading = { kind: "compaction" }
+
+/** One message's reading (`Reading`). */
+export const reading = (value: unknown): Reading => {
+  const assistant = decodeAssistant(value)
+  if (Option.isSome(assistant)) {
+    const message = assistant.value
+    const tools = message.content.flatMap((part): ReadonlyArray<Span> => {
+      const tool = decodeTool(part)
+      if (Option.isNone(tool) || tool.value.time.completed === undefined) return []
+      const at = tool.value.time.ran ?? tool.value.time.created
+      return [{ name: tool.value.name, at, ms: Math.max(0, tool.value.time.completed - at) }]
+    })
+    const tokens = message.tokens
+    return {
+      kind: "step",
+      step: {
         type: "step",
         id: message.id,
         model: modelKey(message.model.providerID, message.model.id),
@@ -150,18 +162,17 @@ export const timeline = (messages: ReadonlyArray<unknown>, logins: ReadonlyMap<s
         endedAt: message.time.streamed ?? message.time.completed ?? message.time.created,
         ...(tokens === undefined ? {} : { usage: promptOf(tokens) }),
         tools,
-        opener,
         closes: (message.finish !== undefined && !OPEN_FINISHES.has(message.finish)) || message.error !== undefined || message.retry !== undefined,
         ...(message.agent === undefined ? {} : { agent: message.agent }),
-        ...(login === undefined ? {} : { login }),
-      }
-      opening = false
-      return [step]
+      },
     }
-    const compacted = decodeCompacted(value)
-    if (Option.isSome(compacted)) {
-      const { id, model, tokens, time } = compacted.value
-      const request: Step = {
+  }
+  const compacted = decodeCompacted(value)
+  if (Option.isSome(compacted)) {
+    const { id, model, tokens, time } = compacted.value
+    return {
+      kind: "summary",
+      step: {
         type: "step",
         id,
         model: modelKey(model.providerID, model.id),
@@ -169,29 +180,85 @@ export const timeline = (messages: ReadonlyArray<unknown>, logins: ReadonlyMap<s
         endedAt: time.created,
         usage: promptOf(tokens),
         tools: [],
-        opener,
         closes: false,
-        ...(agent === undefined ? {} : { agent }),
         compaction: true,
-      }
-      return [request, { type: "compaction" }]
+      },
     }
-    const other = decodeOther(value)
-    if (Option.isNone(other)) return []
-    const { type, id, status, metadata } = other.value
-    if (type === "idle") {
-      opening = true
-      opener = { id, kind: "other" }
-      return []
-    }
-    if (type === "compaction") return status === "completed" ? [{ type: "compaction" }] : []
-    if (opening && INPUTS.has(type)) {
-      opening = false
-      opener = { id, kind: type === "user" ? "prompt" : type === "synthetic" && metadata?.source === "subagent" ? "subagent" : "other" }
-    }
-    return []
-  })
+  }
+  const other = decodeOther(value)
+  if (Option.isNone(other)) return NONE
+  const { type, id, status, metadata } = other.value
+  if (type === "idle") return { kind: "idle", opener: { id, kind: "other" } }
+  if (type === "compaction") return status === "completed" ? COMPACTION : NONE
+  if (INPUTS.has(type))
+    return { kind: "input", opener: { id, kind: type === "user" ? "prompt" : type === "synthetic" && metadata?.source === "subagent" ? "subagent" : "other" } }
+  return NONE
 }
+
+const START: Opener = { id: "start", kind: "other" }
+const COMPACTED = { type: "compaction" } as const
+
+/**
+ * Each reading's step as last placed: a reading is never changed, so the
+ * same reading with the same opener, login and agent is the same step, and a
+ * timeline put together again allocates only the steps whose place changed.
+ */
+const placed = new WeakMap<object, { readonly opener: Opener; readonly login: string | undefined; readonly agent: string | undefined; readonly step: Step }>()
+const place = (read: StepReading, opener: Opener, login: string | undefined, agent: string | undefined, make: () => Step): Step => {
+  const last = placed.get(read)
+  if (last !== undefined && last.opener === opener && last.login === login && last.agent === agent) return last.step
+  const step = make()
+  placed.set(read, { opener, login, agent, step })
+  return step
+}
+
+/**
+ * A session's steps and compactions, oldest first, from its messages'
+ * readings in order. `logins` names the pool login each assistant message
+ * went out on, by its id, as far as the pool recorded it. A compaction's
+ * summary request runs as the agent of the step before it.
+ */
+export const assemble = (readings: Iterable<Reading>, logins: ReadonlyMap<string, string> = new Map()): Timeline => {
+  let opener = START
+  let opening = true
+  let agent: string | undefined
+  const entries: Array<Step | Compaction> = []
+  for (const read of readings)
+    switch (read.kind) {
+      case "step": {
+        const { step } = read
+        const login = logins.get(step.id)
+        agent = step.agent ?? agent
+        entries.push(place(step, opener, login, undefined, () => ({ ...step, opener, ...(login === undefined ? {} : { login }) })))
+        opening = false
+        break
+      }
+      case "summary": {
+        const { step } = read
+        const by = agent
+        entries.push(place(step, opener, undefined, by, () => ({ ...step, opener, ...(by === undefined ? {} : { agent: by }) })), COMPACTED)
+        break
+      }
+      case "compaction":
+        entries.push(COMPACTED)
+        break
+      case "idle":
+        opening = true
+        opener = read.opener
+        break
+      case "input":
+        if (opening) {
+          opening = false
+          opener = read.opener
+        }
+        break
+    }
+  return entries
+}
+
+/** A session's steps and compactions, oldest first, from the messages the TUI holds (`assemble` of each one's `reading`). */
+export const timeline = (messages: ReadonlyArray<unknown>, logins: ReadonlyMap<string, string> = new Map()): Timeline =>
+  assemble(messages.map(reading), logins)
 
 /** `sessionID` and every session under it in its family. */
 export const descendants = <Location>(reads: Reads<Location>, sessionID: string): ReadonlyArray<string> => {
