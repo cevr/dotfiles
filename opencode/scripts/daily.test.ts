@@ -1,11 +1,12 @@
 // `bun run daily`'s config merge: ours replaces only what it owns, and the roles cross families.
-import { describe, expect, test } from "bun:test"
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs"
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { BUILTIN_BTW_OFF, CLAUDE_CACHE_TTL, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, pluginDir, poolEntry, roleModels } from "./daily.ts"
+import { exposedTests, HELD_BRANCH, mergeUpstream, type Options as UpstreamOptions } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
 const CMD = "/repo/opencode/cmd"
@@ -148,6 +149,176 @@ describe("the role models", () => {
       verifier: "anthropic/claude-opus-5-5",
       worker: "anthropic/claude-opus-5-5",
     })
+  })
+})
+
+describe("the upstream merge", () => {
+  // Real git on local repositories: `upstream` and `origin` are bare repos beside the fork, so
+  // nothing touches the network. A scratch git config keeps the owner's hooks and signing out.
+  const saved = { ...process.env }
+  beforeAll(() => {
+    Object.assign(process.env, {
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_AUTHOR_NAME: "daily test",
+      GIT_AUTHOR_EMAIL: "daily@test.invalid",
+      GIT_COMMITTER_NAME: "daily test",
+      GIT_COMMITTER_EMAIL: "daily@test.invalid",
+    })
+  })
+  afterAll(() => {
+    for (const key of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]) {
+      if (saved[key] === undefined) delete process.env[key]
+      else process.env[key] = saved[key]
+    }
+  })
+
+  const git = (dir: string, ...args: string[]) => {
+    const ran = Bun.spawnSync(["git", "-C", dir, ...args], { env: process.env, stdout: "pipe", stderr: "pipe" })
+    if (ran.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${ran.stderr.toString()}`)
+    return ran.stdout.toString().trim()
+  }
+  /** Commits `files` on `branch` of the bare repo `remote` through a scratch clone. */
+  const commitTo = (remote: string, branch: string, files: Record<string, string>) => {
+    const scratch = realpathSync(mkdtempSync(join(tmpdir(), "daily-push-")))
+    git(scratch, "clone", "--quiet", "--branch", branch, remote, ".")
+    for (const [file, text] of Object.entries(files)) writeFileSync(join(scratch, file), text)
+    git(scratch, "add", "-A")
+    git(scratch, "commit", "--quiet", "-m", `change ${Object.keys(files).join(" ")}`)
+    git(scratch, "push", "--quiet", "origin", branch)
+  }
+
+  /** upstream/dev and origin/prime-look share one root commit; the fork has prime-look checked out. */
+  const fixture = () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "daily-upstream-")))
+    const upstream = join(root, "upstream.git")
+    const origin = join(root, "origin.git")
+    const seed = join(root, "seed")
+    for (const dir of [upstream, origin, seed]) mkdirSync(dir)
+    git(upstream, "init", "--quiet", "--bare")
+    git(origin, "init", "--quiet", "--bare")
+    git(seed, "init", "--quiet", "-b", "dev")
+    writeFileSync(join(seed, "a.txt"), "one\n")
+    git(seed, "add", "-A")
+    git(seed, "commit", "--quiet", "-m", "root")
+    git(seed, "push", "--quiet", upstream, "dev")
+    git(seed, "push", "--quiet", origin, "dev:prime-look")
+    const fork = join(root, "fork")
+    git(root, "clone", "--quiet", "--branch", "prime-look", origin, fork)
+    git(fork, "remote", "add", "upstream", upstream)
+    const calls: string[] = []
+    const options = (overrides: Partial<UpstreamOptions> = {}): UpstreamOptions => ({
+      fork,
+      host: "Cristians-MacBook-Pro.local",
+      skip: false,
+      dryRun: false,
+      checks: async (dir) => {
+        calls.push(dir)
+        return { ok: true }
+      },
+      worktree: join(root, "state/upstream-merge"),
+      report: join(root, "state/upstream-conflict.md"),
+      log: () => {},
+      ...overrides,
+    })
+    const head = (dir: string, ref: string) => git(dir, "rev-parse", ref)
+    return { root, upstream, origin, fork, calls, options, head }
+  }
+
+  test("up to date: nothing merges, nothing runs, and a stale report goes", async () => {
+    const f = fixture()
+    const before = f.head(f.fork, "prime-look")
+    mkdirSync(join(f.root, "state"))
+    writeFileSync(f.options().report, "# old conflict\n")
+    expect(await mergeUpstream(f.options())).toEqual({ kind: "up-to-date" })
+    expect(f.head(f.fork, "prime-look")).toBe(before)
+    expect(f.calls).toEqual([])
+    expect(existsSync(f.options().report)).toBe(false)
+  })
+
+  test("a clean merge whose checks pass fast-forwards prime-look to it and pushes it to origin", async () => {
+    const f = fixture()
+    commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
+    commitTo(f.origin, "prime-look", { "c.txt": "ours\n" })
+    git(f.fork, "pull", "--quiet", "--ff-only", "origin", "prime-look")
+    const before = f.head(f.fork, "prime-look")
+    const outcome = await mergeUpstream(f.options())
+    expect(outcome).toMatchObject({ kind: "merged", from: before, commits: 1, pushed: true })
+    const merge = f.head(f.fork, "prime-look")
+    expect(merge).not.toBe(before)
+    // A merge commit: ours first, upstream's second, checked in the worktree, never in the fork.
+    expect(git(f.fork, "rev-list", "--parents", "-n", "1", merge).split(" ")).toEqual([merge, before, f.head(f.upstream, "dev")])
+    expect(f.calls).toEqual([f.options().worktree])
+    expect(f.head(f.origin, "prime-look")).toBe(merge)
+    // The fork had prime-look checked out, so its working tree followed.
+    expect(readFileSync(join(f.fork, "b.txt"), "utf8")).toBe("upstream\n")
+    expect(existsSync(f.options().report)).toBe(false)
+  })
+
+  test("a conflict aborts, leaves prime-look and origin unchanged, and reports the files", async () => {
+    const f = fixture()
+    commitTo(f.upstream, "dev", { "a.txt": "upstream\n" })
+    commitTo(f.origin, "prime-look", { "a.txt": "ours\n" })
+    git(f.fork, "pull", "--quiet", "--ff-only", "origin", "prime-look")
+    const before = f.head(f.fork, "prime-look")
+    const lines: string[] = []
+    const outcome = await mergeUpstream(f.options({ log: (line) => lines.push(line) }))
+    expect(outcome).toMatchObject({ kind: "conflict", files: ["a.txt"] })
+    expect(f.head(f.fork, "prime-look")).toBe(before)
+    expect(f.head(f.origin, "prime-look")).toBe(before)
+    expect(f.calls).toEqual([])
+    expect(lines).toContain("  a.txt")
+    expect(readFileSync(f.options().report, "utf8")).toContain("- a.txt")
+    // No merge left half-done in the worktree, and the fork's own tree untouched.
+    expect(existsSync(join(f.options().worktree, ".git"))).toBe(true)
+    expect(Bun.spawnSync(["git", "-C", f.options().worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD"]).exitCode).not.toBe(0)
+    expect(readFileSync(join(f.fork, "a.txt"), "utf8")).toBe("ours\n")
+  })
+
+  test("red checks leave prime-look and origin unchanged, keep the merge on a branch and report the check", async () => {
+    const f = fixture()
+    commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
+    const before = f.head(f.fork, "prime-look")
+    const outcome = await mergeUpstream(
+      f.options({ checks: async () => ({ ok: false, check: "typecheck packages/tui", log: "error TS2304: Cannot find name 'x'" }) }),
+    )
+    expect(outcome).toMatchObject({ kind: "red", check: "typecheck packages/tui" })
+    expect(f.head(f.fork, "prime-look")).toBe(before)
+    expect(f.head(f.origin, "prime-look")).toBe(before)
+    expect(f.head(f.fork, HELD_BRANCH)).toBe(outcome.kind === "red" ? outcome.merge : "")
+    const report = readFileSync(f.options().report, "utf8")
+    expect(report).toContain("typecheck packages/tui")
+    expect(report).toContain("error TS2304")
+    expect(existsSync(join(f.fork, "b.txt"))).toBe(false)
+  })
+
+  test("the workbox, and --no-upstream, skip it without fetching", async () => {
+    const f = fixture()
+    commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
+    expect(await mergeUpstream(f.options({ host: "bite-cristian" }))).toMatchObject({ kind: "skipped" })
+    expect(await mergeUpstream(f.options({ skip: true }))).toEqual({ kind: "skipped", reason: "--no-upstream" })
+    expect(Bun.spawnSync(["git", "-C", f.fork, "rev-parse", "-q", "--verify", "refs/remotes/upstream/dev"]).exitCode).not.toBe(0)
+    expect(existsSync(f.options().worktree)).toBe(false)
+  })
+
+  test("a dry run says what would merge and changes nothing", async () => {
+    const f = fixture()
+    commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
+    const before = f.head(f.fork, "prime-look")
+    expect(await mergeUpstream(f.options({ dryRun: true }))).toMatchObject({ kind: "would-merge", commits: 1 })
+    expect(f.head(f.fork, "prime-look")).toBe(before)
+    expect(existsSync(f.options().worktree)).toBe(false)
+    expect(f.calls).toEqual([])
+  })
+
+  test("the checks run Prime's, the TUI's CPU, mail and orchestrate acceptance tests", () => {
+    const tests = exposedTests(resolve(import.meta.dir, ".."))
+    expect(tests).toContain("./tests/prime-rows.test.ts")
+    expect(tests).toContain("./tests/tui-cpu.test.ts")
+    expect(tests).toContain("./tests/mail.test.ts")
+    expect(tests).toContain("./tests/orchestrate.test.ts")
+    expect(tests).not.toContain("./tests/mail-peer.test.ts")
+    expect(tests.every((file) => /\/(prime-[^/]+|tui-cpu|mail|orchestrate)\.test\.ts$/.test(file))).toBe(true)
   })
 })
 

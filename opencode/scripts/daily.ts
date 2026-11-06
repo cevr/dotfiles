@@ -1,5 +1,10 @@
 // `bun run daily`: makes the fork, with these mods loaded, the `opencode` a new terminal runs.
 //
+// 0. On the Mac, which owns the fork, merges upstream OpenCode into prime-look first, in a
+//    worktree of its own, and lands it only when the merge is clean and its checks pass
+//    (scripts/upstream.ts); a conflict or a red check leaves prime-look as it was, writes
+//    `~/.local/state/opencode-daily/upstream-conflict.md` and the install goes on. `--no-upstream`
+//    skips it; `--dry-run` fetches, says what it would merge and stops before anything else.
 // 1. Builds the fork in `OPENCODE_DEV` (default: the prime-look Rift) as a release binary
 //    (channel `latest`, version `<base>-prime.<commit>`), so it shares the installed OpenCode's
 //    database and background service; a version change restarts that service as ours.
@@ -18,6 +23,7 @@ import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } from "../testbeds/gamut/gamut.ts"
+import { forkChecks, mergeUpstream } from "./upstream.ts"
 
 const MODS = resolve(import.meta.dir, "../mods")
 const CMD = resolve(import.meta.dir, "../cmd")
@@ -190,11 +196,25 @@ if (import.meta.main) {
   const fork = resolve(process.env.OPENCODE_DEV || DEFAULT_FORK)
   const cli = join(fork, "packages/cli")
   if (!existsSync(join(cli, "script/build.ts"))) throw new Error(`no OpenCode checkout at ${fork}: set OPENCODE_DEV`)
-  const base = (JSON.parse(readFileSync(join(cli, "package.json"), "utf8")) as { version: string }).version
-  const commit = (await $`git -C ${fork} rev-parse --short=8 HEAD`.text()).trim()
-  const version = `${base}-prime.${commit}`
-  const target = `cli-${process.platform}-${process.arch}`
-  const built = join(cli, "dist", target, "bin/opencode")
+  // Step 0 (the Mac only): merge upstream OpenCode into prime-look (scripts/upstream.ts).
+  const state = join(home, ".local/state/opencode-daily")
+  const upstream = (dryRun: boolean) =>
+    mergeUpstream({
+      fork,
+      host: hostname(),
+      skip: process.argv.includes("--no-upstream"),
+      dryRun,
+      checks: forkChecks(resolve(import.meta.dir, ".."), process.env.GENT_SOURCE || join(home, "Developer/personal/.rifts/gent/untrack-local-settings")),
+      worktree: join(state, "upstream-merge"),
+      report: join(state, "upstream-conflict.md"),
+      log: console.log,
+    })
+  if (process.argv.includes("--dry-run")) {
+    const outcome = await upstream(true)
+    if (outcome.kind === "skipped") console.log(`upstream: skipped (${outcome.reason})`)
+    console.log("dry run: nothing merged, built or installed")
+    process.exit(0)
+  }
 
   // The workspace links and vendor packages the plugins import: OpenCode loads plugins in place and
   // installs nothing. The fork's modules are linked before the install, so it never writes through an
@@ -205,6 +225,23 @@ if (import.meta.main) {
   await linkFork()
   await $`bun install --frozen-lockfile`.cwd(resolve(import.meta.dir, "..")).quiet()
   await linkFork()
+
+  // After the links, since the merge's acceptance tests load the mods through them.
+  const outcome = await upstream(false)
+  if (outcome.kind === "skipped") console.log(`upstream: skipped (${outcome.reason})`)
+  if (outcome.kind === "merged") {
+    if ((await $`git -C ${fork} rev-parse HEAD`.text()).trim() === outcome.merge) {
+      // The build skips its install; the merge may have changed the fork's dependencies.
+      await $`bun install --frozen-lockfile`.cwd(fork).quiet()
+      await linkFork()
+    } else console.log(`upstream: ${fork} does not have prime-look checked out, so this build leaves the merge out`)
+  }
+
+  const base = (JSON.parse(readFileSync(join(cli, "package.json"), "utf8")) as { version: string }).version
+  const commit = (await $`git -C ${fork} rev-parse --short=8 HEAD`.text()).trim()
+  const version = `${base}-prime.${commit}`
+  const target = `cli-${process.platform}-${process.arch}`
+  const built = join(cli, "dist", target, "bin/opencode")
 
   if (!process.argv.includes("--skip-build")) {
     console.log(`building ${version} from ${fork}`)
