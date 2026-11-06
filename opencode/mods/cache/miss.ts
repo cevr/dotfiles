@@ -66,12 +66,27 @@ export interface Compaction {
 /** A session's steps and compactions, oldest first. */
 export type Timeline = ReadonlyArray<Step | Compaction>
 
+/** The first segment of a request's prompt that differs from the request before it (fingerprint.ts). */
+export interface PrefixChange {
+  /** `system[1] ¶4`, `tool shell`, `messages[12] user part 0 (text)`, `end of prompt`. */
+  readonly segment: string
+  /** About how many prompt tokens come before it. */
+  readonly offsetTokens: number
+}
+
 /** Why a prefix the previous request cached was billed again. */
 export type Cause =
   /** The step ran on another model; its cache holds nothing of this prefix. */
   | { readonly _tag: "ModelSwitch" }
-  /** Same model inside the lifetime, on a provider that writes its cache: the prefix itself changed (a moved cache marker, a changed system prompt or tool list). */
-  | { readonly _tag: "PrefixChanged" }
+  /**
+   * Same model inside the lifetime, on a provider that writes its cache: the
+   * prefix itself changed (a changed system prompt, tool list or earlier
+   * message). `change` names the first segment that changed, when the cache
+   * mod's server compared the two requests (request-log.ts).
+   */
+  | { readonly _tag: "PrefixChanged"; readonly change?: PrefixChange }
+  /** Inside the lifetime, on one login, the server saw the prefix unchanged and the cache still did not read it. */
+  | { readonly _tag: "Lost" }
   /**
    * Inside the lifetime, around a compaction: `request` when the compaction's
    * own summary request missed the cached conversation; else the step after

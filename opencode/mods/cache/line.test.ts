@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { formatAge, formatTokens, missText, showsRow, sidebarText } from "./line.ts"
+import { formatAge, formatTokens, missText, shortCause, showsRow, sidebarText } from "./line.ts"
 import type { Cause, Miss } from "./miss.ts"
 
 const miss = (missedTokens: number, cause: Cause): Miss => ({
@@ -38,8 +38,34 @@ describe("missText", () => {
     for (const [actual, expected] of rows) expect(actual).toBe(expected)
   })
 
+  test("the server's word on a miss inside the lifetime: the segment that changed first, or an unchanged prefix lost", () => {
+    const change = { segment: "system[1] ¶4", offsetTokens: 3_100 }
+    expect(missText(miss(48_000, { _tag: "PrefixChanged", change }), 0.31)).toBe("cache miss · 48k tokens · $0.31 · prefix changed at system[1] ¶4, 3k tokens in")
+    expect(missText(miss(48_000, { _tag: "Lost" }), 0.31)).toBe("cache miss · 48k tokens · $0.31 · the cache lost an unchanged prefix")
+  })
+
   test("a cost under a cent is not named", () => {
     expect(missText(miss(30_000, { _tag: "PrefixChanged" }), 0.004)).toBe("cache miss · 30k tokens · prefix changed inside the cache lifetime")
+  })
+})
+
+describe("shortCause", () => {
+  test("every expiry reads expired; a changed prefix names its segment when the server named one", () => {
+    const causes: ReadonlyArray<readonly [Cause, string]> = [
+      [{ _tag: "ModelSwitch" }, "model switch"],
+      [{ _tag: "PrefixChanged" }, "prefix changed"],
+      [{ _tag: "PrefixChanged", change: { segment: "tool shell", offsetTokens: 0 } }, "prefix at tool shell"],
+      [{ _tag: "Lost" }, "cache lost"],
+      [{ _tag: "Compaction", request: true }, "compaction"],
+      [{ _tag: "LoginMoved" }, "login moved"],
+      [{ _tag: "Response", ms: 1 }, "expired"],
+      [{ _tag: "Tool", toolName: "shell", ms: 1 }, "expired"],
+      [{ _tag: "Approval", ms: 1 }, "expired"],
+      [{ _tag: "Paused", ms: 1 }, "expired"],
+      [{ _tag: "Child", ms: 1 }, "expired"],
+      [{ _tag: "Idle", ms: 1 }, "expired"],
+    ]
+    expect(causes.map(([cause]) => shortCause(cause))).toEqual(causes.map(([, text]) => text))
   })
 })
 
@@ -55,6 +81,12 @@ describe("sidebarText", () => {
   test("the served share rounded down, and the misses' total from a cent", () => {
     expect(sidebarText({ promptTokens: 1_000_000, cacheReadTokens: 919_900, cacheWriteTokens: 50_000 }, 0.4249)).toBe("Cache 91% · missed $0.42")
     expect(sidebarText({ promptTokens: 1_000, cacheReadTokens: 996, cacheWriteTokens: 0 }, 0.004)).toBe("Cache 99%")
+  })
+
+  test("the cause that cost the most follows the total, only when a total shows", () => {
+    const hits = { promptTokens: 1_000_000, cacheReadTokens: 919_900, cacheWriteTokens: 50_000 }
+    expect(sidebarText(hits, 0.4249, "expired")).toBe("Cache 91% · missed $0.42 · expired")
+    expect(sidebarText(hits, 0.004, "expired")).toBe("Cache 91%")
   })
 
   test("nothing before any cache activity", () => {

@@ -1,6 +1,6 @@
 // What the cache mod draws, as text: a transcript row for a large miss
 // (`cache miss · 48k tokens · $0.31 · expired during a 6m shell call`) and
-// the sidebar line for a session family (`Cache 91% · missed $0.42`).
+// the sidebar line for a session family (`Cache 91% · missed $0.42 · expired`).
 import type { Cause, Miss } from "./miss.ts"
 
 /** A row shows only a miss this large, in tokens or in dollars; the sidebar's total counts every miss. */
@@ -38,7 +38,11 @@ export const causeText = (cause: Cause): string => {
     case "ModelSwitch":
       return "after a model switch"
     case "PrefixChanged":
-      return "prefix changed inside the cache lifetime"
+      return cause.change === undefined
+        ? "prefix changed inside the cache lifetime"
+        : `prefix changed at ${cause.change.segment}, ${formatTokens(cause.change.offsetTokens)} tokens in`
+    case "Lost":
+      return "the cache lost an unchanged prefix"
     case "Compaction":
       return cause.request ? "the compaction request missed the cached prefix" : "a compaction rewrote the prefix"
     case "LoginMoved":
@@ -58,6 +62,29 @@ export const causeText = (cause: Cause): string => {
   }
 }
 
+/** A cause in the sidebar's few words: every expiry reads `expired`, a changed prefix names its segment. */
+export const shortCause = (cause: Cause): string => {
+  switch (cause._tag) {
+    case "ModelSwitch":
+      return "model switch"
+    case "PrefixChanged":
+      return cause.change === undefined ? "prefix changed" : `prefix at ${cause.change.segment}`
+    case "Lost":
+      return "cache lost"
+    case "Compaction":
+      return "compaction"
+    case "LoginMoved":
+      return "login moved"
+    case "Response":
+    case "Tool":
+    case "Approval":
+    case "Paused":
+    case "Child":
+    case "Idle":
+      return "expired"
+  }
+}
+
 /** `cache miss · 48k tokens · $0.31 · expired during a 6m shell call`; a cent or less is not named. */
 export const missText = (miss: Miss, costUsd: number): string =>
   ["cache miss", `${formatTokens(miss.missedTokens)} tokens`, ...(costUsd >= MIN_NAMED_USD ? [formatUsd(costUsd)] : []), causeText(miss.cause)].join(" · ")
@@ -72,11 +99,13 @@ export interface Hits {
 /**
  * The sidebar line: the share of the family's prompt tokens the cache served,
  * rounded down (99.6% is not every token), and what its misses cost, when they
- * cost a cent or more. Nothing for a family that never reported cache activity:
- * a provider that reports none would read as 0%.
+ * cost a cent or more, with the cause that cost the most (`shortCause`) when
+ * one is named. Nothing for a family that never reported cache activity: a
+ * provider that reports none would read as 0%.
  */
-export const sidebarText = (hits: Hits, missedUsd: number): string | undefined => {
+export const sidebarText = (hits: Hits, missedUsd: number, cause?: string): string | undefined => {
   if (hits.promptTokens <= 0 || hits.cacheReadTokens + hits.cacheWriteTokens <= 0) return undefined
   const share = `Cache ${Math.floor((hits.cacheReadTokens * 100) / hits.promptTokens)}%`
-  return missedUsd >= MIN_NAMED_USD ? `${share} · missed ${formatUsd(missedUsd)}` : share
+  if (missedUsd < MIN_NAMED_USD) return share
+  return [share, `missed ${formatUsd(missedUsd)}`, ...(cause === undefined ? [] : [cause])].join(" · ")
 }
