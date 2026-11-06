@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
-import { BUILTIN_BTW_OFF, CLAUDE_CACHE_TTL, launcher, mergeCli, mergeServer, orchestrateEntry, peersOf, pluginDir, poolEntry, roleModels } from "./daily.ts"
+import { BUILTIN_BTW_OFF, CLAUDE_CACHE_TTL, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, pluginDir, poolEntry, roleModels } from "./daily.ts"
 
 const MODS = "/repo/opencode/mods"
 const CMD = "/repo/opencode/cmd"
@@ -78,6 +78,15 @@ describe("the pool's fleet", () => {
     })
     expect(peersOf("bite-cristian")).toEqual([{ name: "macbook", ssh: "cvr@cristians-macbook-pro" }])
     expect(peersOf("cristians-macbook-pro")).toEqual([{ name: "workbox", ssh: "bite-workbox" }])
+  })
+
+  test("mail listens on the Tailscale address on the owner's hosts only, and nowhere without one", () => {
+    expect(mailEntry(`${MODS}/mail`, { host: "bite-cristian", tailscale: "100.64.0.2" })).toEqual({
+      package: `${MODS}/mail`,
+      options: { listen: { hostname: "100.64.0.2" } },
+    })
+    expect(mailEntry(`${MODS}/mail`, { host: "Cristians-MacBook-Pro.local", tailscale: undefined })).toBe(`${MODS}/mail`)
+    expect(mailEntry(`${MODS}/mail`, { host: "ci-runner", tailscale: "100.64.0.9" })).toBe(`${MODS}/mail`)
   })
 
   test("another host has no peers, and still paces OpenAI", () => {
