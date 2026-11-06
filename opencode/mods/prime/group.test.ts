@@ -116,14 +116,14 @@ describe("the group header", () => {
     ])
   })
 
-  test("names a shell call by its form: a background start, a list, and a check, wait and kill on a handle", () => {
+  test("names a shell call by its action: a background start, a list, and a check, wait and kill on a handle", () => {
     const list = calls(
       call("shell", { command: "bun dev", background: true }, "completed", { id: "sh_1", state: "running", backgrounded: "start" }),
-      call("shell", { list: true }),
-      call("shell", { id: "sh_1", lines: 5 }),
-      call("shell", { id: "sh_1", wait: 500 }),
-      call("shell", { id: "sh_1", kill: true }),
-      call("shell", { command: "ls" }),
+      call("shell", { action: "list" }),
+      call("shell", { action: "check", id: "sh_1", lines: 5 }),
+      call("shell", { action: "wait", id: "sh_1", ms: 500 }),
+      call("shell", { action: "kill", id: "sh_1" }),
+      call("shell", { action: "run", command: "ls" }),
     )
     expect(words(list)).toBe(
       "Started 1 command in the background · listed shells · checked 1 shell · waited on 1 shell · killed 1 shell · ran 1 command",
@@ -137,6 +137,23 @@ describe("the group header", () => {
       "Ran ls",
     ])
     // Still running, each says so in the running tense.
+    expect(rows(calls(call("shell", { action: "wait", id: "sh_1" }, "running"))).map(verb)).toEqual(["Waiting on"])
+  })
+
+  test("an older transcript's shell flag forms read as their actions", () => {
+    const list = calls(
+      call("shell", { list: true }),
+      call("shell", { id: "sh_1", lines: 5 }),
+      call("shell", { id: "sh_1", wait: 500 }),
+      call("shell", { id: "sh_1", kill: true }),
+    )
+    expect(words(list)).toBe("Listed shells · checked 1 shell · waited on 1 shell · killed 1 shell")
+    expect(rows(list).map((row) => `${verb(row)} ${subject(row)}`.trim())).toEqual([
+      "Listed shells",
+      "Checked sh_1",
+      "Waited on sh_1",
+      "Killed sh_1",
+    ])
     expect(rows(calls(call("shell", { id: "sh_1", wait: 500 }, "running"))).map(verb)).toEqual(["Waiting on"])
   })
 

@@ -1,6 +1,7 @@
 // One tool call as a transcript row reads it, without rendering: its tool
 // under the host's canonical name, how it stands, the words that stand for
 // it (its preview, its line counts, its time) and what it touched.
+import { shellAction } from "@dotfiles/opencode-subagents/shell"
 import { toolsInCode } from "./kernel.ts"
 import type { Fields, ToolPart } from "./session.ts"
 
@@ -94,8 +95,8 @@ export function callGlyph(part: ToolPart): { readonly char: string; readonly ton
 // and the source of the `↑` line count.
 export function toolSource(tool: string, input: Fields) {
   // A shell call that acts on a handle stands for the shell it names; a list, for the shells.
-  if (tool === "shell" && input.list === true) return "shells"
-  if (tool === "shell" && input.command === undefined && typeof input.id === "string") return input.id
+  if (tool === "shell" && shellAction(input) === "list") return "shells"
+  if (tool === "shell" && shellAction(input) !== "run") return text(input.id) ?? ""
   if (tool === "shell") return text(input.command) ?? ""
   if (tool === "patch") return text(input.patchText) ?? ""
   if (tool === "read") return text(input.path) ?? text(input.filePath) ?? ""

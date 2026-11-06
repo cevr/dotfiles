@@ -1,10 +1,12 @@
 /**
  * The shell inside a cell: `await tools.shell({ command })` runs a command and
  * resolves to a live handle, and the handle's methods act on it. The shell
- * tool's JSON forms that act on a shell (`{ id }`, `{ id, wait }`,
- * `{ id, kill: true }`, `{ list: true }`) stay the model's direct tool input;
- * in a cell they are methods: `.refresh()`, `.wait(ms)`, `.kill()`,
- * `tools.shell.list()`, `tools.shell.handle(id)`.
+ * tool's actions that act on a shell (`{ action: "check", id }`,
+ * `{ action: "wait", id, ms }`, `{ action: "kill", id }`,
+ * `{ action: "list" }`) stay the model's direct tool input; in a cell they are
+ * methods: `.refresh()`, `.read()`, `.wait(ms)`, `.kill()`,
+ * `tools.shell.list()`, `tools.shell.handle(id)`, which call the tool with
+ * those actions underneath.
  *
  * A handle is the shell tool's handle (`{ id, state, exitCode?, signal?,
  * runtimeMs, output, next, truncated, backgrounded? }`) as a live object. Its
@@ -86,28 +88,38 @@ const method = (handle: object, name: string, value: (...args: never[]) => unkno
 export const makeShellHandle = <Data extends ShellHandleData>(data: Data, call: CallShell): Data & ShellHandle => {
   const handle = { ...data } as Data & ShellHandle
   const update = async (input: Record<string, Json>): Promise<ShellHandle> => {
-    const result = await call({ id: handle.id, ...input })
+    const result = await call({ ...input, id: handle.id })
     if (!isShellHandle(result)) throw new Error(`The shell tool did not return a handle for ${handle.id}`)
     Object.assign(handle, result)
     return handle
   }
   method(handle, "read", (options?: { readonly offset?: number; readonly lines?: number }) =>
     update({
+      action: "check",
       ...(options?.offset === undefined ? {} : { offset: options.offset }),
       ...(options?.lines === undefined ? {} : { lines: options.lines }),
     }),
   )
-  method(handle, "wait", (ms?: number) => update({ wait: ms ?? DEFAULT_WAIT_MS }))
-  method(handle, "kill", () => update({ kill: true }))
-  method(handle, "refresh", () => update({}))
+  method(handle, "wait", (ms?: number) => update({ action: "wait", ms: ms ?? DEFAULT_WAIT_MS }))
+  method(handle, "kill", () => update({ action: "kill" }))
+  method(handle, "refresh", () => update({ action: "check" }))
   return handle
 }
 
-/** The method a cell uses in place of each field that acts on a shell. */
+/** The method a cell uses in place of each action that acts on a shell. */
+const ACTIONS: Readonly<Record<string, (id: string) => string>> = {
+  list: () => "await tools.shell.list()",
+  kill: (id) => `(await tools.shell.handle(${id})).kill()`,
+  wait: (id) => `(await tools.shell.handle(${id})).wait(ms)`,
+  check: (id) => `(await tools.shell.handle(${id})).refresh()`,
+}
+
+/** The method a cell uses in place of each field that acts on a shell, the flags before actions among them. */
 const INSTEAD: ReadonlyArray<readonly [field: string, method: (id: string) => string]> = [
   ["list", () => "await tools.shell.list()"],
   ["kill", (id) => `(await tools.shell.handle(${id})).kill()`],
   ["wait", (id) => `(await tools.shell.handle(${id})).wait(ms)`],
+  ["ms", (id) => `(await tools.shell.handle(${id})).wait(ms)`],
   ["offset", (id) => `(await tools.shell.handle(${id})).read({ offset })`],
   ["lines", (id) => `(await tools.shell.handle(${id})).read({ lines })`],
   ["id", (id) => `(await tools.shell.handle(${id})).refresh()`],
@@ -115,12 +127,16 @@ const INSTEAD: ReadonlyArray<readonly [field: string, method: (id: string) => st
 
 /**
  * `tools.shell(input)`: runs a command and resolves to its live handle. An
- * input with a field that acts on a shell (`id`, `kill`, `wait`, `offset`,
- * `lines`, `list`) throws, naming the method to use instead.
+ * input with an action other than `run` (`check`, `wait`, `kill`, `list`),
+ * or a field that acts on a shell (`id`, `ms`, `offset`, `lines`, and the
+ * older flags `kill`, `wait`, `list`), throws, naming the method to use instead.
  */
 export const runShell = async (input: unknown, call: CallShell): Promise<ShellHandle> => {
   if (record(input)) {
     const id = typeof input.id === "string" ? JSON.stringify(input.id) : "id"
+    const action = typeof input.action === "string" ? ACTIONS[input.action] : undefined
+    if (action !== undefined)
+      throw new TypeError(`tools.shell takes a command to run, not action "${String(input.action)}"; use ${action(id)}`)
     const found = INSTEAD.find(([field]) => input[field] !== undefined)
     if (found !== undefined) {
       const [field, instead] = found
@@ -135,7 +151,7 @@ export const runShell = async (input: unknown, call: CallShell): Promise<ShellHa
 /** `tools.shell.handle(id)`: a live handle for one of the session's shells, rebuilt by checking it. */
 export const handleOf = async (id: unknown, call: CallShell): Promise<ShellHandle> => {
   if (typeof id !== "string" || !id.startsWith("sh_")) throw new TypeError("tools.shell.handle takes a shell ID (sh_…)")
-  const result = await call({ id })
+  const result = await call({ action: "check", id })
   if (!isShellHandle(result)) throw new Error(`The shell tool did not return a handle for ${id}`)
   return makeShellHandle(result, call)
 }
@@ -147,7 +163,7 @@ export const handleOf = async (id: unknown, call: CallShell): Promise<ShellHandl
  * it was, so `.refresh()` shows what is new since the last look.
  */
 export const listShells = async (call: CallShell): Promise<ReadonlyArray<ListedShellHandle>> => {
-  const result = await call({ list: true })
+  const result = await call({ action: "list" })
   const shells = record(result) ? result.shells : undefined
   if (!Array.isArray(shells)) throw new Error("The shell tool did not return a list of shells")
   return shells.map((entry: unknown) => {

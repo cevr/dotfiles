@@ -64,7 +64,7 @@ describe.skipIf(!fork)("background shells in Prime", () => {
   test("the agent gets the shell's handle at the move: its header, its output so far and how to act on it", () => {
     const [moved] = results()
     expect(moved).toMatch(/^(sh_\w+) · running · \d+\.\d s · moved to the background at its 2 s limit\ntick 1\nIt keeps running, and you will be notified when it ends\. /)
-    expect(moved).toMatch(/shell\(\{ id: "sh_\w+" \}\) checks it, shell\(\{ id: "sh_\w+", wait: <ms> \}\) waits for it to end, shell\(\{ id: "sh_\w+", kill: true \}\) stops it\./)
+    expect(moved).toMatch(/shell\(\{ action: "check", id: "sh_\w+" \}\) checks it, shell\(\{ action: "wait", id: "sh_\w+", ms: <ms> \}\) waits for it to end, shell\(\{ action: "kill", id: "sh_\w+" \}\) stops it\./)
     const started = results()[4]
     expect(started).toMatch(/^sh_\w+ · running · \d+\.\d s · started in the background\n\(no output yet\)\nIt keeps running/)
   })

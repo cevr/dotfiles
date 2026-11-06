@@ -2,7 +2,7 @@
 // plugin against an OpenCode checkout: a worker backgrounds a long shell and a
 // short one and ends its turn, so its row waits and the host's Subagents
 // panel lists it as active, waiting; woken by the short one's notice, it
-// kills the long one with shell({ id, kill: true }), which sends no notice, and stops. Its
+// kills the long one with shell({ action: "kill", id }), which sends no notice, and stops. Its
 // row then leaves the live rows, the dock's count drops to 0 and the panel
 // lists no active subagent: whether it works is the host's live state, never
 // a notice that did not come. It needs OPENCODE_DEV, the fork whose panel

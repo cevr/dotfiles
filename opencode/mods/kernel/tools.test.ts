@@ -53,7 +53,8 @@ describe("the catalog", () => {
     expect(text).toContain("only runs a command, and resolves to a live handle")
     expect(text).toContain("`await tools.shell.handle(id)`")
     expect(text).toContain("`await tools.shell.list()`")
-    expect(text).not.toMatch(/kill: true|list: true|wait: /)
+    expect(text).toContain("The tool's other actions (check, wait, kill, list) are these methods in a cell")
+    expect(text).not.toMatch(/kill: true|list: true|wait: |action: "/)
   })
 
   test("reads unions, arrays, constants and nullable types; deep objects stay `object`", () => {

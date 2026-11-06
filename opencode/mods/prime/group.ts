@@ -2,6 +2,7 @@
 // reads as one header (`Read 3 files · ran 2 commands · 1 failed`) with one
 // tree row per run of one tool under it, and each of the step's thoughts as
 // a `thinking` node in its place in the tree.
+import { shellAction } from "@dotfiles/opencode-subagents/shell"
 import { close, stretch } from "./burst.ts"
 import {
   background,
@@ -194,18 +195,18 @@ export function kind(tool: string, part?: ToolPart): Kind {
 }
 
 /**
- * The shell call's form: a command that runs (`Ran`), or starts in the
- * background (`Started`); a list of the session's shells; or a call on one
- * shell's handle that kills it, waits on it or checks it.
+ * The shell call's action (`shellAction`, which reads an older transcript's
+ * flag form the same): a command that runs (`Ran`), or starts in the
+ * background (`Started`); a list of the session's shells (`Listed`); or a
+ * call on one shell's handle that kills it, waits on it or checks it.
  */
 function shellKind(input: Fields): Kind {
-  if (input.list === true)
+  const action = shellAction(input)
+  if (action === "list")
     return { key: "shell_list", past: "Listed", running: "Listing", unit: (count) => (count === 1 ? "shells" : `shells ${count}×`) }
-  if (input.command === undefined && typeof input.id === "string") {
-    if (input.kill === true) return { key: "shell_kill", past: "Killed", running: "Killing", unit: plural("shell") }
-    if (typeof input.wait === "number") return { key: "shell-wait", past: "Waited on", running: "Waiting on", unit: plural("shell") }
-    return { key: "shell-check", past: "Checked", running: "Checking", unit: plural("shell") }
-  }
+  if (action === "kill") return { key: "shell_kill", past: "Killed", running: "Killing", unit: plural("shell") }
+  if (action === "wait") return { key: "shell-wait", past: "Waited on", running: "Waiting on", unit: plural("shell") }
+  if (action === "check") return { key: "shell-check", past: "Checked", running: "Checking", unit: plural("shell") }
   if (input.background === true)
     return { key: "shell-start", past: "Started", running: "Starting", unit: (count) => `${plural("command")(count)} in the background` }
   return { key: "shell", past: "Ran", running: "Running", unit: plural("command") }

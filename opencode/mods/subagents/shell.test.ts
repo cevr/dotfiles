@@ -1,6 +1,6 @@
 // A shell command in a few words, and whether it only waits.
 import { describe, expect, test } from "bun:test"
-import { brief, label, waits, waitsInput } from "./shell.ts"
+import { brief, label, shellAction, waits, waitsInput } from "./shell.ts"
 
 // The owner's five lanes on the workbox, as their shell calls read.
 const LANES = {
@@ -60,5 +60,24 @@ describe("the wait rule", () => {
     expect(waitsInput({ command: "gh run watch 123", description: "Poll CI" })).toBe(true)
     expect(waitsInput({ command: LANES.authority, description: "Run the gate (it waits for the lock)" })).toBe(false)
     expect(waitsInput({ command: "sleep 60", description: "Give the server a minute" })).toBe(true)
+  })
+})
+
+describe("a shell call's action", () => {
+  test("is its action field, run for a command without one, and an older transcript's flag form reads the same", () => {
+    expect(shellAction({ command: "ls" })).toBe("run")
+    expect(shellAction({ action: "run", command: "ls" })).toBe("run")
+    expect(shellAction({ action: "check", id: "sh_1" })).toBe("check")
+    expect(shellAction({ action: "wait", id: "sh_1", ms: 500 })).toBe("wait")
+    expect(shellAction({ action: "kill", id: "sh_1" })).toBe("kill")
+    expect(shellAction({ action: "list" })).toBe("list")
+    // The flag forms before actions.
+    expect(shellAction({ id: "sh_1" })).toBe("check")
+    expect(shellAction({ id: "sh_1", wait: 500 })).toBe("wait")
+    expect(shellAction({ id: "sh_1", kill: true })).toBe("kill")
+    expect(shellAction({ list: true })).toBe("list")
+    // A wait on a shell only waits.
+    expect(waitsInput({ action: "wait", id: "sh_1" })).toBe(true)
+    expect(waitsInput({ action: "kill", id: "sh_1" })).toBe(false)
   })
 })

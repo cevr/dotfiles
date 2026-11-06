@@ -156,11 +156,15 @@ lists again; Enter shows its output's tail, and closing that returns to the
 list. A shell call the host moved to the background (see Background
 shells) ends its row with `moved to the background`, muted, at Details and
 All; one started with `background: true` reads `Started <command> in the
-background`. A shell call on a handle reads `Checked sh_…`, `Waited on sh_…`
-or `Killed sh_…`, and `{ list: true }` reads `Listed shells`; the row's body
-is the handle's output, without the header line the row already says.
-Older transcripts' `shell_list`, `shell_read` and `shell_kill` calls still
-read `Listed shells`, `Read sh_…` and `Killed sh_…`.
+background`. A shell call on a handle reads by its action: `check` reads
+`Checked sh_…`, `wait` `Waited on sh_…`, `kill` `Killed sh_…`, and `list`
+`Listed shells` (`shellAction` in `mods/subagents/shell.ts`, which the
+subagent rows read too: `waiting on sh_…`, a wait that only waits); the
+row's body is the handle's output, without the header line the row already
+says. Older transcripts' flag forms (`{ id }`, `{ id, wait }`, `{ id, kill:
+true }`, `{ list: true }`) read the same, and their `shell_list`,
+`shell_read` and `shell_kill` calls still read `Listed shells`, `Read sh_…`
+and `Killed sh_…`.
 `tests/prime-shells.test.ts` runs `scenarios/prime-shells.ts` for all of it.
 
 `.oxlintrc.json` fences both layers. The domain may import only `effect`,
@@ -169,7 +173,7 @@ import `opencode/` or `@opencode/*`.
 
 ## Background shells
 
-The fork (branch `shell-handles`, on `bg-shells`) makes every `shell` call
+The fork (branch `shell-handles`, on `bg-shells`, and `shell-action` for the `action` input) makes every `shell` call
 return a handle, and the same tool acts on it: there are no separate
 shell tools. A handle is
 
@@ -201,18 +205,27 @@ once, and there `timeout` is a kill deadline. ctrl+b (the host's
 "user"`). A `description` on the call names it in the list and the dock's
 list.
 
+The input's `action` says what the call does:
+
 | Input | Does | Header notes |
 | --- | --- | --- |
-| `{ command, workdir?, timeout?, description?, background? }` | runs a command; its handle when it ends or moves | `started in the background`, `moved to the background at its N min limit`, `moved to the background by the user` |
-| `{ id, offset? \| lines? }` | checks it: its state and the output since the last look (its last 40 lines at most), from byte `offset`, or its last `lines` lines; 64 KiB at most | `next N` (the `offset` to read on from), `N earlier bytes not shown`, `the oldest output was dropped` |
-| `{ id, wait: ms }` | waits up to `ms` for it to end, then checks it | `still running after waiting 0.5 s` |
-| `{ id, kill: true }` | stops it, then returns its final handle | `it had already ended` |
-| `{ list: true }` | `{ shells: [{ …state, size, description, command, started, background }] }`; a line per shell: `sh_1 · running · 2.0 s · 7 bytes · Long sleeper` | |
+| `{ action?: "run", command, workdir?, timeout?, description?, background? }` | runs a command; its handle when it ends or moves. `action` may be left out when `command` is given | `started in the background`, `moved to the background at its N min limit`, `moved to the background by the user` |
+| `{ action: "check", id, offset? \| lines? }` | checks it: its state and the output since the last look (its last 40 lines at most), from byte `offset`, or its last `lines` lines; 64 KiB at most | `next N` (the `offset` to read on from), `N earlier bytes not shown`, `the oldest output was dropped` |
+| `{ action: "wait", id, ms?, offset? \| lines? }` | waits up to `ms` (600000, 10 min, by default) for it to end, then checks it | `still running after waiting 0.5 s` |
+| `{ action: "kill", id }` | stops it, then returns its final handle | `it had already ended` |
+| `{ action: "list" }` | `{ shells: [{ …state, size, description, command, started, background }] }`; a line per shell: `sh_1 · running · 2.0 s · 7 bytes · Long sleeper` | |
 
-`command`, `id` and `list` exclude each other, and each form refuses the
-others' fields with a message saying which go together. An id reaches only
-the session's own shells; another fails with `No shell sh_… in this
-session`. A kill sends SIGTERM to the command's process group, then
+The schema is one flat object with an `action` enum, not a root union
+(Anthropic and OpenAI refuse a tool schema whose root is `anyOf` or
+`oneOf`), so the tool checks which fields go with which action: a field
+that is not its action's fails naming the fields it takes (`action "kill"
+takes id, not lines.`), and a missing `id` or `command` says so. Its rest
+is open, so the flag forms before actions reach the tool rather than being
+dropped, and fail naming the action form: `{ id, kill: true }` with `The
+shell tool has no kill field; use { action: "kill", id: "sh_…" }.`, and
+likewise `{ list: true }` and `{ id, wait }`; a bare `{ id }` asks for the
+action. An id reaches only the session's own shells; another fails with
+`No shell sh_… in this session`. A kill sends SIGTERM to the command's process group, then
 SIGKILL to whatever of the group is left after 3 s; the record and output
 stay readable.
 
@@ -232,10 +245,12 @@ its id that updates the handle in place and resolves to it. `await
 tools.shell.handle(id)` rebuilds one, and `await tools.shell.list()` gives
 one for each of the session's shells from a single list call (with its
 `.description`, `.command`, `.started` and `.background`; `.output` empty,
-`.next` the output's size, the read position left where it was). An input
-with `id`, `kill`, `wait`, `offset`, `lines` or `list` throws a TypeError
-naming the method to use. A kernel restart keeps a handle's data but not
-its methods.
+`.next` the output's size, the read position left where it was). The
+methods call the tool with its actions (`check` for `.refresh()` and
+`.read()`, `wait`, `kill`, `list`). An input with an action other than
+`run`, or with `id`, `ms`, `offset`, `lines` or an older flag (`kill`,
+`wait`, `list`), throws a TypeError naming the method to use. A kernel
+restart keeps a handle's data but not its methods.
 
 ```ts
 const dev = await tools.shell({ command: "bun dev", background: true, description: "dev server" })

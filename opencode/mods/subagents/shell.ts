@@ -203,7 +203,29 @@ export function label(input: Readonly<Record<string, unknown>>): string {
   return brief(typeof input.command === "string" ? input.command : "")
 }
 
-/** Whether a shell call's input waits: its description says so, or its command only waits. */
+/** What a shell call does: runs a command, or checks, waits on, kills or lists the session's shells. */
+export type ShellAction = "run" | "check" | "wait" | "kill" | "list"
+
+const ACTIONS: ReadonlySet<string> = new Set<ShellAction>(["run", "check", "wait", "kill", "list"])
+
+/**
+ * A shell call's action: its `action` field (`run` when it gives a command
+ * and no action). Older transcripts' calls named it by flag, and read the
+ * same: `{ list: true }` lists, `{ id, kill: true }` kills, `{ id, wait }`
+ * waits, `{ id }` checks.
+ */
+export function shellAction(input: Readonly<Record<string, unknown>>): ShellAction {
+  if (typeof input.action === "string" && ACTIONS.has(input.action)) return input.action as ShellAction
+  if (input.command !== undefined) return "run"
+  if (input.list === true) return "list"
+  if (typeof input.id !== "string") return "run"
+  if (input.kill === true) return "kill"
+  if (input.wait !== undefined) return "wait"
+  return "check"
+}
+
+/** Whether a shell call's input waits: it waits on a shell, its description says so, or its command only waits. */
 export function waitsInput(input: Readonly<Record<string, unknown>>): boolean {
+  if (shellAction(input) === "wait") return true
   return (typeof input.description === "string" && waitingWords(input.description)) || (typeof input.command === "string" && waits(input.command))
 }

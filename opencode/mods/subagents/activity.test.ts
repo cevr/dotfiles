@@ -24,6 +24,20 @@ describe("a call's activity", () => {
     expect(activity(call("shell", { command: "bun test\nbun lint" }, "running"))).toBe("running bun test …")
   })
 
+  test("a shell call on a shell reads as its action and the shell, an older flag form the same; a wait only waits", () => {
+    expect(activity(call("shell", { action: "wait", id: "sh_1", ms: 500 }, "running"))).toBe("waiting on sh_1")
+    expect(activity(call("shell", { action: "check", id: "sh_1" }))).toBe("checked sh_1")
+    expect(activity(call("shell", { action: "kill", id: "sh_1" }, "running"))).toBe("killing sh_1")
+    expect(activity(call("shell", { action: "list" }))).toBe("listed shells")
+    expect(activity(call("shell", { action: "run", command: "ls" }))).toBe("ran ls")
+    expect(activity(call("shell", { id: "sh_1", wait: 500 }, "running"))).toBe("waiting on sh_1")
+    expect(activity(call("shell", { id: "sh_1", kill: true }))).toBe("killed sh_1")
+    expect(activity(call("shell", { list: true }))).toBe("listed shells")
+    expect(waiting(call("shell", { action: "wait", id: "sh_1" }, "running"))).toBe(true)
+    expect(waiting(call("shell", { id: "sh_1", wait: 500 }, "running"))).toBe(true)
+    expect(waiting(call("shell", { action: "check", id: "sh_1" }, "running"))).toBe(false)
+  })
+
   test("a shell call reads as its own description, a wait as what it waits on, never its whole one-liner", () => {
     const gate = "cd /w/effra && flock /home/x/.cache/gate.lock ./scripts/gate.sh"
     expect(activity(call("bash", { command: gate, description: "Run the gate under the lock" }, "running"))).toBe("Run the gate under the lock")

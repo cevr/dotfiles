@@ -3,7 +3,7 @@
 // `experimental.shell_background_after`) and returns its handle; the agent
 // then lists the session's shells, checks the handle, waits on it a moment,
 // starts a second command in the background, and kills both through their
-// handles (`shell({ id, kill: true })`). The reader moves a
+// handles (`shell({ action: "kill", id })`). The reader moves a
 // blocking call (`timeout: 0`, no limit) to the background with ctrl+b, opens
 // the dock's shell list with a click and kills it there with ctrl+k.
 // Run: OPENCODE_DEV=<opencode checkout> SCENARIO_OUT=out bunx opencode-drive run scenarios/prime-shells.ts
@@ -60,16 +60,16 @@ export default OpenCodeDriver.use(
         if (phase === "agent") {
           if (!s.includes("call_long"))
             return call("call_long", "shell", { command: "printf 'tick 1\\n'; sleep 600", description: "Long sleeper" })
-          if (!s.includes("call_list")) return call("call_list", "shell", { list: true })
-          if (!s.includes("call_check")) return call("call_check", "shell", { id: first ?? "missing", lines: 5 })
-          if (!s.includes("call_wait")) return call("call_wait", "shell", { id: first ?? "missing", wait: 500 })
+          if (!s.includes("call_list")) return call("call_list", "shell", { action: "list" })
+          if (!s.includes("call_check")) return call("call_check", "shell", { action: "check", id: first ?? "missing", lines: 5 })
+          if (!s.includes("call_wait")) return call("call_wait", "shell", { action: "wait", id: first ?? "missing", ms: 500 })
           if (!s.includes("call_bg"))
             return call("call_bg", "shell", { command: "printf 'bg\\n'; sleep 600", background: true, description: "Background sleeper" })
           return say("The sleepers are still running.")
         }
         if (phase === "kill") {
-          if (!s.includes("call_kill_long")) return call("call_kill_long", "shell", { id: first ?? "missing", kill: true })
-          if (!s.includes("call_kill_bg")) return call("call_kill_bg", "shell", { id: second ?? "missing", kill: true })
+          if (!s.includes("call_kill_long")) return call("call_kill_long", "shell", { action: "kill", id: first ?? "missing" })
+          if (!s.includes("call_kill_bg")) return call("call_kill_bg", "shell", { action: "kill", id: second ?? "missing" })
           return say("Killed the sleepers.")
         }
         if (phase === "block") {

@@ -3,7 +3,7 @@
 // a shell call by its own description, else in a few words, never its whole
 // one-liner), else the latest sentence it wrote, thought or put in its queue.
 import type { Call, Message } from "./family.ts"
-import { brief, waitsInput } from "./shell.ts"
+import { brief, shellAction, type ShellAction, waitsInput } from "./shell.ts"
 
 /** The host's name for a tool, whatever the model called it (the host's `canonicalToolName`). */
 export function canonical(name: string): string {
@@ -68,6 +68,14 @@ const VERBS: Readonly<Record<string, readonly [running: string, past: string]>> 
   question: ["asking", "asked"],
 }
 
+/** A shell call on the session's shells, in the tense of its status: `waiting on sh_1`, `killed sh_1`, `listed shells`. */
+const SHELL_ACTIONS: Readonly<Record<Exclude<ShellAction, "run">, readonly [running: string, past: string]>> = {
+  check: ["checking", "checked"],
+  wait: ["waiting on", "waited on"],
+  kill: ["killing", "killed"],
+  list: ["listing", "listed"],
+}
+
 /** Whether a call still runs: streaming its input or running. */
 export const running = (call: Call) => call.status === "streaming" || call.status === "running"
 
@@ -107,6 +115,12 @@ export function activity(call: Call): string {
     const code = text(call.input.code) ?? ""
     const first = code.split("\n").find((line) => line.trim()) ?? ""
     return `kernel: ${first.trim().replace(/^\/\/\s*|^\/\*\s*|\s*\*\/$/g, "")}`.trimEnd()
+  }
+  if (tool === "shell" && shellAction(call.input) !== "run") {
+    const action = shellAction(call.input)
+    const [now, past] = SHELL_ACTIONS[action as Exclude<ShellAction, "run">]
+    const target = action === "list" ? "shells" : (text(call.input.id) ?? "")
+    return [running(call) ? now : past, target].filter(Boolean).join(" ")
   }
   if (tool === "shell") {
     const own = described(call)
