@@ -1,6 +1,6 @@
 // Reading the family from the TUI's data, as `context.data` answers.
 import { describe, expect, test } from "bun:test"
-import { read, type Reads, type SessionInfo } from "./view.ts"
+import { read, type Reads, type SessionInfo, type ShellInfo } from "./view.ts"
 
 interface Fixture {
   readonly info: SessionInfo
@@ -10,7 +10,7 @@ interface Fixture {
   readonly messages?: ReadonlyArray<unknown>
 }
 
-const reads = (sessions: Readonly<Record<string, Fixture>>): Reads => ({
+const reads = (sessions: Readonly<Record<string, Fixture>>, shells: Readonly<Record<string, ReadonlyArray<ShellInfo>>> = {}): Reads<string> => ({
   session: {
     get: (id) => sessions[id]?.info,
     root: (id) => {
@@ -24,6 +24,7 @@ const reads = (sessions: Readonly<Record<string, Fixture>>): Reads => ({
     form: { list: (id) => sessions[id]?.forms?.map((title) => ({ title })) },
     message: { list: (id) => sessions[id]?.messages ?? [] },
   },
+  shell: { list: (location) => shells[location ?? "default"] ?? [] },
 })
 
 describe("read", () => {
@@ -177,6 +178,36 @@ describe("a session's background work", () => {
       },
       { type: "shell", shellID: "sh_1", state: "completed", at: 6 },
     ])
+  })
+})
+
+describe("a session's running shells", () => {
+  const shell = (id: string, sessionID: unknown, over: Partial<ShellInfo> = {}): ShellInfo => ({
+    id,
+    status: "running",
+    command: `cd /w && sleep ${id}`,
+    metadata: { sessionID, description: "Wait for proof DONE\n" },
+    ...over,
+  })
+  const world = reads(
+    {
+      root: { info: { id: "root", time: { created: 0 } } },
+      a: { info: { id: "a", parentID: "root", time: { created: 1 } } },
+    },
+    {
+      default: [shell("sh_1", "a"), shell("sh_2", "a", { metadata: { sessionID: "a" } }), shell("sh_3", "a", { status: "killed" }), shell("sh_4", undefined), shell("sh_5", "root")],
+      elsewhere: [shell("sh_9", "a")],
+    },
+  )
+
+  test("are the registry's running shells, each by the session that started it, from the location asked for", () => {
+    const [root, a] = read(world, "root").sessions
+    expect(a?.shells).toEqual([
+      { id: "sh_1", command: "cd /w && sleep sh_1", description: "Wait for proof DONE" },
+      { id: "sh_2", command: "cd /w && sleep sh_2" },
+    ])
+    expect(root?.shells.map((each) => each.id)).toEqual(["sh_5"])
+    expect(read(world, "root", "elsewhere").sessions[1]?.shells.map((each) => each.id)).toEqual(["sh_9"])
   })
 })
 

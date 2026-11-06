@@ -47,6 +47,14 @@
  *   the parent. A pace hold is decided again at least every two minutes,
  *   since a pace may open early. With no wakes plugin the held call is
  *   refused with the hold's reason and the time it opens.
+ * - Opus first, Codex second: a new agent the pace holds on its own model
+ *   (the newest Opus), that named no model, starts at once on the newest
+ *   Codex model for its role when the Codex pace has room: sol (the verifier
+ *   at medium, the rest at high), or luna at max for a step whose description
+ *   ends `(light)`, `(direct)` or `(mechanical)`. The call log's line says
+ *   `fallback: <first model> held: <reason>`, and the parent reads that line
+ *   first in the subagent's answer. Held on both, it latches on whichever
+ *   opens first, and each open tries the first model before the fallback.
  *
  * Each new subagent is told to the pool (`started`), which counts it on its
  * provider's pace, here and on the owner's other hosts, until its spend shows
@@ -232,6 +240,14 @@ const SubagentOutput = Schema.Struct({
   ),
 })
 
+/** What the parent reads first in a fallback agent's answer: where it ran, and why. */
+const fallbackNote = (started: { readonly model?: string; readonly fallback?: string }) =>
+  `orchestrate: this agent runs on ${started.model ?? "its fallback model"}, the Codex fallback (${started.fallback}).`
+
+/** A started fallback's note, by the call it answers: a kernel cell's calls share one id, so the description is part of the key. */
+const noteKey = (sessionID: string, callID: string, input: unknown) =>
+  `${sessionID}/${callID}/${isObject(input) && typeof input.description === "string" ? input.description : ""}`
+
 /** The subagent tool tells a new child this first; a latched child opens as a follow-up, so it is told here. */
 const SPAWNED = "You are a subagent spawned by another session."
 
@@ -331,6 +347,8 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
       // subagent tool answers it from here instead of starting it. A kernel cell's calls
       // share one call id, so the child, not the call, is the key.
       const latched = new Map<string, ReturnType<typeof latchedResult>>()
+      // A fallback agent's note, by its call (noteKey), put first in the subagent tool's answer.
+      const notes = new Map<string, string>()
       yield* ctx.tool.transform((editor) =>
         editor.update(SUBAGENT, (tool) => {
           const execute = tool.execute
@@ -339,6 +357,18 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
           tool.execute = (input, context) => {
             const child = isObject(input) && typeof input.sessionID === "string" ? input.sessionID : undefined
             const answer = child === undefined ? undefined : latched.get(child)
+            const key = noteKey(context.sessionID, context.id, input)
+            const note = notes.get(key)
+            if (note !== undefined) {
+              notes.delete(key)
+              return execute(input, context).pipe(
+                Effect.map((result) => ({
+                  ...result,
+                  output: isObject(result.output) && typeof result.output.output === "string" ? { ...result.output, output: `${note}\n${result.output.output}` } : result.output,
+                  content: typeof result.content === "string" ? `${note}\n${result.content}` : result.content,
+                })),
+              )
+            }
             if (child === undefined || answer === undefined) return execute(input, context)
             latched.delete(child)
             return Effect.succeed(answer)
@@ -383,6 +413,9 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
             // Run the call as the guard routed it, on the role's model when one was chosen.
             const input: Record<string, unknown> = { ...event.input, agent: routed.agent }
             if (routed.model !== undefined) input.model = routed.model
+            // A fallback's answer tells the parent where it ran and why.
+            if (outcome.value._tag === "SubagentStarted" && outcome.value.fallback !== undefined)
+              notes.set(noteKey(event.sessionID, event.id, event.input), fallbackNote(outcome.value))
             // A latched call names its child, whose answer the subagent tool gives back at once.
             if (outcome.value._tag === "LatchedStart") {
               latched.set(outcome.value.child, latchedResult(outcome.value, options.place))

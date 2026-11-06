@@ -24,7 +24,8 @@ export function host(context: Plugin.Context): Host {
     goal: (sessionID) => data.session.goal(sessionID),
     wakes: (sessionID) => readWakes(context, sessionID),
     familyIDs: (sessionID) => data.session.family(sessionID),
-    subagents: (sessionID) => read(data, sessionID),
+    // The same registry as the shells count, so a row waits on a shell exactly while the dock counts it.
+    subagents: (sessionID) => read(data, sessionID, context.location),
     shells: (sessionID) =>
       data.shell.list(context.location).filter((shell) => shell.metadata.sessionID === sessionID).length,
     model: () => context.ui.model.current(),

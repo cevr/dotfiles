@@ -15,7 +15,7 @@ import type * as Budget from './budget.ts'
 // This load's version passes on, so a reload reads ./budget.ts afresh too.
 const { budget, DEFAULTS } = (await import(`${import.meta.dir}/budget.ts${new URL(import.meta.url).search}`)) as typeof Budget
 
-/** Minutes a latched turn may wait before its role moves to Claude (orchestrate's Families). */
+/** Minutes a latched turn may wait before its role moves to Claude (orchestrate's Opus first). */
 export const PATIENCE_MIN = 10
 const PATIENCE_MS = PATIENCE_MIN * 60e3
 const BUDGET = process.env.CODEX_BRIDGE_BUDGET ?? join(homedir(), '.config/orchestrate/budget.json')

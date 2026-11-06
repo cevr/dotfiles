@@ -16,7 +16,6 @@
 //
 // Usage: bun scripts/agents.ts [--check] [--root <dir>] [--source <orchestrate skill dir>]
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 
 /** What this script uses from the orchestrate skill's scripts/agents.ts. */
@@ -28,7 +27,7 @@ interface Source {
 }
 
 export const ROOT = resolve(import.meta.dir, "..")
-export const DEFAULT_SOURCE = join(homedir(), ".claude/skills/orchestrate")
+export const DEFAULT_SOURCE = resolve(ROOT, "../skills/orchestrate")
 export const WORKER = "worker"
 const WRITTEN = "Written by dotfiles opencode/scripts/agents.ts from the orchestrate skill. Edit the skill, then run `bun run agents`."
 

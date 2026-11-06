@@ -2,7 +2,7 @@
 // session a subagent call opens, the order ←/→ walks, and the words that say
 // how to get around, and which subagents work now.
 import type { Family } from "@dotfiles/opencode-subagents/family"
-import { live, subagents } from "@dotfiles/opencode-subagents/subagent-row"
+import { worksNow } from "@dotfiles/opencode-subagents/works"
 import type { ToolPart } from "./session.ts"
 
 /** A session as navigation reads it: its id, its parent, its title, when it was made. */
@@ -92,14 +92,15 @@ export function topTitle(
 }
 
 /**
- * Which sessions of a family work now: the host runs them (`running`), or
- * their subagent row is live (working, waiting or blocked). A subagent that
- * ended its turn to wait on its own background work is idle to the host, yet
- * still live.
+ * Which subagents of a family work now, as the host's live state says
+ * (`worksNow`, the one answer the rows, the dock's count and the host's
+ * Subagents panel share): running, blocked, latched, or idle with a shell it
+ * started still running or a subagent under it working. The root is not a
+ * subagent.
  */
-export function working(family: Family, running: (id: string) => boolean): (id: string) => boolean {
-  const busy = new Set(subagents(family, family.root).flatMap((row) => (live(row.state) ? [row.id] : [])))
-  return (id) => running(id) || busy.has(id)
+export function working(family: Family): (id: string) => boolean {
+  const works = worksNow(family)
+  return (id) => id !== family.root && works(id) !== undefined
 }
 
 /** How many of `order` other than `current` work now: in a subagent its running siblings, in a session its running subagents. */

@@ -51,7 +51,10 @@ export const launcher = (binary: string): string =>
     "",
   ].join("\n")
 
-/** Each role's model: Claude plans and implements; the verifier is the other family (the skill's Families rule). */
+/**
+ * Each role's model: the newest Opus, the verifier too (the skill's Models rule). Codex is the
+ * fallback the orchestrate mod moves a held start to; no role is bound to it.
+ */
 export const roleModels = (catalog: Catalog): Record<string, string> => {
   const newest = (provider: string, family: string) => {
     const model = newestRelease(catalog, provider, family)
@@ -59,7 +62,7 @@ export const roleModels = (catalog: Catalog): Record<string, string> => {
     return `${provider}/${model}`
   }
   const claude = newest("anthropic", "claude-opus")
-  return { planner: claude, implementor: claude, verifier: newest("openai", "gpt-sol") }
+  return { planner: claude, implementor: claude, verifier: claude, worker: claude }
 }
 
 /** The prompt-cache lifetimes Anthropic offers, as `settings.cache.ttl` writes them, in ms. */

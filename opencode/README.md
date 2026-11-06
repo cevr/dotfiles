@@ -243,22 +243,23 @@ server has `POST /api/shell/:id/kill` and `GET /api/shell?exited=true`.
 `cmd/orchestrate`. It defines the role agents, their compaction windows and
 their five-minute prompt cache (`ROLE_CACHE_TTL`, through the fork's per-agent
 `request.settings.cacheTTL`; the main session keeps the provider's hour),
-routes each subagent call to a role, latches new starts the pace holds, and stops
-agent work over the Sabbath. Its options are `windows`, `log`, `now`,
+routes each subagent call to a role, starts a new Opus start the pace holds on
+Codex instead, latches one both hold, and stops agent work over the Sabbath. Its options are `windows`, `log`, `now`,
 `place`, `fullAgent` and `codex`. An absent option takes its default. A
 malformed one stops the plugin at setup, with a message that names it.
 
 The model (the domain files at `mods/orchestrate/`):
 
-- Facts: `SubagentStarted` (the agent, why it was routed there, and its
-  model), `SubagentLatched` (a held start kept to start later: what holds
-  it, why, when it opens and when it is decided again) and
+- Facts: `SubagentStarted` (the agent, why it was routed there, its
+  model, and `fallback`, why it runs on Codex, when it does),
+  `SubagentLatched` (a held start kept to start later: what holds it, why,
+  when it opens, when it is decided again, and the fallback's hold) and
   `SubagentFinished` (the child session and how it ended).
 - Commands: `StartSubagent`, `OpenLatch` (a latched start decided again at
   its time), `UseTool` (any other tool call) and `FinishSubagent`. Each one
   is decided only from inputs gathered beforehand: the clock, the place, the
   asked agent, the child's agent and latch, the role's model and the pace
-  hold.
+  hold, and the Codex fallback with its own hold.
 - Rejections: `SabbathRest` (when work resumes) and `StillLatched` (a
   follow-up to a child whose latch has not opened). `PaceHeld` (whose pace,
   the reason, and when it opens) refuses a held start only when no latch can
@@ -1117,7 +1118,9 @@ checks), `cron/` (Bun.cron and the job's side) and `memory/`.
 a cancel and a plugin reload) and `scenarios/wake-downtime.ts` (an alarm due
 while the server was stopped) in real OpenCode; `tests/prime-latch.test.ts`
 runs `scenarios/prime-latch.ts` (a latch held, held again, opened, and its
-result waking the parent).
+result waking the parent); `tests/prime-fallback.test.ts` runs
+`scenarios/prime-fallback.ts` (a worker the pace holds starts at once on the
+Codex fallback, and the call log says why).
 
 Where it departs from gent: a fire that went late still starts a turn and
 says how late (gent turns an alarm more than 10 minutes late into a notice);
@@ -1259,13 +1262,29 @@ earlier version wrote, so stored sessions keep restoring. A deleted
 session's entry is removed. The compute limit and the idle timer read
 Effect's `Clock`; the worker's own clock stops while its tool calls run.
 
-## The other model family
+## Opus first, Codex second
 
-Every role is an OpenCode subagent; its family is its model. `bun run daily`
-binds the planner and the implementor to the newest Claude Opus and the
-verifier to the newest GPT sol, on the ChatGPT subscription OpenCode signs in
-to itself (`opencode auth login openai`). To move a role to the other family
-for one call, pass the subagent tool's `model` (`provider/model#variant`).
+Every role is an OpenCode subagent; its model is the config's.
+`bun run daily` binds every role (planner, implementor, verifier, worker)
+to the newest Claude Opus. Codex is the fallback, on the ChatGPT
+subscription OpenCode signs in to itself (`opencode auth login openai`),
+used only when the pace holds a new Opus start.
+
+| Opus | Codex | The start |
+| --- | --- | --- |
+| admitted | (not asked) | starts on Opus |
+| held | admitted | starts at once on Codex; the answer and the call log say why |
+| held | held | latches, and opens on whichever opens first (Opus on a tie) |
+| Sabbath | (not asked) | latches until work resumes |
+
+The fallback is Codex's newest sol, at `high` (the verifier at `medium`), or
+the newest luna at `max` when the description ends in `(light)`, `(direct)`
+or `(mechanical)` (`codexFallback` in `role.ts`; `Models.newest` picks the
+latest release of the family). A call that names a `model` runs on it as is,
+with no fallback. A follow-up never falls back: a role already on Codex stays
+there, and the next new start tries Opus first again. The parent's answer
+starts with `orchestrate: this agent runs on <model>, the Codex fallback
+(<why>).`, and the call log's `call` line carries the same `fallback`.
 No Codex bridge, MCP server or thread tools are involved.
 
 ## Pace and effort
@@ -1282,14 +1301,17 @@ accounts. It holds new starts when pooled weekly use exceeds a 99% even
 weekly allowance plus five percentage points of leeway, or all available
 accounts have no short/weekly-window room.
 
-A held start latches; it is not refused. The wakes keep the latch (a
+A held start falls back to Codex first (see
+[Opus first, Codex second](#opus-first-codex-second)); one both hold latches,
+it is not refused. The wakes keep the latch (a
 `latch` entry, see [Wakes](#wakes)) and make its child session at once,
 with the agent and the description as its title, but send it nothing. The
 call answers at once, foreground or background, and a kernel cell's
 `tools.subagent` gets the same answer as a value: the subagent is latched,
 why, when it opens (UTC and local time), its session and latch ids, and
 that its result will wake the parent. At its time the wakes ask
-`openLatch`, which decides it again on the same rules. Still held, it
+`openLatch`, which decides it again on the same rules: Opus first, then the
+fallback. Still held, it
 latches again with the hold's new reason and time. Admitted, it starts in
 the background on the child, with the original agent, description, prompt
 and model, and its result wakes the parent as a background subagent's
