@@ -1,8 +1,9 @@
 // Landing Rifts as one batch: an integration Rift of the warm source starts
 // at origin's newest default branch, merges each Rift's branch in order (a
 // conflict in lock files alone is settled by installing again; any other
-// stops the batch and names the Rift and the files), runs the repository's
-// gate once, pushes to the default branch, trashes the landed Rifts, then
+// stops the batch and names the Rift and the files), writes the generated
+// files again for the merged sources (a clean merge can leave them stale),
+// runs the repository's gate once, pushes to the default branch, trashes the landed Rifts, then
 // runs the repository's accept check once, in the background, on everything
 // the batch changed, and wakes the calling session with its result. The
 // repository names its commands in its warm source's Git config
@@ -30,10 +31,11 @@ export interface LandConfig {
   /**
    * `rift.generated` (one value per file, relative to the repository root):
    * files a command writes, whose merge conflict `rift.regenerate` settles,
-   * as a lock file's is settled by installing again.
+   * as a lock file's is settled by installing again, and which it writes
+   * again after every batch's merges.
    */
   readonly generated: ReadonlyArray<string>
-  /** `rift.regenerate`: the shell line, run at the repository root, that writes the generated files again. */
+  /** `rift.regenerate`: the shell line, run at the repository root after the merges and the install, that writes the generated files again. */
   readonly regenerate: string | undefined
   /**
    * `rift.push` (default true): whether a green batch is pushed to the
@@ -90,7 +92,7 @@ export interface Landed {
   /** The pushed commit, `<hash> <subject>`. */
   readonly pushed: string
   readonly gate: Ran
-  /** The lock files settled or rewritten by an install, committed in the batch. */
+  /** The lock files and generated files settled or rewritten by an install or `rift.regenerate`, committed in the batch. */
   readonly locks: ReadonlyArray<string>
   /** Each landed Rift kept, with why; the others went to the trash. */
   readonly kept: ReadonlyArray<{ readonly path: string; readonly why: string }>
@@ -108,7 +110,7 @@ export class LandRefused extends Schema.TaggedError<LandRefused>()("LandRefused"
 /** A batch stopped at one step; nothing was pushed. `path` is the Rift whose merge stopped it, else the integration Rift. */
 export class LandStopped extends Schema.TaggedError<LandStopped>()("LandStopped", {
   path: Schema.String,
-  step: Schema.Literals(["start", "merge", "conflict", "install", "gate", "push"]),
+  step: Schema.Literals(["start", "merge", "conflict", "install", "regenerate", "gate", "push"]),
   detail: Schema.String,
 }) {}
 
@@ -129,7 +131,7 @@ export const landedText = (landed: Landed, integration: string, accepting: boole
   const removed = landed.units.filter((unit) => !landed.kept.some((kept) => kept.path === unit.path))
   return [
     `Landed ${landed.units.length} Rift(s) as one push: ${landed.pushed} to ${landed.main} (merged ${branches(landed.units)}; the gate passed in ${landed.gate.seconds}s).`,
-    ...(landed.locks.length > 0 ? [`Installed again and committed: ${landed.locks.join(", ")}.`] : []),
+    ...(landed.locks.length > 0 ? [`Installed or regenerated and committed: ${landed.locks.join(", ")}.`] : []),
     ...(removed.length > 0 ? [`To the trash: ${removed.map((unit) => unit.path).join(", ")}.`] : []),
     ...landed.kept.map((kept) => `Kept ${kept.path}: ${kept.why}`),
     accepting
@@ -178,7 +180,7 @@ export const checkedText = (checked: Checked): string => {
   const gate = checked.gate
   return [
     `Checked ${checked.units.length} Rift(s) as one batch in ${checked.integration} on ${checked.main} since ${checked.base.slice(0, 9)}; rift.push is false, so ${checked.main} was not pushed and every Rift stays.`,
-    ...(checked.locks.length > 0 ? [`Installed again and committed in the integration Rift: ${checked.locks.join(", ")}.`] : []),
+    ...(checked.locks.length > 0 ? [`Installed or regenerated and committed in the integration Rift: ${checked.locks.join(", ")}.`] : []),
     gate === undefined
       ? "The gate did not run: no Rift merged."
       : gate.code === 0

@@ -6,7 +6,8 @@
 // kept in a log under `logs`; the gate and the acceptance run always run
 // heavy, through the guard's launcher (`checkArgv`). A lock file is installed again with its package
 // manager (frozen first, then free, as a merged lock file may need) and
-// committed when the install rewrote it.
+// committed when the install rewrote it. `rift.regenerate` runs after every
+// batch's merges, and what it rewrote is committed.
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { DEFAULT_LIMITS, heavyArgv, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
@@ -175,6 +176,19 @@ export const layer = (options: Options) => {
     return committed
   })
 
+  const regenerate = Effect.fn("Landing.regenerate")(function* (integration: string, settings: LandConfig) {
+    if (settings.regenerate === undefined) return []
+    yield* run(["sh", "-c", settings.regenerate], integration)
+    const status = yield* git(integration, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    const files = statusEntries(status)
+      .map((entry) => entry.file)
+      .filter((file) => settings.generated.includes(file) || isLock(file))
+    if (files.length === 0) return []
+    yield* git(integration, "add", "--", ...files)
+    yield* git(integration, "commit", "-q", "-m", "chore: regenerate generated files after landing", "--", ...files)
+    return files
+  })
+
   const check = Effect.fn("Landing.check")(function* (path: string, label: "gate" | "accept", command: string, env: Readonly<Record<string, string>>) {
     mkdirSync(options.logs, { recursive: true })
     const log = join(options.logs, `${basename(path)}.${label}.log`)
@@ -202,5 +216,5 @@ export const layer = (options: Options) => {
     yield* git(path, "fetch", "-q", "origin")
   })
 
-  return Layer.succeed(Landing, Landing.of({ config, ownChanges, start, merge, install, check, push, pushBranch, sync }))
+  return Layer.succeed(Landing, Landing.of({ config, ownChanges, start, merge, install, regenerate, check, push, pushBranch, sync }))
 }

@@ -134,6 +134,31 @@ describe("process Landing", () => {
     expect(sh(made.integration, "git", "log", "-1", "--format=%s")).toBe("Merge feat/y")
   })
 
+  test("a clean merge that leaves a generated file stale ends with it regenerated and committed; nothing to write commits nothing", async () => {
+    const made = bench()
+    // The Rift adds a package but never writes gen.txt again, so the merge is clean and gen.txt stale.
+    write(made.x, "pkgs/b/package.json", JSON.stringify({ name: "b", version: "1.0.0" }))
+    sh(made.x, "bun", "install")
+    sh(made.x, "git", "add", "-A")
+    sh(made.x, "git", "commit", "-q", "-m", "add b, gen.txt stale")
+    const landed = await made.run((landing) =>
+      Effect.gen(function* () {
+        const started = yield* landing.start(made.integration, "main")
+        const merged = yield* landing.merge(made.integration, { path: made.x, branch: "feat/x" }, made.settings)
+        const locks = yield* landing.install(made.integration, started.previous)
+        const regenerated = yield* landing.regenerate(made.integration, made.settings)
+        const again = yield* landing.regenerate(made.integration, made.settings)
+        return { merged, locks, regenerated, again }
+      }),
+    )
+    expect(landed).toEqual({ merged: { _tag: "Merged", regenerated: [] }, locks: [], regenerated: ["gen.txt"], again: [] })
+    expect(readFileSync(join(made.integration, "gen.txt"), "utf8")).toBe("a\nb\n")
+    expect(sh(made.integration, "git", "log", "-2", "--format=%s")).toBe("chore: regenerate generated files after landing\nadd b, gen.txt stale")
+    expect(sh(made.integration, "git", "status", "--porcelain", "--untracked-files=no")).toBe("")
+    const failed = await made.run((landing) => Effect.flip(landing.regenerate(made.integration, { ...made.settings, regenerate: "echo cannot write >&2; exit 4" })))
+    expect(failed.message).toBe("cannot write")
+  })
+
   test("any other conflict aborts the merge and answers its files", async () => {
     const made = bench()
     write(made.x, "README.md", "x\n")
