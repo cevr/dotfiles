@@ -14,6 +14,11 @@
 //   means nothing between cgroups. A scope runs the command in place: the
 //   same process, environment, directory and output, so a kill by PID or
 //   process group reaches it as before.
+//
+// `heavyArgv` is the same wrapping for a caller that spawns an argv itself
+// (the wakes' heavy job, rift land's gate and acceptance run); this file
+// imports nothing, so any mod's process implementation may import it
+// (`@dotfiles/opencode-guard/launcher`) without the guard plugin.
 
 /** The limits a heavy command runs under. */
 export interface Limits {
@@ -25,6 +30,12 @@ export interface Limits {
   readonly cpuWeight: number
 }
 
+/** The guard's default limits (cmd/guard/server.ts's options), which the other callers run under. */
+export const DEFAULT_LIMITS: Limits = { nice: 10, memoryMax: "12G", cpuWeight: 20 }
+
+/** The probe for a scope: on Linux, one is available when this exits 0 (a user systemd with a reachable bus). */
+export const SCOPE_PROBE: ReadonlyArray<string> = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "true"]
+
 /** One launcher: the shell it stands in for, its limits, and whether it runs a systemd scope. */
 export interface Launch {
   /** The shell's absolute path, as OpenCode resolved it. */
@@ -35,15 +46,21 @@ export interface Launch {
 
 const quote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`
 
+/** `argv` under the limits: `nice`, then, when `scope`, a user systemd scope with its memory cap and CPU weight. */
+export const heavyArgv = (argv: ReadonlyArray<string>, limits: Limits, scope: boolean): ReadonlyArray<string> => [
+  "nice",
+  "-n",
+  String(limits.nice),
+  ...(scope ? ["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", `MemoryMax=${limits.memoryMax}`, "-p", `CPUWeight=${limits.cpuWeight}`, "--"] : []),
+  ...argv,
+]
+
 /** The launcher's file name: the shell's own, so OpenCode reads the shell's dialect from it. */
 export const launcherName = (shell: string): string => shell.slice(shell.lastIndexOf("/") + 1)
 
 /** The launcher's text: a POSIX script that execs the shell, with its arguments, under the limits. */
 export const launcherScript = (launch: Launch): string => {
-  const scope = launch.scope
-    ? ["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", `MemoryMax=${launch.limits.memoryMax}`, "-p", `CPUWeight=${launch.limits.cpuWeight}`, "--"]
-    : []
-  const run = ["exec", "nice", "-n", String(launch.limits.nice), ...scope, quote(launch.shell), '"$@"'].join(" ")
+  const run = ["exec", ...heavyArgv([quote(launch.shell), '"$@"'], launch.limits, launch.scope)].join(" ")
   const what = launch.scope
     ? `at nice ${launch.limits.nice}, in a systemd scope with MemoryMax=${launch.limits.memoryMax} and CPUWeight=${launch.limits.cpuWeight}`
     : `at nice ${launch.limits.nice}`
