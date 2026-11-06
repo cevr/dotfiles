@@ -1133,7 +1133,8 @@ workbox in a week). One input, with an `action`:
   uncommitted changes (a file the same as in the warm source does not count)
   and a repository with no gate. Then, in the source's integration Rift
   (`integrate`, made on first use and kept): repair a stale multi-pack index,
-  check out origin's newest default branch, merge each Rift's branch in order
+  check out origin's newest default branch (dropping any tracked change the
+  last gate left, such as a lint fix), merge each Rift's branch in order
   (`git fetch <rift> <branch>`, `git merge FETCH_HEAD`). A conflict in lock
   files and the repository's generated files alone is settled: the Rift's
   side, installed again and regenerated, committed. Any other conflict aborts
@@ -1146,6 +1147,19 @@ workbox in a week). One input, with an `action`:
   and wakes the calling session (a steered `session.synthetic`) with its
   counts and failures; a red one is fixed forward. The integration Rift takes
   one batch at a time, its accept check included.
+
+  A repository that lands through pull requests (a team repository, where CI
+  on the PR is the merge gate) sets `rift.push` false. Land then merges,
+  installs, regenerates and runs the gate (and the accept check, in the
+  background) in the integration Rift the same way, but never pushes the
+  default branch and never removes a Rift. A conflict reds only its own Rift
+  and the others merge on; a red gate or accept check reds every Rift it ran
+  on, with its log and failures, for the caller to route to the Rift whose
+  diff each failure touches. The answer (or, with an accept check, its wake)
+  lists each Rift `green`, `red` with why, or `pending`. With
+  `rift.pushBranches` true a green Rift's own branch is pushed to the same
+  branch on origin, never forced, so its PR runs CI on the gated head; a
+  refused push is named and leaves the Rift green.
 - On the workbox, `{ action: "init", repository, path? }`, `"refresh"`,
   `"check"` (of the session's or `source`'s warm source), `"deps"` (in the
   named Rift, else the session's directory), `"sources"`, `"prune"` (always
@@ -1162,6 +1176,8 @@ knows no repository's commands:
 | `rift.accept` | the slow check run after it, with `RIFT_LAND_BASE` set to the batch's base |
 | `rift.generated` | one value per generated file (repository-relative) whose conflict is settled by writing it again |
 | `rift.regenerate` | the shell line, run at the repository root, that writes them again |
+| `rift.push` | a Git boolean, default true; false checks the batch without pushing the default branch or removing a Rift |
+| `rift.pushBranches` | a Git boolean, default false; with `rift.push` false, push each green Rift's own branch |
 | `workrift.main` | the default branch; else origin's HEAD, else `main` |
 
 This repository's warm source sets:
@@ -1172,6 +1188,25 @@ git config rift.accept 'cd opencode && env -u ANTHROPIC_BASE_URL OPENCODE_DEV=~/
 git config rift.generated opencode/mods/orchestrate/agents.json
 git config rift.regenerate 'cd opencode && bun scripts/agents.ts'
 ```
+
+The workbox's Bite warm source, `/workspaces/bite` (origin
+`biteinc/maitred`, default branch `master` from origin's HEAD), lands
+through pull requests. Its batch gate is `bite gate` over the batch's diff
+against `origin/master` (`--branch`), with the DB-backed unit suites forced
+on the workbox's local Mongo and Redis (`--require-db`, `--with-infra`
+starts what is missing); CI on the PR, triggered by a `/pipeline <suites>`
+comment on a stack's top PR, stays the thorough gate. `bite gate` lints with
+auto-fix, so the gate line fails when the gate rewrote a file: the branch
+still holds what CI's lint would reject. Set it once in the warm source:
+
+```sh
+git -C /workspaces/bite config rift.push false
+git -C /workspaces/bite config rift.pushBranches true
+git -C /workspaces/bite config rift.gate 'bun bite gate --branch --with-infra --require-db --failures-only && git diff --exit-code --stat'
+```
+
+Bite needs no `rift.generated` or `rift.regenerate` (its one lock file,
+`bun.lock`, is settled by installing again) and no `rift.accept`.
 
 The gate and accept logs are `${XDG_CACHE_HOME:-~/.cache}/rift-land/<rift>.<gate|accept>.log`.
 
