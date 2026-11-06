@@ -222,13 +222,26 @@ handle: the notice's text is the header and the output since the agent's
 last look, and its metadata carries `handle`. The agent's own kill returns
 the final handle and sends no notice; so does a `wait` that sees the end.
 
-A kernel cell's `await tools.shell({ … })` resolves to a live handle:
-`.id`, `.state`, `.exitCode`, `.signal`, `.runtimeMs`, `.output`, `.next`,
-and `.refresh()`, `.read({ offset?, lines? })`, `.wait(ms?)` (10 min by
-default) and `.kill()`, each a shell call with its id that updates the
-handle in place and resolves to it. `await tools.shell.handle(id)` rebuilds
-one; a kernel restart keeps a handle's data but not its methods
-(`mods/kernel/worker/shell-handle.ts`).
+In a kernel cell the shell is methods, not input fields
+(`mods/kernel/worker/shell-handle.ts`). `await tools.shell({ command,
+workdir?, timeout?, description?, background? })` only runs a command and
+resolves to a live handle: `.id`, `.state`, `.exitCode`, `.signal`,
+`.runtimeMs`, `.output`, `.next`, and `.refresh()`, `.read({ offset?, lines?
+})`, `.wait(ms?)` (10 min by default) and `.kill()`, each a shell call with
+its id that updates the handle in place and resolves to it. `await
+tools.shell.handle(id)` rebuilds one, and `await tools.shell.list()` gives
+one for each of the session's shells from a single list call (with its
+`.description`, `.command`, `.started` and `.background`; `.output` empty,
+`.next` the output's size, the read position left where it was). An input
+with `id`, `kill`, `wait`, `offset`, `lines` or `list` throws a TypeError
+naming the method to use. A kernel restart keeps a handle's data but not
+its methods.
+
+```ts
+const dev = await tools.shell({ command: "bun dev", background: true, description: "dev server" })
+await dev.wait(2_000) // dev.state, dev.output
+for (const shell of await tools.shell.list()) if (shell.state === "running") await shell.kill()
+```
 
 Output is kept on disk in two files of 8 MiB each: `<id>.out` holds the
 newest bytes, and when it fills it becomes `<id>.out.1`, replacing the one

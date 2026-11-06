@@ -115,12 +115,13 @@ export const typeOf = (schema: unknown, depth = 0): string => {
 }
 
 /**
- * What a tool's result is in a cell beyond what its own description says: the
- * shell tool's handle is a live object there (worker/shell-handle.ts).
+ * How a tool differs in a cell from what its own description says: the shell
+ * tool only runs commands there, and acts on a shell through its handle's
+ * methods (worker/shell-handle.ts).
  */
 export const IN_A_CELL: Readonly<Record<string, string>> = {
   shell:
-    "In a cell, a shell call that returns a handle resolves to a live one: `.id`, `.state`, `.exitCode`, `.signal`, `.runtimeMs`, `.output`, `.next`, and methods that call this tool with its id, update it in place and resolve to it: `.refresh()` (its state, and the output since the last look), `.read({ offset?, lines? })`, `.wait(ms?)` (up to 10 min by default), `.kill()`. `.output` is what the latest call showed. `await tools.shell.handle(id)` builds one for a shell this session started; a kernel restart keeps a handle's data but not its methods, so rebuild it that way.",
+    "In a cell, `tools.shell({ command, workdir?, timeout?, description?, background? })` only runs a command, and resolves to a live handle: `.id`, `.state`, `.exitCode`, `.signal`, `.runtimeMs`, `.output`, `.next`, and methods that act on that shell, update the handle in place and resolve to it: `.refresh()` (its state, and the output since the last look), `.read({ offset?, lines? })`, `.wait(ms?)` (up to 10 min by default), `.kill()`. `.output` is what the latest call showed. `await tools.shell.handle(id)` builds one for a shell this session started, and `await tools.shell.list()` one for each of them (with `.description` and `.command`). Example: `const h = await tools.shell({ command: 'bun dev', background: true }); await h.wait(500); await h.kill()`. A kernel restart keeps a handle's data but not its methods, so rebuild it with `tools.shell.handle(h.id)`.",
 }
 
 /** The tools a cell reaches, as the model reads them in the kernel's description. */

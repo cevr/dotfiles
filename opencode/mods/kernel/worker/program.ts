@@ -42,7 +42,7 @@ import { makeBoundedOutput } from "../output.ts"
 import { encodeFrame, makeFrameReader, outputMarker, oversized, REQUEST_FD, RESPONSE_FD } from "../wire.ts"
 import { decodeBinding, encodeSnapshot } from "./codec.ts"
 import { declarationsOf, decodeDeclaration, makeDeclarations, type Declared } from "./declarations.ts"
-import { handleOf, shellValue } from "./shell-handle.ts"
+import { handleOf, listShells, runShell } from "./shell-handle.ts"
 
 /** Uncaught errors kept for the next cell; later ones between two cells are dropped. */
 const MAX_STRAY_ERRORS = 20
@@ -101,13 +101,17 @@ type ToolNode = (...args: unknown[]) => unknown
  * so a new listing changes the paths without a rebuild. `tools(id)` looks a
  * tool up by string. A name not in the listing throws, naming the tools.
  *
- * The shell tool's result is a live handle (shell-handle.ts), and
- * `tools.shell.handle(id)` builds one for a shell the session started.
+ * `tools.shell(input)` runs a command and resolves to a live handle
+ * (shell-handle.ts) whose methods act on it; `tools.shell.handle(id)` builds
+ * one for a shell the session started, and `tools.shell.list()` one for each.
  */
 const makeTools = (listing: () => ReadonlyArray<Listing>, callHost: (id: string, input: unknown) => Promise<Json>): ToolNode => {
-  const callShell = (input: Json) => callHost("shell", input)
-  const call = (id: string, input: unknown): Promise<unknown> =>
-    id === "shell" ? callHost(id, input).then((value) => shellValue(value, callShell)) : callHost(id, input)
+  const callShell = (input: unknown) => callHost("shell", input)
+  const call = (id: string, input: unknown): Promise<unknown> => (id === "shell" ? runShell(input, callShell) : callHost(id, input))
+  const shellNamespace: Record<string, unknown> = {
+    handle: (id: unknown) => handleOf(id, callShell),
+    list: () => listShells(callShell),
+  }
   const ids = () => listing().map((tool) => tool.id)
   const nodes = new Map<string, ToolNode>()
   const isPrefix = (path: string) => ids().some((id) => id === path || id.startsWith(`${path}.`))
@@ -124,7 +128,8 @@ const makeTools = (listing: () => ReadonlyArray<Listing>, callHost: (id: string,
     const created = new Proxy(target, {
       get: (target, key, receiver) => {
         if (path === "" && typeof key === "string" && DISCOVERY.has(key)) return discovery[key as keyof typeof discovery]
-        if (path === "shell" && key === "handle" && ids().includes("shell")) return (id: unknown) => handleOf(id, callShell)
+        if (path === "shell" && typeof key === "string" && Object.hasOwn(shellNamespace, key) && ids().includes("shell"))
+          return shellNamespace[key]
         if (!isPathKey(path, key)) return Reflect.get(target, key, receiver)
         if (isPrefix(join(path, key))) return node(join(path, key))
         throw unknown(join(path, key))

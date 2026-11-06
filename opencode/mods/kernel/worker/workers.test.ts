@@ -124,7 +124,8 @@ describe("a worker", () => {
           Effect.sync((): Json => {
             inputs.push(input)
             const asked = input as Record<string, Json>
-            if (asked.list === true) return { shells: [{ ...base, state: "running" }] }
+            if (asked.list === true)
+              return { shells: [{ id: "sh_1", state: "running", runtimeMs: 5, size: 8, description: "Make", command: "make", started: 1, background: true }] }
             if (asked.command !== undefined) return { ...base, state: "running", output: "one\n", next: 4, backgrounded: "start" }
             if (asked.kill === true) return { ...base, state: "killed", signal: "SIGTERM", output: "", next: 8 }
             if (asked.wait !== undefined) return { ...base, state: "exited", exitCode: 0, output: "two\n", next: 8 }
@@ -156,8 +157,29 @@ describe("a worker", () => {
         const rebuilt = yield* run('const again = await tools.shell.handle("sh_1"); [again.id, again.state, typeof again.kill]')
         expect(rebuilt.display).toBe('[ "sh_1", "running", "function" ]')
         expect(inputs.at(-1)).toEqual({ id: "sh_1" })
-        expect((yield* run("(await tools.shell({ list: true })).shells.length")).display).toBe("1")
         expect((yield* run('await tools.shell.handle("nope")')).display).toBe("TypeError: tools.shell.handle takes a shell ID (sh_…)")
+
+        // One list call; each listed shell is a live handle, its data plain, its read position untouched.
+        const listed = yield* run("const shells = await tools.shell.list(); JSON.stringify(shells)")
+        expect(inputs.at(-1)).toEqual({ list: true })
+        expect(JSON.parse(listed.display)).toEqual([
+          { id: "sh_1", state: "running", runtimeMs: 5, description: "Make", command: "make", started: 1, background: true, output: "", next: 8, truncated: false },
+        ])
+        expect((yield* run("(await shells[0].kill()) === shells[0] && [shells[0].state, shells[0].signal]")).display).toBe('[ "killed", "SIGTERM" ]')
+        expect(inputs.at(-1)).toEqual({ id: "sh_1", kill: true })
+
+        // In a cell, tools.shell only runs a command: a field that acts on a shell throws, naming the method.
+        const sent = inputs.length
+        const refused = (input: string) => run(`await tools.shell(${input})`).pipe(Effect.map((result) => result.display))
+        expect(yield* refused('{ id: "sh_1", kill: true }')).toBe('TypeError: tools.shell takes a command to run, not kill; use (await tools.shell.handle("sh_1")).kill()')
+        expect(yield* refused('{ id: "sh_1", wait: 500 }')).toBe('TypeError: tools.shell takes a command to run, not wait; use (await tools.shell.handle("sh_1")).wait(ms)')
+        expect(yield* refused('{ id: "sh_1", lines: 5 }')).toBe('TypeError: tools.shell takes a command to run, not lines; use (await tools.shell.handle("sh_1")).read({ lines })')
+        expect(yield* refused('{ id: "sh_1", offset: 4 }')).toBe('TypeError: tools.shell takes a command to run, not offset; use (await tools.shell.handle("sh_1")).read({ offset })')
+        expect(yield* refused('{ id: "sh_1" }')).toBe('TypeError: tools.shell takes a command to run, not id; use (await tools.shell.handle("sh_1")).refresh()')
+        expect(yield* refused("{ kill: true }")).toBe("TypeError: tools.shell takes a command to run, not kill; use (await tools.shell.handle(id)).kill()")
+        expect(yield* refused("{ list: true }")).toBe("TypeError: tools.shell takes a command to run, not list; use await tools.shell.list()")
+        expect(yield* refused('{ command: "make", wait: 500 }')).toBe("TypeError: tools.shell takes a command to run, not wait; use (await tools.shell.handle(id)).wait(ms)")
+        expect(inputs.length).toBe(sent)
 
         // A restart keeps the handle's data; its methods come back through tools.shell.handle.
         const snapshot = yield* workers.snapshot(first)

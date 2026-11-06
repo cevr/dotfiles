@@ -1,10 +1,16 @@
 /**
- * The handle `await tools.shell({ command })` resolves to inside a cell: the
- * shell tool's handle (`{ id, state, exitCode?, signal?, runtimeMs, output,
- * next, truncated, backgrounded? }`) as a live object. Its data fields are
- * plain and enumerable, so it prints, serializes and survives a kernel restart
- * as data; its methods are not enumerable, so a restart drops them, and
- * `tools.shell.handle(id)` builds a live one again.
+ * The shell inside a cell: `await tools.shell({ command })` runs a command and
+ * resolves to a live handle, and the handle's methods act on it. The shell
+ * tool's JSON forms that act on a shell (`{ id }`, `{ id, wait }`,
+ * `{ id, kill: true }`, `{ list: true }`) stay the model's direct tool input;
+ * in a cell they are methods: `.refresh()`, `.wait(ms)`, `.kill()`,
+ * `tools.shell.list()`, `tools.shell.handle(id)`.
+ *
+ * A handle is the shell tool's handle (`{ id, state, exitCode?, signal?,
+ * runtimeMs, output, next, truncated, backgrounded? }`) as a live object. Its
+ * data fields are plain and enumerable, so it prints, serializes and survives
+ * a kernel restart as data; its methods are not enumerable, so a restart drops
+ * them, and `tools.shell.handle(id)` builds a live one again.
  *
  * Each method calls the shell tool with the handle's id, writes the handle it
  * returns into this one, and resolves to this one. `output` is what the latest
@@ -17,14 +23,18 @@ import type { Json } from "../frame.ts"
 /** How long `wait()` without a limit waits: the shell tool's own foreground limit. */
 export const DEFAULT_WAIT_MS = 10 * 60 * 1_000
 
-/** The shell tool's handle, as JSON. */
-export interface ShellHandleData {
+/** The fields of a handle's state, as the shell tool gives them in a handle and in a list. */
+interface ShellState {
   readonly id: string
   readonly state: "running" | "exited" | "killed"
   readonly exitCode?: number
   readonly signal?: string
   readonly timedOut?: boolean
   readonly runtimeMs: number
+}
+
+/** The shell tool's handle, as JSON. */
+export interface ShellHandleData extends ShellState {
   readonly output: string
   readonly next: number
   readonly truncated: boolean
@@ -43,25 +53,38 @@ export interface ShellHandle extends ShellHandleData {
   refresh(): Promise<ShellHandle>
 }
 
-/** Calls the shell tool with an input and resolves to its result. */
-export type CallShell = (input: Json) => Promise<Json>
+/** A handle `tools.shell.list()` gives: also what the list says of the shell. */
+export interface ListedShellHandle extends ShellHandle {
+  readonly description: string
+  readonly command: string
+  /** Unix milliseconds. */
+  readonly started: number
+  readonly background: boolean
+}
 
-/** Whether a shell result is a handle (a `{ list: true }` call returns `{ shells }` instead). */
+/** Calls the shell tool with an input (made JSON on the way) and resolves to its result. */
+export type CallShell = (input: unknown) => Promise<Json>
+
+const record = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
+const isShellState = (value: unknown): value is ShellState =>
+  record(value) &&
+  typeof value.id === "string" &&
+  value.id.startsWith("sh_") &&
+  typeof value.state === "string" &&
+  typeof value.runtimeMs === "number"
+
+/** Whether a shell result is a handle. */
 export const isShellHandle = (value: unknown): value is ShellHandleData =>
-  typeof value === "object" &&
-  value !== null &&
-  !Array.isArray(value) &&
-  typeof Reflect.get(value, "id") === "string" &&
-  String(Reflect.get(value, "id")).startsWith("sh_") &&
-  typeof Reflect.get(value, "state") === "string" &&
-  typeof Reflect.get(value, "output") === "string"
+  isShellState(value) && typeof Reflect.get(value, "output") === "string"
 
 const method = (handle: object, name: string, value: (...args: never[]) => unknown) =>
   Object.defineProperty(handle, name, { value, writable: true, enumerable: false, configurable: true })
 
 /** `data` as a live handle whose methods reach the shell tool through `call`. */
-export const makeShellHandle = (data: ShellHandleData, call: CallShell): ShellHandle => {
-  const handle = { ...data } as ShellHandle
+export const makeShellHandle = <Data extends ShellHandleData>(data: Data, call: CallShell): Data & ShellHandle => {
+  const handle = { ...data } as Data & ShellHandle
   const update = async (input: Record<string, Json>): Promise<ShellHandle> => {
     const result = await call({ id: handle.id, ...input })
     if (!isShellHandle(result)) throw new Error(`The shell tool did not return a handle for ${handle.id}`)
@@ -80,8 +103,34 @@ export const makeShellHandle = (data: ShellHandleData, call: CallShell): ShellHa
   return handle
 }
 
-/** A shell result as a cell gets it: a handle made live, anything else as it came. */
-export const shellValue = (value: Json, call: CallShell): unknown => (isShellHandle(value) ? makeShellHandle(value, call) : value)
+/** The method a cell uses in place of each field that acts on a shell. */
+const INSTEAD: ReadonlyArray<readonly [field: string, method: (id: string) => string]> = [
+  ["list", () => "await tools.shell.list()"],
+  ["kill", (id) => `(await tools.shell.handle(${id})).kill()`],
+  ["wait", (id) => `(await tools.shell.handle(${id})).wait(ms)`],
+  ["offset", (id) => `(await tools.shell.handle(${id})).read({ offset })`],
+  ["lines", (id) => `(await tools.shell.handle(${id})).read({ lines })`],
+  ["id", (id) => `(await tools.shell.handle(${id})).refresh()`],
+]
+
+/**
+ * `tools.shell(input)`: runs a command and resolves to its live handle. An
+ * input with a field that acts on a shell (`id`, `kill`, `wait`, `offset`,
+ * `lines`, `list`) throws, naming the method to use instead.
+ */
+export const runShell = async (input: unknown, call: CallShell): Promise<ShellHandle> => {
+  if (record(input)) {
+    const id = typeof input.id === "string" ? JSON.stringify(input.id) : "id"
+    const found = INSTEAD.find(([field]) => input[field] !== undefined)
+    if (found !== undefined) {
+      const [field, instead] = found
+      throw new TypeError(`tools.shell takes a command to run, not ${field}; use ${instead(id)}`)
+    }
+  }
+  const result = await call(input)
+  if (!isShellHandle(result)) throw new Error("The shell tool did not return a handle")
+  return makeShellHandle(result, call)
+}
 
 /** `tools.shell.handle(id)`: a live handle for one of the session's shells, rebuilt by checking it. */
 export const handleOf = async (id: unknown, call: CallShell): Promise<ShellHandle> => {
@@ -89,4 +138,21 @@ export const handleOf = async (id: unknown, call: CallShell): Promise<ShellHandl
   const result = await call({ id })
   if (!isShellHandle(result)) throw new Error(`The shell tool did not return a handle for ${id}`)
   return makeShellHandle(result, call)
+}
+
+/**
+ * `tools.shell.list()`: a live handle for each of the session's shells, from
+ * one list call. A list shows no output, so each handle's `output` is empty
+ * and its `next` is the output's size; the shell's read position stays where
+ * it was, so `.refresh()` shows what is new since the last look.
+ */
+export const listShells = async (call: CallShell): Promise<ReadonlyArray<ListedShellHandle>> => {
+  const result = await call({ list: true })
+  const shells = record(result) ? result.shells : undefined
+  if (!Array.isArray(shells)) throw new Error("The shell tool did not return a list of shells")
+  return shells.map((entry: unknown) => {
+    if (!isShellState(entry)) throw new Error("The shell tool listed a shell without its state")
+    const { size, ...listed } = entry as ShellState & Omit<ListedShellHandle, keyof ShellHandle> & { readonly size: number }
+    return makeShellHandle({ ...listed, output: "", next: size, truncated: false }, call)
+  })
 }

@@ -49,8 +49,11 @@ describe("the catalog", () => {
 
   test("says under the shell tool that a cell gets its handle as a live object", () => {
     const text = catalog([{ name: "shell", description: "Execute a shell command and return its handle.", input: {} }])
-    expect(text).toContain("Execute a shell command and return its handle.\n\nIn a cell, a shell call that returns a handle resolves to a live one")
+    expect(text).toContain("Execute a shell command and return its handle.\n\nIn a cell, `tools.shell({ command,")
+    expect(text).toContain("only runs a command, and resolves to a live handle")
     expect(text).toContain("`await tools.shell.handle(id)`")
+    expect(text).toContain("`await tools.shell.list()`")
+    expect(text).not.toMatch(/kill: true|list: true|wait: /)
   })
 
   test("reads unions, arrays, constants and nullable types; deep objects stay `object`", () => {
