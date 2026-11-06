@@ -95,6 +95,23 @@ unread, in the success colour while any is pending (the warning colour with
 only notices); its parts drop from the right as the row narrows. It is read
 again on the wake mod's `changed` event and every 2 seconds.
 
+↓ on an empty prompt opens the host's composer panel. After the host's
+Subagents, Shell and Terminals tabs, Prime adds Wakes and Monitors (through
+the fork's `ui.composerTab`; `tui/composer.tsx`, the words in `wakes.ts`).
+Each lists the session's pending alarms or monitors, soonest first, one row
+each:
+
+```
+12:36 in 9m 59s · ALPHA: check the deploy · wake · once           (Wakes: due, note, mode, repeat)
+echo still-waiting · every 1s · until /^READY$/ · still-waiting   (Monitors: command, period, stop, newest output)
+```
+
+↑/↓ move the highlight, Enter shows the whole entry (its full note, a
+monitor's newest output in full), ctrl+d cancels it as `wake_cancel` does,
+and ←/→ move between tabs. An empty tab says `No pending wakes` or
+`No monitors`. A monitor's newest output is the wake server's memory of
+its last check since that server started.
+
 A session goal (the fork's `/goal`) shows only as one line right above the
 composer, in its state's colour, and nowhere while there is no goal
 (`goal.ts`, `GoalLine` in `tui/chrome.tsx`):
@@ -1409,7 +1426,9 @@ ask, and a subagent asks only outside orchestrate's roles.
 
 `mods/wake` lets a session set itself an alarm or poll a command and be woken
 by it, ported from gent's `wake`. Its plugin is `cmd/wake` (`server.ts`;
-Prime's dock draws the pending wakes). The server takes options: `backstop` (`"cron"`, the default, or
+Prime's dock draws the pending wakes, and its composer panel's Wakes and
+Monitors tabs list and cancel them over the `pending` and `cancel` RPCs,
+a monitor's row with its newest check's output). The server takes options: `backstop` (`"cron"`, the default, or
 `"off"`, which holds the OS jobs in memory, for scenarios and tests), and
 `bun` and `opencode`, those programs by path (default the `bun` on PATH, else
 `~/.bun/bin/bun`, and `~/.local/bin/opencode`).
