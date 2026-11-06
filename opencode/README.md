@@ -22,6 +22,7 @@ so a new terminal runs it, and `opencode2` stays the stock release. As a `latest
 build it shares the stock release's database, logins and background
 service; the version change restarts that service as ours. It merges into
 `~/.config/opencode/opencode.json` the Anthropic auth plugin (`cmd/anthropic-auth`), the pool (on
+the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the cache and the web tools, the role
 the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the rift tool and tool names, the role
 models, a one-hour prompt cache for Claude
 (`providers.anthropic.settings.cache.ttl: "1h"`) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions and the
@@ -279,8 +280,10 @@ their five-minute prompt cache (`ROLE_CACHE_TTL`, the per-agent
 writes over the provider-configured lifetime, raised by the pool to the provider's hour once a
 role's session outlives it; the main session keeps the provider's hour),
 routes each subagent call to a role, starts a new Opus start the pace holds on
-Codex instead, latches one both hold, and stops agent work over the Sabbath. Its options are `windows`, `log`, `now`,
-`place`, `fullAgent` and `codex`. An absent option takes its default. A
+Codex instead, latches one both hold, writes each role's start and hand-back to its unit's
+`log.md`, stops agent work over the Sabbath, and resumes the subagents a restart cut. Its
+options are `windows`, `log`, `now`, `place`, `fullAgent`, `codex`, `unitLog` and `resume`.
+An absent option takes its default. A
 malformed one stops the plugin at setup, with a message that names it.
 
 The model (the domain files at `mods/orchestrate/`):
@@ -306,22 +309,65 @@ The model (the domain files at `mods/orchestrate/`):
   tool calls share the outer call's id, so `decide` never reads state.
 - Values: the Sabbath and `SabbathRest` (`sabbath.ts`), role routing
   (`role.ts`, over `agents.json`), the compaction windows (`compaction.ts`)
-  and the pace answers and `PaceHeld` (`pace.ts`).
+  the pace answers and `PaceHeld` (`pace.ts`), and a unit's moves on a role's
+  start and hand-back (`unit-log.ts`).
 - Views: the call log, `~/.cache/orchestrate/opencode-agents.jsonl`. It has
   one line per fact or rejection (`call-line.ts`), and the status pane reads
   it.
 - Contracts: the pool's pace (`PoolPace`), the Codex admission script
   (`CodexAdmission`), sessions, models, the latches (`Latches`: the wakes
   keep a latch, and a latched child starts through the subagent tool), the
-  compaction windows file and the call log, each a `Context.Service` in `service.ts`, with what every
+  restart's reads and resumes (`Restarts`, below), the
+  compaction windows file, the call log and the units' logs (`UnitLogs`), each a `Context.Service` in `service.ts`, with what every
   implementation owes in `laws.ts`. They are implemented in `filestore/`
-  (the call log and compact.json), `opencode/` (sessions, models, the
-  latches and the pool's pace over OpenCode's plugin context and RPC) and `codex/` (the
+  (the call log, compact.json, and the units' logs through the skill's log.ts), `opencode/` (sessions, models, the
+  latches, the restarts and the pool's pace over OpenCode's plugin context and RPC) and `codex/` (the
   admission script); `memory/` holds the doubles the plugin's seam test
   runs on.
 
 The aggregate stores events, not state. The status pane reads the history
 as the call log, and no command needs the folded state.
+
+### Resuming after a restart
+
+OpenCode continues a root session and a background subagent that a shutdown
+cut mid-turn by itself, at its next start (a `restart` notice in each). It
+leaves a foreground subagent: the parent's call to it ends `Tool execution
+interrupted (sessionID: …)`, and the child stays cut until the parent calls it
+again by hand. When the plugin starts (a server start, or a plugin reload,
+which cuts nothing but finds a cut an earlier start left), it waits 10 s so
+OpenCode's own recovery lands first, then reads its location's subagent
+sessions active in the last 6 hours (`restart.ts`, through the `Restarts`
+contract, `opencode/restarts.ts`):
+
+- Cut: the last step ended aborted and no turn end followed (a shutdown
+  writes no `idle` marker). Resumed.
+- Interrupted (an `idle` marker `interrupted` after the aborted step): the
+  user's Escape or a parent's cancel, left alone, unless the parent's call
+  to it was cut by the same shutdown (the parent's own turn has no
+  `interrupted` after that call, or was itself cut through its parent).
+  The shutdown reaches a foreground child through its parent's call, which
+  cancels it, so this is the common case.
+- Anything else (ended, running, continued by a prompt or OpenCode's own
+  notice, cut before the window or after the start, a root session): left.
+
+Each cut child is prompted, in the background through the subagent tool, in
+its parent's call to it: `Your turn ended when OpenCode restarted; continue
+where you left off. Any shell you had running was cut by the restart; rerun
+the ones you still need.` Its result wakes the parent as a background
+subagent's does. A turn resumed in a row waits longer each time (10 s, 2 min,
+10 min, the `resume.backoffMs` option); past three it is left to the parent.
+Each child is checked again just before its resume, so one its parent or
+OpenCode continued meanwhile is not resumed twice, and a reload finds the
+resumed ones continued. Each resume is a `resumed` line in the call log
+(`{ kind, at, sessionID: parent, callID, child, agent, description, cause:
+"restart", attempt }`). The parent gets one steered notice per restart
+(`◈ Subagents resumed after a restart`) naming the children resumed and the
+ones left, with why; it wakes the parent only when none was resumed. Over the
+Sabbath nothing is resumed. `resume: false` turns it off.
+
+A crash (no graceful shutdown) leaves a step unfinished rather than aborted,
+which reads the same as a step that runs, so it is left to the parent.
 
 The route (`role.ts`): a role or any other agent asked by name runs as
 asked, and a former role name as its role. An untyped or general call runs
@@ -337,6 +383,24 @@ A role mentioned in prose (`Fix the verifier's timeout`, `Planner prompt
 rewrite`) names none. A follow-up asking no particular agent (none, a
 general one, or `worker`) keeps its child's agent (`continued`), and a
 follow-up never changes agent by its description.
+
+A new start routed to a role (asked by name or described) whose `model` is
+the role's own (the model it would run on, at any variant or none, with or
+without its provider) runs as if it named none, reason `model-dropped`: at
+the role's effort, with the Codex fallback and the latch. Any other model a
+call names runs as named, with no fallback.
+
+The units' logs (`unit-log.ts`): a role's start moves its unit, by the
+call's `<role> <unit> r<N>` description, to `plan`, `implement` or
+`verify`; its hand-back, the first line of its last answer when its session
+goes idle (the fork's `experimental.idle` hook), moves it as the machine
+says (implementor `ready` to `verify`, verifier `accepted` or `stuck` to
+`decide`, `changes` to `implement` the next round, any `blocked` to
+`blocked`; a planner's `ready` waits for the orchestrator). Each move goes
+through the skill's `log.ts --current` into `<run dir>/<unit>/log.md`, the
+unit dir being the one a path in the prompt or the hand-back names, else the
+one `tmp/orchestrate/<run>/<unit>` in the session's checkout. None found, a
+move the orchestrator already logged, or one log.ts refuses writes nothing.
 
 The worker's ceiling (`capEffort` in `role.ts`): a call that runs as the
 worker on a model at `#max`, asked by the call or inherited (a new worker
@@ -591,7 +655,7 @@ OpenCode's external editor does.
 The server plugin answers the `dotfiles-opencode.git` RPC (`git.ts`):
 `checkout`, `pullRequest` and `review`, each for one session. It reads the
 session's directory from OpenCode on every call, so a session that moves is
-read where it is. It takes no options. The model has no aggregate:
+read where it is. The RPC model has no aggregate:
 
 - Values: the checkout (`checkout.ts`), parsed from `git status
   --porcelain=v2 --branch -z` and `git diff --numstat -z` against `HEAD`, or
@@ -606,6 +670,46 @@ read where it is. It takes no options. The model has no aggregate:
   asks the host. `process/` runs git with no optional locks and no index
   refresh, so a read never takes the agent's `index.lock`. It also runs `gh`
   and looks up programs on PATH.
+
+### The pr tool
+
+The server plugin also offers `pr`, a direct tool (`pr.ts`, handlers in
+`pulls.ts`), so an agent never polls GitHub with `gh`, `sleep` or a monitor:
+
+- `status`: per request (default: the session's branch's), the head, its
+  checks grouped fail, pending, pass and cancelled, each failing Actions job
+  with its failing tests and a log excerpt (`failure.ts`, at most 3 logs),
+  the review decision, the latest reviews, unresolved threads, requested
+  reviewers and mergeability (`report.ts`). A cancelled run is not a failure.
+- `watch` (`until` green, reviewed or changed; a `note`), `unwatch`, `list`:
+  a watch is the `PrWatch` aggregate (`watch.ts`). Its notice is a steered
+  synthetic message, a `◈` row that wakes the session. `green` tells each
+  failure and goes on, and ends when the checks pass; any watch ends on a
+  merge or a close.
+- `create`: `gh pr create` for the session's branch, asking the configured
+  reviewers of the repository's owner (`biteinc`: andrewgoupil, antwandaher,
+  narminmolina) unless `reviewers` says otherwise.
+
+Once a session family used the tool on a repository, its default branch is
+followed for a week, and the family's root hears for a day when it turns red
+(once per red spell, with the failing jobs) and green again (the
+`DefaultBranch` aggregate, `branch.ts`).
+
+The watcher is per machine. Every directory's plugin in the server process
+registers, and the first one alive ticks every `intervalSeconds`. Watches and
+followed repositories live in the plugin storage, which every directory
+shares and a restart keeps (`opencode/watch-store.ts`). A tick probes each
+repository with conditional REST requests, which cost no rate limit when
+nothing moved. On a change, or every `refreshSeconds`, it reads all the
+repository's watched requests and its default branch in one GraphQL call
+(`process/github.ts`). There is no webhook source: the tokens on both
+machines lack `admin:repo_hook`. `Pulls.poke(repo)` is the seam a push
+source would call.
+
+Options, all optional: `intervalSeconds` (60), `refreshSeconds` (300),
+`follow` (repositories always followed; none), `reviewers` (owner or
+`owner/name` → logins). `tests/pr.test.ts` runs `scenarios/pr.ts` with a
+stand-in `gh` (`process/fake-gh.ts`).
 
 ## Btw
 
@@ -788,6 +892,37 @@ model's test runs on. `tests/recover.test.ts` runs `scenarios/recover.ts`:
 a session moved into a folder that is then removed goes back where it was
 made when the TUI opens it.
 
+## Escape
+
+`cmd/escape` is a TUI plugin that makes one Escape on a busy session take
+back the prompt just sent. Within the grace (5 s after the session's newest
+prompt with text was sent), Escape with an empty composer stops the run,
+reverts the session to before the prompt and puts its text back in the
+composer: it runs the host's own `session.undo`. Past the grace it
+interrupts (`session.interrupt` with `resume`), and the prompt and its
+partial answer stay. A prompt still waiting in the session's inbox (queued,
+or a steer the model has not read) comes back whatever the grace. When the
+taken-back run called a shell, a toast says
+`Cancelled; shell commands it ran are not undone`: a revert restores files,
+not what a command did outside them.
+
+A draft in the composer (text or an attachment, read from the focused
+editor, `renderer.currentFocusedEditor`) swallows the key while the session
+works, so a half-typed message is never replaced. A permission request or a
+question keeps its own Escape, an idle session's Escape is the host's, and a
+second Escape for the prompt being taken back is swallowed for 10 s. In a
+subagent's view Escape interrupts that subagent before the host's Subagents
+picker closes. Its one option is `grace`, in milliseconds (default 5000; 0
+always interrupts). An absent option takes its default. The grace is timed from when the prompt was sent, so a prompt another client
+sent to the session in the last 5 s can be taken back too.
+
+The decision is `decide` in `mods/escape/escape.ts`, over the view
+`opencode/view.ts` reads from the TUI's data; `cmd/escape/setup.ts` adds the
+two keymap layers on Escape (the base mode at priority 1, above the host's
+`session.interrupt` and below the composer's own Escape layers such as shell
+mode or a plugin panel; the composer mode at priority 2 in a subagent's
+view) and acts. `tests/prime-escape.test.ts` runs `scenarios/prime-escape.ts`.
+
 ## Cache
 
 `cmd/cache` is a TUI and a server plugin that show when a request paid again
@@ -867,8 +1002,18 @@ expanded. It reads every command of a line (after `;`, `&&`, `||`, `|`, a
 newline or a subshell), skips `sudo`, `env`, `VAR=1`, `nohup` and `command`
 prefixes, takes neither quoted text nor a heredoc body for a command, and reads the script of
 `sh -c`, `bash -c` and `eval`, as gent's guard floor does. When it cannot
-tell where a call runs, or whether a path is a repository, it refuses. Its
-one option, `home`, defaults to the user's home.
+tell where a call runs, or whether a path is a repository, it refuses.
+
+It refuses a kill by pattern that would reach OpenCode: `pkill`, `killall`
+and `kill $(pgrep …)` (with `-f`, `-i`, `-x` read as those tools read them)
+whose pattern matches this server's process or one whose name or program
+starts with `opencode` (a TUI, another server). It lists the processes with
+`ps -A -ww` for such a call only, and refuses when it cannot list them or
+cannot read the pattern as a regular expression. `kill -1`, which signals
+every process you own, is refused outright. The reason names the
+alternative: find the PID you mean (`pgrep -fl <pattern>`, `ps`) and
+`kill <pid>`. A kill by PID, signal 0, `pkill -P`/`-F` and a `pgrep` that
+only lists pass.
 
 It also refuses a subagent's foreground shell call that opens by sleeping 30
 seconds or more (`sleep 60`, `sleep 60 && tail log`, `sleep 1m; gh run
@@ -885,10 +1030,56 @@ a parent) is its contract.
 
 The model (the domain files at the root of `mods/guard`): `verdict.ts`
 decides a command from where it runs and which of its targets are
-repositories, and `shell-line.ts` reads a command line. `model.ts` asks the
-contracts in `service.ts`: `RepoRoots` (`filesystem/`: a path holding `.git`)
-and `SessionDirectories` (`opencode/`: the session's directory), with
-`memory/` implementations for tests and the laws in `laws.ts`.
+repositories, `kill.ts` decides a kill from the process table, `sleep.ts` a
+subagent's sleep, `heavy.ts` and `launcher.ts` pick and write a heavy
+command's launcher, and `shell-line.ts` reads a command line. `model.ts`
+asks the contracts in `service.ts`: `RepoRoots` (`filesystem/`: a path
+holding `.git`), `SessionDirectories` and `Subagents` (`opencode/`),
+`Processes` (`process/`: `ps`), `Launchers` (`filesystem/`) and `Scopes`
+(`process/`: the `systemd-run` probe), with `memory/` implementations for
+tests and the laws in `laws.ts`.
+
+### Shell policy
+
+A heavy command runs at a lower CPU priority and, on Linux, under a memory
+cap, so one runaway test cannot take the machine and the server down (on
+2026-11-06 one `bun test` on the workbox grew to 38.5 GB and the OpenCode
+server died with it). It is no cap on agents or on load: a light command
+runs as before, and a heavy one runs at once.
+
+A command is heavy when one of its simple commands opens with a pattern of
+the `heavy` option: by default `bun test`, `bun run test`, the gate, check,
+typecheck and accept scripts, `npm`/`pnpm`/`yarn` test, `tsc`, `tsgo`,
+`tsgolint`, `vitest`, `jest`, `playwright test` and `turbo` (`heavy.ts`).
+A pattern's last word also matches its `:` scripts (`bun run test:e2e`);
+`npx`, `bunx`, `pnpm exec`, `timeout` and the script of `sh -c` and `eval`
+are read through. The content of a script file (`bash gate.sh`) is not.
+
+The policy rides the shell's `create.before` hook, which sees every command
+OpenCode spawns, the user's `!` too. For a heavy one it swaps only the shell
+for a launcher of the same file name (`~/.cache/opencode/guard-launchers/<hash>/zsh`),
+which runs `exec nice -n 10 '/bin/zsh' "$@"`; where `systemd-run --user
+--scope` works (probed once), it runs the shell in a transient scope with
+`MemoryMax=12G` and `CPUWeight=20` (`nice` has no effect between cgroups).
+The command, its echo in the transcript and the permission check stay as
+written. The niceness adds to the caller's, up to 19. On a Mac it is `nice`
+alone: there is no memory cap. When a launcher cannot be written, the
+command runs as it would have, and a warning is logged.
+
+Options (all optional; a malformed one stops the plugin and says which):
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `home` | the user's home | the directory `~` and `$HOME` name |
+| `heavy` | the list above | the heavy commands' patterns; `[]` turns the policy off |
+| `nice` | `10` | the niceness added, 0 to 19 |
+| `memoryMax` | `12G` | the scope's `MemoryMax` (`512M`, `12G`, `50%`, `infinity`) |
+| `cpuWeight` | `20` | the scope's `CPUWeight`, 1 to 10000 |
+| `launchers` | `~/.cache/opencode/guard-launchers` | where the launchers are written |
+
+The guard does not strip secrets from a command's environment: the shell
+calls on record carry no API key to strip (the only `env -u` in them drops
+Claude Code's markers).
 
 ## Rift
 
@@ -997,6 +1188,61 @@ then, and a renamed call would pass them unseen. Every other unknown name gets
 OpenCode's own answer. A kernel cell's `tools.<name>` misses are the kernel's
 to answer: they never reach the registry's hooks. The rule is `nearest` in
 `mods/tool-names/near-miss.ts`.
+
+## Web
+
+`cmd/web` is a server plugin that makes the built-in `websearch` and
+`webfetch` tools work where they failed. It replaces neither tool: it adds a
+search provider and wraps webfetch's execute through the tool transform.
+
+**websearch.** The built-in tool asks a consent form when no provider is
+chosen. In a subagent nobody answers it, and after a minute the call fails
+`Web search cancelled` (measured over 7 days: 7 of 7 calls on the workbox,
+7 of 51 on the Mac, all in subagents). The plugin registers a provider, `web`,
+that asks the host's providers by id in `order` (a query by id never asks the
+form) and answers with the first that has results; a provider that fails or
+finds nothing passes to the next. `web` becomes the default unless the config
+chose one (`websearch` in `opencode.json`, a provider id or `false`). That
+default also outranks a choice saved from an earlier form, so a saved choice
+that now fails no longer breaks search. No key is needed: each built-in
+provider answers without one (probed on both hosts); with `EXA_API_KEY`,
+`TAVILY_API_KEY` and the rest set, the host sends the key. When every provider
+fails, the tool's error names each one's failure (`Unable to search the web
+for <query>: every web search provider failed: exa: HTTP 429; ...`).
+
+**webfetch.** The built-in runs first, untouched; the plugin acts only on its
+failure:
+
+- a PDF (`Unsupported fetched file content type: application/pdf`, or a
+  generic binary type from a `.pdf` path) is fetched again, up to `pdfMB`, and
+  answered as its text through `pdftotext -layout` (Homebrew's `poppler`,
+  `poppler-utils` on Linux), cut to `cutKB` with a note; without pdftotext the
+  error says what to install;
+- a body over the built-in's 5 MB limit is fetched again, only its first
+  `cutKB`, and answered under a first line `[webfetch: the body cut to the
+  first 512 KB of 6.2 MB. For the rest, download it (curl ...) and read the
+  file in parts.]`; cut HTML is reduced to its text unless the call asked for
+  `html`;
+- a 404 or 410 fails with what to do instead of guessing again: for a
+  `raw.githubusercontent.com` or GitHub blob URL, `okra repo fetch
+  <owner/repo>` and read the checkout; elsewhere, websearch for the real page
+  or `okra repo fetch`.
+
+Any other failure (a timeout, a 406, a 500) is the built-in's. The refetch
+follows redirects without the built-in's per-redirect permission check, which
+matters only to a config that denies some webfetch URLs.
+
+Options: `order` (default `exa, parallel, tavily, firecrawl, tinyfish`),
+`cutKB` (512), `pdfMB` (50).
+
+The model (the domain files at the root of `mods/web`): `search.ts` holds the
+order and the default, `fetch.ts` reads the built-in's failure and writes the
+words the agent reads, and `model.ts` handles both over the contracts in
+`service.ts`: `Pages` (`http/`), `PdfText` (`process/`) and `SearchProviders`
+(`opencode/`), with `memory/` implementations and the laws in `laws.ts`.
+`tests/web.test.ts` proves it in real OpenCode: a choice of a failing provider
+saved from the form, then a subagent's search that asks no form and answers
+from the next provider, and a PDF, a 6 MB body and a 404 from a loopback site.
 
 ## Idle compaction
 
@@ -1261,8 +1507,8 @@ Prime's dock draws the pending wakes). The server takes options: `backstop` (`"c
 `bun` and `opencode`, those programs by path (default the `bun` on PATH, else
 `~/.bun/bin/bun`, and `~/.local/bin/opencode`).
 
-The server adds four direct tools (a kernel cell calls them as
-`tools.wake(...)` and so on):
+The server adds five direct tools (a kernel cell calls them as
+`tools.wake(...)` and so on); `job` is in [Jobs](#jobs) below:
 
 - `wake({ afterSeconds | at, everySeconds?, mode?, note, newSession? })` sets
   an alarm on this session, at most a year ahead. `everySeconds` (at least 60)
@@ -1419,6 +1665,47 @@ the session that started it and ends with it, so it waits on CI with a
 background shell, and its parent (or the root) sets the wake. The root
 sessions, the orchestrator included, use them for every wake-up; `okra
 schedule` is no longer needed for that.
+
+### Jobs
+
+`job({ command, cwd?, note, heavy?, timeoutSeconds? })` runs a long command
+outside the OpenCode server, so a server restart leaves it running, and wakes
+the session when it ends. Use it instead of `nohup`, `setsid`, `systemd-run`
+or a background shell for anything past a few minutes, and instead of
+polling with `ps`; then end the turn. A subagent may run one too, and waits
+for it with `action: "wait"`, since its turn's end hands back to its parent.
+
+- It runs as `/bin/sh -c <command>` in its own process group, its stdout and
+  stderr to `$XDG_STATE_HOME/opencode-job/<id>/log`, under a runner
+  (`cmd/wake/job.ts`): a `systemd-run --user --unit opencode-job-<id>` unit on
+  Linux (a detached process when the user manager refuses, with a warning in
+  the receipt), a detached session and process group on the Mac. `heavy` runs
+  it under `nice -n 10`; past `timeoutSeconds` (default a day, at most 7) it is
+  stopped with SIGTERM, then SIGKILL 10 s later.
+- Lines the command appends to the file `$JOB_DRIP` names reach the session at
+  most once a minute, without starting a turn; the rest ride on the end
+  letter. `$JOB_ID` is the job's id.
+- Its end steers a letter with the exit code (or the timeout, kill or signal),
+  the duration, the progress, the log tail and the note. The runner asks the
+  service at once (starting it when none runs, unless `backstop: "off"`); the
+  server also looks every 10 s, and a start finds one that ended while none
+  ran, saying how late. A runner gone without an exit (a reboot) reads lost.
+- `job({ action: "check" | "wait" | "kill", id })` reads it, waits up to `ms`
+  (default 10 min, at most 60), or stops it; a `wait` or `kill` that sees the
+  end takes the letter's place. `job({ action: "list" })` lists the session's
+  jobs. `wake_cancel` refuses a job id and names the kill; a deleted session's
+  jobs are killed. At most 20 jobs per session.
+
+```
+⏰ Job j3k9x0a exited 4 after 4s: `bun run gate`.
+It ran in /work/app from 2026-11-06T15:11:37.891Z to 2026-11-06T15:11:41.902Z. Log: ~/.local/state/opencode-job/j3k9x0a/log.
+Note: KAPPA: read the result
+Log tail:
+...
+```
+
+`tests/job.test.ts` runs `scenarios/job.ts`: a job whose end wakes the idle
+session, and a killed one that wakes nobody.
 
 ## The code kernel
 

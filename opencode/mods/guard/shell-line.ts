@@ -161,6 +161,24 @@ export const runningWords = (words: ReadonlyArray<Word>): ReadonlyArray<Word> =>
   return words.slice(index).filter((word) => word.text !== "}")
 }
 
+/** Shells whose `-c` script is a command line of its own. */
+export const SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "ksh"])
+
+/** The script a shell runs with `-c`: the first word after its options, when one of them holds `c`. */
+export const shellScript = (args: ReadonlyArray<Word>): string | undefined => {
+  let command = false
+  for (const word of args) {
+    if (word.text === "--") continue
+    if (/^-[^-]/.test(word.text) || /^\+[^+]/.test(word.text)) {
+      if (word.text.startsWith("-") && word.text.includes("c")) command = true
+      continue
+    }
+    if (word.text.startsWith("--")) continue
+    return command ? word.text : undefined
+  }
+  return undefined
+}
+
 /** The letters of a command's short flags, run together (`-rf -x` is `rfx`). */
 export const shortFlags = (texts: ReadonlyArray<string>): string => texts.filter((text) => /^-[^-]/.test(text)).join("")
 

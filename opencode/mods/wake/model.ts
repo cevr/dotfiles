@@ -12,11 +12,30 @@
 // opener to decide it again, and is settled by the answer: opened goes, held
 // waits for its new time, failed goes and tells the parent. Its child's mark
 // follows each change.
+//
+// A job (job.ts) runs under the Runner, outside the server. Its entry has no
+// OS job: the runner calls `due` itself when the command exits, and a timer
+// here looks every JOB_POLL_MS for its end and its progress. Its end fires a
+// letter as a monitor's match does; `wait` and `kill` take the entry instead,
+// since their answer already says how it ended.
 import { Clock, Context, Duration, Effect, FiberMap, FiberSet, Layer, Random, Semaphore } from "effect"
 import { idOfTitle, minuteOf, type Schedule, scheduleOf, titleOf } from "./backstop.ts"
+import { DRIP_MS, JOB_POLL_MS, KILL_WAIT_MS, lastLines, type Launched, LOG_TAIL, over, type Run, settledRun, WAIT_POLL_MS } from "./job.ts"
 import { type Latch, type LatchAsk, type Mark, markOf } from "./latch.ts"
-import { alarmLetter, freshPrompt, latchFailedLetter, type Letter, monitorLetter, type Outcome, unguarded } from "./message.ts"
-import { Backstop, Changes, Checks, Courier, type DeliveryRefused, Opener, WakeStore } from "./service.ts"
+import {
+  alarmLetter,
+  dripLetter,
+  freshPrompt,
+  jobLetter,
+  jobTick,
+  type JobView,
+  latchFailedLetter,
+  type Letter,
+  monitorLetter,
+  type Outcome,
+  unguarded,
+} from "./message.ts"
+import { Backstop, Changes, Checks, Courier, type DeliveryRefused, Opener, Runner, WakeStore } from "./service.ts"
 import {
   type Alarm,
   type AlarmAsk,
@@ -27,6 +46,10 @@ import {
   type Fired as FiredEntry,
   type Firing,
   fires,
+  guarded,
+  type Job,
+  type JobAsk,
+  jobOf,
   matched,
   type Monitor,
   type MonitorAsk,
@@ -35,7 +58,10 @@ import {
   type Notice,
   ofSessions,
   type Pending,
+  type Place,
+  shown,
   shownOf,
+  specOf,
   WakeRejected,
 } from "./wake.ts"
 
@@ -49,6 +75,8 @@ export interface Config {
 
 /** A session takes at most this many pending entries. */
 export const MAX_PENDING = 20
+/** A session runs at most this many jobs at once. */
+export const MAX_JOBS = 20
 /** A refused fire goes again after this long. */
 export const RETRY_MS = 30_000
 /** An opener that could not be asked (its plugin still loading, say) is asked again after this long. */
@@ -74,6 +102,12 @@ export interface Listed {
   readonly notices: ReadonlyArray<Notice>
 }
 
+/** One job as `check`, `wait` and `kill` read it, and the time they read it. */
+export interface Viewed {
+  readonly now: number
+  readonly view: JobView
+}
+
 export class WakesModel extends Context.Service<
   WakesModel,
   {
@@ -81,16 +115,26 @@ export class WakesModel extends Context.Service<
     readonly monitor: (sessionID: string, ask: MonitorAsk) => Effect.Effect<Placed<Monitor>, WakeRejected>
     /** Keep a held subagent start as a latch of `ask.sessionID`, its child made unprompted: the latch's id and child. */
     readonly latch: (ask: LatchAsk) => Effect.Effect<{ readonly id: string; readonly child: string }, WakeRejected>
-    /** Cancel `id`, or every entry of the session when none is named; an unread notice named goes too, and a latch's child reads cancelled. The ids that went. */
+    /** Start a job for the session (a subagent too) under the runner: the entry, and how it was launched. */
+    readonly job: (sessionID: string, ask: JobAsk) => Effect.Effect<{ readonly job: Job; readonly launched: Launched }, WakeRejected>
+    /** The session's jobs still kept (running, or not yet reported), and how each stands. */
+    readonly jobs: (sessionID: string) => Effect.Effect<{ readonly now: number; readonly jobs: ReadonlyArray<{ readonly job: Job; readonly run: Run }> }>
+    /** How a job stands now, with its last progress lines and its log's tail. */
+    readonly check: (id: string) => Effect.Effect<Viewed, WakeRejected>
+    /** Wait up to `ms` for the job to end; an end it sees takes the entry, so no letter follows. */
+    readonly wait: (id: string, ms: number) => Effect.Effect<Viewed & { readonly ended: boolean }, WakeRejected>
+    /** Stop the job, and wait a little for its end; an end it sees takes the entry. Whether a running job was asked to stop. */
+    readonly kill: (id: string) => Effect.Effect<Viewed & { readonly asked: boolean }, WakeRejected>
+    /** Cancel `id`, or every entry of the session when none is named; an unread notice named goes too, and a latch's child reads cancelled. A job is not cancelled: it is killed. The ids that went. */
     readonly cancel: (sessionID: string, id?: string) => Effect.Effect<ReadonlyArray<string>, WakeRejected>
     readonly list: (sessionID: string) => Effect.Effect<Listed>
     /** What the trays of `sessionIDs` show. */
     readonly pending: (sessionIDs: ReadonlyArray<string>) => Effect.Effect<Pending>
-    /** An OS job's call: fire the entry when it is due here and not yet fired. */
+    /** An OS job's call, or a job runner's when its command exited: fire the entry when it is due here and not yet fired. */
     readonly due: (id: string) => Effect.Effect<Due>
     /** Arm this directory's entries (each one past due fires now, and says how late) and drop the OS jobs whose entry is gone. */
     readonly start: Effect.Effect<void>
-    /** A deleted session's entries and notices go, and their OS jobs; so does a latch whose child it was. */
+    /** A deleted session's entries and notices go, and their OS jobs, and its jobs are killed; so does a latch whose child it was. */
     readonly forget: (sessionID: string) => Effect.Effect<void>
     /** The session read the notice delivered under `delivery`. */
     readonly read: (delivery: string) => Effect.Effect<void>
@@ -110,6 +154,9 @@ interface Made {
 const SUBAGENT =
   "wake and monitor are for a root session: a subagent hands back when its turn ends, and nothing waits for its wake. Wait in a background shell command instead, which your parent waits on."
 
+/** A job id: `j` and six base-36 characters. */
+const isJobID = (id: string) => id.startsWith("j")
+
 /** The alarm with no fire recorded and `dueAt` moved on. */
 const advanced = (alarm: Alarm, dueAt: number): Alarm => ({
   kind: "alarm",
@@ -124,7 +171,8 @@ const advanced = (alarm: Alarm, dueAt: number): Alarm => ({
   ...(alarm.newSession === undefined ? {} : { newSession: alarm.newSession }),
 })
 
-const withFiring = (entry: FiredEntry, firing: Firing): FiredEntry => (entry.kind === "alarm" ? { ...entry, firing } : { ...entry, firing })
+const withFiring = (entry: FiredEntry, firing: Firing): FiredEntry =>
+  entry.kind === "alarm" ? { ...entry, firing } : entry.kind === "monitor" ? { ...entry, firing } : { ...entry, firing }
 
 const ID_SPACE = 36 ** 6
 
@@ -138,6 +186,7 @@ export const layer = (config: Config) =>
       const backstop = yield* Backstop
       const changes = yield* Changes
       const opener = yield* Opener
+      const runner = yield* Runner
       const lock = yield* Semaphore.make(1)
       const locked = lock.withPermits(1)
       const timers = yield* FiberMap.make<string>()
@@ -164,8 +213,9 @@ export const layer = (config: Config) =>
           ),
         )
 
-      /** Drop the entry's OS job; with `defer`, after the job's own run had time to end. */
+      /** Drop the entry's OS job; with `defer`, after the job's own run had time to end. A job's entry has none. */
       const dropJob = (id: string, defer: boolean) => {
+        if (isJobID(id)) return Effect.void
         const drop = backstop.remove(titleOf(id)).pipe(
           Effect.catchTag("BackstopRefused", (refused) => Effect.logWarning("wake: an OS job was not removed", { id, message: refused.message })),
         )
@@ -290,6 +340,138 @@ export const layer = (config: Config) =>
         (entry: FiredEntry, now: number): Made | undefined =>
           entry.kind === "monitor" ? { letter: monitorLetter(entry, outcome, count, last, now), tick: outcome === "matched" ? now : entry.deadline } : undefined
 
+      // ── Jobs ──
+
+      /**
+       * How a job stands: its spec, its run as the wakes read it now, its log's
+       * tail, and its progress from byte `from` (a letter's: what is not yet
+       * delivered) or all of it (a check's: the last lines). Undefined for an
+       * id the runner never launched.
+       */
+      const viewOf = (id: string, from = 0) =>
+        Effect.gen(function* () {
+          const record = yield* runner.read(id)
+          if (record === undefined) return undefined
+          const now = yield* Clock.currentTimeMillis
+          const run = settledRun(record.run, record.spec.setAt, now)
+          const progress = yield* runner.drip(id, from)
+          const view: JobView = {
+            spec: record.spec,
+            run,
+            log: record.log,
+            unit: record.unit,
+            logTail: yield* runner.tail(id, LOG_TAIL),
+            progress: lastLines(progress.text),
+          }
+          return view
+        })
+
+      const jobFire =
+        (view: JobView) =>
+        (entry: FiredEntry, now: number): Made | undefined =>
+          entry.kind === "job" ? { letter: jobLetter(entry, view, now), tick: jobTick(view.run, now) } : undefined
+
+      /** The job's end as its letter reads it, or undefined while it runs. */
+      const endOf = (job: Job) =>
+        Effect.gen(function* () {
+          const view = yield* viewOf(job.id, job.dripped)
+          if (view !== undefined) return over(view.run) ? view : undefined
+          // The runner has no record of it: it never launched, or its record went.
+          const now = yield* Clock.currentTimeMillis
+          const run = settledRun(undefined, job.setAt, now)
+          if (!over(run)) return undefined
+          return { spec: specOf(job), run, log: "", logTail: "", progress: "" } satisfies JobView
+        })
+
+      /** Deliver the progress written since the last delivery, at most once per DRIP_MS, starting no turn. */
+      const drip = (job: Job) =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis
+          if (now - job.drippedAt < DRIP_MS) return
+          const written = yield* runner.drip(job.id, job.dripped)
+          const lines = lastLines(written.text)
+          if (lines === "") return
+          const moved = yield* locked(
+            Effect.gen(function* () {
+              const current = yield* store.read(job.id)
+              if (current?.kind !== "job" || current.firing !== undefined || current.dripped !== job.dripped) return false
+              yield* store.write({ ...current, dripped: written.offset, drippedAt: now })
+              return true
+            }),
+          )
+          if (!moved) return
+          // At most once: progress is moved past before it is sent, so a lost one is not sent twice; the end letter carries what follows.
+          const delivery = yield* courier.newDelivery
+          yield* courier
+            .deliver(job.sessionID, delivery, dripLetter(job, lines, now), false)
+            .pipe(Effect.catchTag("DeliveryRefused", (refused) => Effect.logWarning("wake: a job's progress did not reach its session", { id: job.id, message: refused.message })))
+        })
+
+      /** A job's timer: look for its end every JOB_POLL_MS, delivering its progress meanwhile; fire at the end; a fire recorded before goes again first. */
+      const runJob = (id: string): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          for (;;) {
+            const entry = yield* store.read(id)
+            if (entry?.kind !== "job") return
+            let fired: Fired
+            if (entry.firing !== undefined) fired = yield* fire(id, () => undefined, false)
+            else {
+              const ended = yield* endOf(entry)
+              if (ended === undefined) {
+                yield* drip(entry)
+                yield* Effect.sleep(Duration.millis(JOB_POLL_MS))
+                continue
+              }
+              fired = yield* fire(id, jobFire(ended), false)
+            }
+            if (fired === "refused") {
+              yield* Effect.sleep(Duration.millis(RETRY_MS))
+              continue
+            }
+            return
+          }
+        })
+
+      /** Take a job's entry whose end was read to the caller, so no letter follows; one whose letter is already recorded goes on. */
+      const take = (id: string) =>
+        Effect.gen(function* () {
+          const taken = yield* locked(
+            Effect.gen(function* () {
+              const entry = yield* store.read(id)
+              if (entry?.kind !== "job" || entry.firing !== undefined) return undefined
+              yield* store.remove(id)
+              return entry
+            }),
+          )
+          if (taken === undefined) return
+          yield* disarm(id)
+          yield* changes.changed(taken.sessionID)
+        })
+
+      const noJob = (id: string) => new WakeRejected({ reason: `No job ${id}: job({ action: "list" }) lists this session's jobs.` })
+
+      const viewed = (id: string) =>
+        Effect.gen(function* () {
+          const view = yield* viewOf(id)
+          if (view === undefined) return yield* noJob(id)
+          return { now: yield* Clock.currentTimeMillis, view }
+        })
+
+      /** Look at the job until it is over or `ms` passed. */
+      const watch = (id: string, ms: number) =>
+        Effect.gen(function* () {
+          const by = (yield* Clock.currentTimeMillis) + ms
+          for (;;) {
+            const read = yield* viewed(id)
+            if (over(read.view.run)) {
+              yield* take(id)
+              return { ...read, ended: true }
+            }
+            if (read.now >= by) return { ...read, ended: false }
+            yield* Effect.sleep(Duration.millis(Math.min(WAIT_POLL_MS, by - read.now)))
+          }
+        })
+
       // ── Timers ──
 
       /** An alarm's timer: wait for its time, fire, and go round again for a repeat or a refusal. */
@@ -407,47 +589,63 @@ export const layer = (config: Config) =>
           }
         })
 
-      const timerOf = (entry: Entry) => (entry.kind === "alarm" ? runAlarm(entry.id) : entry.kind === "monitor" ? runMonitor(entry.id) : runLatch(entry.id))
+      const timerOf = (entry: Entry) => {
+        switch (entry.kind) {
+          case "alarm":
+            return runAlarm(entry.id)
+          case "monitor":
+            return runMonitor(entry.id)
+          case "latch":
+            return runLatch(entry.id)
+          case "job":
+            return runJob(entry.id)
+        }
+      }
       const arm = (entry: Entry, onlyIfMissing = false) => FiberMap.run(timers, entry.id, timerOf(entry), { onlyIfMissing }).pipe(Effect.asVoid)
       const disarm = (id: string) => FiberMap.remove(timers, id)
 
       // ── Setting ──
 
-      const newID = Effect.gen(function* () {
-        for (;;) {
-          const id = `w${(yield* Random.nextIntBetween(0, ID_SPACE - 1)).toString(36).padStart(6, "0")}`
-          if ((yield* store.read(id)) === undefined) return id
-        }
-      })
+      const newID = (prefix: "w" | "j") =>
+        Effect.gen(function* () {
+          for (;;) {
+            const id = `${prefix}${(yield* Random.nextIntBetween(0, ID_SPACE - 1)).toString(36).padStart(6, "0")}`
+            if ((yield* store.read(id)) === undefined) return id
+          }
+        })
+
+      /** Store what `make` builds for the calling session, unless the session holds `most` of its kind already. */
+      const keep = <E extends Entry>(sessionID: string, prefix: "w" | "j", full: (count: number) => string, make: (place: Place) => E | WakeRejected) =>
+        locked(
+          Effect.gen(function* () {
+            const mine = ofSessions(yield* store.entries, [sessionID]).filter((entry) => fires(entry) && (entry.kind === "job") === (prefix === "j"))
+            if (mine.length >= (prefix === "j" ? MAX_JOBS : MAX_PENDING)) return yield* new WakeRejected({ reason: full(mine.length) })
+            const made = make({ id: yield* newID(prefix), sessionID, directory: config.directory, now: yield* Clock.currentTimeMillis })
+            if (made instanceof WakeRejected) return yield* made
+            yield* store.write(made)
+            return made
+          }),
+        )
 
       /** Set what `make` builds for the calling session: refuse a subagent and a full session, store it, give it an OS job, arm it. */
-      const set = <E extends Entry>(sessionID: string, make: (place: { id: string; sessionID: string; directory: string; now: number }) => E | WakeRejected) =>
+      const set = <E extends Entry>(sessionID: string, make: (place: Place) => E | WakeRejected) =>
         Effect.gen(function* () {
           if ((yield* courier.parentOf(sessionID)) !== undefined) return yield* new WakeRejected({ reason: SUBAGENT })
-          const entry = yield* locked(
-            Effect.gen(function* () {
-              const mine = ofSessions(yield* store.entries, [sessionID]).filter(fires)
-              if (mine.length >= MAX_PENDING)
-                return yield* new WakeRejected({ reason: `this session has ${mine.length} wakes pending, the most it takes; cancel one with wake_cancel first` })
-              const made = make({ id: yield* newID, sessionID, directory: config.directory, now: yield* Clock.currentTimeMillis })
-              if (made instanceof WakeRejected) return yield* made
-              yield* store.write(made)
-              return made
-            }),
-          )
+          const entry = yield* keep(sessionID, "w", (count) => `this session has ${count} wakes pending, the most it takes; cancel one with wake_cancel first`, make)
           yield* changes.changed(sessionID)
           const warning = yield* guard(entry)
           yield* arm(entry)
           return { entry, now: entry.setAt, ...(warning === undefined ? {} : { warning }) }
         })
 
-      /** Drop entries (their timers and jobs) and notices; the ids that went. With `cancelledAt`, a latch's child reads cancelled. */
+      /** Drop entries (their timers and jobs) and notices; the ids that went. With `cancelledAt`, a latch's child reads cancelled. A job dropped is killed. */
       const drop = (entries: ReadonlyArray<Entry>, notices: ReadonlyArray<Notice>, cancelledAt?: number) =>
         Effect.gen(function* () {
           for (const entry of entries) {
             yield* disarm(entry.id)
             yield* store.remove(entry.id)
-            yield* dropJob(entry.id, false)
+            if (guarded(entry)) yield* dropJob(entry.id, false)
+            if (entry.kind === "job") yield* runner.kill(entry.id)
             if (entry.kind === "latch" && cancelledAt !== undefined) yield* courier.mark(entry.child, { ...markOf(entry), cancelledAt } satisfies Mark)
           }
           for (const notice of notices) yield* store.removeNotice(notice.delivery)
@@ -465,7 +663,7 @@ export const layer = (config: Config) =>
                 const now = yield* Clock.currentTimeMillis
                 const made: Latch = {
                   kind: "latch",
-                  id: yield* newID,
+                  id: yield* newID("w"),
                   sessionID: ask.sessionID,
                   directory: config.directory,
                   setAt: now,
@@ -505,14 +703,59 @@ export const layer = (config: Config) =>
             yield* arm(latch)
             return { id: latch.id, child }
           }),
+        job: (sessionID, ask) =>
+          Effect.gen(function* () {
+            const job = yield* keep(
+              sessionID,
+              "j",
+              (count) => `this session has ${count} jobs kept, the most it takes; wait for one, or stop one with job({ action: "kill", id })`,
+              (place) => jobOf(ask, place),
+            )
+            // The entry is kept before the launch: a runner that calls `due` at once finds it.
+            const launched = yield* runner.launch(specOf(job)).pipe(
+              Effect.catchTag("JobRefused", (refused) =>
+                locked(store.remove(job.id)).pipe(
+                  Effect.andThen(Effect.fail(new WakeRejected({ reason: `the job did not start: ${refused.message}` }))),
+                ),
+              ),
+            )
+            yield* changes.changed(sessionID)
+            yield* arm(job)
+            return { job, launched }
+          }),
+        jobs: (sessionID) =>
+          Effect.gen(function* () {
+            const now = yield* Clock.currentTimeMillis
+            const kept = ofSessions(yield* store.entries, [sessionID]).filter((entry): entry is Job => entry.kind === "job")
+            const jobs = yield* Effect.forEach(kept, (job) =>
+              runner.read(job.id).pipe(Effect.map((record) => ({ job, run: settledRun(record?.run, job.setAt, now) }))),
+            )
+            return { now, jobs: jobs.toSorted((left, right) => left.job.setAt - right.job.setAt) }
+          }),
+        check: viewed,
+        wait: watch,
+        kill: (id) =>
+          Effect.gen(function* () {
+            const before = yield* viewed(id)
+            if (over(before.view.run)) {
+              yield* take(id)
+              return { ...before, asked: false }
+            }
+            const asked = yield* runner.kill(id)
+            const after = yield* watch(id, KILL_WAIT_MS)
+            return { now: after.now, view: after.view, asked }
+          }),
         cancel: (sessionID, id) =>
           Effect.gen(function* () {
             const gone = yield* locked(
               Effect.gen(function* () {
-                const entries = ofSessions(yield* store.entries, [sessionID]).filter((entry) => id === undefined || entry.id === id)
+                const wakes = ofSessions(yield* store.entries, [sessionID]).filter((entry) => entry.kind !== "job")
+                const entries = wakes.filter((entry) => id === undefined || entry.id === id)
                 const notices = ofSessions(yield* store.notices, [sessionID]).filter((notice) => id === undefined || notice.wakeID === id)
+                if (id !== undefined && isJobID(id))
+                  return yield* new WakeRejected({ reason: `${id} is a job, which wake_cancel does not stop: job({ action: "kill", id: "${id}" }) stops it.` })
                 if (id !== undefined && entries.length === 0 && notices.length === 0) {
-                  const pending = ofSessions(yield* store.entries, [sessionID]).map((entry) => entry.id)
+                  const pending = wakes.map((entry) => entry.id)
                   return yield* new WakeRejected({ reason: `No pending wake ${id} in this session. Pending: ${pending.length === 0 ? "none" : pending.join(", ")}.` })
                 }
                 return yield* drop(entries, notices, yield* Clock.currentTimeMillis)
@@ -534,6 +777,7 @@ export const layer = (config: Config) =>
             return {
               now: yield* Clock.currentTimeMillis,
               entries: ofSessions(yield* store.entries, sessionIDs)
+                .filter(shown)
                 .map(shownOf)
                 .toSorted((left, right) => left.dueAt - right.dueAt),
               notices: ofSessions(yield* store.notices, sessionIDs),
@@ -547,6 +791,18 @@ export const layer = (config: Config) =>
               return { outcome: "gone" as const }
             }
             if (entry.directory !== config.directory) return { outcome: "pending" as const }
+            if (entry.kind === "job") {
+              const ended = entry.firing === undefined ? yield* endOf(entry) : undefined
+              if (entry.firing === undefined && ended === undefined) {
+                yield* arm(entry, true)
+                return { outcome: "pending" as const }
+              }
+              yield* disarm(id)
+              const fired = yield* fire(id, ended === undefined ? () => undefined : jobFire(ended), true)
+              const after = yield* store.read(id)
+              if (after !== undefined) yield* arm(after)
+              return { outcome: fired === "done" || fired === "again" ? ("fired" as const) : fired }
+            }
             const now = yield* Clock.currentTimeMillis
             if (entry.kind !== "alarm" || (entry.firing === undefined && entry.dueAt > now + 1000)) {
               yield* arm(entry, true)
@@ -571,7 +827,7 @@ export const layer = (config: Config) =>
             const id = idOfTitle(title)
             if (id !== undefined && !ids.includes(id)) yield* dropJob(id, false)
           }
-          for (const entry of own) if (!titles.includes(titleOf(entry.id))) yield* guard(entry)
+          for (const entry of own) if (guarded(entry) && !titles.includes(titleOf(entry.id))) yield* guard(entry)
         }),
         forget: (sessionID) =>
           Effect.gen(function* () {

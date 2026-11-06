@@ -1,6 +1,6 @@
 // The pace: the Codex admission script's answers, and the model a pace is asked about.
 import { describe, expect, test } from "bun:test"
-import { parseAdmission, parseModel } from "./pace.ts"
+import { namesModel, parseAdmission, parseModel } from "./pace.ts"
 
 describe("the pace", () => {
   test("the Codex script admits with exit 0 and holds with exit 1, with the time it opens", () => {
@@ -24,5 +24,13 @@ describe("the pace", () => {
     expect(parseModel("openai/org/model")).toEqual({ providerID: "openai", id: "org/model" })
     expect(parseModel("gpt-5")).toBeUndefined()
     expect(parseModel(5)).toBeUndefined()
+  })
+
+  test("a model string names a model at any variant or none, with or without its provider", () => {
+    const opus = { providerID: "anthropic", id: "claude-opus-5-5" }
+    for (const named of ["anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5#high", "claude-opus-5-5", "claude-opus-5-5#max"])
+      expect(namesModel(named, opus)).toBe(true)
+    for (const named of ["openai/claude-opus-5-5", "anthropic/claude-opus-5", "claude-opus-5-5-preview", "openai/gpt-6.1-sol#high", ""])
+      expect(namesModel(named, opus)).toBe(false)
   })
 })

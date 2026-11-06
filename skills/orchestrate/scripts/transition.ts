@@ -4,9 +4,11 @@
 // A state's former name reads as its current one: `review` is `verify`. An older run's
 // `verify` (its separate check, before review and the check became one role) reads as
 // verify too, so its time and bounces count under the one role that runs both now.
+// `integration-check` (a unit merging today's main before its own merge) is `ready`: since
+// units land in batches, that wait is the time a unit spends waiting for its batch.
 const LINE = /^(\d{4}-\d\d-\d\dT\d\d:\d\dZ?)\S*\s+(\S+)\s*(?:→|->)\s*(([a-z]+(?:-[a-z]+)*)(?:\([a-z]+\))?)/;
 
-export const RENAMED: Record<string, string> = { review: 'verify' };
+export const RENAMED: Record<string, string> = { review: 'verify', 'integration-check': 'ready' };
 export const currentState = (state: string): string => RENAMED[state] ?? state;
 
 export type Transition = { at: number; from: string; to: string; state: string; round: number };

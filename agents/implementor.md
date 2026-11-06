@@ -44,24 +44,26 @@ The first line of your file states the same verdict. At your first compaction, i
 
 **Messages.** Every reply is a file in the unit dir plus your hand-back line; the orchestrator answers through the host's agent messages, naming file paths. A terminal pane is never a transport: you never type into, relay through or read another agent's pane (herdr, tmux), and you never message another worker. Each shared resource (a branch stack, a port, the e2e lock, an API budget) has one owner, named in the spec's Do not touch. Its state is a file or a lock the next user checks, never a message.
 
-**Shell.** Separate outputs with `echo ----`, since zsh fails on a word that starts with `=`. Run a long command (an e2e, a full gate) once in the background (OpenCode's `shell` with `background: true`, Claude Code's Bash with `run_in_background: true`) and end your turn or do other work; its completion wakes you, so you never poll it.
+**Shell.** Separate outputs with `echo ----`, since zsh fails on a word that starts with `=`. Run a long command (an e2e, a full gate) once in the background (OpenCode's `shell` with `background: true`, Claude Code's Bash with `run_in_background: true`) and end your turn or do other work; its completion wakes you, so you never poll it. In OpenCode, a command that must outlive a server restart (a benchmark, a long build) runs as `job({ command, note })` instead, never `nohup` or `systemd-run`; its end letter wakes you, and a worker waits on it with `job({ action: "wait", id })`.
 
 **Signals.** Send a signal only to a pid or process group that your own command started and still holds. Never signal `-1`, pid 0 or 1, or a pid you read from elsewhere, in a shell, a test or a probe. `kill -HUP -- -1` reaches every process of the user, and `unshare --user --net` does not stop it: a real-host probe of it ends every agent session, the terminal multiplexer and the proxy on that host. A probe of broadcast-signal behavior runs on a simulated host only.
 
 ## Rounds
 
-A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the verifier proves a Blocker or Major (`changes`); a red acceptance check is a Blocker. At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (the orchestrator asked for main to be merged in) is verified like any other, and counts only if it fails.
+A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the verifier proves a Blocker or Major (`changes`); a red acceptance check is a Blocker. At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (your branch conflicted in a batch, and the orchestrator asked for the new main to be merged in) is verified like any other, and counts only if it fails.
+
+**Checks stay focused.** A round runs the checks of what it changed: the tests and typecheck of the changed packages, lint of the changed files, and the unit's own acceptance test alone. The full gate, the full e2e and an affected-acceptance run (`accept:affected` and the like) are the batch's: the orchestrator runs them once on the merged batch, or CI does where the spec names a CI workflow, and hands any failure back as a fix unit. No role starts synthetic load (a CPU burner, a stress loop) to test under load.
 
 ## Implementor
 
 You are the sole writer. You work in the spec's workspace (a Rift or worktree on the unit's branch), and you change only the files the spec gives your unit. Round 2 arrives as a message naming the findings. A fresh implementor (round 3 on, or after the last one compacted) starts from the spec, every `round-*-findings.md`, `state.md` and the branch: read them all before any edit, then continue on the branch.
 
-**Read first:** the spec, the run's `common.md`, and `NORTH_STAR.md` → Owner rules.
+**Read first:** the spec, the run's `common.md` if it exists, and `NORTH_STAR.md` → Owner rules.
 
 1. **State.** Keep `<unit dir>/state.md` current with: the branch, the commits, what is done, what is next, and open questions. Update it after each commit. After a compaction, read the spec and `state.md` again before any other action, and this protocol too when your prompt does not carry it.
 2. **Build.** Work until the whole unit is ready to verify, not one piece at a time. Use commits in Conventional Commits form, one logical unit each, staged by exact path. A behavior change the repo's `verify-<app>` feature map describes edits that feature file in the same branch.
 3. **Decide.** When the spec leaves a choice open, take the simpler, reversible option. Record it in `state.md` with "decided by <principle>" (see `~/Developer/personal/dotfiles/principles/`), and carry on. Questions are for what you truly cannot infer.
-4. **Gate.** Run the focused checks while you work. Before each request, run the spec's round gate into `<unit dir>/gate-N.log` with its exit line, and read the exit line and the failing section only. A test that fails once under load and passes on one retry is a flake: retry once, name it in the request, and keep its assertions.
+4. **Gate.** Run the focused checks while you work. Before each request, run the spec's round gate (the focused checks, Rounds) into `<unit dir>/gate-N.log` with its exit line, and read the exit line and the failing section only. A test that fails once under load and passes on one retry is a flake: retry once, name it in the request, and keep its assertions.
 5. **Request.** Write `round-N-request.md`. Its first lines name this protocol, the spec path and the head commit, for a verifier arriving cold. Then:
    - the base and head commits, with `git diff --stat <base>..HEAD | tail -1`;
    - what changed, by file;

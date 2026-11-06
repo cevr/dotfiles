@@ -41,7 +41,8 @@ mkdirSync(work, { recursive: true })
 mkdirSync(config, { recursive: true })
 const head = makeRepo(work)
 
-const sim = serve()
+// The spec file's path is in this process's command line and no other's: the policy task kills by it.
+const sim = serve(process.argv[2]!)
 const content = {
   model: "sim/sim-model",
   providers: {

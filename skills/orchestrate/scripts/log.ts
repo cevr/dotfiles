@@ -3,14 +3,19 @@
 // in the form timing.ts and status.ts read. It refuses an unknown state, a `from` that is not
 // the unit's current state, and a round below the last one (a rewrite's decide → r1 excepted).
 // A former state name (`review`, which a session that read the skill before the rename still
-// writes) is recorded as its current one (`verify`), as transition.ts reads it.
+// writes; `integration-check`, from before batches) is recorded as its current one (`verify`;
+// `ready`), as transition.ts reads it.
 // Usage: bun log.ts <unit dir> <from> <to> r<N> [note...]
+//        bun log.ts --current <unit dir> <to> r<N> [note...]
 //   The unit's first line comes from `new`. `merged` takes the merge commit as the note's first word.
+//   `--current` moves from the unit's current state (`new` with no log) and writes nothing when the
+//   unit is already in `to` at round N: the OpenCode orchestrate plugin writes a role's start and
+//   hand-back this way, so a move the orchestrator logged first is not logged twice.
 import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { currentState, transitions } from './transition.ts';
 
-export const STATES = ['plan', 'implement', 'verify', 'decide', 'integration-check', 'waiting(pr)', 'merged', 'blocked', 'stuck', 'stuck(quota)', 'stuck(size)', 'dropped'];
+export const STATES = ['plan', 'implement', 'verify', 'decide', 'ready', 'waiting(pr)', 'merged', 'blocked', 'stuck', 'stuck(quota)', 'stuck(size)', 'dropped'];
 const MAX = 200;
 
 /** The line to append to a unit's log, or the reason it is refused. */
@@ -40,15 +45,25 @@ export function transitionLine(log: string, asked: string, askedTo: string, roun
   return { line };
 }
 
+/** The line moving the unit from its current state to `to`, none when it is already there in that round, or the reason it is refused. */
+export function currentLine(log: string, to: string, round: string, note: string, now = new Date()): { line: string } | { refused: string } | { already: string } {
+  const last = transitions(log).at(-1);
+  if (last && last.state === currentState(to) && `r${last.round}` === round) return { already: `the unit is in ${last.state} r${last.round}` };
+  return transitionLine(log, last?.state ?? 'new', to, round, note, now);
+}
+
 if (import.meta.main) {
-  const [dir, from, to, round, ...note] = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const current = args[0] === '--current';
+  const [dir, from, to, round, ...note] = current ? [args[1], 'current', ...args.slice(2)] : args;
   if (!dir || !from || !to || !round || !existsSync(dir) || !statSync(dir).isDirectory()) {
-    console.error('usage: bun log.ts <unit dir> <from> <to> r<N> [note...]');
+    console.error('usage: bun log.ts <unit dir> <from> <to> r<N> [note...]\n       bun log.ts --current <unit dir> <to> r<N> [note...]');
     process.exit(2);
   }
   const path = join(dir, 'log.md');
   const log = existsSync(path) ? readFileSync(path, 'utf8') : '';
-  const r = transitionLine(log, from, to, round, note.join(' '));
+  const r = current ? currentLine(log, to, round, note.join(' ')) : transitionLine(log, from, to, round, note.join(' '));
+  if ('already' in r) { console.log(`unchanged: ${r.already}`); process.exit(0); }
   if ('refused' in r) { console.error(`log.ts refused: ${r.refused}`); process.exit(1); }
   appendFileSync(path, `${log && !log.endsWith('\n') ? '\n' : ''}${r.line}\n`);
   console.log(r.line);

@@ -41,6 +41,13 @@
         "@dotfiles/opencode-cache": "workspace:*",
       },
     },
+    "cmd/escape": {
+      "name": "@dotfiles/opencode-cmd-escape",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-escape": "workspace:*",
+      },
+    },
     "cmd/git": {
       "name": "@dotfiles/opencode-cmd-git",
       "version": "0.0.0",
@@ -169,6 +176,13 @@
         "@dotfiles/opencode-wake": "workspace:*",
       },
     },
+    "cmd/web": {
+      "name": "@dotfiles/opencode-cmd-web",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-web": "workspace:*",
+      },
+    },
     "decider": {
       "name": "@dotfiles/decider",
       "version": "0.0.0",
@@ -194,9 +208,16 @@
         "@dotfiles/opencode-pool": "workspace:*",
       },
     },
+    "mods/escape": {
+      "name": "@dotfiles/opencode-escape",
+      "version": "0.0.0",
+    },
     "mods/git": {
       "name": "@dotfiles/opencode-git",
       "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+      },
     },
     "mods/guard": {
       "name": "@dotfiles/opencode-guard",
@@ -303,6 +324,10 @@
       "name": "@dotfiles/opencode-wake",
       "version": "0.0.0",
     },
+    "mods/web": {
+      "name": "@dotfiles/opencode-web",
+      "version": "0.0.0",
+    },
   },
   "packages": {
     "@dotfiles/decider": ["@dotfiles/decider@workspace:decider"],
@@ -318,6 +343,8 @@
     "@dotfiles/opencode-cmd-btw": ["@dotfiles/opencode-cmd-btw@workspace:cmd/btw"],
 
     "@dotfiles/opencode-cmd-cache": ["@dotfiles/opencode-cmd-cache@workspace:cmd/cache"],
+
+    "@dotfiles/opencode-cmd-escape": ["@dotfiles/opencode-cmd-escape@workspace:cmd/escape"],
 
     "@dotfiles/opencode-cmd-git": ["@dotfiles/opencode-cmd-git@workspace:cmd/git"],
 
@@ -352,6 +379,10 @@
     "@dotfiles/opencode-cmd-tool-names": ["@dotfiles/opencode-cmd-tool-names@workspace:cmd/tool-names"],
 
     "@dotfiles/opencode-cmd-wake": ["@dotfiles/opencode-cmd-wake@workspace:cmd/wake"],
+
+    "@dotfiles/opencode-cmd-web": ["@dotfiles/opencode-cmd-web@workspace:cmd/web"],
+
+    "@dotfiles/opencode-escape": ["@dotfiles/opencode-escape@workspace:mods/escape"],
 
     "@dotfiles/opencode-git": ["@dotfiles/opencode-git@workspace:mods/git"],
 
@@ -388,6 +419,8 @@
     "@dotfiles/opencode-tool-names": ["@dotfiles/opencode-tool-names@workspace:mods/tool-names"],
 
     "@dotfiles/opencode-wake": ["@dotfiles/opencode-wake@workspace:mods/wake"],
+
+    "@dotfiles/opencode-web": ["@dotfiles/opencode-web@workspace:mods/web"],
 
     "@effect/platform-node": ["@effect/platform-node@4.0.1", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.1", "undici": "^8.11.2" }, "peerDependencies": { "effect": "^4.0.1", "redis": ">=5.0.0 <7.0.0" } }, "sha512-FT0Fu5LO0/XP9zBpj0HqrtJNLluK4StNKqf6TSulUsjp8FPBsDVXGJiDuyoN5J2yVMT7tgvhxSwaDcObWVRIaQ=="],
 

@@ -7,13 +7,19 @@ import {
   durationOf,
   excerpt,
   freshPrompt,
+  jobLetter,
+  jobReceipt,
+  type JobView,
   lateBy,
+  runPhrase,
   listing,
   monitorLetter,
   monitorReceipt,
   tailOf,
   unguarded,
 } from "./message.ts"
+import type { Run } from "./job.ts"
+import { type Job, specOf } from "./wake.ts"
 
 describe("an alarm's letter", () => {
   test("on time: what fired, when it was set and due, and the note verbatim", () => {
@@ -119,5 +125,48 @@ describe("spans and cuts", () => {
     expect(excerpt("a\n b   c", 10)).toBe("a b c")
     expect(excerpt("abcdefghij", 5)).toBe("abcd…")
     expect(tailOf("abcdefghij", 3)).toBe("…hij")
+  })
+})
+
+describe("a job's words", () => {
+  const SET = Date.UTC(2026, 10, 6, 12)
+  const job: Job = {
+    kind: "job",
+    id: "j000001",
+    sessionID: "ses_a",
+    directory: "/work/app",
+    mode: "wake",
+    note: "Read the failures.",
+    setAt: SET,
+    command: "bun run gate",
+    cwd: "/work/app",
+    heavy: true,
+    timeoutSeconds: 3600,
+    dripped: 0,
+    drippedAt: SET,
+  }
+  const view = (run: Run): JobView => ({ spec: specOf(job), run, log: "/s/j000001/log", logTail: "ok\n", progress: "" })
+  const exit = { exitCode: 0, startedAt: SET, endedAt: SET + 90_000, timedOut: false, killed: false }
+
+  test("the receipt names the id, log, unit and $JOB_DRIP, and says to end the turn", () => {
+    const receipt = jobReceipt(job, { log: "/s/j000001/log", drip: "/s/j000001/drip", how: "systemd", unit: "opencode-job-j000001" })
+    expect(receipt.split("\n")[0]).toBe("Job j000001 started. Log: /s/j000001/log")
+    expect(receipt).toContain("as the systemd user unit opencode-job-j000001, niced")
+    expect(receipt).toContain("$JOB_DRIP (/s/j000001/drip)")
+    expect(receipt).toContain("End your turn now")
+    const fallback = jobReceipt(job, { log: "l", drip: "d", how: "detached", warning: "systemd-run --user refused (x)" })
+    expect(fallback).toContain("in its own process group")
+    expect(fallback).toContain("systemd-run --user refused (x)")
+  })
+
+  test("an end reads as its exit, a timeout, a kill or a loss", () => {
+    expect(runPhrase({ state: "ended", exit }, SET)).toBe("exited 0 after 2m")
+    expect(runPhrase({ state: "ended", exit: { ...exit, exitCode: null, signal: "SIGTERM", timedOut: true } }, SET)).toStartWith("was stopped at its timeout")
+    expect(runPhrase({ state: "ended", exit: { ...exit, exitCode: null, killed: true } }, SET)).toStartWith("was killed")
+    expect(runPhrase({ state: "lost", why: "its runner is gone" }, SET)).toBe("was lost: its runner is gone")
+    const letter = jobLetter(job, view({ state: "ended", exit }), SET + 90_500)
+    expect(letter.text.split("\n").at(0)).toBe("⏰ Job j000001 exited 0 after 2m: `bun run gate`.")
+    expect(letter.text).toContain("Note: Read the failures.")
+    expect(letter.metadata).toMatchObject({ kind: "job", state: "ended", exitCode: 0 })
   })
 })

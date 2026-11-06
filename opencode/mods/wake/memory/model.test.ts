@@ -16,6 +16,7 @@ import * as MemoryBackstop from "./backstop.ts"
 import * as MemoryChecks from "./checks.ts"
 import * as MemoryCourier from "./courier.ts"
 import * as MemoryOpener from "./opener.ts"
+import * as MemoryRunner from "./runner.ts"
 import * as MemoryStore from "./store.ts"
 
 const DIR = "/work/app"
@@ -42,6 +43,7 @@ const world = (...sessionIDs: ReadonlyArray<string>) => ({
   jobs: MemoryBackstop.empty(),
   checks: MemoryChecks.empty(),
   opener: MemoryOpener.empty(),
+  runner: MemoryRunner.empty(),
   changed: [] as Array<string>,
 })
 type World = ReturnType<typeof world>
@@ -56,6 +58,7 @@ const server = (w: World, directory = DIR) =>
       Layer.provide(MemoryChecks.layer(w.checks)),
       Layer.provide(MemoryBackstop.layer(w.jobs)),
       Layer.provide(MemoryOpener.layer(w.opener)),
+      Layer.provide(MemoryRunner.layer(w.runner)),
       Layer.provide(Layer.succeed(Changes, { changed: (sessionID) => Effect.sync(() => void w.changed.push(sessionID)) })),
     )
     const model = Context.get(yield* Layer.buildWithScope(layer, scope), WakesModel)
@@ -619,6 +622,93 @@ describe("a latch", () => {
         yield* model.forget(latched.child)
         expect(w.store.entries.size).toBe(0)
         expect(w.jobs.jobs.has(titleOf(latched.id))).toBe(false)
+      }),
+    ))
+})
+
+describe("a job", () => {
+  test("drips its progress at most once a minute without a turn, and its end, seen by the poll, steers one letter with the exit, log tail and note", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const { model } = yield* server(w)
+        const { job, launched } = yield* model.job("ses_a", { command: "bun test", note: "Read the failures." })
+        expect(job.id).toMatch(/^j[0-9a-z]{6}$/)
+        expect(launched.how).toBe("detached")
+        expect(w.runner.jobs.get(job.id)?.spec).toMatchObject({ command: "bun test", cwd: DIR, sessionID: "ses_a" })
+        const memory = w.runner.jobs.get(job.id)
+        if (memory === undefined) throw new Error("not launched")
+        MemoryRunner.running(w.runner, job.id, 0)
+        memory.drip = "compiled\nhalf"
+        yield* until(MINUTE + 10 * SECOND)
+        expect(inbox(w).map((message) => [message.resume, message.letter.text.split("\n")[1]])).toEqual([[false, "compiled"]])
+        memory.drip = "compiled\nhalf done\nlinked\n"
+        yield* until(MINUTE + 30 * SECOND)
+        expect(inbox(w)).toHaveLength(1)
+        memory.log = "2 pass\n1 fail\n"
+        MemoryRunner.ended(w.runner, job.id, 1, 100 * SECOND)
+        yield* until(2 * MINUTE)
+        const letters = inbox(w)
+        expect(letters).toHaveLength(2)
+        expect(letters[1]?.resume).toBe(true)
+        expect(letters[1]?.letter.text).toStartWith(`⏰ Job ${job.id} exited 1 after 2m: \`bun test\`.`)
+        // What progress came after the last drip rides on the end letter.
+        expect(letters[1]?.letter.text).toContain("Progress ($JOB_DRIP):\nhalf done\nlinked")
+        expect(letters[1]?.letter.text).toContain("1 fail")
+        expect(letters[1]?.letter.text).toContain("Note: Read the failures.")
+        expect(w.store.entries.size).toBe(0)
+        yield* until(5 * MINUTE)
+        expect(inbox(w)).toHaveLength(2)
+      }),
+    ))
+
+  test("one that ended while no server ran fires at the next start, saying how late", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const first = yield* server(w)
+        const { job } = yield* first.model.job("ses_a", { command: "make", note: "n" })
+        MemoryRunner.running(w.runner, job.id, 0)
+        yield* first.stop
+        MemoryRunner.ended(w.runner, job.id, 0, 5 * MINUTE)
+        yield* until(10 * MINUTE)
+        expect(inbox(w)).toHaveLength(0)
+        const { model } = yield* server(w)
+        yield* model.start
+        yield* settle
+        expect(texts(w)).toHaveLength(1)
+        expect(texts(w)[0]).toContain(`Job ${job.id} exited 0`)
+        expect(texts(w)[0]).toContain("no OpenCode server was running then")
+      }),
+    ))
+
+  test("one whose runner never came up reads lost past the grace, and still wakes its session", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const { model } = yield* server(w)
+        const { job } = yield* model.job("ses_a", { command: "make", note: "n" })
+        yield* until(MINUTE)
+        expect(texts(w)).toHaveLength(1)
+        expect(texts(w)[0]).toContain(`Job ${job.id} was lost: it never started`)
+      }),
+    ))
+
+  test("wake_cancel refuses a job and names the kill; a deleted session's job is killed; a refused launch keeps nothing", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const { model } = yield* server(w)
+        const { job } = yield* model.job("ses_a", { command: "sleep 999", note: "n" })
+        MemoryRunner.running(w.runner, job.id, 0)
+        const refused = yield* Effect.flip(model.cancel("ses_a", job.id))
+        expect(refused.reason).toContain(`job({ action: "kill", id: "${job.id}" })`)
+        yield* model.forget("ses_a")
+        expect(w.runner.killed).toEqual([job.id])
+        expect(w.store.entries.size).toBe(0)
+        w.runner.refusing = "no bun"
+        expect((yield* Effect.flip(model.job("ses_a", { command: "true", note: "n" }))).reason).toBe("the job did not start: no bun")
+        expect(w.store.entries.size).toBe(0)
       }),
     ))
 })

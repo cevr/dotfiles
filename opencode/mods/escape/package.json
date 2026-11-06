@@ -1,0 +1,10 @@
+{
+  "name": "@dotfiles/opencode-escape",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Escape on a busy session takes back the prompt just sent, then interrupts.",
+  "exports": {
+    "./*": "./*.ts"
+  }
+}

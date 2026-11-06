@@ -3,9 +3,12 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The git context: the session's checkout (branch, upstream, changed files) and its pull request, what the sidebar's Git section and the /git pane draw from them, and how a file is reviewed with hunk.",
+  "description": "The git context: the session's checkout (branch, upstream, changed files) and its pull request, what the sidebar's Git section and the /git pane draw from them, how a file is reviewed with hunk, and the pr tool with its per-machine watcher of pull requests and default branches.",
   "exports": {
     "./tui/*": "./tui/*.tsx",
     "./*": "./*.ts"
+  },
+  "dependencies": {
+    "@dotfiles/decider": "workspace:*"
   }
 }

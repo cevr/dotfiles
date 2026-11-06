@@ -2,7 +2,8 @@
 // second after sending, one Escape cancels: the run stops, the session reverts
 // to before the prompt and the prompt is back in the composer. Seven seconds
 // after sending, past the 5 s grace, one Escape interrupts and the prompt and
-// its partial answer stay. The Dock shows no Escape hint. Replayed against OpenCode with a scripted slow model.
+// its partial answer stay. The Dock shows no Escape hint. Escape is the
+// escape TUI plugin (cmd/escape), loaded beside Prime. Replayed against OpenCode with a scripted slow model.
 // Run: OPENCODE_DEV=<opencode checkout> OPENCODE_DRIVE_MEDIA_DIR=<dir> bunx opencode-drive run scenarios/prime-escape.ts
 //
 // It writes, under SCENARIO_OUT, a `.txt` of each frame's text:
@@ -32,7 +33,7 @@ export default OpenCodeDriver.use(
       animations: false,
       tabs: { mode: "off" },
       theme: { name: "prime", mode: "dark" },
-      plugins: [`${root}/cmd/prime`],
+      plugins: [`${root}/cmd/prime`, `${root}/cmd/escape`],
     },
     tui: { viewport: { cols: 106, rows: 40 } },
     project: {

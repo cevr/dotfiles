@@ -84,13 +84,28 @@ test('a rewrite at decide starts its rounds from 1 again', () => {
   expect(bun('log.ts', dir, 'decide', 'implement', 'r1', 'rewrite on a new premise').code).toBe(0);
 });
 
-test('a stale branch goes through integration-check, which the timing names', () => {
+test('an accepted unit waits in ready until its batch lands, which the timing names', () => {
   const dir = unitDir();
   bun('log.ts', dir, 'new', 'decide', 'r1');
-  expect(bun('log.ts', dir, 'decide', 'integration-check', 'r1', 'main moved; merge with no conflict').code).toBe(0);
+  expect(bun('log.ts', dir, 'decide', 'ready', 'r1', 'round-1-findings.md accepted').code).toBe(0);
+  expect(bun('log.ts', dir, 'ready', 'merged', 'r1', 'abc1234 batch-1-gate.log exit 0').out).toContain('ready → merged abc1234 r1');
+  const [u] = JSON.parse(bun('timing.ts', join(dir, '..'), '--json').out);
+  expect(Object.keys(u.time)).toEqual(['decide', 'ready']);
+});
+
+test('a conflict in the batch sends a ready unit back to implement as a merge round', () => {
+  const dir = unitDir();
+  bun('log.ts', dir, 'new', 'ready', 'r2');
+  expect(bun('log.ts', dir, 'ready', 'implement', 'r3', 'batch-1 conflict in src/list.ts').out).toContain('ready → implement r3');
+});
+
+test('a session that still writes integration-check is recorded as ready', () => {
+  const dir = unitDir();
+  bun('log.ts', dir, 'new', 'decide', 'r1');
+  expect(bun('log.ts', dir, 'decide', 'integration-check', 'r1', 'main moved; merge with no conflict').out).toContain('decide → ready r1');
   expect(bun('log.ts', dir, 'integration-check', 'decide', 'r1', 'merge-auth.log exit 0').code).toBe(0);
   const [u] = JSON.parse(bun('timing.ts', join(dir, '..'), '--json').out);
-  expect(Object.keys(u.time)).toEqual(['decide', 'integration-check']);
+  expect(Object.keys(u.time)).toEqual(['decide', 'ready']);
 });
 
 test('a unit too big for a round is stuck(size): logged, timed as stuck, and shown as such', () => {
@@ -102,4 +117,20 @@ test('a unit too big for a round is stuck(size): logged, timed as stuck, and sho
   expect(Object.keys(u.time)).toEqual(['implement', 'stuck']);
   bun('log.ts', dir, 'decide', 'stuck(size)', 'r2');
   expect(bun('status.ts', join(dir, '..')).out).toContain('| auth | stuck(size) | 2 |');
+});
+
+test('--current moves from the current state, and writes nothing when the unit is already there in that round', () => {
+  const dir = unitDir();
+  const log = () => readFileSync(join(dir, 'log.md'), 'utf8').trim().split('\n').map((line) => line.slice(18));
+  expect(bun('log.ts', '--current', dir, 'plan', 'r1').code).toBe(0);
+  expect(bun('log.ts', '--current', dir, 'implement', 'r1', 'spec.md').code).toBe(0);
+  // The orchestrator logged the move first: the plugin's line for it writes nothing.
+  bun('log.ts', dir, 'implement', 'verify', 'r1', 'round-1-request.md');
+  const again = bun('log.ts', '--current', dir, 'verify', 'r1', 'round-1-request.md ready');
+  expect([again.code, again.out]).toEqual([0, 'unchanged: the unit is in verify r1\n']);
+  expect(bun('log.ts', '--current', dir, 'implement', 'r2', 'round-1-findings.md changes').code).toBe(0);
+  // A late line for an older round is refused, as from the orchestrator.
+  expect(bun('log.ts', '--current', dir, 'verify', 'r1').code).toBe(1);
+  expect(log()).toEqual(['new → plan r1', 'plan → implement r1 spec.md', 'implement → verify r1 round-1-request.md', 'verify → implement r2 round-1-findings.md changes']);
+  expect(bun('log.ts', '--current', '/nonexistent/loop-probe-x', 'plan', 'r1').code).toBe(2);
 });

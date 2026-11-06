@@ -3,14 +3,15 @@
 // not compacted while its cache has time left, and is compacted through
 // OpenCode's own compaction once the cache is 5 s from expiring, and so is one
 // whose background shell outlives the cache, before the shell's notice wakes
-// it. With other directories open, so the host runs a copy of the plugin for
+// it. Its due time counts from the request's start as the host saw it, the
+// plugin's clock, not from when the sim got it. With other directories open, so the host runs a copy of the plugin for
 // each, the session is still compacted once. The rule and its timer are tested
 // beside their code in mods/idle-compact and cmd/idle-compact.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import type { Result, Spec } from "./idle-compact/run.ts"
+import type { Result, Spec, Started } from "./idle-compact/run.ts"
 import { ANSWER, BACKGROUND_SECONDS, EARLY_MS, MARGIN_SECONDS, SUMMARY, TTL_SECONDS } from "./idle-compact/sim.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -64,6 +65,13 @@ interface Message {
   readonly summary?: string
   readonly reason?: string
 }
+/**
+ * When the compaction is due: the cache's lifetime less the margin, from the request's start as the host saw it,
+ * the clock the plugin runs on. Not from when the sim got it: that request's trip from the host (tens of ms under
+ * load, once 128) would read the plugin's on-time compaction as early.
+ */
+const dueAfter = (start: Started | undefined) => (start?.at ?? Number.NaN) + (TTL_SECONDS - MARGIN_SECONDS) * 1_000
+
 const messagesOf = (context: unknown): ReadonlyArray<Message> => (Array.isArray(context) ? (context as Message[]) : [])
 const compactions = (context: unknown) => messagesOf(context).filter((message) => message.type === "compaction")
 
@@ -81,7 +89,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       // Then, once: OpenCode's compaction ran on the sim, no sooner than the cache's lifetime less the margin.
       const summaries = result.seen.filter((item) => item.kind === "compaction")
       expect(summaries).toHaveLength(1)
-      const due = (turn?.at ?? 0) + (TTL_SECONDS - MARGIN_SECONDS) * 1_000
+      const due = dueAfter(result.started.find((item) => item.kind === "primary"))
       expect(summaries[0]?.at).toBeGreaterThanOrEqual(due)
       expect(summaries[0]?.at).toBeLessThan(due + 5_000)
       const [compaction] = compactions(result.late)
@@ -115,10 +123,9 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
     "with copies of the plugin for other directories on the host, the idle session is compacted once, by its own directory's",
     async () => {
       const result = await run("copies", { others: 2 })
-      const turn = result.seen.find((item) => item.kind === "turn")
       const summaries = result.seen.filter((item) => item.kind === "compaction")
       expect(summaries).toHaveLength(1)
-      const due = (turn?.at ?? 0) + (TTL_SECONDS - MARGIN_SECONDS) * 1_000
+      const due = dueAfter(result.started.find((item) => item.kind === "primary"))
       expect(summaries[0]?.at).toBeGreaterThanOrEqual(due)
       expect(summaries[0]?.at).toBeLessThan(due + 5_000)
       expect(compactions(result.late)).toHaveLength(1)
@@ -142,9 +149,9 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(compaction).toBeDefined()
       // The cache's last refresh: the turn's last request before the compaction, the one after the shell started.
       const turns = result.seen.filter((item) => item.kind === "turn")
-      const refreshed = turns.filter((item) => item.at < (compaction?.at ?? 0)).at(-1)
       expect(turns.filter((item) => item.at < (compaction?.at ?? 0))).toHaveLength(2)
-      const due = (refreshed?.at ?? 0) + (TTL_SECONDS - MARGIN_SECONDS) * 1_000
+      const compacting = result.started.find((item) => item.kind === "compaction")
+      const due = dueAfter(result.started.filter((item) => item.kind === "primary" && item.at < (compacting?.at ?? 0)).at(-1))
       expect(compaction?.at).toBeGreaterThanOrEqual(due)
       expect(compaction?.at).toBeLessThan(due + 5_000)
       // The shell was still running then: its notice woke the session afterwards, onto the summary.
