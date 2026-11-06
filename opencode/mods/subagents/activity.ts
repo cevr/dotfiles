@@ -165,7 +165,7 @@ export type Said =
   | { readonly type: "call"; readonly call: Call; readonly index: number }
 
 /** Everything a session's steps wrote or did, in order: each step's words and calls (a kernel call as one, its queue updates after it). */
-export function sayings(messages: ReadonlyArray<Message>): ReadonlyArray<Said> {
+export const sayings = once((messages: ReadonlyArray<Message>): ReadonlyArray<Said> => {
   const out: Said[] = []
   for (const message of messages) {
     if (message.type !== "assistant") continue
@@ -187,21 +187,44 @@ export function sayings(messages: ReadonlyArray<Message>): ReadonlyArray<Said> {
     }
   }
   return out
-}
+})
 
 /** The latest sentence it wrote, thought or put in its queue, if any. */
 export const lastSentence = (all: ReadonlyArray<Said>) => all.findLast((item) => item.type === "sentence")
 
-/** When it last wrote or did anything, if the data says: the newest time among its words and calls. */
-export function lastHeard(messages: ReadonlyArray<Message>): number | undefined {
-  const times = messages.flatMap((message) =>
-    message.type === "assistant"
-      ? message.parts.flatMap((part) => (part.type === "words" ? [part.at] : [part.started, part.completed]))
-      : [],
-  )
-  const known = times.filter((time): time is number => time !== undefined)
-  return known.length === 0 ? undefined : Math.max(...known)
+/**
+ * A value worked out once per object: the family keeps a `Message` and an
+ * unchanged session's `messages` array as the same object across updates
+ * (solid/reader.ts), so a token re-works the values of its own message and
+ * session alone.
+ */
+export function once<K extends object, V>(of: (key: K) => V): (key: K) => V {
+  const known = new WeakMap<K, { readonly value: V }>()
+  return (key) => {
+    const hit = known.get(key)
+    if (hit !== undefined) return hit.value
+    const value = of(key)
+    known.set(key, { value })
+    return value
+  }
 }
+
+const newest = (a: number | undefined, b: number | undefined) => (a === undefined ? b : b === undefined ? a : Math.max(a, b))
+
+/** The newest time among one message's words and calls. */
+const heardIn = once((message: Message): number | undefined => {
+  if (message.type !== "assistant") return undefined
+  let at: number | undefined
+  for (const part of message.parts) at = part.type === "words" ? newest(at, part.at) : newest(newest(at, part.started), part.completed)
+  return at
+})
+
+/** When it last wrote or did anything, if the data says: the newest time among its words and calls. */
+export const lastHeard = once((messages: ReadonlyArray<Message>): number | undefined => {
+  let at: number | undefined
+  for (const message of messages) at = newest(at, heardIn(message))
+  return at
+})
 
 /** The call a subagent runs now: its newest step's latest running call. */
 export function liveCall(messages: ReadonlyArray<Message>): Call | undefined {
@@ -215,7 +238,7 @@ export function liveCall(messages: ReadonlyArray<Message>): Call | undefined {
  * thought or queue item); else its latest ended call; `starting` before it
  * has done anything.
  */
-export function runningUpdate(messages: ReadonlyArray<Message>): string {
+export const runningUpdate = once((messages: ReadonlyArray<Message>): string => {
   const all = sayings(messages)
   const live = liveCall(messages)
   const sentence = lastSentence(all)
@@ -224,4 +247,4 @@ export function runningUpdate(messages: ReadonlyArray<Message>): string {
   if (sentence?.type === "sentence") return sentence.text
   const ended = all.findLast((item) => item.type === "call")
   return ended?.type === "call" ? activity(ended.call) : "starting"
-}
+})

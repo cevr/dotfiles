@@ -36,7 +36,7 @@
 //   failed one failed.
 // The time is how long it has been in that state, not since it started.
 import { described as stepOf } from "@dotfiles/opencode-orchestrate/described"
-import { canonical, firstSentence, lastHeard, lastSentence, liveCall, running, runningUpdate, sayings, waiting, waits } from "./activity.ts"
+import { canonical, firstSentence, lastHeard, lastSentence, liveCall, once, running, runningUpdate, sayings, waiting, waits } from "./activity.ts"
 import type { Call, Family, Latch, Message, Session } from "./family.ts"
 import { modelName, type ModelName } from "./model.ts"
 import { label } from "./shell.ts"
@@ -112,18 +112,44 @@ export function order(family: Family, rootSessionID: string): ReadonlyArray<{ re
   return walk(rootSessionID, new Set([rootSessionID]), 0)
 }
 
-/** The parent's subagent call that runs `child`, and the parent's stop notice for it. */
-function launch(parent: ReadonlyArray<Message>, child: string) {
-  let call: Call | undefined
-  let notice: Extract<Message, { type: "notice" }> | undefined
+type Launch = { readonly call?: Call; readonly notice?: Extract<Message, { type: "notice" }> }
+
+/** Each child's launch in a parent's messages, by child id: read once per messages list, not once per child. */
+const launches = once((parent: ReadonlyArray<Message>): ReadonlyMap<string, Launch> => {
+  const by = new Map<string, { call?: Call; notice?: Extract<Message, { type: "notice" }> }>()
+  const of = (child: string) => {
+    let found = by.get(child)
+    if (found === undefined) {
+      found = {}
+      by.set(child, found)
+    }
+    return found
+  }
   for (const message of parent) {
     if (message.type === "assistant")
-      for (const part of message.parts)
-        if (part.type === "call" && canonical(part.tool) === "subagent" && part.metadata.sessionID === child) call ??= part
-    if (message.type === "notice" && message.childID === child) notice = message
+      for (const part of message.parts) {
+        const child = part.type === "call" && canonical(part.tool) === "subagent" ? part.metadata.sessionID : undefined
+        if (part.type === "call" && typeof child === "string") of(child).call ??= part
+      }
+    if (message.type === "notice") of(message.childID).notice = message
   }
-  return { call, notice }
+  return by
+})
+
+/** The parent's subagent call that runs `child`, and the parent's stop notice for it. */
+const launch = (parent: ReadonlyArray<Message>, child: string): Launch => launches(parent).get(child) ?? {}
+
+/** The agent its newest step that names one ran as. */
+function stepAgent(messages: ReadonlyArray<Message>): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!
+    if (message.type === "assistant" && message.agent) return message.agent
+  }
+  return undefined
 }
+
+/** How many assistant steps it took. */
+const stepCount = once((messages: ReadonlyArray<Message>) => messages.filter((message) => message.type === "assistant").length)
 
 /** The short reason a failure gives: the first sentence of its message, past the host's envelope and prefix. */
 function reason(text: string): string {
@@ -138,6 +164,29 @@ const firstLine = (value: unknown) => (typeof value === "string" ? value.split("
 
 /** One piece of background work a session still waits on: what it is, and the step's call that started it (a kernel cell for its own calls). */
 type Pending = { readonly what: string; readonly by?: Call }
+
+/**
+ * The calls of its steps that may have started background work, in order: a
+ * completed shell call that names its shell, or a completed subagent call that
+ * names its session, each with the step's call that made it (a kernel cell
+ * for its own calls). Read once per messages list.
+ */
+const backgroundCalls = once((messages: ReadonlyArray<Message>): ReadonlyArray<{ readonly call: Call; readonly by: Call }> => {
+  const out: Array<{ readonly call: Call; readonly by: Call }> = []
+  for (const message of messages) {
+    if (message.type !== "assistant") continue
+    for (const part of message.parts) {
+      if (part.type !== "call") continue
+      for (const call of [part, ...(part.calls ?? [])]) {
+        if (call.status !== "completed") continue
+        const tool = canonical(call.tool)
+        const named = tool === "shell" ? call.metadata.shellID : tool === "subagent" ? call.metadata.sessionID : undefined
+        if (typeof named === "string") out.push({ call, by: part })
+      }
+    }
+  }
+  return out
+})
 
 /**
  * What a waiting session waits on, in the order it started it: each shell
@@ -167,18 +216,10 @@ function pendingWork(session: Session, children: ReadonlyArray<Session>, works: 
     }
     return undefined
   }
-  const called = session.messages.flatMap((message) =>
-    message.type === "assistant"
-      ? message.parts.flatMap((part): Pending[] =>
-          part.type === "call"
-            ? [part, ...(part.calls ?? [])].flatMap((call) => {
-                const what = of(call)
-                return what === undefined ? [] : [{ what, by: part }]
-              })
-            : [],
-        )
-      : [],
-  )
+  const called = backgroundCalls(session.messages).flatMap(({ call, by }): Pending[] => {
+    const what = of(call)
+    return what === undefined ? [] : [{ what, by }]
+  })
   const unnamed = [
     ...session.shells.flatMap((shell) =>
       named.has(shell.id) ? [] : [{ what: label({ command: shell.command, description: shell.description }) || "a shell command" }],
@@ -214,13 +255,18 @@ function ending(session: Session, found: ReturnType<typeof launch>): Ending {
 
 /** When a running turn last started working: its start, or the end of the latest wait call it ran since. */
 function workingSince(messages: ReadonlyArray<Message>, busy: number): number {
-  const ends = messages.flatMap((message) =>
-    message.type === "assistant"
-      ? message.parts.flatMap((part) => (part.type === "call" && !running(part) && waits(part) && part.completed !== undefined ? [part.completed] : []))
-      : [],
-  )
-  return Math.max(busy, ...ends)
+  return Math.max(busy, waitEnd(messages))
 }
+
+/** When its latest ended wait call ended; -Infinity when none did. Read once per messages list. */
+const waitEnd = once((messages: ReadonlyArray<Message>): number => {
+  let end = -Infinity
+  for (const message of messages)
+    if (message.type === "assistant")
+      for (const part of message.parts)
+        if (part.type === "call" && !running(part) && waits(part) && part.completed !== undefined) end = Math.max(end, part.completed)
+  return end
+})
 
 /**
  * What a subagent whose turn ended says while it waits: the latest sentence
@@ -276,8 +322,28 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
 /** How rows read times: `timeZone` for a latched row's opening time, the host's own by default. */
 export type ReadOptions = { readonly timeZone?: string }
 
-/** Every subagent of the family as a row, in `order`, whatever its state. */
-export function subagents(family: Family, rootSessionID: string, options: ReadOptions = {}): Row[] {
+const rowsKept = new WeakMap<Family, Map<string, ReadonlyArray<Row>>>()
+
+/**
+ * Every subagent of the family as a row, in `order`, whatever its state. A
+ * family is a value, so its rows are worked out once per family, root and
+ * time zone, however many views read them.
+ */
+export function subagents(family: Family, rootSessionID: string, options: ReadOptions = {}): ReadonlyArray<Row> {
+  let kept = rowsKept.get(family)
+  if (kept === undefined) {
+    kept = new Map()
+    rowsKept.set(family, kept)
+  }
+  const key = `${rootSessionID}\n${options.timeZone ?? ""}`
+  const hit = kept.get(key)
+  if (hit !== undefined) return hit
+  const rows = rowsOf(family, rootSessionID, options)
+  kept.set(key, rows)
+  return rows
+}
+
+function rowsOf(family: Family, rootSessionID: string, options: ReadOptions): ReadonlyArray<Row> {
   const byID = new Map(family.sessions.map((session) => [session.id, session]))
   const children = new Map<string, Session[]>()
   for (const session of family.sessions)
@@ -288,10 +354,7 @@ export function subagents(family: Family, rootSessionID: string, options: ReadOp
     const found = launch(parent, session.id)
     const input = found.call?.input ?? {}
     const described = typeof input.description === "string" ? input.description.trim() : ""
-    const agent =
-      session.agent ??
-      session.messages.flatMap((message) => (message.type === "assistant" && message.agent ? [message.agent] : [])).at(-1) ??
-      (typeof input.agent === "string" ? input.agent : "subagent")
+    const agent = session.agent ?? stepAgent(session.messages) ?? (typeof input.agent === "string" ? input.agent : "subagent")
     const { role, unit } = roleAndUnit(agent, described)
     const model = modelName(session.model)
     const base = {
@@ -331,7 +394,7 @@ export function subagents(family: Family, rootSessionID: string, options: ReadOp
       return { ...base, state: "waiting", update: waitingUpdate(session.messages, pendings), ...timed(since) }
     }
     const end = ending(session, found)
-    const steps = session.messages.filter((message) => message.type === "assistant").length
+    const steps = stepCount(session.messages)
     // The symbol says how it ended (line.ts); the words say only what more there is.
     const update = end.state === "done" ? plural(steps, "step") : end.state === "failed" ? (end.why ?? "") : ""
     return { ...base, state: end.state, update, ...(end.at === undefined ? {} : { ended: end.at }) }

@@ -172,3 +172,16 @@ test("a family no view reads any more stops reading the store", async () => {
   family.stream("child1", 1, " more")
   expect(family.counted()).toEqual([])
 })
+
+test("the rows of a family are worked out once, however many views read them", async () => {
+  const { subagents } = await import("../subagent-row.ts")
+  const family = brood(4, 2)
+  const reader = familyReader()
+  const rows = createRoot(() => [0, 1].map(() => createMemo(() => subagents(reader(family.reads, "root"), "root"))))
+  expect(rows[0]!()).toBe(rows[1]!())
+  const before = rows[0]!()
+  family.stream("child2", 1, " more")
+  expect(rows[0]!()).toBe(rows[1]!())
+  expect(rows[0]!()).not.toBe(before)
+  expect(rows[0]!().map((row) => row.update)).toEqual(["child0 step 1", "child1 step 1", "child2 step 1 more", "child3 step 1"])
+})

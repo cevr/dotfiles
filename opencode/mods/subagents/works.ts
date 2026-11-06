@@ -24,12 +24,24 @@ export const latched = (session: Session) =>
   session.time.busy === undefined &&
   session.outcome === undefined
 
+const kept = new WeakMap<Family, (id: string) => Works | undefined>()
+
 /**
  * How each session of `family` works now, by id; undefined for one that does
  * not (or that the family does not hold). Read once per family: the answer
- * for every session is worked out on the first call.
+ * for every session is worked out on the first call, and every reader of the
+ * same family (the rows, the dock's count, the hints) shares it.
  */
 export function worksNow(family: Family): (id: string) => Works | undefined {
+  let works = kept.get(family)
+  if (works === undefined) {
+    works = worksOf(family)
+    kept.set(family, works)
+  }
+  return works
+}
+
+function worksOf(family: Family): (id: string) => Works | undefined {
   const byID = new Map(family.sessions.map((session) => [session.id, session]))
   const children = new Map<string, Session[]>()
   for (const session of family.sessions)
