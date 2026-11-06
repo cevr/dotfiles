@@ -37,6 +37,16 @@
  *   `paced` option), its answer is the ChatGPT account's own measure, counting
  *   every host and harness on the account, and the script answers only when
  *   the pool cannot. Without it the script alone answers.
+ * - `unitLog`: the orchestrate skill's log.ts that writes each unit's moves,
+ *   default `~/.claude/skills/orchestrate/scripts/log.ts`.
+ *
+ * - Unit logs: a role's start (planner, implementor, verifier, by its call's
+ *   `<role> <unit> r<N>` description) and its hand-back (the first line of its
+ *   last answer when its session goes idle) move its unit in
+ *   `<run dir>/<unit>/log.md` through log.ts `--current`. The unit dir is the
+ *   one a path in the prompt or the hand-back names, else the one
+ *   `tmp/orchestrate/<run>/<unit>` in the session's checkout; none found, or a
+ *   move already logged, writes nothing.
  *
  * - Latch: a new subagent the Sabbath or the pace holds latches instead of
  *   being refused. The call answers at once, as a background subagent's
@@ -50,13 +60,22 @@
  *   since a pace may open early. With no wakes plugin the held call is
  *   refused with the hold's reason and the time it opens.
  * - Opus first, Codex second: a new agent the pace holds on its own model
- *   (the newest Opus), that named no model, starts at once on the newest
+ *   (the newest Opus), that named no model (or named its own: dropped, `model-dropped`), starts at once on the newest
  *   Codex model for its role when the Codex pace has room: sol (the verifier
  *   at medium, the rest at high), or luna at max for a step whose description
  *   ends `(light)`, `(direct)` or `(mechanical)`. The call log's line says
  *   `fallback: <first model> held: <reason>`, and the parent reads that line
  *   first in the subagent's answer. Held on both, it latches on whichever
  *   opens first, and each open tries the first model before the fallback.
+ *
+ * - Restart: when the plugin starts (a server start, or a plugin reload),
+ *   the subagents of its location the last shutdown cut mid-turn, and that
+ *   OpenCode's own recovery left (a foreground subagent), are resumed in the
+ *   background through the subagent tool, each turn at most three times in a
+ *   row, after a backoff; each resume is a `resumed` line in the call log,
+ *   and each parent is told once (`mods/orchestrate/restart.ts`). A turn the
+ *   user or the parent cancelled is not resumed, nor is a root session.
+ *   `resume: false` turns it off; `resume.backoffMs` sets the waits.
  *
  * Each new subagent is told to the pool (`started`), which counts it on its
  * provider's pace, here and on the owner's other hosts, until its spend shows
@@ -65,7 +84,7 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
+import { Clock, Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { QUEUE } from "@dotfiles/opencode-queue/queue"
@@ -77,16 +96,19 @@ import { keepMessage, ROOT } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogLive from "@dotfiles/opencode-orchestrate/filestore/call-log"
 import * as CompactionWindowsLive from "@dotfiles/opencode-orchestrate/filestore/compaction-windows"
 import * as StepLogLive from "@dotfiles/opencode-orchestrate/filestore/step-log"
+import * as UnitLogsLive from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import { Draft, IDLE, MARK } from "@dotfiles/opencode-orchestrate/idle"
 import * as Model from "@dotfiles/opencode-orchestrate/model"
 import * as HoldsLive from "@dotfiles/opencode-orchestrate/opencode/holds"
 import * as LatchesLive from "@dotfiles/opencode-orchestrate/opencode/latches"
 import * as ModelsLive from "@dotfiles/opencode-orchestrate/opencode/models"
 import * as PoolPaceLive from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
+import * as RestartsLive from "@dotfiles/opencode-orchestrate/opencode/restarts"
 import * as RunsLive from "@dotfiles/opencode-orchestrate/opencode/runs"
 import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
+import { BACKOFF_MS } from "@dotfiles/opencode-orchestrate/restart"
 import { definitions, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, local, Place, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
 import {
@@ -94,13 +116,17 @@ import {
   type CallLog,
   type CodexAdmission,
   type Latches,
+  type LatchStart,
   type Models,
   type PoolPace,
+  type Restarts,
+  type ResumeStart,
   type RootHolds,
   type Runs,
   type Sessions,
   type Steer,
   type StepLog,
+  type UnitLogs,
 } from "@dotfiles/opencode-orchestrate/service"
 import type { Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
 
@@ -108,6 +134,8 @@ export const DEFAULT_WINDOWS = join(homedir(), ".cache/orchestrate/compact.json"
 export const DEFAULT_LOG = join(homedir(), ".cache/orchestrate/opencode-agents.jsonl")
 /** The orchestrate skill's Codex admission: `admit: …` exit 0, `hold: …[; opens about <time>Z]` exit 1. */
 export const CODEX_BUDGET = join(homedir(), ".claude/skills/orchestrate/scripts/budget.ts")
+/** The orchestrate skill's log.ts, the units' logs' one writer. */
+export const UNIT_LOG = join(homedir(), ".claude/skills/orchestrate/scripts/log.ts")
 
 const SUBAGENT = "subagent"
 
@@ -144,29 +172,46 @@ export const Options = Schema.Struct({
   place: Place.pipe(withDefault<Place>(KNOWLTON)),
   fullAgent: Schema.Boolean.pipe(withDefault(false)),
   codex: Schema.Union([Schema.Literal(false), Codex]).pipe(withDefault<false | typeof Codex.Type>(CODEX_DEFAULT)),
+  unitLog: Schema.String.pipe(withDefault(UNIT_LOG)),
+  resume: Schema.Union([
+    Schema.Literal(false),
+    Schema.Struct({ backoffMs: Schema.Array(Schema.Finite).pipe(withDefault<ReadonlyArray<number>>(BACKOFF_MS)) }),
+  ]).pipe(withDefault<false | { readonly backoffMs: ReadonlyArray<number> }>({ backoffMs: BACKOFF_MS })),
 })
 export type Options = typeof Options.Type
 
 /** The outside systems the model runs on. */
-export type Externals = CallLog | Sessions | Models | PoolPace | CodexAdmission | CompactionWindows | Latches | StepLog | Runs | RootHolds | Steer
+export type Externals = CallLog | Sessions | Models | PoolPace | CodexAdmission | CompactionWindows | Latches | UnitLogs | StepLog | Runs | RootHolds | Steer | Restarts
+
+/** A cut child's resume: the subagent tool, run in the background on the child with the prompt as given. */
+export type Resume = (start: ResumeStart) => Effect.Effect<void, unknown>
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 type SyntheticInput = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 
-/** The outside systems as OpenCode, the filesystem and processes provide them; `start` runs a latched child through the subagent tool. */
-export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start): Layer.Layer<Externals> =>
+/**
+ * The outside systems as OpenCode, the filesystem and processes provide them;
+ * `start` runs a latched child, and `resume` a child a restart cut, through
+ * the subagent tool.
+ */
+export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, resume: Resume): Layer.Layer<Externals> =>
   Layer.mergeAll(
+    RestartsLive.fromContext(ctx, resume),
     CallLogLive.layer(options.log),
-    SessionsLive.layer((sessionID) =>
-      ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
-        Effect.map((session) => ({
-          ...(session.parentID === undefined ? {} : { parentID: session.parentID }),
-          ...(session.agent === undefined ? {} : { agent: session.agent }),
-          started: session.time.busy !== undefined || session.outcome !== undefined,
-          ...(session.metadata?.[MARK_KEY] === undefined ? {} : { latch: session.metadata[MARK_KEY] }),
-        })),
-      ),
+    SessionsLive.layer(
+      (sessionID) =>
+        ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
+          Effect.map((session) => ({
+            ...(session.parentID === undefined ? {} : { parentID: session.parentID }),
+            ...(session.agent === undefined ? {} : { agent: session.agent }),
+            started: session.time.busy !== undefined || session.outcome !== undefined,
+            ...(session.metadata?.[MARK_KEY] === undefined ? {} : { latch: session.metadata[MARK_KEY] }),
+            directory: session.location.directory,
+          })),
+        ),
+      (sessionID) => ctx.session.context({ sessionID: sessionID as SessionID }),
     ),
+    UnitLogsLive.layer(options.unitLog),
     ModelsLive.layer({
       session: (sessionID) =>
         ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
@@ -287,7 +332,7 @@ type Execute = Tool.Info["execute"]
 type ToolContext = Parameters<Execute>[1]
 
 /** The plugin on `externals`: the live systems in OpenCode, test layers in the seam tests. */
-export const make = (externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start) => Layer.Layer<Externals>) =>
+export const make = (externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, resume: Resume) => Layer.Layer<Externals>) =>
   Plugin.define({
     id: "dotfiles-opencode.orchestrate",
     effect: Effect.fn("Orchestrate.plugin")(function* (ctx) {
@@ -296,9 +341,10 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
         Effect.mapError((error) => new Error(`dotfiles-opencode.orchestrate: invalid options: ${error.message}`)),
         Effect.orDie,
       )
-      // The subagent tool's own execute, as the last tool transform saw it: a latched child starts through it.
+      // The subagent tool's own execute, as the last tool transform saw it: a latched child starts through it,
+      // and a child a restart cut is resumed through it, in the background on the existing child.
       let subagent: Execute | undefined
-      const start: LatchesLive.Start = (request) =>
+      const run = (request: LatchStart, prompt: string) =>
         Effect.suspend(() => {
           if (subagent === undefined) return Effect.fail(new Error("the subagent tool is not loaded"))
           const context: ToolContext = {
@@ -312,7 +358,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
             {
               agent: request.agent,
               description: request.description,
-              prompt: `${SPAWNED}\n${request.prompt}`,
+              prompt,
               ...(request.model === undefined ? {} : { model: request.model }),
               sessionID: request.child,
               background: true,
@@ -320,16 +366,20 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
             context,
           ).pipe(Effect.asVoid)
         })
+      const start: LatchesLive.Start = (request) => run(request, `${SPAWNED}\n${request.prompt}`)
+      const resume: Resume = (request) => run(request, request.prompt)
+      const config = {
+        place: options.place,
+        fullAgent: options.fullAgent,
+        ...(options.now === undefined ? {} : { now: options.now }),
+        ...(options.codex === false ? {} : { codex: { providers: options.codex.providers, ...(options.codex.pool === undefined ? {} : { pool: options.codex.pool }) } }),
+      }
       const services = yield* Layer.build(
-        Layer.merge(
-          Model.layer({
-            place: options.place,
-            fullAgent: options.fullAgent,
-            ...(options.now === undefined ? {} : { now: options.now }),
-            ...(options.codex === false ? {} : { codex: { providers: options.codex.providers, ...(options.codex.pool === undefined ? {} : { pool: options.codex.pool }) } }),
-          }),
+        Layer.mergeAll(
+          Model.layer(config),
           Model.idleLayer({ place: options.place, ...(options.now === undefined ? {} : { now: options.now }) }),
-        ).pipe(Layer.provideMerge(externals(ctx, options, start))),
+          Model.restarter(config, options.resume === false ? [] : options.resume.backoffMs),
+        ).pipe(Layer.provideMerge(externals(ctx, options, start, resume))),
       )
       const orchestrate = Context.get(services, Model.Orchestrate)
       const idleRoots = Context.get(services, Model.IdleRoots)
@@ -372,6 +422,9 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
             ),
         })
         .pipe(Effect.orDie)
+
+      // Subagents the last shutdown cut: found and resumed in the background, once this start has settled.
+      if (options.resume !== false) yield* Effect.forkScoped(Context.get(services, Model.Restarter).resumeCut(yield* Clock.currentTimeMillis))
 
       // The roles, defined as OpenCode's own plugins define build and general: before the
       // config's agent files, so a file in the owner's config still overrides a role's fields.
@@ -482,6 +535,8 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
             // Run the call as the guard routed it, on the role's model when one was chosen.
             const input: Record<string, unknown> = { ...event.input, agent: routed.agent }
             if (routed.model !== undefined) input.model = routed.model
+            // A role's own model, named, was dropped: with no variant chosen, the role runs on its own model.
+            else if (routed.reason === "model-dropped") delete input.model
             // A fallback's answer tells the parent where it ran and why; a lowered worker's, at what effort and why.
             if (outcome.value._tag === "SubagentStarted") {
               const said = [
@@ -499,6 +554,9 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
           }),
         )
       })
+
+      // A role's subagent that goes idle may have handed back: its unit moves in the run's log.
+      yield* ctx.session.hook("experimental.idle", (event) => orchestrate.handBack({ sessionID: event.sessionID }))
 
       yield* ctx.tool.hook("execute.after", (event) => {
         if (event.tool !== SUBAGENT) return Effect.void

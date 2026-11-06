@@ -7,6 +7,10 @@
  * - The root's task, `orchestrate`: a `subagent` call with no agent, then one
  *   asking for `orchestrate-reviewer` (the verifier's former name), then a
  *   closing line. Each next call comes once the last one's result is back.
+ * - A unit run's root task, `units <unit dir>`: a `subagent` call starting
+ *   the implementor of `auth` round 1, whose prompt ends `handback: <line>`,
+ *   then a closing line.
+ * - A task whose last line is `handback: <line>`: that line, then another.
  * - A compaction request: a summary in OpenCode's template.
  * - Anything else (a subagent's task, a plain prompt): one line that quotes
  *   the last thing it was told.
@@ -21,6 +25,16 @@ export const ROOT_TASK = "orchestrate"
 export const UNTYPED_TASK = "task-untyped"
 export const REVIEW_TASK = "task-review"
 export const SUMMARY = "## Objective\n- sim summary"
+/** The root's task in a unit run: `units <unit dir>`. */
+export const UNITS_TASK = "units"
+/** A task whose last line is `handback: <line>` answers with that line first. */
+export const HAND_BACK = "handback:"
+/** A root task that calls one foreground subagent on `HANG_TASK`, then closes. */
+export const RESTART_TASK = "restart-root"
+/** The same, for the root the user interrupts. */
+export const ESCAPE_TASK = "escape-root"
+/** A subagent task whose first request hangs until the sim is released: the turn a shutdown cuts. */
+export const HANG_TASK = "task-hang"
 
 export interface ChatMessage {
   readonly role: string
@@ -76,6 +90,18 @@ export const reply = (request: ChatRequest): Reply => {
   const task = lastLine(text(messages.find((message) => message.role === "user")?.content))
   const results = messages.filter((message) => message.role === "tool").length
   const offersSubagent = (request.tools ?? []).some((tool) => tool.function?.name === "subagent")
+  // A unit run: the root starts an implementor on the unit dir it names, and the implementor hands back.
+  if (task.startsWith(UNITS_TASK) && offersSubagent) {
+    const dir = task.slice(UNITS_TASK.length).trim()
+    if (results === 0)
+      return {
+        kind: "tool",
+        name: "subagent",
+        input: { agent: "implementor", description: "implementor auth r1", prompt: `Spec: ${dir}/spec.md\n${HAND_BACK} implementor auth r1: ready ${dir}/round-1-request.md` },
+      }
+    return { kind: "text", text: "root: the implementor handed back" }
+  }
+  if (task.startsWith(HAND_BACK)) return { kind: "text", text: `${task.slice(HAND_BACK.length).trim()}\nThe gate is green.` }
   if (task === ROOT_TASK && offersSubagent) {
     if (results === 0)
       return { kind: "tool", name: "subagent", input: { description: "Untyped task", prompt: UNTYPED_TASK } }
@@ -86,6 +112,10 @@ export const reply = (request: ChatRequest): Reply => {
         input: { agent: "orchestrate-reviewer", description: "Review task", prompt: REVIEW_TASK },
       }
     return { kind: "text", text: "root: both subagents answered" }
+  }
+  if ((task === RESTART_TASK || task === ESCAPE_TASK) && offersSubagent) {
+    if (results === 0) return { kind: "tool", name: "subagent", input: { description: `${task} child`, prompt: HANG_TASK } }
+    return { kind: "text", text: "root: the subagent is back" }
   }
   return { kind: "text", text: `sim: ${lastLine(last) || "nothing"}` }
 }
@@ -133,6 +163,9 @@ const events = (answer: Reply, model: string, id: string, promptTokens: number):
 export const serve = (promptTokens = 100) => {
   const seen: Seen[] = []
   let served = 0
+  // Hanging requests, and whether a hang task's first request still hangs.
+  let hanging = 0
+  let released = false
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -153,10 +186,25 @@ export const serve = (promptTokens = 100) => {
         messages,
       })
       served += 1
+      const task = lastLine(text(messages.find((message) => message.role === "user")?.content))
+      if (task === HANG_TASK && lastLine(text(messages.at(-1)?.content)) === HANG_TASK && !released) {
+        hanging += 1
+        // An open stream that never ends: the request runs until the server's shutdown cuts it.
+        return new Response(new ReadableStream({ start: () => {} }), { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } })
+      }
       return new Response(events(reply(body), body.model ?? "sim", `sim${served}`, promptTokens), {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       })
     },
   })
-  return { server, seen }
+  return {
+    server,
+    seen,
+    /** How many requests hang now or did. */
+    hanging: () => hanging,
+    /** From now on a hang task answers. */
+    release: () => {
+      released = true
+    },
+  }
 }

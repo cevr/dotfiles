@@ -279,8 +279,10 @@ their five-minute prompt cache (`ROLE_CACHE_TTL`, the per-agent
 writes over the provider-configured lifetime, raised by the pool to the provider's hour once a
 role's session outlives it; the main session keeps the provider's hour),
 routes each subagent call to a role, starts a new Opus start the pace holds on
-Codex instead, latches one both hold, and stops agent work over the Sabbath. Its options are `windows`, `log`, `now`,
-`place`, `fullAgent` and `codex`. An absent option takes its default. A
+Codex instead, latches one both hold, writes each role's start and hand-back to its unit's
+`log.md`, stops agent work over the Sabbath, and resumes the subagents a restart cut. Its
+options are `windows`, `log`, `now`, `place`, `fullAgent`, `codex`, `unitLog` and `resume`.
+An absent option takes its default. A
 malformed one stops the plugin at setup, with a message that names it.
 
 The model (the domain files at `mods/orchestrate/`):
@@ -306,22 +308,65 @@ The model (the domain files at `mods/orchestrate/`):
   tool calls share the outer call's id, so `decide` never reads state.
 - Values: the Sabbath and `SabbathRest` (`sabbath.ts`), role routing
   (`role.ts`, over `agents.json`), the compaction windows (`compaction.ts`)
-  and the pace answers and `PaceHeld` (`pace.ts`).
+  the pace answers and `PaceHeld` (`pace.ts`), and a unit's moves on a role's
+  start and hand-back (`unit-log.ts`).
 - Views: the call log, `~/.cache/orchestrate/opencode-agents.jsonl`. It has
   one line per fact or rejection (`call-line.ts`), and the status pane reads
   it.
 - Contracts: the pool's pace (`PoolPace`), the Codex admission script
   (`CodexAdmission`), sessions, models, the latches (`Latches`: the wakes
   keep a latch, and a latched child starts through the subagent tool), the
-  compaction windows file and the call log, each a `Context.Service` in `service.ts`, with what every
+  restart's reads and resumes (`Restarts`, below), the
+  compaction windows file, the call log and the units' logs (`UnitLogs`), each a `Context.Service` in `service.ts`, with what every
   implementation owes in `laws.ts`. They are implemented in `filestore/`
-  (the call log and compact.json), `opencode/` (sessions, models, the
-  latches and the pool's pace over OpenCode's plugin context and RPC) and `codex/` (the
+  (the call log, compact.json, and the units' logs through the skill's log.ts), `opencode/` (sessions, models, the
+  latches, the restarts and the pool's pace over OpenCode's plugin context and RPC) and `codex/` (the
   admission script); `memory/` holds the doubles the plugin's seam test
   runs on.
 
 The aggregate stores events, not state. The status pane reads the history
 as the call log, and no command needs the folded state.
+
+### Resuming after a restart
+
+OpenCode continues a root session and a background subagent that a shutdown
+cut mid-turn by itself, at its next start (a `restart` notice in each). It
+leaves a foreground subagent: the parent's call to it ends `Tool execution
+interrupted (sessionID: …)`, and the child stays cut until the parent calls it
+again by hand. When the plugin starts (a server start, or a plugin reload,
+which cuts nothing but finds a cut an earlier start left), it waits 10 s so
+OpenCode's own recovery lands first, then reads its location's subagent
+sessions active in the last 6 hours (`restart.ts`, through the `Restarts`
+contract, `opencode/restarts.ts`):
+
+- Cut: the last step ended aborted and no turn end followed (a shutdown
+  writes no `idle` marker). Resumed.
+- Interrupted (an `idle` marker `interrupted` after the aborted step): the
+  user's Escape or a parent's cancel, left alone, unless the parent's call
+  to it was cut by the same shutdown (the parent's own turn has no
+  `interrupted` after that call, or was itself cut through its parent).
+  The shutdown reaches a foreground child through its parent's call, which
+  cancels it, so this is the common case.
+- Anything else (ended, running, continued by a prompt or OpenCode's own
+  notice, cut before the window or after the start, a root session): left.
+
+Each cut child is prompted, in the background through the subagent tool, in
+its parent's call to it: `Your turn ended when OpenCode restarted; continue
+where you left off. Any shell you had running was cut by the restart; rerun
+the ones you still need.` Its result wakes the parent as a background
+subagent's does. A turn resumed in a row waits longer each time (10 s, 2 min,
+10 min, the `resume.backoffMs` option); past three it is left to the parent.
+Each child is checked again just before its resume, so one its parent or
+OpenCode continued meanwhile is not resumed twice, and a reload finds the
+resumed ones continued. Each resume is a `resumed` line in the call log
+(`{ kind, at, sessionID: parent, callID, child, agent, description, cause:
+"restart", attempt }`). The parent gets one steered notice per restart
+(`◈ Subagents resumed after a restart`) naming the children resumed and the
+ones left, with why; it wakes the parent only when none was resumed. Over the
+Sabbath nothing is resumed. `resume: false` turns it off.
+
+A crash (no graceful shutdown) leaves a step unfinished rather than aborted,
+which reads the same as a step that runs, so it is left to the parent.
 
 The route (`role.ts`): a role or any other agent asked by name runs as
 asked, and a former role name as its role. An untyped or general call runs
@@ -337,6 +382,24 @@ A role mentioned in prose (`Fix the verifier's timeout`, `Planner prompt
 rewrite`) names none. A follow-up asking no particular agent (none, a
 general one, or `worker`) keeps its child's agent (`continued`), and a
 follow-up never changes agent by its description.
+
+A new start routed to a role (asked by name or described) whose `model` is
+the role's own (the model it would run on, at any variant or none, with or
+without its provider) runs as if it named none, reason `model-dropped`: at
+the role's effort, with the Codex fallback and the latch. Any other model a
+call names runs as named, with no fallback.
+
+The units' logs (`unit-log.ts`): a role's start moves its unit, by the
+call's `<role> <unit> r<N>` description, to `plan`, `implement` or
+`verify`; its hand-back, the first line of its last answer when its session
+goes idle (the fork's `experimental.idle` hook), moves it as the machine
+says (implementor `ready` to `verify`, verifier `accepted` or `stuck` to
+`decide`, `changes` to `implement` the next round, any `blocked` to
+`blocked`; a planner's `ready` waits for the orchestrator). Each move goes
+through the skill's `log.ts --current` into `<run dir>/<unit>/log.md`, the
+unit dir being the one a path in the prompt or the hand-back names, else the
+one `tmp/orchestrate/<run>/<unit>` in the session's checkout. None found, a
+move the orchestrator already logged, or one log.ts refuses writes nothing.
 
 The worker's ceiling (`capEffort` in `role.ts`): a call that runs as the
 worker on a model at `#max`, asked by the call or inherited (a new worker

@@ -1,6 +1,6 @@
 // The orchestrate port: the role agents against the orchestrate skill they
-// come from, and three runs of real OpenCode (the fork, through its SDK) on
-// the scripted model: the guard, compaction per role, and the Sabbath stop.
+// come from, and runs of real OpenCode (the fork, through its SDK) on
+// the scripted model: the paces, the guard, compaction per role, a unit's log.md, and the Sabbath stop.
 // The plugin's rules on their own are tested beside mods/orchestrate and cmd/orchestrate.
 import { afterAll, describe, expect, test } from "bun:test"
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -204,6 +204,43 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(before.task).toBe("planner: first")
       expect(compaction.messages.slice(0, before.messages.length)).toEqual([...before.messages])
       expect(JSON.stringify(messages("planner"))).toContain(SUMMARY.split("\n")[1]!)
+    },
+    RUN_MS,
+  )
+
+  test(
+    "units: an implementor's start and its hand-back move its unit in the run's log.md",
+    async () => {
+      const result = await run("units", { scenario: "units", now: WEDNESDAY })
+      expect(result.children.map((child) => child.agent)).toEqual(["implementor"])
+      expect(result.unitLog).toEqual(["new → implement r1 spec.md", "implement → verify r1 round-1-request.md ready"])
+    },
+    RUN_MS,
+  )
+
+  test(
+    "restart: a foreground subagent a shutdown cut is resumed once in the background and its parent told once; one the user interrupted is not",
+    async () => {
+      const result = await run("restart", { scenario: "restart", now: WEDNESDAY, resumeBackoffMs: [500, 500, 500] })
+      type Message = { type: string; text?: string; metadata?: Record<string, unknown>; content?: ReadonlyArray<{ type: string; text?: string }> }
+      const messages = (name: string) => result.sessions[name]!.messages as Message[]
+      const resumes = (name: string) => messages(name).filter((message) => message.type === "user" && message.text?.startsWith("Your turn ended when OpenCode restarted"))
+      const notices = (name: string) => messages(name).filter((message) => message.type === "synthetic" && message.metadata?.source === "orchestrate")
+      // The cut child got the resume prompt once, and answered after it.
+      expect(resumes("child").length).toBe(1)
+      const after = messages("child").slice(messages("child").indexOf(resumes("child")[0]!) + 1)
+      expect(after.some((message) => message.type === "assistant" && message.content?.some((part) => part.text?.startsWith("sim: ")))).toBe(true)
+      // The call log has its one resume, in its parent's call.
+      const resumed = result.log.filter((line) => line.kind === "resumed")
+      expect(resumed.map(({ child, cause, attempt, description }) => ({ child, cause, attempt, description }))).toEqual([
+        { child: result.children[0]!.id, cause: "restart", attempt: 1, description: "restart-root child" },
+      ])
+      // Its parent was told once, naming it; the interrupted root and its child were left alone.
+      expect(notices("root").map((message) => message.metadata?.children)).toEqual([[result.children[0]!.id]])
+      expect(resumes("escapedChild")).toEqual([])
+      expect(notices("escaped")).toEqual([])
+      // No child was made again.
+      expect(result.children.length).toBe(2)
     },
     RUN_MS,
   )

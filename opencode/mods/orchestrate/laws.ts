@@ -21,6 +21,9 @@ import {
   Sessions,
   Steer,
   StepLog,
+  UnitLogs,
+  Restarts,
+  type ResumeStart,
 } from "./service.ts"
 
 const check = <A, E, R>(layer: Layer.Layer<R>, body: Effect.Effect<A, E, R>) =>
@@ -85,14 +88,25 @@ export const callLogLaws = (name: string, make: Effect.Effect<CallLogProbe, neve
 
 /** The sessions a host knows, by id; any other cannot be read. */
 export type SessionsWorld = Readonly<
-  Record<string, { readonly parentID?: string; readonly agent?: string; readonly started?: boolean; readonly latch?: unknown }>
+  Record<
+    string,
+    {
+      readonly parentID?: string
+      readonly agent?: string
+      readonly started?: boolean
+      readonly latch?: unknown
+      readonly directory?: string
+      /** The text its last answer wrote. */
+      readonly lastWords?: string
+    }
+  >
 >
 
 export const sessionsLaws = (name: string, layer: (world: SessionsWorld) => Layer.Layer<Sessions>) =>
   describe(`${name} keeps the Sessions laws`, () => {
     const world: SessionsWorld = {
-      root: { agent: "build" },
-      child: { parentID: "root", agent: "verifier" },
+      root: { agent: "build", directory: "/work" },
+      child: { parentID: "root", agent: "verifier", lastWords: "verifier auth r1: accepted /work/tmp/orchestrate/web/auth/round-1-findings.md" },
       blank: { parentID: "", agent: "" },
       ran: { parentID: "root", agent: "worker", started: true },
       latched: { parentID: "root", agent: "worker", latch: { hold: "pace", reason: "held", opensAt: 9_000, at: 1_000 } },
@@ -152,6 +166,20 @@ export const sessionsLaws = (name: string, layer: (world: SessionsWorld) => Laye
           expect(yield* sessions.agentOf("missing")).toBeUndefined()
           expect(yield* sessions.startedOf("missing")).toBe(false)
           expect(yield* sessions.latchOf("missing")).toBeUndefined()
+          expect(yield* sessions.directoryOf("missing")).toBeUndefined()
+          expect(yield* sessions.lastWordsOf("missing")).toBeUndefined()
+        }),
+      ))
+
+    test("a session's directory and last words are what the host knows; none when it has none", () =>
+      check(
+        layer(world),
+        Effect.gen(function* () {
+          const sessions = yield* Sessions
+          expect(yield* sessions.directoryOf("root")).toBe("/work")
+          expect(yield* sessions.lastWordsOf("child")).toBe("verifier auth r1: accepted /work/tmp/orchestrate/web/auth/round-1-findings.md")
+          expect(yield* sessions.directoryOf("child")).toBeUndefined()
+          expect(yield* sessions.lastWordsOf("root")).toBeUndefined()
         }),
       ))
   })
@@ -434,6 +462,78 @@ export const compactionWindowsLaws = (name: string, layer: (world: WindowsWorld)
     })
   })
 
+// ── UnitLogs ──
+
+/** Units' logs under test: a scratch checkout, a way to make a dir in it, and each unit's moves read back. */
+export interface UnitLogsProbe {
+  readonly layer: Layer.Layer<UnitLogs>
+  /** The checkout's absolute path. */
+  readonly checkout: string
+  /** Make `<checkout>/<path>` a directory; its absolute path. */
+  readonly make: (path: string) => Effect.Effect<string>
+  /** The moves in a unit's log, `<from> → <to> r<N>[ note]`, oldest first. */
+  readonly moves: (unitDir: string) => Effect.Effect<ReadonlyArray<string>>
+}
+
+/** `make` gives a fresh, empty checkout within the test's scope. */
+export const unitLogsLaws = (name: string, make: Effect.Effect<UnitLogsProbe, never, Scope.Scope>) =>
+  describe(`${name} keeps the UnitLogs laws`, () => {
+    const scoped = (body: (probe: UnitLogsProbe) => Effect.Effect<void, never, UnitLogs>) =>
+      Effect.runPromise(Effect.scoped(Effect.flatMap(make, (probe) => body(probe).pipe(Effect.provide(probe.layer)))))
+
+    test("a unit is found at a path named for it, absolute or relative to the directory, else under the checkout's runs", () =>
+      scoped((probe) =>
+        Effect.gen(function* () {
+          const logs = yield* UnitLogs
+          const auth = yield* probe.make("tmp/orchestrate/web/auth")
+          const elsewhere = yield* probe.make("notes/auth")
+          expect(yield* logs.find({ unit: "auth", named: ["/nonexistent/loop-probe-x/auth", elsewhere], directory: probe.checkout })).toBe(elsewhere)
+          expect(yield* logs.find({ unit: "auth", named: ["notes/auth"], directory: probe.checkout })).toBe(elsewhere)
+          expect(yield* logs.find({ unit: "auth", named: [], directory: probe.checkout })).toBe(auth)
+          expect(yield* logs.find({ unit: "auth", named: ["notes/auth"] })).toBeUndefined()
+        }),
+      ))
+
+    test("no unit is found when nothing names it and the checkout has none, or two runs have one", () =>
+      scoped((probe) =>
+        Effect.gen(function* () {
+          const logs = yield* UnitLogs
+          expect(yield* logs.find({ unit: "auth", named: [], directory: probe.checkout })).toBeUndefined()
+          expect(yield* logs.find({ unit: "auth", named: [], directory: "/nonexistent/loop-probe-x" })).toBeUndefined()
+          yield* probe.make("tmp/orchestrate/web/auth")
+          yield* probe.make("tmp/orchestrate/api/auth")
+          expect(yield* logs.find({ unit: "auth", named: [], directory: probe.checkout })).toBeUndefined()
+        }),
+      ))
+
+    test("a move goes from the unit's current state; one already logged, or one the machine refuses, writes nothing", () =>
+      scoped((probe) =>
+        Effect.gen(function* () {
+          const logs = yield* UnitLogs
+          const dir = yield* probe.make("tmp/orchestrate/web/auth")
+          yield* logs.append(dir, { unit: "auth", to: "plan", round: 1, note: "" })
+          yield* logs.append(dir, { unit: "auth", to: "implement", round: 1, note: "spec.md" })
+          yield* logs.append(dir, { unit: "auth", to: "implement", round: 1, note: "spec.md" })
+          yield* logs.append(dir, { unit: "auth", to: "verify", round: 1, note: "round-1-request.md ready" })
+          yield* logs.append(dir, { unit: "auth", to: "implement", round: 2, note: "round-1-findings.md changes" })
+          yield* logs.append(dir, { unit: "auth", to: "verify", round: 1, note: "late" })
+          expect(yield* probe.moves(dir)).toEqual([
+            "new → plan r1",
+            "plan → implement r1 spec.md",
+            "implement → verify r1 round-1-request.md ready",
+            "verify → implement r2 round-1-findings.md changes",
+          ])
+        }),
+      ))
+
+    test("a move for a dir that is gone fails nothing", () =>
+      scoped(() =>
+        Effect.gen(function* () {
+          yield* (yield* UnitLogs).append("/nonexistent/loop-probe-x/auth", { unit: "auth", to: "plan", round: 1, note: "" })
+        }),
+      ))
+  })
+
 // ── StepLog ──
 
 /** The units each session started a step of, in order, repeats included. */
@@ -547,5 +647,76 @@ export const steerLaws = (
           expect(refused._tag).toBe("NudgeRefused")
           expect(refused.message).toContain("session not found")
         }),
+      ))
+  })
+
+// ── Restarts ──
+
+/** The sessions a host holds: each one's parent, last activity, and whether it is of this plugin's location. */
+export interface RestartsWorld {
+  readonly sessions: Readonly<Record<string, { readonly parentID?: string; readonly updated: number; readonly here: boolean }>>
+  /** A resume fails with this. */
+  readonly fail?: string
+  /** A notice is refused with this. */
+  readonly refuseNotice?: string
+}
+
+const resumeStart = (child: string): ResumeStart => ({
+  parent: "ses_root",
+  from: "build",
+  messageID: "msg_1",
+  callID: "call-1",
+  child,
+  agent: "implementor",
+  description: "implementor export r1",
+  prompt: "Your turn ended when OpenCode restarted; continue where you left off.",
+})
+
+export const restartsLaws = (name: string, layer: (world: RestartsWorld) => Layer.Layer<Restarts>) =>
+  describe(`${name} keeps the Restarts laws`, () => {
+    const world: RestartsWorld = {
+      sessions: {
+        ses_root: { updated: 9_000, here: true },
+        ses_new: { parentID: "ses_root", updated: 8_000, here: true },
+        ses_old: { parentID: "ses_root", updated: 1_000, here: true },
+        ses_away: { parentID: "ses_root", updated: 8_500, here: false },
+      },
+    }
+
+    test("children are this location's subagent sessions active since the time asked", () =>
+      check(
+        layer(world),
+        Effect.gen(function* () {
+          const children = yield* (yield* Restarts).children(5_000)
+          expect(children.map((card) => [card.id, card.parentID])).toEqual([["ses_new", "ses_root"]])
+        }),
+      ))
+
+    test("a session that cannot be read has no transcript", () =>
+      check(
+        layer(world),
+        Effect.gen(function* () {
+          const restarts = yield* Restarts
+          expect(yield* restarts.transcript("ses_missing")).toBeUndefined()
+          expect((yield* restarts.transcript("ses_new"))?.session).toMatchObject({ id: "ses_new", parentID: "ses_root" })
+        }),
+      ))
+
+    test("a resume runs, and one that fails says why", async () => {
+      await check(layer(world), Effect.flatMap(Restarts, (restarts) => restarts.resume(resumeStart("ses_new"))))
+      await check(
+        layer({ ...world, fail: "Unknown agent: implementor" }),
+        Effect.gen(function* () {
+          const failed = yield* Effect.flip((yield* Restarts).resume(resumeStart("ses_new")))
+          expect(failed._tag).toBe("StartFailed")
+          expect(failed.message).toContain("Unknown agent: implementor")
+        }),
+      )
+    })
+
+    test("telling a parent never fails", () =>
+      check(
+        layer({ ...world, refuseNotice: "inbox closed" }),
+        Effect.flatMap(Restarts, (restarts) => restarts.tell({ parent: "ses_root", text: "t", description: "d", wake: false, children: ["ses_new"] })),
       ))
   })
