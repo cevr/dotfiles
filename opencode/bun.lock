@@ -121,6 +121,13 @@
         "@dotfiles/opencode-queue": "workspace:*",
       },
     },
+    "cmd/rift": {
+      "name": "@dotfiles/opencode-cmd-rift",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-rift": "workspace:*",
+      },
+    },
     "cmd/skills": {
       "name": "@dotfiles/opencode-cmd-skills",
       "version": "0.0.0",
@@ -251,6 +258,10 @@
         "@dotfiles/opencode-subagents": "workspace:*",
       },
     },
+    "mods/rift": {
+      "name": "@dotfiles/opencode-rift",
+      "version": "0.0.0",
+    },
     "mods/skills": {
       "name": "@dotfiles/opencode-skills",
       "version": "0.0.0",
@@ -316,6 +327,8 @@
 
     "@dotfiles/opencode-cmd-queue": ["@dotfiles/opencode-cmd-queue@workspace:cmd/queue"],
 
+    "@dotfiles/opencode-cmd-rift": ["@dotfiles/opencode-cmd-rift@workspace:cmd/rift"],
+
     "@dotfiles/opencode-cmd-skills": ["@dotfiles/opencode-cmd-skills@workspace:cmd/skills"],
 
     "@dotfiles/opencode-cmd-status": ["@dotfiles/opencode-cmd-status@workspace:cmd/status"],
@@ -345,6 +358,8 @@
     "@dotfiles/opencode-questions": ["@dotfiles/opencode-questions@workspace:mods/questions"],
 
     "@dotfiles/opencode-queue": ["@dotfiles/opencode-queue@workspace:mods/queue"],
+
+    "@dotfiles/opencode-rift": ["@dotfiles/opencode-rift@workspace:mods/rift"],
 
     "@dotfiles/opencode-skills": ["@dotfiles/opencode-skills@workspace:mods/skills"],
 

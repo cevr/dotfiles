@@ -756,6 +756,47 @@ contracts in `service.ts`: `RepoRoots` (`filesystem/`: a path holding `.git`)
 and `SessionDirectories` (`opencode/`: the session's directory), with
 `memory/` implementations for tests and the laws in `laws.ts`.
 
+## Rift
+
+`cmd/rift` is a server plugin that adds the `rift` tool (a direct tool, so a
+kernel cell reaches it as `tools.rift`) and takes OpenCode's worktree tools
+(`opencode_worktree_create`, `_list`, `_remove`) out of the registry: they
+make Git worktrees, and on Rifts they failed (10 times in 7 sessions on the
+workbox in a week). One input, with an `action`:
+
+- `{ action: "create", branch, name?, source? }` makes a Rift of the warm
+  source the session's directory (or `source`) belongs to, on `branch` (the
+  local branch, else `origin/<branch>`, else a new one from the source's
+  HEAD; default: the name), named after the branch as `workrift` names it
+  (`feat/x` → `feat-x`). It answers the Rift's directory and branch and how
+  to move there (`session_move`); it never moves the session itself. On the
+  Mac it runs `rift create <source> --copy-all --name <name>` and switches the
+  branch; on the workbox, `workrift create <branch>` from the session's
+  directory with `WORKRIFT_SOURCE` set, which refreshes the source, imports
+  gh stack metadata and names the Rift itself.
+- `{ action: "list" }` lists the source's Rifts with their branch and their
+  unsaved work (`clean`, or `2 uncommitted, 1 unpushed, 1 stashed`).
+- `{ action: "remove", name | path, force? }` moves a Rift to Rift's trash
+  (`rift remove`, `workrift remove` on the workbox). It refuses a Rift that
+  holds work found nowhere else, and names it: uncommitted changes (untracked
+  files too), stashes, and commits on no remote and in no branch of its
+  source, unless `force: true`. It always refuses a warm source, the Rift the
+  session runs in, and a Rift with Rifts of its own.
+
+There is no `gc` action: `rift gc` empties the trash of every repository at
+once, for good, and the workbox's nightly `workrift prune` already runs it.
+
+The model (the domain files at the root of `mods/rift`): `rift.ts` is the
+tool's input and the words of each answer, `workspace.ts` what a Rift holds
+and the rule for removing one (`removal`), and `model.ts` the handler. The
+contracts are in `service.ts`: `Rifts` (`process/`: the `rift`, `workrift`
+and `git` commands; `memory/` for tests) and `SessionDirectories`
+(`opencode/`), with their laws in `laws.ts`. The plugin's one option,
+`workrift`, defaults to whether `workrift` is on PATH. `tests/rift.test.ts`
+proves the flow in real OpenCode on real Rift; `mods/rift/process` runs the
+laws on `rift` and on the workbox's own `workrift` script (with a no-op
+`flock`), in a scratch HOME. Both need macOS.
+
 ## Tool names
 
 `cmd/tool-names` is a server plugin that answers a call of a tool that does
