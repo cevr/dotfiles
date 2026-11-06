@@ -80,7 +80,7 @@ An **area** is a set of directories that change together (a package, or a layer 
      - its Report goes into what each round request carries;
      - the risk questions ([`prompts/risks.md`](prompts/risks.md)) go to Risks, and the verifier checks each one directly.
 
-     The Gate is the repo's full gate, guards included. A batch accepted on a narrower gate can still fail a guard on main.
+     The Gate's round gate is the focused checks of the packages the batch touches; its batch gate is the repo's full gate, guards included, which orchestrate runs once on all the ready units merged together ([Land a batch](../orchestrate/SKILL.md#land-a-batch)).
    - **Size.** A batch is one concern, about 10 items. An implementor that compacts within its first round is holding too much: split the batch then. Oversized batches make apply agents most of a run's cache reads.
    - **Workspace.** Each batch's workspace and branch follow orchestrate (`<run>/<unit>`; ledger rows from earlier passes name `p<N>-<batch>`). Setup beyond install (a build, a linked git-ignored file, a shared lock for a heavy test) belongs in the project's `AGENTS.md`; a missing step found here goes there.
    - **Cost.** At each hand-back, run `bun ~/.claude/skills/orchestrate/scripts/agent-cost.ts <id>` and append its line to the unit's `log.md`. The id is the subagent's `sessionID` (`ses_…`) on OpenCode, read through the running service, or the agent id on Claude Code. A hand-back's token count is the agent's final context, not its spend. The retro (step 11) reads these lines instead of rebuilding them.
@@ -88,7 +88,7 @@ An **area** is a set of directories that change together (a package, or a layer 
 
    Done per batch when its unit's verifier accepts it.
 
-7. **Merge.** Integrate as orchestrate's [accepted](../orchestrate/SKILL.md#accepted) step says. A merge of main into a batch's branch keeps both sides' edits, never one side's file whole, and the merge audit in [`guardrails.md`](guardrails.md) runs over it before the gate. If the Push line allows it, push; a red CI is the next batch, and no other batch merges before it. Then write the batch's ledger row: `done <hash> … <hash>, merged <hash>`, decisions, the reviewer and its rounds, open items, and the report's "decisions for the orchestrator" as `Carried` rows.
+7. **Merge.** Integrate as orchestrate's [Land a batch](../orchestrate/SKILL.md#land-a-batch) says. A merge into the integration branch keeps both sides' edits, never one side's file whole, and the merge audit in [`guardrails.md`](guardrails.md) runs over it before the gate. If the Push line allows it, push; a red CI fans out into fix units, and only they land until it is green. Then write the batch's ledger row: `done <hash> … <hash>, merged <hash>`, decisions, the reviewer and its rounds, open items, and the report's "decisions for the orchestrator" as `Carried` rows.
 
    Done when the gate on main is green, the row is written, and the branch and the workspace are gone.
 

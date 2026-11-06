@@ -50,7 +50,9 @@ The first line of your file states the same verdict. At your first compaction, i
 
 ## Rounds
 
-A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the verifier proves a Blocker or Major (`changes`); a red acceptance check is a Blocker. At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (the orchestrator asked for main to be merged in) is verified like any other, and counts only if it fails.
+A round is one request and its verdicts, numbered 1, 2, 3, … for the life of the unit. A round **fails** when the verifier proves a Blocker or Major (`changes`); a red acceptance check is a Blocker. At the third failed round, the orchestrator rewrites the unit from its base on a new spec, and the rewrite's rounds count from 1. Use `stuck` when no further round can help, such as a spec that contradicts itself. A merge round (your branch conflicted in a batch, and the orchestrator asked for the new main to be merged in) is verified like any other, and counts only if it fails.
+
+**Checks stay focused.** A round runs the checks of what it changed: the tests and typecheck of the changed packages, lint of the changed files, and the unit's own acceptance test alone. The full gate, the full e2e and an affected-acceptance run (`accept:affected` and the like) are the batch's: the orchestrator runs them once on the merged batch, or CI does where the spec names a CI workflow, and hands any failure back as a fix unit. No role starts synthetic load (a CPU burner, a stress loop) to test under load.
 
 ## Implementor
 
@@ -61,7 +63,7 @@ You are the sole writer. You work in the spec's workspace (a Rift or worktree on
 1. **State.** Keep `<unit dir>/state.md` current with: the branch, the commits, what is done, what is next, and open questions. Update it after each commit. After a compaction, read the spec and `state.md` again before any other action, and this protocol too when your prompt does not carry it.
 2. **Build.** Work until the whole unit is ready to verify, not one piece at a time. Use commits in Conventional Commits form, one logical unit each, staged by exact path. A behavior change the repo's `verify-<app>` feature map describes edits that feature file in the same branch.
 3. **Decide.** When the spec leaves a choice open, take the simpler, reversible option. Record it in `state.md` with "decided by <principle>" (see `~/Developer/personal/dotfiles/principles/`), and carry on. Questions are for what you truly cannot infer.
-4. **Gate.** Run the focused checks while you work. Before each request, run the spec's round gate into `<unit dir>/gate-N.log` with its exit line, and read the exit line and the failing section only. A test that fails once under load and passes on one retry is a flake: retry once, name it in the request, and keep its assertions.
+4. **Gate.** Run the focused checks while you work. Before each request, run the spec's round gate (the focused checks, Rounds) into `<unit dir>/gate-N.log` with its exit line, and read the exit line and the failing section only. A test that fails once under load and passes on one retry is a flake: retry once, name it in the request, and keep its assertions.
 5. **Request.** Write `round-N-request.md`. Its first lines name this protocol, the spec path and the head commit, for a verifier arriving cold. Then:
    - the base and head commits, with `git diff --stat <base>..HEAD | tail -1`;
    - what changed, by file;

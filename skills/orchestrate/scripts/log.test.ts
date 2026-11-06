@@ -84,13 +84,28 @@ test('a rewrite at decide starts its rounds from 1 again', () => {
   expect(bun('log.ts', dir, 'decide', 'implement', 'r1', 'rewrite on a new premise').code).toBe(0);
 });
 
-test('a stale branch goes through integration-check, which the timing names', () => {
+test('an accepted unit waits in ready until its batch lands, which the timing names', () => {
   const dir = unitDir();
   bun('log.ts', dir, 'new', 'decide', 'r1');
-  expect(bun('log.ts', dir, 'decide', 'integration-check', 'r1', 'main moved; merge with no conflict').code).toBe(0);
+  expect(bun('log.ts', dir, 'decide', 'ready', 'r1', 'round-1-findings.md accepted').code).toBe(0);
+  expect(bun('log.ts', dir, 'ready', 'merged', 'r1', 'abc1234 batch-1-gate.log exit 0').out).toContain('ready → merged abc1234 r1');
+  const [u] = JSON.parse(bun('timing.ts', join(dir, '..'), '--json').out);
+  expect(Object.keys(u.time)).toEqual(['decide', 'ready']);
+});
+
+test('a conflict in the batch sends a ready unit back to implement as a merge round', () => {
+  const dir = unitDir();
+  bun('log.ts', dir, 'new', 'ready', 'r2');
+  expect(bun('log.ts', dir, 'ready', 'implement', 'r3', 'batch-1 conflict in src/list.ts').out).toContain('ready → implement r3');
+});
+
+test('a session that still writes integration-check is recorded as ready', () => {
+  const dir = unitDir();
+  bun('log.ts', dir, 'new', 'decide', 'r1');
+  expect(bun('log.ts', dir, 'decide', 'integration-check', 'r1', 'main moved; merge with no conflict').out).toContain('decide → ready r1');
   expect(bun('log.ts', dir, 'integration-check', 'decide', 'r1', 'merge-auth.log exit 0').code).toBe(0);
   const [u] = JSON.parse(bun('timing.ts', join(dir, '..'), '--json').out);
-  expect(Object.keys(u.time)).toEqual(['decide', 'integration-check']);
+  expect(Object.keys(u.time)).toEqual(['decide', 'ready']);
 });
 
 test('a unit too big for a round is stuck(size): logged, timed as stuck, and shown as such', () => {

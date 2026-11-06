@@ -24,10 +24,9 @@ Work rules:
 - Comments describe today's behavior.
 - UI changes follow `~/.claude/skills/loop/ui-guidance.md` (shadcn, Graphical, composition and state guidance, mapped onto the repo's framework), on the lines you change only.
 - Decide by the principles in ~/Developer/personal/dotfiles/principles/ and write "decided by <principle>"; the batch runs without check-ins.
-- Gate: typecheck, lint, focused tests, then the full gate into a log with its exit line (`<gate command> > <pass dir>/gate-<batch>.log 2>&1; echo "GATE EXIT $?" >> <same log>`) before each commit. A test that fails once under load and passes on one retry is a flake: retry once, name it, keep its assertions.
+- Gate: the focused checks only (the touched packages' typecheck and tests, lint of the changed files) into a log with its exit line (`<focused commands> > <pass dir>/gate-<batch>.log 2>&1; echo "GATE EXIT $?" >> <same log>`) before each commit. The orchestrator runs the full gate and e2e once, on every accepted batch merged together. A test that fails once under load and passes on one retry is a flake: retry once, name it, keep its assertions.
 - Every commit passes the hook, without bypass flags or env overrides. When a change cannot pass it in steps, order the steps so each passes, or make it one commit.
 - Commits: Conventional Commits, one logical unit each, staged by exact path. A public API change carries its changeset and README update. No push, no workspace creation or removal, no ledger edits.
-- Before the report: merge main into the workspace, resolve conflicts there keeping both sides' edits, run the gate into a log and read `GATE EXIT`.
 - Finish in one run: no timers, monitors or sub-agents. A finding that does not fit its description: stop and report.
 
 Report (final message): commits (hash + subject), `git diff --stat <base>..HEAD | tail -1`, per-item result with file:line receipts, a probe table, flake names, the last `GATE EXIT`, decisions for the orchestrator (fixes in files this batch did not own), and the abilities the batch changed with the live-check steps that show them.

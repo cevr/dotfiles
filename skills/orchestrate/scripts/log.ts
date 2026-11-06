@@ -3,7 +3,8 @@
 // in the form timing.ts and status.ts read. It refuses an unknown state, a `from` that is not
 // the unit's current state, and a round below the last one (a rewrite's decide → r1 excepted).
 // A former state name (`review`, which a session that read the skill before the rename still
-// writes) is recorded as its current one (`verify`), as transition.ts reads it.
+// writes; `integration-check`, from before batches) is recorded as its current one (`verify`;
+// `ready`), as transition.ts reads it.
 // Usage: bun log.ts <unit dir> <from> <to> r<N> [note...]
 //        bun log.ts --current <unit dir> <to> r<N> [note...]
 //   The unit's first line comes from `new`. `merged` takes the merge commit as the note's first word.
@@ -14,7 +15,7 @@ import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { currentState, transitions } from './transition.ts';
 
-export const STATES = ['plan', 'implement', 'verify', 'decide', 'integration-check', 'waiting(pr)', 'merged', 'blocked', 'stuck', 'stuck(quota)', 'stuck(size)', 'dropped'];
+export const STATES = ['plan', 'implement', 'verify', 'decide', 'ready', 'waiting(pr)', 'merged', 'blocked', 'stuck', 'stuck(quota)', 'stuck(size)', 'dropped'];
 const MAX = 200;
 
 /** The line to append to a unit's log, or the reason it is refused. */
