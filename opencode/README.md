@@ -1180,6 +1180,11 @@ knows no repository's commands:
 | `rift.pushBranches` | a Git boolean, default false; with `rift.push` false, push each green Rift's own branch |
 | `workrift.main` | the default branch; else origin's HEAD, else `main` |
 
+The gate and the acceptance run always run heavy, through the guard's
+launcher (`heavyArgv` in `mods/guard/launcher.ts`): `nice -n 10`, and where
+`systemd-run --user --scope` works (Linux with a user systemd), a scope with
+`MemoryMax=12G` and `CPUWeight=20`. On the Mac they run niced alone.
+
 This repository's warm source sets:
 
 ```sh
@@ -1735,7 +1740,9 @@ for it with `action: "wait"`, since its turn's end hands back to its parent.
   (`cmd/wake/job.ts`): a `systemd-run --user --unit opencode-job-<id>` unit on
   Linux (a detached process when the user manager refuses, with a warning in
   the receipt), a detached session and process group on the Mac. `heavy` runs
-  it under `nice -n 10`; past `timeoutSeconds` (default a day, at most 7) it is
+  it through the guard's launcher (`mods/guard/launcher.ts`): `nice -n 10`,
+  and where `systemd-run --user --scope` works, a scope with `MemoryMax=12G`
+  and `CPUWeight=20`; past `timeoutSeconds` (default a day, at most 7) it is
   stopped with SIGTERM, then SIGKILL 10 s later.
 - Lines the command appends to the file `$JOB_DRIP` names reach the session at
   most once a minute, without starting a turn; the rest ride on the end

@@ -11,7 +11,7 @@ import { Context, Effect, Layer } from "effect"
 import type { JobSpec, Run } from "../job.ts"
 import { Runner } from "../service.ts"
 import * as ProcessRunner from "./runner.ts"
-import { FILES, writeAtomic } from "./supervise.ts"
+import { argvOf, FILES, scopeAvailable, writeAtomic } from "./supervise.ts"
 import type { Ran } from "../cron/backstop.ts"
 
 const scratch = mkdtempSync(path.join(tmpdir(), "opencode-job-test-"))
@@ -148,5 +148,27 @@ describe("the process runner", () => {
     expect(fallback.how).toBe("detached")
     expect(fallback.warning).toContain("Failed to connect to bus")
     expect(await until(other.id, ended)).toMatchObject({ state: "ended", exit: { exitCode: 0 } })
+  })
+})
+
+describe("a heavy job's command goes through the guard's launcher", () => {
+  test("on a systemd host it runs niced in a user scope with MemoryMax=12G; a light one runs as is", () => {
+    expect(argvOf({ command: "bun test", heavy: true }, true)).toEqual([
+      "nice", "-n", "10",
+      "systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=12G", "-p", "CPUWeight=20", "--",
+      "/bin/sh", "-c", "bun test",
+    ])
+    expect(argvOf({ command: "bun test", heavy: false }, true)).toEqual(["/bin/sh", "-c", "bun test"])
+  })
+
+  test("on the Mac it runs niced alone", () => {
+    expect(argvOf({ command: "bun test", heavy: true }, false)).toEqual(["nice", "-n", "10", "/bin/sh", "-c", "bun test"])
+  })
+
+  test("a scope is available only on Linux, when the probe exits 0", () => {
+    expect(scopeAvailable("darwin", ["true"])).toBe(false)
+    expect(scopeAvailable("linux", ["true"])).toBe(true)
+    expect(scopeAvailable("linux", ["false"])).toBe(false)
+    expect(scopeAvailable("linux", ["/nonexistent/loop-probe-x"])).toBe(false)
   })
 })
