@@ -110,9 +110,9 @@ export default Plugin.define({
       render: (input) => <Dock host={h} sessionID={input.sessionID} />,
     })
 
-    // The composer panel's Wakes and Monitors tabs, after the host's own (the fork's ui.composerTab).
+    // The composer panel's Wakes and Monitors tabs, after the host's own (the fork's ui.composerTab; an older build has none).
     for (const [id, title, tab] of [["wakes", "Wakes", "alarm"], ["monitors", "Monitors", "monitor"]] as const)
-      context.ui.composerTab({
+      context.ui.composerTab?.({
         id,
         title,
         hints: () => wakeHints,
