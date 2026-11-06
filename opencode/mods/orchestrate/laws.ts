@@ -443,6 +443,8 @@ export interface UnitLogsProbe {
   readonly checkout: string
   /** Make `<checkout>/<path>` a directory; its absolute path. */
   readonly make: (path: string) => Effect.Effect<string>
+  /** Write an empty file at `<checkout>/<path>`, its directories made. */
+  readonly touch: (path: string) => Effect.Effect<void>
   /** The moves in a unit's log, `<from> → <to> r<N>[ note]`, oldest first. */
   readonly moves: (unitDir: string) => Effect.Effect<ReadonlyArray<string>>
 }
@@ -458,7 +460,9 @@ export const unitLogsLaws = (name: string, make: Effect.Effect<UnitLogsProbe, ne
         Effect.gen(function* () {
           const logs = yield* UnitLogs
           const auth = yield* probe.make("tmp/orchestrate/web/auth")
+          yield* probe.touch("tmp/orchestrate/web/plan.md")
           const elsewhere = yield* probe.make("notes/auth")
+          yield* probe.touch("notes/auth/spec.md")
           expect(yield* logs.find({ unit: "auth", named: ["/nonexistent/loop-probe-x/auth", elsewhere], directory: probe.checkout })).toBe(elsewhere)
           expect(yield* logs.find({ unit: "auth", named: ["notes/auth"], directory: probe.checkout })).toBe(elsewhere)
           expect(yield* logs.find({ unit: "auth", named: [], directory: probe.checkout })).toBe(auth)
@@ -473,8 +477,28 @@ export const unitLogsLaws = (name: string, make: Effect.Effect<UnitLogsProbe, ne
           expect(yield* logs.find({ unit: "auth", named: [], directory: probe.checkout })).toBeUndefined()
           expect(yield* logs.find({ unit: "auth", named: [], directory: "/nonexistent/loop-probe-x" })).toBeUndefined()
           yield* probe.make("tmp/orchestrate/web/auth")
+          yield* probe.touch("tmp/orchestrate/web/plan.md")
           yield* probe.make("tmp/orchestrate/api/auth")
+          yield* probe.touch("tmp/orchestrate/api/auth/log.md")
           expect(yield* logs.find({ unit: "auth", named: [], directory: probe.checkout })).toBeUndefined()
+        }),
+      ))
+
+    test("a directory that only shares the unit's name (a Rift called like it) is no unit dir, so a start in it writes nothing", () =>
+      scoped((probe) =>
+        Effect.gen(function* () {
+          const logs = yield* UnitLogs
+          const rift = yield* probe.make(".rifts/app/auth")
+          yield* probe.touch(".rifts/app/auth/README.md")
+          yield* probe.make("tmp/orchestrate/web/auth")
+          expect(yield* logs.find({ unit: "auth", named: [rift], directory: rift })).toBeUndefined()
+          expect(yield* logs.find({ unit: "auth", named: [".rifts/app/auth"], directory: probe.checkout })).toBeUndefined()
+          expect(yield* logs.find({ unit: "auth", named: [], directory: probe.checkout })).toBeUndefined()
+          // The run's own unit dir, named next to the Rift, is still found.
+          yield* probe.touch("tmp/orchestrate/web/auth/spec.md")
+          expect(yield* logs.find({ unit: "auth", named: [rift, "tmp/orchestrate/web/auth"], directory: probe.checkout })).toBe(
+            yield* probe.make("tmp/orchestrate/web/auth"),
+          )
         }),
       ))
 

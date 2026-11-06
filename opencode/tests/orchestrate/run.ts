@@ -226,6 +226,7 @@ try {
   } else if (spec.scenario === "units") {
     const unit = join(work, "tmp/orchestrate/web/auth")
     mkdirSync(unit, { recursive: true })
+    writeFileSync(join(unit, "spec.md"), "")
     const root = await opencode.sessions.create({ location })
     await turn(root.id, `${UNITS_TASK} ${unit}`)
     const page = await opencode.sessions.list({ parentID: root.id, directory: work })

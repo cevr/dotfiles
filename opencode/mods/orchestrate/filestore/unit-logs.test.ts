@@ -1,9 +1,9 @@
 // The units' logs on disk, written by this checkout's orchestrate log.ts, in a
 // scratch checkout: the laws, and a `~/` path.
 import { expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { Effect } from "effect"
 import { unitLogsLaws } from "../laws.ts"
 import { UnitLogs } from "../service.ts"
@@ -38,6 +38,11 @@ unitLogsLaws(
         mkdirSync(join(checkout, path), { recursive: true })
         return join(checkout, path)
       }),
+    touch: (path: string) =>
+      Effect.sync(() => {
+        mkdirSync(dirname(join(checkout, path)), { recursive: true })
+        writeFileSync(join(checkout, path), "")
+      }),
     moves: movesIn,
   })),
 )
@@ -48,6 +53,7 @@ test("a path under `~/` is found in the home given", () =>
       Effect.gen(function* () {
         const home = yield* scratch
         mkdirSync(join(home, "work/tmp/orchestrate/web/auth"), { recursive: true })
+        writeFileSync(join(home, "work/tmp/orchestrate/web/plan.md"), "")
         const found = yield* Effect.provide(
           UnitLogs.use((logs) => logs.find({ unit: "auth", named: ["~/work/tmp/orchestrate/web/auth"] })),
           FileUnitLogs.layer(LOG_SCRIPT, home),
