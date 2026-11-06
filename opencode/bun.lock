@@ -296,6 +296,9 @@
     "mods/rift": {
       "name": "@dotfiles/opencode-rift",
       "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-guard": "workspace:*",
+      },
     },
     "mods/skills": {
       "name": "@dotfiles/opencode-skills",
@@ -323,6 +326,9 @@
     "mods/wake": {
       "name": "@dotfiles/opencode-wake",
       "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-guard": "workspace:*",
+      },
     },
     "mods/web": {
       "name": "@dotfiles/opencode-web",
