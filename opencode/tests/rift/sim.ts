@@ -9,6 +9,8 @@
  *   it with force; call `shll`, a one-letter miss of `shell`; call
  *   `opencode_worktree_create`, which the rift plugin took away; then a
  *   closing line.
+ * - The task `rift land`: create a Rift for `feat/x`; commit a file in it
+ *   through the shell; land it; then a closing line, again after the wake.
  * - Anything else: one line.
  *
  * @module
@@ -18,6 +20,8 @@ export const TASK = "rift flow"
 export const DONE = "sim: rift done"
 export const BRANCH = "feat/x"
 export const COMMIT_SUBJECT = "only here"
+export const LAND_TASK = "rift land"
+export const LAND_SUBJECT = "feat: land me"
 
 interface ChatMessage {
   readonly role: string
@@ -70,6 +74,21 @@ const script = (rift: string): ReadonlyArray<Reply> => [
   { kind: "tool", name: "opencode_worktree_create", input: { name: "x" } },
 ]
 
+/** The calls of the land: a Rift for the branch, a commit in it, the land. */
+const landScript = (rift: string): ReadonlyArray<Reply> => [
+  { kind: "tool", name: "rift", input: { action: "create", branch: BRANCH } },
+  {
+    kind: "tool",
+    name: "shell",
+    input: {
+      command: `echo landed > landed.txt && git add landed.txt && git -c user.name=sim -c user.email=sim@example.com -c commit.gpgsign=false commit -q -m "${LAND_SUBJECT}"`,
+      workdir: rift,
+      description: "Commit in the Rift",
+    },
+  },
+  { kind: "tool", name: "rift", input: { action: "land", rifts: ["feat-x"] } },
+]
+
 /** Serves the scripted model for a Rift that will be made at `rift`. */
 export const serve = (rift: string) => {
   const seen: Seen[] = []
@@ -81,8 +100,10 @@ export const serve = (rift: string) => {
       .map((message) => text(message.content))
       .join("\n")
     if (system.includes("You name conversations")) return { kind: "text", text: "Rift run" }
-    if (!firstUser(messages).endsWith(TASK)) return { kind: "text", text: "sim: nothing to do" }
-    return script(rift)[messages.filter((message) => message.role === "tool").length] ?? { kind: "text", text: DONE }
+    const task = firstUser(messages)
+    const steps = task.endsWith(LAND_TASK) ? landScript(rift) : task.endsWith(TASK) ? script(rift) : undefined
+    if (steps === undefined) return { kind: "text", text: "sim: nothing to do" }
+    return steps[messages.filter((message) => message.role === "tool").length] ?? { kind: "text", text: DONE }
   }
   const events = (answer: Reply, model: string, id: string): string => {
     const chunk = (delta: Record<string, unknown>, finish: string | null) => ({ id, object: "chat.completion.chunk", created: 0, model, choices: [{ index: 0, delta, finish_reason: finish }] })

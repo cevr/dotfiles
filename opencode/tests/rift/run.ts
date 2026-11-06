@@ -21,6 +21,8 @@ export interface Spec {
   readonly toolNames: string
   /** The prompt: a task the sim scripts. */
   readonly task: string
+  /** Text the session receives after its turn (a land's wake); the run waits for it, up to a minute. */
+  readonly wake?: string
 }
 
 export interface Result {
@@ -30,6 +32,8 @@ export interface Result {
   readonly source: string
   /** Where the Rift for the branch is made. */
   readonly rift: string
+  /** The bare origin a land pushes to. */
+  readonly origin: string
 }
 
 const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
@@ -54,6 +58,11 @@ git(work, "commit", "-q", "-m", "first")
 git(work, "remote", "add", "origin", origin)
 git(work, "push", "-q", "-u", "origin", "main")
 sh(work, "rift", "init", "--here")
+// The repository's checks for a land: a gate and a slower accept that reports the batch's base.
+git(work, "config", "user.name", "rift")
+git(work, "config", "user.email", "rift@example.com")
+git(work, "config", "rift.gate", 'echo " 2 pass"')
+git(work, "config", "rift.accept", 'sleep 1 && echo " 1 pass since $RIFT_LAND_BASE"')
 const rift = join(dirname(work), ".rifts", basename(work), "feat-x")
 
 const sim = serve(rift)
@@ -100,7 +109,13 @@ try {
   const session = await opencode.sessions.create({ location: { directory: work } })
   await opencode.sessions.prompt({ sessionID: session.id, text: spec.task })
   await opencode.experimental.session.wait({ sessionID: session.id })
-  const result: Result = { messages: await opencode.sessions.context({ sessionID: session.id }), seen: sim.seen, source: work, rift }
+  if (spec.wake !== undefined) {
+    // A land's accept check runs after the turn ends, then wakes the session.
+    const until = Date.now() + 60_000
+    while (!JSON.stringify(await opencode.sessions.context({ sessionID: session.id })).includes(spec.wake) && Date.now() < until) await Bun.sleep(250)
+    await opencode.experimental.session.wait({ sessionID: session.id })
+  }
+  const result: Result = { messages: await opencode.sessions.context({ sessionID: session.id }), seen: sim.seen, source: work, rift, origin }
   writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
 } finally {
   await opencode.close()
