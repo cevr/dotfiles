@@ -6,7 +6,7 @@ The planner fills one copy per unit into `<run dir>/<unit>/spec.md`, and the orc
 # <unit> — spec (orchestrator-owned; agents do not edit it)
 
 Run `<run>` · unit dir `<run dir>/<unit>` · failure cap 3 · timebox <hours per round>
-Machine: plan → implement → verify (Opus first; a fresh agent in a clean checkout runs the acceptance check and tries to break the change) → decide.
+Machine: plan → implement → verify (Opus first; a fresh agent in a clean checkout runs the acceptance check and tries to break the change) → decide → ready → lands in a batch (one merge, one full gate and one acceptance run for every ready unit).
 Path: <direct | light | standard | deep>: <why; for direct, that the diff is prose only; for deep, why a defect is costly or why the check is a live drive>.
 Protocol: a role agent carries it in its prompt; any other worker reads `~/.claude/skills/orchestrate/protocol.md` in full first.
 
@@ -26,7 +26,10 @@ Protocol: a role agent carries it in its prompt; any other worker reads `~/.clau
 <Objective, runnable, written before any code: the commands, and the result that means done. Prefer a test that is red now and must go green, a parity or golden diff, a live drive with its expected state, a benchmark against its baseline. A rule gets a generated property over its whole domain; behavior over time gets a model-based test against a reference model; interleaving concurrency also gets a checked Quint or TLA+ model, named here with its invariants. "Looks right" is not a check. When the repo has a `verify-<app>` skill, name its feature and sub-feature ids, plus any rows this unit adds to its map.>
 
 ## Gate
-<The repo's full gate command, its guards included (a dead-exports or boundary check that only CI or main runs is still the gate); where the log goes (`<run dir>/<unit>/gate-N.log`). Round gate: the legs under a minute each. Merge only: each slower leg, run once at decide.>
+Round gate: <the focused checks as commands, logged to `<run dir>/<unit>/gate-N.log`: the tests and typecheck of the packages Owns covers, lint of the changed files, and this unit's acceptance test file alone. Never the full gate, the full e2e or an affected-acceptance run.>
+Batch gate: <the repo's full gate command, its guards included (a dead-exports or boundary check that only CI or main runs is still the gate), and its full acceptance or e2e run affected since the batch base. The orchestrator runs it once per batch.>
+CI: <the CI workflow that runs the suite on a pushed head, or `none`. Named: the batch waits on that run instead of a local full run.>
+Batch cadence: <default: land when 3 units are ready or the oldest ready unit has waited 30 min, whichever comes first; or this unit's override and why.>
 
 ## Risks
 <What could go wrong in this unit and what the verifier should attack hardest: invariants a refactor must keep, formats that must still decode, traps earlier units found.>
