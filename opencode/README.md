@@ -1183,11 +1183,16 @@ knows no repository's commands:
 This repository's warm source sets:
 
 ```sh
-git config rift.gate 'cd opencode && OPENCODE_DEV=~/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=~/Developer/personal/.rifts/gent/untrack-local-settings bun run gate'
-git config rift.accept 'cd opencode && env -u ANTHROPIC_BASE_URL OPENCODE_DEV=~/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=~/Developer/personal/.rifts/gent/untrack-local-settings bun run accept:affected "$RIFT_LAND_BASE"'
+git config rift.gate 'cd opencode && OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=$HOME/Developer/personal/.rifts/gent/untrack-local-settings bun run gate'
+git config rift.accept 'cd opencode && env -u ANTHROPIC_BASE_URL OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=$HOME/Developer/personal/.rifts/gent/untrack-local-settings bun run accept:affected "$RIFT_LAND_BASE"'
 git config rift.generated opencode/mods/orchestrate/agents.json
 git config rift.regenerate 'cd opencode && bun scripts/agents.ts'
 ```
+
+A path in these values is written with `$HOME`, never `~`: `sh` leaves a
+`~` after `=` in a command's argument as it is, so `env OPENCODE_DEV=~/…`
+hands the run a literal `~` directory (the first real land's accept run
+failed on it).
 
 The workbox's Bite warm source, `/workspaces/bite` (origin
 `biteinc/maitred`, default branch `master` from origin's HEAD), lands
