@@ -28,6 +28,14 @@ export class Sessions extends Context.Service<
   }
 >()("dotfiles-opencode/orchestrate/Sessions") {}
 
+/** A model the host offers: the variants it runs at, its family (such as `gpt-sol`), release (epoch ms) and status. */
+export interface Offered extends ModelRef {
+  readonly variants: ReadonlyArray<{ readonly id: string }>
+  readonly family?: string
+  readonly time?: { readonly released: number }
+  readonly status?: string
+}
+
 /** The models a new subagent of a session could run on. Anything the host cannot answer is undefined. */
 export class Models extends Context.Service<
   Models,
@@ -39,6 +47,13 @@ export class Models extends Context.Service<
     readonly base: (sessionID: string, agentID: string) => Effect.Effect<ModelRef | undefined>
     /** That model at `variant` (`provider/id#variant`), when the model offers it. */
     readonly variant: (sessionID: string, agentID: string, variant: string) => Effect.Effect<string | undefined>
+    /**
+     * The newest model of `family` (such as `gpt-sol`) on one of `providers`
+     * the session's host offers, as `provider/id#variant`, or `provider/id`
+     * when it does not offer `variant`. Newest is the latest release; a
+     * deprecated model is never one.
+     */
+    readonly newest: (sessionID: string, providers: ReadonlyArray<string>, family: string, variant: string) => Effect.Effect<string | undefined>
   }
 >()("dotfiles-opencode/orchestrate/Models") {}
 

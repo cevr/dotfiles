@@ -114,12 +114,22 @@ export const typeOf = (schema: unknown, depth = 0): string => {
   return named.join(" | ") || "unknown"
 }
 
+/**
+ * What a tool's result is in a cell beyond what its own description says: the
+ * shell tool's handle is a live object there (worker/shell-handle.ts).
+ */
+export const IN_A_CELL: Readonly<Record<string, string>> = {
+  shell:
+    "In a cell, a shell call that returns a handle resolves to a live one: `.id`, `.state`, `.exitCode`, `.signal`, `.runtimeMs`, `.output`, `.next`, and methods that call this tool with its id, update it in place and resolve to it: `.refresh()` (its state, and the output since the last look), `.read({ offset?, lines? })`, `.wait(ms?)` (up to 10 min by default), `.kill()`. `.output` is what the latest call showed. `await tools.shell.handle(id)` builds one for a shell this session started; a kernel restart keeps a handle's data but not its methods, so rebuild it that way.",
+}
+
 /** The tools a cell reaches, as the model reads them in the kernel's description. */
 export const catalog = (tools: ReadonlyArray<Reached>): string =>
   reachable(tools)
     .map((tool) => {
       const path = /^[A-Za-z_$][\w$]*$/.test(tool.name) ? `tools.${tool.name}` : `tools[${JSON.stringify(tool.name)}]`
-      return `### ${path}(input: ${typeOf(tool.input)})\n${tool.description.trim()}`
+      const note = IN_A_CELL[tool.name]
+      return `### ${path}(input: ${typeOf(tool.input)})\n${tool.description.trim()}${note === undefined ? "" : `\n\n${note}`}`
     })
     .join("\n\n")
 

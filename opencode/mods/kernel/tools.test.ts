@@ -47,6 +47,12 @@ describe("the catalog", () => {
     expect(text).not.toContain("tools.kernel")
   })
 
+  test("says under the shell tool that a cell gets its handle as a live object", () => {
+    const text = catalog([{ name: "shell", description: "Execute a shell command and return its handle.", input: {} }])
+    expect(text).toContain("Execute a shell command and return its handle.\n\nIn a cell, a shell call that returns a handle resolves to a live one")
+    expect(text).toContain("`await tools.shell.handle(id)`")
+  })
+
   test("reads unions, arrays, constants and nullable types; deep objects stay `object`", () => {
     expect(typeOf({ anyOf: [{ type: "string" }, { const: 1 }] })).toBe('string | 1')
     expect(typeOf({ type: "array", items: { type: ["number", "null"] } })).toBe("number[]")

@@ -1,16 +1,19 @@
 // Background shells in the Prime look. The fork moves a foreground shell call
 // to the background once it outlives its limit (here 2 s, through
-// `experimental.shell_background_after`); the agent then looks it over with
-// shell_list and shell_read and stops it with shell_kill. The reader moves a
+// `experimental.shell_background_after`) and returns its handle; the agent
+// then lists the session's shells, checks the handle, waits on it a moment,
+// starts a second command in the background, and kills both through their
+// handles (`shell({ id, kill: true })`). The reader moves a
 // blocking call (`timeout: 0`, no limit) to the background with ctrl+b, opens
 // the dock's shell list with a click and kills it there with ctrl+k.
 // Run: OPENCODE_DEV=<opencode checkout> SCENARIO_OUT=out bunx opencode-drive run scenarios/prime-shells.ts
 //
 // It writes, under SCENARIO_OUT, `prime-shells-<name>.txt` and `.json` for
 // the frames
-// - `moved`: the long call moved to the background, listed and read; `1 shell`;
-// - `list`: the dock's shell list, opened by a click on `1 shell`;
-// - `killed`: the agent killed it; `0 shells`;
+// - `moved`: the long call moved to the background, listed, checked and
+//   waited on, and a second started in the background; `2 shells`;
+// - `list`: the dock's shell list, opened by a click on `2 shells`;
+// - `killed`: the agent killed both; `0 shells`;
 // - `blocking`: the blocking call runs, the host offering ctrl+b;
 // - `user`: the reader's ctrl+b moved the blocking call; `1 shell`;
 // - `user-list`: the list after ctrl+k killed it there;
@@ -29,8 +32,8 @@ type ToolInput = Parameters<typeof Llm.toolCall>[0]["input"]
 const call = (id: string, name: string, input: ToolInput) => Stream.make(Llm.toolCall({ index: 0, id, name, input }), Llm.finish("tool-calls"))
 const say = (text: string) => Stream.make(Llm.text(text), Llm.finish())
 
-/** The shell IDs the tool results named, in order. */
-const shellIDs = (request: string) => [...new Set([...request.matchAll(/shell ID: (sh_[A-Za-z0-9]+)/g)].map((match) => match[1]!))]
+/** The shell IDs the tool results' handle headers named (`sh_… · running · …`), in order. */
+const shellIDs = (request: string) => [...new Set([...request.matchAll(/(sh_[A-Za-z0-9]+) · /g)].map((match) => match[1]!))]
 
 export default OpenCodeDriver.use(
   {
@@ -53,24 +56,28 @@ export default OpenCodeDriver.use(
         const s = JSON.stringify(request)
         if (s.includes("You name conversations")) return say("Shells fixture")
         requests.push(s)
-        const [first, second] = shellIDs(s)
+        const [first, second, third] = shellIDs(s)
         if (phase === "agent") {
           if (!s.includes("call_long"))
             return call("call_long", "shell", { command: "printf 'tick 1\\n'; sleep 600", description: "Long sleeper" })
-          if (!s.includes("call_list")) return call("call_list", "shell_list", {})
-          if (!s.includes("call_read")) return call("call_read", "shell_read", { id: first ?? "missing", lines: 5 })
-          return say("The sleeper is still running.")
+          if (!s.includes("call_list")) return call("call_list", "shell", { list: true })
+          if (!s.includes("call_check")) return call("call_check", "shell", { id: first ?? "missing", lines: 5 })
+          if (!s.includes("call_wait")) return call("call_wait", "shell", { id: first ?? "missing", wait: 500 })
+          if (!s.includes("call_bg"))
+            return call("call_bg", "shell", { command: "printf 'bg\\n'; sleep 600", background: true, description: "Background sleeper" })
+          return say("The sleepers are still running.")
         }
         if (phase === "kill") {
-          if (!s.includes("call_kill")) return call("call_kill", "shell_kill", { id: first ?? "missing" })
-          return say("Killed the sleeper.")
+          if (!s.includes("call_kill_long")) return call("call_kill_long", "shell", { id: first ?? "missing", kill: true })
+          if (!s.includes("call_kill_bg")) return call("call_kill_bg", "shell", { id: second ?? "missing", kill: true })
+          return say("Killed the sleepers.")
         }
         if (phase === "block") {
           // The host tells the agent of the reader's move too (its session.background notice).
           if (s.includes("Backgrounded work:")) return say("Noted the move.")
           if (!s.includes("call_block"))
             return call("call_block", "shell", { command: "sleep 300", timeout: 0, description: "Blocking sleeper" })
-          return say(`Moved: ${second ?? "?"}.`)
+          return say(`Moved: ${third ?? "?"}.`)
         }
         return say("Heard the blocking sleeper was killed.")
       })
@@ -110,23 +117,23 @@ export default OpenCodeDriver.use(
       const idle = (frame: string) => !frame.includes("Executing")
       const dock = (count: string) => (frame: string) => frame.includes(`◆ 0 subagents  ·  ${count}`)
 
-      // The limit moves the long call to the background; the agent lists and reads it.
+      // The limit moves the long call to the background; the agent lists, checks and waits on it, and starts another.
       yield* ui.submit("prime-shells-fixture")
-      yield* until((frame) => frame.includes("The sleeper is still running.") && dock("1 shell")(frame) && idle(frame))
+      yield* until((frame) => frame.includes("The sleepers are still running.") && dock("2 shells")(frame) && idle(frame))
       yield* Effect.sleep("500 millis")
       yield* keep("moved")
 
       // The dock's count opens the session's shell list.
-      yield* click("1 shell")
-      yield* until((frame) => frame.includes("Long sleeper") && frame.includes("running · "))
+      yield* click("2 shells")
+      yield* until((frame) => frame.includes("Long sleeper") && frame.includes("Background sleeper") && frame.includes("running · "))
       yield* keep("list")
       yield* ui.press("escape")
-      yield* until((frame) => !frame.includes("running · "))
+      yield* until((frame) => !frame.includes("kill ctrl+k"))
 
-      // The agent kills it: no stop notice comes back, and the dock counts none.
+      // The agent kills both through their handles: no stop notice comes back, and the dock counts none.
       phase = "kill"
-      yield* ui.submit("Kill the sleeper.")
-      yield* until((frame) => frame.includes("Killed the sleeper.") && dock("0 shells")(frame) && idle(frame))
+      yield* ui.submit("Kill the sleepers.")
+      yield* until((frame) => frame.includes("Killed the sleepers.") && dock("0 shells")(frame) && idle(frame))
       yield* Effect.sleep("500 millis")
       yield* keep("killed")
 

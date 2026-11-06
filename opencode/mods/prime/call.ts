@@ -93,6 +93,9 @@ export function callGlyph(part: ToolPart): { readonly char: string; readonly ton
 // The one input field that best stands for the call, as the row's preview
 // and the source of the `↑` line count.
 export function toolSource(tool: string, input: Fields) {
+  // A shell call that acts on a handle stands for the shell it names; a list, for the shells.
+  if (tool === "shell" && input.list === true) return "shells"
+  if (tool === "shell" && input.command === undefined && typeof input.id === "string") return input.id
   if (tool === "shell") return text(input.command) ?? ""
   if (tool === "patch") return text(input.patchText) ?? ""
   if (tool === "read") return text(input.path) ?? text(input.filePath) ?? ""
@@ -130,9 +133,18 @@ export function toolPreview(tool: string, input: Fields) {
   return rest.some((line) => line.trim()) ? `${first}…` : first
 }
 
+/**
+ * The handle header a shell result leads with (`sh_… · exited 0 · 0.2 s`),
+ * as its own text part or, in a kernel cell's record, the first line of its
+ * joined text: the row already says it.
+ */
+const SHELL_HEADER = /^sh_\w+ · [^\n]*(\n|$)/
+
 export function toolOutput(part: ToolPart) {
   if (part.state.status === "streaming" || part.state.status === "running") return ""
-  const output = (part.state.content ?? []).flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n")
+  const joined = (part.state.content ?? []).flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n")
+  const handle = typeof part.state.metadata?.id === "string" && part.state.metadata.id.startsWith("sh_")
+  const output = handle ? joined.replace(SHELL_HEADER, "") : joined
   // A subagent's answer arrives wrapped in a <subagent ...> envelope; show the message only.
   return output.replace(/^<\/?subagent\b[^>]*>\n?/gm, "")
 }

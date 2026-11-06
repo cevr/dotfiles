@@ -31,7 +31,7 @@ export function sessionShells(shells: ReadonlyArray<ShellEntry>, sessionID: stri
     .slice(0, SHELLS_SHOWN)
 }
 
-/** `running`, `exited 0`, `killed`, `timed out`: the words the agent's shell_list uses. */
+/** `running`, `exited 0`, `killed`, `timed out`: the states a shell handle reads in, as the agent's `shell({ list: true })` leads its lines with. */
 export function shellState(shell: ShellEntry) {
   if (shell.status === "running") return "running"
   if (shell.status === "exited" && shell.signal === undefined) return `exited ${shell.exit ?? "?"}`

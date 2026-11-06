@@ -4,7 +4,7 @@
 // The plugin's rules on their own are tested beside mods/orchestrate and cmd/orchestrate.
 import { afterAll, describe, expect, test } from "bun:test"
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { homedir, tmpdir } from "node:os"
+import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { build, DEFAULT_SOURCE, OUT, parseAgent, ROOT } from "../scripts/agents.ts"
 import { definitions, effort, ROLES } from "../mods/orchestrate/role.ts"
@@ -14,7 +14,7 @@ import { REVIEW_TASK, SUMMARY, UNTYPED_TASK } from "./orchestrate/sim.ts"
 
 const fork = process.env.OPENCODE_DEV
 const skill = existsSync(join(DEFAULT_SOURCE, "scripts/agents.ts"))
-const CLAUDE_AGENTS = join(homedir(), ".claude/agents")
+const CLAUDE_AGENTS = resolve(ROOT, "../agents")
 if (!fork) console.warn("tests/orchestrate.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
 if (!skill) console.warn(`tests/orchestrate.test.ts: the agent checks skip. No orchestrate skill at ${DEFAULT_SOURCE}.`)
 

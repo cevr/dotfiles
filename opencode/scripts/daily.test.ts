@@ -132,11 +132,12 @@ describe("the role models", () => {
       "gpt-7-sol": { family: "gpt-sol", release_date: "2026-12-01", status: "deprecated" },
     } },
   }
-  test("newest Opus plans and implements; the verifier is the newest sol", () => {
+  test("the newest Opus runs every role, the verifier too", () => {
     expect(roleModels(catalog as never)).toEqual({
       planner: "anthropic/claude-opus-5-5",
       implementor: "anthropic/claude-opus-5-5",
-      verifier: "openai/gpt-6.1-sol",
+      verifier: "anthropic/claude-opus-5-5",
+      worker: "anthropic/claude-opus-5-5",
     })
   })
 })

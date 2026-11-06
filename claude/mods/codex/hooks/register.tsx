@@ -72,11 +72,11 @@ const QUEUED = (t: Thread) =>
   t.status === 'queued' && /\bthe Sabbath\b/.test(t.held ?? '')
     ? `The turn is latched for the Sabbath's rest (${t.held}); it starts by itself when the rest ends. Leave it latched: Claude rests too. `
     : t.status === 'queued'
-    ? `The turn is latched (${t.held ?? 'waiting'})${t.opensAt ? `; it should start about ${minute(t.opensAt)}` : ''}; it starts by itself when there is room. To move the role to Claude if it waits past 10 minutes, run \`codex-bridge wait ${t.id} --patience 10\` in the background. `
+    ? `The turn is latched (${t.held ?? 'waiting'})${t.opensAt ? `; it should start about ${minute(t.opensAt)}` : ''}; it starts by itself when there is room. When this start is the fallback for a held Agent call, run \`codex-bridge wait ${t.id}\` in the background beside the Agent call's waiter, and take whichever exits 0 first (orchestrate, Opus first). `
     : ''
 // A start the bridge refused: its first turn would wait past the patience, so no thread was made.
 const HELD = (t: Thread) =>
-  `Codex holds this turn and made no thread: ${t.held}. It should open about ${minute(t.opensAt ?? 0)}, more than 10 minutes away. Run this role on Claude now (orchestrate Families).`
+  `Codex holds this turn and made no thread: ${t.held}. It should open about ${minute(t.opensAt ?? 0)}, more than 10 minutes away. Keep the role on Claude: run the held Agent call's waiter in the background (orchestrate, Opus first).`
 
 const tokens = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}k`)
 const facts = (t: Thread) =>
@@ -181,7 +181,8 @@ const TOOLS = [
       '`model` takes a slug, or a family (luna, sol, terra, astra) for its newest release; left out, Codex\'s configured default. ' +
       'The thread runs under the host Codex config (sandbox and approvals included) unless `sandbox` is passed. ' +
       'When the Codex budget has no room (the account\'s burn with this turn past the weekly pace, or, when that cannot be measured, weekly use ahead of an even burn), the turn is latched and starts by itself later; the answer says why and when it should start. ' +
-      'When it would start more than 10 minutes from now, no thread is made and the answer says to run the role on Claude now.',
+      'When it would start more than 10 minutes from now, no thread is made and the answer says to wait for Claude instead. ' +
+      'An orchestrate role runs on Opus first; start a Codex thread only when the Claude pool holds its Agent call.',
     inputSchema: {
       type: 'object',
       properties: {

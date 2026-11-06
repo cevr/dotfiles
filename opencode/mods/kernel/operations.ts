@@ -37,7 +37,7 @@ export interface Operation {
   readonly output?: string
   /** Why it failed. */
   readonly error?: string
-  /** The result metadata the transcript reads: `exit`, `files` (patches cut), `sessionID`, `shellID`. */
+  /** The result metadata the transcript reads: `exit`, `files` (patches cut), `sessionID`, `shellID`, a shell handle's `id`. */
   readonly metadata?: Record<string, unknown>
 }
 
@@ -80,6 +80,8 @@ export const briefMetadata = (metadata: unknown): Record<string, unknown> | unde
   if (typeof metadata.sessionID === "string") brief.sessionID = metadata.sessionID
   // A shell command moved to the background names its shell, whose stop notice names it too.
   if (typeof metadata.shellID === "string") brief.shellID = metadata.shellID
+  // A shell handle's ID: its result leads with the handle's header line, which the row drops.
+  if (typeof metadata.id === "string" && metadata.id.startsWith("sh_")) brief.id = metadata.id
   // One the host moved there by its time limit or the reader's ctrl+b: the row says it moved.
   if (metadata.backgrounded === "limit" || metadata.backgrounded === "user") brief.backgrounded = metadata.backgrounded
   // A latched subagent's call answers at once; its child starts when the latch opens (orchestrate).

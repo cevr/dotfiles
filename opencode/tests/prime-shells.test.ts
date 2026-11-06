@@ -1,7 +1,9 @@
 // Public UI seam: real OpenCode with the fork's background shells, Prime and a
 // scripted model (scenarios/prime-shells.ts). Read off the frames: a
-// foreground call past its limit moves to the background and its row says so;
-// the agent lists, reads and kills it; the reader's ctrl+b moves a blocking
+// foreground call past its limit moves to the background, returns its handle
+// and its row says so; the agent lists the shells, checks, waits on and kills
+// it through its handle, and starts one in the background; the reader's
+// ctrl+b moves a blocking
 // call; the dock's count opens the shell list, where ctrl+k kills one; the
 // dock's count follows each move and kill.
 import { beforeAll, describe, expect, test } from "bun:test"
@@ -53,29 +55,40 @@ describe.skipIf(!fork)("background shells in Prime", () => {
   test("past its limit, a foreground call moves to the background: its row says so, and the dock counts it", () => {
     const moved = frames.moved
     expect(lineOf(moved, "Ran printf")).toBe("● Ran printf 'tick 1\\n'; sleep 600 · moved to the background")
-    expect(lineOf(moved, "Command is still running")).toMatch(/^│ Command is still running after 2 s, so it moved .*\(shell ID: sh_\w+\)\.$/)
-    expect(lineOf(moved, DOCK)).toBe("◆ 0 subagents  ·  1 shell")
+    // The row's body is the handle's output, without the header the row already says.
+    expect(transcript(moved).join("\n")).toMatch(/moved to the background\n\s*│ tick 1\n\s*│ It keeps running/)
+    expect(lineOf(moved, "Started printf")).toBe("● Started printf 'bg\\n'; sleep 600 in the background")
+    expect(lineOf(moved, DOCK)).toBe("◆ 0 subagents  ·  2 shells")
   })
 
-  test("the agent gets the shell's ID, its output so far and how to check on it", () => {
+  test("the agent gets the shell's handle at the move: its header, its output so far and how to act on it", () => {
     const [moved] = results()
-    expect(moved).toMatch(/^Command is still running after 2 s, so it moved to the background \(shell ID: (sh_\w+)\)\.\nOutput so far \(last 20 lines\):\ntick 1\n/)
-    expect(moved).toMatch(/Check it with shell_read\(\{ id: "sh_\w+" \}\), stop it with shell_kill\(\{ id: "sh_\w+" \}\), or list this session's commands with shell_list\./)
+    expect(moved).toMatch(/^(sh_\w+) · running · \d+\.\d s · moved to the background at its 2 s limit\ntick 1\nIt keeps running, and you will be notified when it ends\. /)
+    expect(moved).toMatch(/shell\(\{ id: "sh_\w+" \}\) checks it, shell\(\{ id: "sh_\w+", wait: <ms> \}\) waits for it to end, shell\(\{ id: "sh_\w+", kill: true \}\) stops it\./)
+    const started = results()[4]
+    expect(started).toMatch(/^sh_\w+ · running · \d+\.\d s · started in the background\n\(no output yet\)\nIt keeps running/)
   })
 
-  test("the agent lists, reads and kills it; a kill it asked for sends it no stop notice", () => {
-    const [, listed, read, killed] = results()
-    expect(listed).toMatch(/^sh_\w+ running · \d+\.\d s · 7 bytes · Long sleeper$/)
-    expect(read).toMatch(/^sh_\w+ running · .* · bytes 0-7\ntick 1\n$/)
-    expect(killed).toMatch(/^Killed: sh_\w+ killed · SIGTERM · /)
+  test("the agent lists, checks, waits on and kills through the handle; a kill it asked for sends it no stop notice", () => {
+    const [moved, listed, checked, waited, started, killedLong, killedBg] = results()
+    const long = /^(sh_\w+) · /.exec(moved ?? "")?.[1]
+    const bg = /^(sh_\w+) · /.exec(started ?? "")?.[1]
+    expect(long).toBeDefined()
+    expect(bg).toBeDefined()
+    expect(listed).toBe(`${long} · running · ${/ · (\d+\.\d s) · /.exec(listed ?? "")?.[1]} · 7 bytes · Long sleeper`)
+    expect(checked).toMatch(new RegExp(`^${long} · running · \\d+\\.\\d s · next 7\ntick 1\n$`))
+    expect(waited).toMatch(new RegExp(`^${long} · running · \\d+\\.\\d s · still running after waiting 0\\.5 s · next 7\n\\(no new output\\)$`))
+    expect(killedLong).toMatch(new RegExp(`^${long} · killed SIGTERM · \\d+\\.\\d s · next 7\n\\(no new output\\)$`))
+    expect(killedBg).toMatch(new RegExp(`^${bg} · killed SIGTERM · \\d+\\.\\d s · next 3\nbg\n$`))
     // Its rows, named for what they did.
-    expect(lineOf(frames.killed, "Listed shells")).toBe("● Listed shells")
-    expect(lineOf(frames.killed, /^● Read sh_/)).toMatch(/^● Read sh_\w+$/)
-    expect(lineOf(frames.killed, /^● Killed sh_/)).toMatch(/^● Killed sh_\w+$/)
-    expect(lineOf(frames.killed, DOCK)).toBe("◆ 0 subagents  ·  0 shells")
-    const id = /shell ID: (sh_\w+)/.exec(results()[0] ?? "")?.[1]
-    expect(id).toBeDefined()
-    expect(requests.some((request) => request.includes(`<shell id=\\"${id}\\"`))).toBe(false)
+    const killed = frames.killed
+    expect(lineOf(killed, "Listed shells")).toBe("● Listed shells")
+    expect(lineOf(killed, /^● Checked sh_/)).toBe(`● Checked ${long}`)
+    expect(lineOf(killed, /^● Waited on sh_/)).toBe(`● Waited on ${long}`)
+    expect(lineOf(killed, `● Killed ${long}`)).toBe(`● Killed ${long}`)
+    expect(lineOf(killed, `● Killed ${bg}`)).toBe(`● Killed ${bg}`)
+    expect(lineOf(killed, DOCK)).toBe("◆ 0 subagents  ·  0 shells")
+    expect(requests.some((request) => request.includes(`<shell id=\\"${long}\\"`) || request.includes(`<shell id=\\"${bg}\\"`))).toBe(false)
     // The reader's kill later does send one: the check above can see a notice.
     expect(requests.some((request) => request.includes(`<shell id=\\"`))).toBe(true)
   })
@@ -83,7 +96,8 @@ describe.skipIf(!fork)("background shells in Prime", () => {
   test("a click on the dock's count lists the session's shells: state, runtime and last line, and the kill key", () => {
     const list = transcript(frames.list).join("\n")
     expect(list).toContain("Shells")
-    expect(list).toMatch(/Running\s*\n.*Long sleeper running · \d+s · tick 1/)
+    expect(list).toMatch(/Running\s*\n(.*\n)*.*Long sleeper running · \d+s · tick 1/)
+    expect(list).toMatch(/Background sleeper running · \d+s · bg/)
     expect(list).toContain("kill ctrl+k")
   })
 
@@ -91,16 +105,18 @@ describe.skipIf(!fork)("background shells in Prime", () => {
     expect(lineOf(frames.blocking, "Press ctrl+b")).toBe("Press ctrl+b to move running work to the background")
     const user = frames.user
     expect(lineOf(user, "Ran sleep 300")).toBe("● Ran sleep 300 · moved to the background")
-    expect(lineOf(user, "The user moved")).toMatch(/^│ The user moved the command to the background after \d+ s \(shell ID: sh_\w+\)\.$/)
+    expect(transcript(user).join("\n")).toMatch(/Ran sleep 300 · moved to the background\n\s*│ \(no output yet\)\n/)
+    expect(results().at(-1)).toMatch(/^sh_\w+ · running · \d+\.\d s · moved to the background by the user\n\(no output yet\)\n/)
     expect(lineOf(user, DOCK)).toBe("◆ 0 subagents  ·  1 shell")
   })
 
-  test("ctrl+k in the list kills the shell; the list shows it ended; the agent is told; the dock counts none", () => {
+  test("ctrl+k in the list kills the shell; the list shows it ended; the agent is told with its final handle; the dock counts none", () => {
     const list = transcript(frames["user-list"]).join("\n")
     expect(list).toMatch(/Ended\s*\n(.*\n)*.*Blocking sleeper killed · \d+s · no output/)
     expect(list).toMatch(/Long sleeper killed · \d+s · tick 1/)
+    expect(list).toMatch(/Background sleeper killed · \d+s · bg/)
     expect(lineOf(frames["user-killed"], "Heard the blocking sleeper was killed.")).toBeDefined()
-    expect(requests.some((request) => request.includes("Killed by SIGTERM") && request.includes("sleep 300"))).toBe(true)
+    expect(requests.some((request) => /<shell id=\\"sh_\w+\\" [^>]*command=\\"sleep 300\\">\\nsh_\w+ · killed SIGTERM · /.test(request))).toBe(true)
     expect(lineOf(frames["user-killed"], DOCK)).toBe("◆ 0 subagents  ·  0 shells")
   })
 })

@@ -18,6 +18,8 @@ export type CallLine =
       readonly child?: string
       readonly background?: boolean
       readonly description?: string
+      /** It runs on the Codex fallback, and why: `<first model> held: <reason>`. */
+      readonly fallback?: string
     }
   | {
       readonly kind: "done"
@@ -39,6 +41,8 @@ export type CallLine =
       readonly model?: string
       readonly child?: string
       readonly description?: string
+      /** It latched on the Codex fallback, which opens first, and why. */
+      readonly fallback?: string
       readonly hold: Hold
       readonly why: string
       /** ISO 8601: when the hold says it opens. */
@@ -67,6 +71,7 @@ export const started = (event: SubagentStarted, at: string): CallLine => ({
   ...(event.child === undefined ? {} : { child: event.child }),
   ...(event.background === undefined ? {} : { background: event.background }),
   ...(event.description === undefined ? {} : { description: event.description }),
+  ...(event.fallback === undefined ? {} : { fallback: event.fallback }),
 })
 
 /** A latched subagent's line: what holds it, why, and when it opens. */
@@ -82,6 +87,7 @@ export const latched = (event: SubagentLatched, at: string): CallLine => ({
   ...(event.model === undefined ? {} : { model: event.model }),
   ...(event.child === undefined ? {} : { child: event.child }),
   ...(event.description === undefined ? {} : { description: event.description }),
+  ...(event.fallback === undefined ? {} : { fallback: event.fallback }),
   hold: event.hold,
   why: event.why,
   opens: new Date(event.opensAt).toISOString(),

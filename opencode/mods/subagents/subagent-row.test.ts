@@ -323,7 +323,7 @@ describe("a subagent waiting on its own background work", () => {
   })
 
   test("a background shell the registry no longer lists has ended, with no stop notice: the row ends as its session did", () => {
-    // Killed by PID or by shell_kill, or lost to a restart: no notice ever comes.
+    // Killed by PID or through its handle, or lost to a restart: no notice ever comes.
     const killed = one({ outcome: "succeeded", time: { created: 1, busy: 100, idle: 200 }, messages: [step([backgrounded("sleep 999", "sh_1")])] })
     expect(killed).toMatchObject({ state: "done", ended: 200, update: "1 step" })
     expect(visible(killed ? [killed] : [], 200 + LINGER_MS)).toEqual([])

@@ -16,7 +16,7 @@
 - Devbox: the exe devbox `bite-cristian` IS the Bite workbox. Herdr machine `Workbox` (session `bite`) = SSH alias `bite-workbox` (Tailscale, port 2222) = host `bite-cristian`. Use `herdr --machine Workbox …`; never add another herdr machine for it.
 - Principles: `~/Developer/personal/dotfiles/principles/` — read before architectural decisions or code review.
 - Issue tracker: personal repos → GitHub Issues via `gh`; `~/Developer/work` (Bite) → Linear via the `linear` skill.
-- Models: chosen by role, always the newest release, never a pinned version. Codex: newest sol at `high` by default; newest luna at `max` for repetitive, mechanical work.
+- Models: Opus first. Every role, the verifier too, runs on the newest Claude Opus; never a pinned version. Codex is the fallback, used only when Opus is held: newest sol at `high` (a verifier at `medium`), newest luna at `max` for repetitive, mechanical work.
 
 ## Conventions
 

@@ -33,7 +33,7 @@ describe("the dock's shell list", () => {
     expect(list[0]?.id).toBe(`sh_${SHELLS_SHOWN + 4}`)
   })
 
-  test("the state reads as the agent's shell_list writes it", () => {
+  test("the state reads as a shell handle's list line leads with it", () => {
     expect(shellState(shell())).toBe("running")
     expect(shellState(shell({ status: "exited", exit: 2 }))).toBe("exited 2")
     expect(shellState(shell({ status: "killed", signal: "SIGTERM" }))).toBe("killed")

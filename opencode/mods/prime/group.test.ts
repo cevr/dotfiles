@@ -116,6 +116,39 @@ describe("the group header", () => {
     ])
   })
 
+  test("names a shell call by its form: a background start, a list, and a check, wait and kill on a handle", () => {
+    const list = calls(
+      call("shell", { command: "bun dev", background: true }, "completed", { id: "sh_1", state: "running", backgrounded: "start" }),
+      call("shell", { list: true }),
+      call("shell", { id: "sh_1", lines: 5 }),
+      call("shell", { id: "sh_1", wait: 500 }),
+      call("shell", { id: "sh_1", kill: true }),
+      call("shell", { command: "ls" }),
+    )
+    expect(words(list)).toBe(
+      "Started 1 command in the background · listed shells · checked 1 shell · waited on 1 shell · killed 1 shell · ran 1 command",
+    )
+    expect(rows(list).map((row) => `${verb(row)} ${subject(row)}`.trim())).toEqual([
+      "Started bun dev in the background",
+      "Listed shells",
+      "Checked sh_1",
+      "Waited on sh_1",
+      "Killed sh_1",
+      "Ran ls",
+    ])
+    // Still running, each says so in the running tense.
+    expect(rows(calls(call("shell", { id: "sh_1", wait: 500 }, "running"))).map(verb)).toEqual(["Waiting on"])
+  })
+
+  test("a shell row's output drops the handle header its result leads with", () => {
+    const part = call("shell", { command: "ls" }, "completed", { id: "sh_1", state: "exited", exitCode: 0 })
+    const done = { ...part, state: { ...part.state, content: [{ type: "text", text: "sh_1 · exited 0 · 0.2 s" }, { type: "text", text: "a.ts" }] } } as ToolPart
+    expect(callBody({ tool: "shell", part: done }).output).toBe("a.ts")
+    // A kernel cell's record joins the parts into one text.
+    const joined = { ...part, state: { ...part.state, content: [{ type: "text", text: "sh_1 · exited 0 · 0.2 s\na.ts" }] } } as ToolPart
+    expect(callBody({ tool: "shell", part: joined }).output).toBe("a.ts")
+  })
+
   test("counts an edit's files, and names an unknown tool by its id", () => {
     expect(words(calls(call("apply_patch", { patchText: "" }, "completed", { files: [{ relativePath: "a", patch: "" }, { relativePath: "b", patch: "" }] })))).toBe(
       "Edited 2 files",

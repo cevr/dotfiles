@@ -10,7 +10,7 @@
 //
 // The transcript never keeps a session live: a background call with no stop
 // notice is not work once the registry no longer lists its shell or its child
-// stopped. A notice that never comes (a shell killed by PID or by shell_kill,
+// stopped. A notice that never comes (a shell killed by PID or by the agent through its handle,
 // a server restart) leaves nothing behind.
 import type { Family, Session } from "./family.ts"
 

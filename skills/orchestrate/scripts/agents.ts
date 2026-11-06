@@ -19,7 +19,7 @@ const TOOLS = 'Bash, Read, Edit, Write, Skill, Monitor, TaskStop, WebFetch, WebS
 export const ROLES = {
   planner: 'Writes one orchestrate unit\'s spec and its red acceptance check. Changes no product code.',
   implementor: 'The sole writer of one orchestrate unit: builds its spec on the unit\'s branch and hands back a round request.',
-  verifier: 'Runs one orchestrate unit\'s acceptance check on a clean checkout of its head and tries to break the round, from the other model family, directly or through okra counsel, and writes the findings.',
+  verifier: 'Runs one orchestrate unit\'s acceptance check on a clean checkout of its head and tries to break the round, directly or, on a Codex host, through okra counsel, and writes the findings.',
 } as const;
 export type Role = keyof typeof ROLES;
 

@@ -20,6 +20,7 @@ import type { Session } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
+import type { Offered } from "@dotfiles/opencode-orchestrate/service"
 import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, DEFAULT_WINDOWS, make, Options } from "./server.ts"
 
 /** Friday 30 October 2026, 19:00 in Knowlton (EDT): after sunset, in the Sabbath. */
@@ -40,6 +41,8 @@ interface World {
   readonly codex?: (model: string, role: string) => Pace | undefined
   readonly model?: { readonly providerID: string; readonly id: string }
   readonly variants?: ReadonlyArray<string>
+  /** Other models the host offers, such as the Codex fallback's. */
+  readonly others?: ReadonlyArray<Offered>
   readonly compactJson?: string
   /** The wakes' refusal of every latch (no wakes plugin, say); absent, they keep each one. */
   readonly refuse?: string
@@ -124,7 +127,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     const externals = (start: OpenCodeLatches.Start) => Layer.mergeAll(
       CallLogTest.layer(lines),
       SessionsTest.layer(world.sessions ?? {}),
-      ModelsTest.layer(world.model, world.variants),
+      ModelsTest.layer(world.model, world.variants, world.others),
       PoolPaceTest.layer(world.pool ?? {}, world.started),
       CodexAdmissionTest.layer(world.codex ?? (() => undefined)),
       CompactionWindowsTest.layer(world.compactJson),
@@ -140,7 +143,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
           ran.push({ input: input as Record<string, unknown>, context: context as Record<string, unknown> })
           const prompt = (input as { readonly prompt?: unknown }).prompt
           if (typeof prompt === "string" && prompt.includes("boom")) return Effect.fail(new Error("the child would not start"))
-          return Effect.succeed({ output: { sessionID: "ses_ran", status: "running", output: "working" } })
+          return Effect.succeed({ output: { sessionID: "ses_ran", status: "running", output: "working" }, content: "working" })
         }),
     }
     for (const transform of toolTransforms) transform({ update: (id: string, edit: (tool: EditedTool) => void) => (id === "subagent" ? edit(subagent) : undefined) })
@@ -600,6 +603,139 @@ describe("a latch", () => {
         // A cancelled latch's child takes follow-ups again.
         const cancelled = yield* start({ now: WEDNESDAY }, { sessions: { kid: { parentID: "root", agent: "worker", latch: { ...mark, cancelledAt: now } } } })
         expect((yield* cancelled.call("subagent", "root", { sessionID: "kid", prompt: "more" })).refused).toBeUndefined()
+      }),
+    ))
+})
+
+describe("Opus first, Codex second", () => {
+  const now = Date.parse(WEDNESDAY)
+  const model = { providerID: "anthropic", id: "claude-opus" }
+  const held = { anthropic: { ok: false, measured: true, reason: "all pool accounts are held", retryAt: now + 600_000 } }
+  const codexOffered: ReadonlyArray<Offered> = [
+    { providerID: "openai", id: "gpt-6-sol", family: "gpt-sol", time: { released: 1 }, variants: [{ id: "medium" }, { id: "high" }] },
+    { providerID: "openai", id: "gpt-6.1-sol", family: "gpt-sol", time: { released: 2 }, variants: [{ id: "medium" }, { id: "high" }] },
+    { providerID: "openai", id: "gpt-6-luna", family: "gpt-luna", time: { released: 2 }, variants: [{ id: "max" }] },
+  ]
+  const admits = (asked: Array<string>) => (id: string, role: string): Pace => {
+    asked.push(`${id} ${role}`)
+    return { ok: true, measured: true, reason: "scripted room" }
+  }
+  const NOTE = "orchestrate: this agent runs on openai/gpt-6.1-sol#medium, the Codex fallback (anthropic/claude-opus#medium held: all pool accounts are held)."
+
+  test("Claude's pace admits it: it runs on Opus at the role's effort, and Codex is never asked", () =>
+    scenario(
+      Effect.gen(function* () {
+        const asked: Array<string> = []
+        const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked) })
+        expect((yield* plugin.call("subagent", "root", { agent: "verifier", prompt: "x" })).input).toEqual({ agent: "verifier", prompt: "x", model: "anthropic/claude-opus#medium" })
+        expect(asked).toEqual([])
+      }),
+    ))
+
+  test("held on Claude with room on Codex, it starts at once on the newest sol, logged and told to the parent", () =>
+    scenario(
+      Effect.gen(function* () {
+        const asked: Array<string> = []
+        const started: Array<string> = []
+        const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked), pool: held, started })
+        const call = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier sso r1", prompt: "check it", background: true })
+        expect(call).toEqual({
+          refused: undefined,
+          input: { agent: "verifier", description: "verifier sso r1", prompt: "check it", background: true, model: "openai/gpt-6.1-sol#medium" },
+        })
+        expect(asked).toEqual(["gpt-6.1-sol verifier"])
+        expect(plugin.kept).toEqual([])
+        // The pool counts it on the provider it started on.
+        expect(started).toEqual(["openai"])
+        expect(plugin.logged()).toEqual([
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"verifier","agent":"verifier","reason":"kept","model":"openai/gpt-6.1-sol#medium","background":true,"description":"verifier sso r1","fallback":"anthropic/claude-opus#medium held: all pool accounts are held"}',
+        ])
+        // The parent reads where it ran and why first, once.
+        const answer = yield* plugin.runTool(call.input)
+        expect(plugin.ran).toHaveLength(1)
+        expect(answer.content).toBe(`${NOTE}\nworking`)
+        expect(answer.output).toEqual({ sessionID: "ses_ran", status: "running", output: `${NOTE}\nworking` })
+        expect((yield* plugin.runTool(call.input)).content).toBe("working")
+      }),
+    ))
+
+  test("a light, direct or mechanical step falls back to the newest luna at max", () =>
+    scenario(
+      Effect.gen(function* () {
+        const asked: Array<string> = []
+        const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked), pool: held })
+        const call = yield* plugin.call("subagent", "root", { agent: "implementor", description: "pkg-lower implementor (mechanical)", prompt: "x" })
+        expect((call.input as { model?: string }).model).toBe("openai/gpt-6-luna#max")
+        expect(asked).toEqual(["gpt-6-luna implementor"])
+      }),
+    ))
+
+  test("a model the call names is kept: held, it latches on it, and Codex is never asked", () =>
+    scenario(
+      Effect.gen(function* () {
+        const asked: Array<string> = []
+        const plugin = yield* start({ now: WEDNESDAY }, { model, others: codexOffered, codex: admits(asked), pool: held })
+        const call = yield* plugin.call("subagent", "root", { agent: "verifier", model: "anthropic/claude-opus", prompt: "x" })
+        expect(call.input).toMatchObject({ model: "anthropic/claude-opus", sessionID: "ses_latched1" })
+        expect(asked).toEqual([])
+        expect(plugin.kept[0]!.context).toEqual({ reason: "kept" })
+      }),
+    ))
+
+  test("with no Codex provider, or none offered, a held start latches on Opus as before", () =>
+    scenario(
+      Effect.gen(function* () {
+        const asked: Array<string> = []
+        const off = yield* start({ now: WEDNESDAY, codex: false }, { model, others: codexOffered, codex: admits(asked), pool: held })
+        expect((yield* off.call("subagent", "root", { agent: "planner", prompt: "x" })).input).toMatchObject({ sessionID: "ses_latched1" })
+        const none = yield* start({ now: WEDNESDAY }, { model, codex: admits(asked), pool: held })
+        expect((yield* none.call("subagent", "root", { agent: "planner", prompt: "x" })).input).toMatchObject({ sessionID: "ses_latched1" })
+        expect(asked).toEqual([])
+      }),
+    ))
+
+  test("over the Sabbath it latches on Opus, and Codex is never asked", () =>
+    scenario(
+      Effect.gen(function* () {
+        const asked: Array<string> = []
+        const friday = yield* start({ now: FRIDAY_EVENING }, { model, others: codexOffered, codex: admits(asked), pool: held })
+        const call = yield* friday.call("subagent", "root", { agent: "planner", prompt: "x" })
+        expect(call.input).toMatchObject({ model: "anthropic/claude-opus", sessionID: "ses_latched1" })
+        expect(friday.kept[0]).toMatchObject({ hold: "sabbath" })
+        expect(asked).toEqual([])
+      }),
+    ))
+
+  test("held on both, it latches on whichever opens first; each open tries Opus before Codex", () =>
+    scenario(
+      Effect.gen(function* () {
+        const kept: Array<LatchAsk & { readonly child: string }> = []
+        const codexHeld = (): Pace => ({ ok: false, measured: true, reason: "5h pace", retryAt: now + 300_000 })
+        const plugin = yield* start({ now: WEDNESDAY }, { model, others: codexOffered, codex: codexHeld, pool: held, kept })
+        const call = yield* plugin.call("subagent", "root", { agent: "planner", description: "plan", prompt: "x" })
+        // Codex opens at +5 min, before the pool's +10: the child is made on sol and latched on Codex's hold.
+        expect(call.input).toMatchObject({ model: "openai/gpt-6.1-sol#high", sessionID: "ses_latched1" })
+        expect(kept[0]).toMatchObject({
+          hold: "pace",
+          reason: "5h pace",
+          subagent: { model: "openai/gpt-6.1-sol#high" },
+          context: { reason: "kept", models: { primary: "anthropic/claude-opus", fallback: "openai/gpt-6.1-sol#high" } },
+        })
+        expect(plugin.logged()[0]).toContain('"fallback":"anthropic/claude-opus held: all pool accounts are held","hold":"pace","why":"5h pace"')
+        const latch = { kind: "latch", id: "w000001", directory: "/work", setAt: now, ...kept[0]!, child: "ses_latched1" }
+        // At its time Claude has room: it opens on Opus, switching the child's model.
+        const started: Array<string> = []
+        const later = yield* start({ now: WEDNESDAY }, { model, others: codexOffered, codex: codexHeld, started })
+        expect(yield* later.open(latch)).toEqual({ outcome: "opened" })
+        expect(later.ran[0]!.input).toMatchObject({ model: "anthropic/claude-opus", sessionID: "ses_latched1", background: true })
+        expect(started).toEqual(["anthropic"])
+        // Claude still held and Codex with room: it opens on Codex.
+        const codexStarted: Array<string> = []
+        const codexLater = yield* start({ now: WEDNESDAY }, { model, others: codexOffered, codex: admits([]), pool: held, started: codexStarted })
+        expect(yield* codexLater.open(latch)).toEqual({ outcome: "opened" })
+        expect(codexLater.ran[0]!.input).toMatchObject({ model: "openai/gpt-6.1-sol#high" })
+        expect(codexStarted).toEqual(["openai"])
+        expect(codexLater.logged()[0]).toContain('"fallback":"anthropic/claude-opus held: all pool accounts are held"')
       }),
     ))
 })

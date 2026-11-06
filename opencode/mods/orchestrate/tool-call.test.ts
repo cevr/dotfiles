@@ -275,3 +275,104 @@ describe("a latch", () => {
       Story.rejected(new StillLatched({ child: "child-1", opensAt: now + 300_000 })),
     ))
 })
+
+describe("Opus first, Codex second", () => {
+  const now = Date.parse(WEDNESDAY)
+  const OPUS = "anthropic/claude-opus#medium"
+  const SOL = "openai/gpt-sol#medium"
+  const poolHold = { whose: "pool" as const, reason: "anthropic is at 95%", retryAt: now + 900_000 }
+
+  test("the pool admits it: it starts on Opus, and the fallback is never used", () =>
+    run(
+      Story.clock(now),
+      Story.when(start("verifier", { model: OPUS, fallback: { model: SOL } })),
+      Story.then(started({ asked: "verifier", agent: "verifier", reason: "kept", model: OPUS })),
+    ))
+
+  test("the pool holds Opus and Codex has room: it starts on Codex at once, saying why", () =>
+    run(
+      Story.clock(now),
+      Story.when(start("verifier", { model: OPUS, hold: poolHold, fallback: { model: SOL }, description: "verifier sso r1" })),
+      Story.then(
+        started({
+          asked: "verifier",
+          agent: "verifier",
+          reason: "kept",
+          model: SOL,
+          description: "verifier sso r1",
+          fallback: `${OPUS} held: anthropic is at 95%`,
+        }),
+      ),
+      Story.state(Started.make({ agent: "verifier" })),
+    ))
+
+  test("held on both, it latches on Opus when Opus opens first", () =>
+    run(
+      Story.clock(now),
+      Story.when(start("planner", { model: OPUS, hold: poolHold, fallback: { model: SOL, hold: { whose: "codex", reason: "weekly pace", retryAt: now + 3_600_000 } } })),
+      Story.then(
+        latched({
+          asked: "planner",
+          agent: "planner",
+          reason: "kept",
+          model: OPUS,
+          hold: "pace",
+          whose: "pool",
+          why: "anthropic is at 95%",
+          opensAt: now + 900_000,
+          recheckAt: now + PACE_POLL_MS,
+        }),
+      ),
+    ))
+
+  test("held on both, it latches on Codex when Codex opens first, saying why", () =>
+    run(
+      Story.clock(now),
+      Story.when(start("planner", { model: OPUS, hold: poolHold, fallback: { model: SOL, hold: { whose: "codex", reason: "5h pace", retryAt: now + 300_000 } } })),
+      Story.then(
+        latched({
+          asked: "planner",
+          agent: "planner",
+          reason: "kept",
+          model: SOL,
+          fallback: `${OPUS} held: anthropic is at 95%`,
+          hold: "pace",
+          whose: "codex",
+          why: "5h pace",
+          opensAt: now + 300_000,
+          recheckAt: now + PACE_POLL_MS,
+        }),
+      ),
+    ))
+
+  test("over the Sabbath it latches on Opus until work resumes, whatever Codex says", () => {
+    const friday = Date.parse(FRIDAY_EVENING)
+    const rest = new SabbathRest({ resumesAt: resumesAt(friday, KNOWLTON)!, place: KNOWLTON })
+    return run(
+      Story.clock(friday),
+      Story.when(start("planner", { model: OPUS, hold: poolHold, fallback: { model: SOL } })),
+      Story.then(latched({ asked: "planner", agent: "planner", reason: "kept", model: OPUS, hold: "sabbath", why: rest.why, opensAt: rest.resumesAt, recheckAt: rest.resumesAt })),
+    )
+  })
+
+  test("a follow-up never falls back: it continues its child where it runs", () =>
+    run(
+      Story.clock(now),
+      Story.when(start("planner", { child: "child-1", hold: poolHold, fallback: { model: SOL } })),
+      Story.then(latched({ asked: "planner", agent: "planner", reason: "kept", child: "child-1", hold: "pace", whose: "pool", why: "anthropic is at 95%", opensAt: now + 900_000, recheckAt: now + PACE_POLL_MS })),
+    ))
+
+  test("a latch tries Opus first when it opens", () =>
+    run(
+      Story.clock(now),
+      Story.when(open({ model: OPUS, fallback: { model: SOL } })),
+      Story.then(started({ agent: "planner", reason: "kept", model: OPUS, child: "child-1", background: true })),
+    ))
+
+  test("a latch still held on Opus opens on Codex when Codex has room", () =>
+    run(
+      Story.clock(now),
+      Story.when(open({ model: OPUS, hold: poolHold, fallback: { model: SOL } })),
+      Story.then(started({ agent: "planner", reason: "kept", model: SOL, child: "child-1", background: true, fallback: `${OPUS} held: anthropic is at 95%` })),
+    ))
+})
