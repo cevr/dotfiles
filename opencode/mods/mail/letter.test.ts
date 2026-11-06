@@ -25,6 +25,17 @@ describe("a letter", () => {
     )
   })
 
+  test("a sender and a reply-to on a paired host are named with it, and the metadata carries it", () => {
+    const remote = { ...A, host: "mac" }
+    const letter = compose(remote, { ...B, host: "mac" }, "hi")
+    expect(letter.text.split("\n").slice(0, 2)).toEqual([
+      '✉ Message from session "Bite PR" (ses_a) on host mac, sent with the message tool. It is not the user speaking.',
+      'Answers go to session "The \\"dotfiles\\" run" (ses_b) on host mac: call the message tool with { "to": "ses_b", "text": "…" }; answer only if it asks for something.',
+    ])
+    expect(letter.metadata.from).toEqual({ sessionID: "ses_a", title: "Bite PR", host: "mac" })
+    expect(receipt({ ...B, host: "workbox" }, "woke")).toBe('Delivered to session "The \\"dotfiles\\" run" (ses_b) on host workbox. It was idle and is now reading it.')
+  })
+
   test("an untitled sender is named by its id", () => {
     expect(compose({ id: "ses_x" }, { id: "ses_x" }, "hi").text).toStartWith('✉ Message from session "ses_x" (ses_x)')
     expect(compose({ id: "ses_x", title: " " }, { id: "ses_x" }, "hi").description).toBe("from ses_x · hi")
@@ -75,6 +86,9 @@ describe("delivery", () => {
     )
     expect(explain(new AmbiguousTitle({ to: "money", matches: [{ id: "ses_a", title: "Money" }, { id: "ses_b", title: "Money 2" }] }))).toBe(
       'More than one session matches "money": ses_a "Money", ses_b "Money 2". Give the id.',
+    )
+    expect(explain(new NoSuchSession({ to: "ses_z", peers: [{ name: "laptop", missed: "it answered 401: bad signature" }, { name: "workbox" }] }))).toBe(
+      'No session on this server or its paired hosts (laptop, workbox) is "ses_z". laptop could not be asked: it answered 401: bad signature. List them with the sessions tool, and give an id (ses_…) or a title.',
     )
     expect(explain(new SelfAddressed({ sessionID: "ses_a" }))).toBe("That is your own session (ses_a). Write to another one.")
     expect(explain(new EmptyMessage())).toBe("The message has no text.")
