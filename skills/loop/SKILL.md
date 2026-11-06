@@ -83,7 +83,7 @@ An **area** is a set of directories that change together (a package, or a layer 
      The Gate is the repo's full gate, guards included. A batch accepted on a narrower gate can still fail a guard on main.
    - **Size.** A batch is one concern, about 10 items. An implementor that compacts within its first round is holding too much: split the batch then. Oversized batches make apply agents most of a run's cache reads.
    - **Workspace.** Each batch's workspace and branch follow orchestrate (`<run>/<unit>`; ledger rows from earlier passes name `p<N>-<batch>`). Setup beyond install (a build, a linked git-ignored file, a shared lock for a heavy test) belongs in the project's `AGENTS.md`; a missing step found here goes there.
-   - **Cost.** At each hand-back, run `bun ~/.claude/skills/orchestrate/scripts/agent-cost.ts <agent id>` and append its line to the unit's `log.md`. A task notification's token count is the agent's final context, not its spend. The retro (step 11) reads these lines instead of rebuilding them.
+   - **Cost.** At each hand-back, run `bun ~/.claude/skills/orchestrate/scripts/agent-cost.ts <id>` and append its line to the unit's `log.md`. The id is the subagent's `sessionID` (`ses_…`) on OpenCode, read through the running service, or the agent id on Claude Code. A hand-back's token count is the agent's final context, not its spend. The retro (step 11) reads these lines instead of rebuilding them.
    - The verifier's model, rounds, a batch that builds on another's files (it stacks on that branch) and parallelism are orchestrate's rules; follow them there.
 
    Done per batch when its unit's verifier accepts it.

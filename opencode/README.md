@@ -286,7 +286,8 @@ malformed one stops the plugin at setup, with a message that names it.
 The model (the domain files at `mods/orchestrate/`):
 
 - Facts: `SubagentStarted` (the agent, why it was routed there, its
-  model, and `fallback`, why it runs on Codex, when it does),
+  model, `fallback`, why it runs on Codex, when it does, and `lowered`, the
+  variant a worker asked for and does not run at),
   `SubagentLatched` (a held start kept to start later: what holds it, why,
   when it opens, when it is decided again, and the fallback's hold) and
   `SubagentFinished` (the child session and how it ended).
@@ -337,6 +338,22 @@ rewrite`) names none. A follow-up asking no particular agent (none, a
 general one, or `worker`) keeps its child's agent (`continued`), and a
 follow-up never changes agent by its description.
 
+The worker's ceiling (`capEffort` in `role.ts`): a call that runs as the
+worker on a model at `#max`, asked by the call or inherited (a new worker
+naming no model runs on its agent's model, else its parent's, at that
+model's variant; `StartSubagent.inherited`), runs on that model at its
+default effort instead, unless its description ends `(mechanical)`. The
+call log's line says `lowered: "max"`, and the parent reads first in the
+answer that it runs at the default and why. It lowers rather than refuses: a
+root at max would otherwise have every worker refused, and a refusal costs a
+turn and teaches the parent to add `(mechanical)` to get through. A role is
+never lowered: a verifier at max for a deep unit's round 1 runs at max.
+
+The worker's handoff: like each role, the worker is told (`agents/worker.md`,
+through `agents.json`) to stop at its first compaction, write a handoff file
+(the task, what is done, what is next) and end with `compacted: <path>. Start
+a fresh worker from this handoff; do not continue this session.`
+
 ### An idle root with ready work
 
 A root session owns an orchestrate run once it starts a step (`<role> <unit>
@@ -365,7 +382,7 @@ is held while any of these stands:
 - a wake, monitor or latch is set for it;
 - a question to the owner is open (a background question, or a `needs-you`
   item in its queue);
-- it named its wait: a `waiting` item in its queue, which the sidebar shows;
+- it named its wait: a `waiting` item in its queue;
 - the Sabbath.
 
 The aggregate is `IdleRoot` in `idle.ts` (commands `GoIdle`, `Hear`,
@@ -375,7 +392,9 @@ started units, `filestore/`), `Runs` (`opencode/runs.ts`), `RootHolds`
 (the wakes, questions and queue RPCs, `opencode/holds.ts`) and `Steer`
 (`opencode/steer.ts`). `tests/idle-root.test.ts` runs
 `scenarios/idle-root.ts`: no nudge while the planner runs or a draft stays,
-one after the draft clears, the named wait in the sidebar, no second nudge.
+one after the draft clears, the named wait in the queue (read off the
+scenario's Queue sidebar, which `bun run daily` does not install), no second
+nudge.
 
 ## Pool
 
@@ -502,8 +521,7 @@ Status stores nothing. Each RPC call reads the call log and the runs again.
 
 ## Queue
 
-`mods/queue` is the agent's live queue, shown in the session sidebar; its
-plugins are `cmd/queue` (`server.ts` and `tui.tsx`). The server plugin adds
+`mods/queue` is the agent's live queue; its plugins are `cmd/queue` (`server.ts` and `tui.tsx`). The server plugin adds
 the `queue` tool: `set` replaces the calling session's list, `upsert` and
 `remove` patch it by id, and the answer is the list as it now stands. An
 item has an id, one line of text, a state (`needs-you`, `running`,
@@ -515,7 +533,9 @@ transcript, so the queue is kept in a store, not read from parts. Its one
 option is `dir`, default `$XDG_STATE_HOME/opencode-queue`. A deleted
 session's queue goes.
 
-The TUI plugin appends the Queue section to `sidebar.content`. Every two
+The TUI plugin appends the Queue section to `sidebar.content`. It is not
+installed: `scripts/daily.ts` leaves it out of `cli.json` (the owner found the
+section distracting), so the queue is read by the agent and the RPC only. Every two
 seconds it reads the route's root session's queue over the
 `dotfiles-opencode.queue` RPC (`get({ sessionID })` answers
 `{ revision, items }`) and keeps the answer when its revision moved. An
@@ -825,6 +845,19 @@ prefixes, takes neither quoted text nor a heredoc body for a command, and reads 
 `sh -c`, `bash -c` and `eval`, as gent's guard floor does. When it cannot
 tell where a call runs, or whether a path is a repository, it refuses. Its
 one option, `home`, defaults to the user's home.
+
+It also refuses a subagent's foreground shell call that opens by sleeping 30
+seconds or more (`sleep 60`, `sleep 60 && tail log`, `sleep 1m; gh run
+view`; units and summed operands as GNU `sleep` reads them), as
+`guard-sleep: <reason>.`. The reason names the replacement: start what it
+waits on with `background: true` and wait on the handle with
+`shell({ action: "wait", id, ms })`, or run a check of outside state as a
+background `until` loop and wait on that (wake and monitor refuse a
+subagent). A root session's sleep runs, a call with `background: true` runs,
+and a sleep later in the line or inside a loop is not read. When the host
+cannot say whether the session is a subagent, the sleep runs: a sleep loses
+nothing. `sleep.ts` holds the rule; `Subagents` (`opencode/`: a session with
+a parent) is its contract.
 
 The model (the domain files at the root of `mods/guard`): `verdict.ts`
 decides a command from where it runs and which of its targets are

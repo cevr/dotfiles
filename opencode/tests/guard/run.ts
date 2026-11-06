@@ -27,6 +27,8 @@ export interface Spec {
 
 export interface Result {
   readonly messages: unknown
+  /** Each subagent session the run's session started, to its messages. */
+  readonly children: Readonly<Record<string, unknown>>
   readonly seen: ReadonlyArray<Seen>
   /** The work repository's HEAD before the prompt. */
   readonly head: string
@@ -82,7 +84,12 @@ try {
   const session = await opencode.sessions.create({ location: { directory: work } })
   await opencode.sessions.prompt({ sessionID: session.id, text: spec.task })
   await opencode.experimental.session.wait({ sessionID: session.id })
-  const result: Result = { messages: await opencode.sessions.context({ sessionID: session.id }), seen: sim.seen, head }
+  const messages = await opencode.sessions.context({ sessionID: session.id })
+  // Each subagent the session started, by the session id its call's result names.
+  const ids = new Set([...JSON.stringify(messages).matchAll(/ses_[A-Za-z0-9]+/g)].map((match) => match[0]).filter((id) => id !== session.id))
+  const children: Record<string, unknown> = {}
+  for (const id of ids) children[id] = await opencode.sessions.context({ sessionID: id }).catch(() => undefined)
+  const result: Result = { messages, children, seen: sim.seen, head }
   writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
 } finally {
   await opencode.close()

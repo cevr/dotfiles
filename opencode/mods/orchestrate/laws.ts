@@ -179,6 +179,14 @@ export const modelsLaws = (name: string, layer: (world: ModelsWorld) => Layer.La
         }),
       ))
 
+    test("a session's model at a variant keeps it: a new worker would run at that variant", () =>
+      check(
+        layer({ model: { ...model, variant: "max" }, variants: ["high", "max"] }),
+        Effect.gen(function* () {
+          expect(yield* (yield* Models).base("ses_law", "worker")).toEqual({ ...model, variant: "max" })
+        }),
+      ))
+
     test("a variant the model does not offer is none", () =>
       check(
         layer({ model, variants: ["low"] }),

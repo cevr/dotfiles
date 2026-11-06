@@ -31,6 +31,8 @@ export interface Spec {
   /** The Codex admission's answer: the sim provider is paced as Codex, and each call's arguments land in codex-args.jsonl. */
   readonly codex?: "admit" | "hold"
   readonly promptTokens?: number
+  /** The root session's model, such as the sim model at `max`; the config's default when absent. */
+  readonly rootModel?: Child["model"]
 }
 
 export interface Child {
@@ -101,7 +103,7 @@ interface SessionInfo {
 }
 interface Embedded {
   readonly sessions: {
-    readonly create: (input: { location: { directory: string }; agent?: string }) => Promise<SessionInfo>
+    readonly create: (input: { location: { directory: string }; agent?: string; model?: Child["model"] }) => Promise<SessionInfo>
     readonly get: (input: { sessionID: string }) => Promise<SessionInfo>
     readonly list: (input: { parentID: string; directory: string }) => Promise<{ data: ReadonlyArray<SessionInfo> }>
     readonly prompt: (input: { sessionID: string; text: string }) => Promise<unknown>
@@ -129,7 +131,7 @@ const messages = (sessionID: string) => opencode.sessions.context({ sessionID })
 let result: Result
 try {
   if (spec.scenario === "subagents") {
-    const root = await opencode.sessions.create({ location })
+    const root = await opencode.sessions.create({ location, ...(spec.rootModel ? { model: spec.rootModel } : {}) })
     await turn(root.id, ROOT_TASK)
     const page = await opencode.sessions.list({ parentID: root.id, directory: work })
     const children = await Promise.all(page.data.map((item) => opencode.sessions.get({ sessionID: item.id })))
