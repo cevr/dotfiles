@@ -56,6 +56,15 @@
  *   first in the subagent's answer. Held on both, it latches on whichever
  *   opens first, and each open tries the first model before the fallback.
  *
+ * - Restart: when the plugin starts (a server start, or a plugin reload),
+ *   the subagents of its location the last shutdown cut mid-turn, and that
+ *   OpenCode's own recovery left (a foreground subagent), are resumed in the
+ *   background through the subagent tool, each turn at most three times in a
+ *   row, after a backoff; each resume is a `resumed` line in the call log,
+ *   and each parent is told once (`mods/orchestrate/restart.ts`). A turn the
+ *   user or the parent cancelled is not resumed, nor is a root session.
+ *   `resume: false` turns it off; `resume.backoffMs` sets the waits.
+ *
  * Each new subagent is told to the pool (`started`), which counts it on its
  * provider's pace, here and on the owner's other hosts, until its spend shows
  * in a reading.
@@ -63,7 +72,7 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Context, Effect, Layer, Option, Schema, SchemaGetter } from "effect"
+import { Clock, Context, Effect, Layer, Option, Schema, SchemaGetter } from "effect"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { Latch, MARK_KEY, type Opened, OPENER } from "@dotfiles/opencode-wake/latch"
 import { WAKES } from "@dotfiles/opencode-wake/wake"
@@ -75,8 +84,10 @@ import * as Model from "@dotfiles/opencode-orchestrate/model"
 import * as LatchesLive from "@dotfiles/opencode-orchestrate/opencode/latches"
 import * as ModelsLive from "@dotfiles/opencode-orchestrate/opencode/models"
 import * as PoolPaceLive from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
+import * as RestartsLive from "@dotfiles/opencode-orchestrate/opencode/restarts"
 import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
+import { BACKOFF_MS } from "@dotfiles/opencode-orchestrate/restart"
 import { definitions, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, local, Place, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
 import {
@@ -84,8 +95,11 @@ import {
   type CallLog,
   type CodexAdmission,
   type Latches,
+  type LatchStart,
   type Models,
   type PoolPace,
+  type Restarts,
+  type ResumeStart,
   type Sessions,
 } from "@dotfiles/opencode-orchestrate/service"
 import type { Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
@@ -130,17 +144,29 @@ export const Options = Schema.Struct({
   place: Place.pipe(withDefault<Place>(KNOWLTON)),
   fullAgent: Schema.Boolean.pipe(withDefault(false)),
   codex: Schema.Union([Schema.Literal(false), Codex]).pipe(withDefault<false | typeof Codex.Type>(CODEX_DEFAULT)),
+  resume: Schema.Union([
+    Schema.Literal(false),
+    Schema.Struct({ backoffMs: Schema.Array(Schema.Finite).pipe(withDefault<ReadonlyArray<number>>(BACKOFF_MS)) }),
+  ]).pipe(withDefault<false | { readonly backoffMs: ReadonlyArray<number> }>({ backoffMs: BACKOFF_MS })),
 })
 export type Options = typeof Options.Type
 
 /** The outside systems the model runs on. */
-export type Externals = CallLog | Sessions | Models | PoolPace | CodexAdmission | CompactionWindows | Latches
+export type Externals = CallLog | Sessions | Models | PoolPace | CodexAdmission | CompactionWindows | Latches | Restarts
+
+/** A cut child's resume: the subagent tool, run in the background on the child with the prompt as given. */
+export type Resume = (start: ResumeStart) => Effect.Effect<void, unknown>
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 
-/** The outside systems as OpenCode, the filesystem and processes provide them; `start` runs a latched child through the subagent tool. */
-export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start): Layer.Layer<Externals> =>
+/**
+ * The outside systems as OpenCode, the filesystem and processes provide them;
+ * `start` runs a latched child, and `resume` a child a restart cut, through
+ * the subagent tool.
+ */
+export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, resume: Resume): Layer.Layer<Externals> =>
   Layer.mergeAll(
+    RestartsLive.fromContext(ctx, resume),
     CallLogLive.layer(options.log),
     SessionsLive.layer((sessionID) =>
       ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
@@ -260,7 +286,7 @@ type Execute = Tool.Info["execute"]
 type ToolContext = Parameters<Execute>[1]
 
 /** The plugin on `externals`: the live systems in OpenCode, test layers in the seam tests. */
-export const make = (externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start) => Layer.Layer<Externals>) =>
+export const make = (externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, resume: Resume) => Layer.Layer<Externals>) =>
   Plugin.define({
     id: "dotfiles-opencode.orchestrate",
     effect: Effect.fn("Orchestrate.plugin")(function* (ctx) {
@@ -269,9 +295,10 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
         Effect.mapError((error) => new Error(`dotfiles-opencode.orchestrate: invalid options: ${error.message}`)),
         Effect.orDie,
       )
-      // The subagent tool's own execute, as the last tool transform saw it: a latched child starts through it.
+      // The subagent tool's own execute, as the last tool transform saw it: a latched child starts through it,
+      // and a child a restart cut is resumed through it, in the background on the existing child.
       let subagent: Execute | undefined
-      const start: LatchesLive.Start = (request) =>
+      const run = (request: LatchStart, prompt: string) =>
         Effect.suspend(() => {
           if (subagent === undefined) return Effect.fail(new Error("the subagent tool is not loaded"))
           const context: ToolContext = {
@@ -285,7 +312,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
             {
               agent: request.agent,
               description: request.description,
-              prompt: `${SPAWNED}\n${request.prompt}`,
+              prompt,
               ...(request.model === undefined ? {} : { model: request.model }),
               sessionID: request.child,
               background: true,
@@ -293,16 +320,24 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
             context,
           ).pipe(Effect.asVoid)
         })
+      const start: LatchesLive.Start = (request) => run(request, `${SPAWNED}\n${request.prompt}`)
+      const resume: Resume = (request) => run(request, request.prompt)
+      const config = {
+        place: options.place,
+        fullAgent: options.fullAgent,
+        ...(options.now === undefined ? {} : { now: options.now }),
+        ...(options.codex === false ? {} : { codex: { providers: options.codex.providers, ...(options.codex.pool === undefined ? {} : { pool: options.codex.pool }) } }),
+      }
       const services = yield* Layer.build(
-        Model.layer({
-          place: options.place,
-          fullAgent: options.fullAgent,
-          ...(options.now === undefined ? {} : { now: options.now }),
-          ...(options.codex === false ? {} : { codex: { providers: options.codex.providers, ...(options.codex.pool === undefined ? {} : { pool: options.codex.pool }) } }),
-        }).pipe(Layer.provideMerge(externals(ctx, options, start))),
+        Layer.mergeAll(Model.layer(config), Model.restarter(config, options.resume === false ? [] : options.resume.backoffMs)).pipe(
+          Layer.provideMerge(externals(ctx, options, start, resume)),
+        ),
       )
       const orchestrate = Context.get(services, Model.Orchestrate)
       const windows = Context.get(services, CompactionWindows)
+
+      // Subagents the last shutdown cut: found and resumed in the background, once this start has settled.
+      if (options.resume !== false) yield* Effect.forkScoped(Context.get(services, Model.Restarter).resumeCut(yield* Clock.currentTimeMillis))
 
       // The roles, defined as OpenCode's own plugins define build and general: before the
       // config's agent files, so a file in the owner's config still overrides a role's fields.

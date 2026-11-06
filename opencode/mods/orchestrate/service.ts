@@ -5,6 +5,7 @@ import { Context, type Effect, Schema } from "effect"
 import type { CallLine } from "./call-line.ts"
 import type { Windows } from "./compaction.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
+import type { Entry } from "./restart.ts"
 import type { Hold } from "./tool-call.ts"
 
 /** Where the call log's lines go, in order. Appending never fails: a lost line costs the pane a row, not the call. */
@@ -150,3 +151,62 @@ export class Latches extends Context.Service<
     readonly start: (start: LatchStart) => Effect.Effect<void, StartFailed>
   }
 >()("dotfiles-opencode/orchestrate/Latches") {}
+
+/** A session as the restart reads it: its parent, title (a subagent's is its call's description) and agent. */
+export interface SessionCard {
+  readonly id: string
+  readonly parentID?: string
+  readonly title?: string
+  readonly agent?: string
+}
+
+/** A session and its context's messages, as the restart reads them (restart.ts `Entry`). */
+export interface Transcript {
+  readonly session: SessionCard
+  readonly entries: ReadonlyArray<Entry>
+}
+
+/** A cut child to resume: the parent's call it answers to, and the prompt it is resumed with. */
+export interface ResumeStart {
+  readonly parent: string
+  /** The agent the parent's call ran under. */
+  readonly from: string
+  readonly messageID: string
+  readonly callID: string
+  readonly child: string
+  /** The agent the child runs as, kept as it is. */
+  readonly agent: string
+  readonly description: string
+  readonly prompt: string
+}
+
+/** A notice to a parent: what its transcript shows, and whether it wakes an idle parent. */
+export interface ParentNotice {
+  readonly parent: string
+  readonly text: string
+  readonly description: string
+  readonly wake: boolean
+  /** The children it names, kept with it so a later start tells no child twice. */
+  readonly children: ReadonlyArray<string>
+}
+
+/**
+ * What the restart reads and does, for the sessions of this plugin's
+ * location (the host runs one copy of the plugin per location).
+ * - `children`: the subagent sessions active since `since` (epoch ms);
+ *   none when the host cannot list them.
+ * - `transcript`: a session and its context; none when it cannot be read.
+ * - `resume`: prompt the child, as the subagent tool continues a background
+ *   subagent: its result wakes the parent.
+ * - `tell`: a notice to the parent as a steered synthetic message. Telling
+ *   never fails: a lost notice costs the parent a line, not the resume.
+ */
+export class Restarts extends Context.Service<
+  Restarts,
+  {
+    readonly children: (since: number) => Effect.Effect<ReadonlyArray<SessionCard>>
+    readonly transcript: (sessionID: string) => Effect.Effect<Transcript | undefined>
+    readonly resume: (start: ResumeStart) => Effect.Effect<void, StartFailed>
+    readonly tell: (notice: ParentNotice) => Effect.Effect<void>
+  }
+>()("dotfiles-opencode/orchestrate/Restarts") {}

@@ -5,7 +5,20 @@ import { Effect, Layer, type Scope } from "effect"
 import type { CallLine } from "./call-line.ts"
 import { DEFAULTS, type Windows } from "./compaction.ts"
 import { type ModelRef, type Pace, paceOfReply } from "./pace.ts"
-import { CallLog, CodexAdmission, CompactionWindows, type LatchRequest, Latches, type LatchStart, Models, type Offered, PoolPace, Sessions } from "./service.ts"
+import {
+  CallLog,
+  CodexAdmission,
+  CompactionWindows,
+  type LatchRequest,
+  Latches,
+  type LatchStart,
+  Models,
+  type Offered,
+  PoolPace,
+  Restarts,
+  type ResumeStart,
+  Sessions,
+} from "./service.ts"
 
 const check = <A, E, R>(layer: Layer.Layer<R>, body: Effect.Effect<A, E, R>) =>
   Effect.runPromise(body.pipe(Effect.provide(layer)))
@@ -408,4 +421,75 @@ export const compactionWindowsLaws = (name: string, layer: (world: WindowsWorld)
       expect(await read(undefined)).toEqual(DEFAULTS)
       expect(await read("{")).toEqual(DEFAULTS)
     })
+  })
+
+// ── Restarts ──
+
+/** The sessions a host holds: each one's parent, last activity, and whether it is of this plugin's location. */
+export interface RestartsWorld {
+  readonly sessions: Readonly<Record<string, { readonly parentID?: string; readonly updated: number; readonly here: boolean }>>
+  /** A resume fails with this. */
+  readonly fail?: string
+  /** A notice is refused with this. */
+  readonly refuseNotice?: string
+}
+
+const resumeStart = (child: string): ResumeStart => ({
+  parent: "ses_root",
+  from: "build",
+  messageID: "msg_1",
+  callID: "call-1",
+  child,
+  agent: "implementor",
+  description: "implementor export r1",
+  prompt: "Your turn ended when OpenCode restarted; continue where you left off.",
+})
+
+export const restartsLaws = (name: string, layer: (world: RestartsWorld) => Layer.Layer<Restarts>) =>
+  describe(`${name} keeps the Restarts laws`, () => {
+    const world: RestartsWorld = {
+      sessions: {
+        ses_root: { updated: 9_000, here: true },
+        ses_new: { parentID: "ses_root", updated: 8_000, here: true },
+        ses_old: { parentID: "ses_root", updated: 1_000, here: true },
+        ses_away: { parentID: "ses_root", updated: 8_500, here: false },
+      },
+    }
+
+    test("children are this location's subagent sessions active since the time asked", () =>
+      check(
+        layer(world),
+        Effect.gen(function* () {
+          const children = yield* (yield* Restarts).children(5_000)
+          expect(children.map((card) => [card.id, card.parentID])).toEqual([["ses_new", "ses_root"]])
+        }),
+      ))
+
+    test("a session that cannot be read has no transcript", () =>
+      check(
+        layer(world),
+        Effect.gen(function* () {
+          const restarts = yield* Restarts
+          expect(yield* restarts.transcript("ses_missing")).toBeUndefined()
+          expect((yield* restarts.transcript("ses_new"))?.session).toMatchObject({ id: "ses_new", parentID: "ses_root" })
+        }),
+      ))
+
+    test("a resume runs, and one that fails says why", async () => {
+      await check(layer(world), Effect.flatMap(Restarts, (restarts) => restarts.resume(resumeStart("ses_new"))))
+      await check(
+        layer({ ...world, fail: "Unknown agent: implementor" }),
+        Effect.gen(function* () {
+          const failed = yield* Effect.flip((yield* Restarts).resume(resumeStart("ses_new")))
+          expect(failed._tag).toBe("StartFailed")
+          expect(failed.message).toContain("Unknown agent: implementor")
+        }),
+      )
+    })
+
+    test("telling a parent never fails", () =>
+      check(
+        layer({ ...world, refuseNotice: "inbox closed" }),
+        Effect.flatMap(Restarts, (restarts) => restarts.tell({ parent: "ses_root", text: "t", description: "d", wake: false, children: ["ses_new"] })),
+      ))
   })

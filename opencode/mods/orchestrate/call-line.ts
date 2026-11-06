@@ -103,6 +103,19 @@ export type CallLine =
       readonly tool: string
       readonly why: string
     }
+  | {
+      /** A subagent a restart cut, resumed by the plugin: the parent's call it answers to. */
+      readonly kind: "resumed"
+      readonly at: string
+      readonly sessionID: string
+      readonly callID: string
+      readonly child: string
+      readonly agent: string
+      readonly description: string
+      readonly cause: "restart"
+      /** Which resume of the same turn this is, from 1. */
+      readonly attempt: number
+    }
 
 /** A started subagent's line, at `at` (ISO 8601), with the paces `asked` for it. */
 export const started = (event: SubagentStarted, at: string, asked?: Asked): CallLine => ({
@@ -150,6 +163,23 @@ export const finished = (event: SubagentFinished, at: string): CallLine => ({
   callID: event.call.callID,
   ...(event.child === undefined ? {} : { child: event.child }),
   status: event.status,
+})
+
+/** A resumed subagent's line: its parent's call, and which resume of its turn this is. */
+export const resumed = (
+  start: { readonly parent: string; readonly callID: string; readonly child: string; readonly agent: string; readonly description: string },
+  attempt: number,
+  at: string,
+): CallLine => ({
+  kind: "resumed",
+  at,
+  sessionID: start.parent,
+  callID: start.callID,
+  child: start.child,
+  agent: start.agent,
+  description: start.description,
+  cause: "restart",
+  attempt,
 })
 
 /** A refused call's line: the tool and why it was refused. */
