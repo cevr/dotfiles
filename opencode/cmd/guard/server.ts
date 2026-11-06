@@ -21,17 +21,33 @@
  * `codeOnly` runs a cell's tools directly, skipping the hooks; it leaves the
  * shell out of a cell for that reason (mods/kernel/tools.ts, HOOKED_TOOLS).
  *
+ * The shell policy rides the shell's own `create.before` hook, which sees
+ * every command OpenCode spawns (a direct call, a cell's, the user's `!`): a
+ * heavy one (`bun test`, `tsc`, a gate; `@dotfiles/opencode-guard/heavy`) is
+ * spawned through a launcher that stands in for the shell, at `nice` and, on
+ * Linux, in a systemd scope under `MemoryMax`
+ * (`@dotfiles/opencode-guard/launcher`). The command text stays as written.
+ *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `home`: the directory `~` and `$HOME` name; default the user's home.
+ * - `heavy`: the heavy commands' patterns; default `DEFAULT_HEAVY`. `[]` turns the policy off.
+ * - `nice`: the niceness added to a heavy command, 0 to 19; default 10.
+ * - `memoryMax`: the scope's `MemoryMax` on Linux; default `12G`.
+ * - `cpuWeight`: the scope's `CPUWeight` on Linux, 1 to 10000; default 20.
+ * - `launchers`: the directory the launchers are written to; default `~/.cache/opencode/guard-launchers`.
  */
 import { homedir } from "node:os"
+import { join } from "node:path"
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Option, Schema } from "effect"
+import * as FilesystemLaunchers from "@dotfiles/opencode-guard/filesystem/launchers"
 import * as FilesystemRepoRoots from "@dotfiles/opencode-guard/filesystem/repo-roots"
+import { DEFAULT_HEAVY } from "@dotfiles/opencode-guard/heavy"
 import * as Model from "@dotfiles/opencode-guard/model"
 import * as PsProcesses from "@dotfiles/opencode-guard/process/processes"
+import * as ProcessScopes from "@dotfiles/opencode-guard/process/scopes"
 import * as OpenCodeSessionDirectories from "@dotfiles/opencode-guard/opencode/session-directories"
-import type { Processes, RepoRoots, SessionDirectories } from "@dotfiles/opencode-guard/service"
+import type { Launchers, Processes, RepoRoots, Scopes, SessionDirectories } from "@dotfiles/opencode-guard/service"
 import { message } from "@dotfiles/opencode-guard/verdict"
 
 /**
@@ -44,8 +60,15 @@ const withDefault =
   <S extends Schema.Codec<A, any, never, never>>(schema: S) =>
     schema.pipe(Schema.withDecodingDefaultType(Effect.succeed(fallback)))
 
+const Int = (min: number, max: number) => Schema.Int.check(Schema.isBetween({ minimum: min, maximum: max }))
+
 export const Options = Schema.Struct({
   home: Schema.String.pipe(withDefault(homedir())),
+  heavy: Schema.Array(Schema.String).pipe(withDefault<ReadonlyArray<string>>(DEFAULT_HEAVY)),
+  nice: Int(0, 19).pipe(withDefault(10)),
+  memoryMax: Schema.String.check(Schema.isPattern(/^(\d+[KMGT]?|\d+%|infinity)$/)).pipe(withDefault("12G")),
+  cpuWeight: Int(1, 10_000).pipe(withDefault(20)),
+  launchers: Schema.String.pipe(withDefault(join(homedir(), ".cache/opencode/guard-launchers"))),
 })
 export type Options = typeof Options.Type
 
@@ -59,15 +82,17 @@ const decodeInput = Schema.decodeUnknownOption(ShellInput)
 const decodeInputText = Schema.decodeUnknownOption(Schema.fromJsonString(ShellInput))
 
 /** The outside systems the model runs on. */
-export type Externals = Processes | RepoRoots | SessionDirectories
+export type Externals = Launchers | Processes | RepoRoots | Scopes | SessionDirectories
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 
 /** The outside systems as the filesystem and OpenCode provide them. */
-export const live = (ctx: Plugin.Context): Layer.Layer<Externals> =>
+export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externals> =>
   Layer.mergeAll(
     FilesystemRepoRoots.layer,
+    FilesystemLaunchers.layer(options.launchers),
     PsProcesses.layer(),
+    ProcessScopes.layer(),
     OpenCodeSessionDirectories.layer((sessionID) =>
       ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map((session) => session.location.directory)),
     ),
@@ -83,8 +108,23 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
         Effect.mapError((error) => new Error(`dotfiles-opencode.guard: invalid options: ${error.message}`)),
         Effect.orDie,
       )
-      const services = yield* Layer.build(Model.layer({ home: options.home, server: process.pid }).pipe(Layer.provide(externals(ctx, options))))
+      const limits = { nice: options.nice, memoryMax: options.memoryMax, cpuWeight: options.cpuWeight }
+      const services = yield* Layer.build(
+        Layer.mergeAll(Model.layer({ home: options.home, server: process.pid }), Model.policyLayer({ heavy: options.heavy, limits })).pipe(
+          Layer.provide(externals(ctx, options)),
+        ),
+      )
       const guard = Context.get(services, Model.Guard)
+      const policy = Context.get(services, Model.ShellPolicy)
+
+      // The command stays as written: only the program that runs it changes.
+      yield* ctx.shell.hook("create.before", (invocation) =>
+        policy.shellFor(invocation.shell, invocation.command).pipe(
+          Effect.map((shell) => {
+            invocation.shell = shell
+          }),
+        ),
+      )
 
       yield* ctx.tool.hook("execute.before", (event) => {
         if (!SHELL_TOOLS.has(event.tool)) return Effect.void

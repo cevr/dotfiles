@@ -1,4 +1,7 @@
-// The guard's handler: it gathers what the verdict needs from outside (where
+// The guard's handlers. `ShellPolicy` picks the shell a command spawns
+// with: a launcher under limits for a heavy one (heavy.ts, launcher.ts).
+//
+// `Guard`: it gathers what the verdict needs from outside (where
 // the call runs, which of its `rm` targets are repositories, and, for a kill
 // by pattern, what runs on the machine) and fails with `Destructive` when a
 // verdict denies the call. The plugin calls this and nothing else.
@@ -7,10 +10,12 @@
 // target it cannot tell is a repository, or a kill by pattern while it cannot
 // list the processes, refuses the call with why.
 import { Context, Effect, Layer } from "effect"
+import { isHeavy } from "./heavy.ts"
 import { killsByPattern, killVerdict } from "./kill.ts"
+import { launcherName, launcherScript, type Limits } from "./launcher.ts"
 import { resolve } from "./path.ts"
 import { expandWord } from "./shell-line.ts"
-import { Processes, RepoRoots, SessionDirectories } from "./service.ts"
+import { Launchers, Processes, RepoRoots, Scopes, SessionDirectories } from "./service.ts"
 import { Destructive, repoCandidates, verdict } from "./verdict.ts"
 
 /** The guard's settings, from the plugin's options. */
@@ -84,5 +89,46 @@ export const layer = (config: Config) =>
       })
 
       return Guard.of({ judge })
+    }),
+  )
+
+/** What runs heavy commands, and under which limits; from the plugin's options. */
+export interface PolicyConfig {
+  /** The patterns of heavy commands (heavy.ts). */
+  readonly heavy: ReadonlyArray<string>
+  readonly limits: Limits
+}
+
+export class ShellPolicy extends Context.Service<
+  ShellPolicy,
+  {
+    /**
+     * The shell to spawn `command` with in place of `shell`: a launcher under
+     * the limits for a heavy command, `shell` itself for any other. It never
+     * fails: when no launcher can be written, the command runs as it would
+     * have, and the failure is logged.
+     */
+    readonly shellFor: (shell: string, command: string) => Effect.Effect<string>
+  }
+>()("dotfiles-opencode/guard/ShellPolicy") {}
+
+export const policyLayer = (config: PolicyConfig) =>
+  Layer.effect(
+    ShellPolicy,
+    Effect.gen(function* () {
+      const launchers = yield* Launchers
+      const scopes = yield* Scopes
+
+      const shellFor = Effect.fn("ShellPolicy.shellFor")(function* (shell: string, command: string) {
+        if (!shell.startsWith("/") || !isHeavy(command, config.heavy)) return shell
+        const scope = yield* scopes.available
+        return yield* launchers.install(launcherName(shell), launcherScript({ shell, limits: config.limits, scope })).pipe(
+          Effect.catchTag("LauncherUnavailable", (error) =>
+            Effect.logWarning(`dotfiles-opencode.guard: a heavy command runs without its limits: ${error.message}`).pipe(Effect.as(shell)),
+          ),
+        )
+      })
+
+      return ShellPolicy.of({ shellFor })
     }),
   )

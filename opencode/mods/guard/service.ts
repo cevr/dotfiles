@@ -40,6 +40,29 @@ export class SessionDirectories extends Context.Service<
   }
 >()("dotfiles-opencode/guard/SessionDirectories") {}
 
+/** A launcher could not be written. */
+export class LauncherUnavailable extends Schema.TaggedError<LauncherUnavailable>()("LauncherUnavailable", {
+  message: Schema.String,
+}) {}
+
+/** Where launchers (launcher.ts) live on disk. */
+export class Launchers extends Context.Service<
+  Launchers,
+  {
+    /** The absolute path of an executable file named `name` holding `script`, written when no such file exists yet. Two scripts never share a path. */
+    readonly install: (name: string, script: string) => Effect.Effect<string, LauncherUnavailable>
+  }
+>()("dotfiles-opencode/guard/Launchers") {}
+
+/** Whether this machine can run a command in a systemd user scope. */
+export class Scopes extends Context.Service<
+  Scopes,
+  {
+    /** True when `systemd-run --user --scope` works here; asked once, then known. */
+    readonly available: Effect.Effect<boolean>
+  }
+>()("dotfiles-opencode/guard/Scopes") {}
+
 /** The processes running on the machine, read when a call kills by pattern. */
 export class Processes extends Context.Service<
   Processes,
