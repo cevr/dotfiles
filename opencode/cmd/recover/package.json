@@ -1,0 +1,13 @@
+{
+  "name": "@dotfiles/opencode-cmd-recover",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The recover mod's OpenCode TUI plugin: the composition root of @dotfiles/opencode-recover.",
+  "exports": {
+    "./tui": "./tui.tsx"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-recover": "workspace:*"
+  }
+}

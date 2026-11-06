@@ -65,3 +65,9 @@ export const windowsOf = (text: string | undefined): Windows => {
  */
 export const KEEP =
   "Keep these word for word: the path of every plan, log, notes or state file the work reads or writes; the current step and its next action; each instruction the user gave during the session. Name a file by its path rather than restating its contents: it can be read again."
+
+/** The keep-list as the user message the compaction request carries after the conversation, before the summary prompt. */
+export const keepMessage = (): { role: "user"; content: Array<{ type: "text"; text: string }> } => ({
+  role: "user",
+  content: [{ type: "text", text: KEEP }],
+})

@@ -7,7 +7,7 @@ import type { Endpoint } from "../endpoint.ts"
 import type { Auth } from "../model.ts"
 import { readUnifiedQuota } from "../quota.ts"
 import { describeConnection, type RateLimitCategory } from "../rate-limit.ts"
-import { rewriteRequestBody } from "../request-body.ts"
+import { type CacheTTL, rewriteRequestBody } from "../request-body.ts"
 import { CLAUDE_CODE_SESSION_HEADER, claudeCodeSessionID } from "../session-header.ts"
 import { headersAfterBodyTransform, contentLength } from "../content-headers.ts"
 import { ToolNameAliasTable, type ToolNameRejected } from "../tool-alias.ts"
@@ -54,6 +54,8 @@ export type ResponseError = RequestUntracked
 /** The request hook's event, as OpenCode's `http.request` hands it: `request` may be replaced. */
 export interface RequestEvent {
   readonly sessionID: string
+  /** The agent the request runs as; the host always names it. */
+  readonly agent?: string
   readonly model: { readonly providerID: string; readonly id: string }
   request: Request
 }
@@ -75,6 +77,12 @@ export interface Exchange {
   readonly leases: AliasLeases
   readonly connections: Connections
   readonly clock: Clock.Clock
+  /**
+   * The agent's own prompt-cache lifetime (its `request.settings.cacheTTL`,
+   * such as an orchestration role's 5 minutes), or undefined when it sets
+   * none Anthropic takes or cannot be read.
+   */
+  readonly ownCacheTTL: (agentID: string) => Effect.Effect<CacheTTL | undefined>
   /** Whether the setup still runs; a disposed one leaves requests as they are. */
   readonly active: () => boolean
 }
@@ -89,7 +97,8 @@ const credentialIDOf = (connection: { readonly type: string; readonly id?: strin
 /**
  * `http.request`: send a request for the `anthropic` provider on its login,
  * as Claude Code would, its cache written for the lifetime another plugin
- * named (`CACHE_TTL_HEADER`) when it named one. A login refused for a while
+ * named (`CACHE_TTL_HEADER`) when it named one, else for the agent's own
+ * lifetime when the provider configures one. A login refused for a while
  * sends the request nowhere; the response hook answers it as a retryable 429.
  */
 export const onRequest =
@@ -147,8 +156,11 @@ export const onRequest =
         ? yield* readBoundedText(request.clone().body, MAX_REQUEST_BODY_BYTES, "Anthropic request body")
         : undefined
       if (!exchange.active()) return
+      // Another plugin's lifetime for this request wins over the agent's own.
+      const own = cache.ttl === undefined && event.agent !== undefined ? yield* exchange.ownCacheTTL(event.agent) : undefined
+      if (!exchange.active()) return
       const aliases = new ToolNameAliasTable({ maxEntries: MAX_REQUEST_ALIAS_ENTRIES, maxBytes: MAX_REQUEST_ALIAS_BYTES })
-      const rewrittenBody = bodyText === undefined ? undefined : rewriteRequestBody(bodyText, version, aliases, cache.ttl)
+      const rewrittenBody = bodyText === undefined ? undefined : rewriteRequestBody(bodyText, version, aliases, { named: cache.ttl, own })
       if (rewrittenBody !== undefined && Result.isFailure(rewrittenBody)) {
         aliases.dispose()
         return yield* rewrittenBody.failure

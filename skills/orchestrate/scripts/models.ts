@@ -1,11 +1,16 @@
 #!/usr/bin/env bun
 // The model eval: per orchestrate phase and model, what an agent costs and what
-// its phase produced. Agents come from Claude Code subagents and main sessions
-// and from Codex rollouts; outcomes come from the unit's verdict files and log.
-// Run it on each host: units and transcripts live where they ran.
-// Usage: bun models.ts [--since 2026-10-17] [--json]
+// its phase produced. Agents come from Claude Code subagents and main sessions,
+// from Codex rollouts, and from the running OpenCode service's sessions; outcomes
+// come from the unit's verdict files and log. OpenCode's rounds (each subagent
+// start, and whether it started, latched or was denied) come from the orchestrate
+// mod's call log. Run it on each host: units and transcripts live where they ran.
+// Usage: bun models.ts [--since 2026-10-17] [--json] [--no-opencode]
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
+import { probe, serviceEndpoint } from '../../retro/scripts/mine/opencode.ts';
+import { opencodeAgents, roundsOf, roundsTable, ROUNDS_HEADER } from './models/opencode.ts';
 import { joinUnit, outcomeOf, type Outcome, type Phase } from './models/outcomes.ts';
 import { bridgeUnits, claudeAgents, codexAgents, type Agent } from './models/sources.ts';
 import { ROOTS, unitDirs } from './runs.ts';
@@ -17,7 +22,15 @@ const json = args.includes('--json');
 
 // codex-bridge's state dir, as the bridge finds it.
 const bridge = process.env.CODEX_BRIDGE_DIR ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), '.local/state'), 'codex-bridge');
-const agents = [...claudeAgents(join(homedir(), '.claude/projects'), since), ...codexAgents(join(homedir(), '.codex/sessions'), since, bridgeUnits(bridge))];
+const ep = args.includes('--no-opencode') ? undefined : serviceEndpoint();
+const opencode = ep && (await probe(ep)) ? await opencodeAgents(ep, since) : [];
+const callLog = join(homedir(), '.cache/orchestrate/opencode-agents.jsonl');
+const rounds = existsSync(callLog) ? roundsOf(readFileSync(callLog, 'utf8'), since) : [];
+const agents = [
+  ...claudeAgents(join(homedir(), '.claude/projects'), since),
+  ...codexAgents(join(homedir(), '.codex/sessions'), since, bridgeUnits(bridge)),
+  ...opencode,
+];
 const label = (a: Agent) => (a.effort ? `${a.model}@${a.effort}` : a.model);
 
 // Each worker's phase outcome; the orchestrator's (decide) is the units its workers touched.
@@ -59,7 +72,7 @@ const group = <T,>(xs: T[], key: (x: T) => string) => {
 };
 
 const priced = agents.filter((a) => a.cost !== null);
-console.log(`agents ${agents.length} (claude ${agents.filter((a) => a.harness === 'claude').length}, codex ${agents.filter((a) => a.harness === 'codex').length}), API-priced $${priced.reduce((s, a) => s + a.cost!, 0).toFixed(0)}; "?" = no price row in models/prices.ts`);
+console.log(`agents ${agents.length} (claude ${agents.filter((a) => a.harness === 'claude').length}, codex ${agents.filter((a) => a.harness === 'codex').length}, opencode ${opencode.length}), API-priced $${priced.reduce((s, a) => s + a.cost!, 0).toFixed(0)}; "?" = no price row in models/prices.ts`);
 console.log('\nCost: role       model                 n   med-$  med-min  med-in-M  med-out-k  compacted');
 for (const [key, xs] of group(agents, (a) => `${a.role}\t${label(a)}`)) {
   const [role, model] = key.split('\t');
@@ -93,4 +106,10 @@ for (const [key, rs] of group(joined, (r) => `${r.outcome!.phase}\t${label(r.age
   const os = [...new Map(rs.map((r) => [`${r.outcome!.unit} ${r.outcome!.round}`, r.outcome!])).values()];
   const results = phase === 'decide' ? '' : group(os, (o) => o.result).map(([k, v]) => `${k} ${v.length}`).join(', ');
   console.log(`         ${phase.padEnd(10)} ${model.padEnd(20)} ${String(os.length).padStart(4)}   ${HEADLINE[phase](os)}${results ? `; ${results}` : ''}`);
+}
+
+// OpenCode's rounds: every start the orchestrate mod logged, by the role it ran as and the model the call named.
+if (rounds.length) {
+  console.log(`\n${ROUNDS_HEADER}   (${rounds.length} starts in ${callLog}; follow = the call named an existing child)`);
+  for (const line of roundsTable(rounds)) console.log(line);
 }

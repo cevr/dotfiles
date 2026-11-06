@@ -104,9 +104,11 @@ export const build = async (root = ROOT, sourceDir = DEFAULT_SOURCE): Promise<Bu
   for (const role of Object.keys(source.ROLES)) {
     // The description and prompt as Claude Code has them, from the same functions.
     const claude = parseAgent(source.agentFile(role, protocol, safety))
-    const table = readFileSync(join(sourceDir, "SKILL.md"), "utf8")
-    const row = table.split("\n").find((line) => line.startsWith(`| ${role} |`))
-    const cell = row?.split("|")[4]?.trim()
+    // The Effort column found by its header, so a host column added or moved keeps it.
+    const lines = readFileSync(join(sourceDir, "SKILL.md"), "utf8").split("\n")
+    const cells = (line?: string) => line?.split("|").map((c) => c.trim()) ?? []
+    const column = cells(lines.find((line) => line.startsWith("| Role |"))).indexOf("Effort")
+    const cell = column > 0 ? cells(lines.find((line) => line.startsWith(`| ${role} |`)))[column] : undefined
     const effort = /^(?:Opus )?(minimal|low|medium|high|xhigh|max)\b/.exec(cell ?? "")?.[1]
     if (!effort) throw new Error(`no Claude-family effort for ${role} in SKILL.md's role table`)
     agents[role] = define(claude.fields.description!, claude.body, effort)
