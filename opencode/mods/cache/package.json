@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Prompt-cache misses: a session's steps folded into the prefixes billed again, each with its cause over the cache lifetime and its cost from the model's prices.",
+  "description": "Prompt-cache misses: a session's steps folded into the prefixes billed again, each with its cause over the cache lifetime and its cost from the model's prices; and the server's request ledger, each request fingerprinted and judged against the one before.",
   "exports": {
     "./tui/*": "./tui/*.tsx",
     "./*": "./*.ts"

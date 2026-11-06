@@ -1,5 +1,6 @@
 // One turn whose prompt cache expires while a shell call runs, replayed against
-// OpenCode with the Prime look and the cache mod (cmd/cache) loaded. The model
+// OpenCode with the Prime look and the cache mod (cmd/cache, its TUI and server
+// halves) loaded. The model
 // costs $3 per million input tokens, $3.75 to write the cache and $0.30 to read
 // it, and its cache lives 2s; the shell call takes 4s, so the second request
 // writes back the 48k prefix the first one cached.
@@ -12,7 +13,8 @@
 //
 // It writes, under SCENARIO_OUT: the finished turn with its miss row and the
 // sidebar line, as `cache.txt` (its text) and `cache.json` (its styled lines);
-// `cache.timeout.txt` if they never drew.
+// `cache.timeout.txt` if they never drew; the server half's `ledger.jsonl`, and
+// `ledger.timeout.txt` if it never held a line for each request.
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
@@ -48,6 +50,8 @@ export default OpenCodeDriver.use(
     config: {
       autoupdate: false,
       username: "Demo",
+      // The server half: its ledger goes to SCENARIO_OUT.
+      plugins: [{ package: `${process.cwd()}/cmd/cache`, options: { dir: out, host: "scenario" } }],
       providers: {
         simulation: {
           models: {
@@ -104,5 +108,11 @@ export default OpenCodeDriver.use(
       )
       writeFileSync(`${out}/cache.txt`, text(frame))
       writeFileSync(`${out}/cache.json`, JSON.stringify(frame))
+      // The server half judged both requests: a line each in the ledger.
+      yield* Effect.try(() => readFileSync(`${out}/ledger.jsonl`, "utf8").trim().split("\n")).pipe(
+        Effect.flatMap((lines) => (lines.length >= 2 ? Effect.void : Effect.fail("pending"))),
+        Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }),
+        Effect.orElseSucceed(() => writeFileSync(`${out}/ledger.timeout.txt`, "the ledger never held two lines")),
+      )
     }),
 )

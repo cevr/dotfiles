@@ -3,8 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The cache mod's OpenCode TUI plugin: the composition root of @dotfiles/opencode-cache.",
+  "description": "The cache mod's OpenCode plugins, the request ledger and its RPC (server) and the miss rows and sidebar line (tui): the composition root of @dotfiles/opencode-cache.",
   "exports": {
+    "./server": "./server.ts",
     "./tui": "./tui.tsx"
   },
   "dependencies": {

@@ -90,6 +90,9 @@
       "dependencies": {
         "@dotfiles/opencode-orchestrate": "workspace:*",
         "@dotfiles/opencode-pool": "workspace:*",
+        "@dotfiles/opencode-questions": "workspace:*",
+        "@dotfiles/opencode-queue": "workspace:*",
+        "@dotfiles/opencode-status": "workspace:*",
         "@dotfiles/opencode-wake": "workspace:*",
       },
     },
