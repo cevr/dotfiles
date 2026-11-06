@@ -45,6 +45,15 @@ describe("a kernel call's journal", () => {
     expect((record.metadata()[OPERATIONS_KEY] as ReadonlyArray<Operation>)[0]?.metadata).toEqual({ shellID: "sh_2", backgrounded: "limit" })
   })
 
+  test("a shell handle keeps its ID, which tells the row to drop the handle's header line", async () => {
+    const { record } = recording()
+    const metadata = { id: "sh_3", state: "exited", exitCode: 0, runtimeMs: 12, next: 3, truncated: false, status: "completed", exit: 0 }
+    await Effect.runPromise(record.around("shell", { command: "ls" }, Effect.succeed({ content: [{ type: "text", text: "sh_3 · exited 0 · 0.0 s" }, { type: "text", text: "a\n" }], metadata })))
+    const [operation] = record.metadata()[OPERATIONS_KEY] as ReadonlyArray<Operation>
+    expect(operation?.metadata).toEqual({ exit: 0, id: "sh_3" })
+    expect(operation?.output).toBe("sh_3 · exited 0 · 0.0 s\na\n")
+  })
+
   test("a latched subagent keeps its child and its latched status, which its row reads; a running one keeps only its child", async () => {
     const { record } = recording()
     await Effect.runPromise(record.around("subagent", { agent: "worker" }, Effect.succeed({ content: "latched", metadata: { sessionID: "ses_l", status: "latched", latch: { id: "w1" } } })))

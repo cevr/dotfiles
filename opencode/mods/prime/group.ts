@@ -23,7 +23,7 @@ import {
 import { blink } from "./clock.ts"
 import type { Detail } from "./detail.ts"
 import { cellCalls, expand, operations, toolsInCode } from "./kernel.ts"
-import { words, type AssistantMessage, type Message, type Part, type ToolPart, type WordsPart } from "./session.ts"
+import { words, type AssistantMessage, type Fields, type Message, type Part, type ToolPart, type WordsPart } from "./session.ts"
 
 /** Whether a part draws a transcript row: a call, or text or reasoning with words in it. */
 function drawn(part: Part) {
@@ -177,8 +177,8 @@ export function kind(tool: string, part?: ToolPart): Kind {
   if (tool === "webfetch") return { key: "webfetch", past: "Fetched", running: "Fetching", unit: plural("page") }
   if (tool === "patch" || tool === "edit") return { key: "edit", past: "Edited", running: "Editing", unit: plural("file") }
   if (tool === "write") return { key: "write", past: "Wrote", running: "Writing", unit: plural("file") }
-  if (tool === "shell") return { key: "shell", past: "Ran", running: "Running", unit: plural("command") }
-  // The background-shell tools: look over, read and stop the session's commands.
+  if (tool === "shell") return shellKind(part ? toolInput(part) : {})
+  // The background-shell tools older transcripts used, before the shell tool's handles took their place.
   if (tool === "shell_list")
     return { key: "shell_list", past: "Listed", running: "Listing", unit: (count) => (count === 1 ? "shells" : `shells ${count}×`) }
   if (tool === "shell_read") return { key: "shell_read", past: "Read", running: "Reading", unit: plural("shell output") }
@@ -192,6 +192,31 @@ export function kind(tool: string, part?: ToolPart): Kind {
   if (tool === "question") return { key: "question", past: "Asked", running: "Asking", unit: plural("question") }
   return { key: tool, past: "", running: "", unit: times(tool) }
 }
+
+/**
+ * The shell call's form: a command that runs (`Ran`), or starts in the
+ * background (`Started`); a list of the session's shells; or a call on one
+ * shell's handle that kills it, waits on it or checks it.
+ */
+function shellKind(input: Fields): Kind {
+  if (input.list === true)
+    return { key: "shell_list", past: "Listed", running: "Listing", unit: (count) => (count === 1 ? "shells" : `shells ${count}×`) }
+  if (input.command === undefined && typeof input.id === "string") {
+    if (input.kill === true) return { key: "shell_kill", past: "Killed", running: "Killing", unit: plural("shell") }
+    if (typeof input.wait === "number") return { key: "shell-wait", past: "Waited on", running: "Waiting on", unit: plural("shell") }
+    return { key: "shell-check", past: "Checked", running: "Checking", unit: plural("shell") }
+  }
+  if (input.background === true)
+    return { key: "shell-start", past: "Started", running: "Starting", unit: (count) => `${plural("command")(count)} in the background` }
+  return { key: "shell", past: "Ran", running: "Running", unit: plural("command") }
+}
+
+/** Whether a row starts its commands in the background: its subject says so. */
+function startsInBackground(row: Row) {
+  return row.tool === "shell" && toolInput(row.calls[0]).background === true && toolInput(row.calls[0]).command !== undefined
+}
+
+const IN_THE_BACKGROUND = " in the background"
 
 /** A cell whose code spells out no call it can name: `ran code`, never the code (gent's `CODE_KIND`). */
 const CODE: Kind = {
@@ -533,10 +558,9 @@ export function subject(row: Row, width = Number.POSITIVE_INFINITY): string {
     const task = toolPreview("subagent", input)
     return task ? `${subagentName(input)} · ${task}` : subagentName(input)
   }
-  return listed(
-    row.calls.map((part) => toolPreview(row.tool, toolInput(part))),
-    width,
-  )
+  const subjects = row.calls.map((part) => toolPreview(row.tool, toolInput(part)))
+  if (startsInBackground(row)) return `${listed(subjects, width - IN_THE_BACKGROUND.length)}${IN_THE_BACKGROUND}`
+  return listed(subjects, width)
 }
 
 /**

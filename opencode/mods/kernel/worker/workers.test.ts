@@ -112,6 +112,62 @@ describe("a worker", () => {
         expect((yield* workers.evaluate(first, cell("[n, m.get('a'), f(1)]"))).display).toBe("[ 5, 1n, 6 ]")
       }),
     ))
+
+  test("makes a shell result a live handle whose methods call the shell tool with its id, and rebuilds one by id", () =>
+    scenario(
+      Effect.gen(function* () {
+        const workers = yield* started()
+        // A shell tool that answers as the fork's does: a handle per call, `{ shells }` for a list.
+        const inputs: Json[] = []
+        const base = { id: "sh_1", runtimeMs: 5, truncated: false }
+        const shell: Cell["call"] = (_name, input) =>
+          Effect.sync((): Json => {
+            inputs.push(input)
+            const asked = input as Record<string, Json>
+            if (asked.list === true) return { shells: [{ ...base, state: "running" }] }
+            if (asked.command !== undefined) return { ...base, state: "running", output: "one\n", next: 4, backgrounded: "start" }
+            if (asked.kill === true) return { ...base, state: "killed", signal: "SIGTERM", output: "", next: 8 }
+            if (asked.wait !== undefined) return { ...base, state: "exited", exitCode: 0, output: "two\n", next: 8 }
+            if (asked.lines !== undefined || asked.offset !== undefined) return { ...base, state: "exited", exitCode: 0, output: "one\ntwo\n", next: 8 }
+            return { ...base, state: "running", output: "", next: 4 }
+          })
+        const tools = [{ id: "shell", description: "runs commands" }]
+        const run = (source: string) => workers.evaluate(first, cell(source, tools, shell))
+
+        const opened = yield* run('const h = await tools.shell({ command: "make", background: true }); JSON.stringify(h)')
+        expect(opened).toMatchObject({ ok: true, bindings: ["h"] })
+        // Data only: the methods are not enumerable.
+        expect(JSON.parse(opened.display)).toEqual({ ...base, state: "running", output: "one\n", next: 4, backgrounded: "start" })
+
+        expect((yield* run("(await h.refresh()) === h && [h.state, h.output, h.next]")).display).toBe('[ "running", "", 4 ]')
+        expect((yield* run("await h.wait(50); [h.state, h.exitCode, h.output, h.backgrounded]")).display).toBe('[ "exited", 0, "two\\n", "start" ]')
+        expect((yield* run("(await h.read({ lines: 2 })).output")).display).toBe("one\ntwo\n")
+        expect((yield* run("await h.read({ offset: 4 }); await h.wait(); (await h.kill()).signal")).display).toBe("SIGTERM")
+        expect(inputs).toEqual([
+          { command: "make", background: true },
+          { id: "sh_1" },
+          { id: "sh_1", wait: 50 },
+          { id: "sh_1", lines: 2 },
+          { id: "sh_1", offset: 4 },
+          { id: "sh_1", wait: 600_000 },
+          { id: "sh_1", kill: true },
+        ])
+
+        const rebuilt = yield* run('const again = await tools.shell.handle("sh_1"); [again.id, again.state, typeof again.kill]')
+        expect(rebuilt.display).toBe('[ "sh_1", "running", "function" ]')
+        expect(inputs.at(-1)).toEqual({ id: "sh_1" })
+        expect((yield* run("(await tools.shell({ list: true })).shells.length")).display).toBe("1")
+        expect((yield* run('await tools.shell.handle("nope")')).display).toBe("TypeError: tools.shell.handle takes a shell ID (sh_…)")
+
+        // A restart keeps the handle's data; its methods come back through tools.shell.handle.
+        const snapshot = yield* workers.snapshot(first)
+        expect(snapshot.omitted).toEqual([])
+        yield* workers.start(first, work)
+        yield* workers.restore(first, snapshot.bindings)
+        expect((yield* run("[h.id, h.state, typeof h.kill]")).display).toBe('[ "sh_1", "killed", "undefined" ]')
+        expect((yield* run("typeof (await tools.shell.handle(h.id)).wait")).display).toBe("function")
+      }),
+    ))
 })
 
 /** Runs `cells` in one worker, then restores its snapshot into a fresh one. */
