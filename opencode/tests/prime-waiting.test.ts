@@ -2,7 +2,7 @@
 // plugin against an OpenCode checkout: a worker backgrounds a long shell and a
 // short one and ends its turn, so its row waits and the host's Subagents
 // panel lists it as active, waiting; woken by the short one's notice, it
-// kills the long one with shell_kill, which sends no notice, and stops. Its
+// kills the long one with shell({ id, kill: true }), which sends no notice, and stops. Its
 // row then leaves the live rows, the dock's count drops to 0 and the panel
 // lists no active subagent: whether it works is the host's live state, never
 // a notice that did not come. It needs OPENCODE_DEV, the fork whose panel
@@ -64,7 +64,7 @@ describe.skipIf(!fork)("a waiting subagent's wait ends with no notice (OPENCODE_
     expect(panel(frames["waiting-panel"])).toEqual([expect.stringMatching(/^Worker: Run the proof +Waiting$/)])
   })
 
-  test("killed with shell_kill, the proof wait sends no notice: the worker only ever heard of the short shell", () => {
+  test("killed through its handle, the proof wait sends no notice: the worker only ever heard of the short shell", () => {
     const last = requests.findLast((request) => request.includes("Worker brief P.") && request.includes("call_kill")) ?? ""
     expect(last.match(/<shell id=/g)?.length).toBe(1)
   })

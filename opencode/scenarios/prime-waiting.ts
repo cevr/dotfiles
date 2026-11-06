@@ -3,7 +3,7 @@
 // `sleep 6` to the background and ends its turn. While both run its row waits
 // and the host's Subagents panel (↓ on an empty prompt) lists it as active,
 // waiting. The short shell's notice wakes it; it kills the long one with
-// shell_kill, which sends no notice, and ends its turn. Its row then leaves
+// shell({ id, kill: true }), which sends no notice, and ends its turn. Its row then leaves
 // the live rows and the panel lists it no more: the host's shell registry no
 // longer runs the shell, notice or not. Replayed against OpenCode with a
 // scripted model.
@@ -29,7 +29,7 @@ type ToolInput = Parameters<typeof Llm.toolCall>[0]["input"]
 const call = (id: string, name: string, input: ToolInput) => Stream.make(Llm.toolCall({ index: 0, id, name, input }), Llm.finish("tool-calls"))
 const say = (words: string) => Stream.make(Llm.text(words), Llm.finish())
 /** The shell IDs the tool results named, in order. */
-const shellIDs = (request: string) => [...new Set([...request.matchAll(/shell ID: (sh_[A-Za-z0-9]+)/g)].map((match) => match[1]!))]
+const shellIDs = (request: string) => [...new Set([...request.matchAll(/(sh_[A-Za-z0-9]+) · /g)].map((match) => match[1]!))]
 
 const ASK = "Prove it in a background worker."
 const BRIEF = "Worker brief P."
@@ -70,7 +70,7 @@ export default OpenCodeDriver.use(
           if (!s.includes("call_short")) return call("call_short", "shell", { command: "sleep 6", background: true, description: "Short check" })
           // The short shell's stop notice wakes it: it stops the proof wait, which sends no notice.
           if (!s.includes("<shell id=")) return say(WAITING)
-          if (!s.includes("call_kill")) return call("call_kill", "shell_kill", { id: shellIDs(s)[0] ?? "missing" })
+          if (!s.includes("call_kill")) return call("call_kill", "shell", { id: shellIDs(s)[0] ?? "missing", kill: true })
           return say(STOPPED)
         }
         if (!s.includes("call_worker"))
