@@ -64,7 +64,12 @@ theme. The mod has three parts.
 - `opencode/host.ts` builds that `Host` from the plugin context. Each read
   goes straight to the context, so it stays reactive. The wakes come from
   the wake mod's RPC (`opencode/wakes.ts`, ids from its protocol file
-  `@dotfiles/opencode-wake/wake`, decoded with Prime's own schema).
+  `@dotfiles/opencode-wake/wake`, decoded with Prime's own schema). A part
+  of a step (`partOf` in `session.ts`) and the context usage (`usage.ts`)
+  are worked out from the session's messages and the location's models; the
+  goal comes from OpenCode's goal RPC (`opencode/goal.ts`: read on a
+  session's first read and on reconnect, kept current from its `changed`
+  events).
 
 The dock under the composer counts the session's work:
 
