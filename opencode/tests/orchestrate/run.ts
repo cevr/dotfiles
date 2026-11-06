@@ -11,15 +11,17 @@
  * - `subagents`: the root session runs the sim's `orchestrate` task, which
  *   calls `subagent` with no agent and then with `orchestrate-reviewer`.
  * - `compaction`: a planner session and a worker session, two prompts each.
+ * - `units`: the root starts the implementor of `work/tmp/orchestrate/web/auth`,
+ *   which hands back; the result carries that unit's `log.md`.
  *
  * @module
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { ROOT_TASK, serve } from "./sim.ts"
+import { ROOT_TASK, serve, UNITS_TASK } from "./sim.ts"
 
 export interface Spec {
-  readonly scenario: "subagents" | "compaction"
+  readonly scenario: "subagents" | "compaction" | "units"
   readonly base: string
   readonly fork: string
   readonly plugin: string
@@ -45,6 +47,8 @@ export interface Result {
   readonly sessions: Record<string, { readonly agent?: string; readonly messages: unknown }>
   readonly seen: ReturnType<typeof serve>["seen"]
   readonly log: ReadonlyArray<Record<string, unknown>>
+  /** A unit run's `log.md`, each line without its time. */
+  readonly unitLog?: ReadonlyArray<string>
 }
 
 const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
@@ -89,7 +93,7 @@ const content = {
       },
     },
   },
-  plugins: [{ package: spec.plugin, options: { windows: windowsFile, log: logFile, now: spec.now, ...codexOption } }, ...(spec.pace !== undefined ? [{ package: pacePlugin }] : [])],
+  plugins: [{ package: spec.plugin, options: { windows: windowsFile, log: logFile, now: spec.now, unitLog: join(spec.plugin, "../../../skills/orchestrate/scripts/log.ts"), ...codexOption } }, ...(spec.pace !== undefined ? [{ package: pacePlugin }] : [])],
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
@@ -143,6 +147,27 @@ try {
       sessions: {},
       seen: sim.seen,
       log: [],
+    }
+  } else if (spec.scenario === "units") {
+    const unit = join(work, "tmp/orchestrate/web/auth")
+    mkdirSync(unit, { recursive: true })
+    const root = await opencode.sessions.create({ location })
+    await turn(root.id, `${UNITS_TASK} ${unit}`)
+    const page = await opencode.sessions.list({ parentID: root.id, directory: work })
+    const file = join(unit, "log.md")
+    const unitLog = existsSync(file)
+      ? readFileSync(file, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => line.replace(/^\S+Z /, ""))
+      : []
+    result = {
+      root: { id: root.id, messages: await messages(root.id) },
+      children: page.data.map((child) => ({ id: child.id, ...(child.agent ? { agent: child.agent } : {}) })),
+      sessions: {},
+      seen: sim.seen,
+      log: [],
+      unitLog,
     }
   } else {
     const sessions: Result["sessions"] = {}

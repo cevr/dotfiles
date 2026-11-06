@@ -1,6 +1,6 @@
 // The orchestrate port: the role agents against the orchestrate skill they
-// come from, and three runs of real OpenCode (the fork, through its SDK) on
-// the scripted model: the guard, compaction per role, and the Sabbath stop.
+// come from, and runs of real OpenCode (the fork, through its SDK) on
+// the scripted model: the paces, the guard, compaction per role, a unit's log.md, and the Sabbath stop.
 // The plugin's rules on their own are tested beside mods/orchestrate and cmd/orchestrate.
 import { afterAll, describe, expect, test } from "bun:test"
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -177,6 +177,16 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(keeping[0]!.task).toBe("planner: first")
       expect(keeping[0]!.last).toContain("You MUST summarize the conversation")
       expect(JSON.stringify(messages("planner"))).toContain(SUMMARY.split("\n")[1]!)
+    },
+    RUN_MS,
+  )
+
+  test(
+    "units: an implementor's start and its hand-back move its unit in the run's log.md",
+    async () => {
+      const result = await run("units", { scenario: "units", now: WEDNESDAY })
+      expect(result.children.map((child) => child.agent)).toEqual(["implementor"])
+      expect(result.unitLog).toEqual(["new → implement r1 spec.md", "implement → verify r1 round-1-request.md ready"])
     },
     RUN_MS,
   )
