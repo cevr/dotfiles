@@ -41,6 +41,13 @@
         "@dotfiles/opencode-cache": "workspace:*",
       },
     },
+    "cmd/escape": {
+      "name": "@dotfiles/opencode-cmd-escape",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-escape": "workspace:*",
+      },
+    },
     "cmd/git": {
       "name": "@dotfiles/opencode-cmd-git",
       "version": "0.0.0",
@@ -174,6 +181,10 @@
         "@dotfiles/opencode-pool": "workspace:*",
       },
     },
+    "mods/escape": {
+      "name": "@dotfiles/opencode-escape",
+      "version": "0.0.0",
+    },
     "mods/git": {
       "name": "@dotfiles/opencode-git",
       "version": "0.0.0",
@@ -291,6 +302,8 @@
 
     "@dotfiles/opencode-cmd-cache": ["@dotfiles/opencode-cmd-cache@workspace:cmd/cache"],
 
+    "@dotfiles/opencode-cmd-escape": ["@dotfiles/opencode-cmd-escape@workspace:cmd/escape"],
+
     "@dotfiles/opencode-cmd-git": ["@dotfiles/opencode-cmd-git@workspace:cmd/git"],
 
     "@dotfiles/opencode-cmd-guard": ["@dotfiles/opencode-cmd-guard@workspace:cmd/guard"],
@@ -320,6 +333,8 @@
     "@dotfiles/opencode-cmd-status": ["@dotfiles/opencode-cmd-status@workspace:cmd/status"],
 
     "@dotfiles/opencode-cmd-wake": ["@dotfiles/opencode-cmd-wake@workspace:cmd/wake"],
+
+    "@dotfiles/opencode-escape": ["@dotfiles/opencode-escape@workspace:mods/escape"],
 
     "@dotfiles/opencode-git": ["@dotfiles/opencode-git@workspace:mods/git"],
 

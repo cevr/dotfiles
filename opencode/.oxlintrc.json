@@ -187,6 +187,31 @@
     },
     {
       "files": [
+        "mods/escape/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
+                "message": "The escape domain fence: the escape mod's domain files import effect, their own root files and bun:test only; never @opencode/*, @opentui/*, node:*, bun, a vendor package or one of its folders."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
         "mods/recover/*.ts"
       ],
       "rules": {
