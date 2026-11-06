@@ -2,12 +2,11 @@
 // second after sending, one Escape cancels: the run stops, the session reverts
 // to before the prompt and the prompt is back in the composer. Seven seconds
 // after sending, past the 5 s grace, one Escape interrupts and the prompt and
-// its partial answer stay. The Dock says which (`esc cancel and edit · 4s`,
-// `esc interrupt`). Replayed against OpenCode with a scripted slow model.
+// its partial answer stay. The Dock shows no Escape hint. Replayed against OpenCode with a scripted slow model.
 // Run: OPENCODE_DEV=<opencode checkout> OPENCODE_DRIVE_MEDIA_DIR=<dir> bunx opencode-drive run scenarios/prime-escape.ts
 //
 // It writes, under SCENARIO_OUT, a `.txt` of each frame's text:
-// - `cancel-hint`: just after sending, the Dock offering the cancel;
+// - `cancel-hint`: just after sending, inside the grace;
 // - `cancelled`: after Escape at 1 s;
 // - `interrupt-hint`: 7 s after sending the prompt again;
 // - `interrupted`: after Escape at 7 s.
@@ -63,7 +62,7 @@ export default OpenCodeDriver.use(
 
       const first = Date.now()
       yield* ui.submit(ASK)
-      yield* until("cancel-hint", (frame) => frame.includes(PARTIAL) && frame.includes("esc cancel and edit"))
+      yield* until("cancel-hint", (frame) => frame.includes(PARTIAL))
       yield* save("cancel-hint")
       yield* at(first, 1_000)
       yield* ui.press("escape")
@@ -76,7 +75,7 @@ export default OpenCodeDriver.use(
       yield* ui.enter()
       yield* until("resent", (frame) => frame.includes(PARTIAL))
       yield* at(second, 7_000)
-      yield* until("interrupt-hint", (frame) => frame.includes("esc interrupt"))
+      yield* until("interrupt-hint", (frame) => frame.includes(PARTIAL))
       yield* save("interrupt-hint")
       yield* ui.press("escape")
       yield* until("interrupted", (frame) => frame.includes("Interrupted"))

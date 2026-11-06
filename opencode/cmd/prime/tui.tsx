@@ -104,7 +104,7 @@ export default Plugin.define({
     })
     context.ui.slot({
       replace: "prompt.footer",
-      render: (input) => <Dock host={h} sessionID={input.sessionID} escape={input.escape} />,
+      render: (input) => <Dock host={h} sessionID={input.sessionID} />,
     })
 
     context.keymap.layer(() => ({

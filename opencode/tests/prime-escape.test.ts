@@ -43,8 +43,9 @@ describe.skipIf(!fork)("Escape cancels within the grace and interrupts after it,
     for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
   }, 300_000)
 
-  test("just after sending, the Dock offers the cancel and counts it down", () => {
-    expect(dock(frames["cancel-hint"])).toMatch(/^ ← manage {2}· {2}esc cancel and edit · [45]s /)
+  test("just after sending, the Dock shows no Escape hint", () => {
+    expect(dock(frames["cancel-hint"])).toMatch(/^ ← manage {2}/)
+    expect(dock(frames["cancel-hint"])).not.toContain("esc ")
   })
 
   test("Escape at 1 s: the prompt leaves the transcript and is back in the composer", () => {
@@ -56,8 +57,8 @@ describe.skipIf(!fork)("Escape cancels within the grace and interrupts after it,
     expect(dock(frames.cancelled)).not.toContain("esc ")
   })
 
-  test("7 s after sending, the Dock offers the interrupt", () => {
-    expect(dock(frames["interrupt-hint"])).toMatch(/^ ← manage {2}· {2}esc interrupt /)
+  test("7 s after sending, the Dock still shows no Escape hint", () => {
+    expect(dock(frames["interrupt-hint"])).not.toContain("esc ")
   })
 
   test("Escape at 7 s interrupts: the prompt and its partial answer stay", () => {

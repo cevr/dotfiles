@@ -151,10 +151,7 @@ function useGoal(host: Host, sessionID: () => string | undefined): Accessor<Goal
 const cellsOf = (text: string) => [...text].length
 const DOCK_SEP = "  ·  "
 
-/** What Escape does now, as the host's footer input reports it; the Dock shows it since it replaces the host's hint. */
-export type DockEscape = { readonly action: "cancel" | "interrupt" | "pull"; readonly label: string }
-
-export function Dock(props: { host: Host; sessionID?: string; escape?: DockEscape }) {
+export function Dock(props: { host: Host; sessionID?: string }) {
   const theme = () => props.host.theme()
   const usage = createMemo(() => (props.sessionID ? usageLabel(props.host.usage(props.sessionID)) : undefined))
   const model = createMemo(() => trayModel(props.host.model()))
@@ -187,20 +184,6 @@ export function Dock(props: { host: Host; sessionID?: string; escape?: DockEscap
       <box flexDirection="row" justifyContent="space-between" height={1}>
         <text wrapMode="none" fg={theme().text.muted}>
           ← manage
-          <Show when={props.escape}>
-            {(escape) => (
-              <>
-                {sep()}
-                <span
-                  style={{
-                    fg: escape().action === "cancel" ? theme().text.feedback.warning.base : theme().text.muted,
-                  }}
-                >
-                  esc {escape().label}
-                </span>
-              </>
-            )}
-          </Show>
         </text>
         <text wrapMode="none" truncate fg={theme().text.faint}>
           {[model(), usage()].filter(Boolean).join(" · ")}
