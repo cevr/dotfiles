@@ -1,0 +1,13 @@
+{
+  "name": "@dotfiles/opencode-cmd-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The web mod's OpenCode server plugin: the composition root of @dotfiles/opencode-web.",
+  "exports": {
+    "./server": "./server.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-web": "workspace:*"
+  }
+}
