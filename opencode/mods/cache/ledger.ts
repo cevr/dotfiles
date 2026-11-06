@@ -72,13 +72,48 @@ export const judge = (
  * turn's footer under its closing step, so the rows sit at the end of the
  * turn that paid for them. Nothing when `messageID` is no step of the timeline.
  */
-export const turnRows = (timeline: Timeline, judged: ReadonlyArray<Judged>, messageID: string): ReadonlyArray<string> => {
-  const steps = timeline.flatMap((entry) => (entry.type === "step" ? [entry] : []))
-  const end = steps.findIndex((step) => step.id === messageID)
-  if (end === -1) return []
-  const start = steps.findLastIndex((step, index) => index < end && step.closes) + 1
-  const turn = new Set(steps.slice(start, end + 1).map((step) => step.id))
-  return judged.flatMap((item) => (item.row !== undefined && turn.has(item.miss.stepID) ? [item.row] : []))
+export const turnRows = (timeline: Timeline, judged: ReadonlyArray<Judged>, messageID: string): ReadonlyArray<string> =>
+  turnIndex(timeline, judged)(messageID)
+
+/**
+ * `turnRows` of every message at once: one pass over the timeline and the
+ * judged misses, then each turn's rows by its closing message in the steps of
+ * that turn alone. A TUI that draws many turns' rows builds it once per
+ * change of the session, not once per turn.
+ */
+export const turnIndex = (timeline: Timeline, judged: ReadonlyArray<Judged>): ((messageID: string) => ReadonlyArray<string>) => {
+  const steps: Array<string> = []
+  const position = new Map<string, number>()
+  const starts: Array<number> = []
+  let open = 0
+  for (const entry of timeline) {
+    if (entry.type !== "step") continue
+    const index = steps.length
+    steps.push(entry.id)
+    if (!position.has(entry.id)) position.set(entry.id, index)
+    starts.push(open)
+    if (entry.closes) open = index + 1
+  }
+  const rows = new Map<string, Array<string>>()
+  for (const item of judged)
+    if (item.row !== undefined) {
+      const own = rows.get(item.miss.stepID)
+      if (own === undefined) rows.set(item.miss.stepID, [item.row])
+      else own.push(item.row)
+    }
+  return (messageID) => {
+    const end = position.get(messageID)
+    if (end === undefined) return []
+    const seen = new Set<string>()
+    const found: Array<string> = []
+    for (let index = starts[end]!; index <= end; index++) {
+      const id = steps[index]!
+      if (seen.has(id)) continue
+      seen.add(id)
+      found.push(...(rows.get(id) ?? []))
+    }
+    return found
+  }
 }
 
 /** What every judged miss of a family cost. */
