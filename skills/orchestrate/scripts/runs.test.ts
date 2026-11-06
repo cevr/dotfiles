@@ -1,7 +1,8 @@
 import { expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, mkdtempSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ROOTS, runDirs } from './runs.ts';
 
 const here = import.meta.dir;
 const run = (script: string, ...args: string[]) => {
@@ -46,4 +47,26 @@ test('runs lists each run dir whose unit logs hold transitions and changed since
 
   const out = run('runs.ts', '--since', '2026-10-01', dev, cache).trim().split('\n');
   expect(out).toEqual([join(dev, 'repo/tmp/orchestrate/web'), join(cache, 'verify')].sort());
+});
+
+test('runs skips a test fixture right under a temp root and a removed Rift, and lists a run reached twice once', () => {
+  const temp = mkdtempSync(join(tmpdir(), 'runs-temp-'));
+  const dev = mkdtempSync(join(tmpdir(), 'runs-dev-'));
+  const line = '2026-10-20T10:00Z plan → implement r1 spec.md\n';
+  for (const fixture of ['log-a1/run/auth', 'timing-b2/run/auth', 'runs-dev-c3/repo/tmp/orchestrate/web/auth', 'request-d4/run/unit', 'agents-e5/run/unit'])
+    unit(temp, fixture, line);
+  // A run kept in /tmp by hand is a run; so is one whose name only looks like a fixture deeper down.
+  unit(temp, 'work/tmp/orchestrate/p5/auth', line);
+  unit(temp, 'work/tmp/orchestrate/log-x/auth', line);
+  unit(dev, 'repo/tmp/orchestrate/web/auth', line);
+  unit(dev, '.rifts/repo/.trash/01ABC-old/tmp/orchestrate/web/auth', line);
+  // The same run under a second root, through a symlink to it.
+  symlinkSync(join(dev, 'repo'), join(temp, 'repo-link'));
+
+  const listed = runDirs([dev, temp, join(temp, 'repo-link')], Date.parse('2026-10-01'), [temp]);
+  expect(listed).toEqual([join(dev, 'repo/tmp/orchestrate/web'), join(temp, 'work/tmp/orchestrate/log-x'), join(temp, 'work/tmp/orchestrate/p5')].sort());
+});
+
+test('runs searches the baton cache, /tmp and the orchestrate cache by default', () => {
+  expect(ROOTS).toEqual([join(homedir(), 'Developer'), '/tmp', join(homedir(), '.cache/orchestrate'), join(homedir(), '.cache/baton')]);
 });
