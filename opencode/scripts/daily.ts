@@ -229,6 +229,9 @@ if (import.meta.main) {
     pluginDir("questions"),
     pluginDir("wake"),
     pluginDir("skills"),
+    pluginDir("rift"),
+    pluginDir("tool-names"),
+    pluginDir("cache"),
   ]
   // Earlier runs loaded the auth plugin through a loader directory here; its entry is replaced too.
   const loader = join(share, "anthropic-auth")
@@ -237,7 +240,7 @@ if (import.meta.main) {
   const config = join(home, ".config/opencode")
   const models = roleModels(await loadCatalog(fork))
   writeJson(join(config, "opencode.json"), mergeServer(readJson(join(config, "opencode.json")), server, models, owned))
-  writeJson(join(config, "cli.json"), mergeCli(readJson(join(config, "cli.json")), [pluginDir("prime"), pluginDir("status"), pluginDir("herdr"), pluginDir("git"), pluginDir("cache"), pluginDir("questions"), pluginDir("btw"), pluginDir("skills"), pluginDir("recover"), pluginDir("escape"), BUILTIN_BTW_OFF], owned))
+  writeJson(join(config, "cli.json"), mergeCli(readJson(join(config, "cli.json")), [pluginDir("prime"), pluginDir("status"), pluginDir("herdr"), pluginDir("git"), pluginDir("cache"), pluginDir("questions"), pluginDir("btw"), pluginDir("skills"), pluginDir("recover"), pluginDir("orchestrate"), pluginDir("escape"), BUILTIN_BTW_OFF], owned))
   mkdirSync(join(config, "themes"), { recursive: true })
   copyFileSync(THEME, join(config, "themes/prime.json"))
 

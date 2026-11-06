@@ -1,0 +1,16 @@
+{
+  "name": "@dotfiles/opencode-cmd-tool-names",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The tool-name repair's OpenCode server plugin: the composition root of @dotfiles/opencode-tool-names.",
+  "exports": {
+    "./server": "./server.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-tool-names": "workspace:*"
+  },
+  "devDependencies": {
+    "@dotfiles/opencode-anthropic-auth": "workspace:*"
+  }
+}
