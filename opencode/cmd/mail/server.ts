@@ -1,31 +1,60 @@
 /**
  * Session mail as an OpenCode server plugin. The composition root: it builds
  * mail's model (`@dotfiles/opencode-mail/model`) on OpenCode's sessions and
- * registers two direct tools, offered to every session, main and subagent, and
- * reached from a kernel cell as `tools.sessions` and `tools.message`:
+ * the hosts this one is paired with, and registers two direct tools, offered
+ * to every session, main and subagent, and reached from a kernel cell as
+ * `tools.sessions` and `tools.message`:
  *
- * - `sessions({ search?, children?, limit? })`: the server's sessions the
- *   caller may write to (`@dotfiles/opencode-mail/directory`).
+ * - `sessions({ search?, children?, limit? })`: the sessions the caller may
+ *   write to, this server's and each paired host's, marked `on <host>`
+ *   (`@dotfiles/opencode-mail/directory`).
  * - `message({ to, text, wake?, replyTo? })`: a synthetic message into the
  *   session `to` names, under a header naming the sender and the session to
  *   answer (`@dotfiles/opencode-mail/letter`), delivered as a steer and waking
- *   an idle session unless `wake: false`. Each delivery is logged at info.
+ *   an idle session unless `wake: false`. An id this server lacks goes to the
+ *   paired hosts. Each delivery is logged at info.
  *
- * No options.
+ * Options:
+ * - `listen: { hostname, port? }`: run the mail listener
+ *   (`@dotfiles/opencode-mail/http/listener`) on that one address (the host's
+ *   Tailscale address; a wildcard is refused), port 4196 unless given, so
+ *   paired hosts reach this one. Default none: this host can still write to
+ *   its peers, and pairs only by joining.
+ *
+ * Pairing is the pair command's (`cmd/mail/pair.ts`); the state is in
+ * `@dotfiles/opencode-mail/filestore/pairs`.
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, Schema } from "effect"
 import { MESSAGE_DESCRIPTION, MessageInput, explain, receipt, type Rejection } from "@dotfiles/opencode-mail/letter"
 import { SESSIONS_DESCRIPTION, SessionsInput } from "@dotfiles/opencode-mail/directory"
 import * as Model from "@dotfiles/opencode-mail/model"
+import { DEFAULT_PORT } from "@dotfiles/opencode-mail/peer"
+import * as FilePairs from "@dotfiles/opencode-mail/filestore/pairs"
+import * as Listener from "@dotfiles/opencode-mail/http/listener"
+import * as HttpPeers from "@dotfiles/opencode-mail/http/peers"
+import { keyed, token } from "@dotfiles/opencode-mail/node/keyed"
 import * as OpenCodeSessions from "@dotfiles/opencode-mail/opencode/sessions"
-import type { DeliveryRefused, Sessions, SessionsUnreadable } from "@dotfiles/opencode-mail/service"
+import { type DeliveryRefused, PairStore, type Peers, type Sessions, type SessionsUnreadable } from "@dotfiles/opencode-mail/service"
+
+export const Options = Schema.Struct({
+  listen: Schema.optional(
+    Schema.Struct({
+      hostname: Schema.String,
+      port: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65_535 }))),
+    }),
+  ),
+})
+export type Options = typeof Options.Type
 
 /** The outside systems mail runs on. */
-export type Externals = Sessions
+export type Externals = Sessions | Peers | PairStore
 
-/** The outside systems as OpenCode provides them. */
-export const live = (ctx: Plugin.Context): Layer.Layer<Externals> => OpenCodeSessions.fromContext(ctx)
+/** The outside systems as OpenCode and this host provide them: the sessions, the pairing file, and the peers over HTTP. */
+export const live = (ctx: Plugin.Context): Layer.Layer<Externals> => {
+  const pairs = FilePairs.layer(FilePairs.fileOf(process.env))
+  return Layer.mergeAll(OpenCodeSessions.fromContext(ctx), pairs, HttpPeers.layer(keyed, () => token(16)).pipe(Layer.provide(pairs)))
+}
 
 /** What the agent reads when a message is not sent. */
 const messageOf = (failure: Rejection | SessionsUnreadable | DeliveryRefused) => {
@@ -36,13 +65,28 @@ const messageOf = (failure: Rejection | SessionsUnreadable | DeliveryRefused) =>
 
 const text = (value: string) => ({ content: [{ type: "text" as const, text: value }] })
 
-/** The plugin on `externals`: the live sessions in OpenCode, a stand-in host's in the seam test. */
+/** The plugin on `externals`: the live sessions and peers in OpenCode, a stand-in host's in the seam test. */
 export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<Externals>) =>
   Plugin.define({
     id: "dotfiles-opencode.mail",
     effect: Effect.fn("Mail.plugin")(function* (ctx) {
-      const services = yield* Layer.build(Model.layer.pipe(Layer.provide(externals(ctx))))
+      // A malformed option is a mistake in the config: the plugin does not start, and says which.
+      const options = yield* Schema.decodeUnknownEffect(Options)(ctx.options ?? {}).pipe(
+        Effect.mapError((error) => new Error(`dotfiles-opencode.mail: invalid options: ${error.message}`)),
+        Effect.orDie,
+      )
+      const outside = yield* Layer.build(externals(ctx))
+      const services = yield* Layer.build(Model.layer.pipe(Layer.provide(Layer.succeedContext(outside))))
       const mail = Context.get(services, Model.Mail)
+
+      if (options.listen !== undefined) {
+        const listen = { hostname: options.listen.hostname, port: options.listen.port ?? DEFAULT_PORT }
+        yield* Effect.forkScoped(
+          Listener.serve(listen, { cards: mail.cards, receive: mail.receive }, keyed, () => token(32)).pipe(
+            Effect.provideService(PairStore, Context.get(outside, PairStore)),
+          ),
+        )
+      }
 
       yield* ctx.tool.transform((editor) => {
         // Direct tools beside the others, so they are offered without code mode and reached from a kernel cell.
@@ -66,7 +110,7 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<Externals>)
             mail.send(context.sessionID, input).pipe(
               Effect.map((sent) => ({
                 ...text(receipt(sent.to, sent.delivery)),
-                metadata: { to: sent.to.id, delivery: sent.delivery },
+                metadata: { to: sent.to.id, delivery: sent.delivery, ...(sent.to.host === undefined ? {} : { host: sent.to.host }) },
               })),
               Effect.mapError((failure) => new Tool.Error({ message: messageOf(failure), error: failure })),
             ),

@@ -37,6 +37,11 @@ describe("the sessions listing", () => {
     expect(line(OLD, "ses_new", NOW)).toBe('ses_old "Dotfiles" · idle · build · /Users/me/dotfiles · 3d ago')
   })
 
+  test("a paired host's session says which host, and is never the caller's", () => {
+    expect(line({ ...NEW, host: "workbox" }, "ses_new", NOW)).toBe('ses_new "Bite PR" · running · build · /Users/me/work/bite · just now · on workbox')
+    expect(listing([], "ses_x", NOW, [{ peer: "workbox", message: "timed out" }])).toBe("No sessions match.\nworkbox: unreachable (timed out); its sessions are not listed.")
+  })
+
   test("the answer counts the sessions, or says none match", () => {
     expect(listing([], "ses_new", NOW)).toBe("No sessions match.")
     expect(listing(select(CARDS, { limit: 1 }), "ses_x", NOW)).toBe('Sessions (1):\nses_new "Bite PR" · running · build · /Users/me/work/bite · just now')

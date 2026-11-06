@@ -111,6 +111,24 @@ export const poolEntry = (pool: string, gent: string | undefined, fleet?: { read
  */
 export const orchestrateEntry = (orchestrate: string): PluginEntry => ({ package: orchestrate, options: { codex: { pool: true } } })
 
+/**
+ * Mail's plugin entry: on one of the owner's hosts (`FLEET`) whose Tailscale address is known,
+ * its listener on that address only, so the hosts paired with `bun cmd/mail/pair.ts` reach it;
+ * elsewhere the bare plugin, which listens nowhere.
+ */
+export const mailEntry = (mail: string, fleet: { readonly host: string; readonly tailscale: string | undefined }): PluginEntry =>
+  peersOf(fleet.host).length === 0 || fleet.tailscale === undefined ? mail : { package: mail, options: { listen: { hostname: fleet.tailscale } } }
+
+/** This machine's Tailscale IPv4 address, from the `tailscale` CLI (on PATH, or the Mac app's), or undefined. */
+export const tailscaleAddress = async (): Promise<string | undefined> => {
+  for (const cli of ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"]) {
+    const ran = await $`${cli} ip -4`.nothrow().quiet().catch(() => undefined)
+    const address = ran?.exitCode === 0 ? ran.stdout.toString().trim().split("\n")[0] : undefined
+    if (address !== undefined && /^100\.\d+\.\d+\.\d+$/.test(address)) return address
+  }
+  return undefined
+}
+
 const record = (value: unknown): Json => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Json) : {})
 
 /**
@@ -225,7 +243,7 @@ if (import.meta.main) {
     pluginDir("queue"),
     pluginDir("git"),
     pluginDir("idle-compact"),
-    pluginDir("mail"),
+    mailEntry(pluginDir("mail"), { host: hostname(), tailscale: await tailscaleAddress() }),
     pluginDir("questions"),
     pluginDir("wake"),
     pluginDir("skills"),

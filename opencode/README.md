@@ -1428,8 +1428,9 @@ in real OpenCode on a 20 s cache.
 `cmd/mail` is a server plugin that lets the sessions on one OpenCode server
 write to each other, so two agents can coordinate without the owner relaying.
 It adds two direct tools, offered to every session (main and subagent) and
-reached from a kernel cell as `tools.sessions` and `tools.message`. It takes
-no options.
+reached from a kernel cell as `tools.sessions` and `tools.message`. Its one
+option, `listen`, reaches the sessions of a paired host too (Mail between
+hosts, below).
 
 - `sessions({ search?, children?, limit? })` lists the server's sessions,
   newest activity first: id, title, `running` or `idle`, agent, directory,
@@ -1466,18 +1467,73 @@ metadata is `{ source: "mail", from, replyTo }`. Each delivery is logged at
 info as `mail: <sender> → <receiver>`, annotated with both ids, the reply
 session, the delivery and the text's first 200 characters.
 
-Sessions on another server are out of reach: the plugin reads and writes
-through its own server's sessions.
+### Mail between hosts
+
+Two hosts' servers (the Mac and the workbox) pair once and then write to each
+other's sessions. Each runs the plugin with `listen: { hostname, port? }`: a
+small HTTP listener of the plugin's own on that one address (port 4196 by
+default; a wildcard such as `0.0.0.0` is refused and logged, so nothing
+listens). `bun run daily` sets it to the host's Tailscale address
+(`tailscale ip -4`) on the owner's hosts (`FLEET`), and leaves it off
+elsewhere. OpenCode's own server stays on loopback: a peer reaches only the
+listener's three routes, never the rest of OpenCode's API.
+
+Pairing, run once by hand (both listeners up):
+
+```
+# on the workbox
+bun ~/Developer/personal/dotfiles/opencode/cmd/mail/pair.ts invite
+# prints, good for ten minutes and once:
+#   bun …/cmd/mail/pair.ts join http://100.x.y.z:4196 <code>
+# run that on the Mac
+```
+
+`invite` keeps only the code's hash; `join` sends the code with this host's
+mail name (`--name`, default the host name without `.local`) and listener
+address, and the inviter answers with a fresh 32-byte secret, so both hosts
+keep each other's name, address and that secret in
+`$XDG_STATE_HOME/opencode-mail/pairs.json` (0600). `pair.ts list` shows the
+peers (never the secret); `pair.ts forget <name>` drops one (run it on both
+hosts to unpair).
+
+Every request between paired hosts is signed with the shared secret
+(HMAC-SHA256 over the method, path, time, a random nonce and the body,
+`pairing.ts`). The listener refuses with 401, and logs at warning, a request
+from an unpaired name, a bad signature, a time more than 60 s off, or a nonce
+it saw already; a wrong, used or expired pairing code is refused with 403.
+Tailscale (WireGuard) encrypts the traffic.
+
+Once paired, `sessions` also lists each peer's sessions, marked
+`· on <host>` (a peer that cannot be reached is named on a last line), and
+`message` to an id this server lacks offers it to each peer in turn (titles
+name only this server's sessions). The peer composes the letter, naming the
+sender `on host <name>` with the id to answer, and delivers it as a local
+one, a `✉` notice; an answer at that id comes back the same way. An id no
+host has is refused naming the hosts asked and any that could not be.
+
+Why a listener of its own, not OpenCode's server: OpenCode's pairing
+(`opencode pair`) issues a session token that is good for its whole API, and
+reaching it from the other host means binding the whole server to the tailnet
+(`opencode service set hostname`). A mail secret per peer reaches only mail.
+The plugin needs no hook in the fork: it runs `Bun.serve` itself. OpenCode
+serves the plugin once per directory; one instance binds the port and the
+others try again every 30 s.
 
 The model (the domain files at the root of `mods/mail`): `directory.ts`
 lists sessions (`select`, `listing`), `address.ts` holds the addressing rules
 (`isSessionID`, `byTitle`, `notSelf`) and their refusals, `letter.ts` writes
-the header, the transcript line and the receipt, and `model.ts` is `Mail`,
-which resolves `to` and `replyTo` and sends. It
-asks the `Sessions` contract in `service.ts`, implemented in `opencode/`, with
-the laws in `laws.ts`. `tests/mail.test.ts` runs two exchanges in real
-OpenCode: a ping and its answer between two idle sessions, and a message
-steered into a running one.
+the header, the transcript line and the receipt, `pairing.ts` the pairing and
+request-signing rules, `peer.ts` the listener's routes and bodies, and
+`model.ts` is `Mail`, which resolves `to` and `replyTo` and sends, here or to
+a peer, and takes a peer's parcel (`receive`). It asks the `Sessions`,
+`Peers` and `PairStore` contracts in `service.ts`, implemented in
+`opencode/`, `http/` (the peers and the listener), `filestore/` and `node/`
+(the crypto), with the laws of `Sessions` in `laws.ts`.
+`tests/mail.test.ts` runs two exchanges in real OpenCode: a ping and its
+answer between two idle sessions, and a message steered into a running one.
+`tests/mail-peer.test.ts` pairs two real OpenCode servers with the real pair
+command and sends a message each way. `cmd/mail/pair.test.ts` covers the
+pairing and the refusals over real HTTP in one process.
 
 ## Background questions
 

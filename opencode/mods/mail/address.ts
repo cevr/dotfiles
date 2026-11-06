@@ -1,12 +1,19 @@
 // Whom a message goes to. An address is a session id (`ses_…`), looked up as
-// is, or a title, matched against the server's sessions: an exact title (any
-// case) first, else the one title that contains it. A session never writes to
-// itself.
+// is (on this server, then on each paired host), or a title, matched against
+// this server's sessions: an exact title (any case) first, else the one title
+// that contains it. A session never writes to itself.
 import { Effect, Schema } from "effect"
 import { nameOf, type SessionCard } from "./directory.ts"
 
-/** No session on this server has that id, or a title that matches. */
-export class NoSuchSession extends Schema.TaggedError<NoSuchSession>()("NoSuchSession", { to: Schema.String }) {}
+/**
+ * No session on this server has that id, or a title that matches; for an id,
+ * none of the paired hosts asked (`peers`) has it either, and those that could
+ * not be asked say why (`missed`).
+ */
+export class NoSuchSession extends Schema.TaggedError<NoSuchSession>()("NoSuchSession", {
+  to: Schema.String,
+  peers: Schema.optional(Schema.Array(Schema.Struct({ name: Schema.String, missed: Schema.optional(Schema.String) }))),
+}) {}
 
 /** More than one session's title matches; the evidence is each match. */
 export class AmbiguousTitle extends Schema.TaggedError<AmbiguousTitle>()("AmbiguousTitle", {
