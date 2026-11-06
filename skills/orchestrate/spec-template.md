@@ -6,7 +6,7 @@ The planner fills one copy per unit into `<run dir>/<unit>/spec.md`, and the orc
 # <unit> — spec (orchestrator-owned; agents do not edit it)
 
 Run `<run>` · unit dir `<run dir>/<unit>` · failure cap 3 · timebox <hours per round>
-Machine: plan → implement → verify (Opus first; a fresh agent in a clean checkout runs the acceptance check and tries to break the change) → decide → ready → lands in a batch (one merge, one full gate and one acceptance run for every ready unit).
+Machine: plan → implement → verify (Opus first; a fresh agent in a clean checkout runs the acceptance check and tries to break the change) → decide → ready → lands in a batch (one merge, one batch gate and one acceptance run for every ready unit; in a PR repo the green batch pushes the unit's branch to its PR instead of main).
 Path: <direct | light | standard | deep>: <why; for direct, that the diff is prose only; for deep, why a defect is costly or why the check is a live drive>.
 Protocol: a role agent carries it in its prompt; any other worker reads `~/.claude/skills/orchestrate/protocol.md` in full first.
 
@@ -27,8 +27,9 @@ Protocol: a role agent carries it in its prompt; any other worker reads `~/.clau
 
 ## Gate
 Round gate: <the focused checks as commands, logged to `<run dir>/<unit>/gate-N.log`: the tests and typecheck of the packages Owns covers, lint of the changed files, and this unit's acceptance test file alone. Never the full gate, the full e2e or an affected-acceptance run.>
-Batch gate: <the repo's full gate command, its guards included (a dead-exports or boundary check that only CI or main runs is still the gate), and its full acceptance or e2e run affected since the batch base. The orchestrator runs it once per batch.>
-CI: <the CI workflow that runs the suite on a pushed head, or `none`. Named: the batch waits on that run instead of a local full run.>
+Batch gate: <the repo's full gate command, its guards included (a dead-exports or boundary check that only CI or main runs is still the gate), and its full acceptance or e2e run affected since the batch base; where CI is the thorough gate, the repo's quick local pass (e.g. Bite on the workbox: `bun bite gate --branch --with-infra --require-db`, its unit suites on the local Mongo). The orchestrator runs it once per batch, as a heavy job, in every repo, CI repos included.>
+Lands: <`push` (a green batch pushes main) or `PR` (a team repo: a green batch pushes each unit's branch and opens or updates its PR; main is never pushed).>
+CI: <the CI workflow that runs the suite on a pushed head, or `none`; for a PR repo also its trigger and suites (e.g. a `/pipeline vitrine route` comment on a stack's top PR). Named: CI runs after a green batch gate, never in its place: on main after the push, or on each unit's PR.>
 Batch cadence: <default: land when 3 units are ready or the oldest ready unit has waited 30 min, whichever comes first; or this unit's override and why.>
 
 ## Risks
