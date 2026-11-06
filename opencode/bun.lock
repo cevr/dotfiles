@@ -215,6 +215,9 @@
     "mods/git": {
       "name": "@dotfiles/opencode-git",
       "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+      },
     },
     "mods/guard": {
       "name": "@dotfiles/opencode-guard",

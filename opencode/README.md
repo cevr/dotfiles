@@ -655,7 +655,7 @@ OpenCode's external editor does.
 The server plugin answers the `dotfiles-opencode.git` RPC (`git.ts`):
 `checkout`, `pullRequest` and `review`, each for one session. It reads the
 session's directory from OpenCode on every call, so a session that moves is
-read where it is. It takes no options. The model has no aggregate:
+read where it is. The RPC model has no aggregate:
 
 - Values: the checkout (`checkout.ts`), parsed from `git status
   --porcelain=v2 --branch -z` and `git diff --numstat -z` against `HEAD`, or
@@ -670,6 +670,46 @@ read where it is. It takes no options. The model has no aggregate:
   asks the host. `process/` runs git with no optional locks and no index
   refresh, so a read never takes the agent's `index.lock`. It also runs `gh`
   and looks up programs on PATH.
+
+### The pr tool
+
+The server plugin also offers `pr`, a direct tool (`pr.ts`, handlers in
+`pulls.ts`), so an agent never polls GitHub with `gh`, `sleep` or a monitor:
+
+- `status`: per request (default: the session's branch's), the head, its
+  checks grouped fail, pending, pass and cancelled, each failing Actions job
+  with its failing tests and a log excerpt (`failure.ts`, at most 3 logs),
+  the review decision, the latest reviews, unresolved threads, requested
+  reviewers and mergeability (`report.ts`). A cancelled run is not a failure.
+- `watch` (`until` green, reviewed or changed; a `note`), `unwatch`, `list`:
+  a watch is the `PrWatch` aggregate (`watch.ts`). Its notice is a steered
+  synthetic message, a `◈` row that wakes the session. `green` tells each
+  failure and goes on, and ends when the checks pass; any watch ends on a
+  merge or a close.
+- `create`: `gh pr create` for the session's branch, asking the configured
+  reviewers of the repository's owner (`biteinc`: andrewgoupil, antwandaher,
+  narminmolina) unless `reviewers` says otherwise.
+
+Once a session family used the tool on a repository, its default branch is
+followed for a week, and the family's root hears for a day when it turns red
+(once per red spell, with the failing jobs) and green again (the
+`DefaultBranch` aggregate, `branch.ts`).
+
+The watcher is per machine. Every directory's plugin in the server process
+registers, and the first one alive ticks every `intervalSeconds`. Watches and
+followed repositories live in the plugin storage, which every directory
+shares and a restart keeps (`opencode/watch-store.ts`). A tick probes each
+repository with conditional REST requests, which cost no rate limit when
+nothing moved. On a change, or every `refreshSeconds`, it reads all the
+repository's watched requests and its default branch in one GraphQL call
+(`process/github.ts`). There is no webhook source: the tokens on both
+machines lack `admin:repo_hook`. `Pulls.poke(repo)` is the seam a push
+source would call.
+
+Options, all optional: `intervalSeconds` (60), `refreshSeconds` (300),
+`follow` (repositories always followed; none), `reviewers` (owner or
+`owner/name` → logins). `tests/pr.test.ts` runs `scenarios/pr.ts` with a
+stand-in `gh` (`process/fake-gh.ts`).
 
 ## Btw
 

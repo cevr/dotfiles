@@ -473,10 +473,11 @@
                   "!effect",
                   "!effect/*",
                   "*/**/effect",
+                  "!@dotfiles/decider/*",
                   "!./*.ts",
                   "!bun:test"
                 ],
-                "message": "The git domain fence: git's domain files import effect, git's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of git's folders."
+                "message": "The git domain fence: git's domain files import effect, @dotfiles/decider/*, git's own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of git's folders."
               }
             ]
           }

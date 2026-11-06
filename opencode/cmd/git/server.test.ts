@@ -13,10 +13,16 @@ import { CheckoutAnswer, GIT, PullRequestAnswer, ReviewAnswer } from "@dotfiles/
 import { OPEN_REQUEST } from "@dotfiles/opencode-git/laws"
 import { PULL_REQUEST_FIELDS } from "@dotfiles/opencode-git/pull-request"
 import { HUNK_MISSING } from "@dotfiles/opencode-git/review"
+import { type FakeWorld, install } from "@dotfiles/opencode-git/process/fake-gh"
 import Git, { live, make } from "./server.ts"
 
 type Host = Parameters<(typeof Git)["effect"]>[0]
 type Handler = (input: unknown) => Effect.Effect<unknown, unknown>
+interface Tool {
+  readonly name: string
+  readonly options?: { readonly codemode?: boolean }
+  readonly execute: (input: unknown, context: { readonly sessionID: string }) => Effect.Effect<{ readonly content: ReadonlyArray<{ readonly text: string }> }, { readonly message: string }>
+}
 
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
 
@@ -67,17 +73,32 @@ const world = (programs: { readonly gh: boolean; readonly hunk: boolean }) =>
  * The plugin started on a stand-in host whose sessions are `sessions` (read
  * on every call, so a test can move one), and its git RPC.
  */
-const start = (sessions: Record<string, string>, env: Record<string, string | undefined>) =>
+const start = (sessions: Record<string, string>, env: Record<string, string | undefined>, options: Record<string, unknown> = {}) =>
   Effect.gen(function* () {
     const rpc: Record<string, Record<string, Handler>> = {}
+    const tools: Record<string, Tool> = {}
+    const storage = new Map<string, unknown>()
+    const delivered: Array<{ readonly sessionID: string; readonly text: string; readonly description: string }> = []
     const host = {
-      options: {},
+      options,
       location: { directory: "/plugin" },
       session: {
         get: ({ sessionID }: { readonly sessionID: string }) => {
           const directory = sessions[sessionID]
           return directory === undefined ? Effect.fail(new Error(`Session not found: ${sessionID}`)) : Effect.succeed({ location: { directory } })
         },
+        synthetic: (input: { readonly sessionID: string; readonly text: string; readonly description: string }) => Effect.sync(() => void delivered.push(input)),
+      },
+      storage: {
+        get: (key: string) => Effect.sync(() => storage.get(key)),
+        set: (key: string, value: unknown) => Effect.sync(() => void storage.set(key, value)),
+        remove: (key: string) => Effect.sync(() => void storage.delete(key)),
+        scan: ({ prefix }: { readonly prefix: string }) =>
+          Effect.sync(() => ({ entries: [...storage.keys()].filter((key) => key.startsWith(prefix)).map((key) => ({ key, value: storage.get(key) })) })),
+      },
+      tool: {
+        transform: (edit: (editor: { readonly add: (tool: Tool) => void }) => void) =>
+          Effect.sync(() => edit({ add: (tool) => void (tools[tool.name] = tool) })),
       },
       rpc: {
         register: (definition: { readonly id: string }, handlers: Record<string, Handler>) =>
@@ -100,6 +121,9 @@ const start = (sessions: Record<string, string>, env: Record<string, string | un
       pullRequest: (sessionID: string) => call("pullRequest", PullRequestAnswer, { sessionID }),
       review: (sessionID: string, path: string) => call("review", ReviewAnswer, { sessionID, path }),
       raw: (name: string, input: unknown) => call(name, Schema.Unknown, input),
+      tools,
+      storage,
+      delivered,
     }
   })
 
@@ -165,6 +189,63 @@ describe("the git RPC", () => {
         const plugin = yield* start({}, env)
         expect(yield* plugin.raw("checkout", {})).toEqual({ error: "the question names no session" })
         expect(yield* plugin.raw("review", { sessionID: "ses_1" })).toEqual({ note: "the question names no session" })
+      }),
+    ))
+})
+
+const FAKE: FakeWorld = {
+  repo: "biteinc/maitred",
+  branchRequest: 412,
+  requests: [{ number: 412, title: "Pay with points", head: "aaaaaaaa11", checks: [{ name: "test", word: "IN_PROGRESS" }] }],
+  branch: { name: "master", head: "bbbbbbbb22", checks: [{ name: "build", word: "SUCCESS" }] },
+}
+
+const until = (done: () => boolean) =>
+  Effect.gen(function* () {
+    for (let tries = 0; tries < 200 && !done(); tries += 1) yield* Effect.promise(() => new Promise((wake) => setTimeout(wake, 10)))
+  })
+
+describe("the pr tool", () => {
+  test("is a direct tool; a watch's notice comes into the session on the watcher's tick, and the watch is kept in storage", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { dir, env, repository } = yield* world({ gh: false, hunk: false })
+        const gh = install(dir, FAKE)
+        const plugin = yield* start({ ses_1: repository }, { ...env, ...gh.env }, { intervalSeconds: 0.02 })
+        const pr = plugin.tools.pr
+        expect(pr?.options).toEqual({ codemode: false })
+        const status = yield* pr!.execute({ action: "status" }, { sessionID: "ses_1" })
+        expect(status.content[0]?.text).toContain("biteinc/maitred#412 Pay with points · open")
+        const watched = yield* pr!.execute({ action: "watch" }, { sessionID: "ses_1" })
+        expect(watched.content[0]?.text).toContain("Watching biteinc/maitred#412 Pay with points until green: checks pending.")
+        expect([...plugin.storage.keys()].sort()).toEqual(["repo:biteinc/maitred", "watch:ses_1:biteinc/maitred#412"])
+
+        gh.put({ ...FAKE, requests: [{ ...FAKE.requests[0]!, checks: [{ name: "test", word: "SUCCESS" }] }] })
+        yield* until(() => plugin.delivered.length > 0)
+        expect(plugin.delivered.map((each) => [each.sessionID, each.description])).toEqual([["ses_1", "PR biteinc/maitred#412: checks pending → pass"]])
+        expect(plugin.delivered[0]?.text).toContain("The watch ended.")
+        yield* until(() => !plugin.storage.has("watch:ses_1:biteinc/maitred#412"))
+        expect(plugin.storage.has("watch:ses_1:biteinc/maitred#412")).toBe(false)
+      }),
+    ))
+
+  test("a refusal is a tool error the agent reads", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { dir, env, outside } = yield* world({ gh: false, hunk: false })
+        const gh = install(dir, { ...FAKE, repo: undefined, branchRequest: undefined })
+        const plugin = yield* start({ ses_1: outside }, { ...env, ...gh.env })
+        const failure = yield* plugin.tools.pr!.execute({ action: "watch" }, { sessionID: "ses_1" }).pipe(Effect.flip)
+        expect(failure.message).toBe("the session is in no GitHub checkout: name the requests in prs")
+      }),
+    ))
+
+  test("a malformed option stops the plugin and says which", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { env } = yield* world({ gh: false, hunk: false })
+        const exit = yield* Effect.exit(start({}, env, { intervalSeconds: "often" }))
+        expect(String(exit)).toContain("dotfiles-opencode.git: invalid options")
       }),
     ))
 })
