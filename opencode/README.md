@@ -749,6 +749,19 @@ prefixes, takes neither quoted text nor a heredoc body for a command, and reads 
 tell where a call runs, or whether a path is a repository, it refuses. Its
 one option, `home`, defaults to the user's home.
 
+It also refuses a subagent's foreground shell call that opens by sleeping 30
+seconds or more (`sleep 60`, `sleep 60 && tail log`, `sleep 1m; gh run
+view`; units and summed operands as GNU `sleep` reads them), as
+`guard-sleep: <reason>.`. The reason names the replacement: start what it
+waits on with `background: true` and wait on the handle with
+`shell({ action: "wait", id, ms })`, or run a check of outside state as a
+background `until` loop and wait on that (wake and monitor refuse a
+subagent). A root session's sleep runs, a call with `background: true` runs,
+and a sleep later in the line or inside a loop is not read. When the host
+cannot say whether the session is a subagent, the sleep runs: a sleep loses
+nothing. `sleep.ts` holds the rule; `Subagents` (`opencode/`: a session with
+a parent) is its contract.
+
 The model (the domain files at the root of `mods/guard`): `verdict.ts`
 decides a command from where it runs and which of its targets are
 repositories, and `shell-line.ts` reads a command line. `model.ts` asks the

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { DIRTY, git, KEPT_FILE } from "./guard/repo.ts"
 import type { Result, Spec } from "./guard/run.ts"
-import { CELL_TASK, DIRECT_TASK, DONE, HARMLESS, HARMLESS_FILE, HARMLESS_OUT, RESET } from "./guard/sim.ts"
+import { CELL_TASK, CHILD_SLEEP, DIRECT_TASK, DONE, HARMLESS, HARMLESS_FILE, HARMLESS_OUT, RESET, ROOT_SLEEP, SLEEP_TASK } from "./guard/sim.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/guard.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
@@ -105,6 +105,32 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(harmless?.state.status).toBe("completed")
       expect(said(harmless)).toContain(HARMLESS_OUT)
       untouched(result)
+    },
+    RUN_MS,
+  )
+
+  test(
+    "a subagent's shell call opening with sleep 60 is refused in the guard's words, and the root's sleep runs",
+    async () => {
+      const result = await run("sleep", { task: SLEEP_TASK, codeOnly: false })
+      const [subagent, rootSleep, ...rest] = toolParts(result.messages)
+      expect(rest).toEqual([])
+      expect(subagent?.name).toBe("subagent")
+      expect(subagent?.state.status).toBe("completed")
+      expect(rootSleep?.name).toBe("shell")
+      expect(rootSleep?.state.input.command).toBe(ROOT_SLEEP)
+      expect(rootSleep?.state.status).toBe("completed")
+      expect(said(rootSleep)).not.toContain("guard-sleep")
+      const children = Object.values(result.children)
+      expect(children).toHaveLength(1)
+      const [childSleep, ...childRest] = toolParts(children[0])
+      expect(childRest).toEqual([])
+      expect(childSleep?.name).toBe("shell")
+      expect(childSleep?.state.input.command).toBe(CHILD_SLEEP)
+      expect(childSleep?.state.status).toBe("error")
+      expect(said(childSleep)).toContain("guard-sleep: `sleep 60` would hold this subagent's turn for 60 s doing nothing")
+      expect(said(childSleep)).toContain("wait\\\", id, ms })")
+      expect(said(childSleep)).not.toContain("child slept")
     },
     RUN_MS,
   )
