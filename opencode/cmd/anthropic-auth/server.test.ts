@@ -191,6 +191,7 @@ function makeMockContext() {
   const rpcHandlers = new Map<string, QuotaHandlers>()
   const rpcEvents: Array<{ id: string; name: string; payload: Tree }> = []
   const connections: Array<{ type: 'credential'; id: string; label: string }> = []
+  const agentSettings = new Map<string, Record<string, unknown>>()
   const { clock, advance } = shiftedClock()
   const ctx = {
     integration: {
@@ -263,9 +264,15 @@ function makeMockContext() {
           return { dispose: Effect.void }
         }),
     },
+    // Each agent's request settings, by id; an agent not listed sets none.
+    agent: {
+      get: (input: { agentID: string }) =>
+        Effect.succeed({ data: { request: { settings: agentSettings.get(input.agentID) ?? {} } } }),
+    },
   }
   return {
     ctx,
+    agentSettings,
     host: host as unknown as Host,
     run,
     advance,
@@ -3544,6 +3551,60 @@ describe('credential choice, wire extras and quota readings', () => {
       expect(sent.headers.has('x-opencode-cache-ttl')).toBe(false)
       expect(breakpoints(body)).toEqual(Array(4).fill({ type: 'ephemeral', ttl: '1h' }))
       expect(body.messages[0].content[0].input).toEqual({ cache_control: fiveMinutes })
+    })
+
+    describe("an agent's own lifetime", () => {
+      const oneHour = { type: 'ephemeral', ttl: '1h' }
+      const providerDefault = { type: 'ephemeral' }
+      /** A request at the provider's configured hour (or its default), sent as agent `planner`. */
+      const sendAs = async (sessionHooks: SessionHooks, breakpoint: object, headers: Record<string, string> = {}) => {
+        const request = roleRequest(headers)
+        const body = JSON.stringify(await request.json()).replaceAll(JSON.stringify(fiveMinutes), JSON.stringify(breakpoint))
+        const event: RequestEvent = {
+          sessionID: 'ses_one',
+          agent: 'planner',
+          model,
+          kind: 'primary',
+          request: new Request(request.url, { method: 'POST', headers: request.headers, body }),
+        }
+        await sessionHooks.get('http.request')(event)
+        const sent = event.request as Request
+        return { sent, body: await sent.clone().json() }
+      }
+
+      test('replaces the lifetime the provider configures on every breakpoint, never a tool input', async () => {
+        const { ctx, sessionHooks, agentSettings } = twoAccounts()
+        agentSettings.set('planner', { cacheTTL: '5m', compactionWindow: 50_000 })
+        await plugin.setup(ctx)
+
+        const { body } = await sendAs(sessionHooks, oneHour)
+
+        expect(breakpoints(body)).toEqual(Array(4).fill(fiveMinutes))
+        expect(body.messages[0].content[0].input).toEqual({ cache_control: oneHour })
+      })
+
+      test("gives way to the lifetime another plugin names for the request", async () => {
+        const { ctx, sessionHooks, agentSettings } = twoAccounts()
+        agentSettings.set('planner', { cacheTTL: '5m' })
+        await plugin.setup(ctx)
+
+        const { sent, body } = await sendAs(sessionHooks, oneHour, { 'x-opencode-cache-ttl': '1h' })
+
+        expect(sent.headers.has('x-opencode-cache-ttl')).toBe(false)
+        expect(breakpoints(body)).toEqual(Array(4).fill(oneHour))
+      })
+
+      test("leaves a provider's default lifetime, an agent without one, and a value Anthropic does not take", async () => {
+        const { ctx, sessionHooks, agentSettings } = twoAccounts()
+        agentSettings.set('planner', { cacheTTL: '5m' })
+        await plugin.setup(ctx)
+        expect(breakpoints((await sendAs(sessionHooks, providerDefault)).body)).toEqual(Array(4).fill(providerDefault))
+
+        for (const settings of [{}, { cacheTTL: '2h' }, { cacheTTL: 300 }]) {
+          agentSettings.set('planner', settings)
+          expect(breakpoints((await sendAs(sessionHooks, oneHour)).body)).toEqual(Array(4).fill(oneHour))
+        }
+      })
     })
 
     test('leaves the breakpoints as they came without it, or with a lifetime Anthropic does not take', async () => {

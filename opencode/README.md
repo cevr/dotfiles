@@ -64,7 +64,12 @@ theme. The mod has three parts.
 - `opencode/host.ts` builds that `Host` from the plugin context. Each read
   goes straight to the context, so it stays reactive. The wakes come from
   the wake mod's RPC (`opencode/wakes.ts`, ids from its protocol file
-  `@dotfiles/opencode-wake/wake`, decoded with Prime's own schema).
+  `@dotfiles/opencode-wake/wake`, decoded with Prime's own schema). A part
+  of a step (`partOf` in `session.ts`) and the context usage (`usage.ts`)
+  are worked out from the session's messages and the location's models; the
+  goal comes from OpenCode's goal RPC (`opencode/goal.ts`: read on a
+  session's first read and on reconnect, kept current from its `changed`
+  events).
 
 The dock under the composer counts the session's work:
 
@@ -269,8 +274,9 @@ server has `POST /api/shell/:id/kill` and `GET /api/shell?exited=true`.
 
 `mods/orchestrate` holds the orchestrate skill's rules; its plugin is
 `cmd/orchestrate`. It defines the role agents, their compaction windows and
-their five-minute prompt cache (`ROLE_CACHE_TTL`, through the fork's per-agent
-`request.settings.cacheTTL`, raised by the pool to the provider's hour once a
+their five-minute prompt cache (`ROLE_CACHE_TTL`, the per-agent
+`request.settings.cacheTTL` that `cmd/anthropic-auth`'s `http.request` hook
+writes over the provider-configured lifetime, raised by the pool to the provider's hour once a
 role's session outlives it; the main session keeps the provider's hour),
 routes each subagent call to a role, starts a new Opus start the pace holds on
 Codex instead, latches one both hold, and stops agent work over the Sabbath. Its options are `windows`, `log`, `now`,
@@ -691,6 +697,37 @@ and no work) unless `HERDR_ENV=1` and both `HERDR_PANE_ID` and
 `HERDR_SOCKET_PATH` are set. The server runs as a background service outside
 any pane, so only the TUI can report.
 
+## Recover
+
+`cmd/recover` is a TUI plugin that returns a session whose directory is gone
+(a removed rift or worktree) to where it was before. When the session on
+screen is idle and its directory no longer exists, it reads the session's
+location-switched messages (every applied move appends one, naming where the
+session went and where it left; the oldest one's previous location is where
+the session was made), newest first, and moves the session to the newest of
+those locations that still exists, through the same `session.move` route the
+host's "Choose directory" calls. A toast says so:
+
+```
+Moved to ~/Developer/repo: ~/.rifts/repo/feature no longer exists
+```
+
+With no such location, the host's own "Session location unavailable" prompt
+stays. A failed read or move toasts `Failed to return session` and leaves the
+prompt. A directory that exists is looked at again on the next visit; a
+missing one is tried once per session and directory. The host draws its
+prompt for the moment before the move lands. The TUI checks the directories
+on its own machine, as `daily` runs it beside its server.
+
+The model (the domain files at the root of `mods/recover`): `recover.ts`
+picks the location (`recoverTarget`) and words the toast, and `model.ts`'s
+`recover` reads and moves through the contracts in `service.ts`: `Sessions`
+(`opencode/`: the TUI client's message list and move) and `Directories`
+(`filesystem/`, with its laws in `laws.ts`); `memory/` holds the world the
+model's test runs on. `tests/recover.test.ts` runs `scenarios/recover.ts`:
+a session moved into a folder that is then removed goes back where it was
+made when the TUI opens it.
+
 ## Cache
 
 `cmd/cache` is a TUI plugin that shows when a request paid again for a
@@ -710,7 +747,7 @@ lifetime, the response itself, a tool call, an approval wait, a pause, a
 subagent's report or idle time between turns. The lifetime is the one the
 previous request's agent asked for: its own `request.settings.cacheTTL`
 (the roles' 5 minutes) over a model or provider `settings.cache.ttl`, as the
-fork applies it, else that setting, else 5 minutes for Anthropic and 30
+auth plugin applies it, else that setting, else 5 minutes for Anthropic and 30
 minutes for OpenAI. A provider with neither counts only model switches. A
 miss is priced at the cache-write rate for the tokens the request wrote back
 and the input rate for the rest, less the read rate it would have paid.
@@ -789,7 +826,7 @@ A session compacts at its cache's expiry less a margin when all of these hold:
 
 The cache's life counts from the last request's start (title requests
 aside), as Anthropic counts it. Its length is the one the request was sent
-with, resolved as the fork resolves it: the model's `cache.ttl`, else its
+with, resolved as the auth plugin resolves it: the model's `cache.ttl`, else its
 provider's, replaced by the agent's own `request.settings.cacheTTL` (an
 orchestration role's 5 minutes) when one is configured; with none
 configured, the provider's default: 5 minutes for Anthropic, 30 minutes for

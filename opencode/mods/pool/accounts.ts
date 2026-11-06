@@ -62,8 +62,8 @@ const UNIT_MS = { ms: 1, s: 1_000, m: MINUTE, h: 60 * MINUTE, d: 24 * 60 * MINUT
 
 /**
  * An agent's own prompt-cache lifetime in ms, from the `request.settings.cacheTTL`
- * a plugin sets on it ("5m", "1h", models.dev's duration format; the fork
- * applies it in packages/core/src/session/agent-cache.ts). Undefined for
+ * a plugin sets on it ("5m", "1h", models.dev's duration format; the
+ * anthropic-auth `http.request` hook applies it, mods/anthropic-auth/request-body.ts). Undefined for
  * anything else: the agent then keeps its provider's lifetime.
  */
 export const ttlMs = (ttl: unknown): number | undefined => {
