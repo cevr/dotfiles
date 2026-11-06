@@ -306,11 +306,16 @@ export function Working(props: { host: Host; sessionID: string }) {
   const started = createMemo(() => turnStart(props.host.messages(props.sessionID)))
   const [now, setNow] = createSignal(Date.now())
   const [frame, setFrame] = createSignal(0)
-  const timer = setInterval(() => {
+  // The spinner turns only while the turn runs; an idle session sets no timer.
+  createEffect(() => {
+    if (!running()) return
     setNow(Date.now())
-    setFrame((value) => (value + 1) % SPINNER.length)
-  }, SPINNER_MS)
-  onCleanup(() => clearInterval(timer))
+    const timer = setInterval(() => {
+      setNow(Date.now())
+      setFrame((value) => (value + 1) % SPINNER.length)
+    }, SPINNER_MS)
+    onCleanup(() => clearInterval(timer))
+  })
   return (
     <Show when={running()}>
       <box paddingLeft={GUTTER} marginTop={1} flexShrink={0}>

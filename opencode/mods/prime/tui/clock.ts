@@ -7,7 +7,11 @@ const [now, setNow] = createSignal(Date.now())
 let readers = 0
 let timer: ReturnType<typeof setInterval> | undefined
 
-/** The current time, ticking every `TICK_MS` while `active` is true. */
+/**
+ * The current time, ticking every `TICK_MS` while `active` is true. While it
+ * is false the read is the time at the read and tracks no clock, so a settled
+ * row never recomputes on another row's tick.
+ */
 export function useNow(active: Accessor<boolean>): Accessor<number> {
   createEffect(() => {
     if (!active()) return
@@ -17,5 +21,5 @@ export function useNow(active: Accessor<boolean>): Accessor<number> {
       if (--readers === 0) clearInterval(timer)
     })
   })
-  return now
+  return () => (active() ? now() : Date.now())
 }

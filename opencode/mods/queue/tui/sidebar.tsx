@@ -6,6 +6,7 @@
 // beneath the composer, not this section's. A failed or undecodable answer
 // changes nothing; no rows draw nothing.
 // cmd/queue/tui.tsx registers it on `sidebar.content`.
+import { familyReader } from "@dotfiles/opencode-subagents/solid/reader"
 import type { Plugin } from "@opencode/plugin/tui"
 import { Option, Schema } from "effect"
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
@@ -24,6 +25,8 @@ const POLL_MS = 2000
 export function QueueSection(props: { ctx: Plugin.Context; sessionID: string }) {
   const ctx = props.ctx
   const root = createMemo(() => ctx.data.session.root(props.sessionID))
+  // A token streamed into the family re-reads only its own message.
+  const family = familyReader()
   const [queue, setQueue] = createSignal<{ readonly root: string; readonly snapshot: Snapshot }>()
   const [now, setNow] = createSignal(Date.now())
   const abort = new AbortController()
@@ -54,7 +57,7 @@ export function QueueSection(props: { ctx: Plugin.Context; sessionID: string }) 
   const rows = createMemo(() => {
     const current = queue()
     const items = current?.root === root() ? current.snapshot.items : []
-    return board(items, liveStates(ctx.data, root(), ctx.location), now())
+    return board(items, liveStates(ctx.data, root(), ctx.location, family), now())
   })
   const theme = () => ctx.theme
   const colour = (mark: Mark) => {
