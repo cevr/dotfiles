@@ -1153,8 +1153,8 @@ Prime's dock draws the pending wakes). The server takes options: `backstop` (`"c
 `bun` and `opencode`, those programs by path (default the `bun` on PATH, else
 `~/.bun/bin/bun`, and `~/.local/bin/opencode`).
 
-The server adds four direct tools (a kernel cell calls them as
-`tools.wake(...)` and so on):
+The server adds five direct tools (a kernel cell calls them as
+`tools.wake(...)` and so on); `job` is in [Jobs](#jobs) below:
 
 - `wake({ afterSeconds | at, everySeconds?, mode?, note, newSession? })` sets
   an alarm on this session, at most a year ahead. `everySeconds` (at least 60)
@@ -1311,6 +1311,47 @@ the session that started it and ends with it, so it waits on CI with a
 background shell, and its parent (or the root) sets the wake. The root
 sessions, the orchestrator included, use them for every wake-up; `okra
 schedule` is no longer needed for that.
+
+### Jobs
+
+`job({ command, cwd?, note, heavy?, timeoutSeconds? })` runs a long command
+outside the OpenCode server, so a server restart leaves it running, and wakes
+the session when it ends. Use it instead of `nohup`, `setsid`, `systemd-run`
+or a background shell for anything past a few minutes, and instead of
+polling with `ps`; then end the turn. A subagent may run one too, and waits
+for it with `action: "wait"`, since its turn's end hands back to its parent.
+
+- It runs as `/bin/sh -c <command>` in its own process group, its stdout and
+  stderr to `$XDG_STATE_HOME/opencode-job/<id>/log`, under a runner
+  (`cmd/wake/job.ts`): a `systemd-run --user --unit opencode-job-<id>` unit on
+  Linux (a detached process when the user manager refuses, with a warning in
+  the receipt), a detached session and process group on the Mac. `heavy` runs
+  it under `nice -n 10`; past `timeoutSeconds` (default a day, at most 7) it is
+  stopped with SIGTERM, then SIGKILL 10 s later.
+- Lines the command appends to the file `$JOB_DRIP` names reach the session at
+  most once a minute, without starting a turn; the rest ride on the end
+  letter. `$JOB_ID` is the job's id.
+- Its end steers a letter with the exit code (or the timeout, kill or signal),
+  the duration, the progress, the log tail and the note. The runner asks the
+  service at once (starting it when none runs, unless `backstop: "off"`); the
+  server also looks every 10 s, and a start finds one that ended while none
+  ran, saying how late. A runner gone without an exit (a reboot) reads lost.
+- `job({ action: "check" | "wait" | "kill", id })` reads it, waits up to `ms`
+  (default 10 min, at most 60), or stops it; a `wait` or `kill` that sees the
+  end takes the letter's place. `job({ action: "list" })` lists the session's
+  jobs. `wake_cancel` refuses a job id and names the kill; a deleted session's
+  jobs are killed. At most 20 jobs per session.
+
+```
+⏰ Job j3k9x0a exited 4 after 4s: `bun run gate`.
+It ran in /work/app from 2026-11-06T15:11:37.891Z to 2026-11-06T15:11:41.902Z. Log: ~/.local/state/opencode-job/j3k9x0a/log.
+Note: KAPPA: read the result
+Log tail:
+...
+```
+
+`tests/job.test.ts` runs `scenarios/job.ts`: a job whose end wakes the idle
+session, and a killed one that wakes nobody.
 
 ## The code kernel
 

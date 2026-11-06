@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Wakes' OpenCode plugins, the wake, monitor, wake_cancel and wake_list tools and RPC (server) and the OS job's script (backstop): the composition root of @dotfiles/opencode-wake. Prime's dock draws the pending wakes.",
+  "description": "Wakes' OpenCode plugins, the wake, monitor, wake_cancel, wake_list and job tools and RPC (server), the OS job's script (backstop) and the job runner (job): the composition root of @dotfiles/opencode-wake. Prime's dock draws the pending wakes.",
   "exports": {
     "./server": "./server.ts",
     "./backstop": "./backstop.ts",
