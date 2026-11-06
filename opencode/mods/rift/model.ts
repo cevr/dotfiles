@@ -294,6 +294,9 @@ export const layer = Layer.effect(
         }
         const merged = units.filter((unit) => !conflicts.has(unit.path))
         locks.push(...(yield* landing.install(integration, started.previous).pipe(Effect.mapError((failure) => stopped("install", failure.message)))))
+        // A clean merge can still leave a generated file stale (its sources changed in another Rift): write them again every batch.
+        if (config.regenerate !== undefined && merged.length > 0)
+          locks.push(...(yield* landing.regenerate(integration, config).pipe(Effect.mapError((failure) => stopped("regenerate", failure.message)))))
         const gate = merged.length === 0 ? undefined : yield* landing.check(integration, "gate", gateCommand, {})
 
         if (!config.push) {

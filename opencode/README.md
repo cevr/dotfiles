@@ -1139,7 +1139,13 @@ workbox in a week). One input, with an `action`:
   files and the repository's generated files alone is settled: the Rift's
   side, installed again and regenerated, committed. Any other conflict aborts
   the merge and stops the batch, naming the Rift and the files. Then install
-  each lock file the batch changed (committed when rewritten), run the gate
+  each lock file the batch changed (committed when rewritten), and, when
+  `rift.regenerate` is set, run it once more after every batch, conflict or
+  not: a clean merge can still leave a generated file stale (one Rift
+  changed what another's generated file is written from). What it rewrote
+  among the generated files and the lock files is committed as one `chore:
+  regenerate generated files after landing` (nothing changed, no commit); a
+  failing regenerate stops the batch before the gate. Then run the gate
   once, push to the default branch when it still holds origin's newest, fetch
   in each landed Rift and trash it unless the removal rule keeps it (it says
   why). The accept check then runs once, in the background, one at a time
@@ -1174,8 +1180,8 @@ knows no repository's commands:
 | --- | --- |
 | `rift.gate` | the fast check run before the push; required |
 | `rift.accept` | the slow check run after it, with `RIFT_LAND_BASE` set to the batch's base |
-| `rift.generated` | one value per generated file (repository-relative) whose conflict is settled by writing it again |
-| `rift.regenerate` | the shell line, run at the repository root, that writes them again |
+| `rift.generated` | one value per generated file (repository-relative): its conflict is settled by writing it again, and its rewrite after every batch is committed |
+| `rift.regenerate` | the shell line, run at the repository root, that writes them again: on such a conflict, and after every batch's merges and install, before the gate |
 | `rift.push` | a Git boolean, default true; false checks the batch without pushing the default branch or removing a Rift |
 | `rift.pushBranches` | a Git boolean, default false; with `rift.push` false, push each green Rift's own branch |
 | `workrift.main` | the default branch; else origin's HEAD, else `main` |
@@ -1186,7 +1192,11 @@ This repository's warm source sets:
 git config rift.gate 'cd opencode && OPENCODE_DEV=~/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=~/Developer/personal/.rifts/gent/untrack-local-settings bun run gate'
 git config rift.accept 'cd opencode && env -u ANTHROPIC_BASE_URL OPENCODE_DEV=~/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=~/Developer/personal/.rifts/gent/untrack-local-settings bun run accept:affected "$RIFT_LAND_BASE"'
 git config rift.generated opencode/mods/orchestrate/agents.json
-git config rift.regenerate 'cd opencode && bun scripts/agents.ts'
+for role in planner implementor verifier; do
+  git config --add rift.generated agents/$role.md
+  git config --add rift.generated codex/agents/$role.toml
+done
+git config rift.regenerate 'bun skills/orchestrate/scripts/agents.ts && cd opencode && bun scripts/agents.ts'
 ```
 
 The workbox's Bite warm source, `/workspaces/bite` (origin

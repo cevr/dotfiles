@@ -143,7 +143,7 @@ describe("land", () => {
     expect(answer).toBe(
       [
         "Landed 2 Rift(s) as one push: abc1234 Merge into main to main (merged feat/x, feat/y; the gate passed in 3s).",
-        "Installed again and committed: opencode/bun.lock, opencode/mods/orchestrate/agents.json.",
+        "Installed or regenerated and committed: opencode/bun.lock, opencode/mods/orchestrate/agents.json.",
         `To the trash: ${FEAT}, ${OTHER}.`,
         `The accept check runs in the background in ${INTEGRATE} on the batch since base0; this session is woken with its result.`,
       ].join("\n"),
@@ -205,6 +205,43 @@ describe("land", () => {
     expect(answers[0]).toBe(`refused: The push from ${INTEGRATE} failed: origin/main moved while the gate ran; land the batch again to merge it first.`)
     expect(answers[1]).toBe(answers[0]!)
     expect(made.rifts.rifts.has(FEAT)).toBe(true)
+  })
+
+  describe("with rift.regenerate set", () => {
+    const AGENTS = "opencode/mods/orchestrate/agents.json"
+    const regenerating = () =>
+      bench(
+        MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), MemoryRifts.clean(OTHER, "feat/y")]),
+        MemoryLanding.world({ [SOURCE]: MemoryLanding.config("main", "bun run gate", undefined, { generated: [AGENTS], regenerate: "bun scripts/agents.ts" }) }),
+      )
+
+    test("a clean batch is regenerated after the merges and the install, and what it rewrote is committed before the gate", async () => {
+      const made = regenerating()
+      made.landing.regenerates.push(AGENTS)
+      expect(await call(made, { action: "land", rifts: ["feat-x", "feat-y"] })).toBe(
+        [
+          "Landed 2 Rift(s) as one push: abc1234 Merge into main to main (merged feat/x, feat/y; the gate passed in 3s).",
+          `Installed or regenerated and committed: ${AGENTS}.`,
+          `To the trash: ${FEAT}, ${OTHER}.`,
+          "No rift.accept is configured, so no check runs after the push.",
+        ].join("\n"),
+      )
+      expect(made.landing.steps.slice(0, 7)).toEqual([`start ${INTEGRATE} main`, "merge feat/x", "merge feat/y", "install", "regenerate", `commit ${AGENTS}`, `gate ${INTEGRATE}`])
+    })
+
+    test("nothing to commit makes no commit; a failing regenerate stops the batch before the gate", async () => {
+      const quiet = regenerating()
+      expect(await call(quiet, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+      expect(quiet.landing.steps.slice(0, 5)).toEqual([`start ${INTEGRATE} main`, "merge feat/x", "install", "regenerate", `gate ${INTEGRATE}`])
+
+      const broken = regenerating()
+      broken.landing.regenerateFails = "error: Cannot find module './protocol.md'"
+      expect(await call(broken, { action: "land", rifts: ["feat-x"] })).toBe(
+        `refused: The regenerate step failed in ${INTEGRATE}; nothing was pushed: error: Cannot find module './protocol.md'`,
+      )
+      expect(broken.landing.steps).toEqual([`start ${INTEGRATE} main`, "merge feat/x", "install", "regenerate"])
+      expect(broken.rifts.rifts.has(FEAT)).toBe(true)
+    })
   })
 
   test("with no accept check nothing runs after the push; a landed Rift the session runs in stays; changes also in the warm source do not keep one", async () => {
