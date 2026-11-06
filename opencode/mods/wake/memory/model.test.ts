@@ -206,6 +206,24 @@ describe("a monitor", () => {
       }),
     ))
 
+  test("the tray reads its interval, pattern and newest check's output, which goes with it", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        w.checks.answers.set("curl -s /health", [MemoryChecks.check(1, "", "refused"), MemoryChecks.check(0, "booting\nstill waiting"), MemoryChecks.check(0, "READY")])
+        const { model } = yield* server(w)
+        const placed = yield* model.monitor("ses_a", { command: "curl -s /health", intervalSeconds: 5, until: "^READY$", note: "deploy" })
+        yield* settle
+        const shown = (yield* model.pending(["ses_a"])).entries[0]
+        expect(shown).toMatchObject({ id: placed.entry.id, kind: "monitor", command: "curl -s /health", intervalSeconds: 5, until: "^READY$" })
+        expect(shown?.last).toEqual({ at: 0, exitCode: 1, output: "refused" })
+        yield* until(5 * SECOND)
+        expect((yield* model.pending(["ses_a"])).entries[0]?.last).toEqual({ at: 5 * SECOND, exitCode: 0, output: "booting\nstill waiting" })
+        yield* until(10 * SECOND)
+        expect((yield* model.pending(["ses_a"])).entries).toEqual([])
+      }),
+    ))
+
   test("wakes at its deadline when nothing matched", () =>
     run(
       Effect.gen(function* () {

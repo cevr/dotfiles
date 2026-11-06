@@ -50,6 +50,8 @@ import {
   type Job,
   type JobAsk,
   jobOf,
+  type LastCheck,
+  lastCheckOf,
   matched,
   type Monitor,
   type MonitorAsk,
@@ -192,6 +194,8 @@ export const layer = (config: Config) =>
       const timers = yield* FiberMap.make<string>()
       const later = yield* FiberSet.make()
       const settleMs = config.settleMs ?? 5000
+      /** Each running monitor's newest check, for the tray; it goes with the monitor's timer. */
+      const lastChecks = new Map<string, LastCheck>()
 
       const sleepUntil = (at: number) =>
         Effect.gen(function* () {
@@ -507,6 +511,7 @@ export const layer = (config: Config) =>
               count += 1
               last = check
               const after = yield* Clock.currentTimeMillis
+              lastChecks.set(id, lastCheckOf(check, after))
               if (matched(entry, check)) fired = yield* fire(id, monitorFire("matched", count, last), false)
               else if (after >= entry.deadline) fired = yield* fire(id, monitorFire("timed-out", count, last), false)
               else {
@@ -520,7 +525,7 @@ export const layer = (config: Config) =>
             }
             return
           }
-        })
+        }).pipe(Effect.ensuring(Effect.sync(() => void lastChecks.delete(id))))
 
       // ── Latches ──
 
@@ -778,7 +783,10 @@ export const layer = (config: Config) =>
               now: yield* Clock.currentTimeMillis,
               entries: ofSessions(yield* store.entries, sessionIDs)
                 .filter(shown)
-                .map(shownOf)
+                .map((entry) => {
+                  const last = lastChecks.get(entry.id)
+                  return last === undefined ? shownOf(entry) : { ...shownOf(entry), last }
+                })
                 .toSorted((left, right) => left.dueAt - right.dueAt),
               notices: ofSessions(yield* store.notices, sessionIDs),
             }

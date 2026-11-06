@@ -351,6 +351,7 @@ const text = { type: "string" } as const
  * - `pending({ sessionIDs })`: what those sessions have pending, and their unread notices.
  * - `due({ id })`: the OS backstop's call when its job fires: fire the entry if it is due and not yet fired. `Due` says what happened.
  * - `latch(LatchAsk)`: keep a held subagent start as a latch of the asking session, with its child session made unprompted. `Latched` says its id and child, or why not.
+ * - `cancel({ sessionID, id })`: the owner cancels one of the session's entries, as `wake_cancel` does. `Cancelled` says which ids went, or why not.
  * - `changed({ sessionID })`: published after every change to a session's wakes.
  */
 export const WAKES = {
@@ -359,11 +360,24 @@ export const WAKES = {
     pending: { input: object({ sessionIDs: { type: "array", items: text } }, ["sessionIDs"]), output: { type: "object" } },
     due: { input: object({ id: text }, ["id"]), output: { type: "object" } },
     latch: { input: { type: "object" }, output: { type: "object" } },
+    cancel: { input: object({ sessionID: text, id: text }, ["sessionID", "id"]), output: { type: "object" } },
   },
   events: {
     changed: { schema: { type: "object", properties: { sessionID: text }, required: ["sessionID"] } },
   },
 } as const
+
+/** A monitor's newest check as the tray reads it: when, the exit code, and its output's tail (stdout, else stderr). */
+export const LastCheck = Schema.Struct({ at: Schema.Number, exitCode: Schema.Number, output: Schema.String })
+export type LastCheck = typeof LastCheck.Type
+
+/** How many characters of a check's output the tray keeps: the end. */
+export const LAST_OUTPUT_CHARS = 2000
+
+export const lastCheckOf = (check: Check, at: number): LastCheck => {
+  const output = (check.stdout.trim() === "" ? check.stderr : check.stdout).trimEnd()
+  return { at, exitCode: check.exitCode, output: output.length > LAST_OUTPUT_CHARS ? output.slice(-LAST_OUTPUT_CHARS) : output }
+}
 
 /** One pending entry as the tray reads it. */
 export const Shown = Schema.Struct({
@@ -377,6 +391,12 @@ export const Shown = Schema.Struct({
   dueAt: Schema.Number,
   everySeconds: Schema.optional(Schema.Number),
   command: Schema.optional(Schema.String),
+  /** A monitor's check period, seconds. */
+  intervalSeconds: Schema.optional(Schema.Number),
+  /** A monitor's stop pattern. */
+  until: Schema.optional(Schema.String),
+  /** A monitor's newest check since this server started, if it ran one. */
+  last: Schema.optional(LastCheck),
   /** A latch's child session. */
   child: Schema.optional(Schema.String),
 })
@@ -394,7 +414,9 @@ export const shownOf = (entry: Exclude<Entry, Job>): Shown => ({
   dueAt: dueOf(entry),
   ...(entry.kind === "latch" ? { child: entry.child } : {}),
   ...(entry.kind === "alarm" && entry.everySeconds !== undefined ? { everySeconds: entry.everySeconds } : {}),
-  ...(entry.kind === "monitor" ? { command: entry.command } : {}),
+  ...(entry.kind === "monitor"
+    ? { command: entry.command, intervalSeconds: entry.intervalSeconds, ...(entry.until === undefined ? {} : { until: entry.until }) }
+    : {}),
 })
 
 /** What `pending` answers. */
@@ -408,6 +430,13 @@ export type Pending = typeof Pending.Type
  */
 export const Due = Schema.Struct({ outcome: Schema.Literals(["fired", "pending", "gone", "refused"]) })
 export type Due = typeof Due.Type
+
+/** What `cancel` answers: the ids that went, or the refusal `wake_cancel` would give. */
+export const Cancelled = Schema.Union([
+  Schema.Struct({ outcome: Schema.Literal("cancelled"), ids: Schema.Array(Schema.String) }),
+  Schema.Struct({ outcome: Schema.Literal("refused"), reason: Schema.String }),
+])
+export type Cancelled = typeof Cancelled.Type
 
 /** The event the server publishes on every change: its full type, as the TUI's event stream carries it. */
 export const CHANGED = `rpc.${WAKES.id}.changed`
