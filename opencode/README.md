@@ -8,7 +8,27 @@ plugin hooks supply the UI; orchestration policy lives in this repository.
 ```sh
 bun run daily            # build the fork, write ~/.local/bin/opencode, merge the config
 bun run daily --skip-build
+bun run daily --no-upstream  # skip the upstream merge
+bun run daily --dry-run      # fetch upstream, say what would merge, change nothing
 ```
+
+On the Mac, the host that owns the fork, `daily` first merges upstream
+OpenCode into the fork (`scripts/upstream.ts`): it fetches `upstream/dev`
+and, when `prime-look` lacks some of its commits, merges it (`--no-edit`) in
+a worktree of the fork of its own (`~/.local/state/opencode-daily/upstream-merge`,
+kept between runs so its `node_modules` stay warm), never in the checkout
+`OPENCODE_DEV` builds. A clean merge must then install as its lockfile says,
+typecheck `packages/tui`, `packages/core` and `packages/plugin`, and pass the
+acceptance tests most exposed to host changes (`tests/prime-*`, `tui-cpu`,
+`mail`, `orchestrate`) with `OPENCODE_DEV` at the merge, niced and without
+`ANTHROPIC_BASE_URL`. Green, `prime-look` fast-forwards to the merge (its
+working tree too, where it is checked out), goes to origin, and this build
+is of it. A conflict (aborted) or a red check leaves `prime-look` as it was,
+prints the conflicting files or the failing check, writes them to
+`~/.local/state/opencode-daily/upstream-conflict.md` for an agent to resolve
+(a red merge is kept on branch `daily/upstream-merge`), and the install goes
+on with the fork as it is. The report goes once `prime-look` is current
+again. The workbox skips the step and pulls origin `prime-look`.
 
 `scripts/daily.ts` installs the mods' dependencies (`bun install
 --frozen-lockfile`; OpenCode loads the plugins in place and installs nothing),
