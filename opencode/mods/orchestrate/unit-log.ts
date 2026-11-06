@@ -19,8 +19,9 @@
 // Where the unit dir is comes from the paths the prompt or the hand-back
 // names (`<unit dir>/spec.md`, `<unit dir>/round-1-request.md`): the prefix up
 // to the segment that is the unit's name. The store also looks under the
-// session's checkout (service.ts UnitLogs); when neither finds it, nothing is
-// written.
+// session's checkout (service.ts UnitLogs). Only a unit dir counts (it holds
+// spec.md or log.md, or its run dir holds plan.md), so a Rift that shares the
+// unit's name gets no log.md; when none is found, nothing is written.
 import { described, isStep, type Step } from "./described.ts"
 
 /** One move of a unit, as log.ts takes it: the state it moves to, the round, and the note (its cause first). */

@@ -1122,7 +1122,8 @@ workbox in a week). One input, with an `action`:
 - `{ action: "remove", name | path, force? }` moves a Rift to Rift's trash
   (`rift remove`, `workrift remove` on the workbox). It refuses a Rift that
   holds work found nowhere else, and names it: uncommitted changes (untracked
-  files too), stashes, and commits on no remote and in no branch of its
+  files too), stash entries the warm source does not also hold (a Rift
+  inherits its source's stash), and commits on no remote and in no branch of its
   source, unless `force: true`. It always refuses a warm source, the Rift the
   session runs in, and a Rift with Rifts of its own. `withChildren: true`
   takes the Rift's own Rifts with it, each still refused while it holds
@@ -1194,8 +1195,8 @@ launcher (`heavyArgv` in `mods/guard/launcher.ts`): `nice -n 10`, and where
 This repository's warm source sets:
 
 ```sh
-git config rift.gate 'cd opencode && OPENCODE_DEV=~/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=~/Developer/personal/.rifts/gent/untrack-local-settings bun run gate'
-git config rift.accept 'cd opencode && env -u ANTHROPIC_BASE_URL OPENCODE_DEV=~/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=~/Developer/personal/.rifts/gent/untrack-local-settings bun run accept:affected "$RIFT_LAND_BASE"'
+git config rift.gate 'cd opencode && OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=$HOME/Developer/personal/.rifts/gent/untrack-local-settings bun run gate'
+git config rift.accept 'cd opencode && env -u ANTHROPIC_BASE_URL OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=$HOME/Developer/personal/.rifts/gent/untrack-local-settings bun run accept:affected "$RIFT_LAND_BASE"'
 git config rift.generated opencode/mods/orchestrate/agents.json
 for role in planner implementor verifier; do
   git config --add rift.generated agents/$role.md
@@ -1203,6 +1204,11 @@ for role in planner implementor verifier; do
 done
 git config rift.regenerate 'bun skills/orchestrate/scripts/agents.ts && cd opencode && bun scripts/agents.ts'
 ```
+
+A path in these values is written with `$HOME`, never `~`: `sh` leaves a
+`~` after `=` in a command's argument as it is, so `env OPENCODE_DEV=~/…`
+hands the run a literal `~` directory (the first real land's accept run
+failed on it).
 
 The workbox's Bite warm source, `/workspaces/bite` (origin
 `biteinc/maitred`, default branch `master` from origin's HEAD), lands
