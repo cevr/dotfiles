@@ -12,6 +12,11 @@
  *   cell reaches them as `tools.wake(...)`.
  * - Each entry also gets an OS job (`opencode-wake-<id>`) that fires it when
  *   no server runs: the job starts the OpenCode service and calls `due`.
+ * - `job` runs a command as its own process outside the server (a
+ *   `systemd-run --user` unit on Linux, a detached process group on the
+ *   Mac; runner `job.ts`), so it outlives a restart; its end steers a letter
+ *   into the session, through `due` from the runner, the server's poll, or
+ *   the next start. `check`, `wait`, `kill` and `list` over the same tool.
  * - `pending({ sessionIDs })` for the tray, `due({ id })` for the OS jobs;
  *   every change publishes `changed({ sessionID })`.
  * - `latch(LatchAsk)` for orchestrate: a held subagent start kept as a latch
@@ -31,17 +36,21 @@ import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Ref, Schema, Stream } from "effect"
 import * as CronBackstop from "@dotfiles/opencode-wake/cron/backstop"
 import * as MemoryBackstop from "@dotfiles/opencode-wake/memory/backstop"
-import { alarmReceipt, cancelReceipt, listing, monitorReceipt } from "@dotfiles/opencode-wake/message"
+import { DEFAULT_WAIT_MS, MAX_WAIT_MS } from "@dotfiles/opencode-wake/job"
+import { alarmReceipt, cancelReceipt, durationOf, jobListing, jobReceipt, jobReport, listing, monitorReceipt } from "@dotfiles/opencode-wake/message"
 import * as Model from "@dotfiles/opencode-wake/model"
 import * as OpenCodeCourier from "@dotfiles/opencode-wake/opencode/courier"
 import * as OpenCodeOpener from "@dotfiles/opencode-wake/opencode/opener"
 import * as OpenCodeStore from "@dotfiles/opencode-wake/opencode/store"
 import * as ProcessChecks from "@dotfiles/opencode-wake/process/checks"
+import * as ProcessRunner from "@dotfiles/opencode-wake/process/runner"
 import { type Latched, LatchAsk } from "@dotfiles/opencode-wake/latch"
-import { type Backstop, Changes, type Checks, type Courier, type Opener, type WakeStore } from "@dotfiles/opencode-wake/service"
+import { type Backstop, Changes, type Checks, type Courier, type Opener, type Runner, type WakeStore } from "@dotfiles/opencode-wake/service"
 import {
   CANCEL_DESCRIPTION,
   CancelInput,
+  JOB_DESCRIPTION,
+  JobInput,
   LIST_DESCRIPTION,
   ListInput,
   MONITOR_DESCRIPTION,
@@ -63,17 +72,35 @@ export const Options = Schema.Struct({
 export type Options = typeof Options.Type
 
 /** What the wakes run on. */
-export type Externals = WakeStore | Courier | Checks | Backstop | Opener
+export type Externals = WakeStore | Courier | Checks | Backstop | Opener | Runner
 
 /** The OS job's script, beside this file. */
 export const SCRIPT = fileURLToPath(new URL("./backstop.ts", import.meta.url))
+/** A job's runner, beside this file. */
+export const JOB_SCRIPT = fileURLToPath(new URL("./job.ts", import.meta.url))
+
+const bunOf = (options: Options, home: string) => options.bun ?? Bun.which("bun") ?? path.join(home, ".bun", "bin", "bun")
+
+/** Where jobs run: their own processes, whose end calls the service through the backstop's script unless the backstop is off. */
+export const runnerOf = (options: Options, env: Readonly<Record<string, string | undefined>> = process.env): Layer.Layer<Runner> => {
+  const home = env.HOME ?? homedir()
+  return ProcessRunner.layer({
+    root: path.join(env.XDG_STATE_HOME ?? path.join(home, ".local", "state"), "opencode-job"),
+    bun: bunOf(options, home),
+    script: JOB_SCRIPT,
+    platform: process.platform,
+    env,
+    opencode: options.backstop === "off" ? undefined : (options.opencode ?? path.join(home, ".local", "bin", "opencode")),
+    exec: CronBackstop.exec,
+  })
+}
 
 /** The OS backstop the options pick. */
 export const backstopOf = (options: Options, env: Readonly<Record<string, string | undefined>> = process.env): Layer.Layer<Backstop> => {
   if (options.backstop === "off") return MemoryBackstop.layer(MemoryBackstop.empty())
   const home = env.HOME ?? homedir()
   return CronBackstop.layer({
-    bun: options.bun ?? Bun.which("bun") ?? path.join(home, ".bun", "bin", "bun"),
+    bun: bunOf(options, home),
     script: SCRIPT,
     jobs: path.join(env.XDG_STATE_HOME ?? path.join(home, ".local", "state"), "opencode-wake", "jobs"),
     opencode: options.opencode ?? path.join(home, ".local", "bin", "opencode"),
@@ -84,12 +111,47 @@ export const backstopOf = (options: Options, env: Readonly<Record<string, string
   })
 }
 
-/** The live externals: the plugin's storage, the session inbox, owned checks, orchestrate's opener, and the backstop the options pick. */
+/** The live externals: the plugin's storage, the session inbox, owned checks, orchestrate's opener, the backstop the options pick, and job processes. */
 export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externals> =>
-  Layer.mergeAll(OpenCodeStore.fromContext(ctx), OpenCodeCourier.fromContext(ctx), ProcessChecks.layer, OpenCodeOpener.fromContext(ctx), backstopOf(options))
+  Layer.mergeAll(
+    OpenCodeStore.fromContext(ctx),
+    OpenCodeCourier.fromContext(ctx),
+    ProcessChecks.layer,
+    OpenCodeOpener.fromContext(ctx),
+    backstopOf(options),
+    runnerOf(options),
+  )
 
 const text = (value: string) => ({ content: [{ type: "text" as const, text: value }] })
 const refused = (failure: WakeRejected) => new Tool.Error({ message: failure.reason, error: failure })
+
+const asked = (what: string) => new Tool.Error({ message: what })
+
+/** The `job` tool: run, check, wait, kill and list over the wakes' jobs. */
+const jobTool = (wakes: Context.Service.Shape<typeof Model.WakesModel>, input: JobInput, sessionID: string) => {
+  const action = input.action ?? "run"
+  if (action === "list") return wakes.jobs(sessionID).pipe(Effect.map(({ jobs, now }) => text(jobListing(jobs, now))))
+  if (action === "run") {
+    if (input.command === undefined || input.note === undefined) return Effect.fail(asked('job({ action: "run" }) needs a command and a note'))
+    return wakes
+      .job(sessionID, { command: input.command, cwd: input.cwd, note: input.note, heavy: input.heavy, timeoutSeconds: input.timeoutSeconds })
+      .pipe(Effect.map(({ job, launched }) => text(jobReceipt(job, launched))), Effect.mapError(refused))
+  }
+  const id = input.id
+  if (id === undefined) return Effect.fail(asked(`job({ action: "${action}" }) needs the job's id`))
+  if (action === "check") return wakes.check(id).pipe(Effect.map(({ view, now }) => text(jobReport(view, now))), Effect.mapError(refused))
+  if (action === "wait") {
+    const ms = Math.min(MAX_WAIT_MS, Math.max(0, input.ms ?? DEFAULT_WAIT_MS))
+    return wakes.wait(id, ms).pipe(
+      Effect.map(({ view, now, ended }) => text(jobReport(view, now, ended ? [] : [`It still runs after a wait of ${durationOf(ms)}; its end letter still comes.`]))),
+      Effect.mapError(refused),
+    )
+  }
+  return wakes.kill(id).pipe(
+    Effect.map(({ view, now, asked: stopped }) => text(jobReport(view, now, stopped ? [] : ["It was not running, so nothing was stopped."]))),
+    Effect.mapError(refused),
+  )
+}
 
 const PendingInput = Schema.Struct({ sessionIDs: Schema.Array(Schema.String) })
 const DueInput = Schema.Struct({ id: Schema.String })
@@ -147,6 +209,13 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
           input: ListInput,
           options: { codemode: false },
           execute: (_input, context) => wakes.list(context.sessionID).pipe(Effect.map((listed) => text(listing(listed.entries, listed.notices, listed.now)))),
+        })
+        editor.add({
+          name: NAMES.job,
+          description: JOB_DESCRIPTION,
+          input: JobInput,
+          options: { codemode: false },
+          execute: (input, context) => jobTool(wakes, input, context.sessionID),
         })
       })
 

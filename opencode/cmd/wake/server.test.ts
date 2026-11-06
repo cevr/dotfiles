@@ -14,6 +14,7 @@ import * as MemoryBackstop from "@dotfiles/opencode-wake/memory/backstop"
 import * as MemoryChecks from "@dotfiles/opencode-wake/memory/checks"
 import * as MemoryCourier from "@dotfiles/opencode-wake/memory/courier"
 import * as MemoryOpener from "@dotfiles/opencode-wake/memory/opener"
+import * as MemoryRunner from "@dotfiles/opencode-wake/memory/runner"
 import * as MemoryStore from "@dotfiles/opencode-wake/memory/store"
 import { Due, Pending, WAKES } from "@dotfiles/opencode-wake/wake"
 import WakePlugin, { make } from "./server.ts"
@@ -46,11 +47,12 @@ interface Doubles {
   readonly jobs: MemoryBackstop.MemoryJobs
   readonly checks: MemoryChecks.MemoryChecks
   readonly opener: MemoryOpener.MemoryOpener
+  readonly runner: MemoryRunner.MemoryRunner
 }
 
 /** The plugin started on a stand-in host over the doubles. */
 const start = (
-  doubles: Doubles = { store: MemoryStore.empty(), sessions: MemoryCourier.empty("ses_root", "ses_child"), jobs: MemoryBackstop.empty(), checks: MemoryChecks.empty(), opener: MemoryOpener.empty() },
+  doubles: Doubles = { store: MemoryStore.empty(), sessions: MemoryCourier.empty("ses_root", "ses_child"), jobs: MemoryBackstop.empty(), checks: MemoryChecks.empty(), opener: MemoryOpener.empty(), runner: MemoryRunner.empty() },
   options: unknown = { backstop: "off" },
 ) =>
   Effect.gen(function* () {
@@ -85,6 +87,7 @@ const start = (
         MemoryChecks.layer(doubles.checks),
         MemoryBackstop.layer(doubles.jobs),
         MemoryOpener.layer(doubles.opener),
+        MemoryRunner.layer(doubles.runner),
       ),
     ).effect(host)
     yield* settle()
@@ -111,11 +114,11 @@ const start = (
   })
 
 describe("the wake tools", () => {
-  test("are four direct tools", () =>
+  test("are five direct tools", () =>
     scenario(
       Effect.gen(function* () {
         const plugin = yield* start()
-        expect([...plugin.added.keys()]).toEqual(["wake", "monitor", "wake_cancel", "wake_list"])
+        expect([...plugin.added.keys()]).toEqual(["wake", "monitor", "wake_cancel", "wake_list", "job"])
         for (const tool of plugin.added.values()) expect(tool.options).toEqual({ codemode: false })
         expect(plugin.added.get("wake")?.description).toContain("even if no OpenCode server is running")
       }),
@@ -190,7 +193,7 @@ describe("the plugin's events and start", () => {
   test("the start fires a stored wake that came due while no server ran; due then answers gone", () =>
     scenario(
       Effect.gen(function* () {
-        const doubles = { store: MemoryStore.empty(), sessions: MemoryCourier.empty("ses_root"), jobs: MemoryBackstop.empty(), checks: MemoryChecks.empty(), opener: MemoryOpener.empty() }
+        const doubles = { store: MemoryStore.empty(), sessions: MemoryCourier.empty("ses_root"), jobs: MemoryBackstop.empty(), checks: MemoryChecks.empty(), opener: MemoryOpener.empty(), runner: MemoryRunner.empty() }
         const now = Date.now()
         doubles.store.entries.set(alarm.id, { ...alarm, sessionID: "ses_root", directory: DIR, setAt: now - 3 * 3600_000, dueAt: now - 2 * 3600_000 })
         const plugin = yield* start(doubles)
@@ -225,4 +228,64 @@ describe("the plugin's events and start", () => {
     expect(Exit.isFailure(exit)).toBe(true)
     expect(String(Exit.isFailure(exit) ? exit.cause : "")).toContain("dotfiles-opencode.wake: invalid options")
   })
+})
+
+describe("the job tool", () => {
+  test("runs a job, lists it, and its end steers a letter with the exit code, log tail and note into the session", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        const receipt = yield* plugin.call("job", { command: "bun test", note: "Read the failures.", heavy: true })
+        const id = /^Job (j[0-9a-z]{6}) started\. Log: (\S+)/.exec(receipt)?.[1] ?? ""
+        expect(id).not.toBe("")
+        expect(receipt).toContain("niced")
+        expect(receipt).toContain("$JOB_DRIP")
+        expect(plugin.doubles.runner.jobs.get(id)?.spec).toMatchObject({ command: "bun test", cwd: DIR, heavy: true, sessionID: "ses_root" })
+        expect(yield* plugin.call("job", { action: "list" })).toContain(`- ${id}: `)
+        expect(plugin.emitted).toContainEqual(["changed", { sessionID: "ses_root" }])
+
+        const job = plugin.doubles.runner.jobs.get(id)
+        if (job !== undefined) job.log = "2 pass\n1 fail\n"
+        MemoryRunner.ended(plugin.doubles.runner, id, 1, Date.now())
+        expect(yield* plugin.due(id)).toEqual({ outcome: "fired" })
+        const [letter] = plugin.inbox()
+        expect(letter?.resume).toBe(true)
+        expect(letter?.letter.text).toContain(`Job ${id} `)
+        expect(letter?.letter.text).toContain("1 fail")
+        expect(letter?.letter.text).toContain("Note: Read the failures.")
+        expect(yield* plugin.due(id)).toEqual({ outcome: "gone" })
+        expect(yield* plugin.call("job", { action: "list" })).toBe("No jobs are running or waiting to report in this session.")
+      }),
+    ))
+
+  test("wait and kill take a job's end themselves, so no letter follows; check leaves it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        const idOf = (receipt: string) => /^Job (j[0-9a-z]{6})/.exec(receipt)?.[1] ?? ""
+        const waited = idOf(yield* plugin.call("job", { command: "make", note: "n" }))
+        MemoryRunner.ended(plugin.doubles.runner, waited, 0, Date.now())
+        expect(yield* plugin.call("job", { action: "check", id: waited })).toContain(`Job ${waited} `)
+        expect(yield* plugin.call("job", { action: "wait", id: waited, ms: 1000 })).toContain(`Job ${waited} `)
+        const killed = idOf(yield* plugin.call("job", { command: "sleep 99", note: "n" }))
+        expect(yield* plugin.call("job", { action: "kill", id: killed })).toContain(`Job ${killed} `)
+        expect(plugin.doubles.runner.killed).toEqual([killed])
+        yield* settle(50)
+        expect(yield* plugin.due(waited)).toEqual({ outcome: "gone" })
+        expect(yield* plugin.due(killed)).toEqual({ outcome: "gone" })
+        expect(plugin.inbox()).toEqual([])
+      }),
+    ))
+
+  test("refuses a run without a command or note, an action without an id, and a launch the runner refuses", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        expect(yield* plugin.fail("job", { note: "n" })).toContain("needs a command and a note")
+        expect(yield* plugin.fail("job", { action: "kill" })).toContain("needs the job's id")
+        plugin.doubles.runner.refusing = "no bun"
+        expect(yield* plugin.fail("job", { command: "true", note: "n" })).toBe("the job did not start: no bun")
+        expect(yield* plugin.call("job", { action: "list" })).toBe("No jobs are running or waiting to report in this session.")
+      }),
+    ))
 })

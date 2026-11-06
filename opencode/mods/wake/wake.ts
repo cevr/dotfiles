@@ -1,4 +1,5 @@
-// Wakes: alarms and monitors a session sets on itself, the latches
+// Wakes: alarms and monitors a session sets on itself, the long jobs it starts
+// outside the server (job.ts), the latches
 // orchestrate keeps for its held subagent starts (latch.ts), and the notices a
 // `notify` fire leaves for the owner. An entry is kept from the moment it is
 // set until its fire reached the session; the fire is recorded on the entry,
@@ -7,6 +8,7 @@
 // session reads it once. Also the wakes' RPC, which the TUI and the OS
 // backstop call.
 import { Schema } from "effect"
+import { DEFAULT_JOB_TIMEOUT_SECONDS, type JobSpec, MAX_JOB_TIMEOUT_SECONDS } from "./job.ts"
 import { Latch } from "./latch.ts"
 
 /** `wake`: the fire starts a turn. `notify`: it waits for the session's next turn and shows to the owner meanwhile. */
@@ -68,11 +70,32 @@ export const Monitor = Schema.Struct({
 })
 export type Monitor = typeof Monitor.Type
 
-export const Entry = Schema.Union([Alarm, Monitor, Latch])
+/**
+ * A long command running outside the server (job.ts), whose end fires a
+ * letter into its session. Its run lives with its runner; the entry keeps what
+ * the letter needs and how far its progress file was delivered.
+ */
+export const Job = Schema.Struct({
+  kind: Schema.Literal("job"),
+  ...base,
+  /** Always `wake`: the end starts a turn. */
+  mode: Schema.Literal("wake"),
+  command: Schema.String,
+  cwd: Schema.String,
+  heavy: Schema.Boolean,
+  timeoutSeconds: Schema.Number,
+  /** Bytes of `$JOB_DRIP` already delivered as progress. */
+  dripped: Schema.Number,
+  /** Epoch ms: the last progress delivery, or when it was set. */
+  drippedAt: Schema.Number,
+})
+export type Job = typeof Job.Type
+
+export const Entry = Schema.Union([Alarm, Monitor, Latch, Job])
 export type Entry = typeof Entry.Type
 
-/** An entry that fires a letter into its session: an alarm or a monitor. A latch opens instead. */
-export type Fired = Alarm | Monitor
+/** An entry that fires a letter into its session: an alarm, a monitor, or a job's end. A latch opens instead. */
+export type Fired = Alarm | Monitor | Job
 
 export const fires = (entry: Entry): entry is Fired => entry.kind !== "latch"
 
@@ -231,6 +254,54 @@ export const monitorOf = (ask: MonitorAsk, place: Place): Monitor | WakeRejected
   }
 }
 
+/** The job as asked. */
+export interface JobAsk {
+  readonly command: string
+  readonly cwd?: string | undefined
+  readonly note: string
+  readonly heavy?: boolean | undefined
+  readonly timeoutSeconds?: number | undefined
+}
+
+/** The job `ask` starts at `place`, or why not. It runs in `cwd`, else the server's directory. */
+export const jobOf = (ask: JobAsk, place: Place): Job | WakeRejected => {
+  const note = noteOf(ask.note)
+  if (note instanceof WakeRejected) return note
+  if (ask.command.trim() === "") return new WakeRejected({ reason: "command is empty" })
+  const timeout = ask.timeoutSeconds ?? DEFAULT_JOB_TIMEOUT_SECONDS
+  if (!finite(timeout) || timeout <= 0 || timeout > MAX_JOB_TIMEOUT_SECONDS)
+    return new WakeRejected({ reason: `timeoutSeconds must be more than 0 and at most ${MAX_JOB_TIMEOUT_SECONDS}` })
+  if (ask.cwd !== undefined && !ask.cwd.startsWith("/")) return new WakeRejected({ reason: "cwd must be an absolute path" })
+  return {
+    kind: "job",
+    id: place.id,
+    sessionID: place.sessionID,
+    directory: place.directory,
+    mode: "wake",
+    note,
+    setAt: place.now,
+    command: ask.command,
+    cwd: ask.cwd ?? place.directory,
+    heavy: ask.heavy ?? false,
+    timeoutSeconds: timeout,
+    dripped: 0,
+    drippedAt: place.now,
+  }
+}
+
+/** What the runner keeps of a job. */
+export const specOf = (job: Job): JobSpec => ({
+  id: job.id,
+  sessionID: job.sessionID,
+  directory: job.directory,
+  command: job.command,
+  cwd: job.cwd,
+  note: job.note,
+  heavy: job.heavy,
+  timeoutSeconds: job.timeoutSeconds,
+  setAt: job.setAt,
+})
+
 // ── Firing ──
 
 /** The next tick of a repeat still ahead of `now`; every tick missed while no server ran folds into the fire that just happened. */
@@ -241,7 +312,11 @@ export const nextDueAt = (dueAt: number, everySeconds: number, now: number): num
 }
 
 /** When an entry next needs its server: an alarm's due time, a monitor's deadline, the time a latch says it opens. */
-export const dueOf = (entry: Entry): number => (entry.kind === "alarm" ? entry.dueAt : entry.kind === "monitor" ? entry.deadline : entry.opensAt)
+export const dueOf = (entry: Entry): number =>
+  entry.kind === "alarm" ? entry.dueAt : entry.kind === "monitor" ? entry.deadline : entry.kind === "latch" ? entry.opensAt : entry.setAt + entry.timeoutSeconds * 1000
+
+/** Whether an entry has an OS backstop job: every kind but a job, whose own runner calls the server when it ends. */
+export const guarded = (entry: Entry): boolean => entry.kind !== "job"
 
 /** What a check of a monitor's command found. */
 export interface Check {
@@ -307,7 +382,10 @@ export const Shown = Schema.Struct({
 })
 export type Shown = typeof Shown.Type
 
-export const shownOf = (entry: Entry): Shown => ({
+/** The entries the tray shows: a job is not among them (its readers know three kinds). */
+export const shown = (entry: Entry): entry is Exclude<Entry, Job> => entry.kind !== "job"
+
+export const shownOf = (entry: Exclude<Entry, Job>): Shown => ({
   id: entry.id,
   kind: entry.kind,
   sessionID: entry.sessionID,
