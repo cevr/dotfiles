@@ -170,14 +170,14 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   )
 
   test(
-    "compaction: a planner session over its 50k window compacts; a worker session at 100k does not",
+    "compaction: on a 1M model, a planner session at 350k compacts at the 400k window; a worker session at 200k does not",
     async () => {
-      // 40k tokens of input on every reply: over the planner's ceiling (50k less the 16k reserve), under the worker's.
+      // The 400k window's ceiling is 340k (less its 15% reserve): the planner's 350k is over it, far under the model's
+      // own 850k; the worker's 200k is under it, and over the 170k a 200k window would compact at.
       const result = await run("compaction", {
         scenario: "compaction",
         now: WEDNESDAY,
-        windows: { planner: 50_000, worker: 100_000 },
-        promptTokens: 40_000,
+        promptTokens: { planner: 350_000, worker: 200_000 },
       })
       type Message = { type: string; status?: string; reason?: string; summary?: string }
       const messages = (agent: string) => result.sessions[agent]!.messages as Message[]

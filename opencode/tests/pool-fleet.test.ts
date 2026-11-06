@@ -191,7 +191,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
           plugins: [
             {
               package: join(ROOT, "cmd/orchestrate"),
-              options: { windows: join(root, "compact.json"), log: join(root, "agents.jsonl"), now: "2026-11-04T15:00:00Z", codex: false },
+              options: { log: join(root, "agents.jsonl"), now: "2026-11-04T15:00:00Z", codex: false },
             },
             { package: poolPlugin, options: { sweepMinutes: 0, fleet: { host: "host-a" } } },
           ],

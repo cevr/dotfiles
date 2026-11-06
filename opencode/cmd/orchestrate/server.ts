@@ -14,17 +14,16 @@
  *   worker asked or inheriting `#max` runs at its model's default effort
  *   unless its description ends `(mechanical)`, and its answer says so. Each
  *   call is a line in a JSONL log a status pane can read.
- * - Compaction: each role compacts at its own window, and the primary agents
- *   at root's, from the orchestrate tuner's compact.json, else the defaults.
- *   The window is the agent's `request.settings.compactionWindow`, which the
- *   fork's automatic compaction reads. Every compaction keeps the files, the
- *   step and the user's instructions word for word.
+ * - Compaction: each role and each primary agent compacts at one fixed
+ *   window, `WINDOW` in compaction.ts (400k tokens). The window is the
+ *   agent's `request.settings.compactionWindow`, which the fork's automatic
+ *   compaction reads. Every compaction keeps the files, the step and the
+ *   user's instructions word for word.
  * - Sabbath: from Friday sunset to 30 minutes after Saturday's at the owner's
  *   place, no subagent starts and a running subagent's next tool call is
  *   refused so it ends its turn. The main session answers as always.
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
- * - `windows`: path of compact.json, default `~/.cache/orchestrate/compact.json`.
  * - `log`: path of the call log, default `~/.cache/orchestrate/opencode-agents.jsonl`.
  * - `now`: a fixed time (ISO 8601) for the Sabbath clock, for tests.
  * - `place`: `{ name, lat, lon, timeZone }` for the Sabbath, default Knowlton, QC.
@@ -92,9 +91,8 @@ import { STATUS } from "@dotfiles/opencode-status/status"
 import { Latch, MARK_KEY, type Opened, OPENER } from "@dotfiles/opencode-wake/latch"
 import { WAKES } from "@dotfiles/opencode-wake/wake"
 import * as CodexAdmissionLive from "@dotfiles/opencode-orchestrate/codex/admission"
-import { keepMessage, ROOT } from "@dotfiles/opencode-orchestrate/compaction"
+import { keepMessage, WINDOW } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogLive from "@dotfiles/opencode-orchestrate/filestore/call-log"
-import * as CompactionWindowsLive from "@dotfiles/opencode-orchestrate/filestore/compaction-windows"
 import * as StepLogLive from "@dotfiles/opencode-orchestrate/filestore/step-log"
 import * as UnitLogsLive from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import { Draft, IDLE, MARK } from "@dotfiles/opencode-orchestrate/idle"
@@ -112,7 +110,6 @@ import { BACKOFF_MS } from "@dotfiles/opencode-orchestrate/restart"
 import { definitions, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, local, Place, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
 import {
-  CompactionWindows,
   type CallLog,
   type CodexAdmission,
   type Latches,
@@ -130,7 +127,6 @@ import {
 } from "@dotfiles/opencode-orchestrate/service"
 import type { Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
 
-export const DEFAULT_WINDOWS = join(homedir(), ".cache/orchestrate/compact.json")
 export const DEFAULT_LOG = join(homedir(), ".cache/orchestrate/opencode-agents.jsonl")
 /** The orchestrate skill's Codex admission: `admit: …` exit 0, `hold: …[; opens about <time>Z]` exit 1. */
 export const CODEX_BUDGET = join(homedir(), ".claude/skills/orchestrate/scripts/budget.ts")
@@ -166,7 +162,6 @@ const Codex = Schema.Struct({
 })
 
 export const Options = Schema.Struct({
-  windows: Schema.String.pipe(withDefault(DEFAULT_WINDOWS)),
   log: Schema.String.pipe(withDefault(DEFAULT_LOG)),
   now: Schema.optional(Instant),
   place: Place.pipe(withDefault<Place>(KNOWLTON)),
@@ -181,7 +176,7 @@ export const Options = Schema.Struct({
 export type Options = typeof Options.Type
 
 /** The outside systems the model runs on. */
-export type Externals = CallLog | Sessions | Models | PoolPace | CodexAdmission | CompactionWindows | Latches | UnitLogs | StepLog | Runs | RootHolds | Steer | Restarts
+export type Externals = CallLog | Sessions | Models | PoolPace | CodexAdmission | Latches | UnitLogs | StepLog | Runs | RootHolds | Steer | Restarts
 
 /** A cut child's resume: the subagent tool, run in the background on the child with the prompt as given. */
 export type Resume = (start: ResumeStart) => Effect.Effect<void, unknown>
@@ -230,7 +225,6 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
       (input) => ctx.rpc(POOL_STATUS).started(input),
     ),
     CodexAdmissionLive.layer(options.codex === false ? CODEX_BUDGET : options.codex.script),
-    CompactionWindowsLive.layer(options.windows),
     LatchesLive.layer((ask) => ctx.rpc(WAKES).latch(ask), start),
     StepLogLive.layer(options.log),
     RunsLive.layer(() => ctx.rpc(STATUS).status({})),
@@ -325,9 +319,6 @@ const SPAWNED = "You are a subagent spawned by another session."
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 
-/** The tuner rewrites compact.json about once a day; agents pick it up within this. */
-const REREAD = "1 hour"
-
 type Execute = Tool.Info["execute"]
 type ToolContext = Parameters<Execute>[1]
 
@@ -383,7 +374,6 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
       )
       const orchestrate = Context.get(services, Model.Orchestrate)
       const idleRoots = Context.get(services, Model.IdleRoots)
-      const windows = Context.get(services, CompactionWindows)
       const scope = yield* Effect.scope
 
       // An idle root with ready work is steered once per idle period (idle.ts). The decision runs on
@@ -428,16 +418,14 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
 
       // The roles, defined as OpenCode's own plugins define build and general: before the
       // config's agent files, so a file in the owner's config still overrides a role's fields.
-      // Each role compacts at its window, and each primary agent at root's. Config agent files
+      // Each role and each primary agent compacts at `WINDOW`. Config agent files
       // cannot set a window, and the config's agents arrive after this, so a primary agent
-      // defined only in a config file keeps the model's ceiling. The transform is synchronous,
-      // and compact.json is read on each run, so a reload picks up the tuner's rewrite.
+      // defined only in a config file keeps the model's ceiling.
       yield* ctx.agent.transform((editor) => {
-        const sizes = Effect.runSync(windows.read)
         for (const agent of editor.list()) {
           if (agent.mode === "subagent" || agent.hidden) continue
           editor.update(agent.id, (item) => {
-            item.request.settings.compactionWindow = sizes[ROOT]
+            item.request.settings.compactionWindow = WINDOW
           })
         }
         for (const role of ROLES) {
@@ -447,12 +435,11 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
             item.system = definition.system
             item.mode = definition.mode
             item.permissions.push(...definition.permissions.map((rule) => ({ ...rule })))
-            item.request.settings.compactionWindow = sizes[role]
+            item.request.settings.compactionWindow = WINDOW
             item.request.settings.cacheTTL = ROLE_CACHE_TTL
           })
         }
       })
-      yield* Effect.forkScoped(Effect.forever(Effect.sleep(REREAD).pipe(Effect.andThen(Effect.ignoreCause(ctx.agent.reload())))))
 
       // The keep-list goes after the conversation as its own user message, which the host's summary prompt follows,
       // so the compaction request keeps the conversation's cached prefix (system, tools and messages as the normal

@@ -15,8 +15,8 @@
  * - Anything else (a subagent's task, a plain prompt): one line that quotes
  *   the last thing it was told.
  *
- * Every reply reports `promptTokens` tokens of input, so a test can set how
- * full the context looks.
+ * Every reply reports `promptTokens` tokens of input, or as many as it gives
+ * for the conversation's task, so a test can set how full a context looks.
  *
  * @module
  */
@@ -160,7 +160,8 @@ const events = (answer: Reply, model: string, id: string, promptTokens: number):
   return [...list.map((event) => `data: ${JSON.stringify(event)}\n\n`), "data: [DONE]\n\n"].join("")
 }
 
-export const serve = (promptTokens = 100) => {
+export const serve = (promptTokens: number | ((task: string) => number) = 100) => {
+  const tokensOf = typeof promptTokens === "number" ? () => promptTokens : promptTokens
   const seen: Seen[] = []
   let served = 0
   // Hanging requests, and whether a hang task's first request still hangs.
@@ -192,7 +193,7 @@ export const serve = (promptTokens = 100) => {
         // An open stream that never ends: the request runs until the server's shutdown cuts it.
         return new Response(new ReadableStream({ start: () => {} }), { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } })
       }
-      return new Response(events(reply(body), body.model ?? "sim", `sim${served}`, promptTokens), {
+      return new Response(events(reply(body), body.model ?? "sim", `sim${served}`, tokensOf(task)), {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       })
     },

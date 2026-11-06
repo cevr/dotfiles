@@ -3,7 +3,6 @@
 // after their dependency: filestore/, opencode/, codex/ and memory/.
 import { Context, type Effect, Schema } from "effect"
 import type { CallLine } from "./call-line.ts"
-import type { Windows } from "./compaction.ts"
 import type { Holds, Run } from "./idle.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
 import type { Entry } from "./restart.ts"
@@ -104,17 +103,6 @@ export class CodexAdmission extends Context.Service<
   CodexAdmission,
   { readonly admit: (model: string, role: string) => Effect.Effect<PaceReply> }
 >()("dotfiles-opencode/orchestrate/CodexAdmission") {}
-
-/**
- * The compaction window each agent kind runs at, as the orchestrate tuner's
- * compact.json says now. The tuner rewrites it about once a day; no file, or
- * a broken one, gives the defaults. Reading is synchronous at heart: the
- * host's agent transform runs it inside a synchronous callback.
- */
-export class CompactionWindows extends Context.Service<
-  CompactionWindows,
-  { readonly read: Effect.Effect<Windows> }
->()("dotfiles-opencode/orchestrate/CompactionWindows") {}
 
 /** A held subagent start, as the latch keeps it: the call as it was routed, what holds it, and when it is decided again. */
 export interface LatchRequest {

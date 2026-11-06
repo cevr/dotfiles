@@ -14,7 +14,6 @@ import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import { KEEP } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogTest from "@dotfiles/opencode-orchestrate/memory/call-log"
 import * as CodexAdmissionTest from "@dotfiles/opencode-orchestrate/memory/codex-admission"
-import * as CompactionWindowsTest from "@dotfiles/opencode-orchestrate/memory/compaction-windows"
 import * as ModelsTest from "@dotfiles/opencode-orchestrate/memory/models"
 import * as PoolPaceTest from "@dotfiles/opencode-orchestrate/memory/pool-pace"
 import * as RestartsTest from "@dotfiles/opencode-orchestrate/memory/restarts"
@@ -32,7 +31,7 @@ import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { BACKOFF_MS, NOTICE_TITLE, RESUME_PROMPT, resumePrompt } from "@dotfiles/opencode-orchestrate/restart"
 import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
 import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
-import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, DEFAULT_WINDOWS, make, Options, type Resume, UNIT_LOG } from "./server.ts"
+import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, make, Options, type Resume, UNIT_LOG } from "./server.ts"
 
 /** The orchestrate skill's log.ts in this checkout: the units' logs are written for real, in scratch dirs. */
 const LOG_SCRIPT = join(import.meta.dir, "../../../skills/orchestrate/scripts/log.ts")
@@ -59,7 +58,6 @@ interface World {
   readonly variants?: ReadonlyArray<string>
   /** Other models the host offers, such as the Codex fallback's. */
   readonly others?: ReadonlyArray<Offered>
-  readonly compactJson?: string
   /** The wakes' refusal of every latch (no wakes plugin, say); absent, they keep each one. */
   readonly refuse?: string
   /** The latches the wakes kept, in order. */
@@ -162,7 +160,6 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
         ? PoolPaceTest.layer(world.pool ?? {}, world.started)
         : OpenCodePoolPace.layer(world.poolAsk, () => Effect.succeed({})),
       CodexAdmissionTest.layer(world.codex ?? (() => undefined)),
-      CompactionWindowsTest.layer(world.compactJson),
       OpenCodeLatches.layer(keep, start),
       FileUnitLogs.layer(LOG_SCRIPT),
       StepLogTest.layer(world.steps ?? {}),
@@ -1157,13 +1154,10 @@ describe("an idle root with ready units", () => {
 })
 
 describe("the agents", () => {
-  test("each role gets its definition and window, each primary agent root's; compaction keeps the files", () =>
+  test("each role gets its definition, each role and primary agent the 400k window; compaction keeps the files", () =>
     scenario(
       Effect.gen(function* () {
-        const plugin = yield* start(
-          { now: WEDNESDAY },
-          { compactJson: JSON.stringify({ windows: { planner: 300_000, root: 600_000 } }) },
-        )
+        const plugin = yield* start({ now: WEDNESDAY })
         const agents: Record<string, EditedAgent> = {}
         for (const [id, mode] of [["build", "primary"], ["explore", "subagent"], ["planner", "subagent"], ["worker", "subagent"]] as const)
           agents[id] = { id, mode, permissions: [], request: { settings: {} } }
@@ -1177,7 +1171,7 @@ describe("the agents", () => {
         }
         expect(plugin.transforms).toHaveLength(1)
         plugin.transforms[0]!(editor)
-        expect(agents.build!.request.settings.compactionWindow).toBe(600_000)
+        expect(agents.build!.request.settings.compactionWindow).toBe(400_000)
         expect(agents.hidden!.request.settings.compactionWindow).toBeUndefined()
         expect(agents.explore!.request.settings.compactionWindow).toBeUndefined()
         expect(agents.planner).toMatchObject({
@@ -1185,9 +1179,9 @@ describe("the agents", () => {
           system: definitions.planner.system,
           mode: "subagent",
           permissions: definitions.planner.permissions,
-          request: { settings: { compactionWindow: 300_000, cacheTTL: "5m" } },
+          request: { settings: { compactionWindow: 400_000, cacheTTL: "5m" } },
         })
-        expect(agents.worker!.request.settings.compactionWindow).toBe(200_000)
+        expect(agents.worker!.request.settings.compactionWindow).toBe(400_000)
         // Roles cache for five minutes; the main agent keeps the provider's lifetime.
         expect(agents.worker!.request.settings.cacheTTL).toBe("5m")
         expect(agents.build!.request.settings.cacheTTL).toBeUndefined()
@@ -1341,7 +1335,6 @@ describe("after a restart", () => {
 describe("the options", () => {
   const decode = Schema.decodeUnknownSync(Options)
   const defaults = {
-    windows: DEFAULT_WINDOWS,
     log: DEFAULT_LOG,
     place: KNOWLTON,
     fullAgent: false,
@@ -1352,7 +1345,7 @@ describe("the options", () => {
 
   test("each absent option takes its default; an undefined one is absent", () => {
     expect(decode({})).toEqual(defaults)
-    expect(decode({ windows: undefined, now: undefined, place: undefined, codex: undefined, resume: undefined })).toEqual(defaults)
+    expect(decode({ log: undefined, now: undefined, place: undefined, codex: undefined, resume: undefined })).toEqual(defaults)
     expect(decode({ codex: {} }).codex).toEqual(defaults.codex)
     expect(decode({ resume: {} }).resume).toEqual(defaults.resume)
     expect(decode({ resume: false }).resume).toBe(false)
@@ -1362,9 +1355,8 @@ describe("the options", () => {
   test("the ones given are read as the plugin uses them", () => {
     const place = { name: "Lisbon", lat: 38.7, lon: -9.1, timeZone: "Europe/Lisbon" }
     expect(
-      decode({ windows: "/w.json", log: "/l.jsonl", now: WEDNESDAY, place, fullAgent: true, codex: { providers: ["openai", "sim"] } }),
+      decode({ log: "/l.jsonl", now: WEDNESDAY, place, fullAgent: true, codex: { providers: ["openai", "sim"] } }),
     ).toEqual({
-      windows: "/w.json",
       log: "/l.jsonl",
       now: Date.parse(WEDNESDAY),
       place,
@@ -1379,7 +1371,6 @@ describe("the options", () => {
 
   test("a malformed option stops the plugin at setup, naming the option", async () => {
     const malformed: ReadonlyArray<readonly [Record<string, unknown>, string]> = [
-      [{ windows: 1 }, '["windows"]'],
       [{ log: null }, '["log"]'],
       [{ now: "someday" }, '["now"]'],
       [{ place: "home" }, '["place"]'],
