@@ -915,19 +915,72 @@ workbox in a week). One input, with an `action`:
   holds work found nowhere else, and names it: uncommitted changes (untracked
   files too), stashes, and commits on no remote and in no branch of its
   source, unless `force: true`. It always refuses a warm source, the Rift the
-  session runs in, and a Rift with Rifts of its own.
+  session runs in, and a Rift with Rifts of its own. `withChildren: true`
+  takes the Rift's own Rifts with it, each still refused while it holds
+  unsaved work.
+- `{ action: "land", rifts: ["feat-x", "feat-y"] }` lands the Rifts as one
+  batch, as the orchestrator's batch landing does by hand. Before touching
+  any, it refuses a warm source, a Rift off any branch, a Rift with its own
+  uncommitted changes (a file the same as in the warm source does not count)
+  and a repository with no gate. Then, in the source's integration Rift
+  (`integrate`, made on first use and kept): repair a stale multi-pack index,
+  check out origin's newest default branch, merge each Rift's branch in order
+  (`git fetch <rift> <branch>`, `git merge FETCH_HEAD`). A conflict in lock
+  files and the repository's generated files alone is settled: the Rift's
+  side, installed again and regenerated, committed. Any other conflict aborts
+  the merge and stops the batch, naming the Rift and the files. Then install
+  each lock file the batch changed (committed when rewritten), run the gate
+  once, push to the default branch when it still holds origin's newest, fetch
+  in each landed Rift and trash it unless the removal rule keeps it (it says
+  why). The accept check then runs once, in the background, one at a time
+  per plugin, in the integration Rift on everything since the batch's base,
+  and wakes the calling session (a steered `session.synthetic`) with its
+  counts and failures; a red one is fixed forward. The integration Rift takes
+  one batch at a time, its accept check included.
+- On the workbox, `{ action: "init", repository, path? }`, `"refresh"`,
+  `"check"` (of the session's or `source`'s warm source), `"deps"` (in the
+  named Rift, else the session's directory), `"sources"`, `"prune"` (always
+  `--dry-run`) and `"storage"` (`workbox-rift-storage --check` and `df -h` of
+  `WORKBOX_RIFT_MOUNT`, else `/workspaces`) run the workbox's own script as it
+  is and answer what it printed. Elsewhere they say they need the workbox.
+
+A repository names its checks in its warm source's Git config, so the tool
+knows no repository's commands:
+
+| Key | Meaning |
+| --- | --- |
+| `rift.gate` | the fast check run before the push; required |
+| `rift.accept` | the slow check run after it, with `RIFT_LAND_BASE` set to the batch's base |
+| `rift.generated` | one value per generated file (repository-relative) whose conflict is settled by writing it again |
+| `rift.regenerate` | the shell line, run at the repository root, that writes them again |
+| `workrift.main` | the default branch; else origin's HEAD, else `main` |
+
+This repository's warm source sets:
+
+```sh
+git config rift.gate 'cd opencode && OPENCODE_DEV=~/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=~/Developer/personal/.rifts/gent/untrack-local-settings bun run gate'
+git config rift.accept 'cd opencode && env -u ANTHROPIC_BASE_URL OPENCODE_DEV=~/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=~/Developer/personal/.rifts/gent/untrack-local-settings bun run accept:affected "$RIFT_LAND_BASE"'
+git config rift.generated opencode/mods/orchestrate/agents.json
+git config rift.regenerate 'cd opencode && bun scripts/agents.ts'
+```
+
+The gate and accept logs are `${XDG_CACHE_HOME:-~/.cache}/rift-land/<rift>.<gate|accept>.log`.
 
 There is no `gc` action: `rift gc` empties the trash of every repository at
 once, for good, and the workbox's nightly `workrift prune` already runs it.
 
 The model (the domain files at the root of `mods/rift`): `rift.ts` is the
 tool's input and the words of each answer, `workspace.ts` what a Rift holds
-and the rule for removing one (`removal`), and `model.ts` the handler. The
-contracts are in `service.ts`: `Rifts` (`process/`: the `rift`, `workrift`
-and `git` commands; `memory/` for tests) and `SessionDirectories`
-(`opencode/`), with their laws in `laws.ts`. The plugin's one option,
-`workrift`, defaults to whether `workrift` is on PATH. `tests/rift.test.ts`
-proves the flow in real OpenCode on real Rift; `mods/rift/process` runs the
+and the rule for removing one (`removal`), `land.ts` a land's rules and
+words, and `model.ts` the handler. The contracts are in `service.ts`:
+`Rifts` (`process/`: the `rift`, `workrift` and `git` commands; `memory/`
+for tests), `Landing` (`process/`: Git and the repository's checks),
+`Workbox` (`process/`: the workbox's scripts), `Notices` and
+`SessionDirectories` (`opencode/`), with the Rifts laws in `laws.ts`. The
+plugin's one option, `workrift`, defaults to whether `workrift` is on PATH.
+`tests/rift.test.ts` proves the flow and a land in real OpenCode on real
+Rift; `mods/rift/process/landing.test.ts` runs Landing on real Git
+repositories; `mods/rift/process` runs the
 laws on `rift` and on the workbox's own `workrift` script (with a no-op
 `flock`), in a scratch HOME. Both need macOS.
 

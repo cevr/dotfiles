@@ -65,6 +65,9 @@ noncurrent snapshot objects after 14 days.
 - `workrift remove [--with-children] [path]` moves a workspace to the Rift trash.
   It refuses a workspace with child workspaces unless you pass `--with-children`.
 - `workrift prune [--dry-run]` archives and removes workspaces idle for two days.
+- In OpenCode, the `rift` tool runs these for an agent: `create`, `list`,
+  `remove` and `land` on any host, and `init`, `refresh`, `deps`, `check`,
+  `sources`, `prune` (only `--dry-run`) and `storage` here.
 - `workbox-port <port>` prints the private exe.dev URL for a running HTTP server.
 - `backup-state` creates and verifies an S3 state snapshot.
 - `check-updates` reports Ubuntu, Bun tool, and skill updates.

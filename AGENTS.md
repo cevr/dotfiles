@@ -30,7 +30,7 @@
 ## Isolated workspaces
 
 - Use Rift instead of Git worktrees when Rift supports the file system.
-- In OpenCode, use the `rift` tool (`create`, `list`, `remove`): it runs the commands below for you, and `remove` refuses a Rift with unsaved work.
+- In OpenCode, use the `rift` tool (`create`, `list`, `remove`, `land`, and on the workbox its `workrift` actions): it runs the commands below for you, `remove` refuses a Rift with unsaved work, and `land` merges Rifts onto the default branch as one batch, gates, pushes and removes them.
 - Keep one clean warm source for each repository.
 - Do not make feature changes in a warm source.
 - Create a Rift from the warm source with `rift create --name <name> --copy-all .` to keep installed packages and generated output. The positional argument is the source path, not a branch name. Create the branch inside the Rift afterwards.
