@@ -1,9 +1,13 @@
-// An idle root with ready work: the IdleRoot aggregate, one per root
+// An idle root with work to do: the IdleRoot aggregate, one per root
 // session that owns an orchestrate run. When such a root ends its turn with
 // nothing of its own still going (no subagent or shell running under it, no
 // wake, monitor or latch set), while its runs hold units in plan, implement
-// or verify, it is steered once with one line: `idle with units ready:
-// <units>; start them or name what you wait on.` (`lineOf`).
+// or verify, or units in `ready` whose batch is due (`BATCH_SIZE` of them, or
+// the oldest in `ready` for `BATCH_WAIT_MS`, by its log.md time), it is
+// steered once with one line (`lineOf`): `idle with units in plan, implement
+// or verify: <units>; start them or name what you wait on.`, and for a due
+// batch `… batch due (<why>): <units>; land it with rift({ action: "land",
+// rifts: [...] }).`
 //
 // Once per idle period: after a nudge, the root is not nudged again until new
 // input reaches it (the owner's prompt, a wake, a worker's notice; never the
@@ -24,16 +28,30 @@ import type { Decider } from "@dotfiles/decider/decider"
 // ── The facts ──
 
 /** The unit states a root moves on its own: a unit in one of them that nothing works on waits for the root. */
-export const READY_STATES = ["plan", "implement", "verify"] as const
+export const MOVING_STATES = ["plan", "implement", "verify"] as const
+
+/** The state an accepted unit waits in until its batch lands. */
+export const READY = "ready"
+
+/** A batch is due once this many units are ready (the skill's default cadence). */
+export const BATCH_SIZE = 3
+
+/** Or once the oldest ready unit has waited this long. */
+export const BATCH_WAIT_MS = 30 * 60_000
 
 /** One unit of a run the root owns, in a state the root moves. */
-export const ReadyUnit = Schema.Struct({ run: Schema.String, unit: Schema.String, state: Schema.String })
+export const MovingUnit = Schema.Struct({ run: Schema.String, unit: Schema.String, state: Schema.String })
+export interface MovingUnit extends Schema.Schema.Type<typeof MovingUnit> {}
+
+/** One unit of a run the root owns, in `ready`, with when it got there (epoch ms; none when its log has no time that reads). */
+export const ReadyUnit = Schema.Struct({ run: Schema.String, unit: Schema.String, since: Schema.optional(Schema.Number) })
 export interface ReadyUnit extends Schema.Schema.Type<typeof ReadyUnit> {}
 
-/** One unit of an orchestrate run, as the status script derives it. */
+/** One unit of an orchestrate run, as the status script derives it: `since` is its log.md time for that state. */
 export interface RunUnit {
   readonly unit: string
   readonly state: string
+  readonly since?: string
 }
 
 /** One orchestrate run: its directory's name and its units. */
@@ -45,18 +63,58 @@ export interface Run {
 /** The unit a step's description names: the first word after the role (described.ts's `rest`). */
 export const unitOf = (rest: string): string | undefined => rest.trim().split(/\s+/)[0] || undefined
 
+/** A log.md time (`2026-11-06T10:00Z`, as log.ts writes it; a time with no zone is UTC) in epoch ms, or none. */
+export const sinceOf = (since: string | undefined): number | undefined => {
+  if (since === undefined || since.trim() === "") return undefined
+  const at = Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(since.trim()) ? since.trim() : `${since.trim()}Z`)
+  return Number.isNaN(at) ? undefined : at
+}
+
+/** What the root's runs hold for it: units in a state it moves, and units in `ready`. */
+export interface RootUnits {
+  readonly moving: ReadonlyArray<MovingUnit>
+  readonly ready: ReadonlyArray<ReadyUnit>
+}
+
 /**
  * The units of the runs `started` (the units whose steps the root started)
- * makes the root's, in a state the root moves, in the runs' order.
+ * makes the root's, in the runs' order: those in a state the root moves, and
+ * those in `ready`.
  */
-export const readyUnits = (runs: ReadonlyArray<Run>, started: ReadonlyArray<string>): ReadonlyArray<ReadyUnit> =>
-  runs
-    .filter((run) => run.units.some((unit) => started.includes(unit.unit)))
-    .flatMap((run) =>
+export const unitsOf = (runs: ReadonlyArray<Run>, started: ReadonlyArray<string>): RootUnits => {
+  const owned = runs.filter((run) => run.units.some((unit) => started.includes(unit.unit)))
+  return {
+    moving: owned.flatMap((run) =>
       run.units
-        .filter((unit) => (READY_STATES as ReadonlyArray<string>).includes(unit.state))
+        .filter((unit) => (MOVING_STATES as ReadonlyArray<string>).includes(unit.state))
         .map((unit) => ({ run: run.name, unit: unit.unit, state: unit.state })),
-    )
+    ),
+    ready: owned.flatMap((run) =>
+      run.units
+        .filter((unit) => unit.state === READY)
+        .map((unit) => {
+          const since = sinceOf(unit.since)
+          return since === undefined ? { run: run.name, unit: unit.unit } : { run: run.name, unit: unit.unit, since }
+        }),
+    ),
+  }
+}
+
+/** Why the ready units' batch is due now (`3 ready`, `alpha ready 42 min`), or none while it is not. */
+export const batchDue = (ready: ReadonlyArray<ReadyUnit>, now: number): string | undefined => {
+  if (ready.length >= BATCH_SIZE) return `${ready.length} ready`
+  const timed = ready.flatMap((unit) => (unit.since === undefined ? [] : [{ unit, since: unit.since }]))
+  const oldest = timed.reduce<(typeof timed)[number] | undefined>((min, next) => (min === undefined || next.since < min.since ? next : min), undefined)
+  if (oldest === undefined || now - oldest.since < BATCH_WAIT_MS) return undefined
+  return `${oldest.unit.unit} ready ${Math.floor((now - oldest.since) / 60_000)} min`
+}
+
+/**
+ * The Rift a ready unit lives in, as `rift({ action: "land" })` takes it: the
+ * unit's branch `<run>/<unit>` (SKILL.md, plan), which the tool finds as the
+ * Rift a create on that branch names by default (`workspaceName`).
+ */
+export const riftOf = (unit: { readonly run: string; readonly unit: string }): string => `${unit.run}/${unit.unit}`
 
 /** What else holds the root, from the other plugins: wakes, questions to the owner, and its queue. */
 export const Holds = Schema.Struct({
@@ -80,16 +138,30 @@ export const NO_HOLDS: Holds = { wakes: 0, questions: 0, needsYou: [], waits: []
 export const LISTED = 8
 
 /** The units as the line names them: `unit`, or `run/unit` when they come from more than one run. */
-export const unitList = (units: ReadonlyArray<ReadyUnit>): string => {
+export const unitList = (units: ReadonlyArray<{ readonly run: string; readonly unit: string }>): string => {
   const runs = new Set(units.map((unit) => unit.run))
   const names = units.map((unit) => (runs.size > 1 ? `${unit.run}/${unit.unit}` : unit.unit))
   const listed = names.slice(0, LISTED).join(", ")
   return names.length > LISTED ? `${listed} and ${names.length - LISTED} more` : listed
 }
 
+/** What the root is steered to do: start the units it moves, and land a due batch (`why` it is due). */
+export interface Due {
+  readonly moving: ReadonlyArray<MovingUnit>
+  readonly landing?: { readonly units: ReadonlyArray<ReadyUnit>; readonly why: string }
+}
+
+/** The land call for the batch: every ready unit's Rift, in the runs' order. */
+export const landCall = (units: ReadonlyArray<ReadyUnit>): string =>
+  `rift({ action: "land", rifts: [${units.map((unit) => JSON.stringify(riftOf(unit))).join(", ")}] })`
+
 /** The one line the root is steered with. */
-export const lineOf = (units: ReadonlyArray<ReadyUnit>): string =>
-  `idle with units ready: ${unitList(units)}; start them or name what you wait on.`
+export const lineOf = ({ moving, landing }: Due): string => {
+  const move = `units in plan, implement or verify: ${unitList(moving)}; start them or name what you wait on.`
+  const land = landing === undefined ? "" : `batch due (${landing.why}): ${unitList(landing.units)}; land it with ${landCall(landing.units)}.`
+  if (moving.length === 0) return `idle with a ${land}`
+  return landing === undefined ? `idle with ${move}` : `idle with ${move} A ${land}`
+}
 
 /** The nudge's metadata key: a nudge carries it, so its arrival is not new input. */
 export const MARK = "dotfiles-opencode.orchestrate.idle"
@@ -125,6 +197,7 @@ export interface ReportDraft extends Schema.Schema.Type<typeof ReportDraft> {}
 
 /** Steer the idle root, with what was gathered about it. */
 export const Nudge = Schema.TaggedStruct("Nudge", {
+  moving: Schema.Array(MovingUnit),
   ready: Schema.Array(ReadyUnit),
   holds: Holds,
   /** The Sabbath holds every agent start. */
@@ -146,14 +219,14 @@ export interface DraftSeen extends Schema.Schema.Type<typeof DraftSeen> {}
 export const DraftCleared = Schema.TaggedStruct("DraftCleared", { client: Schema.String })
 export interface DraftCleared extends Schema.Schema.Type<typeof DraftCleared> {}
 
-/** The root was steered with `line`, naming `units`. */
-export const Nudged = Schema.TaggedStruct("Nudged", { units: Schema.Array(ReadyUnit), line: Schema.String })
+/** The root was steered with `line`, naming the units it moves and the batch it lands (none when not due). */
+export const Nudged = Schema.TaggedStruct("Nudged", { moving: Schema.Array(MovingUnit), landing: Schema.Array(ReadyUnit), line: Schema.String })
 export interface Nudged extends Schema.Schema.Type<typeof Nudged> {}
 
 export type Event = WentIdle | Heard | DraftSeen | DraftCleared | Nudged
 
 /** Why a root was not nudged, in the order they are checked. */
-export const Why = Schema.Literals(["working", "nudged", "background", "drafting", "sabbath", "nothing-ready", "wake", "question", "wait-named"])
+export const Why = Schema.Literals(["working", "nudged", "background", "drafting", "sabbath", "nothing-due", "wake", "question", "wait-named"])
 export type Why = typeof Why.Type
 
 /** The root is not nudged now, and why, with the evidence. */
@@ -175,10 +248,29 @@ export const heldBack = (state: IdleRootState, now: number): NotNudged | undefin
   return undefined
 }
 
+/** What the root is steered to do now, from what was gathered: nothing when no unit waits on it and no batch is due. */
+export const dueOf = (nudge: Pick<Nudge, "moving" | "ready">, now: number): Due | undefined => {
+  const why = batchDue(nudge.ready, now)
+  if (nudge.moving.length === 0 && why === undefined) return undefined
+  return why === undefined ? { moving: nudge.moving } : { moving: nudge.moving, landing: { units: nudge.ready, why } }
+}
+
+/** Why nothing is due: no unit to move, and the ready units (if any) short of the cadence. */
+const nothingDue = (ready: ReadonlyArray<ReadyUnit>, now: number): NotNudged => {
+  const base = "no run of its holds a unit in plan, implement or verify"
+  if (ready.length === 0) return new NotNudged({ why: "nothing-due", detail: base })
+  const times = ready.flatMap((unit) => (unit.since === undefined ? [] : [unit.since]))
+  const oldest = times.length === 0 ? "" : `, the oldest for ${Math.floor((now - Math.min(...times)) / 60_000)} min`
+  return new NotNudged({
+    why: "nothing-due",
+    detail: `${base}, and its batch is not due: ${ready.length} ready${oldest} (due at ${BATCH_SIZE} or ${BATCH_WAIT_MS / 60_000} min)`,
+  })
+}
+
 /** What holds the nudge back in what was gathered. */
-const heldBy = (nudge: Nudge): NotNudged | undefined => {
+const heldBy = (nudge: Nudge, due: Due | undefined, now: number): NotNudged | undefined => {
   if (nudge.resting) return new NotNudged({ why: "sabbath", detail: "no agent starts over the Sabbath" })
-  if (nudge.ready.length === 0) return new NotNudged({ why: "nothing-ready", detail: "no run of its holds a unit in plan, implement or verify" })
+  if (due === undefined) return nothingDue(nudge.ready, now)
   const { holds } = nudge
   if (holds.wakes > 0) return new NotNudged({ why: "wake", detail: `${holds.wakes} wake, monitor or latch set` })
   if (holds.questions > 0 || holds.needsYou.length > 0)
@@ -200,9 +292,13 @@ export const IdleRoot: Decider<IdleRootState, Command, Event, NotNudged> = {
           if (command.drafting) return [DraftSeen.make({ client: command.client, at: now })]
           return command.client in state.drafts ? [DraftCleared.make({ client: command.client })] : []
         case "Nudge": {
-          const held = heldBack(state, now) ?? heldBy(command)
+          const back = heldBack(state, now)
+          if (back !== undefined) return yield* back
+          const due = dueOf(command, now)
+          const held = heldBy(command, due, now)
           if (held !== undefined) return yield* held
-          return [Nudged.make({ units: command.ready, line: lineOf(command.ready) })]
+          if (due === undefined) return yield* nothingDue(command.ready, now)
+          return [Nudged.make({ moving: due.moving, landing: due.landing?.units ?? [], line: lineOf(due) })]
         }
       }
     }),

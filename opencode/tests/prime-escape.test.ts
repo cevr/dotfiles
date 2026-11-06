@@ -2,16 +2,16 @@
 // checkout and asserts what one Escape does on a busy session with an empty
 // composer: at 1 s it cancels (the prompt leaves the transcript and is back in
 // the composer), at 7 s it interrupts (the prompt and its partial answer stay).
-// The Dock, which replaces the host's footer, says which. It needs
-// OPENCODE_DEV, a fork whose Escape cancels within `escape_cancel_grace` and
-// whose footer input carries `escape`.
+// The Dock, which replaces the host's footer, shows no Escape hint. The
+// escape plugin (cmd/escape), loaded beside Prime, does the cancelling; it
+// needs OPENCODE_DEV, the fork.
 import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const fork = process.env.OPENCODE_DEV
-if (!fork) console.warn("tests/prime-escape.test.ts: skipped. Set OPENCODE_DEV to the fork with Escape-to-cancel to run it.")
+if (!fork) console.warn("tests/prime-escape.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
 
 const root = join(import.meta.dir, "..")
 const names = ["cancel-hint", "cancelled", "interrupt-hint", "interrupted"] as const

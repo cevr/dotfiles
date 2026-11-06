@@ -12,7 +12,13 @@ import { nameOf } from "./directory.ts"
 export interface Party {
   readonly id: string
   readonly title?: string | undefined
+  /** The paired host it is on; none for this server's own. */
+  readonly host?: string | undefined
 }
+
+/** A party as a header names it: `session "Title" (ses_…)`, then ` on host <host>` for a paired host's. */
+const named = (party: Party): string =>
+  `session ${JSON.stringify(nameOf(party))} (${party.id})${party.host === undefined ? "" : ` on host ${party.host}`}`
 
 export const MessageInput = Schema.Struct({
   to: Schema.String.annotate({
@@ -29,8 +35,8 @@ export const MessageInput = Schema.Struct({
 export type MessageInput = typeof MessageInput.Type
 
 export const MESSAGE_DESCRIPTION = [
-  "Send a message to another OpenCode session on this server (find it with the sessions tool), to coordinate with it without the owner relaying. It arrives in that session as a message from you, with your session's id and title and how to answer.",
-  "A running session reads it at its next step; an idle one wakes to read it (wake: false leaves it for its next turn). Answers come back the same way, as a message in your session. You cannot write to your own session or to a session on another server.",
+  "Send a message to another OpenCode session (find it with the sessions tool), to coordinate with it without the owner relaying. It arrives in that session as a message from you, with your session's id and title and how to answer.",
+  "A running session reads it at its next step; an idle one wakes to read it (wake: false leaves it for its next turn). Answers come back the same way, as a message in your session. A session on a host paired with this one (listed `on <host>`) is reached by its id. You cannot write to your own session.",
   "Answer a message only when it asks for something, so two sessions do not reply to each other forever.",
 ].join("\n\n")
 
@@ -46,10 +52,12 @@ export interface Letter {
   readonly description: string
   readonly metadata: {
     readonly source: "mail"
-    readonly from: { readonly sessionID: string; readonly title: string }
-    readonly replyTo: { readonly sessionID: string; readonly title: string }
+    readonly from: { readonly sessionID: string; readonly title: string; readonly host?: string }
+    readonly replyTo: { readonly sessionID: string; readonly title: string; readonly host?: string }
   }
 }
+
+const signed = (party: Party) => ({ sessionID: party.id, title: nameOf(party), ...(party.host === undefined ? {} : { host: party.host }) })
 
 /** The text on one line, at most `max` characters, `…` where it was cut. */
 export const excerpt = (text: string, max: number): string => {
@@ -65,13 +73,12 @@ export const LOG_EXCERPT = 200
 
 /** The header the receiver reads above the text: who wrote, and how to answer. */
 export const header = (from: Party, replyTo: Party): ReadonlyArray<string> => {
-  const sender = `session ${JSON.stringify(nameOf(from))} (${from.id})`
   const answer = `{ "to": "${replyTo.id}", "text": "…" }`
   return [
-    `✉ Message from ${sender}, sent with the message tool. It is not the user speaking.`,
+    `✉ Message from ${named(from)}, sent with the message tool. It is not the user speaking.`,
     replyTo.id === from.id
       ? `To answer, call the message tool with ${answer}; answer only if it asks for something.`
-      : `Answers go to session ${JSON.stringify(nameOf(replyTo))} (${replyTo.id}): call the message tool with ${answer}; answer only if it asks for something.`,
+      : `Answers go to ${named(replyTo)}: call the message tool with ${answer}; answer only if it asks for something.`,
   ]
 }
 
@@ -79,11 +86,7 @@ export const header = (from: Party, replyTo: Party): ReadonlyArray<string> => {
 export const compose = (from: Party, replyTo: Party, body: string): Letter => ({
   text: [...header(from, replyTo), "", body.trim()].join("\n"),
   description: `from ${nameOf(from)} · ${excerpt(body, LINE_EXCERPT)}`,
-  metadata: {
-    source: "mail",
-    from: { sessionID: from.id, title: nameOf(from) },
-    replyTo: { sessionID: replyTo.id, title: nameOf(replyTo) },
-  },
+  metadata: { source: "mail", from: signed(from), replyTo: signed(replyTo) },
 })
 
 /** How the receiver gets it: at its next step (running), woken now (idle), or at its next turn (idle, not woken). */
@@ -93,7 +96,7 @@ export const deliveryOf = (running: boolean, wake: boolean): Delivery => (runnin
 
 /** What the sender reads once it is delivered. */
 export const receipt = (to: Party, delivery: Delivery): string => {
-  const target = `session ${JSON.stringify(nameOf(to))} (${to.id})`
+  const target = named(to)
   if (delivery === "steered") return `Delivered to ${target}. It is running and reads it at its next step.`
   if (delivery === "woke") return `Delivered to ${target}. It was idle and is now reading it.`
   return `Delivered to ${target}. It is idle and reads it at its next turn (not woken).`
@@ -102,8 +105,12 @@ export const receipt = (to: Party, delivery: Delivery): string => {
 /** What the sender reads when the message is refused. */
 export const explain = (rejection: Rejection): string => {
   switch (rejection._tag) {
-    case "NoSuchSession":
-      return `No session on this server is ${JSON.stringify(rejection.to)}. List them with the sessions tool, and give an id (ses_…) or a title.`
+    case "NoSuchSession": {
+      const peers = rejection.peers ?? []
+      const where = peers.length === 0 ? "this server" : `this server or its paired hosts (${peers.map((peer) => peer.name).join(", ")})`
+      const missed = peers.flatMap((peer) => (peer.missed === undefined ? [] : [` ${peer.name} could not be asked: ${peer.missed}.`]))
+      return `No session on ${where} is ${JSON.stringify(rejection.to)}.${missed.join("")} List them with the sessions tool, and give an id (ses_…) or a title.`
+    }
     case "AmbiguousTitle":
       return `More than one session matches ${JSON.stringify(rejection.to)}: ${rejection.matches
         .map((match) => `${match.id} ${JSON.stringify(match.title)}`)
