@@ -117,7 +117,7 @@ function part(value: unknown, step: number | undefined): Part | undefined {
  * An assistant step, a background subagent's stop notice, or a background
  * shell's stop notice; undefined for any other message.
  */
-function message(value: unknown): Message | undefined {
+export function message(value: unknown): Message | undefined {
   const fields = record(value)
   if (fields.type === "assistant") {
     const agent = string(fields.agent)
@@ -151,13 +151,20 @@ function latchOf(value: unknown): Latch | undefined {
   return { hold, reason, opensAt, at, ...(cancelledAt === undefined ? {} : { cancelledAt }), ...(failed === undefined ? {} : { failed }) }
 }
 
-/** The model the latest assistant step ran on, by id. */
-const stepModel = (items: ReadonlyArray<unknown>): string | undefined =>
-  items.flatMap((item) => {
-    const fields = record(item)
-    const id = fields.type === "assistant" ? string(record(fields.model).id) : undefined
-    return id ? [id] : []
-  }).at(-1)
+/** One field of an object, read alone: a store proxy then tracks that field only. */
+const field = (value: unknown, key: string): unknown =>
+  value !== null && typeof value === "object" ? Reflect.get(value, key) : undefined
+
+/** The model the latest assistant step ran on, by id: read from the newest item back, so older steps go unread. */
+const stepModel = (items: ReadonlyArray<unknown>): string | undefined => {
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index]
+    if (field(item, "type") !== "assistant") continue
+    const id = string(field(field(item, "model"), "id"))
+    if (id) return id
+  }
+  return undefined
+}
 
 /** The running shells of the registry, by the session that started each. */
 function shellsBySession(listed: ReadonlyArray<ShellInfo>): ReadonlyMap<string, ReadonlyArray<Shell>> {
@@ -171,7 +178,21 @@ function shellsBySession(listed: ReadonlyArray<ShellInfo>): ReadonlyMap<string, 
   return by
 }
 
-function session(reads: Pick<Reads, "session">, id: string, shells: ReadonlyMap<string, ReadonlyArray<Shell>>): Session {
+/**
+ * How `read` turns each of a session's message items into the family's
+ * `Message`: `message` itself, or a caller's cache of it. A TUI passes one that
+ * keeps each item's reading (`message(item)`) and reads it again only when that
+ * item changes, so a token streamed into one message re-reads that message
+ * alone, not every message of the family.
+ */
+export type Convert = (item: unknown) => Message | undefined
+
+function session(
+  reads: Pick<Reads, "session">,
+  id: string,
+  shells: ReadonlyMap<string, ReadonlyArray<Shell>>,
+  convert: Convert,
+): Session {
   const info = reads.session.get(id)
   const time = info?.time
   const items = reads.session.message.list(id)
@@ -197,18 +218,23 @@ function session(reads: Pick<Reads, "session">, id: string, shells: ReadonlyMap<
       [request.action, request.resources[0]].filter(Boolean).join(" "),
     ),
     questions: (reads.session.form.list(id) ?? []).map((form) => form.title),
-    messages: items.flatMap((item) => message(item) ?? []),
+    messages: items.flatMap((item) => convert(item) ?? []),
   }
 }
 
 /**
  * The family of `sessionID`: its root and every session in the root's family,
  * with the shells `location`'s registry runs for each (the host's default
- * location when none is given).
+ * location when none is given), each message item read through `convert`.
  */
-export const read = <Location>(reads: Reads<Location>, sessionID: string, location?: Location): Family => {
+export const read = <Location>(
+  reads: Reads<Location>,
+  sessionID: string,
+  location?: Location,
+  convert: Convert = message,
+): Family => {
   const root = reads.session.root(sessionID)
   const ids = reads.session.family(root)
   const shells = shellsBySession(reads.shell.list(location))
-  return { root, sessions: (ids.includes(root) ? ids : [root, ...ids]).map((id) => session(reads, id, shells)) }
+  return { root, sessions: (ids.includes(root) ? ids : [root, ...ids]).map((id) => session(reads, id, shells, convert)) }
 }

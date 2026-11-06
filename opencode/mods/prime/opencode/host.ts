@@ -4,7 +4,7 @@
 // the compiler checks that the host's values fit the look's own types.
 // The part, the context usage and the goal are worked out here from the
 // host's base reads (`partOf`, `contextUsage`, `opencode/goal.ts`).
-import { read } from "@dotfiles/opencode-subagents/opencode/view"
+import { familyReader } from "@dotfiles/opencode-subagents/solid/reader"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { Goal } from "../goal.ts"
 import { partOf } from "../session.ts"
@@ -16,6 +16,8 @@ import { readWakes } from "./wakes.ts"
 /** The Host over `context`, with each session's goal read through `goal` (`goals` in opencode/goal.ts). */
 export function host(context: Plugin.Context, goal: (sessionID: string) => Goal | undefined): Host {
   const data = context.data
+  // The rows, the dock's count and the hints all read the family; a token re-reads only its own message.
+  const family = familyReader()
   return {
     theme: () => context.theme,
     version: () => context.app.version,
@@ -40,7 +42,7 @@ export function host(context: Plugin.Context, goal: (sessionID: string) => Goal 
     wakes: (sessionID) => readWakes(context, sessionID),
     familyIDs: (sessionID) => data.session.family(sessionID),
     // The same registry as the shells count, so a row waits on a shell exactly while the dock counts it.
-    subagents: (sessionID) => read(data, sessionID, context.location),
+    subagents: (sessionID) => family(data, sessionID, context.location),
     shells: (sessionID) =>
       data.shell.list(context.location).filter((shell) => shell.metadata.sessionID === sessionID).length,
     model: () => context.ui.model.current(),
