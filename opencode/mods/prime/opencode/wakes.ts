@@ -3,9 +3,10 @@
 // every 2 seconds (so a time crossing midnight reads right), keeping the last
 // reading when a read fails. The protocol's id and event name come from the
 // wake mod's protocol file; the answer decodes with Prime's own narrow schema.
+// Also the composer tabs' cancel, over the same RPC.
 // A latch is a held subagent start, which the subagent rows show: the dock's
 // wake item leaves it out.
-import { CHANGED, WAKES } from "@dotfiles/opencode-wake/wake"
+import { Cancelled, CHANGED, WAKES } from "@dotfiles/opencode-wake/wake"
 import type { Plugin } from "@opencode/plugin/tui"
 import { Option, Schema } from "effect"
 import { createEffect, createSignal, onCleanup, type Accessor } from "solid-js"
@@ -13,10 +14,38 @@ import type { Wakes } from "../wakes.ts"
 
 const Answer = Schema.Struct({
   now: Schema.Number,
-  entries: Schema.Array(Schema.Struct({ kind: Schema.Literals(["alarm", "monitor", "latch"]), dueAt: Schema.Number })),
+  entries: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      kind: Schema.Literals(["alarm", "monitor", "latch"]),
+      dueAt: Schema.Number,
+      note: Schema.String,
+      mode: Schema.Literals(["wake", "notify"]),
+      everySeconds: Schema.optional(Schema.Number),
+      command: Schema.optional(Schema.String),
+      intervalSeconds: Schema.optional(Schema.Number),
+      until: Schema.optional(Schema.String),
+      last: Schema.optional(Schema.Struct({ at: Schema.Number, exitCode: Schema.Number, output: Schema.String })),
+    }),
+  ),
   notices: Schema.Array(Schema.Unknown),
 })
 const decodeAnswer = Schema.decodeUnknownOption(Answer)
+const decodeCancelled = Schema.decodeUnknownOption(Cancelled)
+
+/**
+ * Cancels one of the session's alarms or monitors, as `wake_cancel` does: the
+ * refusal's reason, or undefined once it went. The readers see it go on the
+ * `changed` event that follows.
+ */
+export async function cancelWake(context: Plugin.Context, sessionID: string, id: string): Promise<string | undefined> {
+  const answer = await context.client
+    .rpc(WAKES)
+    .cancel({ sessionID, id }, { location: context.location })
+    .then(decodeCancelled, (error: unknown) => Option.some({ outcome: "refused" as const, reason: String(error) }))
+  if (Option.isNone(answer)) return "the wake server's answer did not read"
+  return answer.value.outcome === "refused" ? answer.value.reason : undefined
+}
 const decodeChanged = Schema.decodeUnknownOption(
   Schema.Struct({ type: Schema.Literal(CHANGED), data: Schema.Struct({ sessionID: Schema.String }) }),
 )
