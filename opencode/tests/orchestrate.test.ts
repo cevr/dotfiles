@@ -219,6 +219,33 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   )
 
   test(
+    "restart: a foreground subagent a shutdown cut is resumed once in the background and its parent told once; one the user interrupted is not",
+    async () => {
+      const result = await run("restart", { scenario: "restart", now: WEDNESDAY, resumeBackoffMs: [500, 500, 500] })
+      type Message = { type: string; text?: string; metadata?: Record<string, unknown>; content?: ReadonlyArray<{ type: string; text?: string }> }
+      const messages = (name: string) => result.sessions[name]!.messages as Message[]
+      const resumes = (name: string) => messages(name).filter((message) => message.type === "user" && message.text?.startsWith("Your turn ended when OpenCode restarted"))
+      const notices = (name: string) => messages(name).filter((message) => message.type === "synthetic" && message.metadata?.source === "orchestrate")
+      // The cut child got the resume prompt once, and answered after it.
+      expect(resumes("child").length).toBe(1)
+      const after = messages("child").slice(messages("child").indexOf(resumes("child")[0]!) + 1)
+      expect(after.some((message) => message.type === "assistant" && message.content?.some((part) => part.text?.startsWith("sim: ")))).toBe(true)
+      // The call log has its one resume, in its parent's call.
+      const resumed = result.log.filter((line) => line.kind === "resumed")
+      expect(resumed.map(({ child, cause, attempt, description }) => ({ child, cause, attempt, description }))).toEqual([
+        { child: result.children[0]!.id, cause: "restart", attempt: 1, description: "restart-root child" },
+      ])
+      // Its parent was told once, naming it; the interrupted root and its child were left alone.
+      expect(notices("root").map((message) => message.metadata?.children)).toEqual([[result.children[0]!.id]])
+      expect(resumes("escapedChild")).toEqual([])
+      expect(notices("escaped")).toEqual([])
+      // No child was made again.
+      expect(result.children.length).toBe(2)
+    },
+    RUN_MS,
+  )
+
+  test(
     "Sabbath: on Friday evening the subagent calls are refused with when work resumes, and no child starts",
     async () => {
       const result = await run("sabbath", { scenario: "subagents", now: FRIDAY_EVENING })
