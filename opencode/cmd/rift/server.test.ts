@@ -5,8 +5,11 @@
 // tests/rift.test.ts runs it in OpenCode on the scripted model and real Rift.
 import { describe, expect, test } from "bun:test"
 import { Effect, Exit, Layer, type Scope } from "effect"
+import * as MemoryLanding from "@dotfiles/opencode-rift/memory/landing"
+import * as MemoryNotices from "@dotfiles/opencode-rift/memory/notices"
 import * as MemoryRifts from "@dotfiles/opencode-rift/memory/rifts"
 import * as MemorySessionDirectories from "@dotfiles/opencode-rift/memory/session-directories"
+import * as MemoryWorkbox from "@dotfiles/opencode-rift/memory/workbox"
 import Rift, { make, WORKTREE_TOOLS } from "./server.ts"
 
 type Host = Parameters<(typeof Rift)["effect"]>[0]
@@ -21,8 +24,9 @@ type Editor = { add: (tool: Registered) => void; remove: (id: string) => void }
 const SOURCE = "/code/app"
 
 /** The plugin started on a stand-in host whose registry already holds the built-in tools. */
-const start = (options: Record<string, unknown> = { workrift: false }, state = MemoryRifts.world([SOURCE])) =>
+const start = (options: Record<string, unknown> = { workrift: false }, state = MemoryRifts.world([SOURCE]), landing = MemoryLanding.world()) =>
   Effect.gen(function* () {
+    const woken: Array<MemoryNotices.Woken> = []
     const tools = new Map<string, Registered | "builtin">([["shell", "builtin"], ["opencode_session_move", "builtin"], ...WORKTREE_TOOLS.map((id) => [id, "builtin"] as const)])
     const host = {
       options,
@@ -34,7 +38,15 @@ const start = (options: Record<string, unknown> = { workrift: false }, state = M
           }),
       },
     } as unknown as Host
-    yield* make(() => Layer.mergeAll(MemoryRifts.layer(state), MemorySessionDirectories.layer({ ses_1: `${SOURCE}/src` }))).effect(host)
+    yield* make(() =>
+      Layer.mergeAll(
+        MemoryRifts.layer(state),
+        MemorySessionDirectories.layer({ ses_1: `${SOURCE}/src` }),
+        MemoryLanding.layer(landing),
+        MemoryNotices.layer(woken),
+        MemoryWorkbox.layer(false),
+      ),
+    ).effect(host)
 
     /** One call of the rift tool: its text, or `error: <message>`. */
     const call = Effect.fn(function* (input: Record<string, unknown>) {
@@ -45,7 +57,7 @@ const start = (options: Record<string, unknown> = { workrift: false }, state = M
       const reason = exit.cause.reasons.find((item) => item._tag === "Fail")
       return reason?._tag === "Fail" ? `error: ${reason.error.message}` : "defect"
     })
-    return { call, tools, state }
+    return { call, tools, state, woken }
   })
 
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
@@ -73,6 +85,20 @@ describe("the rift plugin", () => {
         )
         expect(yield* call({ action: "remove", name: "feat-x", force: true })).toBe("Moved the Rift /code/.rifts/app/feat-x (branch feat/x) to Rift's trash; it held 1 unpushed.")
         expect(yield* call({ action: "create" })).toStartWith("error: create needs a branch")
+      }),
+    ))
+
+  test("lands Rifts as one batch, wakes the session with the accept check's result, and says the workbox's commands need the workbox", () =>
+    scenario(
+      Effect.gen(function* () {
+        const state = MemoryRifts.world([SOURCE], [MemoryRifts.clean("/code/.rifts/app/feat-x", "feat/x")])
+        const landing = MemoryLanding.world({ [SOURCE]: MemoryLanding.config("main", "bun run gate", "bun run accept") })
+        const { call, woken } = yield* start({ workrift: false }, state, landing)
+        expect(yield* call({ action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push: abc1234 Merge into main to main (merged feat/x; the gate passed in 3s).")
+        yield* Effect.sleep("20 millis")
+        expect(woken.map((wake) => wake.notice.description)).toEqual(["rift land · accept passed"])
+        expect(yield* call({ action: "land", rifts: ["nope"] })).toStartWith("error: The warm source /code/app has no Rift named nope.")
+        expect(yield* call({ action: "prune" })).toBe("error: prune runs the workbox's workrift, which this machine does not have. Here the rift tool offers create, list, remove and land.")
       }),
     ))
 
