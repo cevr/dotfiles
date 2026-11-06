@@ -274,8 +274,9 @@ server has `POST /api/shell/:id/kill` and `GET /api/shell?exited=true`.
 
 `mods/orchestrate` holds the orchestrate skill's rules; its plugin is
 `cmd/orchestrate`. It defines the role agents, their compaction windows and
-their five-minute prompt cache (`ROLE_CACHE_TTL`, through the fork's per-agent
-`request.settings.cacheTTL`, raised by the pool to the provider's hour once a
+their five-minute prompt cache (`ROLE_CACHE_TTL`, the per-agent
+`request.settings.cacheTTL` that `cmd/anthropic-auth`'s `http.request` hook
+writes over the provider-configured lifetime, raised by the pool to the provider's hour once a
 role's session outlives it; the main session keeps the provider's hour),
 routes each subagent call to a role, starts a new Opus start the pace holds on
 Codex instead, latches one both hold, and stops agent work over the Sabbath. Its options are `windows`, `log`, `now`,
@@ -746,7 +747,7 @@ lifetime, the response itself, a tool call, an approval wait, a pause, a
 subagent's report or idle time between turns. The lifetime is the one the
 previous request's agent asked for: its own `request.settings.cacheTTL`
 (the roles' 5 minutes) over a model or provider `settings.cache.ttl`, as the
-fork applies it, else that setting, else 5 minutes for Anthropic and 30
+auth plugin applies it, else that setting, else 5 minutes for Anthropic and 30
 minutes for OpenAI. A provider with neither counts only model switches. A
 miss is priced at the cache-write rate for the tokens the request wrote back
 and the input rate for the rest, less the read rate it would have paid.
@@ -825,7 +826,7 @@ A session compacts at its cache's expiry less a margin when all of these hold:
 
 The cache's life counts from the last request's start (title requests
 aside), as Anthropic counts it. Its length is the one the request was sent
-with, resolved as the fork resolves it: the model's `cache.ttl`, else its
+with, resolved as the auth plugin resolves it: the model's `cache.ttl`, else its
 provider's, replaced by the agent's own `request.settings.cacheTTL` (an
 orchestration role's 5 minutes) when one is configured; with none
 configured, the provider's default: 5 minutes for Anthropic, 30 minutes for
