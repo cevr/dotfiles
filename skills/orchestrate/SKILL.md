@@ -207,7 +207,7 @@ Stop the old implementor.
 
 ## 4. Between messages
 
-- **Wait.** End your turn and let workers wake you. Spec the next units while you wait. To wait on an outside event (the owner's answer, a lab change), set one `monitor({ command, until, note })` on OpenCode, or run one background Bash until-loop on Claude Code, that ends on the event, and re-arm it only after an event. While units wait in `ready`, the oldest one's 30 minutes is such an event: one timer, re-armed when a batch lands.
+- **Wait.** End your turn and let workers wake you. Spec the next units while you wait. To wait on an outside event (the owner's answer, a lab change), set one `monitor({ command, until, note })` on OpenCode (`repeat: "change"` for one that should keep watching), or run one background Bash until-loop on Claude Code, that ends on the event, and re-arm it only after an event. While units wait in `ready`, the oldest one's 30 minutes is such an event: one timer, re-armed when a batch lands.
 - **Name the wait.** Before you end a turn with units in `plan`, `implement` or `verify` and no agent working on them, start them, or name what they wait on as a `waiting` queue item (the `queue` tool on OpenCode). On OpenCode, an idle root with ready units and no named wait is steered once: `idle with units ready: …; start them or name what you wait on.`
 - **Stop finished agents.** On OpenCode a subagent stops when its turn ends. On Claude Code, TaskStop an agent at its final hand-back.
 - **Owner direction** goes, the same turn, into the file that owns it: `NORTH_STAR.md` for scope and standing rules, the project's skill for craft and voice, `AGENTS.md` for the stack.

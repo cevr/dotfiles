@@ -1571,11 +1571,21 @@ The server adds five direct tools (a kernel cell calls them as
   the session reads it at its next turn, and the user sees it meanwhile.
   `newSession: { directory?, prompt }` starts a fresh session there at the
   time instead, with `prompt` as its first message.
-- `monitor({ command, cwd?, intervalSeconds?, until?, timeoutSeconds?, note })`
+- `monitor({ command, cwd?, intervalSeconds?, until?, timeoutSeconds?, note, repeat? })`
   runs `command` every `intervalSeconds` (default 30) until its stdout matches
   the regular expression `until` (without it, until it exits 0), or until
   `timeoutSeconds` (default 1800, at most 86400) pass, and then wakes the
-  session with the outcome and the last output.
+  session with the outcome and the last output. With `repeat` it keeps
+  checking after a match, until `timeoutSeconds` (default 86400, at most 30
+  days) or `wake_cancel`: `repeat: "match"` wakes on each new match (a match
+  after a check that did not match), `repeat: "change"` each time a matching
+  check's stdout differs from the last matching one's (the first match is the
+  baseline; `stepOf` in `wake.ts`). Each such fire is short: `⏰ Monitor <id>
+  changed (fire 2): `<command, cut to 80>`.`, how it goes on, the note and the
+  output's tail; the deadline ends it with `⏰ Monitor <id> ended: …`. What a
+  repeat keeps between checks (`matching`, the stdout's fingerprint `seen`,
+  its `fired` count) is stored on the entry, so a restart neither fires an
+  old match again nor loses the baseline.
 - `wake_cancel({ id })` cancels one; `wake_list({})` lists the pending ones
   and the notices not yet read.
 
@@ -1720,6 +1730,33 @@ the session that started it and ends with it, so it waits on CI with a
 background shell, and its parent (or the root) sets the wake. The root
 sessions, the orchestrator included, use them for every wake-up; `okra
 schedule` is no longer needed for that.
+
+### OpenCode's schedules are off
+
+OpenCode's own schedule tools (`schedule_create`, `_list`, `_pause`,
+`_resume`, `_delete`, offered under `experimental.schedules`) fire a schedule
+by prompting its session with its whole action: a real user message each
+time, kilobytes for a watch that fires on every change. The wake plugin takes
+them out of the registry for every agent (`SCHEDULE_TOOLS` in
+`cmd/wake/server.ts`, as the rift plugin takes the worktree tools), so a wake
+(`at`, `everySeconds`), a monitor (`until`, `repeat`) or the `pr` tool's watch
+does that work as a short synthetic notice. Cron and time zones are not
+carried over: no active schedule used them (both machines, 2026-11-06). The
+host's `/schedule` command stays (a plugin cannot remove a command); with
+the tools gone it has nothing to call.
+
+`bun scripts/migrate-schedules.ts` moves the active schedules over once: for
+each it plans the equivalent wake or monitor for its session (the mapping is
+in the script's header), writes a prompt over 200 characters to
+`$XDG_STATE_HOME/opencode-wake/schedules/<id>.md` and points the note at it,
+and prints the plan. `--apply` sets each entry over the wakes' `set` RPC
+(`{ sessionID, wake } | { sessionID, monitor }`, the tools' rules) and pauses
+the schedule; what has no equivalent (cron, a Code Mode check, remaining
+runs) is skipped and named. `--rows <file>` reads another machine's rows
+(the script's `QUERY` through `sqlite3 -readonly -json`).
+`tests/wake-repeat.test.ts` runs `scenarios/wake-repeat.ts` in real OpenCode
+with `experimental.schedules` on: no request offers a schedule tool, and a
+`repeat: "change"` monitor wakes the session once per change of a file.
 
 ### Jobs
 
