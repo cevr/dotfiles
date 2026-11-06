@@ -32,12 +32,11 @@ export interface Spec {
   readonly plugin: string
   /** The Sabbath clock, ISO 8601. */
   readonly now: string
-  /** compact.json's content, if the run has one. */
-  readonly windows?: Record<string, number>
   readonly pace?: boolean
   /** The Codex admission's answer: the sim provider is paced as Codex, and each call's arguments land in codex-args.jsonl. */
   readonly codex?: "admit" | "hold"
-  readonly promptTokens?: number
+  /** The input tokens every reply reports, or per agent: by the task's text before its `:` (`planner: first`). */
+  readonly promptTokens?: number | Readonly<Record<string, number>>
   /** The plugin's `resume.backoffMs`: the waits before it resumes a subagent a restart cut. */
   readonly resumeBackoffMs?: ReadonlyArray<number>
   /** The root session's model, such as the sim model at `max`; the config's default when absent. */
@@ -63,13 +62,12 @@ export interface Result {
 const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
 const work = join(spec.base, "work")
 const config = join(spec.base, "config")
-const windowsFile = join(spec.base, "compact.json")
 const logFile = join(spec.base, "agents.jsonl")
 mkdirSync(work, { recursive: true })
 mkdirSync(config, { recursive: true })
-if (spec.windows) writeFileSync(windowsFile, JSON.stringify({ windows: spec.windows }))
 
-const sim = serve(spec.promptTokens)
+const tokens = spec.promptTokens
+const sim = serve(typeof tokens === "object" ? (task) => tokens[task.split(":")[0]!] ?? 100 : tokens)
 const pacePlugin = join(spec.base, "fake-pace")
 if (spec.pace !== undefined) {
   mkdirSync(pacePlugin, { recursive: true })
@@ -96,7 +94,8 @@ const content = {
         "sim-model": {
           name: "Sim",
           capabilities: { tools: true, input: ["text"], output: ["text"] },
-          limit: { context: 128_000, output: 16_000 },
+          // A window as large as Opus's, so only the agents' own window decides when a session compacts.
+          limit: { context: 1_000_000, output: 16_000 },
           variants: [{ id: "low" }, { id: "medium" }, { id: "high" }, { id: "max" }],
         },
       },
@@ -106,7 +105,6 @@ const content = {
     {
       package: spec.plugin,
       options: {
-        windows: windowsFile,
         log: logFile,
         now: spec.now,
         unitLog: join(spec.plugin, "../../../skills/orchestrate/scripts/log.ts"),
