@@ -5,7 +5,24 @@ import { Effect, Layer, type Scope } from "effect"
 import type { CallLine } from "./call-line.ts"
 import { DEFAULTS, type Windows } from "./compaction.ts"
 import { type ModelRef, type Pace, paceOfReply } from "./pace.ts"
-import { CallLog, CodexAdmission, CompactionWindows, type LatchRequest, Latches, type LatchStart, Models, type Offered, PoolPace, Sessions, UnitLogs } from "./service.ts"
+import { type Holds, NO_HOLDS, type Run } from "./idle.ts"
+import {
+  CallLog,
+  CodexAdmission,
+  CompactionWindows,
+  type LatchRequest,
+  Latches,
+  type LatchStart,
+  Models,
+  type Offered,
+  PoolPace,
+  RootHolds,
+  Runs,
+  Sessions,
+  Steer,
+  StepLog,
+  UnitLogs,
+} from "./service.ts"
 
 const check = <A, E, R>(layer: Layer.Layer<R>, body: Effect.Effect<A, E, R>) =>
   Effect.runPromise(body.pipe(Effect.provide(layer)))
@@ -511,6 +528,122 @@ export const unitLogsLaws = (name: string, make: Effect.Effect<UnitLogsProbe, ne
       scoped(() =>
         Effect.gen(function* () {
           yield* (yield* UnitLogs).append("/nonexistent/loop-probe-x/auth", { unit: "auth", to: "plan", round: 1, note: "" })
+        }),
+      ))
+  })
+
+// ── StepLog ──
+
+/** The units each session started a step of, in order, repeats included. */
+export type StepWorld = Readonly<Record<string, ReadonlyArray<string>>>
+
+export const stepLogLaws = (name: string, layer: (world: StepWorld) => Layer.Layer<StepLog>) =>
+  describe(`${name} keeps the StepLog laws`, () => {
+    test("a session's units are the ones it started steps of, once each, in the order first started", () =>
+      check(
+        layer({ root: ["alpha", "beta", "alpha", "gamma"], other: ["delta"] }),
+        Effect.gen(function* () {
+          const log = yield* StepLog
+          expect(yield* log.units("root")).toEqual(["alpha", "beta", "gamma"])
+          expect(yield* log.units("other")).toEqual(["delta"])
+        }),
+      ))
+
+    test("a session that started no step has none", () =>
+      check(
+        layer({}),
+        Effect.gen(function* () {
+          expect(yield* (yield* StepLog).units("root")).toEqual([])
+        }),
+      ))
+  })
+
+// ── Runs ──
+
+/** What the runs' source answers: runs of units with their states, or nothing it can give. */
+export type RunsWorld = ReadonlyArray<Run> | "unreadable"
+
+export const runsLaws = (name: string, layer: (world: RunsWorld) => Layer.Layer<Runs>) =>
+  describe(`${name} keeps the Runs laws`, () => {
+    const runs: ReadonlyArray<Run> = [
+      { name: "p1", units: [{ unit: "alpha", state: "implement" }, { unit: "beta", state: "merged 1234567" }] },
+      { name: "p2", units: [] },
+    ]
+    test("the runs, each with its units' states, in order", () =>
+      check(
+        layer(runs),
+        Effect.gen(function* () {
+          expect(yield* (yield* Runs).list).toEqual(runs)
+        }),
+      ))
+
+    test("runs that cannot be read are none, without failing", () =>
+      check(
+        layer("unreadable"),
+        Effect.gen(function* () {
+          expect(yield* (yield* Runs).list).toEqual([])
+        }),
+      ))
+  })
+
+// ── RootHolds ──
+
+/** What the other plugins hold, by session; `unreadable` when none of them can be asked. */
+export type HoldsWorld = Readonly<Record<string, Holds>> | "unreadable"
+
+export const rootHoldsLaws = (name: string, layer: (world: HoldsWorld) => Layer.Layer<RootHolds>) =>
+  describe(`${name} keeps the RootHolds laws`, () => {
+    const held: Holds = { wakes: 2, questions: 1, needsYou: ["Pick the export format"], waits: ["CI on the PR (pr 12)"] }
+    test("a session's wakes, questions, needs and waits; another session's are not its", () =>
+      check(
+        layer({ root: held, other: { ...NO_HOLDS, wakes: 5 } }),
+        Effect.gen(function* () {
+          const holds = yield* RootHolds
+          expect(yield* holds.of("root")).toEqual(held)
+          expect(yield* holds.of("quiet")).toEqual(NO_HOLDS)
+        }),
+      ))
+
+    test("plugins that cannot be asked hold nothing", () =>
+      check(
+        layer("unreadable"),
+        Effect.gen(function* () {
+          expect(yield* (yield* RootHolds).of("root")).toEqual(NO_HOLDS)
+        }),
+      ))
+  })
+
+// ── Steer ──
+
+/** A host whose sessions take messages, recording each in `sent`, or refuse with `refuse`. */
+export interface SteerWorld {
+  readonly refuse?: string
+}
+
+/** `make` gives the Steer on `world` and the lines it delivered, by session. */
+export const steerLaws = (
+  name: string,
+  make: (world: SteerWorld) => { readonly layer: Layer.Layer<Steer>; readonly sent: () => ReadonlyArray<{ readonly sessionID: string; readonly line: string }> },
+) =>
+  describe(`${name} keeps the Steer laws`, () => {
+    test("a nudge reaches its session with its line", async () => {
+      const probe = make({})
+      await check(
+        probe.layer,
+        Effect.gen(function* () {
+          yield* (yield* Steer).nudge("root", "idle with units ready: alpha; start them or name what you wait on.")
+        }),
+      )
+      expect(probe.sent()).toEqual([{ sessionID: "root", line: "idle with units ready: alpha; start them or name what you wait on." }])
+    })
+
+    test("a nudge the host refuses fails, saying why", () =>
+      check(
+        make({ refuse: "session not found" }).layer,
+        Effect.gen(function* () {
+          const refused = yield* Effect.flip((yield* Steer).nudge("root", "line"))
+          expect(refused._tag).toBe("NudgeRefused")
+          expect(refused.message).toContain("session not found")
         }),
       ))
   })

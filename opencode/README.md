@@ -374,6 +374,48 @@ through `agents.json`) to stop at its first compaction, write a handoff file
 (the task, what is done, what is next) and end with `compacted: <path>. Start
 a fresh worker from this handoff; do not continue this session.`
 
+### An idle root with ready work
+
+A root session owns an orchestrate run once it starts a step (`<role> <unit>
+r<N>`) of one of the run's units, as the call log records it. When such a root
+ends its turn (the fork's `experimental.idle` hook) while its runs hold units
+in `plan`, `implement` or `verify` (the status mod's `STATUS` RPC, over the
+skill's `status.ts`), it is steered once with one line:
+
+```
+idle with units ready: alpha, beta; start them or name what you wait on.
+```
+
+Units from more than one run read `run/unit`; past eight the rest are
+counted. The line is a steered synthetic message carrying the metadata key
+`dotfiles-opencode.orchestrate.idle`, so its own arrival is not new input.
+
+Once per idle period: after a nudge the root is not nudged again until new
+input reaches it (the owner's prompt, a wake, a worker's notice). The nudge
+is held while any of these stands:
+
+- a subagent or shell still runs under it;
+- the owner drafts a prompt to it: the orchestrate TUI plugin
+  (`cmd/orchestrate/tui.ts`) reports a composer holding text over the
+  `IDLE.draft` RPC, again every 10 s while it stays; the server forgets a
+  draft not reported within 30 s, and decides again 2 s after one clears;
+- a wake, monitor or latch is set for it;
+- a question to the owner is open (a background question, or a `needs-you`
+  item in its queue);
+- it named its wait: a `waiting` item in its queue;
+- the Sabbath.
+
+The aggregate is `IdleRoot` in `idle.ts` (commands `GoIdle`, `Hear`,
+`ReportDraft`, `Nudge`; rejection `NotNudged` with its reason), the handler
+`IdleRoots` in `model.ts`, over the contracts `StepLog` (the call log's
+started units, `filestore/`), `Runs` (`opencode/runs.ts`), `RootHolds`
+(the wakes, questions and queue RPCs, `opencode/holds.ts`) and `Steer`
+(`opencode/steer.ts`). `tests/idle-root.test.ts` runs
+`scenarios/idle-root.ts`: no nudge while the planner runs or a draft stays,
+one after the draft clears, the named wait in the queue (read off the
+scenario's Queue sidebar, which `bun run daily` does not install), no second
+nudge.
+
 ## Pool
 
 `mods/pool` pools a provider's OAuth logins; its plugin is `cmd/pool`. It chooses the login each

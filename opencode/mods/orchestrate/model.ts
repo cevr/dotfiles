@@ -21,12 +21,25 @@
 // read or write (the Sabbath's, a pace's) is on that fixed clock, so the
 // times a latch hands the wakes are moved onto the system's by how far the
 // fixed clock is behind it at that moment. Without one, they move by nothing.
-import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
+import { Clock, Context, Effect, Layer, Option, Schema, Semaphore } from "effect"
+import { fold } from "@dotfiles/decider/decider"
 import * as CallLine from "./call-line.ts"
+import {
+  type Command as IdleCommand,
+  GoIdle,
+  Hear,
+  heldBack,
+  IdleRoot,
+  type IdleRootState,
+  NO_HOLDS,
+  Nudge,
+  readyUnits,
+  ReportDraft,
+} from "./idle.ts"
 import { formatRef, namesModel, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
 import { codexFallback, effort, isRole, Reason, WORKER } from "./role.ts"
 import { resumesAt, SabbathRest, type Place } from "./sabbath.ts"
-import { CallLog, CodexAdmission, Latches, Models, PoolPace, Sessions, UnitLogs } from "./service.ts"
+import { CallLog, CodexAdmission, Latches, Models, PoolPace, RootHolds, Runs, Sessions, Steer, StepLog, UnitLogs } from "./service.ts"
 import { handBackOf, startOf, type Transition, unitDirsIn } from "./unit-log.ts"
 import { isStep } from "./described.ts"
 import {
@@ -488,6 +501,103 @@ const refusalOf = (latched: SubagentLatched, place: Place): SabbathRest | PaceHe
   latched.hold === "sabbath"
     ? new SabbathRest({ resumesAt: latched.opensAt, place })
     : new PaceHeld({ whose: latched.whose ?? "pool", reason: latched.why, retryAt: latched.opensAt })
+
+// ── Idle roots (idle.ts) ──
+
+/** How long after a draft ends, with no new input, the idle period is decided again: a sent prompt lands first. */
+export const RECHECK_MS = 2_000
+
+/** What one decision of an idle root came to, for the plugin's log. */
+export type IdleOutcome =
+  | { readonly _tag: "Nudged"; readonly line: string }
+  | { readonly _tag: "NotNudged"; readonly why: string; readonly detail: string }
+  | { readonly _tag: "Refused"; readonly message: string }
+
+export class IdleRoots extends Context.Service<
+  IdleRoots,
+  {
+    /** The session ended its turn with nothing pending; `background` still runs for it. A root's idle period is decided now. */
+    readonly idle: (sessionID: string, background: number) => Effect.Effect<IdleOutcome | undefined>
+    /** New input reached the session (not the nudge): its idle period, if any, ends. */
+    readonly heard: (sessionID: string) => Effect.Effect<void>
+    /**
+     * An owner's TUI says whether its composer holds a draft to the session.
+     * A draft that ends while the root is idle decides it again `RECHECK_MS` later.
+     */
+    readonly draft: (input: { readonly sessionID: string; readonly client: string; readonly drafting: boolean }) => Effect.Effect<IdleOutcome | undefined>
+    /** The session is gone. */
+    readonly forget: (sessionID: string) => Effect.Effect<void>
+  }
+>()("dotfiles-opencode/orchestrate/IdleRoots") {}
+
+/** The idle roots' handlers. Each root's state lives here, in memory: a restart starts every root afresh. */
+export const idleLayer = (config: Pick<Config, "place" | "now">) =>
+  Layer.effect(
+    IdleRoots,
+    Effect.gen(function* () {
+      const sessions = yield* Sessions
+      const steps = yield* StepLog
+      const runs = yield* Runs
+      const holds = yield* RootHolds
+      const steer = yield* Steer
+      const roots = new Map<string, IdleRootState>()
+      // One decision at a time: an idle hook and a draft's end may race for one root.
+      const one = yield* Semaphore.make(1)
+      const sabbathNow = config.now === undefined ? Clock.currentTimeMillis : Effect.succeed(config.now)
+
+      const apply = (sessionID: string, command: IdleCommand) =>
+        Effect.gen(function* () {
+          const state = roots.get(sessionID) ?? IdleRoot.initial
+          const events = yield* IdleRoot.decide(state, command, yield* Clock.currentTimeMillis)
+          const next = fold(IdleRoot, events, state)
+          roots.set(sessionID, next)
+          return { events, state: next }
+        })
+
+      /** Decide the root's idle period: gather what holds it, then nudge or say why not. */
+      const consider = (sessionID: string): Effect.Effect<IdleOutcome> =>
+        Effect.gen(function* () {
+          const state = roots.get(sessionID) ?? IdleRoot.initial
+          // Nothing is gathered while its own state already holds it back.
+          const held = heldBack(state, yield* Clock.currentTimeMillis)
+          if (held !== undefined) return { _tag: "NotNudged", why: held.why, detail: held.detail } as const
+          const resting = resumesAt(yield* sabbathNow, config.place) !== undefined
+          const ready = resting ? [] : readyUnits(yield* runs.list, yield* steps.units(sessionID))
+          const gathered = ready.length === 0 ? NO_HOLDS : yield* holds.of(sessionID)
+          const decided = yield* apply(sessionID, Nudge.make({ ready, holds: gathered, resting })).pipe(Effect.result)
+          if (decided._tag === "Failure") return { _tag: "NotNudged", why: decided.failure.why, detail: decided.failure.detail } as const
+          const nudged = decided.success.events.find((event) => event._tag === "Nudged")
+          if (nudged === undefined) return { _tag: "NotNudged", why: "nudged", detail: "nothing to record" } as const
+          return yield* steer.nudge(sessionID, nudged.line).pipe(
+            Effect.as<IdleOutcome>({ _tag: "Nudged", line: nudged.line }),
+            Effect.catchTag("NudgeRefused", (refused) => Effect.succeed<IdleOutcome>({ _tag: "Refused", message: refused.message })),
+          )
+        }).pipe(one.withPermits(1))
+
+      const idle = Effect.fn("IdleRoots.idle")(function* (sessionID: string, background: number) {
+        if ((yield* sessions.parentOf(sessionID)) !== undefined) return undefined
+        yield* apply(sessionID, GoIdle.make({ background })).pipe(Effect.orDie)
+        return yield* consider(sessionID)
+      })
+
+      const heard = Effect.fn("IdleRoots.heard")(function* (sessionID: string) {
+        if (!roots.has(sessionID)) return
+        yield* apply(sessionID, Hear.make({})).pipe(Effect.orDie)
+      })
+
+      const draft = Effect.fn("IdleRoots.draft")(function* (input: { readonly sessionID: string; readonly client: string; readonly drafting: boolean }) {
+        if (!roots.has(input.sessionID) && !input.drafting) return undefined
+        const { events, state } = yield* apply(input.sessionID, ReportDraft.make({ client: input.client, drafting: input.drafting })).pipe(Effect.orDie)
+        if (!events.some((event) => event._tag === "DraftCleared") || state.phase !== "idle") return undefined
+        yield* Effect.sleep(RECHECK_MS)
+        return yield* consider(input.sessionID)
+      })
+
+      const forget = (sessionID: string) => Effect.sync(() => void roots.delete(sessionID)).pipe(Effect.withSpan("IdleRoots.forget"))
+
+      return { idle, heard, draft, forget }
+    }),
+  )
 
 /** What the log says about a refusal: the Sabbath's sentence, the pace's reason, or the latch the child waits on. */
 const whyOf = (rejection: Rejection | PaceHeld) =>

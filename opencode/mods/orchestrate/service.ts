@@ -4,6 +4,7 @@
 import { Context, type Effect, Schema } from "effect"
 import type { CallLine } from "./call-line.ts"
 import type { Windows } from "./compaction.ts"
+import type { Holds, Run } from "./idle.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
 import type { Hold } from "./tool-call.ts"
 import type { Transition } from "./unit-log.ts"
@@ -171,3 +172,40 @@ export class Latches extends Context.Service<
     readonly start: (start: LatchStart) => Effect.Effect<void, StartFailed>
   }
 >()("dotfiles-opencode/orchestrate/Latches") {}
+
+// ── An idle root's facts (idle.ts) ──
+
+/**
+ * The steps a session started, as the call log keeps them: the unit each
+ * step's description names (`<role> <unit> r<N>`, described.ts), once each,
+ * in the order first started. No log, a line that does not read, or a
+ * description that names no step gives nothing.
+ */
+export class StepLog extends Context.Service<
+  StepLog,
+  { readonly units: (sessionID: string) => Effect.Effect<ReadonlyArray<string>> }
+>()("dotfiles-opencode/orchestrate/StepLog") {}
+
+/**
+ * The orchestrate runs of the repository this plugin serves, each with its
+ * units' states as the skill's status script derives them. Runs that cannot
+ * be read are none.
+ */
+export class Runs extends Context.Service<Runs, { readonly list: Effect.Effect<ReadonlyArray<Run>> }>()("dotfiles-opencode/orchestrate/Runs") {}
+
+/**
+ * What the other plugins hold for a session: its wakes, its open questions
+ * and its queue's `needs-you` and `waiting` items. A plugin that cannot be
+ * asked holds nothing.
+ */
+export class RootHolds extends Context.Service<RootHolds, { readonly of: (sessionID: string) => Effect.Effect<Holds> }>()(
+  "dotfiles-opencode/orchestrate/RootHolds",
+) {}
+
+/** The nudge could not reach the session. */
+export class NudgeRefused extends Schema.TaggedError<NudgeRefused>()("NudgeRefused", { message: Schema.String }) {}
+
+/** Steers a session with one line, marked as the nudge (`MARK`), which wakes it if idle. */
+export class Steer extends Context.Service<Steer, { readonly nudge: (sessionID: string, line: string) => Effect.Effect<void, NudgeRefused> }>()(
+  "dotfiles-opencode/orchestrate/Steer",
+) {}

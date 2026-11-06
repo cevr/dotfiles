@@ -3,13 +3,17 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The orchestrate rules' OpenCode server plugin: the composition root of @dotfiles/opencode-orchestrate.",
+  "description": "The orchestrate rules' OpenCode plugins, the role agents, guard, latches and idle-root nudge (server) and the draft reporter (tui): the composition root of @dotfiles/opencode-orchestrate.",
   "exports": {
-    "./server": "./server.ts"
+    "./server": "./server.ts",
+    "./tui": "./tui.ts"
   },
   "dependencies": {
     "@dotfiles/opencode-orchestrate": "workspace:*",
     "@dotfiles/opencode-pool": "workspace:*",
+    "@dotfiles/opencode-questions": "workspace:*",
+    "@dotfiles/opencode-queue": "workspace:*",
+    "@dotfiles/opencode-status": "workspace:*",
     "@dotfiles/opencode-wake": "workspace:*"
   }
 }

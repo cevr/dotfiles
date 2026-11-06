@@ -75,20 +75,28 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Context, Effect, Layer, Option, Schema, SchemaGetter } from "effect"
+import { Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
+import { QUESTIONS } from "@dotfiles/opencode-questions/question"
+import { QUEUE } from "@dotfiles/opencode-queue/queue"
+import { STATUS } from "@dotfiles/opencode-status/status"
 import { Latch, MARK_KEY, type Opened, OPENER } from "@dotfiles/opencode-wake/latch"
 import { WAKES } from "@dotfiles/opencode-wake/wake"
 import * as CodexAdmissionLive from "@dotfiles/opencode-orchestrate/codex/admission"
 import { keepMessage, ROOT } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogLive from "@dotfiles/opencode-orchestrate/filestore/call-log"
 import * as CompactionWindowsLive from "@dotfiles/opencode-orchestrate/filestore/compaction-windows"
+import * as StepLogLive from "@dotfiles/opencode-orchestrate/filestore/step-log"
 import * as UnitLogsLive from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
+import { Draft, IDLE, MARK } from "@dotfiles/opencode-orchestrate/idle"
 import * as Model from "@dotfiles/opencode-orchestrate/model"
+import * as HoldsLive from "@dotfiles/opencode-orchestrate/opencode/holds"
 import * as LatchesLive from "@dotfiles/opencode-orchestrate/opencode/latches"
 import * as ModelsLive from "@dotfiles/opencode-orchestrate/opencode/models"
 import * as PoolPaceLive from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
+import * as RunsLive from "@dotfiles/opencode-orchestrate/opencode/runs"
 import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
+import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
 import { definitions, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, local, Place, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
@@ -99,7 +107,11 @@ import {
   type Latches,
   type Models,
   type PoolPace,
+  type RootHolds,
+  type Runs,
   type Sessions,
+  type Steer,
+  type StepLog,
   type UnitLogs,
 } from "@dotfiles/opencode-orchestrate/service"
 import type { Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
@@ -151,9 +163,10 @@ export const Options = Schema.Struct({
 export type Options = typeof Options.Type
 
 /** The outside systems the model runs on. */
-export type Externals = CallLog | Sessions | Models | PoolPace | CodexAdmission | CompactionWindows | Latches | UnitLogs
+export type Externals = CallLog | Sessions | Models | PoolPace | CodexAdmission | CompactionWindows | Latches | UnitLogs | StepLog | Runs | RootHolds | Steer
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
+type SyntheticInput = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 
 /** The outside systems as OpenCode, the filesystem and processes provide them; `start` runs a latched child through the subagent tool. */
 export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start): Layer.Layer<Externals> =>
@@ -193,6 +206,14 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
     CodexAdmissionLive.layer(options.codex === false ? CODEX_BUDGET : options.codex.script),
     CompactionWindowsLive.layer(options.windows),
     LatchesLive.layer((ask) => ctx.rpc(WAKES).latch(ask), start),
+    StepLogLive.layer(options.log),
+    RunsLive.layer(() => ctx.rpc(STATUS).status({})),
+    HoldsLive.layer({
+      pending: (input) => ctx.rpc(WAKES).pending({ sessionIDs: [...input.sessionIDs] }),
+      open: (input) => ctx.rpc(QUESTIONS).open({ sessionIDs: [...input.sessionIDs] }),
+      queue: (input) => ctx.rpc(QUEUE).get(input),
+    }),
+    SteerLive.layer((input) => ctx.session.synthetic({ ...input, sessionID: input.sessionID as SessionID, metadata: { ...input.metadata } } as SyntheticInput)),
   )
 
 /** A time as the model reads it: ISO 8601, and the owner's local time. */
@@ -319,15 +340,57 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
           ).pipe(Effect.asVoid)
         })
       const services = yield* Layer.build(
-        Model.layer({
-          place: options.place,
-          fullAgent: options.fullAgent,
-          ...(options.now === undefined ? {} : { now: options.now }),
-          ...(options.codex === false ? {} : { codex: { providers: options.codex.providers, ...(options.codex.pool === undefined ? {} : { pool: options.codex.pool }) } }),
-        }).pipe(Layer.provideMerge(externals(ctx, options, start))),
+        Layer.merge(
+          Model.layer({
+            place: options.place,
+            fullAgent: options.fullAgent,
+            ...(options.now === undefined ? {} : { now: options.now }),
+            ...(options.codex === false ? {} : { codex: { providers: options.codex.providers, ...(options.codex.pool === undefined ? {} : { pool: options.codex.pool }) } }),
+          }),
+          Model.idleLayer({ place: options.place, ...(options.now === undefined ? {} : { now: options.now }) }),
+        ).pipe(Layer.provideMerge(externals(ctx, options, start))),
       )
       const orchestrate = Context.get(services, Model.Orchestrate)
+      const idleRoots = Context.get(services, Model.IdleRoots)
       const windows = Context.get(services, CompactionWindows)
+      const scope = yield* Effect.scope
+
+      // An idle root with ready work is steered once per idle period (idle.ts). The decision runs on
+      // the plugin's scope, so the session goes idle at once; the nudge wakes it.
+      const logged = (sessionID: string) => (outcome: Model.IdleOutcome | undefined) =>
+        outcome === undefined
+          ? Effect.void
+          : outcome._tag === "Nudged"
+            ? Effect.logInfo("orchestrate: nudged an idle root").pipe(Effect.annotateLogs({ sessionID, line: outcome.line }))
+            : outcome._tag === "Refused"
+              ? Effect.logWarning("orchestrate: the nudge did not reach the root").pipe(Effect.annotateLogs({ sessionID, message: outcome.message }))
+              : Effect.logDebug("orchestrate: no nudge").pipe(Effect.annotateLogs({ sessionID, why: outcome.why, detail: outcome.detail }))
+      const background = (sessionID: string, work: Effect.Effect<Model.IdleOutcome | undefined>) =>
+        work.pipe(Effect.flatMap(logged(sessionID)), Effect.ignoreCause, Effect.forkIn(scope), Effect.asVoid)
+      yield* ctx.session.hook("experimental.idle", (event) => background(event.sessionID, idleRoots.idle(event.sessionID, event.background.length)))
+      yield* Effect.forkScoped(
+        ctx.event.subscribe({ types: ["session.inbox.enqueued", "session.deleted"] }).pipe(
+          Stream.runForEach((event) => {
+            if (event.type === "session.deleted") return idleRoots.forget(event.data.sessionID)
+            const item = event.data.item
+            // New input: the owner's prompt or another plugin's message; never the nudge itself.
+            const heard = item.type === "user" || (item.type === "synthetic" && item.payload.metadata?.[MARK] === undefined)
+            return heard ? idleRoots.heard(event.data.sessionID) : Effect.void
+          }),
+          Effect.ignoreCause,
+        ),
+        { startImmediately: true },
+      )
+      yield* ctx.rpc
+        .register(IDLE, {
+          draft: (input) =>
+            Schema.decodeUnknownEffect(Draft)(input).pipe(
+              Effect.tap((draft) => background(draft.sessionID, idleRoots.draft(draft))),
+              Effect.as({ ok: true }),
+              Effect.orElseSucceed(() => ({ ok: false })),
+            ),
+        })
+        .pipe(Effect.orDie)
 
       // The roles, defined as OpenCode's own plugins define build and general: before the
       // config's agent files, so a file in the owner's config still overrides a role's fields.
