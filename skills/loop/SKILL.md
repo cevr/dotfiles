@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 This skill is a superset of `improve-codebase-architecture`: the same lens, judged against the project's north stars and prior arts. It runs one of two ways — a [single pass with the user](#single-pass-with-the-user), who picks and grills, or the autonomous loop below, where every finding is applied or rejected with a receipt.
 
-In the loop, a **pass** is: coverage audit → read-only sweeps → triage into batches → per batch: a [track](../orchestrate/SKILL.md) (an implementor in the batch's own workspace, a verifier from another model family, rounds until accepted) → merge → live check → count → [retro](retro.md). Passes repeat until the close rule holds. Within a pass, each **sweep** is one read-only lens over the code.
+In the loop, a **pass** is: coverage audit → read-only sweeps → triage into batches → per batch: a [track](../orchestrate/SKILL.md) (an implementor in the batch's own workspace, a fresh verifier, rounds until accepted) → merge → live check → count → [retro](retro.md). Passes repeat until the close rule holds. Within a pass, each **sweep** is one read-only lens over the code.
 
 The project says what good is; this skill says how to loop:
 

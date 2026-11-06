@@ -5,7 +5,7 @@ import { Effect, Layer, type Scope } from "effect"
 import type { CallLine } from "./call-line.ts"
 import { DEFAULTS, type Windows } from "./compaction.ts"
 import type { ModelRef, Pace } from "./pace.ts"
-import { CallLog, CodexAdmission, CompactionWindows, type LatchRequest, Latches, type LatchStart, Models, PoolPace, Sessions } from "./service.ts"
+import { CallLog, CodexAdmission, CompactionWindows, type LatchRequest, Latches, type LatchStart, Models, type Offered, PoolPace, Sessions } from "./service.ts"
 
 const check = <A, E, R>(layer: Layer.Layer<R>, body: Effect.Effect<A, E, R>) =>
   Effect.runPromise(body.pipe(Effect.provide(layer)))
@@ -140,10 +140,11 @@ export const sessionsLaws = (name: string, layer: (world: SessionsWorld) => Laye
 
 // ── Models ──
 
-/** A host whose sessions run on `model`, offered at `variants`; no model at all when absent. */
+/** A host whose sessions run on `model`, offered at `variants`, no model at all when absent; `others` it offers too. */
 export interface ModelsWorld {
   readonly model?: ModelRef
   readonly variants: ReadonlyArray<string>
+  readonly others?: ReadonlyArray<Offered>
 }
 
 export const modelsLaws = (name: string, layer: (world: ModelsWorld) => Layer.Layer<Models>) =>
@@ -175,6 +176,45 @@ export const modelsLaws = (name: string, layer: (world: ModelsWorld) => Layer.La
           const models = yield* Models
           expect(yield* models.base("ses_law", "planner")).toBeUndefined()
           expect(yield* models.variant("ses_law", "planner", "high")).toBeUndefined()
+        }),
+      ))
+
+    const sol = (id: string, released: number, fields: Partial<Offered> = {}): Offered => ({
+      providerID: "openai",
+      id,
+      family: "gpt-sol",
+      time: { released },
+      variants: [{ id: "high" }, { id: "medium" }],
+      ...fields,
+    })
+
+    test("the newest of a family is the latest release on the providers asked, never a deprecated one", () =>
+      check(
+        layer({
+          model,
+          variants: [],
+          others: [
+            sol("gpt-6-sol", 1),
+            sol("gpt-6.1-sol", 2),
+            sol("gpt-7-sol", 3, { status: "deprecated" }),
+            sol("gpt-8-sol", 4, { providerID: "other" }),
+            sol("gpt-6-luna", 5, { family: "gpt-luna" }),
+          ],
+        }),
+        Effect.gen(function* () {
+          const models = yield* Models
+          expect(yield* models.newest("ses_law", ["openai"], "gpt-sol", "high")).toBe("openai/gpt-6.1-sol#high")
+          expect(yield* models.newest("ses_law", ["openai", "other"], "gpt-sol", "high")).toBe("other/gpt-8-sol#high")
+        }),
+      ))
+
+    test("the newest at a variant it does not offer is the bare model; a family not offered is none", () =>
+      check(
+        layer({ model, variants: [], others: [sol("gpt-6-sol", 1)] }),
+        Effect.gen(function* () {
+          const models = yield* Models
+          expect(yield* models.newest("ses_law", ["openai"], "gpt-sol", "max")).toBe("openai/gpt-6-sol")
+          expect(yield* models.newest("ses_law", ["openai"], "gpt-luna", "max")).toBeUndefined()
         }),
       ))
   })

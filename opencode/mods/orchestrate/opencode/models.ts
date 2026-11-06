@@ -4,12 +4,9 @@
 // undefined, and the call runs as it would have.
 import { Effect, Layer } from "effect"
 import type { ModelRef } from "../pace.ts"
-import { Models } from "../service.ts"
+import { Models, type Offered } from "../service.ts"
 
-/** A model OpenCode offers, with the variants it runs at. */
-export interface Offered extends ModelRef {
-  readonly variants: ReadonlyArray<{ readonly id: string }>
-}
+export type { Offered }
 
 /** OpenCode's lookups, as the plugin calls them, each in the parent session's directory. */
 export interface Port {
@@ -20,6 +17,9 @@ export interface Port {
 }
 
 const orNone = Effect.catchCause(() => Effect.succeed(undefined))
+
+/** Newest first: the latest release, then the greater id; a model with no release date is oldest. */
+const newer = (a: Offered, b: Offered) => (b.time?.released ?? 0) - (a.time?.released ?? 0) || b.id.localeCompare(a.id)
 
 export const layer = (port: Port) => {
   const base = Effect.fnUntraced(function* (sessionID: string, agentID: string) {
@@ -39,6 +39,16 @@ export const layer = (port: Port) => {
       const found = offered.find((item) => item.providerID === model.providerID && item.id === model.id)
       if (!found?.variants.some((item) => item.id === variant)) return undefined
       return `${model.providerID}/${model.id}#${variant}`
+    }, orNone),
+    newest: Effect.fn("Models.newest")(function* (sessionID: string, providers: ReadonlyArray<string>, family: string, variant: string) {
+      const { directory } = yield* port.session(sessionID)
+      const offered = yield* port.offered(directory)
+      const found = offered
+        .filter((item) => providers.includes(item.providerID) && item.family === family && item.status !== "deprecated")
+        .toSorted(newer)[0]
+      if (found === undefined) return undefined
+      const at = found.variants.some((item) => item.id === variant) ? `#${variant}` : ""
+      return `${found.providerID}/${found.id}${at}`
     }, orNone),
   })
 }

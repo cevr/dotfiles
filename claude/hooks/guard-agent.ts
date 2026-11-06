@@ -6,8 +6,9 @@
 // its current one: a session that read the skill before the rename still asks
 // for it. A new agent starts only when orchestrate's `budget.ts --admit` says
 // its turn in the agent queue came and its expected cost fits the pool's pace.
-// A held agent stays queued: the session runs the waiter the reason names in
-// the background, and calls Agent again when it exits. CLAUDE_FULL_AGENT=1
+// A held agent stays queued, and the reason says to start the role on Codex
+// at once (Opus first, Codex second); only when Codex holds too does the
+// session run the waiter the reason names, and call Agent again when it exits. CLAUDE_FULL_AGENT=1
 // lets a full agent through.
 
 import { homedir } from 'node:os';

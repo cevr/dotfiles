@@ -7,6 +7,11 @@
 // call answers at once, the wakes keep the latch (mods/wake latch.ts), and at
 // its time OpenLatch decides it again, to latch once more or to start.
 //
+// Opus first, Codex second: a new start the pace holds on its model, with a
+// Codex fallback whose pace admits it, starts at once on the fallback and says
+// why (`fallback`). Only when both are held does it latch, on whichever opens
+// first. The Sabbath holds both: it latches on the first model.
+//
 // `decide` never reads the state. A kernel cell's tool calls share the cell's
 // call id, so one call can start several subagents, and a finish can arrive
 // for a start the log never saw (the plugin loaded mid-call). Every command is
@@ -31,12 +36,23 @@ export const streamOf = (id: ToolCallId) => `${id.sessionID}/${id.callID}`
 
 // ── StartSubagent ──
 // Starting a subagent: a new one latches over the Sabbath or when the pace
-// has no room, a follow-up is refused over the Sabbath or while its child is
+// has no room on its model nor on its fallback, a follow-up is refused over the Sabbath or while its child is
 // still latched, and otherwise it runs as the agent the guard routes it to.
 
 /**
+ * The model a held start falls back to: the newest Codex model for its role,
+ * and the Codex pace's hold on it, if any.
+ */
+export const Fallback = Schema.Struct({
+  model: Schema.String,
+  hold: Schema.optionalKey(PaceHold),
+})
+export interface Fallback extends Schema.Schema.Type<typeof Fallback> {}
+
+/**
  * A subagent call, with what the guard gathered for it: the follow-up's child,
- * its agent and its latch, the model it runs on, and the pace's hold, if any.
+ * its agent and its latch, the model it runs on, the pace's hold, if any, and
+ * the fallback gathered when the pace holds a new agent.
  */
 export const StartSubagent = Schema.TaggedStruct("StartSubagent", {
   call: ToolCallId,
@@ -57,12 +73,14 @@ export const StartSubagent = Schema.TaggedStruct("StartSubagent", {
   place: Place,
   /** The pace's answer when it holds a new agent; a follow-up is never paced. */
   hold: Schema.optionalKey(PaceHold),
+  /** The Codex model to start on when the pace holds `model`; gathered only for a held new agent that named no model. */
+  fallback: Schema.optionalKey(Fallback),
   /** When the follow-up's child, still latched, opens (epoch ms). */
   childLatched: Schema.optionalKey(Schema.Number),
 })
 export interface StartSubagent extends Schema.Schema.Type<typeof StartSubagent> {}
 
-/** The subagent runs: the agent the guard routed it to and why, on its model. */
+/** The subagent runs: the agent the guard routed it to and why, on its model; on the fallback, why it moved. */
 export const SubagentStarted = Schema.TaggedStruct("SubagentStarted", {
   call: ToolCallId,
   from: Schema.String,
@@ -73,6 +91,8 @@ export const SubagentStarted = Schema.TaggedStruct("SubagentStarted", {
   child: Schema.optionalKey(Schema.String),
   background: Schema.optionalKey(Schema.Literal(true)),
   description: Schema.optionalKey(Schema.String),
+  /** It runs on the Codex fallback: `<first model> held: <its hold's reason>`. */
+  fallback: Schema.optionalKey(Schema.String),
 })
 export interface SubagentStarted extends Schema.Schema.Type<typeof SubagentStarted> {}
 
@@ -95,6 +115,8 @@ export const SubagentLatched = Schema.TaggedStruct("SubagentLatched", {
   child: Schema.optionalKey(Schema.String),
   background: Schema.optionalKey(Schema.Literal(true)),
   description: Schema.optionalKey(Schema.String),
+  /** It latched on the Codex fallback, which opens first: `<first model> held: <its hold's reason>`. */
+  fallback: Schema.optionalKey(Schema.String),
   hold: Hold,
   /** The pace's owner, for a pace hold. */
   whose: Schema.optionalKey(Whose),
@@ -128,18 +150,34 @@ export const PACE_POLL_MS = 120_000
 const opensOf = (hold: PaceHold, now: number) =>
   hold.retryAt !== undefined && Number.isFinite(hold.retryAt) ? Math.max(now + MIN_WAIT_MS, hold.retryAt) : now + DEFAULT_WAIT_MS
 
-/** The latch a hold makes of a routed start: the Sabbath's until work resumes, the pace's until it opens, asked again every PACE_POLL_MS. */
-const latchedOf = (
-  fields: Omit<SubagentLatched, "_tag" | "hold" | "whose" | "why" | "opensAt" | "recheckAt">,
+type Routed = Omit<SubagentStarted, "_tag" | "fallback">
+
+/** The latch a pace hold makes of a routed start: until it opens, asked again every PACE_POLL_MS. */
+const pacedOf = (fields: Routed & { readonly fallback?: string }, hold: PaceHold, now: number) => {
+  const opensAt = opensOf(hold, now)
+  return SubagentLatched.make({ ...fields, hold: "pace", whose: hold.whose, why: hold.reason, opensAt, recheckAt: Math.min(opensAt, now + PACE_POLL_MS) })
+}
+
+/**
+ * Where a routed start goes. The Sabbath latches it on its model until work
+ * resumes. No hold starts it on its model. A hold with a fallback the Codex
+ * pace admits starts it on the fallback, saying why. Held on both, it latches
+ * on whichever opens first, its own model on a tie; with no fallback, on its own.
+ */
+const admit = (
+  fields: Routed,
   now: number,
   rests: { readonly resumes: number; readonly place: Place } | undefined,
   hold: PaceHold | undefined,
-): SubagentLatched | undefined => {
+  fallback: Fallback | undefined,
+): SubagentStarted | SubagentLatched => {
   if (rests !== undefined)
     return SubagentLatched.make({ ...fields, hold: "sabbath", why: explain(rests.resumes, rests.place), opensAt: rests.resumes, recheckAt: rests.resumes })
-  if (hold === undefined) return undefined
-  const opensAt = opensOf(hold, now)
-  return SubagentLatched.make({ ...fields, hold: "pace", whose: hold.whose, why: hold.reason, opensAt, recheckAt: Math.min(opensAt, now + PACE_POLL_MS) })
+  if (hold === undefined) return SubagentStarted.make(fields)
+  if (fallback === undefined) return pacedOf(fields, hold, now)
+  const moved = { ...fields, model: fallback.model, fallback: `${fields.model ?? "its model"} held: ${hold.reason}` }
+  if (fallback.hold === undefined) return SubagentStarted.make(moved)
+  return opensOf(fallback.hold, now) < opensOf(hold, now) ? pacedOf(moved, fallback.hold, now) : pacedOf(fields, hold, now)
 }
 
 /**
@@ -183,26 +221,29 @@ const decideStart = (
     ...(command.background ? { background: true as const } : {}),
     ...(command.description === undefined ? {} : { description: command.description }),
   }
-  const latched = latchedOf(fields, now, resumes === undefined ? undefined : { resumes, place: command.place }, command.hold)
-  return Effect.succeed([latched ?? SubagentStarted.make(fields)])
+  const rests = resumes === undefined ? undefined : { resumes, place: command.place }
+  return Effect.succeed([admit(fields, now, rests, command.hold, command.child === undefined ? command.fallback : undefined)])
 }
 
 // ── OpenLatch ──
-// A latch's time came: the start is decided again on its own terms. Still
-// held, it latches again with the new reason and time; admitted, it starts in
-// the background on its child. A child that already ran records nothing.
+// A latch's time came: the start is decided again on its own terms, its first
+// model before its fallback. Still held, it latches again with the new reason
+// and time; admitted, it starts in the background on its child, on the model
+// that admitted it. A child that already ran records nothing.
 
-/** A latched start at its time, with the pace's hold now, if any. */
+/** A latched start at its time, with the pace's hold now, if any, on its first model and on its fallback. */
 export const OpenLatch = Schema.TaggedStruct("OpenLatch", {
   call: ToolCallId,
   from: Schema.String,
   agent: Schema.String,
   reason: Reason,
+  /** Its first model, the one it latched on unless the fallback opened first. */
   model: Schema.optionalKey(Schema.String),
   description: Schema.optionalKey(Schema.String),
   child: Schema.String,
   place: Place,
   hold: Schema.optionalKey(PaceHold),
+  fallback: Schema.optionalKey(Fallback),
   /** The child has run already: an earlier open started it. */
   started: Schema.Boolean,
 })
@@ -225,8 +266,8 @@ const decideOpen = (command: OpenLatch, now: number): Effect.Effect<ReadonlyArra
     background: true as const,
     ...(command.description === undefined ? {} : { description: command.description }),
   }
-  const latched = latchedOf(fields, now, resumes === undefined ? undefined : { resumes, place: command.place }, command.hold)
-  return Effect.succeed([latched ?? SubagentStarted.make(fields)])
+  const rests = resumes === undefined ? undefined : { resumes, place: command.place }
+  return Effect.succeed([admit(fields, now, rests, command.hold, command.fallback)])
 }
 
 // ── UseTool ──

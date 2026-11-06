@@ -151,13 +151,13 @@ test('a start names its orchestrate unit and round to the bridge', async ($, on)
   expect(posted.findLast(p => p.path === '/start')?.body).toMatchObject({ unit: 'sheet', round: 2, cwd: '/' })
 })
 
-test('a start the bridge holds past the patience says when it would open and to run the role on Claude', async ($, on) => {
+test('a start the bridge holds past the patience says when it would open and to wait for Claude', async ($, on) => {
   const held = { status: 'held', held: 'codex burns 1.6 %/h; this sol verifier adds about 0.4 %/h; the pace is 1.2 %/h', opensAt: Date.UTC(2026, 9, 30, 14, 20) }
   bridge(on, () => [held as unknown as Thread])
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   const answer = await $.tool.call({ tool: 'mcp__codex__start', description: 'verifier sheet r1', prompt: 'review', tool_use_id: 'tu1' })
   expect(answer).toMatchObject({
-    result: `Codex holds this turn and made no thread: ${held.held}. It should open about 2026-10-30 14:20Z, more than 10 minutes away. Run this role on Claude now (orchestrate Families).`,
+    result: `Codex holds this turn and made no thread: ${held.held}. It should open about 2026-10-30 14:20Z, more than 10 minutes away. Keep the role on Claude: run the held Agent call's waiter in the background (orchestrate, Opus first).`,
   })
 })
 

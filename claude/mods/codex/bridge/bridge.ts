@@ -1010,12 +1010,12 @@ export async function waitStarted(
     if (thread?.opensAt && thread.opensAt > deadline)
       return {
         code: 4,
-        line: `latched (${held}); it should open about ${new Date(thread.opensAt).toISOString().slice(0, 16).replace('T', ' ')}Z, past ${minutes} min: interrupt it with mcp__codex__interrupt and run this role on Claude instead (orchestrate Families)`,
+        line: `latched (${held}); it should open about ${new Date(thread.opensAt).toISOString().slice(0, 16).replace('T', ' ')}Z, past ${minutes} min: interrupt it with mcp__codex__interrupt and keep this role on Claude (orchestrate, Opus first)`,
       }
     if (Date.now() >= deadline)
       return {
         code: 4,
-        line: `still latched after ${minutes} min (${held}): interrupt it with mcp__codex__interrupt and run this role on Claude instead (orchestrate Families)`,
+        line: `still latched after ${minutes} min (${held}): interrupt it with mcp__codex__interrupt and keep this role on Claude (orchestrate, Opus first)`,
       }
     await Bun.sleep(every)
   }

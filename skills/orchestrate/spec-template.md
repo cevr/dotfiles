@@ -6,7 +6,7 @@ The planner fills one copy per unit into `<run dir>/<unit>/spec.md`, and the orc
 # <unit> — spec (orchestrator-owned; agents do not edit it)
 
 Run `<run>` · unit dir `<run dir>/<unit>` · failure cap 3 · timebox <hours per round>
-Machine: plan → implement → verify (the other model family: directly from Claude Code, through okra counsel from Codex; a fresh agent in a clean checkout runs the acceptance check and tries to break the change) → decide.
+Machine: plan → implement → verify (Opus first: directly from Claude Code and OpenCode, through okra counsel from Codex; a fresh agent in a clean checkout runs the acceptance check and tries to break the change) → decide.
 Path: <direct | light | standard | deep>: <why; for direct, that the diff is prose only; for deep, why a defect is costly or why the check is a live drive>.
 Protocol: a role agent carries it in its prompt; any other worker reads `~/.claude/skills/orchestrate/protocol.md` in full first.
 

@@ -14,7 +14,7 @@ modelsLaws("OpenCode's Models", (world) =>
     agentModel: () => Effect.succeed(undefined),
     defaultModel: () => Effect.succeed(undefined),
     offered: () =>
-      Effect.succeed(world.model === undefined ? [] : [{ ...world.model, variants: world.variants.map((id) => ({ id })) }]),
+      Effect.succeed([...(world.model === undefined ? [] : [{ ...world.model, variants: world.variants.map((id) => ({ id })) }]), ...(world.others ?? [])]),
   }),
 )
 

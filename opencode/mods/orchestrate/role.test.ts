@@ -1,6 +1,6 @@
 // The guard's routing: which agent a subagent call runs as.
 import { describe, expect, test } from "bun:test"
-import { route, unspecific } from "./role.ts"
+import { codexFallback, route, unspecific } from "./role.ts"
 
 describe("the guard's routing", () => {
   test("an untyped or general call runs as the worker; a former role name as the role", () => {
@@ -47,5 +47,18 @@ describe("the guard's routing", () => {
   test("a call names no particular agent when untyped, general or the worker", () => {
     for (const asked of [undefined, null, "", "general", "claude", "status:general", "worker"]) expect(unspecific(asked)).toBe(true)
     for (const asked of ["planner", "verifier", "explore", "orchestrate-reviewer"]) expect(unspecific(asked)).toBe(false)
+  })
+})
+
+describe("the Codex fallback", () => {
+  test("light, direct or mechanical work runs on luna at max", () => {
+    for (const note of ["(light)", "(direct)", "(mechanical)", "(Mechanical) "])
+      expect(codexFallback("implementor", `pkg-lower implementor ${note}`)).toEqual({ family: "gpt-luna", variant: "max" })
+  })
+
+  test("the rest run on sol: the verifier at medium, everything else at high", () => {
+    expect(codexFallback("verifier", "verifier sso r1")).toEqual({ family: "gpt-sol", variant: "medium" })
+    for (const agent of ["planner", "implementor", "worker", "explore"]) expect(codexFallback(agent, undefined)).toEqual({ family: "gpt-sol", variant: "high" })
+    expect(codexFallback("implementor", "a light (mechanical) refactor, then more")).toEqual({ family: "gpt-sol", variant: "high" })
   })
 })
