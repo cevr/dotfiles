@@ -5,6 +5,7 @@
 // tests/guard.test.ts runs it in OpenCode, with direct and kernel-cell calls.
 import { describe, expect, test } from "bun:test"
 import { Effect, Exit, Layer, type Scope } from "effect"
+import * as MemoryProcesses from "@dotfiles/opencode-guard/memory/processes"
 import * as MemoryRepoRoots from "@dotfiles/opencode-guard/memory/repo-roots"
 import * as MemorySessionDirectories from "@dotfiles/opencode-guard/memory/session-directories"
 import Guard, { make } from "./server.ts"
@@ -13,11 +14,17 @@ type Host = Parameters<(typeof Guard)["effect"]>[0]
 type Hook = (event: Record<string, unknown>) => Effect.Effect<void, { readonly _tag: string; readonly message: string }>
 
 const HOME = "/Users/owner"
+/** The machine: this test process stands for the server the plugin runs in (it reads `process.pid`), beside a dev server. */
+const PROCESSES: MemoryProcesses.World = [
+  { pid: process.pid, name: "opencode", args: "opencode serve --service" },
+  { pid: process.pid + 1, name: "vite", args: "node vite --port 5173" },
+]
 
 /** The outside systems' state for one test. */
 interface World {
   readonly sessions?: Readonly<Record<string, string>>
   readonly repos?: MemoryRepoRoots.World
+  readonly processes?: MemoryProcesses.World
 }
 
 /** The plugin started on a stand-in host, and a call through the hooks it registered. */
@@ -35,7 +42,11 @@ const start = (options: Record<string, unknown> = { home: HOME }, world: World =
       },
     } as unknown as Host
     yield* make(() =>
-      Layer.mergeAll(MemorySessionDirectories.layer(world.sessions ?? { ses_1: "/work/app" }), MemoryRepoRoots.layer(world.repos ?? { repos: ["/work/app"] })),
+      Layer.mergeAll(
+        MemorySessionDirectories.layer(world.sessions ?? { ses_1: "/work/app" }),
+        MemoryRepoRoots.layer(world.repos ?? { repos: ["/work/app"] }),
+        MemoryProcesses.layer(world.processes ?? PROCESSES),
+      ),
     ).effect(host)
 
     /** One tool call through the `execute.before` hooks: the refusal's message, or undefined when it may run. */
@@ -90,6 +101,20 @@ describe("the guard plugin", () => {
         expect(yield* call("shell", { command: "rm -rf src", workdir: ".." })).toBeUndefined()
         expect(yield* call("shell", { command: "rm -rf app", workdir: "/work" })).toContain("would delete the repository at /work/app")
         expect(yield* call("shell", JSON.stringify({ command: "git clean -fdx" }))).toContain("deletes untracked files for good")
+      }),
+    ))
+
+  test("refuses a kill by pattern that would reach the server it runs in, and lets one that misses it run", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { call } = yield* start()
+        expect(yield* call("shell", { command: "pkill -f 'serve --service'" })).toBe(
+          `Tool.Error: guard-destructive: \`pkill -f serve --service\` would also kill the OpenCode server this session runs on, pid ${process.pid} (\`opencode serve --service\`); find the PID you mean (\`pgrep -fl <pattern>\`, \`ps\`) and \`kill <pid>\`.`,
+        )
+        expect(yield* call("bash", { command: "killall opencode" })).toContain("would also kill the OpenCode server")
+        expect(yield* call("shell", { command: "pkill -f vite" })).toBeUndefined()
+        const { call: blind } = yield* start({ home: HOME }, { processes: "unreadable" })
+        expect(yield* blind("shell", { command: "pkill -f vite" })).toContain("cannot list the processes")
       }),
     ))
 

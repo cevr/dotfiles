@@ -5,7 +5,8 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import * as Model from "./model.ts"
-import { RepoRootUnknown, RepoRoots, SessionDirectories, SessionUnreadable } from "./service.ts"
+import type { ProcessInfo } from "./kill.ts"
+import { Processes, ProcessesUnreadable, RepoRootUnknown, RepoRoots, SessionDirectories, SessionUnreadable } from "./service.ts"
 import type { Destructive } from "./verdict.ts"
 
 const HOME = "/Users/owner"
@@ -38,7 +39,26 @@ const sessionDirectories = Layer.succeed(
   }),
 )
 
-const run = (call: Model.ShellCall, repos: Repos = { repos: ["/work/app"] }) =>
+const SERVER = 4100
+const TABLE: ReadonlyArray<ProcessInfo> = [
+  { pid: SERVER, name: "opencode", args: "/usr/local/bin/opencode serve --service" },
+  { pid: 5100, name: "vite", args: "node vite --port 5173" },
+]
+
+/** The process table, or a `ps` that fails; how many times the guard read it is counted. */
+const processes = (world: ReadonlyArray<ProcessInfo> | "unreadable", reads: { count: number }) =>
+  Layer.succeed(
+    Processes,
+    Processes.of({
+      list: () =>
+        Effect.suspend(() => {
+          reads.count += 1
+          return world === "unreadable" ? Effect.fail(new ProcessesUnreadable({ message: "ps exited 1" })) : Effect.succeed(world)
+        }),
+    }),
+  )
+
+const run = (call: Model.ShellCall, repos: Repos = { repos: ["/work/app"] }, table: ReadonlyArray<ProcessInfo> | "unreadable" = TABLE, reads = { count: 0 }) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const guard = yield* Model.Guard
@@ -48,8 +68,8 @@ const run = (call: Model.ShellCall, repos: Repos = { repos: ["/work/app"] }) =>
       )
     }).pipe(
       Effect.provide(
-        Model.layer({ home: HOME }).pipe(
-          Layer.provide(Layer.mergeAll(repoRoots(repos), sessionDirectories)),
+        Model.layer({ home: HOME, server: SERVER }).pipe(
+          Layer.provide(Layer.mergeAll(repoRoots(repos), sessionDirectories, processes(table, reads))),
         ),
       ),
     ),
@@ -84,5 +104,24 @@ describe("the guard", () => {
     )
     // A path it cannot read is asked about only when a recursive rm names it.
     expect(await run({ sessionID: "other", command: "cat locked/x" }, { repos: [], unreadable: ["/tmp/scratch/locked"] })).toBeUndefined()
+  })
+
+  test("refuses a kill by pattern that reaches the server, and reads the process table only for one", async () => {
+    const reads = { count: 0 }
+    expect(await run({ sessionID: "root", command: "pkill -f opencode" }, undefined, TABLE, reads)).toBe(
+      "`pkill -f opencode` would also kill the OpenCode server this session runs on, pid 4100 (`/usr/local/bin/opencode serve --service`); find the PID you mean (`pgrep -fl <pattern>`, `ps`) and `kill <pid>`",
+    )
+    expect(await run({ sessionID: "root", command: "pkill -f vite" }, undefined, TABLE, reads)).toBeUndefined()
+    expect(reads.count).toBe(2)
+    expect(await run({ sessionID: "root", command: "kill 5100 && bun test" }, undefined, TABLE, reads)).toBeUndefined()
+    expect(await run({ sessionID: "root", command: "kill -9 -1" }, undefined, TABLE, reads)).toContain("signals every process you own")
+    expect(reads.count).toBe(2)
+  })
+
+  test("fails closed on a kill by pattern when it cannot list the processes, and only then", async () => {
+    expect(await run({ sessionID: "root", command: "pkill -f vite" }, undefined, "unreadable")).toBe(
+      "cannot list the processes `pkill -f vite` may kill (ps exited 1); find the PID you mean and `kill <pid>`",
+    )
+    expect(await run({ sessionID: "root", command: "ls" }, undefined, "unreadable")).toBeUndefined()
   })
 })

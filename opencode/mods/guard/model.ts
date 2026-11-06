@@ -1,20 +1,24 @@
 // The guard's handler: it gathers what the verdict needs from outside (where
-// the call runs, which of its `rm` targets are repositories) and fails with
-// `Destructive` when the verdict denies the call. The plugin calls this and
-// nothing else.
+// the call runs, which of its `rm` targets are repositories, and, for a kill
+// by pattern, what runs on the machine) and fails with `Destructive` when a
+// verdict denies the call. The plugin calls this and nothing else.
 //
-// The guard fails closed: a session whose directory the host cannot give, or
-// a target it cannot tell is a repository, refuses the call with why.
+// The guard fails closed: a session whose directory the host cannot give, a
+// target it cannot tell is a repository, or a kill by pattern while it cannot
+// list the processes, refuses the call with why.
 import { Context, Effect, Layer } from "effect"
+import { killsByPattern, killVerdict } from "./kill.ts"
 import { resolve } from "./path.ts"
 import { expandWord } from "./shell-line.ts"
-import { RepoRoots, SessionDirectories } from "./service.ts"
+import { Processes, RepoRoots, SessionDirectories } from "./service.ts"
 import { Destructive, repoCandidates, verdict } from "./verdict.ts"
 
 /** The guard's settings, from the plugin's options. */
 export interface Config {
   /** The home directory `~` and `$HOME` name. */
   readonly home: string
+  /** The PID of the OpenCode server the guard runs in, which a kill by pattern must not reach. */
+  readonly server: number
 }
 
 /** One shell call: the session it runs for, its command and its `workdir` (relative to the session's directory). */
@@ -38,6 +42,7 @@ export const layer = (config: Config) =>
     Effect.gen(function* () {
       const sessions = yield* SessionDirectories
       const roots = yield* RepoRoots
+      const processes = yield* Processes
 
       const judge = Effect.fn("Guard.judge")(function* (call: ShellCall) {
         const refuse = (reason: string) => Effect.fail(new Destructive({ command: call.command, reason }))
@@ -64,6 +69,18 @@ export const layer = (config: Config) =>
         const repositories = new Set(answers.flatMap(([path, root]) => (root ? [path] : [])))
         const answer = verdict(call.command, { ...place, isRepoRoot: (path) => repositories.has(path) })
         if (answer._tag === "Deny") return yield* refuse(answer.reason)
+        // The process table is read only for a kill by pattern; a `kill -1` needs none.
+        const running = killsByPattern(call.command)
+          ? yield* processes
+              .list()
+              .pipe(
+                Effect.catchTag("ProcessesUnreadable", (error) =>
+                  refuse(`cannot list the processes \`${call.command}\` may kill (${error.message}); find the PID you mean and \`kill <pid>\``),
+                ),
+              )
+          : []
+        const kill = killVerdict(call.command, running, config.server)
+        if (kill._tag === "Deny") return yield* refuse(kill.reason)
       })
 
       return Guard.of({ judge })

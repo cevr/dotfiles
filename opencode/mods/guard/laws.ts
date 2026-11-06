@@ -2,7 +2,22 @@
 // suites. Each implementation's test beside it runs the suite over its Layer.
 import { describe, expect, test } from "bun:test"
 import { Effect, type Layer, type Scope } from "effect"
-import { RepoRootUnknown, RepoRoots, SessionDirectories, SessionUnreadable } from "./service.ts"
+import { Processes, RepoRootUnknown, RepoRoots, SessionDirectories, SessionUnreadable } from "./service.ts"
+
+/** `layer` lists the processes running now; `self` is a process it must list: the test's own. */
+export const processesLaws = (name: string, layer: Layer.Layer<Processes>, self: { readonly pid: number; readonly args: string }) =>
+  describe(`${name} keeps the Processes laws`, () => {
+    test("it lists the running process with its name and its whole command line, each PID once", () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const listed = yield* (yield* Processes).list()
+          const own = listed.find((each) => each.pid === self.pid)
+          expect(own?.args).toBe(self.args)
+          expect(own?.name).not.toBe("")
+          expect(new Set(listed.map((each) => each.pid)).size).toBe(listed.length)
+        }).pipe(Effect.provide(layer)),
+      ))
+  })
 
 /** An implementation of RepoRoots and the paths it was set up with. */
 export interface RepoBench {

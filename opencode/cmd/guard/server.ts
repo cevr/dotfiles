@@ -8,8 +8,11 @@
  * A shell call that loses work for good is refused before it runs, and the
  * model reads why: `rm -rf` of the root, the home, the directory it runs in or
  * a repository, `git reset --hard`, and a forced `git clean` with `-d`, `-x`
- * or `-X` (`@dotfiles/opencode-guard/verdict` has the rules). Everything else
- * runs untouched.
+ * or `-X` (`@dotfiles/opencode-guard/verdict` has the rules). So is a kill
+ * by pattern (`pkill`, `killall`, `kill $(pgrep …)`) whose pattern matches
+ * this server or another OpenCode process running now, and `kill -1`
+ * (`@dotfiles/opencode-guard/kill`); the process table is read with `ps` only
+ * for such a call. Everything else runs untouched.
  *
  * The hook is the registry's, so it sees every call the registry runs: a
  * direct call, a call from code mode's `execute`, and a kernel cell's
@@ -26,8 +29,9 @@ import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import * as FilesystemRepoRoots from "@dotfiles/opencode-guard/filesystem/repo-roots"
 import * as Model from "@dotfiles/opencode-guard/model"
+import * as PsProcesses from "@dotfiles/opencode-guard/process/processes"
 import * as OpenCodeSessionDirectories from "@dotfiles/opencode-guard/opencode/session-directories"
-import type { RepoRoots, SessionDirectories } from "@dotfiles/opencode-guard/service"
+import type { Processes, RepoRoots, SessionDirectories } from "@dotfiles/opencode-guard/service"
 import { message } from "@dotfiles/opencode-guard/verdict"
 
 /**
@@ -55,7 +59,7 @@ const decodeInput = Schema.decodeUnknownOption(ShellInput)
 const decodeInputText = Schema.decodeUnknownOption(Schema.fromJsonString(ShellInput))
 
 /** The outside systems the model runs on. */
-export type Externals = RepoRoots | SessionDirectories
+export type Externals = Processes | RepoRoots | SessionDirectories
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 
@@ -63,6 +67,7 @@ type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 export const live = (ctx: Plugin.Context): Layer.Layer<Externals> =>
   Layer.mergeAll(
     FilesystemRepoRoots.layer,
+    PsProcesses.layer(),
     OpenCodeSessionDirectories.layer((sessionID) =>
       ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map((session) => session.location.directory)),
     ),
@@ -78,7 +83,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
         Effect.mapError((error) => new Error(`dotfiles-opencode.guard: invalid options: ${error.message}`)),
         Effect.orDie,
       )
-      const services = yield* Layer.build(Model.layer({ home: options.home }).pipe(Layer.provide(externals(ctx, options))))
+      const services = yield* Layer.build(Model.layer({ home: options.home, server: process.pid }).pipe(Layer.provide(externals(ctx, options))))
       const guard = Context.get(services, Model.Guard)
 
       yield* ctx.tool.hook("execute.before", (event) => {
