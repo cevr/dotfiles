@@ -4,7 +4,8 @@
 // moves it to Rift's trash, which `rift gc` (on the workbox, the nightly
 // `workrift prune`) empties for good, so the tool refuses a removal that would
 // lose work: changes not committed, commits that exist only in this Rift (on
-// no remote and in no branch of its source), stashes. `force` overrides that,
+// no remote and in no branch of its source), stashes its source does not also
+// hold. `force` overrides that,
 // and only that: a warm source, a Rift that holds the calling session, and a
 // Rift with Rifts of its own are always refused.
 import { Effect, Schema } from "effect"
@@ -27,8 +28,19 @@ export interface Workspace {
   readonly uncommitted: ReadonlyArray<string>
   /** `<hash> <subject>` of each commit found only here, newest first. */
   readonly unpushed: ReadonlyArray<string>
-  /** How many stash entries it holds. */
+  /** How many stash entries it holds of its own: ones not inherited from the workspaces it was copied from (ownStashes). */
   readonly stashes: number
+}
+
+/**
+ * How many of a Rift's stash entries are its own. A Rift is a copy-on-write
+ * copy, so it inherits its source's stash: an entry whose commit the source
+ * (or a Rift above it) still holds is found elsewhere, and counts for nothing.
+ * Both lists are stash commits (`git stash list --format=%H`).
+ */
+export const ownStashes = (rift: ReadonlyArray<string>, above: ReadonlyArray<string>): number => {
+  const inherited = new Set(above)
+  return rift.filter((commit) => !inherited.has(commit)).length
 }
 
 /** The workspace is a warm source. */

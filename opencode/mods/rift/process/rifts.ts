@@ -8,7 +8,7 @@ import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { Effect, Layer } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
-import type { Workspace } from "../workspace.ts"
+import { ownStashes, type Workspace } from "../workspace.ts"
 import { commands, lines } from "./command.ts"
 
 export interface Options {
@@ -97,7 +97,10 @@ export const layer = (options: Options) => {
     const unpushed = lines(
       yield* git(path, "log", "--format=%h %s", ...(hasHead ? ["HEAD"] : []), "--branches", "--ignore-missing", "--not", "--remotes", ...sourceTips),
     )
-    const stashes = lines(yield* git(path, "stash", "list")).length
+    // Stash entries found only here: a Rift inherits the stash of the workspaces it was copied from.
+    const stashOf = (at: string) => git(at, "stash", "list", "--format=%H").pipe(Effect.map(lines))
+    const inherited = yield* Effect.forEach(above, stashOf).pipe(Effect.map((each) => each.flat()))
+    const stashes = ownStashes(yield* stashOf(path), inherited)
     return { ...base, git: true, branch: branch === "" ? undefined : branch, head, uncommitted, unpushed, stashes } satisfies Workspace
   })
 

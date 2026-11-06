@@ -1122,7 +1122,8 @@ workbox in a week). One input, with an `action`:
 - `{ action: "remove", name | path, force? }` moves a Rift to Rift's trash
   (`rift remove`, `workrift remove` on the workbox). It refuses a Rift that
   holds work found nowhere else, and names it: uncommitted changes (untracked
-  files too), stashes, and commits on no remote and in no branch of its
+  files too), stash entries the warm source does not also hold (a Rift
+  inherits its source's stash), and commits on no remote and in no branch of its
   source, unless `force: true`. It always refuses a warm source, the Rift the
   session runs in, and a Rift with Rifts of its own. `withChildren: true`
   takes the Rift's own Rifts with it, each still refused while it holds

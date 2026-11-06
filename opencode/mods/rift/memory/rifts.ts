@@ -3,19 +3,31 @@
 // out as Rift lays them (`<parent>/.rifts/<source>/<name>`).
 import { Effect, Layer } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
-import { holds, type Workspace } from "../workspace.ts"
+import { holds, ownStashes, type Workspace } from "../workspace.ts"
 
 export interface World {
   /** The warm sources, by directory. */
   readonly sources: Array<string>
   /** Each Rift, by its directory. */
   readonly rifts: Map<string, Workspace>
+  /**
+   * Each workspace's stash commits (`stash`), sources and Rifts alike. A Rift
+   * made from a source starts with a copy of the source's; `inspect` counts
+   * the ones its source does not also hold on top of the `stashes` a test set.
+   */
+  readonly stashed: Map<string, ReadonlyArray<string>>
 }
 
 export const world = (sources: ReadonlyArray<string>, rifts: ReadonlyArray<Workspace> = []): World => ({
   sources: [...sources],
   rifts: new Map(rifts.map((workspace) => [workspace.path, workspace])),
+  stashed: new Map(),
 })
+
+/** Stashes a change in the workspace at `path` (a source or a Rift), as `git stash` there would: a new commit atop its stash. */
+export const stash = (state: World, path: string, commit: string): void => {
+  state.stashed.set(path, [commit, ...(state.stashed.get(path) ?? [])])
+}
 
 /** Where Rift puts a Rift named `name` of `source`. */
 export const pathOf = (source: string, name: string): string => {
@@ -54,6 +66,8 @@ export const layer = (state: World) =>
         const path = pathOf(request.source, request.name)
         if (state.rifts.has(path)) return yield* new RiftFailed({ operation: "rift create", message: `rift directory already exists: ${path}` })
         state.rifts.set(path, clean(path, request.branch))
+        // A copy-on-write copy: the source's stash comes with it.
+        state.stashed.set(path, [...(state.stashed.get(request.source) ?? [])])
         return path
       }),
       list: Effect.fn("Rifts.list")(function* (source: string) {
@@ -63,7 +77,9 @@ export const layer = (state: World) =>
         if (state.sources.includes(path)) return { ...clean(path, "main"), source: true, children: [...state.rifts.keys()].filter((rift) => sourceOfRift(state, rift) === path) }
         const workspace = state.rifts.get(path)
         if (workspace === undefined) return yield* new RiftFailed({ operation: "rift", message: `${path} is not a Rift workspace (no .rift marker)` })
-        return workspace
+        const source = sourceOfRift(state, path)
+        const own = ownStashes(state.stashed.get(path) ?? [], source === undefined ? [] : (state.stashed.get(source) ?? []))
+        return own === 0 ? workspace : { ...workspace, stashes: workspace.stashes + own }
       }),
       remove: Effect.fn("Rifts.remove")(function* (path: string, options?: { readonly withChildren?: boolean }) {
         const workspace = state.rifts.get(path)
@@ -74,6 +90,7 @@ export const layer = (state: World) =>
         const drop = (each: string): void => {
           for (const child of state.rifts.get(each)?.children ?? []) drop(child)
           state.rifts.delete(each)
+          state.stashed.delete(each)
         }
         drop(path)
       }),

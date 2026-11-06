@@ -17,6 +17,8 @@ export interface RiftBench {
   readonly commit: (path: string) => Effect.Effect<void>
   /** Leaves an uncommitted change in the Rift at `path`. */
   readonly dirty: (path: string) => Effect.Effect<void>
+  /** Stashes a fresh change in the workspace at `path`, the warm source or a Rift. */
+  readonly stash: (path: string) => Effect.Effect<void>
 }
 
 const check = <A, E>(bench: () => Effect.Effect<RiftBench, never, Scope.Scope>, body: (bench: RiftBench) => Effect.Effect<A, E, Rifts>) =>
@@ -67,6 +69,22 @@ export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, ne
             expect(workspace.uncommitted).toHaveLength(1)
             yield* rifts.remove(path)
             expect(yield* rifts.list(made.source)).toEqual([])
+          }),
+        ),
+      timeout,
+    )
+
+    test(
+      "a stash a Rift inherited from its warm source is not its own; one stashed in the Rift is",
+      () =>
+        check(bench, (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            yield* made.stash(made.source)
+            const path = yield* rifts.create({ source: made.source, from: made.inside, name: "stashed", branch: "stashed" })
+            expect((yield* rifts.inspect(path)).stashes).toBe(0)
+            yield* made.stash(path)
+            expect((yield* rifts.inspect(path)).stashes).toBe(1)
           }),
         ),
       timeout,
