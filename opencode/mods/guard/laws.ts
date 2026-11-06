@@ -2,7 +2,7 @@
 // suites. Each implementation's test beside it runs the suite over its Layer.
 import { describe, expect, test } from "bun:test"
 import { Effect, type Layer, type Scope } from "effect"
-import { Processes, RepoRootUnknown, RepoRoots, SessionDirectories, SessionUnreadable } from "./service.ts"
+import { Processes, RepoRootUnknown, RepoRoots, SessionDirectories, SessionUnreadable, Subagents } from "./service.ts"
 
 /** `layer` lists the processes running now; `self` is a process it must list: the test's own. */
 export const processesLaws = (name: string, layer: Layer.Layer<Processes>, self: { readonly pid: number; readonly args: string }) =>
@@ -67,6 +67,31 @@ export const repoRootsLaws = (name: string, bench: () => Effect.Effect<RepoBench
           expect(error).toBeInstanceOf(RepoRootUnknown)
           expect(error.path).toBe(paths.unreadable)
         }),
+      ))
+  })
+
+/** `layer` makes a fresh implementation over the sessions the host knows, each to its parent (undefined for a root session). */
+export const subagentsLaws = (name: string, layer: (world: Readonly<Record<string, string | undefined>>) => Layer.Layer<Subagents>) =>
+  describe(`${name} keeps the Subagents laws`, () => {
+    const world = { root: undefined, child: "root", grandchild: "child" }
+
+    test("a session with a parent is a subagent; a root session is not", () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const subagents = yield* Subagents
+          expect(yield* subagents.isSubagent("root")).toBe(false)
+          expect(yield* subagents.isSubagent("child")).toBe(true)
+          expect(yield* subagents.isSubagent("grandchild")).toBe(true)
+        }).pipe(Effect.provide(layer(world))),
+      ))
+
+    test("a session the host cannot read fails SessionUnreadable naming it", () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const error = yield* Effect.flip((yield* Subagents).isSubagent("gone"))
+          expect(error).toBeInstanceOf(SessionUnreadable)
+          expect(error.sessionID).toBe("gone")
+        }).pipe(Effect.provide(layer(world))),
       ))
   })
 

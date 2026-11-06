@@ -12,7 +12,10 @@
  * by pattern (`pkill`, `killall`, `kill $(pgrep …)`) whose pattern matches
  * this server or another OpenCode process running now, and `kill -1`
  * (`@dotfiles/opencode-guard/kill`); the process table is read with `ps` only
- * for such a call. Everything else runs untouched.
+ * for such a call. A subagent's foreground call that opens by sleeping 30
+ * seconds or more is refused too, naming a background shell and
+ * `shell({ action: "wait", id, ms })` instead (`@dotfiles/opencode-guard/sleep`);
+ * a root session's runs. Everything else runs untouched.
  *
  * The hook is the registry's, so it sees every call the registry runs: a
  * direct call, a call from code mode's `execute`, and a kernel cell's
@@ -47,7 +50,9 @@ import * as Model from "@dotfiles/opencode-guard/model"
 import * as PsProcesses from "@dotfiles/opencode-guard/process/processes"
 import * as ProcessScopes from "@dotfiles/opencode-guard/process/scopes"
 import * as OpenCodeSessionDirectories from "@dotfiles/opencode-guard/opencode/session-directories"
-import type { Launchers, Processes, RepoRoots, Scopes, SessionDirectories } from "@dotfiles/opencode-guard/service"
+import * as OpenCodeSubagents from "@dotfiles/opencode-guard/opencode/subagents"
+import type { Launchers, Processes, RepoRoots, Scopes, SessionDirectories, Subagents } from "@dotfiles/opencode-guard/service"
+import { idleMessage } from "@dotfiles/opencode-guard/sleep"
 import { message } from "@dotfiles/opencode-guard/verdict"
 
 /**
@@ -76,27 +81,29 @@ export type Options = typeof Options.Type
 export const SHELL_TOOLS: ReadonlySet<string> = new Set(["shell", "bash"])
 
 /** What the guard reads of a shell call's input. */
-const ShellInput = Schema.Struct({ command: Schema.String, workdir: Schema.optional(Schema.String) })
+// `background` is read loosely: a malformed one must not take the call out of the destructive rule's reach.
+const ShellInput = Schema.Struct({ command: Schema.String, workdir: Schema.optional(Schema.String), background: Schema.optional(Schema.Unknown) })
 const decodeInput = Schema.decodeUnknownOption(ShellInput)
 /** The input as a JSON string, as a model sometimes sends it and the input-repair hook may not have parsed yet. */
 const decodeInputText = Schema.decodeUnknownOption(Schema.fromJsonString(ShellInput))
 
 /** The outside systems the model runs on. */
-export type Externals = Launchers | Processes | RepoRoots | Scopes | SessionDirectories
+export type Externals = Launchers | Processes | RepoRoots | Scopes | SessionDirectories | Subagents
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 
 /** The outside systems as the filesystem and OpenCode provide them. */
-export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externals> =>
-  Layer.mergeAll(
+export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externals> => {
+  const get = (sessionID: string) => ctx.session.get({ sessionID: sessionID as SessionID })
+  return Layer.mergeAll(
     FilesystemRepoRoots.layer,
     FilesystemLaunchers.layer(options.launchers),
     PsProcesses.layer(),
     ProcessScopes.layer(),
-    OpenCodeSessionDirectories.layer((sessionID) =>
-      ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map((session) => session.location.directory)),
-    ),
+    OpenCodeSessionDirectories.layer((sessionID) => get(sessionID).pipe(Effect.map((session) => session.location.directory))),
+    OpenCodeSubagents.layer((sessionID) => get(sessionID).pipe(Effect.map((session) => session.parentID))),
   )
+}
 
 /** The plugin on `externals`: the live systems in OpenCode, memory layers in the seam test. */
 export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer.Layer<Externals>) =>
@@ -131,10 +138,20 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
         // An input that is not a shell call's is left to the tool, which refuses it itself.
         const input = Option.orElse(decodeInput(event.input), () => decodeInputText(event.input))
         if (Option.isNone(input)) return Effect.void
-        const { command, workdir } = input.value
+        const { command, workdir, background } = input.value
         return guard
-          .judge({ sessionID: event.sessionID, command, ...(workdir === undefined ? {} : { workdir }) })
-          .pipe(Effect.mapError((refusal) => new Tool.Error({ message: message(refusal.reason), error: refusal })))
+          .judge({
+            sessionID: event.sessionID,
+            command,
+            ...(workdir === undefined ? {} : { workdir }),
+            ...(background === true ? { background } : {}),
+          })
+          .pipe(
+            Effect.mapError(
+              (refusal) =>
+                new Tool.Error({ message: refusal._tag === "Idle" ? idleMessage(refusal.reason) : message(refusal.reason), error: refusal }),
+            ),
+          )
       })
     }),
   })

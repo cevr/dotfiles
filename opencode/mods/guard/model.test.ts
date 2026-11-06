@@ -17,11 +17,13 @@ import {
   Scopes,
   SessionDirectories,
   SessionUnreadable,
+  Subagents,
 } from "./service.ts"
+import type { Idle } from "./sleep.ts"
 import type { Destructive } from "./verdict.ts"
 
 const HOME = "/Users/owner"
-const SESSIONS: Readonly<Record<string, string>> = { root: "/work/app/src", other: "/tmp/scratch" }
+const SESSIONS: Readonly<Record<string, string>> = { root: "/work/app/src", other: "/tmp/scratch", child: "/work/app/src", orphan: "/tmp/scratch" }
 
 /** The repositories on the stand-in disk, and the paths it cannot read. */
 interface Repos {
@@ -69,6 +71,19 @@ const processes = (world: ReadonlyArray<ProcessInfo> | "unreadable", reads: { co
     }),
   )
 
+/** Each session's parent: `child` is a subagent of `root`, `other` is a root; any other session cannot be read. */
+const PARENTS: Readonly<Record<string, string | undefined>> = { root: undefined, other: undefined, child: "root" }
+
+const subagents = Layer.succeed(
+  Subagents,
+  Subagents.of({
+    isSubagent: (sessionID) =>
+      Object.hasOwn(PARENTS, sessionID)
+        ? Effect.succeed(PARENTS[sessionID] !== undefined)
+        : Effect.fail(new SessionUnreadable({ sessionID, message: `no session ${sessionID}` })),
+  }),
+)
+
 const run = (call: Model.ShellCall, repos: Repos = { repos: ["/work/app"] }, table: ReadonlyArray<ProcessInfo> | "unreadable" = TABLE, reads = { count: 0 }) =>
   Effect.runPromise(
     Effect.gen(function* () {
@@ -76,11 +91,12 @@ const run = (call: Model.ShellCall, repos: Repos = { repos: ["/work/app"] }, tab
       return yield* guard.judge(call).pipe(
         Effect.as(undefined),
         Effect.catchTag("Destructive", (refusal: Destructive) => Effect.succeed(refusal.reason)),
+        Effect.catchTag("Idle", (refusal: Idle) => Effect.succeed(`idle: ${refusal.reason}`)),
       )
     }).pipe(
       Effect.provide(
         Model.layer({ home: HOME, server: SERVER }).pipe(
-          Layer.provide(Layer.mergeAll(repoRoots(repos), sessionDirectories, processes(table, reads))),
+          Layer.provide(Layer.mergeAll(repoRoots(repos), sessionDirectories, subagents, processes(table, reads))),
         ),
       ),
     ),
@@ -134,6 +150,30 @@ describe("the guard", () => {
       "cannot list the processes `pkill -f vite` may kill (ps exited 1); find the PID you mean and `kill <pid>`",
     )
     expect(await run({ sessionID: "root", command: "ls" }, undefined, "unreadable")).toBeUndefined()
+  })
+
+  test("refuses a subagent's foreground call that opens by sleeping 30 s or more, and names the wait to use instead", async () => {
+    const refused = await run({ sessionID: "child", command: "sleep 60 && tail -5 build.log" })
+    expect(refused).toStartWith("idle: `sleep 60` would hold this subagent's turn for 60 s doing nothing")
+    expect(refused).toContain('`shell({ action: "wait", id, ms })`')
+    expect(refused).toContain("`background: true`")
+    expect(await run({ sessionID: "child", command: "sleep 30; gh run view" })).toStartWith("idle: `sleep 30` would hold")
+    expect(await run({ sessionID: "child", command: "sleep 2m" })).toStartWith("idle: `sleep 2m` would hold this subagent's turn for 120 s")
+  })
+
+  test("lets a root session sleep, a short sleep, a background sleep and a sleep later in the line run", async () => {
+    expect(await run({ sessionID: "root", command: "sleep 600" })).toBeUndefined()
+    expect(await run({ sessionID: "child", command: "sleep 29 && tail build.log" })).toBeUndefined()
+    expect(await run({ sessionID: "child", command: "sleep 600", background: true })).toBeUndefined()
+    expect(await run({ sessionID: "child", command: "until test -f done; do sleep 60; done" })).toBeUndefined()
+    // A session the host cannot place as a subagent sleeps: a sleep loses nothing.
+    expect(await run({ sessionID: "orphan", command: "sleep 600" })).toBeUndefined()
+  })
+
+  test("refuses a destructive call before it reads the sleep", async () => {
+    expect(await run({ sessionID: "child", command: "sleep 60; git reset --hard" })).toBe(
+      "`git reset --hard` discards uncommitted work; stash it (`git stash -u`) or commit first",
+    )
   })
 })
 

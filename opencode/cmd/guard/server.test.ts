@@ -9,6 +9,7 @@ import * as MemoryLaunchers from "@dotfiles/opencode-guard/memory/launchers"
 import * as MemoryProcesses from "@dotfiles/opencode-guard/memory/processes"
 import * as MemoryRepoRoots from "@dotfiles/opencode-guard/memory/repo-roots"
 import * as MemorySessionDirectories from "@dotfiles/opencode-guard/memory/session-directories"
+import * as MemorySubagents from "@dotfiles/opencode-guard/memory/subagents"
 import Guard, { make } from "./server.ts"
 
 type Host = Parameters<(typeof Guard)["effect"]>[0]
@@ -33,6 +34,8 @@ const PROCESSES: MemoryProcesses.World = [
 interface World {
   readonly sessions?: Readonly<Record<string, string>>
   readonly repos?: MemoryRepoRoots.World
+  /** Each session's parent; default `ses_1` a root and `ses_child` its subagent. */
+  readonly parents?: Readonly<Record<string, string | undefined>>
   readonly processes?: MemoryProcesses.World
   readonly launchers?: Omit<MemoryLaunchers.World, "written">
 }
@@ -53,8 +56,9 @@ const start = (options: Record<string, unknown> = { home: HOME }, world: World =
     const written = new Map<string, string>()
     yield* make(() =>
       Layer.mergeAll(
-        MemorySessionDirectories.layer(world.sessions ?? { ses_1: "/work/app" }),
+        MemorySessionDirectories.layer(world.sessions ?? { ses_1: "/work/app", ses_child: "/work/app" }),
         MemoryRepoRoots.layer(world.repos ?? { repos: ["/work/app"] }),
+        MemorySubagents.layer(world.parents ?? { ses_1: undefined, ses_child: "ses_1" }),
         MemoryProcesses.layer(world.processes ?? PROCESSES),
         MemoryLaunchers.layer({ scope: false, ...world.launchers, written }),
       ),
@@ -133,6 +137,25 @@ describe("the guard plugin", () => {
         expect(yield* call("shell", { command: "pkill -f vite" })).toBeUndefined()
         const { call: blind } = yield* start({ home: HOME }, { processes: "unreadable" })
         expect(yield* blind("shell", { command: "pkill -f vite" })).toContain("cannot list the processes")
+      }),
+    ))
+
+  test("refuses a subagent's foreground sleep of 30 s or more in the guard's words, under either tool name, and lets the root's run", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { call } = yield* start()
+        const refused = yield* call("shell", { command: "sleep 60 && tail -5 build.log" }, "ses_child")
+        expect(refused).toStartWith("Tool.Error: guard-sleep: `sleep 60` would hold this subagent's turn for 60 s doing nothing")
+        expect(refused).toContain('shell({ action: "wait", id, ms })')
+        expect(refused).toEndWith("wake and monitor are the root session's, not a subagent's.")
+        expect(yield* call("bash", { command: "sleep 45; gh run view" }, "ses_child")).toStartWith("Tool.Error: guard-sleep: `sleep 45`")
+        expect(yield* call("shell", JSON.stringify({ command: "sleep 90" }), "ses_child")).toStartWith("Tool.Error: guard-sleep:")
+        expect(yield* call("shell", { command: "sleep 60 && tail -5 build.log" })).toBeUndefined()
+        expect(yield* call("shell", { command: "sleep 60", background: true }, "ses_child")).toBeUndefined()
+        expect(yield* call("shell", { command: "sleep 10 && ls" }, "ses_child")).toBeUndefined()
+        // A malformed `background` is no background, and never hides a destructive call.
+        expect(yield* call("shell", { command: "sleep 60", background: "yes" }, "ses_child")).toStartWith("Tool.Error: guard-sleep:")
+        expect(yield* call("shell", { command: "git reset --hard", background: "yes" })).toContain("guard-destructive:")
       }),
     ))
 

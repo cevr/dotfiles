@@ -1,7 +1,8 @@
 // The contracts the guard needs from outside: whether a path is a
-// repository's root, the directory a session's shell runs in, and the
-// processes running on the machine. Each states its failure; `laws.ts` states
-// what every implementation owes.
+// repository's root, the directory a session's shell runs in, whether a
+// session is a subagent, the processes running on the machine, and where
+// launchers live and whether systemd scopes work. Each states its failure;
+// `laws.ts` states what every implementation owes.
 import { Context, type Effect, Schema } from "effect"
 import type { ProcessInfo } from "./kill.ts"
 
@@ -30,6 +31,15 @@ export class RepoRoots extends Context.Service<
     readonly isRoot: (path: string) => Effect.Effect<boolean, RepoRootUnknown>
   }
 >()("dotfiles-opencode/guard/RepoRoots") {}
+
+/** Which sessions are subagents: a session another session started, as OpenCode records it by its parent. */
+export class Subagents extends Context.Service<
+  Subagents,
+  {
+    /** Whether the session has a parent session. */
+    readonly isSubagent: (sessionID: string) => Effect.Effect<boolean, SessionUnreadable>
+  }
+>()("dotfiles-opencode/guard/Subagents") {}
 
 /** Where each session's tools run. */
 export class SessionDirectories extends Context.Service<

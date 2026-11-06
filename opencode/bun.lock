@@ -121,6 +121,13 @@
         "@dotfiles/opencode-queue": "workspace:*",
       },
     },
+    "cmd/recover": {
+      "name": "@dotfiles/opencode-cmd-recover",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-recover": "workspace:*",
+      },
+    },
     "cmd/skills": {
       "name": "@dotfiles/opencode-cmd-skills",
       "version": "0.0.0",
@@ -241,6 +248,10 @@
         "@dotfiles/opencode-subagents": "workspace:*",
       },
     },
+    "mods/recover": {
+      "name": "@dotfiles/opencode-recover",
+      "version": "0.0.0",
+    },
     "mods/skills": {
       "name": "@dotfiles/opencode-skills",
       "version": "0.0.0",
@@ -302,6 +313,8 @@
 
     "@dotfiles/opencode-cmd-queue": ["@dotfiles/opencode-cmd-queue@workspace:cmd/queue"],
 
+    "@dotfiles/opencode-cmd-recover": ["@dotfiles/opencode-cmd-recover@workspace:cmd/recover"],
+
     "@dotfiles/opencode-cmd-skills": ["@dotfiles/opencode-cmd-skills@workspace:cmd/skills"],
 
     "@dotfiles/opencode-cmd-status": ["@dotfiles/opencode-cmd-status@workspace:cmd/status"],
@@ -329,6 +342,8 @@
     "@dotfiles/opencode-questions": ["@dotfiles/opencode-questions@workspace:mods/questions"],
 
     "@dotfiles/opencode-queue": ["@dotfiles/opencode-queue@workspace:mods/queue"],
+
+    "@dotfiles/opencode-recover": ["@dotfiles/opencode-recover@workspace:mods/recover"],
 
     "@dotfiles/opencode-skills": ["@dotfiles/opencode-skills@workspace:mods/skills"],
 
