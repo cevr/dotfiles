@@ -756,6 +756,20 @@ contracts in `service.ts`: `RepoRoots` (`filesystem/`: a path holding `.git`)
 and `SessionDirectories` (`opencode/`: the session's directory), with
 `memory/` implementations for tests and the laws in `laws.ts`.
 
+## Tool names
+
+`cmd/tool-names` is a server plugin that answers a call of a tool that does
+not exist when its name is a case or one-edit miss (a letter added, dropped,
+changed, or two swapped) of exactly one real tool, or of that tool's alias on
+the Claude login (`mcp_T<base64url>`, `mods/anthropic-auth/tool-alias.ts`):
+`There is no "shll" tool; did you mean "shell"? Call "shell" with the same
+input.` It answers rather than runs the real tool, because other plugins'
+`execute.before` hooks (the guard, orchestrate) have read the wrong name by
+then, and a renamed call would pass them unseen. Every other unknown name gets
+OpenCode's own answer. A kernel cell's `tools.<name>` misses are the kernel's
+to answer: they never reach the registry's hooks. The rule is `nearest` in
+`mods/tool-names/near-miss.ts`.
+
 ## Idle compaction
 
 `cmd/idle-compact` is a server plugin that compacts a large session that has
