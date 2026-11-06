@@ -1,4 +1,4 @@
-// An idle root with ready work, in real OpenCode with the orchestrate,
+// An idle root with units to move, in real OpenCode with the orchestrate,
 // status and queue plugins and a scripted model. The project holds an
 // orchestrate run `p1` with two units: `alpha` in implement and `beta` in
 // plan. The root starts `planner alpha r1` in the background, which makes the
@@ -28,7 +28,7 @@ const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
 const label = "idle-root"
 
-export const LINE = "idle with units ready: alpha, beta; start them or name what you wait on."
+export const LINE = "idle with units in plan, implement or verify: alpha, beta; start them or name what you wait on."
 const PLANNER = { agent: "planner", description: "planner alpha r1", prompt: "Plan alpha now.", background: true }
 const DRAFT = "half a thought"
 const WAIT = { set: [{ id: "owner-review", text: "Owner review of alpha", state: "waiting", detail: "owner" }] }

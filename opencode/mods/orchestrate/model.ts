@@ -33,8 +33,8 @@ import {
   type IdleRootState,
   NO_HOLDS,
   Nudge,
-  readyUnits,
   ReportDraft,
+  unitsOf,
 } from "./idle.ts"
 import { formatRef, namesModel, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
 import * as Restart from "./restart.ts"
@@ -718,9 +718,9 @@ export const idleLayer = (config: Pick<Config, "place" | "now">) =>
           const held = heldBack(state, yield* Clock.currentTimeMillis)
           if (held !== undefined) return { _tag: "NotNudged", why: held.why, detail: held.detail } as const
           const resting = resumesAt(yield* sabbathNow, config.place) !== undefined
-          const ready = resting ? [] : readyUnits(yield* runs.list, yield* steps.units(sessionID))
-          const gathered = ready.length === 0 ? NO_HOLDS : yield* holds.of(sessionID)
-          const decided = yield* apply(sessionID, Nudge.make({ ready, holds: gathered, resting })).pipe(Effect.result)
+          const units = resting ? { moving: [], ready: [] } : unitsOf(yield* runs.list, yield* steps.units(sessionID))
+          const gathered = units.moving.length === 0 && units.ready.length === 0 ? NO_HOLDS : yield* holds.of(sessionID)
+          const decided = yield* apply(sessionID, Nudge.make({ ...units, holds: gathered, resting })).pipe(Effect.result)
           if (decided._tag === "Failure") return { _tag: "NotNudged", why: decided.failure.why, detail: decided.failure.detail } as const
           const nudged = decided.success.events.find((event) => event._tag === "Nudged")
           if (nudged === undefined) return { _tag: "NotNudged", why: "nudged", detail: "nothing to record" } as const

@@ -11,7 +11,7 @@ runsLaws("OpenCode's Runs", (world) =>
     world === "unreadable"
       ? Effect.fail(new Error("no server for dotfiles-opencode.status"))
       : // The status plugin's answer, with the fields this reader does not read.
-        Effect.succeed({ agents: [], errors: [], runs: world.map((run) => ({ ...run, units: run.units.map((unit) => ({ ...unit, round: "1", since: "" })) })) }),
+        Effect.succeed({ agents: [], errors: [], runs: world.map((run) => ({ ...run, units: run.units.map((unit) => ({ ...unit, round: "1", since: unit.since ?? "" })) })) }),
   ),
 )
 
