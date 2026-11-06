@@ -16,6 +16,7 @@ import * as MemoryBackstop from "./backstop.ts"
 import * as MemoryChecks from "./checks.ts"
 import * as MemoryCourier from "./courier.ts"
 import * as MemoryOpener from "./opener.ts"
+import * as MemoryRunner from "./runner.ts"
 import * as MemoryStore from "./store.ts"
 
 const DIR = "/work/app"
@@ -42,6 +43,7 @@ const world = (...sessionIDs: ReadonlyArray<string>) => ({
   jobs: MemoryBackstop.empty(),
   checks: MemoryChecks.empty(),
   opener: MemoryOpener.empty(),
+  runner: MemoryRunner.empty(),
   changed: [] as Array<string>,
 })
 type World = ReturnType<typeof world>
@@ -56,6 +58,7 @@ const server = (w: World, directory = DIR) =>
       Layer.provide(MemoryChecks.layer(w.checks)),
       Layer.provide(MemoryBackstop.layer(w.jobs)),
       Layer.provide(MemoryOpener.layer(w.opener)),
+      Layer.provide(MemoryRunner.layer(w.runner)),
       Layer.provide(Layer.succeed(Changes, { changed: (sessionID) => Effect.sync(() => void w.changed.push(sessionID)) })),
     )
     const model = Context.get(yield* Layer.buildWithScope(layer, scope), WakesModel)
