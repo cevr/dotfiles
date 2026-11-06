@@ -139,7 +139,7 @@ Where the time goes in the 170 × 100 × 3 case (`bun --cpu-prof`, `scripts/perf
    - mimalloc's purge and scavenger take about 15% of the server's 0.2 cores.
    - Expected: small. **guess**
 
-I made no fix in this branch. None of them is both small and proven by the profile: Strobe cannot name the JIT frames, so the profile does not separate our rows from the core's transcript memos. The bench proves the magnitude of fixes 1 and 2.
+Fixes 1 and 2 are done in this branch (`mods/subagents/solid/reader.ts`, `subagent-row.ts`, `activity.ts`, `works.ts`). The bench, 170 children × 100 messages, three consumers, one token, same Mac at load 11–14, its views checking that each sees the token: 90–153 ms before, 1.0–1.6 ms after; one consumer 34 ms before, 0.7–2.1 ms after. **measured** The JS profile of the frozen TUI later put `mods/prime/tui/live.tsx` at 22%, `mods/subagents/opencode/view.ts` at 11%, `mods/prime/tui/chrome.tsx` at 8% and `subagent-row.ts` at 3% of its time, all of which read the family through this path. **measured** by the orchestrator's profile `cpu-2324482-2026-11-06T191154973Z.cpuprofile`.
 
 ## Next step: name the JS (one action by the owner)
 

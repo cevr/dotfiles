@@ -65,10 +65,14 @@ const reads: Reads<string> = {
   shell: { list: () => [] },
 }
 
-// One family reader per plugin, as prime's host and the queue's sidebar each make one.
+// Each consumer takes its reader as prime's host and the queue's sidebar each do (`familyReader()`,
+// one reader shared by the process). A view keeps the live row's update, so the run checks that the
+// views see each token.
 const readers = Array.from({ length: consumers }, () => familyReader())
 const t0 = performance.now()
-const views = createRoot(() => readers.map((reader) => createMemo(() => subagents(reader(reads, "root"), "root").length)))
+const views = createRoot(() =>
+  readers.map((reader) => createMemo(() => subagents(reader(reads, "root"), "root").find((row) => row.state === "working")?.update ?? "")),
+)
 views.forEach((view) => view())
 const first = performance.now() - t0
 
@@ -91,6 +95,9 @@ for (let i = 0; i < tokens; i++) {
   views.forEach((view) => view())
 }
 const perToken = (performance.now() - t1) / tokens
+// The live child's update is its newest sentence, which the tokens extend.
+if (perChild > 0 && !views.every((view) => view().endsWith("token")))
+  throw new Error(`a view missed the tokens: ${views.map((view) => view()).join(" | ")}`)
 console.log(
   JSON.stringify({ children, perChild, rootMessages, consumers, firstReadMs: +first.toFixed(1), perTokenMs: +perToken.toFixed(2) }),
 )
