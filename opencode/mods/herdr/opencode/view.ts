@@ -1,10 +1,11 @@
 // The view the decision reads, from the TUI's own data: the current route's
 // root session and every session in its family, each with the host's run
-// status, its queued input, its waiting permissions and questions, and the
-// tool calls running in its newest assistant message. Read inside a Solid
-// computation, every read here is reactive.
+// status, its queued input, its waiting permissions and questions, its open
+// background questions (from questions.ts, which follows the questions
+// plugin), and the tool calls running in its newest assistant message. Read
+// inside a Solid computation, every read here is reactive.
 import { Option, Schema } from "effect"
-import type { SessionView, View } from "../activity.ts"
+import type { Asked, SessionView, View } from "../activity.ts"
 import type { RunningTool } from "../label.ts"
 
 /**
@@ -23,6 +24,9 @@ export interface Reads {
     readonly message: { list(sessionID: string): ReadonlyArray<{ readonly type: string; readonly content?: unknown }> }
   }
 }
+
+/** The open background questions a session asked, as questions.ts follows them. */
+export type AskedOf = (sessionID: string) => ReadonlyArray<Asked>
 
 /** The route the TUI shows, as `context.ui.router.current()` returns it. */
 export type Route = { readonly type: "session"; readonly sessionID: string } | { readonly type: string }
@@ -46,7 +50,7 @@ const runningTools = (reads: Reads, sessionID: string): ReadonlyArray<RunningToo
   })
 }
 
-const session = (reads: Reads, id: string): SessionView => {
+const session = (reads: Reads, asked: AskedOf, id: string): SessionView => {
   const title = reads.session.get(id)?.title
   return {
     id,
@@ -58,19 +62,23 @@ const session = (reads: Reads, id: string): SessionView => {
       request.resources[0] === undefined ? request.action : `${request.action} ${request.resources[0]}`,
     ),
     questions: (reads.session.form.list(id) ?? []).map((form) => form.title),
+    asked: asked(id),
     tools: runningTools(reads, id),
   }
 }
 
-/** The view of `route`: its root session and that root's family, or no session off a session route. */
-export const read = (reads: Reads, route: Route): View => {
-  if (!("sessionID" in route) || route.type !== "session" || route.sessionID === "dummy") return { root: undefined, descendants: [] }
+/** The sessions of `route`'s view: its root first, then the root's family; none off a session route. */
+export const membersOf = (reads: Reads, route: Route): ReadonlyArray<string> => {
+  if (!("sessionID" in route) || route.type !== "session" || route.sessionID === "dummy") return []
   const root = reads.session.root(route.sessionID)
-  return {
-    root: session(reads, root),
-    descendants: reads.session
-      .family(root)
-      .filter((id) => id !== root)
-      .map((id) => session(reads, id)),
-  }
+  return [root, ...reads.session.family(root).filter((id) => id !== root)]
+}
+
+const none: AskedOf = () => []
+
+/** The view of `route`: its root session and that root's family, or no session off a session route. */
+export const read = (reads: Reads, route: Route, asked: AskedOf = none): View => {
+  const [root, ...descendants] = membersOf(reads, route)
+  if (root === undefined) return { root: undefined, descendants: [] }
+  return { root: session(reads, asked, root), descendants: descendants.map((id) => session(reads, asked, id)) }
 }

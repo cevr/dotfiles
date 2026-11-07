@@ -8,6 +8,7 @@
     "./tui": "./tui.tsx"
   },
   "dependencies": {
-    "@dotfiles/opencode-herdr": "workspace:*"
+    "@dotfiles/opencode-herdr": "workspace:*",
+    "@dotfiles/opencode-questions": "workspace:*"
   }
 }

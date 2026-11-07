@@ -67,6 +67,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/opencode-herdr": "workspace:*",
+        "@dotfiles/opencode-questions": "workspace:*",
       },
     },
     "cmd/idle-compact": {
@@ -226,6 +227,9 @@
     "mods/herdr": {
       "name": "@dotfiles/opencode-herdr",
       "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-questions": "workspace:*",
+      },
     },
     "mods/idle-compact": {
       "name": "@dotfiles/opencode-idle-compact",

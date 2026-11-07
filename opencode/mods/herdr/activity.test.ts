@@ -7,6 +7,7 @@ const session = (id: string, over: Partial<SessionView> = {}): SessionView => ({
   queued: false,
   permissions: [],
   questions: [],
+  asked: [],
   tools: [],
   ...over,
 })
@@ -58,6 +59,44 @@ describe("decide", () => {
     const view = { root: session("ses_root", { running: true, questions: ["Which\nbranch?"] }), descendants: [] }
     expect(decide(view)).toEqual({ state: "blocked", sessionId: "ses_root", message: "Question: Which branch?" })
     expect(decide({ root: session("ses_root", { questions: [" "] }), descendants: [] }).message).toBe("Question needs input")
+  })
+})
+
+describe("decide, with background questions open", () => {
+  const db = { label: "Which\ndatabase?", at: 20 }
+  const branch = { label: "Which branch?", at: 10 }
+
+  test("nothing works and one is open: blocked, naming it", () => {
+    expect(decide({ root: session("ses_root", { asked: [db] }), descendants: [] })).toEqual({
+      state: "blocked",
+      sessionId: "ses_root",
+      message: "Question: Which database?",
+    })
+  })
+
+  test("several open across the family: blocked, counted, naming the oldest", () => {
+    const view = { root: session("ses_root", { asked: [db] }), descendants: [session("ses_a", { asked: [branch] })] }
+    expect(decide(view)).toEqual({ state: "blocked", sessionId: "ses_root", message: "2 questions: Which branch?" })
+    expect(decide({ root: session("ses_root", { asked: [{ label: " ", at: 1 }, { label: "", at: 2 }] }), descendants: [] }).message).toBe(
+      "2 questions need input",
+    )
+  })
+
+  test("work runs while they are open: working, with its label", () => {
+    const root = session("ses_root", { running: true, asked: [db], tools: [{ tool: "bash", input: { command: "ls" }, at: 1 }] })
+    expect(decide({ root, descendants: [] })).toEqual({ state: "working", sessionId: "ses_root", working: "shell: ls" })
+    const view = { root: session("ses_root", { asked: [db] }), descendants: [session("ses_a", { queued: true })] }
+    expect(decide(view).state).toBe("working")
+  })
+
+  test("a waiting permission or question form still comes first", () => {
+    const view = { root: session("ses_root", { asked: [branch], questions: ["Pick one"] }), descendants: [session("ses_a", { permissions: ["edit"] })] }
+    expect(decide(view).message).toBe("Permission: edit")
+    expect(decide({ root: session("ses_root", { asked: [branch], questions: ["Pick one"] }), descendants: [] }).message).toBe("Question: Pick one")
+  })
+
+  test("once answered or withdrawn, none is open: idle", () => {
+    expect(decide({ root: session("ses_root", { asked: [] }), descendants: [] })).toEqual({ state: "idle", sessionId: "ses_root" })
   })
 })
 

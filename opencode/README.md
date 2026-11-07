@@ -888,11 +888,22 @@ session on screen is doing, so its pane shows working, blocked and idle like
 Claude's. It ports gent's `@gent/herdr` reporter. It judges the current
 route's root session and every subagent it started:
 
-- `blocked` while a permission (first) or a question waits, with a short
-  message such as `Permission: shell bun test`;
+- `blocked` while a permission (first) or a question form waits, with a
+  short message such as `Permission: shell bun test`;
 - `working` while the root or any subagent runs or holds queued input, so
-  kernel cells and background workers count;
+  kernel cells and background workers count; an open background question
+  (`ask_user_async`) never stops the agent, so it leaves work `working`;
+- `blocked` when nothing works and background questions are open, since the
+  agent waits on the answers: `Question: <label>`, or `3 questions: <label>`
+  naming the oldest. An answered, dismissed or withdrawn question drops out
+  on the questions plugin's `changed` event;
 - `idle` otherwise, and `unknown` off a session (the home screen).
+
+The background questions live in the questions plugin's server, so the
+reporter reads them over its RPC (`open`) when the session's family changes,
+on every `changed` event for one of its sessions, and every 10 seconds as a
+backstop. A failed read keeps the last one; without the questions plugin none
+are open.
 
 Each state report uses source `dotfiles:opencode` and agent `opencode`. It
 carries the root session's id and `resume_argv`

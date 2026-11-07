@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { decide } from "../activity.ts"
-import { read, type Reads } from "./view.ts"
+import { membersOf, read, type Reads } from "./view.ts"
 
 interface Fixture {
   readonly title?: string
@@ -62,6 +62,22 @@ describe("read", () => {
     const root = read(data, { type: "session", sessionID: "ses_root" }).root
     expect(root?.permissions).toEqual(["shell rm -rf build", "edit"])
     expect(root?.questions).toEqual(["Pick one"])
+  })
+
+  test("each member carries its open background questions; idle on them, the view blocks", () => {
+    const data = reads({ ses_root: {}, ses_child: {} }, ["ses_root", "ses_child"])
+    const asked = (id: string) => (id === "ses_child" ? [{ label: "Which branch?", at: 5 }] : [])
+    const view = read(data, { type: "session", sessionID: "ses_root" }, asked)
+    expect(view.root?.asked).toEqual([])
+    expect(view.descendants.map((member) => member.asked)).toEqual([[{ label: "Which branch?", at: 5 }]])
+    expect(decide(view)).toEqual({ state: "blocked", sessionId: "ses_root", message: "Question: Which branch?" })
+    expect(read(data, { type: "session", sessionID: "ses_root" }).root?.asked).toEqual([])
+  })
+
+  test("the members are the root first, then its family; none off a session", () => {
+    const data = reads({ ses_root: {}, ses_child: {} }, ["ses_root", "ses_child"])
+    expect(membersOf(data, { type: "session", sessionID: "ses_child" })).toEqual(["ses_root", "ses_child"])
+    expect(membersOf(data, { type: "home" })).toEqual([])
   })
 
   test("the running calls of the newest assistant message, with when each started running", () => {
