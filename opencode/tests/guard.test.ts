@@ -161,7 +161,8 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       const result = await run("policy", { task: POLICY_TASK, codeOnly: false })
       const [heavy, light, kill, ...rest] = toolParts(result.messages)
       expect(rest).toEqual([])
-      // The run's process, and so OpenCode's shells, start at this test's niceness; the guard adds 10, up to 19.
+      // The run's process, and so OpenCode's shells, start at this test's niceness; the guard adds 10, up to the
+      // system's highest niceness (20 on macOS, 19 on Linux).
       const base = getPriority()
       expect(light?.state.input.command).toBe(LIGHT_NICE)
       expect(light?.state.status).toBe("completed")
@@ -169,7 +170,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       // The model's call and the tool part show the command as the model wrote it: only the program that runs it changed.
       expect(heavy?.state.input.command).toBe(HEAVY_NICE)
       expect(heavy?.state.status).toBe("completed")
-      expect(niceness(heavy)).toBe(Math.min(base + 10, 19))
+      expect(niceness(heavy)).toBe(Math.min(base + 10, process.platform === "darwin" ? 20 : 19))
       const launchers = join(scratch, "policy/home/.cache/opencode/guard-launchers")
       // One launcher, named as the shell it stands in for, so OpenCode reads the command in that shell's dialect.
       const written = readdirSync(launchers).flatMap((hash) => readdirSync(join(launchers, hash)))
