@@ -11,15 +11,14 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { useTerminalDimensions } from "@opentui/solid"
 import { Option, Schema } from "effect"
 import { createEffect, createMemo, onCleanup, Show } from "solid-js"
-import { CHANGED, Open, type Question, QUESTIONS, Reply } from "../question.ts"
+import { type Open, type Question, QUESTIONS, Reply } from "../question.ts"
+import { changedSession, decodeOpen } from "../reading.ts"
 import { under } from "../tray.ts"
 import { Pane } from "./pane.tsx"
 import type { Questions } from "./questions.tsx"
 import { Tray } from "./tray.tsx"
 
-const decodeOpen = Schema.decodeUnknownOption(Open)
 const decodeReply = Schema.decodeUnknownOption(Reply)
-const decodeChanged = Schema.decodeUnknownOption(Schema.Struct({ type: Schema.Literal(CHANGED), data: Schema.Struct({ sessionID: Schema.String }) }))
 
 /** How often the questions are read again. */
 const POLL_MS = 2000
@@ -93,8 +92,8 @@ export function Dock(props: { ctx: Plugin.Context; sessionID: string; questions:
   void refresh()
   const timer = setInterval(() => void refresh(), POLL_MS)
   const stop = ctx.data.listen((event) => {
-    const changed = decodeChanged(event.details)
-    if (Option.isSome(changed) && members().includes(changed.value.data.sessionID)) void refresh()
+    const changed = changedSession(event.details)
+    if (changed !== undefined && members().includes(changed)) void refresh()
   })
   onCleanup(() => {
     closed = true
