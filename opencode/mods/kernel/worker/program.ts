@@ -9,7 +9,9 @@
  * - `console` writes to the cell's display while it runs; other stdout and
  *   stderr writes reach the host on the output pipe, closed by a marker.
  * - `tools.<id>(input)` asks the host to run tool `<id>` and resolves to its
- *   result. `tools.list()` lists the tools the host offered for this cell.
+ *   result. `tools.list()` lists the tools the host offered for this cell,
+ *   `tools.docs(id)` gives one's full words and input schema, and
+ *   `tools.docs.search(query)` finds them.
  * - `attach(...paths)` records image files for the host to show the model
  *   after the cell: only their paths, resolved against the session's working
  *   directory, travel in the result frame (`attached`); the host reads them.
@@ -42,6 +44,7 @@ import { makeBoundedOutput } from "../output.ts"
 import { encodeFrame, makeFrameReader, outputMarker, oversized, REQUEST_FD, RESPONSE_FD } from "../wire.ts"
 import { decodeBinding, encodeSnapshot } from "./codec.ts"
 import { declarationsOf, decodeDeclaration, makeDeclarations, type Declared } from "./declarations.ts"
+import { searcher, type Searcher } from "../summary.ts"
 import { handleOf, listShells, runShell } from "./shell-handle.ts"
 
 /** Uncaught errors kept for the next cell; later ones between two cells are dropped. */
@@ -71,8 +74,13 @@ const RESERVED = new Set([
   "$$typeof",
   "nodeType",
 ])
-/** Root keys that are functions of the namespace, not tool ids: `tools.list()`. */
-const DISCOVERY = new Set(["list"])
+/**
+ * Root keys that are functions of the namespace, not tool ids: `tools.list()`,
+ * `tools.docs(id)` (a tool's full description and input schema) and
+ * `tools.docs.search(query, limit?)` (the tools that match, best first, each
+ * with its first sentence; ../summary.ts).
+ */
+const DISCOVERY = new Set(["list", "docs"])
 
 /** The source that reaches `id`: `tools.read`, `tools["x-y"]`, or `tools("list")` for a reserved name. */
 export const toolPath = (id: string): string => {
@@ -120,7 +128,29 @@ const makeTools = (listing: () => ReadonlyArray<Listing>, callHost: (id: string,
     typeof key === "string" && !RESERVED.has(key) && !(path === "" && DISCOVERY.has(key))
   const unknown = (path: string) =>
     new Error(`${toolPath(path)} is not a tool here. Tools: ${ids().map(toolPath).sort().join(", ") || "none"}`)
-  const discovery = { list: () => listing().map(({ id, description }) => ({ id, description })) }
+  // The search index, built at the first search and kept while the tools stay the same: each cell
+  // brings its listing anew, but a session's tools rarely change, so a search is a walk over postings.
+  let indexed: { readonly listing: ReadonlyArray<Listing>; readonly key: string; readonly search: Searcher } | undefined
+  const searchOf = (): Searcher => {
+    const current = listing()
+    if (indexed?.listing === current) return indexed.search
+    const key = current.map((tool) => `${tool.id}\u0000${tool.description}`).join("\u0001")
+    indexed = indexed?.key === key ? { ...indexed, listing: current } : { listing: current, key, search: searcher(current) }
+    return indexed.search
+  }
+  const docs = Object.assign(
+    (name: unknown) => {
+      const id = String(name)
+      const tool = listing().find((item) => item.id === id)
+      if (tool === undefined) throw unknown(id)
+      return { name: tool.id, description: tool.description, ...(tool.input === undefined ? {} : { input: tool.input }) }
+    },
+    {
+      search: (query: unknown, limit?: unknown) =>
+        searchOf()(String(query ?? ""), typeof limit === "number" ? limit : undefined).map(({ name, summary }) => ({ name, summary })),
+    },
+  )
+  const discovery = { list: () => listing().map(({ id, description }) => ({ id, description })), docs }
   const node = (path: string): ToolNode => {
     const existing = nodes.get(path)
     if (existing) return existing

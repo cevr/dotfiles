@@ -3,7 +3,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Exit } from "effect"
 import type { Json } from "./frame.ts"
-import { callable, catalog, cellValue, contentValue, IMAGE_NOTE, notATool, plain, reachable, textOf, typeOf, whollyDisabled, withoutImages } from "./tools.ts"
+import { callable, catalog, cellValue, docsOf, contentValue, IMAGE_NOTE, notATool, plain, reachable, textOf, typeOf, whollyDisabled, withoutImages } from "./tools.ts"
 
 describe("whollyDisabled", () => {
   test("follows the last matching rule, as the registry does", () => {
@@ -36,25 +36,25 @@ describe("notATool", () => {
 })
 
 describe("the catalog", () => {
-  test("lists each tool the kernel reaches with its input, quoting a name that is not an identifier", () => {
+  test("lists each tool the kernel reaches on one line, sorted, with its input and first sentence, quoting a name that is not an identifier", () => {
     const text = catalog([
-      { name: "read", description: "Read a file", input: { type: "object", properties: { path: { type: "string" }, limit: { type: "integer" } }, required: ["path"] } },
+      { name: "read", description: "Read a file. Details the docs give.\n\nMore.", input: { type: "object", properties: { path: { type: "string" }, limit: { type: "integer" } }, required: ["path"] } },
       { name: "mcp-search", description: "Search", input: { type: "object", properties: { mode: { enum: ["a", "b"] } } } },
       { name: "kernel", description: "itself", input: {} },
     ])
-    expect(text).toContain("### tools.read(input: { path: string, limit?: number })\nRead a file")
-    expect(text).toContain('### tools["mcp-search"](input: { mode?: "a" | "b" })\nSearch')
-    expect(text).not.toContain("tools.kernel")
+    expect(text).toBe('- tools["mcp-search"](input: { mode?: "a" | "b" }): Search\n- tools.read(input: { path: string, limit?: number }): Read a file.')
   })
 
-  test("says under the shell tool that a cell gets its handle as a live object", () => {
-    const text = catalog([{ name: "shell", description: "Execute a shell command and return its handle.", input: {} }])
-    expect(text).toContain("Execute a shell command and return its handle.\n\nIn a cell, `tools.shell({ command,")
-    expect(text).toContain("only runs a command, and resolves to a live handle")
-    expect(text).toContain("`await tools.shell.handle(id)`")
-    expect(text).toContain("`await tools.shell.list()`")
-    expect(text).toContain("The tool's other actions (check, wait, kill, list) are these methods in a cell")
-    expect(text).not.toMatch(/kill: true|list: true|wait: |action: "/)
+  test("gives the shell tool its input and line in a cell; its docs carry the handle's note", () => {
+    const text = catalog([{ name: "shell", description: "Execute a shell command and return its handle.", input: { type: "object", properties: { action: { enum: ["run", "kill"] } } } }])
+    expect(text).toBe(
+      "- tools.shell(input: { command: string, workdir?: string, timeout?: number, description?: string, background?: boolean }): Runs a command and resolves to a live handle whose methods (.wait, .kill, .refresh, .read) act on that shell.",
+    )
+    const docs = docsOf("shell", "Execute a shell command and return its handle.")
+    expect(docs).toContain("Execute a shell command and return its handle.\n\nIn a cell, `tools.shell({ command,")
+    expect(docs).toContain("`await tools.shell.handle(id)`")
+    expect(docs).toContain("The tool's other actions (check, wait, kill, list) are these methods in a cell")
+    expect(docsOf("read", " Read a file. ")).toBe("Read a file.")
   })
 
   test("reads unions, arrays, constants and nullable types; deep objects stay `object`", () => {

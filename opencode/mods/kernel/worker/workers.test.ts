@@ -90,6 +90,32 @@ describe("a worker", () => {
       }),
     ))
 
+  test("gives a tool's docs and searches them in the cell, without a tool call", () =>
+    scenario(
+      Effect.gen(function* () {
+        const workers = yield* started()
+        const tools: ReadonlyArray<Listing> = [
+          { id: "read", description: "Read a file from disk. Long details follow.", input: { type: "object", properties: { path: { type: "string" } } } },
+          { id: "grep", description: "Search file contents with a pattern." },
+          { id: "docs", description: "A tool that happens to be named docs." },
+        ]
+        const docs = yield* workers.evaluate(first, cell("JSON.stringify(tools.docs('read'))", tools))
+        expect(JSON.parse(docs.display)).toEqual({
+          name: "read",
+          description: "Read a file from disk. Long details follow.",
+          input: { type: "object", properties: { path: { type: "string" } } },
+        })
+        const found = yield* workers.evaluate(first, cell("JSON.stringify(tools.docs.search('file'))", tools))
+        expect(JSON.parse(found.display)).toEqual([
+          { name: "grep", summary: "Search file contents with a pattern." },
+          { name: "read", summary: "Read a file from disk." },
+        ])
+        expect((yield* workers.evaluate(first, cell("tools.docs('nope')", tools))).display).toBe("Error: tools.nope is not a tool here. Tools: tools(\"docs\"), tools.grep, tools.read")
+        // A tool named like the built-in is still reached by its string.
+        expect((yield* workers.evaluate(first, cell("tools.docs('docs').description", tools))).display).toBe("A tool that happens to be named docs.")
+      }),
+    ))
+
   test("rejects a cell with the worker's exit when it crashes", () =>
     scenario(
       Effect.gen(function* () {

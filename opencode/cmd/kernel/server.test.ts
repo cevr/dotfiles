@@ -55,9 +55,12 @@ interface World {
  * it, the storage's entries, the build agent's rules, and a way to delete a
  * session.
  */
-const start = (options: Record<string, unknown> = {}, world: World = {}) =>
+const start = (options: Record<string, unknown> = {}, world: World = {}, stored: Map<string, Json> = new Map()) =>
   Effect.gen(function* () {
     const entries = new Map<string, Json>()
+    const hooks = new Map<string, Array<(event: RequestEvent) => Effect.Effect<void>>>()
+    const synthetics: Array<{ readonly sessionID: string; readonly text: string; readonly resume?: boolean }> = []
+    const announced = yield* Queue.unbounded<void>()
     const dropped = yield* Queue.unbounded<string>()
     const deletions = yield* Queue.unbounded<{ readonly type: "session.deleted"; readonly data: { readonly sessionID: string } }>()
     const agentRules: Array<Rule> = []
@@ -81,6 +84,21 @@ const start = (options: Record<string, unknown> = {}, world: World = {}) =>
           }),
       },
       event: { subscribe: () => Stream.fromQueue(deletions) },
+      // The plugin's own storage, where the frozen descriptions live.
+      storage: {
+        get: (key: string) => Effect.sync(() => stored.get(key)),
+        set: (key: string, value: Json) => Effect.sync(() => void stored.set(key, JSON.parse(JSON.stringify(value)))),
+        remove: (key: string) => Effect.sync(() => void stored.delete(key)),
+      },
+      session: {
+        hook: (name: string, callback: (event: RequestEvent) => Effect.Effect<void>) =>
+          Effect.sync(() => {
+            hooks.set(name, [...(hooks.get(name) ?? []), callback])
+            return { dispose: Effect.void }
+          }),
+        synthetic: (input: { readonly sessionID: string; readonly text: string; readonly resume?: boolean }) =>
+          Effect.sync(() => void synthetics.push(input)).pipe(Effect.andThen(Queue.offer(announced, undefined))),
+      },
     } as unknown as Host
     // The host's storage: JSON in, JSON out; a removal is reported once it is done.
     const snapshots = OpenCodeSnapshots.layer({
@@ -128,8 +146,28 @@ const start = (options: Record<string, unknown> = {}, world: World = {}) =>
       Effect.flip(run(code, extra)).pipe(Effect.map((error) => error.message))
     const deleteSession = (sessionID: string) =>
       Queue.offer(deletions, { type: "session.deleted", data: { sessionID } }).pipe(Effect.andThen(Queue.take(dropped)))
-    return { call, parts, fail, entries, agentRules, tool, deleteSession }
+    /**
+     * One model request of `sessionID` (a primary one, or a compaction) as the fork makes it: the
+     * runtime describes `tools`, then the request hooks see the kernel's definition; the description
+     * the request offers.
+     */
+    const request = (sessionID: string, tools: ReadonlyArray<Reached>, hook: "context" | "compaction" = "context") =>
+      Effect.gen(function* () {
+        const live = tool?.options?.runtime?.describe(tools)
+        if (live === undefined) return yield* Effect.die("the kernel is not the runtime")
+        const event: RequestEvent = { sessionID, agent: "build", tools: { kernel: { description: live, input: {} } } }
+        for (const callback of hooks.get(hook) ?? []) yield* callback(event)
+        return event.tools.kernel!.description
+      })
+    return { call, parts, fail, entries, agentRules, tool, deleteSession, request, synthetics, announced }
   })
+
+/** A request hook's event, as much of it as the kernel reads. */
+interface RequestEvent {
+  readonly sessionID: string
+  readonly agent: string
+  readonly tools: Record<string, { description: string; input: unknown }>
+}
 
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
 
@@ -358,7 +396,7 @@ describe("the options", () => {
 })
 
 describe("as the runtime", () => {
-  test("codeOnly makes the kernel the runtime, its description listing each tool it reaches with its input", () =>
+  test("codeOnly makes the kernel the runtime, its description listing each tool it reaches on a line with its input", () =>
     scenario(
       Effect.gen(function* () {
         const runtime = (yield* start()).tool?.options?.runtime
@@ -367,8 +405,8 @@ describe("as the runtime", () => {
           { name: "mcp-search", description: "Search", input: { type: "object", properties: { mode: { enum: ["a", "b"] } } } },
           { name: "kernel", description: "itself", input: {} },
         ])
-        expect(text).toContain("### tools.read(input: { path: string, limit?: number })\nRead a file")
-        expect(text).toContain('### tools["mcp-search"](input: { mode?: "a" | "b" })\nSearch')
+        expect(text).toContain("- tools.read(input: { path: string, limit?: number }): Read a file")
+        expect(text).toContain(`- tools["mcp-search"](input: { mode?: "a" | "b" }): Search`)
         expect(text).not.toContain("tools.kernel")
         expect(text).toContain("the kernel is your only tool")
         expect((yield* start({ codeOnly: false })).tool?.options?.runtime).toBeUndefined()
@@ -420,6 +458,69 @@ describe("as the runtime", () => {
         yield* Scope.close(plugin, Exit.void)
         const message = yield* Fiber.join(call).pipe(Effect.timeoutOption("5 seconds"))
         expect(Option.getOrUndefined(message)).toContain("reloaded or shut down its plugins")
+      }),
+    ))
+})
+
+describe("a session's frozen description", () => {
+  const read: Reached = { name: "read", description: "Read a file. It reads.", input: { type: "object", properties: { path: { type: "string" } } } }
+  const browse: Reached = { name: "browse_snapshot", description: "Snapshot the page. It lists the elements.", input: { type: "object", properties: {} } }
+  const kernel: Reached = { name: "kernel", description: "itself", input: {} }
+
+  test("keeps its bytes when an MCP tool joins mid-session; the tool is callable, its docs readable, and told once", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { call, request, synthetics, announced } = yield* start()
+        const first = yield* request("ses_1", [kernel, read])
+        expect(first).toContain("- tools.read(input: { path?: string }): Read a file.")
+        // The browse MCP server connects: the live description changes, the session's does not.
+        const joined = [kernel, read, browse]
+        expect(yield* request("ses_1", joined)).toBe(first)
+        yield* Queue.take(announced)
+        expect(yield* request("ses_1", joined)).toBe(first)
+        expect(yield* request("ses_1", joined, "compaction")).toBe(first)
+        expect(synthetics).toHaveLength(1)
+        expect(synthetics[0]).toMatchObject({ sessionID: "ses_1", resume: false })
+        expect(synthetics[0]?.text).toContain("- tools.browse_snapshot: Snapshot the page.")
+        // The runtime reaches the live tools, so the new one runs, and its docs are there.
+        const runtime: Runtime = { tools: joined, call: (name) => Effect.succeed({ output: `ran ${name}` }) }
+        expect(yield* call("await tools.browse_snapshot({})", { runtime })).toBe("ran browse_snapshot")
+        expect(yield* call("tools.docs('browse_snapshot').description", { runtime })).toBe("Snapshot the page. It lists the elements.")
+        expect(yield* call("tools.docs.search('page').map((hit) => hit.name).join()", { runtime })).toBe("browse_snapshot")
+      }),
+    ))
+
+  test("a subagent freezes its own at its first request; a gone tool is told and its call throws", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { fail, request, synthetics, announced } = yield* start()
+        const parent = yield* request("ses_1", [kernel, read, browse])
+        const child = yield* request("ses_child", [kernel, read])
+        expect(child).not.toBe(parent)
+        expect(child).not.toContain("browse_snapshot")
+        expect(yield* request("ses_child", [kernel, read])).toBe(child)
+        // browse disconnects: the parent keeps its text and is told; the child never had it.
+        expect(yield* request("ses_1", [kernel, read])).toBe(parent)
+        yield* Queue.take(announced)
+        expect(synthetics.map((item) => item.sessionID)).toEqual(["ses_1"])
+        expect(synthetics[0]?.text).toContain("Gone (a call now throws):\n- tools.browse_snapshot")
+        const runtime: Runtime = { tools: [read], call: () => Effect.die("not called") }
+        expect(yield* fail("await tools.browse_snapshot({})", { runtime })).toContain("tools.browse_snapshot is not a tool here")
+      }),
+    ))
+
+  test("holds across a plugin restart and goes when the session is deleted", () =>
+    scenario(
+      Effect.gen(function* () {
+        const stored = new Map<string, Json>()
+        const before = yield* start({}, {}, stored)
+        const first = yield* before.request("ses_1", [kernel, read])
+        const after = yield* start({}, {}, stored)
+        expect(yield* after.request("ses_1", [kernel, read, browse])).toBe(first)
+        expect(stored.has("kernel-catalog:ses_1")).toBe(true)
+        yield* after.call("1")
+        yield* after.deleteSession("ses_1")
+        expect(stored.has("kernel-catalog:ses_1")).toBe(false)
       }),
     ))
 })

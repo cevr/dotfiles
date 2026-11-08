@@ -127,7 +127,8 @@ export const toolboxLaws = (name: string, layer: (tools: ReadonlyArray<LawTool>)
         layer(tools),
         Effect.gen(function* () {
           const reached = yield* (yield* Toolbox).reach([])
-          expect(reached.listing).toEqual([
+          // A listing may also carry the tool's input schema, for `tools.docs(id)`.
+          expect(reached.listing.map(({ id, description }) => ({ id, description }))).toEqual([
             { id: "echo", description: "says it back" },
             { id: "broken", description: "always fails" },
           ])

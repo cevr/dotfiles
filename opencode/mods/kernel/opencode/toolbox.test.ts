@@ -68,3 +68,27 @@ describe("the registry's bridge", () => {
     expect(invalid.message).toStartWith("Invalid input for count: ")
   })
 })
+
+describe("the listing", () => {
+  const reach = (source: OpenCodeToolbox.Source) => Effect.runPromise(Toolbox.use((toolbox) => toolbox.reach([])).pipe(Effect.provide(OpenCodeToolbox.layer(source))))
+
+  test("carries each tool's full words in a cell and its input as JSON Schema, for tools.docs", async () => {
+    const input = { type: "object", properties: { command: { type: "string" } } }
+    const runtime = await reach({
+      _tag: "Runtime",
+      runtime: { tools: [{ name: "shell", description: "Run a command.", input }], call: () => Effect.die("not called") },
+    })
+    expect(runtime.listing[0]?.input).toEqual(input)
+    expect(runtime.listing[0]?.description).toStartWith("Run a command.\n\nIn a cell, `tools.shell({ command,")
+    const registry = await reach({
+      _tag: "Registry",
+      list: Effect.succeed([{ id: "count", description: "counts", input: Schema.Struct({ n: Schema.String }), execute: () => Effect.die("not called") }]),
+    })
+    expect(registry.listing[0]).toMatchObject({ id: "count", description: "counts", input: { type: "object", properties: { n: { type: "string" } } } })
+  })
+
+  test("leaves the input out when the schema cannot be written as JSON Schema", () => {
+    expect(OpenCodeToolbox.inputSchemaOf({ "~standard": { validate: () => ({}) } })).toBeUndefined()
+    expect(OpenCodeToolbox.inputSchemaOf("not a schema")).toBeUndefined()
+  })
+})
