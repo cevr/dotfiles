@@ -297,11 +297,12 @@ export function GoalLine(props: { host: Host; sessionID: string }) {
 }
 
 /**
- * Above the composer, one row per prompt the runner has not taken, oldest
- * first (`◌ queued · Also update the docs.`, pending.ts): the prompt leaves
- * the transcript until the runner takes it, and its row goes the moment it
- * does. A click offers to move it to the queue or delete it. Nothing while
- * none waits.
+ * Above the composer, in place of the host's queued box, one row per prompt
+ * the runner has not taken, steers and queued prompts in one list, oldest
+ * first (`◌ queued · Also update the docs.`, `◌ after the turn · …`,
+ * pending.ts): the prompt leaves the transcript until the runner takes it,
+ * and its row goes the moment it does. A click offers that kind's actions
+ * (`pendingActions`). Nothing while none waits.
  */
 export function Queued(props: { host: Host; sessionID: string }) {
   const theme = () => props.host.theme()
@@ -329,7 +330,7 @@ export function Queued(props: { host: Host; sessionID: string }) {
                 onMouseOver={() => setHover(true)}
                 onMouseOut={() => setHover(false)}
                 onMouseUp={() => {
-                  if (!props.host.selecting()) props.host.openPending(props.sessionID, prompt.id)
+                  if (!props.host.selecting()) props.host.openPending(props.sessionID, prompt)
                 }}
               >
                 <text wrapMode="none" truncate fg={hover() ? theme().text.base : theme().text.muted}>

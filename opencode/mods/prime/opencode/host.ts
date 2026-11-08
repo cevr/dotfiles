@@ -41,7 +41,7 @@ export function host(context: Plugin.Context, goal: (sessionID: string) => Goal 
     },
     goal,
     pending: (sessionID) => data.session.pending.list(sessionID),
-    openPending: (sessionID, inboxID) => void openPending(context, sessionID, inboxID),
+    openPending: (sessionID, prompt) => void openPending(context, sessionID, prompt),
     wakes: (sessionID) => readWakes(context, sessionID),
     familyIDs: (sessionID) => data.session.family(sessionID),
     // The same registry as the shells count, so a row waits on a shell exactly while the dock counts it.

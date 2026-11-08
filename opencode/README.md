@@ -183,28 +183,36 @@ without the slot draws its own block at every level, but then Prime's
 typecheck fails on the unknown slot name.
 
 A prompt the runner has not taken yet (sent while a turn or a compaction
-runs, a steer waiting in the session's inbox) is not in the transcript and
-takes no row there: it waits in a row above the composer, oldest first, and
+runs and waiting in the session's inbox) is not in the transcript and takes
+no row there: it waits in one list above the composer, oldest first, and
 enters the transcript at its place the moment the runner takes it
 (`pending.ts`, `Queued` in `tui/chrome.tsx`, the inbox read through the
-host's `data.session.pending`). Its transcript row's gap is dropped through
-the layout rule's `messageID`, which needs the fork's `row-gap-message`
-branch; an older fork fails Prime's typecheck on the unknown field.
-A click offers `Move to queue` or `Delete`, as the host's own pending row
-does. A prompt sent to the queue (leader+Enter) stays in the host's own
-`N queued · …` dock, which opens its Queued prompts picker.
+host's `data.session.pending`). The list holds both kinds: a steer, which
+goes in at the runner's next step (`◌ queued · …`), and a prompt sent to
+the queue with leader+Enter, which goes in once the turn ends (`◌ after the
+turn · …`). It replaces the host's own `N queued · …` box through the fork's
+`session.composer.queued` slot, so no prompt shows twice. A click offers
+that kind's actions, as the host's own rows do: a steer `Move to queue` or
+`Delete`, a queued prompt `Send now` or `Delete`; the host's Queued prompts
+picker (its `undo`, back to the composer) stays on its command. A hidden
+prompt's transcript row gets no gap through the layout rule's `messageID`.
+Both hooks are on the fork's `prime-look`; an older fork fails Prime's
+typecheck on them.
 
 ```
 ◌ queued · Also update the docs.
+◌ after the turn · Afterwards tag the release.
 ```
 
 The loader under the transcript names what runs: `Compacting · 4s` while a
 compaction of the current run runs, from its start, else `Executing · 13s`,
 from the run's first step, so a waiting prompt never restarts the clock.
-`tests/prime-queued.test.ts` runs `scenarios/prime-queued.ts`: two prompts
-sent during an automatic compaction wait above the composer under
-`Compacting`, with no blank row for them in the transcript, then read in the
-transcript in the order sent under `Executing`.
+`tests/prime-queued.test.ts` runs `scenarios/prime-queued.ts`: two steers
+and one queued prompt sent during an automatic compaction wait above the
+composer as one list under `Compacting`, with no blank row for them in the
+transcript and no host box, then the steers read in the transcript in the
+order sent under `Executing`, and the queued prompt after them once that
+turn ends.
 
 The shells count is the session's running shell commands. A click on it
 opens the session's shell list (`shells.ts`, `opencode/shells.ts`), read

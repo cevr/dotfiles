@@ -18,8 +18,8 @@ export type PendingItem = {
   readonly payload?: unknown
 }
 
-/** A prompt the runner has not taken: its inbox id and its text. */
-export type WaitingPrompt = { readonly id: string; readonly text: string }
+/** A prompt the runner has not taken: its inbox id, its text and when it goes in. */
+export type WaitingPrompt = { readonly id: string; readonly text: string; readonly delivery: "steer" | "queue" }
 
 function textOf(payload: unknown) {
   if (typeof payload !== "object" || payload === null || !("text" in payload)) return ""
@@ -36,24 +36,49 @@ export function isWaiting(pending: ReadonlyArray<PendingItem>, messageID: string
 }
 
 /**
- * The prompts the queued rows show, oldest first: the reader's steers the
- * runner has not taken. A `queue` prompt is the host's own queued dock's
- * (`N queued · …`, which opens its Queued prompts picker), so it is not
- * listed twice.
+ * The prompts the queued rows show, as one list, oldest first: the reader's
+ * steers the runner has not taken and the prompts sent to the queue. The
+ * list replaces the host's own queued box (`N queued · …`, the fork's
+ * `session.composer.queued` slot), so no prompt shows twice.
  */
 export function waitingPrompts(pending: ReadonlyArray<PendingItem>): ReadonlyArray<WaitingPrompt> {
   return pending
-    .filter((item) => item.type === "user" && item.delivery === "steer")
+    .filter((item) => item.type === "user")
     .toSorted((a, b) => a.time.created - b.time.created)
-    .map((item) => ({ id: item.id, text: textOf(item.payload) }))
+    .map((item) => ({ id: item.id, text: textOf(item.payload), delivery: item.delivery }))
 }
 
-/** The lead of a queued row. */
-export const QUEUED = "◌ queued · "
+/** The lead of a queued row: a steer goes in at the runner's next step, a queued prompt once the turn ends. */
+export function lead(delivery: WaitingPrompt["delivery"]) {
+  return delivery === "steer" ? "◌ queued · " : "◌ after the turn · "
+}
 
-/** A queued row in `width` cells: `◌ queued · Also update the docs.`, its text on one line, cut to fit. */
+/**
+ * A queued row in `width` cells, its text on one line, cut to fit:
+ * `◌ queued · Also update the docs.` for a steer, `◌ after the turn · Then
+ * bump the version.` for a prompt sent to the queue.
+ */
 export function queuedRow(prompt: WaitingPrompt, width: number) {
-  return QUEUED + oneLine(prompt.text, Math.max(1, width - [...QUEUED].length))
+  const head = lead(prompt.delivery)
+  return head + oneLine(prompt.text, Math.max(1, width - [...head].length))
+}
+
+/** What a queued row's click offers, as the host's own pending rows do; `value` is the inbox move. */
+export type PendingAction = {
+  readonly title: string
+  readonly value: "steer" | "queue" | "cancel"
+  readonly description?: string
+}
+
+/**
+ * A steer can move to the queue or go; a queued prompt can be sent now (a
+ * steer, the host picker's Enter) or go.
+ */
+export function pendingActions(delivery: WaitingPrompt["delivery"]): ReadonlyArray<PendingAction> {
+  const remove: PendingAction = { title: "Delete", value: "cancel" }
+  return delivery === "steer"
+    ? [{ title: "Move to queue", value: "queue", description: "after the turn, not at its next step" }, remove]
+    : [{ title: "Send now", value: "steer", description: "at the turn's next step" }, remove]
 }
 
 /** What the loader says, and since when it counts. */

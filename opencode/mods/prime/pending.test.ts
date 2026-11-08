@@ -1,7 +1,7 @@
 // What the runner has not taken: which prompts wait, the queued rows that show
 // them, and what the loader names and times while a compaction or a turn runs.
 import { describe, expect, test } from "bun:test"
-import { isWaiting, loader, queuedRow, waitingPrompts, type PendingItem } from "./pending.ts"
+import { isWaiting, loader, pendingActions, queuedRow, waitingPrompts, type PendingItem } from "./pending.ts"
 import type { Message } from "./session.ts"
 
 const steer = (id: string, created: number, text: string): PendingItem => ({
@@ -32,24 +32,42 @@ describe("the prompts the runner has not taken", () => {
     expect(isWaiting(pending, "msg_c")).toBe(false)
   })
 
-  test("the queued rows list the steers oldest first; a queue-delivery prompt stays the host's queued dock's", () => {
+  test("the queued rows list steers and queued prompts as one list, oldest first", () => {
     const pending: PendingItem[] = [
       steer("msg_c", 30, "third"),
       { ...steer("msg_q", 10, "later"), delivery: "queue" },
       steer("msg_a", 5, "first"),
+      { id: "msg_s", type: "synthetic", time: { created: 1 }, delivery: "steer" },
     ]
     expect(waitingPrompts(pending)).toEqual([
-      { id: "msg_a", text: "first" },
-      { id: "msg_c", text: "third" },
+      { id: "msg_a", text: "first", delivery: "steer" },
+      { id: "msg_q", text: "later", delivery: "queue" },
+      { id: "msg_c", text: "third", delivery: "steer" },
     ])
     expect(waitingPrompts([])).toEqual([])
   })
 
-  test("a row reads `◌ queued · <text>` on one line, cut to its width", () => {
-    expect(queuedRow({ id: "m", text: "Also update\nthe docs." }, 80)).toBe("◌ queued · Also update the docs.")
-    const cut = queuedRow({ id: "m", text: "Also update the docs and the changelog too." }, 24)
+  test("a row reads `◌ queued · <text>` for a steer, `◌ after the turn · <text>` for a queued prompt, cut to its width", () => {
+    expect(queuedRow({ id: "m", text: "Also update\nthe docs.", delivery: "steer" }, 80)).toBe(
+      "◌ queued · Also update the docs.",
+    )
+    expect(queuedRow({ id: "m", text: "Then bump the version.", delivery: "queue" }, 80)).toBe(
+      "◌ after the turn · Then bump the version.",
+    )
+    const cut = queuedRow({ id: "m", text: "Also update the docs and the changelog too.", delivery: "steer" }, 24)
     expect([...cut].length).toBeLessThanOrEqual(24)
     expect(cut.startsWith("◌ queued · Also")).toBe(true)
+  })
+
+  test("a click offers a steer Move to queue or Delete, a queued prompt Send now or Delete", () => {
+    expect(pendingActions("steer").map((action) => [action.title, action.value])).toEqual([
+      ["Move to queue", "queue"],
+      ["Delete", "cancel"],
+    ])
+    expect(pendingActions("queue").map((action) => [action.title, action.value])).toEqual([
+      ["Send now", "steer"],
+      ["Delete", "cancel"],
+    ])
   })
 })
 

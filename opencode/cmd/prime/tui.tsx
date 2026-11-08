@@ -87,9 +87,9 @@ export default Plugin.define({
       replace: "session.message.compaction",
       render: (input) => <Compaction host={h} sessionID={input.sessionID} messageID={input.messageID} detail={detail} />,
     })
-    // The prompts the runner has not taken, under the transcript they have not entered yet (tui/chrome.tsx).
+    // The prompts the runner has not taken, steers and queued ones in one list, in place of the host's queued box (tui/chrome.tsx).
     context.ui.slot({
-      append: "session.composer.top",
+      replace: "session.composer.queued",
       render: (input) => <Queued host={h} sessionID={input.sessionID} />,
     })
     context.ui.slot({
