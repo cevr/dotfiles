@@ -22,3 +22,8 @@ export PATH
 
 # Machine-local secrets (GRAFANA_TOKEN, …): never committed; agents inherit them.
 [ -f "$HOME/.config/secrets.env" ] && . "$HOME/.config/secrets.env"
+
+# The workbox's Tailscale sshd runs with OOMScoreAdjust=-900 so it survives memory pressure, and every
+# process started from an SSH login inherits it. Give the login back the default score, so under an OOM
+# the kernel kills a runaway program instead of everything else.
+[ "$(cat /proc/self/oom_score_adj 2>/dev/null)" -lt 0 ] 2>/dev/null && echo 0 > /proc/self/oom_score_adj 2>/dev/null
