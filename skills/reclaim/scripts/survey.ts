@@ -1,18 +1,22 @@
 #!/usr/bin/env bun
 // Read-only survey of the disk space a Mac could reclaim: free space, then each
 // candidate with its size, idle age, tier, and the command that removes it.
-// Nothing is changed. Sizes are `du` allocations: APFS clones (Rifts, bun's
-// node_modules, uv environments) count in full, so `df` after a removal is the
-// real figure.
+// Nothing is changed. Each size is what removing the item would free: for APFS
+// clones (Rifts and their trash, bun's and uv's caches, node_modules, code-sign
+// clones) the bytes no other file shares, marked `~` and given beside their `du`
+// size (see clone-size.ts); for everything else, `du`. `df` after a removal is
+// the real figure.
 //
 // Usage: bun survey.ts [--json] [--roots <dir,...>] [--idle-days 30] [--build-days 2]
-//                      [--transcript-days 7] [--keep-since YYYY-MM-DD]
+//                      [--transcript-days 7] [--keep-since YYYY-MM-DD] [--jobs 4]
 //   --roots         code folders to scan for build output, node_modules and worktrees (default ~/Developer)
 //   --keep-since    keep agent transcripts from this date on, whatever their age (a pending model eval)
+//   --jobs          walks that size clones at once (default 4)
 
 import { existsSync, lstatSync, readdirSync, readlinkSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, sep } from 'node:path';
+import { cloneSizes, riftSince, split, type Method } from './clone-size.ts';
 
 type Tier = 'A' | 'B' | 'C';
 type Item = {
@@ -20,12 +24,19 @@ type Item = {
   category: string;
   what: string;
   paths: string[];
+  /** What removal frees: the own (unshared) bytes for a clone, else `du`. */
   bytes: number;
+  /** A clone's `du` size, which counts the blocks it shares in full. */
+  duBytes?: number;
+  /** How a clone's bytes were measured, and what it shares its blocks with. */
+  clone?: { method: Method; sharedWith: string };
   idleDays?: number;
   command: string;
   busy?: string;
   note?: string;
 };
+/** A clone to size: what it shares blocks with, when it was made (a Rift), and whether to walk its children apart. */
+type Clone = { sharedWith: string; since?: number; split?: boolean };
 
 const HOME = homedir();
 const DAY = 86400e3;
@@ -41,6 +52,7 @@ const BUILD_DAYS = Number(flag('--build-days', '2'));
 const TRANSCRIPT_DAYS = Number(flag('--transcript-days', '7'));
 const KEEP_SINCE = Date.parse(flag('--keep-since', '')) || Infinity;
 const TRANSCRIPT_CUTOFF = Math.min(NOW - TRANSCRIPT_DAYS * DAY, KEEP_SINCE);
+const JOBS = Number(flag('--jobs', '4'));
 
 const items: Item[] = [];
 // macOS keeps the data volume and /tmp under these names; Linux under / and /tmp.
@@ -93,9 +105,17 @@ const idleDays = (ms: number) => Math.max(0, Math.floor((NOW - ms) / DAY));
 const touchedWithin = (dir: string, days: number) => sh(['find', dir, '-type', 'f', '-mtime', `-${days}`, '-print', '-quit']).trim() !== '';
 
 const GIB = 1024 ** 3;
-function add({ min = 50 * 1024 ** 2, ...item }: Omit<Item, 'bytes'> & { bytes?: number; min?: number }) {
+// A clone is sized by what removal frees, its `du` size kept beside it; the threshold applies to the former.
+// Clones are sized together at the end, in a pool of walks (see clone-size.ts).
+const pending: { item: Item; min: number; since?: number; units: string[][] }[] = [];
+function add({ min = 50 * 1024 ** 2, clone, ...item }: Omit<Item, 'bytes' | 'duBytes' | 'clone'> & { bytes?: number; min?: number; clone?: Clone }) {
   const paths = item.paths.filter(exists);
   if (paths.length === 0) return;
+  if (clone) {
+    const units = clone.split ? split(paths[0]!, JOBS) : [paths];
+    pending.push({ item: { ...item, paths, bytes: 0, clone: { method: 'apfs', sharedWith: clone.sharedWith } }, min, since: clone.since, units });
+    return;
+  }
   const bytes = item.bytes ?? du(paths);
   if (bytes < min) return;
   items.push({ ...item, paths, bytes });
@@ -103,12 +123,12 @@ function add({ min = 50 * 1024 ** 2, ...item }: Omit<Item, 'bytes'> & { bytes?: 
 
 // ── Tier A: package and tool caches, by their own clean commands ──
 const pnpmStore = sh(['pnpm', 'store', 'path']).trim();
-const CACHES: { what: string; paths: string[]; command: string; busy?: RegExp; note?: string }[] = [
-  { what: 'Bun install cache', paths: ['~/.bun/install/cache', '~/Library/Caches/bun'], command: 'bun pm cache rm', busy: /\bbun (install|add|i)\b/, note: "node_modules are clones of it: df frees less than du says" },
+const CACHES: { what: string; paths: string[]; command: string; busy?: RegExp; note?: string; clone?: Clone }[] = [
+  { what: 'Bun install cache', paths: ['~/.bun/install/cache', '~/Library/Caches/bun'], command: 'bun pm cache rm', busy: /\bbun (install|add|i)\b/, clone: { sharedWith: 'the node_modules cloned from it' }, note: 'removing it with those node_modules frees more' },
   { what: 'npm cache', paths: ['~/.npm/_cacache'], command: 'npm cache clean --force', busy: /\bnpm (install|ci|i)\b/ },
-  { what: 'pnpm store', paths: [pnpmStore || '~/Library/pnpm/store'], command: 'pnpm store prune', busy: /\bpnpm (install|add|i)\b/, note: 'keep PNPM_HOME: global binaries' },
+  { what: 'pnpm store', paths: [pnpmStore || '~/Library/pnpm/store'], command: 'pnpm store prune', busy: /\bpnpm (install|add|i)\b/, clone: { sharedWith: 'the node_modules cloned from it' }, note: 'keep PNPM_HOME: global binaries' },
   { what: 'Yarn cache', paths: ['~/Library/Caches/Yarn', '~/.cache/yarn'], command: 'yarn cache clean' },
-  { what: 'uv cache', paths: ['~/.cache/uv'], command: 'uv cache prune', busy: /\buvx? /, note: 'uvx tool environments live here; restart uvx tools after a clean' },
+  { what: 'uv cache', paths: ['~/.cache/uv'], command: 'uv cache prune', busy: /\buvx? /, clone: { sharedWith: 'the uv environments cloned from it' }, note: 'uvx tool environments live here; restart uvx tools after a clean' },
   { what: 'pip cache', paths: ['~/Library/Caches/pip', '~/.cache/pip'], command: 'pip3 cache purge' },
   { what: 'Homebrew downloads', paths: ['~/Library/Caches/Homebrew'], command: 'brew cleanup --prune=all', busy: /\bbrew / },
   { what: 'Gradle caches', paths: ['~/.gradle/caches'], command: 'rm -rf ~/.gradle/caches', busy: /GradleDaemon/ },
@@ -120,7 +140,7 @@ const CACHES: { what: string; paths: string[]; command: string; busy?: RegExp; n
   { what: 'node-gyp and electron-builder caches', paths: ['~/Library/Caches/node-gyp', '~/Library/Caches/electron-builder'], command: 'rm -rf <paths>' },
   { what: 'Xcode DerivedData', paths: ['~/Library/Developer/Xcode/DerivedData'], command: 'rm -rf ~/Library/Developer/Xcode/DerivedData', busy: /Xcode\.app\/Contents\/MacOS\/Xcode/ },
 ];
-for (const c of CACHES) add({ tier: 'A', category: 'package caches', what: c.what, paths: c.paths.map(home), command: c.command, busy: busyWith(c.busy), note: c.note });
+for (const c of CACHES) add({ tier: 'A', category: 'package caches', what: c.what, paths: c.paths.map(home), command: c.command, busy: busyWith(c.busy), note: c.note, clone: c.clone });
 
 // App updater leftovers: downloaded update packages.
 const updaters = ls(home('~/Library/Caches'))
@@ -134,7 +154,7 @@ const signClones = ls(join(dirname(tmpdir()), 'X'))
   .map((e) => join(dirname(tmpdir()), 'X', e.name));
 for (const clone of signClones) {
   const open = sh(['lsof', '+D', clone]).trim() !== '';
-  add({ tier: 'A', category: 'stale temp', what: `Code-sign clone ${basename(clone, '.code_sign_clone')}`, paths: [clone], command: 'rm -rf <path>', busy: open ? 'files open' : undefined, note: 'a clone: df frees less than du says' });
+  add({ tier: 'A', category: 'stale temp', what: `Code-sign clone ${basename(clone, '.code_sign_clone')}`, paths: [clone], command: 'rm -rf <path>', busy: open ? 'files open' : undefined, clone: { sharedWith: 'the browser app' } });
 }
 
 // Huge logs: empty them in place, so the writer keeps its file.
@@ -213,14 +233,35 @@ if (culled.freedGB > 0.05)
 
 // ── Code folders: build output, idle node_modules, worktrees ──
 const BUILD = new Set(['.next', 'dist', 'build', '.turbo', '.parcel-cache', 'target', '.gradle', 'DerivedData']);
-type Checkout = { path: string; worktree: boolean };
+// A Rift (`rift create --copy-all`) is an APFS clone of its source: a checkout with a `.rift` marker in
+// a hidden folder (`.rifts`). Its warm source carries a marker too, but sits in the open, and stays.
+// A git worktree, or another checkout in a hidden folder, is a real copy.
+type Checkout = { path: string; worktree: boolean; riftSince?: number };
 function checkouts(dir: string, depth: number, hidden: boolean, out: Checkout[] = []): Checkout[] {
+  for (const e of ls(dir)) {
+    if (!e.isDirectory() || e.name === 'node_modules' || e.name === '.git' || e.name === RIFT_TRASH) continue;
+    const p = join(dir, e.name);
+    const isHidden = hidden || e.name.startsWith('.');
+    if (exists(join(p, '.git'))) out.push({ path: p, worktree: isHidden || lstatSync(join(p, '.git')).isFile(), riftSince: isHidden ? riftSince(p) : undefined });
+    else if (depth > 0) checkouts(p, depth - 1, isHidden, out);
+  }
+  return out;
+}
+// Rifts live in <parent>/.rifts/<repo>/<name>, cloned from <parent>/<repo>; `rift remove` moves one to
+// <parent>/.rifts/<repo>/.trash, and `rift gc` deletes the trash.
+const RIFT_TRASH = '.trash';
+const riftSource = (rift: string) => {
+  const repo = dirname(rift);
+  const source = join(dirname(dirname(repo)), basename(repo));
+  return basename(dirname(repo)) === '.rifts' && exists(source) ? tilde(source) : 'its source';
+};
+function riftTrashes(dir: string, depth: number, out: string[] = []): string[] {
   for (const e of ls(dir)) {
     if (!e.isDirectory() || e.name === 'node_modules' || e.name === '.git') continue;
     const p = join(dir, e.name);
-    const isHidden = hidden || e.name.startsWith('.');
-    if (exists(join(p, '.git'))) out.push({ path: p, worktree: isHidden || lstatSync(join(p, '.git')).isFile() });
-    else if (depth > 0) checkouts(p, depth - 1, isHidden, out);
+    if (e.name === '.rifts') {
+      for (const repo of ls(p)) if (repo.isDirectory() && exists(join(p, repo.name, RIFT_TRASH))) out.push(join(p, repo.name, RIFT_TRASH));
+    } else if (depth > 0 && !exists(join(p, '.git'))) riftTrashes(p, depth - 1, out);
   }
   return out;
 }
@@ -269,13 +310,21 @@ for (const root of ROOTS)
       const dirty = git(repo.path, 'status', '--porcelain').split('\n').filter(Boolean).length;
       const ahead = git(repo.path, 'rev-list', '--count', '@{u}..HEAD');
       const pushed = ahead === '' ? 'no upstream' : `${ahead} unpushed`;
-      add({ tier: 'C', category: 'worktrees', what: `${name} (${git(repo.path, 'branch', '--show-current') || 'detached'}, ${dirty} dirty, ${pushed})`, paths: [repo.path], idleDays: idle, busy, command: 'rift remove / git worktree remove, after its work is merged', note: 'clones: df frees less than du says' });
+      const what = `${name} (${git(repo.path, 'branch', '--show-current') || 'detached'}, ${dirty} dirty, ${pushed})`;
+      if (repo.riftSince !== undefined)
+        add({ tier: 'C', category: 'rifts', what, paths: [repo.path], idleDays: idle, busy, clone: { sharedWith: riftSource(repo.path), since: repo.riftSince }, command: 'rift remove, after its work is merged', note: 'remove only moves it to the Rift trash: the space frees at rift gc' });
+      else
+        add({ tier: 'C', category: 'worktrees', what, paths: [repo.path], idleDays: idle, busy, command: 'git worktree remove, after its work is merged', note: 'a real copy: du is what it frees, less any node_modules bun cloned from its cache' });
       continue;
     }
     if (!busy) add({ tier: 'A', category: 'build output', what: `${name}: build output idle ${BUILD_DAYS}+ days`, paths: buildDirs(repo.path), idleDays: idle, command: 'rm -rf <paths>' });
     for (const dir of ignoredData(repo.path)) add({ tier: 'C', category: 'ignored data', what: `${tilde(dir)}: ignored by git`, paths: [dir], idleDays: idleDays(newest(dir, 2)), command: 'move to the Trash, item by item', note: 'renders, bundles, scratch: ask what it is', min: GIB });
-    if (idle >= IDLE_DAYS && !busy) add({ tier: 'A', category: 'idle node_modules', what: `${name}: node_modules, project idle ${idle} days`, paths: nodeModules(repo.path), idleDays: idle, command: 'rm -rf <paths> (reinstall with the lockfile)', note: 'a warm source for clones loses its install' });
+    if (idle >= IDLE_DAYS && !busy) add({ tier: 'A', category: 'idle node_modules', what: `${name}: node_modules, project idle ${idle} days`, paths: nodeModules(repo.path), idleDays: idle, clone: { sharedWith: "the package manager's cache and its Rifts" }, command: 'rm -rf <paths> (reinstall with the lockfile)', note: 'a warm source for clones loses its install' });
   }
+for (const trash of ROOTS.flatMap((root) => riftTrashes(root, 3))) {
+  const removed = ls(trash).filter((e) => e.isDirectory()).length;
+  add({ tier: 'C', category: 'rift trash', what: `${tilde(trash)}: ${removed} removed Rifts`, paths: [trash], idleDays: idleDays(statSync(trash).mtimeMs), clone: { sharedWith: `${riftSource(join(dirname(trash), 'x'))} and its live Rifts`, split: true }, command: 'rift gc (deletes the trash of every repo)', note: 'removed Rifts can hold unpushed work: ask' });
+}
 
 // ── Temp: Bun WebView profiles, tool caches that rebuild, and folders nothing touched lately ──
 // Bun's WebView leaves a headless Chrome profile per run in the per-user temp folder.
@@ -337,6 +386,13 @@ const PERSONAL = ['~/Downloads', '~/Desktop', '~/Documents', '~/Movies', '~/Musi
 for (const file of sh(['find', ...PERSONAL, '-type', 'f', '-size', '+500M']).split('\n').filter(Boolean))
   add({ tier: 'C', category: 'big files', what: tilde(file), paths: [file], idleDays: idleDays(statSync(file).mtimeMs), command: 'move to the Trash, item by item', note: /\.(dmg|pkg|xip|apk|ipa)$/i.test(file) ? 'an installer: check its app is installed' : undefined });
 
+// ── Clones: size them all at once, and keep those that free enough ──
+const sizes = await cloneSizes(pending, JOBS);
+pending.forEach(({ item, min }, i) => {
+  const size = sizes[i]!;
+  if (size.own >= min) items.push({ ...item, bytes: size.own, duBytes: size.du, clone: { ...item.clone!, method: size.method } });
+});
+
 // ── Report ──
 const df = sh(['df', '-k', DATA]).split('\n')[1]?.trim().split(/\s+/) ?? [];
 const free = Number(df[3] ?? 0) * 1024;
@@ -345,15 +401,16 @@ const gib = (n: number) => `${(n / 1024 ** 3).toFixed(1)} GiB`;
 if (args.includes('--json')) {
   console.log(JSON.stringify({ freeBytes: free, sizeBytes: size, items }, null, 2));
 } else {
-  console.log(`Free: ${gib(free)} of ${gib(size)} (df). Sizes below are du allocations; clones count in full.\n`);
+  console.log(`Free: ${gib(free)} of ${gib(size)} (df). Sizes are what removal frees: ~ marks an APFS clone, sized by the blocks it shares with no other file; the rest are du.\n`);
   for (const tier of ['A', 'B', 'C'] as Tier[]) {
     const rows = items.filter((i) => i.tier === tier).sort((a, b) => b.bytes - a.bytes);
     if (!rows.length) continue;
     console.log(`Tier ${tier}: ${{ A: 'regenerable', B: 'costly to get back', C: 'user data, decide per item' }[tier]} (${gib(rows.reduce((s, r) => s + r.bytes, 0))})`);
     for (const r of rows) {
-      console.log(`  ${gib(r.bytes).padStart(10)}  ${r.idleDays === undefined ? '' : `${r.idleDays}d idle  `}${r.what}${r.busy ? `  [busy: ${r.busy}]` : ''}`);
-      console.log(`              ${r.command}${r.note ? `  (${r.note})` : ''}`);
-      if (r.paths.length > 1 && r.paths.length <= 8) for (const p of r.paths) console.log(`                ${tilde(p)}`);
+      console.log(`  ${`${r.clone && r.clone.method !== 'du' ? '~' : ''}${gib(r.bytes)}`.padStart(11)}  ${r.idleDays === undefined ? '' : `${r.idleDays}d idle  `}${r.what}${r.busy ? `  [busy: ${r.busy}]` : ''}`);
+      if (r.clone) console.log(`               ${r.clone.method === 'du' ? `${gib(r.bytes)} by du; clone sharing unknown here, df tells` : `~${gib(r.bytes)} own, ${gib(r.duBytes ?? 0)} by du (shared with ${r.clone.sharedWith})${r.clone.method === 'mtime' ? ', own = files written since it was made' : ''}`}`);
+      console.log(`               ${r.command}${r.note ? `  (${r.note})` : ''}`);
+      if (r.paths.length > 1 && r.paths.length <= 8) for (const p of r.paths) console.log(`                 ${tilde(p)}`);
     }
     console.log();
   }
