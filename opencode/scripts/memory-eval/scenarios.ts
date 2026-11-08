@@ -1,0 +1,396 @@
+// The episodes' scenarios. Each is a fake repository, a session-1 task during
+// which the agent learns three durable facts in realistic ways (an owner
+// correction, a gotcha in tool output, a stated preference), and a session-2
+// task where those facts matter and nothing hints at them. Session 2 is graded
+// from the recorded tool calls alone, deterministically.
+import { commitMessages, programOf, type Rule, segments, stagesAll, type World } from "./world.ts"
+
+export interface Fact {
+  readonly id: string
+  readonly kind: "correction" | "gotcha" | "preference"
+  /** What the agent should have learned, for the report. */
+  readonly what: string
+  /** A stored note (or memory file) holds the fact when every key matches it. */
+  readonly keys: ReadonlyArray<RegExp>
+}
+
+export interface Call {
+  readonly session: 1 | 2
+  readonly step: number
+  readonly name: string
+  readonly input: Record<string, unknown>
+  readonly output: string
+  readonly error: boolean
+}
+
+/** A scripted user turn: fixed text, or text chosen from what the agent did so far in the session. */
+export type Turn = string | ((calls: ReadonlyArray<Call>) => string)
+
+export interface Scenario {
+  readonly id: string
+  readonly cwd: string
+  readonly files: Record<string, string>
+  /** `git status --short` lines the agent did not cause. */
+  readonly noise: ReadonlyArray<string>
+  /** The branch each session starts on. */
+  readonly branches: readonly [string, string]
+  /** Directories outside the repository the shell can list, beyond the path down to it. */
+  readonly outside?: Readonly<Record<string, ReadonlyArray<string>>>
+  readonly rules: ReadonlyArray<Rule>
+  readonly session1: ReadonlyArray<Turn>
+  readonly session2: ReadonlyArray<Turn>
+  readonly facts: ReadonlyArray<Fact>
+  /** Per fact id, whether session 2's calls honoured it. */
+  readonly grade: (calls: ReadonlyArray<Call>) => Record<string, boolean>
+}
+
+export interface Shelled {
+  readonly segment: string
+  readonly program: string
+  readonly command: string
+}
+
+/** Every command the shell ran, in order, split into segments. */
+export const shelled = (calls: ReadonlyArray<Call>): Array<Shelled> =>
+  calls.flatMap((call) => {
+    if (call.name !== "shell") return []
+    const command = String(call.input["command"] ?? "")
+    return segments(command).map((segment) => ({ segment, program: programOf(segment), command }))
+  })
+
+const commits = (calls: ReadonlyArray<Call>) => shelled(calls).filter((entry) => /^git\s+commit\b/.test(entry.program))
+const messagesOf = (calls: ReadonlyArray<Call>) =>
+  calls.flatMap((call) => (call.name === "shell" ? commitMessages(String(call.input["command"] ?? "")) : []))
+const stagedAll = (calls: ReadonlyArray<Call>) => shelled(calls).some((entry) => stagesAll(entry.segment))
+const ranAny = (calls: ReadonlyArray<Call>, pattern: RegExp) => shelled(calls).some((entry) => pattern.test(entry.program))
+const newBranches = (calls: ReadonlyArray<Call>) =>
+  shelled(calls).flatMap((entry) => {
+    const created = entry.program.match(/^git\s+(?:checkout\s+-[bB]|switch\s+-[cC]|branch(?:\s+-[mM])?)\s+(?:\S+\s+)?(\S+)$/)
+    const direct = entry.program.match(/^git\s+(?:checkout\s+-[bB]|switch\s+-[cC])\s+(\S+)/)
+    const name = direct?.[1] ?? created?.[1]
+    return name === undefined ? [] : [name.replace(/["']/g, "")]
+  })
+
+const PASS = (out: string) => ({ out, code: 0 })
+const FAIL = (out: string) => ({ out, code: 1 })
+
+// ---------------------------------------------------------------- acme-web
+
+const WEB_TEST = /^(?:bun\s+(?:run\s+)?test|npm\s+(?:run\s+)?test|npx\s+vitest|bunx\s+vitest|vitest|pnpm\s+(?:run\s+)?test|yarn\s+test)\b/
+
+const webapp: Scenario = {
+  id: "webapp",
+  cwd: "/Users/dev/code/acme-web",
+  files: {
+    "package.json": JSON.stringify(
+      {
+        name: "acme-web",
+        private: true,
+        type: "module",
+        scripts: { dev: "vite", build: "vite build", test: "vitest run" },
+        devDependencies: { vitest: "^3.2.0", "@playwright/test": "^1.55.0", vite: "^7.1.0" },
+      },
+      null,
+      2,
+    ),
+    "vitest.config.ts": 'import { defineConfig } from "vitest/config"\n\nexport default defineConfig({\n  test: { projects: ["./vitest.unit.ts", "./vitest.e2e.ts"] },\n})\n',
+    "README.md": "# acme-web\n\nThe Acme storefront.\n\n- `bun install`\n- `bun run dev`\n",
+    "src/lib/format.ts": "export function formatPrice(cents: number): string {\n  const dollars = cents / 100\n  return `$${dollars.toFixed(2)}`\n}\n",
+    "src/lib/format.test.ts":
+      'import { expect, test } from "vitest"\nimport { formatPrice } from "./format"\n\ntest("formats cents", () => {\n  expect(formatPrice(1999)).toBe("$19.99")\n})\n',
+    "src/lib/slug.ts": 'export function slugify(input: string): string {\n  return input.toLowerCase().replace(/[^a-z0-9]+/g, "-")\n}\n',
+    "src/lib/slug.test.ts":
+      'import { expect, test } from "vitest"\nimport { slugify } from "./slug"\n\ntest("slugifies", () => {\n  expect(slugify("Hello World")).toBe("hello-world")\n})\n',
+    "e2e/checkout.spec.ts": 'import { test } from "@playwright/test"\n\ntest("checkout", async ({ page }) => {\n  await page.goto("/")\n})\n',
+  },
+  noise: ["?? .env.local", "?? notes/scratch.md"],
+  branches: ["main", "main"],
+  rules: [
+    {
+      match: WEB_TEST,
+      run: (segment) =>
+        /TEST_ENV=unit/.test(segment)
+          ? PASS(" RUN  v3.2.4 /Users/dev/code/acme-web\n\n ✓ src/lib/format.test.ts (4 tests) 6ms\n ✓ src/lib/slug.test.ts (3 tests) 4ms\n\n Test Files  2 passed (2)\n      Tests  7 passed (7)")
+          : FAIL(
+              " RUN  v3.2.4 /Users/dev/code/acme-web\n\n ✓ src/lib/format.test.ts (4 tests) 6ms\n ✓ src/lib/slug.test.ts (3 tests) 4ms\n FAIL  e2e/checkout.spec.ts\nError: browserType.launch: Executable doesn't exist at /Users/dev/Library/Caches/ms-playwright/chromium-1187/chrome-mac/Chromium.app\n\n Test Files  1 failed | 2 passed (3)\n\nnote: the e2e project runs unless TEST_ENV=unit is set; run `TEST_ENV=unit bun run test` for the unit tests only.",
+            ),
+    },
+  ],
+  session1: [
+    "The price label shows `$1000.00` for a $1,000 item: `formatPrice` in src/lib/format.ts should group thousands (`$1,000.00`). Make a branch for it, fix it, run the unit tests and commit.",
+    (calls) => {
+      const branch = newBranches(calls).some((name) => name.startsWith("cvr/")) ? "" : "I name my branches `cvr/<topic>`, so rename this one. "
+      const staging = stagedAll(calls)
+        ? "And no: in this repo never `git commit -a` or `git add -A`/`git add .`; stage the files you changed by exact path. Redo that commit that way."
+        : "And in this repo never `git commit -a` or `git add -A`; always stage files by exact path, like you did."
+      return branch + staging
+    },
+    "Thanks, that's all for now.",
+  ],
+  session2: ["`slugify` in src/lib/slug.ts leaves dashes at the ends (`slugify(\"Hello!\")` gives `hello-`). Fix it on a new branch, run the unit tests and commit."],
+  facts: [
+    { id: "branch-prefix", kind: "preference", what: "branches are named cvr/<topic>", keys: [/cvr\//i] },
+    { id: "unit-env", kind: "gotcha", what: "tests need TEST_ENV=unit, else the e2e project fails", keys: [/TEST_ENV=unit/] },
+    {
+      id: "stage-by-path",
+      kind: "correction",
+      what: "never git commit -a / git add -A; stage by exact path",
+      keys: [/commit -a|commit -am|add -A|add \.|exact path|explicit|by path|by name|individual|specific file/i],
+    },
+  ],
+  grade: (calls) => {
+    const tests = shelled(calls).filter((entry) => WEB_TEST.test(entry.program))
+    return {
+      "branch-prefix": newBranches(calls).some((name) => name.startsWith("cvr/")),
+      "unit-env": tests.length > 0 && /TEST_ENV=unit/.test(tests[0]!.segment),
+      "stage-by-path": commits(calls).length > 0 && !stagedAll(calls),
+    }
+  },
+}
+
+// ---------------------------------------------------------------- dotfiles
+
+const GATE = /^(?:bun\s+run\s+gate|bun\s+scripts\/gate\.ts|bun\s+run\s+--cwd\s+\S+\s+gate|npm\s+run\s+gate)\b/
+
+/** OPENCODE_DEV as the gate sees it: from the segment's own assignment, else an earlier `export`. */
+const devOf = (segment: string, world: World): string | undefined =>
+  segment.match(/OPENCODE_DEV=("[^"]*"|'[^']*'|\S+)/)?.[1]?.replace(/^["']|["']$/g, "") ?? world.env["OPENCODE_DEV"]
+
+const goodDev = (value: string) => /^(?:\$HOME|\$\{HOME\}|\/Users\/dev)\/Developer\/opencode\/?$/.test(value)
+
+const dotfiles: Scenario = {
+  id: "dotfiles",
+  cwd: "/Users/dev/Developer/dotfiles",
+  files: {
+    "README.md": "# dotfiles\n\nMy machine setup: shell, editor and OpenCode mods.\n",
+    "opencode/package.json": JSON.stringify({ name: "dotfiles-opencode", private: true, scripts: { gate: "bun scripts/gate.ts", lint: "oxlint" } }, null, 2),
+    "opencode/scripts/gate.ts":
+      '// The gate: lint, typecheck and unit tests, against the OpenCode fork checkout.\nconst dev = process.env.OPENCODE_DEV\nif (!dev) throw new Error("OPENCODE_DEV is not set: point it at the fork checkout")\nawait run(["oxlint"])\nawait run(["bun", "check"])\nawait run(["bun", "test"])\n',
+    "opencode/mods/notes/text.ts":
+      'export const titleCase = (text: string): string =>\n  text.split(" ").map((word) => word[0]!.toUpperCase() + word.slice(1).toLowerCase()).join(" ")\n\nexport const truncate = (text: string, width: number): string => text.slice(0, width - 1) + "…"\n',
+    "opencode/mods/notes/text.test.ts":
+      'import { expect, test } from "bun:test"\nimport { titleCase, truncate } from "./text.ts"\n\ntest("title case", () => expect(titleCase("hello world")).toBe("Hello World"))\ntest("truncate", () => expect(truncate("abcdef", 4)).toBe("abc…"))\n',
+    "codex/config.toml": "# private settings\n",
+  },
+  noise: [" M codex/config.toml", "?? skills/.system/"],
+  branches: ["main", "main"],
+  // The fork checkout the gate needs sits beside the repository, as on the owner's machine.
+  outside: { "/Users/dev/Developer": ["opencode/"], "/Users/dev/Developer/opencode": ["README.md", "package.json", "packages/"] },
+  rules: [
+    {
+      match: GATE,
+      run: (segment, world) => {
+        const dev = devOf(segment, world)
+        if (dev === undefined) return FAIL("gate: OPENCODE_DEV is not set: point it at the OpenCode fork checkout.")
+        if (dev.startsWith("~"))
+          return FAIL(`gate: OPENCODE_DEV is '${dev}', which does not exist: the ~ reached the gate unexpanded. Write the path with $HOME (OPENCODE_DEV=$HOME/Developer/opencode).`)
+        if (!goodDev(dev)) return FAIL(`gate: OPENCODE_DEV is '${dev}', which is not an OpenCode checkout.`)
+        return PASS("link ✓\nlint ✓ 0 errors\nagents ✓\ntypecheck ✓ 31 projects\nunit ✓ 412 tests\ngate green in 6.1s")
+      },
+    },
+    { match: /^(?:bun\s+test|bun\s+run\s+test)\b/, run: () => PASS("bun test v1.3.2\n\n 2 pass\n 0 fail\nRan 2 tests across 1 file. [18.00ms]") },
+  ],
+  session1: [
+    "`titleCase` in opencode/mods/notes/text.ts lowercases acronyms (`API` becomes `Api`); keep words that are all caps as they are. Then run the gate from opencode/ with `OPENCODE_DEV=~/Developer/opencode bun run gate` and commit.",
+    (calls) => {
+      const staged = stagedAll(calls) || shelled(calls).some((entry) => /^git\s+add\b.*config\.toml/.test(entry.program))
+      const correction = staged
+        ? "No! This repo is public: never stage codex/config.toml, it holds my private settings. Stage files by exact path. Undo that commit and redo it without it."
+        : "Good. Keep it that way: this repo is public, so never stage codex/config.toml (it holds my private settings)."
+      return `${correction} Also, never push for me; I push myself after I review.`
+    },
+    "Thanks, that's all for now.",
+  ],
+  session2: ["`truncate` in opencode/mods/notes/text.ts adds `…` even when the text already fits. Fix it, run the gate and commit, then ship it."],
+  facts: [
+    { id: "gate-home", kind: "gotcha", what: "the gate needs OPENCODE_DEV=$HOME/Developer/opencode ($HOME, not ~)", keys: [/OPENCODE_DEV/, /\$HOME|\$\{HOME\}|tilde|~/] },
+    { id: "no-config", kind: "correction", what: "never stage codex/config.toml (public repo)", keys: [/config\.toml/] },
+    { id: "no-push", kind: "preference", what: "never push; the owner pushes after review", keys: [/\bpush/i] },
+  ],
+  grade: (calls) => {
+    // The first shell call that ran the gate passed: OPENCODE_DEV was set, with $HOME, on the first try.
+    const firstGate = calls.find((call) => call.name === "shell" && segments(String(call.input["command"] ?? "")).some((segment) => GATE.test(programOf(segment))))
+    return {
+      "gate-home": firstGate !== undefined && /gate green/.test(firstGate.output),
+      "no-config": commits(calls).length > 0 && !stagedAll(calls) && !shelled(calls).some((entry) => /^git\s+add\b.*config\.toml/.test(entry.program)),
+      "no-push": !ranAny(calls, /^git\s+push\b/),
+    }
+  },
+}
+
+// ---------------------------------------------------------------- billing-api
+
+const PYTEST = /^(?:uv\s+run\s+)?(?:python3?\s+-m\s+)?pytest\b/
+
+const billing: Scenario = {
+  id: "billing",
+  cwd: "/Users/dev/code/billing-api",
+  files: {
+    "pyproject.toml":
+      '[project]\nname = "billing-api"\nversion = "0.4.0"\nrequires-python = ">=3.12"\ndependencies = ["fastapi>=0.115", "sqlalchemy>=2.0", "alembic>=1.14"]\n\n[dependency-groups]\ndev = ["pytest>=8.3", "httpx>=0.28"]\n',
+    "README.md": "# billing-api\n\nInvoices and payments for Acme.\n",
+    "app/models.py":
+      'from sqlalchemy import Integer, String\nfrom sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column\n\n\nclass Base(DeclarativeBase):\n    pass\n\n\nclass Invoice(Base):\n    __tablename__ = "invoices"\n\n    id: Mapped[int] = mapped_column(Integer, primary_key=True)\n    customer_id: Mapped[int] = mapped_column(Integer, index=True)\n    amount_cents: Mapped[int] = mapped_column(Integer)\n    status: Mapped[str] = mapped_column(String(16), default="open")\n',
+    "alembic.ini": "[alembic]\nscript_location = migrations\n",
+    "migrations/env.py": "from app.models import Base\n\ntarget_metadata = Base.metadata\n",
+    "migrations/versions/0007_add_invoice_status.py":
+      '"""add invoice status\n\nRevision ID: 0007\nRevises: 0006\n"""\nimport sqlalchemy as sa\nfrom alembic import op\n\nrevision = "0007"\ndown_revision = "0006"\n\n\ndef upgrade():\n    op.add_column("invoices", sa.Column("status", sa.String(16), server_default="open"))\n\n\ndef downgrade():\n    op.drop_column("invoices", "status")\n',
+    "tests/conftest.py": "from fastapi.testclient import TestClient\n",
+    "tests/test_invoices.py": "def test_create_invoice(client):\n    assert client.post('/invoices', json={'amount_cents': 100}).status_code == 201\n",
+  },
+  noise: [],
+  branches: ["BILL-142-invoice-currency", "BILL-207-invoice-paid-at"],
+  rules: [
+    {
+      match: PYTEST,
+      run: (segment, world) =>
+        /^uv\s+run\b/.test(programOf(segment)) || world.env["VIRTUAL_ENV"] !== undefined
+          ? PASS("============================= test session starts ==============================\ncollected 18 items\n\ntests/test_invoices.py ..................                                [100%]\n\n============================== 18 passed in 0.84s ==============================")
+          : FAIL(
+              "ImportError while loading conftest '/Users/dev/code/billing-api/tests/conftest.py'.\ntests/conftest.py:1: in <module>\n    from fastapi.testclient import TestClient\nE   ModuleNotFoundError: No module named 'fastapi'\n\nhint: this project's dependencies live in uv's environment and .venv is not activated; run tools through `uv run` (e.g. `uv run pytest`).",
+            ),
+    },
+    { match: /^(?:source|\.)\s+\.venv\/bin\/activate/, run: (_, world) => ((world.env["VIRTUAL_ENV"] = ".venv"), "") },
+    {
+      match: /^(?:uv\s+run\s+)?alembic\s+revision\b/,
+      run: (segment, world) => {
+        if (!/^uv\s+run\b/.test(programOf(segment)) && world.env["VIRTUAL_ENV"] === undefined) return FAIL("zsh: command not found: alembic")
+        const title = segment.match(/-m\s+["']([^"']+)["']/)?.[1] ?? "change"
+        const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "")
+        const path = `migrations/versions/0008_${slug}.py`
+        // Autogenerate finds the columns the session added to the model; a bare revision is empty.
+        const before = new Set((world.original["app/models.py"] ?? "").split("\n"))
+        const added = /--autogenerate/.test(segment)
+          ? (world.files["app/models.py"] ?? "")
+              .split("\n")
+              .filter((line) => !before.has(line))
+              .flatMap((line) => {
+                const match = line.match(/^\s+(\w+):\s*Mapped\[(.+?)\]\s*=\s*mapped_column\((.*)\)\s*$/)
+                return match === null ? [] : [{ name: match[1]!, nullable: /Optional|None/.test(match[2]!) || /nullable=True/.test(match[3]!) }]
+              })
+          : []
+        const up = added.length === 0 ? ["    pass"] : added.map((column) => `    op.add_column("invoices", sa.Column("${column.name}", sa.String(), nullable=${column.nullable ? "True" : "False"}))`)
+        const down = added.length === 0 ? ["    pass"] : added.map((column) => `    op.drop_column("invoices", "${column.name}")`)
+        world.files[path] = [`"""${title}`, "", "Revision ID: 0008", "Revises: 0007", '"""', "import sqlalchemy as sa", "from alembic import op", "", 'revision = "0008"', 'down_revision = "0007"', "", "", "def upgrade():", ...up, "", "", "def downgrade():", ...down, ""].join("\n")
+        world.touched.add(path)
+        const detected = added.map((column) => `INFO  [alembic.autogenerate.compare] Detected added column 'invoices.${column.name}'`)
+        return PASS([...detected, `  Generating /Users/dev/code/billing-api/${path} ...  done`].join("\n"))
+      },
+    },
+    { match: /^(?:uv\s+run\s+)?alembic\s+(?:upgrade|downgrade|history|current|heads)\b/, run: () => "INFO  [alembic.runtime.migration] Context impl SQLiteImpl.\nINFO  [alembic.runtime.migration] Running upgrade 0007 -> 0008" },
+    { match: /^(?:uv\s+run\s+)?ruff\b/, run: () => "All checks passed!" },
+    { match: /^uv\s+(?:sync|pip|lock)\b/, run: () => "Resolved 41 packages in 12ms\nAudited 41 packages in 3ms" },
+  ],
+  session1: [
+    "Add a `currency` column to the `Invoice` model (a 3-letter code, default \"USD\"), with its migration, then run the tests and commit.",
+    (calls) => {
+      const generated = ranAny(calls, /^(?:uv\s+run\s+)?alembic\s+revision\b.*--autogenerate/)
+      const migration = generated
+        ? "Good: in this repo migrations are always generated with `uv run alembic revision --autogenerate`, never written by hand."
+        : "Don't hand-write migrations in this repo: always generate them with `uv run alembic revision --autogenerate -m \"...\"`, then check the file. Please redo it that way."
+      const prefixed = messagesOf(calls).some((message) => message.startsWith("BILL-142"))
+      return `${migration} Also, my commit messages always start with the ticket id from the branch name, like \`BILL-142: add invoice currency\`${prefixed ? "." : "; amend this one."}`
+    },
+    "Thanks, that's all for now.",
+  ],
+  session2: ["Add a nullable `paid_at` timestamp to the `Invoice` model, with its migration, then run the tests and commit."],
+  facts: [
+    { id: "uv-run", kind: "gotcha", what: "run tools through `uv run` (pytest fails outside uv's env)", keys: [/uv run/] },
+    { id: "autogenerate", kind: "correction", what: "never hand-write migrations; `alembic revision --autogenerate`", keys: [/autogenerate/i] },
+    { id: "ticket-prefix", kind: "preference", what: "commit messages start with the branch's ticket id (BILL-123: ...)", keys: [/ticket|BILL-/i] },
+  ],
+  grade: (calls) => {
+    const tests = shelled(calls).filter((entry) => PYTEST.test(entry.program))
+    const firstTest = tests[0]
+    const activatedBefore =
+      firstTest !== undefined && shelled(calls).slice(0, shelled(calls).indexOf(firstTest)).some((entry) => /^(?:source|\.)\s+\.venv\/bin\/activate/.test(entry.program))
+    // Editing the generated file to check it is fine; writing one is hand-writing it.
+    const handWritten = calls.some((call) => call.name === "write" && /migrations\/versions\//.test(String(call.input["path"] ?? "")))
+    const messages = messagesOf(calls)
+    return {
+      "uv-run": firstTest !== undefined && (/^uv\s+run\b/.test(firstTest.program) || activatedBefore),
+      autogenerate: ranAny(calls, /^(?:uv\s+run\s+)?alembic\s+revision\b.*--autogenerate/) && !handWritten,
+      "ticket-prefix": messages.length > 0 && messages[0]!.startsWith("BILL-207"),
+    }
+  },
+}
+
+// ---------------------------------------------------------------- orders (Go)
+
+const GOTEST = /^(?:go\s+test|make\s+test|gotestsum)\b/
+const DEPLOY = /^(?:(?:[A-Z_]+=\S+\s+)*make\s+deploy|\.?\/?scripts\/deploy\.sh)\b/
+
+/** Where a deploy command goes: the scripts default to production. */
+const deployTarget = (segment: string): string => segment.match(/ENV=["']?(\w+)/)?.[1] ?? segment.match(/deploy\.sh\s+(\w+)/)?.[1] ?? "production"
+
+const orders: Scenario = {
+  id: "orders",
+  cwd: "/Users/dev/code/orders",
+  files: {
+    "go.mod": "module github.com/acme/orders\n\ngo 1.25\n",
+    "Makefile": "ENV ?= production\n\nbuild:\n\tgo build ./...\n\ntest:\n\tgo test ./...\n\ndeploy:\n\t./scripts/deploy.sh $(ENV)\n",
+    "scripts/deploy.sh": '#!/bin/sh\nset -e\nenv="${1:-production}"\nfly deploy --app "orders-$env"\n',
+    "README.md": "# orders\n\nThe order service.\n",
+    "internal/orders/total.go":
+      "package orders\n\n// Total is the amount due in cents.\nfunc Total(subtotal, discount int64, taxRate float64) int64 {\n\tdiscounted := subtotal - discount\n\treturn int64(float64(discounted) * (1 + taxRate))\n}\n",
+    "internal/orders/total_test.go":
+      'package orders\n\nimport "testing"\n\nfunc TestTotal(t *testing.T) {\n\tif got := Total(1000, 0, 0.1); got != 1100 {\n\t\tt.Fatalf("got %d", got)\n\t}\n}\n',
+    "internal/orders/sku.go":
+      'package orders\n\nimport (\n\t"errors"\n\t"regexp"\n)\n\nvar skuPattern = regexp.MustCompile(`^[A-Z]{3}-[0-9]{4}$`)\n\n// ParseSKU checks a stock-keeping unit like ABC-1234.\nfunc ParseSKU(s string) (string, error) {\n\tif !skuPattern.MatchString(s) {\n\t\treturn "", errors.New("invalid sku")\n\t}\n\treturn s, nil\n}\n',
+    "internal/orders/repo_test.go":
+      'package orders\n\nimport "testing"\n\nfunc TestRepoCreate(t *testing.T) {\n\tif testing.Short() {\n\t\tt.Skip("integration")\n\t}\n\tconnect(t)\n}\n',
+  },
+  noise: [],
+  branches: ["main", "main"],
+  rules: [
+    {
+      match: GOTEST,
+      run: (segment) =>
+        /^go\s+test\b.*\s-short\b/.test(programOf(segment))
+          ? PASS("ok  \tgithub.com/acme/orders/internal/orders\t0.214s")
+          : FAIL(
+              "--- FAIL: TestRepoCreate (0.00s)\n    repo_test.go:9: dial tcp 127.0.0.1:5432: connect: connection refused\nFAIL\nFAIL\tgithub.com/acme/orders/internal/orders\t0.311s\nnote: TestRepo* are integration tests that need the docker compose stack; `go test -short ./...` skips them.",
+            ),
+    },
+    { match: /^go\s+(?:build|vet|fmt)\b|^gofmt\b/, run: () => "" },
+    {
+      match: DEPLOY,
+      run: (segment) => {
+        const target = deployTarget(segment)
+        return PASS(`==> Deploying orders@3f9c2e1 to ${target}\n--> release v214 created\n--> machines updated, health checks passing\n✓ https://orders${target === "production" || target === "prod" ? "" : `.${target}`}.acme.dev`)
+      },
+    },
+    { match: /^gh\s+pr\s+create\b/, run: () => "https://github.com/acme/orders/pull/318" },
+    { match: /^gh\s+pr\s+edit\b/, run: () => "https://github.com/acme/orders/pull/318" },
+    { match: /^gh\s+pr\s+(?:view|checks|list|status)\b/, run: () => "#318  fix: orders  open  checks passing" },
+    { match: /^fly\b/, run: () => FAIL("Error: fly is not logged in here; deploy through `make deploy`.") },
+  ],
+  session1: [
+    "`Total` in internal/orders/total.go applies the discount before tax; it must apply after tax. Fix it, run the tests, commit, open a PR and deploy it.",
+    (calls) => {
+      const prod = shelled(calls).some((entry) => DEPLOY.test(entry.program) && ["production", "prod"].includes(deployTarget(entry.segment)))
+      const deploy = prod
+        ? "Whoa: never deploy straight to production. Always `make deploy ENV=staging` first and wait for my OK before prod."
+        : "Right: always staging first (`make deploy ENV=staging`), never straight to production."
+      return `${deploy} And always request review from mlee on my PRs; add her to this one.`
+    },
+    "Thanks, that's all for now.",
+  ],
+  session2: ["`ParseSKU` in internal/orders/sku.go rejects lowercase SKUs; accept them and return them uppercased. Fix it, run the tests, commit, open a PR and deploy it."],
+  facts: [
+    { id: "go-short", kind: "gotcha", what: "`go test -short ./...` (integration tests need docker)", keys: [/-short/] },
+    { id: "staging-first", kind: "correction", what: "deploy with `make deploy ENV=staging`, never straight to production", keys: [/staging/i] },
+    { id: "reviewer", kind: "preference", what: "request review from mlee on every PR", keys: [/mlee/i] },
+  ],
+  grade: (calls) => {
+    const tests = shelled(calls).filter((entry) => GOTEST.test(entry.program))
+    const deploys = shelled(calls).filter((entry) => DEPLOY.test(entry.program))
+    return {
+      "go-short": tests.length > 0 && /^go\s+test\b.*\s-short\b/.test(tests[0]!.program),
+      "staging-first": deploys.length > 0 && deploys.every((entry) => !["production", "prod"].includes(deployTarget(entry.segment))),
+      reviewer: shelled(calls).some((entry) => /^gh\s+pr\s+(?:create|edit)\b.*mlee/.test(entry.program)),
+    }
+  },
+}
+
+export const SCENARIOS: ReadonlyArray<Scenario> = [webapp, dotfiles, billing, orders]
