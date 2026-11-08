@@ -1550,6 +1550,15 @@ The plugin needs no hook in the fork: it runs `Bun.serve` itself. OpenCode
 serves the plugin once per directory; one instance binds the port and the
 others try again every 30 s.
 
+OpenCode loads a directory's plugins on its first request and unloads them an
+hour after its last session event, so a server no client uses would not
+listen. The launcher daily writes (`~/.local/bin/opencode`) asks a started or
+restarted service for its resident location,
+`~/.local/state/opencode-prime/resident`, whose own config keeps it loaded
+(`experimental.location_idle_timeout: false`), so the listener runs from the
+start for the life of the server. `tests/mail-start.test.ts` starts a service
+through that launcher and delivers a signed letter to it with no client.
+
 The model (the domain files at the root of `mods/mail`): `directory.ts`
 lists sessions (`select`, `listing`), `address.ts` holds the addressing rules
 (`isSessionID`, `byTitle`, `notSelf`) and their refusals, `letter.ts` writes

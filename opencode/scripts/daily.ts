@@ -10,8 +10,10 @@
 //    database and background service; a version change restarts that service as ours.
 //    `--skip-build` reuses the last build.
 // 2. Copies it to `~/.local/share/opencode-prime/` and writes `~/.local/bin/opencode`, a launcher
-//    that runs it without the caller's Anthropic routing (`launcher`). `~/.local/bin` comes before
-//    `~/.bun/bin` on PATH; `opencode2` stays the stock release.
+//    that runs it without the caller's Anthropic routing and, after a service start or restart,
+//    loads the resident location so the server plugins run with no client (`launcher`,
+//    `residentDir`). `~/.local/bin` comes before `~/.bun/bin` on PATH; `opencode2` stays the
+//    stock release.
 // 3. Merges our entries into `~/.config/opencode/opencode.json` (server plugins, the role
 //    agents' models, no auto-update) and `cli.json` (TUI plugins, the Prime theme), keeping
 //    every other key and plugin. Paths are this checkout's, so nothing machine-specific is
@@ -48,14 +50,36 @@ const packageOf = (entry: unknown): string | undefined =>
  * proxy. The background service inherits the environment of the client that starts it, so the
  * variables are dropped at every launch, not only when `daily` restarts the service.
  */
-export const launcher = (binary: string): string =>
-  [
+export const launcher = (binary: string, resident: string): string => {
+  const quoted = `'${binary.replaceAll("'", `'\\''`)}'`
+  const header = `'x-opencode-directory:${encodeURIComponent(resident).replaceAll("'", "%27")}'`
+  return [
     "#!/bin/sh",
     "# Written by `bun run daily` (dotfiles/opencode/scripts/daily.ts).",
     "unset ANTHROPIC_BASE_URL ANTHROPIC_INSECURE",
-    `exec '${binary.replaceAll("'", `'\\''`)}' "$@"`,
+    "# A started service loads the server plugins in its resident location (`residentConfig`).",
+    'case "$1 $2" in',
+    '"service start" | "service restart")',
+    `  ${quoted} "$@" || exit`,
+    `  ${quoted} api GET /api/location -H ${header} >/dev/null || echo "opencode: the service did not load its resident location; its plugins wait for a client" >&2`,
+    "  exit 0",
+    "  ;;",
+    "esac",
+    `exec ${quoted} "$@"`,
     "",
   ].join("\n")
+}
+
+/**
+ * The resident location: a directory of its own whose config keeps it loaded
+ * (`location_idle_timeout: false`). OpenCode loads the server plugins per
+ * location, on a location's first request, and unloads a location an hour
+ * after its last session event, so a server no client uses runs none of them:
+ * the mail listener among them, which a paired host needs. The launcher asks
+ * for this location whenever it starts or restarts the service.
+ */
+export const residentDir = (home: string): string => join(home, ".local/state/opencode-prime/resident")
+export const residentConfig: Json = { experimental: { location_idle_timeout: false } }
 
 /**
  * Each role's model: the newest Opus, the verifier too (the skill's Models rule). Codex is the
@@ -265,7 +289,8 @@ if (import.meta.main) {
   const link = join(home, ".local/bin/opencode")
   mkdirSync(dirname(link), { recursive: true })
   rmSync(link, { force: true })
-  writeFileSync(link, launcher(binary), { mode: 0o755 })
+  writeJson(join(residentDir(home), "opencode.json"), residentConfig)
+  writeFileSync(link, launcher(binary, residentDir(home)), { mode: 0o755 })
 
   const auth = anthropicAuthPlugin
   const gent = gentAuthDir()
