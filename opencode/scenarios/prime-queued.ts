@@ -1,18 +1,21 @@
-// A prompt sent while an automatic compaction runs, in the Prime look. The
+// Prompts sent while an automatic compaction runs, in the Prime look. The
 // first step reports a prompt near the simulated model's 128k window and calls
 // a tool, so the host compacts before the next step; the scripted summary
-// takes a few seconds, and the reader sends two more prompts meanwhile. Until
-// the runner takes them, the prompts are not in the transcript and take no
-// row there: a queued row each above the composer shows them and the loader
-// says `Compacting`. Once the runner takes them, they are in the transcript in
-// the order sent, the queued rows are gone and the loader says `Executing`.
+// takes a few seconds, and the reader sends two steers and one prompt to the
+// queue (leader+Enter) meanwhile. Until the runner takes them, the prompts are
+// not in the transcript and take no row there: one list above the composer
+// shows all three, oldest first, in place of the host's own `N queued · …`
+// box, and the loader says `Compacting`. The runner takes the steers at its
+// next step (`Executing`), the queued prompt once that turn ends; each enters
+// the transcript in the order sent and leaves the list.
 // Replayed against OpenCode with a scripted model.
 // Run: OPENCODE_DEV=<opencode checkout> OPENCODE_DRIVE_MEDIA_DIR=<dir> bunx opencode-drive run scenarios/prime-queued.ts
 //
 // It writes, under SCENARIO_OUT, a `.txt` of each frame's text, a `.json` of
 // its styled lines and a screenshot:
-// - `queued`: the compaction runs and the two later prompts wait;
-// - `taken`: the runner took them and the model works on them.
+// - `queued`: the compaction runs and the three later prompts wait;
+// - `taken`: the runner took the steers and the model works on them, the queued prompt still waiting;
+// - `after`: the queued prompt's turn ended, every prompt in the transcript.
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
@@ -24,13 +27,15 @@ const text = (frame: Frame) => frame.lines.map((l) => l.spans.map((s) => s.text)
 
 const ASK = "Check the build."
 const NEXT = "Also update the docs."
-const LAST = "Then bump the version."
+const THEN = "Then bump the version."
+const LATER = "Afterwards tag the release."
 const DONE = "Docs updated."
+const TAGGED = "Release tagged."
 /** A summary in OpenCode's template (a heading of its own), which the host checks before it keeps one. */
 const SUMMARY = "## Objective\n\nResume from the build check."
 /** How long the scripted summary takes: time to send the later prompts and frame them. */
-const SUMMARY_MS = 6_000
-/** How long the answer to the second prompt stalls before it ends: time to frame it running. */
+const SUMMARY_MS = 9_000
+/** How long the answer to the steers stalls before it ends: time to frame it running. */
 const ANSWER_MS = 4_000
 
 const usage = (prompt: number, output: number) =>
@@ -60,6 +65,7 @@ export default OpenCodeDriver.use(
         if (s.includes("You name conversations")) return Stream.make(Llm.text("build check"), Llm.finish())
         if (s.includes("summarize the conversation above"))
           return Stream.make(Llm.pause(SUMMARY_MS), Llm.text(SUMMARY), usage(1_000, 40), Llm.finish())
+        if (s.includes(LATER)) return Stream.make(Llm.text(TAGGED), usage(2_000, 5), Llm.finish())
         if (s.includes(NEXT)) return Stream.make(Llm.text("Updating"), Llm.pause(ANSWER_MS), Llm.text(` ${DONE}`), usage(2_000, 5), Llm.finish())
         // The first step: a tool call on a context near the window, so the host compacts before the next step.
         if (!called) {
@@ -90,17 +96,23 @@ export default OpenCodeDriver.use(
 
       yield* ui.submit(ASK)
       yield* until("compacting", (frame) => frame.includes("Automatic compaction"))
+      // Each prompt reached the session's inbox once its row shows (not the composer's draft): the old look draws a steer at once, this one lists it.
       yield* ui.submit(NEXT)
-      // The prompt reached the session's inbox (its queued row, not the composer's draft): the old look draws it at once, this one queues it.
       yield* until("queued-one", (frame) => frame.includes(`◌ queued · ${NEXT}`))
-      yield* ui.submit(LAST)
-      yield* until("queued", (frame) => frame.includes(`◌ queued · ${LAST}`))
-      yield* Effect.sleep("1500 millis")
+      yield* ui.submit(THEN)
+      yield* until("queued-two", (frame) => frame.includes(`◌ queued · ${THEN}`))
+      // To the queue: leader (ctrl+x) then Enter.
+      yield* ui.type(LATER)
+      yield* ui.press("x", { ctrl: true })
+      yield* ui.press("return")
+      yield* until("queued", (frame) => frame.includes(`◌ after the turn · ${LATER}`))
+      yield* Effect.sleep("1000 millis")
       yield* save("queued")
       yield* until("taken", (frame) => frame.includes("Updating"))
       yield* Effect.sleep("500 millis")
       yield* save("taken")
-      // Let the stalled answer end before the driver checks every model response settled.
-      yield* until("done", (frame) => frame.includes(DONE))
+      yield* until("after", (frame) => frame.includes(TAGGED) && !frame.includes("◌"))
+      yield* Effect.sleep("500 millis")
+      yield* save("after")
     }),
 )
