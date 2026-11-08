@@ -540,9 +540,11 @@ or priced step, for its agent's own `request.settings.cacheTTL` when it sets
 one, such as the roles' 5 minutes, else `cacheLifeMs`: default 5 minutes, and
 `daily` sets it from the TTL it gives Claude), its next run stays on that
 login. It leaves only
-when the login is held, or has a quota window at its share while another
-login has room. Load, live sessions and pace place only a run whose cache is
-gone.
+when the login is held: a quota window at its share does not move it, since
+the login still serves until it refuses, and a move writes the whole prompt
+again (the ledger, 2026-11-08: a session left a login at 94% of its 5-hour
+window 80 s after its last request and wrote 198k tokens again). Room, load,
+live sessions and pace place only a run whose cache is gone.
 
 An agent's own lifetime shorter than `cacheLifeMs` (the roles' 5 minutes)
 pays only while its session's requests follow each other closely. A session

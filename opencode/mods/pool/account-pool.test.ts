@@ -244,7 +244,7 @@ describe("a session's cache keeps its account", () => {
     )
   })
 
-  test("it leaves an account with no room while another has room, and stays when none has", () => {
+  test("it stays on an account at its share while the account is not held, wherever else has room", () => {
     const full = reading({ windows: [{ name: "5h", utilization: 0.95, resetAt: T0 + HOUR }] })
     return run(
       accounts("a", "b", "c"),
@@ -257,8 +257,12 @@ describe("a session's cache keeps its account", () => {
       ...placed("s1", "a", T0 + MINUTE),
       ...released("s1"),
       ...read("c", reading()),
-      // c has room again: s2 leaves a for it.
-      ...placed("s2", "c", T0 + MINUTE),
+      // c has room again, but a still serves: s2 stays with its cache rather than write it all again on c.
+      ...placed("s2", "a", T0 + MINUTE),
+      ...released("s2"),
+      // A run whose cache is gone goes where there is room.
+      Story.clock(T0 + MINUTE + CACHE_LIFE_MS),
+      ...placed("s3", "c", T0 + MINUTE + CACHE_LIFE_MS),
     )
   })
 })

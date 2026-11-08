@@ -8,9 +8,8 @@
 // - A new run of a session whose prompt cache still lives (for the pool's
 //   cache life since its last request or step) stays on the cache's account:
 //   moving it would write the whole prompt again on another account, since a
-//   cache belongs to one account. It leaves only when that account is held,
-//   or has no room while another account has. Load, live sessions and pace
-//   never move it.
+//   cache belongs to one account. It leaves only when that account is held:
+//   room, load, live sessions and pace never move it.
 // - Any other new run is placed by `rankPlacement`: held accounts last,
 //   accounts at their share after those with room, then by recorded load and
 //   live sessions, and equal accounts by the soonest weekly reset.
