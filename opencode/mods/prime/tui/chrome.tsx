@@ -5,7 +5,7 @@
 // chrome.ts's; this file draws them.
 import type { BoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, onCleanup, Show, type Accessor } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, Show, type Accessor } from "solid-js"
 import {
   cost,
   plural,
@@ -14,11 +14,11 @@ import {
   SPINNER,
   SPINNER_MS,
   trayModel,
-  turnStart,
   usageLabel,
 } from "../chrome.ts"
+import { loader, loaderMargin, queuedRow, waitingPrompts } from "../pending.ts"
 import { elapsed } from "../clock.ts"
-import { detailHint, type Detail } from "../detail.ts"
+import { detailHint, rowGap, type Detail } from "../detail.ts"
 import { GOAL_LINGER_MS, goalLine, goalShown, type Goal } from "../goal.ts"
 import { navigationHint, neighbour, othersWorking, subagentOrder, topTitle } from "../subagent.ts"
 import { wakeItem } from "../wakes.ts"
@@ -296,17 +296,73 @@ export function GoalLine(props: { host: Host; sessionID: string }) {
   )
 }
 
-/** While a turn runs: a blank row, then a braille spinner in the primary accent (Prime #7c6faf) and `Executing · 13s` (Prime's loader rows). */
-export function Working(props: { host: Host; sessionID: string }) {
+/**
+ * Above the composer, one row per prompt the runner has not taken, oldest
+ * first (`◌ queued · Also update the docs.`, pending.ts): the prompt leaves
+ * the transcript until the runner takes it, and its row goes the moment it
+ * does. A click offers to move it to the queue or delete it. Nothing while
+ * none waits.
+ */
+export function Queued(props: { host: Host; sessionID: string }) {
+  const theme = () => props.host.theme()
+  const prompts = createMemo(() => waitingPrompts(props.host.pending(props.sessionID)))
+  const terminal = useTerminalDimensions()
+  const [measured, setMeasured] = createSignal<number>()
+  return (
+    <Show when={prompts().length > 0}>
+      <box
+        flexDirection="column"
+        flexShrink={0}
+        marginTop={1}
+        paddingLeft={GUTTER}
+        onSizeChange={function (this: BoxRenderable) {
+          const value = this.width
+          queueMicrotask(() => setMeasured(value))
+        }}
+      >
+        <For each={prompts()}>
+          {(prompt) => {
+            const [hover, setHover] = createSignal(false)
+            return (
+              <box
+                height={1}
+                onMouseOver={() => setHover(true)}
+                onMouseOut={() => setHover(false)}
+                onMouseUp={() => {
+                  if (!props.host.selecting()) props.host.openPending(props.sessionID, prompt.id)
+                }}
+              >
+                <text wrapMode="none" truncate fg={hover() ? theme().text.base : theme().text.muted}>
+                  {queuedRow(prompt, (measured() ?? terminal().width - 2) - GUTTER)}
+                </text>
+              </box>
+            )
+          }}
+        </For>
+      </box>
+    </Show>
+  )
+}
+
+/**
+ * While a turn runs: a blank row, then a braille spinner in the primary
+ * accent (Prime #7c6faf) and what runs, `Executing · 13s` or
+ * `Compacting · 4s` (Prime's loader rows), timed as pending.ts `loader` says.
+ */
+export function Working(props: { host: Host; sessionID: string; detail: Accessor<Detail> }) {
   const running = createMemo(() => props.host.status(props.sessionID) === "running")
-  // The turn started with the newest user message.
-  const started = createMemo(() => turnStart(props.host.messages(props.sessionID)))
+  const shown = createMemo(() => loader(props.host.messages(props.sessionID), props.host.pending(props.sessionID)))
+  const margin = createMemo(() =>
+    loaderMargin(props.host.pending(props.sessionID), rowGap(props.detail(), { kind: "user" })),
+  )
   const [now, setNow] = createSignal(Date.now())
+  const [seen, setSeen] = createSignal(Date.now())
   const [frame, setFrame] = createSignal(0)
   // The spinner turns only while the turn runs; an idle session sets no timer.
   createEffect(() => {
     if (!running()) return
     setNow(Date.now())
+    setSeen(Date.now())
     const timer = setInterval(() => {
       setNow(Date.now())
       setFrame((value) => (value + 1) % SPINNER.length)
@@ -315,10 +371,10 @@ export function Working(props: { host: Host; sessionID: string }) {
   })
   return (
     <Show when={running()}>
-      <box paddingLeft={GUTTER} marginTop={1} flexShrink={0}>
+      <box paddingLeft={GUTTER} marginTop={margin()} flexShrink={0}>
         <text wrapMode="none" fg={props.host.theme().text.muted}>
           <span style={{ fg: props.host.theme().hue.accent[300] }}>{SPINNER[frame()]} </span>
-          Executing · {elapsed(now() - started())}
+          {shown().label} · {elapsed(now() - (shown().since ?? seen()))}
         </text>
       </box>
     </Show>

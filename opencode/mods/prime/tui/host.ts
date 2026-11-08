@@ -7,6 +7,7 @@ import type { RGBA } from "@opentui/core"
 import type { Accessor, JSX } from "solid-js"
 import type { CurrentModel, Usage } from "../chrome.ts"
 import type { Goal } from "../goal.ts"
+import type { PendingItem } from "../pending.ts"
 import type { Wakes } from "../wakes.ts"
 import type { Message, Part, Session } from "../session.ts"
 
@@ -72,6 +73,10 @@ export interface Host {
   usage(sessionID: string): Usage | undefined
   /** The goal `/goal` set on the session, if any. */
   goal(sessionID: string): Goal | undefined
+  /** The session's inbox: what was sent to it that the runner has not taken yet, in the host's order. */
+  pending(sessionID: string): ReadonlyArray<PendingItem>
+  /** Offers to move a waiting prompt to the queue or delete it, as the host's own pending row does. */
+  openPending(sessionID: string, inboxID: string): void
   /**
    * The wakes pending and notices unread for the session the accessor names,
    * kept current while the calling component lives; undefined until the

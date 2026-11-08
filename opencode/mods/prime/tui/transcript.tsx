@@ -3,6 +3,7 @@
 import { RGBA, type BoxRenderable } from "@opentui/core"
 import { createMemo, createSignal, Show } from "solid-js"
 import { governingAsk, oneLine } from "../ask.ts"
+import { isWaiting } from "../pending.ts"
 import { attachedLine, promptText } from "../prompt.ts"
 import type { Host, Overlay, Palette } from "./host.ts"
 
@@ -36,7 +37,8 @@ const USER_RAIL = {
  * text as typed, bold, on the terminal's own background (gent's UserRow, less
  * its panel). The rail is the text colour, as fx's marker and the rail
  * composer are. What came with the prompt (files, skills, agents) is one
- * muted line under the text.
+ * muted line under the text. A prompt the runner has not taken draws nothing
+ * here; it enters the transcript, at the place the host gives it, once taken.
  */
 export function UserBand(props: { host: Host; sessionID: string; messageID: string }) {
   const message = createMemo(() => {
@@ -45,9 +47,11 @@ export function UserBand(props: { host: Host; sessionID: string; messageID: stri
   })
   const text = createMemo(() => promptText(message()))
   const attached = createMemo(() => attachedLine(message()))
+  // A prompt the runner has not taken shows in the queued rows above the composer (chrome.tsx Queued), not here.
+  const waiting = createMemo(() => isWaiting(props.host.pending(props.sessionID), props.messageID))
   const theme = () => props.host.theme()
   return (
-    <Show when={text() || attached()}>
+    <Show when={!waiting() && (text() || attached())}>
       <box
         width="100%"
         flexDirection="column"

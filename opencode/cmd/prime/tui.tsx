@@ -14,7 +14,7 @@ import { goals } from "@dotfiles/opencode-prime/opencode/goal"
 import { host } from "@dotfiles/opencode-prime/opencode/host"
 import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
 import { hints as wakeHints, WakeTab } from "@dotfiles/opencode-prime/tui/composer"
-import { Dock, GoalLine, ModeHint, Splash, TopBar, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
+import { Dock, GoalLine, ModeHint, Queued, Splash, TopBar, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
 import { SubagentRows } from "@dotfiles/opencode-prime/tui/live"
 import { Completion, StepEnd } from "@dotfiles/opencode-prime/tui/notice"
 import { GroupRow, ToolRow } from "@dotfiles/opencode-prime/tui/tools"
@@ -81,6 +81,11 @@ export default Plugin.define({
       replace: "session.message.compaction",
       render: (input) => <Compaction host={h} sessionID={input.sessionID} messageID={input.messageID} detail={detail} />,
     })
+    // The prompts the runner has not taken, under the transcript they have not entered yet (tui/chrome.tsx).
+    context.ui.slot({
+      append: "session.composer.top",
+      render: (input) => <Queued host={h} sessionID={input.sessionID} />,
+    })
     context.ui.slot({
       append: "session.composer.top",
       render: (input) => <ModeHint host={h} sessionID={input.sessionID} detail={detail} />,
@@ -103,7 +108,7 @@ export default Plugin.define({
     // Prime's loader is the transcript's last row, straight under the newest output.
     context.ui.slot({
       append: "session.transcript.end",
-      render: (input) => <Working host={h} sessionID={input.sessionID} />,
+      render: (input) => <Working host={h} sessionID={input.sessionID} detail={detail} />,
     })
     context.ui.slot({
       replace: "prompt.footer",
