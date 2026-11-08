@@ -18,6 +18,8 @@ import * as ModelsTest from "@dotfiles/opencode-orchestrate/memory/models"
 import * as PoolPaceTest from "@dotfiles/opencode-orchestrate/memory/pool-pace"
 import * as RestartsTest from "@dotfiles/opencode-orchestrate/memory/restarts"
 import * as SessionsTest from "@dotfiles/opencode-orchestrate/memory/sessions"
+import * as SkillTest from "@dotfiles/opencode-orchestrate/memory/skill"
+import { DRIFT_MARK, RECONCILE } from "@dotfiles/opencode-orchestrate/skill-drift"
 import * as FileUnitLogs from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import * as OpenCodeLatches from "@dotfiles/opencode-orchestrate/opencode/latches"
 import { type Holds, MARK, NO_HOLDS, type Run } from "@dotfiles/opencode-orchestrate/idle"
@@ -31,7 +33,7 @@ import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { BACKOFF_MS, NOTICE_TITLE, RESUME_PROMPT, resumePrompt } from "@dotfiles/opencode-orchestrate/restart"
 import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
 import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
-import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, make, Options, type Resume, UNIT_LOG } from "./server.ts"
+import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, make, Options, type Resume, SKILL_DIR, UNIT_LOG } from "./server.ts"
 
 /** The orchestrate skill's log.ts in this checkout: the units' logs are written for real, in scratch dirs. */
 const LOG_SCRIPT = join(import.meta.dir, "../../../skills/orchestrate/scripts/log.ts")
@@ -72,6 +74,10 @@ interface World {
   readonly refuseNudge?: string
   /** The sessions a restart may have cut, their transcripts, and the notices told. */
   readonly restarts?: RestartsTest.MemoryRestarts
+  /** The orchestrate skill's history; absent, no version can be read. */
+  readonly skill?: SkillTest.MemorySkill
+  /** Each run dir's seen skill version and departures. */
+  readonly records?: SkillTest.MemoryRecords
 }
 
 /** A tool as the host's tool editor hands it out: only what the plugin touches. */
@@ -166,8 +172,12 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       OpenCodeRuns.layer(() => Effect.succeed({ agents: [], runs: world.runs ?? [], errors: [] })),
       Layer.succeed(RootHolds, { of: (sessionID: string) => Effect.succeed(world.holds?.[sessionID] ?? NO_HOLDS) }),
       OpenCodeSteer.layer((input) => (world.refuseNudge === undefined ? Effect.sync(() => void nudges.push(input)) : Effect.fail(new Error(world.refuseNudge)))),
+      OpenCodeSteer.tellLayer((input) => (world.refuseNudge === undefined ? Effect.sync(() => void notes.push(input)) : Effect.fail(new Error(world.refuseNudge)))),
+      SkillTest.skill(world.skill ?? { history: [] }),
+      SkillTest.records(world.records ?? { seen: new Map() }),
     )
     const nudges: Array<OpenCodeSteer.Synthetic> = []
+    const notes: Array<OpenCodeSteer.Synthetic> = []
     yield* make((_ctx, _options, start, resume) => externals(start, resume)).effect(host)
 
     // The subagent tool, as the host's editor holds it after the plugin's transform: it records each run.
@@ -227,7 +237,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       const handler = rpc["dotfiles-opencode.orchestrate.idle"]?.draft
       return handler === undefined ? Effect.die(new Error("no idle RPC")) : handler(input)
     }
-    return { call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, draft, nudges }
+    return { call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, draft, nudges, notes }
   })
 
 /** Waits for the plugin's background work: `check` passes within a second. */
@@ -1212,6 +1222,108 @@ describe("an idle root with units to move or a batch to land", () => {
     ))
 })
 
+describe("a root whose run saw an older skill", () => {
+  const DIR = "/repo/tmp/orchestrate/p5"
+  const history = (count: number) => Array.from({ length: count }, (_, n) => ({ hash: `${n}`.repeat(40), subject: `feat(orchestrate): change ${n}` }))
+  const world = (seen: string | undefined, departures: ReadonlyArray<string> = []) => ({
+    sessions: { root: {}, child: { parentID: "root" } },
+    steps: { root: ["lexer"] },
+    runs: [{ name: "p5", dir: DIR, units: [{ unit: "lexer", state: "merged abc1234" }] }],
+    skill: { history: history(3) },
+    records: { seen: new Map(seen === undefined ? [] : [[DIR, seen]]), departures: { [DIR]: departures } },
+  })
+
+  test("a newer skill: one note with the commit subjects since, newest first, and the run's departures; the run then records the new version", () =>
+    scenario(
+      Effect.gen(function* () {
+        const state = world("0".repeat(40), ["common.md:12: Departs from Heavy checks fit the machine: benchmarks need the whole box"])
+        const plugin = yield* start({ now: WEDNESDAY }, state)
+        yield* plugin.idle("root")
+        yield* eventually(() => expect(plugin.notes).toHaveLength(1))
+        const [note] = plugin.notes
+        expect(note).toMatchObject({ sessionID: "root", metadata: { [DRIFT_MARK]: true }, delivery: "steer", resume: true })
+        expect(note?.text).toBe(
+          [
+            "The orchestrate skill changed since run p5 saw it (0000000..2222222, 2 commits):",
+            "- feat(orchestrate): change 2",
+            "- feat(orchestrate): change 1",
+            "Run p5's departures, to check against these changes:",
+            "- common.md:12: Departs from Heavy checks fit the machine: benchmarks need the whole box",
+            RECONCILE,
+          ].join("\n"),
+        )
+        expect(note?.description).toBe("orchestrate skill changed since p5 saw it: reconcile the run's rules files")
+        expect(state.records.seen.get(DIR)).toBe("2".repeat(40))
+        // The idle nudge is its own: the run holds nothing to move, so none came.
+        expect(plugin.nudges).toEqual([])
+      }),
+    ))
+
+  test("the same skill: no note", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, world("2".repeat(40)))
+        yield* plugin.idle("root")
+        yield* settle
+        expect(plugin.notes).toEqual([])
+      }),
+    ))
+
+  test("idle twice, or twice at once, on one newer version: one note; the next version brings one more", () =>
+    scenario(
+      Effect.gen(function* () {
+        const state = world("1".repeat(40))
+        const plugin = yield* start({ now: WEDNESDAY }, state)
+        yield* Effect.all([plugin.idle("root"), plugin.idle("root")], { concurrency: "unbounded" })
+        yield* eventually(() => expect(plugin.notes).toHaveLength(1))
+        yield* plugin.idle("root")
+        yield* settle
+        expect(plugin.notes).toHaveLength(1)
+        expect(plugin.notes[0]?.text).toStartWith("The orchestrate skill changed since run p5 saw it (1111111..2222222, 1 commit):\n- feat(orchestrate): change 2\n")
+        state.skill.history.push({ hash: "3".repeat(40), subject: "fix(orchestrate): change 3" })
+        yield* plugin.idle("root")
+        yield* eventually(() => expect(plugin.notes).toHaveLength(2))
+        expect(plugin.notes[1]?.text).toStartWith("The orchestrate skill changed since run p5 saw it (2222222..3333333, 1 commit):\n- fix(orchestrate): change 3\n")
+      }),
+    ))
+
+  test("a run never seen records its version silently; a subagent, a run not its own, an older skill or the Sabbath: no note", () =>
+    scenario(
+      Effect.gen(function* () {
+        const fresh = world(undefined)
+        const first = yield* start({ now: WEDNESDAY }, fresh)
+        yield* first.idle("root")
+        yield* eventually(() => expect(fresh.records.seen.get(DIR)).toBe("2".repeat(40)))
+        const behind = world("0".repeat(40))
+        const child = yield* start({ now: WEDNESDAY }, behind)
+        yield* child.idle("child")
+        const stranger = yield* start({ now: WEDNESDAY }, { ...behind, steps: { root: ["audio"] } })
+        yield* stranger.idle("root")
+        // The checkout moved back: the installed version is older than the one the run saw.
+        const ahead = { ...world("2".repeat(40)), skill: { history: history(3), installed: "1".repeat(40) } }
+        const older = yield* start({ now: WEDNESDAY }, ahead)
+        yield* older.idle("root")
+        const friday = yield* start({ now: FRIDAY_EVENING }, behind)
+        yield* friday.idle("root")
+        yield* settle
+        expect([first.notes, child.notes, stranger.notes, older.notes, friday.notes]).toEqual([[], [], [], [], []])
+        expect(behind.records.seen.get(DIR)).toBe("0".repeat(40))
+        expect(ahead.records.seen.get(DIR)).toBe("2".repeat(40))
+      }),
+    ))
+
+  test("a note the host refuses is not recorded, so the next idle tries again", () =>
+    scenario(
+      Effect.gen(function* () {
+        const state = world("0".repeat(40))
+        const plugin = yield* start({ now: WEDNESDAY }, { ...state, refuseNudge: "session busy" })
+        yield* plugin.idle("root")
+        yield* settle
+        expect(state.records.seen.get(DIR)).toBe("0".repeat(40))
+      }),
+    ))
+})
+
 describe("the agents", () => {
   test("each role gets its definition, each role and primary agent the 400k window; compaction keeps the files", () =>
     scenario(
@@ -1399,6 +1511,7 @@ describe("the options", () => {
     fullAgent: false,
     codex: { providers: ["openai"], script: CODEX_BUDGET },
     unitLog: UNIT_LOG,
+    skill: SKILL_DIR,
     resume: { backoffMs: BACKOFF_MS },
   }
 
@@ -1422,8 +1535,10 @@ describe("the options", () => {
       fullAgent: true,
       codex: { providers: ["openai", "sim"], script: CODEX_BUDGET },
       unitLog: UNIT_LOG,
+      skill: SKILL_DIR,
       resume: { backoffMs: BACKOFF_MS },
     })
+    expect(decode({ skill: "/s" }).skill).toBe("/s")
     expect(decode({ codex: false }).codex).toBe(false)
     expect(decode({ codex: { pool: true } }).codex).toEqual({ ...defaults.codex, pool: true })
   })
@@ -1439,6 +1554,7 @@ describe("the options", () => {
       [{ codex: { providers: ["openai", 7] } }, '["codex"]["providers"][1]'],
       [{ resume: true }, '["resume"]'],
       [{ resume: { backoffMs: ["10s"] } }, '["resume"]["backoffMs"][0]'],
+      [{ skill: 7 }, '["skill"]'],
     ]
     for (const [options, path] of malformed) {
       const exit = await Effect.runPromise(Effect.exit(Effect.scoped(start(options))))

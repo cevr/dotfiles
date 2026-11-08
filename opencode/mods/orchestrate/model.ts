@@ -49,13 +49,17 @@ import {
   Restarts,
   type ResumeStart,
   RootHolds,
+  RunRecords,
   Runs,
   Sessions,
+  Skill,
   Steer,
   StepLog,
+  Tell,
   type Transcript,
   UnitLogs,
 } from "./service.ts"
+import { descriptionOf, type Drift, noteOf, stepOf } from "./skill-drift.ts"
 import { handBackOf, startOf, type Transition, unitDirsIn } from "./unit-log.ts"
 import { isStep } from "./described.ts"
 import {
@@ -752,6 +756,75 @@ export const idleLayer = (config: Pick<Config, "place" | "now">) =>
       const forget = (sessionID: string) => Effect.sync(() => void roots.delete(sessionID)).pipe(Effect.withSpan("IdleRoots.forget"))
 
       return { idle, heard, draft, forget }
+    }),
+  )
+
+// ── A run's skill drift (skill-drift.ts) ──
+
+/** What one drift check of an idle root came to, for the plugin's log. */
+export type DriftOutcome =
+  | { readonly _tag: "Told"; readonly runs: ReadonlyArray<string> }
+  | { readonly _tag: "Quiet"; readonly why: string }
+  | { readonly _tag: "Refused"; readonly message: string }
+
+export class SkillDrifts extends Context.Service<
+  SkillDrifts,
+  {
+    /**
+     * The session ended its turn. When it is a root that owns runs (it started
+     * a step of one), each run with a dir is checked against the installed
+     * skill: a run never seen records the version; a run that saw an older one
+     * goes into one note to the root, and records the new one once told.
+     */
+    readonly idle: (sessionID: string) => Effect.Effect<DriftOutcome>
+  }
+>()("dotfiles-opencode/orchestrate/SkillDrifts") {}
+
+/** The drift checks: one at a time, so two idle events tell a run once. */
+export const driftLayer = (config: Pick<Config, "place" | "now">) =>
+  Layer.effect(
+    SkillDrifts,
+    Effect.gen(function* () {
+      const sessions = yield* Sessions
+      const steps = yield* StepLog
+      const runs = yield* Runs
+      const skill = yield* Skill
+      const records = yield* RunRecords
+      const tell = yield* Tell
+      const one = yield* Semaphore.make(1)
+      const sabbathNow = config.now === undefined ? Clock.currentTimeMillis : Effect.succeed(config.now)
+
+      const idle = (sessionID: string): Effect.Effect<DriftOutcome> =>
+        Effect.gen(function* () {
+          if ((yield* sessions.parentOf(sessionID)) !== undefined) return { _tag: "Quiet", why: "a subagent" } as const
+          // No agent works over the Sabbath, so no reconcile is asked for then.
+          if (resumesAt(yield* sabbathNow, config.place) !== undefined) return { _tag: "Quiet", why: "the Sabbath" } as const
+          const started = yield* steps.units(sessionID)
+          if (started.length === 0) return { _tag: "Quiet", why: "owns no run" } as const
+          const owned = (yield* runs.list).flatMap((run) =>
+            run.dir !== undefined && run.units.some((unit) => started.includes(unit.unit)) ? [{ name: run.name, dir: run.dir }] : [],
+          )
+          if (owned.length === 0) return { _tag: "Quiet", why: "owns no run with a dir" } as const
+          const installed = yield* skill.version
+          if (installed === undefined) return { _tag: "Quiet", why: "the skill's version cannot be read" } as const
+          const drifts: Array<Drift & { readonly dir: string }> = []
+          for (const { name, dir } of owned) {
+            const seen = yield* records.seen(dir)
+            const relation = seen === undefined || seen === installed ? undefined : yield* skill.relation(seen, installed)
+            const step = stepOf(seen, installed, relation)
+            if (step._tag === "Record") yield* records.see(dir, installed)
+            if (step._tag === "Tell" && seen !== undefined)
+              drifts.push({ run: name, dir, seen, installed, subjects: step.subjects, unrelated: step.unrelated, departures: yield* records.departures(dir) })
+          }
+          if (drifts.length === 0) return { _tag: "Quiet", why: "every run saw this skill" } as const
+          return yield* tell.tell(sessionID, { text: noteOf(drifts), description: descriptionOf(drifts) }).pipe(
+            Effect.andThen(Effect.forEach(drifts, (drift) => records.see(drift.dir, installed), { discard: true })),
+            Effect.as<DriftOutcome>({ _tag: "Told", runs: drifts.map((drift) => drift.run) }),
+            Effect.catchTag("NudgeRefused", (refused) => Effect.succeed<DriftOutcome>({ _tag: "Refused", message: refused.message })),
+          )
+        }).pipe(one.withPermits(1), Effect.withSpan("SkillDrifts.idle"))
+
+      return { idle }
     }),
   )
 
