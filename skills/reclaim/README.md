@@ -12,6 +12,8 @@ cp -R /tmp/reclaim-src/skills/reclaim ~/.claude/skills/reclaim
 
 Then ask Claude Code to "reclaim disk space", or run `/reclaim`. The survey alone: `bun ~/.claude/skills/reclaim/scripts/survey.ts` (`--roots` for code folders other than `~/Developer`).
 
+The survey sizes APFS clones (Rifts and their trash, bun's and uv's caches, `node_modules`) by what removing them would free, the bytes they share with no other file, and shows their `du` size beside it: a Rift that `du` puts at 15 GiB can free almost nothing. Git worktrees are real copies and keep their `du` size.
+
 To keep transcripts small every week, schedule `bun ~/.claude/skills/reclaim/scripts/cull-transcript-images.ts`. It replaces images inlined in Claude Code and Codex transcripts with a short note.
 
 Bun's WebView leaves a headless Chrome profile (`.<id>.bun-chrome`) in the temp folder after each run, and a Chrome whose Bun process died keeps running. `bun ~/.claude/skills/reclaim/scripts/bun-webview-leftovers.ts --apply` stops those orphans and deletes the profiles nothing uses; without `--apply` it only counts. Schedule it daily to keep them from piling up.
