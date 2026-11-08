@@ -1,17 +1,18 @@
 // A prompt sent while an automatic compaction runs, in the Prime look. The
 // first step reports a prompt near the simulated model's 128k window and calls
 // a tool, so the host compacts before the next step; the scripted summary
-// takes a few seconds, and the reader sends a second prompt meanwhile. Until
-// the runner takes it, the prompt is not in the transcript: a queued row above
-// the composer shows it and the loader says `Compacting`. Once the runner
-// takes it, it is in the transcript, the queued row is gone and the loader
-// says `Executing`. Replayed against OpenCode with a scripted model.
+// takes a few seconds, and the reader sends two more prompts meanwhile. Until
+// the runner takes them, the prompts are not in the transcript and take no
+// row there: a queued row each above the composer shows them and the loader
+// says `Compacting`. Once the runner takes them, they are in the transcript in
+// the order sent, the queued rows are gone and the loader says `Executing`.
+// Replayed against OpenCode with a scripted model.
 // Run: OPENCODE_DEV=<opencode checkout> OPENCODE_DRIVE_MEDIA_DIR=<dir> bunx opencode-drive run scenarios/prime-queued.ts
 //
 // It writes, under SCENARIO_OUT, a `.txt` of each frame's text, a `.json` of
 // its styled lines and a screenshot:
-// - `queued`: the compaction runs and the second prompt waits;
-// - `taken`: the runner took the second prompt and the model works on it.
+// - `queued`: the compaction runs and the two later prompts wait;
+// - `taken`: the runner took them and the model works on them.
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
@@ -23,10 +24,11 @@ const text = (frame: Frame) => frame.lines.map((l) => l.spans.map((s) => s.text)
 
 const ASK = "Check the build."
 const NEXT = "Also update the docs."
+const LAST = "Then bump the version."
 const DONE = "Docs updated."
 /** A summary in OpenCode's template (a heading of its own), which the host checks before it keeps one. */
 const SUMMARY = "## Objective\n\nResume from the build check."
-/** How long the scripted summary takes: time to send the second prompt and frame it. */
+/** How long the scripted summary takes: time to send the later prompts and frame them. */
 const SUMMARY_MS = 6_000
 /** How long the answer to the second prompt stalls before it ends: time to frame it running. */
 const ANSWER_MS = 4_000
@@ -89,8 +91,10 @@ export default OpenCodeDriver.use(
       yield* ui.submit(ASK)
       yield* until("compacting", (frame) => frame.includes("Automatic compaction"))
       yield* ui.submit(NEXT)
-      // The prompt reached the session's inbox: the old look draws it at once, this one queues it.
-      yield* until("queued", (frame) => frame.includes(NEXT))
+      // The prompt reached the session's inbox (its queued row, not the composer's draft): the old look draws it at once, this one queues it.
+      yield* until("queued-one", (frame) => frame.includes(`◌ queued · ${NEXT}`))
+      yield* ui.submit(LAST)
+      yield* until("queued", (frame) => frame.includes(`◌ queued · ${LAST}`))
       yield* Effect.sleep("1500 millis")
       yield* save("queued")
       yield* until("taken", (frame) => frame.includes("Updating"))
