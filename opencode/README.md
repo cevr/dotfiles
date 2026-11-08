@@ -1866,8 +1866,12 @@ them out of the registry for every agent (`SCHEDULE_TOOLS` in
 (`at`, `everySeconds`), a monitor (`until`, `repeat`) or the `pr` tool's watch
 does that work as a short synthetic notice. Cron and time zones are not
 carried over: no active schedule used them (both machines, 2026-11-06). The
-host's `/schedule` command stays (a plugin cannot remove a command); with
-the tools gone it has nothing to call.
+host's `/schedule` command, which tells the model to call those tools, comes
+from the same built-in plugin (`opencode.tool.schedule`); a plugin cannot
+remove a command, so `bun run daily` turns that plugin off in the server
+config (`-opencode.tool.schedule`, `BUILTIN_SCHEDULE_OFF` in
+`scripts/daily.ts`), and neither the tools nor `/schedule` are offered.
+Stored schedules and their API stay the host's.
 
 `bun scripts/migrate-schedules.ts` moves the active schedules over once: for
 each it plans the equivalent wake or monitor for its session (the mapping is
@@ -1879,7 +1883,8 @@ the schedule; what has no equivalent (cron, a Code Mode check, remaining
 runs) is skipped and named. `--rows <file>` reads another machine's rows
 (the script's `QUERY` through `sqlite3 -readonly -json`).
 `tests/wake-repeat.test.ts` runs `scenarios/wake-repeat.ts` in real OpenCode
-with `experimental.schedules` on: no request offers a schedule tool, and a
+with `experimental.schedules` on and the built-in schedule plugin off: no
+request offers a schedule tool, the server lists no `/schedule`, and a
 `repeat: "change"` monitor wakes the session once per change of a file.
 
 ### Jobs

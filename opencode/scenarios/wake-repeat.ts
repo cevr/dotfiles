@@ -1,8 +1,10 @@
 // A repeating monitor in real OpenCode, with OpenCode's schedules turned on
-// (`experimental.schedules`) and the wake plugin, which takes the schedule
-// tools away, on a scripted model:
+// (`experimental.schedules`), the built-in schedule plugin off as daily
+// writes it (`-opencode.tool.schedule`) and the wake plugin, which also takes
+// the schedule tools away, on a scripted model:
 // - step-tools: the model is asked once, so its request (the tools it was
-//   offered) is kept; the schedule tools must not be among them.
+//   offered) is kept; the schedule tools must not be among them, nor the
+//   `/schedule` command among the server's commands.
 // - step-watch: a `repeat: "change"` monitor reads a status file every second.
 //   Its first check is the baseline; the scenario rewrites the file twice, and
 //   each change wakes the idle session with a short synthetic notice.
@@ -11,8 +13,8 @@
 //
 // It writes, under SCENARIO_OUT, `wake-repeat-requests.json` (each model
 // request, with its session), `wake-repeat-transcripts.json`,
-// `wake-repeat-commands.json` (the server's command names: `schedule` among
-// them shows the schedules flag is on), `wake-repeat-<name>.txt` for the kept
+// `wake-repeat-commands.json` (the server's command names: `schedule` must
+// not be among them), `wake-repeat-<name>.txt` for the kept
 // frames (`set`, `first`, `second`, `stopped`) and `wake-repeat-timeout.txt`
 // when a wait times out. The backstop is `off`: a scenario must not register
 // OS jobs.
@@ -20,6 +22,7 @@ import { Effect, Schedule, Stream } from "effect"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { Llm, OpenCodeDriver } from "opencode-drive"
+import { BUILTIN_SCHEDULE_OFF } from "../scripts/daily.ts"
 
 const root = process.cwd()
 const out = resolve(process.env.SCENARIO_OUT ?? "out")
@@ -58,7 +61,8 @@ export default OpenCodeDriver.use(
       autoupdate: false,
       username: "Demo",
       experimental: { schedules: true },
-      plugins: [{ package: `${root}/cmd/wake`, options: { backstop: "off" } }],
+      // As `bun run daily` writes the server config: the wake plugin, and the built-in schedule plugin off.
+      plugins: [{ package: `${root}/cmd/wake`, options: { backstop: "off" } }, BUILTIN_SCHEDULE_OFF],
     },
     tuiConfig: { animations: false, tabs: { mode: "off" } },
     tui: { viewport: { cols: 150, rows: 50 } },
