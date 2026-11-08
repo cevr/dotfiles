@@ -469,17 +469,22 @@ idle with units in plan, implement or verify: alpha, beta; start them or name wh
 ```
 
 Units in `ready` wait for their batch (the orchestrate skill's Land a batch).
-Once the batch is due, at 3 ready units or the oldest ready for 30 minutes by
-its `log.md` time, the line says to land it, naming each unit's Rift by its
-branch `<run>/<unit>`, which the rift tool finds:
+Once the batch is due, the line says to land it, naming each unit's Rift by
+its name, the unit (the orchestrator makes `.rifts/<repo>/<unit>` on branch
+`<run>/<unit>`), which the rift tool finds:
 
 ```
-idle with a batch due (3 ready): gamma, delta, eps; land it with rift({ action: "land", rifts: ["p1/gamma", "p1/delta", "p1/eps"] }).
+idle with a batch due (3 ready): gamma, delta, eps; land it with rift({ action: "land", rifts: ["gamma", "delta", "eps"] }).
 ```
 
-With both, the batch follows the first line as `… A batch due (…): …`. A
-spec's or plan's own `Batch cadence` is not read: the nudge keeps the
-defaults. Units from more than one run read `run/unit`; past eight the rest
+A batch is due by each ready unit's cadence: its spec's `Batch cadence` line,
+else its plan's, else 3 ready or 30 minutes. Only the line's numbers are read
+(`<n> ready`, `<n> min` or `<n> h`); a number it leaves out comes from the
+level above. The skill's `status.ts` prints it per unit (`Cadence`, `3 ready
+or 30 min`, its `cadence.ts`). It is due once the ready units reach any ready
+unit's count, or any ready unit has waited its wait by its `log.md` time.
+
+With both, the batch follows the first line as `… A batch due (…): …`. Units from more than one run read `run/unit`; past eight the rest
 are counted (the land call names every one). The line is a steered synthetic message carrying the metadata key
 `dotfiles-opencode.orchestrate.idle`, so its own arrival is not new input.
 
@@ -1861,8 +1866,12 @@ them out of the registry for every agent (`SCHEDULE_TOOLS` in
 (`at`, `everySeconds`), a monitor (`until`, `repeat`) or the `pr` tool's watch
 does that work as a short synthetic notice. Cron and time zones are not
 carried over: no active schedule used them (both machines, 2026-11-06). The
-host's `/schedule` command stays (a plugin cannot remove a command); with
-the tools gone it has nothing to call.
+host's `/schedule` command, which tells the model to call those tools, comes
+from the same built-in plugin (`opencode.tool.schedule`); a plugin cannot
+remove a command, so `bun run daily` turns that plugin off in the server
+config (`-opencode.tool.schedule`, `BUILTIN_SCHEDULE_OFF` in
+`scripts/daily.ts`), and neither the tools nor `/schedule` are offered.
+Stored schedules and their API stay the host's.
 
 `bun scripts/migrate-schedules.ts` moves the active schedules over once: for
 each it plans the equivalent wake or monitor for its session (the mapping is
@@ -1874,7 +1883,8 @@ the schedule; what has no equivalent (cron, a Code Mode check, remaining
 runs) is skipped and named. `--rows <file>` reads another machine's rows
 (the script's `QUERY` through `sqlite3 -readonly -json`).
 `tests/wake-repeat.test.ts` runs `scenarios/wake-repeat.ts` in real OpenCode
-with `experimental.schedules` on: no request offers a schedule tool, and a
+with `experimental.schedules` on and the built-in schedule plugin off: no
+request offers a schedule tool, the server lists no `/schedule`, and a
 `repeat: "change"` monitor wakes the session once per change of a file.
 
 ### Jobs

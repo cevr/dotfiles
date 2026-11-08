@@ -569,12 +569,12 @@ export const runsLaws = (name: string, layer: (world: RunsWorld) => Layer.Layer<
         units: [
           { unit: "alpha", state: "implement" },
           { unit: "beta", state: "merged 1234567" },
-          { unit: "gamma", state: "ready", since: "2026-11-06T10:00Z" },
+          { unit: "gamma", state: "ready", since: "2026-11-06T10:00Z", cadence: "1 ready or 15 min" },
         ],
       },
       { name: "p2", units: [] },
     ]
-    test("the runs, each with its units' states and the time each entered it, in order", () =>
+    test("the runs, each with its units' states, the time each entered it and its batch cadence, in order", () =>
       check(
         layer(runs),
         Effect.gen(function* () {

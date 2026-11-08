@@ -9,6 +9,7 @@ import { Effect } from "effect"
 import * as Story from "@dotfiles/decider/story"
 import {
   BATCH_WAIT_MS,
+  cadenceOf,
   DRAFT_TTL_MS,
   DraftCleared,
   DraftSeen,
@@ -28,6 +29,7 @@ import {
   type ReadyUnit,
   ReportDraft,
   reportsOf,
+  riftOf,
   sinceOf,
   unitOf,
   unitsOf,
@@ -158,7 +160,7 @@ describe("what holds the nudge back", () => {
 describe("a due batch", () => {
   const ready = (count: number, since?: number): ReadonlyArray<ReadyUnit> =>
     ["lexer", "parser", "docs"].slice(0, count).map((unit) => (since === undefined ? { run: "p5", unit } : { run: "p5", unit, since }))
-  const LAND = 'land it with rift({ action: "land", rifts: ["p5/lexer", "p5/parser", "p5/docs"] }).'
+  const LAND = 'land it with rift({ action: "land", rifts: ["lexer", "parser", "docs"] }).'
 
   test("three ready units are due at once, two are not", () =>
     run(
@@ -192,7 +194,7 @@ describe("a due batch", () => {
         Nudged.make({
           moving: [],
           landing: ready(1, T),
-          line: 'idle with a batch due (lexer ready 30 min): lexer; land it with rift({ action: "land", rifts: ["p5/lexer"] }).',
+          line: 'idle with a batch due (lexer ready 30 min): lexer; land it with rift({ action: "land", rifts: ["lexer"] }).',
         }),
       ),
     ))
@@ -210,7 +212,7 @@ describe("a due batch", () => {
         Nudged.make({
           moving: [],
           landing: [{ run: "p5", unit: "lexer", since: T + 10 * MINUTE }, { run: "p5", unit: "parser", since: T }],
-          line: 'idle with a batch due (parser ready 35 min): lexer, parser; land it with rift({ action: "land", rifts: ["p5/lexer", "p5/parser"] }).',
+          line: 'idle with a batch due (parser ready 35 min): lexer, parser; land it with rift({ action: "land", rifts: ["lexer", "parser"] }).',
         }),
       ),
     ))
@@ -222,6 +224,43 @@ describe("a due batch", () => {
       Story.when(nudge({ ready: ready(3) })),
       Story.then(Nudged.make({ moving: MOVING, landing: ready(3), line: `${LINE} A batch due (3 ready): lexer, parser, docs; ${LAND}` })),
     ))
+
+  test("a unit's own cadence decides for it: one ready is due at once at `1 ready`, a longer wait holds past thirty minutes", () => {
+    const hot: ReadyUnit = { run: "p5", unit: "hotfix", since: T, cadence: { ready: 1, waitMs: 30 * MINUTE } }
+    const slow: ReadyUnit = { run: "p5", unit: "lexer", since: T, cadence: { ready: 4, waitMs: 60 * MINUTE } }
+    return run(
+      Story.given(idle),
+      Story.clock(T + 45 * MINUTE),
+      Story.when(nudge({ moving: [], ready: [slow] })),
+      Story.rejected(
+        new NotNudged({
+          why: "nothing-due",
+          detail: "no run of its holds a unit in plan, implement or verify, and its batch is not due: 1 ready, the oldest for 45 min (due at 4 or 60 min)",
+        }),
+      ),
+      Story.when(nudge({ moving: [], ready: [slow, { ...slow, unit: "parser" }, { ...slow, unit: "docs" }] })),
+      Story.rejected(
+        new NotNudged({
+          why: "nothing-due",
+          detail: "no run of its holds a unit in plan, implement or verify, and its batch is not due: 3 ready, the oldest for 45 min (due at 4 or 60 min)",
+        }),
+      ),
+      Story.when(nudge({ moving: [], ready: [slow, hot] })),
+      Story.then(
+        Nudged.make({ moving: [], landing: [slow, hot], line: 'idle with a batch due (2 ready): lexer, hotfix; land it with rift({ action: "land", rifts: ["lexer", "hotfix"] }).' }),
+      ),
+    )
+  })
+
+  test("a shorter wait of its own is due before thirty minutes", () => {
+    const quick: ReadyUnit = { run: "p5", unit: "lexer", since: T, cadence: { ready: 3, waitMs: 10 * MINUTE } }
+    return run(
+      Story.given(idle),
+      Story.clock(T + 10 * MINUTE),
+      Story.when(nudge({ moving: [], ready: [quick] })),
+      Story.then(Nudged.make({ moving: [], landing: [quick], line: 'idle with a batch due (lexer ready 10 min): lexer; land it with rift({ action: "land", rifts: ["lexer"] }).' })),
+    )
+  })
 
   test("a due batch is held like any nudge: by a wake, a question or a named wait", () =>
     run(
@@ -242,7 +281,7 @@ describe("the units and the line", () => {
         { unit: "parser", state: "merged abc1234" },
         { unit: "docs", state: "waiting(pr)" },
         { unit: "cli", state: "stuck(quota)" },
-        { unit: "fmt", state: "ready", since: "2026-11-06T10:00Z" },
+        { unit: "fmt", state: "ready", since: "2026-11-06T10:00Z", cadence: "1 ready or 15 min" },
         { unit: "lint", state: "ready", since: "garbled" },
       ],
     },
@@ -257,7 +296,7 @@ describe("the units and the line", () => {
         { run: "p5", unit: "lexer", state: "verify" },
       ],
       ready: [
-        { run: "p5", unit: "fmt", since: Date.parse("2026-11-06T10:00:00Z") },
+        { run: "p5", unit: "fmt", since: Date.parse("2026-11-06T10:00:00Z"), cadence: { ready: 1, waitMs: 15 * MINUTE } },
         { run: "p5", unit: "lint" },
       ],
     })
@@ -271,6 +310,18 @@ describe("the units and the line", () => {
     expect(sinceOf("")).toBeUndefined()
     expect(sinceOf(undefined)).toBeUndefined()
     expect(sinceOf("garbled")).toBeUndefined()
+  })
+
+  test("the status script's cadence reads as counts and a wait; anything else is the default", () => {
+    expect(cadenceOf("2 ready or 45 min")).toEqual({ ready: 2, waitMs: 45 * MINUTE })
+    expect(cadenceOf("0 ready or 0 min")).toEqual({ ready: 1, waitMs: 0 })
+    expect(cadenceOf(undefined)).toBeUndefined()
+    expect(cadenceOf("override: lands with hskokoro")).toBeUndefined()
+  })
+
+  test("a unit's Rift is the one the orchestrator made for it, named after the unit, as the rift tool finds it by name", () => {
+    // SKILL.md, plan: `.rifts/<repo>/<unit>` on branch `<run>/<unit>`; the tool matches a name to a Rift's directory.
+    expect(riftOf({ run: "hymnapp", unit: "hskokoro" })).toBe("hskokoro")
   })
 
   test("names the units, by run when they come from more than one, and counts past eight", () => {
@@ -289,7 +340,7 @@ describe("the units and the line", () => {
   test("the land call names every ready unit's Rift, past the eight the line lists", () => {
     const many = Array.from({ length: 9 }, (_, n) => ({ run: "r", unit: `u${n}` }))
     expect(lineOf({ moving: [], landing: { units: many, why: "9 ready" } })).toBe(
-      `idle with a batch due (9 ready): u0, u1, u2, u3, u4, u5, u6, u7 and 1 more; land it with rift({ action: "land", rifts: [${many.map((unit) => `"r/${unit.unit}"`).join(", ")}] }).`,
+      `idle with a batch due (9 ready): u0, u1, u2, u3, u4, u5, u6, u7 and 1 more; land it with rift({ action: "land", rifts: [${many.map((unit) => `"${unit.unit}"`).join(", ")}] }).`,
     )
   })
 
