@@ -50,6 +50,12 @@ describe("the caching rules", () => {
     expect(rules[2]?.findings[0]?.detail).toContain("MCP: browse")
   })
 
+  test("the billing stamp leading the system prompt passes: Anthropic leaves it out of the cache key", () => {
+    const rule = judgeRules({ ...clean, billingStampFirst: true }, quiet)[0]
+    expect(rule?.status).toBe("pass")
+    expect(rule?.findings).toContainEqual(expect.objectContaining({ status: "pass", file: "mods/anthropic-auth/request-body.ts" }))
+  })
+
   test("a fact not found warns: check by hand", () => {
     const { forkSkillsDelta: _, ...rest } = clean
     expect(judgeRules(rest, quiet)[1]?.findings[0]).toMatchObject({ status: "warn", detail: "not found: check by hand" })

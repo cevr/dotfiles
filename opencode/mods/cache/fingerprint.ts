@@ -9,8 +9,9 @@
 // so a dynamic line a few thousand tokens in is named, not the whole block;
 // each message's content part is a segment. `cache_control` markers are left
 // out of every hash: the provider moves them each request and they are not
-// part of the cached text. Only hashes and lengths are kept, and the first
-// words of a system paragraph, never a message's content.
+// part of the cached text, nor is Anthropic's billing stamp, which is no
+// segment at all (`BILLING_STAMP_PREFIX`). Only hashes and lengths are kept,
+// and the first words of a system paragraph, never a message's content.
 import { DEFAULT_TTL_MS, parseTtl } from "./ttl.ts"
 
 /** One hashed piece of a request's prompt. */
@@ -92,11 +93,21 @@ const toolName = (tool: unknown, index: number): string => {
   return `#${index}`
 }
 
+/**
+ * The billing stamp the Claude Code route puts first in the system prompt
+ * (mods/anthropic-auth/billing.ts). Anthropic reads it as request metadata and
+ * leaves it out of the cache key: a request whose stamp changed at a
+ * compaction still read some 24k tokens of system prompt past it (measured in
+ * the ledger, 2026-11). It is no segment, so a change of it names nothing.
+ */
+export const BILLING_STAMP_PREFIX = "x-anthropic-billing-header:"
+
 const systemSegments = (system: unknown): ReadonlyArray<Segment> => {
   if (typeof system === "string") return paragraphs("system[0]", system)
   if (!Array.isArray(system)) return []
   return system.flatMap((block: unknown, index) => {
     const text = textOf(block)
+    if (text?.startsWith(BILLING_STAMP_PREFIX)) return []
     return text === undefined ? [segment(`system[${index}]`, block)] : paragraphs(`system[${index}]`, text)
   })
 }
