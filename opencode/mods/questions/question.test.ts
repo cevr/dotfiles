@@ -3,7 +3,7 @@ import { Effect } from "effect"
 import * as Story from "@dotfiles/decider/story"
 import {
   Ask,
-  AnswerQuestion,
+  AnswerQuestions,
   Delivered,
   Dismiss,
   EMPTY,
@@ -143,15 +143,18 @@ describe("Ask", () => {
     ))
 })
 
-describe("AnswerQuestion, Dismiss and Delivered", () => {
+const answer = (delivery: string, ...answers: ReadonlyArray<readonly [string, string]>) =>
+  AnswerQuestions.make({ answers: answers.map(([id, text]) => ({ id, answer: text })), delivery })
+
+describe("AnswerQuestions, Dismiss and Delivered", () => {
   test("an answer is recorded with its message id; the question leaves the open list once delivered", () =>
     Effect.runPromise(
       story(
         Story.given<Event>(QuestionOpened.make({ question: port })),
-        Story.when(AnswerQuestion.make({ id: "q1", answer: " 3000 ", delivery: "msg_1" })),
+        Story.when(answer("msg_1", ["q1", " 3000 "])),
         Story.then<Event>(QuestionAnswered.make({ id: "q1", answer: "3000", delivery: "msg_1" })),
         Story.state({ next: 2, rows: [{ ...port, answered: { answer: "3000", delivery: "msg_1" } }] }),
-        Story.when(AnswerQuestion.make({ id: "q1", answer: "8080", delivery: "msg_2" })),
+        Story.when(answer("msg_2", ["q1", "8080"])),
         Story.rejected(new NotOpen({ id: "q1" })),
         Story.when(Delivered.make({ delivery: "msg_1" })),
         Story.then<Event>(QuestionClosed.make({ id: "q1", reason: "delivered" })),
@@ -165,10 +168,37 @@ describe("AnswerQuestion, Dismiss and Delivered", () => {
     Effect.runPromise(
       story(
         Story.given<Event>(QuestionOpened.make({ question: port })),
-        Story.when(AnswerQuestion.make({ id: "q1", answer: "  ", delivery: "msg_1" })),
+        Story.when(answer("msg_1", ["q1", "  "])),
         Story.rejected(new EmptyAnswer({ id: "q1" })),
-        Story.when(AnswerQuestion.make({ id: "q9", answer: "yes", delivery: "msg_1" })),
+        Story.when(answer("msg_1", ["q9", "yes"])),
         Story.rejected(new NotOpen({ id: "q9" })),
+      ),
+    ))
+
+  test("one submit records every answer under one message id, in the order asked; one delivery closes them all", () =>
+    Effect.runPromise(
+      story(
+        Story.given<Event>(QuestionOpened.make({ question: port }), QuestionOpened.make({ question: flag }), QuestionOpened.make({ question: asked("q3", "Third?") })),
+        Story.when(answer("msg_1", ["q3", "yes"], ["q1", "3000"], ["q1", "again"])),
+        Story.then<Event>(
+          QuestionAnswered.make({ id: "q1", answer: "3000", delivery: "msg_1" }),
+          QuestionAnswered.make({ id: "q3", answer: "yes", delivery: "msg_1" }),
+        ),
+        Story.when(Delivered.make({ delivery: "msg_1" })),
+        Story.then<Event>(QuestionClosed.make({ id: "q1", reason: "delivered" }), QuestionClosed.make({ id: "q3", reason: "delivered" })),
+        // The one left blank stays open.
+        Story.state({ next: 4, rows: [flag] }),
+      ),
+    ))
+
+  test("a submit leaves out a question no longer open, and is refused when nothing it answers is open", () =>
+    Effect.runPromise(
+      story(
+        Story.given<Event>(QuestionOpened.make({ question: port }), QuestionOpened.make({ question: flag }), QuestionClosed.make({ id: "q2", reason: "withdrawn" })),
+        Story.when(answer("msg_1", ["q2", "no"], ["q1", "3000"])),
+        Story.then<Event>(QuestionAnswered.make({ id: "q1", answer: "3000", delivery: "msg_1" })),
+        Story.when(answer("msg_2", ["q2", "no"])),
+        Story.rejected(new NotOpen({ id: "q2" })),
       ),
     ))
 

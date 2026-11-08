@@ -1710,32 +1710,41 @@ one line while the session or any of its subagents has questions open:
 
 With one question it reads `? 1 open question · <header> · assuming <assume> · shift+← /answer`;
 parts drop from the right as the width shrinks, the hotkey last but one. `/answer`,
-or shift+← on an empty composer, opens the pane in the line's place, on the
-oldest question. shift+← is also the composer's select-left: with text in the
-composer the key stays the composer's and selects (the hotkey's layer sits
-above the textarea's and hands the key on); with no question open it does
-nothing.
+or shift+← on an empty composer, opens OpenCode's own question form (the one
+its built-in `question` tool shows) in the composer's place: one form per
+asking session, holding every question that session has open, from all its
+asks, oldest first; the session on screen's first, then each subagent's,
+which names it (`Asked by general`). shift+← is also the composer's
+select-left: with text in the composer the key stays the composer's and
+selects (the hotkey's layer sits above the textarea's and hands the key on);
+with no question open it does nothing. A session that already has its form
+pending gets no second.
 
 ```
-? Question 1/3 · Cache store · asked just now
+Background questions
+Cache store  Old endpoint  Log format  Submit
 Which database should the cache use?
-▸ SQLite  assumed · one file, no server
-  Redis
-  Type your own answer
-↑↓ move · enter answer · type your own · ctrl+x dismiss · esc close
+1. SQLite
+   assumed · one file, no server
+2. Redis
+3. Type your own answer
+⇆ tab  ↑↓ select  enter confirm  esc dismiss
 ```
 
-The cursor starts on the assumption (a row of its own at the top when no
-choice names it); typing answers in your own words. Enter answers, `ctrl+x`
-twice dismisses (the agent is not told), Esc closes. A subagent's question
-names it: `· from general ·`. The pane closes with the last question.
-The cursor, the typed answer and a first `ctrl+x` stay while the questions
-are read again; they start over only when another question takes the top
-(the shown one was answered, dismissed, withdrawn or asked again, which gives
-it a new id): the pane then shows the next oldest, on its assumption.
+Each question is a tab; its choices come with the assumed one first, marked
+`assumed` (a choice of its own when no choice names it), and the last row
+types an answer of your own. Answer some, leave others blank, and submit once
+on the Submit tab (a form of one question submits on Enter). Every answer
+given goes to the asking session as one message; a blank question stays
+open, and Esc closes the form with all of them open. The form is the host's:
+its submit is the host's `form.replied` event, which the server plugin reads
+(the form's field keys are `ask_user_async:<id>`, `form.ts`). Dismissing a
+question without telling the agent is the RPC's `dismiss`; the form has no
+key for it.
 
-An answer goes to the session that asked as a synthetic user message,
-steered, so a running session reads it at its next step and an idle one wakes:
+The answers of one submit go to the session that asked as one synthetic user
+message, steered, so a running session reads it at its next step and an idle
+one wakes, once. One answer reads:
 
 ```
 Answer to your background question q1 (asked 2026-11-05T12:54:12.125Z):
@@ -1745,31 +1754,56 @@ A: Redis
 This differs from your assumption: revise the work that rests on it, and say what you changed.
 ```
 
-(or `This is what you assumed: carry on.`). The transcript draws it as one
-notice, `◈ answered · <question> → <answer>`; its metadata is
+(or `This is what you assumed: carry on.`). Several read:
+
+```
+Answers to your background questions q1, q2 and q4:
+
+q1 (asked 2026-11-05T12:54:12.125Z): Which database should the cache use?
+You assumed: SQLite
+A: Redis
+This differs from your assumption.
+
+q2 (asked …): Should the old /v1 endpoint stay for a release?
+You assumed: Keep it
+A: Keep it
+This is what you assumed.
+
+q4 (asked …): …
+
+Revise the work that rests on q1 and q4, and say what you changed; the rest are what you assumed.
+```
+
+(the last line is `Each is what you assumed: carry on.` when none differs,
+and `These differ from your assumptions: revise the work that rests on …`
+when all do). The transcript draws it as one notice,
+`◈ answered · <question> → <answer>`, or `◈ answered 3 · <q> → <a> · …`;
+its metadata is
 `{ source: "questions", answers: [{ id, question, header?, assume, answer, matches }] }`.
-The answer is recorded with the message's id before it is sent, so one that
-did not go (the server stopped) goes again under the same id when the TUI
-next reads or the plugin starts, and the session reads it once. A deleted
-session's questions go.
+The answers of a submit are recorded together, under the one message's id,
+before it is sent, so the batch is closed before it goes (a later submit
+takes a new id), and a message that did not go (the session refused it, the
+server stopped) goes again under the same id with the session's next answer
+or when the plugin starts; the session reads it once. Reading the open
+questions sends nothing. A deleted session's questions go.
 
 The questions are kept in the plugin's storage (OpenCode's database), one
 sheet per session. The TUI reads them over the `dotfiles-opencode.questions`
-RPC (`open`, `answer`, `dismiss`), again on its `changed` event and every 2
-seconds.
+RPC (`open`, `answer({ sessionID, answers: [{ id, answer }] })`, `dismiss`),
+again on its `changed` event and every 2 seconds.
 
 The model (the domain files at the root of `mods/questions`): `question.ts`
-is the `Questions` aggregate, deciding `Ask`, `Answer`, `Dismiss` and
-`Delivered`; `ask.ts` the tool's input, description and receipt; `reply.ts`
-the answer's message; `tray.ts` and `choices.ts` the line and the pane;
-`hotkey.ts` when shift+← opens the pane;
+is the `Questions` aggregate, deciding `Ask`, `AnswerQuestions`, `Dismiss`
+and `Delivered`; `ask.ts` the tool's input, description and receipt;
+`reply.ts` the answers' message; `form.ts` the form's fields and the answers
+its reply gives; `tray.ts` the line; `hotkey.ts` when shift+← opens the form;
 `model.ts` the `QuestionsModel` that keeps the sheets and sends the answers.
 It asks the `QuestionStore`, `Courier` and `Changes` contracts in
 `service.ts`, implemented in `opencode/` and `memory/`, with the laws in
-`laws.ts`. `tests/questions.test.ts` runs `scenarios/questions.ts` in real
-OpenCode, direct and from a kernel cell, and `scenarios/questions-hold.ts`
-for the hotkey and the pane holding its place across readings;
-`cmd/questions/tui.test.ts` checks the hotkey's binding on a stand-in TUI.
+`laws.ts`; `opencode/form.ts` opens the host's forms. `tests/questions.test.ts`
+runs `scenarios/questions.ts` in real OpenCode, direct and from a kernel
+cell; `cmd/questions/tui.test.ts` checks the hotkey's binding on a stand-in
+TUI.
 
 Where it departs from gent: a subagent may ask (gent refuses it in a child
 session), and its question shows in its parent's tray; ids are per session,

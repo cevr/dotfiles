@@ -2,10 +2,11 @@
 // `ask_user_async` tool writes and the /answer pane reads. A question opens
 // with the assumption the agent works on until an answer comes; it closes when
 // the agent withdraws it, asks it again (superseded), asks past the cap
-// (dropped), the user dismisses it, or its answer was delivered. An answer is
-// recorded on its row, with the id of the message that carries it, before it
-// is sent, so a send that stopped short goes again under the same id and the
-// session reads it once. Also the questions' RPC, which the TUI reads.
+// (dropped), the user dismisses it, or its answer was delivered. The answers
+// of one submit are recorded on their rows at once, all with the id of the one
+// message that carries them, before it is sent, so a send that stopped short
+// goes again under the same id and the session reads it once. Also the
+// questions' RPC, which the TUI reads.
 import { Effect, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 
@@ -90,9 +91,17 @@ export const Ask = Schema.TaggedStruct("Ask", {
 })
 export interface Ask extends Schema.Schema.Type<typeof Ask> {}
 
-/** Record the user's answer to an open question, and the message id that carries it. */
-export const AnswerQuestion = Schema.TaggedStruct("AnswerQuestion", { id: Schema.String, answer: Schema.String, delivery: Schema.String })
-export interface AnswerQuestion extends Schema.Schema.Type<typeof AnswerQuestion> {}
+/** One question's answer as the user gave it. */
+export const Given = Schema.Struct({ id: Schema.String, answer: Schema.String })
+export type Given = typeof Given.Type
+
+/**
+ * Record the answers the user gave in one submit, all under the one message id
+ * that carries them. Written at once, so the batch is closed before it is sent:
+ * a later submit takes a new id.
+ */
+export const AnswerQuestions = Schema.TaggedStruct("AnswerQuestions", { answers: Schema.Array(Given), delivery: Schema.String })
+export interface AnswerQuestions extends Schema.Schema.Type<typeof AnswerQuestions> {}
 
 /** Drop an open question without telling the agent. */
 export const Dismiss = Schema.TaggedStruct("Dismiss", { id: Schema.String })
@@ -102,7 +111,7 @@ export interface Dismiss extends Schema.Schema.Type<typeof Dismiss> {}
 export const Delivered = Schema.TaggedStruct("Delivered", { delivery: Schema.String })
 export interface Delivered extends Schema.Schema.Type<typeof Delivered> {}
 
-export type Command = Ask | AnswerQuestion | Dismiss | Delivered
+export type Command = Ask | AnswerQuestions | Dismiss | Delivered
 
 // ── Events ──
 
@@ -201,13 +210,21 @@ export const decideAsk = (state: Sheet, command: Ask, now: number): Effect.Effec
     return [...withdrawn, ...superseded, ...dropped, ...opened]
   })
 
-/** What an answer records: the answer and its message id on the open row. */
-export const decideAnswer = (state: Sheet, command: AnswerQuestion): Effect.Effect<ReadonlyArray<Event>, ReplyRejection> => {
-  const row = openOf(state.rows).find((candidate) => candidate.id === command.id)
-  if (row === undefined) return Effect.fail(new NotOpen({ id: command.id }))
-  const answer = command.answer.trim()
-  if (answer === "") return Effect.fail(new EmptyAnswer({ id: command.id }))
-  return Effect.succeed([QuestionAnswered.make({ id: row.id, answer, delivery: command.delivery })])
+/**
+ * What a submit records: each answer and the one message id on its open row,
+ * in the order asked. An answer to a question no longer open (withdrawn or
+ * answered meanwhile) is left out, and an id given twice counts once; a submit
+ * that answers nothing open is refused, as is an empty answer.
+ */
+export const decideAnswers = (state: Sheet, command: AnswerQuestions): Effect.Effect<ReadonlyArray<Event>, ReplyRejection> => {
+  const empty = command.answers.find((given) => given.answer.trim() === "")
+  if (empty !== undefined) return Effect.fail(new EmptyAnswer({ id: empty.id }))
+  const events = openOf(state.rows).flatMap((row) => {
+    const given = command.answers.find((candidate) => candidate.id.trim() === row.id)
+    return given === undefined ? [] : [QuestionAnswered.make({ id: row.id, answer: given.answer.trim(), delivery: command.delivery })]
+  })
+  if (events.length === 0) return Effect.fail(new NotOpen({ id: command.answers[0]?.id ?? "" }))
+  return Effect.succeed(events)
 }
 
 /** What a dismissal records: the open question closes. */
@@ -229,8 +246,8 @@ export const Questions: Decider<Sheet, Command, Event, Rejection> = {
     switch (command._tag) {
       case "Ask":
         return decideAsk(state, command, now)
-      case "AnswerQuestion":
-        return decideAnswer(state, command)
+      case "AnswerQuestions":
+        return decideAnswers(state, command)
       case "Dismiss":
         return decideDismiss(state, command)
       case "Delivered":
@@ -262,7 +279,9 @@ const text = { type: "string" } as const
 /**
  * The questions' RPC.
  * - `open({ sessionIDs })`: the open questions of those sessions, oldest first.
- * - `answer({ sessionID, id, answer })`: answer one; `Reply` says whether it reached the session.
+ * - `answer({ sessionID, answers: [{ id, answer }] })`: answer several of one
+ *   session's questions as one message; `Reply` says whether it reached the
+ *   session. The TUI answers through the host's form instead (form.ts).
  * - `dismiss({ sessionID, id })`: drop one without telling the agent.
  * - `changed({ sessionID })`: published after every change to a session's questions.
  */
@@ -270,7 +289,10 @@ export const QUESTIONS = {
   id: "dotfiles-opencode.questions",
   methods: {
     open: { input: object({ sessionIDs: { type: "array", items: text } }, ["sessionIDs"]), output: { type: "object" } },
-    answer: { input: object({ sessionID: text, id: text, answer: text }, ["sessionID", "id", "answer"]), output: { type: "object" } },
+    answer: {
+      input: object({ sessionID: text, answers: { type: "array", items: object({ id: text, answer: text }, ["id", "answer"]) } }, ["sessionID", "answers"]),
+      output: { type: "object" },
+    },
     dismiss: { input: object({ sessionID: text, id: text }, ["sessionID", "id"]), output: { type: "object" } },
   },
   events: {

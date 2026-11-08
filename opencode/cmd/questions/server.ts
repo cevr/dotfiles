@@ -11,9 +11,12 @@
  *   so a kernel cell reaches it as `tools.ask_user_async(...)`.
  * - `open({ sessionIDs })`, `answer(...)`, `dismiss(...)` for the TUI; every
  *   change publishes `changed({ sessionID })`.
- * - An answer arrives in the asking session as a synthetic steer message that
- *   wakes it when idle. One recorded but not delivered goes again when the
- *   TUI next reads, and when the plugin starts.
+ * - The TUI's /answer opens the host's question form for a session's open
+ *   questions (`@dotfiles/opencode-questions/form`); its submit comes back as
+ *   the host's `form.replied` event, and every answer it gives arrives in the
+ *   asking session as one synthetic steer message that wakes it when idle.
+ *   Answers recorded but not delivered go with the session's next answer, and
+ *   when the plugin starts.
  * - A deleted session's questions go.
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
@@ -22,7 +25,8 @@ import { AskInput, DESCRIPTION, explain, NAME, receipt } from "@dotfiles/opencod
 import * as Model from "@dotfiles/opencode-questions/model"
 import * as OpenCodeCourier from "@dotfiles/opencode-questions/opencode/courier"
 import * as OpenCodeStore from "@dotfiles/opencode-questions/opencode/store"
-import { type Open, QUESTIONS, type Rejection, type Reply } from "@dotfiles/opencode-questions/question"
+import { answersOf } from "@dotfiles/opencode-questions/form"
+import { Given, type Open, QUESTIONS, type Rejection, type Reply } from "@dotfiles/opencode-questions/question"
 import { Changes, type Courier, type DeliveryRefused, type QuestionStore, type QuestionsUnreadable } from "@dotfiles/opencode-questions/service"
 
 /** The live externals: the plugin's storage and the session inbox. */
@@ -38,7 +42,7 @@ const messageOf = (failure: Rejection | QuestionsUnreadable | DeliveryRefused) =
 }
 
 const OpenInput = Schema.Struct({ sessionIDs: Schema.Array(Schema.String) })
-const AnswerInput = Schema.Struct({ sessionID: Schema.String, id: Schema.String, answer: Schema.String })
+const AnswerInput = Schema.Struct({ sessionID: Schema.String, answers: Schema.Array(Given) })
 const DismissInput = Schema.Struct({ sessionID: Schema.String, id: Schema.String })
 
 const done: Reply = { ok: true }
@@ -71,6 +75,20 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionSto
         })
       })
 
+      // The /answer form's submit: every answer given goes to the asking session as one message.
+      yield* Effect.forkScoped(
+        ctx.event.subscribe({ types: ["form.replied"] }).pipe(
+          Stream.runForEach((event) => {
+            const answers = answersOf(event.data.answer)
+            if (answers === undefined || answers.length === 0) return Effect.void
+            return questions.answer(event.data.sessionID, answers).pipe(
+              Effect.catchCause((cause) => Effect.logWarning("questions: the form's answers were not recorded", { sessionID: event.data.sessionID, cause })),
+            )
+          }),
+          Effect.ignoreCause,
+        ),
+      )
+
       // A deleted session's questions go.
       yield* Effect.forkScoped(
         ctx.event.subscribe({ types: ["session.deleted"] }).pipe(
@@ -91,9 +109,9 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionSto
             Schema.decodeUnknownEffect(AnswerInput)(input).pipe(
               Effect.matchEffect({
                 onFailure: (error) => Effect.succeed(malformed(error)),
-                onSuccess: ({ sessionID, id, answer }) =>
-                  questions.answer(sessionID, id, answer).pipe(
-                    Effect.as(done),
+                onSuccess: ({ sessionID, answers }) =>
+                  questions.answer(sessionID, answers).pipe(
+                    Effect.map(({ skipped }): Reply => (skipped.length === 0 ? done : { ok: true, message: `No longer open, so not sent: ${skipped.join(", ")}.` })),
                     Effect.catch((failure) => Effect.succeed(refused(failure))),
                   ),
               }),

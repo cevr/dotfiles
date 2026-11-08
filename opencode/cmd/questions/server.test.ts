@@ -1,9 +1,10 @@
 // The plugin seam: the composition root on a stand-in host over the memory
 // doubles. It checks what OpenCode sees: the tool's answer and refusals, the
 // RPC's open list, an answer reaching the asking session (a subagent's too)
-// with a `changed` event per change, a refused delivery sent at the next start,
-// and a deleted session's questions going. tests/questions.test.ts runs it in
-// OpenCode.
+// with a `changed` event per change, the /answer form's submit (the host's
+// `form.replied`) reaching the session as one message, a refused delivery
+// sent at the next start, and a deleted session's questions going.
+// tests/questions.test.ts runs it in OpenCode.
 import { describe, expect, test } from "bun:test"
 import type { Tool } from "@opencode/plugin/effect"
 import { Effect, Layer, Queue, Schedule, Schema, type Scope, Stream } from "effect"
@@ -32,6 +33,7 @@ const start = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses
     const rpc: Record<string, Record<string, Handler>> = {}
     const emitted: Array<readonly [string, unknown]> = []
     const deletions = yield* Queue.unbounded<{ readonly type: "session.deleted"; readonly data: { readonly sessionID: string } }>()
+    const replies = yield* Queue.unbounded<{ readonly type: "form.replied"; readonly data: { readonly id: string; readonly sessionID: string; readonly answer: Record<string, unknown> } }>()
     let added: Added | undefined
     const host = {
       options: {},
@@ -42,7 +44,10 @@ const start = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses
             return { dispose: Effect.void }
           }),
       },
-      event: { subscribe: () => Stream.fromQueue(deletions) },
+      event: {
+        subscribe: (input: { readonly types: ReadonlyArray<string> }) =>
+          input.types.includes("form.replied") ? Stream.fromQueue(replies) : Stream.fromQueue(deletions),
+      },
       rpc: {
         register: (definition: { readonly id: string }, handlers: Record<string, Handler>) =>
           Effect.sync(() => {
@@ -76,7 +81,16 @@ const start = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses
       method(name).pipe(Effect.flatMap((handler) => handler(input)), Effect.flatMap(Schema.decodeUnknownEffect(Reply)), Effect.orDie)
     const deleteSession = (sessionID: string) => Queue.offer(deletions, { type: "session.deleted", data: { sessionID } })
     const inbox = (sessionID: string) => (sessions.inboxes.get(sessionID) ?? []).map((message) => message.letter)
-    return { tool, call, fail, open, reply, deleteSession, inbox, emitted }
+    /** The host's form submitted in `sessionID` with `answer`. */
+    const submit = (sessionID: string, answer: Record<string, unknown>) =>
+      Queue.offer(replies, { type: "form.replied", data: { id: `frm_${sessionID}`, sessionID, answer } })
+    /** Wait until `sessionID` holds `count` messages. */
+    const received = (sessionID: string, count: number) =>
+      Effect.suspend(() => (inbox(sessionID).length < count ? Effect.fail("not yet") : Effect.void)).pipe(
+        Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
+        Effect.orDie,
+      )
+    return { tool, call, fail, open, reply, deleteSession, inbox, emitted, submit, received }
   })
 
 const port = { question: "Which port should the dev server use?", header: "Port", options: [{ label: "8080" }, { label: "3000" }], assume: "8080" }
@@ -128,17 +142,42 @@ describe("answering", () => {
       Effect.gen(function* () {
         const plugin = yield* start()
         yield* plugin.call({ questions: [port] })
-        expect(yield* plugin.reply("answer", { sessionID: "ses_root", id: "q1", answer: "3000" })).toEqual({ ok: true })
+        expect(yield* plugin.reply("answer", { sessionID: "ses_root", answers: [{ id: "q1", answer: "3000" }] })).toEqual({ ok: true })
         const [letter, ...more] = plugin.inbox("ses_root")
         expect(more).toEqual([])
         expect(letter?.text).toContain("You assumed: 8080\nA: 3000\nThis differs from your assumption")
         expect(letter?.description).toBe("answered · Which port should the dev server use? → 3000")
         expect(yield* plugin.open("ses_root")).toEqual([])
-        expect(yield* plugin.reply("answer", { sessionID: "ses_root", id: "q1", answer: "3000" })).toEqual({ ok: false, message: "Question q1 is not open." })
+        expect(yield* plugin.reply("answer", { sessionID: "ses_root", answers: [{ id: "q1", answer: "3000" }] })).toEqual({
+          ok: false,
+          message: "Question q1 is not open.",
+        })
       }),
     ))
 
-  test("a subagent's question shows with its parent's and its answer goes to the subagent", () =>
+  test("the form's submit sends every answer given as one message; a blank one stays open, another form's reply is ignored", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        yield* plugin.call({ questions: [port, { question: "Keep the --legacy flag?", assume: "yes" }] })
+        yield* plugin.call({ questions: [{ question: "Which test runner?", assume: "bun test" }, { question: "Fourth?", assume: "no" }] })
+        yield* plugin.submit("ses_root", { q0: "a built-in question's answer" })
+        yield* plugin.submit("ses_root", {
+          "ask_user_async:q1": "3000",
+          "ask_user_async:q2": "yes",
+          "ask_user_async:q3": "vitest",
+          "ask_user_async:q4": "",
+        })
+        yield* plugin.received("ses_root", 1)
+        const [letter, ...more] = plugin.inbox("ses_root")
+        expect(more).toEqual([])
+        expect(letter?.text.split("\n")[0]).toBe("Answers to your background questions q1, q2 and q3:")
+        expect(letter?.text.split("\n").at(-1)).toBe("Revise the work that rests on q1 and q3, and say what you changed; the rest are what you assumed.")
+        expect((yield* plugin.open("ses_root")).map((question) => question.id)).toEqual(["q4"])
+      }),
+    ))
+
+  test("two sessions' forms are two messages, each in the session that asked; a subagent's question shows with its parent's", () =>
     scenario(
       Effect.gen(function* () {
         const plugin = yield* start()
@@ -149,9 +188,12 @@ describe("answering", () => {
           ["ses_root", "q1"],
           ["ses_child", "q1"],
         ])
-        yield* plugin.reply("answer", { sessionID: "ses_child", id: "q1", answer: "yes" })
+        yield* plugin.submit("ses_child", { "ask_user_async:q1": "yes" })
+        yield* plugin.submit("ses_root", { "ask_user_async:q1": "8080" })
+        yield* plugin.received("ses_root", 1)
+        yield* plugin.received("ses_child", 1)
         expect(plugin.inbox("ses_child").map((letter) => letter.description)).toEqual(["answered · Scan vendored code too? → yes"])
-        expect(plugin.inbox("ses_root")).toEqual([])
+        expect(plugin.inbox("ses_root").map((letter) => letter.description)).toEqual(["answered · Which port should the dev server use? → 8080"])
       }),
     ))
 
@@ -185,7 +227,7 @@ describe("answering", () => {
         const first = yield* start(sheets, sessions)
         yield* first.call({ questions: [port] })
         sessions.refusing.set("ses_root", "the session is reverting")
-        expect(yield* first.reply("answer", { sessionID: "ses_root", id: "q1", answer: "3000" })).toEqual({
+        expect(yield* first.reply("answer", { sessionID: "ses_root", answers: [{ id: "q1", answer: "3000" }] })).toEqual({
           ok: false,
           message: "The answer is saved and goes when the session takes it: the session is reverting",
         })

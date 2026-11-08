@@ -1,12 +1,13 @@
 // The TUI plugin seam: the composition root's setup (setup.ts) on a stand-in
-// TUI. It checks what the host sees: /answer as a slash command, and shift+←
-// bound in the base mode above the composer's own layer, opening the pane of
-// the session on screen when its composer is empty and handing the key on
-// (run returns false, so the composer selects) when the composer has text,
-// no question is open, the pane is open already or no session shows; and the
-// dock drawn in `session.composer.top`. tests/questions.test.ts runs it in
-// OpenCode.
+// TUI and a stand-in host form API. It checks what the host sees: /answer as a
+// slash command opening the host's question form for the open questions, and
+// shift+← bound in the base mode above the composer's own layer, opening it
+// when the composer is empty and handing the key on (run returns false, so
+// the composer selects) when the composer has text, no question is open or no
+// session shows; and the tray drawn in `session.composer.top`.
+// tests/questions.test.ts runs it in OpenCode.
 import { expect, test } from "bun:test"
+import type { FormInput } from "@dotfiles/opencode-questions/form"
 import type { Question } from "@dotfiles/opencode-questions/question"
 import { ANSWER, OPEN, setup } from "./setup.ts"
 
@@ -31,6 +32,7 @@ const start = (route: { readonly type: string; readonly sessionID?: string }, co
   const layers: Array<Layer> = []
   const slots: Array<{ readonly append: string; readonly render: (input: { readonly sessionID: string }) => unknown }> = []
   const toasts: Array<string> = []
+  const forms: Array<readonly [string, FormInput]> = []
   const ctx = {
     keymap: { layer: (make: () => Layer) => void layers.push(make()) },
     renderer: {
@@ -45,13 +47,21 @@ const start = (route: { readonly type: string; readonly sessionID?: string }, co
     },
   }
   const drawn: Array<string> = []
-  const questions = setup(ctx as unknown as Host, (input) => {
-    drawn.push(input.sessionID)
-    return "dock"
-  })
+  const questions = setup(
+    ctx as unknown as Host,
+    (input) => {
+      drawn.push(input.sessionID)
+      return "dock"
+    },
+    { pending: () => [], create: (sessionID, input) => Promise.resolve(void forms.push([sessionID, input])), asker: (sessionID) => sessionID },
+  )
   const layerOf = (id: string) => layers.find((layer) => layer.commands.some((command) => command.id === id))
   const command = (id: string) => layers.flatMap((layer) => layer.commands).find((candidate) => candidate.id === id)
-  return { questions, layerOf, command, slots, drawn, toasts, composer }
+  const opened = async () => {
+    await Bun.sleep(0)
+    return forms.map(([sessionID, input]) => [sessionID, input.fields.map((field) => field.key)])
+  }
+  return { questions, layerOf, command, slots, drawn, toasts, composer, opened }
 }
 
 test("shift+← is bound in the base mode, above the composer's own layer", () => {
@@ -62,42 +72,39 @@ test("shift+← is bound in the base mode, above the composer's own layer", () =
   expect(plugin.layerOf(OPEN)?.priority).toBe(1)
 })
 
-test("on an empty composer shift+← opens the pane of the session on screen", () => {
+test("on an empty composer shift+← opens the host's form for the session's questions", async () => {
   const plugin = start({ type: "session", sessionID: "ses_root" })
   plugin.questions.setOpen("ses_root", [asked])
   expect(plugin.command(OPEN)?.run()).toBeUndefined()
-  expect(plugin.questions.pane()).toBe("ses_root")
-  // Pressed again with the pane open, it hands the key on.
-  expect(plugin.command(OPEN)?.run()).toBe(false)
+  expect(await plugin.opened()).toEqual([["ses_root", ["ask_user_async:q1"]]])
 })
 
-test("with text in the composer shift+← goes on to the composer, and the pane stays shut", () => {
+test("with text in the composer shift+← goes on to the composer, and no form opens", async () => {
   const plugin = start({ type: "session", sessionID: "ses_root" }, { plainText: "draft" })
   plugin.questions.setOpen("ses_root", [asked])
   expect(plugin.command(OPEN)?.run()).toBe(false)
-  expect(plugin.questions.pane()).toBeUndefined()
+  expect(await plugin.opened()).toEqual([])
 })
 
 test("with no open question or no session on screen, shift+← goes on quietly", () => {
   const empty = start({ type: "session", sessionID: "ses_root" })
   expect(empty.command(OPEN)?.run()).toBe(false)
-  expect(empty.questions.pane()).toBeUndefined()
   expect(empty.toasts).toEqual([])
   const home = start({ type: "home" }, null)
   expect(home.command(OPEN)?.run()).toBe(false)
 })
 
-test("/answer opens the pane, or says there is nothing to answer", () => {
+test("/answer opens the form, or says there is nothing to answer", async () => {
   const plugin = start({ type: "session", sessionID: "ses_root" })
   expect(plugin.command(ANSWER)?.slash?.name).toBe("answer")
   plugin.command(ANSWER)?.run()
   expect(plugin.toasts).toEqual(["No open questions"])
   plugin.questions.setOpen("ses_root", [asked])
   plugin.command(ANSWER)?.run()
-  expect(plugin.questions.pane()).toBe("ses_root")
+  expect(await plugin.opened()).toEqual([["ses_root", ["ask_user_async:q1"]]])
 })
 
-test("the dock draws above the composer for the session the slot names", () => {
+test("the tray draws above the composer for the session the slot names", () => {
   const plugin = start({ type: "session", sessionID: "ses_root" })
   expect(plugin.slots.map((slot) => slot.append)).toEqual(["session.composer.top"])
   expect(plugin.slots[0]?.render({ sessionID: "ses_root" })).toBe("dock")
