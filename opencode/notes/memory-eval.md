@@ -8,7 +8,132 @@ tool, (3) the use cases are weak. This note gives the eval, its results and a
 recommendation. The script is `scripts/memory-eval/`; the design of memory
 itself is `notes/memory.md`.
 
-## Recommendation
+Two rounds ran. Round 1 compared our tools, a pointer line, the native tool
+and no memory. Round 2 took up round 1's three follow-ups: string tags, a
+`kernel` arm for the production surface, and a trigger for gotchas. Round 2
+comes first below, then round 1.
+
+## Round 2: the kernel arm, the gotcha trigger, string tags
+
+### Recommendation (round 2)
+
+1. **The kernel hides memory completely. Fix that before anything else.** In
+   7 kernel episodes no agent saved a note (0 of 21 facts) and none touched
+   memory at all: no `tools.memory_*` call, no `tools.docs` of it. In the same
+   run, `ours` saved 9 of 15 facts (round 1: 49 of 66). After the owner's
+   correction a kernel agent answered "Got it! I'll remember: 1. Never stage
+   `codex/config.toml` …" and saved nothing. Session 2 then had no digest and
+   honoured 2 of 15 facts (`none` in round 1: 9%). This is the likeliest
+   cause of the 4 saves in 105 production sessions (measured here on Haiku
+   4.5; production runs other models, so the size of the effect there is
+   inferred). The simplest fix to try next:
+   offer `memory_save`, `memory_search` and `memory_forget` as direct tools
+   beside the kernel even in `codeOnly`. Round 1 measured that shape as
+   `ours`. That puts three small definitions in the cached prefix. Measure it
+   as a `kernel+direct` arm before it ships; the API credit ran out before
+   this round could.
+2. **Do not build the gotcha trigger as tested.** The line was appended to
+   the result of a shell retry that fixed a failure. It fired at the gotcha
+   in 4 of 5 session-1 episodes, and the agent saved the gotcha in none of
+   them (0 of 4 pure gotchas; billing's `uv run` is confounded, see round 1).
+   Each time it read the line and went on to commit. Junk stayed at zero (no
+   off-list notes) and the other facts did not suffer (corrections 5 of 5,
+   preferences 5 of 5 saved), so the line is harmless, but it does not help.
+   The detector (`scripts/memory-eval/retry.ts`, unit-tested) stays in the
+   eval and is not in the plugin. One more point against building it at
+   the shell seam: kernel agents reached for `child_process`, `fs` and `Bun`
+   far more than for `tools.shell` and `tools.read`. In the kernel
+   transcripts, 151 lines name `execSync`, `readFileSync` or `Bun.` and 21
+   name `tools.shell` or `tools.read`. In production those calls bypass the
+   shell tool, so a `tool.execute.after` hook on `shell` would miss most
+   retries (inferred from the eval; the real kernel really runs them). Candidates for a later
+   round: an imperative line that names the fix ("Save this with
+   memory_save: <the changed command>"), or a sentence in the save
+   description about "a command that failed until you changed how you ran
+   it".
+3. **String tags: done.** `memory_save` accepts `tags` as a comma-separated
+   string. It splits on commas, trims each tag and drops empty ones
+   (`mods/memory/notebook.ts`, `Tags`; tests in `notebook.test.ts`). The
+   JSON Schema offers `string[] | string`. In this round's run Haiku sent
+   tags as a string in 8 of its 11 saves, and none was refused. Round 1 had
+   14 refusals for this.
+
+### How round 2 ran (measured)
+
+- **Model `claude-haiku-4-5-20251001`.** One probe of `claude-haiku-5-5`
+  got 429s for 5 s and no answer, as in round 1.
+- **Spend: $1.17 of the $3 cap**: two dry runs ($0.08, $0.23) and the run
+  ($0.86). Then the run stopped: from its 16th episode on, every request
+  answered `400 invalid_request_error: Your credit balance is too low`.
+  So the run graded 15 of 48 planned episodes, 5 per arm, about one per
+  scenario, and 33 failed to start. Treat the per-fact cells as anecdotes.
+  Only the kernel result (0 notes in 7 episodes against 9 of 15 facts
+  saved) and the trigger's 0 of 4 are clear.
+- Raw data: `~/.cache/memory-eval/2026-11-08-run2/` (the run, its log at
+  `~/.cache/memory-eval/run2.log`), `…-run2-dry/` and `…-run2-dry2/`. The
+  first dry run's kernel episode used a harness that still answered direct
+  tool calls in the kernel arm, so it is left out. The second dry run's
+  `kernel` and `kernel+nudge` episodes ran on the final harness, except for
+  `stdio: "inherit"` and `process.exit`. Both saved nothing and are counted
+  in the "7 kernel episodes" above, with the run's 5.
+
+### The new arms
+
+- **`kernel`**: the agent's only tool is `kernel`, with the real description
+  (`mods/kernel/description.ts` in runtime mode) over the real 50-tool
+  catalog of 2026-11-08. Each line's name and summary come from
+  `mods/kernel/catalog.fixture.ts` through `firstSentence`, and the shell's
+  line from `IN_A_CELL`. Each input is as a frozen production description
+  printed it (`scripts/memory-eval/kernel-inputs.ts`, taken from a
+  read-only copy of the Mac's `opencode.db`, `kernel-catalog:` entry).
+  Memory's three lines are rendered by the real `catalog()` from the real
+  schemas. A cell is compiled as the worker compiles it (`Bun.Transpiler`,
+  `replMode`) and runs in a `vm` context that persists for the session.
+  `tools.<name>(input)` reaches the eval's fake world and our memory store,
+  and `tools.shell` resolves to a real handle (`worker/shell-handle.ts`).
+  `tools.list`, `tools.docs` and `tools.docs.search` work as in the worker.
+  Production cells also reach `child_process`, `fs` and `Bun`, and the
+  agents used them first, so small stand-ins route those to the fake world
+  as `shell`, `read` and `write` calls, which the graders see. A direct
+  call of any other tool name is refused with OpenCode's words ("Tool is
+  not available for this request: read"). Haiku tried that 20 times in 5
+  episodes. Session 2 gets the same digest as `ours`.
+- **`ours+nudge`**: `ours`, plus one line appended to a successful shell
+  result when it is a changed retry of a failure among the last 3 commands
+  (most of the shorter command's words in the other, not the same command):
+  "A retry fixed a failure: if the fix is a durable fact about this repo or
+  machine, memory_save it." It goes in the tool result, never the system
+  prompt.
+- `kernel+nudge` exists, with the line on the cell's answer. It ran once,
+  in a dry run.
+
+### Round 2 results (15 episodes, Haiku 4.5)
+
+| arm | n | facts saved (s1) | s2 digest | s2 facts honoured | honoured when saved | off-list notes s1/s2 | requests s1/s2 | $/episode |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ours | 5 | 60% (9/15) | 80% (4/5) | 47% (7/15) | 78% (7/9) | 0.0 / 0.0 | 16.8 / 14.0 | $0.047 |
+| kernel | 5 | 0% (0/15) | 0% (0/5) | 13% (2/15) | – | 0.0 / 0.0 | 15.8 / 15.8 | $0.054 |
+| ours+nudge | 5 | 73% (11/15) | 100% (5/5) | 67% (10/15) | 91% (10/11) | 0.0 / 0.0 | 16.8 / 14.0 | $0.046 |
+
+| arm | correction saved → honoured | gotcha saved → honoured | preference saved → honoured |
+| --- | --- | --- | --- |
+| ours | 4/5 → 3/5 | 1/5 → 1/5 (billing, confounded) | 4/5 → 3/5 |
+| kernel | 0/5 → 2/5 | 0/5 → 0/5 | 0/5 → 0/5 |
+| ours+nudge | 5/5 → 5/5 | 1/5 → 1/5 (billing, confounded) | 5/5 → 4/5 |
+
+The gotcha trigger in `ours+nudge`: 4 tool results carried the line in
+session 1 (4 of 5 episodes, each time at the scenario's gotcha: `TEST_ENV=unit
+npm test`, `OPENCODE_DEV=$HOME/… bun run gate`, `go test -short …`) and 2 in
+session 2. The 6 memory writes in session 1 all came after the owner's
+correction; none followed the line.
+
+One `ours` episode (webapp #0) saved nothing at all, which round 1 never
+saw (22 of 22 saved). With 5 episodes that is one sample. It is not a
+change from round 1.
+
+## Round 1: recommendation
+
+The sections from here to "Running it" are round 1's.
 
 1. **Keep our shape: three tools and the start-of-session digest.** It beat
    the native tool on every kind of fact the owner states: corrections were
@@ -29,7 +154,8 @@ itself is `notes/memory.md`.
    because its progress log happened to record the working command. Worth
    building: a nudge when a command failed and a changed retry succeeded (a
    hook, or the save description naming "a command that failed until you
-   changed how you ran it").
+   changed how you ran it"). (Round 2 tested the hook's line: no gotcha
+   was saved.)
 5. **Test the production surface next.** This eval offers the memory tools as
    direct tools with their full descriptions. In production the kernel is the
    agents' only tool (`codeOnly`, the default): memory is one catalog line in
@@ -38,10 +164,11 @@ itself is `notes/memory.md`.
    measured here): the same model saved on every correction when it could see
    the tool. A `kernel` arm, which renders the real catalog line and runs
    `tools.memory_save(...)` from a cell, is the next arm to add; or register
-   the memory tools beside the kernel and measure the sessions.
+   the memory tools beside the kernel and measure the sessions. (Round 2
+   added the `kernel` arm: 0 notes in 7 episodes.)
 6. **Small fixes the transcripts show.** Haiku passed `tags` as a
    comma-separated string in 14 calls and was refused (`Expected array`); accept a
-   string and split it. Notes bundle two or three facts in one line ("public
+   string and split it (done in round 2). Notes bundle two or three facts in one line ("public
    repo: never stage codex/config.toml; stage by path; never push"), against
    "one fact per note"; harmless for the digest, worse for search and for
    correcting one fact by id.
@@ -259,6 +386,7 @@ From `opencode/`:
 bun scripts/memory-eval/eval.ts --dry                      # one episode per arm
 bun scripts/memory-eval/eval.ts --repeats 8 --cap 5        # the full run
 bun scripts/memory-eval/eval.ts --model claude-haiku-4-5-20251001 --repeats 8 --cap 4.35
+bun scripts/memory-eval/eval.ts --arms ours,kernel,ours+nudge --repeats 4 --cap 2.5   # round 2's run
 bun scripts/memory-eval/report.ts <out>/episodes.jsonl     # regrade and summarize a run
 bun scripts/memory-eval/show.ts <out>/episodes.jsonl native orders --s2   # read transcripts
 ```
