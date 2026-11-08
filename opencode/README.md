@@ -2472,7 +2472,11 @@ one import override per context; see `ARCHITECTURE.md`), and its warnings are
 advice. `git diff --check` checks patch whitespace. The typecheck links every
 workspace package (`mods/*`, `cmd/*`, `decider`) to the fork's installed host
 packages; run `bun run link-fork` before and after `bun install` (an install
-drops the links), and install only when changing the lock file. If working in a Rift, set `GENT_SOURCE` to
+drops the links), and install only when changing the lock file. Link-fork, and
+with it the gate, typecheck, accept and daily, first checks that `OPENCODE_DEV`
+is an OpenCode checkout on this machine whose `packages/tui/node_modules` all
+resolve (`scripts/fork.ts`), and stops before touching anything when it is not:
+a Mac path on the workbox would leave every TUI plugin without `solid-js`. If working in a Rift, set `GENT_SOURCE` to
 its source checkout so the gent pool integration tests run instead of
 skipping.
 

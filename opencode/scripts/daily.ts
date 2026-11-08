@@ -25,6 +25,7 @@ import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } from "../testbeds/gamut/gamut.ts"
+import { checkFork } from "./fork.ts"
 import { forkChecks, mergeUpstream } from "./upstream.ts"
 
 const MODS = resolve(import.meta.dir, "../mods")
@@ -227,9 +228,11 @@ const writeJson = (path: string, value: Json) => {
 
 if (import.meta.main) {
   const home = homedir()
-  const fork = resolve(process.env.OPENCODE_DEV || DEFAULT_FORK)
+  const checked = checkFork(process.env.OPENCODE_DEV || DEFAULT_FORK)
+  if ("problem" in checked) throw new Error(checked.problem)
+  const fork = checked.fork
   const cli = join(fork, "packages/cli")
-  if (!existsSync(join(cli, "script/build.ts"))) throw new Error(`no OpenCode checkout at ${fork}: set OPENCODE_DEV`)
+  if (!existsSync(join(cli, "script/build.ts"))) throw new Error(`no OpenCode checkout at ${fork}: expected packages/cli/script/build.ts; set OPENCODE_DEV`)
   // Step 0 (the Mac only): merge upstream OpenCode into prime-look (scripts/upstream.ts).
   const state = join(home, ".local/state/opencode-daily")
   const upstream = (dryRun: boolean) =>

@@ -129,6 +129,18 @@ describe("link-fork", () => {
     expect(dangling()).toEqual([])
   })
 
+  test("accept runs the same check, before it runs or lists any test", () => {
+    const child = Bun.spawnSync([process.execPath, join(import.meta.dir, "accept.ts"), "--list"], {
+      cwd: join(import.meta.dir, ".."),
+      env: { ...process.env, OPENCODE_DEV: ELSEWHERE },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    expect(child.exitCode).not.toBe(0)
+    expect(child.stdout.toString()).toBe("")
+    expect(child.stderr.toString()).toContain(`accept: OPENCODE_DEV is '${ELSEWHERE}', which does not exist`)
+  })
+
   test("repairs the links an earlier run left into a fork that is gone, the ones the new fork lacks too", () => {
     for (const dir of packages()) {
       const modules = join(dir, "node_modules")
