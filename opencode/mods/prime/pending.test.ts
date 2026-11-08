@@ -1,7 +1,7 @@
 // What the runner has not taken: which prompts wait, the queued rows that show
 // them, and what the loader names and times while a compaction or a turn runs.
 import { describe, expect, test } from "bun:test"
-import { isWaiting, loader, loaderMargin, queuedRow, waitingPrompts, type PendingItem } from "./pending.ts"
+import { isWaiting, loader, queuedRow, waitingPrompts, type PendingItem } from "./pending.ts"
 import type { Message } from "./session.ts"
 
 const steer = (id: string, created: number, text: string): PendingItem => ({
@@ -54,14 +54,6 @@ describe("the prompts the runner has not taken", () => {
 })
 
 describe("the loader", () => {
-  test("its blank row is the hidden prompt's gap while a steer waits, its own otherwise", () => {
-    expect(loaderMargin([steer("msg_b", 2, "x")], 1)).toBe(0)
-    expect(loaderMargin([], 1)).toBe(1)
-    // Overview gives a prompt no gap, and a queue-delivery prompt has no row at all.
-    expect(loaderMargin([steer("msg_b", 2, "x")], 0)).toBe(1)
-    expect(loaderMargin([{ ...steer("msg_q", 2, "x"), delivery: "queue" }], 1)).toBe(1)
-  })
-
   test("a compaction running in the current run is `Compacting`, from the compaction's start", () => {
     const messages = [user("msg_1", 100), step("msg_2", 110), compaction("msg_3", 500, "running"), user("msg_4", 600)]
     expect(loader(messages, [steer("msg_4", 600, "next")])).toEqual({ label: "Compacting", since: 500 })

@@ -26,7 +26,11 @@ function textOf(payload: unknown) {
   return typeof payload.text === "string" ? payload.text : ""
 }
 
-/** Whether the message is a prompt the runner has not taken: the transcript leaves it out until it has. */
+/**
+ * Whether the message is a prompt the runner has not taken: the transcript
+ * leaves it out until it has, its row's gap too (the layout rule's
+ * `messageID`, cmd/prime/tui.tsx), so it takes no space.
+ */
 export function isWaiting(pending: ReadonlyArray<PendingItem>, messageID: string) {
   return pending.some((item) => item.id === messageID && item.type === "user")
 }
@@ -50,16 +54,6 @@ export const QUEUED = "◌ queued · "
 /** A queued row in `width` cells: `◌ queued · Also update the docs.`, its text on one line, cut to fit. */
 export function queuedRow(prompt: WaitingPrompt, width: number) {
   return QUEUED + oneLine(prompt.text, Math.max(1, width - [...QUEUED].length))
-}
-
-/**
- * The loader's blank row above it. The host still lays out a row, empty, for
- * each prompt the transcript leaves out, with the gap a prompt gets
- * (`userGap`, detail.ts `rowGap`), right above the loader; that gap is then
- * the loader's blank row. Two waiting prompts or more leave a blank row each.
- */
-export function loaderMargin(pending: ReadonlyArray<PendingItem>, userGap: number) {
-  return userGap > 0 && waitingPrompts(pending).length > 0 ? 0 : 1
 }
 
 /** What the loader says, and since when it counts. */
