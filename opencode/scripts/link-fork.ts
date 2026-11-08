@@ -12,21 +12,23 @@
 // the fork) and again after it: an install that changes a package's
 // node_modules drops the links it did not make. The TUI plugins resolve
 // `solid-js` through these links when OpenCode loads them.
+//
+// It checks the fork first (scripts/fork.ts) and touches nothing when the
+// check fails: a path from another machine, or a fork whose own install points
+// nowhere, would leave every TUI plugin without `solid-js`. A link of ours that
+// points nowhere, left by a run against a fork that is gone, is removed.
 import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, rmSync, symlinkSync } from "node:fs"
 import path from "node:path"
+import { checkFork, FORK_MODULES } from "./fork.ts"
 
-const dev = process.env.OPENCODE_DEV
-if (!dev) {
-  console.error("OPENCODE_DEV is not set: point it at an OpenCode checkout, e.g. the prime-look Rift.")
+const checked = checkFork(process.env.OPENCODE_DEV)
+if ("problem" in checked) {
+  console.error(`link-fork: ${checked.problem}`)
   process.exit(1)
 }
-const target = path.resolve(dev, "packages/tui/node_modules")
-if (!existsSync(path.join(target, "@opencode/plugin"))) {
-  console.error(`${target} has no @opencode/plugin: run bun install in ${dev} first.`)
-  process.exit(1)
-}
+const target = checked.modules
 
-const forkModules = path.join("packages", "tui", "node_modules") + path.sep
+const forkModules = path.normalize(FORK_MODULES) + path.sep
 const root = path.resolve(import.meta.dir, "..")
 const children = (dir: string) => (existsSync(dir) ? readdirSync(dir).map((name) => path.join(dir, name)) : [])
 const packages = [...children(path.join(root, "mods")), ...children(path.join(root, "cmd")), path.join(root, "decider")].filter(
@@ -42,6 +44,19 @@ const linkOf = (file: string) => {
   }
 }
 
+/** A link into this fork's, or another checkout's, packages/tui/node_modules: ours to repoint or remove. */
+const ours = (link: string | undefined): link is string => link !== undefined && link !== "real" && link.includes(forkModules)
+
+/** Removes the links of ours in `dir` (one level into scopes) that point nowhere. */
+const prune = (dir: string) => {
+  for (const name of readdirSync(dir)) {
+    const entry = path.join(dir, name)
+    const current = linkOf(entry)
+    if (ours(current) && !existsSync(entry)) rmSync(entry)
+    else if (current === "real" && name.startsWith("@") && lstatSync(entry).isDirectory()) prune(entry)
+  }
+}
+
 /** Links each entry of `from` missing in `into`; a scope both have is merged one level down. */
 const merge = (from: string, into: string) => {
   for (const name of readdirSync(from)) {
@@ -51,8 +66,7 @@ const merge = (from: string, into: string) => {
     const current = linkOf(link)
     if (current === undefined) symlinkSync(source, link)
     else if (current === "real" && name.startsWith("@") && lstatSync(link).isDirectory()) merge(source, link)
-    // A link into this fork, or into another checkout's packages/tui/node_modules, is ours to repoint.
-    else if (current !== "real" && current !== source && current.includes(forkModules)) {
+    else if (ours(current) && current !== source) {
       rmSync(link)
       symlinkSync(source, link)
     }
@@ -64,5 +78,6 @@ for (const dir of packages) {
   // An older checkout linked the whole directory to a fork: replace the link with a directory.
   if (linkOf(modules) !== undefined && linkOf(modules) !== "real") rmSync(modules)
   mkdirSync(modules, { recursive: true })
+  prune(modules)
   merge(target, modules)
 }
