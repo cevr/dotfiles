@@ -464,6 +464,55 @@ describe('rewriteRequestBody', () => {
     aliases.dispose()
   })
 
+  test('a compaction changes only the billing stamp before the first breakpoint, a block with no breakpoint of its own', () => {
+    const request = (messages: Array<{ role: string; content: string }>) =>
+      JSON.stringify({
+        tools: [{ name: 'bash', description: 'Run a command.', input_schema: { type: 'object' } }],
+        system: [
+          { type: 'text', text: REALISTIC_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+          { type: 'text', text: 'Project instructions.', cache_control: { type: 'ephemeral' } },
+        ],
+        messages,
+      })
+    // One session: its first request, then its first request after a compaction,
+    // whose conversation starts at the summary.
+    const before = JSON.parse(
+      rewriteRequestBody(
+        request([
+          { role: 'user', content: 'Fix the login bug in auth.ts, please.' },
+          { role: 'assistant', content: 'Looking at auth.ts.' },
+          { role: 'user', content: 'Go on.' },
+        ]),
+      ),
+    )
+    const after = JSON.parse(
+      rewriteRequestBody(
+        request([
+          { role: 'user', content: 'What did we do so far?' },
+          { role: 'assistant', content: 'We fixed the login bug.' },
+          { role: 'user', content: 'Go on.' },
+        ]),
+      ),
+    )
+    const firstBreakpoint = (system: Array<{ cache_control?: unknown }>) =>
+      system.findIndex((block) => block.cache_control !== undefined)
+    const cachedPrefix = (body: { tools: unknown; system: Array<{ cache_control?: unknown }> }) =>
+      JSON.stringify([body.tools, body.system.slice(1, firstBreakpoint(body.system) + 1)])
+
+    // The stamp leads the system prompt as Claude Code sends it, and follows the
+    // first user message, so the compaction changed it ...
+    expect(before.system[0].text).toStartWith('x-anthropic-billing-header:')
+    expect(after.system[0].text).toStartWith('x-anthropic-billing-header:')
+    expect(after.system[0].text).not.toBe(before.system[0].text)
+    // ... but it carries no breakpoint, and Anthropic reads it as metadata, out
+    // of the cache key: everything else up to the first breakpoint is byte-identical.
+    expect(before.system[0]).toEqual({ type: 'text', text: before.system[0].text })
+    expect(firstBreakpoint(before.system)).toBe(2)
+    expect(firstBreakpoint(after.system)).toBe(2)
+    expect(cachedPrefix(after)).toBe(cachedPrefix(before))
+    expect(JSON.stringify(after.system.slice(1))).toBe(JSON.stringify(before.system.slice(1)))
+  })
+
   test('is byte-idempotent when there are no users or tools', () => {
     const body = JSON.stringify({ system: 'Only instructions', messages: [] })
     const once = rewriteRequestBody(body)

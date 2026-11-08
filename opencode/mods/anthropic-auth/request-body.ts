@@ -117,7 +117,12 @@ export function rewriteRequestBody(
   const system = prependClaudeCodeIdentity(parsed.system).filter((block) => !isBillingBlock(block))
 
   // Prepend the billing header as a separate system block so the
-  // final layout is: [billing header, identity, ...rest]
+  // final layout is: [billing header, identity, ...rest], Claude Code's own.
+  // It follows the first user message, so a compaction changes it; it carries
+  // no breakpoint, and Anthropic reads it as metadata and leaves it out of the
+  // cache key: the request after a compaction still reads the system prompt
+  // past it (measured, mods/cache/fingerprint.ts). Freezing it per session
+  // would send a stamp that no longer matches the first message, for no cache gain.
   if (billingHeader) {
     system.unshift({ type: "text", text: billingHeader })
   }
