@@ -174,3 +174,67 @@ That decides between fixes 1–2 (ours) and 3–4 (core) first. The worker proto
 - `~/.local/share/strobe/` (24 MB): the recordings above.
 - `/tmp/opencode/perf-freeze/`: scratch with the scripts, timelines and the freeze-catch log.
 - No system package was installed and no sysctl was changed.
+
+These were removed after that run.
+
+# Under load (workbox, 2026-11-08 00:26–00:46 UTC)
+
+The machine: load 39/34/22 on 16 vCPUs at the start, CPU pressure `some` avg60 53%, then 13–22 while recording. Nearly all of it was Go builds and tests at nice 0 from five `systemd-run --user --wait --pipe` units the ergo verifiers started (about 12 cores); see "Who ran the Go work". **measured**
+
+## What it says
+
+- **OpenCode is not where the load is, and the TUIs did not freeze.** No recording had a single second with the main thread ≥90% busy. **measured**
+  - Server: 0.23–0.24 cores over the whole process, its main thread at 17% on average, peaking at 642 ms in one second.
+  - The busiest TUIs: 0.03–0.09 cores, main thread 2–6% on average.
+  - Before the fixes above, the bite-20590 TUI ran at 80–88% for whole minutes. The workbox's server and TUIs restarted at about 00:30 during this run, so this is not a like-for-like bench of fixes 1–3. **inferred**
+- **An idle TUI's time is its timers and the allocator, not its store.**
+  - Timers are 38–50% of the TUI's samples, and OpenTUI's native render and Yoga layout 5–13%.
+  - Solid's store proxies are 3–4% (23–25% in the frozen TUI), and the microtask drain 10–38% (62–93%).
+  - mimalloc's purge (`mi_page_purge_holes_now`, `mi_arena_page_purge_holes_at`, `_mi_thread_idle_work`, the `mi-scavenger` thread) takes 10–21% of each TUI's samples. **measured**
+- **The server's split is the same as on 2026-11-06, a little larger.** Microtasks 30–31%, timers 14–15%, socket and HTTP 8–10%, GC on the main thread 11–12%, sqlite 5%, JSON stringify 4–5% (`appendQuotedJSONString` alone is 2.8–3.6% self), mimalloc purge and idle work about 9% self, the JIT worker 7–10%. On 2026-11-06 it was 0.20 cores with sqlite at 2.8% and HTTP at 14%. **measured**
+- **The JS is still unnamed.** 26–35% of the samples have a JIT frame as the leaf, and strobe 0.19 names none of them, the same gap as 0.14. A per-file split of the JS needs the fork's `SIGPROF` profile (`cpuprofile-top.py`), which only the owner may trigger (see "Next step"). **measured**
+
+| Recording | Target | Window (UTC) | Cores, whole process | Main thread mean | Microtasks | Timers | Store proxies | GC (main) | mimalloc purge, self | OpenTUI native | JSON stringify | sqlite |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| rec_75a20e | server (old pid 3621862) | 00:26:47 +180 s | 0.23 | 17% | 31.3% | 14.2% | 0.0% | 11.9% | 6.6% | n/a | 3.9% | 5.0% |
+| rec_95fc3f | TUI `e56b9f69` (old) | 00:29:47 +180 s | 0.03 | 2% | 38.4% | 9.1% | 2.6% | 7.2% | 8.0% | 5.4% | 0.0% | n/a |
+| rec_7df7ae | server (new pid 2660982) | 00:38:51 +150 s | 0.24 | 17% | 30.1% | 15.0% | 0.0% | 11.4% | 5.1% | n/a | 5.0% | 5.2% |
+| rec_444ab7 | TUI `e56ba5bf` (ergo) | 00:41:24 +150 s | 0.09 | 6% | 10.0% | 49.8% | 3.8% | 9.0% | 11.9% | 8.3% | 0.1% | n/a |
+| rec_15594d | TUI `e56b9128` (bite) | 00:43:54 +150 s | 0.04 | 3% | 14.4% | 38.4% | 4.1% | 8.0% | 18.2% | 12.7% | 0.1% | n/a |
+
+The workbox's server and TUIs restarted at about 00:30:30 (not by this run): rec_95fc3f's TUI ended 49 s into its recording, and the second old TUI (`e56bb6de`, pid 2446308) was gone before its turn, so the three later recordings are of the new processes, 8–13 minutes old. Shares are inclusive of the process's samples, from `scripts/perf/strobe-symbolize.py` with Bun 1.4.4's profile build (same build id `588d7307…`); per-second CPU from `strobe-timeline.py`.
+
+## Worth fixing, in order
+
+1. **Nothing urgent on OpenCode's side.** Under load 20–39 the whole of OpenCode took under half a core: the server 0.24 and five TUIs about 0.03–0.1 each. The load is the Go units; the guard fix below is the fix that matters. **measured**
+2. **The idle TUIs' timers.** 38–50% of an idle TUI is timer callbacks. Which timers is unknown until the JS is named: prime's dock and spinners, the subagent rows' clocks and OpenTUI's own frame timer are the candidates. Plugin first: a timer that runs while nothing on screen changes is ours to stop. To confirm with one `SIGPROF` profile of an idle TUI. **guess**
+3. **mimalloc's purge in every Bun process.** 10–21% of a TUI's samples and about 9% of the server's go to returning freed pages to the OS. mimalloc reads `MIMALLOC_PURGE_DELAY` from the environment (ms, default 10; `-1` never purges, at the cost of RSS), if Bun's build keeps its environment options (not checked), so `~/.local/bin/opencode` could export a longer delay, like 1000, for the TUIs. It would save a few percent of a core over the five TUIs: small, and cheap to measure with one strobe recording before and after. **guess**
+4. **The server's JSON stringify (4–5%) and GC (11–12%).** Likely one `JSON.stringify` per event per subscriber on the event stream, and the transcript objects it builds. Core (fork). Not worth it at 0.24 cores. **inferred**
+
+## The Mac (2026-11-08 00:39–00:43 UTC)
+
+- strobe 0.19.0 runs on macOS (`@hona/strobe-darwin-arm64`, in `~/.local/opt/strobe-0.19.0/`): `record pid: --probes deep` samples with `/usr/bin/sample`, untimed. Load was 5–7 on 12 cores, after a restart of the Mac's server at 00:38.
+- rec_944687, the server (pid 71887): 11,545 samples in 120 s, about 0.1 cores. rec_b94bf2, the busiest TUI (pid 72117, `ses_e56d092f`): 2,213 samples, about 0.02 cores. **measured**
+- strobe names no frame of the compiled binary there (`_mh_execute_header` 67–85%, `???` 12–21%): the Mach-O is stripped, and `strobe-symbolize.py` reads ELF only. Symbolizing it would need Bun's darwin profile build and a Mach-O path in the script; at these loads it is not worth it. The only named leaf was Yoga's `roundLayoutResultsToPixelGrid`, 1.8% of the TUI. **measured**
+- This session's own TUI was not singled out: a subagent cannot tell which TUI shows its parent. The busiest one stood in for it. The script's `pgrep -f` also skips the server, because macOS `pgrep` leaves out the caller's ancestors, so the server was recorded by its pid.
+
+## Who ran the Go work
+
+Matched by each unit's `GOCACHE` and working directory against the shell calls in a read-only copy of the server's database (`session_message`). **measured**
+
+| Unit | Started (UTC) | What | Session |
+| --- | --- | --- | --- |
+| run-u33984 | 00:14:11 | `go test -p 4 ./internal/sketch/check` then `lower`, in `/tmp/opencode/v-s1a-head` | `ses_e478202fcffe63EiL6994OB9eo` "verify S1A" |
+| run-u33988 | 00:14:25 | `go test … TestEveryPackageRecordsOnlyItsClosure ./internal/closure`, which builds every package itself, in `~/Developer/personal/.worktrees/ergo-b9-fix-gate` | `ses_e47f86a97ffepOeUwOAopwXDhZ` "b9 fix gate F2 F3", through `flock … sh batch4.sh` (the `systemd-run` sits in the script) |
+| run-u33993 | 00:15:26 | `go test ./runtime/... ./internal/sketch/{std,check,lower}`, in `/tmp/opencode/v-s3a-head` | `ses_e477f03c7ffec0txt8kz5O0h80` "verify S3A" |
+| run-u33996 | 00:16:05 | `go test ./runtime/v1 ./internal/sketch/{std,check,lower}`, in `/tmp/opencode/v-s3b-head` | `ses_e477f03afffezb5lJsJ1K7A7I8` "verify S3B" |
+| run-u34014 | about 00:19:50 | `go test ./internal/sketch/check`, in `/tmp/opencode/v-s1b-head` | `ses_e478202e6ffeD49Bogo0OKPvHT` "verify S1B" |
+
+All five are children of the ergo root session `ses_e56ba5bf2ffeEzZPXNSBA6bBSm` ("Session handoff to OpenCode, resuming agents"). Each took a verify-slot `flock` and ran `systemd-run --user --wait --pipe --collect --same-dir -q -p MemoryMax=8G -p MemorySwapMax=0 … env GOMEMLIMIT=6GiB GOMAXPROCS=4 … timeout N go test …`. So memory was capped and each was held to 4 threads, but every unit ran at nice 0 and the default CPU weight, next to the TUIs. A service started this way leaves the guard's launcher: measured on the workbox, `nice -n 10 systemd-run --user --scope … sh -c "systemd-run --user --wait --pipe …"` runs the inner command at nice 0 in its own service cgroup, and an inner `--scope` keeps nice 10 but leaves the launcher's `CPUWeight=20` scope.
+
+The guard now reads such a line as heavy and gives the inner unit the launcher's limits (`mods/guard/heavy.ts`, `launcher.ts`'s `systemdRunScript`). The same end-to-end check through the new launcher gives `nice=10 w=20 mem=8589934592` for the verifiers' service shape, with their own `MemoryMax=8G` kept, and `nice=10 w=20` for a scope. **measured** It reaches a command the shell tool sees. It does not reach u33988's shape, a `systemd-run` inside a script file, unless the line that runs the script is itself heavy.
+
+## Installed for this run
+
+- Workbox: `~/.local/opt/strobe-0.19.0/` (17 MB; `npm pack @hona/strobe-linux-x64@0.19.0`, the newest release, the same way as 0.14.0), `~/.local/opt/bun-1.4.4-profile/` (476 MB, `bun-linux-x64-profile.zip` of Bun v1.4.4), `~/.local/share/strobe/` (7.6 MB, the recordings above), and `/tmp/opencode/load-perf/` (scripts and analyses; the database copy is deleted). No `strobe up`, no daemon, no sysctl.
+- Mac: `~/.local/opt/strobe-0.19.0/` (darwin-arm64) and `~/.local/share/strobe/` (16 MB, rec_944687 and rec_b94bf2).
