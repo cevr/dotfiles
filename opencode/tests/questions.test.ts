@@ -83,7 +83,7 @@ describe.skipIf(!fork)("background questions", () => {
         "assumed · one file, no server",
         "2. Redis",
         "3. Type your own answer",
-        "⇆ tab  ↑↓ select  enter confirm  esc dismiss",
+        "⇆ tab  ↑↓ select  enter confirm  n notes  esc dismiss",
       ])
       // Typed on the row under the assumption.
       expect(form(read("typed.txt")).slice(2, 6)).toEqual(["Should the old /v1 endpoint stay for a release?", "1. Keep it", "assumed", "2. Drop it after this release"])
