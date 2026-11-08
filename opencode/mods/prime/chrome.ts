@@ -1,7 +1,7 @@
 // The words of the frame around the transcript, without rendering: the top
 // bar's cost, the splash's model line, the tray's model and usage, the
-// dock's counts and the loader's spinner and start.
-import type { Message, Session } from "./session.ts"
+// dock's counts and the loader's spinner.
+import type { Session } from "./session.ts"
 
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
 
@@ -60,8 +60,3 @@ export const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 /** How often the loader's spinner and clock move. */
 export const SPINNER_MS = 100
-
-/** When the running turn started: with the newest prompt. */
-export function turnStart(messages: ReadonlyArray<Message>) {
-  return Math.max(0, ...messages.flatMap((message) => (message.type === "user" ? [message.time.created] : [])))
-}

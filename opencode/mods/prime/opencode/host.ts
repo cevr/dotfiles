@@ -10,6 +10,7 @@ import type { Goal } from "../goal.ts"
 import { partOf } from "../session.ts"
 import type { Host } from "../tui/host.ts"
 import { contextUsage } from "../usage.ts"
+import { openPending } from "./pending.ts"
 import { openShells } from "./shells.ts"
 import { cancelWake, readWakes } from "./wakes.ts"
 
@@ -39,6 +40,8 @@ export function host(context: Plugin.Context, goal: (sessionID: string) => Goal 
       )
     },
     goal,
+    pending: (sessionID) => data.session.pending.list(sessionID),
+    openPending: (sessionID, inboxID) => void openPending(context, sessionID, inboxID),
     wakes: (sessionID) => readWakes(context, sessionID),
     familyIDs: (sessionID) => data.session.family(sessionID),
     // The same registry as the shells count, so a row waits on a shell exactly while the dock counts it.

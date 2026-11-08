@@ -78,7 +78,8 @@ theme. The mod has three parts.
   (`notice.ts`), a step's end row (`step-end.ts`), the pinned ask
   (`ask.ts`), subagent navigation (`subagent.ts`), the top bar and dock
   (`chrome.ts`), the dock's wake item (`wakes.ts`), the goal line
-  (`goal.ts`), and the detail levels with their row gaps (`detail.ts`).
+  (`goal.ts`), the prompts waiting in the inbox and the loader's words
+  (`pending.ts`), and the detail levels with their row gaps (`detail.ts`).
   `session.ts` holds the session data it reads, typed as plain values.
 - The components are in `tui/`. They read the host only through the `Host`
   contract in `tui/host.ts`.
@@ -180,6 +181,26 @@ compaction. At All (Ctrl+O) it is the host's whole block, with its rule and
 the summary. This needs the fork's `session.message.compaction` slot. A host
 without the slot draws its own block at every level, but then Prime's
 typecheck fails on the unknown slot name.
+
+A prompt the runner has not taken yet (sent while a turn or a compaction
+runs, a steer waiting in the session's inbox) is not in the transcript: it
+waits in a row above the composer, oldest first, and enters the transcript
+at its place the moment the runner takes it (`pending.ts`, `Queued` in
+`tui/chrome.tsx`, the inbox read through the host's `data.session.pending`).
+A click offers `Move to queue` or `Delete`, as the host's own pending row
+does. A prompt sent to the queue (leader+Enter) stays in the host's own
+`N queued · …` dock, which opens its Queued prompts picker.
+
+```
+◌ queued · Also update the docs.
+```
+
+The loader under the transcript names what runs: `Compacting · 4s` while a
+compaction of the current run runs, from its start, else `Executing · 13s`,
+from the run's first step, so a waiting prompt never restarts the clock.
+`tests/prime-queued.test.ts` runs `scenarios/prime-queued.ts`: a prompt sent
+during an automatic compaction waits above the composer under
+`Compacting`, then reads in the transcript under `Executing`.
 
 The shells count is the session's running shell commands. A click on it
 opens the session's shell list (`shells.ts`, `opencode/shells.ts`), read
