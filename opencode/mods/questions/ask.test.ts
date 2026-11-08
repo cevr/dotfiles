@@ -42,8 +42,10 @@ test("each refusal reads as one sentence the agent can act on", () => {
   expect(explain(new EmptyAnswer({ id: "q1" }))).toBe("The answer to q1 is empty.")
 })
 
-test("the description tells the agent it returns at once, where answers arrive and how to withdraw", () => {
+test("the description tells the agent it returns at once, where answers arrive, and to withdraw a question answered another way", () => {
   expect(DESCRIPTION).toContain("Returns immediately")
   expect(DESCRIPTION).toContain("/answer")
-  expect(DESCRIPTION).toContain("withdraw: [id]")
+  expect(DESCRIPTION).toContain(
+    "When the user answers an open question another way (in chat, in a file, by acting on it), or it no longer matters, withdraw it with withdraw: [id] so it leaves their tray.",
+  )
 })

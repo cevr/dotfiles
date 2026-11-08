@@ -24,7 +24,7 @@ export type AskInput = typeof AskInput.Type
 export const DESCRIPTION = [
   "Ask the user questions in the background and continue at once on a stated assumption. Returns immediately; your turn does not wait, and an unanswered question never blocks you.",
   "The user sees the open questions in a tray above the prompt and answers them with /answer when they choose. An answer arrives later as a message in this session (it wakes you if you are idle), naming the question, your assumption and the answer, and saying whether they differ; when they differ, revise the work that rests on the assumption.",
-  "Use it when you can go on with a reasonable assumption; when you cannot, ask in your reply and stop. While a question is open, state its assumption in your final answer. Asking the same question again replaces the open one; withdraw a question that no longer matters with withdraw: [id]. " +
+  "Use it when you can go on with a reasonable assumption; when you cannot, ask in your reply and stop. While a question is open, state its assumption in your final answer. Asking the same question again replaces the open one. When the user answers an open question another way (in chat, in a file, by acting on it), or it no longer matters, withdraw it with withdraw: [id] so it leaves their tray. " +
     `At most ${MAX_OPEN} stay open; past that the oldest drops.`,
 ].join("\n\n")
 
