@@ -21,12 +21,11 @@
  * - `sweepMinutes`: how often to read each login's usage; 0 turns it off. Default 10.
  * - `cacheLifeMs`: how long a session's prompt cache lives on the login it last
  *   used, in ms: the provider's cache lifetime (`settings.cache.ttl`). While it
- *   lives the session stays on that login unless the login is held or out of
- *   room. Default 5 minutes, Anthropic's default; `bun run daily` sets it from
+ *   lives the session stays on that login unless the login is held. Default 5 minutes, Anthropic's default; `bun run daily` sets it from
  *   the lifetime it gives Claude. A request whose agent sets its own lifetime
  *   (`request.settings.cacheTTL`, read through `ctx.agent.get`) keeps the
  *   session there for that lifetime instead, until the session comes back
- *   after that lifetime but within this one: its requests from then on ask for
+ *   after that lifetime but within this one: its requests from that one on ask for
  *   this lifetime (`CACHE_TTL_HEADER`, which the auth plugin writes on the
  *   request's cache breakpoints) while each follows the last within it.
  * - `sources`: other stores whose logins join a pool beside OpenCode's own, read

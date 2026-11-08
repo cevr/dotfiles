@@ -11,12 +11,11 @@
  * session counted, the score is the live sessions alone.
  *
  * The preferred account (where the run's prompt cache still lives) is the
- * choice unless it is held, or it has no room (a quota window at its share)
- * while another eligible account has room. Its score and pace never move it:
- * a move writes the whole prompt again on the new account. Load, live
- * sessions and pace place only a run whose cache is gone, or one that left a
- * held or full account (then the first eligible account, or the first with
- * room). With none eligible, the preferred account, else the pool's first.
+ * choice unless it is held. Its room, score and pace never move it: a move
+ * writes the whole prompt again on the new account, and an account at its
+ * share still serves until a refusal holds it. Load, live sessions, room and
+ * pace place only a run whose cache is gone, or one that left a held account.
+ * With none eligible, the preferred account, else the pool's first.
  */
 
 /** What placement reads of one account. */
@@ -78,16 +77,10 @@ export function rankPlacement<Slot>(table: PlacementTable<Slot>): readonly [Slot
       if (byScore !== 0) return byScore
       return byWeeklyReset(left, right)
     })
-  // A held account is not eligible, so `kept` is unset when its hold moves the run. Room here is
-  // the quota's alone (`entry.noRoom`), never `noRoom` above, which counts pace too.
+  // A held account is not eligible, so `kept` is unset when its hold moves the run. An account at
+  // its share still serves: leaving it writes the whole prompt again, its refusal moves the run anyway.
   const kept = table.preferred === undefined ? undefined : eligible.find((entry) => entry.slot === table.preferred)
-  const roomed = eligible.find((entry) => !entry.noRoom)
-  const choice =
-    kept !== undefined
-      ? kept.noRoom && roomed !== undefined
-        ? roomed.slot
-        : kept.slot
-      : (eligible[0]?.slot ?? table.preferred ?? table.slots[0].slot)
+  const choice = kept?.slot ?? eligible[0]?.slot ?? table.preferred ?? table.slots[0].slot
   const rest = [
     ...eligible.map((entry) => entry.slot),
     ...table.slots.filter((entry) => entry.held).map((entry) => entry.slot),

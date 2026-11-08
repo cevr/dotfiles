@@ -19,14 +19,21 @@ const TOOLS = 'Bash, Read, Edit, Write, Skill, Monitor, TaskStop, WebFetch, WebS
 export const ROLES = {
   planner: 'Writes one orchestrate unit\'s spec and its red acceptance check. Changes no product code.',
   implementor: 'The sole writer of one orchestrate unit: builds its spec on the unit\'s branch and hands back a round request.',
-  verifier: 'Runs one orchestrate unit\'s acceptance check on a clean checkout of its head and tries to break the round itself, and writes the findings.',
+  verifier: 'Verifies one orchestrate batch on a clean checkout of its merged head: runs the batch acceptance once, tries to break each unit\'s change against its spec, and writes findings per unit.',
 } as const;
+
+/** What a role's first message names: a unit's spec, or for the verifier its batch's file. */
+const SUBJECT: Record<Role, string> = {
+  planner: "one orchestrate unit. Your first message names the unit's `spec.md` and the round.",
+  implementor: "one orchestrate unit. Your first message names the unit's `spec.md` and the round.",
+  verifier: "one orchestrate batch. Your first message names the batch's `batch-<k>.md`, which names each unit's `spec.md` and round.",
+};
 export type Role = keyof typeof ROLES;
 
 // The Codex efforts in SKILL.md's role table. The model is the spawn's (the newest
 // sol or luna), so no file pins one; an effort in the file wins over a Codex spawn's,
 // and a Claude Code orchestrator's mcp__codex__start effort wins over the file's.
-// A verifier runs at medium; a deep unit's round 1 passes max to its one call.
+// A verifier runs at medium; a batch holding a deep unit's round 1 passes max to its one call.
 const CODEX_EFFORT: Record<Role, string> = { planner: 'high', implementor: 'max', verifier: 'medium' };
 
 /** protocol.md's `## ` sections by heading. */
@@ -41,7 +48,7 @@ export function instructions(role: Role, protocol: string, safety: string): stri
   const rules = safety.slice(safety.indexOf('SAFETY (mandatory')).trim();
   const own = s[role[0].toUpperCase() + role.slice(1)];
   if (!s['Ending a step'] || !s.Rounds || !own || !rules.startsWith('SAFETY')) throw new Error(`protocol.md or safety.md lost a section ${role} needs`);
-  return `You are the ${role} of one orchestrate unit. Your first message names the unit's \`spec.md\` and the round. This prompt carries the worker protocol and the safety rules, so do not read \`protocol.md\` or \`safety.md\`.
+  return `You are the ${role} of ${SUBJECT[role]} This prompt carries the worker protocol and the safety rules, so do not read \`protocol.md\` or \`safety.md\`.
 
 # Safety
 

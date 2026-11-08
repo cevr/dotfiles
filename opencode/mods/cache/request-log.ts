@@ -34,7 +34,8 @@ export interface Tokens {
 
 /**
  * Why a request wrote what it wrote.
- * - `first`: no earlier request of the session went out through this server.
+ * - `first`: no earlier request of the session went out through this server,
+ *   and the ledger kept none from another (`Kept`).
  * - `hit`: the cache read the previous prompt (all but the noise floor); its
  *   writes are the prompt's new end.
  * - `uncached`: neither it nor the request before reported any cache activity.
@@ -85,6 +86,12 @@ export const LedgerLine = Schema.Struct({
   change: Schema.optionalKey(ChangeSchema),
   /** The login the previous request went out on, when the pool moved this one. */
   from: Schema.optionalKey(Schema.String),
+  /**
+   * The previous request was read back from the ledger (`Kept`): another
+   * process sent it, so OpenCode restarted between the two (or another
+   * location's copy of the plugin sent it).
+   */
+  restored: Schema.optionalKey(Schema.Literal(true)),
 })
 export type LedgerLine = typeof LedgerLine.Type
 
@@ -93,6 +100,34 @@ export interface Previous {
   readonly sent: Sent
   readonly tokens: Tokens
 }
+
+const SegmentSchema = Schema.Struct({
+  label: Schema.String,
+  hash: Schema.String,
+  chars: Schema.Number,
+  head: Schema.optionalKey(Schema.String),
+})
+
+/**
+ * A session's newest judged request as the ledger keeps it between
+ * processes, with whether a compaction rewrote the context since: the next
+ * process judges the session's first request against it, so a restart names
+ * what it changed instead of `first`.
+ */
+export const Kept = Schema.Struct({
+  sent: Schema.Struct({
+    at: Schema.Number,
+    kind: Schema.Literals(["primary", "compaction"]),
+    agent: Schema.String,
+    model: Schema.String,
+    login: Schema.optionalKey(Schema.String),
+    ttlMs: Schema.Number,
+    segments: Schema.Array(SegmentSchema),
+  }),
+  tokens: Schema.Struct({ prompt: Schema.Number, read: Schema.Number, write: Schema.Number }),
+  compacted: Schema.Boolean,
+})
+export type Kept = typeof Kept.Type
 
 /** A request's cause, with the evidence the line keeps. */
 export interface Judgement {
@@ -134,6 +169,8 @@ export const lineOf = (input: {
   readonly sent: Sent
   readonly tokens: Tokens
   readonly judgement: Judgement
+  /** The previous request was read back from the ledger. */
+  readonly restored?: boolean
 }): LedgerLine => {
   const { sent, tokens, judgement } = input
   return {
@@ -154,6 +191,7 @@ export const lineOf = (input: {
     cause: judgement.cause,
     ...(judgement.change === undefined ? {} : { change: judgement.change }),
     ...(judgement.from === undefined ? {} : { from: judgement.from }),
+    ...(input.restored === true ? { restored: true as const } : {}),
   }
 }
 

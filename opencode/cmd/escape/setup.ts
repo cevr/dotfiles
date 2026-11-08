@@ -6,12 +6,15 @@
  * panel), it reads the session on screen (`opencode/view.ts`), decides
  * (`escape.ts`) and acts: a take-back runs the host's `session.undo`, which
  * interrupts, waits, reverts and puts the prompt back in the composer (or
- * takes a pending prompt back out of the inbox); an interrupt goes through
- * the client. In the composer mode, the host's Subagents picker in a
+ * takes a pending prompt back out of the inbox, the run it waited behind
+ * interrupted beside it); an interrupt goes through the client. A refused
+ * interrupt, or a session still running (or a prompt still queued) STOP_MS
+ * after the press, is a toast, so a press the server never answers is never
+ * silent. In the composer mode, the host's Subagents picker in a
  * subagent's view, it interrupts a busy subagent before the picker closes.
  * Anything Escape means nothing to falls through to the host.
  */
-import { decide, DEFAULT_GRACE_MS, type Taking } from "@dotfiles/opencode-escape/escape"
+import { decide, DEFAULT_GRACE_MS, STOP_MS, type Taking } from "@dotfiles/opencode-escape/escape"
 import { read, type Editor, type Reads, type Route } from "@dotfiles/opencode-escape/opencode/view"
 import { Schema } from "effect"
 
@@ -44,30 +47,69 @@ export interface Host {
 /** The host command that takes the newest prompt back: interrupt, wait, revert and restore, or pull a pending one. */
 export const UNDO = "session.undo"
 
-export const setup = (host: Host, now: () => number = Date.now) => {
+/** The time the plugin reads and the timer it sets; a test supplies its own. */
+export interface Clock {
+  now(): number
+  after(ms: number, run: () => void): void
+}
+
+const realClock: Clock = { now: Date.now, after: (ms, run) => void setTimeout(run, ms) }
+
+/** The toast when the session still runs STOP_MS after an Escape asked it to stop. */
+export const NOT_STOPPED = `Still running ${STOP_MS / 1000} s after Escape: the server has not stopped it (is it reachable?)`
+/** The toast when a pending prompt is still in the inbox STOP_MS after an Escape took it back. */
+export const NOT_TAKEN = `Still queued ${STOP_MS / 1000} s after Escape: the server has not taken the prompt back (is it reachable?)`
+/** The toast for an Escape while the take-back it repeats is still settling. */
+export const SETTLING = "Still taking the prompt back"
+
+export const setup = (host: Host, clock: Clock = realClock) => {
   const grace = Schema.decodeUnknownSync(Options)(host.options).grace ?? DEFAULT_GRACE_MS
   let taking: Taking | undefined
-  const failed = (error: unknown) =>
-    host.ui.toast.show({ message: error instanceof Error ? error.message : String(error), variant: "error", duration: 5_000 })
+  const toast = (message: string, variant: "info" | "warning" | "error") => host.ui.toast.show({ message, variant, duration: 5_000 })
+  const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
+  const running = (sessionID: string) => host.data.session.status(sessionID) === "running"
+  const pending = (sessionID: string, messageID: string) => host.data.session.pending.list(sessionID).some((item) => item.id === messageID)
+
+  /** Interrupts `sessionID`; a refusal says why, and a run still going STOP_MS later says the server has not stopped it. */
+  const interrupt = (sessionID: string, resume: boolean) => {
+    let refused = false
+    void host.client.session.interrupt({ sessionID, resume }).catch((error: unknown) => {
+      refused = true
+      toast(`Could not interrupt: ${errorText(error)}`, "error")
+    })
+    clock.after(STOP_MS, () => {
+      if (!refused && running(sessionID)) toast(NOT_STOPPED, "error")
+    })
+  }
 
   const escape = () => {
-    const at = now()
+    const at = clock.now()
     const action = decide(read(host.data, host.ui.router.current(), host.renderer.currentFocusedEditor), { now: at, grace, taking })
     switch (action._tag) {
       case "Pass":
         return false
-      case "Hold":
+      case "Settling":
+        toast(SETTLING, "info")
         return
       case "Interrupt":
-        void host.client.session.interrupt({ sessionID: action.sessionID, resume: true }).catch(failed)
+        interrupt(action.sessionID, true)
         return
-      case "TakeBack":
+      case "TakeBack": {
         taking = { messageID: action.messageID, at }
+        const { sessionID } = action
+        // The host's undo puts the prompt back in the composer: for a pending one it cancels it in the inbox, for a
+        // sent one it interrupts, waits, and reverts. Its own failures are its toasts; a hang is ours below.
         host.keymap.dispatch(UNDO)
+        // A pending prompt waited behind a run: stop that too, without resuming the inbox ahead of the cancel.
+        if (action.stop) interrupt(sessionID, false)
+        else
+          clock.after(STOP_MS, () => {
+            if (action.pending ? pending(sessionID, action.messageID) : running(sessionID)) toast(action.pending ? NOT_TAKEN : NOT_STOPPED, "error")
+          })
         // A revert restores files, not what a shell command did outside them.
-        if (action.ranShell && !action.pending)
-          host.ui.toast.show({ message: "Cancelled; shell commands it ran are not undone", variant: "warning", duration: 5_000 })
+        if (action.ranShell && !action.pending) toast("Cancelled; shell commands it ran are not undone", "warning")
         return
+      }
     }
   }
 

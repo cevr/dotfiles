@@ -8,6 +8,9 @@
 // Usage: bun log.ts <unit dir> <from> <to> r<N> [note...]
 //        bun log.ts --current <unit dir> <to> r<N> [note...]
 //   The unit's first line comes from `new`. `merged` takes the merge commit as the note's first word.
+//   The moves follow SKILL.md's machine: implement → ready (focused gate green), ready → verify
+//   (its batch landed), verify → merged, waiting(pr) or implement r<N+1>; this script checks the
+//   states and rounds, not which move follows which.
 //   `--current` moves from the unit's current state (`new` with no log) and writes nothing when the
 //   unit is already in `to` at round N: the OpenCode orchestrate plugin writes a role's start and
 //   hand-back this way, so a move the orchestrator logged first is not logged twice.

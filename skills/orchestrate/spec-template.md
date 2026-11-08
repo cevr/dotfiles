@@ -1,12 +1,12 @@
 # Unit spec template
 
-The planner fills one copy per unit into `<run dir>/<unit>/spec.md`, and the orchestrator approves it before the unit is implemented. The spec is the planner's output. The implementor builds against it, and the verifier runs its acceptance check and judges against it. Write it for a capable reader with no context, and keep it to what this unit needs: the shared rules live in `protocol.md`.
+The planner fills one copy per unit into `<run dir>/<unit>/spec.md`, and the orchestrator approves it before the unit is implemented. The spec is the planner's output. The implementor builds against it, and its batch's verifier runs its acceptance check and judges the unit's diff against it. Write it for a capable reader with no context, and keep it to what this unit needs: the shared rules live in `protocol.md`.
 
 ```markdown
 # <unit> — spec (orchestrator-owned; agents do not edit it)
 
 Run `<run>` · unit dir `<run dir>/<unit>` · failure cap 3 · timebox <hours per round>
-Machine: plan → implement → verify (Opus first; a fresh agent in a clean checkout runs the acceptance check and tries to break the change) → decide → ready → lands in a batch (one merge, one batch gate and one acceptance run for every ready unit; in a PR repo the green batch pushes the unit's branch to its PR instead of main).
+Machine: plan → implement (focused checks only) → ready → lands in a batch (one merge, one batch gate, then the push: main, or in a PR repo the unit's branch and its draft PR) → verify (one fresh verifier for the batch, on its merged head: the batch acceptance once, this unit's diff against this spec) → merged, or the next round fixed forward.
 Path: <direct | light | standard | deep>: <why; for direct, that the diff is prose only; for deep, why a defect is costly or why the check is a live drive>.
 Protocol: a role agent carries it in its prompt; any other worker reads `~/.claude/skills/orchestrate/protocol.md` in full first.
 
@@ -27,13 +27,14 @@ Protocol: a role agent carries it in its prompt; any other worker reads `~/.clau
 
 ## Gate
 Round gate: <the focused checks as commands, logged to `<run dir>/<unit>/gate-N.log`: the tests and typecheck of the packages Owns covers, lint of the changed files, and this unit's acceptance test file alone. Never the full gate, the full e2e or an affected-acceptance run.>
-Batch gate: <the repo's full gate command, its guards included (a dead-exports or boundary check that only CI or main runs is still the gate), and its full acceptance or e2e run affected since the batch base; where CI is the thorough gate, the repo's quick local pass (e.g. Bite on the workbox: `bun bite gate --branch --with-infra --require-db`, its unit suites on the local Mongo). The orchestrator runs it once per batch, as a heavy job, in every repo, CI repos included.>
-Lands: <`push` (a green batch pushes main) or `PR` (a team repo: a green batch pushes each unit's branch and opens or updates its PR; main is never pushed).>
+Batch gate: <the repo's full gate command, its guards included (a dead-exports or boundary check that only CI or main runs is still the gate); where CI is the thorough gate, the repo's quick local pass (e.g. Bite on the workbox: `bun bite gate --branch --with-infra --require-db`, its unit suites on the local Mongo). The orchestrator runs it once per batch, before the push, as a heavy job, in every repo, CI repos included.>
+Batch accept: <the repo's full acceptance or e2e run affected since the batch base (`accept:affected "$RIFT_LAND_BASE"` and the like), run once per batch after the push, by `rift land`'s `rift.accept` or the batch verifier; or `none`.>
+Lands: <`push` (a green batch pushes main before its verify, and a red verify is fixed forward) or `PR` (a team repo: a green batch pushes each unit's branch and opens or updates its PR as a draft, marked ready once the batch verifier accepts it; main is never pushed).>
 CI: <the CI workflow that runs the suite on a pushed head, or `none`; for a PR repo also its trigger and suites (e.g. a `/pipeline vitrine route` comment on a stack's top PR). Named: CI runs after a green batch gate, never in its place: on main after the push, or on each unit's PR.>
 Batch cadence: <default: land when 3 units are ready or the oldest ready unit has waited 30 min, whichever comes first; or this unit's override and why.>
 
 ## Risks
-<What could go wrong in this unit and what the verifier should attack hardest: invariants a refactor must keep, formats that must still decode, traps earlier units found.>
+<What could go wrong in this unit, alone or merged with the units beside it, and what the verifier should attack hardest: invariants a refactor must keep, formats that must still decode, traps earlier units found.>
 
 ## Decided
 <Choices the orchestrator already made, each with its principle.>

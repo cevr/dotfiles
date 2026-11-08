@@ -19,11 +19,12 @@ test('the lines log.ts writes are the transitions timing.ts and status.ts read',
   for (const step of [
     ['new', 'plan', 'r0', 'owner ask'],
     ['plan', 'implement', 'r1', 'spec.md'],
-    ['implement', 'verify', 'r1', 'round-1-request.md'],
+    ['implement', 'ready', 'r1', 'round-1-request.md ready'],
+    ['ready', 'verify', 'r1', 'batch-1.md'],
     ['verify', 'implement', 'r2', 'round-1-findings.md changes'],
-    ['implement', 'verify', 'r2', 'round-2-request.md'],
-    ['verify', 'decide', 'r2', 'round-2-findings.md accepted'],
-    ['decide', 'merged', 'r2', 'abc1234 fast-forward'],
+    ['implement', 'ready', 'r2', 'round-2-request.md ready'],
+    ['ready', 'verify', 'r2', 'batch-2.md'],
+    ['verify', 'merged', 'r2', 'abc1234 round-2-findings.md accepted'],
   ]) expect(bun('log.ts', dir, ...step).code).toBe(0);
 
   const [u] = JSON.parse(bun('timing.ts', join(dir, '..'), '--json').out);
@@ -84,13 +85,34 @@ test('a rewrite at decide starts its rounds from 1 again', () => {
   expect(bun('log.ts', dir, 'decide', 'implement', 'r1', 'rewrite on a new premise').code).toBe(0);
 });
 
-test('an accepted unit waits in ready until its batch lands, which the timing names', () => {
+test('a ready unit waits for its batch, is verified with it, and the timing names each wait', () => {
   const dir = unitDir();
-  bun('log.ts', dir, 'new', 'decide', 'r1');
-  expect(bun('log.ts', dir, 'decide', 'ready', 'r1', 'round-1-findings.md accepted').code).toBe(0);
-  expect(bun('log.ts', dir, 'ready', 'merged', 'r1', 'abc1234 batch-1-gate.log exit 0').out).toContain('ready → merged abc1234 r1');
+  bun('log.ts', dir, 'new', 'implement', 'r1');
+  expect(bun('log.ts', dir, 'implement', 'ready', 'r1', 'round-1-request.md ready').code).toBe(0);
+  expect(bun('log.ts', dir, 'ready', 'verify', 'r1', 'batch-1.md').out).toContain('ready → verify r1 batch-1.md');
+  expect(bun('log.ts', dir, 'verify', 'merged', 'r1', 'abc1234 batch-1-findings.md accepted').out).toContain('verify → merged abc1234 r1');
   const [u] = JSON.parse(bun('timing.ts', join(dir, '..'), '--json').out);
-  expect(Object.keys(u.time)).toEqual(['decide', 'ready']);
+  expect(Object.keys(u.time)).toEqual(['implement', 'ready', 'verify']);
+});
+
+test('a direct unit closes when its batch lands, with no verify', () => {
+  const dir = unitDir();
+  bun('log.ts', dir, 'new', 'implement', 'r1');
+  bun('log.ts', dir, 'implement', 'ready', 'r1');
+  expect(bun('log.ts', dir, 'ready', 'merged', 'r1', 'abc1234 batch-1-gate.log exit 0').out).toContain('ready → merged abc1234 r1');
+});
+
+test('in a PR repo an accepted unit waits for its approval, and changes requested are its next round', () => {
+  const dir = unitDir();
+  bun('log.ts', dir, 'new', 'verify', 'r1');
+  expect(bun('log.ts', dir, 'verify', 'waiting(pr)', 'r1', 'batch-1-findings.md accepted').code).toBe(0);
+  expect(bun('log.ts', dir, 'waiting(pr)', 'implement', 'r2', 'changes requested').code).toBe(0);
+  bun('log.ts', dir, 'implement', 'ready', 'r2');
+  bun('log.ts', dir, 'ready', 'verify', 'r2', 'batch-2.md');
+  bun('log.ts', dir, 'verify', 'waiting(pr)', 'r2');
+  expect(bun('log.ts', dir, 'waiting(pr)', 'merged', 'r2', 'abc1234 approved').code).toBe(0);
+  const [u] = JSON.parse(bun('timing.ts', join(dir, '..'), '--json').out);
+  expect(u).toMatchObject({ final: 'merged', rounds: 2, verifyBounces: 0 });
 });
 
 test('a conflict in the batch sends a ready unit back to implement as a merge round', () => {
@@ -125,12 +147,14 @@ test('--current moves from the current state, and writes nothing when the unit i
   expect(bun('log.ts', '--current', dir, 'plan', 'r1').code).toBe(0);
   expect(bun('log.ts', '--current', dir, 'implement', 'r1', 'spec.md').code).toBe(0);
   // The orchestrator logged the move first: the plugin's line for it writes nothing.
-  bun('log.ts', dir, 'implement', 'verify', 'r1', 'round-1-request.md');
-  const again = bun('log.ts', '--current', dir, 'verify', 'r1', 'round-1-request.md ready');
-  expect([again.code, again.out]).toEqual([0, 'unchanged: the unit is in verify r1\n']);
-  expect(bun('log.ts', '--current', dir, 'implement', 'r2', 'round-1-findings.md changes').code).toBe(0);
+  bun('log.ts', dir, 'implement', 'ready', 'r1', 'round-1-request.md');
+  const again = bun('log.ts', '--current', dir, 'ready', 'r1', 'round-1-request.md ready');
+  expect([again.code, again.out]).toEqual([0, 'unchanged: the unit is in ready r1\n']);
+  bun('log.ts', dir, 'ready', 'verify', 'r1', 'batch-1.md');
+  bun('log.ts', dir, 'verify', 'implement', 'r2', 'round-1-findings.md changes');
+  expect(bun('log.ts', '--current', dir, 'implement', 'r2', 'round-1-findings.md').out).toBe('unchanged: the unit is in implement r2\n');
   // A late line for an older round is refused, as from the orchestrator.
-  expect(bun('log.ts', '--current', dir, 'verify', 'r1').code).toBe(1);
-  expect(log()).toEqual(['new → plan r1', 'plan → implement r1 spec.md', 'implement → verify r1 round-1-request.md', 'verify → implement r2 round-1-findings.md changes']);
+  expect(bun('log.ts', '--current', dir, 'ready', 'r1').code).toBe(1);
+  expect(log()).toEqual(['new → plan r1', 'plan → implement r1 spec.md', 'implement → ready r1 round-1-request.md', 'ready → verify r1 batch-1.md', 'verify → implement r2 round-1-findings.md changes']);
   expect(bun('log.ts', '--current', '/nonexistent/loop-probe-x', 'plan', 'r1').code).toBe(2);
 });

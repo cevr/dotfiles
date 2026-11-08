@@ -491,6 +491,29 @@ describe("a session's cache", () => {
       }),
     ))
 
+  // OpenCode runs a copy of the plugin per location, all on one storage. The ledger, 2026-11-08 02:17: after a
+  // restart two build sessions 50 minutes into their hour's cache moved to another login and wrote 115k and
+  // 138k tokens again; another location's copy, whose view of them was its start's, had pruned their marks.
+  test("survives a restart after another location's copy swept its older view of the session", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        const here = yield* start({ sweepMinutes: 0, cacheLifeMs: HOUR }, state)
+        yield* loaded(here)
+        // Another location's copy starts and reads the marks as they are now.
+        yield* start({ sweepMinutes: 10, cacheLifeMs: HOUR }, state)
+        // s1 goes on here for 50 minutes.
+        yield* TestClock.adjust(50 * MINUTE)
+        expect(yield* here.request("s1")).toBe("cred-a")
+        yield* here.emit({ type: "session.step.ended", data: { sessionID: "s1", cost: 1 } })
+        yield* here.idle("s1")
+        // The other copy sweeps past the hour of its own view of s1.
+        yield* TestClock.adjust(20 * MINUTE)
+        const next = yield* start({ sweepMinutes: 0, cacheLifeMs: HOUR }, state)
+        expect(yield* next.request("s1")).toBe("cred-a")
+      }),
+    ))
+
   /** The provider gives an hour; the implementor role keeps its own five minutes, as orchestrate sets it. */
   const roles = () => {
     const state = world()
@@ -559,7 +582,7 @@ describe("a session's cache", () => {
       }),
     ))
 
-  test("of a role that comes back after its five minutes, within the hour, asks for the hour from its next request on", () =>
+  test("of a role that comes back after its five minutes, within the hour, asks for the hour from that request on", () =>
     onTestClock(
       Effect.gen(function* () {
         const state = roles()
@@ -572,14 +595,17 @@ describe("a session's cache", () => {
         yield* TestClock.adjust(CACHE_LIFE_MS - 1)
         expect((yield* role())[CACHE_TTL_HEADER]).toBeUndefined()
         yield* step(1)
-        // Back after a ten-minute shell command: its cache had expired. This request still writes for five minutes ...
+        // Back after a ten-minute shell command: its cache had expired, so the prompt it writes again is
+        // written for the hour ...
         yield* TestClock.adjust(10 * MINUTE)
-        expect((yield* role())[CACHE_TTL_HEADER]).toBeUndefined()
-        yield* step(1)
-        // ... and every one after asks for the hour, which keeps the session on its login that long.
-        yield* TestClock.adjust(MINUTE)
         const raised = yield* role()
         expect(raised[CACHE_TTL_HEADER]).toBe("1h")
+        yield* step(1)
+        // ... and the one after reads it at that hour, which keeps the session on its login that long.
+        yield* TestClock.adjust(MINUTE)
+        const next = yield* role()
+        expect(next[CACHE_TTL_HEADER]).toBe("1h")
+        expect(next[CREDENTIAL_HEADER]).toBe(raised[CREDENTIAL_HEADER])
         yield* step(1)
         // The ledger keeps it, so a restart goes on asking for the hour.
         expect(state.storage.get("anthropic/cache/s1")).toMatchObject({ lifeMs: HOUR, outlived: true })

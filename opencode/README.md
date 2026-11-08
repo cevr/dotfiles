@@ -428,13 +428,16 @@ without its provider) runs as if it named none, reason `model-dropped`: at
 the role's effort, with the Codex fallback and the latch. Any other model a
 call names runs as named, with no fallback.
 
-The units' logs (`unit-log.ts`): a role's start moves its unit, by the
-call's `<role> <unit> r<N>` description, to `plan`, `implement` or
-`verify`; its hand-back, the first line of its last answer when its session
-goes idle (the fork's `experimental.idle` hook), moves it as the machine
-says (implementor `ready` to `verify`, verifier `accepted` or `stuck` to
-`decide`, `changes` to `implement` the next round, any `blocked` to
-`blocked`; a planner's `ready` waits for the orchestrator). Each move goes
+The units' logs (`unit-log.ts`): a planner's or implementor's start moves
+its unit, by the call's `<role> <unit> r<N>` description, to `plan` or
+`implement`; its hand-back, the first line of its last answer when its
+session goes idle (the fork's `experimental.idle` hook), moves it as the
+machine says (implementor `ready` to `ready`, where it waits for its batch;
+`blocked` to `blocked`; a planner's `ready` waits for the orchestrator). A
+verifier moves nothing: it verifies a batch (`verifier batch-<k> r1`), and
+the orchestrator logs each landed unit's moves from the batch's findings
+(`ready → verify` at the land, then `merged`, `waiting(pr)` or the next
+round). Each move goes
 through the skill's `log.ts --current` into `<run dir>/<unit>/log.md`, the
 unit dir being the one a path in the prompt or the hand-back names, else the
 one `tmp/orchestrate/<run>/<unit>` in the session's checkout. None found, a
@@ -449,7 +452,7 @@ call log's line says `lowered: "max"`, and the parent reads first in the
 answer that it runs at the default and why. It lowers rather than refuses: a
 root at max would otherwise have every worker refused, and a refusal costs a
 turn and teaches the parent to add `(mechanical)` to get through. A role is
-never lowered: a verifier at max for a deep unit's round 1 runs at max.
+never lowered: a verifier at max for a batch with a deep unit's round 1 runs at max.
 
 The worker's handoff: like each role, the worker is told (`agents/worker.md`,
 through `agents.json`) to stop at its first compaction, write a handoff file
@@ -570,16 +573,22 @@ or priced step, for its agent's own `request.settings.cacheTTL` when it sets
 one, such as the roles' 5 minutes, else `cacheLifeMs`: default 5 minutes, and
 `daily` sets it from the TTL it gives Claude), its next run stays on that
 login. It leaves only
-when the login is held, or has a quota window at its share while another
-login has room. Load, live sessions and pace place only a run whose cache is
-gone.
+when the login is held: a quota window at its share does not move it, since
+the login still serves until it refuses, and a move writes the whole prompt
+again (the ledger, 2026-11-08: a session left a login at 94% of its 5-hour
+window 80 s after its last request and wrote 198k tokens again). Room, load,
+live sessions and pace place only a run whose cache is gone.
 
 An agent's own lifetime shorter than `cacheLifeMs` (the roles' 5 minutes)
 pays only while its session's requests follow each other closely. A session
 that comes back after its own lifetime but within `cacheLifeMs` (a long shell
-command, a wait, a role resumed) has outlived it: from its next request on,
-the pool gives it `cacheLifeMs` for as long as each request follows the last
-within it (`requestCache` in `accounts.ts`). The pool names that lifetime on
+command, a wait, a role resumed) has outlived it: from the request that came
+back on, which writes its prompt again anyway, the pool gives it `cacheLifeMs`
+for as long as each request follows the last within it (`requestCache` in
+`accounts.ts`). While a cache lives, a request asks for the lifetime it was
+written for: Anthropic keeps a cache per lifetime, and a request that raised
+five minutes to an hour within the five minutes read none of it (13 of 13 in
+the ledger, 2026-11). The pool names that lifetime on
 the request (`x-opencode-cache-ttl: 1h`), and the auth plugin strips the
 header and writes it on every cache breakpoint of the body. A session's cache
 mark is kept at least `cacheLifeMs` (`markKept`), so the pool knows the
@@ -613,7 +622,10 @@ The model, in the domain files at `mods/pool`'s root:
 - Contracts: the integration's logins and a gent store's (`Logins`), the
   auth plugin's quota RPC (`Quota`) and the ledger in the plugin's storage
   (`Ledger`), each a `Context.Service` in `service.ts`, with what every
-  implementation owes in `laws.ts`. `opencode/` implements them over the
+  implementation owes in `laws.ts`. OpenCode runs a copy of the plugin per
+  location on one storage, so a cache mark one copy prunes is removed only
+  while the stored mark is the one it saw expire: the copy serving the session
+  may have written a newer one, which a restart reads back. `opencode/` implements them over the
   plugin's integration, RPC and storage; `memory/` holds the in-memory
   ones the seam tests use. `gent/store.ts` reads and refreshes gent's
   store in place, under gent's lock, byte-compatible with gent. It
@@ -989,23 +1001,33 @@ made when the TUI opens it.
 
 ## Escape
 
-`cmd/escape` is a TUI plugin that makes one Escape on a busy session take
-back the prompt just sent. Within the grace (5 s after the session's newest
-prompt with text was sent), Escape with an empty composer stops the run,
-reverts the session to before the prompt and puts its text back in the
-composer: it runs the host's own `session.undo`. Past the grace it
-interrupts (`session.interrupt` with `resume`), and the prompt and its
-partial answer stay. A prompt still waiting in the session's inbox (queued,
-or a steer the model has not read) comes back whatever the grace. When the
-taken-back run called a shell, a toast says
+`cmd/escape` is a TUI plugin that makes one Escape on a busy session stop
+its run, taking back the prompt just sent. Within the grace (5 s after the
+session's newest prompt with text was sent), Escape with an empty composer
+stops the run, reverts the session to before the prompt and puts its text
+back in the composer: it runs the host's own `session.undo`. Past the grace,
+with a draft in the composer or with no editor focused, it interrupts
+(`session.interrupt` with `resume`), and the prompt and its partial answer
+stay. A prompt still waiting in the session's inbox (queued, or a steer the
+model has not read) comes back to the composer whatever the grace, appended
+to any draft, and the turn it waited behind is interrupted in the same press
+(without `resume`, so the inbox is not resumed ahead of the take-back): a
+prompt sent while the model works is never dropped, and the run never keeps
+going behind it. When the taken-back run called a shell, a toast says
 `Cancelled; shell commands it ran are not undone`: a revert restores files,
 not what a command did outside them.
 
-A draft in the composer (text or an attachment, read from the focused
-editor, `renderer.currentFocusedEditor`) swallows the key while the session
-works, so a half-typed message is never replaced. A permission request or a
-question keeps its own Escape, an idle session's Escape is the host's, and a
-second Escape for the prompt being taken back is swallowed for 10 s. In a
+A press never goes unanswered. A refused interrupt is a toast with the
+client's error (`Could not interrupt: …`); a session still running 5 s after
+the press (`STOP_MS`), or a pending prompt still queued, is a toast that the
+server has not stopped it (`Still running 5 s after Escape: the server has
+not stopped it (is it reachable?)`), which is what a stalled or 503-ing
+server looks like; the host's own `Connection lost…` overlay covers a dropped
+event stream. A draft is never replaced: a sent prompt is taken back only
+into an empty composer. A permission request or a question keeps its own
+Escape, an idle session's Escape is the host's, and a second Escape for the
+prompt being taken back does nothing for 10 s but say
+`Still taking the prompt back`. In a
 subagent's view Escape interrupts that subagent before the host's Subagents
 picker closes. Its one option is `grace`, in milliseconds (default 5000; 0
 always interrupts). An absent option takes its default. The grace is timed from when the prompt was sent, so a prompt another client
@@ -1016,7 +1038,10 @@ The decision is `decide` in `mods/escape/escape.ts`, over the view
 two keymap layers on Escape (the base mode at priority 1, above the host's
 `session.interrupt` and below the composer's own Escape layers such as shell
 mode or a plugin panel; the composer mode at priority 2 in a subagent's
-view) and acts. `tests/prime-escape.test.ts` runs `scenarios/prime-escape.ts`.
+view) and acts. `tests/prime-escape.test.ts` runs `scenarios/prime-escape.ts`;
+`tests/escape-states.test.ts` runs `scenarios/escape-states.ts` once per
+state (a steer or a queued prompt sent while the model works, a running
+shell call, a draft, a stalled link to the server).
 
 ## Cache
 
@@ -1068,7 +1093,11 @@ changed at system[1] ¶4, 3k tokens in` or `the cache lost an unchanged
 prefix`; without the server half the TUI's own causes stand.
 
 Each judged request is a line of `~/.cache/opencode-cache-ledger/ledger.jsonl`
-(options: `dir`, `host`). `bun scripts/cache-ledger.ts [--since 24h] [--host
+(options: `dir`, `host`), and the session's newest judged request, its
+fingerprint with it, is kept beside it in `last/<sessionID>.json`: a copy of
+the plugin that has judged nothing of a session (after a restart, or in
+another location) judges its first request against that one, and the line
+says `restored`, so a restart names the segment it changed instead of `first`. `bun scripts/cache-ledger.ts [--since 24h] [--host
 <name>] [--top 10] [--json] [--file <ledger.jsonl>]...` sums it: cache writes
 by cause, by first changed segment, the unexplained part (`login`, `prefix`,
 `unchanged`) per host and day, and the costliest session-hours.
@@ -1083,8 +1112,10 @@ wasted writes. A break is a request whose read fell against the session's
 request before by more than the 1,024-token floor and a fifth of the prompt
 both share, found from the tokens, classified first match wins: `model-switch`,
 `compaction`, `ttl-expiry` (a gap past the previous request's lifetime),
-`login-move`, `restart` (the server judged it first although the ledger holds
-an earlier request), `tool-set`, `system-prompt` or `message-edit` (by the
+`login-move`, `ttl-switch` (it asked for another lifetime than the request
+before: Anthropic keeps a cache per lifetime), `restart` (the server judged it
+first although the ledger holds an earlier request, or against a `restored`
+one, with the segment that changed), `tool-set`, `system-prompt` or `message-edit` (by the
 first changed segment), else `dropped`. A session's first request is a cold
 start: `subagent-first` on an agent outside `--primary`, else
 `session-start`. It ranks the causes and sessions by the tokens written

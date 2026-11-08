@@ -112,11 +112,23 @@ export const ledgerLaws = (name: string, layer: () => Layer.Layer<Ledger>) =>
             RequestPlaced.make({ sessionID: "ses_other", kind: "title", credentialID: "cred-b", at: 1_200 }),
             RequestPlaced.make({ sessionID: "ses_gone", kind: "primary", credentialID: "cred-a", at: 100 }),
           ])
-          yield* ledger.record(pool, [LedgerPruned.make({ steps: [], holds: [], runs: [], caches: ["ses_gone"] })])
+          yield* ledger.record(pool, [LedgerPruned.make({ steps: [], holds: [], runs: [], caches: [{ sessionID: "ses_gone", at: 100 }] })])
           expect((yield* ledger.restore(pool)).recent).toEqual({
             ses_law: { credentialID: "cred-a", at: 1_000 },
             ses_other: { credentialID: "cred-b", at: 1_200 },
           })
+        }),
+      ))
+
+    test("a cache pruned as an older mark keeps the newer one another copy of the plugin wrote", () =>
+      check(
+        layer(),
+        Effect.gen(function* () {
+          const ledger = yield* Ledger
+          yield* ledger.record(pool, [RequestPlaced.make({ sessionID: "ses_law", kind: "primary", credentialID: "cred-a", at: 5_000 })])
+          // Another copy saw the session's mark of time 100 expire.
+          yield* ledger.record(pool, [LedgerPruned.make({ steps: [], holds: [], runs: [], caches: [{ sessionID: "ses_law", at: 100 }] })])
+          expect((yield* ledger.restore(pool)).recent).toEqual({ ses_law: { credentialID: "cred-a", at: 5_000 } })
         }),
       ))
 

@@ -33,10 +33,25 @@ const readingKey = (credentialID: string) => `reading/${credentialID}`
 const stepKey = (step: Step) => `step/${String(step.at).padStart(15, "0")}/${step.sessionID}`
 const cacheKey = (sessionID: string) => `cache/${sessionID}`
 
-type Write = { readonly _tag: "Put"; readonly key: string; readonly value: Schema.Json } | { readonly _tag: "Remove"; readonly key: string }
+type Write =
+  | { readonly _tag: "Put"; readonly key: string; readonly value: Schema.Json }
+  | { readonly _tag: "Remove"; readonly key: string }
+  /** Remove the key only while what it holds still matches: another copy of the plugin may have written it since. */
+  | { readonly _tag: "RemoveIf"; readonly key: string; readonly stale: (stored: unknown) => boolean }
 
 const put = (key: string, value: Schema.Json): Write => ({ _tag: "Put", key, value })
 const remove = (key: string): Write => ({ _tag: "Remove", key })
+
+/**
+ * A cache mark expired as one copy of the plugin saw it. OpenCode runs a copy
+ * per location on one storage, and the copy that serves the session may have
+ * written a newer mark since: that one stays (a restart reads it back).
+ */
+const removeExpiredMark = (sessionID: string, at: number): Write => ({
+  _tag: "RemoveIf",
+  key: cacheKey(sessionID),
+  stale: (stored) => Option.match(decodeMark(stored), { onNone: () => true, onSome: (mark) => mark.at <= at }),
+})
 
 /** The writes that bring the ledger up to `event`, in order. */
 const writesOf = (event: Event): ReadonlyArray<Write> => {
@@ -59,7 +74,7 @@ const writesOf = (event: Event): ReadonlyArray<Write> => {
       return [
         ...event.steps.map((step) => remove(stepKey(step))),
         ...event.holds.map((credentialID) => remove(holdKey(credentialID))),
-        ...event.caches.map((sessionID) => remove(cacheKey(sessionID))),
+        ...event.caches.map((cache) => removeExpiredMark(cache.sessionID, cache.at)),
       ]
     case "LoginsListed":
     case "RunReleased":
@@ -119,7 +134,16 @@ export const layer = (storage: Storage) =>
     record: Effect.fn("Ledger.record")(function* (pool: PoolId, events: ReadonlyArray<Event>) {
       for (const write of events.flatMap(writesOf)) {
         const key = `${pool}/${write.key}`
-        yield* (write._tag === "Put" ? storage.set(key, write.value) : storage.remove(key)).pipe(Effect.ignoreCause)
+        if (write._tag === "Put") yield* storage.set(key, write.value).pipe(Effect.ignoreCause)
+        else if (write._tag === "Remove") yield* storage.remove(key).pipe(Effect.ignoreCause)
+        else
+          yield* storage.scan({ prefix: key, limit: 1 }).pipe(
+            Effect.flatMap((page) => {
+              const stored = page.entries.find((entry) => entry.key === key)
+              return stored === undefined || !write.stale(stored.value) ? Effect.void : storage.remove(key)
+            }),
+            Effect.ignoreCause,
+          )
       }
     }),
   })

@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 This skill is a superset of `improve-codebase-architecture`: the same lens, judged against the project's north stars and prior arts. It runs one of two ways — a [single pass with the user](#single-pass-with-the-user), who picks and grills, or the autonomous loop below, where every finding is applied or rejected with a receipt.
 
-In the loop, a **pass** is: coverage audit → read-only sweeps → triage into batches → per batch: a [track](../orchestrate/SKILL.md) (an implementor in the batch's own workspace, a fresh verifier, rounds until accepted) → merge → live check → count → [retro](retro.md). Passes repeat until the close rule holds. Within a pass, each **sweep** is one read-only lens over the code.
+In the loop, a **pass** is: coverage audit → read-only sweeps → triage into batches → per batch: a [track](../orchestrate/SKILL.md) (an implementor in the batch's own workspace, landed with the other ready batches, one fresh verifier over the landed set, rounds until accepted) → live check → count → [retro](retro.md). Passes repeat until the close rule holds. Within a pass, each **sweep** is one read-only lens over the code.
 
 The project says what good is; this skill says how to loop:
 
@@ -73,24 +73,24 @@ An **area** is a set of directories that change together (a package, or a layer 
 
 5. **Triage.** Group findings into batches by the files they touch. Every report's P3s and "not worth a pass" lines go to the batch that owns their file; that batch fixes each or rejects it with a reason. Write the pass section of the ledger: verdict, decisions, the triage table (batch, workspace, items), and the open `Carried` rows of the last pass, each in a batch or carried on. Done when every finding is in a batch or rejected with a receipt.
 
-6. **Apply and verify, as orchestrate units.** Run the loop as the [`orchestrate`](../orchestrate/SKILL.md) orchestrator, one unit per batch, through its machine: plan, implement, verify, decide. The batch's apply agent is the unit's implementor, kept for round 2 and replaced by a fresh one after that (orchestrate's Fresh implementor).
+6. **Apply and verify, as orchestrate units.** Run the loop as the [`orchestrate`](../orchestrate/SKILL.md) orchestrator, one unit per batch, through its machine: plan, implement, ready, land, verify. The batch's apply agent is the unit's implementor, kept for round 2 and replaced by a fresh one after that (orchestrate's Fresh implementor).
    - **Spec.** Fill each batch's spec from [`spec-template.md`](../orchestrate/spec-template.md). The apply prompt ([`prompts/apply.md`](prompts/apply.md)) supplies it:
      - its slots go to Goal, Workspace, Owns and Decided;
      - its work rules go to Work rules;
      - its Report goes into what each round request carries;
      - the risk questions ([`prompts/risks.md`](prompts/risks.md)) go to Risks, and the verifier checks each one directly.
 
-     The Gate's round gate is the focused checks of the packages the batch touches; its batch gate is the repo's full gate, guards included, which orchestrate runs once on all the ready units merged together ([Land a batch](../orchestrate/SKILL.md#land-a-batch)).
+     The Gate's round gate is the focused checks of the packages the batch touches; its batch gate is the repo's full gate, guards included, which orchestrate runs once on all the ready units merged together ([Land a batch](../orchestrate/SKILL.md#3-land-a-batch)).
    - **Size.** A batch is one concern, about 10 items. An implementor that compacts within its first round is holding too much: split the batch then. Oversized batches make apply agents most of a run's cache reads.
    - **Workspace.** Each batch's workspace and branch follow orchestrate (`<run>/<unit>`; ledger rows from earlier passes name `p<N>-<batch>`). Setup beyond install (a build, a linked git-ignored file, a shared lock for a heavy test) belongs in the project's `AGENTS.md`; a missing step found here goes there.
    - **Cost.** At each hand-back, run `bun ~/.claude/skills/orchestrate/scripts/agent-cost.ts <id>` and append its line to the unit's `log.md`. The id is the subagent's `sessionID` (`ses_…`) on OpenCode, read through the running service, or the agent id on Claude Code. A hand-back's token count is the agent's final context, not its spend. The retro (step 11) reads these lines instead of rebuilding them.
    - The verifier's model, rounds, a batch that builds on another's files (it stacks on that branch) and parallelism are orchestrate's rules; follow them there.
 
-   Done per batch when its unit's verifier accepts it.
+   Done per batch when its unit is ready.
 
-7. **Merge.** Integrate as orchestrate's [Land a batch](../orchestrate/SKILL.md#land-a-batch) says. A merge into the integration branch keeps both sides' edits, never one side's file whole, and the merge audit in [`guardrails.md`](guardrails.md) runs over it before the gate. If the Push line allows it, push; a red CI fans out into fix units, and only they land until it is green. Then write the batch's ledger row: `done <hash> … <hash>, merged <hash>`, decisions, the reviewer and its rounds, open items, and the report's "decisions for the orchestrator" as `Carried` rows.
+7. **Merge and verify.** Integrate as orchestrate's [Land a batch](../orchestrate/SKILL.md#3-land-a-batch) says, then its [Verify a batch](../orchestrate/SKILL.md#4-verify-a-batch): one verifier for every loop batch that landed together, its findings per batch, a `changes` batch back to its apply agent as its next round. A merge into the integration branch keeps both sides' edits, never one side's file whole, and the merge audit in [`guardrails.md`](guardrails.md) runs over it before the gate. If the Push line allows it, push; a red CI fans out into fix units, and only they land until it is green. Then write the batch's ledger row: `done <hash> … <hash>, merged <hash>`, decisions, the reviewer and its rounds, open items, and the report's "decisions for the orchestrator" as `Carried` rows.
 
-   Done when the gate on main is green, the row is written, and the branch and the workspace are gone.
+   Done when the batch verifier accepted it, the gate on main is green, the row is written, and the branch and the workspace are gone.
 
 8. **Live check.** After each merge, or a small group of merges, run `NORTH_STAR.md` → Live check over every ability the batches changed (each apply report names them): the drive shows what rendered, the state view shows what happened. A defect found here becomes a live-fix batch (step 6). Done when the state matches the intent, the ledger has a live-check row, and every process the check started is stopped.
 

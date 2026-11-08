@@ -1,7 +1,6 @@
 // The placement ranking, one case per rule: held accounts last, accounts at
 // their share after those with room, then by score and weekly reset, and the
-// account a session's cache is on kept unless it is held or out of room while
-// another has room.
+// account a session's cache is on kept unless it is held.
 import { describe, expect, test } from "bun:test"
 import { rankPlacement, type PlacementSlot } from "./placement.ts"
 
@@ -88,14 +87,17 @@ describe("rankPlacement", () => {
     expect(ranked).toEqual(["b", "a"])
   })
 
-  test("the preferred account at its share gives way to one with room, and stays when none has room", () => {
+  // The ledger, 2026-11-08 00:44:10: a build session with its hour's cache on a login at 94% of its
+  // 5-hour window moved to a login with room 80 s after its last request and wrote 198k tokens again,
+  // though the login it left was never refused. A usable login keeps the session's cache.
+  test("the preferred account at its share stays: it is usable until it is held", () => {
     const ranked = rankPlacement({
       slots: [slot("a", { noRoom: true }), slot("b")],
       spent: 0,
       sessions: 0,
       preferred: "a",
     })
-    expect(ranked[0]).toBe("b")
+    expect(ranked[0]).toBe("a")
     const full = rankPlacement({
       slots: [slot("a", { noRoom: true, live: 3 }), slot("b", { noRoom: true })],
       spent: 0,
@@ -105,13 +107,8 @@ describe("rankPlacement", () => {
     expect(full[0]).toBe("a")
   })
 
-  test("a preferred account at its share gives way to the best account with room, not one below a pace with none", () => {
-    const ranked = rankPlacement({
-      slots: [slot("a", { noRoom: true }), slot("b", { noRoom: true, sustainable: 4 }), slot("c", { live: 2 })],
-      spent: 0,
-      sessions: 0,
-      preferred: "a",
-    })
-    expect(ranked[0]).toBe("c")
+  test("a run with no live cache still takes an account with room before one at its share", () => {
+    const ranked = rankPlacement({ slots: [slot("a", { noRoom: true }), slot("b", { live: 2 })], spent: 0, sessions: 0 })
+    expect(ranked[0]).toBe("b")
   })
 })

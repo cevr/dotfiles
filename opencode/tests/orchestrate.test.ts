@@ -214,7 +214,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
     async () => {
       const result = await run("units", { scenario: "units", now: WEDNESDAY })
       expect(result.children.map((child) => child.agent)).toEqual(["implementor"])
-      expect(result.unitLog).toEqual(["new → implement r1 spec.md", "implement → verify r1 round-1-request.md ready"])
+      expect(result.unitLog).toEqual(["new → implement r1 spec.md", "implement → ready r1 round-1-request.md ready"])
     },
     RUN_MS,
   )

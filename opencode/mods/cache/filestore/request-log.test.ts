@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
 import { requestLogLaws } from "../laws.ts"
 import { RequestLog } from "../service.ts"
 import { layer, parse } from "./request-log.ts"
@@ -25,5 +25,22 @@ describe("the JSONL ledger", () => {
     )
     expect(read.map((line) => line.at)).toEqual([1, 2])
     expect(parse("")).toEqual([])
+  })
+
+  test("a kept request that does not decode reads as none, and a session id that is no plain word is kept nowhere", async () => {
+    const path = join(scratch, "kept/ledger.jsonl")
+    mkdirSync(join(scratch, "kept/last"), { recursive: true })
+    writeFileSync(join(scratch, "kept/last/ses_bad.json"), "{ not json")
+    const [bad, escaped] = await Effect.runPromise(
+      Effect.gen(function* () {
+        const log = yield* RequestLog
+        const kept = { sent: { at: 1, kind: "primary", agent: "build", model: "a/b", ttlMs: 1, segments: [] }, tokens: { prompt: 1, read: 0, write: 1 }, compacted: false } as const
+        yield* log.keep("../escape", kept)
+        return [yield* log.last("ses_bad"), yield* log.last("../escape")] as const
+      }).pipe(Effect.provide(layer(path))),
+    )
+    expect(Option.isNone(bad)).toBe(true)
+    expect(Option.isNone(escaped)).toBe(true)
+    expect(existsSync(join(scratch, "kept/escape.json"))).toBe(false)
   })
 })

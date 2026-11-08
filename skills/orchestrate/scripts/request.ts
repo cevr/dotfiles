@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
-// The orchestrator's check of a round's request before verify (protocol.md, Implementor → Request):
-// it exists and names its head commit, and it names a red test for each Blocker or Major the last
-// round's findings mark `repeat of`.
-// Usage: bun request.ts <unit dir> <round>   Exit 0: verify it. Exit 1: send the reasons back.
+// The orchestrator's check of a round's request before the unit waits in ready for its batch
+// (protocol.md, Implementor → Request): it exists and names its head commit, and it names a red
+// test for each Blocker or Major the last round's findings mark `repeat of`.
+// Usage: bun request.ts <unit dir> <round>   Exit 0: it is ready to land. Exit 1: send the reasons back.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -30,7 +30,7 @@ export function headOf(request: string): string | undefined {
   return /\bhead\b[^\n]*?\b([0-9a-f]{7,40})\b/i.exec(request)?.[1] ?? /\b[0-9a-f]{7,40}\.\.([0-9a-f]{7,40})\b/.exec(request)?.[1];
 }
 
-/** Why round `n`'s request cannot go to verify; empty when it can. */
+/** Why round `n`'s request cannot wait in ready; empty when it can. */
 export function refusals(dir: string, n: number): string[] {
   const request = read(join(dir, `round-${n}-request.md`));
   if (request === undefined) return [`round-${n}-request.md is missing`];
