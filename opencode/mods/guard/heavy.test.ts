@@ -42,6 +42,50 @@ describe("a heavy command", () => {
     ])
       expect([line, heavy(line)]).toEqual([line, true])
   })
+
+  test("a Go or Rust build, test, vet or lint", () => {
+    for (const line of [
+      "go test -count=1 ./internal/sketch/check",
+      "go build -trimpath ./p/...",
+      "go vet ./...",
+      "/usr/local/go/bin/go test ./...",
+      "golangci-lint run",
+      "cargo test --workspace",
+      "cargo build --release",
+      "cargo check",
+      "cargo clippy -- -D warnings",
+      "cargo nextest run",
+      "cargo bench",
+    ])
+      expect([line, heavy(line)]).toEqual([line, true])
+  })
+
+  test("behind the launchers agents put in front, with their options", () => {
+    for (const line of [
+      // The workbox's verifiers on 2026-11-08, as they ran.
+      "flock /home/u/.cache/baton/wf10/verify-slot-0.lock systemd-run --user --wait --pipe --collect --same-dir -q -p MemoryMax=8G -p MemorySwapMax=0 --setenv=PATH=\"$PATH\" --setenv=HOME=\"$HOME\" env GOMEMLIMIT=6GiB GOMAXPROCS=4 GOCACHE=/tmp/opencode/v-s1a-gocache timeout 2400 sh -c 'go test -p 4 -count=1 ./internal/sketch/check; echo check=$?'",
+      "systemd-run --user --scope -p MemoryMax=8G go test ./...",
+      "systemd-run --user --unit=gate-1 -p CPUWeight=20 --description 'the gate' -- bun run gate",
+      "systemd-run --user -u gate -E GOFLAGS=-p=4 --setenv GOMAXPROCS=4 --slice app.slice cargo build",
+      "setsid -f bun test",
+      "nohup go test ./... > /tmp/t.log 2>&1 &",
+      "env -i PATH=/usr/bin -u HOME -C /tmp GOFLAGS=-p=4 go test ./...",
+      "env -- go vet ./...",
+      "env -S 'bun test --bail'",
+      "nice -n 19 cargo test",
+      "nice -5 go build ./...",
+      "nice --adjustment=10 tsc -b",
+      "ionice -c3 go test ./...",
+      "ionice -c 2 -n 7 cargo check",
+      "stdbuf -oL -eL bun test",
+      "stdbuf -o L go test -v ./...",
+      "flock -w 600 /tmp/gate.lock bun run gate",
+      "flock -x /tmp/gate.lock -c 'cd app && go test ./...'",
+      "timeout 600 sh -c 'go test ./...'",
+      "sudo -u ci time nice -n 5 setsid nohup timeout 600 go test ./...",
+    ])
+      expect([line, heavy(line)]).toEqual([line, true])
+  })
 })
 
 describe("not a heavy command", () => {
@@ -58,6 +102,20 @@ describe("not a heavy command", () => {
       "grep -rn tsc .",
       "cat <<EOF\nbun test\nEOF",
       "npx prettier --write .",
+      "go run ./cmd/server",
+      "go mod tidy",
+      "go fmt ./...",
+      "cargo run --bin tool",
+      "cargo fmt",
+      "make check",
+      "systemd-run --user --scope -p MemoryMax=8G sleep 60",
+      "systemd-run --user --unit go-test -- ls",
+      "flock /tmp/gate.lock sh gate.sh",
+      "flock -x /tmp/go.lock -c 'go mod download'",
+      "env GOFLAGS=-p=4 go env",
+      "nice -n 19 git gc",
+      "setsid -f opencode serve",
+      "stdbuf -oL tail -f /tmp/go-test.log",
     ])
       expect([line, heavy(line)]).toEqual([line, false])
   })

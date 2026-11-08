@@ -201,11 +201,11 @@ describe("the shell policy", () => {
       Effect.gen(function* () {
         const defaults = yield* start({ home: HOME }, { launchers: { scope: true } })
         yield* defaults.spawn("vitest run")
-        expect([...defaults.written.values()][0]).toContain("systemd-run --user --scope --quiet --collect -p MemoryMax=12G -p CPUWeight=20 -- '/bin/zsh'")
+        expect([...defaults.written.values()].find((file) => !file.includes("a heavy command's systemd-run"))).toContain("systemd-run --user --scope --quiet --collect -p MemoryMax=12G -p CPUWeight=20 -- '/bin/zsh'")
         const tuned = yield* start({ home: HOME, heavy: ["make check"], nice: 5, memoryMax: "8G", cpuWeight: 50 }, { launchers: { scope: true } })
         expect((yield* tuned.spawn("bun test")).shell).toBe("/bin/zsh")
-        expect((yield* tuned.spawn("make check")).shell).toBe("/launchers/0/zsh")
-        expect([...tuned.written.values()][0]).toContain("exec nice -n 5 systemd-run --user --scope --quiet --collect -p MemoryMax=8G -p CPUWeight=50 --")
+        expect((yield* tuned.spawn("make check")).shell).toMatch(/^\/launchers\/\d+\/zsh$/)
+        expect([...tuned.written.values()].find((file) => !file.includes("a heavy command's systemd-run"))).toContain("exec nice -n 5 systemd-run --user --scope --quiet --collect -p MemoryMax=8G -p CPUWeight=50 --")
         const off = yield* start({ home: HOME, heavy: [] })
         expect((yield* off.spawn("bun test")).shell).toBe("/bin/zsh")
       }),

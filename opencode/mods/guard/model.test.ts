@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import * as Model from "./model.ts"
 import type { ProcessInfo } from "./kill.ts"
-import { launcherScript } from "./launcher.ts"
+import { launcherScript, systemdRunScript } from "./launcher.ts"
 import {
   Launchers,
   LauncherUnavailable,
@@ -210,9 +210,21 @@ describe("the shell policy", () => {
     expect(written).toEqual([["zsh", launcherScript({ shell: "/bin/zsh", limits: LIMITS, scope: false })]])
   })
 
-  test("in a scope with its memory cap where systemd can", async () => {
-    const { written } = await shellFor("/usr/bin/bash", "tsc -b", { scope: true })
-    expect(written[0]?.[1]).toContain("systemd-run --user --scope --quiet --collect -p MemoryMax=12G -p CPUWeight=20 -- '/usr/bin/bash'")
+  test("in a scope with its memory cap where systemd can, the guard's systemd-run first on its PATH", async () => {
+    const { spawned, written } = await shellFor("/usr/bin/bash", "tsc -b", { scope: true })
+    expect(spawned).toBe("/cache/launchers/bash")
+    expect(written).toEqual([
+      ["systemd-run", systemdRunScript(LIMITS)],
+      ["bash", launcherScript({ shell: "/usr/bin/bash", limits: LIMITS, scope: true, systemdRun: "/cache/launchers/systemd-run" })],
+    ])
+    expect(written[1]?.[1]).toContain("systemd-run --user --scope --quiet --collect -p MemoryMax=12G -p CPUWeight=20 -- '/usr/bin/bash'")
+  })
+
+  test("a heavy command behind an agent's own systemd-run is heavy too", async () => {
+    const { spawned } = await shellFor("/bin/zsh", "flock /tmp/slot.lock systemd-run --user --wait --pipe -p MemoryMax=8G env GOMAXPROCS=4 timeout 600 bun test", {
+      scope: true,
+    })
+    expect(spawned).toBe("/cache/launchers/zsh")
   })
 
   test("any other command spawns its own shell, and neither the probe nor the disk is asked", async () => {
