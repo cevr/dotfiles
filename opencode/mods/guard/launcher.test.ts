@@ -1,7 +1,7 @@
 // A launcher's text: the shell it execs, under nice alone or in a scope with
 // its limits. filesystem/launchers.test.ts runs one.
 import { expect, test } from "bun:test"
-import { DEFAULT_LIMITS, heavyArgv, launcherName, launcherScript, systemdRunScript } from "./launcher.ts"
+import { DEFAULT_LIMITS, heavyArgv, launcherName, launcherScript } from "./launcher.ts"
 
 const limits = { nice: 10, memoryMax: "12G", cpuWeight: 20 }
 
@@ -25,18 +25,6 @@ test("with systemd, the shell runs in a user scope with its memory cap and CPU w
   expect(launcherScript({ shell: "/usr/bin/zsh", limits, scope: true }).split("\n")[2]).toBe(
     "exec nice -n 10 systemd-run --user --scope --quiet --collect -p MemoryMax=12G -p CPUWeight=20 -- '/usr/bin/zsh' \"$@\"",
   )
-})
-
-test("with the guard's systemd-run, the launcher puts its directory first on the shell's PATH", () => {
-  expect(launcherScript({ shell: "/usr/bin/zsh", limits, scope: true, systemdRun: "/cache/x y/systemd-run" }).split("\n").slice(2)).toEqual([
-    "PATH='/cache/x y':\"$PATH\"",
-    "export PATH",
-    "exec nice -n 10 systemd-run --user --scope --quiet --collect -p MemoryMax=12G -p CPUWeight=20 -- '/usr/bin/zsh' \"$@\"",
-    "",
-  ])
-  const script = systemdRunScript(limits)
-  expect(script).toContain('exec "$real" -p Nice=10 -p MemoryMax=12G -p CPUWeight=20 "$@"')
-  expect(script).toContain('exec "$real" -p MemoryMax=12G -p CPUWeight=20 "$@"')
 })
 
 test("a shell path with a quote is quoted, and the launcher takes the shell's file name", () => {

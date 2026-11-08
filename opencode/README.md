@@ -1144,9 +1144,14 @@ what they start usually lives on, and their build is mostly cached.
 A pattern's last word also matches its `:` scripts (`bun run test:e2e`).
 The launchers agents put in front are read through, with their options and
 `VAR=value` assignments: `npx`, `bunx`, `pnpm exec`, `timeout`, `flock`,
-`systemd-run`, `setsid`, `nohup`, `env`, `nice`, `ionice` and `stdbuf`; so
-are the scripts of `sh -c`, `eval`, `flock -c` and `env -S`. The content of
-a script file (`bash gate.sh`) is not.
+`setsid`, `nohup`, `env`, `nice`, `ionice` and `stdbuf`; so are the scripts
+of `sh -c`, `eval`, `flock -c` and `env -S`. The content of a script file
+(`bash gate.sh`) is not, and neither is `systemd-run`: the unit it starts
+runs outside the launcher (a service at nice 0 in a cgroup of its own), so
+the line runs as written. Workers do not wrap their checks in units of their
+own (the orchestrate protocol's Shell); how many heavy checks run on one
+machine at once is the orchestrator's to size (the orchestrate skill's
+"Heavy checks fit the machine"), not this policy's.
 
 The policy rides the shell's `create.before` hook, which sees every command
 OpenCode spawns, the user's `!` too. For a heavy one it swaps only the shell
@@ -1154,16 +1159,7 @@ for a launcher of the same file name (`~/.cache/opencode/guard-launchers/<hash>/
 which runs `exec nice -n 10 '/bin/zsh' "$@"`; where `systemd-run --user
 --scope` works (probed once), it runs the shell in a transient scope with
 `MemoryMax=12G` and `CPUWeight=20` (`nice` has no effect between cgroups).
-There the launcher also puts the guard's own `systemd-run` first on the
-shell's PATH. A command's own `systemd-run` would start its unit outside the
-launcher: a service is started by the user's systemd at nice 0 in a cgroup
-of its own, and a `--scope` leaves the launcher's scope (on 2026-11-08 five
-verifiers' `systemd-run --user --wait --pipe … go test` took 12 of the
-workbox's 16 cores at nice 0). The guard's `systemd-run` passes
-`-p Nice=10` (a service only; a scope refuses it and keeps the nice),
-`-p MemoryMax=12G` and `-p CPUWeight=20` ahead of the caller's options, so
-the caller's own `-p` still wins, then runs the next `systemd-run` on the
-PATH. The command, its echo in the transcript and the permission check stay as
+The command, its echo in the transcript and the permission check stay as
 written. The niceness adds to the caller's, up to 19. On a Mac it is `nice`
 alone: there is no memory cap. When a launcher cannot be written, the
 command runs as it would have, and a warning is logged.

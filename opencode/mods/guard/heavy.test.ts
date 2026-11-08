@@ -62,11 +62,7 @@ describe("a heavy command", () => {
 
   test("behind the launchers agents put in front, with their options", () => {
     for (const line of [
-      // The workbox's verifiers on 2026-11-08, as they ran.
-      "flock /home/u/.cache/baton/wf10/verify-slot-0.lock systemd-run --user --wait --pipe --collect --same-dir -q -p MemoryMax=8G -p MemorySwapMax=0 --setenv=PATH=\"$PATH\" --setenv=HOME=\"$HOME\" env GOMEMLIMIT=6GiB GOMAXPROCS=4 GOCACHE=/tmp/opencode/v-s1a-gocache timeout 2400 sh -c 'go test -p 4 -count=1 ./internal/sketch/check; echo check=$?'",
-      "systemd-run --user --scope -p MemoryMax=8G go test ./...",
-      "systemd-run --user --unit=gate-1 -p CPUWeight=20 --description 'the gate' -- bun run gate",
-      "systemd-run --user -u gate -E GOFLAGS=-p=4 --setenv GOMAXPROCS=4 --slice app.slice cargo build",
+      "flock /tmp/verify-slot-0.lock env GOMEMLIMIT=6GiB GOMAXPROCS=4 GOCACHE=/tmp/v-gocache timeout 2400 sh -c 'go test -p 4 -count=1 ./internal/sketch/check; echo check=$?'",
       "setsid -f bun test",
       "nohup go test ./... > /tmp/t.log 2>&1 &",
       "env -i PATH=/usr/bin -u HOME -C /tmp GOFLAGS=-p=4 go test ./...",
@@ -108,8 +104,9 @@ describe("not a heavy command", () => {
       "cargo run --bin tool",
       "cargo fmt",
       "make check",
-      "systemd-run --user --scope -p MemoryMax=8G sleep 60",
-      "systemd-run --user --unit go-test -- ls",
+      // A unit of the command's own runs outside the launcher, so it is not read through (heavy.ts).
+      "systemd-run --user --wait --pipe -p MemoryMax=8G env GOMAXPROCS=4 go test ./...",
+      "flock /tmp/verify-slot-0.lock systemd-run --user --scope go test ./...",
       "flock /tmp/gate.lock sh gate.sh",
       "flock -x /tmp/go.lock -c 'go mod download'",
       "env GOFLAGS=-p=4 go env",
