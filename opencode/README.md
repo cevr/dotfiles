@@ -1063,8 +1063,10 @@ wasted writes. A break is a request whose read fell against the session's
 request before by more than the 1,024-token floor and a fifth of the prompt
 both share, found from the tokens, classified first match wins: `model-switch`,
 `compaction`, `ttl-expiry` (a gap past the previous request's lifetime),
-`login-move`, `restart` (the server judged it first although the ledger holds
-an earlier request), `tool-set`, `system-prompt` or `message-edit` (by the
+`login-move`, `ttl-switch` (it asked for another lifetime than the request
+before: Anthropic keeps a cache per lifetime), `restart` (the server judged it
+first although the ledger holds an earlier request, or against a `restored`
+one, with the segment that changed), `tool-set`, `system-prompt` or `message-edit` (by the
 first changed segment), else `dropped`. A session's first request is a cold
 start: `subagent-first` on an agent outside `--primary`, else
 `session-start`. It ranks the causes and sessions by the tokens written

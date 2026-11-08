@@ -36,9 +36,13 @@ export const writeMultiplier = (ttlMs: number): number => (ttlMs >= HOUR_MS ? PR
  * - `compaction`: it is a compaction's summary request, or the first after one.
  * - `ttl-expiry`: it went out after the previous request's lifetime ran out (an idle gap).
  * - `login-move`: the pool sent it on another login (a cache belongs to one organisation).
+ * - `ttl-switch`: it asked for another cache lifetime than the request before
+ *   (Anthropic keeps a cache per lifetime: a 5-minute prompt is not read by a
+ *   request that asks for the hour).
  * - `restart`: the server judged it a session's first request although the
- *   ledger holds an earlier one: OpenCode restarted between them, and the
- *   prompt it rebuilt was not the one cached (no segment to compare).
+ *   ledger holds an earlier one, or judged it against a request it read back
+ *   from the ledger (`restored`): OpenCode restarted between them, and the
+ *   prompt it rebuilt was not the one cached (the segment, when restored).
  * - `tool-set`: the first changed segment is a tool (one added, removed or redescribed).
  * - `system-prompt`: the first changed segment is in the system prompt.
  * - `message-edit`: the first changed segment is an earlier message.
@@ -49,6 +53,7 @@ export type BreakCause =
   | "compaction"
   | "ttl-expiry"
   | "login-move"
+  | "ttl-switch"
   | "restart"
   | "tool-set"
   | "system-prompt"
@@ -89,7 +94,8 @@ export const classify = (previous: LedgerLine, line: LedgerLine): BreakCause => 
   if (line.kind === "compaction" || previous.kind === "compaction" || line.cause === "compaction") return "compaction"
   if (line.at - previous.at > previous.ttlMs) return "ttl-expiry"
   if (line.login !== undefined && previous.login !== undefined && line.login !== previous.login) return "login-move"
-  if (line.cause === "first") return "restart"
+  if (line.ttlMs !== previous.ttlMs) return "ttl-switch"
+  if (line.cause === "first" || line.restored === true) return "restart"
   const segment = line.change?.segment
   if (segment === undefined || segment === "end of prompt") return "dropped"
   if (segment.startsWith("tool ")) return "tool-set"
