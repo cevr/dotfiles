@@ -1,13 +1,14 @@
 // The kernel in real OpenCode (the fork, through its SDK) on the scripted
 // model: two kernel calls in one session share a binding, the first reads a
 // file through `tools.read`, `denyExecute` keeps code mode's `execute` from
-// the model, and an image a cell attaches reaches the next request. The kernel on its own is tested beside its code in mods/kernel.
+// the model, an image a cell attaches reaches the next request, and with the
+// memory mod loaded its tools are offered beside the kernel and called directly. The kernel on its own is tested beside its code in mods/kernel.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./kernel/run.ts"
-import { ATTACH_CELL, ATTACH_TASK, cells, DONE, HELLO, KERNEL_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
+import { ATTACH_CELL, ATTACH_TASK, cells, DONE, HELLO, KERNEL_TASK, MEMORY_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
 import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -18,7 +19,7 @@ const scratch = mkdtempSync(join(tmpdir(), "kernel-e2e-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** One run of real OpenCode in a scratch home; see tests/kernel/run.ts. */
-const run = async (name: string, spec: Pick<Spec, "task" | "denyExecute" | "codeOnly" | "orchestrate" | "images">): Promise<Result & { base: string }> => {
+const run = async (name: string, spec: Pick<Spec, "task" | "denyExecute" | "codeOnly" | "orchestrate" | "memory" | "images">): Promise<Result & { base: string }> => {
   const base = join(scratch, name)
   const home = join(base, "home")
   mkdirSync(home, { recursive: true })
@@ -110,6 +111,25 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       // The host's normalizer may re-encode the pixel, so the request carries a PNG data URI, not these bytes.
       expect(next?.images).toHaveLength(1)
       expect(next?.images?.[0]).toStartWith("data:image/png;base64,")
+    },
+    RUN_MS,
+  )
+
+  test(
+    "code only with the memory mod: the memory tools are offered beside the kernel, off its list, and a direct memory_save saves",
+    async () => {
+      const result = await run("memory", { task: MEMORY_TASK, denyExecute: true, memory: { plugin: join(ROOT, "cmd/memory") } })
+      const turns = result.seen.filter((request) => request.task === MEMORY_TASK)
+      expect(turns.length).toBe(2)
+      // The same tools on every request of the session, so the cached prefix holds.
+      for (const request of turns) expect([...request.tools].sort()).toEqual(["kernel", "memory_forget", "memory_save", "memory_search"])
+      expect(turns[0]!.kernel).toContain("the kernel is your main tool")
+      expect(turns[0]!.kernel).toContain("- tools.read(input: { ")
+      expect(turns[0]!.kernel).not.toContain("tools.memory_")
+      const [saved] = toolParts(result.messages)
+      expect({ name: saved?.name, status: saved?.state.status }).toEqual({ name: "memory_save", status: "completed" })
+      expect((saved?.state.content ?? []).map((part) => part.text ?? "").join("")).toBe("Saved #1 (global).")
+      expect(JSON.stringify(result.messages)).toContain(DONE)
     },
     RUN_MS,
   )

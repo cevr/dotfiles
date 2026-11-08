@@ -23,6 +23,8 @@ export interface Spec {
   readonly codeOnly?: boolean
   /** Loads the orchestrate mod too, its Sabbath clock at this time (ISO 8601). */
   readonly orchestrate?: { readonly plugin: string; readonly now: string }
+  /** Loads the memory mod too, its notes in the scratch `memory.db`. */
+  readonly memory?: { readonly plugin: string }
   /** The model reads images too; absent, it reads text only. */
   readonly images?: boolean
 }
@@ -64,6 +66,7 @@ const content = {
       options: { denyExecute: spec.denyExecute, timeoutMs: 20_000, ...(spec.codeOnly === undefined ? {} : { codeOnly: spec.codeOnly }) },
     },
     ...(spec.orchestrate ? [{ package: spec.orchestrate.plugin, options: { now: spec.orchestrate.now, log: join(spec.base, "agents.jsonl") } }] : []),
+    ...(spec.memory ? [{ package: spec.memory.plugin, options: { path: join(spec.base, "memory.db") } }] : []),
   ],
 }
 

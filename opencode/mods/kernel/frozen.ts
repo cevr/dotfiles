@@ -12,6 +12,12 @@
 // (`notice`), never by a new description. A subagent is its own session, so
 // it freezes its own at its first request.
 //
+// The tools the host offers directly beside the kernel (the `direct` option)
+// are frozen the same way: the set the first request carried is the set every
+// later request carries. A request hook can drop a tool but not add one, so a
+// direct tool that joins mid-session is reached from a cell only, and one
+// that leaves is gone until it comes back.
+//
 // The runtime writes the live description without knowing the session
 // (`describe`); the request hook knows the session and sees that text. So
 // `describe` keeps the tools each text it wrote names, by the text, and
@@ -29,10 +35,17 @@ export const REMEMBERED = 32
 
 /**
  * One session's entry: the description its first request offered, the
- * `stamp` of the kernel's words it was written with, and the tools the
- * session was last told of, by name.
+ * `stamp` of the kernel's words it was written with, the tools the session
+ * was last told of, by name, and the tools offered directly beside the kernel
+ * at that first request (`direct`; absent in an entry written before them,
+ * which offered none).
  */
-export const Frozen = Schema.Struct({ stamp: Schema.String, description: Schema.String, names: Schema.Array(Schema.String) })
+export const Frozen = Schema.Struct({
+  stamp: Schema.String,
+  description: Schema.String,
+  names: Schema.Array(Schema.String),
+  direct: Schema.optional(Schema.Array(Schema.String)),
+})
 export interface Frozen extends Schema.Schema.Type<typeof Frozen> {}
 
 /** The plugin's storage, as the frozen descriptions use it. A read that breaks counts as empty. */
@@ -54,10 +67,15 @@ export interface Change {
   readonly removed: ReadonlyArray<string>
 }
 
-/** What a request offers: the session's frozen description, and the change to tell it of, when there is one. */
+/**
+ * What a request offers: the session's frozen description, the change to
+ * tell it of, when there is one, and, when the request named the direct
+ * tools it carries, the ones it keeps.
+ */
 export interface Offer {
   readonly description: string
   readonly change?: Change
+  readonly direct?: ReadonlyArray<string>
 }
 
 /** The words that tell a session its tools changed while its list stayed as it was. */
@@ -96,7 +114,14 @@ export const make = (write: (tools: ReadonlyArray<Reached>) => string, stamp: st
     }
     const save = (session: string, frozen: Frozen) =>
       Effect.sync(() => void sessions.set(session, frozen)).pipe(
-        Effect.andThen(store.set(FROZEN_PREFIX + session, { stamp: frozen.stamp, description: frozen.description, names: [...frozen.names] })),
+        Effect.andThen(
+          store.set(FROZEN_PREFIX + session, {
+            stamp: frozen.stamp,
+            description: frozen.description,
+            names: [...frozen.names],
+            ...(frozen.direct === undefined ? {} : { direct: [...frozen.direct] }),
+          }),
+        ),
       )
 
     /** The runtime's `describe`: the live description, remembered with the tools it names. */
@@ -117,25 +142,35 @@ export const make = (write: (tools: ReadonlyArray<Reached>) => string, stamp: st
      * frozen text, and when the live tools differ from those the session was
      * last told of, the change, once. A `live` text `describe` did not write
      * (or no longer remembers) changes nothing.
+     *
+     * `offered` names the tools the request carries directly beside the
+     * kernel. The first request freezes them too; a later one keeps only
+     * those of them, so a tool that joins mid-session stays off the
+     * definitions (a cell still reaches it, and the change tells of it).
      */
-    const offer = (session: string, live: string): Effect.Effect<Offer> =>
+    const offer = (session: string, live: string, offered?: ReadonlyArray<string>): Effect.Effect<Offer> =>
       lock.withPermits(1)(
         Effect.gen(function* () {
           const tools = described.get(live)
           const frozen = yield* load(session)
-          if (tools === undefined) return { description: frozen?.stamp === stamp ? frozen.description : live }
+          const current = frozen?.stamp === stamp ? frozen : undefined
+          /** The direct tools this request keeps: those it carries that the session froze, or all of them when it freezes now. */
+          const keep = (kept: ReadonlyArray<string> | undefined) =>
+            offered === undefined ? {} : { direct: kept === undefined ? [...offered] : offered.filter((name) => kept.includes(name)) }
+          if (tools === undefined) return { description: current?.description ?? live, ...keep(current === undefined ? undefined : (current.direct ?? [])) }
           const names = tools.map((tool) => tool.name)
-          if (frozen === undefined || frozen.stamp !== stamp) {
-            yield* save(session, { stamp, description: live, names })
-            return { description: live }
+          if (current === undefined) {
+            yield* save(session, { stamp, description: live, names, ...(offered === undefined ? {} : { direct: [...offered] }) })
+            return { description: live, ...keep(undefined) }
           }
-          const told = new Set(frozen.names)
+          const direct = keep(current.direct ?? [])
+          const told = new Set(current.names)
           const now = new Set(names)
           const added = tools.filter((tool) => !told.has(tool.name))
-          const removed = frozen.names.filter((name) => !now.has(name))
-          if (added.length === 0 && removed.length === 0) return { description: frozen.description }
-          yield* save(session, { ...frozen, names })
-          return { description: frozen.description, change: { added, removed } }
+          const removed = current.names.filter((name) => !now.has(name))
+          if (added.length === 0 && removed.length === 0) return { description: current.description, ...direct }
+          yield* save(session, { ...current, names })
+          return { description: current.description, change: { added, removed }, ...direct }
         }),
       )
 

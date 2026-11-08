@@ -10,6 +10,8 @@
  *   one's result is back.
  * - The task `kernel attach`: one `kernel` call that attaches the work dir's
  *   pixel.png, then a closing line.
+ * - The task `kernel memory`, when `memory_save` is offered directly: one
+ *   direct `memory_save` call, then a closing line.
  * - Anything else: one line.
  *
  * @module
@@ -90,6 +92,10 @@ export const PIXEL_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQV
 /** One kernel call that attaches the pixel by its path relative to the session's directory. */
 export const ATTACH_CELL = `attach(${JSON.stringify(PIXEL_FILE)})`
 
+export const MEMORY_TASK = "kernel memory"
+/** The note the memory task saves with a direct `memory_save` call. */
+export const MEMORY_NOTE = "The owner keeps the kernel's memory tools direct."
+
 /** The two kernel calls; the first reads `file` through the kernel's `tools`. */
 export const cells = (file: string) => [
   `let note = "kept"\nconst page = await tools.read({ path: ${JSON.stringify(file)} })\nconsole.log(JSON.stringify(page))\nnote.length`,
@@ -107,6 +113,9 @@ const reply = (request: ChatRequest, file: string): Reply => {
   const offersKernel = (request.tools ?? []).some((tool) => tool.function?.name === "kernel")
   if (firstUser(messages).endsWith(SUBAGENT_TASK) && offersKernel)
     return results === 0 ? { kind: "tool", name: "kernel", input: { code: SUBAGENT_CELL } } : { kind: "text", text: DONE }
+  const offersSave = (request.tools ?? []).some((tool) => tool.function?.name === "memory_save")
+  if (firstUser(messages).endsWith(MEMORY_TASK) && offersSave)
+    return results === 0 ? { kind: "tool", name: "memory_save", input: { text: MEMORY_NOTE, scope: "global" } } : { kind: "text", text: DONE }
   if (firstUser(messages).endsWith(ATTACH_TASK) && offersKernel)
     return results === 0 ? { kind: "tool", name: "kernel", input: { code: ATTACH_CELL } } : { kind: "text", text: DONE }
   if (firstUser(messages).endsWith(KERNEL_TASK) && offersKernel) {

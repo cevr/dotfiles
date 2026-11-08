@@ -2172,7 +2172,7 @@ the tool's input schema and its text ask for one whenever a cell calls tools
 or changes anything. It is optional, so calls made before it still decode. It runs TypeScript in one Bun process per session, so
 top-level bindings persist from call to call, and returns what the code
 printed, then its last expression's value. Its options are `idleMs`,
-`timeoutMs`, `viewChars`, `codeOnly` and `denyExecute` (below). An absent
+`timeoutMs`, `viewChars`, `codeOnly`, `direct` and `denyExecute` (below). An absent
 option takes its default. A malformed one stops the plugin at setup, with a
 message that names it.
 
@@ -2187,6 +2187,19 @@ its first sentence; the description tells the model to read a tool's docs
 before its first call. Both are kernel built-ins, not tools, so they never
 change the definitions.
 
+Beside the kernel the model is offered the tools `direct` names, each with
+its own definition (the fork's `options.runtime.direct`); by default the
+memory tools, `memory_save`, `memory_search` and `memory_forget`. With the
+kernel alone, Haiku never saved a note in the memory eval (0 of 21 facts in 7
+episodes, `notes/memory-eval.md`, round 2), and production saw 4 saves in 105
+sessions; offered directly, it saved 49 of 66 and 9 of 15. A direct tool
+the agent may not use is not offered. The kernel's list leaves them out
+(their definitions already carry their words, and a copy would cost tokens
+on every request) and its text says the tools beside it are called directly;
+a cell still calls them as `tools.memory_save(…)`, and `tools.list()` and
+`tools.docs` still name them. `direct: []` makes the kernel the only tool
+again.
+
 The description is frozen per session at its first request (`frozen.ts`), so
 the tool definitions at the front of the cached prompt keep their bytes for
 the session's life: an MCP server that connects or reconnects, a plugin that
@@ -2197,6 +2210,12 @@ the session's frozen text back in place of the live one, and a change in the
 tools since the session was last told is announced once, as a synthetic
 message that waits for the session's next step (`resume: false`), naming each
 new tool with its first sentence and each gone one, whose call now throws.
+The direct tools are frozen with it: a session's requests carry the direct
+tools its first request carried. A request hook can drop a tool but not add
+one, so a direct tool that joins mid-session (the memory plugin loading late)
+is dropped from the definitions, reached only from a cell, and announced as
+the others are; a new session is offered it. One that leaves is gone from the
+definitions until it comes back.
 The entry lives in the plugin's storage under `kernel-catalog:<sessionID>`, so
 it holds across a kernel or server restart, and goes with the session. A
 subagent is its own session and freezes its own. A change in the kernel's own
@@ -2237,6 +2256,7 @@ attach(path) to see it" }`, never as base64.
 | `timeoutMs` | `30000` | One call's compute limit, paused while its tool calls run. Past it the worker is killed. |
 | `viewChars` | `8000` | Characters of output the model sees per call: the head and the tail. The worker keeps 64 KiB at most. |
 | `codeOnly` | `true` | Make the kernel the agents' only tool, as above. `false` offers it beside the direct tools. |
+| `direct` | `["memory_save", "memory_search", "memory_forget"]` | With `codeOnly`: the tool ids offered beside the kernel with their own definitions, left off its list. Needs the fork's `runtime.direct`. |
 | `denyExecute` | `true` | Without `codeOnly`: deny code mode's `execute` to every agent, so the kernel is the only code tool and every other tool is offered directly. |
 
 Without `codeOnly` a cell's call runs the tool's own `execute` and skips

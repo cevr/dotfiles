@@ -26,7 +26,9 @@
  *   description: ../../mods/kernel/frozen.ts), and a cell's call runs through the
  *   registry's hooks, so `tools.subagent` passes the orchestrate guard, pace
  *   and Sabbath. Deny `kernel` to an agent to give it its usual tools. Needs
- *   the fork's `options.runtime`.
+ *   the fork's `options.runtime`. The tools `direct` names are offered beside
+ *   it with their own definitions (the runtime's `direct`), left off its
+ *   list, and still reached from a cell; the set is frozen per session too.
  * - Without `codeOnly` it is a direct tool beside the others (`codemode:
  *   false`), whose calls skip the hooks; with `denyExecute`, every agent the
  *   plugins define denies code mode's `execute`.
@@ -37,6 +39,7 @@
  * - `viewChars`: the characters of output the model sees per call; default 8,000.
  * - `codeOnly`: make the kernel the agents' only tool; default true.
  * - `denyExecute`: without `codeOnly`, deny code mode's `execute` to every agent; default true.
+ * - `direct`: with `codeOnly`, the tool ids offered beside the kernel; default the memory tools (`DIRECT`).
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Schema, Scope, Stream } from "effect"
@@ -65,6 +68,13 @@ const withDefault =
 
 type SessionID = Parameters<Plugin.Context["session"]["synthetic"]>[0]["sessionID"]
 
+/**
+ * The tools offered beside the runtime kernel by default: the memory tools. A
+ * model with the kernel alone saved no note in the memory eval
+ * (notes/memory-eval.md, round 2); offered directly, it saved most of them.
+ */
+export const DIRECT: ReadonlyArray<string> = ["memory_save", "memory_search", "memory_forget"]
+
 /** A count of milliseconds or characters: finite and above zero. */
 const Positive = Schema.Finite.check(Schema.isGreaterThan(0))
 
@@ -74,6 +84,7 @@ export const Options = Schema.Struct({
   viewChars: Positive.pipe(withDefault(8_000)),
   codeOnly: Schema.Boolean.pipe(withDefault(true)),
   denyExecute: Schema.Boolean.pipe(withDefault(true)),
+  direct: Schema.Array(Schema.String).pipe(withDefault<ReadonlyArray<string>>(DIRECT)),
 })
 export type Options = typeof Options.Type
 
@@ -124,7 +135,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
           name: "kernel",
           description: description(options),
           input: KernelInput,
-          options: options.codeOnly ? { codemode: false, runtime: { describe: catalogs.describe } } : { codemode: false },
+          options: options.codeOnly ? { codemode: false, runtime: { describe: catalogs.describe, direct: options.direct } } : { codemode: false },
           execute: (input, context) => {
             // The tools the cell calls, live in the call's metadata and kept in its result's, so the
             // transcript draws what the cell did (../../mods/kernel/operations.ts). The journal closes
@@ -172,14 +183,17 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
               Effect.asVoid,
               Effect.catchCause((cause) => Effect.logWarning("kernel: could not announce a tool change", { sessionID, cause })),
             )
-        // Every request of a session offers its frozen description in place of the live one.
+        // Every request of a session offers its frozen description in place of the live one, and
+        // the direct tools its first request offered: a direct tool that joined since is dropped.
         const freeze = (event: { readonly sessionID: SessionID; readonly tools: Record<string, { description: string }> }) =>
           Effect.suspend(() => {
             const offered = event.tools.kernel
             if (offered === undefined) return Effect.void
-            return catalogs.offer(event.sessionID, offered.description).pipe(
+            const direct = options.direct.filter((name) => Object.hasOwn(event.tools, name))
+            return catalogs.offer(event.sessionID, offered.description, direct).pipe(
               Effect.flatMap((offer) => {
                 offered.description = offer.description
+                for (const name of direct) if (!offer.direct?.includes(name)) delete event.tools[name]
                 return offer.change === undefined ? Effect.void : Effect.asVoid(Effect.forkIn(announce(event.sessionID, offer.change), scope))
               }),
             )

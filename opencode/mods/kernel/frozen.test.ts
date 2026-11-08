@@ -83,6 +83,27 @@ describe("a session's description", () => {
     expect(await run(renewed.offer("ses_1", "a text no describe wrote"))).toEqual({ description: next })
   })
 
+  test("keeps the direct tools its first request carried; new words refreeze them once, and an older entry kept none", async () => {
+    const store = memoryStore()
+    const frozen = catalogs(store)
+    const first = frozen.describe([read])
+    expect(await run(frozen.offer("ses_1", first, ["memory_save"]))).toEqual({ description: first, direct: ["memory_save"] })
+    // One that joins is not kept; one that leaves is not there to keep, and back when it returns.
+    expect((await run(frozen.offer("ses_1", first, ["memory_save", "memory_forget"]))).direct).toEqual(["memory_save"])
+    expect((await run(frozen.offer("ses_1", first, []))).direct).toEqual([])
+    expect((await run(frozen.offer("ses_1", first, ["memory_forget", "memory_save"]))).direct).toEqual(["memory_save"])
+    expect(store.entries.get(`${Frozen.FROZEN_PREFIX}ses_1`)).toMatchObject({ direct: ["memory_save"] })
+    // A text no describe wrote keeps the frozen set too.
+    expect((await run(frozen.offer("ses_1", "a text no describe wrote", ["memory_save", "memory_forget"]))).direct).toEqual(["memory_save"])
+    // An entry written before the direct tools offered none, and keeps offering none under the same words.
+    store.entries.set(`${Frozen.FROZEN_PREFIX}ses_old`, { stamp: "words-1", description: first, names: ["read"] })
+    expect((await run(frozen.offer("ses_old", first, ["memory_save"]))).direct).toEqual([])
+    // New words freeze the session again, its direct tools with it.
+    const renewed = catalogs(store, "words-2")
+    const next = renewed.describe([read])
+    expect((await run(renewed.offer("ses_old", next, ["memory_save"]))).direct).toEqual(["memory_save"])
+  })
+
   test("reads an entry it cannot decode as none", async () => {
     const store = memoryStore(new Map([[`${Frozen.FROZEN_PREFIX}ses_1`, { stamp: 1 }]]))
     const frozen = catalogs(store)
