@@ -559,7 +559,7 @@ describe("a session's cache", () => {
       }),
     ))
 
-  test("of a role that comes back after its five minutes, within the hour, asks for the hour from its next request on", () =>
+  test("of a role that comes back after its five minutes, within the hour, asks for the hour from that request on", () =>
     onTestClock(
       Effect.gen(function* () {
         const state = roles()
@@ -572,14 +572,17 @@ describe("a session's cache", () => {
         yield* TestClock.adjust(CACHE_LIFE_MS - 1)
         expect((yield* role())[CACHE_TTL_HEADER]).toBeUndefined()
         yield* step(1)
-        // Back after a ten-minute shell command: its cache had expired. This request still writes for five minutes ...
+        // Back after a ten-minute shell command: its cache had expired, so the prompt it writes again is
+        // written for the hour ...
         yield* TestClock.adjust(10 * MINUTE)
-        expect((yield* role())[CACHE_TTL_HEADER]).toBeUndefined()
-        yield* step(1)
-        // ... and every one after asks for the hour, which keeps the session on its login that long.
-        yield* TestClock.adjust(MINUTE)
         const raised = yield* role()
         expect(raised[CACHE_TTL_HEADER]).toBe("1h")
+        yield* step(1)
+        // ... and the one after reads it at that hour, which keeps the session on its login that long.
+        yield* TestClock.adjust(MINUTE)
+        const next = yield* role()
+        expect(next[CACHE_TTL_HEADER]).toBe("1h")
+        expect(next[CREDENTIAL_HEADER]).toBe(raised[CREDENTIAL_HEADER])
         yield* step(1)
         // The ledger keeps it, so a restart goes on asking for the hour.
         expect(state.storage.get("anthropic/cache/s1")).toMatchObject({ lifeMs: HOUR, outlived: true })

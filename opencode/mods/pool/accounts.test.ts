@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test"
 import { fold } from "@dotfiles/decider/decider"
 import { AccountPool, LoginsListed, ReadingTaken, RequestPlaced, restored, StepRecorded, type Event } from "./account-pool.ts"
-import { cacheLives, DEFAULT_RULES, held, rank, sessionAccount, shouldFailOver, status, ttlMs, ttlOf, WINDOW_MS } from "./accounts.ts"
+import { cacheLives, DEFAULT_RULES, held, rank, requestCache, sessionAccount, shouldFailOver, status, ttlMs, ttlOf, WINDOW_MS } from "./accounts.ts"
 
 const HOUR = 3_600_000
 const T0 = 1_800_000_000_000
@@ -55,6 +55,35 @@ describe("a session's cache", () => {
     // A new run stays on a while the role's cache lives, against a's load; then load places it on b.
     expect(rank(role, "s1", T0 + 6 * MINUTE - 1, hourly)[0]).toBe("a")
     expect(rank(role, "s1", T0 + 6 * MINUTE, hourly)[0]).toBe("b")
+  })
+
+  // The ledger, 2026-11-06 to 08: 13 of 13 requests that asked for an hour within five minutes of a request
+  // that wrote for five minutes, on one login, read none of what it had just written (against 4 misses in
+  // 3,523 requests that kept five minutes). A cache is kept per lifetime: one that changes is a full write.
+  test("a request asks for the lifetime its session's live cache was written for, and changes it only once that cache is gone", () => {
+    const ROLE = 5 * MINUTE
+    const at = (lifeMs: number | undefined, outlived = false) => ({
+      credentialID: "a",
+      at: T0,
+      ...(lifeMs === undefined ? {} : { lifeMs }),
+      ...(outlived ? { outlived: true } : {}),
+    })
+    // Live caches keep their lifetime: a role's five minutes, the hour it was raised to, and a mark from before
+    // (written at five minutes, already outlived) until those five minutes pass.
+    for (const [mark, gap] of [
+      [at(ROLE), 4 * MINUTE],
+      [at(HOUR, true), 30 * MINUTE],
+      [at(ROLE, true), MINUTE],
+      [at(undefined), 2 * MINUTE],
+    ] as const) {
+      const life = mark.lifeMs ?? hourly.cacheLifeMs
+      expect(requestCache(hourly, mark, ROLE, T0 + gap).lifeMs).toBe(life)
+    }
+    // A role's cache gone within the provider's hour: the session outlived its five minutes, and the request
+    // that writes the prompt again writes it for the hour.
+    expect(requestCache(hourly, at(ROLE), ROLE, T0 + 10 * MINUTE)).toEqual({ lifeMs: HOUR, outlived: true })
+    // Gone past the hour too: it starts over at its own.
+    expect(requestCache(hourly, at(HOUR, true), ROLE, T0 + HOUR)).toEqual({ lifeMs: ROLE })
   })
 
   test("an agent's cacheTTL reads in models.dev's duration format; anything else is none", () => {

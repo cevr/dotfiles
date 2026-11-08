@@ -549,9 +549,13 @@ live sessions and pace place only a run whose cache is gone.
 An agent's own lifetime shorter than `cacheLifeMs` (the roles' 5 minutes)
 pays only while its session's requests follow each other closely. A session
 that comes back after its own lifetime but within `cacheLifeMs` (a long shell
-command, a wait, a role resumed) has outlived it: from its next request on,
-the pool gives it `cacheLifeMs` for as long as each request follows the last
-within it (`requestCache` in `accounts.ts`). The pool names that lifetime on
+command, a wait, a role resumed) has outlived it: from the request that came
+back on, which writes its prompt again anyway, the pool gives it `cacheLifeMs`
+for as long as each request follows the last within it (`requestCache` in
+`accounts.ts`). While a cache lives, a request asks for the lifetime it was
+written for: Anthropic keeps a cache per lifetime, and a request that raised
+five minutes to an hour within the five minutes read none of it (13 of 13 in
+the ledger, 2026-11). The pool names that lifetime on
 the request (`x-opencode-cache-ttl: 1h`), and the auth plugin strips the
 header and writes it on every cache breakpoint of the body. A session's cache
 mark is kept at least `cacheLifeMs` (`markKept`), so the pool knows the

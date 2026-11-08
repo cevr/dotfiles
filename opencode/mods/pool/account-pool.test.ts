@@ -299,7 +299,7 @@ describe("a session whose agent keeps a shorter cache lifetime than the provider
       ...released("s1"),
     ] as const
 
-  test("keeps its own while it comes back within it, and the provider's from the request after one that outlived it", () =>
+  test("keeps its own while it comes back within it, and the provider's from the request that outlived it", () =>
     Effect.runPromise(
       hourStory(
         accounts("a", "b"),
@@ -309,10 +309,11 @@ describe("a session whose agent keeps a shorter cache lifetime than the provider
         // Back within its five minutes.
         ...role("a", T0 + 4 * MINUTE, ROLE),
         ...roleStep("a", T0 + 4 * MINUTE, ROLE),
-        // Back twenty minutes on: the cache had expired, so load places it (b has s2 live, a none), and it still writes for five minutes.
-        ...role("a", T0 + 24 * MINUTE, ROLE, true),
-        ...roleStep("a", T0 + 24 * MINUTE, ROLE, true),
-        // From the next request on it writes for the hour, even one that comes back within five minutes.
+        // Back twenty minutes on: the cache had expired, so load places it (b has s2 live, a none), and the
+        // prompt it writes again anyway is written for the hour.
+        ...role("a", T0 + 24 * MINUTE, HOUR, true),
+        ...roleStep("a", T0 + 24 * MINUTE, HOUR, true),
+        // The request after reads it at the same hour: a lifetime that changed would read none of it.
         ...role("a", T0 + 25 * MINUTE, HOUR, true),
         ...roleStep("a", T0 + 25 * MINUTE, HOUR, true),
         // And the hour keeps it on its cache's account, though b scores better now.
