@@ -7,12 +7,12 @@ The maintained source for verifying what a Notes user can do. Read this index be
 - `bun run verify:seed $DIR` makes a scratch data dir with the notes `Quarterly plan` (body `Draft budget`) and `Grocery list`.
 - `bun run verify:launch --root $DIR --port $PORT` serves Notes on `http://127.0.0.1:$PORT`. Never port 4173, the owner's own instance.
 - `bun run verify:doctor --port $PORT` passes before the first drive.
-- Every browser command runs as `agent-browser --session $RUN --args "--mute-audio,--disable-audio-output" …`; recipes below write it as `ab`.
+- Each run makes its own session, `browse session new $RUN --allow-origin http://127.0.0.1:$PORT`, and deletes it at cleanup. Every step runs as `browse execute --session $RUN '<code>'`; recipes below show only the code. `$EVIDENCE` is a `mktemp -d` under `/tmp`, since browse writes files only inside its roots and only into a directory without group or world write. Notes plays no sound, so browse drives it.
 
 ## Proof and skip reporting
 
-- Each journey records a video, `$EVIDENCE/<feature>/<feature>.webm`.
-- Each step records the action, the URL after it, `ab snapshot` and `ab screenshot` into `$EVIDENCE/<feature>/`.
+- Each journey records a video, `browse recording start $EVIDENCE/<feature>/<feature>.webm --session $RUN --mode cdp`, stopped after the last step.
+- Each step records the action, the URL after it, `await snapshot()` and `await page.screenshot({ path })` into `$EVIDENCE/<feature>/`.
 - A write is proved by a second view: reopen the note from the list.
 - An unreachable entry point is reported with the command tried and the unmet precondition. It never counts as verified through another path.
 
@@ -22,7 +22,7 @@ Each feature file has an H1, one paragraph of user-visible behavior, then exactl
 
 1. `Sub-features`: short ids, one line each.
 2. `How to get to it (user POV)`: every entry point a user has.
-3. `Driving it with agent-browser`: starts with three lines, then labeled steps that pair a user action, an exact command and the observable result.
+3. `Driving it with browse`: starts with three lines, then labeled steps that pair a user action, the exact code and the observable result.
    - **Preconditions:** the state the steps need beyond the baseline.
    - **States:** which of default, focus-visible, open, loading, empty and error the steps exercise; mark the rest `n/a`.
    - **Regression:** the automated tests that cover the feature.

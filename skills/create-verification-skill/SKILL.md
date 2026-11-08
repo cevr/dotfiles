@@ -16,7 +16,7 @@ Answer from the code. Ask the owner only what no file shows.
 
 - **Surface.** What does the user touch: a web page, a CLI, a TUI, a desktop app, an HTTP API?
 - **Run.** The repo's own dev command (`package.json` scripts, `AGENTS.md` or `CLAUDE.md`, the README), with its ports, env, seed data and auth.
-- **Drive.** Existing harnesses first: e2e fixtures, gesture helpers, a debug port. Then the generic driver: `agent-browser` for web and Electron, `pilotty` for a CLI or TUI, `curl` for HTTP.
+- **Drive.** Existing harnesses first: e2e fixtures, gesture helpers, a debug port. Then the generic driver: `browse` for a web page (the owner's Chrome, one session per run; see the **browse** skill), `agent-browser` for Electron and for a run that needs an isolated or headless profile (CI, parallel users with separate cookies, sound), `pilotty` for a CLI or TUI, `curl` for HTTP.
 - **Observe.** What proof exists: video, screenshots, ARIA snapshots, terminal transcripts, response bodies, the dev logs (for example `tmp/logs/latest`), exit codes, rows, the `git diff` of a scratch root.
 - **Isolate.** Can two instances run side by side (ports, data dirs, browser profiles, scratch roots)? Which instance is the owner's own and must never be driven?
 - **Hosts.** Which machines run the repo (the laptop, a remote dev box), and what differs per host: ports, GPU, a mic or screen permission, the address the owner opens.
@@ -39,7 +39,7 @@ The usual set, minus what the repo already has:
 - `verify:doctor --port <p>`: the read-only health check (§3);
 - `verify:drive`: only the powers the generic driver lacks, such as touch emulation, device metrics, or wheel and finger gestures.
 
-**Silence.** Every browser the skill or a helper starts is muted. With `agent-browser`, pass `--args "--mute-audio,--disable-audio-output"` (or set `AGENT_BROWSER_ARGS`); a Chrome the repo launches itself takes the same flags in its launcher. A drive or test that plays sound through the owner's speakers is a bug in the skill.
+**Silence.** Every browser the skill or a helper starts is muted. A `browse` tab plays through the owner's Chrome, so a feature that makes sound is driven with `agent-browser`. With `agent-browser`, pass `--args "--mute-audio,--disable-audio-output"` (or set `AGENT_BROWSER_ARGS`); a Chrome the repo launches itself takes the same flags in its launcher. A drive or test that plays sound through the owner's speakers is a bug in the skill.
 
 ## 3. Write `SKILL.md`
 
@@ -55,17 +55,17 @@ Frontmatter: `name: verify-<app>`, and a model-facing `description` that leads w
   - the load average is below the core count, or timings claim nothing ([explain-the-number](~/Developer/personal/dotfiles/principles/explain-the-number.md)).
 
   Run it before the first drive, and again after any surprising result.
-- **Drive.** The conventions every feature file uses: `agent-browser --session <run>` per run; an ARIA role and accessible name with `--exact` (a name match is a substring by default, so `Cut` also matches "Show cuts"), or a stable `data-*` handle, and never a class or a coordinate; the real user path (clicks, keys, fingers), and never an internal setter, a URL-state write or an API call to reach a state. Then a pointer to `features/README.md`.
-- **Evidence.** Where proof goes: an evidence dir the caller names, outside every checkout (default `tmp/verify/<run>/<feature>/`, git-ignored). What it holds:
-  - a video of each journey, on by default with a flag to skip it: Playwright's `recordVideo` on the context, or the driver's own recorder; `<feature>.webm`, no audio, proved playable (`ffprobe` duration above 0);
+- **Drive.** The conventions every feature file uses: one browse session per run, allowlisted to the app (`browse session new <run> --allow-origin http://127.0.0.1:<port>`), and each step a `browse execute --session <run>`; an ARIA role and accessible name with `exact: true` (`page.getByRole("button", { name: "Cut", exact: true })`; a name match is a substring by default, so `Cut` also matches "Show cuts"), or a stable `data-*` handle, and never a class or a coordinate; the real user path (clicks, keys, fingers), and never an internal setter, a URL-state write or an API call to reach a state. Then a pointer to `features/README.md`.
+- **Evidence.** Where proof goes: an evidence dir the caller names, outside every checkout (default `tmp/verify/<run>/<feature>/`, git-ignored; with browse, a `mktemp -d` under `/tmp`, since browse writes only inside its file roots). What it holds:
+  - a video of each journey, on by default with a flag to skip it: Playwright's `recordVideo` on the context, or the driver's own recorder (`browse recording start <path> --session <run> --mode cdp`); `<feature>.webm`, no audio, proved playable (`ffprobe` duration above 0);
   - for each step, the action, the URL after it, an ARIA snapshot and a screenshot;
   - a write proved by a second view: reopen it, read the row, or `git diff` the scratch root;
   - a flaky step as n/n trials with the load;
   - a failure rerun on base, on another port, to tell new from pre-existing;
   - an unreachable entry point reported with its unmet precondition, never passed through another path.
-- **Cleanup.** Kill by recorded PID, never by name (`pkill -f` kills the owner's instance too). Close each `agent-browser --session`. Remove scratch roots and checkouts. Evidence stays.
+- **Cleanup.** Kill by recorded PID, never by name (`pkill -f` kills the owner's instance too). Delete each run's browse session (`browse session delete <run>`), which closes its tabs. Remove scratch roots and checkouts. Evidence stays.
 - **Helpers.** Each script with its exact invocation and what it prints.
-- **Hosts** (when the repo runs on more than one machine): per host, the ports, the owner's instance to leave alone, and what that host lacks.
+- **Hosts** (when the repo runs on more than one machine): per host, the ports, the owner's instance to leave alone, and what that host lacks. browse always drives the Mac's Chrome, so on a remote box the app listens on `0.0.0.0` and the drive opens the box's Tailscale address, not `127.0.0.1`.
 
 ## 4. Seed the feature map
 

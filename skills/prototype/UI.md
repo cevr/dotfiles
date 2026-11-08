@@ -93,7 +93,7 @@ Put the switcher in a single shared component so both sub-shapes can reuse it. L
 
 ### 5. Drive and measure every variant yourself
 
-Before the owner sees anything, drive each variant the way a user would, with the repo's `verify-<app>` skill when it has one, else `agent-browser` (muted):
+Before the owner sees anything, drive each variant the way a user would, with the repo's `verify-<app>` skill when it has one, else the **browse** skill (a variant that plays sound goes through `agent-browser`, muted):
 
 - **Screenshot** each variant at desktop and phone width, in light and dark when the app has both, and in its empty, loading, error and longest-content states.
 - **Measure** what the question is about, the same way for every variant: time to the first useful paint and to interactive, layout shift, horizontal overflow at phone width, the number of steps for the core task, and any console error. Run each measurement at least twice and keep the median.
