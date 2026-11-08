@@ -4,7 +4,7 @@
 // runner gone without an exit reads lost. On Linux, `systemd-run --user`
 // is asked first, and a refusal falls back to a detached runner with a warning.
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Context, Effect, Layer } from "effect"
@@ -117,6 +117,20 @@ describe("the process runner", () => {
     expect(run.state === "ended" && run.exit).toMatchObject({ exitCode: null, timedOut: false, killed: true })
     expect(await Effect.runPromise(runner.kill(spec.id))).toBe(false)
     expect(await Effect.runPromise(runner.kill("jnone00"))).toBe(false)
+  })
+
+  test("a kill the moment the job reads running ends it as killed, never lost", async () => {
+    const specs = Array.from({ length: 5 }, () => specOf("sleep 30"))
+    for (const spec of specs) {
+      await Effect.runPromise(runner.launch(spec))
+      // runner.json makes the job read running; kill on the first poll that sees it.
+      while (!existsSync(path.join(scratch, "jobs", spec.id, FILES.runner))) await Bun.sleep(1)
+      expect(await Effect.runPromise(runner.kill(spec.id))).toBe(true)
+    }
+    for (const spec of specs) {
+      const run = await until(spec.id, (run) => run.state !== "running")
+      expect(run.state === "ended" && run.exit).toMatchObject({ exitCode: null, timedOut: false, killed: true })
+    }
   })
 
   test("a runner gone without an exit reads lost; one never up reads starting; an unknown id reads nothing", async () => {

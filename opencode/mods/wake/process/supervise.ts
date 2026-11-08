@@ -85,6 +85,26 @@ export const supervise = async (dir: string, notify?: (descriptor: Descriptor) =
   const job = JSON.parse(readFileSync(path.join(dir, FILES.job), "utf8")) as JobFile
   const env = readEnv(dir)
   const startedAt = Date.now()
+
+  let child: ReturnType<typeof Bun.spawn> | undefined
+  let timedOut = false
+  let killed = false
+  let hard: ReturnType<typeof setTimeout> | undefined
+  const stop = () => {
+    const pid = child?.pid
+    if (pid === undefined) return
+    signalGroup(pid, "SIGTERM")
+    hard ??= setTimeout(() => signalGroup(pid, "SIGKILL"), grace)
+  }
+  const onSignal = () => {
+    killed = true
+    stop()
+  }
+  // The handlers come before runner.json: once it is written the job reads
+  // running and a kill sends SIGTERM here, and without a handler that signal
+  // ends this runner with no exit recorded (the job reads lost) and leaves
+  // the command's group running.
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, onSignal)
   writeAtomic(path.join(dir, FILES.runner), { pid: process.pid, startedAt })
 
   const record = async (exit: JobExit) => {
@@ -93,16 +113,16 @@ export const supervise = async (dir: string, notify?: (descriptor: Descriptor) =
     return exit
   }
 
-  if (existsSync(path.join(dir, FILES.stop)))
+  if (killed || existsSync(path.join(dir, FILES.stop)))
     return record({ exitCode: null, signal: "SIGTERM", startedAt, endedAt: Date.now(), timedOut: false, killed: true })
 
   const log = openSync(path.join(dir, FILES.log), "a", 0o600)
   const drip = path.join(dir, FILES.drip)
   writeFileSync(drip, "", { flag: "a", mode: 0o600 })
   const childEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !(STARTUP as ReadonlyArray<string>).includes(name)))
-  let child: ReturnType<typeof Bun.spawn>
+  let spawned: ReturnType<typeof Bun.spawn>
   try {
-    child = Bun.spawn([...argvOf(job.spec, job.spec.heavy && scopeAvailable())], {
+    spawned = Bun.spawn([...argvOf(job.spec, job.spec.heavy && scopeAvailable())], {
       cwd: job.spec.cwd,
       env: { ...childEnv, JOB_DRIP: drip, JOB_ID: job.spec.id },
       stdin: "ignore",
@@ -116,30 +136,19 @@ export const supervise = async (dir: string, notify?: (descriptor: Descriptor) =
     return record({ exitCode: 127, startedAt, endedAt: Date.now(), timedOut: false, killed: false })
   }
   closeSync(log)
+  child = spawned
 
-  let timedOut = false
-  let killed = false
-  let hard: ReturnType<typeof setTimeout> | undefined
-  const stop = () => {
-    signalGroup(child.pid, "SIGTERM")
-    hard ??= setTimeout(() => signalGroup(child.pid, "SIGKILL"), grace)
-  }
   const timer = setTimeout(() => {
     timedOut = true
     stop()
   }, job.spec.timeoutSeconds * 1000)
-  const onSignal = () => {
-    killed = true
-    stop()
-  }
-  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, onSignal)
   // A kill that came while this runner was coming up.
-  if (existsSync(path.join(dir, FILES.stop))) onSignal()
+  if (killed || existsSync(path.join(dir, FILES.stop))) onSignal()
 
-  const exitCode = await child.exited
+  const exitCode = await spawned.exited
   clearTimeout(timer)
   if (hard !== undefined) clearTimeout(hard)
-  const signal = child.signalCode == null ? undefined : String(child.signalCode)
+  const signal = spawned.signalCode == null ? undefined : String(spawned.signalCode)
   return record({
     exitCode: signal === undefined ? exitCode : null,
     ...(signal === undefined ? {} : { signal }),
