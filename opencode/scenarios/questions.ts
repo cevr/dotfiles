@@ -1,18 +1,25 @@
 // Background questions: a scripted model asks two questions through
 // `ask_user_async`, directly (QUESTIONS_VIA=direct, the default) or from a
-// kernel cell (QUESTIONS_VIA=kernel), and carries on; then it starts a
-// background subagent that asks one of its own the same way. The root's tray counts all
-// three. /answer opens the pane on the oldest: the user moves off the
-// assumption and answers with a choice, so the idle root wakes on a letter
-// that says the answer differs; types an answer of their own to the second;
-// and dismisses the subagent's with ctrl+x twice, which tells nobody.
+// kernel cell (QUESTIONS_VIA=kernel), then a third in a second call, and
+// carries on; then it starts a background subagent that asks one of its own
+// the same way. The root's tray counts all four. /answer opens the host's own
+// question form (the built-in `question` tool's) with the root's three
+// questions as tabs: the user moves off the assumption on the first, types an
+// answer of their own on the second, leaves the third blank and submits once,
+// so the idle root wakes on ONE letter with both answers. The same /answer
+// opened the subagent's form too, naming who asked; it shows next, and Esc
+// closes it, leaving its question open. shift+← on the empty composer then
+// opens the forms again: the root's left-over question, which the user
+// answers with its assumption (its own letter), and the subagent's, closed
+// again with Esc.
 // Run: OPENCODE_DEV=<opencode checkout> SCENARIO_OUT=out QUESTIONS_VIA=kernel bunx opencode-drive run scenarios/questions.ts
 //
-// It writes, under SCENARIO_OUT, `questions-<via>-tray.txt` (the frame with
-// the three open), `-pane.txt` (the pane on the first), `-moved.txt` (the
-// cursor moved), `-typed.txt` (an answer typed), `-subagent.txt` (the pane on
-// the subagent's), `-armed.txt` (after one ctrl+x), `-done.txt` (after the
-// dismissal), `-timeout.txt` when a wait times out, `-requests.json` (each
+// It writes, under SCENARIO_OUT, `questions-<via>-<name>.txt` for the frames
+// `tray` (four open), `form` (the form on the first question), `moved` (the
+// cursor on Redis), `typed` (an answer typed on the second), `review` (the
+// submit tab), `answered` (the root's letter and the tray after), `again` (the
+// left-over question's form), `subagent` (the subagent's form) and `done`
+// (after Esc); `-timeout.txt` when a wait times out; `-requests.json` (each
 // model request, by the session it came from) and `-transcripts.json`.
 import { Deferred, Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
@@ -35,6 +42,9 @@ const ASK: ToolInput = {
     },
     { question: "Should the old /v1 endpoint stay for a release?", header: "Old endpoint", assume: "Keep it" },
   ],
+}
+const ASK_MORE: ToolInput = {
+  questions: [{ question: "Should the logs be JSON?", header: "Log format", options: [{ label: "JSON" }, { label: "Plain text" }], assume: "JSON" }],
 }
 const SUB_ASK: ToolInput = {
   questions: [{ question: "Which test runner should the suite use?", header: "Test runner", options: [{ label: "bun test" }, { label: "vitest" }], assume: "bun test" }],
@@ -94,9 +104,11 @@ export default OpenCodeDriver.use(
           return Stream.fromEffect(Deferred.succeed(subagentAsked, undefined)).pipe(Stream.drain, Stream.concat(say("Subagent asked and carried on")))
         }
         // The root: the answers it reads, newest first.
-        if (s.includes("A: Drop it after this release")) return say("Root dropped the old endpoint")
-        if (s.includes("A: Redis")) return say(s.includes("This differs from your assumption") ? "Root switched the cache to Redis" : "Root missed the difference")
+        if (s.includes("Answer to your background question q3")) return say("Root kept JSON logs")
+        if (s.includes("Answers to your background questions q1 and q2"))
+          return say(s.includes("revise the work that rests on q1 and q2") ? "Root switched to Redis and dropped the endpoint" : "Root missed the difference")
         if (!s.includes("call_ask")) return call("call_ask", "ask_user_async", ASK)
+        if (!s.includes("call_more")) return call("call_more", "ask_user_async", ASK_MORE)
         if (!s.includes("call_runner")) return call("call_runner", "subagent", RUNNER)
         return say("Root carried on, assuming SQLite")
       })
@@ -128,31 +140,52 @@ export default OpenCodeDriver.use(
 
       yield* ui.submit("questions-fixture")
       yield* Deferred.await(subagentAsked)
-      yield* until((frame) => frame.includes("Root carried on, assuming SQLite") && frame.includes("3 open questions"))
+      yield* until((frame) => frame.includes("Root carried on, assuming SQLite") && frame.includes("4 open questions"))
       yield* keep("tray")
 
+      // One form for the root's three questions, from both its asks.
       yield* ui.submit("/answer")
-      yield* until((frame) => frame.includes("Question 1/3") && frame.includes("▸ SQLite"))
-      yield* keep("pane")
-      console.log("screenshot:", yield* ui.screenshot(`${label}-pane`))
+      yield* until((frame) => frame.includes("Background questions") && frame.includes("Which database should the cache use?"))
+      yield* keep("form")
+      console.log("screenshot:", yield* ui.screenshot(`${label}-form`))
       yield* ui.press("down")
-      yield* until((frame) => frame.includes("▸ Redis"))
       yield* keep("moved")
       yield* ui.press("return")
-      yield* until((frame) => frame.includes("Question 1/2") && frame.includes("Root switched the cache to Redis"))
-
+      yield* until((frame) => frame.includes("Should the old /v1 endpoint stay for a release?"))
+      // The second: an answer of one's own, on the row under the assumption.
+      yield* ui.press("down")
+      yield* ui.press("return")
       yield* ui.type("Drop it after this release")
       yield* until((frame) => frame.includes("Drop it after this release"))
       yield* keep("typed")
       yield* ui.press("return")
-      yield* until((frame) => frame.includes("Question 1/1") && frame.includes("Root dropped the old endpoint"))
-      yield* keep("subagent")
+      yield* until((frame) => frame.includes("Should the logs be JSON?"))
+      // The third stays blank: on to the submit tab.
+      yield* ui.press("tab")
+      yield* until((frame) => frame.includes("(not answered)"))
+      yield* keep("review")
+      console.log("screenshot:", yield* ui.screenshot(`${label}-review`))
+      yield* ui.press("return")
+      // One letter wakes the root; the subagent's form, opened by the same /answer, shows next.
+      yield* until(
+        (frame) =>
+          frame.includes("Root switched to Redis and dropped the endpoint") && frame.includes("2 open questions") && frame.includes("Which test runner should the suite use?"),
+      )
+      yield* keep("answered")
+      console.log("screenshot:", yield* ui.screenshot(`${label}-answered`))
+      // Esc closes it; the question stays open.
+      yield* ui.press("escape")
+      yield* until((frame) => !frame.includes("Which test runner should the suite use?") && frame.includes("2 open questions"))
 
-      yield* ui.press("x", { ctrl: true })
-      yield* until((frame) => frame.includes("ctrl+x again dismisses"))
-      yield* keep("armed")
-      yield* ui.press("x", { ctrl: true })
-      yield* until((frame) => !frame.includes("Question 1/1") && !frame.includes("open question"))
+      // shift+← on the empty composer: the left-over question, then the subagent's again.
+      yield* ui.press("left", { shift: true })
+      yield* until((frame) => frame.includes("Should the logs be JSON?") && !frame.includes("Which database should the cache use?"))
+      yield* keep("again")
+      yield* ui.press("return")
+      yield* until((frame) => frame.includes("Which test runner should the suite use?") && frame.includes("Root kept JSON logs"))
+      yield* keep("subagent")
+      yield* ui.press("escape")
+      yield* until((frame) => !frame.includes("Which test runner should the suite use?") && frame.includes("1 open question"))
       // The prompt has the focus back.
       yield* ui.type("typed-after-answer")
       yield* until((frame) => frame.includes("typed-after-answer"))
