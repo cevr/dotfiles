@@ -90,7 +90,7 @@ const OUR_TOOLS: ReadonlyArray<OurTool> = [
 const PROJECT = "eval-project"
 
 /** A tool's input schema as JSON Schema, as the fork's tool runtime (core/src/tool/runtime.ts) makes it. */
-const jsonSchemaOf = (schema: Schema.Top): Record<string, unknown> => {
+export const jsonSchemaOf = (schema: Schema.Top): Record<string, unknown> => {
   const document = Schema.toJsonSchemaDocument(schema, { onExcessProperty: "error" })
   const root = { ...(document.schema as Record<string, unknown>) }
   if (Object.keys(document.definitions).length > 0) root["$defs"] = document.definitions

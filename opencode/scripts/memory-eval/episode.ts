@@ -8,11 +8,20 @@ import { addUsage, type Block, create, emptyUsage, type Ledger, type Message, MO
 import { grade, type Graded } from "./grade.ts"
 import { type MemoryArm, native, ours, type Stored } from "./memory.ts"
 import type { Call, Scenario } from "./scenarios.ts"
-import { basePrompt, DISTRACTORS, SHELL } from "./tools.ts"
+import { kernelTool, listingOf, newKernel } from "./kernel.ts"
+import { NUDGE, retryFixed, type ShellRun } from "./retry.ts"
+import { basePrompt, DISTRACTORS, SHELL, type ToolDef } from "./tools.ts"
 import { newWorld, runDistractor, runShell } from "./world.ts"
 
-export const ARMS = ["none", "ours", "ours+pointer", "native"] as const
+export const ARMS = ["none", "ours", "ours+pointer", "native", "kernel", "ours+nudge", "kernel+nudge"] as const
 export type Arm = (typeof ARMS)[number]
+
+/** The arms that reach memory as production does: through the kernel, its only tool (kernel.ts). */
+export const throughKernel = (arm: Arm): boolean => arm.startsWith("kernel")
+/** The arms whose shell results carry the gotcha trigger (retry.ts). */
+export const nudged = (arm: Arm): boolean => arm.endsWith("+nudge")
+/** The arms on our memory, with its digest. */
+export const onOurs = (arm: Arm): boolean => arm !== "none" && arm !== "native"
 
 /** The one line `ours+pointer` adds to the system prompt, notes or none. */
 export const POINTER =
@@ -29,6 +38,8 @@ export interface SessionResult {
   readonly extra: ReadonlyArray<string>
   readonly transcript: ReadonlyArray<string>
   readonly cappedTurns: number
+  /** How many tool results carried the gotcha trigger's line. */
+  readonly nudges?: number
 }
 
 export interface EpisodeResult {
@@ -44,6 +55,12 @@ export interface EpisodeResult {
   readonly error?: string
 }
 
+interface Dispatched {
+  readonly output: string
+  readonly error: boolean
+  readonly nudge: boolean
+}
+
 const short = (text: string, max: number) => (text.length <= max ? text : text.slice(0, max) + "…")
 
 const runSession = async (
@@ -57,14 +74,67 @@ const runSession = async (
   const sessionID = `session-${session}`
   const extra = [...(arm === "ours+pointer" ? [POINTER] : []), ...(memory === undefined ? [] : await memory.system(sessionID))]
   const system = [basePrompt(scenario.cwd), ...extra].map((text) => ({ type: "text" as const, text }))
-  const tools = [SHELL, ...DISTRACTORS, ...(memory?.tools ?? [])]
+  const memoryTools = (memory?.tools ?? []) as ReadonlyArray<ToolDef>
+  const tools = throughKernel(arm) ? [kernelTool(memoryTools)] : [SHELL, ...DISTRACTORS, ...memoryTools]
+  const kernel = throughKernel(arm) ? newKernel(listingOf(memoryTools), scenario.cwd) : undefined
   const messages: Array<Message> = []
   const calls: Array<Call> = []
   const transcript: Array<string> = []
   const usage = emptyUsage()
+  const shellRuns: Array<ShellRun> = []
   let requests = 0
   let cappedTurns = 0
   let step = 0
+  let nudges = 0
+
+  /** One tool call, answered and recorded; `nudge` when it is a shell retry that fixed a failure, on an arm with the trigger. */
+  const dispatch = (name: string, input: Record<string, unknown>): Dispatched | Promise<Dispatched> => {
+    step += 1
+    const at = step
+    if (memory !== undefined && memory.names.has(name)) return memory.call(sessionID, name, input).then((answer) => record(at, name, input, answer.text, answer.error))
+    const outcome = name === "shell" ? runShell(String(input["command"] ?? ""), world, scenario.rules) : runDistractor(name, input, world)
+    return record(at, name, input, outcome.out, outcome.code !== 0)
+  }
+
+  const record = (at: number, name: string, input: Record<string, unknown>, output: string, error: boolean): Dispatched => {
+    let nudge = false
+    if (name === "shell") {
+      const run = { command: String(input["command"] ?? ""), failed: error }
+      nudge = nudged(arm) && retryFixed(shellRuns, run)
+      shellRuns.push(run)
+    }
+    calls.push({ session, step: at, name, input, output, error })
+    transcript.push(`${kernel === undefined ? "→" : "  ⇢"} ${name} ${short(JSON.stringify(input), 300)}`, `${kernel === undefined ? "←" : "  ⇠"} ${short(output, 240)}`)
+    if (nudge) transcript.push("  [nudge]")
+    return { output, error, nudge }
+  }
+
+  /** A tool_use block's result: a direct call, or a kernel cell and the calls it made. */
+  const answer = async (name: string, input: Record<string, unknown>): Promise<{ output: string; error: boolean }> => {
+    // With the kernel, it is the only tool: a call of any other name is refused as OpenCode refuses it.
+    if (kernel !== undefined && name !== "kernel") {
+      transcript.push(`→ ${name} (not a tool here)`)
+      return { output: `Tool is not available for this request: ${name}`, error: true }
+    }
+    if (kernel === undefined) {
+      const result = await dispatch(name, input)
+      if (!result.nudge) return result
+      nudges += 1
+      return { output: `${result.output}\n\n${NUDGE}`, error: result.error }
+    }
+    transcript.push(`→ kernel ${short(String(input["code"] ?? ""), 600)}`)
+    let fired = false
+    const cell = await kernel.run(String(input["code"] ?? ""), (inner, innerInput) => {
+      const result = dispatch(inner, innerInput)
+      if (result instanceof Promise) return result.then((settled) => ((fired ||= settled.nudge), settled))
+      fired ||= result.nudge
+      return result
+    })
+    transcript.push(`← ${short(cell.text, 300)}`)
+    if (!fired) return { output: cell.text, error: !cell.ok }
+    nudges += 1
+    return { output: `${cell.text}\n\n${NUDGE}`, error: !cell.ok }
+  }
 
   /** A user turn: its own message, or added to the tool results a capped turn left last. */
   const say = (text: string) => {
@@ -91,32 +161,14 @@ const runSession = async (
       }
       const results: Array<Block> = []
       for (const use of uses) {
-        step += 1
-        const input = use.input ?? {}
-        let output: string
-        let error: boolean
-        if (memory !== undefined && memory.names.has(use.name)) {
-          const answer = await memory.call(sessionID, use.name, input)
-          output = answer.text
-          error = answer.error
-        } else if (use.name === "shell") {
-          const outcome = runShell(String(input["command"] ?? ""), world, scenario.rules)
-          output = outcome.out
-          error = outcome.code !== 0
-        } else {
-          const outcome = runDistractor(use.name, input, world)
-          output = outcome.out
-          error = outcome.code !== 0
-        }
-        calls.push({ session, step, name: use.name, input, output, error })
-        transcript.push(`→ ${use.name} ${short(JSON.stringify(input), 300)}`, `← ${short(output, 240)}`)
+        const { output, error } = await answer(use.name, use.input ?? {})
         results.push({ type: "tool_result", tool_use_id: use.id, content: output, ...(error ? { is_error: true } : {}) })
       }
       messages.push({ role: "user", content: results })
     }
     if (!ended) cappedTurns += 1
   }
-  return { requests, usage, calls, extra, transcript, cappedTurns }
+  return { requests, usage, calls, extra, transcript, cappedTurns, nudges }
 }
 
 const memoryFor = async (arm: Arm, dir: string): Promise<MemoryArm | undefined> => {

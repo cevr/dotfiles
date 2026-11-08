@@ -1,6 +1,6 @@
 // The memory tools as the agent sees them: their names, inputs and
 // descriptions, what each answers, and what the agent reads when one refuses.
-import { Schema } from "effect"
+import { Schema, SchemaGetter } from "effect"
 import { MAX_TAGS, MAX_TEXT, type Note, type NoteTooLong, type EmptyNote, type EmptyQuery, type NoteNotFound, Scope, type SubagentWrite } from "./note.ts"
 
 export const SAVE = "memory_save"
@@ -11,6 +11,25 @@ export const FORGET = "memory_forget"
 export const MAX_RESULTS = 25
 export const DEFAULT_RESULTS = 10
 
+/**
+ * Tags as a list, or as one comma-separated string ("tests, ci"), which models
+ * often send: split on commas, trimmed, empties dropped.
+ */
+export const Tags = Schema.Union([
+  Schema.Array(Schema.String),
+  Schema.String.pipe(
+    Schema.decodeTo(Schema.Array(Schema.String), {
+      decode: SchemaGetter.transform((text: string) =>
+        text
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter((tag) => tag !== ""),
+      ),
+      encode: SchemaGetter.transform((tags: ReadonlyArray<string>) => tags.join(", ")),
+    }),
+  ),
+])
+
 export const SaveInput = Schema.Struct({
   text: Schema.String.annotate({
     description: `The note: one self-contained line of at most ${MAX_TEXT} characters, true without this session's context (name the tool, path or person it is about)`,
@@ -18,7 +37,7 @@ export const SaveInput = Schema.Struct({
   scope: Schema.optional(Scope).annotate({
     description: "global: about the user, true in every project; project (the default): this repository's conventions, commands and fixes",
   }),
-  tags: Schema.optional(Schema.Array(Schema.String)).annotate({ description: `Up to ${MAX_TAGS} one-word tags that help a later search` }),
+  tags: Schema.optional(Tags).annotate({ description: `Up to ${MAX_TAGS} one-word tags that help a later search` }),
   id: Schema.optional(Schema.Number).annotate({ description: "A note's id (#12 → 12) to correct it in place; its text and tags are replaced" }),
 })
 export type SaveInput = typeof SaveInput.Type
