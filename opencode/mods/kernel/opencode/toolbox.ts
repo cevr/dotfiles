@@ -19,7 +19,7 @@ import { Cause, Effect, JsonSchema, Layer, Schema, SchemaRepresentation } from "
 import type { Json, Listing } from "../frame.ts"
 import { silent, type Journal } from "../operations.ts"
 import { Toolbox, type CellTools } from "../service.ts"
-import { CallFailed, callable, cellValue, messageOf, notATool, reachable, type ContentPart, type Reached, type Registered } from "../tools.ts"
+import { CallFailed, callable, cellValue, docsOf, messageOf, notATool, reachable, type ContentPart, type Reached, type Registered } from "../tools.ts"
 
 /** A tool result as the host gives it. */
 export interface ToolResult {
@@ -111,9 +111,34 @@ const registryValue = (tool: RegistryTool, result: ToolResult): Effect.Effect<Js
   return encoded.pipe(Effect.flatMap((output) => cellValue({ output })))
 }
 
+/**
+ * A tool's input as JSON Schema, for `tools.docs(id)`: a JSON Schema as it is,
+ * an Effect Schema as its document; none for a Standard Schema or one that
+ * cannot be written.
+ */
+export const inputSchemaOf = (schema: unknown): Json | undefined => {
+  try {
+    const document = Schema.isSchema(schema)
+      ? Schema.toJsonSchemaDocument(schema as Schema.Top).schema
+      : isStandard(schema) || !isJsonSchema(schema)
+        ? undefined
+        : schema
+    const text = document === undefined ? undefined : JSON.stringify(document)
+    return text === undefined ? undefined : (JSON.parse(text) as Json)
+  } catch {
+    return undefined
+  }
+}
+
+/** One tool as the worker lists it: its full words in a cell and, when it has one, its input schema. */
+const listed = (id: string, description: string, input: unknown): Listing => {
+  const schema = inputSchemaOf(input)
+  return { id, description: docsOf(id, description), ...(schema === undefined ? {} : { input: schema }) }
+}
+
 /** A cell's tools without the runtime: each registered tool's own `execute`. */
 const fromRegistry = (tools: ReadonlyMap<string, RegistryTool>, journal: Journal): CellTools => ({
-  listing: [...tools.values()].map((tool): Listing => ({ id: tool.id, description: tool.description })),
+  listing: [...tools.values()].map((tool) => listed(tool.id, tool.description, tool.input)),
   call: (id, input) => {
     const tool = tools.get(id)
     if (tool === undefined) return Effect.fail(new CallFailed({ message: notATool(id, tools.keys()) }))
@@ -131,7 +156,7 @@ const fromRuntime = (runtime: Runtime, journal: Journal): CellTools => {
   const tools = reachable(runtime.tools)
   const names = new Set(tools.map((tool) => tool.name))
   return {
-    listing: tools.map((tool): Listing => ({ id: tool.name, description: tool.description })),
+    listing: tools.map((tool) => listed(tool.name, tool.description, tool.input)),
     call: (id, input) => {
       if (!names.has(id)) return Effect.fail(new CallFailed({ message: notATool(id, names) }))
       return asCallFailed(

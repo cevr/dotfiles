@@ -33,10 +33,18 @@ describe("the description", () => {
     const limits = { timeoutMs: 30_000, viewChars: 8_000 }
     const runtime = description(limits, [{ name: "read", description: "Read a file", input: {} }])
     expect(runtime).toContain("the kernel is your only tool")
-    expect(runtime).toContain("### tools.read(input: unknown)\nRead a file")
+    expect(runtime).toContain("## Tools\n\n- tools.read(input: unknown): Read a file")
     const direct = description(limits)
     expect(direct).not.toContain("the kernel is your only tool")
     expect(direct).toContain("tools.list()")
+  })
+
+  test("in either mode, says to read a tool's docs before its first call, and how", () => {
+    const limits = { timeoutMs: 30_000, viewChars: 8_000 }
+    for (const text of [description(limits), description(limits, [])]) {
+      expect(text).toContain("Read a tool's docs before its first call: `tools.docs(name)`")
+      expect(text).toContain("`tools.docs.search(query)`")
+    }
   })
 
   test("in either mode, says attach shows images and what a tool's image is to the code", () => {

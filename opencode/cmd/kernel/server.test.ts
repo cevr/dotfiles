@@ -358,7 +358,7 @@ describe("the options", () => {
 })
 
 describe("as the runtime", () => {
-  test("codeOnly makes the kernel the runtime, its description listing each tool it reaches with its input", () =>
+  test("codeOnly makes the kernel the runtime, its description listing each tool it reaches on a line with its input", () =>
     scenario(
       Effect.gen(function* () {
         const runtime = (yield* start()).tool?.options?.runtime
@@ -367,8 +367,8 @@ describe("as the runtime", () => {
           { name: "mcp-search", description: "Search", input: { type: "object", properties: { mode: { enum: ["a", "b"] } } } },
           { name: "kernel", description: "itself", input: {} },
         ])
-        expect(text).toContain("### tools.read(input: { path: string, limit?: number })\nRead a file")
-        expect(text).toContain('### tools["mcp-search"](input: { mode?: "a" | "b" })\nSearch')
+        expect(text).toContain("- tools.read(input: { path: string, limit?: number }): Read a file")
+        expect(text).toContain(`- tools["mcp-search"](input: { mode?: "a" | "b" }): Search`)
         expect(text).not.toContain("tools.kernel")
         expect(text).toContain("the kernel is your only tool")
         expect((yield* start({ codeOnly: false })).tool?.options?.runtime).toBeUndefined()

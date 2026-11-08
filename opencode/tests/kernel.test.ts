@@ -91,8 +91,8 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(JSON.stringify(result.messages)).toContain(DONE)
       // The kernel is the runtime: no other tool is offered, and its description lists them with their input.
       for (const request of turns) expect(request.tools).toEqual(["kernel"])
-      expect(turns[0]!.kernel).toContain("### tools.read(input: { ")
-      expect(turns[0]!.kernel).toContain("### tools.subagent(input: { ")
+      expect(turns[0]!.kernel).toContain("- tools.read(input: { ")
+      expect(turns[0]!.kernel).toContain("- tools.subagent(input: { ")
     },
     RUN_MS,
   )

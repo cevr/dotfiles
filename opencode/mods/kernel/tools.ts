@@ -9,6 +9,7 @@
 // `execute` skips those hooks.
 import { Effect, Schema } from "effect"
 import type { Json } from "./frame.ts"
+import { firstSentence } from "./summary.ts"
 
 /** A cell's tool call failed; the cell's `await` throws an Error with `message`. */
 export class CallFailed extends Schema.TaggedError<CallFailed>()("CallFailed", { message: Schema.String }) {}
@@ -114,25 +115,50 @@ export const typeOf = (schema: unknown, depth = 0): string => {
   return named.join(" | ") || "unknown"
 }
 
+/** How a tool differs in a cell: its input there, its line in the catalog, and the note its docs add. */
+export interface InACell {
+  readonly input: string
+  readonly line: string
+  readonly note: string
+}
+
 /**
  * How a tool differs in a cell from what its own description says: the shell
  * tool only runs commands there, and acts on a shell through its handle's
  * methods (worker/shell-handle.ts).
  */
-export const IN_A_CELL: Readonly<Record<string, string>> = {
-  shell:
-    "In a cell, `tools.shell({ command, workdir?, timeout?, description?, background? })` only runs a command, and resolves to a live handle: `.id`, `.state`, `.exitCode`, `.signal`, `.runtimeMs`, `.output`, `.next`, and methods that act on that shell, update the handle in place and resolve to it: `.refresh()` (its state, and the output since the last look), `.read({ offset?, lines? })`, `.wait(ms?)` (up to 10 min by default), `.kill()`. `.output` is what the latest call showed. `await tools.shell.handle(id)` builds one for a shell this session started, and `await tools.shell.list()` one for each of them (with `.description` and `.command`). Example: `const h = await tools.shell({ command: 'bun dev', background: true }); await h.wait(500); await h.kill()`. A kernel restart keeps a handle's data but not its methods, so rebuild it with `tools.shell.handle(h.id)`. The tool's other actions (check, wait, kill, list) are these methods in a cell: an input naming one throws, naming the method.",
+export const IN_A_CELL: Readonly<Record<string, InACell>> = {
+  shell: {
+    input: "{ command: string, workdir?: string, timeout?: number, description?: string, background?: boolean }",
+    line: "Runs a command and resolves to a live handle whose methods (.wait, .kill, .refresh, .read) act on that shell.",
+    note: "In a cell, `tools.shell({ command, workdir?, timeout?, description?, background? })` only runs a command, and resolves to a live handle: `.id`, `.state`, `.exitCode`, `.signal`, `.runtimeMs`, `.output`, `.next`, and methods that act on that shell, update the handle in place and resolve to it: `.refresh()` (its state, and the output since the last look), `.read({ offset?, lines? })`, `.wait(ms?)` (up to 10 min by default), `.kill()`. `.output` is what the latest call showed. `await tools.shell.handle(id)` builds one for a shell this session started, and `await tools.shell.list()` one for each of them (with `.description` and `.command`). Example: `const h = await tools.shell({ command: 'bun dev', background: true }); await h.wait(500); await h.kill()`. A kernel restart keeps a handle's data but not its methods, so rebuild it with `tools.shell.handle(h.id)`. The tool's other actions (check, wait, kill, list) are these methods in a cell: an input naming one throws, naming the method.",
+  },
 }
 
-/** The tools a cell reaches, as the model reads them in the kernel's description. */
+/** A tool's full words in a cell, as `tools.docs(name)` gives them: its description, then how it differs in a cell. */
+export const docsOf = (name: string, description: string): string => {
+  const note = IN_A_CELL[name]?.note
+  return note === undefined ? description.trim() : `${description.trim()}\n\n${note}`
+}
+
+/** How a cell reaches a tool: `tools.read`, or `tools["mcp-search"]` for a name that is not an identifier. */
+export const pathOf = (name: string): string => (/^[A-Za-z_$][\w$]*$/.test(name) ? `tools.${name}` : `tools[${JSON.stringify(name)}]`)
+
+const byName = <T extends { readonly name: string }>(left: T, right: T) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
+
+/**
+ * The tools a cell reaches, as the model reads them in the kernel's
+ * description: one line each, sorted by name, with its input and the first
+ * sentence of its description. The rest is in `tools.docs(name)`.
+ */
 export const catalog = (tools: ReadonlyArray<Reached>): string =>
-  reachable(tools)
+  [...reachable(tools)]
+    .sort(byName)
     .map((tool) => {
-      const path = /^[A-Za-z_$][\w$]*$/.test(tool.name) ? `tools.${tool.name}` : `tools[${JSON.stringify(tool.name)}]`
-      const note = IN_A_CELL[tool.name]
-      return `### ${path}(input: ${typeOf(tool.input)})\n${tool.description.trim()}${note === undefined ? "" : `\n\n${note}`}`
+      const cell = IN_A_CELL[tool.name]
+      return `- ${pathOf(tool.name)}(input: ${cell?.input ?? typeOf(tool.input)}): ${cell?.line ?? firstSentence(tool.description)}`
     })
-    .join("\n\n")
+    .join("\n")
 
 /** One part of a tool result's content: text, or a file (`uri` a data URI or a link). */
 export interface ContentPart {

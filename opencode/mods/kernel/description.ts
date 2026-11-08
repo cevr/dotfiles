@@ -27,9 +27,11 @@ export interface Limits {
   readonly viewChars: number
 }
 
-const DIRECT_TOOLS = "Calling tools: `await tools.<id>(input)` runs any other tool this session offers, with the same input it takes as a direct call, and resolves to its result (its output, or its text). Permissions apply as for a direct call. `tools.list()` returns the ids and descriptions. A failed tool call throws; catch it to continue. Run independent calls together with Promise.all."
+const DOCS = "Read a tool's docs before its first call: `tools.docs(name)` returns its full description and input schema, and `tools.docs.search(query)` ranks the tools by a query, each with its first sentence."
 
-const RUNTIME_TOOLS = "Calling tools: the kernel is your only tool. Every other tool is a function on `tools`, listed below with its input: `await tools.<name>(input)` runs it and resolves to its result (its output, or its text). Read files, edit, run commands and start subagents from here. Permissions apply and a refused or failed call throws; catch it to continue. Run independent calls together with Promise.all, and print only what you need to read."
+const DIRECT_TOOLS = `Calling tools: \`await tools.<id>(input)\` runs any other tool this session offers, with the same input it takes as a direct call, and resolves to its result (its output, or its text). Permissions apply as for a direct call. \`tools.list()\` returns the ids and descriptions. ${DOCS} A failed tool call throws; catch it to continue. Run independent calls together with Promise.all.`
+
+const RUNTIME_TOOLS = `Calling tools: the kernel is your only tool. Every other tool is a function on \`tools\`, listed below with its input and the first sentence of its description: \`await tools.<name>(input)\` runs it and resolves to its result (its output, or its text). ${DOCS} Read files, edit, run commands and start subagents from here. Permissions apply and a refused or failed call throws; catch it to continue. A tool that joins or leaves later is announced in a message; this list stays as it is. Run independent calls together with Promise.all, and print only what you need to read.`
 
 const ATTACH = `Seeing images: \`attach(...paths: string[])\` shows image files (PNG, JPEG, GIF, WebP; a relative path is under the working directory) to you after this call, the way a pasted image is. An image a tool returns reaches your code as \`${JSON.stringify({ type: "image", mime: "image/png", name: "<path>", note: IMAGE_NOTE })}\`, not as its data.`
 

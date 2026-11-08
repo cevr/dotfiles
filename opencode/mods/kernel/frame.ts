@@ -7,8 +7,12 @@ import { Schema } from "effect"
 
 export type Json = Schema.Json
 
-/** One tool the cell can call, as the worker lists it. */
-export const Listing = Schema.Struct({ id: Schema.String, description: Schema.String })
+/**
+ * One tool the cell can call, as the worker lists it: `description` is its
+ * full words in a cell (tools.ts, `docsOf`), and `input` its input as JSON
+ * Schema when the host has one; `tools.docs(id)` gives both.
+ */
+export const Listing = Schema.Struct({ id: Schema.String, description: Schema.String, input: Schema.optionalKey(Schema.Json) })
 export interface Listing extends Schema.Schema.Type<typeof Listing> {}
 
 /**
