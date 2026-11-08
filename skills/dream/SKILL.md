@@ -40,6 +40,8 @@ The window is the last 7 days unless the owner names another. Work only from mea
 
    Count the classes per round. A ceremony step whose bounces are all one class, or that bounced nothing, is the finding.
 
+   Then audit each live run's own rules (its `common.md` and any other rules file in the run dir, by [`orchestrate/references/run-rules.md`](../orchestrate/references/run-rules.md)) against the installed `orchestrate/SKILL.md` and `protocol.md`. Write a drift table, one row per run: the run and machine, its `skill-version` against the installed one, and its rules counted as **restates** (the skill says it; delete), **project fact** (keep), **departure** (a `Departs from` line) and **contradicts** (differs from the skill with no `Departs from`; the run drifted). A departure that two or more runs make, or one run makes for two weeks, is a candidate skill change in step 8: the skill takes it, or the runs drop it. A contradiction is a candidate too, since the reconcile note did not hold.
+
 5. **Hold the week against the skills and principles.** Read `~/Developer/personal/dotfiles/principles/` and the skills the digest counts most. For each repeated owner message, find the line that encodes it. A message with no encoding line is a candidate. A line the owner had to repeat is a candidate too, because it does not hold.
 
    When a step costs much and finds little, read how a peer does the same step with less, for example `okra repo fetch cursor/plugins` (`pstack`) or `okra repo fetch mattpocock/skills`. Name the peer's mechanism. Do not copy the peer's ceremony.
