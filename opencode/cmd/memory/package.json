@@ -1,0 +1,13 @@
+{
+  "name": "@dotfiles/opencode-cmd-memory",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Memory's OpenCode server plugin (the memory tools and the session digest) and its CLI: the composition roots of @dotfiles/opencode-memory.",
+  "exports": {
+    "./server": "./server.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-memory": "workspace:*"
+  }
+}

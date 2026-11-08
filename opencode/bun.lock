@@ -92,6 +92,13 @@
         "@dotfiles/opencode-mail": "workspace:*",
       },
     },
+    "cmd/memory": {
+      "name": "@dotfiles/opencode-cmd-memory",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-memory": "workspace:*",
+      },
+    },
     "cmd/orchestrate": {
       "name": "@dotfiles/opencode-cmd-orchestrate",
       "version": "0.0.0",
@@ -255,6 +262,10 @@
       "name": "@dotfiles/opencode-mail",
       "version": "0.0.0",
     },
+    "mods/memory": {
+      "name": "@dotfiles/opencode-memory",
+      "version": "0.0.0",
+    },
     "mods/orchestrate": {
       "name": "@dotfiles/opencode-orchestrate",
       "version": "0.0.0",
@@ -368,6 +379,8 @@
 
     "@dotfiles/opencode-cmd-mail": ["@dotfiles/opencode-cmd-mail@workspace:cmd/mail"],
 
+    "@dotfiles/opencode-cmd-memory": ["@dotfiles/opencode-cmd-memory@workspace:cmd/memory"],
+
     "@dotfiles/opencode-cmd-orchestrate": ["@dotfiles/opencode-cmd-orchestrate@workspace:cmd/orchestrate"],
 
     "@dotfiles/opencode-cmd-pool": ["@dotfiles/opencode-cmd-pool@workspace:cmd/pool"],
@@ -405,6 +418,8 @@
     "@dotfiles/opencode-kernel": ["@dotfiles/opencode-kernel@workspace:mods/kernel"],
 
     "@dotfiles/opencode-mail": ["@dotfiles/opencode-mail@workspace:mods/mail"],
+
+    "@dotfiles/opencode-memory": ["@dotfiles/opencode-memory@workspace:mods/memory"],
 
     "@dotfiles/opencode-orchestrate": ["@dotfiles/opencode-orchestrate@workspace:mods/orchestrate"],
 
