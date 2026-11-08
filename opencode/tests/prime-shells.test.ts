@@ -67,7 +67,8 @@ describe.skipIf(!fork)("background shells in Prime", () => {
     expect(moved).toMatch(/^(sh_\w+) · running · \d+\.\d s · moved to the background at its 2 s limit\ntick 1\nIt keeps running, and you will be notified when it ends\. /)
     expect(moved).toMatch(/shell\(\{ action: "check", id: "sh_\w+" \}\) checks it, shell\(\{ action: "wait", id: "sh_\w+", ms: <ms> \}\) waits for it to end, shell\(\{ action: "kill", id: "sh_\w+" \}\) stops it\./)
     const started = results()[4]
-    expect(started).toMatch(/^sh_\w+ · running · \d+\.\d s · started in the background\n\(no output yet\)\nIt keeps running/)
+    // Its `bg` line may or may not have been written by the time the handle is taken.
+    expect(started).toMatch(/^sh_\w+ · running · \d+\.\d s · started in the background\n(\(no output yet\)|bg)\nIt keeps running/)
   })
 
   test("the agent lists, checks, waits on and kills through the handle; a kill it asked for sends it no stop notice", () => {
@@ -80,7 +81,9 @@ describe.skipIf(!fork)("background shells in Prime", () => {
     expect(checked).toMatch(new RegExp(`^${long} · running · \\d+\\.\\d s · next 7\ntick 1\n$`))
     expect(waited).toMatch(new RegExp(`^${long} · running · \\d+\\.\\d s · still running after waiting 0\\.5 s · next 7\n\\(no new output\\)$`))
     expect(killedLong).toMatch(new RegExp(`^${long} · killed SIGTERM · \\d+\\.\\d s · next 7\n\\(no new output\\)$`))
-    expect(killedBg).toMatch(new RegExp(`^${bg} · killed SIGTERM · \\d+\\.\\d s · next 3\nbg\n$`))
+    // The kill shows the `bg` line only if the start's handle didn't already.
+    const seen = /started in the background\nbg\n/.test(started ?? "")
+    expect(killedBg).toMatch(new RegExp(`^${bg} · killed SIGTERM · \\d+\\.\\d s · next 3\n${seen ? "\\(no new output\\)$" : "bg\n$"}`))
     // Its rows, named for what they did.
     const killed = frames.killed
     expect(lineOf(killed, "Listed shells")).toBe("● Listed shells")
