@@ -4,17 +4,16 @@
 // read from the first line of its last answer (`<role> <unit> r<N>: <verdict>
 // <path>`, protocol.md, Ending a step). The moves are the skill's machine:
 //
-//   planner starts      → plan       r<N>
-//   implementor starts  → implement  r<N>   spec.md, or the last round's findings
-//   verifier starts     → verify     r<N>   round-N-request.md
-//   implementor ready   → verify     r<N>
-//   verifier accepted   → decide     r<N>
-//   verifier changes    → implement  r<N+1>
-//   verifier stuck      → decide     r<N>   (as stuck)
-//   any role blocked    → blocked    r<N>
+//   planner starts               → plan       r<N>
+//   implementor starts           → implement  r<N>   spec.md, or the last round's findings
+//   implementor ready            → ready      r<N>   (waits for its batch)
+//   planner, implementor blocked → blocked    r<N>
 //
 // A planner's `ready` moves nothing: the spec waits for the orchestrator's
-// approval, and the implementor's start moves the unit on.
+// approval, and the implementor's start moves the unit on. A verifier moves
+// nothing: it verifies a batch (`verifier batch-<k> r1`), not a unit, and the
+// orchestrator logs each landed unit's moves (ready → verify at the land,
+// then merged, waiting(pr) or the next round) from the batch's findings.
 //
 // Where the unit dir is comes from the paths the prompt or the hand-back
 // names (`<unit dir>/spec.md`, `<unit dir>/round-1-request.md`): the prefix up
@@ -27,34 +26,35 @@ import { described, isStep, type Step } from "./described.ts"
 /** One move of a unit, as log.ts takes it: the state it moves to, the round, and the note (its cause first). */
 export interface Transition {
   readonly unit: string
-  readonly to: "plan" | "implement" | "verify" | "decide" | "blocked"
+  readonly to: "plan" | "implement" | "ready" | "blocked"
   readonly round: number
   readonly note: string
 }
 
-const STARTS: Readonly<Record<Step, Transition["to"]>> = { planner: "plan", implementor: "implement", verifier: "verify" }
+/** The state a role's start moves its unit to; a verifier's moves none. */
+const STARTS: Readonly<Record<Step, Transition["to"] | undefined>> = { planner: "plan", implementor: "implement", verifier: undefined }
 
 /** A unit slug as the skill writes it: one lowercase word. */
 const UNIT = /^[a-z0-9][a-z0-9._-]*$/
 const ROUND = /^r(\d+)$/i
 
 /** The cause a start's line names: the file the role starts from. */
-const startCause = (role: Step, round: number) =>
-  role === "planner" ? "" : role === "verifier" ? `round-${round}-request.md` : round > 1 ? `round-${round - 1}-findings.md` : "spec.md"
+const startCause = (role: Step, round: number) => (role === "planner" ? "" : round > 1 ? `round-${round - 1}-findings.md` : "spec.md")
 
 /**
  * The move a role's start makes, from its call's description; none for an
- * agent that is not a step, a description that names no step or another role,
- * or one that names no round.
+ * agent that is not a step, a verifier, a description that names no step or
+ * another role, or one that names no round.
  */
 export const startOf = (agent: string, description: string | undefined): Transition | undefined => {
   if (!isStep(agent)) return undefined
+  const to = STARTS[agent]
   const step = described(description)
-  if (step === undefined || step.role !== agent) return undefined
+  if (to === undefined || step === undefined || step.role !== agent) return undefined
   const [unit, ...rest] = step.rest.split(" ")
   const round = rest.map((word) => ROUND.exec(word)?.[1]).find((n) => n !== undefined)
   if (unit === undefined || !UNIT.test(unit) || ROUND.test(unit) || round === undefined) return undefined
-  return { unit, to: STARTS[agent], round: Number(round), note: startCause(agent, Number(round)) }
+  return { unit, to, round: Number(round), note: startCause(agent, Number(round)) }
 }
 
 /** The hand-back line: `<role> <unit> r<N>: <verdict> <path>`, maybe in backticks or bold. */
@@ -69,7 +69,7 @@ export interface HandBack {
 /**
  * The hand-back a role's last answer opens with, read only for the role it
  * names being the agent's own; none for any other answer. A planner's
- * `ready` is a hand-back that moves nothing.
+ * `ready` and every verifier's hand-back move nothing.
  */
 export const handBackOf = (agent: string, text: string | undefined): HandBack | undefined => {
   const first = (text ?? "").split("\n").find((line) => line.trim() !== "") ?? ""
@@ -84,15 +84,13 @@ export const handBackOf = (agent: string, text: string | undefined): HandBack | 
   const note = name === undefined ? verdict : `${name} ${verdict}`
   const move = (to: Transition["to"], at = round): Transition => ({ unit, to, round: at, note })
   const transition =
-    verdict === "blocked"
-      ? move("blocked")
-      : agent === "implementor" && verdict === "ready"
-        ? move("verify")
-        : agent === "verifier" && (verdict === "accepted" || verdict === "stuck")
-          ? move("decide")
-          : agent === "verifier" && verdict === "changes"
-            ? move("implement", round + 1)
-            : undefined
+    agent === "verifier"
+      ? undefined
+      : verdict === "blocked"
+        ? move("blocked")
+        : agent === "implementor" && verdict === "ready"
+          ? move("ready")
+          : undefined
   return { transition, file }
 }
 

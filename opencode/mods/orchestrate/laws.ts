@@ -510,14 +510,14 @@ export const unitLogsLaws = (name: string, make: Effect.Effect<UnitLogsProbe, ne
           yield* logs.append(dir, { unit: "auth", to: "plan", round: 1, note: "" })
           yield* logs.append(dir, { unit: "auth", to: "implement", round: 1, note: "spec.md" })
           yield* logs.append(dir, { unit: "auth", to: "implement", round: 1, note: "spec.md" })
-          yield* logs.append(dir, { unit: "auth", to: "verify", round: 1, note: "round-1-request.md ready" })
-          yield* logs.append(dir, { unit: "auth", to: "implement", round: 2, note: "round-1-findings.md changes" })
-          yield* logs.append(dir, { unit: "auth", to: "verify", round: 1, note: "late" })
+          yield* logs.append(dir, { unit: "auth", to: "ready", round: 1, note: "round-1-request.md ready" })
+          yield* logs.append(dir, { unit: "auth", to: "implement", round: 2, note: "round-1-findings.md" })
+          yield* logs.append(dir, { unit: "auth", to: "ready", round: 1, note: "late" })
           expect(yield* probe.moves(dir)).toEqual([
             "new → plan r1",
             "plan → implement r1 spec.md",
-            "implement → verify r1 round-1-request.md ready",
-            "verify → implement r2 round-1-findings.md changes",
+            "implement → ready r1 round-1-request.md ready",
+            "ready → implement r2 round-1-findings.md",
           ])
         }),
       ))

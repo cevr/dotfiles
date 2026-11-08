@@ -428,13 +428,16 @@ without its provider) runs as if it named none, reason `model-dropped`: at
 the role's effort, with the Codex fallback and the latch. Any other model a
 call names runs as named, with no fallback.
 
-The units' logs (`unit-log.ts`): a role's start moves its unit, by the
-call's `<role> <unit> r<N>` description, to `plan`, `implement` or
-`verify`; its hand-back, the first line of its last answer when its session
-goes idle (the fork's `experimental.idle` hook), moves it as the machine
-says (implementor `ready` to `verify`, verifier `accepted` or `stuck` to
-`decide`, `changes` to `implement` the next round, any `blocked` to
-`blocked`; a planner's `ready` waits for the orchestrator). Each move goes
+The units' logs (`unit-log.ts`): a planner's or implementor's start moves
+its unit, by the call's `<role> <unit> r<N>` description, to `plan` or
+`implement`; its hand-back, the first line of its last answer when its
+session goes idle (the fork's `experimental.idle` hook), moves it as the
+machine says (implementor `ready` to `ready`, where it waits for its batch;
+`blocked` to `blocked`; a planner's `ready` waits for the orchestrator). A
+verifier moves nothing: it verifies a batch (`verifier batch-<k> r1`), and
+the orchestrator logs each landed unit's moves from the batch's findings
+(`ready → verify` at the land, then `merged`, `waiting(pr)` or the next
+round). Each move goes
 through the skill's `log.ts --current` into `<run dir>/<unit>/log.md`, the
 unit dir being the one a path in the prompt or the hand-back names, else the
 one `tmp/orchestrate/<run>/<unit>` in the session's checkout. None found, a
@@ -449,7 +452,7 @@ call log's line says `lowered: "max"`, and the parent reads first in the
 answer that it runs at the default and why. It lowers rather than refuses: a
 root at max would otherwise have every worker refused, and a refusal costs a
 turn and teaches the parent to add `(mechanical)` to get through. A role is
-never lowered: a verifier at max for a deep unit's round 1 runs at max.
+never lowered: a verifier at max for a batch with a deep unit's round 1 runs at max.
 
 The worker's handoff: like each role, the worker is told (`agents/worker.md`,
 through `agents.json`) to stop at its first compaction, write a handoff file
