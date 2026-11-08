@@ -959,7 +959,7 @@ describe("the units' logs", () => {
           .map((line) => line.replace(/^\S+Z /, ""))
       : []
 
-  test("each role's start and hand-back move its unit in the run's log, once each", () =>
+  test("a planner's and an implementor's start and hand-back move its unit in the run's log, once each; a verifier's move nothing", () =>
     scenario(
       Effect.gen(function* () {
         const work = yield* checkout
@@ -987,7 +987,7 @@ describe("the units' logs", () => {
         yield* plugin.call("subagent", "root", { agent: "implementor", description: "implementor auth r1", prompt: "Build the spec." })
         yield* plugin.idle("busy")
         yield* plugin.idle("implementor")
-        // The verifier's start finds the move its implementor's hand-back made.
+        // A verifier verifies a batch: neither its start nor its hand-back moves a unit.
         yield* plugin.call("subagent", "root", { agent: "general", description: "verifier auth r1", prompt: `Verify ${auth}/round-1-request.md.` })
         yield* plugin.idle("verifier")
         yield* plugin.idle("verifier")
@@ -995,13 +995,17 @@ describe("the units' logs", () => {
         yield* plugin.idle("root")
         yield* plugin.idle("lead")
         yield* plugin.idle("worker")
+        // A worker call described as a step runs as that role (role.ts), so its start moves the unit as the
+        // role's would: back to implement r1, as when a refused request goes back to its implementor.
         yield* plugin.call("subagent", "root", { agent: "worker", description: "implementor auth r1", prompt: "x" })
+        // The next round, after its batch's verifier asked for changes, moves it on to r2.
         yield* plugin.call("subagent", "root", { sessionID: "implementor", description: "implementor auth r2", prompt: `Fix ${auth}/round-1-findings.md.` })
         expect(moves(auth)).toEqual([
           "new → plan r1",
           "plan → implement r1 spec.md",
-          "implement → verify r1 round-1-request.md ready",
-          "verify → implement r2 round-1-findings.md changes",
+          "implement → ready r1 round-1-request.md ready",
+          "ready → implement r1 spec.md",
+          "implement → implement r2 round-1-findings.md",
         ])
       }),
     ))
@@ -1017,18 +1021,18 @@ describe("the units' logs", () => {
         }
         const plugin = yield* start({ now: WEDNESDAY }, { sessions: { root: { directory: work } } })
         // Two runs hold an `auth` unit: the search finds none.
-        const call = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier auth r1", prompt: "x" })
-        expect(call).toEqual({ refused: undefined, input: { agent: "verifier", description: "verifier auth r1", prompt: "x" } })
-        yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier auth", prompt: `Verify ${elsewhere}/round-1-request.md` })
+        const call = yield* plugin.call("subagent", "root", { agent: "implementor", description: "implementor auth r1", prompt: "x" })
+        expect(call).toEqual({ refused: undefined, input: { agent: "implementor", description: "implementor auth r1", prompt: "x" } })
+        yield* plugin.call("subagent", "root", { agent: "implementor", description: "implementor auth", prompt: `Build ${elsewhere}/spec.md` })
         for (const dir of ["tmp/orchestrate/web/auth", "tmp/orchestrate/api/auth", "notes/auth"]) expect(existsSync(join(work, dir, "log.md"))).toBe(false)
         // A directory named for the unit that holds no spec.md, log.md or run's plan.md is no unit dir.
         mkdirSync(elsewhere, { recursive: true })
-        yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier auth r1", prompt: `Verify ${elsewhere}/round-1-request.md` })
+        yield* plugin.call("subagent", "root", { agent: "implementor", description: "implementor auth r1", prompt: `Build ${elsewhere}/spec.md` })
         expect(existsSync(join(elsewhere, "log.md"))).toBe(false)
         // A path the prompt names finds it once it holds the unit's spec.
         writeFileSync(join(elsewhere, "spec.md"), "")
-        yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier auth r1", prompt: `Verify ${elsewhere}/round-1-request.md` })
-        expect(moves(elsewhere)).toEqual(["new → verify r1 round-1-request.md"])
+        yield* plugin.call("subagent", "root", { agent: "implementor", description: "implementor auth r1", prompt: `Build ${elsewhere}/spec.md` })
+        expect(moves(elsewhere)).toEqual(["new → implement r1 spec.md"])
       }),
     ))
 

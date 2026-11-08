@@ -9,10 +9,14 @@ describe("a role's start", () => {
     expect(startOf("planner", "planner auth r1")).toEqual({ unit: "auth", to: "plan", round: 1, note: "" })
     expect(startOf("implementor", "implementor auth r1")).toEqual({ unit: "auth", to: "implement", round: 1, note: "spec.md" })
     expect(startOf("implementor", "implementor auth r3 (fresh)")).toEqual({ unit: "auth", to: "implement", round: 3, note: "round-2-findings.md" })
-    expect(startOf("verifier", "verifier auth r2")).toEqual({ unit: "auth", to: "verify", round: 2, note: "round-2-request.md" })
     // The suffix form the guard routes too.
-    expect(startOf("verifier", "closure-flake verifier r1 (Opus)")).toEqual({ unit: "closure-flake", to: "verify", round: 1, note: "round-1-request.md" })
     expect(startOf("implementor", "pkg-lower r2 implementor")).toEqual({ unit: "pkg-lower", to: "implement", round: 2, note: "round-1-findings.md" })
+  })
+
+  test("a verifier's start moves nothing: it verifies a batch, whose units the orchestrator moves", () => {
+    expect(startOf("verifier", "verifier batch-2 r1")).toBeUndefined()
+    expect(startOf("verifier", "verifier auth r2")).toBeUndefined()
+    expect(startOf("verifier", "closure-flake verifier r1 (Opus)")).toBeUndefined()
   })
 
   test("moves nothing for the worker, another agent, another role, no round, or prose", () => {
@@ -31,21 +35,25 @@ describe("a role's hand-back", () => {
 
   test("moves its unit as the machine says, citing its file and verdict", () => {
     expect(handBackOf("implementor", `implementor auth r1: ready ${dir}/round-1-request.md\nGate green.`)).toEqual({
-      transition: { unit: "auth", to: "verify", round: 1, note: "round-1-request.md ready" },
+      transition: { unit: "auth", to: "ready", round: 1, note: "round-1-request.md ready" },
       file: `${dir}/round-1-request.md`,
     })
-    expect(handBackOf("verifier", `verifier auth r2: accepted ${dir}/round-2-findings.md`)?.transition).toEqual({ unit: "auth", to: "decide", round: 2, note: "round-2-findings.md accepted" })
-    expect(handBackOf("verifier", `verifier auth r2: changes ${dir}/round-2-findings.md`)?.transition).toEqual({ unit: "auth", to: "implement", round: 3, note: "round-2-findings.md changes" })
-    expect(handBackOf("verifier", `verifier auth r2: stuck ${dir}/round-2-findings.md`)?.transition).toEqual({ unit: "auth", to: "decide", round: 2, note: "round-2-findings.md stuck" })
-    for (const role of ["planner", "implementor", "verifier"])
+    for (const role of ["planner", "implementor"])
       expect(handBackOf(role, `${role} auth r1: blocked ${dir}/blocked.md`)?.transition).toEqual({ unit: "auth", to: "blocked", round: 1, note: "blocked.md blocked" })
+  })
+
+  test("a verifier's hand-back moves nothing, whatever its verdict: the orchestrator routes each unit from the batch's findings", () => {
+    const run = "/work/tmp/orchestrate/web"
+    for (const verdict of ["accepted", "changes", "stuck", "blocked"])
+      expect(handBackOf("verifier", `verifier batch-2 r1: ${verdict} ${run}/batch-2-findings.md`)).toEqual({ transition: undefined, file: `${run}/batch-2-findings.md` })
+    expect(handBackOf("verifier", `verifier auth r2: changes ${dir}/round-2-findings.md`)?.transition).toBeUndefined()
   })
 
   test("a planner's ready moves nothing; the line may sit after blank lines, in backticks or bold", () => {
     expect(handBackOf("planner", `planner auth r1: ready ${dir}/spec.md`)).toEqual({ transition: undefined, file: `${dir}/spec.md` })
     expect(handBackOf("implementor", `\n\n\`implementor auth r1: ready ${dir}/round-1-request.md\``)?.file).toBe(`${dir}/round-1-request.md`)
-    expect(handBackOf("verifier", `**verifier auth r1: accepted** ${dir}/round-1-findings.md`)?.transition?.to).toBe("decide")
-    expect(handBackOf("implementor", "implementor auth r1: ready")).toEqual({ transition: { unit: "auth", to: "verify", round: 1, note: "ready" }, file: undefined })
+    expect(handBackOf("implementor", `**implementor auth r1: blocked** ${dir}/blocked.md`)?.transition?.to).toBe("blocked")
+    expect(handBackOf("implementor", "implementor auth r1: ready")).toEqual({ transition: { unit: "auth", to: "ready", round: 1, note: "ready" }, file: undefined })
   })
 
   test("is none for another role's line, a line that is not first, or an answer that is not a hand-back", () => {
