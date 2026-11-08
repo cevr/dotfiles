@@ -18,6 +18,7 @@ import os from "node:os"
 import path from "node:path"
 import { $ } from "bun"
 import { listing, type Proc, servers, stop, survivors, table, watch } from "./leaks.ts"
+import { checkFork } from "./fork.ts"
 import { acceptanceTests, load, packageOf, reach, ROOT, SHARED } from "./reach.ts"
 
 /** How long a finished run's processes have to end before one still running counts as leaked. */
@@ -32,6 +33,14 @@ const CACHE = path.join(ROOT, "node_modules/.cache/gate")
 mkdirSync(CACHE, { recursive: true })
 
 if (!process.env.OPENCODE_DEV) console.warn("accept: OPENCODE_DEV is not set, so the real-OpenCode tests skip. Point it at the fork.")
+else {
+  // A fork that is not installed here would fail every real-OpenCode test for a reason none of them names.
+  const checked = checkFork(process.env.OPENCODE_DEV)
+  if ("problem" in checked) {
+    console.error(`accept: ${checked.problem}`)
+    process.exit(1)
+  }
+}
 
 const workspace = await load()
 let files = acceptanceTests(workspace)
