@@ -16,7 +16,7 @@
 import { Context, Effect, Layer } from "effect"
 import { isHeavy } from "./heavy.ts"
 import { killsByPattern, killVerdict } from "./kill.ts"
-import { launcherName, launcherScript, type Limits } from "./launcher.ts"
+import { launcherName, launcherScript, systemdRunScript, type Limits } from "./launcher.ts"
 import { resolve } from "./path.ts"
 import { expandWord } from "./shell-line.ts"
 import { Launchers, Processes, RepoRoots, Scopes, SessionDirectories, Subagents } from "./service.ts"
@@ -134,7 +134,11 @@ export const policyLayer = (config: PolicyConfig) =>
       const shellFor = Effect.fn("ShellPolicy.shellFor")(function* (shell: string, command: string) {
         if (!shell.startsWith("/") || !isHeavy(command, config.heavy)) return shell
         const scope = yield* scopes.available
-        return yield* launchers.install(launcherName(shell), launcherScript({ shell, limits: config.limits, scope })).pipe(
+        return yield* Effect.gen(function* () {
+          // Where systemd runs the scope, a `systemd-run` of the command's own gets the same limits (launcher.ts).
+          const systemdRun = scope ? yield* launchers.install("systemd-run", systemdRunScript(config.limits)) : undefined
+          return yield* launchers.install(launcherName(shell), launcherScript({ shell, limits: config.limits, scope, systemdRun }))
+        }).pipe(
           Effect.catchTag("LauncherUnavailable", (error) =>
             Effect.logWarning(`dotfiles-opencode.guard: a heavy command runs without its limits: ${error.message}`).pipe(Effect.as(shell)),
           ),
