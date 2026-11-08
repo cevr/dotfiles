@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 /** The frame's lines, without the sidebar's column. */
 const lines = (frame: string): ReadonlyArray<string> => frame.split("\n").map((line) => line.slice(0, 108).trim())
@@ -43,7 +44,7 @@ const textOf = (message: Message) => message.text ?? ""
 
 const scenario = async (args: ReadonlyArray<string>, label: string, env: (out: string) => Record<string, string> = () => ({})) => {
   const out = mkdtempSync(join(tmpdir(), `${label}-`))
-  const child = Bun.spawn(["bunx", "opencode-drive", ...args], {
+  const child = owned(["bunx", "opencode-drive", ...args], {
     cwd: join(import.meta.dir, ".."),
     env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media"), ...env(out) },
     stdin: "ignore",

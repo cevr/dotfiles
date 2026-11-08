@@ -16,6 +16,7 @@ import {
   type FakeAnthropic,
   type FakeRequestInfo,
 } from "./fake-anthropic.ts"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork)
@@ -103,7 +104,7 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
       stdin: new TextEncoder().encode(JSON.stringify(logins)),
     })
     expect(imported.exitCode).toBe(0)
-    const run = Bun.spawn(
+    const run = owned(
       [...launch.base, "run", "--standalone", "--dangerously-skip-permissions", "--format", "json", "say hello"],
       { cwd: join(base, "work"), env, stdout: "pipe", stderr: "pipe" },
     )

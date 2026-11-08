@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork)
@@ -79,7 +80,7 @@ function load(out: string, name: string): Saved {
 describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () => {
   beforeAll(async () => {
     const out = mkdtempSync(join(tmpdir(), "prime-scenario-"))
-    const run = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/prime-demo.ts"], {
+    const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-demo.ts"], {
       cwd: root,
       env: {
         ...process.env,

@@ -20,6 +20,7 @@ import { fleetRows, type PaneFleet } from "../mods/status/pane.ts"
 import { fakeAccount, startFakeAnthropic } from "./fake-anthropic.ts"
 import { gentAvailable, gentSource, openGentStore } from "./gent/store.ts"
 import { ROOT_TASK, serve } from "./orchestrate/sim.ts"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork) && gentAvailable()
@@ -99,7 +100,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
     for (const dir of ["work", ".config/opencode", ".local/state"]) mkdirSync(join(dir === "work" ? base : home, dir), { recursive: true })
     writeFileSync(join(home, ".config/opencode/opencode.json"), JSON.stringify(config))
     const launch = forkLaunch(fork ?? "", process.execPath)
-    const child = Bun.spawn([...launch.base, "serve", "--service", "--port", "0"], {
+    const child = owned([...launch.base, "serve", "--service", "--port", "0"], {
       cwd: join(base, "work"),
       env: {
         PATH: process.env.PATH ?? "",

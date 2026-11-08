@@ -2198,6 +2198,17 @@ paths they name, and all of them when a shared input changed. A fork change
 is outside this repository: run `bun run accept` after one. `bun run test`
 still runs every file one after another.
 
+A test starts what it runs (opencode-drive, an OpenCode server, a
+`run --standalone`) through `tests/owned.ts`, which stops everything that
+child started when it exits, or when the test process does after a failure or
+a timeout. opencode-drive puts its server and TUIs in process groups of their
+own and leaves them running when it is stopped, so `owned` follows the
+child's descendants, not only its group. The accept run is a process group of
+its own, followed the same way (`scripts/leaks.ts`): an OpenCode server or
+drive run still alive 5 s after the run ends is a leak, which it names, stops
+and fails the run on. It only ever names the run's own descendants, never the
+owner's servers or TUIs.
+
 `bun run lint` is oxlint: its errors are the layout fence (`.oxlintrc.json`,
 one import override per context; see `ARCHITECTURE.md`), and its warnings are
 advice. `git diff --check` checks patch whitespace. The typecheck links every

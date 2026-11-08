@@ -8,13 +8,14 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { PULL_REQUEST_FIELDS } from "../mods/git/pull-request.ts"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/git.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("the Git sidebar section and /git", () => {
   test("show the branch against its upstream, the totals and the pull request, and review a file with hunk", async () => {
     const out = mkdtempSync(join(tmpdir(), "git-pane-"))
-    const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/git.ts"], {
+    const child = owned(["bunx", "opencode-drive", "run", "scenarios/git.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
       stdout: "pipe", stderr: "pipe",

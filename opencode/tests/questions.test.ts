@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 const RECEIPT = [
   "Asked in the background; nobody has answered yet:",
@@ -49,7 +50,7 @@ describe.skipIf(!fork)("background questions", () => {
   for (const via of ["direct", "kernel"] as const)
     test(`asked ${via === "direct" ? "through ask_user_async" : "from a kernel cell"}: the tray, /answer, the answers' letters and a dismissal`, async () => {
       const out = mkdtempSync(join(tmpdir(), `questions-${via}-`))
-      const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/questions.ts"], {
+      const child = owned(["bunx", "opencode-drive", "run", "scenarios/questions.ts"], {
         cwd: join(import.meta.dir, ".."),
         env: { ...process.env, SCENARIO_OUT: out, QUESTIONS_VIA: via, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
         stdin: "ignore",
@@ -133,7 +134,7 @@ describe.skipIf(!fork)("background questions", () => {
 describe.skipIf(!fork)("the /answer pane holds its place", () => {
   test("shift+← opens it on an empty composer and selects in a full one; the cursor, the arm and typed text hold across readings", async () => {
     const out = mkdtempSync(join(tmpdir(), "questions-hold-"))
-    const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/questions-hold.ts"], {
+    const child = owned(["bunx", "opencode-drive", "run", "scenarios/questions-hold.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
       stdin: "ignore",

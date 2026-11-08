@@ -11,6 +11,7 @@ import { definitions, effort, ROLES } from "../mods/orchestrate/role.ts"
 import { KEEP } from "../mods/orchestrate/compaction.ts"
 import type { Result, Spec } from "./orchestrate/run.ts"
 import { REVIEW_TASK, SUMMARY, UNTYPED_TASK } from "./orchestrate/sim.ts"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 const skill = existsSync(join(DEFAULT_SOURCE, "scripts/agents.ts"))
@@ -63,7 +64,7 @@ const run = async (name: string, spec: Omit<Spec, "base" | "fork" | "plugin">): 
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
   writeFileSync(file, JSON.stringify({ ...spec, base, fork: resolve(fork!), plugin: join(ROOT, "cmd/orchestrate") }))
-  const child = Bun.spawn([process.execPath, join(import.meta.dir, "orchestrate/run.ts"), file], {
+  const child = owned([process.execPath, join(import.meta.dir, "orchestrate/run.ts"), file], {
     env: {
       PATH: process.env.PATH ?? "",
       HOME: home,

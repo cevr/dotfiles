@@ -7,13 +7,14 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/lost-login.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("a lost gent login in the TUI", () => {
   test("the sidebar and a toast name it with gent's sign-in command, and a good refresh clears both", async () => {
     const out = mkdtempSync(join(tmpdir(), "lost-login-"))
-    const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/lost-login.ts"], {
+    const child = owned(["bunx", "opencode-drive", "run", "scenarios/lost-login.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
       stdout: "pipe", stderr: "pipe",

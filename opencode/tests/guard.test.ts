@@ -28,6 +28,7 @@ import {
   ROOT_SLEEP,
   SLEEP_TASK,
 } from "./guard/sim.ts"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/guard.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
@@ -46,7 +47,7 @@ const run = async (name: string, spec: Pick<Spec, "task" | "codeOnly">): Promise
     file,
     JSON.stringify({ ...spec, base, fork: resolve(fork ?? ""), kernel: join(ROOT, "cmd/kernel"), guard: join(ROOT, "cmd/guard") } satisfies Spec),
   )
-  const child = Bun.spawn([process.execPath, join(import.meta.dir, "guard/run.ts"), file], {
+  const child = owned([process.execPath, join(import.meta.dir, "guard/run.ts"), file], {
     env: {
       PATH: process.env.PATH ?? "",
       HOME: home,

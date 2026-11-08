@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-compaction.test.ts: skipped. Set OPENCODE_DEV to the fork with the compaction slot to run it.")
@@ -29,7 +30,7 @@ const LINE = /^ {2}◇ Compacted · 171k → 6k tokens · 1\.\ds$/
 describe.skipIf(!fork)("a compaction is one line in the Prime look, and the host's block at All (OPENCODE_DEV)", () => {
   beforeAll(async () => {
     const out = mkdtempSync(join(tmpdir(), "prime-compaction-"))
-    const run = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/prime-compaction.ts"], {
+    const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-compaction.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
       stdout: "pipe",

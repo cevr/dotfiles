@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 interface Request {
   readonly session?: "root" | "title"
@@ -28,7 +29,7 @@ if (!fork) console.warn("tests/job.test.ts: skipped. Set OPENCODE_DEV to the for
 describe.skipIf(!fork)("jobs", () => {
   test("a job's end steers a letter with its exit, log tail and note into the idle session; a killed job wakes nobody", async () => {
     const out = mkdtempSync(join(tmpdir(), "job-"))
-    const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/job.ts"], {
+    const child = owned(["bunx", "opencode-drive", "run", "scenarios/job.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
       stdin: "ignore",

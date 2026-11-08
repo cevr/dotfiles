@@ -8,6 +8,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Received } from "../mods/herdr/laws.ts"
 import { listen } from "../mods/herdr/herdr/fake-server.ts"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/herdr.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -21,7 +22,7 @@ describe.skipIf(!fork)("the herdr reporter in a real TUI", () => {
     const server = listen(join(dir, "herdr.sock"))
     if ("failed" in server) throw new Error(`the fake herdr could not listen: ${server.failed}`)
     try {
-      const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/herdr.ts"], {
+      const child = owned(["bunx", "opencode-drive", "run", "scenarios/herdr.ts"], {
         cwd: join(import.meta.dir, ".."),
         env: { ...process.env, HERDR_FAKE_SOCKET: server.path, OPENCODE_DRIVE_MEDIA_DIR: join(dir, "media") },
         stdout: "pipe",

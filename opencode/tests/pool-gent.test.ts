@@ -19,6 +19,7 @@ import {
 } from "../mods/pool/gent/store.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAccount, type FakeAnthropic, type FakeTokenAnswer } from "./fake-anthropic.ts"
 import { gentAvailable, gentSource, openGentStore, type GentStore } from "./gent/store.ts"
+import { owned } from "./owned.ts"
 
 const ready = gentAvailable()
 if (!ready) {
@@ -185,7 +186,7 @@ describe.skipIf(!ready)("the pool's gent source over gent's own store", () => {
     )
     const worker = join(import.meta.dir, "gent/refresh-worker.ts")
     const spawn = () =>
-      Bun.spawn([process.execPath, worker, dir, tokenURL, `${GENT_PREFIX}alpha`], { stdout: "pipe", stderr: "pipe" })
+      owned([process.execPath, worker, dir, tokenURL, `${GENT_PREFIX}alpha`], { stdout: "pipe", stderr: "pipe" })
     const runs = [spawn(), spawn()]
     const outputs = await Promise.all(
       runs.map(async (run) => {

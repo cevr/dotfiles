@@ -8,6 +8,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 type Rgba = readonly [number, number, number, number]
 type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string; fg: Rgba }> }> }
@@ -45,7 +46,7 @@ if (!fork) console.warn("tests/prime-goal.test.ts: skipped. Set OPENCODE_DEV to 
 describe.skipIf(!fork)("Prime's dock and goal line", () => {
   beforeAll(async () => {
     const out = mkdtempSync(join(tmpdir(), "prime-goal-"))
-    const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/prime-goal.ts"], {
+    const child = owned(["bunx", "opencode-drive", "run", "scenarios/prime-goal.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
       stdin: "ignore",

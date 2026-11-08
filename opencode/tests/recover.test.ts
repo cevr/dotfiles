@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/recover.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -12,7 +13,7 @@ if (!fork) console.warn("tests/recover.test.ts: skipped. Set OPENCODE_DEV to the
 describe.skipIf(!fork)("session recover", () => {
   test("a session whose folder is gone goes back to where it was, with a toast", async () => {
     const out = mkdtempSync(join(tmpdir(), "recover-"))
-    const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/recover.ts"], {
+    const child = owned(["bunx", "opencode-drive", "run", "scenarios/recover.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
       stdin: "ignore",

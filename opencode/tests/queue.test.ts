@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 /** The rows the sidebar shows after the set, in its order: grouped, the linked item running, no row for the unnamed worker. */
 const SET_ROWS = [
@@ -48,7 +49,7 @@ describe.skipIf(!fork)("the Queue section of the sidebar", () => {
   for (const via of ["direct", "kernel"] as const)
     test(`shows the queue kept ${via === "direct" ? "through the queue tool" : "from a kernel cell"}, a linked item's live state, and follows a patch`, async () => {
       const out = mkdtempSync(join(tmpdir(), `queue-${via}-`))
-      const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/queue.ts"], {
+      const child = owned(["bunx", "opencode-drive", "run", "scenarios/queue.ts"], {
         cwd: join(import.meta.dir, ".."),
         env: { ...process.env, SCENARIO_OUT: out, QUEUE_VIA: via, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
         stdin: "ignore",

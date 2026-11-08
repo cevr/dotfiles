@@ -11,6 +11,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./web/run.ts"
 import { BIG_PATH, MISSING_PATH, PDF_PATH, PDF_TEXT, STEADY_URL } from "./web/sim.ts"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/web.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
@@ -26,7 +27,7 @@ const run = async (): Promise<Result> => {
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
   writeFileSync(file, JSON.stringify({ base, fork: resolve(fork ?? ""), web: join(ROOT, "cmd/web") } satisfies Spec))
-  const child = Bun.spawn([process.execPath, join(import.meta.dir, "web/run.ts"), file], {
+  const child = owned([process.execPath, join(import.meta.dir, "web/run.ts"), file], {
     env: {
       PATH: process.env.PATH ?? "",
       HOME: home,

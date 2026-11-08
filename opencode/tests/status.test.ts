@@ -4,13 +4,14 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/status.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("/pool in the Prime look", () => {
   test("shows held accounts and both quota windows, a live agent and derived run states", async () => {
     const out = mkdtempSync(join(tmpdir(), "pool-pane-"))
-    const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/pool.ts"], {
+    const child = owned(["bunx", "opencode-drive", "run", "scenarios/pool.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
       stdout: "pipe", stderr: "pipe",

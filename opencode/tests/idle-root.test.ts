@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 const LINE = "idle with units in plan, implement or verify: alpha, beta; start them or name what you wait on."
 
@@ -18,7 +19,7 @@ if (!fork) console.warn("tests/idle-root.test.ts: skipped. Set OPENCODE_DEV to t
 describe.skipIf(!fork)("an idle root with units to move", () => {
   test("is steered once, after its planner ends and the owner's draft clears, and names its wait", async () => {
     const out = mkdtempSync(join(tmpdir(), "idle-root-"))
-    const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/idle-root.ts"], {
+    const child = owned(["bunx", "opencode-drive", "run", "scenarios/idle-root.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
       stdin: "ignore",

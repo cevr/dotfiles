@@ -8,6 +8,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./kernel/run.ts"
 import { ATTACH_CELL, ATTACH_TASK, cells, DONE, HELLO, KERNEL_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/kernel.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
@@ -23,7 +24,7 @@ const run = async (name: string, spec: Pick<Spec, "task" | "denyExecute" | "code
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
   writeFileSync(file, JSON.stringify({ ...spec, base, fork: resolve(fork!), plugin: join(ROOT, "cmd/kernel") } satisfies Spec))
-  const child = Bun.spawn([process.execPath, join(import.meta.dir, "kernel/run.ts"), file], {
+  const child = owned([process.execPath, join(import.meta.dir, "kernel/run.ts"), file], {
     env: {
       PATH: process.env.PATH ?? "",
       HOME: home,

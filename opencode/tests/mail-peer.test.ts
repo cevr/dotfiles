@@ -14,6 +14,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/mail-peer.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -169,7 +170,7 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
       OPENCODE_DB: join(base, "opencode.db"),
       OPENCODE_DISABLE_MODELS_FETCH: "1",
     }
-    const child = Bun.spawn([...launch.base, "serve", "--service", "--port", "0"], { cwd: join(base, "work"), env: { ...env, ...launch.env }, stdout: "ignore", stderr: "pipe" })
+    const child = owned([...launch.base, "serve", "--service", "--port", "0"], { cwd: join(base, "work"), env: { ...env, ...launch.env }, stdout: "ignore", stderr: "pipe" })
     let stderr = ""
     void (async () => {
       for await (const chunk of child.stderr) stderr += new TextDecoder().decode(chunk)
@@ -206,7 +207,7 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
     )
 
   const pairCommand = async (host: Host, ...args: ReadonlyArray<string>) => {
-    const child = Bun.spawn([process.execPath, join(ROOT, "cmd/mail/pair.ts"), ...args, "--name", host.name], { cwd: ROOT, env: host.env, stdout: "pipe", stderr: "pipe" })
+    const child = owned([process.execPath, join(ROOT, "cmd/mail/pair.ts"), ...args, "--name", host.name], { cwd: ROOT, env: host.env, stdout: "pipe", stderr: "pipe" })
     const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
     return { code, out, err }
   }

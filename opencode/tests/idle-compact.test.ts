@@ -13,6 +13,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Result, Spec, Started } from "./idle-compact/run.ts"
 import { ANSWER, BACKGROUND_SECONDS, EARLY_MS, MARGIN_SECONDS, SUMMARY, TTL_SECONDS } from "./idle-compact/sim.ts"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/idle-compact.test.ts: the OpenCode run skips. Set OPENCODE_DEV to the fork.")
@@ -28,7 +29,7 @@ const run = async (name: string, options: { readonly background?: boolean; reado
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
   writeFileSync(file, JSON.stringify({ base, fork: resolve(fork ?? ""), plugin: join(ROOT, "cmd/idle-compact"), ...options } satisfies Spec))
-  const child = Bun.spawn([process.execPath, join(import.meta.dir, "idle-compact/run.ts"), file], {
+  const child = owned([process.execPath, join(import.meta.dir, "idle-compact/run.ts"), file], {
     env: {
       PATH: process.env.PATH ?? "",
       HOME: home,

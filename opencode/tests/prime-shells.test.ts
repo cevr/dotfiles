@@ -10,6 +10,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 const label = "prime-shells"
 const names = ["moved", "list", "killed", "blocking", "user", "user-list", "user-killed"] as const
@@ -37,7 +38,7 @@ if (!fork) console.warn("tests/prime-shells.test.ts: skipped. Set OPENCODE_DEV t
 describe.skipIf(!fork)("background shells in Prime", () => {
   beforeAll(async () => {
     const out = mkdtempSync(join(tmpdir(), "prime-shells-"))
-    const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/prime-shells.ts"], {
+    const child = owned(["bunx", "opencode-drive", "run", "scenarios/prime-shells.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
       stdin: "ignore",

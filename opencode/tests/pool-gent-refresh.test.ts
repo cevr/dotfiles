@@ -13,6 +13,7 @@ import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAnswer, type FakeRequestInfo, type FakeTokenAnswer } from "./fake-anthropic.ts"
 import { gentAvailable, gentSource, openGentStore } from "./gent/store.ts"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork) && gentAvailable()
@@ -97,7 +98,7 @@ describe.skipIf(!ready)("a gent account whose refresh is rate-limited does not e
           ...launch.env,
         }
         const started = Date.now()
-        const run = Bun.spawn(
+        const run = owned(
           [...launch.base, "run", "--standalone", "--dangerously-skip-permissions", "--format", "json", "say hello"],
           { cwd: join(base, "work"), env, stdout: "pipe", stderr: "pipe" },
         )

@@ -7,13 +7,14 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/pr.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("the pr tool and its watcher", () => {
   test("a watch set in a turn sends its notice into the idle session when the checks pass", async () => {
     const out = mkdtempSync(join(tmpdir(), "pr-tool-"))
-    const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/pr.ts"], {
+    const child = owned(["bunx", "opencode-drive", "run", "scenarios/pr.ts"], {
       cwd: join(import.meta.dir, ".."),
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
       stdout: "pipe",

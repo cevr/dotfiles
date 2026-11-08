@@ -17,7 +17,11 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { $ } from "bun"
+import { listing, type Proc, servers, stop, survivors, table, watch } from "./leaks.ts"
 import { acceptanceTests, load, packageOf, reach, ROOT, SHARED } from "./reach.ts"
+
+/** How long a finished run's processes have to end before one still running counts as leaked. */
+const LEAK_GRACE_MS = 5000
 
 const argv = process.argv.slice(2)
 const rest = argv.includes("--") ? argv.slice(argv.indexOf("--") + 1) : []
@@ -96,15 +100,13 @@ const release = () => {
   if (holder()?.pid === process.pid) rmSync(LOCK, { recursive: true, force: true })
 }
 process.on("exit", release)
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
-  process.on(signal, () => {
-    release()
-    process.exit(130)
-  })
 
 const env = { ...process.env }
 delete env.ANTHROPIC_BASE_URL
 const timings = path.join(CACHE, "accept-timings.json")
+// The run is a process group of its own, so a signal to accept stops every test
+// process with it; `watch` follows its descendants, the ones that leave the
+// group too, and what is still running after it ends is a leak (scripts/leaks.ts).
 const child = Bun.spawn(
   [
     process.execPath,
@@ -117,6 +119,43 @@ const child = Bun.spawn(
     ...rest,
     ...files.map((file) => `./${file}`),
   ],
-  { cwd: ROOT, env, stdout: "inherit", stderr: "inherit" },
+  { cwd: ROOT, env, stdout: "inherit", stderr: "inherit", detached: true },
 )
-process.exit(await child.exited)
+const watching = watch(child.pid)
+let stopping = false
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
+  process.on(signal, () => {
+    if (stopping) return
+    stopping = true
+    try {
+      process.kill(-child.pid, "SIGTERM")
+    } catch {
+      // The run's group is gone already.
+    }
+    // A test's own process groups are outside the run's: its servers are stopped by name.
+    void stop(servers(survivors(watching.stop(), table()))).finally(() => {
+      release()
+      process.exit(130)
+    })
+  })
+const code = await child.exited
+if (stopping) await new Promise(() => {})
+process.exit((await leaked(watching.stop())) ? code || 1 : code)
+
+/** Whether the run left a server or drive behind; stops those and names every survivor. */
+async function leaked(seen: ReadonlyArray<Proc>): Promise<boolean> {
+  // A test's teardown may still be ending what it started.
+  const deadline = Date.now() + LEAK_GRACE_MS
+  let left = survivors(seen, table())
+  while (left.length > 0 && Date.now() < deadline) {
+    await Bun.sleep(250)
+    left = survivors(seen, table())
+  }
+  const strays = servers(left)
+  const others = left.filter((proc) => !strays.includes(proc))
+  if (others.length > 0) console.warn(`accept: ${others.length} test processes outlived the run:\n${listing(others)}`)
+  if (strays.length === 0) return false
+  console.error(`accept: the run leaked ${strays.length} OpenCode servers or drive runs; stopping them:\n${listing(strays)}`)
+  await stop(strays)
+  return true
+}

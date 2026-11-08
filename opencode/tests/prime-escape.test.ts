@@ -9,6 +9,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-escape.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -28,7 +29,7 @@ const dock = (frame: ReadonlyArray<string>) => frame.find((line) => line.include
 describe.skipIf(!fork)("Escape cancels within the grace and interrupts after it, in the Prime look (OPENCODE_DEV)", () => {
   beforeAll(async () => {
     const out = mkdtempSync(join(tmpdir(), "prime-escape-"))
-    const run = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/prime-escape.ts"], {
+    const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-escape.ts"], {
       cwd: root,
       env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
       stdout: "pipe",

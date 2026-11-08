@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 interface Request {
   readonly session?: "root" | "title"
@@ -27,7 +28,7 @@ interface Session {
 const label = "wake-repeat"
 const run = async () => {
   const out = mkdtempSync(join(tmpdir(), `${label}-`))
-  const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/wake-repeat.ts"], {
+  const child = owned(["bunx", "opencode-drive", "run", "scenarios/wake-repeat.ts"], {
     cwd: join(import.meta.dir, ".."),
     env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
     stdin: "ignore",

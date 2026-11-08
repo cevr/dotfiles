@@ -11,6 +11,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/tui-cpu.test.ts: skipped. Set OPENCODE_DEV to an OpenCode checkout to run it.")
@@ -26,7 +27,7 @@ let busy: string
 describe.skipIf(!fork)("the TUI's CPU while a long session and its subagents stream (OPENCODE_DEV)", () => {
   beforeAll(async () => {
     const out = mkdtempSync(join(tmpdir(), "tui-cpu-"))
-    const run = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/tui-cpu.ts"], {
+    const run = owned(["bunx", "opencode-drive", "run", "scenarios/tui-cpu.ts"], {
       cwd: root,
       env: {
         ...process.env,

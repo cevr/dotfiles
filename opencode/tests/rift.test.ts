@@ -14,6 +14,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./rift/run.ts"
 import { BRANCH, COMMIT_SUBJECT, DONE, LAND_SUBJECT, LAND_TASK, TASK } from "./rift/sim.ts"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/rift.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
@@ -35,7 +36,7 @@ const run = async (name: string, task = TASK, wake?: string): Promise<Result> =>
     file,
     JSON.stringify({ base, fork: resolve(fork ?? ""), rift: join(ROOT, "cmd/rift"), toolNames: join(ROOT, "cmd/tool-names"), task, ...(wake === undefined ? {} : { wake }) } satisfies Spec),
   )
-  const child = Bun.spawn([process.execPath, join(import.meta.dir, "rift/run.ts"), file], {
+  const child = owned([process.execPath, join(import.meta.dir, "rift/run.ts"), file], {
     env: {
       PATH: process.env.PATH ?? "",
       HOME: home,

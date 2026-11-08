@@ -11,6 +11,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/cache.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -51,7 +52,7 @@ describe.skipIf(!fork)("the cache mod in a real TUI", () => {
   test("a shell call that outlives the cache ends its turn on a priced miss row, and the sidebar sums it", async () => {
     const out = mkdtempSync(join(tmpdir(), "cache-scenario-"))
     try {
-      const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/cache.ts"], {
+      const child = owned(["bunx", "opencode-drive", "run", "scenarios/cache.ts"], {
         cwd: join(import.meta.dir, ".."),
         env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
         stdout: "pipe",
@@ -95,7 +96,7 @@ describe.skipIf(!fork)("the cache mod in a real TUI", () => {
   test("an agent's own 2s cache lifetime expires the prefix its model would keep an hour", async () => {
     const out = mkdtempSync(join(tmpdir(), "cache-role-scenario-"))
     try {
-      const child = Bun.spawn(["bunx", "opencode-drive", "run", "scenarios/cache.ts"], {
+      const child = owned(["bunx", "opencode-drive", "run", "scenarios/cache.ts"], {
         cwd: join(import.meta.dir, ".."),
         env: { ...process.env, CACHE_ROLE_TTL: "2s", SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
         stdout: "pipe",
