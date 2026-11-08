@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fateOf, joinUnit, outcomeOf, verdictOf } from './outcomes.ts';
+import { batchUnits, fateOf, joinUnit, joinUnits, outcomeOf, verdictOf } from './outcomes.ts';
 import { costOf } from './prices.ts';
 import { bridgeUnits, claudeAgent, codexAgent, codexAgents } from './sources.ts';
 
@@ -211,6 +211,55 @@ describe('outcomes', () => {
     const thread = { ...agent('implement', 'Fix the findings.'), unit: 'unit', round: 2, last: Date.now() };
     expect(joinUnit(thread, 'context ran out', () => [dir])).toEqual({ phase: 'implement', dir, unit: dir, round: 2 });
     expect(joinUnit({ ...thread, prompt: `Read ${other}/spec.md` }, '', () => [dir])).toEqual({ phase: 'implement', dir: other, unit: other, round: 2 });
+  });
+
+  describe('a batch verifier', () => {
+    // A run dir holding two units that landed in batch 2: auth at round 2, tabs at round 1.
+    const batch = () => {
+      const run = join(mkdtempSync(join(tmpdir(), 'models-')), 'run');
+      const auth = join(run, 'auth'), tabs = join(run, 'tabs');
+      for (const dir of [auth, tabs]) mkdirSync(dir, { recursive: true });
+      writeFileSync(join(run, 'log.md'), 't batch-2 landed\n');
+      writeFileSync(join(auth, 'log.md'), 't ready → verify r1 batch-1.md\nt ready → verify r2 batch-2.md\n');
+      writeFileSync(join(tabs, 'log.md'), 't ready → verify r1 batch-2.md\n');
+      writeFileSync(join(auth, 'round-2-findings.md'), 'Verdict: ACCEPTED\n');
+      writeFileSync(join(tabs, 'round-1-findings.md'), 'Verdict: CHANGES REQUIRED\n');
+      writeFileSync(join(run, 'batch-2.md'), `base a, head b\n- auth: round 2, request ${auth}/round-2-request.md\n- tabs: round 1, request tmp/orchestrate/run/tabs/round-1-request.md\n`);
+      writeFileSync(join(run, 'batch-2-findings.md'), 'Verdict: CHANGES REQUIRED\n\n| unit | round | verdict | findings |\n| auth | 2 | accepted | auth/round-2-findings.md |\n| tabs | 1 | changes | tabs/round-1-findings.md (repeat of auth/round-1-findings.md) |\n');
+      return { run, auth, tabs };
+    };
+    const results = (js: ReturnType<typeof joinUnits>) => js.map((j) => outcomeOf(j)).sort((x, y) => x.unit.localeCompare(y.unit));
+
+    test("counts each unit's own verdict, one accepted and one changes, from its hand-back line", () => {
+      const { run } = batch();
+      const js = joinUnits(agent('verify'), `verifier batch-2 r1: changes ${run}/batch-2-findings.md`);
+      expect(results(js)).toEqual([
+        { phase: 'verify', unit: 'run/auth', round: 2, result: 'accepted', fate: 'open' },
+        { phase: 'verify', unit: 'run/tabs', round: 1, result: 'changes', fate: 'open' },
+      ]);
+    });
+
+    test('with no hand-back line, joins by the batch file its prompt names', () => {
+      const { run } = batch();
+      const js = joinUnits(agent('verify', `Verify the batch: ${run}/batch-2.md`), 'context ran out');
+      expect(results(js).map((o) => [o.unit, o.round, o.result])).toEqual([['run/auth', 2, 'accepted'], ['run/tabs', 1, 'changes']]);
+    });
+
+    test('finds its units from any one of the batch files or the unit logs', () => {
+      const { run, auth, tabs } = batch();
+      const only = (keep: string) => (p: string) => (p.endsWith(keep) ? readFileSync(p, 'utf8') : undefined);
+      for (const keep of ['batch-2.md', 'batch-2-findings.md', 'log.md'])
+        expect(batchUnits(run, 2, only(keep)).map((j) => [j.unit, j.round]).sort()).toEqual([[auth, 2], [tabs, 1]]);
+    });
+  });
+
+  test('an older per-unit verifier still joins its one unit', () => {
+    const dir = unit();
+    writeFileSync(join(dir, 'round-1-findings.md'), 'Verdict: ACCEPTED\n');
+    const js = joinUnits(agent('verify'), `verifier unit r1: accepted ${dir}/round-1-findings.md`);
+    expect(js).toEqual([{ phase: 'verify', dir, unit: dir, round: 1, own: 'accepted' }]);
+    expect(outcomeOf(js[0]).result).toBe('accepted');
+    expect(joinUnits(agent('verify', `Review ${dir}/round-1-request.md`), '')).toEqual([{ phase: 'verify', dir, unit: dir, round: 1 }]);
   });
 
   test('with no hand-back line, joins by the unit files the prompt names', () => {
