@@ -196,6 +196,37 @@ describe("the cache ledger plugin", () => {
       }),
     ))
 
+  // The ledger, 2026-11-08 00:38:55: a build session's first request after a restart read 12,952 of
+  // 198,763 tokens, and the line said only `first`: the request before it was the old process's.
+  test("after a restart, a session's first request is judged against the last request the old process sent", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const ledger = Memory.make()
+        const before = yield* start(ledger)
+        yield* before.send("ses_1", body("Friday", 1), { login: "cred-a" })
+        yield* before.ended("ses_1", "msg_1", 0, 40_000)
+        yield* TestClock.adjust(MINUTE)
+        // The server restarts: a new copy of the plugin, the same ledger.
+        const after = yield* start(ledger)
+        yield* after.send("ses_1", body("Saturday", 3), { login: "cred-a" })
+        yield* after.ended("ses_1", "msg_2", 300, 42_000)
+        yield* TestClock.adjust(MINUTE)
+        yield* after.send("ses_1", body("Saturday", 5), { login: "cred-b" })
+        yield* after.ended("ses_1", "msg_3", 0, 44_000)
+        yield* TestClock.adjust(MINUTE)
+        // A session it never saw is still first.
+        yield* after.send("ses_2", body("Saturday", 1))
+        yield* after.ended("ses_2", "msg_4", 0, 40_000)
+        expect(ledger.lines.map((line) => [line.messageID, line.cause, line.gapMs, line.restored])).toEqual([
+          ["msg_1", "first", undefined, undefined],
+          ["msg_2", "prefix", MINUTE, true],
+          ["msg_3", "login", MINUTE, undefined],
+          ["msg_4", "first", undefined, undefined],
+        ])
+        expect(ledger.lines[1]?.change).toMatchObject({ segment: "system[1] ¶2", head: "Today is Saturday." })
+      }),
+    ))
+
   test("a ledger that cannot be written still answers the TUI", () =>
     onTestClock(
       Effect.gen(function* () {

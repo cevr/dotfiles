@@ -1044,7 +1044,11 @@ changed at system[1] ¶4, 3k tokens in` or `the cache lost an unchanged
 prefix`; without the server half the TUI's own causes stand.
 
 Each judged request is a line of `~/.cache/opencode-cache-ledger/ledger.jsonl`
-(options: `dir`, `host`). `bun scripts/cache-ledger.ts [--since 24h] [--host
+(options: `dir`, `host`), and the session's newest judged request, its
+fingerprint with it, is kept beside it in `last/<sessionID>.json`: a copy of
+the plugin that has judged nothing of a session (after a restart, or in
+another location) judges its first request against that one, and the line
+says `restored`, so a restart names the segment it changed instead of `first`. `bun scripts/cache-ledger.ts [--since 24h] [--host
 <name>] [--top 10] [--json] [--file <ledger.jsonl>]...` sums it: cache writes
 by cause, by first changed segment, the unexplained part (`login`, `prefix`,
 `unchanged`) per host and day, and the costliest session-hours.
