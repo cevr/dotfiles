@@ -1,9 +1,13 @@
 // Runs scenarios/prime-queued.ts with the Prime look against an OpenCode
-// checkout and asserts how a prompt sent during an automatic compaction reads:
-// until the runner takes it, it is not in the transcript, a queued row above
-// the composer shows it and the loader says `Compacting`; once taken, it is in
-// the transcript, the row is gone and the loader says `Executing`, timed from
-// the turn's start rather than from the prompt. Needs OPENCODE_DEV, the fork.
+// checkout and asserts how prompts sent during an automatic compaction read:
+// two steers and one prompt sent to the queue wait in one list above the
+// composer, oldest first, in place of the host's `N queued · …` box, out of
+// the transcript with no blank row left there, while the loader says
+// `Compacting`; the steers enter the transcript in the order sent under
+// `Executing`, timed from the turn's start, the queued prompt still listed;
+// once that turn ends the queued prompt enters too and the list is empty.
+// Needs OPENCODE_DEV, a fork whose layout rule sees the row's message and
+// which publishes the `session.composer.queued` slot (`prime-look`).
 import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -14,15 +18,16 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-queued.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
 
 const root = join(import.meta.dir, "..")
-const names = ["queued", "taken"] as const
+const names = ["queued", "taken", "after"] as const
 const frames = {} as Record<(typeof names)[number], ReadonlyArray<string>>
 
 /** The rows above Prime's mode hint (the transcript, then the queued rows), blank rows dropped. */
 const above = (frame: ReadonlyArray<string>) =>
   frame.slice(0, frame.findIndex((line) => /mode \(Ctrl\+O/.test(line))).filter((line) => line.trim() !== "")
 const LOADER = (label: string) => new RegExp(`^ {2}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ${label} · (\\d+)s$`)
+const LATER = "  ◌ after the turn · Afterwards tag the release."
 
-describe.skipIf(!fork)("a prompt sent during a compaction waits above the composer, in the Prime look (OPENCODE_DEV)", () => {
+describe.skipIf(!fork)("prompts sent during a compaction wait above the composer as one list, in the Prime look (OPENCODE_DEV)", () => {
   beforeAll(async () => {
     const out = mkdtempSync(join(tmpdir(), "prime-queued-"))
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-queued.ts"], {
@@ -40,31 +45,53 @@ describe.skipIf(!fork)("a prompt sent during a compaction waits above the compos
     for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
   }, 300_000)
 
-  test("while the compaction runs: no prompt in the transcript, a queued row, and `Compacting`", () => {
+  test("while the compaction runs: no prompt in the transcript, one list of all three, and `Compacting`", () => {
     const shown = above(frames.queued)
-    expect(shown.slice(-5)).toEqual([
+    expect(shown.slice(-7)).toEqual([
       "  ● Ran true",
       "    │ (no output)",
       expect.stringMatching(/^ {2}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Automatic compaction$/),
       expect.stringMatching(LOADER("Compacting")),
       "  ◌ queued · Also update the docs.",
+      "  ◌ queued · Then bump the version.",
+      LATER,
     ])
-    // One blank row between the compaction and the loader: the hidden prompt's row adds none.
+    // One blank row between the compaction and the loader, the loader's own: the hidden prompts' rows add none.
     const loader = frames.queued.findIndex((line) => LOADER("Compacting").test(line))
     expect(frames.queued[loader - 1]?.trim()).toBe("")
     expect(frames.queued[loader - 2]).toMatch(/Automatic compaction$/)
-    expect(shown.some((line) => line.includes("┃ Also update the docs."))).toBe(false)
+    for (const prompt of ["Also update the docs.", "Then bump the version.", "Afterwards tag the release."])
+      expect(shown.some((line) => line.includes(`┃ ${prompt}`))).toBe(false)
+    // The host's own queued box is replaced, not drawn beside the list.
+    expect(frames.queued.join("\n")).not.toMatch(/\d+ queued/)
     expect(frames.queued.join("\n")).not.toContain("Executing")
   })
 
-  test("once the runner takes it: the prompt in the transcript, no queued row, and `Executing` from the turn's start", () => {
+  test("once the runner takes the steers: both in the transcript in order under `Executing` from the turn's start, the queued prompt still listed", () => {
     const shown = above(frames.taken)
     const at = shown.indexOf(" ┃ Also update the docs.")
     expect(at).toBeGreaterThan(shown.findIndex((line) => line.includes("◇ Compacted automatically")))
-    expect(shown.slice(at + 1)).toEqual(["  Updating", expect.stringMatching(LOADER("Executing"))])
+    expect(shown.slice(at + 1)).toEqual([
+      " ┃ Then bump the version.",
+      "  Updating",
+      expect.stringMatching(LOADER("Executing")),
+      LATER,
+    ])
     expect(frames.taken.join("\n")).not.toContain("◌ queued")
-    // The turn started before the six-second compaction; the prompt that waited behind it does not restart the clock.
-    const seconds = Number(LOADER("Executing").exec(shown.at(-1) ?? "")?.[1])
+    expect(frames.taken.join("\n")).not.toMatch(/\d+ queued/)
+    // The turn started before the nine-second compaction; the prompts that waited behind it do not restart the clock.
+    const seconds = Number(LOADER("Executing").exec(shown.at(-2) ?? "")?.[1])
     expect(seconds).toBeGreaterThanOrEqual(5)
+  })
+
+  test("once that turn ends: the queued prompt in the transcript after the steers, and the list empty", () => {
+    const shown = above(frames.after)
+    const order = ["Also update the docs.", "Then bump the version.", "Afterwards tag the release."].map((prompt) =>
+      shown.indexOf(` ┃ ${prompt}`),
+    )
+    expect(order.every((index) => index >= 0)).toBe(true)
+    expect(order).toEqual(order.toSorted((a, b) => a - b))
+    expect(shown.slice(order[2]! + 1)[0]).toBe("  Release tagged.")
+    expect(frames.after.join("\n")).not.toContain("◌")
   })
 })

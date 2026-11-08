@@ -12,6 +12,7 @@ import { Plugin } from "@opencode/plugin/tui"
 import { nextDetail, rowGap, type Detail } from "@dotfiles/opencode-prime/detail"
 import { goals } from "@dotfiles/opencode-prime/opencode/goal"
 import { host } from "@dotfiles/opencode-prime/opencode/host"
+import { isWaiting } from "@dotfiles/opencode-prime/pending"
 import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
 import { hints as wakeHints, WakeTab } from "@dotfiles/opencode-prime/tui/composer"
 import { Dock, GoalLine, ModeHint, Queued, Splash, TopBar, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
@@ -27,11 +28,16 @@ export default Plugin.define({
     const goal = goals(context)
     const h = host(context, goal.read)
     const [detail, setDetail] = createSignal<Detail>("details")
+    // A prompt the runner has not taken draws nothing in the transcript (tui/transcript.tsx UserBand), so its row takes no gap either.
+    const hidden = (messageID: string | undefined) => {
+      const sessionID = h.route()
+      return messageID !== undefined && sessionID !== undefined && isWaiting(h.pending(sessionID), messageID)
+    }
 
     context.ui.layout({
       inset: 1,
       composer: { chrome: "rail" },
-      rowGap: (row) => rowGap(detail(), row),
+      rowGap: (row) => (hidden(row.messageID) ? 0 : rowGap(detail(), row)),
       // Prime shows every tool call and thought on its own row.
       transcript: { grouping: "none", thinking: "show" },
     })
@@ -81,9 +87,9 @@ export default Plugin.define({
       replace: "session.message.compaction",
       render: (input) => <Compaction host={h} sessionID={input.sessionID} messageID={input.messageID} detail={detail} />,
     })
-    // The prompts the runner has not taken, under the transcript they have not entered yet (tui/chrome.tsx).
+    // The prompts the runner has not taken, steers and queued ones in one list, in place of the host's queued box (tui/chrome.tsx).
     context.ui.slot({
-      append: "session.composer.top",
+      replace: "session.composer.queued",
       render: (input) => <Queued host={h} sessionID={input.sessionID} />,
     })
     context.ui.slot({
@@ -108,7 +114,7 @@ export default Plugin.define({
     // Prime's loader is the transcript's last row, straight under the newest output.
     context.ui.slot({
       append: "session.transcript.end",
-      render: (input) => <Working host={h} sessionID={input.sessionID} detail={detail} />,
+      render: (input) => <Working host={h} sessionID={input.sessionID} />,
     })
     context.ui.slot({
       replace: "prompt.footer",

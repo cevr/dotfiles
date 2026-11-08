@@ -16,9 +16,9 @@ import {
   trayModel,
   usageLabel,
 } from "../chrome.ts"
-import { loader, loaderMargin, queuedRow, waitingPrompts } from "../pending.ts"
+import { loader, queuedRow, waitingPrompts } from "../pending.ts"
 import { elapsed } from "../clock.ts"
-import { detailHint, rowGap, type Detail } from "../detail.ts"
+import { detailHint, type Detail } from "../detail.ts"
 import { GOAL_LINGER_MS, goalLine, goalShown, type Goal } from "../goal.ts"
 import { navigationHint, neighbour, othersWorking, subagentOrder, topTitle } from "../subagent.ts"
 import { wakeItem } from "../wakes.ts"
@@ -297,11 +297,12 @@ export function GoalLine(props: { host: Host; sessionID: string }) {
 }
 
 /**
- * Above the composer, one row per prompt the runner has not taken, oldest
- * first (`◌ queued · Also update the docs.`, pending.ts): the prompt leaves
- * the transcript until the runner takes it, and its row goes the moment it
- * does. A click offers to move it to the queue or delete it. Nothing while
- * none waits.
+ * Above the composer, in place of the host's queued box, one row per prompt
+ * the runner has not taken, steers and queued prompts in one list, oldest
+ * first (`◌ queued · Also update the docs.`, `◌ after the turn · …`,
+ * pending.ts): the prompt leaves the transcript until the runner takes it,
+ * and its row goes the moment it does. A click offers that kind's actions
+ * (`pendingActions`). Nothing while none waits.
  */
 export function Queued(props: { host: Host; sessionID: string }) {
   const theme = () => props.host.theme()
@@ -329,7 +330,7 @@ export function Queued(props: { host: Host; sessionID: string }) {
                 onMouseOver={() => setHover(true)}
                 onMouseOut={() => setHover(false)}
                 onMouseUp={() => {
-                  if (!props.host.selecting()) props.host.openPending(props.sessionID, prompt.id)
+                  if (!props.host.selecting()) props.host.openPending(props.sessionID, prompt)
                 }}
               >
                 <text wrapMode="none" truncate fg={hover() ? theme().text.base : theme().text.muted}>
@@ -349,12 +350,9 @@ export function Queued(props: { host: Host; sessionID: string }) {
  * accent (Prime #7c6faf) and what runs, `Executing · 13s` or
  * `Compacting · 4s` (Prime's loader rows), timed as pending.ts `loader` says.
  */
-export function Working(props: { host: Host; sessionID: string; detail: Accessor<Detail> }) {
+export function Working(props: { host: Host; sessionID: string }) {
   const running = createMemo(() => props.host.status(props.sessionID) === "running")
   const shown = createMemo(() => loader(props.host.messages(props.sessionID), props.host.pending(props.sessionID)))
-  const margin = createMemo(() =>
-    loaderMargin(props.host.pending(props.sessionID), rowGap(props.detail(), { kind: "user" })),
-  )
   const [now, setNow] = createSignal(Date.now())
   const [seen, setSeen] = createSignal(Date.now())
   const [frame, setFrame] = createSignal(0)
@@ -371,7 +369,7 @@ export function Working(props: { host: Host; sessionID: string; detail: Accessor
   })
   return (
     <Show when={running()}>
-      <box paddingLeft={GUTTER} marginTop={margin()} flexShrink={0}>
+      <box paddingLeft={GUTTER} marginTop={1} flexShrink={0}>
         <text wrapMode="none" fg={props.host.theme().text.muted}>
           <span style={{ fg: props.host.theme().hue.accent[300] }}>{SPINNER[frame()]} </span>
           {shown().label} · {elapsed(now() - (shown().since ?? seen()))}

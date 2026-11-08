@@ -38,7 +38,8 @@ const USER_RAIL = {
  * its panel). The rail is the text colour, as fx's marker and the rail
  * composer are. What came with the prompt (files, skills, agents) is one
  * muted line under the text. A prompt the runner has not taken draws nothing
- * here; it enters the transcript, at the place the host gives it, once taken.
+ * here, and its row takes no gap (cmd/prime/tui.tsx's layout rule); it enters
+ * the transcript, at the place the host gives it, once taken.
  */
 export function UserBand(props: { host: Host; sessionID: string; messageID: string }) {
   const message = createMemo(() => {
