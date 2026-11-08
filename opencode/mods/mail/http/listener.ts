@@ -117,6 +117,9 @@ export const serve = (listen: Listen, handlers: Handlers, keyed: Keyed, secret: 
         Effect.orDie,
       ),
       (bound) => Effect.sync(() => void bound.stop(true)),
+      // Other locations may own this port indefinitely. A reload must be able
+      // to cancel the retry wait before this instance acquires a listener.
+      { interruptible: true },
     )
     const url = urlOf(listen.hostname, server.port ?? listen.port)
     const store = yield* PairStore
