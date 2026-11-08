@@ -1920,6 +1920,64 @@ Log tail:
 `tests/job.test.ts` runs `scenarios/job.ts`: a job whose end wakes the idle
 session, and a killed one that wakes nobody.
 
+## Memory
+
+`mods/memory` gives the agent a long-term memory of short notes, kept in one
+SQLite file per host (`$XDG_STATE_HOME/opencode-memory/memory.db`, else
+`~/.local/state/…`; the Mac and the workbox each have their own, no sync). Its
+plugin is `cmd/memory` (`server.ts`); the design and what it took from
+Anthropic's "components of agent memory" and OptMem is in
+[`notes/memory.md`](notes/memory.md).
+
+A note is one line of at most 400 characters with up to 8 tags, kept
+`global` (about the user, true in every project) or `project` (OpenCode's
+project id, which every clone, worktree and Rift of a repository shares). The
+server adds three direct tools (a kernel cell calls them as `tools.memory_save(...)`):
+
+- `memory_save({ text, scope?, tags?, id? })`: `scope` defaults to
+  `project`. A note whose words are at least 60% the same (Jaccard) as a note
+  of its bucket updates that note instead of adding one (`Updated #1 (global),
+  which said nearly the same: "…"`); with `id`, it corrects that note. Its
+  description says what is worth saving (the user's facts, preferences and
+  corrections, the project's conventions, hard-won fixes) and what is not
+  (task state, plans, what the repository already says, secrets).
+- `memory_search({ query, limit? })`: the project's notes and the global
+  ones, by FTS5 rank (porter stemming), at most 25.
+- `memory_forget({ id })`.
+
+A subagent searches but does not save or forget (OptMem's rule: it cannot judge
+what is already known); its refusal tells it to put the fact in its answer.
+
+**The digest.** At a session's first request the plugin picks the notes it
+starts with: the highest by `(1 + log2(1 + uses)) · ½^(days since updated / 60)`,
+at most `digestNotes` (30) whose lines fit `digestChars` (4,000 characters,
+about 1k tokens), laid out global first, then the project's, by id, under a
+`# Memory` heading. It goes last in the system prompt through the `context`
+hook, and is kept in the file per session, so every request of the session
+(and of a server restart) carries the same block and the cached prefix holds;
+a note saved mid-session shows from the next session on. A session with no
+notes keeps an empty one. `uses` counts searches and repeated saves; `shown`
+counts digests and never ranks, so the injected notes cannot keep themselves
+in place. `used` is the last time either happened.
+
+Options: `path` (the file), `digestNotes`, `digestChars`.
+
+**The CLI** reads and edits the same file, for the weekly dream or the owner;
+reading there counts no use:
+
+```
+bun opencode/cmd/memory/cli.ts list|search|show|add|edit|merge|forget|projects|stats [--db <file>] [--json]
+```
+
+`stats` gives each note's uses, showings, dates and idle days, the notes idle
+30 days or more (`--stale-days`), pairs of one bucket at least 40% alike, and
+each project's digest fill (what it holds of what its sessions see, and its
+size). `projects` maps project ids to the directories their notes were saved
+in, for `add --scope project --project <id>`.
+
+Transcripts are not copied: they stay searchable in OpenCode's own database.
+`tests/memory.test.ts` proves it in real OpenCode on the scripted model.
+
 ## The code kernel
 
 `mods/kernel` gives the model a `kernel` tool, `{ code, description?, reset? }`, ported
