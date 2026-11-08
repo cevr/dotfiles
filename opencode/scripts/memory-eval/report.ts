@@ -2,6 +2,7 @@
 // then correctness per scenario and per kind of fact, then a few failures.
 import { costOf, type Usage } from "./api.ts"
 import { ARMS, type EpisodeResult } from "./episode.ts"
+import { grade } from "./grade.ts"
 import { SCENARIOS } from "./scenarios.ts"
 
 const pct = (hits: number, total: number) => (total === 0 ? "–" : `${Math.round((100 * hits) / total)}% (${hits}/${total})`)
@@ -10,8 +11,15 @@ const tokens = (usage: Usage | undefined) => (usage === undefined ? 0 : usage.in
 
 const kindOf = (scenario: string, fact: string) => SCENARIOS.find((s) => s.id === scenario)?.facts.find((f) => f.id === fact)?.kind ?? "?"
 
+/** An episode graded again from what it recorded, so a fixed grader applies to an earlier run. */
+const regrade = (episode: EpisodeResult): EpisodeResult => {
+  const scenario = SCENARIOS.find((s) => s.id === episode.scenario)
+  if (scenario === undefined) return episode
+  return { ...episode, graded: grade(scenario, episode.s1?.calls ?? [], episode.s2.calls, episode.s2.extra, episode.stored1, episode.stored2) }
+}
+
 export const report = (episodes: ReadonlyArray<EpisodeResult>): string => {
-  const ok = episodes.filter((episode) => episode.error === undefined)
+  const ok = episodes.filter((episode) => episode.error === undefined).map(regrade)
   const arms = ARMS.filter((arm) => ok.some((episode) => episode.arm === arm))
   const lines: Array<string> = []
   const failed = episodes.length - ok.length
@@ -76,12 +84,14 @@ export const report = (episodes: ReadonlyArray<EpisodeResult>): string => {
     lines.push(`| ${arm} | ${cells.join(" | ")} |`)
   }
 
-  lines.push("", "Per fact, honoured in session 2:", "", `| fact | ${arms.join(" | ")} |`, `| --- | ${arms.map(() => "---").join(" | ")} |`)
+  lines.push("", "Per fact, saved in session 1 → honoured in session 2:", "", `| fact | ${arms.join(" | ")} |`, `| --- | ${arms.map(() => "---").join(" | ")} |`)
   for (const scenario of SCENARIOS)
     for (const fact of scenario.facts) {
       const cells = arms.map((arm) => {
-        const values = ok.filter((e) => e.arm === arm && e.scenario === scenario.id).map((e) => e.graded.correct[fact.id] === true)
-        return pct(values.filter(Boolean).length, values.length)
+        const group = ok.filter((e) => e.arm === arm && e.scenario === scenario.id)
+        const saved = group.filter((e) => e.graded.saved[fact.id] === true).length
+        const values = group.map((e) => e.graded.correct[fact.id] === true)
+        return `${arm === "none" ? "" : `${saved}/${group.length} → `}${pct(values.filter(Boolean).length, values.length)}`
       })
       lines.push(`| ${scenario.id}/${fact.id} (${fact.kind}) | ${cells.join(" | ")} |`)
     }

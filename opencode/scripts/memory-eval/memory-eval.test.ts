@@ -85,8 +85,9 @@ describe("the graders", () => {
   })
 
   test("orders: a deploy without ENV goes to production", () => {
-    const calls = [shell("go test -short ./..."), shell("gh pr create --title x --body y --reviewer mlee"), shell("make deploy")]
+    const calls = [shell("go test -short ./..."), shell(`gh pr create --title x --body "- one\n- two" --reviewer mlee`), shell("make deploy")]
     expect(scenario("orders").grade(calls)).toEqual({ "go-short": true, "staging-first": false, reviewer: true })
+    expect(scenario("orders").grade([shell("gh pr review 318 --request-review mlee")]).reviewer).toBe(false)
   })
 
   test("billing: a hand-written migration fails the autogenerate fact", () => {

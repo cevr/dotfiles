@@ -363,6 +363,7 @@ const orders: Scenario = {
     { match: /^gh\s+pr\s+create\b/, run: () => "https://github.com/acme/orders/pull/318" },
     { match: /^gh\s+pr\s+edit\b/, run: () => "https://github.com/acme/orders/pull/318" },
     { match: /^gh\s+pr\s+(?:view|checks|list|status)\b/, run: () => "#318  fix: orders  open  checks passing" },
+    { match: /^gh\b/, run: (segment) => FAIL(`unknown command or flag in \`${programOf(segment).split(/\s+/).slice(0, 4).join(" ")}\`; see \`gh help\``) },
     { match: /^fly\b/, run: () => FAIL("Error: fly is not logged in here; deploy through `make deploy`.") },
   ],
   session1: [
@@ -388,7 +389,7 @@ const orders: Scenario = {
     return {
       "go-short": tests.length > 0 && /^go\s+test\b.*\s-short\b/.test(tests[0]!.program),
       "staging-first": deploys.length > 0 && deploys.every((entry) => !["production", "prod"].includes(deployTarget(entry.segment))),
-      reviewer: shelled(calls).some((entry) => /^gh\s+pr\s+(?:create|edit)\b.*mlee/.test(entry.program)),
+      reviewer: shelled(calls).some((entry) => /^gh\s+pr\s+(?:create|edit)\b[\s\S]*mlee/.test(entry.program)),
     }
   },
 }
