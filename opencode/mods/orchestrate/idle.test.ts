@@ -160,7 +160,7 @@ describe("what holds the nudge back", () => {
 describe("a due batch", () => {
   const ready = (count: number, since?: number): ReadonlyArray<ReadyUnit> =>
     ["lexer", "parser", "docs"].slice(0, count).map((unit) => (since === undefined ? { run: "p5", unit } : { run: "p5", unit, since }))
-  const LAND = 'land it with rift({ action: "land", rifts: ["lexer", "parser", "docs"] }).'
+  const LAND = 'land it with rift({ action: "land", rifts: ["p5/lexer", "p5/parser", "p5/docs"] }).'
 
   test("three ready units are due at once, two are not", () =>
     run(
@@ -194,7 +194,7 @@ describe("a due batch", () => {
         Nudged.make({
           moving: [],
           landing: ready(1, T),
-          line: 'idle with a batch due (lexer ready 30 min): lexer; land it with rift({ action: "land", rifts: ["lexer"] }).',
+          line: 'idle with a batch due (lexer ready 30 min): lexer; land it with rift({ action: "land", rifts: ["p5/lexer"] }).',
         }),
       ),
     ))
@@ -212,7 +212,7 @@ describe("a due batch", () => {
         Nudged.make({
           moving: [],
           landing: [{ run: "p5", unit: "lexer", since: T + 10 * MINUTE }, { run: "p5", unit: "parser", since: T }],
-          line: 'idle with a batch due (parser ready 35 min): lexer, parser; land it with rift({ action: "land", rifts: ["lexer", "parser"] }).',
+          line: 'idle with a batch due (parser ready 35 min): lexer, parser; land it with rift({ action: "land", rifts: ["p5/lexer", "p5/parser"] }).',
         }),
       ),
     ))
@@ -247,7 +247,7 @@ describe("a due batch", () => {
       ),
       Story.when(nudge({ moving: [], ready: [slow, hot] })),
       Story.then(
-        Nudged.make({ moving: [], landing: [slow, hot], line: 'idle with a batch due (2 ready): lexer, hotfix; land it with rift({ action: "land", rifts: ["lexer", "hotfix"] }).' }),
+        Nudged.make({ moving: [], landing: [slow, hot], line: 'idle with a batch due (2 ready): lexer, hotfix; land it with rift({ action: "land", rifts: ["p5/lexer", "p5/hotfix"] }).' }),
       ),
     )
   })
@@ -258,7 +258,7 @@ describe("a due batch", () => {
       Story.given(idle),
       Story.clock(T + 10 * MINUTE),
       Story.when(nudge({ moving: [], ready: [quick] })),
-      Story.then(Nudged.make({ moving: [], landing: [quick], line: 'idle with a batch due (lexer ready 10 min): lexer; land it with rift({ action: "land", rifts: ["lexer"] }).' })),
+      Story.then(Nudged.make({ moving: [], landing: [quick], line: 'idle with a batch due (lexer ready 10 min): lexer; land it with rift({ action: "land", rifts: ["p5/lexer"] }).' })),
     )
   })
 
@@ -319,9 +319,9 @@ describe("the units and the line", () => {
     expect(cadenceOf("override: lands with hskokoro")).toBeUndefined()
   })
 
-  test("a unit's Rift is the one the orchestrator made for it, named after the unit, as the rift tool finds it by name", () => {
-    // SKILL.md, plan: `.rifts/<repo>/<unit>` on branch `<run>/<unit>`; the tool matches a name to a Rift's directory.
-    expect(riftOf({ run: "hymnapp", unit: "hskokoro" })).toBe("hskokoro")
+  test("a unit's Rift is named by its branch, which the rift tool finds whether rift or workrift made it", () => {
+    // SKILL.md, plan: branch `<run>/<unit>`; `rift create` names the Rift `<unit>`, `workrift create` names it `<run>-<unit>`.
+    expect(riftOf({ run: "hymnapp", unit: "hskokoro" })).toBe("hymnapp/hskokoro")
   })
 
   test("names the units, by run when they come from more than one, and counts past eight", () => {
@@ -340,7 +340,7 @@ describe("the units and the line", () => {
   test("the land call names every ready unit's Rift, past the eight the line lists", () => {
     const many = Array.from({ length: 9 }, (_, n) => ({ run: "r", unit: `u${n}` }))
     expect(lineOf({ moving: [], landing: { units: many, why: "9 ready" } })).toBe(
-      `idle with a batch due (9 ready): u0, u1, u2, u3, u4, u5, u6, u7 and 1 more; land it with rift({ action: "land", rifts: [${many.map((unit) => `"${unit.unit}"`).join(", ")}] }).`,
+      `idle with a batch due (9 ready): u0, u1, u2, u3, u4, u5, u6, u7 and 1 more; land it with rift({ action: "land", rifts: [${many.map((unit) => `"${unit.run}/${unit.unit}"`).join(", ")}] }).`,
     )
   })
 

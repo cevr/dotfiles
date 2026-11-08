@@ -146,11 +146,12 @@ export const batchDue = (ready: ReadonlyArray<ReadyUnit>, now: number): string |
 }
 
 /**
- * The Rift a ready unit lives in, as `rift({ action: "land" })` takes it: the
- * orchestrator makes each unit's Rift named after the unit, on branch
- * `<run>/<unit>` (SKILL.md, plan), and the tool finds a Rift by its name.
+ * The Rift a ready unit lives in, as `rift({ action: "land" })` takes it: its
+ * branch, `<run>/<unit>` (SKILL.md, plan). The tool finds a Rift by its branch,
+ * and the branch is the one name both backends share: `rift create` names the
+ * Rift after the unit, `workrift create <branch>` after the whole branch.
  */
-export const riftOf = (unit: { readonly run: string; readonly unit: string }): string => unit.unit
+export const riftOf = (unit: { readonly run: string; readonly unit: string }): string => `${unit.run}/${unit.unit}`
 
 /** What else holds the root, from the other plugins: wakes, questions to the owner, and its queue. */
 export const Holds = Schema.Struct({

@@ -470,11 +470,11 @@ idle with units in plan, implement or verify: alpha, beta; start them or name wh
 
 Units in `ready` wait for their batch (the orchestrate skill's Land a batch).
 Once the batch is due, the line says to land it, naming each unit's Rift by
-its name, the unit (the orchestrator makes `.rifts/<repo>/<unit>` on branch
-`<run>/<unit>`), which the rift tool finds:
+its branch, `<run>/<unit>`, which the rift tool finds whether `rift create`
+named the Rift `<unit>` or `workrift create` named it `<run>-<unit>`:
 
 ```
-idle with a batch due (3 ready): gamma, delta, eps; land it with rift({ action: "land", rifts: ["gamma", "delta", "eps"] }).
+idle with a batch due (3 ready): gamma, delta, eps; land it with rift({ action: "land", rifts: ["p5/gamma", "p5/delta", "p5/eps"] }).
 ```
 
 A batch is due by each ready unit's cadence: its spec's `Batch cadence` line,
