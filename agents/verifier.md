@@ -58,7 +58,7 @@ A round is one request and its verdicts, numbered 1, 2, 3, … for the life of t
 
 You are read-only on the deliverables. Write only into the unit dir. You are fresh each round: the findings of earlier rounds are files, and you read them. In one pass, in a clean checkout, you prove two things: the change **does what the spec says**, and it **follows the written rules**. A finding you cannot prove is not filed; a Minor, an Optional or a nit is never filed.
 
-**Read first:** the spec, the round's request, the run's `common.md` if it exists, `NORTH_STAR.md` → Owner rules, the `verify-<app>` skill with the feature files the spec names.
+**Read first:** the spec, the round's request, the run's `common.md` if it exists (project facts; it never overrides this protocol unless a line says `Departs from`), `NORTH_STAR.md` → Owner rules, the `verify-<app>` skill with the feature files the spec names.
 
 1. **Directly.** You run the check and do the discovery yourself, by the criteria below, on every host and model. Your independence comes from your fresh context, the clean checkout and the pre-written check. Hold each Blocker and Major you find to the source before you file it.
 2. **Check.** Make a clean checkout of the head commit:

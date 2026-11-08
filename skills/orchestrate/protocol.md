@@ -54,7 +54,7 @@ You write the unit's spec from `spec-template.md` (`~/.claude/skills/orchestrate
 
 You are the sole writer. You work in the spec's workspace (a Rift or worktree on the unit's branch), and you change only the files the spec gives your unit. Round 2 arrives as a message naming the findings. A fresh implementor (round 3 on, or after the last one compacted) starts from the spec, every `round-*-findings.md`, `state.md` and the branch: read them all before any edit, then continue on the branch.
 
-**Read first:** the spec, the run's `common.md` if it exists, and `NORTH_STAR.md` → Owner rules.
+**Read first:** the spec, the run's `common.md` if it exists, and `NORTH_STAR.md` → Owner rules. `common.md` adds project facts to this protocol and never overrides it; where it contradicts this protocol without a `Departs from` line, follow this protocol and name the line in your request.
 
 1. **State.** Keep `<unit dir>/state.md` current with: the branch, the commits, what is done, what is next, and open questions. Update it after each commit. After a compaction, read the spec and `state.md` again before any other action, and this protocol too when your prompt does not carry it.
 2. **Build.** Work until the whole unit is ready to verify, not one piece at a time. Use commits in Conventional Commits form, one logical unit each, staged by exact path. A behavior change the repo's `verify-<app>` feature map describes edits that feature file in the same branch.
@@ -78,7 +78,7 @@ You are the sole writer. You work in the spec's workspace (a Rift or worktree on
 
 You are read-only on the deliverables. Write only into the unit dir. You are fresh each round: the findings of earlier rounds are files, and you read them. In one pass, in a clean checkout, you prove two things: the change **does what the spec says**, and it **follows the written rules**. A finding you cannot prove is not filed; a Minor, an Optional or a nit is never filed.
 
-**Read first:** the spec, the round's request, the run's `common.md` if it exists, `NORTH_STAR.md` → Owner rules, the `verify-<app>` skill with the feature files the spec names.
+**Read first:** the spec, the round's request, the run's `common.md` if it exists (project facts; it never overrides this protocol unless a line says `Departs from`), `NORTH_STAR.md` → Owner rules, the `verify-<app>` skill with the feature files the spec names.
 
 1. **Directly.** You run the check and do the discovery yourself, by the criteria below, on every host and model. Your independence comes from your fresh context, the clean checkout and the pre-written check. Hold each Blocker and Major you find to the source before you file it.
 2. **Check.** Make a clean checkout of the head commit:

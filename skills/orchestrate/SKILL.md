@@ -127,6 +127,7 @@ Done when the run dir exists, you know which host column you use, and the host c
    - **Owner questions never wait in a dialog.** Put the question in Owner questions with your recommendation, and tell the user in one short message. Then end your turn, and keep the other units running.
    - **Reserved for the user:** deploy, publish, paid runs, force-push to a shared branch, non-additive changes to stored or wire formats, and anything irreversible. Push is not reserved: push once the batch gate is green.
    - **You may merge locally.**
+   - **A run's rules file holds project facts, never the skill.** `<run dir>/common.md`, when the run needs one, holds the commands, paths, flags, thread shares and owner additions the skill cannot know. It never restates or overrides a skill default: a run that must depart from one writes `Departs from <rule>: <why>`, and you offer each departure upstream as a skill change at close. When the skill changes mid-run, reconcile the file once ([`references/run-rules.md`](references/run-rules.md); on OpenCode the plugin's note says when).
    - **Carried tooling first.** A carried tooling unit that pays back inside this run (a flake triage script, a meter fix) takes the next free slot before a new feature unit, unless the user orders otherwise.
 4. **Plan file.** Write the plan as a docs file in the project, beside its plans or ledger (for example `plans/<run>-run.md`), and link it as `<run dir>/plan.md` so workers find it there. Commit it with each batch. It is the single source of truth, and you re-read it after every compaction. Move a closed section (a finished table, an earlier host's table) into a `<run>-run-archive.md` beside it, so `plan.md` holds only the live table, Decisions and Owner questions. Its first line holds the user's goal word for word, so a new session resumes from `plan.md` and the unit folders alone.
 
@@ -226,7 +227,7 @@ The end report opens with the goal from `plan.md`'s first line, word for word, a
 - the gate on main;
 - decisions taken by principle;
 - the owner questions, each with a recommendation;
-- the follow-ups;
+- the follow-ups, with each `Departs from` line of the run's rules file as a proposed skill change;
 - the Review later list;
 - the environment changes that would make the next run go better (a constrained API, a lint rule, a log, data access), and the recurring schedules worth setting up;
 - the `plan.md` path.
