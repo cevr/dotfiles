@@ -8,9 +8,8 @@
 // - A new run of a session whose prompt cache still lives (for the pool's
 //   cache life since its last request or step) stays on the cache's account:
 //   moving it would write the whole prompt again on another account, since a
-//   cache belongs to one account. It leaves only when that account is held,
-//   or has no room while another account has. Load, live sessions and pace
-//   never move it.
+//   cache belongs to one account. It leaves only when that account is held:
+//   room, load, live sessions and pace never move it.
 // - Any other new run is placed by `rankPlacement`: held accounts last,
 //   accounts at their share after those with room, then by recorded load and
 //   live sessions, and equal accounts by the soonest weekly reset.
@@ -131,19 +130,25 @@ export interface RequestCache {
  * while the session's requests follow each other closely. A session that comes
  * back after its own lifetime has passed but before the provider's has (a long
  * shell command, a wait, a resumed role) is `outlived`: its cache had expired,
- * and it would have read it at the provider's lifetime. From its next request
- * on it asks for the provider's lifetime, for as long as each request follows
- * the last within it. The request that came back still writes at the agent's
- * own: most sessions that come back once go on without another long pause, and
- * the provider's lifetime costs more to write.
+ * and it would have read it at the provider's lifetime. The request that came
+ * back writes its prompt again anyway, so it writes it for the provider's
+ * lifetime, and every request after asks for that, for as long as each follows
+ * the last within it.
+ *
+ * While the session's cache lives, a request asks for the lifetime it was
+ * written for: Anthropic keeps a cache per lifetime, so a request that asks
+ * for another reads none of it (the ledger, 2026-11: 13 of 13 requests that
+ * raised five minutes to an hour within the five minutes wrote the whole
+ * prompt again).
  */
 export const requestCache = (rules: Rules, last: Mark | undefined, declared: number | undefined, now: number): RequestCache => {
   if (declared === undefined) return {}
   if (declared >= rules.cacheLifeMs || last === undefined) return { lifeMs: declared }
   const gap = now - last.at
   if (gap >= rules.cacheLifeMs) return { lifeMs: declared }
-  if (last.outlived === true) return { lifeMs: rules.cacheLifeMs, outlived: true }
-  return gap >= declared ? { lifeMs: declared, outlived: true } : { lifeMs: declared }
+  const lastLifeMs = last.lifeMs ?? rules.cacheLifeMs
+  if (gap < lastLifeMs) return { lifeMs: lastLifeMs, ...(last.outlived === true ? { outlived: true } : {}) }
+  return { lifeMs: rules.cacheLifeMs, outlived: true }
 }
 
 /**

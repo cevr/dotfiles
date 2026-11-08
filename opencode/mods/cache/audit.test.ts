@@ -56,7 +56,9 @@ describe("a break's cause, by the line's evidence, first match wins", () => {
     ["compaction", cold(at, { cause: "compaction" })],
     ["ttl-expiry", cold(T0 + HOUR + 1, { login: "pool:two" })],
     ["login-move", cold(at, { login: "pool:two" })],
+    ["ttl-switch", cold(at, { ttlMs: 5 * MIN, cause: "first" })],
     ["restart", cold(at, { cause: "first" })],
+    ["restart", cold(at, { restored: true, change: { segment: "system[4] ¶1", offsetTokens: 4_000 } })],
     ["tool-set", cold(at, { change: { segment: "tool mcp_kernel", offsetTokens: 0 } })],
     ["system-prompt", cold(at, { change: { segment: "system[1] ¶4", offsetTokens: 3_000, head: "Today is" } })],
     ["message-edit", cold(at, { change: { segment: "messages[3] user part 0 (text)", offsetTokens: 9_000 } })],
@@ -72,7 +74,9 @@ describe("a break's cause, by the line's evidence, first match wins", () => {
 
   test("the lifetime is the previous request's: a 5-minute role expires after 5 minutes", () => {
     expect(classify(row(T0, { ttlMs: 5 * MIN }), cold(T0 + 6 * MIN))).toBe("ttl-expiry")
-    expect(classify(row(T0, { ttlMs: 5 * MIN }), cold(T0 + 4 * MIN))).toBe("dropped")
+    expect(classify(row(T0, { ttlMs: 5 * MIN }), cold(T0 + 4 * MIN, { ttlMs: 5 * MIN }))).toBe("dropped")
+    // The same request asking for the hour is a lifetime switch (the ledger, 2026-11: 13 of 13 read nothing).
+    expect(classify(row(T0, { ttlMs: 5 * MIN }), cold(T0 + 4 * MIN))).toBe("ttl-switch")
   })
 })
 

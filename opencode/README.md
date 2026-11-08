@@ -543,16 +543,22 @@ or priced step, for its agent's own `request.settings.cacheTTL` when it sets
 one, such as the roles' 5 minutes, else `cacheLifeMs`: default 5 minutes, and
 `daily` sets it from the TTL it gives Claude), its next run stays on that
 login. It leaves only
-when the login is held, or has a quota window at its share while another
-login has room. Load, live sessions and pace place only a run whose cache is
-gone.
+when the login is held: a quota window at its share does not move it, since
+the login still serves until it refuses, and a move writes the whole prompt
+again (the ledger, 2026-11-08: a session left a login at 94% of its 5-hour
+window 80 s after its last request and wrote 198k tokens again). Room, load,
+live sessions and pace place only a run whose cache is gone.
 
 An agent's own lifetime shorter than `cacheLifeMs` (the roles' 5 minutes)
 pays only while its session's requests follow each other closely. A session
 that comes back after its own lifetime but within `cacheLifeMs` (a long shell
-command, a wait, a role resumed) has outlived it: from its next request on,
-the pool gives it `cacheLifeMs` for as long as each request follows the last
-within it (`requestCache` in `accounts.ts`). The pool names that lifetime on
+command, a wait, a role resumed) has outlived it: from the request that came
+back on, which writes its prompt again anyway, the pool gives it `cacheLifeMs`
+for as long as each request follows the last within it (`requestCache` in
+`accounts.ts`). While a cache lives, a request asks for the lifetime it was
+written for: Anthropic keeps a cache per lifetime, and a request that raised
+five minutes to an hour within the five minutes read none of it (13 of 13 in
+the ledger, 2026-11). The pool names that lifetime on
 the request (`x-opencode-cache-ttl: 1h`), and the auth plugin strips the
 header and writes it on every cache breakpoint of the body. A session's cache
 mark is kept at least `cacheLifeMs` (`markKept`), so the pool knows the
@@ -586,7 +592,10 @@ The model, in the domain files at `mods/pool`'s root:
 - Contracts: the integration's logins and a gent store's (`Logins`), the
   auth plugin's quota RPC (`Quota`) and the ledger in the plugin's storage
   (`Ledger`), each a `Context.Service` in `service.ts`, with what every
-  implementation owes in `laws.ts`. `opencode/` implements them over the
+  implementation owes in `laws.ts`. OpenCode runs a copy of the plugin per
+  location on one storage, so a cache mark one copy prunes is removed only
+  while the stored mark is the one it saw expire: the copy serving the session
+  may have written a newer one, which a restart reads back. `opencode/` implements them over the
   plugin's integration, RPC and storage; `memory/` holds the in-memory
   ones the seam tests use. `gent/store.ts` reads and refreshes gent's
   store in place, under gent's lock, byte-compatible with gent. It
@@ -1054,7 +1063,11 @@ changed at system[1] ¶4, 3k tokens in` or `the cache lost an unchanged
 prefix`; without the server half the TUI's own causes stand.
 
 Each judged request is a line of `~/.cache/opencode-cache-ledger/ledger.jsonl`
-(options: `dir`, `host`). `bun scripts/cache-ledger.ts [--since 24h] [--host
+(options: `dir`, `host`), and the session's newest judged request, its
+fingerprint with it, is kept beside it in `last/<sessionID>.json`: a copy of
+the plugin that has judged nothing of a session (after a restart, or in
+another location) judges its first request against that one, and the line
+says `restored`, so a restart names the segment it changed instead of `first`. `bun scripts/cache-ledger.ts [--since 24h] [--host
 <name>] [--top 10] [--json] [--file <ledger.jsonl>]...` sums it: cache writes
 by cause, by first changed segment, the unexplained part (`login`, `prefix`,
 `unchanged`) per host and day, and the costliest session-hours.
@@ -1069,8 +1082,10 @@ wasted writes. A break is a request whose read fell against the session's
 request before by more than the 1,024-token floor and a fifth of the prompt
 both share, found from the tokens, classified first match wins: `model-switch`,
 `compaction`, `ttl-expiry` (a gap past the previous request's lifetime),
-`login-move`, `restart` (the server judged it first although the ledger holds
-an earlier request), `tool-set`, `system-prompt` or `message-edit` (by the
+`login-move`, `ttl-switch` (it asked for another lifetime than the request
+before: Anthropic keeps a cache per lifetime), `restart` (the server judged it
+first although the ledger holds an earlier request, or against a `restored`
+one, with the segment that changed), `tool-set`, `system-prompt` or `message-edit` (by the
 first changed segment), else `dropped`. A session's first request is a cold
 start: `subagent-first` on an agent outside `--primary`, else
 `session-start`. It ranks the causes and sessions by the tokens written

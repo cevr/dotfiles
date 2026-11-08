@@ -187,6 +187,7 @@ export const judgeRules = (facts: Facts, audit: Audit): ReadonlyArray<Rule> => {
             file: FILES.roleTtl,
             detail: `lifetimes under 1h (roles: ${facts.roleCacheTtl ?? "?"}) save ${formatTokens(trade.extraAtHour - trade.savedAtHour)} input-token equivalents over 1h (measured)`,
           },
+      ...evidence(audit, "ttl-switch", FILES.roleTtl, "requests that asked for another lifetime than their live cache's"),
     ]),
   ]
 }

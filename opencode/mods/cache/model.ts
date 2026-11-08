@@ -6,7 +6,10 @@
 // - A request goes out (`sent`): its fingerprint waits for its usage. A retry
 //   replaces it: the last request is the one the step was billed for.
 // - The step ends (`stepEnded`, with its assistant message and usage): the
-//   waiting request is judged and becomes the session's previous one.
+//   waiting request is judged and becomes the session's previous one, kept in
+//   the ledger too (`RequestLog.keep`). A session this copy judged nothing of
+//   is judged against the request the ledger kept, so the first request after
+//   a restart names what changed (its line `restored`) instead of `first`.
 // - A compaction ends (`compacted`, with its summary request's usage): the
 //   waiting compaction request is judged, and the next request is marked as
 //   after a compaction.
@@ -18,9 +21,9 @@
 // only the copy holding a waiting request writes a line, so each request gets
 // one. A ledger that cannot be written is logged and skipped; the TUI still
 // gets the step's cause.
-import { Clock, Context, Effect, Layer } from "effect"
+import { Clock, Context, Effect, Layer, Option } from "effect"
 import { judge, lineOf, type Previous, type Sent, type SessionSteps, type StepCause, type Tokens } from "./request-log.ts"
-import { RequestLog } from "./service.ts"
+import { type LedgerUnavailable, RequestLog } from "./service.ts"
 
 /** How many sessions, and steps of each, are kept for the RPC; the oldest go first. */
 export const KEPT_SESSIONS = 500
@@ -43,6 +46,8 @@ interface SessionState {
   pending?: Sent
   previous?: Previous
   compacted: boolean
+  /** The ledger's kept request was looked up for this session (once per copy). */
+  looked: boolean
   steps: Array<StepCause>
 }
 
@@ -55,7 +60,7 @@ export const layer = (host: string) =>
       const sessions = new Map<string, SessionState>()
       const stateOf = (sessionID: string): SessionState => {
         const found = sessions.get(sessionID)
-        const state: SessionState = found ?? { compacted: false, steps: [] }
+        const state: SessionState = found ?? { compacted: false, looked: false, steps: [] }
         sessions.delete(sessionID)
         sessions.set(sessionID, state)
         if (sessions.size > KEPT_SESSIONS) {
@@ -65,11 +70,25 @@ export const layer = (host: string) =>
         return state
       }
 
+      const unwritten = (error: LedgerUnavailable) => Effect.logWarning(`cache ledger: ${error.message}`)
+
+      /** The request the ledger kept for a session this copy has judged nothing of: the last one another process sent. */
+      const restore = Effect.fn("Recorder.restore")(function* (sessionID: string, state: SessionState) {
+        if (state.previous !== undefined || state.looked) return false
+        state.looked = true
+        const kept = yield* log.last(sessionID).pipe(Effect.catchTag("LedgerUnavailable", (error) => unwritten(error).pipe(Effect.as(Option.none()))))
+        if (Option.isNone(kept)) return false
+        state.previous = { sent: kept.value.sent, tokens: kept.value.tokens }
+        state.compacted = kept.value.compacted
+        return true
+      })
+
       const settle = Effect.fn("Recorder.settle")(function* (sessionID: string, messageID: string | undefined, tokens: Tokens) {
         const state = sessions.get(sessionID)
         const sent = state?.pending
         if (state === undefined || sent === undefined) return
         delete state.pending
+        const restored = yield* restore(sessionID, state)
         const judgement = judge(state.previous, sent, tokens, state.compacted)
         state.previous = { sent, tokens }
         state.compacted = sent.kind === "compaction"
@@ -78,8 +97,9 @@ export const layer = (host: string) =>
           if (state.steps.length > KEPT_STEPS) state.steps.splice(0, state.steps.length - KEPT_STEPS)
         }
         yield* log
-          .append(lineOf({ host, sessionID, ...(messageID === undefined ? {} : { messageID }), sent, tokens, judgement }))
-          .pipe(Effect.catchTag("LedgerUnavailable", (error) => Effect.logWarning(`cache ledger: ${error.message}`)))
+          .append(lineOf({ host, sessionID, ...(messageID === undefined ? {} : { messageID }), sent, tokens, judgement, restored }))
+          .pipe(Effect.catchTag("LedgerUnavailable", unwritten))
+        yield* log.keep(sessionID, { sent, tokens, compacted: state.compacted }).pipe(Effect.catchTag("LedgerUnavailable", unwritten))
       })
 
       return Recorder.of({

@@ -1,8 +1,8 @@
 // What every implementation of the RequestLog contract owes, as a shared test
 // suite. Each implementation's test beside it runs the suite over its Layer.
 import { describe, expect, test } from "bun:test"
-import { Effect, type Layer } from "effect"
-import type { LedgerLine } from "./request-log.ts"
+import { Effect, type Layer, Option } from "effect"
+import type { Kept, LedgerLine } from "./request-log.ts"
 import { RequestLog } from "./service.ts"
 
 const line = (at: number, cause: LedgerLine["cause"]): LedgerLine => ({
@@ -40,5 +40,36 @@ export const requestLogLaws = (name: string, make: () => Layer.Layer<RequestLog>
         }),
       )
       expect(read).toEqual(lines)
+    })
+
+    test("a session's kept request reads back whole, the newest in place of the one before; another session's is none", async () => {
+      const kept = (at: number): Kept => ({
+        sent: {
+          at,
+          kind: "primary",
+          agent: "build",
+          model: "anthropic/claude-x",
+          login: "cred-a",
+          ttlMs: 3_600_000,
+          segments: [
+            { label: "tool shell", hash: "h1", chars: 40 },
+            { label: "system[1] ¶1", hash: "h2", chars: 120, head: "Follow the rules." },
+          ],
+        },
+        tokens: { prompt: 10_000, read: 9_000, write: 1_000 },
+        compacted: false,
+      })
+      const [none, newest, other] = await run(
+        Effect.gen(function* () {
+          const log = yield* RequestLog
+          const none = yield* log.last("ses_1")
+          yield* log.keep("ses_1", kept(1))
+          yield* log.keep("ses_1", kept(2))
+          return [none, yield* log.last("ses_1"), yield* log.last("ses_2")] as const
+        }),
+      )
+      expect(Option.isNone(none)).toBe(true)
+      expect(Option.getOrUndefined(newest)).toEqual(kept(2))
+      expect(Option.isNone(other)).toBe(true)
     })
   })
