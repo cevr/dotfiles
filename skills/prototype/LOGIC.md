@@ -51,7 +51,7 @@ Keep it beautiful but restrained: clean typography, generous spacing, one accent
 
 ### 4. Play every walkthrough yourself
 
-Before hand-over, open the file with `agent-browser` and play each guided walkthrough to its end, then free-play the actions in the orders a hurried user would try. Save the state after each step, and list every state that surprised you: an action that should be impossible, a state with no way out, two paths that end in different states for the same intent. Fix a broken walkthrough; keep a surprising state, since it is the finding.
+Before hand-over, serve the file over HTTP (`bunx serve <dir>`; browse refuses `file:` URLs), open it with the **browse** skill and play each guided walkthrough to its end, then free-play the actions in the orders a hurried user would try. Save the state after each step, and list every state that surprised you: an action that should be impossible, a state with no way out, two paths that end in different states for the same intent. Fix a broken walkthrough; keep a surprising state, since it is the finding.
 
 ### 5. Hand it over
 
