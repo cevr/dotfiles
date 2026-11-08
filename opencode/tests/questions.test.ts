@@ -74,27 +74,25 @@ describe.skipIf(!fork)("background questions", () => {
       // The root's tray counts its own three, from two asks, and its subagent's one, oldest first.
       expect(lines(read("tray.txt"))).toContain("? 4 open questions · Cache store, Old endpoint, Log format, Test runner · shift+← /answer")
 
-      // /answer: the host's question form, a tab per question of the root's two asks, the assumed choice first, Dismiss last.
-      expect(form(read("form.txt")).slice(0, 9)).toEqual([
+      // /answer: the host's question form, a tab per question of the root's two asks, the assumed choice first, no Dismiss
+      // choice; the footer offers ctrl+x dismiss.
+      expect(form(read("form.txt")).slice(0, 8)).toEqual([
         "Background questions",
         "Cache store  Old endpoint  Log format  Submit",
         "Which database should the cache use?",
         "1. SQLite",
         "assumed · one file, no server",
         "2. Redis",
-        "3. Dismiss · keep the assumption",
-        "4. Type your own answer",
-        "⇆ tab  ↑↓ select  enter confirm  n notes  esc dismiss",
+        "3. Type your own answer",
+        "⇆ tab  ↑↓ select  enter confirm  n notes  ctrl+x dismiss  esc dismiss",
       ])
-      // Typed on the row under Dismiss.
-      expect(form(read("typed.txt")).slice(2, 7)).toEqual([
-        "Should the old /v1 endpoint stay for a release?",
-        "1. Keep it",
-        "assumed",
-        "2. Dismiss · keep the assumption",
-        "3. Drop it after this release",
-      ])
-      // The submit tab: two answered, the third left blank.
+      expect(form(read("form.txt")).join("\n")).not.toContain("Dismiss · keep the assumption")
+      // Typed on the row under the assumption.
+      expect(form(read("typed.txt")).slice(2, 6)).toEqual(["Should the old /v1 endpoint stay for a release?", "1. Keep it", "assumed", "2. Drop it after this release"])
+      // ctrl+x on the third: on to the submit tab, which lists it dismissed; back on its tab it shows dismissed.
+      expect(form(read("marked.txt"))).toContain("Log format: dismissed")
+      expect(form(read("marked-tab.txt"))).toEqual(expect.arrayContaining(["Should the logs be JSON?", "✓ dismissed · ctrl+x again undoes"]))
+      // The submit tab: two answered, the third left blank (ctrl+x again undid its dismissal).
       expect(form(read("review.txt"))).toEqual(
         expect.arrayContaining(["Cache store: Redis", "Old endpoint: Drop it after this release", "Log format: (not answered)", "⇆ tab  enter submit  esc dismiss"]),
       )
@@ -114,16 +112,17 @@ describe.skipIf(!fork)("background questions", () => {
       const done = lines(read("done.txt"))
       expect(done).toContain("? 1 open question · Test runner · assuming bun test · shift+← /answer")
       expect(done).toContain("┃ typed-after-answer")
-      // Dismiss, the subagent's form's last choice: its question closes, the tray goes, and nobody is sent a message.
-      expect(form(read("dismiss.txt")).slice(0, 6)).toEqual([
+      // ctrl+x on the subagent's one-question form: its question closes, the tray goes, and nobody is sent a message.
+      expect(form(read("dismiss.txt")).slice(0, 7)).toEqual([
         "Background questions",
         "Asked by general",
         "Which test runner should the suite use?",
         "1. bun test",
         "assumed",
         "2. vitest",
+        "3. Type your own answer",
       ])
-      expect(form(read("dismiss.txt"))).toContain("3. Dismiss · keep the assumption")
+      expect(form(read("dismiss.txt")).join("\n")).toContain("ctrl+x dismiss")
       expect(lines(read("dismissed.txt")).some((line) => line.includes("open question"))).toBe(false)
 
       const requests: ReadonlyArray<Request> = JSON.parse(read("requests.json"))
@@ -141,7 +140,7 @@ describe.skipIf(!fork)("background questions", () => {
       expect(asked.some((request) => request.includes("- q1: Which test runner should the suite use? · assuming bun test"))).toBe(true)
       expect(asked.some((request) => request.includes("background question"))).toBe(false)
 
-      // Two answering submits, two synthetic messages in the root, their source `questions` (the Dismiss submit sent none); a kernel cell leaves no ask_user_async part.
+      // Two answering submits, two synthetic messages in the root, their source `questions` (the ctrl+x dismiss sent none); a kernel cell leaves no ask_user_async part.
       const sessions: ReadonlyArray<Session> = JSON.parse(read("transcripts.json"))
       const rootSession = sessions.find((session) => session.parentID === undefined || session.parentID === null)
       expect(rootSession?.messages.filter((message) => message.type === "synthetic" && message.metadata?.source === "questions")).toHaveLength(2)

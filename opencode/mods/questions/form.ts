@@ -3,8 +3,8 @@
 // choices, a line to type an answer of one's own, one submit). The TUI opens
 // it through the host's `session.form.create`; the server reads its reply off
 // the host's `form.replied` event and records every answer given as one
-// message. A question left blank stays open; one answered with the last
-// choice, Dismiss, closes on its assumption.
+// message. A question left blank stays open; one dismissed with ctrl+x (the
+// form's one action) closes on its assumption.
 //
 // The form is the host's, so it is told apart by its field keys: each is
 // `ask_user_async:<question id>`, a prefix no host form uses.
@@ -19,12 +19,23 @@ export const TITLE = "Background questions"
 export const ASSUMED = "assumed"
 /** How much of the question a tab's label keeps when it has no header. */
 export const TAB = 24
-/** The last choice of every tab: close the question and keep working on the assumption. */
-export const DISMISS = "Dismiss · keep the assumption"
-/** What the form replies when Dismiss is picked: a value no typed answer is. */
+/** What the form replies for a dismissed question: a value no typed answer is. */
 export const DISMISS_VALUE = `${KEY_PREFIX}dismiss`
-/** The host form sends an option chosen with a note as `<option> (note: <note>)`. */
-const NOTED_DISMISS = new RegExp(`^${DISMISS_VALUE} \\(note: ([\\s\\S]*)\\)$`)
+
+/** A host form action: a key that answers the question on screen with `value` (Form.Action in the fork). */
+export interface FormAction {
+  readonly key: string
+  readonly label: string
+  readonly value: string
+  readonly mark?: string
+}
+
+/**
+ * The form's one action: ctrl+x dismisses the question on screen, keeping the
+ * assumption, and moves to the next; ctrl+x again on it undoes that. The tab
+ * and the Submit tab show it as dismissed until the submit.
+ */
+export const DISMISS: FormAction = { key: "ctrl+x", label: "dismiss", value: DISMISS_VALUE, mark: "dismissed" }
 
 /** A host form option. */
 export interface FormOption {
@@ -47,6 +58,7 @@ export interface FormField {
 export interface FormInput {
   readonly title: string
   readonly metadata: { readonly source: "questions"; readonly message?: string }
+  readonly actions: ReadonlyArray<FormAction>
   readonly fields: readonly [FormField, ...Array<FormField>]
 }
 
@@ -60,8 +72,7 @@ const option = (label: string, description: string | undefined): FormOption => (
  * The question as a field: its choices with the assumed one first (where the
  * built-in tool puts its recommended choice, and where the cursor starts),
  * marked `assumed`; with no choice naming the assumption, the assumption is a
- * choice of its own at the top. Dismiss is the last choice, before the host's
- * own "Type your own answer".
+ * choice of its own at the top. The host adds "Type your own answer" last.
  */
 export const fieldOf = (question: Question): FormField => {
   const choices = question.options ?? []
@@ -75,11 +86,7 @@ export const fieldOf = (question: Question): FormField => {
     type: "string",
     title: question.header ?? excerpt(question.question, TAB),
     description: question.question,
-    options: [
-      first,
-      ...choices.filter((choice) => choice !== assumed).map((choice) => option(choice.label, choice.description)),
-      { value: DISMISS_VALUE, label: DISMISS },
-    ],
+    options: [first, ...choices.filter((choice) => choice !== assumed).map((choice) => option(choice.label, choice.description))],
     custom: true,
   }
 }
@@ -91,6 +98,7 @@ export const formOf = (questions: ReadonlyArray<Question>, from?: string): FormI
   return {
     title: TITLE,
     metadata: { source: "questions", ...(from === undefined ? {} : { message: `Asked by ${from}` }) },
+    actions: [DISMISS],
     fields: [fieldOf(first), ...rest.map(fieldOf)],
   }
 }
@@ -107,9 +115,8 @@ export interface FormReply {
 
 /**
  * What a form's reply gives, in its keys' order, when every key is ours; a
- * blank one is left out. Dismiss picked alone dismisses; Dismiss picked with a
- * note keeps the assumption and sends the note, so it is an answer. None when
- * the reply is another form's.
+ * blank one is left out, and one the dismiss action answered is dismissed.
+ * None when the reply is another form's.
  */
 export const replyOf = (answer: Readonly<Record<string, unknown>>): FormReply | undefined => {
   const keys = Object.keys(answer)
@@ -121,14 +128,8 @@ export const replyOf = (answer: Readonly<Record<string, unknown>>): FormReply | 
     const value = answer[key]
     const text = (Array.isArray(value) ? value.map(String).join(", ") : value === undefined || value === null ? "" : String(value)).trim()
     if (text === "") continue
-    if (text === DISMISS_VALUE) {
-      dismissed.push(id)
-      continue
-    }
-    const note = NOTED_DISMISS.exec(text)?.[1]?.trim()
-    if (note === undefined) answers.push({ id, answer: text })
-    else if (note === "") dismissed.push(id)
-    else answers.push({ id, answer: note, keep: true })
+    if (text === DISMISS_VALUE) dismissed.push(id)
+    else answers.push({ id, answer: text })
   }
   return { answers, dismissed }
 }

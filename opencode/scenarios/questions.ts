@@ -12,16 +12,19 @@
 // opens the forms again: the root's left-over question, which the user
 // answers with its assumption (its own letter), and the subagent's, closed
 // again with Esc. Last, shift+← opens the subagent's form once more and the
-// user picks Dismiss: the question closes, the tray goes, and nothing is sent.
+// user presses ctrl+x (dismiss): the question closes, the tray goes, and
+// nothing is sent. On the root's form, ctrl+x on the third tab marks it
+// dismissed, and ctrl+x again there undoes it before the submit.
 // Run: OPENCODE_DEV=<opencode checkout> SCENARIO_OUT=out QUESTIONS_VIA=kernel bunx opencode-drive run scenarios/questions.ts
 //
 // It writes, under SCENARIO_OUT, `questions-<via>-<name>.txt` for the frames
 // `tray` (four open), `form` (the form on the first question), `moved` (the
-// cursor on Redis), `typed` (an answer typed on the second), `review` (the
-// submit tab), `answered` (the root's letter and the tray after), `again` (the
-// left-over question's form), `subagent` (the subagent's form), `done`
-// (after Esc), `dismiss` (Dismiss highlighted on the subagent's form) and
-// `dismissed` (after it, no tray); `-timeout.txt` when a wait times out; `-requests.json` (each
+// cursor on Redis), `typed` (an answer typed on the second), `marked` (the
+// third dismissed with ctrl+x, on the Submit tab), `marked-tab` (back on the
+// third: dismissed), `review` (the submit tab, the third undone), `answered`
+// (the root's letter and the tray after), `again` (the left-over question's
+// form), `subagent` (the subagent's form), `done` (after Esc), `dismiss` (the
+// subagent's form before ctrl+x) and `dismissed` (after it, no tray); `-timeout.txt` when a wait times out; `-requests.json` (each
 // model request, by the session it came from) and `-transcripts.json`.
 import { Deferred, Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
@@ -154,8 +157,7 @@ export default OpenCodeDriver.use(
       yield* keep("moved")
       yield* ui.press("return")
       yield* until((frame) => frame.includes("Should the old /v1 endpoint stay for a release?"))
-      // The second: an answer of one's own, on the row under Dismiss.
-      yield* ui.press("down")
+      // The second: an answer of one's own, on the row under the assumption.
       yield* ui.press("down")
       yield* ui.press("return")
       yield* ui.type("Drop it after this release")
@@ -163,6 +165,15 @@ export default OpenCodeDriver.use(
       yield* keep("typed")
       yield* ui.press("return")
       yield* until((frame) => frame.includes("Should the logs be JSON?"))
+      // The third: ctrl+x dismisses it and moves on to the submit tab; back on it, ctrl+x again undoes it.
+      yield* ui.press("x", { ctrl: true })
+      yield* until((frame) => frame.includes("Log format: dismissed"))
+      yield* keep("marked")
+      yield* ui.press("tab", { shift: true })
+      yield* until((frame) => frame.includes("✓ dismissed"))
+      yield* keep("marked-tab")
+      yield* ui.press("x", { ctrl: true })
+      yield* until((frame) => !frame.includes("✓ dismissed"))
       // The third stays blank: on to the submit tab.
       yield* ui.press("tab")
       yield* until((frame) => frame.includes("(not answered)"))
@@ -194,15 +205,13 @@ export default OpenCodeDriver.use(
       yield* until((frame) => frame.includes("typed-after-answer"))
       yield* keep("done")
 
-      // The subagent's question, dismissed: the composer emptied, shift+← opens its form, Dismiss is picked.
+      // The subagent's question, dismissed: the composer emptied, shift+← opens its form, ctrl+x dismisses it.
       for (let left = "typed-after-answer".length; left > 0; left--) yield* ui.press("backspace")
       yield* until((frame) => !frame.includes("typed-after-answer"))
       yield* ui.press("left", { shift: true })
       yield* until((frame) => frame.includes("Which test runner should the suite use?"))
-      yield* ui.press("down")
-      yield* ui.press("down")
       yield* keep("dismiss")
-      yield* ui.press("return")
+      yield* ui.press("x", { ctrl: true })
       yield* until((frame) => !frame.includes("Which test runner should the suite use?") && !frame.includes("open question"))
       yield* keep("dismissed")
       yield* dump

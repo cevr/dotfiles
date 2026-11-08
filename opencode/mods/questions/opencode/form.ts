@@ -65,7 +65,8 @@ export const openForms = async (host: FormHost, screen: string, questions: Reado
 /** The host's forms through the TUI plugin context. */
 export const fromContext = (ctx: Plugin.Context): FormHost => ({
   pending: (sessionID) => ctx.data.session.form.list(sessionID) ?? [],
-  create: (sessionID, input) => ctx.client.session.form.create({ sessionID, title: input.title, metadata: { ...input.metadata }, fields: input.fields }),
+  create: (sessionID, input) =>
+    ctx.client.session.form.create({ sessionID, title: input.title, metadata: { ...input.metadata }, actions: input.actions, fields: input.fields }),
   asker: (sessionID) => {
     const session = ctx.data.session.get(sessionID)
     return session?.agent ?? session?.title ?? sessionID

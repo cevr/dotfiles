@@ -15,8 +15,8 @@
  *   questions (`@dotfiles/opencode-questions/form`); its submit comes back as
  *   the host's `form.replied` event, and every answer it gives arrives in the
  *   asking session as one synthetic steer message that wakes it when idle.
- *   Each tab's last choice dismisses its question: beside answers the message
- *   names it; alone, nothing is sent.
+ *   ctrl+x on a tab dismisses its question (the form's one action): beside
+ *   answers the message names it; alone, nothing is sent.
  *   Answers recorded but not delivered go with the session's next answer, and
  *   when the plugin starts.
  * - A deleted session's questions go.

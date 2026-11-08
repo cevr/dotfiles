@@ -1750,26 +1750,32 @@ Which database should the cache use?
 1. SQLite
    assumed · one file, no server
 2. Redis
-3. Dismiss · keep the assumption
-4. Type your own answer
-⇆ tab  ↑↓ select  enter confirm  n notes  esc dismiss
+3. Type your own answer
+⇆ tab  ↑↓ select  enter confirm  n notes  ctrl+x dismiss  esc dismiss
 ```
 
 Each question is a tab; its choices come with the assumed one first, marked
-`assumed` (a choice of its own when no choice names it), then `Dismiss · keep
-the assumption`, and the last row types an answer of your own. Answer some,
-dismiss some, leave others blank, and submit once on the Submit tab (a form
-of one question submits on Enter). Every answer given goes to the asking
-session as one message, which names the questions dismissed beside them
-(`q3 dismissed: your assumption stands (…)`); a submit that only dismisses
-closes those questions and sends nothing, since the assumption already stands
-and a message would wake an idle agent for nothing. Dismiss picked with a
-note (`n`) is an answer: the assumption with the note, which the agent reads.
-A blank question stays open, and Esc closes the form with all of them open.
-The form is the host's: its submit is the host's `form.replied` event, which
-the server plugin reads (the form's field keys are `ask_user_async:<id>`, and
-Dismiss replies `ask_user_async:dismiss`, `form.ts`). The RPC's `dismiss`
-drops one question the same silent way.
+`assumed` (a choice of its own when no choice names it), and the last row
+types an answer of your own. ctrl+x on a tab dismisses its question, keeping
+the assumption, and moves to the next tab; until the submit the tab shows
+`✓ dismissed · ctrl+x again undoes` and the Submit tab lists it as
+`dismissed`, and ctrl+x on it again undoes it. On a form of one question
+ctrl+x dismisses at once. (`esc dismiss` is the host's: it closes the form.)
+Answer some, dismiss some, leave others blank, and submit once on the Submit
+tab (a form of one question submits on Enter). Every answer given goes to the
+asking session as one message, which names the questions dismissed beside
+them (`q3 dismissed: your assumption stands (…)`); a submit that only
+dismisses closes those questions and sends nothing, since the assumption
+already stands and a message would wake an idle agent for nothing. To keep the
+assumption and say something about it, pick the assumed choice with a note
+(`n`): that is an answer, which the agent reads. A blank question stays open,
+and Esc closes the form with all of them open. The form is the host's: its
+submit is the host's `form.replied` event, which the server plugin reads (the
+form's field keys are `ask_user_async:<id>`). Dismissing is a form action,
+the fork's generic `Form.Action` (`key`, footer `label`, `value`, `mark`):
+ctrl+x answers the tab with `ask_user_async:dismiss` (`form.ts`), and inside
+the form it takes the key before the leader (ctrl+x is the default leader).
+The RPC's `dismiss` drops one question the same silent way.
 
 The answers of one submit go to the session that asked as one synthetic user
 message, steered, so a running session reads it at its next step and an idle

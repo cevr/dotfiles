@@ -197,7 +197,7 @@ describe("answering", () => {
       }),
     ))
 
-  test("the form's Dismiss alone closes the question and sends nothing; Dismiss with a note sends the note on the assumption", () =>
+  test("the form's dismiss (ctrl+x) alone closes the question and sends nothing; the assumed choice with a note sends the note on it", () =>
     scenario(
       Effect.gen(function* () {
         const plugin = yield* start()
@@ -210,7 +210,7 @@ describe("answering", () => {
         )
         expect((yield* plugin.open("ses_root")).map((question) => question.id)).toEqual(["q2"])
         expect(plugin.inbox("ses_root")).toEqual([])
-        yield* plugin.submit("ses_root", { "ask_user_async:q2": "ask_user_async:dismiss (note: drop it next release)" })
+        yield* plugin.submit("ses_root", { "ask_user_async:q2": "yes (note: drop it next release)" })
         yield* plugin.received("ses_root", 1)
         expect(plugin.inbox("ses_root").map((letter) => letter.text.split("\n").slice(-2))).toEqual([
           ["A: yes (note: drop it next release)", "This is what you assumed: carry on."],
