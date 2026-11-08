@@ -589,7 +589,10 @@ The model, in the domain files at `mods/pool`'s root:
 - Contracts: the integration's logins and a gent store's (`Logins`), the
   auth plugin's quota RPC (`Quota`) and the ledger in the plugin's storage
   (`Ledger`), each a `Context.Service` in `service.ts`, with what every
-  implementation owes in `laws.ts`. `opencode/` implements them over the
+  implementation owes in `laws.ts`. OpenCode runs a copy of the plugin per
+  location on one storage, so a cache mark one copy prunes is removed only
+  while the stored mark is the one it saw expire: the copy serving the session
+  may have written a newer one, which a restart reads back. `opencode/` implements them over the
   plugin's integration, RPC and storage; `memory/` holds the in-memory
   ones the seam tests use. `gent/store.ts` reads and refreshes gent's
   store in place, under gent's lock, byte-compatible with gent. It

@@ -346,7 +346,7 @@ describe("a session whose agent keeps a shorter cache lifetime than the provider
         Story.then(LedgerPruned.make({ steps: [], holds: [], runs: ["s1"], caches: [] })),
         Story.clock(T0 + HOUR),
         Story.when(PruneLedger.make({})),
-        Story.then(LedgerPruned.make({ steps: [], holds: [], runs: [], caches: ["s1"] })),
+        Story.then(LedgerPruned.make({ steps: [], holds: [], runs: [], caches: [{ sessionID: "s1", at: T0 }] })),
       ),
     ))
 })
@@ -379,7 +379,7 @@ describe("a restored pool", () => {
         accounts("a", "b"),
         Story.clock(T0 + CACHE_LIFE_MS),
         Story.when(PruneLedger.make({})),
-        Story.then(LedgerPruned.make({ steps: [], holds: [], runs: [], caches: ["s1", "s2"] })),
+        Story.then(LedgerPruned.make({ steps: [], holds: [], runs: [], caches: [{ sessionID: "s1", at: T0 }, { sessionID: "s2", at: T0 }] })),
         ...placed("s1", "b", T0 + CACHE_LIFE_MS),
       ),
     ))
@@ -498,7 +498,7 @@ describe("the ledger is pruned", () => {
       Story.clock(T0 + WINDOW_MS),
       Story.when(PruneLedger.make({})),
       Story.then(
-        LedgerPruned.make({ steps: [{ at: T0, sessionID: "s1", credentialID: "a", cost: 1 }], holds: ["a"], runs: ["s1"], caches: ["s1"] }),
+        LedgerPruned.make({ steps: [{ at: T0, sessionID: "s1", credentialID: "a", cost: 1 }], holds: ["a"], runs: ["s1"], caches: [{ sessionID: "s1", at: T0 }] }),
       ),
       Story.when(PruneLedger.make({})),
       Story.then(),

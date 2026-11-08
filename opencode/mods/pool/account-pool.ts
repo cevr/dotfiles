@@ -325,8 +325,12 @@ export const LedgerPruned = Schema.TaggedStruct("LedgerPruned", {
   holds: Schema.Array(Schema.String),
   /** Sessions whose pin has gone idle. */
   runs: Schema.Array(Schema.String),
-  /** Sessions whose cache mark is no longer kept. */
-  caches: Schema.Array(Schema.String),
+  /**
+   * Sessions whose cache mark is no longer kept, each with the time of the mark
+   * that expired: another copy of the plugin (one per location, on one ledger)
+   * may hold a newer mark of the session, which the ledger keeps.
+   */
+  caches: Schema.Array(Schema.Struct({ sessionID: Schema.String, at: Schema.Number })),
 })
 export interface LedgerPruned extends Schema.Schema.Type<typeof LedgerPruned> {}
 
@@ -344,7 +348,7 @@ const pruneLedger = (
   const steps = state.steps.filter((step) => now - step.at >= WINDOW_MS)
   const holds = Object.entries(state.holds).flatMap(([credentialID, hold]) => (hold.until > now ? [] : [credentialID]))
   const runs = Object.entries(state.runs).flatMap(([sessionID, mark]) => (now - mark.at >= PIN_IDLE_MS ? [sessionID] : []))
-  const caches = Object.entries(state.recent).flatMap(([sessionID, mark]) => (markKept(rules, mark, now) ? [] : [sessionID]))
+  const caches = Object.entries(state.recent).flatMap(([sessionID, mark]) => (markKept(rules, mark, now) ? [] : [{ sessionID, at: mark.at }]))
   if (steps.length + holds.length + runs.length + caches.length === 0) return Effect.succeed([])
   return Effect.succeed([LedgerPruned.make({ steps, holds, runs, caches })])
 }
@@ -433,7 +437,10 @@ export const AccountPool = (rules: Rules): Decider<AccountPoolState, Command, Ev
           steps: state.steps.filter((step) => !pruned.has(stepIdentity(step))),
           holds: without(state.holds, event.holds),
           runs: without(state.runs, event.runs),
-          recent: without(state.recent, event.caches),
+          recent: without(
+            state.recent,
+            event.caches.map((cache) => cache.sessionID),
+          ),
         }
       }
     }

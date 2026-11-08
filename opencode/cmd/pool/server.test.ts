@@ -491,6 +491,29 @@ describe("a session's cache", () => {
       }),
     ))
 
+  // OpenCode runs a copy of the plugin per location, all on one storage. The ledger, 2026-11-08 02:17: after a
+  // restart two build sessions 50 minutes into their hour's cache moved to another login and wrote 115k and
+  // 138k tokens again; another location's copy, whose view of them was its start's, had pruned their marks.
+  test("survives a restart after another location's copy swept its older view of the session", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        const here = yield* start({ sweepMinutes: 0, cacheLifeMs: HOUR }, state)
+        yield* loaded(here)
+        // Another location's copy starts and reads the marks as they are now.
+        yield* start({ sweepMinutes: 10, cacheLifeMs: HOUR }, state)
+        // s1 goes on here for 50 minutes.
+        yield* TestClock.adjust(50 * MINUTE)
+        expect(yield* here.request("s1")).toBe("cred-a")
+        yield* here.emit({ type: "session.step.ended", data: { sessionID: "s1", cost: 1 } })
+        yield* here.idle("s1")
+        // The other copy sweeps past the hour of its own view of s1.
+        yield* TestClock.adjust(20 * MINUTE)
+        const next = yield* start({ sweepMinutes: 0, cacheLifeMs: HOUR }, state)
+        expect(yield* next.request("s1")).toBe("cred-a")
+      }),
+    ))
+
   /** The provider gives an hour; the implementor role keeps its own five minutes, as orchestrate sets it. */
   const roles = () => {
     const state = world()
