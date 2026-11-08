@@ -1719,7 +1719,9 @@ it as `tools.ask_user_async(...)`):
   ```
 
 - Ids are `q1`, `q2`, … per session. Asking the same text again replaces the
-  open question; `withdraw: ["q1"]` takes questions back; at most 8 stay open
+  open question; `withdraw: ["q1"]` takes questions back (the description
+  tells the agent to withdraw one the user answered another way, in chat, in
+  a file or by acting on it, so it leaves the tray); at most 8 stay open
   and a ninth drops the oldest. The receipt names each of these.
 
 The TUI plugin draws, above the composer (the `session.composer.top` slot),
@@ -1748,20 +1750,26 @@ Which database should the cache use?
 1. SQLite
    assumed · one file, no server
 2. Redis
-3. Type your own answer
-⇆ tab  ↑↓ select  enter confirm  esc dismiss
+3. Dismiss · keep the assumption
+4. Type your own answer
+⇆ tab  ↑↓ select  enter confirm  n notes  esc dismiss
 ```
 
 Each question is a tab; its choices come with the assumed one first, marked
-`assumed` (a choice of its own when no choice names it), and the last row
-types an answer of your own. Answer some, leave others blank, and submit once
-on the Submit tab (a form of one question submits on Enter). Every answer
-given goes to the asking session as one message; a blank question stays
-open, and Esc closes the form with all of them open. The form is the host's:
-its submit is the host's `form.replied` event, which the server plugin reads
-(the form's field keys are `ask_user_async:<id>`, `form.ts`). Dismissing a
-question without telling the agent is the RPC's `dismiss`; the form has no
-key for it.
+`assumed` (a choice of its own when no choice names it), then `Dismiss · keep
+the assumption`, and the last row types an answer of your own. Answer some,
+dismiss some, leave others blank, and submit once on the Submit tab (a form
+of one question submits on Enter). Every answer given goes to the asking
+session as one message, which names the questions dismissed beside them
+(`q3 dismissed: your assumption stands (…)`); a submit that only dismisses
+closes those questions and sends nothing, since the assumption already stands
+and a message would wake an idle agent for nothing. Dismiss picked with a
+note (`n`) is an answer: the assumption with the note, which the agent reads.
+A blank question stays open, and Esc closes the form with all of them open.
+The form is the host's: its submit is the host's `form.replied` event, which
+the server plugin reads (the form's field keys are `ask_user_async:<id>`, and
+Dismiss replies `ask_user_async:dismiss`, `form.ts`). The RPC's `dismiss`
+drops one question the same silent way.
 
 The answers of one submit go to the session that asked as one synthetic user
 message, steered, so a running session reads it at its next step and an idle

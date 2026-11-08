@@ -81,6 +81,40 @@ test("several answers all as assumed say carry on; all differing say revise them
   )
 })
 
+test("a question dismissed beside an answer is named after it, in the same message", () => {
+  const letter = letterOf([
+    { question: port, answer: "3000" },
+    { question: runner, answer: "bun test", dismissed: true },
+  ])
+  expect(letter.text).toBe(
+    [
+      "Answer to your background question q1 (asked 2026-11-05T15:00:00.000Z):",
+      "Q: Which port should the dev server use?",
+      "You assumed: 8080",
+      "A: 3000",
+      "This differs from your assumption: revise the work that rests on it, and say what you changed.",
+      "",
+      "q4 dismissed: your assumption stands (Which test runner? You assumed: bun test)",
+    ].join("\n"),
+  )
+  expect(letter.description).toBe("answered · Which port should the dev server use? → 3000 · q4 dismissed")
+  expect(letter.metadata.dismissed).toEqual(["q4"])
+  expect(letter.metadata.answers.map((answer) => answer.id)).toEqual(["q1"])
+})
+
+test("with several answers, the dismissed ones follow the line naming what to revise", () => {
+  const letter = letterOf([
+    { question: port, answer: "8080" },
+    { question: flag, answer: "yes", dismissed: true },
+    { question: runner, answer: "bun test" },
+  ])
+  expect(letter.text).toStartWith("Answers to your background questions q1 and q4:")
+  expect(letter.text).toEndWith(
+    ["Each is what you assumed: carry on.", "", "q2 dismissed: your assumption stands (Keep the --legacy flag? You assumed: yes)"].join("\n"),
+  )
+  expect(letter.description).toEndWith("· q2 dismissed")
+})
+
 test("the notice line keeps each side to one line and sixty characters", () => {
   const letter = letterOf([{ question: { ...port, question: `Which${" very".repeat(30)} long question?` }, answer: "line one\nline two" }])
   const [question = "", answer = ""] = letter.description.replace("answered · ", "").split(" → ")
