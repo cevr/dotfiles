@@ -68,6 +68,7 @@ const bench = (workrift: boolean) =>
             writeFileSync(join(path, "README.md"), `stashed in ${path}\n`)
             sh(path, env, "git", "stash", "push", "-q", "-m", "wip")
           }),
+        switchTo: (path: string, branch: string) => Effect.sync(() => void sh(path, env, "git", "switch", "-q", "-c", branch)),
       }
     }),
     (made) => Effect.sync(() => rmSync(made.scratch, { recursive: true, force: true })),

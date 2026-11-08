@@ -2,6 +2,8 @@
 // suites. Each implementation's test beside it runs the suite over its Layer.
 import { describe, expect, test } from "bun:test"
 import { Effect, type Layer, type Scope } from "effect"
+import { findRift } from "./find.ts"
+import { AmbiguousRift, NoSuchRift } from "./rift.ts"
 import { RiftFailed, Rifts, SessionDirectories, SessionUnreadable } from "./service.ts"
 
 /** An implementation of Rifts over one warm source. */
@@ -19,6 +21,8 @@ export interface RiftBench {
   readonly dirty: (path: string) => Effect.Effect<void>
   /** Stashes a fresh change in the workspace at `path`, the warm source or a Rift. */
   readonly stash: (path: string) => Effect.Effect<void>
+  /** Moves the Rift at `path` to a new branch, as work in it would. */
+  readonly switchTo: (path: string, branch: string) => Effect.Effect<void>
 }
 
 const check = <A, E>(bench: () => Effect.Effect<RiftBench, never, Scope.Scope>, body: (bench: RiftBench) => Effect.Effect<A, E, Rifts>) =>
@@ -85,6 +89,37 @@ export const riftsLaws = (name: string, bench: () => Effect.Effect<RiftBench, ne
             expect((yield* rifts.inspect(path)).stashes).toBe(0)
             yield* made.stash(path)
             expect((yield* rifts.inspect(path)).stashes).toBe(1)
+          }),
+        ),
+      timeout,
+    )
+
+    test(
+      "land's findRift finds a Rift by path, by name or by branch (exact, else with / as -), and refuses a name two Rifts answer to, naming both",
+      () =>
+        check(bench, (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            // Named after their branches, as workrift names them; then each moves to a branch of its run.
+            const lexer = yield* rifts.create({ source: made.source, from: made.inside, name: "fu-lexer", branch: "fu/lexer" })
+            const parser = yield* rifts.create({ source: made.source, from: made.inside, name: "fu-parser", branch: "fu/parser" })
+            yield* made.switchTo(lexer, "run/lexer")
+            yield* made.switchTo(parser, "run-parser")
+            const find = (target: string) => findRift(made.inside, made.source, target)
+            expect(yield* find(lexer)).toBe(lexer)
+            expect(yield* find("fu-lexer")).toBe(lexer)
+            expect(yield* find("fu/lexer")).toBe(lexer)
+            expect(yield* find("run/lexer")).toBe(lexer)
+            expect(yield* find("run-lexer")).toBe(lexer)
+            // An exact branch wins over another Rift's branch with / as -.
+            expect(yield* find("run-parser")).toBe(parser)
+            const missing = yield* Effect.flip(find("lexer"))
+            expect(missing).toBeInstanceOf(NoSuchRift)
+
+            yield* made.switchTo(parser, "run/lexer")
+            const ambiguous = yield* Effect.flip(find("run/lexer"))
+            expect(ambiguous).toBeInstanceOf(AmbiguousRift)
+            expect(ambiguous._tag === "AmbiguousRift" && ambiguous.matches).toEqual([`${lexer} (branch run/lexer)`, `${parser} (branch run/lexer)`])
           }),
         ),
       timeout,

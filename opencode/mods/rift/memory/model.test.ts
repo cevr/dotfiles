@@ -177,6 +177,22 @@ describe("land", () => {
     expect([...made.rifts.rifts.keys()]).toEqual([INTEGRATE])
   })
 
+  test("land finds each Rift by its branch too, and refuses a name two Rifts answer to, naming both", async () => {
+    const LEXER = "/code/.rifts/app/fu-lexer"
+    const PARSER = "/code/.rifts/app/fu-parser"
+    const state = () => MemoryRifts.world([SOURCE], [MemoryRifts.clean(LEXER, "run/lexer"), MemoryRifts.clean(PARSER, "run/parser")])
+    const made = bench(state(), MemoryLanding.world(configured))
+    expect(await call(made, { action: "land", rifts: ["run/lexer", "run-parser"] })).toStartWith("Landed 2 Rift(s) as one push")
+    expect(made.landing.steps.slice(0, 3)).toEqual([`start ${INTEGRATE} main`, "merge run/lexer", "merge run/parser"])
+
+    const twice = bench(state(), MemoryLanding.world(configured))
+    MemoryRifts.change(twice.rifts, PARSER, (workspace) => ({ ...workspace, branch: "run/lexer" }))
+    expect(await call(twice, { action: "land", rifts: ["run/lexer"] })).toBe(
+      `refused: run/lexer names more than one Rift of ${SOURCE}; name one by its path:\n  ${LEXER} (branch run/lexer)\n  ${PARSER} (branch run/lexer)`,
+    )
+    expect(twice.landing.steps).toEqual([])
+  })
+
   test("a landed Rift whose only stash is the warm source's own is trashed; one with a stash of its own stays, named", async () => {
     const made = bench(MemoryRifts.world([SOURCE]), MemoryLanding.world(configured))
     MemoryRifts.stash(made.rifts, SOURCE, "5a5a5a5")
