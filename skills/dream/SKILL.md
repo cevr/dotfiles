@@ -1,6 +1,6 @@
 ---
 name: dream
-description: "Weekly retro across every session, machine and orchestrate run: where the week's time and compute went, and what to change."
+description: "Weekly retro across every session, machine and orchestrate run: where the week's time and compute went, what to change, and an audit of each machine's memory notes."
 disable-model-invocation: true
 ---
 
@@ -10,7 +10,7 @@ The window is the last 7 days unless the owner names another. Work only from mea
 
 ## Steps
 
-1. **Read last week's dream** in `~/.claude/dreams/`, if one exists. For each action it applied, find the number it promised to move. An action that moved nothing is a revert candidate. Removing tooling counts the same as adding it.
+1. **Read last week's dream** in `~/.claude/dreams/`, if one exists. For each action it applied, find the number it promised to move. An action that moved nothing is a revert candidate. Removing tooling counts the same as adding it. Its Memory section counts too: a note added for a repeated correction worked when the owner stopped repeating it, and a note no session used since is a prune candidate in step 6.
 
 2. **Mine the sessions on each machine.** The machines are this one and each remote dev box the global `AGENTS.md` names (over `ssh`). Run the miner from [`retro`](../retro/SKILL.md) step 2 on each one, with its own `--out`:
 
@@ -44,12 +44,28 @@ The window is the last 7 days unless the owner names another. Work only from mea
 
    When a step costs much and finds little, read how a peer does the same step with less, for example `okra repo fetch cursor/plugins` (`pstack`) or `okra repo fetch mattpocock/skills`. Name the peer's mechanism. Do not copy the peer's ceremony.
 
-6. **Write `~/.claude/dreams/<YYYY-MM-DD>.md`.** Do not write it in the dotfiles. That repository is public, and the digest quotes work sessions. Include:
+6. **Audit memory on each machine.** Each machine keeps its own memory file, the notes the OpenCode memory plugin injects at session start (rules in `opencode/README.md`, Memory). Read and change it only through its CLI, run on that machine after the pull of step 2:
+
+   ```
+   bun ~/Developer/personal/dotfiles/opencode/cmd/memory/cli.ts stats --json
+   ```
+
+   `stats` gives each note's uses, showings, last use and idle days, the stale notes, the near pairs, and each project's digest fill; `projects` maps project ids to directories; `show`, `search`, `edit`, `merge`, `add` and `forget` do the rest (a bad command prints the usage). Hold the notes against the week's digests and act on each class:
+   - **Repeats**: a near pair that states one fact → `merge <keep> <drop>`, with `--text` for the better wording. A pair that states two facts stays.
+   - **Contradicted**: a note the week's sessions or the owner's messages show wrong or outdated → `edit <id> --text`, or `forget` when nothing true remains.
+   - **Stale**: idle past 30 days with no use → reword it so a search finds it, or `forget` it when its fact no longer bears on the work.
+   - **Missing**: an owner correction or preference the digest shows twice or more that no note holds → `add --scope global` (about the owner, any project) or `add --scope project --project <id>` (one repository's convention).
+   - **Budget**: a digest whose `holds` is below its `visible` drops notes at session start; keep the ones the week used and merge or prune the rest.
+
+   The audit is done when every stale note and near pair has a decision and every repeated owner correction maps to a note. These changes apply now, without the owner's pick: they are reversible, and next week's dream checks them.
+
+7. **Write `~/.claude/dreams/<YYYY-MM-DD>.md`.** Do not write it in the dotfiles. That repository is public, and the digest quotes work sessions. Include:
    - The week's numbers per machine, with a measured label.
    - At most 10 candidates, ranked by expected saving. Each candidate gives: the evidence, the class, the fix at the highest level that works (the ladder in [`retro`](../retro/SKILL.md) step 4), the expected saving, and the number next week's dream reads to check it.
    - Last week's actions, each kept or reverted, with the number.
+   - A **Memory** section per machine: each note added, edited, merged or forgotten, by id, with its evidence (the digest line or session it rests on) and the number next week's dream reads, such as how often the owner repeated that correction; and the `stats` totals before and after.
 
-7. **Present the candidates to the owner.** Skill, `AGENTS.md` and principle edits land once the owner picks them. Then follow [`writing-for-agents`](../writing-for-agents/SKILL.md), commit each edit as its own Conventional Commit, and push. Add a `Applied:` line to the dream file that names each commit.
+8. **Present the candidates to the owner.** Skill, `AGENTS.md` and principle edits land once the owner picks them. Then follow [`writing-for-agents`](../writing-for-agents/SKILL.md), commit each edit as its own Conventional Commit, and push. Add a `Applied:` line to the dream file that names each commit.
 
 ## Reference
 

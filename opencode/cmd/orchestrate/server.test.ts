@@ -1115,28 +1115,37 @@ describe("an idle root with units to move or a batch to land", () => {
       }),
     ))
 
-  test("ready units from the status plugin: their batch, due by count or by the oldest's log time, is landed by name; short of both, no nudge", () =>
+  test("ready units from the status plugin: their batch, due by count or by the oldest's log time (each unit's own cadence when it has one), is landed by each unit's Rift; short of both, no nudge", () =>
     scenario(
       Effect.gen(function* () {
-        const ready = (units: ReadonlyArray<{ readonly unit: string; readonly since?: string }>) =>
+        const ready = (units: ReadonlyArray<{ readonly unit: string; readonly since?: string; readonly cadence?: string }>) =>
           start({ now: WEDNESDAY }, { ...world, runs: [{ name: "p5", units: [{ unit: "closure-flake", state: "merged abc1234" }, ...units.map((unit) => ({ ...unit, state: "ready" }))] }] })
         const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString().slice(0, 16) + "Z"
         const three = yield* ready([{ unit: "lexer" }, { unit: "parser" }, { unit: "docs" }])
         const old = yield* ready([{ unit: "lexer", since: minutesAgo(45) }])
         const fresh = yield* ready([{ unit: "lexer", since: minutesAgo(5) }, { unit: "parser" }])
-        for (const plugin of [three, old, fresh]) yield* plugin.idle("root")
+        // A unit's own cadence, as the status script prints it from its spec: one ready lands at once; a longer wait holds.
+        const hot = yield* ready([{ unit: "hotfix", since: minutesAgo(5), cadence: "1 ready or 30 min" }])
+        const slow = yield* ready([{ unit: "lexer", since: minutesAgo(45), cadence: "3 ready or 60 min" }])
+        for (const plugin of [three, old, fresh, hot, slow]) yield* plugin.idle("root")
+        yield* eventually(() =>
+          expect(hot.nudges.map((nudge) => nudge.text)).toEqual([
+            'idle with a batch due (1 ready): hotfix; land it with rift({ action: "land", rifts: ["hotfix"] }).',
+          ]),
+        )
         yield* eventually(() =>
           expect(three.nudges.map((nudge) => nudge.text)).toEqual([
-            'idle with a batch due (3 ready): lexer, parser, docs; land it with rift({ action: "land", rifts: ["p5/lexer", "p5/parser", "p5/docs"] }).',
+            'idle with a batch due (3 ready): lexer, parser, docs; land it with rift({ action: "land", rifts: ["lexer", "parser", "docs"] }).',
           ]),
         )
         // The log's time is to the minute, so the age is 45 or, across a minute's turn, 46.
         yield* eventually(() =>
           expect(old.nudges.map((nudge) => nudge.text)).toEqual([
-            expect.stringMatching(/^idle with a batch due \(lexer ready 4[56] min\): lexer; land it with rift\(\{ action: "land", rifts: \["p5\/lexer"\] \}\)\.$/),
+            expect.stringMatching(/^idle with a batch due \(lexer ready 4[56] min\): lexer; land it with rift\(\{ action: "land", rifts: \["lexer"\] \}\)\.$/),
           ]),
         )
         expect(fresh.nudges).toEqual([])
+        expect(slow.nudges).toEqual([])
       }),
     ))
 

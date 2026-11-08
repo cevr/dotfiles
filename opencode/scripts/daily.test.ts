@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
-import { BUILTIN_BTW_OFF, CLAUDE_CACHE_TTL, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, type Options as UpstreamOptions } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
@@ -126,6 +126,14 @@ describe("the TUI config's built-in /btw", () => {
   test("is turned off once, however many runs merged it", () => {
     const once = mergeCli({ plugins: ["/x"] }, [`${MODS}/btw`, BUILTIN_BTW_OFF], [MODS])
     expect(mergeCli(once, [`${MODS}/btw`, BUILTIN_BTW_OFF], [MODS]).plugins).toEqual([`${MODS}/btw`, BUILTIN_BTW_OFF, "/x"])
+  })
+})
+
+describe("the server config's built-in schedule plugin", () => {
+  test("is turned off once, however many runs merged it, so neither its tools nor /schedule are offered", () => {
+    expect(BUILTIN_SCHEDULE_OFF).toBe("-opencode.tool.schedule")
+    const once = mergeServer({ plugins: ["/x"] }, [`${MODS}/wake`, BUILTIN_SCHEDULE_OFF], {}, [MODS])
+    expect(mergeServer(once, [`${MODS}/wake`, BUILTIN_SCHEDULE_OFF], {}, [MODS]).plugins).toEqual([`${MODS}/wake`, BUILTIN_SCHEDULE_OFF, "/x"])
   })
 })
 

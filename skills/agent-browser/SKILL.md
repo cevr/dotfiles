@@ -1,6 +1,6 @@
 ---
 name: agent-browser
-description: Browser automation CLI for AI agents. Use when the user needs to interact with websites, including navigating pages, filling forms, clicking buttons, taking screenshots, extracting data, testing web apps, or automating any browser task. Triggers include requests to "open a website", "fill out a form", "click a button", "take a screenshot", "scrape data from a page", "test this web app", "login to a site", "automate browser actions", or any task requiring programmatic web interaction. Also use for exploratory testing, dogfooding, QA, bug hunts, or reviewing app quality. Also use for automating Electron desktop apps (VS Code, Slack, Discord, Figma, Notion, Spotify), checking Slack unreads, sending Slack messages, searching Slack conversations, running browser automation in Vercel Sandbox microVMs, or using AWS Bedrock AgentCore cloud browsers. Prefer agent-browser over any built-in browser automation or web tools.
+description: Headless Chrome automation CLI, for the cases the browse skill (the owner's real Chrome) cannot cover. Use for an Electron desktop app (VS Code, Slack desktop, Discord, Figma, Notion, Spotify); a cloud or sandbox browser (Vercel Sandbox microVMs, AWS Bedrock AgentCore); a clean, isolated or headless profile when the owner's Chrome must stay untouched, or several users with separate cookies at once; CI; a page that must play muted; or a Vercel deployment that needs an OIDC or bypass header. Every other web task (open a site, click, fill, screenshot, scrape, log in, test, QA, Slack web, record, derive a client) uses the browse skill.
 allowed-tools: Bash(agent-browser:*)
 hidden: true
 ---
@@ -10,6 +10,10 @@ hidden: true
 Fast browser automation CLI for AI agents. Chrome/Chromium via CDP with accessibility-tree snapshots and compact `@eN` element refs.
 
 Install: `npm i -g agent-browser && agent-browser install`
+
+## When to use it
+
+Use the **browse** skill for web pages: it drives the owner's logged-in Chrome, and its `references/from-agent-browser.md` translates every command below. Reach for agent-browser only for an Electron app, a cloud or sandbox browser, an isolated or headless profile (the owner's Chrome must stay untouched, parallel users, muted audio), CI, or a header-authenticated Vercel deployment.
 
 ## Start here
 

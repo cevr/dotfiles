@@ -1,0 +1,10 @@
+{
+  "name": "@dotfiles/opencode-memory",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Long-term memory for OpenCode: notes the agent saves and searches in one SQLite file per host, and a small, stable digest of them each session starts with.",
+  "exports": {
+    "./*": "./*.ts"
+  }
+}

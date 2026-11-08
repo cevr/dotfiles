@@ -18,6 +18,15 @@ describe("unitsOf", () => {
     ])
   })
 
+  test("a row's batch cadence, when the table prints one", () => {
+    const table = [
+      "| Unit | State | Round | Since | Cause | Cadence |",
+      "| ---- | ----- | ----- | ----- | ----- | ------- |",
+      "| lexer | ready | 1 | 2026-11-04T15:00Z | round-1-findings.md | 1 ready or 15 min |",
+    ].join("\n")
+    expect(unitsOf(table)).toEqual([{ unit: "lexer", state: "ready", round: "1", since: "2026-11-04T15:00Z", cadence: "1 ready or 15 min" }])
+  })
+
   test("a row with no state, a warning line and a short row", () => {
     expect(unitsOf(["| fresh |  | | |", "plan.md is over 40 KB", "| bare | plan"].join("\n"))).toEqual([
       { unit: "bare", state: "plan", round: "", since: "" },

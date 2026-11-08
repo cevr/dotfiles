@@ -469,17 +469,22 @@ idle with units in plan, implement or verify: alpha, beta; start them or name wh
 ```
 
 Units in `ready` wait for their batch (the orchestrate skill's Land a batch).
-Once the batch is due, at 3 ready units or the oldest ready for 30 minutes by
-its `log.md` time, the line says to land it, naming each unit's Rift by its
-branch `<run>/<unit>`, which the rift tool finds:
+Once the batch is due, the line says to land it, naming each unit's Rift by
+its name, the unit (the orchestrator makes `.rifts/<repo>/<unit>` on branch
+`<run>/<unit>`), which the rift tool finds:
 
 ```
-idle with a batch due (3 ready): gamma, delta, eps; land it with rift({ action: "land", rifts: ["p1/gamma", "p1/delta", "p1/eps"] }).
+idle with a batch due (3 ready): gamma, delta, eps; land it with rift({ action: "land", rifts: ["gamma", "delta", "eps"] }).
 ```
 
-With both, the batch follows the first line as `… A batch due (…): …`. A
-spec's or plan's own `Batch cadence` is not read: the nudge keeps the
-defaults. Units from more than one run read `run/unit`; past eight the rest
+A batch is due by each ready unit's cadence: its spec's `Batch cadence` line,
+else its plan's, else 3 ready or 30 minutes. Only the line's numbers are read
+(`<n> ready`, `<n> min` or `<n> h`); a number it leaves out comes from the
+level above. The skill's `status.ts` prints it per unit (`Cadence`, `3 ready
+or 30 min`, its `cadence.ts`). It is due once the ready units reach any ready
+unit's count, or any ready unit has waited its wait by its `log.md` time.
+
+With both, the batch follows the first line as `… A batch due (…): …`. Units from more than one run read `run/unit`; past eight the rest
 are counted (the land call names every one). The line is a steered synthetic message carrying the metadata key
 `dotfiles-opencode.orchestrate.idle`, so its own arrival is not new input.
 
@@ -1870,8 +1875,12 @@ them out of the registry for every agent (`SCHEDULE_TOOLS` in
 (`at`, `everySeconds`), a monitor (`until`, `repeat`) or the `pr` tool's watch
 does that work as a short synthetic notice. Cron and time zones are not
 carried over: no active schedule used them (both machines, 2026-11-06). The
-host's `/schedule` command stays (a plugin cannot remove a command); with
-the tools gone it has nothing to call.
+host's `/schedule` command, which tells the model to call those tools, comes
+from the same built-in plugin (`opencode.tool.schedule`); a plugin cannot
+remove a command, so `bun run daily` turns that plugin off in the server
+config (`-opencode.tool.schedule`, `BUILTIN_SCHEDULE_OFF` in
+`scripts/daily.ts`), and neither the tools nor `/schedule` are offered.
+Stored schedules and their API stay the host's.
 
 `bun scripts/migrate-schedules.ts` moves the active schedules over once: for
 each it plans the equivalent wake or monitor for its session (the mapping is
@@ -1883,7 +1892,8 @@ the schedule; what has no equivalent (cron, a Code Mode check, remaining
 runs) is skipped and named. `--rows <file>` reads another machine's rows
 (the script's `QUERY` through `sqlite3 -readonly -json`).
 `tests/wake-repeat.test.ts` runs `scenarios/wake-repeat.ts` in real OpenCode
-with `experimental.schedules` on: no request offers a schedule tool, and a
+with `experimental.schedules` on and the built-in schedule plugin off: no
+request offers a schedule tool, the server lists no `/schedule`, and a
 `repeat: "change"` monitor wakes the session once per change of a file.
 
 ### Jobs
@@ -1928,6 +1938,64 @@ Log tail:
 
 `tests/job.test.ts` runs `scenarios/job.ts`: a job whose end wakes the idle
 session, and a killed one that wakes nobody.
+
+## Memory
+
+`mods/memory` gives the agent a long-term memory of short notes, kept in one
+SQLite file per host (`$XDG_STATE_HOME/opencode-memory/memory.db`, else
+`~/.local/state/…`; the Mac and the workbox each have their own, no sync). Its
+plugin is `cmd/memory` (`server.ts`); the design and what it took from
+Anthropic's "components of agent memory" and OptMem is in
+[`notes/memory.md`](notes/memory.md).
+
+A note is one line of at most 400 characters with up to 8 tags, kept
+`global` (about the user, true in every project) or `project` (OpenCode's
+project id, which every clone, worktree and Rift of a repository shares). The
+server adds three direct tools (a kernel cell calls them as `tools.memory_save(...)`):
+
+- `memory_save({ text, scope?, tags?, id? })`: `scope` defaults to
+  `project`. A note whose words are at least 60% the same (Jaccard) as a note
+  of its bucket updates that note instead of adding one (`Updated #1 (global),
+  which said nearly the same: "…"`); with `id`, it corrects that note. Its
+  description says what is worth saving (the user's facts, preferences and
+  corrections, the project's conventions, hard-won fixes) and what is not
+  (task state, plans, what the repository already says, secrets).
+- `memory_search({ query, limit? })`: the project's notes and the global
+  ones, by FTS5 rank (porter stemming), at most 25.
+- `memory_forget({ id })`.
+
+A subagent searches but does not save or forget (OptMem's rule: it cannot judge
+what is already known); its refusal tells it to put the fact in its answer.
+
+**The digest.** At a session's first request the plugin picks the notes it
+starts with: the highest by `(1 + log2(1 + uses)) · ½^(days since updated / 60)`,
+at most `digestNotes` (30) whose lines fit `digestChars` (4,000 characters,
+about 1k tokens), laid out global first, then the project's, by id, under a
+`# Memory` heading. It goes last in the system prompt through the `context`
+hook, and is kept in the file per session, so every request of the session
+(and of a server restart) carries the same block and the cached prefix holds;
+a note saved mid-session shows from the next session on. A session with no
+notes keeps an empty one. `uses` counts searches and repeated saves; `shown`
+counts digests and never ranks, so the injected notes cannot keep themselves
+in place. `used` is the last time either happened.
+
+Options: `path` (the file), `digestNotes`, `digestChars`.
+
+**The CLI** reads and edits the same file, for the weekly dream or the owner;
+reading there counts no use:
+
+```
+bun opencode/cmd/memory/cli.ts list|search|show|add|edit|merge|forget|projects|stats [--db <file>] [--json]
+```
+
+`stats` gives each note's uses, showings, dates and idle days, the notes idle
+30 days or more (`--stale-days`), pairs of one bucket at least 40% alike, and
+each project's digest fill (what it holds of what its sessions see, and its
+size). `projects` maps project ids to the directories their notes were saved
+in, for `add --scope project --project <id>`.
+
+Transcripts are not copied: they stay searchable in OpenCode's own database.
+`tests/memory.test.ts` proves it in real OpenCode on the scripted model.
 
 ## The code kernel
 

@@ -1,9 +1,10 @@
 // Public seam: real OpenCode with `experimental.schedules` on, the real wake
-// server plugin and a scripted model. scenarios/wake-repeat.ts asks the model
-// once (keeping the tools it was offered), sets a `repeat: "change"` monitor
-// on a status file, changes the file twice and cancels the monitor. The
-// schedule tools must be gone from the request while the flag is on (the
-// server still lists its `/schedule` command), and each change must reach the
+// server plugin, the built-in schedule plugin off as daily writes it, and a
+// scripted model. scenarios/wake-repeat.ts asks the model once (keeping the
+// tools it was offered), sets a `repeat: "change"` monitor on a status file,
+// changes the file twice and cancels the monitor. The schedule tools must be
+// gone from the request while the flag is on, the `/schedule` command from
+// the server's commands, and each change must reach the
 // session as one short synthetic notice, never a user prompt.
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
@@ -49,8 +50,10 @@ describe.skipIf(!fork)("with OpenCode's schedules on", () => {
     const requests: ReadonlyArray<Request> = JSON.parse(read("requests.json"))
     const root = requests.filter((request) => request.session === "root")
 
-    // The flag is on (its command is listed), yet no request offers a schedule tool; ours are offered.
-    expect(JSON.parse(read("commands.json"))).toContain("schedule")
+    // The flag is on, yet with the built-in schedule plugin off neither its /schedule command nor a schedule tool is offered; ours are.
+    const commands: ReadonlyArray<string> = JSON.parse(read("commands.json"))
+    expect(commands).toContain("review")
+    expect(commands).not.toContain("schedule")
     expect(root.length).toBeGreaterThan(0)
     for (const request of root) {
       expect(request.request).not.toMatch(/schedule_(create|list|pause|resume|delete)/)
