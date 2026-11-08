@@ -5,8 +5,11 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { expect, test } from "bun:test"
 import { Effect } from "effect"
 import { runTablesLaws } from "../laws.ts"
+import type { RunTable } from "../run-table.ts"
+import { RunTables } from "../service.ts"
 import * as RunScript from "./run-tables.ts"
 
 const scratch = Effect.acquireRelease(
@@ -27,7 +30,8 @@ if (existsSync(join(dir, "broken"))) { console.error("cannot read " + dir); proc
 process.stdout.write(readFileSync(join(dir, "table.md"), "utf8"))
 `
 
-runTablesLaws("the status script's RunTables", (tables) =>
+/** A repository holding `tables`, read by the stand-in status script. */
+const repositoryOf = (tables: ReadonlyArray<RunTable>) =>
   Effect.gen(function* () {
     const dir = yield* scratch
     const repository = join(dir, "repo")
@@ -50,5 +54,17 @@ runTablesLaws("the status script's RunTables", (tables) =>
         for (const { name } of tables) writeFileSync(join(runs, name, "broken"), "")
       }),
     }
-  }),
-)
+  })
+
+runTablesLaws("the status script's RunTables", repositoryOf)
+
+test("each run names its dir: tmp/orchestrate/<run> at the repository's main checkout", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const probe = yield* repositoryOf([{ name: "p5", table: "| Unit | State |\n" }])
+        const runs = yield* RunTables.use((runs) => runs.list(probe.repository)).pipe(Effect.provide(probe.layer))
+        expect(runs.map((run) => run.dir)).toEqual([join(probe.repository, "tmp/orchestrate/p5")])
+      }),
+    ),
+  ))

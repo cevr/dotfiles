@@ -517,6 +517,36 @@ one after the draft clears, the named wait in the queue (read off the
 scenario's Queue sidebar, which `bun run daily` does not install), no second
 nudge.
 
+### A run that saw an older skill
+
+Each run dir records the orchestrate skill version the run last saw, in
+`<run dir>/skill-version`: the newest commit that touched the skill, read
+through git from the checkout `~/.claude/skills/orchestrate` links into (the
+`skill` option). When a root that owns the run goes idle (the same hook) and
+the installed skill is newer, the root gets one steered note, metadata key
+`dotfiles-opencode.orchestrate.skill`:
+
+```
+The orchestrate skill changed since run p5 saw it (0a1b2c3..4d5e6f7, 2 commits):
+- feat(orchestrate): fan out, land in batches, verify each batch once on its merged head, fan out what follows
+- test(orchestrate): log moves follow the batch machine: implement → ready → verify → merged or waiting(pr)
+Run p5's departures, to check against these changes:
+- common.md:12: Departs from Heavy checks fit the machine: benchmarks need the whole box for a minute
+Reconcile the run's rules files (common.md and the like) with the skill now: delete what the skill now covers, keep project facts (commands, paths, flags, thread shares), and write each remaining departure from a skill default as `Departs from <rule>: <why>`; a departure is offered upstream as a skill change at close. A worker hears of a change only at its next round boundary, in one message. This note comes once per skill version.
+```
+
+The departures are the lines holding `Departs from` in the run dir's own
+top-level Markdown files (not its unit dirs). The run records the new version
+once the note reaches the root, so each version reaches each run once; a
+refused note is tried again at the next idle. A run seen for the first time
+records its version silently, which is the version it started on. An older
+installed skill (a checkout moved back) says nothing. No note over the
+Sabbath, to a subagent, or about a run whose dir the status mod does not give
+(it gives `dir` for each run in `tmp/orchestrate/`). Only runs are read; the
+idle nudge above is its own. The rules are in `skill-drift.ts`, the handler
+`SkillDrifts` in `model.ts`, over the contracts `Skill` (`git/skill.ts`),
+`RunRecords` (`filestore/run-records.ts`) and `Tell` (`opencode/steer.ts`).
+
 ## Pool
 
 `mods/pool` pools a provider's OAuth logins; its plugin is `cmd/pool`. It chooses the login each

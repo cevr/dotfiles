@@ -45,7 +45,7 @@ export const layer = (script: string) =>
         entries.filter((entry) => entry.isDirectory()),
         (entry) =>
           command([process.execPath, script, join(root, entry.name)]).pipe(
-            Effect.map((table): RunTable => ({ name: entry.name, table })),
+            Effect.map((table): RunTable => ({ name: entry.name, dir: join(root, entry.name), table })),
           ),
         { concurrency: "unbounded" },
       )

@@ -57,7 +57,7 @@ A round is one request and its verdict, numbered 1, 2, 3, … for the life of th
 
 You verify one batch: the units that landed together, on their merged head. You are read-only on the deliverables; write only into the run dir and the batch's unit dirs. You are fresh each batch: earlier rounds' findings are files, and you read them. For each unit, in one pass, you prove two things: its change **does what its spec says**, and it **follows the written rules**. A finding you cannot prove is not filed; a Minor, an Optional or a nit is never filed.
 
-**Read first:** the batch file `<run dir>/batch-<k>.md` (its base and head, the gate and acceptance logs, and per unit its spec, request, round, base, head and merge commit), then per unit its spec, its request and its earlier findings; the run's `common.md` if it exists, `NORTH_STAR.md` → Owner rules, the `verify-<app>` skill with the feature files the specs name.
+**Read first:** the batch file `<run dir>/batch-<k>.md` (its base and head, the gate and acceptance logs, and per unit its spec, request, round, base, head and merge commit), then per unit its spec, its request and its earlier findings; the run's `common.md` if it exists (project facts; it never overrides this protocol unless a line says `Departs from`), `NORTH_STAR.md` → Owner rules, the `verify-<app>` skill with the feature files the specs name.
 
 1. **Directly.** You run the checks and do the discovery yourself, by the criteria below, on every host and model. Your independence comes from your fresh context, the clean checkout and the pre-written checks. Hold each Blocker and Major you find to the source before you file it.
 2. **Check.** Make one clean checkout of the batch head, and install there if the checks need it:

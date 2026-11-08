@@ -6,6 +6,7 @@ import type { CallLine } from "./call-line.ts"
 import type { Holds, Run } from "./idle.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
 import type { Entry } from "./restart.ts"
+import type { Relation } from "./skill-drift.ts"
 import type { Hold } from "./tool-call.ts"
 import type { Transition } from "./unit-log.ts"
 
@@ -200,6 +201,44 @@ export class NudgeRefused extends Schema.TaggedError<NudgeRefused>()("NudgeRefus
 export class Steer extends Context.Service<Steer, { readonly nudge: (sessionID: string, line: string) => Effect.Effect<void, NudgeRefused> }>()(
   "dotfiles-opencode/orchestrate/Steer",
 ) {}
+
+// ── A run's skill drift (skill-drift.ts) ──
+
+/**
+ * The orchestrate skill as installed, read from the git checkout it lives in.
+ * - `version`: the newest commit that touched the skill; none when it cannot
+ *   be read (no checkout, no git).
+ * - `relation`: how `installed` stands to `seen`, with the subjects of the
+ *   commits between them, newest first; none when it cannot be read.
+ */
+export class Skill extends Context.Service<
+  Skill,
+  {
+    readonly version: Effect.Effect<string | undefined>
+    readonly relation: (seen: string, installed: string) => Effect.Effect<Relation | undefined>
+  }
+>()("dotfiles-opencode/orchestrate/Skill") {}
+
+/**
+ * What a run dir keeps about the skill.
+ * - `seen`: the skill version the run last saw (`SEEN_FILE`); none when never recorded.
+ * - `see`: record it. Never fails: a lost record costs one repeated note.
+ * - `departures`: the "Departs from" lines in the run's own top-level Markdown files, `<file>:<line>: <text>`.
+ */
+export class RunRecords extends Context.Service<
+  RunRecords,
+  {
+    readonly seen: (runDir: string) => Effect.Effect<string | undefined>
+    readonly see: (runDir: string, version: string) => Effect.Effect<void>
+    readonly departures: (runDir: string) => Effect.Effect<ReadonlyArray<string>>
+  }
+>()("dotfiles-opencode/orchestrate/RunRecords") {}
+
+/** Steers a session with one note, marked `DRIFT_MARK`, which wakes it if idle. */
+export class Tell extends Context.Service<
+  Tell,
+  { readonly tell: (sessionID: string, note: { readonly text: string; readonly description: string }) => Effect.Effect<void, NudgeRefused> }
+>()("dotfiles-opencode/orchestrate/Tell") {}
 
 /** A session as the restart reads it: its parent, title (a subagent's is its call's description) and agent. */
 export interface SessionCard {

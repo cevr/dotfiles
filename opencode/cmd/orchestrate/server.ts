@@ -38,6 +38,14 @@
  *   the pool cannot. Without it the script alone answers.
  * - `unitLog`: the orchestrate skill's log.ts that writes each unit's moves,
  *   default `~/.claude/skills/orchestrate/scripts/log.ts`.
+ * - `skill`: the orchestrate skill's dir, whose git history versions it,
+ *   default `~/.claude/skills/orchestrate`.
+ *
+ * - Skill drift: when a root that owns a run goes idle and the installed
+ *   skill is newer than the version the run last saw (`<run dir>/skill-version`),
+ *   the root gets one note: the commit subjects since, the run's "Departs
+ *   from" lines, and to reconcile its rules files (mods/orchestrate/skill-drift.ts).
+ *   Once per version per run; a run seen first records its version silently.
  *
  * - Unit logs: a role's start (planner, implementor, verifier, by its call's
  *   `<role> <unit> r<N>` description) and its hand-back (the first line of its
@@ -94,7 +102,9 @@ import * as CodexAdmissionLive from "@dotfiles/opencode-orchestrate/codex/admiss
 import { keepMessage, WINDOW } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogLive from "@dotfiles/opencode-orchestrate/filestore/call-log"
 import * as StepLogLive from "@dotfiles/opencode-orchestrate/filestore/step-log"
+import * as RunRecordsLive from "@dotfiles/opencode-orchestrate/filestore/run-records"
 import * as UnitLogsLive from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
+import * as SkillLive from "@dotfiles/opencode-orchestrate/git/skill"
 import { Draft, IDLE, MARK } from "@dotfiles/opencode-orchestrate/idle"
 import * as Model from "@dotfiles/opencode-orchestrate/model"
 import * as HoldsLive from "@dotfiles/opencode-orchestrate/opencode/holds"
@@ -119,10 +129,13 @@ import {
   type Restarts,
   type ResumeStart,
   type RootHolds,
+  type RunRecords,
   type Runs,
   type Sessions,
+  type Skill,
   type Steer,
   type StepLog,
+  type Tell,
   type UnitLogs,
 } from "@dotfiles/opencode-orchestrate/service"
 import type { Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
@@ -132,6 +145,8 @@ export const DEFAULT_LOG = join(homedir(), ".cache/orchestrate/opencode-agents.j
 export const CODEX_BUDGET = join(homedir(), ".claude/skills/orchestrate/scripts/budget.ts")
 /** The orchestrate skill's log.ts, the units' logs' one writer. */
 export const UNIT_LOG = join(homedir(), ".claude/skills/orchestrate/scripts/log.ts")
+/** The orchestrate skill as installed: a link into the dotfiles checkout, whose history versions it. */
+export const SKILL_DIR = join(homedir(), ".claude/skills/orchestrate")
 
 const SUBAGENT = "subagent"
 
@@ -168,6 +183,7 @@ export const Options = Schema.Struct({
   fullAgent: Schema.Boolean.pipe(withDefault(false)),
   codex: Schema.Union([Schema.Literal(false), Codex]).pipe(withDefault<false | typeof Codex.Type>(CODEX_DEFAULT)),
   unitLog: Schema.String.pipe(withDefault(UNIT_LOG)),
+  skill: Schema.String.pipe(withDefault(SKILL_DIR)),
   resume: Schema.Union([
     Schema.Literal(false),
     Schema.Struct({ backoffMs: Schema.Array(Schema.Finite).pipe(withDefault<ReadonlyArray<number>>(BACKOFF_MS)) }),
@@ -176,7 +192,22 @@ export const Options = Schema.Struct({
 export type Options = typeof Options.Type
 
 /** The outside systems the model runs on. */
-export type Externals = CallLog | Sessions | Models | PoolPace | CodexAdmission | Latches | UnitLogs | StepLog | Runs | RootHolds | Steer | Restarts
+export type Externals =
+  | CallLog
+  | Sessions
+  | Models
+  | PoolPace
+  | CodexAdmission
+  | Latches
+  | UnitLogs
+  | StepLog
+  | Runs
+  | RootHolds
+  | Steer
+  | Restarts
+  | Skill
+  | RunRecords
+  | Tell
 
 /** A cut child's resume: the subagent tool, run in the background on the child with the prompt as given. */
 export type Resume = (start: ResumeStart) => Effect.Effect<void, unknown>
@@ -233,8 +264,15 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
       open: (input) => ctx.rpc(QUESTIONS).open({ sessionIDs: [...input.sessionIDs] }),
       queue: (input) => ctx.rpc(QUEUE).get(input),
     }),
-    SteerLive.layer((input) => ctx.session.synthetic({ ...input, sessionID: input.sessionID as SessionID, metadata: { ...input.metadata } } as SyntheticInput)),
+    SteerLive.layer(synthetic(ctx)),
+    SteerLive.tellLayer(synthetic(ctx)),
+    SkillLive.layer(options.skill),
+    RunRecordsLive.layer,
   )
+
+/** A steered synthetic message, as the host's `session.synthetic` takes it. */
+const synthetic = (ctx: Plugin.Context) => (input: SteerLive.Synthetic) =>
+  ctx.session.synthetic({ ...input, sessionID: input.sessionID as SessionID, metadata: { ...input.metadata } } as SyntheticInput)
 
 /** A time as the model reads it: ISO 8601, and the owner's local time. */
 const timeOf = (ms: number, place: Place) => `${new Date(ms).toISOString()} (${local(ms, place)} ${place.timeZone})`
@@ -369,6 +407,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
         Layer.mergeAll(
           Model.layer(config),
           Model.idleLayer({ place: options.place, ...(options.now === undefined ? {} : { now: options.now }) }),
+          Model.driftLayer({ place: options.place, ...(options.now === undefined ? {} : { now: options.now }) }),
           Model.restarter(config, options.resume === false ? [] : options.resume.backoffMs),
         ).pipe(Layer.provideMerge(externals(ctx, options, start, resume))),
       )
@@ -389,6 +428,18 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
       const background = (sessionID: string, work: Effect.Effect<Model.IdleOutcome | undefined>) =>
         work.pipe(Effect.flatMap(logged(sessionID)), Effect.ignoreCause, Effect.forkIn(scope), Effect.asVoid)
       yield* ctx.session.hook("experimental.idle", (event) => background(event.sessionID, idleRoots.idle(event.sessionID, event.background.length)))
+
+      // A root whose run saw an older skill is told once what changed, and to reconcile the run's rules files.
+      const drifts = Context.get(services, Model.SkillDrifts)
+      const driftLogged = (sessionID: string) => (outcome: Model.DriftOutcome) =>
+        outcome._tag === "Told"
+          ? Effect.logInfo("orchestrate: told a root its runs' skill changed").pipe(Effect.annotateLogs({ sessionID, runs: outcome.runs.join(", ") }))
+          : outcome._tag === "Refused"
+            ? Effect.logWarning("orchestrate: the skill note did not reach the root").pipe(Effect.annotateLogs({ sessionID, message: outcome.message }))
+            : Effect.logDebug("orchestrate: no skill note").pipe(Effect.annotateLogs({ sessionID, why: outcome.why }))
+      yield* ctx.session.hook("experimental.idle", (event) =>
+        drifts.idle(event.sessionID).pipe(Effect.flatMap(driftLogged(event.sessionID)), Effect.ignoreCause, Effect.forkIn(scope), Effect.asVoid),
+      )
       yield* Effect.forkScoped(
         ctx.event.subscribe({ types: ["session.inbox.enqueued", "session.deleted"] }).pipe(
           Stream.runForEach((event) => {

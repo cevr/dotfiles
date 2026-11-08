@@ -566,6 +566,7 @@ export const runsLaws = (name: string, layer: (world: RunsWorld) => Layer.Layer<
     const runs: ReadonlyArray<Run> = [
       {
         name: "p1",
+        dir: "/repo/tmp/orchestrate/p1",
         units: [
           { unit: "alpha", state: "implement" },
           { unit: "beta", state: "merged 1234567" },
@@ -574,7 +575,7 @@ export const runsLaws = (name: string, layer: (world: RunsWorld) => Layer.Layer<
       },
       { name: "p2", units: [] },
     ]
-    test("the runs, each with its units' states, the time each entered it and its batch cadence, in order", () =>
+    test("the runs, each with its dir when given, its units' states, the time each entered it and its batch cadence, in order", () =>
       check(
         layer(runs),
         Effect.gen(function* () {

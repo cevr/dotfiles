@@ -263,7 +263,9 @@ describe("the live adapters", () => {
         const tree = join(dir, "tree")
         yield* git(repo, "worktree", "add", "-q", tree)
         const options = { log: join(dir, "agents.jsonl"), statusScript: script }
-        const byName = (runs: Snapshot["runs"]) => [...runs].sort((left, right) => left.name.localeCompare(right.name))
+        // Each run also carries its directory, checked on its own below.
+        const byName = (runs: Snapshot["runs"]) =>
+          [...runs].sort((left, right) => left.name.localeCompare(right.name)).map(({ dir: _dir, ...run }) => run)
         const expected = [
           { name: "fresh", units: [{ unit: "plan", state: "plan", round: "1", since: "2026-11-04T15:00Z" }] },
           {
@@ -276,6 +278,7 @@ describe("the live adapters", () => {
         ]
         const fromRepo = yield* (yield* start(options, world(), live, repo)).status
         expect(byName(fromRepo.runs)).toEqual(expected)
+        expect(fromRepo.runs.map((run) => run.dir).sort()).toEqual(["fresh", "port"].map((run) => join(repo, "tmp/orchestrate", run)))
         expect(fromRepo.errors).toEqual([])
         expect(byName((yield* (yield* start(options, world(), live, tree)).status).runs)).toEqual(expected)
 

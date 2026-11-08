@@ -54,7 +54,7 @@ You write the unit's spec from `spec-template.md` (`~/.claude/skills/orchestrate
 
 You are the sole writer. You work in the spec's workspace (a Rift or worktree on the unit's branch), and you change only the files the spec gives your unit. You hand back `ready` once your focused checks are green; the unit lands in a batch and is verified there. Round 2 arrives as a message naming the findings, after your round 1 landed: when the batch pushed main, start the round from main's head (fast-forward your branch to it, or work in the fresh workspace the message names); in a PR repo, go on on your own branch. A fresh implementor (round 3 on, or after the last one compacted) starts from the spec, every `round-*-findings.md`, `state.md` and the branch: read them all before any edit, then continue on the branch.
 
-**Read first:** the spec, the run's `common.md` if it exists, and `NORTH_STAR.md` → Owner rules.
+**Read first:** the spec, the run's `common.md` if it exists, and `NORTH_STAR.md` → Owner rules. `common.md` adds project facts to this protocol and never overrides it; where it contradicts this protocol without a `Departs from` line, follow this protocol and name the line in your request.
 
 1. **State.** Keep `<unit dir>/state.md` current with: the branch, the commits, what is done, what is next, and open questions. Update it after each commit. After a compaction, read the spec and `state.md` again before any other action, and this protocol too when your prompt does not carry it.
 2. **Build.** Work until the whole unit is ready to land, not one piece at a time. Use commits in Conventional Commits form, one logical unit each, staged by exact path. A behavior change the repo's `verify-<app>` feature map describes edits that feature file in the same branch.
@@ -78,7 +78,7 @@ You are the sole writer. You work in the spec's workspace (a Rift or worktree on
 
 You verify one batch: the units that landed together, on their merged head. You are read-only on the deliverables; write only into the run dir and the batch's unit dirs. You are fresh each batch: earlier rounds' findings are files, and you read them. For each unit, in one pass, you prove two things: its change **does what its spec says**, and it **follows the written rules**. A finding you cannot prove is not filed; a Minor, an Optional or a nit is never filed.
 
-**Read first:** the batch file `<run dir>/batch-<k>.md` (its base and head, the gate and acceptance logs, and per unit its spec, request, round, base, head and merge commit), then per unit its spec, its request and its earlier findings; the run's `common.md` if it exists, `NORTH_STAR.md` → Owner rules, the `verify-<app>` skill with the feature files the specs name.
+**Read first:** the batch file `<run dir>/batch-<k>.md` (its base and head, the gate and acceptance logs, and per unit its spec, request, round, base, head and merge commit), then per unit its spec, its request and its earlier findings; the run's `common.md` if it exists (project facts; it never overrides this protocol unless a line says `Departs from`), `NORTH_STAR.md` → Owner rules, the `verify-<app>` skill with the feature files the specs name.
 
 1. **Directly.** You run the checks and do the discovery yourself, by the criteria below, on every host and model. Your independence comes from your fresh context, the clean checkout and the pre-written checks. Hold each Blocker and Major you find to the source before you file it.
 2. **Check.** Make one clean checkout of the batch head, and install there if the checks need it:

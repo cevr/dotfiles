@@ -28,7 +28,7 @@ export const layer = Layer.effect(
           [
             callLog.events.pipe(Effect.map((events) => live(fold(AgentCalls, events))), Effect.result),
             runTables.list(directory).pipe(
-              Effect.map((tables) => tables.map((run) => ({ name: run.name, units: unitsOf(run.table) }))),
+              Effect.map((tables) => tables.map((run) => ({ name: run.name, ...(run.dir === undefined ? {} : { dir: run.dir }), units: unitsOf(run.table) }))),
               Effect.result,
             ),
           ],
