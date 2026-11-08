@@ -17,6 +17,7 @@ riftsLaws("memory Rifts", () =>
       dirty: (path: string) =>
         Effect.sync(() => MemoryRifts.change(state, path, (workspace) => ({ ...workspace, uncommitted: [...workspace.uncommitted, "?? new.txt"] }))),
       stash: (path: string) => Effect.sync(() => MemoryRifts.stash(state, path, `stash${++stashes}`)),
+      switchTo: (path: string, branch: string) => Effect.sync(() => MemoryRifts.change(state, path, (workspace) => ({ ...workspace, branch }))),
     }
   }),
 )

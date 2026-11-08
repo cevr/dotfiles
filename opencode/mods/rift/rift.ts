@@ -27,7 +27,8 @@ export const RiftInput = Schema.Struct({
     description: "remove and deps: the Rift's directory, in place of its name. init: where to clone (default: /workspaces/<repository>).",
   }),
   rifts: Schema.optional(Schema.Array(Schema.String)).annotate({
-    description: "land: the Rifts to land, in order, each by name or by path (a path starts with / or .).",
+    description:
+      "land: the Rifts to land, in order, each by path (a path starts with / or .), by name, or by its branch (exact, else with / as -); a name two Rifts answer to is refused, naming both.",
   }),
   repository: Schema.optional(Schema.String).annotate({ description: "init: the repository to clone as a new warm source (a Git URL)." }),
   force: Schema.optional(Schema.Boolean).annotate({
@@ -43,7 +44,7 @@ export const RIFT_DESCRIPTION = [
   "Isolated workspaces (Rifts): a copy-on-write copy of the repository's warm source, with its installed packages and build output, on its own branch. Use it in place of git worktrees, and in place of any script of your own around rift or workrift.",
   'create ({ action: "create", branch, name? }) answers the Rift\'s directory and branch; it does not move this session. On the workbox it runs `workrift create <branch>`, which first refreshes the warm source and carries over gh stack metadata, and names the Rift after the branch.',
   'list ({ action: "list" }) shows each Rift with its branch and its unsaved work. remove ({ action: "remove", name | path, withChildren? }) moves a Rift to the trash once its work is committed and pushed; it refuses one with uncommitted changes, stashes or unpushed commits and names them, unless force: true.',
-  'land ({ action: "land", rifts: ["feat-x", "feat-y"] }) lands the Rifts as one batch, in the warm source\'s integration Rift (`integrate`): it starts at origin\'s newest default branch, merges each Rift\'s branch in order (a conflict in lock files or the repository\'s generated files is settled by writing them again; any other stops the batch, aborts the merge and names the Rift and the files), writes the generated files again after every batch (`rift.regenerate`, its changes committed), runs the repository\'s gate once (`rift.gate` in the warm source\'s Git config), pushes to the default branch and trashes the landed Rifts. Then its accept check (`rift.accept`) runs once, in the background, on everything the batch changed, and wakes this session with the result; a red one is fixed forward. A red gate stops before the push. Commit everything first. A repository that lands through pull requests sets `rift.push` false: land then merges, gates and checks the same way but pushes no default branch and keeps every Rift, and answers each Rift green or red (a conflict makes only that Rift red); with `rift.pushBranches` true a green Rift\'s own branch is pushed, for its PR.',
+  'land ({ action: "land", rifts: ["feat-x", "feat-y"] }) lands the Rifts (each by path, name or branch) as one batch, in the warm source\'s integration Rift (`integrate`): it starts at origin\'s newest default branch, merges each Rift\'s branch in order (a conflict in lock files or the repository\'s generated files is settled by writing them again; any other stops the batch, aborts the merge and names the Rift and the files), writes the generated files again after every batch (`rift.regenerate`, its changes committed), runs the repository\'s gate once (`rift.gate` in the warm source\'s Git config), pushes to the default branch and trashes the landed Rifts. Then its accept check (`rift.accept`) runs once, in the background, on everything the batch changed, and wakes this session with the result; a red one is fixed forward. A red gate stops before the push. Commit everything first. A repository that lands through pull requests sets `rift.push` false: land then merges, gates and checks the same way but pushes no default branch and keeps every Rift, and answers each Rift green or red (a conflict makes only that Rift red); with `rift.pushBranches` true a green Rift\'s own branch is pushed, for its PR.',
   'On the workbox, { action: "refresh" | "check" | "deps" | "sources" | "prune" | "storage" | "init" } runs `workrift <action>` (prune only as --dry-run; storage is the Rift file system\'s check and use; init needs repository). Elsewhere they answer that they need the workbox.',
   "Never do feature work in the warm source itself.",
 ].join("\n\n")
@@ -61,6 +62,13 @@ export class NoSuchRift extends Schema.TaggedError<NoSuchRift>()("NoSuchRift", {
   rifts: Schema.Array(Schema.String),
 }) {}
 
+/** A land target that two or more Rifts of the source answer to, by name or branch; `matches` names each with its branch. */
+export class AmbiguousRift extends Schema.TaggedError<AmbiguousRift>()("AmbiguousRift", {
+  name: Schema.String,
+  source: Schema.String,
+  matches: Schema.Array(Schema.String),
+}) {}
+
 /** A land that names no Rift. */
 export class RiftsMissing extends Schema.TaggedError<RiftsMissing>()("RiftsMissing", {}) {}
 
@@ -68,7 +76,7 @@ export class RiftsMissing extends Schema.TaggedError<RiftsMissing>()("RiftsMissi
 export class RepositoryMissing extends Schema.TaggedError<RepositoryMissing>()("RepositoryMissing", {}) {}
 
 /** Why the tool did not act on its input, before asking Rift. */
-export type InputRefused = BranchMissing | TargetMissing | NoSuchRift | RiftsMissing | RepositoryMissing
+export type InputRefused = BranchMissing | TargetMissing | NoSuchRift | AmbiguousRift | RiftsMissing | RepositoryMissing
 
 /** The directory name a branch makes, as `workrift` names it: `/` and spaces become `-`, other punctuation goes. */
 export const workspaceName = (branch: string): string =>
@@ -137,5 +145,7 @@ export const explainInput = (refusal: InputRefused): string => {
       return refusal.rifts.length === 0
         ? `The warm source ${refusal.source} has no Rift named ${refusal.name}; it has no Rifts.`
         : `The warm source ${refusal.source} has no Rift named ${refusal.name}. Its Rifts:\n${refusal.rifts.map((path) => `  ${path}`).join("\n")}`
+    case "AmbiguousRift":
+      return `${refusal.name} names more than one Rift of ${refusal.source}; name one by its path:\n${refusal.matches.map((match) => `  ${match}`).join("\n")}`
   }
 }

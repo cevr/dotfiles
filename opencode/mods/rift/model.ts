@@ -7,6 +7,7 @@
 // not pushed: each Rift answered green or red, every Rift kept. The plugin
 // calls this and nothing else.
 import { Context, Effect, Layer, Scope, Semaphore } from "effect"
+import { findRift, resolvePath } from "./find.ts"
 import {
   GateMissing,
   INTEGRATION,
@@ -43,16 +44,7 @@ import {
 import { Landing, Notices, Rifts, SessionDirectories, Workbox, type NotOnWorkbox, type RiftFailed, type SessionUnreadable, type WorkboxCommand } from "./service.ts"
 import { explainRefusal, removal, type RemoveRefused, type Workspace } from "./workspace.ts"
 
-/** `path` against `directory`, with `.` and `..` folded. */
-export const resolvePath = (directory: string, path: string): string => {
-  const parts: Array<string> = []
-  for (const part of (path.startsWith("/") ? path : `${directory}/${path}`).split("/")) {
-    if (part === "" || part === ".") continue
-    if (part === "..") parts.pop()
-    else parts.push(part)
-  }
-  return `/${parts.join("/")}`
-}
+export { resolvePath }
 
 /** One answer: the text the model reads and what the transcript keeps. */
 export interface Answer {
@@ -264,9 +256,7 @@ export const layer = Layer.effect(
       const targets = input.rifts ?? []
       if (targets.length === 0) return yield* new RiftsMissing()
       // Every Rift is found and checked before any is touched.
-      const paths = yield* Effect.forEach(targets, (target) =>
-        locate(directory, source, target.startsWith("/") || target.startsWith(".") ? { path: target } : { name: target }),
-      )
+      const paths = yield* Effect.forEach(targets, (target) => findRift(directory, source, target).pipe(Effect.provideService(Rifts, rifts)))
       const units = yield* Effect.forEach(paths, (path) => unitOf(path, source))
       const config = yield* landing.config(source)
       const gateCommand = config.gate
@@ -403,6 +393,7 @@ export const explain = (failure: Failure): string => {
     case "BranchMissing":
     case "TargetMissing":
     case "NoSuchRift":
+    case "AmbiguousRift":
     case "RiftsMissing":
     case "RepositoryMissing":
       return explainInput(failure)

@@ -1213,8 +1213,11 @@ workbox in a week). One input, with an `action`:
   takes the Rift's own Rifts with it, each still refused while it holds
   unsaved work.
 - `{ action: "land", rifts: ["feat-x", "feat-y"] }` lands the Rifts as one
-  batch, as the orchestrator's batch landing does by hand. Before touching
-  any, it refuses a warm source, a Rift off any branch, a Rift with its own
+  batch, as the orchestrator's batch landing does by hand. Each entry names a
+  Rift by path (it starts with `/` or `.`), by name, or by its branch: exact
+  first (the name, or the branch), then the branch with `/` as `-`
+  (`mods/rift/find.ts`); an entry two Rifts answer to is refused, naming both
+  with their branches. Before touching any, it refuses a warm source, a Rift off any branch, a Rift with its own
   uncommitted changes (a file the same as in the warm source does not count)
   and a repository with no gate. Then, in the source's integration Rift
   (`integrate`, made on first use and kept): repair a stale multi-pack index,
