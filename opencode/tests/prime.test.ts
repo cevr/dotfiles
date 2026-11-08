@@ -204,7 +204,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     expect(hint).toBeGreaterThan(0)
     expect(details.lines.slice(hint + 1, hint + 5)).toEqual([
       " ┃",
-      expect.stringMatching(/^ ← manage {20,}gpt-sim-model · 64k \(24%\)$/),
+      expect.stringMatching(/^ {20,}gpt-sim-model · 64k \(24%\)$/),
       ` ${"─".repeat(104)}`,
       " ◆ 0 subagents  ·  0 shells",
     ])

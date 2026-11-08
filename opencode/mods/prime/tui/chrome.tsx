@@ -181,10 +181,7 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   const sep = () => <span style={{ fg: theme().text.faint }}>{DOCK_SEP}</span>
   return (
     <box flexDirection="column" flexGrow={1} flexShrink={1}>
-      <box flexDirection="row" justifyContent="space-between" height={1}>
-        <text wrapMode="none" fg={theme().text.muted}>
-          ← manage
-        </text>
+      <box flexDirection="row" justifyContent="flex-end" height={1}>
         <text wrapMode="none" truncate fg={theme().text.faint}>
           {[model(), usage()].filter(Boolean).join(" · ")}
         </text>
