@@ -5,9 +5,10 @@
 // state column someone keeps by hand in plan.md is never read.
 import type { Unit } from "./status.ts"
 
-/** One orchestrate run's directory name and the table the status script printed for it. */
+/** One orchestrate run's directory name, its path when known, and the table the status script printed for it. */
 export interface RunTable {
   readonly name: string
+  readonly dir?: string
   readonly table: string
 }
 

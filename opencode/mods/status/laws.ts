@@ -88,7 +88,7 @@ export const runTablesLaws = (name: string, make: (runs: ReadonlyArray<RunTable>
         Effect.gen(function* () {
           const probe = yield* make(tables)
           const runs = yield* RunTables.use((runs) => runs.list(probe.repository)).pipe(Effect.provide(probe.layer))
-          expect(byName(runs)).toEqual([...tables])
+          expect(byName(runs).map(({ name, table }) => ({ name, table }))).toEqual([...tables])
         }),
       ))
 

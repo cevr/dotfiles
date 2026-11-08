@@ -32,9 +32,10 @@ export const Unit = Schema.Struct({
 })
 export type Unit = typeof Unit.Type
 
-/** An orchestrate run: its directory's name and its units. */
+/** An orchestrate run: its directory's name, its path when known, and its units. */
 export const Run = Schema.Struct({
   name: Schema.String,
+  dir: Schema.optionalKey(Schema.String),
   units: Schema.Array(Unit),
 })
 export type Run = typeof Run.Type

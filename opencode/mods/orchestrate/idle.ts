@@ -76,9 +76,10 @@ export interface RunUnit {
   readonly cadence?: string
 }
 
-/** One orchestrate run: its directory's name and its units. */
+/** One orchestrate run: its directory's name, its path when the status plugin gives it, and its units. */
 export interface Run {
   readonly name: string
+  readonly dir?: string
   readonly units: ReadonlyArray<RunUnit>
 }
 
