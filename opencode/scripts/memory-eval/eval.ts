@@ -4,7 +4,7 @@
 //
 // Usage, from opencode/:
 //   bun scripts/memory-eval/eval.ts [--dry] [--repeats 8] [--cap 5] [--concurrency 4] [--model claude-haiku-5-5]
-//                                   [--arms none,ours,ours+pointer,native] [--scenarios webapp,dotfiles,billing,orders]
+//                                   [--arms none,ours,ours+pointer,native,kernel,ours+nudge,kernel+nudge] [--scenarios webapp,dotfiles,billing,orders]
 //                                   [--out out/memory-eval/<stamp>]
 //
 // --dry runs one episode per arm. The run stops starting requests once --cap

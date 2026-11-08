@@ -1,7 +1,7 @@
 // The run's summary from its episodes: per arm, the means with their counts,
 // then correctness per scenario and per kind of fact, then a few failures.
 import { costOf, type Usage } from "./api.ts"
-import { ARMS, type EpisodeResult } from "./episode.ts"
+import { ARMS, type EpisodeResult, nudged, onOurs } from "./episode.ts"
 import { grade } from "./grade.ts"
 import { SCENARIOS } from "./scenarios.ts"
 
@@ -47,7 +47,7 @@ export const report = (episodes: ReadonlyArray<EpisodeResult>): string => {
         group.length,
         arm === "none" ? "–" : pct(facts.filter(([, v]) => v).length, facts.length),
         arm === "none" ? "–" : pct(group.filter((e) => e.graded.readBeforeAct).length, group.length),
-        arm.startsWith("ours") ? pct(group.filter((e) => e.graded.digest).length, group.length) : "–",
+        onOurs(arm) ? pct(group.filter((e) => e.graded.digest).length, group.length) : "–",
         pct(correct.filter(([, v]) => v).length, correct.length),
         pct(all, group.length),
         arm === "none" ? "–" : pct(savedAndCorrect.filter(([, v]) => v).length, savedAndCorrect.length),
@@ -61,6 +61,17 @@ export const report = (episodes: ReadonlyArray<EpisodeResult>): string => {
         `$${mean(cost, 4)}`,
       ].join(" | ").replace(/^/, "| ").replace(/$/, " |"),
     )
+  }
+
+  const triggered = arms.filter(nudged)
+  if (triggered.length > 0) {
+    lines.push("", "The gotcha trigger: tool results that carried its line, and the memory writes of those episodes:", "", "| arm | results with the line s1/s2 | episodes with one in s1 | memory writes s1/s2 |", "| --- | --- | --- | --- |")
+    for (const arm of triggered) {
+      const group = ok.filter((episode) => episode.arm === arm)
+      lines.push(
+        `| ${arm} | ${group.reduce((n, e) => n + (e.s1?.nudges ?? 0), 0)} / ${group.reduce((n, e) => n + (e.s2.nudges ?? 0), 0)} | ${group.filter((e) => (e.s1?.nudges ?? 0) > 0).length}/${group.length} | ${group.reduce((n, e) => n + e.graded.writes1, 0)} / ${group.reduce((n, e) => n + e.graded.writes2, 0)} |`,
+      )
+    }
   }
 
   lines.push("", "Session-2 facts honoured, per scenario:", "", `| arm | ${SCENARIOS.map((s) => s.id).join(" | ")} |`, `| --- | ${SCENARIOS.map(() => "---").join(" | ")} |`)
