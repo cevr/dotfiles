@@ -230,4 +230,7 @@ test("an answer matches its assumption regardless of case and spacing", () => {
   expect(matches(" Yes ", "yes")).toBe(true)
   expect(matches("use  8080", "Use 8080")).toBe(true)
   expect(matches("3000", "8080")).toBe(false)
+  // An option chosen with a note in the question form is still the option.
+  expect(matches("Postgres (note: keep SQLite for tests)", "Postgres")).toBe(true)
+  expect(matches("SQLite (note: Postgres later)", "Postgres")).toBe(false)
 })

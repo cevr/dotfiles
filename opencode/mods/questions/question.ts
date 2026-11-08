@@ -69,7 +69,10 @@ export const questionOf = (row: Row): Question => {
 export const normalize = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase()
 
 /** Whether an answer says what the agent assumed. */
-export const matches = (answer: string, assume: string): boolean => normalize(answer) === normalize(assume)
+/** The question form sends an option chosen with a note as `<option> (note: <note>)`. */
+const withoutNote = (answer: string): string => answer.replace(/ \(note: [\s\S]*\)$/, "")
+
+export const matches = (answer: string, assume: string): boolean => normalize(withoutNote(answer)) === normalize(assume)
 
 // ── Commands ──
 
