@@ -37,13 +37,19 @@ export class QuestionsModel extends Context.Service<
     readonly open: (sessionIDs: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<Question>>
     /**
      * Record the answers given in one submit under one message id, then deliver
-     * them as that one message; the questions close once it is delivered. What
-     * was recorded, and the ids left out because they were no longer open.
+     * them as that one message; the questions close once it is delivered. The
+     * questions `dismissed` in the submit ride in that message, or close at once
+     * with no message when nothing was answered. What was answered, what was
+     * dismissed, and the ids left out because they were no longer open.
      */
     readonly answer: (
       sessionID: string,
       answers: ReadonlyArray<Given>,
-    ) => Effect.Effect<{ readonly answered: ReadonlyArray<string>; readonly skipped: ReadonlyArray<string> }, ReplyRejection | QuestionsUnreadable | DeliveryRefused>
+      dismissed?: ReadonlyArray<string>,
+    ) => Effect.Effect<
+      { readonly answered: ReadonlyArray<string>; readonly dismissed: ReadonlyArray<string>; readonly skipped: ReadonlyArray<string> },
+      ReplyRejection | QuestionsUnreadable | DeliveryRefused
+    >
     readonly dismiss: (sessionID: string, id: string) => Effect.Effect<void, ReplyRejection | QuestionsUnreadable>
     /** Send every answer recorded in a stored sheet and not yet delivered (a restart's leftovers); how many went. A sheet whose session is gone is removed. */
     readonly resend: Effect.Effect<number>
@@ -84,7 +90,7 @@ export const layer = Layer.effect(
       for (const row of sheet.rows) {
         if (row.answered === undefined) continue
         const batch = batches.get(row.answered.delivery) ?? []
-        batch.push({ question: questionOf(row), answer: row.answered.answer })
+        batch.push({ question: questionOf(row), answer: row.answered.answer, ...(row.answered.dismissed === true ? { dismissed: true } : {}) })
         batches.set(row.answered.delivery, batch)
       }
       // Delivery ids ascend, so the older submit goes first.
@@ -110,12 +116,17 @@ export const layer = Layer.effect(
           .flatMap((sheet) => (sheet === undefined ? [] : openOf(sheet.rows).map(questionOf)))
           .toSorted((left, right) => left.askedAt - right.askedAt)
       }),
-      answer: Effect.fn("QuestionsModel.answer")(function* (sessionID: string, answers: ReadonlyArray<Given>) {
+      answer: Effect.fn("QuestionsModel.answer")(function* (sessionID: string, answers: ReadonlyArray<Given>, dismissed: ReadonlyArray<string> = []) {
         const delivery = yield* courier.newDelivery
-        const events = yield* apply(sessionID, (sheet) => decideAnswers(sheet, AnswerQuestions.make({ answers, delivery })))
-        const answered = events.flatMap((event) => (event._tag === "QuestionAnswered" ? [event.id] : []))
-        yield* flush(sessionID)
-        return { answered, skipped: answers.map((given) => given.id.trim()).filter((id) => !answered.includes(id)) }
+        const events = yield* apply(sessionID, (sheet) => decideAnswers(sheet, AnswerQuestions.make({ answers, dismissed, delivery })))
+        const answered = events.flatMap((event) => (event._tag === "QuestionAnswered" && event.dismissed !== true ? [event.id] : []))
+        const gone = events.flatMap((event) =>
+          (event._tag === "QuestionAnswered" && event.dismissed === true) || (event._tag === "QuestionClosed" && event.reason === "dismissed") ? [event.id] : [],
+        )
+        // A submit that only dismissed sends nothing: the assumptions already stand.
+        if (answered.length > 0) yield* flush(sessionID)
+        const asked = [...answers.map((given) => given.id.trim()), ...dismissed.map((id) => id.trim())]
+        return { answered, dismissed: gone, skipped: [...new Set(asked)].filter((id) => !answered.includes(id) && !gone.includes(id)) }
       }),
       dismiss: (sessionID, id) => apply(sessionID, (sheet) => decideDismiss(sheet, Dismiss.make({ id }))).pipe(Effect.asVoid),
       resend: Effect.gen(function* () {

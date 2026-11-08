@@ -15,6 +15,8 @@
  *   questions (`@dotfiles/opencode-questions/form`); its submit comes back as
  *   the host's `form.replied` event, and every answer it gives arrives in the
  *   asking session as one synthetic steer message that wakes it when idle.
+ *   Each tab's last choice dismisses its question: beside answers the message
+ *   names it; alone, nothing is sent.
  *   Answers recorded but not delivered go with the session's next answer, and
  *   when the plugin starts.
  * - A deleted session's questions go.
@@ -25,7 +27,7 @@ import { AskInput, DESCRIPTION, explain, NAME, receipt } from "@dotfiles/opencod
 import * as Model from "@dotfiles/opencode-questions/model"
 import * as OpenCodeCourier from "@dotfiles/opencode-questions/opencode/courier"
 import * as OpenCodeStore from "@dotfiles/opencode-questions/opencode/store"
-import { answersOf } from "@dotfiles/opencode-questions/form"
+import { replyOf } from "@dotfiles/opencode-questions/form"
 import { Given, type Open, QUESTIONS, type Rejection, type Reply } from "@dotfiles/opencode-questions/question"
 import { Changes, type Courier, type DeliveryRefused, type QuestionStore, type QuestionsUnreadable } from "@dotfiles/opencode-questions/service"
 
@@ -75,13 +77,14 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionSto
         })
       })
 
-      // The /answer form's submit: every answer given goes to the asking session as one message.
+      // The /answer form's submit: every answer given goes to the asking session as one message, naming the
+      // questions dismissed beside them; a submit that only dismisses sends nothing.
       yield* Effect.forkScoped(
         ctx.event.subscribe({ types: ["form.replied"] }).pipe(
           Stream.runForEach((event) => {
-            const answers = answersOf(event.data.answer)
-            if (answers === undefined || answers.length === 0) return Effect.void
-            return questions.answer(event.data.sessionID, answers).pipe(
+            const reply = replyOf(event.data.answer)
+            if (reply === undefined || reply.answers.length + reply.dismissed.length === 0) return Effect.void
+            return questions.answer(event.data.sessionID, reply.answers, reply.dismissed).pipe(
               Effect.catchCause((cause) => Effect.logWarning("questions: the form's answers were not recorded", { sessionID: event.data.sessionID, cause })),
             )
           }),

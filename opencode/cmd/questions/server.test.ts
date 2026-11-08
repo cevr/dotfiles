@@ -197,6 +197,28 @@ describe("answering", () => {
       }),
     ))
 
+  test("the form's Dismiss alone closes the question and sends nothing; Dismiss with a note sends the note on the assumption", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        yield* plugin.call({ questions: [port, { question: "Keep the --legacy flag?", assume: "yes" }] })
+        yield* plugin.submit("ses_root", { "ask_user_async:q1": "ask_user_async:dismiss", "ask_user_async:q2": "" })
+        yield* Effect.suspend(() => plugin.open("ses_root")).pipe(
+          Effect.flatMap((open) => (open.length === 1 ? Effect.void : Effect.fail("not yet"))),
+          Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
+          Effect.orDie,
+        )
+        expect((yield* plugin.open("ses_root")).map((question) => question.id)).toEqual(["q2"])
+        expect(plugin.inbox("ses_root")).toEqual([])
+        yield* plugin.submit("ses_root", { "ask_user_async:q2": "ask_user_async:dismiss (note: drop it next release)" })
+        yield* plugin.received("ses_root", 1)
+        expect(plugin.inbox("ses_root").map((letter) => letter.text.split("\n").slice(-2))).toEqual([
+          ["A: yes (note: drop it next release)", "This is what you assumed: carry on."],
+        ])
+        expect(yield* plugin.open("ses_root")).toEqual([])
+      }),
+    ))
+
   test("dismiss drops the question and the agent is told nothing", () =>
     scenario(
       Effect.gen(function* () {

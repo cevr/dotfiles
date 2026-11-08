@@ -2,7 +2,9 @@
 // a session in one submit goes as one message, so the agent reads the whole
 // picture in one turn. The model reads the text: each question, its
 // assumption, the answer, and whether they differ, so it needs no lookup; one
-// line at the end says what to revise. One answer reads as it always has. The
+// line at the end says what to revise. One answer reads as it always has. A
+// question dismissed in the same submit is named after the answers as
+// `q3 dismissed: your assumption stands`. The
 // transcript draws the description as one notice line,
 // `answered · <question> → <answer>`. The metadata names the source and keeps
 // the answers' fields for anything that reads the transcript.
@@ -12,6 +14,8 @@ import { matches, type Question } from "./question.ts"
 export interface Answered {
   readonly question: Question
   readonly answer: string
+  /** Dismissed beside the answers: named in the message, not answered. */
+  readonly dismissed?: boolean
 }
 
 export interface Letter {
@@ -19,6 +23,8 @@ export interface Letter {
   readonly description: string
   readonly metadata: {
     readonly source: "questions"
+    /** The ids of the questions dismissed beside the answers, when there are any. */
+    readonly dismissed?: ReadonlyArray<string>
     readonly answers: ReadonlyArray<{
       readonly id: string
       readonly question: string
@@ -87,20 +93,33 @@ const textOfMany = (answered: ReadonlyArray<Answered>, same: ReadonlyArray<boole
   ].join("\n")
 }
 
-/** The one message that carries `answered` (at least one), in the order given. */
-export const letterOf = (answered: ReadonlyArray<Answered>): Letter => {
+/** The line that names a question dismissed beside the answers. */
+export const dismissedLine = (question: Question): string =>
+  `${question.id} dismissed: your assumption stands (${question.question} You assumed: ${question.assume})`
+
+/**
+ * The one message that carries `given` (at least one answer), in the order
+ * given; the questions dismissed beside the answers are named after them.
+ */
+export const letterOf = (given: ReadonlyArray<Answered>): Letter => {
+  const answered = given.filter((entry) => entry.dismissed !== true)
+  const dismissed = given.filter((entry) => entry.dismissed === true).map((entry) => entry.question)
   const same = answered.map(({ question, answer }) => matches(answer, question.assume))
   const only = answered.length === 1 ? answered[0] : undefined
+  const body = only !== undefined ? textOfOne(only, same[0] === true) : answered.length === 0 ? "" : textOfMany(answered, same)
+  const named = dismissed.map(dismissedLine).join("\n")
+  const lineOfDismissed = dismissed.length === 0 ? "" : ` · ${listed(dismissed.map((question) => question.id))} dismissed`
   return {
-    text: only !== undefined ? textOfOne(only, same[0] === true) : textOfMany(answered, same),
+    text: [body, named].filter((part) => part !== "").join("\n\n"),
     description:
-      only !== undefined
+      (only !== undefined
         ? `answered · ${excerpt(only.question.question, LINE_QUESTION)} → ${excerpt(only.answer, LINE_ANSWER)}`
         : `answered ${answered.length} · ${answered
             .map(({ question, answer }) => `${excerpt(question.question, LINE_QUESTION_OF_MANY)} → ${excerpt(answer, LINE_ANSWER_OF_MANY)}`)
-            .join(" · ")}`,
+            .join(" · ")}`) + lineOfDismissed,
     metadata: {
       source: "questions",
+      ...(dismissed.length === 0 ? {} : { dismissed: dismissed.map((question) => question.id) }),
       answers: answered.map(({ question, answer }, at) => ({
         id: question.id,
         question: question.question,

@@ -214,6 +214,51 @@ describe("AnswerQuestions, Dismiss and Delivered", () => {
       ),
     ))
 
+  test("a submit that only dismisses closes its questions at once, with no message to deliver", () =>
+    Effect.runPromise(
+      story(
+        Story.given<Event>(QuestionOpened.make({ question: port }), QuestionOpened.make({ question: flag })),
+        Story.when(AnswerQuestions.make({ answers: [], dismissed: [" q2 ", "q9"], delivery: "msg_1" })),
+        Story.then<Event>(QuestionClosed.make({ id: "q2", reason: "dismissed" })),
+        Story.state({ next: 3, rows: [port] }),
+        // Nothing waits under the submit's id.
+        Story.when(Delivered.make({ delivery: "msg_1" })),
+        Story.then<Event>(),
+        Story.when(AnswerQuestions.make({ answers: [], dismissed: ["q2"], delivery: "msg_2" })),
+        Story.rejected(new NotOpen({ id: "q2" })),
+      ),
+    ))
+
+  test("a dismissal beside answers rides in their message, closing as dismissed when it is delivered", () =>
+    Effect.runPromise(
+      story(
+        Story.given<Event>(QuestionOpened.make({ question: port }), QuestionOpened.make({ question: flag }), QuestionOpened.make({ question: asked("q3", "Third?") })),
+        // q1 is both answered and dismissed: the answer wins.
+        Story.when(AnswerQuestions.make({ answers: [{ id: "q1", answer: "3000" }], dismissed: ["q3", "q1"], delivery: "msg_1" })),
+        Story.then<Event>(
+          QuestionAnswered.make({ id: "q1", answer: "3000", delivery: "msg_1" }),
+          QuestionAnswered.make({ id: "q3", answer: "no", delivery: "msg_1", dismissed: true }),
+        ),
+        // Neither is open any more: the tray counts only q2.
+        Story.state({
+          next: 4,
+          rows: [{ ...port, answered: { answer: "3000", delivery: "msg_1" } }, flag, { ...asked("q3", "Third?"), answered: { answer: "no", delivery: "msg_1", dismissed: true } }],
+        }),
+        Story.when(Delivered.make({ delivery: "msg_1" })),
+        Story.then<Event>(QuestionClosed.make({ id: "q1", reason: "delivered" }), QuestionClosed.make({ id: "q3", reason: "dismissed" })),
+        Story.state({ next: 4, rows: [flag] }),
+      ),
+    ))
+
+  test("Dismiss picked with a note is an answer: the assumption, carrying the note", () =>
+    Effect.runPromise(
+      story(
+        Story.given<Event>(QuestionOpened.make({ question: port })),
+        Story.when(AnswerQuestions.make({ answers: [{ id: "q1", answer: " fine, but free 3000 for the docs ", keep: true }], delivery: "msg_1" })),
+        Story.then<Event>(QuestionAnswered.make({ id: "q1", answer: "8080 (note: fine, but free 3000 for the docs)", delivery: "msg_1" })),
+      ),
+    ))
+
   test("an answered question waiting for delivery can no longer be withdrawn or dismissed", () =>
     Effect.runPromise(
       story(

@@ -59,7 +59,7 @@ describe("QuestionsModel", () => {
   test("one answer reaches the asking session once, in the one-answer letter, and the question closes", async () => {
     const { run, fail, texts, sheets } = rig()
     await run((model) => model.ask("ses_a", { questions: [port] }))
-    expect(await run((model) => model.answer("ses_a", [{ id: "q1", answer: "3000" }]))).toEqual({ answered: ["q1"], skipped: [] })
+    expect(await run((model) => model.answer("ses_a", [{ id: "q1", answer: "3000" }]))).toEqual({ answered: ["q1"], dismissed: [], skipped: [] })
     expect(texts("ses_a")).toHaveLength(1)
     expect(texts("ses_a")[0]).toStartWith("Answer to your background question q1 (asked ")
     expect(texts("ses_a")[0]).toContain("A: 3000")
@@ -79,7 +79,7 @@ describe("QuestionsModel", () => {
         { id: "q3", answer: "vitest" },
       ]),
     )
-    expect(done).toEqual({ answered: ["q1", "q2", "q3"], skipped: [] })
+    expect(done).toEqual({ answered: ["q1", "q2", "q3"], dismissed: [], skipped: [] })
     expect(texts("ses_a")).toHaveLength(1)
     expect(texts("ses_a")[0]).toStartWith("Answers to your background questions q1, q2 and q3:")
     expect(sessions.inboxes.get("ses_a")?.[0]?.letter.metadata.answers.map((answer) => answer.id)).toEqual(["q1", "q2", "q3"])
@@ -113,7 +113,7 @@ describe("QuestionsModel", () => {
     const { run, texts } = rig()
     await run((model) => model.ask("ses_a", { questions: [port, flag] }))
     await run((model) => model.ask("ses_a", { withdraw: ["q2"] }))
-    expect(await run((model) => model.answer("ses_a", [{ id: "q1", answer: "3000" }, { id: "q2", answer: "no" }]))).toEqual({ answered: ["q1"], skipped: ["q2"] })
+    expect(await run((model) => model.answer("ses_a", [{ id: "q1", answer: "3000" }, { id: "q2", answer: "no" }]))).toEqual({ answered: ["q1"], dismissed: [], skipped: ["q2"] })
     expect(texts("ses_a")).toHaveLength(1)
   })
 
@@ -209,6 +209,28 @@ describe("QuestionsModel", () => {
     await run((model) => model.dismiss("ses_a", "q1"))
     expect(await run((model) => model.open(["ses_a"]))).toEqual([])
     expect(texts("ses_a")).toEqual([])
+  })
+
+  test("a submit that only dismisses closes its questions and sends nothing, then or later", async () => {
+    const { run, texts, sheets } = rig()
+    await run((model) => model.ask("ses_a", { questions: [port, flag] }))
+    expect(await run((model) => model.answer("ses_a", [], ["q1"]))).toEqual({ answered: [], dismissed: ["q1"], skipped: [] })
+    expect((await run((model) => model.open(["ses_a"]))).map((question) => question.id)).toEqual(["q2"])
+    expect(sheets.sheets.get("ses_a")?.rows.map((row) => row.id)).toEqual(["q2"])
+    expect(await run((model) => model.resend)).toBe(0)
+    expect(texts("ses_a")).toEqual([])
+  })
+
+  test("a submit that answers and dismisses sends one message naming the dismissed; a resend sends nothing more", async () => {
+    const { run, texts, sheets } = rig()
+    await run((model) => model.ask("ses_a", { questions: [port, flag, runner] }))
+    expect(await run((model) => model.answer("ses_a", [{ id: "q1", answer: "3000" }], ["q3"]))).toEqual({ answered: ["q1"], dismissed: ["q3"], skipped: [] })
+    expect(texts("ses_a")).toHaveLength(1)
+    expect(texts("ses_a")[0]).toStartWith("Answer to your background question q1 (asked ")
+    expect(texts("ses_a")[0]).toEndWith("q3 dismissed: your assumption stands (Which test runner? You assumed: bun test)")
+    expect(sheets.sheets.get("ses_a")?.rows.map((row) => row.id)).toEqual(["q2"])
+    expect(await run((model) => model.resend)).toBe(0)
+    expect(texts("ses_a")).toHaveLength(1)
   })
 
   test("forget removes the session's sheet and announces it", async () => {

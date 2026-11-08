@@ -5,8 +5,11 @@
 // (dropped), the user dismisses it, or its answer was delivered. The answers
 // of one submit are recorded on their rows at once, all with the id of the one
 // message that carries them, before it is sent, so a send that stopped short
-// goes again under the same id and the session reads it once. Also the
-// questions' RPC, which the TUI reads.
+// goes again under the same id and the session reads it once. A submit may
+// dismiss questions too: with no answer beside them they close at once and
+// nothing is sent (the assumption already stands); beside answers they ride
+// in the same message, named as dismissed, and close when it is delivered.
+// Also the questions' RPC, which the TUI reads.
 import { Effect, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 
@@ -33,8 +36,12 @@ export const Question = Schema.Struct({
 })
 export type Question = typeof Question.Type
 
-/** A recorded answer and the id of the message that carries it. Written once; the first answer wins. */
-export const Answer = Schema.Struct({ answer: Schema.String, delivery: Schema.String })
+/**
+ * A recorded answer and the id of the message that carries it. Written once;
+ * the first answer wins. `dismissed`: the user dismissed the question beside
+ * other answers, so the message names it as dismissed and `answer` is the assumption.
+ */
+export const Answer = Schema.Struct({ answer: Schema.String, delivery: Schema.String, dismissed: Schema.optional(Schema.Literal(true)) })
 export type Answer = typeof Answer.Type
 
 /** A question as the sheet keeps it: open until `answered` is recorded, then waiting for its delivery. */
@@ -68,10 +75,10 @@ export const questionOf = (row: Row): Question => {
 /** Text compared as the user means it: case and spacing do not count. */
 export const normalize = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase()
 
-/** Whether an answer says what the agent assumed. */
 /** The question form sends an option chosen with a note as `<option> (note: <note>)`. */
 const withoutNote = (answer: string): string => answer.replace(/ \(note: [\s\S]*\)$/, "")
 
+/** Whether an answer says what the agent assumed. */
 export const matches = (answer: string, assume: string): boolean => normalize(withoutNote(answer)) === normalize(assume)
 
 // ── Commands ──
@@ -94,16 +101,24 @@ export const Ask = Schema.TaggedStruct("Ask", {
 })
 export interface Ask extends Schema.Schema.Type<typeof Ask> {}
 
-/** One question's answer as the user gave it. */
-export const Given = Schema.Struct({ id: Schema.String, answer: Schema.String })
+/**
+ * One question's answer as the user gave it. `keep`: the user kept the
+ * assumption and `answer` is their note on it, so the answer recorded is the
+ * assumption with that note (`<assumption> (note: <note>)`).
+ */
+export const Given = Schema.Struct({ id: Schema.String, answer: Schema.String, keep: Schema.optional(Schema.Boolean) })
 export type Given = typeof Given.Type
 
 /**
  * Record the answers the user gave in one submit, all under the one message id
- * that carries them. Written at once, so the batch is closed before it is sent:
- * a later submit takes a new id.
+ * that carries them, and the questions they dismissed in it. Written at once,
+ * so the batch is closed before it is sent: a later submit takes a new id.
  */
-export const AnswerQuestions = Schema.TaggedStruct("AnswerQuestions", { answers: Schema.Array(Given), delivery: Schema.String })
+export const AnswerQuestions = Schema.TaggedStruct("AnswerQuestions", {
+  answers: Schema.Array(Given),
+  dismissed: Schema.optional(Schema.Array(Schema.String)),
+  delivery: Schema.String,
+})
 export interface AnswerQuestions extends Schema.Schema.Type<typeof AnswerQuestions> {}
 
 /** Drop an open question without telling the agent. */
@@ -128,7 +143,13 @@ export type Reason = typeof Reason.Type
 export const QuestionClosed = Schema.TaggedStruct("QuestionClosed", { id: Schema.String, reason: Reason })
 export interface QuestionClosed extends Schema.Schema.Type<typeof QuestionClosed> {}
 
-export const QuestionAnswered = Schema.TaggedStruct("QuestionAnswered", { id: Schema.String, answer: Schema.String, delivery: Schema.String })
+export const QuestionAnswered = Schema.TaggedStruct("QuestionAnswered", {
+  id: Schema.String,
+  answer: Schema.String,
+  delivery: Schema.String,
+  /** Dismissed beside other answers: the message names it, and it closes as dismissed. */
+  dismissed: Schema.optional(Schema.Literal(true)),
+})
 export interface QuestionAnswered extends Schema.Schema.Type<typeof QuestionAnswered> {}
 
 export type Event = QuestionOpened | QuestionClosed | QuestionAnswered
@@ -217,17 +238,33 @@ export const decideAsk = (state: Sheet, command: Ask, now: number): Effect.Effec
  * What a submit records: each answer and the one message id on its open row,
  * in the order asked. An answer to a question no longer open (withdrawn or
  * answered meanwhile) is left out, and an id given twice counts once; a submit
- * that answers nothing open is refused, as is an empty answer.
+ * that answers and dismisses nothing open is refused, as is an empty answer.
+ * A dismissal with no answer beside it closes its question at once, since no
+ * message goes; beside answers it is recorded under the same message id, so
+ * the message names it. A question both answered and dismissed is answered.
  */
 export const decideAnswers = (state: Sheet, command: AnswerQuestions): Effect.Effect<ReadonlyArray<Event>, ReplyRejection> => {
   const empty = command.answers.find((given) => given.answer.trim() === "")
   if (empty !== undefined) return Effect.fail(new EmptyAnswer({ id: empty.id }))
-  const events = openOf(state.rows).flatMap((row) => {
-    const given = command.answers.find((candidate) => candidate.id.trim() === row.id)
-    return given === undefined ? [] : [QuestionAnswered.make({ id: row.id, answer: given.answer.trim(), delivery: command.delivery })]
-  })
-  if (events.length === 0) return Effect.fail(new NotOpen({ id: command.answers[0]?.id ?? "" }))
-  return Effect.succeed(events)
+  const open = openOf(state.rows)
+  const givenOf = (row: Row) => command.answers.find((candidate) => candidate.id.trim() === row.id)
+  const dismissed = command.dismissed ?? []
+  const isDismissed = (row: Row) => givenOf(row) === undefined && dismissed.some((id) => id.trim() === row.id)
+  const answered = open.filter((row) => givenOf(row) !== undefined)
+  if (answered.length === 0) {
+    const closed = open.filter(isDismissed).map((row) => QuestionClosed.make({ id: row.id, reason: "dismissed" }))
+    return closed.length === 0 ? Effect.fail(new NotOpen({ id: command.answers[0]?.id ?? dismissed[0] ?? "" })) : Effect.succeed(closed)
+  }
+  return Effect.succeed(
+    open.flatMap((row) => {
+      const given = givenOf(row)
+      if (given !== undefined) {
+        const answer = given.keep === true ? `${row.assume} (note: ${given.answer.trim()})` : given.answer.trim()
+        return [QuestionAnswered.make({ id: row.id, answer, delivery: command.delivery })]
+      }
+      return isDismissed(row) ? [QuestionAnswered.make({ id: row.id, answer: row.assume, delivery: command.delivery, dismissed: true })] : []
+    }),
+  )
 }
 
 /** What a dismissal records: the open question closes. */
@@ -240,7 +277,9 @@ export const decideDismiss = (state: Sheet, command: Dismiss): Effect.Effect<Rea
 /** What a delivery records: the questions it answered close; a delivery seen before records nothing. */
 export const decideDelivered = (state: Sheet, command: Delivered): Effect.Effect<ReadonlyArray<Event>> =>
   Effect.succeed(
-    state.rows.filter((row) => row.answered?.delivery === command.delivery).map((row) => QuestionClosed.make({ id: row.id, reason: "delivered" })),
+    state.rows
+      .filter((row) => row.answered?.delivery === command.delivery)
+      .map((row) => QuestionClosed.make({ id: row.id, reason: row.answered?.dismissed === true ? "dismissed" : "delivered" })),
   )
 
 export const Questions: Decider<Sheet, Command, Event, Rejection> = {
@@ -268,7 +307,11 @@ export const Questions: Decider<Sheet, Command, Event, Rejection> = {
       case "QuestionAnswered":
         return {
           ...state,
-          rows: state.rows.map((row) => (row.id === event.id ? { ...row, answered: { answer: event.answer, delivery: event.delivery } } : row)),
+          rows: state.rows.map((row) =>
+            row.id === event.id
+              ? { ...row, answered: { answer: event.answer, delivery: event.delivery, ...(event.dismissed === true ? { dismissed: true as const } : {}) } }
+              : row,
+          ),
         }
     }
   },

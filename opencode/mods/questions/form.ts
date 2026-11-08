@@ -3,7 +3,8 @@
 // choices, a line to type an answer of one's own, one submit). The TUI opens
 // it through the host's `session.form.create`; the server reads its reply off
 // the host's `form.replied` event and records every answer given as one
-// message. A question left blank stays open.
+// message. A question left blank stays open; one answered with the last
+// choice, Dismiss, closes on its assumption.
 //
 // The form is the host's, so it is told apart by its field keys: each is
 // `ask_user_async:<question id>`, a prefix no host form uses.
@@ -18,6 +19,12 @@ export const TITLE = "Background questions"
 export const ASSUMED = "assumed"
 /** How much of the question a tab's label keeps when it has no header. */
 export const TAB = 24
+/** The last choice of every tab: close the question and keep working on the assumption. */
+export const DISMISS = "Dismiss · keep the assumption"
+/** What the form replies when Dismiss is picked: a value no typed answer is. */
+export const DISMISS_VALUE = `${KEY_PREFIX}dismiss`
+/** The host form sends an option chosen with a note as `<option> (note: <note>)`. */
+const NOTED_DISMISS = new RegExp(`^${DISMISS_VALUE} \\(note: ([\\s\\S]*)\\)$`)
 
 /** A host form option. */
 export interface FormOption {
@@ -53,7 +60,8 @@ const option = (label: string, description: string | undefined): FormOption => (
  * The question as a field: its choices with the assumed one first (where the
  * built-in tool puts its recommended choice, and where the cursor starts),
  * marked `assumed`; with no choice naming the assumption, the assumption is a
- * choice of its own at the top.
+ * choice of its own at the top. Dismiss is the last choice, before the host's
+ * own "Type your own answer".
  */
 export const fieldOf = (question: Question): FormField => {
   const choices = question.options ?? []
@@ -67,7 +75,11 @@ export const fieldOf = (question: Question): FormField => {
     type: "string",
     title: question.header ?? excerpt(question.question, TAB),
     description: question.question,
-    options: [first, ...choices.filter((choice) => choice !== assumed).map((choice) => option(choice.label, choice.description))],
+    options: [
+      first,
+      ...choices.filter((choice) => choice !== assumed).map((choice) => option(choice.label, choice.description)),
+      { value: DISMISS_VALUE, label: DISMISS },
+    ],
     custom: true,
   }
 }
@@ -87,16 +99,36 @@ export const formOf = (questions: ReadonlyArray<Question>, from?: string): FormI
 export const isOurs = (form: { readonly fields: ReadonlyArray<{ readonly key: string }> }): boolean =>
   form.fields.length > 0 && form.fields.every((field) => field.key.startsWith(KEY_PREFIX))
 
+/** What a form's reply gives: the answers, and the questions dismissed. */
+export interface FormReply {
+  readonly answers: ReadonlyArray<Given>
+  readonly dismissed: ReadonlyArray<string>
+}
+
 /**
- * The answers a form's reply gives, in its keys' order, when every key is
- * ours; a blank one is left out. None when the reply is another form's.
+ * What a form's reply gives, in its keys' order, when every key is ours; a
+ * blank one is left out. Dismiss picked alone dismisses; Dismiss picked with a
+ * note keeps the assumption and sends the note, so it is an answer. None when
+ * the reply is another form's.
  */
-export const answersOf = (answer: Readonly<Record<string, unknown>>): ReadonlyArray<Given> | undefined => {
+export const replyOf = (answer: Readonly<Record<string, unknown>>): FormReply | undefined => {
   const keys = Object.keys(answer)
   if (keys.length === 0 || !keys.every((key) => key.startsWith(KEY_PREFIX))) return undefined
-  return keys.flatMap((key) => {
+  const answers: Array<Given> = []
+  const dismissed: Array<string> = []
+  for (const key of keys) {
+    const id = key.slice(KEY_PREFIX.length)
     const value = answer[key]
-    const text = Array.isArray(value) ? value.map(String).join(", ") : value === undefined || value === null ? "" : String(value)
-    return text.trim() === "" ? [] : [{ id: key.slice(KEY_PREFIX.length), answer: text.trim() }]
-  })
+    const text = (Array.isArray(value) ? value.map(String).join(", ") : value === undefined || value === null ? "" : String(value)).trim()
+    if (text === "") continue
+    if (text === DISMISS_VALUE) {
+      dismissed.push(id)
+      continue
+    }
+    const note = NOTED_DISMISS.exec(text)?.[1]?.trim()
+    if (note === undefined) answers.push({ id, answer: text })
+    else if (note === "") dismissed.push(id)
+    else answers.push({ id, answer: note, keep: true })
+  }
+  return { answers, dismissed }
 }
