@@ -106,7 +106,7 @@ export interface CourierProbe {
   readonly received: (sessionID: string) => Effect.Effect<ReadonlyArray<Received>>
 }
 
-const letter = letterOf({ id: "q1", sessionID: "ses_a", question: "Which port?", header: "Port", assume: "8080", askedAt: ASKED }, "3000")
+const letter = letterOf([{ question: { id: "q1", sessionID: "ses_a", question: "Which port?", header: "Port", assume: "8080", askedAt: ASKED }, answer: "3000" }])
 
 /** `make` gives a courier with no sessions within the test's scope. */
 export const courierLaws = (name: string, make: Effect.Effect<CourierProbe, never, Scope.Scope>) =>
