@@ -15,17 +15,13 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { owned } from "./owned.ts"
+import { ready, type Service } from "./service.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/mail-peer.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 
 const ROOT = join(import.meta.dir, "..")
 const TIMEOUT_MS = 150_000
-
-interface Service {
-  readonly url: string
-  readonly password: string
-}
 
 interface Host {
   readonly name: string
@@ -175,12 +171,9 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
     void (async () => {
       for await (const chunk of child.stderr) stderr += new TextDecoder().decode(chunk)
     })()
-    // A build from source is the "local" channel: its service file is service-local.json.
-    const service = (await until(
-      () => readJson(join(home, ".local/state/opencode/service-local.json")) as Service | undefined,
-      (value) => typeof value?.url === "string" && typeof value.password === "string",
-      () => `${name}'s service file (${stderr.slice(-500)})`,
-    )) as Service
+    // A build from source is the "local" channel: its service file is service-local.json. The file is written
+    // when the service listens, before it boots, and it answers 503 until then: wait until it can serve.
+    const service = await ready(join(home, ".local/state/opencode/service-local.json"), () => `${name}'s service (${stderr.slice(-500)})`)
     const pairs = join(home, ".local/state/opencode-mail/pairs.json")
     const host: Host = {
       name,
