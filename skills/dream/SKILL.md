@@ -1,6 +1,6 @@
 ---
 name: dream
-description: "Weekly retro across every session, machine and orchestrate run: where the week's time and compute went, what to change, and an audit of each machine's memory notes."
+description: "Weekly retro across every session, machine and orchestrate run: where the week's time and compute went, what to change, and an audit of each machine's memory notes and prompt-cache efficiency."
 disable-model-invocation: true
 ---
 
@@ -10,7 +10,7 @@ The window is the last 7 days unless the owner names another. Work only from mea
 
 ## Steps
 
-1. **Read last week's dream** in `~/.claude/dreams/`, if one exists. For each action it applied, find the number it promised to move. An action that moved nothing is a revert candidate. Removing tooling counts the same as adding it. Its Memory section counts too: a note added for a repeated correction worked when the owner stopped repeating it, and a note no session used since is a prune candidate in step 6.
+1. **Read last week's dream** in `~/.claude/dreams/`, if one exists. For each action it applied, find the number it promised to move. An action that moved nothing is a revert candidate. Removing tooling counts the same as adding it. Its Memory section counts too: a note added for a repeated correction worked when the owner stopped repeating it, and a note no session used since is a prune candidate in step 6. So does its Cache section, which step 7 holds against this week's audit.
 
 2. **Mine the sessions on each machine.** The machines are this one and each remote dev box the global `AGENTS.md` names (over `ssh`). Run the miner from [`retro`](../retro/SKILL.md) step 2 on each one, with its own `--out`:
 
@@ -59,13 +59,28 @@ The window is the last 7 days unless the owner names another. Work only from mea
 
    The audit is done when every stale note and near pair has a decision and every repeated owner correction maps to a note. These changes apply now, without the owner's pick: they are reversible, and next week's dream checks them.
 
-7. **Write `~/.claude/dreams/<YYYY-MM-DD>.md`.** Do not write it in the dotfiles. That repository is public, and the digest quotes work sessions. Include:
+7. **Audit the prompt cache on each machine.** The north star is the overall **hit rate** (`read / (read + write + uncached)`) and the **wasted writes** (tokens a break wrote again). Each machine keeps its own ledger, so run the audit on each one, after the pull of step 2:
+
+   ```
+   cd ~/Developer/personal/dotfiles/opencode && bun scripts/cache-audit.ts --since 7d --static --json
+   ```
+
+   It gives the hit rate and the writes' share of prompt and cost, overall and per host, agent and model; the **breaks** (a session's read falling sharply against its request before) by cause, ranked by wasted writes, with the first changed segment; the cold starts (`subagent-first`, `session-start`); the top sessions; the trade of lifetimes under an hour; and `rules`, the six caching rules plus the lifetime fit, `pass`, `warn` or `fail`, each finding naming its file. The causes and rules are in `opencode/README.md`, Cache.
+
+   - Hold each number against last week's dream file, its **Cache** section. A fix it applied is kept when its cause's wasted writes fell, and is a revert candidate when they did not.
+   - Name the top two causes by wasted writes on each machine, with their segment or file. `dropped` and `restart` name no segment: read the top sessions' breaks (`--top 20`, text output) before naming a fix for them.
+   - Pick one or two fixes for the top causes, at the highest rung that works: a plugin or config change first (a mod under `opencode/mods`, its `cmd/` root, the config), a fork hook last (`opencode/AGENTS.md`, the fork's ladder). A fix that is a small, reversible plugin or config change applies now, on its own branch, with its focused tests and gate, committed as one Conventional Commit; anything larger, and every fork change, goes to the candidates of step 8. Each fix names the number next week's audit reads: the cause's wasted writes, or a rule's status.
+
+   The audit is done when each machine's hit rate, write-token share, write cost share and top causes are recorded, every `fail` rule has a fix applied or queued, and every fix names its number.
+
+8. **Write `~/.claude/dreams/<YYYY-MM-DD>.md`.** Do not write it in the dotfiles. That repository is public, and the digest quotes work sessions. Include:
    - The week's numbers per machine, with a measured label.
    - At most 10 candidates, ranked by expected saving. Each candidate gives: the evidence, the class, the fix at the highest level that works (the ladder in [`retro`](../retro/SKILL.md) step 4), the expected saving, and the number next week's dream reads to check it.
    - Last week's actions, each kept or reverted, with the number.
    - A **Memory** section per machine: each note added, edited, merged or forgotten, by id, with its evidence (the digest line or session it rests on) and the number next week's dream reads, such as how often the owner repeated that correction; and the `stats` totals before and after.
+   - A **Cache** section per machine, measured: the hit rate, the write-token share, the write cost share, the wasted writes and the break count, each beside last week's with the trend; the top causes with their wasted writes; each rule's status; and each fix applied (its commit) or queued, with the number next week's audit reads.
 
-8. **Present the candidates to the owner.** Skill, `AGENTS.md` and principle edits land once the owner picks them. Then follow [`writing-for-agents`](../writing-for-agents/SKILL.md), commit each edit as its own Conventional Commit, and push. Add a `Applied:` line to the dream file that names each commit.
+9. **Present the candidates to the owner.** Skill, `AGENTS.md` and principle edits land once the owner picks them. Then follow [`writing-for-agents`](../writing-for-agents/SKILL.md), commit each edit as its own Conventional Commit, and push. Add a `Applied:` line to the dream file that names each commit.
 
 ## Reference
 

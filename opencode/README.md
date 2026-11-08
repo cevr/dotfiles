@@ -1043,6 +1043,28 @@ Each judged request is a line of `~/.cache/opencode-cache-ledger/ledger.jsonl`
 by cause, by first changed segment, the unexplained part (`login`, `prefix`,
 `unchanged`) per host and day, and the costliest session-hours.
 
+`bun scripts/cache-audit.ts [--since 7d] [--host <name>] [--top 10] [--json]
+[--static] [--primary build,plan] [--file <ledger.jsonl>]...` audits it for
+the weekly dream (`mods/cache/audit.ts`). The north star is the hit rate,
+`read / (read + write + uncached)`, overall and per host, agent and model,
+with the writes' share of the prompt and of its cost (Anthropic's list
+multipliers: read 0.1×, 5-minute write 1.25×, 1-hour write 2×), and the
+wasted writes. A break is a request whose read fell against the session's
+request before by more than the 1,024-token floor and a fifth of the prompt
+both share, found from the tokens, classified first match wins: `model-switch`,
+`compaction`, `ttl-expiry` (a gap past the previous request's lifetime),
+`login-move`, `restart` (the server judged it first although the ledger holds
+an earlier request), `tool-set`, `system-prompt` or `message-edit` (by the
+first changed segment), else `dropped`. A session's first request is a cold
+start: `subagent-first` on an agent outside `--primary`, else
+`session-start`. It ranks the causes and sessions by the tokens written
+again, and weighs lifetimes under an hour (the roles' 5 minutes): the hour's
+dearer writes against the expiries an hour would have covered. `--static`
+holds the setup against the six caching rules and the lifetime fit
+(`mods/cache/rules.ts`): probes of our plugins, the fork (`OPENCODE_DEV`) and
+the config's model and MCP server names, with the window's breaks as the
+evidence, `pass`, `warn` or `fail` per rule with the file responsible.
+
 ## Guard
 
 `cmd/guard` is a server plugin that refuses a shell command that loses work
