@@ -11,7 +11,7 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { probe, serviceEndpoint } from '../../retro/scripts/mine/opencode.ts';
 import { opencodeAgents, roundsOf, roundsTable, ROUNDS_HEADER } from './models/opencode.ts';
-import { joinUnit, outcomeOf, type Outcome, type Phase } from './models/outcomes.ts';
+import { joinUnits, outcomeOf, type Outcome, type Phase } from './models/outcomes.ts';
 import { bridgeUnits, claudeAgents, codexAgents, type Agent } from './models/sources.ts';
 import { ROOTS, unitDirs } from './runs.ts';
 
@@ -41,9 +41,10 @@ const find = (unit: string) => {
   byName ??= unitDirs(ROOTS, since).reduce((m, d) => m.set(basename(d), [...(m.get(basename(d)) ?? []), d]), new Map<string, string[]>());
   return byName.get(unit) ?? [];
 };
-const rows: Row[] = agents.map((agent) => {
-  const j = joinUnit(agent, agent.final, find);
-  return { agent, outcome: j ? outcomeOf(j) : undefined };
+// A batch verifier judged each unit of its batch: one row per unit, so its verdicts count per unit.
+const rows: Row[] = agents.flatMap((agent) => {
+  const js = joinUnits(agent, agent.final, find);
+  return js.length ? js.map((j) => ({ agent, outcome: outcomeOf(j) })) : [{ agent }];
 });
 const units = new Map<string, Set<string>>();
 const merged = new Map<string, Set<string>>();
@@ -98,8 +99,9 @@ const HEADLINE: Record<Phase, (os: Outcome[]) => string> = {
   decide: (os) => `units ${os.reduce((s, o) => s + parseInt(o.unit), 0)}, merged ${os.reduce((s, o) => s + parseInt(o.result), 0)}`,
 };
 const joined = rows.filter((r) => r.outcome);
-const workers = rows.filter((r) => ['plan', 'implement', 'verify'].includes(r.agent.role));
-console.log(`\nOutcome: phase      model                 n   headline; results   (n = unit rounds; joined ${joined.length} of ${workers.length} plan, implement and verify agents to a unit)`);
+const workers = agents.filter((a) => ['plan', 'implement', 'verify'].includes(a.role));
+const joinedWorkers = new Set(joined.filter((r) => workers.includes(r.agent)).map((r) => r.agent)).size;
+console.log(`\nOutcome: phase      model                 n   headline; results   (n = unit rounds; joined ${joinedWorkers} of ${workers.length} plan, implement and verify agents to a unit)`);
 for (const [key, rs] of group(joined, (r) => `${r.outcome!.phase}\t${label(r.agent)}`)) {
   const [phase, model] = key.split('\t') as [Phase, string];
   // One result per unit and round: a round that took several agents of one model counts once.
