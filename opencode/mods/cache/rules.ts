@@ -30,7 +30,11 @@ export interface Facts {
   readonly forkSkillsDelta?: boolean
   /** Our plugins that push into the system prompt, each with whether its block is fixed for the session. */
   readonly systemPushers: ReadonlyArray<{ readonly file: string; readonly frozen: boolean }>
-  /** The anthropic-auth billing stamp leads the system prompt and is drawn from the first user message. */
+  /**
+   * The anthropic-auth billing stamp leads the system prompt and is drawn from
+   * the first user message. Anthropic leaves it out of the cache key, so it
+   * passes (fingerprint.ts, `BILLING_STAMP_PREFIX`).
+   */
   readonly billingStampFirst?: boolean
   /** The kernel, as the runtime, describes every tool in its own description, rebuilt per request. */
   readonly kernelCatalogPerRequest?: boolean
@@ -90,6 +94,7 @@ const known = (fact: boolean | undefined, file: string, good: string, bad: strin
       ? { status: "pass", file, detail: good }
       : { status: badStatus, file, detail: bad }
 
+/** The billing stamp, as ledger lines written before the fingerprint left it out name it: no break of the system prompt. */
 const isBilling = (segment: string) => segment === "system[0] ¶1"
 
 /** The rules judged from the facts and the window's audit. */
@@ -108,7 +113,14 @@ export const judgeRules = (facts: Facts, audit: Audit): ReadonlyArray<Rule> => {
       known(facts.forkInstructionsFrozen, FILES.forkInstructions, "date and environment are read once per session; a change goes in as a message", "the date or environment is rebuilt into the system prompt"),
       ...pushers,
       ...(facts.billingStampFirst === true
-        ? [{ status: "warn" as const, file: FILES.billing, detail: "the billing stamp leads the system prompt and hashes the first user message: fixed in a session, but a compaction's new first message rewrites the whole system prompt behind it (needed for the Claude Code route)" }]
+        ? [
+            {
+              status: "pass" as const,
+              file: FILES.billing,
+              detail:
+                "the billing stamp leads the system prompt as Claude Code sends it and changes with a compaction's first message, but Anthropic leaves it out of the cache key: the request after a compaction reads the system prompt past it (measured)",
+            },
+          ]
         : []),
       ...evidence(audit, "system-prompt", FILES.billing, "breaks at the system prompt", (segment) => !isBilling(segment)),
     ]),

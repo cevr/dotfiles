@@ -106,6 +106,19 @@ describe("firstChange", () => {
     expect(firstChange(segments(body("Friday")), segments(body("Friday", { messages: 5 })))).toBeUndefined()
   })
 
+  test("the billing stamp is no segment: a compaction's new stamp names the first message, past the whole system prompt", () => {
+    const stamp = (cch: string) => ({ type: "text", text: `x-anthropic-billing-header: cc_version=2.1.280.411; cc_entrypoint=sdk-cli; cch=${cch};` })
+    const before = body("Friday", { messages: 5 })
+    const after = body("Friday", { messages: 3 })
+    after.messages[0] = { role: "user", content: [{ type: "text", text: "What did we do so far?" }] }
+    const stamped = (request: typeof before, cch: string) => ({ ...request, system: [stamp(cch), ...request.system] })
+    expect(segments(stamped(before, "aaaaa")).map((segment) => segment.label)).not.toContain("system[0] ¶1")
+    const change = firstChange(segments(stamped(before, "aaaaa")), segments(stamped(after, "bbbbb")))
+    expect(change?.segment).toBe("messages[0] user part 0 (text)")
+    // The tools and the whole system prompt: what the cache still reads past the changed stamp.
+    expect(change?.offsetTokens).toBeGreaterThan(3_400)
+  })
+
   test("a reordered tool list is named at its first tool", () => {
     expect(firstChange(segments(body("Friday")), segments(body("Friday", { tools: [...TOOLS].reverse() })))).toEqual({
       segment: "tool read",
