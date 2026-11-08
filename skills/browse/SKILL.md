@@ -60,7 +60,7 @@ return await page.getByRole("table", { name: "Prices" }).locator("tr").evaluateA
 
 `page.evaluate` runs in an isolated world with the page's cookies (same-origin `fetch` works there); pass `false` as its fourth argument to read the page's own globals: `page.evaluate(() => window.__APP__, undefined, undefined, false)`.
 
-**Screenshots.** `return await page.screenshot()` hands the image to an MCP caller; `page.screenshot({ path: files.path("home.png"), fullPage: true })` saves one. `screenshotWithLabels()` draws numbered labels and registers them for `ref()`; `screenshotDiff({ baseline })` compares with a saved PNG. Give every saved file a new name: the relay writes it group-writable on the workbox, and `files.path` then refuses that name.
+**Screenshots.** `return await page.screenshot()` hands the image to an MCP caller; `page.screenshot({ path: files.path("home.png"), fullPage: true })` saves one. `screenshotWithLabels()` draws numbered labels and registers them for `ref()`; `screenshotDiff({ baseline })` compares with a saved PNG. Give every saved file a new name: `files.path` refuses to reuse one the relay wrote before.
 
 **Layout and themes.** `page.setViewportSize({ width: 390, height: 844 })` and `page.emulateMedia({ colorScheme: "dark" })`. Chrome's zoom on that origin scales the CSS viewport (390 became 312 at 125%): read `innerWidth` back and report what you measured.
 
@@ -127,8 +127,8 @@ return await files.write("export.csv", Buffer.from(b64, "base64"))
 
 ## Hosts
 
-- The Mac's Chrome is the only browser. On the workbox, browse drives that same Chrome over Tailscale, so `localhost` in a page means the Mac: serve a workbox app on `0.0.0.0` and open `http://100.88.97.119:<port>` (bite-cristian's Tailscale address). Files from `files` and recordings land on the host that runs the command.
-- The extension serves one relay at a time: while the workbox's relay holds Chrome, the Mac's `browse status` shows `paired-offline`, and the reverse.
+- The Mac's Chrome is the only browser, and the Mac's relay is the only relay. The extension serves one relay at a time, so the workbox has none of its own: a launchd job on the Mac (`dev.cvr.browse-tunnel`) forwards the workbox's `127.0.0.1:19988` to the Mac's relay over SSH, the workbox holds the Mac's relay token, and its browse MCP runs with `OPENCODE_BROWSER_AUTOSTART=0`. So on the workbox, `localhost` in a page means the Mac: serve a workbox app on `0.0.0.0` and open `http://100.88.97.119:<port>` (bite-cristian's Tailscale address). Files from `files`, screenshots and recordings land on the Mac, whichever host ran the command.
+- When the workbox's `browse status` can't reach the relay, the tunnel is down: `launchctl kickstart -k gui/$(id -u)/dev.cvr.browse-tunnel` on the Mac.
 - When `status` shows `connected: false`, follow its `extension.nextStep`: `paired-offline` means the owner reopens Chrome (or switches the extension back to this host's relay); `unpaired` or `refused` means re-pair with `browse pair` on that host. Both are the owner's to do: name the command and stop.
 
 ## When it is not browse

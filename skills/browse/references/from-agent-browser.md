@@ -1,6 +1,6 @@
 # From agent-browser to browse
 
-Each agent-browser command or skill, its browse equivalent, and whether that equivalent ran live (browse 0.0.14, 2026-11-07, the workbox relay driving the Mac's Chrome, against example.com and a fixture page on the workbox). Use it to translate an older recipe; the browse code runs inside one `execute`.
+Each agent-browser command or skill, its browse equivalent, and whether that equivalent ran live (browse 0.0.14, 2026-11-07, the workbox relay driving the Mac's Chrome; since then the workbox uses the Mac's relay through a tunnel, against example.com and a fixture page on the workbox). Use it to translate an older recipe; the browse code runs inside one `execute`.
 
 | agent-browser | browse | Live |
 | --- | --- | --- |
