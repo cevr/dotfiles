@@ -9,10 +9,12 @@
 // A pattern's last word also matches a script of that family
 // (`bun run test` matches `bun run test:integration`). The launchers in front
 // of a command are skipped: package runners (`npx`, `bunx`, `pnpx`,
-// `pnpm exec`, `pnpm dlx`, `yarn exec`), `timeout`, `flock`, `systemd-run`,
-// `setsid`, `nohup`, `env`, `nice`, `ionice` and `stdbuf`, with their options
-// and `VAR=value` assignments. The script of `sh -c`, `eval`, `flock -c` and
-// `env -S` is read, as the guard reads them.
+// `pnpm exec`, `pnpm dlx`, `yarn exec`), `timeout`, `flock`, `setsid`,
+// `nohup`, `env`, `nice`, `ionice` and `stdbuf`, with their options and
+// `VAR=value` assignments. The script of `sh -c`, `eval`, `flock -c` and
+// `env -S` is read, as the guard reads them. `systemd-run` is not read
+// through: the unit it starts runs outside the launcher, so the launcher's
+// nice and scope would not reach the command.
 import { runningWords, SHELLS, shellScript, simpleCommands, type Word } from "./shell-line.ts"
 
 /** The commands heavy by default: test runners, typecheckers, compilers and the gates that run them. */
@@ -67,15 +69,6 @@ const launcher = (values: ReadonlyArray<string>, positional = 0): Launcher => ({
 const LAUNCHERS: ReadonlyMap<string, Launcher> = new Map([
   ["timeout", launcher(["-s", "-k", "--signal", "--kill-after"], 1)],
   ["flock", launcher(["-w", "--wait", "--timeout", "-E", "--conflict-exit-code"], 1)],
-  [
-    "systemd-run",
-    launcher([
-      "-p", "--property", "-u", "--unit", "-E", "--setenv", "-H", "--host", "-M", "--machine", "-C", "--capsule",
-      "--description", "--slice", "--uid", "--gid", "--nice", "--working-directory", "--service-type", "--job-mode",
-      "--on-active", "--on-boot", "--on-startup", "--on-unit-active", "--on-unit-inactive", "--on-calendar",
-      "--timer-property", "--path-property", "--socket-property", "--expand-environment", "--background",
-    ]),
-  ],
   ["setsid", launcher([])],
   ["nohup", launcher([])],
   ["env", launcher(["-u", "--unset", "-C", "--chdir", "-S", "--split-string"])],
