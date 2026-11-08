@@ -1,6 +1,6 @@
 // A tool's first sentence, and the docs search over the tools.
 import { describe, expect, test } from "bun:test"
-import { firstSentence, search, SUMMARY_CHARS } from "./summary.ts"
+import { firstSentence, search, searcher, SUMMARY_CHARS } from "./summary.ts"
 
 describe("firstSentence", () => {
   test("is the first paragraph's first sentence on one line; an abbreviation does not end it", () => {
@@ -25,15 +25,34 @@ describe("search", () => {
     { id: "websearch", description: "Search the web." },
   ]
 
-  test("ranks a name match over a mention, best first, with each tool's first sentence", () => {
-    expect(search(tools, "snapshot")).toEqual([{ name: "browse_snapshot", summary: "Take a snapshot of the page.", score: 11 }])
-    expect(search(tools, "file").map((hit) => hit.name)).toEqual(["grep", "read"])
+  test("ranks by BM25 with a name's terms above the description's, best first, with each tool's first sentence", () => {
+    const [hit] = search(tools, "snapshot")
+    expect(hit).toMatchObject({ name: "browse_snapshot", summary: "Take a snapshot of the page." })
+    expect(hit!.score).toBeGreaterThan(0)
+    // "files" and "file" meet; grep's name holds neither, so it ranks by its words alone.
+    expect(search(tools, "files").map((hit) => hit.name)).toEqual(["grep", "read"])
+    // Only the descriptions hold "search" (websearch is one word); the shorter one ranks first.
     expect(search(tools, "search").map((hit) => hit.name)).toEqual(["websearch", "grep"])
+    expect(search(tools, "read file")[0]?.name).toBe("read")
+  })
+
+  test("puts a tool whose exact name is the query first", () => {
+    const named = [
+      { id: "shell", description: "Run a command." },
+      { id: "shell_list", description: "List each shell, every shell this shell session started." },
+    ]
+    expect(search(named, "Shell").map((hit) => hit.name)).toEqual(["shell", "shell_list"])
   })
 
   test("leaves out what does not match, and honours the limit; an empty query finds nothing", () => {
     expect(search(tools, "zebra")).toEqual([])
     expect(search(tools, "the", 1)).toHaveLength(1)
     expect(search(tools, "  ")).toEqual([])
+  })
+
+  test("asked again of one searcher, answers the same from the index it built once", () => {
+    const find = searcher(tools)
+    expect(find("page snapshot")).toEqual(find("page snapshot"))
+    expect(find("page snapshot")).toEqual(search(tools, "page snapshot"))
   })
 })

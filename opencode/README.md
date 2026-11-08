@@ -2007,7 +2007,7 @@ alone, and its description lists every other tool on one line, sorted by
 name, as `tools.<name>(input: …): <first sentence>`. The rest of a tool's
 words are disclosed in a cell: `tools.docs(name)` gives its full description
 (with how it differs in a cell, such as the shell's live handle) and its input
-schema, and `tools.docs.search(query)` ranks the tools by a query, each with
+schema, and `tools.docs.search(query)` ranks the tools by a query with BM25 (`bm25.ts`; a tool's name weighs above its description, an exact name comes first), each with
 its first sentence; the description tells the model to read a tool's docs
 before its first call. Both are kernel built-ins, not tools, so they never
 change the definitions.

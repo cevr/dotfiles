@@ -44,7 +44,7 @@ import { makeBoundedOutput } from "../output.ts"
 import { encodeFrame, makeFrameReader, outputMarker, oversized, REQUEST_FD, RESPONSE_FD } from "../wire.ts"
 import { decodeBinding, encodeSnapshot } from "./codec.ts"
 import { declarationsOf, decodeDeclaration, makeDeclarations, type Declared } from "./declarations.ts"
-import { search } from "../summary.ts"
+import { searcher, type Searcher } from "../summary.ts"
 import { handleOf, listShells, runShell } from "./shell-handle.ts"
 
 /** Uncaught errors kept for the next cell; later ones between two cells are dropped. */
@@ -128,6 +128,16 @@ const makeTools = (listing: () => ReadonlyArray<Listing>, callHost: (id: string,
     typeof key === "string" && !RESERVED.has(key) && !(path === "" && DISCOVERY.has(key))
   const unknown = (path: string) =>
     new Error(`${toolPath(path)} is not a tool here. Tools: ${ids().map(toolPath).sort().join(", ") || "none"}`)
+  // The search index, built at the first search and kept while the tools stay the same: each cell
+  // brings its listing anew, but a session's tools rarely change, so a search is a walk over postings.
+  let indexed: { readonly listing: ReadonlyArray<Listing>; readonly key: string; readonly search: Searcher } | undefined
+  const searchOf = (): Searcher => {
+    const current = listing()
+    if (indexed?.listing === current) return indexed.search
+    const key = current.map((tool) => `${tool.id}\u0000${tool.description}`).join("\u0001")
+    indexed = indexed?.key === key ? { ...indexed, listing: current } : { listing: current, key, search: searcher(current) }
+    return indexed.search
+  }
   const docs = Object.assign(
     (name: unknown) => {
       const id = String(name)
@@ -137,7 +147,7 @@ const makeTools = (listing: () => ReadonlyArray<Listing>, callHost: (id: string,
     },
     {
       search: (query: unknown, limit?: unknown) =>
-        search(listing(), String(query ?? ""), typeof limit === "number" ? limit : undefined).map(({ name, summary }) => ({ name, summary })),
+        searchOf()(String(query ?? ""), typeof limit === "number" ? limit : undefined).map(({ name, summary }) => ({ name, summary })),
     },
   )
   const discovery = { list: () => listing().map(({ id, description }) => ({ id, description })), docs }

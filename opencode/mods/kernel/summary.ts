@@ -1,7 +1,8 @@
 // A tool's words, shortened and searched: the first sentence the kernel's
 // catalog shows for each tool, and the ranking `tools.docs.search(query)`
-// gives in a cell. Plain functions with no imports, so the worker loads them
-// without Effect.
+// gives in a cell. Plain functions that import only ./bm25.ts, so the worker
+// loads them without Effect.
+import { index } from "./bm25.ts"
 
 /** The most characters a one-line summary keeps. */
 export const SUMMARY_CHARS = 200
@@ -31,31 +32,39 @@ export interface Hit {
   readonly score: number
 }
 
-const words = (text: string): ReadonlyArray<string> => text.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word !== "")
+/** How much a term of a tool's name counts against one of its description (BM25F field weights). */
+export const NAME_WEIGHT = 3
+
+/** A search over one set of tools: `query` to its hits, best first, at most `limit`. */
+export type Searcher = (query: string, limit?: number) => ReadonlyArray<Hit>
 
 /**
- * The tools that match `query`, best first, at most `limit`: each word of the
- * query scores 10 when it is the tool's name or one of its name's words, 4
- * when the name holds it, and 1 for each word of the description that starts
- * with it (at most 5). A tool that scores nothing is left out; a tie goes by
- * name.
+ * The docs search over `tools`, its BM25 index built once (./bm25.ts, k1 1.2,
+ * b 0.75): a tool's name terms weigh NAME_WEIGHT, its description's 1. A
+ * query that is a tool's exact name (any case) puts that tool first; a tool
+ * no query term reaches is left out; a tie goes by name.
  */
-export const search = (tools: ReadonlyArray<Documented>, query: string, limit = 10): ReadonlyArray<Hit> => {
-  const terms = words(query)
-  if (terms.length === 0) return []
-  return tools
-    .map((tool): Hit => {
-      const name = tool.id.toLowerCase()
-      const nameWords = words(tool.id)
-      const described = words(tool.description)
-      const score = terms.reduce((total, term) => {
-        const named = name === term || nameWords.includes(term) ? 10 : name.includes(term) ? 4 : 0
-        const mentioned = Math.min(5, described.filter((word) => word.startsWith(term)).length)
-        return total + named + mentioned
-      }, 0)
-      return { name: tool.id, summary: firstSentence(tool.description), score }
-    })
-    .filter((hit) => hit.score > 0)
-    .sort((left, right) => right.score - left.score || (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
-    .slice(0, Math.max(0, limit))
+export const searcher = (tools: ReadonlyArray<Documented>): Searcher => {
+  const sorted = [...tools].sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+  const summaries = new Map(sorted.map((tool) => [tool.id, firstSentence(tool.description)]))
+  const byName = new Map(sorted.map((tool) => [tool.id.toLowerCase(), tool.id]))
+  const ranked = index(
+    sorted.map((tool) => ({
+      id: tool.id,
+      fields: [
+        { text: tool.id, weight: NAME_WEIGHT },
+        { text: tool.description, weight: 1 },
+      ],
+    })),
+  )
+  return (query, limit = 10) => {
+    const max = Math.max(0, limit)
+    const exact = byName.get(query.trim().toLowerCase())
+    const scored = ranked.search(query, max + 1)
+    const hits = exact === undefined ? scored : [{ id: exact, score: scored.find((hit) => hit.id === exact)?.score ?? 0 }, ...scored.filter((hit) => hit.id !== exact)]
+    return hits.slice(0, max).map((hit) => ({ name: hit.id, summary: summaries.get(hit.id) ?? "", score: hit.score }))
+  }
 }
+
+/** The tools that match `query`, as `searcher` ranks them; build a searcher to search one set often. */
+export const search = (tools: ReadonlyArray<Documented>, query: string, limit = 10): ReadonlyArray<Hit> => searcher(tools)(query, limit)
