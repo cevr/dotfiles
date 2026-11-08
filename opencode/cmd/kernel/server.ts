@@ -21,7 +21,9 @@
  *   worker starts with them, and `reset` drops them.
  * - With `codeOnly` (the default) the kernel is the agent's runtime, as Prime
  *   Agent's REPL is: the model is offered the kernel alone, its description
- *   lists every other tool with its input, and a cell's call runs through the
+ *   lists every other tool on a line with its input (frozen per session at
+ *   its first request; a later change in the tools is a message, never a new
+ *   description: ../../mods/kernel/frozen.ts), and a cell's call runs through the
  *   registry's hooks, so `tools.subagent` passes the orchestrate guard, pace
  *   and Sabbath. Deny `kernel` to an agent to give it its usual tools. Needs
  *   the fork's `options.runtime`.
@@ -37,8 +39,9 @@
  * - `denyExecute`: without `codeOnly`, deny code mode's `execute` to every agent; default true.
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
-import { Context, Effect, Layer, Schema, Stream } from "effect"
+import { Context, Effect, Layer, Schema, Scope, Stream } from "effect"
 import { description, KernelInput } from "@dotfiles/opencode-kernel/description"
+import * as Frozen from "@dotfiles/opencode-kernel/frozen"
 import type { Reply } from "@dotfiles/opencode-kernel/attachment"
 import * as FileStoreFiles from "@dotfiles/opencode-kernel/filestore/files"
 import * as Model from "@dotfiles/opencode-kernel/model"
@@ -59,6 +62,8 @@ const withDefault =
   <A>(fallback: A) =>
   <S extends Schema.Codec<A, any, never, never>>(schema: S) =>
     schema.pipe(Schema.withDecodingDefaultType(Effect.succeed(fallback)))
+
+type SessionID = Parameters<Plugin.Context["session"]["synthetic"]>[0]["sessionID"]
 
 /** A count of milliseconds or characters: finite and above zero. */
 const Positive = Schema.Finite.check(Schema.isGreaterThan(0))
@@ -111,15 +116,15 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
         Model.layer({ idleMs: options.idleMs, viewChars: options.viewChars }).pipe(Layer.provideMerge(externals(ctx, options))),
       )
       const kernel = Context.get(services, Model.Kernel)
+      // Each session's runtime description, frozen at its first request (../../mods/kernel/frozen.ts).
+      const catalogs = yield* Frozen.make((tools) => description(options, tools), description(options, []), ctx.storage)
 
       yield* ctx.tool.transform((editor) => {
         editor.add({
           name: "kernel",
           description: description(options),
           input: KernelInput,
-          options: options.codeOnly
-            ? { codemode: false, runtime: { describe: (tools) => description(options, tools) } }
-            : { codemode: false },
+          options: options.codeOnly ? { codemode: false, runtime: { describe: catalogs.describe } } : { codemode: false },
           execute: (input, context) => {
             // The tools the cell calls, live in the call's metadata and kept in its result's, so the
             // transcript draws what the cell did (../../mods/kernel/operations.ts). The journal closes
@@ -149,10 +154,49 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
             })
         })
 
-      // A deleted session's worker stops and its stored bindings go.
+      if (options.codeOnly) {
+        const scope = yield* Scope.Scope
+        // A change in the tools is told once, in a message the session reads at its next step; the
+        // description stays. The message waits for the session's next wake rather than waking it.
+        const announce = (sessionID: SessionID, change: Frozen.Change) =>
+          ctx.session
+            .synthetic({
+              sessionID,
+              text: Frozen.notice(change),
+              description: "Kernel tools changed",
+              metadata: { kernelTools: { added: change.added.map((tool) => tool.name), removed: [...change.removed] } },
+              delivery: "steer",
+              resume: false,
+            })
+            .pipe(
+              Effect.asVoid,
+              Effect.catchCause((cause) => Effect.logWarning("kernel: could not announce a tool change", { sessionID, cause })),
+            )
+        // Every request of a session offers its frozen description in place of the live one.
+        const freeze = (event: { readonly sessionID: SessionID; readonly tools: Record<string, { description: string }> }) =>
+          Effect.suspend(() => {
+            const offered = event.tools.kernel
+            if (offered === undefined) return Effect.void
+            return catalogs.offer(event.sessionID, offered.description).pipe(
+              Effect.flatMap((offer) => {
+                offered.description = offer.description
+                return offer.change === undefined ? Effect.void : Effect.asVoid(Effect.forkIn(announce(event.sessionID, offer.change), scope))
+              }),
+            )
+          })
+        yield* ctx.session.hook("context", freeze)
+        yield* ctx.session.hook("compaction", freeze)
+        yield* ctx.session.hook("generate", freeze)
+      }
+
+      // A deleted session's worker stops and its stored bindings go, and its frozen description.
       yield* Effect.forkScoped(
         ctx.event.subscribe({ types: ["session.deleted"] }).pipe(
-          Stream.runForEach((event) => kernel.deleted(KernelSessionId.make(event.data.sessionID)).pipe(Effect.ignoreCause)),
+          Stream.runForEach((event) =>
+            Effect.all([catalogs.forget(event.data.sessionID), kernel.deleted(KernelSessionId.make(event.data.sessionID))], { discard: true }).pipe(
+              Effect.ignoreCause,
+            ),
+          ),
           Effect.ignoreCause,
         ),
       )

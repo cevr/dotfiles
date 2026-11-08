@@ -2003,8 +2003,29 @@ message that names it.
 
 Code only, as Prime Agent's REPL: the kernel registers as the agent's
 runtime (the fork's `options.runtime`), so the model is offered the kernel
-alone, and its description lists every other tool as
-`tools.<name>(input: …)` with the tool's own text. Inside the code,
+alone, and its description lists every other tool on one line, sorted by
+name, as `tools.<name>(input: …): <first sentence>`. The rest of a tool's
+words are disclosed in a cell: `tools.docs(name)` gives its full description
+(with how it differs in a cell, such as the shell's live handle) and its input
+schema, and `tools.docs.search(query)` ranks the tools by a query, each with
+its first sentence; the description tells the model to read a tool's docs
+before its first call. Both are kernel built-ins, not tools, so they never
+change the definitions.
+
+The description is frozen per session at its first request (`frozen.ts`), so
+the tool definitions at the front of the cached prompt keep their bytes for
+the session's life: an MCP server that connects or reconnects, a plugin that
+reloads, or a tool that leaves would otherwise rewrite the first segment of
+the prompt and write all of it to the cache again. The runtime still reaches
+every live tool; the request hooks (`context`, `compaction`, `generate`) put
+the session's frozen text back in place of the live one, and a change in the
+tools since the session was last told is announced once, as a synthetic
+message that waits for the session's next step (`resume: false`), naming each
+new tool with its first sentence and each gone one, whose call now throws.
+The entry lives in the plugin's storage under `kernel-catalog:<sessionID>`, so
+it holds across a kernel or server restart, and goes with the session. A
+subagent is its own session and freezes its own. A change in the kernel's own
+words (its text or limits) refreezes a session once. Inside the code,
 `await tools.<name>(input)` runs that tool through OpenCode's registry with
 the kernel call's context: permissions, abort and the
 `execute.before`/`execute.after` hooks apply as for a direct call, so
