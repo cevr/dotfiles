@@ -1,0 +1,274 @@
+# Memory eval: our memory tools against Anthropic's native memory tool
+
+The owner asked for a measured comparison before redesigning memory. In 105
+Mac sessions since memory went live, 4 called `memory_save` and 2
+`memory_search`. Three hypotheses: (1) nothing prompts the agent to use it
+(discovery, triggers), (2) the weights expect Anthropic's native file memory
+tool, (3) the use cases are weak. This note gives the eval, its results and a
+recommendation. The script is `scripts/memory-eval/`; the design of memory
+itself is `notes/memory.md`.
+
+## Recommendation
+
+1. **Keep our shape: three tools and the start-of-session digest.** It beat
+   the native tool on every kind of fact the owner states: corrections were
+   saved in 43 of 43 episodes and honoured in 41 of 43 (native: 14 of 20
+   saved, 10 of 20 honoured). Session 2 never needed `memory_search`: the
+   digest put the notes in front of it (1 search in 43 sessions).
+2. **Skip the pointer line.** With the tools offered directly, one extra
+   system line changed nothing measurable (60% against 61% of facts
+   honoured, the same save timing). The tool descriptions already carry the
+   trigger.
+3. **The trigger that matters is the owner's correction, and it already
+   works.** Every save in our arms came in the turn right after the owner
+   corrected the agent or stated a preference; none came during the work.
+4. **The trigger that is missing is the gotcha that surfaces in tool output.**
+   Our arms saved none of the three pure tool-output gotchas (0 of 33
+   episodes): the agent read the hint, retried, succeeded and moved on, so
+   session 2 failed the same way. Native saved some of them (5 of 15) only
+   because its progress log happened to record the working command. Worth
+   building: a nudge when a command failed and a changed retry succeeded (a
+   hook, or the save description naming "a command that failed until you
+   changed how you ran it").
+5. **Test the production surface next.** This eval offers the memory tools as
+   direct tools with their full descriptions. In production the kernel is the
+   agents' only tool (`codeOnly`, the default): memory is one catalog line in
+   the kernel's description and its words come through `tools.docs`. That gap
+   is the likeliest cause of 4 saves in 105 sessions (inferred, not
+   measured here): the same model saved on every correction when it could see
+   the tool. A `kernel` arm, which renders the real catalog line and runs
+   `tools.memory_save(...)` from a cell, is the next arm to add; or register
+   the memory tools beside the kernel and measure the sessions.
+6. **Small fixes the transcripts show.** Haiku passed `tags` as a
+   comma-separated string in 14 calls and was refused (`Expected array`); accept a
+   string and split it. Notes bundle two or three facts in one line ("public
+   repo: never stage codex/config.toml; stage by path; never push"), against
+   "one fact per note"; harmless for the digest, worse for search and for
+   correcting one fact by id.
+
+## How it ran (measured)
+
+- **Model: `claude-haiku-4-5-20251001`, not Haiku 5.5.** Every request to
+  `claude-haiku-5-5` with this key answered `429 rate_limit_error`, also a
+  single 8-token probe, while the model list names it and Haiku 4.5 answered
+  at once. The script defaults to Haiku 5.5 and takes
+  `--model claude-haiku-4-5-20251001`; it refuses any model that is not one of
+  the two Haikus.
+- **Spend: $4.36 for the run, $0.61 for three dry runs; $4.97 in all.** At
+  Haiku 4.5's price (ten times Haiku 5.5's) the cap stopped the run after 85
+  of 128 episodes: 5 or 6 repeats per arm × scenario, not 8. The same run on
+  Haiku 5.5 would cost about $0.7.
+- 2,644 requests, 528k uncached input tokens, 770k cache writes, 13.8M cache
+  reads (93–97% of the input of the memory arms was read from the cache),
+  299k output tokens. Concurrency 4.
+
+## What the eval does
+
+An episode is two sessions on one memory store. Session 2 starts a fresh
+context, with no hint of what session 1 learned.
+
+- **Session 1**: a coding task in a fake repository, driven by a scripted
+  user. The agent learns three durable facts: a gotcha in tool output (a
+  command fails and its output says why), an owner correction, and a stated
+  preference. The user's second message depends on what the agent did ("No:
+  never `git commit -a` … redo it" when it staged everything, "… like you
+  did" when it did not). The third is "Thanks, that's all for now."
+- **Session 2**: a new task where the facts matter. It is graded from the
+  recorded tool calls alone.
+- **Tools**: a fake `shell` (git, files, `cd`, pipes, package scripts and the
+  scenario's commands, all canned; nothing real runs) and 11 distractors with
+  OpenCode's descriptions (read, edit, write, grep, glob, webfetch,
+  websearch, todowrite, question, subagent, skill), then the arm's memory.
+- **Arms**:
+  - `none`: no memory. It runs session 2 only.
+  - `ours`: `memory_save`, `memory_search`, `memory_forget` with their real
+    names, descriptions, inputs and answers (`mods/memory/notebook.ts`) over
+    the real model and SQLite store (`mods/memory/model.ts`,
+    `sqlite/store.ts`) in a scratch file, and the session's digest
+    (`MemoryModel.digest`, which is `digestOf` under `HEADING`) last in the
+    system prompt, nothing when there are no notes, as `cmd/memory/server.ts`
+    wires them. The composition root is not imported: it pulls in the fork's
+    plugin sources, which the root project cannot typecheck.
+  - `ours+pointer`: the same, plus one line in the system prompt even with no
+    notes: "Memory: memory_save keeps one-line notes across sessions. Save one
+    when the user corrects you or states a preference, or when you learn a
+    non-obvious fact about this project (a command that only works one way);
+    memory_search before guessing this project's conventions."
+  - `native`: `{"type":"memory_20250818","name":"memory"}` with a handler
+    over a scratch directory (paths outside `/memories` refused); the API adds
+    its own instruction.
+- **Prompt caching**: the system prompt's last block carries a breakpoint and
+  the request sets the top-level `cache_control`, so tools, system and the
+  conversation so far are read from the cache.
+
+### Scenarios and their facts
+
+| scenario | gotcha (in tool output) | correction (owner) | preference (owner) |
+| --- | --- | --- | --- |
+| webapp (TS) | tests need `TEST_ENV=unit`, else the e2e project fails | never `git commit -a` / `git add -A`; stage by path | branches are `cvr/<topic>` |
+| dotfiles (the owner's) | the gate needs `OPENCODE_DEV=$HOME/…`; `~` fails | never stage `codex/config.toml` (public repo) | never push; the owner pushes |
+| billing (Python) | run through `uv run` (bare `pytest` fails) | never hand-write migrations; `alembic revision --autogenerate` | commit subjects start with the branch's ticket id |
+| orders (Go) | `go test -short` (integration tests need docker) | deploy with `make deploy ENV=staging`, never straight to production | request review from mlee on every PR |
+
+**Grading**, all deterministic. A fact is *saved* when one note (ours) or one
+memory file (native) matches all of the fact's key patterns after session 1.
+Session 2 *honours* a fact by its tool calls: the first test or gate command
+was the working one, every commit staged by path, the first commit subject
+starts `BILL-207`, no deploy went to production, and so on. *Read before
+acting* is a search or view before the first other tool call. *Off-list
+notes* are notes (ours) or memory-file lines (native) that touch no fact.
+
+**Two facts are confounded; read them apart.** `dotfiles/no-push`: session 2
+says "then ship it", which every arm read as an order to push (0 of 16 memory
+episodes honoured it, even with the note in the digest). `billing/uv-run`: the
+owner's migration correction itself says `uv run alembic …`, so the note that
+holds the correction holds this gotcha too.
+
+## Results (85 episodes, Haiku 4.5)
+
+Without the two confounded facts (10 facts per arm):
+
+| arm | facts honoured in session 2 | corrections saved → honoured | preferences saved → honoured | gotchas saved → honoured |
+| --- | --- | --- | --- | --- |
+| none | 9% (5/55) | – → 23% (5/22) | – → 0% (0/16) | – → 0% (0/17) |
+| ours | 64% (35/55) | 22/22 → 95% (21/22) | 16/16 → 88% (14/16) | 0/17 → 0% (0/17) |
+| ours+pointer | 62% (33/53) | 21/21 → 95% (20/21) | 16/16 → 81% (13/16) | 0/16 → 0% (0/16) |
+| native | 40% (20/50) | 14/20 → 50% (10/20) | 11/15 → 40% (6/15) | 5/15 → 27% (4/15) |
+
+All twelve facts, as `report.ts` prints them:
+
+| arm | n | facts saved (s1) | s2 read before acting | s2 digest | s2 facts honoured | s2 all honoured | honoured when saved | off-list notes (s1/s2) | requests s1/s2 | turns cut at the 30-step cap s1/s2 | $/episode |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| none | 22 | – | – | – | 9% (6/66) | 0% (0/22) | – | – | – / 17.3 | 0 / 3 | $0.044 |
+| ours | 22 | 74% (49/66) | 0% (0/22) | 100% (22/22) | 61% (40/66) | 23% (5/22) | 82% (40/49) | 0.0 / 0.0 | 17.7 / 15.6 | 0 / 0 | $0.051 |
+| ours+pointer | 21 | 75% (47/63) | 0% (0/21) | 100% (21/21) | 60% (38/63) | 19% (4/21) | 81% (38/47) | 0.0 / 0.0 | 18.6 / 15.2 | 0 / 1 | $0.050 |
+| native | 20 | 63% (38/60) | 100% (20/20) | – | 40% (24/60) | 20% (4/20) | 58% (22/38) | 7.2 / 6.9 | 21.3 / 16.2 | 0 / 0 | $0.056 |
+
+| fact | none | ours | ours+pointer | native |
+| --- | --- | --- | --- | --- |
+| webapp/branch-prefix (preference) | 0/6 | 6/6 saved → 6/6 | 6/6 → 6/6 | 2/5 → 2/5 |
+| webapp/unit-env (gotcha) | 0/6 | 0/6 → 0/6 | 0/6 → 0/6 | 0/5 → 0/5 |
+| webapp/stage-by-path (correction) | 2/6 | 6/6 → 6/6 | 6/6 → 6/6 | 1/5 → 3/5 |
+| dotfiles/gate-home (gotcha) | 0/6 | 0/6 → 0/6 | 0/5 → 0/5 | 3/5 → 2/5 |
+| dotfiles/no-config (correction) | 3/6 | 6/6 → 5/6 | 5/5 → 5/5 | 4/5 → 3/5 |
+| dotfiles/no-push (preference, confounded) | 1/6 | 6/6 → 0/6 | 5/5 → 0/5 | 4/5 → 0/5 |
+| billing/uv-run (gotcha, confounded) | 0/5 | 5/5 → 5/5 | 5/5 → 5/5 | 4/5 → 4/5 |
+| billing/autogenerate (correction) | 0/5 | 5/5 → 5/5 | 5/5 → 5/5 | 4/5 → 4/5 |
+| billing/ticket-prefix (preference) | 0/5 | 5/5 → 5/5 | 5/5 → 4/5 | 4/5 → 4/5 |
+| orders/go-short (gotcha) | 0/5 | 0/5 → 0/5 | 0/5 → 0/5 | 2/5 → 2/5 |
+| orders/staging-first (correction) | 0/5 | 5/5 → 5/5 | 5/5 → 4/5 | 5/5 → 0/5 |
+| orders/reviewer (preference) | 0/5 | 5/5 → 3/5 | 5/5 → 3/5 | 5/5 → 0/5 |
+
+When the saves happen (count of memory writes by the user turn they follow,
+turn 1 being the task):
+
+| arm | after turn 1 (the work) | after turn 2 (correction, preference) | after turn 3 ("thanks") | episodes with a write |
+| --- | --- | --- | --- | --- |
+| ours | 0 | 30 | 1 | 22/22 |
+| ours+pointer | 0 | 33 | 0 | 21/21 |
+| native | 31 | 9 | 12 | 19/20 |
+
+Notes per store after session 1: ours 1.05, ours+pointer 1.29, every one on
+the fact list. Native's files held 7 off-list lines on average: progress
+logs ("✅ Committed", "## Status: COMPLETED").
+
+## What the transcripts show
+
+**Ours saves at the correction, and the digest carries it.** dotfiles, ours,
+episode 0, session 1, the turn after the owner's correction:
+
+```
+→ memory_save {"text":"dotfiles repo is public: never stage codex/config.toml (private settings).
+   Stage files by exact path. Never push; user reviews and pushes themselves.","scope":"project",...}
+```
+
+Session 2's system prompt ended with that note under `# Memory`, and the
+agent staged `opencode/mods/notes/text.ts` by path without being told.
+
+**Ours does not save a gotcha the agent fixed itself.** The same session 1:
+
+```
+→ shell OPENCODE_DEV=~/Developer/opencode bun run gate
+← gate: OPENCODE_DEV is '~/Developer/opencode', which does not exist: the ~ reached the gate
+  unexpanded. Write the path with $HOME (OPENCODE_DEV=$HOME/Developer/opencode).
+→ shell OPENCODE_DEV=$HOME/Developer/opencode bun run gate
+← link ✓ … gate green
+```
+
+No save followed. Session 2: `bun run gate` → `OPENCODE_DEV is not set`, then
+a search of the repository, then lint and tests run by hand instead of the
+gate.
+
+**The digest note did not beat the user's words in session 2.** Same
+episode: the digest said "Never push", the user said "ship it", and the
+agent ran `git push`. Every memory arm did the same (0 of 16), so this fact
+measures the scenario, not memory.
+
+**Native writes a progress log, and session 2 overwrites it.** webapp, native,
+episode 0: the only memory file after session 1 was `progress.md`
+("# Price Formatting Task … ## Status ✅ COMPLETED … Branch:
+fix/price-formatting"), written during the work and never updated with the
+owner's `cvr/` branch rule or the staging correction. orders, native: session
+2 viewed a file that began "## IMPORTANT RULES - Always deploy to staging
+FIRST", then ran `make deploy ENV=staging` and, in the same turn,
+`make deploy ENV=production`; episode 1 rewrote the old task's status
+heading as the new task's and deployed with `./scripts/deploy.sh production`.
+The native instruction ("record status / progress / thoughts … ASSUME
+INTERRUPTION") turns memory into a task journal, which is what our save
+description forbids, and the durable rules drown in it.
+
+**Without memory the agent rediscovers and still guesses.** none, webapp,
+episode 0: `git checkout -b fix/slugify-trailing-dashes`, `npm test
+src/lib/slug.test.ts` (fails with the `TEST_ENV=unit` hint),
+`TEST_ENV=unit npm test`, `git add -A && git commit …`. It learns the gotcha
+again each session, and never the owner's branch name or staging rule.
+
+## Hypotheses
+
+1. **Discovery and triggers**: supported, with a twist. When the tools are
+   visible with their descriptions, the owner's correction is enough of a
+   trigger: 43 of 43 episodes saved right after it, unprompted, and the
+   pointer line added nothing. What never triggers a save is a gotcha the
+   agent fixed by itself. Production hides the tools behind the kernel's
+   catalog, which this eval did not reproduce (see recommendation 5).
+2. **The weights expect the native tool**: not supported. Haiku used it
+   eagerly (read before acting in 20 of 20 sessions, a write in 19 of 20) but
+   wrote task journals, overwrote them and honoured fewer facts (40% against
+   64%). Its one edge, gotchas (4 of 15 against 0 of 33), is a side effect of
+   journaling the working command.
+3. **Weak use cases**: not supported for corrections and preferences (from
+   23% and 0% without memory to 95% and 88% with ours). Gotchas found in tool
+   output are the weak case only because nothing saves them.
+
+## Limits
+
+- One model, Haiku 4.5 rather than Haiku 5.5; 5 or 6 repeats per cell, not 8
+  (the spend cap). Differences of a fact or two per cell are noise.
+- A fake shell: commands it does not know answer `(no output)`. The world
+  was fixed through three dry runs until the transcripts read as real work
+  (absolute paths, `cd`, pipes, `find`, package scripts, a real autogenerated
+  migration).
+- Direct tools only; no kernel; no compaction; a 30-step cap per user turn
+  (it cut 4 of 148 sessions).
+
+## Running it
+
+From `opencode/`:
+
+```
+bun scripts/memory-eval/eval.ts --dry                      # one episode per arm
+bun scripts/memory-eval/eval.ts --repeats 8 --cap 5        # the full run
+bun scripts/memory-eval/eval.ts --model claude-haiku-4-5-20251001 --repeats 8 --cap 4.35
+bun scripts/memory-eval/report.ts <out>/episodes.jsonl     # regrade and summarize a run
+bun scripts/memory-eval/show.ts <out>/episodes.jsonl native orders --s2   # read transcripts
+```
+
+The key is `anthropic.key` in `~/.local/share/opencode/auth.json`, read at
+runtime and never printed. Each run writes `out/memory-eval/<stamp>/`
+(ignored by git): `episodes.jsonl` (one line per episode: the calls, a
+compact transcript, the stores, the usage) and `report.md`. This run's data
+(1.9 MB) is kept outside the repository at
+`~/.cache/memory-eval/2026-11-08-run1/`. `report.ts` grades every episode
+again from what it recorded, so a fixed grader applies to an old run: the
+tables above are regraded after the reviewer grader learned to read a PR body
+with newlines (+2 for ours on orders/reviewer).
