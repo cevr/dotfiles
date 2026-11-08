@@ -469,17 +469,22 @@ idle with units in plan, implement or verify: alpha, beta; start them or name wh
 ```
 
 Units in `ready` wait for their batch (the orchestrate skill's Land a batch).
-Once the batch is due, at 3 ready units or the oldest ready for 30 minutes by
-its `log.md` time, the line says to land it, naming each unit's Rift by its
-branch `<run>/<unit>`, which the rift tool finds:
+Once the batch is due, the line says to land it, naming each unit's Rift by
+its name, the unit (the orchestrator makes `.rifts/<repo>/<unit>` on branch
+`<run>/<unit>`), which the rift tool finds:
 
 ```
-idle with a batch due (3 ready): gamma, delta, eps; land it with rift({ action: "land", rifts: ["p1/gamma", "p1/delta", "p1/eps"] }).
+idle with a batch due (3 ready): gamma, delta, eps; land it with rift({ action: "land", rifts: ["gamma", "delta", "eps"] }).
 ```
 
-With both, the batch follows the first line as `… A batch due (…): …`. A
-spec's or plan's own `Batch cadence` is not read: the nudge keeps the
-defaults. Units from more than one run read `run/unit`; past eight the rest
+A batch is due by each ready unit's cadence: its spec's `Batch cadence` line,
+else its plan's, else 3 ready or 30 minutes. Only the line's numbers are read
+(`<n> ready`, `<n> min` or `<n> h`); a number it leaves out comes from the
+level above. The skill's `status.ts` prints it per unit (`Cadence`, `3 ready
+or 30 min`, its `cadence.ts`). It is due once the ready units reach any ready
+unit's count, or any ready unit has waited its wait by its `log.md` time.
+
+With both, the batch follows the first line as `… A batch due (…): …`. Units from more than one run read `run/unit`; past eight the rest
 are counted (the land call names every one). The line is a steered synthetic message carrying the metadata key
 `dotfiles-opencode.orchestrate.idle`, so its own arrival is not new input.
 

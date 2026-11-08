@@ -2,7 +2,8 @@
 // session that owns an orchestrate run. When such a root ends its turn with
 // nothing of its own still going (no subagent or shell running under it, no
 // wake, monitor or latch set), while its runs hold units in plan, implement
-// or verify, or units in `ready` whose batch is due (`BATCH_SIZE` of them, or
+// or verify, or units in `ready` whose batch is due (by each unit's cadence:
+// its spec's `Batch cadence`, else its plan's, else `BATCH_SIZE` of them or
 // the oldest in `ready` for `BATCH_WAIT_MS`, by its log.md time), it is
 // steered once with one line (`lineOf`): `idle with units in plan, implement
 // or verify: <units>; start them or name what you wait on.`, and for a due
@@ -39,19 +40,40 @@ export const BATCH_SIZE = 3
 /** Or once the oldest ready unit has waited this long. */
 export const BATCH_WAIT_MS = 30 * 60_000
 
+/**
+ * A unit's batch cadence: its batch is due once `ready` units are ready, or
+ * once it has waited `waitMs` in `ready`. The status script derives it from
+ * the unit's spec.md `Batch cadence` line over the plan.md one over the
+ * skill's default (`BATCH_SIZE`, `BATCH_WAIT_MS`).
+ */
+export const Cadence = Schema.Struct({ ready: Schema.Number, waitMs: Schema.Number })
+export interface Cadence extends Schema.Schema.Type<typeof Cadence> {}
+
+/** The skill's default cadence: 3 ready or 30 min. */
+export const DEFAULT_CADENCE: Cadence = { ready: BATCH_SIZE, waitMs: BATCH_WAIT_MS }
+
 /** One unit of a run the root owns, in a state the root moves. */
 export const MovingUnit = Schema.Struct({ run: Schema.String, unit: Schema.String, state: Schema.String })
 export interface MovingUnit extends Schema.Schema.Type<typeof MovingUnit> {}
 
-/** One unit of a run the root owns, in `ready`, with when it got there (epoch ms; none when its log has no time that reads). */
-export const ReadyUnit = Schema.Struct({ run: Schema.String, unit: Schema.String, since: Schema.optional(Schema.Number) })
+/**
+ * One unit of a run the root owns, in `ready`, with when it got there (epoch
+ * ms; none when its log has no time that reads) and its cadence (none: the
+ * default).
+ */
+export const ReadyUnit = Schema.Struct({ run: Schema.String, unit: Schema.String, since: Schema.optional(Schema.Number), cadence: Schema.optional(Cadence) })
 export interface ReadyUnit extends Schema.Schema.Type<typeof ReadyUnit> {}
 
-/** One unit of an orchestrate run, as the status script derives it: `since` is its log.md time for that state. */
+/**
+ * One unit of an orchestrate run, as the status script derives it: `since` is
+ * its log.md time for that state, `cadence` its batch cadence as the script
+ * prints it (`3 ready or 30 min`).
+ */
 export interface RunUnit {
   readonly unit: string
   readonly state: string
   readonly since?: string
+  readonly cadence?: string
 }
 
 /** One orchestrate run: its directory's name and its units. */
@@ -68,6 +90,12 @@ export const sinceOf = (since: string | undefined): number | undefined => {
   if (since === undefined || since.trim() === "") return undefined
   const at = Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(since.trim()) ? since.trim() : `${since.trim()}Z`)
   return Number.isNaN(at) ? undefined : at
+}
+
+/** The status script's cadence (`3 ready or 30 min`) as a Cadence, or none when it prints none that reads. */
+export const cadenceOf = (cadence: string | undefined): Cadence | undefined => {
+  const match = cadence === undefined ? null : /^\s*(\d+) ready or (\d+) min\s*$/.exec(cadence)
+  return match === null ? undefined : { ready: Math.max(1, Number(match[1])), waitMs: Number(match[2]) * 60_000 }
 }
 
 /** What the root's runs hold for it: units in a state it moves, and units in `ready`. */
@@ -94,27 +122,35 @@ export const unitsOf = (runs: ReadonlyArray<Run>, started: ReadonlyArray<string>
         .filter((unit) => unit.state === READY)
         .map((unit) => {
           const since = sinceOf(unit.since)
-          return since === undefined ? { run: run.name, unit: unit.unit } : { run: run.name, unit: unit.unit, since }
+          const cadence = cadenceOf(unit.cadence)
+          return { run: run.name, unit: unit.unit, ...(since === undefined ? {} : { since }), ...(cadence === undefined ? {} : { cadence }) }
         }),
     ),
   }
 }
 
-/** Why the ready units' batch is due now (`3 ready`, `alpha ready 42 min`), or none while it is not. */
+/**
+ * Why the ready units' batch is due now (`3 ready`, `alpha ready 42 min`), or
+ * none while it is not: some ready unit's cadence is met, by the count of
+ * ready units or by how long it has waited (the longest-waiting such unit is
+ * named).
+ */
 export const batchDue = (ready: ReadonlyArray<ReadyUnit>, now: number): string | undefined => {
-  if (ready.length >= BATCH_SIZE) return `${ready.length} ready`
-  const timed = ready.flatMap((unit) => (unit.since === undefined ? [] : [{ unit, since: unit.since }]))
-  const oldest = timed.reduce<(typeof timed)[number] | undefined>((min, next) => (min === undefined || next.since < min.since ? next : min), undefined)
-  if (oldest === undefined || now - oldest.since < BATCH_WAIT_MS) return undefined
+  if (ready.some((unit) => ready.length >= (unit.cadence ?? DEFAULT_CADENCE).ready)) return `${ready.length} ready`
+  const waited = ready.flatMap((unit) =>
+    unit.since !== undefined && now - unit.since >= (unit.cadence ?? DEFAULT_CADENCE).waitMs ? [{ unit, since: unit.since }] : [],
+  )
+  const oldest = waited.reduce<(typeof waited)[number] | undefined>((min, next) => (min === undefined || next.since < min.since ? next : min), undefined)
+  if (oldest === undefined) return undefined
   return `${oldest.unit.unit} ready ${Math.floor((now - oldest.since) / 60_000)} min`
 }
 
 /**
  * The Rift a ready unit lives in, as `rift({ action: "land" })` takes it: the
- * unit's branch `<run>/<unit>` (SKILL.md, plan), which the tool finds as the
- * Rift a create on that branch names by default (`workspaceName`).
+ * orchestrator makes each unit's Rift named after the unit, on branch
+ * `<run>/<unit>` (SKILL.md, plan), and the tool finds a Rift by its name.
  */
-export const riftOf = (unit: { readonly run: string; readonly unit: string }): string => `${unit.run}/${unit.unit}`
+export const riftOf = (unit: { readonly run: string; readonly unit: string }): string => unit.unit
 
 /** What else holds the root, from the other plugins: wakes, questions to the owner, and its queue. */
 export const Holds = Schema.Struct({
@@ -261,9 +297,13 @@ const nothingDue = (ready: ReadonlyArray<ReadyUnit>, now: number): NotNudged => 
   if (ready.length === 0) return new NotNudged({ why: "nothing-due", detail: base })
   const times = ready.flatMap((unit) => (unit.since === undefined ? [] : [unit.since]))
   const oldest = times.length === 0 ? "" : `, the oldest for ${Math.floor((now - Math.min(...times)) / 60_000)} min`
+  // The soonest any ready unit's cadence comes due: its smallest count and its shortest wait.
+  const cadences = ready.map((unit) => unit.cadence ?? DEFAULT_CADENCE)
+  const size = Math.min(...cadences.map((cadence) => cadence.ready))
+  const wait = Math.min(...cadences.map((cadence) => cadence.waitMs))
   return new NotNudged({
     why: "nothing-due",
-    detail: `${base}, and its batch is not due: ${ready.length} ready${oldest} (due at ${BATCH_SIZE} or ${BATCH_WAIT_MS / 60_000} min)`,
+    detail: `${base}, and its batch is not due: ${ready.length} ready${oldest} (due at ${size} or ${wait / 60_000} min)`,
   })
 }
 

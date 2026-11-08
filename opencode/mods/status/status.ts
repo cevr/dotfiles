@@ -27,6 +27,8 @@ export const Unit = Schema.Struct({
   state: Schema.String,
   round: Schema.String,
   since: Schema.String,
+  /** Its batch cadence (`3 ready or 30 min`), when the script prints one. */
+  cadence: Schema.optionalKey(Schema.String),
 })
 export type Unit = typeof Unit.Type
 
