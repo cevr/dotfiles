@@ -31,12 +31,33 @@ const DOCS = "Read a tool's docs before its first call: `tools.docs(name)` retur
 
 const DIRECT_TOOLS = `Calling tools: \`await tools.<id>(input)\` runs any other tool this session offers, with the same input it takes as a direct call, and resolves to its result (its output, or its text). Permissions apply as for a direct call. \`tools.list()\` returns the ids and descriptions. ${DOCS} A failed tool call throws; catch it to continue. Run independent calls together with Promise.all.`
 
-const RUNTIME_TOOLS = `Calling tools: the kernel is your only tool. Every other tool is a function on \`tools\`, listed below with its input and the first sentence of its description: \`await tools.<name>(input)\` runs it and resolves to its result (its output, or its text). ${DOCS} Read files, edit, run commands and start subagents from here. Permissions apply and a refused or failed call throws; catch it to continue. A tool that joins or leaves later is announced in a message; this list stays as it is. Run independent calls together with Promise.all, and print only what you need to read.`
+/** The opening of the runtime's words: the kernel alone, or the kernel beside the tools offered directly. */
+const runtimeOpening = (direct: boolean) =>
+  direct
+    ? "Calling tools: the kernel is your main tool. The few tools offered beside it you call directly; a cell reaches them on `tools` too, and they are not listed below. Every other tool"
+    : "Calling tools: the kernel is your only tool. Every other tool"
+
+const runtimeTools = (direct: boolean) => `${runtimeOpening(direct)} is a function on \`tools\`, listed below with its input and the first sentence of its description: \`await tools.<name>(input)\` runs it and resolves to its result (its output, or its text). ${DOCS} Read files, edit, run commands and start subagents from here. Permissions apply and a refused or failed call throws; catch it to continue. A tool that joins or leaves later is announced in a message; this list stays as it is. Run independent calls together with Promise.all, and print only what you need to read.`
 
 const ATTACH = `Seeing images: \`attach(...paths: string[])\` shows image files (PNG, JPEG, GIF, WebP; a relative path is under the working directory) to you after this call, the way a pasted image is. An image a tool returns reaches your code as \`${JSON.stringify({ type: "image", mime: "image/png", name: "<path>", note: IMAGE_NOTE })}\`, not as its data.`
 
+/** The kernel's words: its limits, and the tools the host offers beside it while it is the runtime. */
+export interface Words extends Limits {
+  /**
+   * Tool names offered to the model directly beside the runtime kernel. They
+   * stay off the list: their own definitions carry their words, and a second
+   * copy would cost tokens on every request.
+   */
+  readonly direct?: ReadonlyArray<string>
+}
+
 /** What the model reads about the kernel; `tools` when it is the runtime, which reaches them. */
-export const description = (limits: Limits, tools?: ReadonlyArray<Reached>) => `Run TypeScript in a persistent kernel: one Bun process for this session.
+export const description = (limits: Words, tools?: ReadonlyArray<Reached>) => {
+  const direct = new Set(limits.direct ?? [])
+  return describeWith(limits, direct.size > 0, tools?.filter((tool) => !direct.has(tool.name)))
+}
+
+const describeWith = (limits: Limits, direct: boolean, tools?: ReadonlyArray<Reached>) => `Run TypeScript in a persistent kernel: one Bun process for this session.
 
 What persists: top-level bindings (let, const, var, function, class) stay defined for the next kernel call in this session. They also survive a kernel restart: top-level imports and function and class declarations (const f = () => … included) run again from their source, each name at its latest version; then data comes back, cycles included: primitives and BigInt, plain objects, arrays, Map, Set, Date, RegExp, Buffer, typed arrays, errors (type, name, message) and instances of those classes, up to 16 MiB per binding and 256 MiB in all. Closures made inside a function, instances of classes with #private members, promises and other live objects do not. The result names each binding it dropped and why. reset: true starts an empty kernel.
 
@@ -46,7 +67,7 @@ Describing a call: description is a few words in the present tense saying what t
 
 ${ATTACH}
 
-${tools === undefined ? DIRECT_TOOLS : RUNTIME_TOOLS}
+${tools === undefined ? DIRECT_TOOLS : runtimeTools(direct)}
 
 Limits: ${limits.timeoutMs / 1000} s of compute per call, paused while tool calls run; past it the kernel is killed and bindings since the last call are lost. You see at most ${limits.viewChars.toLocaleString("en-US")} characters of output, its head and tail; ${MAX_DISPLAY_CHARS / 1024} KiB at most are kept. Keep large data in variables and print what you need.${tools === undefined ? `
 

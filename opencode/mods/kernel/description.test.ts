@@ -39,6 +39,20 @@ describe("the description", () => {
     expect(direct).toContain("tools.list()")
   })
 
+  test("as the runtime beside direct tools, says so and leaves them off the list", () => {
+    const words = { timeoutMs: 30_000, viewChars: 8_000, direct: ["memory_save"] }
+    const text = description(words, [
+      { name: "read", description: "Read a file", input: {} },
+      { name: "memory_save", description: "Save a note", input: {} },
+    ])
+    expect(text).not.toContain("the kernel is your only tool")
+    expect(text).toContain("the kernel is your main tool. The few tools offered beside it you call directly; a cell reaches them on `tools` too")
+    expect(text).toContain("## Tools\n\n- tools.read(input: unknown): Read a file")
+    expect(text).not.toContain("tools.memory_save")
+    // Without the runtime the option changes nothing.
+    expect(description(words)).toBe(description({ timeoutMs: 30_000, viewChars: 8_000 }))
+  })
+
   test("in either mode, says to read a tool's docs before its first call, and how", () => {
     const limits = { timeoutMs: 30_000, viewChars: 8_000 }
     for (const text of [description(limits), description(limits, [])]) {

@@ -26,7 +26,9 @@ type Host = Parameters<(typeof Kernel)["effect"]>[0]
 /** The kernel tool as the host's editor receives it: only what the tests read. */
 interface Added {
   readonly execute: (input: { code: string; reset?: boolean }, context: unknown) => Effect.Effect<{ readonly content: string | ReadonlyArray<Tool.Content> }, Tool.Error>
-  readonly options?: { readonly runtime?: { readonly describe: (tools: ReadonlyArray<Reached>) => string } }
+  readonly options?: {
+    readonly runtime?: { readonly describe: (tools: ReadonlyArray<Reached>) => string; readonly direct?: ReadonlyArray<string> }
+  }
 }
 
 /** The agent's other tools while the kernel is its runtime. */
@@ -152,14 +154,26 @@ const start = (options: Record<string, unknown> = {}, world: World = {}, stored:
      * the request offers.
      */
     const request = (sessionID: string, tools: ReadonlyArray<Reached>, hook: "context" | "compaction" = "context") =>
+      offer(sessionID, tools, hook).pipe(Effect.map((offered) => offered.kernel))
+    /**
+     * The same request, with the definitions the fork offers beside the kernel: each of `tools`
+     * the runtime names direct. The kernel's description and the names of every tool it offers.
+     */
+    const offer = (sessionID: string, tools: ReadonlyArray<Reached>, hook: "context" | "compaction" = "context") =>
       Effect.gen(function* () {
-        const live = tool?.options?.runtime?.describe(tools)
+        const runtime = tool?.options?.runtime
+        const live = runtime?.describe(tools)
         if (live === undefined) return yield* Effect.die("the kernel is not the runtime")
-        const event: RequestEvent = { sessionID, agent: "build", tools: { kernel: { description: live, input: {} } } }
+        const direct = tools.filter((item) => runtime?.direct?.includes(item.name))
+        const event: RequestEvent = {
+          sessionID,
+          agent: "build",
+          tools: { kernel: { description: live, input: {} }, ...Object.fromEntries(direct.map((item) => [item.name, { description: item.description, input: item.input }])) },
+        }
         for (const callback of hooks.get(hook) ?? []) yield* callback(event)
-        return event.tools.kernel!.description
+        return { kernel: event.tools.kernel!.description, tools: Object.keys(event.tools) }
       })
-    return { call, parts, fail, entries, agentRules, tool, deleteSession, request, synthetics, announced }
+    return { call, parts, fail, entries, agentRules, tool, deleteSession, request, offer, synthetics, announced }
   })
 
 /** A request hook's event, as much of it as the kernel reads. */
@@ -386,6 +400,7 @@ describe("the options", () => {
           ["idleMs", 0],
           ["viewChars", -1],
           ["codeOnly", "yes"],
+          ["direct", "memory_save"],
         ] as const) {
           const exit = yield* Effect.exit(start({ [option]: value }))
           expect(Exit.isFailure(exit)).toBe(true)
@@ -408,8 +423,39 @@ describe("as the runtime", () => {
         expect(text).toContain("- tools.read(input: { path: string, limit?: number }): Read a file")
         expect(text).toContain(`- tools["mcp-search"](input: { mode?: "a" | "b" }): Search`)
         expect(text).not.toContain("tools.kernel")
-        expect(text).toContain("the kernel is your only tool")
         expect((yield* start({ codeOnly: false })).tool?.options?.runtime).toBeUndefined()
+      }),
+    ))
+
+  test("by default the memory tools are offered beside it, off its list; direct: [] leaves the kernel alone", () =>
+    scenario(
+      Effect.gen(function* () {
+        const tools: ReadonlyArray<Reached> = [
+          { name: "read", description: "Read a file", input: {} },
+          { name: "memory_save", description: "Save a note", input: {} },
+        ]
+        const runtime = (yield* start()).tool?.options?.runtime
+        expect(runtime?.direct).toEqual(["memory_save", "memory_search", "memory_forget"])
+        const text = runtime?.describe(tools)
+        expect(text).toContain("the kernel is your main tool. The few tools offered beside it you call directly")
+        expect(text).toContain("- tools.read(")
+        expect(text).not.toContain("tools.memory_save")
+        const alone = (yield* start({ direct: [] })).tool?.options?.runtime
+        expect(alone?.direct).toEqual([])
+        expect(alone?.describe(tools)).toContain("the kernel is your only tool")
+        expect(alone?.describe(tools)).toContain("- tools.memory_save(")
+      }),
+    ))
+
+  test("a cell still calls a direct tool through the runtime", () =>
+    scenario(
+      Effect.gen(function* () {
+        const runtime: Runtime = {
+          tools: [{ name: "memory_save", description: "Save a note", input: {} }],
+          call: (name, input) => Effect.succeed({ output: `${name} ${JSON.stringify(input)}` }),
+        }
+        const { call } = yield* start()
+        expect(yield* call("await tools.memory_save({ text: 'x' })", { runtime })).toBe('memory_save {"text":"x"}')
       }),
     ))
 
@@ -506,6 +552,33 @@ describe("a session's frozen description", () => {
         expect(synthetics[0]?.text).toContain("Gone (a call now throws):\n- tools.browse_snapshot")
         const runtime: Runtime = { tools: [read], call: () => Effect.die("not called") }
         expect(yield* fail("await tools.browse_snapshot({})", { runtime })).toContain("tools.browse_snapshot is not a tool here")
+      }),
+    ))
+
+  test("keeps the direct tools its first request offered: one that joins later is dropped and told, a new session gets it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const save: Reached = { name: "memory_save", description: "Save a note. It keeps it.", input: {} }
+        const search: Reached = { name: "memory_search", description: "Search the notes. It ranks them.", input: {} }
+        const forget: Reached = { name: "memory_forget", description: "Forget a note. It drops it.", input: {} }
+        const stored = new Map<string, Json>()
+        const { offer, synthetics, announced } = yield* start({}, {}, stored)
+        const first = yield* offer("ses_1", [kernel, read, save, search])
+        expect(first.tools).toEqual(["kernel", "memory_save", "memory_search"])
+        expect(first.kernel).not.toContain("tools.memory_")
+        // memory_forget joins mid-session: the definitions stay as they were, byte for byte.
+        const joined = [kernel, read, save, search, forget]
+        expect(yield* offer("ses_1", joined)).toEqual(first)
+        yield* Queue.take(announced)
+        expect(synthetics[0]?.text).toContain("- tools.memory_forget: Forget a note.")
+        expect(yield* offer("ses_1", joined, "compaction")).toEqual(first)
+        // A session that starts now is offered all three.
+        expect((yield* offer("ses_2", joined)).tools).toEqual(["kernel", "memory_save", "memory_search", "memory_forget"])
+        // A session frozen with none (the memory plugin came late) keeps none, across a restart too.
+        const bare = yield* offer("ses_3", [kernel, read])
+        const restarted = yield* start({}, {}, stored)
+        expect(yield* restarted.offer("ses_3", joined)).toEqual(bare)
+        expect(yield* restarted.offer("ses_1", joined)).toEqual(first)
       }),
     ))
 
