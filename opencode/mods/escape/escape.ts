@@ -1,18 +1,24 @@
 // What one Escape does to the session on screen, decided without the host.
-// Within the grace after the session's newest prompt was sent, Escape on an
-// empty composer takes the prompt back: the run stops, the session reverts to
-// before it and its text returns to the composer. After the grace, Escape
-// interrupts and the prompt stays. A prompt still waiting in the session's
-// inbox (queued, or a steer not yet delivered) comes back whatever the grace.
-// A draft in the composer leaves the session alone; in a subagent's view,
-// Escape interrupts that subagent. opencode/view.ts reads the view from the
-// TUI's data; cmd/escape/setup.ts acts on the decision.
+// One Escape on a busy session stops its run. Within the grace after the
+// session's newest prompt was sent, Escape on an empty composer takes that
+// prompt back: the run stops, the session reverts to before it and its text
+// returns to the composer. After the grace, or with a draft in the composer
+// or no editor focused, Escape interrupts and the prompt stays. A prompt still
+// waiting in the session's inbox (queued, or a steer not yet delivered) comes
+// back to the composer whatever the grace, and the run it waited behind stops
+// too; nothing in the inbox is dropped. In a subagent's view, Escape
+// interrupts that subagent. opencode/view.ts reads the view from the TUI's
+// data; cmd/escape/setup.ts acts on the decision and says when the session
+// did not stop.
 
 /** The default grace, in milliseconds (the plugin's `grace` option; 0 always interrupts). */
 export const DEFAULT_GRACE_MS = 5_000
 
-/** How long a take-back is assumed to be settling: a second Escape for the same prompt meanwhile is swallowed. */
+/** How long a take-back is assumed to be settling: a second Escape for the same prompt meanwhile does not take it back again. */
 export const SETTLE_MS = 10_000
+
+/** How long after an Escape the session may still run before the TUI says the server has not stopped it. */
+export const STOP_MS = 5_000
 
 /** The session's newest user prompt with text, as Escape reads it. */
 export interface Prompt {
@@ -49,30 +55,49 @@ export interface Taking {
 }
 
 export type Action =
-  /** Stop the run, revert to before the prompt and put it back in the composer (the host's `session.undo`). */
-  | { readonly _tag: "TakeBack"; readonly messageID: string; readonly pending: boolean; readonly ranShell: boolean }
+  /**
+   * Take the prompt back into the composer (the host's `session.undo`): a sent
+   * prompt's run stops and the session reverts to before it; a pending one
+   * leaves the inbox, and with `stop` the run it waited behind is
+   * interrupted too (without resuming the inbox, so the prompt being taken
+   * back is not delivered first).
+   */
+  | {
+      readonly _tag: "TakeBack"
+      readonly sessionID: string
+      readonly messageID: string
+      readonly pending: boolean
+      readonly ranShell: boolean
+      readonly stop: boolean
+    }
   /** Stop the run; the prompt and its partial answer stay. */
   | { readonly _tag: "Interrupt"; readonly sessionID: string }
-  /** Swallow the key: it means nothing to the session now, and nothing else should act on it. */
-  | { readonly _tag: "Hold" }
+  /** A take-back of this prompt is still settling: nothing new to do, which the TUI says. */
+  | { readonly _tag: "Settling"; readonly sessionID: string }
   /** Leave the key to the host. */
   | { readonly _tag: "Pass" }
 
 const pass: Action = { _tag: "Pass" }
-const hold: Action = { _tag: "Hold" }
 
 /** The decision for one Escape at `now`, given the grace and the take-back still settling, if any. */
 export const decide = (view: View | undefined, input: { readonly now: number; readonly grace: number; readonly taking?: Taking }): Action => {
   if (view === undefined || view.blocked) return pass
   if (view.subagent) return view.busy ? { _tag: "Interrupt", sessionID: view.sessionID } : pass
   const latest = view.latest
-  const engaged = view.busy || latest?.pending === true
-  if (!engaged || view.composer === "none") return pass
-  if (view.composer === "draft") return hold
-  if (latest !== undefined && (latest.pending || input.now - latest.created < input.grace)) {
+  if (!view.busy && latest?.pending !== true) return pass
+  // A pending prompt is appended to whatever the composer holds; a sent one is taken back only into an empty composer.
+  const takeBack = latest !== undefined && (latest.pending || (view.composer === "empty" && input.now - latest.created < input.grace))
+  if (latest !== undefined && takeBack) {
     const taking = input.taking
-    if (taking !== undefined && taking.messageID === latest.id && input.now - taking.at < SETTLE_MS) return hold
-    return { _tag: "TakeBack", messageID: latest.id, pending: latest.pending, ranShell: latest.ranShell }
+    if (taking !== undefined && taking.messageID === latest.id && input.now - taking.at < SETTLE_MS) return { _tag: "Settling", sessionID: view.sessionID }
+    return {
+      _tag: "TakeBack",
+      sessionID: view.sessionID,
+      messageID: latest.id,
+      pending: latest.pending,
+      ranShell: latest.ranShell,
+      stop: latest.pending && view.busy,
+    }
   }
   return { _tag: "Interrupt", sessionID: view.sessionID }
 }

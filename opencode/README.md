@@ -959,23 +959,33 @@ made when the TUI opens it.
 
 ## Escape
 
-`cmd/escape` is a TUI plugin that makes one Escape on a busy session take
-back the prompt just sent. Within the grace (5 s after the session's newest
-prompt with text was sent), Escape with an empty composer stops the run,
-reverts the session to before the prompt and puts its text back in the
-composer: it runs the host's own `session.undo`. Past the grace it
-interrupts (`session.interrupt` with `resume`), and the prompt and its
-partial answer stay. A prompt still waiting in the session's inbox (queued,
-or a steer the model has not read) comes back whatever the grace. When the
-taken-back run called a shell, a toast says
+`cmd/escape` is a TUI plugin that makes one Escape on a busy session stop
+its run, taking back the prompt just sent. Within the grace (5 s after the
+session's newest prompt with text was sent), Escape with an empty composer
+stops the run, reverts the session to before the prompt and puts its text
+back in the composer: it runs the host's own `session.undo`. Past the grace,
+with a draft in the composer or with no editor focused, it interrupts
+(`session.interrupt` with `resume`), and the prompt and its partial answer
+stay. A prompt still waiting in the session's inbox (queued, or a steer the
+model has not read) comes back to the composer whatever the grace, appended
+to any draft, and the turn it waited behind is interrupted in the same press
+(without `resume`, so the inbox is not resumed ahead of the take-back): a
+prompt sent while the model works is never dropped, and the run never keeps
+going behind it. When the taken-back run called a shell, a toast says
 `Cancelled; shell commands it ran are not undone`: a revert restores files,
 not what a command did outside them.
 
-A draft in the composer (text or an attachment, read from the focused
-editor, `renderer.currentFocusedEditor`) swallows the key while the session
-works, so a half-typed message is never replaced. A permission request or a
-question keeps its own Escape, an idle session's Escape is the host's, and a
-second Escape for the prompt being taken back is swallowed for 10 s. In a
+A press never goes unanswered. A refused interrupt is a toast with the
+client's error (`Could not interrupt: …`); a session still running 5 s after
+the press (`STOP_MS`), or a pending prompt still queued, is a toast that the
+server has not stopped it (`Still running 5 s after Escape: the server has
+not stopped it (is it reachable?)`), which is what a stalled or 503-ing
+server looks like; the host's own `Connection lost…` overlay covers a dropped
+event stream. A draft is never replaced: a sent prompt is taken back only
+into an empty composer. A permission request or a question keeps its own
+Escape, an idle session's Escape is the host's, and a second Escape for the
+prompt being taken back does nothing for 10 s but say
+`Still taking the prompt back`. In a
 subagent's view Escape interrupts that subagent before the host's Subagents
 picker closes. Its one option is `grace`, in milliseconds (default 5000; 0
 always interrupts). An absent option takes its default. The grace is timed from when the prompt was sent, so a prompt another client
@@ -986,7 +996,10 @@ The decision is `decide` in `mods/escape/escape.ts`, over the view
 two keymap layers on Escape (the base mode at priority 1, above the host's
 `session.interrupt` and below the composer's own Escape layers such as shell
 mode or a plugin panel; the composer mode at priority 2 in a subagent's
-view) and acts. `tests/prime-escape.test.ts` runs `scenarios/prime-escape.ts`.
+view) and acts. `tests/prime-escape.test.ts` runs `scenarios/prime-escape.ts`;
+`tests/escape-states.test.ts` runs `scenarios/escape-states.ts` once per
+state (a steer or a queued prompt sent while the model works, a running
+shell call, a draft, a stalled link to the server).
 
 ## Cache
 
