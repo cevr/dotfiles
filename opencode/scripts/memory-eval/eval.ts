@@ -4,16 +4,22 @@
 //
 // Usage, from opencode/:
 //   bun scripts/memory-eval/eval.ts [--dry] [--repeats 8] [--cap 5] [--concurrency 4] [--model claude-haiku-5-5]
-//                                   [--arms none,ours,ours+pointer,native,kernel,ours+nudge,kernel+nudge] [--scenarios webapp,dotfiles,billing,orders]
-//                                   [--out out/memory-eval/<stamp>]
+//                                   [--arms none,ours,ours+pointer,native,kernel,ours+nudge,kernel+nudge,kernel+direct] [--scenarios webapp,dotfiles,billing,orders]
+//                                   [--out out/memory-eval/<stamp>] [--api-key] [--gent-dir <dir>]
 //
 // --dry runs one episode per arm. The run stops starting requests once --cap
-// dollars are spent. Each episode is a line of <out>/episodes.jsonl, and the
-// summary is <out>/report.md.
+// dollars (API prices, a measure of size on the pool) are spent. Each episode
+// is a line of <out>/episodes.jsonl, and the summary is <out>/report.md.
+//
+// Requests go out on the pool's Claude accounts (pool.ts), placed as the pool
+// places them; before each episode the live pool's pace and the eval accounts'
+// own are asked, and a no stops the run. `--api-key` sends with the API key
+// in OpenCode's auth file instead; `--gent-dir` names another gent store.
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { CapReached, Ledger, MODEL, useModel } from "./api.ts"
+import { CapReached, keyTransport, Ledger, MODEL, poolTransport, useModel, useTransport } from "./api.ts"
 import { type Arm, ARMS, type EpisodeResult, runEpisode } from "./episode.ts"
+import { gentSource, liveServer, Pool, PoolLimit } from "./pool.ts"
 import { report } from "./report.ts"
 import { type Scenario, SCENARIOS } from "./scenarios.ts"
 
@@ -54,10 +60,30 @@ const results: Array<EpisodeResult> = []
 let next = 0
 let stopped = false
 
-console.log(`memory-eval: ${jobs.length} episodes on ${MODEL}, concurrency ${concurrency}, cap $${cap}, out ${out}`)
+const gentDir = flag("gent-dir")
+const pool = process.argv.includes("--api-key") ? undefined : new Pool({ source: gentSource(...(gentDir === undefined ? [] : [gentDir])), live: liveServer() })
+if (pool === undefined) useTransport(keyTransport())
+else {
+  useTransport(poolTransport(pool))
+  const pace = await pool.pace()
+  console.log(`pool: ${pool.accounts.length} gent accounts · ${pool.line()} · pace ${pace.ok ? "ok" : "no"}: ${pace.reason}`)
+  if (pool.accounts.length === 0) fail("the gent store lists no account: pass --gent-dir, or --api-key")
+  if (!pace.ok) fail(`the pool says wait: ${pace.reason}`)
+}
+
+console.log(`memory-eval: ${jobs.length} episodes on ${MODEL} via ${pool === undefined ? "the API key" : "the pool"}, concurrency ${concurrency}, cap $${cap}, out ${out}`)
 
 const worker = async () => {
   while (!stopped && next < jobs.length) {
+    // The pool's pace before each episode: an account near its limit stops the run before the owner's sessions feel it.
+    const pace = await pool?.pace()
+    if (pace !== undefined && !pace.ok) {
+      stopped = true
+      console.log(`■ the pool says wait: ${pace.reason}; stopping · ${pool!.line()}`)
+      return
+    }
+    // Another worker may have taken the last job while this one asked.
+    if (stopped || next >= jobs.length) return
     const job = jobs[next++]!
     const label = `${job.arm} ${job.scenario.id} #${job.repeat}`
     try {
@@ -68,7 +94,7 @@ const worker = async () => {
       const correct = Object.values(result.graded.correct).filter(Boolean).length
       console.log(`✓ ${label}: saved ${saved}/${job.scenario.facts.length}, honoured ${correct}/${job.scenario.facts.length} · ${ledger.line()}`)
     } catch (error) {
-      if (error instanceof CapReached) {
+      if (error instanceof CapReached || error instanceof PoolLimit) {
         stopped = true
         console.log(`■ ${label}: ${error.message}; stopping`)
         return
@@ -83,6 +109,7 @@ const worker = async () => {
 }
 
 await Promise.all(Array.from({ length: concurrency }, worker))
-const summary = [`# Memory eval run`, "", `Model ${MODEL}; ${ledger.line()}`, "", report(results)].join("\n")
+const via = pool === undefined ? "the API key" : `the pool (${pool.line()})`
+const summary = [`# Memory eval run`, "", `Model ${MODEL} via ${via}; ${ledger.line()}`, "", report(results)].join("\n")
 writeFileSync(join(out, "report.md"), summary + "\n")
 console.log("\n" + summary)

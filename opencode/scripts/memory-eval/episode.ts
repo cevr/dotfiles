@@ -13,11 +13,13 @@ import { NUDGE, retryFixed, type ShellRun } from "./retry.ts"
 import { basePrompt, DISTRACTORS, SHELL, type ToolDef } from "./tools.ts"
 import { newWorld, runDistractor, runShell } from "./world.ts"
 
-export const ARMS = ["none", "ours", "ours+pointer", "native", "kernel", "ours+nudge", "kernel+nudge"] as const
+export const ARMS = ["none", "ours", "ours+pointer", "native", "kernel", "ours+nudge", "kernel+nudge", "kernel+direct"] as const
 export type Arm = (typeof ARMS)[number]
 
-/** The arms that reach memory as production does: through the kernel, its only tool (kernel.ts). */
+/** The arms that reach memory through the kernel (kernel.ts): its only tool, or beside the memory tools. */
 export const throughKernel = (arm: Arm): boolean => arm.startsWith("kernel")
+/** The kernel arm as production runs it since 9535f78: the memory tools offered directly beside the kernel. */
+export const directBeside = (arm: Arm): boolean => arm === "kernel+direct"
 /** The arms whose shell results carry the gotcha trigger (retry.ts). */
 export const nudged = (arm: Arm): boolean => arm.endsWith("+nudge")
 /** The arms on our memory, with its digest. */
@@ -69,13 +71,18 @@ const runSession = async (
   arm: Arm,
   memory: MemoryArm | undefined,
   session: 1 | 2,
+  repeat: number,
 ): Promise<SessionResult> => {
   const world = newWorld(scenario.cwd, scenario.files, scenario.branches[session - 1]!, scenario.noise, scenario.outside)
   const sessionID = `session-${session}`
+  /** The session as the pool places it: one account for its life, so its prompt cache stays there. */
+  const placed = `memory-eval/${arm}/${scenario.id}/${repeat}/s${session}`
   const extra = [...(arm === "ours+pointer" ? [POINTER] : []), ...(memory === undefined ? [] : await memory.system(sessionID))]
   const system = [basePrompt(scenario.cwd), ...extra].map((text) => ({ type: "text" as const, text }))
   const memoryTools = (memory?.tools ?? []) as ReadonlyArray<ToolDef>
-  const tools = throughKernel(arm) ? [kernelTool(memoryTools)] : [SHELL, ...DISTRACTORS, ...memoryTools]
+  const tools = throughKernel(arm)
+    ? [kernelTool(memoryTools, directBeside(arm)), ...(directBeside(arm) ? memoryTools : [])]
+    : [SHELL, ...DISTRACTORS, ...memoryTools]
   const kernel = throughKernel(arm) ? newKernel(listingOf(memoryTools), scenario.cwd) : undefined
   const messages: Array<Message> = []
   const calls: Array<Call> = []
@@ -88,15 +95,17 @@ const runSession = async (
   let nudges = 0
 
   /** One tool call, answered and recorded; `nudge` when it is a shell retry that fixed a failure, on an arm with the trigger. */
-  const dispatch = (name: string, input: Record<string, unknown>): Dispatched | Promise<Dispatched> => {
+  /** `inCell` when a kernel cell made the call: the transcript indents it under the cell. */
+  const dispatch = (name: string, input: Record<string, unknown>, inCell = kernel !== undefined): Dispatched | Promise<Dispatched> => {
     step += 1
     const at = step
-    if (memory !== undefined && memory.names.has(name)) return memory.call(sessionID, name, input).then((answer) => record(at, name, input, answer.text, answer.error))
+    if (memory !== undefined && memory.names.has(name))
+      return memory.call(sessionID, name, input).then((answer) => record(at, name, input, answer.text, answer.error, inCell))
     const outcome = name === "shell" ? runShell(String(input["command"] ?? ""), world, scenario.rules) : runDistractor(name, input, world)
-    return record(at, name, input, outcome.out, outcome.code !== 0)
+    return record(at, name, input, outcome.out, outcome.code !== 0, inCell)
   }
 
-  const record = (at: number, name: string, input: Record<string, unknown>, output: string, error: boolean): Dispatched => {
+  const record = (at: number, name: string, input: Record<string, unknown>, output: string, error: boolean, inCell: boolean): Dispatched => {
     let nudge = false
     if (name === "shell") {
       const run = { command: String(input["command"] ?? ""), failed: error }
@@ -104,20 +113,21 @@ const runSession = async (
       shellRuns.push(run)
     }
     calls.push({ session, step: at, name, input, output, error })
-    transcript.push(`${kernel === undefined ? "→" : "  ⇢"} ${name} ${short(JSON.stringify(input), 300)}`, `${kernel === undefined ? "←" : "  ⇠"} ${short(output, 240)}`)
+    transcript.push(`${inCell ? "  ⇢" : "→"} ${name} ${short(JSON.stringify(input), 300)}`, `${inCell ? "  ⇠" : "←"} ${short(output, 240)}`)
     if (nudge) transcript.push("  [nudge]")
     return { output, error, nudge }
   }
 
   /** A tool_use block's result: a direct call, or a kernel cell and the calls it made. */
   const answer = async (name: string, input: Record<string, unknown>): Promise<{ output: string; error: boolean }> => {
-    // With the kernel, it is the only tool: a call of any other name is refused as OpenCode refuses it.
-    if (kernel !== undefined && name !== "kernel") {
+    // With the kernel, a call of a tool it does not offer is refused as OpenCode refuses it; `kernel+direct` offers memory's.
+    const offered = name === "kernel" || (directBeside(arm) && memory !== undefined && memory.names.has(name))
+    if (kernel !== undefined && !offered) {
       transcript.push(`→ ${name} (not a tool here)`)
       return { output: `Tool is not available for this request: ${name}`, error: true }
     }
-    if (kernel === undefined) {
-      const result = await dispatch(name, input)
+    if (kernel === undefined || name !== "kernel") {
+      const result = await dispatch(name, input, false)
       if (!result.nudge) return result
       nudges += 1
       return { output: `${result.output}\n\n${NUDGE}`, error: result.error }
@@ -149,7 +159,7 @@ const runSession = async (
     say(typeof turn === "string" ? turn : turn(calls))
     let ended = false
     for (let i = 0; i < STEPS_PER_TURN; i++) {
-      const response = await create(ledger, { system, tools, messages })
+      const response = await create(ledger, { system, tools, messages, session: placed })
       requests += 1
       addUsage(usage, response.usage)
       messages.push({ role: "assistant", content: response.content })
@@ -182,9 +192,9 @@ export const runEpisode = async (ledger: Ledger, scenario: Scenario, arm: Arm, r
   const dir = mkdtempSync(join(tmpdir(), "memory-eval-"))
   const memory = await memoryFor(arm, dir)
   try {
-    const s1 = arm === "none" ? undefined : await runSession(ledger, scenario, arm, memory, 1)
+    const s1 = arm === "none" ? undefined : await runSession(ledger, scenario, arm, memory, 1, repeat)
     const stored1 = memory?.stored() ?? { units: [], documents: [] }
-    const s2 = await runSession(ledger, scenario, arm, memory, 2)
+    const s2 = await runSession(ledger, scenario, arm, memory, 2, repeat)
     const stored2 = memory?.stored() ?? { units: [], documents: [] }
     const graded = grade(scenario, s1?.calls ?? [], s2.calls, s2.extra, stored1, stored2)
     return { model: MODEL, arm, scenario: scenario.id, repeat, ...(s1 === undefined ? {} : { s1 }), s2, stored1, stored2, graded }

@@ -8,10 +8,110 @@ tool, (3) the use cases are weak. This note gives the eval, its results and a
 recommendation. The script is `scripts/memory-eval/`; the design of memory
 itself is `notes/memory.md`.
 
-Two rounds ran. Round 1 compared our tools, a pointer line, the native tool
+Three rounds ran. Round 1 compared our tools, a pointer line, the native tool
 and no memory. Round 2 took up round 1's three follow-ups: string tags, a
-`kernel` arm for the production surface, and a trigger for gotchas. Round 2
-comes first below, then round 1.
+`kernel` arm for the production surface, and a trigger for gotchas. Round 3
+measured the fix round 2 proposed and production shipped in 9535f78: the
+memory tools offered directly beside the kernel (`kernel+direct`). The newest
+round comes first below.
+
+## Round 3: the memory tools beside the kernel
+
+### Recommendation (round 3)
+
+1. **Keep `direct` as cmd/kernel's default; it works.** Over 24 episodes per
+   arm on Haiku 5.5, offering `memory_save`, `memory_search` and
+   `memory_forget` beside the kernel nearly tripled the facts saved in
+   session 1, from 19% (14 of 72) to 54% (39 of 72). Session 2 then had a
+   digest in 79% of episodes instead of 29%, and honoured 46% of the facts
+   instead of 35% (measured). Every one of the 20 `kernel+direct` saves was a
+   direct call. No cell of that arm named `tools.memory_*`, so the model uses
+   the definition when it has one. The `kernel` arm's 7 saves all came from
+   cells. The cost: 12% more per episode ($0.0162 against $0.0144 at API
+   prices) and about 2 more requests per session (measured).
+2. **Gotchas are now the gap, and a better tool surface does not close
+   it.** Both arms saved almost no gotcha from tool output: 0 of 24 with
+   `kernel`, 1 of 24 with `kernel+direct`. Corrections went from 7 to 19 of
+   24 saved and preferences from 7 to 19 of 24. Rounds 1 and 2 found the
+   same with direct tools (`ours`) on Haiku 4.5. The next round should test
+   the candidates round 2 named: an imperative line that names the fix, or a
+   sentence in `memory_save`'s description about a command that only worked
+   once it was run another way.
+3. **Session 2 recalls through the digest, not through search.** In neither
+   arm did a session-2 agent read memory before acting (0 of 24 each). Six
+   `kernel+direct` and three `kernel` session-2 episodes searched later on.
+   The digest carries recall, so what gets saved in session 1 is what counts.
+   When a fact was saved, it was honoured 77% of the time with
+   `kernel+direct` (30 of 39) and 71% with `kernel` (10 of 14).
+
+### How round 3 ran (measured)
+
+- **Model `claude-haiku-5-5`**, through the pool. A one-episode probe
+  answered at once. With the API key it had only ever answered 429 (rounds 1
+  and 2). Rounds 1 and 2 ran on Haiku 4.5, so compare this round's two arms
+  with each other, not with those rounds. One cross-model point anyway: the
+  `kernel` arm saved 0 of 21 facts on Haiku 4.5 and 14 of 72 on Haiku 5.5.
+- **Through the pool, not the API key**, which had no credit left. The
+  transport is `scripts/memory-eval/pool.ts`: the 7 gent accounts, each
+  request shaped as the Anthropic auth plugin shapes it, and a local
+  `AccountPool` seeded from the live pool's `status`. Before every episode
+  the run asked the live pool's `pace` and its own accounts' pace. Both said
+  "within its weekly pace" all the way through. No request was refused (no
+  401 or 429) and no episode failed: 48 of 48 graded.
+- **Size: 1,794 requests and 20.4M cache-read tokens** (93–94% of input
+  read from the cache), 1.45M cache writes and 699k output tokens. At API
+  prices that is $0.73, plus $0.01 for the probe. Over the 20-minute run
+  the accounts' 5-hour readings rose by 0 to 4 points and the weekly ones
+  moved by at most 1. Those readings were taken by the pool before and after,
+  and they include the owner's live sessions in the same window.
+- 6 repeats × 4 scenarios × 2 arms, concurrency 4. Raw data:
+  `~/.cache/memory-eval/2026-11-09-run3/` (log
+  `~/.cache/memory-eval/run3.log`), probe `…-run3-probe55/`.
+
+### Round 3 results (24 episodes per arm, Haiku 5.5)
+
+| arm | n | facts saved (s1) | s2 digest | s2 facts honoured | s2 all honoured | honoured when saved | off-list notes s1/s2 | requests s1/s2 | $/episode |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| kernel | 24 | 19% (14/72) | 29% (7/24) | 35% (25/72) | 4% (1/24) | 71% (10/14) | 0.0 / 0.0 | 19.9 / 15.7 | $0.0144 |
+| kernel+direct | 24 | 54% (39/72) | 79% (19/24) | 46% (33/72) | 4% (1/24) | 77% (30/39) | 0.0 / 0.0 | 21.8 / 17.4 | $0.0162 |
+
+| arm | correction saved → honoured | gotcha saved → honoured | preference saved → honoured |
+| --- | --- | --- | --- |
+| kernel | 7/24 → 12/24 | 0/24 → 3/24 | 7/24 → 10/24 |
+| kernel+direct | 19/24 → 14/24 | 1/24 → 4/24 | 19/24 → 15/24 |
+
+Per fact, saved in session 1 → honoured in session 2 (of 6 each):
+
+| fact | kernel | kernel+direct |
+| --- | --- | --- |
+| webapp/branch-prefix (preference) | 3 → 3 | 6 → 6 |
+| webapp/unit-env (gotcha) | 0 → 0 | 0 → 0 |
+| webapp/stage-by-path (correction) | 3 → 5 | 6 → 6 |
+| dotfiles/gate-home (gotcha) | 0 → 1 | 0 → 1 |
+| dotfiles/no-config (correction) | 1 → 4 | 6 → 3 |
+| dotfiles/no-push (preference) | 1 → 6 | 6 → 6 |
+| billing/uv-run (gotcha) | 0 → 2 | 1 → 3 |
+| billing/autogenerate (correction) | 0 → 0 | 1 → 0 |
+| billing/ticket-prefix (preference) | 0 → 0 | 1 → 1 |
+| orders/go-short (gotcha) | 0 → 0 | 0 → 0 |
+| orders/staging-first (correction) | 3 → 3 | 6 → 5 |
+| orders/reviewer (preference) | 3 → 1 | 6 → 2 |
+
+What the cells show:
+
+- In webapp, dotfiles and orders, `kernel+direct` saved the correction and the
+  preference in all 6 episodes. `kernel` saved them in 1 to 3.
+- **Billing is a harness limit, not a memory result.** Both arms saved almost
+  nothing there (`kernel+direct`: 1 save in 6 episodes). In the transcripts,
+  Haiku 5.5 doubts the fake shell: "The tool results don't match what the
+  commands should do, so I've stopped". It gives up before the owner's
+  correction can be acted on. The fake git in that scenario needs work before
+  its numbers mean anything on Haiku 5.5.
+- Saving a fact is not the same as honouring it. dotfiles/no-config was saved
+  6 times and honoured 3 times. orders/reviewer was saved 6 times and
+  honoured 2 times. The `kernel` arm honoured dotfiles/no-push 6 times with
+  1 save, so session 2 can get that fact right without memory. With 6
+  episodes per cell, a difference of one or two is noise.
 
 ## Round 2: the kernel arm, the gotcha trigger, string tags
 
@@ -387,12 +487,21 @@ bun scripts/memory-eval/eval.ts --dry                      # one episode per arm
 bun scripts/memory-eval/eval.ts --repeats 8 --cap 5        # the full run
 bun scripts/memory-eval/eval.ts --model claude-haiku-4-5-20251001 --repeats 8 --cap 4.35
 bun scripts/memory-eval/eval.ts --arms ours,kernel,ours+nudge --repeats 4 --cap 2.5   # round 2's run
+bun scripts/memory-eval/eval.ts --arms kernel,kernel+direct --repeats 6 --cap 3        # round 3's run
 bun scripts/memory-eval/report.ts <out>/episodes.jsonl     # regrade and summarize a run
 bun scripts/memory-eval/show.ts <out>/episodes.jsonl native orders --s2   # read transcripts
 ```
 
-The key is `anthropic.key` in `~/.local/share/opencode/auth.json`, read at
-runtime and never printed. Each run writes `out/memory-eval/<stamp>/`
+Since round 3 requests go out on the pool's Claude accounts
+(`scripts/memory-eval/pool.ts`): the accounts gent signed in to, in the store
+the pool plugin reads (`~/.local/share/opencode-prime/pool-auth`, or
+`--gent-dir`), each request shaped as the Anthropic auth plugin shapes it and
+placed by a local copy of the pool's `AccountPool` seeded from the live
+pool's `status`. Before each episode the run asks the live pool's `pace` and
+its own accounts' pace, and stops on a no. `--api-key` sends with
+`anthropic.key` in `~/.local/share/opencode/auth.json` instead, as rounds 1
+and 2 did. No token or key is printed. The `$` figures are API prices: on the
+pool they measure size, not money. Each run writes `out/memory-eval/<stamp>/`
 (ignored by git): `episodes.jsonl` (one line per episode: the calls, a
 compact transcript, the stores, the usage) and `report.md`. This run's data
 (1.9 MB) is kept outside the repository at

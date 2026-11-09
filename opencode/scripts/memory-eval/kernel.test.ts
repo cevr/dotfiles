@@ -53,6 +53,21 @@ describe("the kernel arm", () => {
     }
   })
 
+  test("kernel+direct: memory is off the list and the description says the tools beside it are called directly", async () => {
+    const { memory, tools } = await setup()
+    try {
+      const lines = catalogLines(tools, true)
+      expect(lines).toHaveLength(FIXTURE.length - 3)
+      expect(lines.some((line) => line.startsWith("- tools.memory_"))).toBe(false)
+      const tool = kernelTool(tools, true)
+      expect(tool.description).toContain("the kernel is your main tool. The few tools offered beside it you call directly")
+      expect(tool.description).not.toContain("the kernel is your only tool")
+      expect(tool.description).toEndWith(lines.join("\n"))
+    } finally {
+      await memory.close()
+    }
+  })
+
   test("a cell runs the fake shell and saves a note, tags given as a string; bindings persist", async () => {
     const { memory, kernel, dispatch, calls } = await setup()
     try {
