@@ -11,6 +11,7 @@
 //
 // It writes, under SCENARIO_OUT:
 // - `before.txt`: the frame just before Ctrl+Enter (the shell running, the queued row, the draft, the hint);
+// - `checked.txt`: the frame 6.5 s after the first press, the next turn still answering (past the 5 s stop check);
 // - `after.txt`: the frame once the next turn answered;
 // - `tool.txt`: `interrupted` when the shell call was cut, else `running`;
 // - `requests.json`: for each model request after the first, the user texts it carries, in order.
@@ -28,8 +29,14 @@ const LATER = "Then tag the release."
 const DRAFT = "Skip the suite, ship it."
 const RUNNING = "Running it"
 const ANSWER = "Shipped and tagged."
-/** How long the answer to the next turn stalls: time for a second Ctrl+Enter while it runs. */
-const ANSWER_MS = 3_000
+/**
+ * How long the answer to the next turn stalls: time for a second Ctrl+Enter
+ * while it runs, and for the stop check, STOP_MS (5 s) after the first press,
+ * to find the session running that next turn.
+ */
+const ANSWER_MS = 8_000
+/** When, after the first press, `checked.txt` is saved: past the stop check, within its toast's 5 s. */
+const CHECKED_MS = 6_500
 
 /** The user texts of a chat-completions request, in order. */
 const userTexts = (req: unknown): ReadonlyArray<string> => {
@@ -104,12 +111,16 @@ export default OpenCodeDriver.use(
       yield* Effect.sleep("500 millis")
       yield* save("before")
       yield* chord
+      const pressed = Date.now()
       const cut = yield* shell.awaitInterrupted().pipe(Effect.timeout("5 seconds"), Effect.option)
       writeFileSync(`${out}/tool.txt`, cut._tag === "Some" ? "interrupted" : "running")
       if (cut._tag === "None") yield* shell.succeed({ output: "done\n", exit: 0 })
       // The next turn runs: a second Ctrl+Enter with nothing waiting must not interrupt it.
       yield* until("next", (frame) => frame.includes(`┃ ${DRAFT}`) && !frame.includes("◌"))
       yield* chord
+      // Past the stop check, the next turn still answering: a toast that the first press did not stop the turn would show.
+      yield* Effect.sleep(`${Math.max(0, pressed + CHECKED_MS - Date.now())} millis`)
+      yield* save("checked")
       // Settled: the last prompt answered and no turn running.
       yield* until("after", (frame) => frame.lastIndexOf(ANSWER) > frame.indexOf(`┃ ${DRAFT}`) && !frame.includes("Executing"))
       yield* Effect.sleep("500 millis")
