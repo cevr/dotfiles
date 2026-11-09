@@ -8,9 +8,11 @@
  * A session in the other directory runs first, so the plugin is loaded there
  * too. Then a session in the asking directory asks one question; the run opens
  * the /answer form for it (`session.form.create`, as the TUI does) and submits
- * an answer, waits for the letter and the turn it wakes, and writes the asking
- * session's messages and every warning the server logged to
- * `<base>/result.json`.
+ * an answer, waits for the letter and the turn it wakes. Last, a root session
+ * and a subagent of it (its child session): the subagent asks, the form in the
+ * root answers it, the subagent wakes on the letter, and the root, not woken,
+ * takes one more turn, which reads the notice. It writes the sessions'
+ * messages and every warning the server logged to `<base>/result.json`.
  *
  * @module
  */
@@ -18,7 +20,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { formOf } from "../../mods/questions/form.ts"
 import type { Question } from "../../mods/questions/question.ts"
-import { ASK_TASK, IDLE_TASK, LETTER, QUESTION, serve } from "./sim.ts"
+import { ASK_TASK, IDLE_TASK, LETTER, QUESTION, ROOT_TASK, serve, SUBAGENT } from "./sim.ts"
 
 export interface Spec {
   readonly base: string
@@ -36,6 +38,8 @@ export interface Result {
   readonly asked: unknown
   /** The other directory's session's messages. */
   readonly other: unknown
+  /** The subagent run: the form field's key, the subagent's messages, and the root's before and after its next turn. */
+  readonly subagent: { readonly field: string; readonly child: unknown; readonly untold: unknown; readonly root: unknown }
   /** Every warning the server logged. */
   readonly warnings: ReadonlyArray<Warning>
 }
@@ -69,7 +73,7 @@ const content = {
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
 interface Embedded {
   readonly sessions: {
-    readonly create: (input: { location: { directory: string } }) => Promise<{ readonly id: string }>
+    readonly create: (input: { location: { directory: string }; parentID?: string; title?: string }) => Promise<{ readonly id: string }>
     readonly prompt: (input: { sessionID: string; text: string }) => Promise<unknown>
     readonly context: (input: { sessionID: string }) => Promise<unknown>
     readonly form: {
@@ -118,18 +122,48 @@ try {
     await opencode.sessions.form.reply({ sessionID: session.id, formID: form.id, answer: { [input.fields[0].key]: "Redis" } })
 
     // The letter wakes the session; wait for it to arrive, then for the turn it starts.
-    const deadline = Date.now() + 30_000
-    while (!JSON.stringify(await opencode.sessions.context({ sessionID: session.id })).includes(LETTER)) {
-      if (Date.now() > deadline) throw new Error("the answer's letter never arrived")
-      await sleep(100)
+    const lettered = async (sessionID: string) => {
+      const deadline = Date.now() + 30_000
+      while (!JSON.stringify(await opencode.sessions.context({ sessionID })).includes(LETTER)) {
+        if (Date.now() > deadline) throw new Error(`the answer's letter never arrived in ${sessionID}`)
+        await sleep(100)
+      }
+      await opencode.experimental.session.wait({ sessionID })
     }
-    await opencode.experimental.session.wait({ sessionID: session.id })
+    await lettered(session.id)
+
+    // A root session and a subagent of it: the subagent asks, the form in the root answers it.
+    const root = await opencode.sessions.create({ location: { directory: asking } })
+    await opencode.sessions.prompt({ sessionID: root.id, text: ROOT_TASK })
+    await opencode.experimental.session.wait({ sessionID: root.id })
+    const child = await opencode.sessions.create({ location: { directory: asking }, parentID: root.id, title: SUBAGENT })
+    await opencode.sessions.prompt({ sessionID: child.id, text: ASK_TASK })
+    await opencode.experimental.session.wait({ sessionID: child.id })
+    const subInput = formOf([{ id: "q1", sessionID: child.id, askedAt: 0, ...QUESTION }], root.id, () => SUBAGENT)
+    if (subInput === undefined) throw new Error("no form for the subagent's question")
+    const subForm = await opencode.sessions.form.create({ sessionID: root.id, ...subInput })
+    await opencode.sessions.form.reply({ sessionID: root.id, formID: subForm.id, answer: { [subInput.fields[0].key]: "Redis" } })
+    await lettered(child.id)
+    // A wake the notice should not cause would have answered by now.
+    await sleep(1000)
+    await opencode.experimental.session.wait({ sessionID: root.id })
+    const untold = await opencode.sessions.context({ sessionID: root.id })
+    // The root's next turn reads the notice.
+    await opencode.sessions.prompt({ sessionID: root.id, text: "carry on" })
+    await opencode.experimental.session.wait({ sessionID: root.id })
+
     // Every location's subscriber has long seen the event by now; let any late one log.
     await sleep(500)
 
     const result: Result = {
       asked: await opencode.sessions.context({ sessionID: session.id }),
       other: await opencode.sessions.context({ sessionID: idle.id }),
+      subagent: {
+        field: subInput.fields[0].key,
+        child: await opencode.sessions.context({ sessionID: child.id }),
+        untold,
+        root: await opencode.sessions.context({ sessionID: root.id }),
+      },
       warnings,
     }
     writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
