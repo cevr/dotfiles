@@ -75,9 +75,37 @@ interface OurTool {
   readonly run: (memory: Model.MemoryModel["Service"], sessionID: string, input: never) => Effect.Effect<string, Failure>
 }
 
-/** The three tools as cmd/memory/server.ts registers them. */
-const OUR_TOOLS: ReadonlyArray<OurTool> = [
-  { name: SAVE, description: SAVE_DESCRIPTION, input: SaveInput, run: (memory, sessionID, input: SaveInput) => memory.save(sessionID, input).pipe(Effect.map(savedText)) },
+/**
+ * Round 4's candidates for saving gotchas, each against production's words (notes/memory-eval.md, round 4):
+ * - `describe`: one more sentence in memory_save's description, after "a fix that took real effort and its cause".
+ * - `followup`: one fixed line after memory_save's answer, read in the turn the agent is already saving in.
+ * Both are fixed text: no tool definition or system block changes from turn to turn.
+ */
+export const GOTCHA_SENTENCE =
+  "A command that failed and worked only once you ran it another way (a variable, a flag, a wrapper, a path) is such a fix: save the way that works, so the next session does not fail first."
+export const FOLLOWUP_LINE =
+  "If this session also taught you something a later session would need, such as a command that failed until you ran it another way, save that too, one fact per note."
+
+export interface Variant {
+  readonly saveDescription?: string
+  readonly afterSave?: string
+}
+
+export const VARIANTS = {
+  production: {},
+  describe: { saveDescription: SAVE_DESCRIPTION.replace("a fix that took real effort and its cause.", `a fix that took real effort and its cause. ${GOTCHA_SENTENCE}`) },
+  followup: { afterSave: FOLLOWUP_LINE },
+} as const satisfies Record<string, Variant>
+
+/** The three tools as cmd/memory/server.ts registers them, with a variant's words in place of production's. */
+const ourTools = (variant: Variant): ReadonlyArray<OurTool> => [
+  {
+    name: SAVE,
+    description: variant.saveDescription ?? SAVE_DESCRIPTION,
+    input: SaveInput,
+    run: (memory, sessionID, input: SaveInput) =>
+      memory.save(sessionID, input).pipe(Effect.map((saved) => (variant.afterSave === undefined ? savedText(saved) : `${savedText(saved)}\n\n${variant.afterSave}`))),
+  },
   {
     name: SEARCH,
     description: SEARCH_DESCRIPTION,
@@ -98,7 +126,8 @@ export const jsonSchemaOf = (schema: Schema.Top): Record<string, unknown> => {
 }
 
 /** Our memory over a scratch SQLite file in `dir`; every session is a root session of one project. */
-export const ours = async (dir: string): Promise<MemoryArm> => {
+export const ours = async (dir: string, variant: Variant = VARIANTS.production): Promise<MemoryArm> => {
+  const OUR_TOOLS = ourTools(variant)
   const path = join(dir, "memory.db")
   const externals = Layer.merge(
     SqliteStore.layer(path),

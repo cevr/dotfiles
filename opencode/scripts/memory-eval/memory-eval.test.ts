@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { HEADING } from "../../mods/memory/digest.ts"
 import { grade, isRead } from "./grade.ts"
-import { native, nativeCommand, ours, resolveMemoryPath } from "./memory.ts"
+import { FOLLOWUP_LINE, GOTCHA_SENTENCE, native, nativeCommand, ours, resolveMemoryPath, VARIANTS } from "./memory.ts"
 import { type Call, SCENARIOS } from "./scenarios.ts"
 import { commitMessages, newWorld, runShell, segments, stagesAll } from "./world.ts"
 
@@ -233,6 +233,21 @@ describe("the native memory handler", () => {
 })
 
 describe("our plugin as the eval hosts it", () => {
+  test("round 4's variants change only memory_save: one sentence in its description, or one line after its answer", async () => {
+    const plain = await ours(scratch())
+    const describe_ = await ours(scratch(), VARIANTS.describe)
+    const followup = await ours(scratch(), VARIANTS.followup)
+    try {
+      const saveOf = (arm: typeof plain) => (arm.tools as Array<{ name: string; description: string }>).find((tool) => tool.name === "memory_save")!.description
+      expect(saveOf(describe_)).toBe(saveOf(plain).replace("its cause.", `its cause. ${GOTCHA_SENTENCE}`))
+      expect(saveOf(followup)).toBe(saveOf(plain))
+      expect((await followup.call("s", "memory_save", { text: "acme-web: tests need TEST_ENV=unit" })).text).toBe(`Saved #1 (project).\n\n${FOLLOWUP_LINE}`)
+      expect((await plain.call("s", "memory_save", { text: "acme-web: tests need TEST_ENV=unit" })).text).toBe("Saved #1 (project).")
+    } finally {
+      await Promise.all([plain.close(), describe_.close(), followup.close()])
+    }
+  })
+
   test("offers its three tools; a note saved in one session is the next session's digest", async () => {
     const arm = await ours(scratch())
     try {
