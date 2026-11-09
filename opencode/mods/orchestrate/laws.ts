@@ -269,6 +269,19 @@ export const modelsLaws = (name: string, layer: (world: ModelsWorld) => Layer.La
           expect(yield* models.newest("ses_law", ["openai"], "gpt-luna", "max")).toBeUndefined()
         }),
       ))
+
+    test("a model by name is at the variant it offers, bare at one it does not, and none when not offered", () =>
+      check(
+        layer({ model, variants: [], others: [{ providerID: "anthropic", id: "claude-fable", variants: [{ id: "high" }] }] }),
+        Effect.gen(function* () {
+          const models = yield* Models
+          expect(yield* models.at("ses_law", "anthropic/claude-fable", "high")).toBe("anthropic/claude-fable#high")
+          expect(yield* models.at("ses_law", "anthropic/claude-fable", "max")).toBe("anthropic/claude-fable")
+          expect(yield* models.at("ses_law", "anthropic/claude-fable", undefined)).toBe("anthropic/claude-fable")
+          expect(yield* models.at("ses_law", "anthropic/claude-sage", "high")).toBeUndefined()
+          expect(yield* models.at("ses_law", "no-provider", "high")).toBeUndefined()
+        }),
+      ))
   })
 
 // ── PoolPace ──

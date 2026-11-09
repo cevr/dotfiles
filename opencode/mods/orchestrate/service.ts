@@ -79,6 +79,12 @@ export class Models extends Context.Service<
      * deprecated model is never one.
      */
     readonly newest: (sessionID: string, providers: ReadonlyArray<string>, family: string, variant: string) => Effect.Effect<string | undefined>
+    /**
+     * `model` (`provider/id`) at `variant` (`provider/id#variant`) when the
+     * session's host offers both, the bare model when it offers the model
+     * without that variant, and none when it does not offer the model.
+     */
+    readonly at: (sessionID: string, model: string, variant: string | undefined) => Effect.Effect<string | undefined>
   }
 >()("dotfiles-opencode/orchestrate/Models") {}
 

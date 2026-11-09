@@ -5,11 +5,14 @@
 // come from the unit's verdict files and log. OpenCode's rounds (each subagent
 // start, and whether it started, latched or was denied) come from the orchestrate
 // mod's call log. Run it on each host: units and transcripts live where they ran.
-// Usage: bun models.ts [--since 2026-10-17] [--json] [--no-opencode]
+// `--experiment` prints only the model experiment's view (models/experiment.ts): per arm of the
+// role the mod splits across two models, the starts, tokens and cost per start, and the units' fates.
+// Usage: bun models.ts [--since 2026-10-17] [--json] [--no-opencode] [--experiment]
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { probe, serviceEndpoint } from '../../retro/scripts/mine/opencode.ts';
+import { armStats, experimentTable } from './models/experiment.ts';
 import { opencodeAgents, roundsOf, roundsTable, ROUNDS_HEADER } from './models/opencode.ts';
 import { joinUnits, outcomeOf, type Outcome, type Phase } from './models/outcomes.ts';
 import { bridgeUnits, claudeAgents, codexAgents, type Agent } from './models/sources.ts';
@@ -57,6 +60,15 @@ for (const r of rows) {
 for (const r of rows)
   if (r.agent.role === 'root' && units.has(r.agent.id))
     r.outcome = { phase: 'decide', unit: `${units.get(r.agent.id)!.size} units`, round: 0, result: `${merged.get(r.agent.id)?.size ?? 0} merged`, fate: '' };
+
+// The model experiment's arms (the mod's `experiment` option): starts, tokens and cost per start, and the units' fates.
+if (args.includes('--experiment')) {
+  const tokens = new Map(opencode.map((a) => [a.id, a.tokens]));
+  const outcomes = rows.flatMap((r) => (r.outcome ? [r.outcome] : []));
+  for (const line of experimentTable(armStats(rounds, (child) => tokens.get(child), outcomes))) console.log(line);
+  if (!opencode.length) console.log('  (no OpenCode service answered: tokens and cost are unjoined)');
+  process.exit(0);
+}
 
 if (json) {
   console.log(JSON.stringify(rows.map(({ agent: { prompt, final, ...a }, outcome }) => ({ ...a, outcome }))));

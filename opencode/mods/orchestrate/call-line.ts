@@ -4,6 +4,7 @@
 // A new subagent's line says what admitted or held it: each pace asked, by
 // its answer or by why it failed open, so a start a measured pace admitted
 // reads apart from one a broken RPC let through. A follow-up asks no pace.
+import type { ArmRecord } from "./experiment.ts"
 import type { PaceReply } from "./pace.ts"
 import type { Reason } from "./role.ts"
 import type { Hold, Status, SubagentFinished, SubagentLatched, SubagentStarted, ToolCallId } from "./tool-call.ts"
@@ -37,7 +38,7 @@ const admissions = (asked: Asked | undefined) => ({
   ...(asked?.fallbackCodex === undefined ? {} : { fallbackCodex: admissionOf(asked.fallbackCodex) }),
 })
 
-/** A line's admission fields. */
+/** A line's admission fields, and the experiment arm a new start is in (experiment.ts). */
 interface Admissions {
   /** The pool's pace on its model. */
   readonly pace?: Admission
@@ -47,7 +48,11 @@ interface Admissions {
   readonly fallbackPace?: Admission
   /** The Codex admission on its Codex fallback. */
   readonly fallbackCodex?: Admission
+  /** Its arm of the model experiment, the trial's model, and why a trial start ran on the normal chain. */
+  readonly experiment?: ArmRecord
 }
+
+const armed = (experiment: ArmRecord | undefined) => (experiment === undefined ? {} : { experiment })
 
 /** One line of the call log. `asked` is what the model passed; `agent` is what runs. */
 export type CallLine =
@@ -121,8 +126,8 @@ export type CallLine =
       readonly attempt: number
     }
 
-/** A started subagent's line, at `at` (ISO 8601), with the paces `asked` for it. */
-export const started = (event: SubagentStarted, at: string, asked?: Asked): CallLine => ({
+/** A started subagent's line, at `at` (ISO 8601), with the paces `asked` for it and its experiment arm. */
+export const started = (event: SubagentStarted, at: string, asked?: Asked, experiment?: ArmRecord): CallLine => ({
   kind: "call",
   at,
   sessionID: event.call.sessionID,
@@ -138,10 +143,11 @@ export const started = (event: SubagentStarted, at: string, asked?: Asked): Call
   ...(event.fallback === undefined ? {} : { fallback: event.fallback }),
   ...(event.lowered === undefined ? {} : { lowered: event.lowered }),
   ...admissions(asked),
+  ...armed(experiment),
 })
 
-/** A latched subagent's line: the paces `asked` for it, what holds it, why, and when it opens. */
-export const latched = (event: SubagentLatched, at: string, asked?: Asked): CallLine => ({
+/** A latched subagent's line: the paces `asked` for it, its experiment arm, what holds it, why, and when it opens. */
+export const latched = (event: SubagentLatched, at: string, asked?: Asked, experiment?: ArmRecord): CallLine => ({
   kind: "latched",
   at,
   sessionID: event.call.sessionID,
@@ -156,6 +162,7 @@ export const latched = (event: SubagentLatched, at: string, asked?: Asked): Call
   ...(event.fallback === undefined ? {} : { fallback: event.fallback }),
   ...(event.lowered === undefined ? {} : { lowered: event.lowered }),
   ...admissions(asked),
+  ...armed(experiment),
   hold: event.hold,
   why: event.why,
   opens: new Date(event.opensAt).toISOString(),

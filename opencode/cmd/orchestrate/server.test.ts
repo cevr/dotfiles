@@ -954,6 +954,103 @@ describe("Opus first, Codex second", () => {
     ))
 })
 
+describe("the model experiment", () => {
+  const now = Date.parse(WEDNESDAY)
+  const model = { providerID: "anthropic", id: "claude-opus" }
+  const fable: Offered = { providerID: "anthropic", id: "claude-fable", family: "claude-fable", variants: [{ id: "high" }, { id: "max" }] }
+  const sol: Offered = { providerID: "openai", id: "gpt-6.1-sol", family: "gpt-sol", time: { released: 2 }, variants: [{ id: "high" }] }
+  const options = { now: WEDNESDAY, experiment: { role: "planner", model: "anthropic/claude-fable", share: 0.5 } }
+  const room = () => ({ ok: true, measured: true, reason: "scripted room" })
+  // `billing` hashes into the trial arm at half, `auth` into the control (experiment.test.ts).
+  const line = (logged: ReadonlyArray<string>) => JSON.parse(logged[0]!) as Record<string, unknown>
+
+  test("a trial unit's new planner starts on the trial's model at the role's effort; a control unit's on the role's own", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start(options, { model, variants: ["high"], others: [fable, sol] })
+        const trial = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x" })
+        expect(trial.input).toMatchObject({ model: "anthropic/claude-fable#high" })
+        const control = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner auth r1", prompt: "x" })
+        expect(control.input).toMatchObject({ model: "anthropic/claude-opus#high" })
+        const [trialLine, controlLine] = plugin.logged().map((text) => JSON.parse(text) as Record<string, unknown>)
+        expect(trialLine).toMatchObject({ model: "anthropic/claude-fable#high", experiment: { arm: "trial", model: "anthropic/claude-fable" } })
+        expect(controlLine).toMatchObject({ model: "anthropic/claude-opus#high", experiment: { arm: "control", model: "anthropic/claude-fable" } })
+      }),
+    ))
+
+  test("a replan of a trial unit is a new start in the same arm; a resumed round keeps its child's model and is in no arm", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start(options, { model, variants: ["high"], others: [fable], sessions: { child: { parentID: "root", agent: "planner" } } })
+        const replan = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r2", prompt: "x" })
+        expect(replan.input).toMatchObject({ model: "anthropic/claude-fable#high" })
+        const resumed = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r2", prompt: "go on", sessionID: "child" })
+        expect(resumed.input).toEqual({ agent: "planner", description: "planner billing r2", prompt: "go on", sessionID: "child" })
+        const lines = plugin.logged().map((text) => JSON.parse(text) as Record<string, unknown>)
+        expect(lines[0]).toMatchObject({ experiment: { arm: "trial" } })
+        expect(lines[1]!.experiment).toBeUndefined()
+      }),
+    ))
+
+  test("another role, or a planner naming a model of its own, is in no arm", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start(options, { model, variants: ["high", "medium"], others: [fable, sol] })
+        const verifier = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier billing r1", prompt: "x" })
+        expect(verifier.input).toMatchObject({ model: "anthropic/claude-opus#medium" })
+        const named = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", model: "openai/gpt-6.1-sol", prompt: "x" })
+        expect(named.input).toMatchObject({ model: "openai/gpt-6.1-sol" })
+        for (const text of plugin.logged()) expect(JSON.parse(text).experiment).toBeUndefined()
+      }),
+    ))
+
+  test("the pace holds the trial's model: the trial start takes the normal chain, Opus then Codex, and its line says why", () =>
+    scenario(
+      Effect.gen(function* () {
+        const held = { anthropic: { ok: false, measured: true, reason: "all pool accounts are held", retryAt: now + 600_000 } }
+        const plugin = yield* start(options, { model, variants: ["high"], others: [fable, sol], pool: held, codex: room })
+        const call = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x" })
+        expect(call.input).toMatchObject({ model: "openai/gpt-6.1-sol#high" })
+        expect(line(plugin.logged())).toMatchObject({
+          model: "openai/gpt-6.1-sol#high",
+          fallback: "anthropic/claude-opus#high held: all pool accounts are held",
+          experiment: { arm: "trial", model: "anthropic/claude-fable", fellBack: "anthropic/claude-fable#high held: all pool accounts are held" },
+        })
+      }),
+    ))
+
+  test("a held start that latches keeps its arm, so the line its latch writes records it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const held = { anthropic: { ok: false, measured: true, reason: "all pool accounts are held", retryAt: now + 600_000 } }
+        const plugin = yield* start(options, { model, variants: ["high"], pool: held })
+        yield* plugin.call("subagent", "root", { agent: "planner", description: "planner auth r1", prompt: "x" })
+        expect(plugin.kept[0]!.context).toEqual({ reason: "kept", experiment: { arm: "control", model: "anthropic/claude-fable" } })
+        expect(line(plugin.logged())).toMatchObject({ kind: "latched", experiment: { arm: "control" } })
+      }),
+    ))
+
+  test("a host that does not offer the trial's model starts the trial unit on the role's own", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start(options, { model, variants: ["high"] })
+        const call = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x" })
+        expect(call.input).toMatchObject({ model: "anthropic/claude-opus#high" })
+        expect(line(plugin.logged())).toMatchObject({ experiment: { arm: "trial", fellBack: "anthropic/claude-fable is not offered" } })
+      }),
+    ))
+
+  test("with no experiment set, every planner starts on the role's own model and no line names an arm", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["high"], others: [fable] })
+        const call = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x" })
+        expect(call.input).toMatchObject({ model: "anthropic/claude-opus#high" })
+        expect(line(plugin.logged()).experiment).toBeUndefined()
+      }),
+    ))
+})
+
 describe("the units' logs", () => {
   /** A scratch checkout, removed with the test's scope. */
   const checkout = Effect.acquireRelease(
@@ -1545,6 +1642,8 @@ describe("the options", () => {
     expect(decode({ skill: "/s" }).skill).toBe("/s")
     expect(decode({ codex: false }).codex).toBe(false)
     expect(decode({ codex: { pool: true } }).codex).toEqual({ ...defaults.codex, pool: true })
+    const experiment = { role: "planner", model: "anthropic/claude-fable-5-2", share: 0.5 } as const
+    expect(decode({ experiment }).experiment).toEqual(experiment)
   })
 
   test("a malformed option stops the plugin at setup, naming the option", async () => {
@@ -1559,6 +1658,9 @@ describe("the options", () => {
       [{ resume: true }, '["resume"]'],
       [{ resume: { backoffMs: ["10s"] } }, '["resume"]["backoffMs"][0]'],
       [{ skill: 7 }, '["skill"]'],
+      [{ experiment: { role: "planner", model: "anthropic/claude-fable", share: 1.5 } }, '["experiment"]["share"]'],
+      [{ experiment: { role: "build", model: "anthropic/claude-fable", share: 0.5 } }, '["experiment"]["role"]'],
+      [{ experiment: { role: "planner", model: "claude-fable", share: 0.5 } }, '["experiment"]["model"]'],
     ]
     for (const [options, path] of malformed) {
       const exit = await Effect.runPromise(Effect.exit(Effect.scoped(start(options))))
