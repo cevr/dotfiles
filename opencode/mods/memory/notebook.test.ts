@@ -1,8 +1,17 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
-import { SaveInput } from "./notebook.ts"
+import { GOTCHA_SENTENCE, SAVE_DESCRIPTION, SaveInput } from "./notebook.ts"
 
 const decode = Schema.decodeUnknownSync(SaveInput)
+
+describe("memory_save's description", () => {
+  test("names the gotcha a session recovered from by itself as a fix worth saving, right after the fixes it widens", () => {
+    // The round-5 eval's lever (notes/memory-eval.md): moving or dropping it is a measured change, not a wording one.
+    expect(SAVE_DESCRIPTION).toContain(`a fix that took real effort and its cause. ${GOTCHA_SENTENCE} Save it when the user asks you`)
+    expect(GOTCHA_SENTENCE).toContain("failed and worked only once you ran it another way")
+    expect(SAVE_DESCRIPTION.split(GOTCHA_SENTENCE)).toHaveLength(2)
+  })
+})
 
 describe("memory_save's input", () => {
   test("takes tags as a list", () => {

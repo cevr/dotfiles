@@ -24,6 +24,7 @@ export const ARMS = [
   "kernel+direct",
   "kernel+direct+describe",
   "kernel+direct+followup",
+  "kernel+direct+plain",
 ] as const
 export type Arm = (typeof ARMS)[number]
 
@@ -31,9 +32,15 @@ export type Arm = (typeof ARMS)[number]
 export const throughKernel = (arm: Arm): boolean => arm.startsWith("kernel")
 /** The kernel arm as production runs it since 9535f78: the memory tools offered directly beside the kernel; round 4's candidates on it. */
 export const directBeside = (arm: Arm): boolean => arm.startsWith("kernel+direct")
-/** The words of memory_save an arm offers: production's, or a round-4 candidate's (memory.ts). */
+/** The words of memory_save an arm offers: production's, a round-4 candidate's, or production's before round 5 (memory.ts). */
 export const variantOf = (arm: Arm): Variant =>
-  arm === "kernel+direct+describe" ? VARIANTS.describe : arm === "kernel+direct+followup" ? VARIANTS.followup : VARIANTS.production
+  arm === "kernel+direct+describe"
+    ? VARIANTS.describe
+    : arm === "kernel+direct+followup"
+      ? VARIANTS.followup
+      : arm === "kernel+direct+plain"
+        ? VARIANTS.plain
+        : VARIANTS.production
 /** The arms whose shell results carry the gotcha trigger (retry.ts). */
 export const nudged = (arm: Arm): boolean => arm.endsWith("+nudge")
 /** The arms on our memory, with its digest. */

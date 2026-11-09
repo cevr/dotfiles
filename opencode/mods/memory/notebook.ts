@@ -53,9 +53,17 @@ export const ForgetInput = Schema.Struct({
 })
 export type ForgetInput = typeof ForgetInput.Type
 
+/**
+ * The gotcha a session recovers from by itself, named in memory_save's description: without it agents saved what the
+ * owner said and almost never a command they had to run another way (notes/memory-eval.md, round 5: on Opus 5.5,
+ * gotchas saved 3 of 24 → 11 of 24, no off-list note).
+ */
+export const GOTCHA_SENTENCE =
+  "A command that failed and worked only once you ran it another way (a variable, a flag, a wrapper, a path) is such a fix: save the way that works, so the next session does not fail first."
+
 export const SAVE_DESCRIPTION = [
   "Save a note to long-term memory, kept on this machine across sessions. Later sessions start with the most useful notes in their system prompt, and memory_search finds the rest.",
-  "Save what a later session could not read off the code or the screen and would want: a durable fact about the user, a preference or correction they gave (\"use bun, not npm\"), a convention of this project, a fix that took real effort and its cause. Save it when the user asks you to remember something, and when something is clearly worth keeping.",
+  `Save what a later session could not read off the code or the screen and would want: a durable fact about the user, a preference or correction they gave ("use bun, not npm"), a convention of this project, a fix that took real effort and its cause. ${GOTCHA_SENTENCE} Save it when the user asks you to remember something, and when something is clearly worth keeping.`,
   "Do not save task state, progress, plans, what you just did, anything the repository or its docs already say, or a guess you have not checked. Never save a secret, token or credential.",
   "A note that repeats one already kept updates that note instead of adding another. To correct a wrong note, save with its id; to remove it, memory_forget. A subagent does not save: it puts what is worth keeping in its answer.",
 ].join("\n\n")

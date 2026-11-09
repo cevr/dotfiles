@@ -294,18 +294,22 @@ describe("the native memory handler", () => {
 })
 
 describe("our plugin as the eval hosts it", () => {
-  test("round 4's variants change only memory_save: one sentence in its description, or one line after its answer", async () => {
-    const plain = await ours(scratch())
+  test("the variants change only memory_save: production holds the gotcha sentence, plain drops it, followup adds a line after the answer", async () => {
+    const production = await ours(scratch())
     const describe_ = await ours(scratch(), VARIANTS.describe)
+    const plain = await ours(scratch(), VARIANTS.plain)
     const followup = await ours(scratch(), VARIANTS.followup)
     try {
       const saveOf = (arm: typeof plain) => (arm.tools as Array<{ name: string; description: string }>).find((tool) => tool.name === "memory_save")!.description
-      expect(saveOf(describe_)).toBe(saveOf(plain).replace("its cause.", `its cause. ${GOTCHA_SENTENCE}`))
-      expect(saveOf(followup)).toBe(saveOf(plain))
+      // Round 5 made round 4's `describe` sentence production's; `plain` is the words before it.
+      expect(saveOf(production)).toBe(saveOf(plain).replace("its cause.", `its cause. ${GOTCHA_SENTENCE}`))
+      expect(saveOf(describe_)).toBe(saveOf(production))
+      expect(saveOf(plain)).not.toContain(GOTCHA_SENTENCE)
+      expect(saveOf(followup)).toBe(saveOf(production))
       expect((await followup.call("s", "memory_save", { text: "acme-web: tests need TEST_ENV=unit" })).text).toBe(`Saved #1 (project).\n\n${FOLLOWUP_LINE}`)
-      expect((await plain.call("s", "memory_save", { text: "acme-web: tests need TEST_ENV=unit" })).text).toBe("Saved #1 (project).")
+      expect((await production.call("s", "memory_save", { text: "acme-web: tests need TEST_ENV=unit" })).text).toBe("Saved #1 (project).")
     } finally {
-      await Promise.all([plain.close(), describe_.close(), followup.close()])
+      await Promise.all([production.close(), describe_.close(), plain.close(), followup.close()])
     }
   })
 

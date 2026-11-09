@@ -18,6 +18,7 @@ import {
   FORGET,
   FORGET_DESCRIPTION,
   ForgetInput,
+  GOTCHA_SENTENCE,
   forgotText,
   foundText,
   type Rejection,
@@ -76,13 +77,15 @@ interface OurTool {
 }
 
 /**
- * Round 4's candidates for saving gotchas, each against production's words (notes/memory-eval.md, round 4):
- * - `describe`: one more sentence in memory_save's description, after "a fix that took real effort and its cause".
+ * The words of memory_save an arm offers (notes/memory-eval.md, rounds 4 and 5):
+ * - `production`: mods/memory's own. Since round 5 they hold GOTCHA_SENTENCE, after "a fix that took real effort and
+ *   its cause".
+ * - `describe`: round 4's candidate, that sentence; production's words since round 5, kept so old runs keep their arm.
+ * - `plain`: production's words before round 5, without the sentence: the baseline of rounds 3 to 5.
  * - `followup`: one fixed line after memory_save's answer, read in the turn the agent is already saving in.
- * Both are fixed text: no tool definition or system block changes from turn to turn.
+ * All are fixed text: no tool definition or system block changes from turn to turn.
  */
-export const GOTCHA_SENTENCE =
-  "A command that failed and worked only once you ran it another way (a variable, a flag, a wrapper, a path) is such a fix: save the way that works, so the next session does not fail first."
+export { GOTCHA_SENTENCE }
 export const FOLLOWUP_LINE =
   "If this session also taught you something a later session would need, such as a command that failed until you ran it another way, save that too, one fact per note."
 
@@ -93,7 +96,8 @@ export interface Variant {
 
 export const VARIANTS = {
   production: {},
-  describe: { saveDescription: SAVE_DESCRIPTION.replace("a fix that took real effort and its cause.", `a fix that took real effort and its cause. ${GOTCHA_SENTENCE}`) },
+  describe: {},
+  plain: { saveDescription: SAVE_DESCRIPTION.replace(` ${GOTCHA_SENTENCE}`, "") },
   followup: { afterSave: FOLLOWUP_LINE },
 } as const satisfies Record<string, Variant>
 

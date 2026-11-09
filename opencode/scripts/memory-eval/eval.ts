@@ -4,7 +4,7 @@
 //
 // Usage, from opencode/:
 //   bun scripts/memory-eval/eval.ts [--dry] [--repeats 8] [--cap 5] [--concurrency 4] [--model claude-haiku-5-5]
-//                                   [--arms none,ours,ours+pointer,native,kernel,ours+nudge,kernel+nudge,kernel+direct,kernel+direct+describe,kernel+direct+followup] [--scenarios webapp,dotfiles,billing,orders]
+//                                   [--arms none,ours,ours+pointer,native,kernel,ours+nudge,kernel+nudge,kernel+direct,kernel+direct+describe,kernel+direct+followup,kernel+direct+plain] [--scenarios webapp,dotfiles,billing,orders]
 //                                   [--out out/memory-eval/<stamp>] [--api-key] [--gent-dir <dir>]
 //                                   [--weekly-limit 5] [--owner-approved-opus]
 //
