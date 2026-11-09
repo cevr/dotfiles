@@ -115,4 +115,48 @@ describe("turnRows", () => {
     expect(turnRows(TIMELINE, judged, "d")).toEqual([])
     expect(turnRows(TIMELINE, judged, "msg_unknown")).toEqual([])
   })
+
+  const HOUR = 60 * MINUTE
+  const hour = () => ({ ...TERMS, lifetimeMs: HOUR, configured: true })
+  const summary = (id: string, at: number, prompt: number, read: number, write: number): Step => ({ ...step(id, at, prompt, read, write), compaction: true })
+
+  // ses_e46c7a8e4ffedkRL0wCTsFSVma's shape: a turn closes, an idle compaction
+  // 55 minutes later misses the conversation it summarizes, and the next turn
+  // opens 36 hours on, past the cache's hour.
+  const COMPACTED_AT = 41_000 + 55 * MINUTE
+  const LATER = COMPACTED_AT + 36 * HOUR + 16 * MINUTE
+  const IDLE_COMPACTED: Timeline = [
+    step("a", 0, 161_083, 161_081, 0),
+    step("b", 41_000, 166_082, 161_469, 4_611, true),
+    summary("cmp", COMPACTED_AT, 146_594, 17_611, 128_979),
+    { type: "compaction" },
+    { ...step("c", LATER, 43_227, 0, 42_423), opener: { id: "msg_next", kind: "prompt" } },
+    { ...step("d", LATER + 5_000, 44_276, 42_423, 1_851, true), opener: { id: "msg_next", kind: "prompt" } },
+  ]
+
+  test("a compaction after a closed turn shows its own miss; the turn that follows it, however much later, shows only its own", () => {
+    const compacted = judge(IDLE_COMPACTED, [], hour)
+    expect(compacted.map((item) => [item.miss.stepID, item.miss.cause._tag])).toEqual([
+      ["cmp", "Compaction"],
+      ["c", "Idle"],
+    ])
+    expect(turnRows(IDLE_COMPACTED, compacted, "cmp")).toEqual([
+      expect.stringMatching(/^cache miss · 129k tokens · \$[\d.]+ · the compaction request missed the cached prefix$/),
+    ])
+    expect(turnRows(IDLE_COMPACTED, compacted, "d")).toEqual([expect.stringMatching(/^cache miss · 43k tokens · \$[\d.]+ · expired after 36h 16m idle$/)])
+    expect(turnRows(IDLE_COMPACTED, compacted, "b")).toEqual([])
+  })
+
+  test("a compaction inside a turn shows its own miss, and the turn around it keeps the misses of its own steps", () => {
+    const midTurn: Timeline = [
+      step("a", 0, 48_000, 0, 48_000, false, [{ name: "shell", at: 2_000, ms: 6 * MINUTE }]),
+      step("b", 6 * MINUTE + 5_000, 50_000, 0, 50_000),
+      summary("cmp", 6 * MINUTE + 10_000, 50_000, 0, 50_000),
+      { type: "compaction" },
+      step("c", 6 * MINUTE + 20_000, 8_000, 0, 8_000, true),
+    ]
+    const compacted = judge(midTurn, [], () => TERMS)
+    expect(turnRows(midTurn, compacted, "cmp")).toEqual([expect.stringContaining("the compaction request missed the cached prefix")])
+    expect(turnRows(midTurn, compacted, "c")).toEqual(["cache miss · 48k tokens · $0.17 · expired during a 6m shell call"])
+  })
 })

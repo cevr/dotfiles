@@ -70,7 +70,11 @@ export const judge = (
  * The rows of the turn `messageID` closes: the misses of its steps, from the
  * step after the previous closing step through this one. The host draws a
  * turn's footer under its closing step, so the rows sit at the end of the
- * turn that paid for them. Nothing when `messageID` is no step of the timeline.
+ * turn that paid for them. A compaction's summary request is no step of a
+ * turn: its rows are those of the compaction `messageID` names, drawn under
+ * the compaction's own row, and no turn shows them, so an idle compaction's
+ * miss never waits for the next turn, however much later it comes. Nothing
+ * when `messageID` is no step of the timeline.
  */
 export const turnRows = (timeline: Timeline, judged: ReadonlyArray<Judged>, messageID: string): ReadonlyArray<string> =>
   turnIndex(timeline, judged)(messageID)
@@ -78,21 +82,26 @@ export const turnRows = (timeline: Timeline, judged: ReadonlyArray<Judged>, mess
 /**
  * `turnRows` of every message at once: one pass over the timeline and the
  * judged misses, then each turn's rows by its closing message in the steps of
- * that turn alone. A TUI that draws many turns' rows builds it once per
- * change of the session, not once per turn.
+ * that turn alone, and each compaction's by its own message. A TUI that draws
+ * many turns' rows builds it once per change of the session, not once per turn.
  */
 export const turnIndex = (timeline: Timeline, judged: ReadonlyArray<Judged>): ((messageID: string) => ReadonlyArray<string>) => {
   const steps: Array<string> = []
   const position = new Map<string, number>()
   const starts: Array<number> = []
+  /** By step: a compaction's summary request, which shows its rows alone. */
+  const alone: Array<boolean> = []
   let open = 0
   for (const entry of timeline) {
     if (entry.type !== "step") continue
     const index = steps.length
     steps.push(entry.id)
     if (!position.has(entry.id)) position.set(entry.id, index)
-    starts.push(open)
-    if (entry.closes) open = index + 1
+    const summary = entry.compaction === true
+    alone.push(summary)
+    // A summary request closes no turn and opens none: the turn around it goes on.
+    starts.push(summary ? index : open)
+    if (entry.closes && !summary) open = index + 1
   }
   const rows = new Map<string, Array<string>>()
   for (const item of judged)
@@ -108,7 +117,7 @@ export const turnIndex = (timeline: Timeline, judged: ReadonlyArray<Judged>): ((
     const found: Array<string> = []
     for (let index = starts[end]!; index <= end; index++) {
       const id = steps[index]!
-      if (seen.has(id)) continue
+      if (seen.has(id) || (alone[index] && index !== end)) continue
       seen.add(id)
       found.push(...(rows.get(id) ?? []))
     }

@@ -137,6 +137,35 @@ test("a step's end and a new step read that message, and the rows follow the fol
   ledger.dispose()
 })
 
+test("an idle compaction's miss shows under the compaction, not under the turn that opens 36 hours later", () => {
+  const { setStore, ctx } = world(1)
+  const ledger = createLedger(ctx)
+  // The turn closed at 70m; an idle compaction 55 minutes later reads only the system prompt of its 146k.
+  const compactedAt = 70 * MINUTE + 10_000 + 55 * MINUTE
+  const later = compactedAt + 36 * 60 * MINUTE + 16 * MINUTE
+  setStore(
+    produce((draft) => {
+      const root = draft.messages.root!
+      // The turn's closing step read its 166k prompt from the cache.
+      root.at(-2)!.tokens = { input: 2, cache: { read: 161_469, write: 4_611 } }
+      root.push({ type: "compaction", id: "cmp", status: "completed", model: MODEL, tokens: { input: 4, cache: { read: 17_611, write: 128_979 } }, time: { created: compactedAt } })
+      root.push({ type: "idle", id: "idle_cmp", time: { created: compactedAt + 20_000 } })
+      root.push({ type: "user", id: "user_late", time: { created: later } })
+      root.push(assistant("msg_late_0", later, 43_227, 0, "tool-calls"))
+      root.push(assistant("msg_late_1", later + 5_000, 44_276, 42_423, "stop"))
+    }),
+  )
+  const { compaction, turn, stop } = createRoot((stop) => ({
+    compaction: createMemo(() => ledger.rows("root", "cmp")),
+    turn: createMemo(() => ledger.rows("root", "msg_late_1")),
+    stop,
+  }))
+  expect(compaction()).toEqual([expect.stringMatching(/^cache miss · 129k tokens · \$[\d.]+ · the compaction request missed the cached prefix$/)])
+  expect(turn()).toEqual([expect.stringMatching(/^cache miss · 43k tokens · \$[\d.]+ · expired after 36h 16m idle$/)])
+  stop()
+  ledger.dispose()
+})
+
 test("a session no row or sidebar reads is let go: its step ends ask nothing", async () => {
   const { calls, handlers, ctx } = world(3)
   const ledger = createLedger(ctx, { releaseMs: 1 })

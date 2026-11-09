@@ -42,7 +42,7 @@ const STEPS_SETTLE_MS = 1_000
 const RELEASE_MS = 10_000
 
 export interface Ledger {
-  /** The rows of the turn `messageID` of `sessionID` closes. Reactive. */
+  /** The rows of the turn `messageID` of `sessionID` closes, or of the compaction it names. Reactive. */
   rows(sessionID: string, messageID: string): ReadonlyArray<string>
   /** The sidebar line of `sessionID` and every session under it; undefined before any cache activity. Reactive. */
   sidebar(sessionID: string): string | undefined

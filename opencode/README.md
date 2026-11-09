@@ -1149,6 +1149,10 @@ $0.10) ends on a row such as:
 ◌ cache miss · 48k tokens · $0.17 · expired during a 4s shell call
 ```
 
+A compaction's summary request belongs to no turn: its row sits under the
+compaction's own row, so an idle compaction's miss shows where it happened,
+not at the end of the next turn, however much later that comes.
+
 The causes are a model switch; inside the cache lifetime (only on a provider
 that writes its cache, such as Anthropic) the pool moving the step to
 another login, a compaction (its summary request, or the step after it

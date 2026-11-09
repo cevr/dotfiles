@@ -1,8 +1,10 @@
 // The transcript rows of a turn's large cache misses, under the turn's last
-// step: `◌ cache miss · 48k tokens · $0.31 · expired during a 6m shell call`,
+// step, or of a compaction's summary request, under the compaction:
+// `◌ cache miss · 48k tokens · $0.31 · expired during a 6m shell call`,
 // the glyph in the warning colour and the words muted. Thin: it draws what
 // the ledger answers. cmd/cache/tui.tsx places it after the host's assistant
-// footer slot, which Prime empties but keeps as a boundary.
+// footer slot and after its compaction slot, which Prime replaces but keeps
+// as boundaries.
 import type { Plugin } from "@opencode/plugin/tui"
 import { createMemo, For, Show } from "solid-js"
 import type { Ledger } from "./ledger.tsx"
