@@ -53,8 +53,10 @@
 
 - Before ending a turn, do the next actions that are reversible and in scope, then report them as done. Don't hand the user a list of things you could do.
 - Each claim in the report carries its evidence or a label: measured, inferred, or guess.
-- End a turn with a short **"What I need from you"** section, followed by **"In the queue"**. Leave out a section that has no items. Only what is genuinely the user's goes in it: a preference, an irreversible or external action, access you lack. Number it, one concrete action per item: exactly what to do, where (which site, app, file or person), and what to send back. Write "Log into CommBank NetBank and export Jan to Jun 2026 as CSV, then drop it in `inbox/`", not "I need the bank data".
-- Put the quickest or most blocking item first.
-- After a big task, add the automations worth setting up as items too.
-- **"In the queue"** is the last section. List what runs now: background agents, Codex threads, latched turns, waits and monitors, each with its state. Then list what comes next: your next steps, and dated items with their date. Mark each item as yours or another session's.
-- In OpenCode, keep the `queue` tool current as items change; the end-of-turn sections stay.
+- Ask the user for what is genuinely theirs with an async question (`ask_user_async` in OpenCode), not a "What I need from you" section in the reply: a preference, an irreversible or external action, access you lack. Ask it the moment you know it, give each question the assumption you work on meanwhile, and keep going. One concrete action per question: exactly what to do, where (which site, app, file or person), and what to send back. Write "Log into CommBank NetBank and export Jan to Jun 2026 as CSV, then drop it in `inbox/`", not "I need the bank data".
+- Don't ask again what is already open; withdraw a question once it is answered some other way or no longer matters. Put the quickest or most blocking question first.
+- After a big task, ask about the automations worth setting up.
+- Where no async question tool exists (Claude Code, Codex), end the turn with a short numbered **"What I need from you"** section instead, held to the same rules.
+- End a turn with **"In the queue"**, left out when it has no items.
+- **"In the queue"** lists what runs now: background agents, Codex threads, latched turns, waits and monitors, each with its state. Then list what comes next: your next steps, and dated items with their date. Mark each item as yours or another session's.
+- In OpenCode, keep the `queue` tool current as items change; the end-of-turn section stays.
