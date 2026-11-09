@@ -265,7 +265,7 @@ if (import.meta.main) {
       host: hostname(),
       skip: process.argv.includes("--no-upstream"),
       dryRun,
-      checks: forkChecks(resolve(import.meta.dir, ".."), process.env.GENT_SOURCE || join(home, "Developer/personal/.rifts/gent/untrack-local-settings")),
+      checks: forkChecks(resolve(import.meta.dir, ".."), fork, process.env.GENT_SOURCE || join(home, "Developer/personal/.rifts/gent/untrack-local-settings")),
       worktree: join(state, "upstream-merge"),
       report: join(state, "upstream-conflict.md"),
       log: console.log,

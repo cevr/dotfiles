@@ -4,13 +4,15 @@
 // The merge happens in a worktree of the fork of its own (detached, kept between runs so its
 // node_modules stay warm), never in the checkout `OPENCODE_DEV` builds. A conflict is aborted; a
 // clean merge must pass the fork's typecheck (packages/tui, core, plugin) and the dotfiles
-// acceptance tests most exposed to host changes, run against the merged worktree. Only then does
+// acceptance tests most exposed to host changes, run against the merged worktree with the mods linked
+// to it, on a calm host, a failed file rerun once (`acceptance`). Only then does
 // `prime-look` fast-forward to the merge and go to origin. A conflict or a red check leaves
 // `prime-look` where it was and writes the report an agent resolves it from; the install goes on
 // with the fork as it is, so the merge never blocks it.
 //
 // Only the fork's owner runs it (the Mac, `FORK_OWNER`); the workbox pulls origin prime-look.
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { loadavg, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
 /** The host that owns the fork, as `peersOf` names hosts (lower case, no `.local`). */
@@ -218,25 +220,123 @@ export const exposedTests = (opencode: string): ReadonlyArray<string> =>
 
 const tail = (text: string, lines = 80) => text.trimEnd().split("\n").slice(-lines).join("\n")
 
+/** The 1-minute load the acceptance tests start under; the install scripts wait for the same. */
+export const CALM_LOAD = 20
+/** How long the acceptance tests wait for a calm host before they start anyway. */
+export const CALM_WAIT_MS = 30 * 60_000
+
+export interface Host {
+  /** The 1-minute load average. */
+  readonly load: () => number
+  readonly sleep: (ms: number) => Promise<void>
+  readonly now: () => number
+}
+export const realHost: Host = { load: () => loadavg()[0] ?? 0, sleep: (ms) => Bun.sleep(ms), now: () => Date.now() }
+
+/**
+ * Waits until the 1-minute load is under `CALM_LOAD`, at most `CALM_WAIT_MS`. Under a load past
+ * the core count the Prime scenarios miss their frames (2026-11-09: the daily ran at load 32 beside
+ * another agent's full gate, and prime-goal, prime-rows, prime-wake and prime-sidebar went red),
+ * so the check waits for the host rather than judging the merge by it. True when the host calmed.
+ */
+export const awaitCalm = async (host: Host, log: (line: string) => void, every = 15_000): Promise<boolean> => {
+  const start = host.now()
+  let told = false
+  for (;;) {
+    const load = host.load()
+    if (load < CALM_LOAD) return true
+    if (host.now() - start >= CALM_WAIT_MS) {
+      log(`upstream: load ${load.toFixed(1)} after ${Math.round(CALM_WAIT_MS / 60_000)} min of waiting; running the acceptance tests anyway`)
+      return false
+    }
+    if (!told) log(`upstream: load ${load.toFixed(1)} ≥ ${CALM_LOAD}; the acceptance tests wait for it to drop`)
+    told = true
+    await host.sleep(every)
+  }
+}
+
+/** The test files (`./<path>`, as `bun test` takes them) with a failing test in bun's JUnit report. */
+export const failedFiles = (junit: string): ReadonlyArray<string> => {
+  const files = new Set<string>()
+  for (const match of junit.matchAll(/<testsuite\b[^>]*>/g)) {
+    const file = /\bfile="([^"]+)"/.exec(match[0])?.[1]
+    const failures = Number(/\bfailures="(\d+)"/.exec(match[0])?.[1] ?? 0)
+    if (file !== undefined && failures > 0) files.add(file.startsWith("/") || file.startsWith("./") ? file : `./${file}`)
+  }
+  return [...files].sort()
+}
+
+/** One `bun test` run of `files`: its exit, its output, and the files bun reported failing. */
+export type TestRun = (files: ReadonlyArray<string>) => Promise<{ readonly code: number; readonly log: string; readonly failed: ReadonlyArray<string> }>
+
+/**
+ * The acceptance check: waits for a calm host, runs `files`, and reruns only the files that failed,
+ * once, after another wait. A file that passes on its rerun is a flake, named in the log and not
+ * held against the merge; a file red twice, or a run red with no file to blame (a crash, a load
+ * error), makes the check red. Assertions stay as written: the rerun is the same test.
+ */
+export const acceptance = async (files: ReadonlyArray<string>, run: TestRun, host: Host, log: (line: string) => void): Promise<CheckResult> => {
+  const check = "acceptance tests"
+  await awaitCalm(host, log)
+  const first = await run(files)
+  if (first.code === 0) return { ok: true }
+  if (first.failed.length === 0) return { ok: false, check, log: first.log }
+  log(`upstream: ${first.failed.length} acceptance files red (${first.failed.join(", ")}); rerunning them once`)
+  await awaitCalm(host, log)
+  const second = await run(first.failed)
+  if (second.code === 0) {
+    log(`upstream: flaky, green on the rerun: ${first.failed.join(", ")}`)
+    return { ok: true }
+  }
+  const twice = second.failed.length === 0 ? first.failed : second.failed
+  return { ok: false, check: `${check} (red twice: ${twice.join(", ")})`, log: second.log }
+}
+
 /**
  * The real checks, each niced: the merged lockfile installs as committed, packages/tui, core and
  * plugin typecheck, and the exposed acceptance tests pass with `OPENCODE_DEV` at the merge,
- * without the caller's Anthropic routing.
+ * without the caller's Anthropic routing (`acceptance`: on a calm host, a failed file rerun once).
  */
 export const forkChecks =
-  (opencode: string, gent: string): Checks =>
+  (opencode: string, fork: string, gent: string, host: Host = realHost, log: (line: string) => void = console.log): Checks =>
   async (dir) => {
     const env: Record<string, string | undefined> = { ...process.env, OPENCODE_DEV: dir, GENT_SOURCE: gent }
     delete env.ANTHROPIC_BASE_URL
+    const spawn = async (cwd: string, command: ReadonlyArray<string>, extra: Record<string, string> = {}) => {
+      const child = Bun.spawn(["nice", "-n", "10", ...command], { cwd, env: { ...env, ...extra }, stdout: "pipe", stderr: "pipe" })
+      const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+      return { code, log: tail(`${out}\n${err}`) }
+    }
     const steps: ReadonlyArray<readonly [string, string, ReadonlyArray<string>]> = [
       ["bun install --frozen-lockfile", dir, ["bun", "install", "--frozen-lockfile"]],
       ...["tui", "core", "plugin"].map((name) => [`typecheck packages/${name}`, join(dir, "packages", name), ["bun", "run", "typecheck"]] as const),
-      ["acceptance tests", opencode, ["bun", "test", "--timeout", "300000", ...exposedTests(opencode)]],
     ]
     for (const [check, cwd, command] of steps) {
-      const child = Bun.spawn(["nice", "-n", "10", ...command], { cwd, env, stdout: "pipe", stderr: "pipe" })
-      const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
-      if (code !== 0) return { ok: false, check, log: tail(`${out}\n${err}`) }
+      const ran = await spawn(cwd, command)
+      if (ran.code !== 0) return { ok: false, check, log: ran.log }
     }
-    return { ok: true }
+    const report = join(mkdtempSync(join(tmpdir(), "upstream-accept-")), "junit.xml")
+    const run: TestRun = async (files) => {
+      rmSync(report, { force: true })
+      const ran = await spawn(opencode, ["bun", "test", "--timeout", "300000", "--reporter=junit", `--reporter-outfile=${report}`, ...files])
+      return { ...ran, failed: existsSync(report) ? failedFiles(readFileSync(report, "utf8")) : [] }
+    }
+    // The TUI plugins resolve `solid-js` through the links scripts/link-fork.ts makes. Linked to the
+    // fork while the TUI under test is the merge's, the plugins hold a second Solid whose signals the
+    // merge's renderer never tracks: rows never take a worker's thought, the goal line never shows
+    // (2026-11-09, red at load 4 and green once linked to the merge). So the tests run linked to the
+    // merge, and the links go back to the fork whatever the result.
+    const link = (target: string) => spawn(opencode, [process.execPath, join(opencode, "scripts/link-fork.ts")], { OPENCODE_DEV: target })
+    const linked = await link(dir)
+    if (linked.code !== 0) {
+      await link(fork)
+      return { ok: false, check: "link the mods to the merge", log: linked.log }
+    }
+    try {
+      return await acceptance(exposedTests(opencode), run, host, log)
+    } finally {
+      const back = await link(fork)
+      if (back.code !== 0) log(`upstream: relinking the mods to ${fork} failed; run \`bun run link-fork\`: ${back.log}`)
+      rmSync(dirname(report), { recursive: true, force: true })
+    }
   }
