@@ -38,6 +38,9 @@ const WRITTEN = "Written by dotfiles opencode/scripts/agents.ts from the orchest
  * todo, glob/grep tool or MCP tool. Edit and Write are the `edit` permission
  * (edit, write and patch); Monitor and TaskStop are background `shell` work.
  * Reading a .env file still asks, as for every built-in agent.
+ * `ask_user_async` (the questions plugin) stays: a subagent's background
+ * question shows in its root session's tray and form, and the answer comes
+ * back to the subagent.
  */
 export const PERMISSIONS = [
   { action: "*", resource: "*", effect: "deny" },
@@ -51,6 +54,7 @@ export const PERMISSIONS = [
   { action: "webfetch", resource: "*", effect: "allow" },
   { action: "websearch", resource: "*", effect: "allow" },
   { action: "external_directory", resource: "*", effect: "allow" },
+  { action: "ask_user_async", resource: "*", effect: "allow" },
 ] as const
 
 export interface Built {
