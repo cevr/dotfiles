@@ -82,7 +82,8 @@ const worker = async () => {
       console.log(`■ the pool says wait: ${pace.reason}; stopping · ${pool!.line()}`)
       return
     }
-    if (stopped) return
+    // Another worker may have taken the last job while this one asked.
+    if (stopped || next >= jobs.length) return
     const job = jobs[next++]!
     const label = `${job.arm} ${job.scenario.id} #${job.repeat}`
     try {
