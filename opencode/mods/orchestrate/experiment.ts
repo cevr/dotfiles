@@ -52,14 +52,16 @@ export const armOf = (experiment: Experiment, unit: string): Arm => (fraction(`$
 
 /**
  * The arm a start is in: none when no experiment is set, the start is a
- * follow-up, it runs as another agent, it names a model of its own, or its
- * description names no unit.
+ * follow-up, it runs as another agent, it names a model of its own, or it
+ * has no description. A free-form description (`Revise #197 ownership plan`)
+ * names no unit, so the description itself stands in for one.
  */
 export const armFor = (
   experiment: Experiment | undefined,
   start: { readonly agent: string; readonly followUp: boolean; readonly namedModel: boolean; readonly description: string | undefined },
 ): { readonly arm: Arm; readonly unit: string } | undefined => {
   if (experiment === undefined || start.followUp || start.namedModel || start.agent !== experiment.role) return undefined
-  const unit = unitNamed(start.description)
+  const free = start.description?.trim().toLowerCase().replace(/\s+/g, " ")
+  const unit = unitNamed(start.description) ?? (free ? free : undefined)
   return unit === undefined ? undefined : { arm: armOf(experiment, unit), unit }
 }
