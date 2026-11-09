@@ -8,13 +8,156 @@ tool, (3) the use cases are weak. This note gives the eval, its results and a
 recommendation. The script is `scripts/memory-eval/`; the design of memory
 itself is `notes/memory.md`.
 
-Four rounds ran. Round 1 compared our tools, a pointer line, the native tool
+Five rounds ran. Round 1 compared our tools, a pointer line, the native tool
 and no memory. Round 2 took up round 1's three follow-ups: string tags, a
 `kernel` arm for the production surface, and a trigger for gotchas. Round 3
 measured the fix round 2 proposed and production shipped in 9535f78: the
 memory tools offered directly beside the kernel (`kernel+direct`). Round 4
 fixed the billing scenario's fake world and tested two fixed-text levers for
-saving gotchas against `kernel+direct`. The newest round comes first below.
+saving gotchas against `kernel+direct`. Round 5 ran round 4's harmless lever
+on Opus 5.5, the model production runs, and shipped it. The newest round
+comes first below.
+
+## Round 5: the gotcha sentence on Opus
+
+### Recommendation (round 5)
+
+1. **Ship the sentence; done in 74b5780.** On Opus 5.5, the sentence in
+   `memory_save`'s description took gotchas saved in session 1 from 3 of 24
+   to 11 of 24 (measured). The two gotchas nothing on screen gives away moved
+   most: webapp/unit-env from 0 to 3 of 6 saved, dotfiles/gate-home from 1
+   to 5 of 6. Session 2 then honoured them 7 times against 1. No arm wrote an
+   off-list or task-state note (0 in every session). Corrections and
+   preferences were saved 48 of 48 times in both arms. The sentence is now
+   `GOTCHA_SENTENCE` in `mods/memory/notebook.ts`, inside `SAVE_DESCRIPTION`,
+   with a test that pins where it sits. In the eval, every arm on our tools
+   now offers the sentence. `kernel+direct+describe` is the same as
+   `kernel+direct`, and the new `kernel+direct+plain` keeps the words from
+   before (`VARIANTS` in `scripts/memory-eval/memory.ts`).
+2. **The one cell that went the wrong way is the fake shell, not memory.**
+   Corrections and preferences were honoured 44 of 48 times without the
+   sentence and 39 of 48 with it. Every one of those misses is in a session
+   2 that stopped before its commit: 6 episodes with the sentence against
+   3 without. In each of them the agent stopped because it no longer trusted
+   the shell ("`git` and `gh` stopped working in this session", "the shell
+   tool isn't running commands"). Over the episodes that reached their
+   commit, both arms honoured every correction and preference: 42 of 42
+   without the sentence and 36 of 36 with it (measured from the
+   transcripts). The stops come from the eval's world. One is round 4's known
+   one: a kernel shell handle's `wait()` returns only the output since the
+   last look, so it can be empty. The other was a harness bug, fixed after
+   the run: the eval's `spawnSync` stand-ins joined an argv with bare spaces.
+   So `Bun.spawnSync(["bash", "-lc", "git add … && git commit …"])` reached
+   the fake shell as `bash -lc git add …`, and the fake bash, like a real
+   one, ran only `git` (orders #0: "`git` and `gh` stopped working"). Now each
+   argument stays whole (`argvLine` in `kernel.ts`). In session 2 the sentence
+   changes only `memory_save`'s description and, through the saved gotchas,
+   the digest. 3 of the 6 stopped episodes had no gotcha note in their
+   digest. Adding the session-1 episodes that
+   ran no commit command, the counts are 7 with the sentence and 6 without,
+   so the stops look independent of the arm (inferred).
+3. **What remains is a gotcha with a side door.** orders/go-short was saved
+   0 times in both arms. `go test` names `-short` in its own output, so the
+   agent may read it as the tool's documentation rather than something the
+   repo taught it. billing/uv-run (2 and 3 of 6 saved) is still mostly
+   relearned from the `.venv` in session 2, as in round 4. A next round, if
+   any, would look at these two. The open fix with more reach is the shell
+   handle's empty `wait()`. That is production behaviour, not the eval's. It
+   sets Opus doubting the tools, and here it cost more episodes than any
+   memory difference did.
+
+### How round 5 ran (measured)
+
+- `claude-opus-5-5` through the pool, 6 repeats × 4 scenarios × 2 arms,
+  concurrency 4. The owner approved this one round on Opus. The script
+  refuses Opus unless `--owner-approved-opus` is passed (`api.ts`). 48 of 48
+  episodes graded, with no failure and no refusal.
+- Before every episode the run asked the live pool's pace and the eval
+  accounts' own, and stopped if any eval account's weekly reading rose more
+  than 5 points since the start (`--weekly-limit`, `weeklyDrift` in
+  `pool.ts`). Neither tripped. Over the 20 minutes the weekly readings moved
+  by at most +1 point (one account, 2% → 3%; the other six did not move) and
+  the 5-hour readings by 0 to +4. The readings include the owner's own
+  sessions.
+- 1,598 requests, 16.4M cache-read tokens (93% of input), 1.29M cache writes,
+  381k output tokens and 3.6k uncached input: **$17.40 at Opus 5.5's API
+  prices** ($4 in, $20 out, $5 cache write, $0.20 cache read per million),
+  $0.36 per episode in both arms. Opus costs 40 times Haiku 5.5 per token,
+  and it ran about as many requests per session as Haiku did in round 4.
+- A grader fix came out of reading the transcripts. Opus often ran its
+  commands as `sh -c '…' > file` or `bash -c '…'` and read the file back.
+  The graders saw `sh` as the program, so a commit inside the wrapper did
+  not count, and neither did a migration generated inside one. In d92b01f
+  `shelled` and `commitMessages` read the wrapped command as the shell runs
+  it. The fix also checks the redirect on the wrapper for a hand-written
+  migration. Regraded, round 5's `kernel+direct` honoured 52 of 72 facts
+  (49 before the fix) and `+describe` 52 (51 before). Round 4's tables do not
+  change under the new grader.
+- Raw data: `~/.cache/memory-eval/2026-11-09-run5/` (log
+  `~/.cache/memory-eval/run5.log`; `report-regraded.md` is the regraded
+  summary).
+
+### Round 5 results (24 episodes per arm, Opus 5.5, regraded)
+
+| arm | n | facts saved (s1) | s2 digest | s2 facts honoured | s2 all honoured | honoured when saved | off-list notes s1/s2 | task-state notes s1/s2 | requests s1/s2 | $/episode |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| kernel+direct | 24 | 71% (51/72) | 100% (24/24) | 72% (52/72) | 29% (7/24) | 92% (47/51) | 0.0 / 0.0 | 0.0 / 0.0 | 17.8 / 15.3 | $0.361 |
+| kernel+direct+describe | 24 | 82% (59/72) | 100% (24/24) | 72% (52/72) | 42% (10/24) | 83% (49/59) | 0.0 / 0.0 | 0.0 / 0.0 | 19.4 / 14.0 | $0.364 |
+
+| arm | correction saved → honoured | gotcha saved → honoured | preference saved → honoured |
+| --- | --- | --- | --- |
+| kernel+direct | 24/24 → 21/24 | 3/24 → 8/24 | 24/24 → 23/24 |
+| kernel+direct+describe | 24/24 → 18/24 | 11/24 → 13/24 | 24/24 → 21/24 |
+
+Per fact, saved in session 1 → honoured in session 2 (of 6 each):
+
+| fact | kernel+direct | +describe |
+| --- | --- | --- |
+| webapp/branch-prefix (preference) | 6 → 6 | 6 → 5 |
+| webapp/unit-env (gotcha) | 0 → 0 | 3 → 3 |
+| webapp/stage-by-path (correction) | 6 → 6 | 6 → 4 |
+| dotfiles/gate-home (gotcha) | 1 → 1 | 5 → 4 |
+| dotfiles/no-config (correction) | 6 → 4 | 6 → 4 |
+| dotfiles/no-push (preference) | 6 → 6 | 6 → 6 |
+| billing/uv-run (gotcha) | 2 → 6 | 3 → 6 |
+| billing/autogenerate (correction) | 6 → 6 | 6 → 6 |
+| billing/ticket-prefix (preference) | 6 → 6 | 6 → 6 |
+| orders/go-short (gotcha) | 0 → 1 | 0 → 0 |
+| orders/staging-first (correction) | 6 → 5 | 6 → 4 |
+| orders/reviewer (preference) | 6 → 5 | 6 → 4 |
+
+Session-2 episodes that stopped before their commit, and the corrections and
+preferences honoured in the ones that did not (counted from the transcripts):
+
+| arm | stopped (s2) | no commit command (s1) | corrections + preferences honoured, finished s2 |
+| --- | --- | --- | --- |
+| kernel+direct | 3/24 (dotfiles #2, #4; orders #2) | 3/24 | 42/42 |
+| kernel+direct+describe | 6/24 (webapp #4, #5; dotfiles #0, #4; orders #0, #1) | 1/24 | 36/36 |
+
+What the cells and transcripts show:
+
+- **The sentence moves saves into the work.** In session 1, every
+  `kernel+direct` save (49) came in the turn after the owner's correction,
+  as in every round before. With the sentence, 7 saves came during the work
+  itself, before any correction, and 49 after it (measured from the
+  transcripts). No earlier round had a save during the work except
+  `native`'s progress logs. The gotcha notes stand alone. They name the
+  working command and why the other one fails, as in webapp #3: "acme-web:
+  run unit tests with `TEST_ENV=unit bun run test`; plain `vitest run` also
+  runs the Playwright e2e project, which fails when Chromium isn't
+  installed."
+- **Some gotcha notes carry a remark about the kernel's shell** (dotfiles #0
+  and #2: "tools.shell ignores `workdir`, and its cwd carries over between
+  calls"). This is the agent's reading of the fake world, saved as a fact
+  about the tool. The grader does not count it off-list, since it sits in
+  the gate note. In production it would be true or false of the real shell
+  handle. It is worth watching in real notes, but it is not junk of the kind
+  the description forbids.
+- **On Opus, `kernel+direct` saves more than on Haiku.** It saved 71% of
+  facts in session 1, against 50% on Haiku 5.5 in round 4, and the digest
+  reached all 24 session-2 episodes, against 18. Billing, which Haiku
+  rarely saved in, was saved 6 of 6 times for the correction and the
+  preference. Rounds on different models are not compared fact by fact.
 
 ## Round 4: two gotcha-save levers, and a billing world that holds up
 
@@ -675,6 +818,8 @@ bun scripts/memory-eval/eval.ts --model claude-haiku-4-5-20251001 --repeats 8 --
 bun scripts/memory-eval/eval.ts --arms ours,kernel,ours+nudge --repeats 4 --cap 2.5   # round 2's run
 bun scripts/memory-eval/eval.ts --arms kernel,kernel+direct --repeats 6 --cap 3        # round 3's run
 bun scripts/memory-eval/eval.ts --arms kernel+direct,kernel+direct+describe,kernel+direct+followup --repeats 6 --cap 3   # round 4's run
+bun scripts/memory-eval/eval.ts --model claude-opus-5-5 --owner-approved-opus --arms kernel+direct,kernel+direct+describe --repeats 6 --cap 50 --weekly-limit 5   # round 5's run (owner-approved, once)
+bun scripts/memory-eval/eval.ts --arms kernel+direct+plain,kernel+direct --repeats 6 --cap 3   # since round 5: the words before it against production's
 bun scripts/memory-eval/report.ts <out>/episodes.jsonl     # regrade and summarize a run
 bun scripts/memory-eval/show.ts <out>/episodes.jsonl native orders --s2   # read transcripts
 ```
