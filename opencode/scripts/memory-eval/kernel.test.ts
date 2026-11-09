@@ -97,6 +97,9 @@ describe("the kernel arm", () => {
       expect((await kernel.run("(await Bun.$`git status`.text()).length > 0", dispatch)).text).toBe("true")
       await kernel.run(`await Bun.write("notes.txt", "x")`, dispatch)
       expect(calls).toEqual(["shell", "shell", "read", "shell", "write"])
+      // A removal goes through the shell, so the fake world loses the file.
+      expect(await kernel.run(`fs.unlinkSync("notes.txt")\nfs.existsSync("notes.txt")`, dispatch)).toEqual({ ok: true, text: "false" })
+      expect((await kernel.run(`fs.unlinkSync("notes.txt")`, dispatch)).text).toBe("Error: rm: notes.txt: No such file or directory")
     } finally {
       await memory.close()
     }

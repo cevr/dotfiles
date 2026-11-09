@@ -73,7 +73,7 @@ const runSession = async (
   session: 1 | 2,
   repeat: number,
 ): Promise<SessionResult> => {
-  const world = newWorld(scenario.cwd, scenario.files, scenario.branches[session - 1]!, scenario.noise, scenario.outside)
+  const world = newWorld(scenario.cwd, scenario.files, scenario.branches[session - 1]!, scenario.noise, scenario.outside, scenario.history)
   const sessionID = `session-${session}`
   /** The session as the pool places it: one account for its life, so its prompt cache stays there. */
   const placed = `memory-eval/${arm}/${scenario.id}/${repeat}/s${session}`
