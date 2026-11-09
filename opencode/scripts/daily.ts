@@ -143,12 +143,32 @@ export const poolEntry = (pool: string, gent: string | undefined, fleet?: { read
   },
 })
 
+/** The model experiment orchestrate runs (mods/orchestrate/experiment.ts): a share of one role's units on another model. */
+export interface Experiment {
+  readonly role: string
+  readonly model: string
+  readonly share: number
+}
+
+/**
+ * The planner A/B: half the planner's units on the newest Fable, half on its own Opus, so the
+ * model eval (`models.ts --experiment`) can say whether Fable's planning pays for its price.
+ * None when the catalog has no Fable release.
+ */
+export const plannerExperiment = (catalog: Catalog): Experiment | undefined => {
+  const fable = newestRelease(catalog, "anthropic", "claude-fable")
+  return fable === undefined ? undefined : { role: "planner", model: `anthropic/${fable}`, share: 0.5 }
+}
+
 /**
  * Orchestrate's plugin entry: a Codex provider's new agents take the pool's pace first, which
  * paces OpenAI on the ChatGPT account (`poolEntry`'s `paced`); the admission script answers only
- * when the pool has no measure of it.
+ * when the pool has no measure of it. With `experiment`, the model experiment runs.
  */
-export const orchestrateEntry = (orchestrate: string): PluginEntry => ({ package: orchestrate, options: { codex: { pool: true } } })
+export const orchestrateEntry = (orchestrate: string, experiment?: Experiment): PluginEntry => ({
+  package: orchestrate,
+  options: { codex: { pool: true }, ...(experiment === undefined ? {} : { experiment }) },
+})
 
 /**
  * Mail's plugin entry: on one of the owner's hosts (`FLEET`) whose Tailscale address is known,
@@ -312,10 +332,12 @@ if (import.meta.main) {
   const auth = anthropicAuthPlugin
   const gent = gentAuthDir()
   const pool = pluginDir("pool")
+  const catalog = await loadCatalog(fork)
+  const experiment = plannerExperiment(catalog)
   const server: PluginEntry[] = [
     auth,
     poolEntry(pool, existsSync(gent) ? gent : undefined, { host: hostname() }),
-    orchestrateEntry(pluginDir("orchestrate")),
+    orchestrateEntry(pluginDir("orchestrate"), experiment),
     pluginDir("guard"),
     pluginDir("kernel"),
     pluginDir("status"),
@@ -338,7 +360,7 @@ if (import.meta.main) {
   rmSync(loader, { recursive: true, force: true })
   const owned = [MODS, CMD, loader]
   const config = join(home, ".config/opencode")
-  const models = roleModels(await loadCatalog(fork))
+  const models = roleModels(catalog)
   writeJson(join(config, "opencode.json"), mergeServer(readJson(join(config, "opencode.json")), server, models, owned))
   writeJson(join(config, "cli.json"), mergeCli(readJson(join(config, "cli.json")), [pluginDir("prime"), pluginDir("status"), pluginDir("herdr"), pluginDir("git"), pluginDir("cache"), pluginDir("questions"), pluginDir("btw"), pluginDir("skills"), pluginDir("recover"), pluginDir("orchestrate"), pluginDir("escape"), BUILTIN_BTW_OFF], owned))
   mkdirSync(join(config, "themes"), { recursive: true })
@@ -348,5 +370,6 @@ if (import.meta.main) {
   console.log(`opencode -> ${binary} (${reported})`)
   console.log(`server plugins: ${server.map(packageOf).join(", ")}`)
   console.log(`roles: ${Object.entries(models).map(([role, model]) => `${role} ${model}`).join(", ")}`)
+  console.log(experiment === undefined ? "experiment: none (no Fable in the catalog)" : `experiment: ${experiment.role} ${experiment.model} on ${experiment.share * 100}% of units`)
   console.log(restart.exitCode === 0 ? "background service restarted" : `service restart exited ${restart.exitCode}: ${restart.stderr.toString().trim()}`)
 }
