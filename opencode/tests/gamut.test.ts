@@ -521,8 +521,8 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
       expect(first.out).toContain("run the tests")
       expect(first.out).toContain(`● Ran ${SIM_COMMAND}`)
       expect(first.out).toContain("sim: the suite says Ran 15 tests across 5 files.")
-      // Prime's dock, not the stock look.
-      expect(first.out).toContain("◆ 0 subagents")
+      // Prime's look, not the stock one: its mode hint over the composer (the dock's counts show only while something is active).
+      expect(first.out).toContain("Details mode (Ctrl+O to expand)")
 
       expect(gamut("send", "hello there").code).toBe(0)
       expect(gamut("wait", "120")).toMatchObject({ code: 0, out: "idle\n" })

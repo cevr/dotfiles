@@ -13,11 +13,11 @@
 // - `moved`: the long call moved to the background, listed, checked and
 //   waited on, and a second started in the background; `2 shells`;
 // - `list`: the dock's shell list, opened by a click on `2 shells`;
-// - `killed`: the agent killed both; `0 shells`;
+// - `killed`: the agent killed both; no count line;
 // - `blocking`: the blocking call runs, the host offering ctrl+b;
 // - `user`: the reader's ctrl+b moved the blocking call; `1 shell`;
 // - `user-list`: the list after ctrl+k killed it there;
-// - `user-killed`: the agent heard the kill; `0 shells`;
+// - `user-killed`: the agent heard the kill; no count line;
 // a screenshot of each, `prime-shells-timeout.txt` when a wait times out and
 // `prime-shells-requests.json` (each root model request).
 import { Effect, Schedule, Stream } from "effect"
@@ -115,7 +115,9 @@ export default OpenCodeDriver.use(
           yield* ui.mouse({ action: "up", x, y, button: "left" })
         })
       const idle = (frame: string) => !frame.includes("Executing")
-      const dock = (count: string) => (frame: string) => frame.includes(`◆ 0 subagents  ·  ${count}`)
+      // With no shell left (and no subagent or wake), the dock's count line is not drawn at all.
+      const dock = (count: string) => (frame: string) =>
+        count === "0 shells" ? !/◆ \d+ subagents?  ·/.test(frame) : frame.includes(`◆ 0 subagents  ·  ${count}`)
 
       // The limit moves the long call to the background; the agent lists, checks and waits on it, and starts another.
       yield* ui.submit("prime-shells-fixture")

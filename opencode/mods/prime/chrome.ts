@@ -55,6 +55,15 @@ export function plural(count: number, word: string) {
   return `${count} ${word}${count === 1 ? "" : "s"}`
 }
 
+/**
+ * Whether the dock's count line shows: while a subagent works, a shell runs,
+ * or a wake or monitor is pending. With all four at zero it is not drawn,
+ * not even as a blank row; unread notices alone do not keep it.
+ */
+export function dockShown(input: { readonly subagents: number; readonly shells: number; readonly wakes: number; readonly monitors: number }) {
+  return input.subagents > 0 || input.shells > 0 || input.wakes > 0 || input.monitors > 0
+}
+
 /** The loader's spinner frames, a braille turn. */
 export const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 

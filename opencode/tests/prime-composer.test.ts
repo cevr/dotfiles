@@ -4,7 +4,8 @@
 // Prime's Wakes and Monitors; → reaches Wakes, which lists the alarm; Enter
 // shows it whole; ctrl+d cancels it and the tab says it has none; Monitors
 // lists the monitor with its newest output; closed, the dock counts the
-// monitor and no wake. It needs OPENCODE_DEV, the fork with `ui.composerTab`.
+// monitor and no wake; with the monitor cancelled too the count line is gone,
+// and a turn that sets one alarm alone brings it back. It needs OPENCODE_DEV, the fork with `ui.composerTab`.
 import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -15,7 +16,7 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-composer.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
 
 const root = join(import.meta.dir, "..")
-const names = ["panel", "wakes", "detail", "cancelled", "monitors", "closed"] as const
+const names = ["panel", "wakes", "detail", "cancelled", "monitors", "closed", "none", "alarm"] as const
 const frames = {} as Record<(typeof names)[number], ReadonlyArray<string>>
 
 /** The panel: its tab row, then its entries up to its hint line, without the rail. */
@@ -68,5 +69,24 @@ describe.skipIf(!fork)("the composer panel's Wakes and Monitors tabs (OPENCODE_D
   test("closed, the dock counts the monitor and no wake", () => {
     const dock = frames.closed.find((line) => line.includes("subagents  ·"))
     expect(dock?.trim()).toBe("◆ 0 subagents  ·  0 shells  ·  1 monitor")
+  })
+
+  test("with the monitor cancelled too, nothing is active: the dock's count line is not drawn", () => {
+    const none = frames.none
+    expect(none.some((line) => /◆ \d+ subagents?|\d+ shells?\b|\d+ (wake|monitor)s?\b/.test(line))).toBe(false)
+    // No blank row stands in for it: under the rule, only the one gap row the dock always leaves before the host's footer.
+    const rule = none.findLastIndex((line) => /^ ─{20,}$/.test(line))
+    expect(rule).toBeGreaterThan(0)
+    expect(none.slice(rule + 1, rule + 3).map((line) => line.trim())).toEqual(["", expect.stringContaining("Server")])
+  })
+
+  test("a pending wake alone brings the line back, counting it, right under the rule", () => {
+    const alarm = frames.alarm
+    const rule = alarm.findLastIndex((line) => /^ ─{20,}$/.test(line))
+    expect(alarm.slice(rule + 1, rule + 4).map((line) => line.trim())).toEqual([
+      "◆ 0 subagents  ·  0 shells  ·  1 wake",
+      "",
+      expect.stringContaining("Server"),
+    ])
   })
 })
