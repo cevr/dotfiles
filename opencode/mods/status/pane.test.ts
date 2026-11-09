@@ -2,7 +2,7 @@
 // running agents named by their call, unit lines, and which read failed.
 import { describe, expect, test } from "bun:test"
 import { Option, Schema } from "effect"
-import { accountRows, agentRows, fleetRows, PaneFleet, PanePools, stamp, unavailable, unitLine } from "./pane.ts"
+import { accountRows, agentRows, fleetRows, PaneFleet, PanePools, resetsLine, stamp, unavailable, unitLine } from "./pane.ts"
 
 const now = Date.parse("2026-11-04T15:00:00Z")
 
@@ -38,6 +38,36 @@ describe("accountRows", () => {
         windows: ["  5h unknown · reset unknown", "  7d unknown · reset unknown"],
       },
     ])
+  })
+
+  test("each model's own window and the resets an account can claim follow its windows, and sum on one line", () => {
+    const pools = {
+      anthropic: {
+        accounts: [
+          {
+            credentialID: "gent:alpha",
+            reading: {
+              windows: [
+                { name: "7d", utilization: 0.5 },
+                { name: "7d:Fable", utilization: 0.12, resetAt: now + 3_600_000 },
+              ],
+              resets: { available: 2, nextExpiresAt: Date.parse("2026-11-30T20:04:00Z") },
+            },
+          },
+          { credentialID: "gent:beta", reading: { windows: [], resets: { available: 0 } } },
+        ],
+      },
+      openai: { accounts: [{ credentialID: "chatgpt", reading: { windows: [], resets: { available: 1 } } }] },
+    }
+    expect(accountRows(pools)[0]?.windows).toEqual([
+      "  5h unknown · reset unknown",
+      "  7d 50% · reset unknown",
+      "  Fable 7d 12% · reset 2026-11-04 16:00Z",
+      "  resets 2 · until 2026-11-30",
+    ])
+    expect(accountRows(pools)[1]?.windows).toEqual(["  5h unknown · reset unknown", "  7d unknown · reset unknown"])
+    expect(resetsLine(pools)).toBe("resets: 2 (Claude, until 2026-11-30) · 1 (Codex)")
+    expect(resetsLine({ anthropic: { accounts: [{ credentialID: "a", reading: { windows: [], resets: { available: 0 } } }] } })).toBeUndefined()
   })
 
   test("no pools, no rows", () => {

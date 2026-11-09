@@ -9,7 +9,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { Option, Schema } from "effect"
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
-import { accountRows, agentRows, fleetRows, PaneFleet, PanePools, stamp, unavailable, unitLine } from "../pane.ts"
+import { accountRows, agentRows, fleetRows, PaneFleet, PanePools, resetsLine, stamp, unavailable, unitLine } from "../pane.ts"
 import { Snapshot, STATUS } from "../status.ts"
 
 const decodePools = Schema.decodeUnknownOption(PanePools)
@@ -79,6 +79,10 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
     const pools = pool()
     return pools === undefined ? undefined : accountRows(pools)
   })
+  const resets = createMemo(() => {
+    const pools = pool()
+    return pools === undefined ? undefined : resetsLine(pools)
+  })
   const theme = () => ctx.theme
   const heading = (label: string) => <text fg={theme().text.base} attributes={1} marginTop={1}>{label}</text>
   const muted = (text: string) => <text fg={theme().text.muted}>{text}</text>
@@ -90,6 +94,7 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
         <For each={errors()}>{(error) => <text fg={theme().text.feedback.warning.base}>{error}</text>}</For>
         <For each={snapshot()?.errors}>{(error) => <text fg={theme().text.feedback.warning.base}>{error}</text>}</For>
         {heading("Accounts")}
+        <Show when={resets()}>{(line) => <text fg={theme().text.base}>{line()}</text>}</Show>
         <Show when={accounts()} fallback={muted("Loading accounts…")}>
           {(rows) => (
             <For each={rows()} fallback={muted("No pool accounts.")}>

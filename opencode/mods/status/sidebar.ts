@@ -1,6 +1,7 @@
 // What the session sidebar's Pool section draws, as text: the account the
 // session is on (the pool's `session` answer, dotfiles-opencode.pool), its
-// weekly and 5-hour use with when each resets, and how alarming each line is.
+// weekly and 5-hour use with when each resets, each model's own week (Fable's),
+// and how alarming each line is.
 // tui/sidebar.tsx reads the answer and draws these lines.
 import { Schema } from "effect"
 import { stamp } from "./pane.ts"
@@ -95,7 +96,12 @@ export const sidebarLines = (answer: SidebarAnswer, now: number): ReadonlyArray<
   }
   const hold: ReadonlyArray<SidebarLine> =
     held && account.hold !== undefined ? [{ text: `held · ${when(account.hold.until, now)}`, tone: "warning" }] : []
-  const windows = WINDOWS.flatMap(([name, shown]): ReadonlyArray<SidebarLine> => {
+  // Each model's own week (`7d:Fable`) follows the account's, as `Fable week`.
+  const scoped = (account.reading?.windows ?? []).flatMap((window): ReadonlyArray<readonly [string, string]> => {
+    const [length, model] = window.name.split(":", 2)
+    return model === undefined || length !== "7d" ? [] : [[window.name, `${model} week`]]
+  })
+  const windows = [...WINDOWS, ...scoped].flatMap(([name, shown]): ReadonlyArray<SidebarLine> => {
     const window = account.reading?.windows.find((item) => item.name === name)
     if (window === undefined) return []
     // A window that has reset since the answer is empty, until the next one says otherwise.

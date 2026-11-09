@@ -21,6 +21,7 @@ export const PaneAccount = Schema.Struct({
       windows: Schema.Array(
         Schema.Struct({ name: Schema.String, utilization: Schema.Number, resetAt: Schema.optionalKey(Schema.Number) }),
       ),
+      resets: Schema.optionalKey(Schema.Struct({ available: Schema.Number, nextExpiresAt: Schema.optionalKey(Schema.Number) })),
     }),
   ),
 })
@@ -40,22 +41,62 @@ export interface AccountRow {
   readonly held: boolean
   /** `<pool> / <credential> · held (<kind>) until <time>`, or `· available`. */
   readonly title: string
-  /** One line per window: `  5h 23% · reset <time>`. */
+  /**
+   * One line per window: `  5h 23% · reset <time>`; then each model's own
+   * window, `  Fable 7d 12% · reset <time>`; then `  resets 2 · until <date>`
+   * when the account holds resets it can claim.
+   */
   readonly windows: ReadonlyArray<string>
 }
+
+/** `YYYY-MM-DD` of an epoch-ms time. */
+const day = (at: number) => stamp(at).slice(0, 10)
 
 /** Every pool's accounts, in the order the pool lists them. */
 export const accountRows = (pools: PanePools): ReadonlyArray<AccountRow> =>
   Object.entries(pools).flatMap(([pool, entry]) =>
-    entry.accounts.map((account) => ({
-      held: account.hold !== undefined,
-      title: `${pool} / ${account.credentialID} · ${account.hold ? `held (${account.hold.kind}) until ${stamp(account.hold.until)}` : "available"}`,
-      windows: WINDOWS.map((name) => {
-        const window = account.reading?.windows.find((item) => item.name === name)
-        return `  ${name} ${window ? `${Math.round(window.utilization * 100)}%` : "unknown"} · reset ${stamp(window?.resetAt)}`
-      }),
-    })),
+    entry.accounts.map((account) => {
+      const resets = account.reading?.resets
+      return {
+        held: account.hold !== undefined,
+        title: `${pool} / ${account.credentialID} · ${account.hold ? `held (${account.hold.kind}) until ${stamp(account.hold.until)}` : "available"}`,
+        windows: [
+          ...WINDOWS.map((name) => {
+            const window = account.reading?.windows.find((item) => item.name === name)
+            return `  ${name} ${window ? `${Math.round(window.utilization * 100)}%` : "unknown"} · reset ${stamp(window?.resetAt)}`
+          }),
+          ...(account.reading?.windows ?? []).flatMap((window) => {
+            const at = window.name.indexOf(":")
+            if (at < 0) return []
+            return [`  ${window.name.slice(at + 1)} ${window.name.slice(0, at)} ${Math.round(window.utilization * 100)}% · reset ${stamp(window.resetAt)}`]
+          }),
+          ...(resets !== undefined && resets.available > 0
+            ? [`  resets ${resets.available}${resets.nextExpiresAt === undefined ? "" : ` · until ${day(resets.nextExpiresAt)}`}`]
+            : []),
+        ],
+      }
+    }),
   )
+
+/** The provider each pool's resets are known by. */
+const RESET_NAMES: Readonly<Record<string, string>> = { anthropic: "Claude", openai: "Codex" }
+
+/**
+ * The resets every pool can claim, on one line: `resets: 2 (Claude, until
+ * 2026-11-30) · 1 (Codex)`, each pool's total and its soonest expiry. None
+ * when no account holds one.
+ */
+export const resetsLine = (pools: PanePools): string | undefined => {
+  const parts = Object.entries(pools).flatMap(([pool, entry]) => {
+    const held = entry.accounts.flatMap((account) => (account.reading?.resets === undefined ? [] : [account.reading.resets]))
+    const available = held.reduce((total, resets) => total + resets.available, 0)
+    if (available <= 0) return []
+    const ends = held.flatMap((resets) => (resets.available > 0 && resets.nextExpiresAt !== undefined ? [resets.nextExpiresAt] : []))
+    const name = RESET_NAMES[pool] ?? pool
+    return [`${available} (${name}${ends.length === 0 ? "" : `, until ${day(Math.min(...ends))}`})`]
+  })
+  return parts.length === 0 ? undefined : `resets: ${parts.join(" · ")}`
+}
 
 /**
  * The pool's fleet answer as the pane reads it: the same fields as the pool's

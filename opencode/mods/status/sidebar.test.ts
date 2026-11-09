@@ -48,6 +48,26 @@ describe("sidebarLines", () => {
     ])
   })
 
+  test("a model's own week follows the account's windows, by the model's name", () => {
+    const answer = {
+      account: {
+        label: "claude-max-2",
+        on: "placed" as const,
+        reading: {
+          windows: [
+            { name: "7d", utilization: 0.41, resetAt: now + 47 * HOUR },
+            { name: "7d:Fable", utilization: 1, resetAt: now + 47 * HOUR },
+          ],
+        },
+      },
+    }
+    expect(sidebarLines(answer, now)).toEqual([
+      { text: "claude-max-2", tone: "base" },
+      { text: "week 41% · in 1d 23h · Fri 14:00Z", tone: "muted" },
+      { text: "Fable week 100% · in 1d 23h · Fri 14:00Z", tone: "error" },
+    ])
+  })
+
   test("a window at 80% is a warning, at 95% an error; a held account says until when", () => {
     const answer = {
       account: {
