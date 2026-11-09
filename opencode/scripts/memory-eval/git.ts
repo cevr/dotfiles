@@ -20,8 +20,12 @@ export interface Commit {
 export interface Repo {
   head: Tree
   index: Tree
-  /** Newest first; the first is HEAD. */
+  /** HEAD's ancestry, newest first; the first is HEAD. */
   commits: Array<Commit>
+  /** Every commit ever made, by hash, with its ancestry: a reset to a commit the branch left still finds it. */
+  readonly objects: Map<string, ReadonlyArray<Commit>>
+  /** Where HEAD has been, newest first, as `git reflog` shows it. */
+  readonly reflog: Array<{ readonly hash: string; readonly action: string }>
   readonly stash: Array<{ readonly index: Tree; readonly files: Tree; readonly message: string }>
 }
 
@@ -46,14 +50,37 @@ const NOW = "Mon Nov 9 11:20:00 2026 +0000"
 /** A repository whose HEAD and index are `head`, with `history` (oldest first) behind it. */
 export const newRepo = (head: Tree, history: ReadonlyArray<string> = DEFAULT_HISTORY): Repo => {
   const commits: Array<Commit> = []
+  const objects = new Map<string, ReadonlyArray<Commit>>()
   let parent = ""
   history.forEach((message, index) => {
     const commit = commitOf(parent, message, head, DATES[index % DATES.length]!)
     commits.unshift(commit)
+    objects.set(commit.hash, [...commits])
     parent = commit.hash
   })
-  return { head: { ...head }, index: { ...head }, commits, stash: [] }
+  const tip = commits[0]!
+  return { head: { ...head }, index: { ...head }, commits, objects, reflog: [{ hash: tip.hash, action: `commit: ${subjectOf(tip.message)}` }], stash: [] }
 }
+
+/** HEAD moves to `ancestry[0]`; the reflog records why. */
+const moveHead = (repo: Repo, ancestry: ReadonlyArray<Commit>, action: string) => {
+  repo.commits = [...ancestry]
+  repo.objects.set(ancestry[0]!.hash, [...ancestry])
+  repo.reflog.unshift({ hash: ancestry[0]!.hash, action })
+}
+
+/** Whether `.gitignore` at the root ignores `path`: a name anywhere, a `dir/`, or a `*` pattern on the file's name. */
+export const ignored = (files: Readonly<Tree>, path: string): boolean =>
+  (files[".gitignore"] ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"))
+    .some((pattern) => {
+      const bare = pattern.replace(/^\//, "")
+      if (bare.endsWith("/")) return path.startsWith(bare) || path.includes(`/${bare}`)
+      if (/[*?]/.test(bare)) return new Bun.Glob(bare).match(path.split("/").at(-1)!) || new Bun.Glob(bare).match(path)
+      return path === bare || path.startsWith(bare + "/") || path.split("/").includes(bare)
+    })
 
 // ---------------------------------------------------------------- diff
 
@@ -168,17 +195,25 @@ const matchSpec = (world: World, dir: string, spec: string, paths: ReadonlyArray
 const fail = (out: string, code = 1): Outcome => ({ out, code })
 const ok = (out: string): Outcome => ({ out, code: 0 })
 
-/** The commit a revision names: HEAD, HEAD~N, HEAD^, @, a hash prefix or the branch's name. */
-const resolve = (world: World, rev: string): number | undefined => {
+/**
+ * The commit a revision names, as its ancestry (the commit first): HEAD, @, HEAD@{n}, a hash prefix, the branch or
+ * main, each with ~N and ^ steps.
+ */
+const resolve = (world: World, rev: string): ReadonlyArray<Commit> | undefined => {
   const repo = world.repo
-  const match = rev.match(/^(HEAD|@|[0-9a-f]{4,40}|[\w./-]+?)((?:[~^]\d*)*)$/)
+  const match = rev.match(/^(HEAD@\{\d+\}|@\{\d+\}|HEAD|@|[\w./-]+?)((?:[~^]\d*)*)$/)
   if (match === null) return undefined
   const base = match[1]!
-  let at = base === "HEAD" || base === "@" || base === world.branch ? 0 : repo.commits.findIndex((commit) => commit.hash.startsWith(base))
-  if (at === -1 && ["main", "master", "origin/main"].includes(base)) at = 0
-  if (at === -1) return undefined
+  const logged = base.match(/@\{(\d+)\}$/)
+  let ancestry: ReadonlyArray<Commit> | undefined
+  if (logged !== null) ancestry = repo.objects.get(repo.reflog[Number(logged[1])]?.hash ?? "")
+  else if (base === "HEAD" || base === "@" || base === world.branch) ancestry = repo.commits
+  else if (["main", "master", "origin/main", "origin/HEAD"].includes(base)) ancestry = repo.objects.get(repo.reflog.at(-1)!.hash)
+  else if (/^[0-9a-f]{4,40}$/.test(base)) ancestry = [...repo.objects.entries()].find(([hash]) => hash.startsWith(base))?.[1]
+  if (ancestry === undefined) return undefined
+  let at = 0
   for (const step of match[2]!.matchAll(/([~^])(\d*)/g)) at += step[2] === "" ? 1 : Number(step[2])
-  return at < repo.commits.length ? at : undefined
+  return at < ancestry.length ? ancestry.slice(at) : undefined
 }
 
 const unknownRev = (rev: string) => fail(`fatal: ambiguous argument '${rev}': unknown revision or path not in the working tree.\nUse '--' to separate paths from revisions, like this:\n'git <command> [<revision>...] -- [<file>...]'`, 128)
@@ -201,6 +236,7 @@ const entries = (world: World): Array<Entry> => {
     const inIndex = path in index
     const x = path in head ? (inIndex ? (head[path] === index[path] ? " " : "M") : "D") : inIndex ? "A" : ""
     if (!inIndex && !(path in head)) {
+      if (ignored(files, path)) continue
       // Untracked: shown as its highest directory that holds no tracked file.
       const parts = path.split("/")
       let shown = path
@@ -259,11 +295,15 @@ const add = (world: World, args: ReadonlyArray<string>): Outcome => {
   const update = flags.some((flag) => ["-u", "--update"].includes(flag))
   const all = (update || flags.some((flag) => ["-A", "--all"].includes(flag))) && specs.length === 0
   if (!all && specs.length === 0) return ok("Nothing specified, nothing added.\nhint: Maybe you wanted to say 'git add .'?")
+  const force = flags.some((flag) => flag === "-f" || flag === "--force")
   const chosen = new Set<string>()
   for (const spec of all ? ["."] : specs) {
     const hits = matchSpec(world, all ? world.cwd : world.dir, spec, known)
     if (hits.length === 0) return fail(`fatal: pathspec '${spec}' did not match any files`, 128)
-    for (const hit of hits) chosen.add(hit)
+    // An ignored untracked file goes in only with -f; named on its own, git refuses.
+    const kept = force ? hits : hits.filter((hit) => hit in index || !ignored(world.files, hit))
+    if (kept.length === 0) return fail(`The following paths are ignored by one of your .gitignore files:\n${spec}\nhint: Use -f if you really want to add them.\nhint: Turn this message off by running\nhint: "git config advice.addIgnoredFile false"`, 1)
+    for (const hit of kept) chosen.add(hit)
   }
   for (const path of chosen) {
     if (update && !(path in index)) continue
@@ -302,9 +342,9 @@ const restore = (world: World, args: ReadonlyArray<string>): Outcome => {
   if (specs.length === 0) return fail("fatal: you must specify path(s) to restore", 128)
   let source: Tree | undefined
   if (sourceArg !== undefined) {
-    const at = resolve(world, sourceArg)
-    if (at === undefined) return fail(`fatal: could not resolve ${sourceArg}`, 128)
-    source = world.repo.commits[at]!.tree
+    const found = resolve(world, sourceArg)
+    if (found === undefined) return fail(`fatal: could not resolve ${sourceArg}`, 128)
+    source = found[0]!.tree
   }
   const { head, index } = world.repo
   for (const spec of specs) {
@@ -367,8 +407,7 @@ const commit = (world: World, args: ReadonlyArray<string>, stdin: string | undef
   if (message === undefined || message.trim() === "")
     return fail(given === undefined ? "error: There was a problem with the editor 'vi'.\nPlease supply the message using either -m or -F option." : "Aborting commit due to empty commit message.")
   const next = commitOf(parent?.hash ?? "", message, repo.index, NOW)
-  if (amend) repo.commits[0] = next
-  else repo.commits.unshift(next)
+  moveHead(repo, [next, ...repo.commits.slice(amend ? 1 : 0)], `commit${amend ? " (amend)" : ""}: ${subjectOf(message)}`)
   repo.head = { ...repo.index }
   const added = diffs.reduce((n, diff) => n + diff.added, 0)
   const removed = diffs.reduce((n, diff) => n + diff.removed, 0)
@@ -385,7 +424,7 @@ const reset = (world: World, args: ReadonlyArray<string>): Outcome => {
   const specs = rest.filter((arg) => arg !== rev)
   if (specs.length > 0) {
     // `git reset [HEAD] -- paths`: unstage.
-    const tree = rev === undefined ? repo.head : repo.commits[resolve(world, rev)!]!.tree
+    const tree = rev === undefined ? repo.head : resolve(world, rev)![0]!.tree
     for (const spec of specs)
       for (const path of matchSpec(world, world.dir, spec, [...new Set([...Object.keys(tree), ...Object.keys(repo.index)])])) {
         if (path in tree) repo.index[path] = tree[path]!
@@ -395,10 +434,10 @@ const reset = (world: World, args: ReadonlyArray<string>): Outcome => {
     return ok(unstaged.length === 0 ? "" : ["Unstaged changes after reset:", ...unstaged.map((entry) => `${entry.y}\t${entry.path}`)].join("\n"))
   }
   if (rest[0] !== undefined && rev === undefined) return unknownRev(rest[0])
-  const at = rev === undefined ? 0 : resolve(world, rev)!
+  const target = rev === undefined ? repo.commits : resolve(world, rev)!
   // Tracked before the reset: a hard reset removes such a file when the new HEAD lacks it; untracked files stay.
   const tracked = new Set([...Object.keys(repo.head), ...Object.keys(repo.index)])
-  repo.commits.splice(0, at)
+  moveHead(repo, target, `reset: moving to ${rev ?? "HEAD"}`)
   repo.head = { ...repo.commits[0]!.tree }
   if (mode !== "--soft") repo.index = { ...repo.head }
   if (mode === "--hard") {
@@ -424,7 +463,7 @@ const diffCommand = (world: World, args: ReadonlyArray<string>): Outcome => {
     else specs.push(arg)
   }
   for (const rev of revs) if (resolve(world, rev) === undefined) return unknownRev(rev)
-  const treeAt = (rev: string) => repo.commits[resolve(world, rev)!]!.tree
+  const treeAt = (rev: string) => resolve(world, rev)![0]!.tree
   const [before, after] =
     revs.length >= 2 ? [treeAt(revs[0]!), treeAt(revs[1]!)] : revs.length === 1 ? [treeAt(revs[0]!), cached ? repo.index : world.files] : cached ? [repo.head, repo.index] : [repo.index, world.files]
   // A plain `git diff` leaves untracked files out.
@@ -443,11 +482,14 @@ const render = (diffs: ReadonlyArray<FileDiff>, args: ReadonlyArray<string>): st
   return diffs.map((diff) => diff.text).join("\n")
 }
 
-const header = (world: World, commit: Commit, at: number) =>
-  [`commit ${commit.hash}${at === 0 ? ` (HEAD -> ${world.branch})` : ""}`, "Author: Dev <dev@acme.dev>", `Date:   ${commit.date}`, "", ...commit.message.split("\n").map((line) => `    ${line}`.trimEnd())].join("\n")
+/** ` (HEAD -> branch)` on HEAD's commit, as git decorates it. */
+const decoration = (world: World, commit: Commit) => (commit.hash === world.repo.commits[0]!.hash ? ` (HEAD -> ${world.branch})` : "")
+
+const header = (world: World, commit: Commit) =>
+  [`commit ${commit.hash}${decoration(world, commit)}`, "Author: Dev <dev@acme.dev>", `Date:   ${commit.date}`, "", ...commit.message.split("\n").map((line) => `    ${line}`.trimEnd())].join("\n")
 
 /** `--format`/`--pretty=format:` placeholders: %H %h %s %an %ae %ad %B %b %d. */
-const formatted = (world: World, commit: Commit, at: number, format: string) =>
+const formatted = (world: World, commit: Commit, format: string) =>
   format
     .replace(/%H/g, commit.hash)
     .replace(/%h/g, short(commit.hash))
@@ -457,7 +499,7 @@ const formatted = (world: World, commit: Commit, at: number, format: string) =>
     .replace(/%an/g, "Dev")
     .replace(/%ae/g, "dev@acme.dev")
     .replace(/%a[dr]/g, commit.date)
-    .replace(/%d/g, at === 0 ? ` (HEAD -> ${world.branch})` : "")
+    .replace(/%d/g, decoration(world, commit))
     .replace(/%n/g, "\n")
 
 const formatOf = (args: ReadonlyArray<string>): string | undefined => {
@@ -482,25 +524,24 @@ const log = (world: World, args: ReadonlyArray<string>): Outcome => {
   const revArg = plain.find((arg) => resolve(world, arg.replace(/\.\..*$/, "")) !== undefined && (dash === -1 || args.indexOf(arg) < dash))
   const specs = plain.filter((arg) => arg !== revArg)
   if (revArg === undefined && specs.length > 0 && dash === -1 && specs.some((spec) => matchSpec(world, world.dir, spec, Object.keys(world.files)).length === 0)) return unknownRev(specs[0]!)
-  let from = revArg === undefined ? 0 : resolve(world, revArg.replace(/\.\..*$/, ""))!
+  let chain = revArg === undefined ? repo.commits : resolve(world, revArg.replace(/\.\..*$/, ""))!
   // `a..b`: the commits on b that a lacks.
-  let until = repo.commits.length
   if (revArg !== undefined && revArg.includes("..")) {
-    until = from
-    from = resolve(world, revArg.split(/\.\.\.?/)[1] || "HEAD") ?? 0
+    const excluded = new Set(chain.map((commit) => commit.hash))
+    chain = (resolve(world, revArg.split(/\.\.\.?/)[1] || "HEAD") ?? []).filter((commit) => !excluded.has(commit.hash))
   }
   const format = formatOf(args)
   const withStat = args.includes("--stat")
   const names = args.includes("--name-only") || args.includes("--name-status")
   const out: Array<string> = []
   let shown = 0
-  for (let at = from; at < until && shown < limit; at++) {
-    const commit = repo.commits[at]!
-    const parent = repo.commits[at + 1]?.tree ?? {}
+  for (let at = 0; at < chain.length && shown < limit; at++) {
+    const commit = chain[at]!
+    const parent = chain[at + 1]?.tree ?? {}
     const diffs = treeDiff(parent, commit.tree)
     if (specs.length > 0 && !diffs.some((diff) => specs.some((spec) => matchSpec(world, world.dir, spec, [diff.path]).length > 0))) continue
     shown++
-    const head = format === undefined ? header(world, commit, at) : formatted(world, commit, at, format)
+    const head = format === undefined ? header(world, commit) : formatted(world, commit, format)
     const extra = withStat ? statLines(diffs) : names ? render(diffs, args) : args.includes("-p") || args.includes("--patch") ? render(diffs, []) : ""
     out.push([head, ...(extra === "" ? [] : ["", extra])].join("\n"))
   }
@@ -512,18 +553,19 @@ const show = (world: World, args: ReadonlyArray<string>): Outcome => {
   const target = args.find((arg) => !arg.startsWith("-")) ?? "HEAD"
   const blob = target.match(/^([^:]*):(.+)$/)
   if (blob !== null) {
-    const at = resolve(world, blob[1] || "HEAD")
-    if (at === undefined) return unknownRev(blob[1]!)
+    // `HEAD:path` is from the root; `:path` is the index.
     const path = blob[2]!.startsWith("./") ? absolute(world.dir, blob[2]!).slice(world.cwd.length + 1) : blob[2]!
-    const text = repo.commits[at]!.tree[path]
-    return text === undefined ? fail(`fatal: path '${path}' does not exist in '${blob[1] || "HEAD"}'`, 128) : ok(text.replace(/\n$/, ""))
+    const tree = blob[1] === "" ? repo.index : resolve(world, blob[1]!)?.[0]?.tree
+    if (tree === undefined) return unknownRev(blob[1]!)
+    const text = tree[path]
+    return text === undefined ? fail(`fatal: path '${path}' does not exist in '${blob[1] || "the index"}'`, 128) : ok(text.replace(/\n$/, ""))
   }
-  const at = resolve(world, target)
-  if (at === undefined) return unknownRev(target)
-  const commit = repo.commits[at]!
-  const diffs = treeDiff(repo.commits[at + 1]?.tree ?? {}, commit.tree)
+  const found = resolve(world, target)
+  if (found === undefined) return unknownRev(target)
+  const commit = found[0]!
+  const diffs = treeDiff(found[1]?.tree ?? {}, commit.tree)
   const format = formatOf(args)
-  const head = format === undefined ? header(world, commit, at) : formatted(world, commit, at, format)
+  const head = format === undefined ? header(world, commit) : formatted(world, commit, format)
   if (args.includes("--no-patch") || args.includes("-s") || args.includes("--quiet")) return ok(head)
   const body = render(diffs, args)
   return ok(body === "" ? head : `${head}\n\n${body}`)
@@ -553,6 +595,7 @@ const checkout = (world: World, sub: string, args: ReadonlyArray<string>): Outco
     const name = (args[create + 1] ?? "").replace(/["']/g, "")
     if (name === "") return fail(`error: switch \`${args[create]!.slice(1)}' requires a value`, 129)
     if (world.branches.includes(name) && /^-[bc]$/.test(args[create]!)) return fail(`fatal: a branch named '${name}' already exists`, 128)
+    world.repo.reflog.unshift({ hash: world.repo.commits[0]!.hash, action: `checkout: moving from ${world.branch} to ${name}` })
     world.branches.push(world.branch)
     world.branch = name
     return ok(`Switched to a new branch '${name}'`)
@@ -566,6 +609,7 @@ const checkout = (world: World, sub: string, args: ReadonlyArray<string>): Outco
   if (name === world.branch) return ok(`Already on '${name}'`)
   if (name === "-" || world.branches.includes(name) || name === "main") {
     const target = name === "-" ? world.branches.at(-1) ?? "main" : name
+    world.repo.reflog.unshift({ hash: world.repo.commits[0]!.hash, action: `checkout: moving from ${world.branch} to ${target}` })
     world.branches.push(world.branch)
     world.branch = target
     return ok(`Switched to branch '${target}'`)
@@ -606,9 +650,9 @@ const lsFiles = (world: World, args: ReadonlyArray<string>): Outcome => {
 const lsTree = (world: World, args: ReadonlyArray<string>): Outcome => {
   const plain = args.filter((arg) => !arg.startsWith("-"))
   const rev = plain[0] ?? "HEAD"
-  const at = resolve(world, rev)
-  if (at === undefined) return fail(`fatal: Not a valid object name ${rev}`, 128)
-  const tree = world.repo.commits[at]!.tree
+  const found = resolve(world, rev)
+  if (found === undefined) return fail(`fatal: Not a valid object name ${rev}`, 128)
+  const tree = found[0]!.tree
   const recursive = args.includes("-r")
   const prefix = plain[1] === undefined ? "" : plain[1].replace(/\/$/, "") + "/"
   const names = new Set<string>()
@@ -628,11 +672,11 @@ const lsTree = (world: World, args: ReadonlyArray<string>): Outcome => {
 const catFile = (world: World, args: ReadonlyArray<string>): Outcome => {
   const target = args.find((arg) => !arg.startsWith("-")) ?? ""
   if (target.includes(":")) return show(world, [target])
-  const at = resolve(world, target)
-  if (at === undefined) return fail(`fatal: Not a valid object name ${target}`, 128)
+  const found = resolve(world, target)
+  if (found === undefined) return fail(`fatal: Not a valid object name ${target}`, 128)
   if (args.includes("-t")) return ok("commit")
-  const commit = world.repo.commits[at]!
-  return ok([`tree ${sha(JSON.stringify(commit.tree))}`, ...(world.repo.commits[at + 1] === undefined ? [] : [`parent ${world.repo.commits[at + 1]!.hash}`]), "author Dev <dev@acme.dev> 1762687200 +0000", "committer Dev <dev@acme.dev> 1762687200 +0000", "", commit.message].join("\n"))
+  const commit = found[0]!
+  return ok([`tree ${sha(JSON.stringify(commit.tree))}`, ...(found[1] === undefined ? [] : [`parent ${found[1].hash}`]), "author Dev <dev@acme.dev> 1762687200 +0000", "committer Dev <dev@acme.dev> 1762687200 +0000", "", commit.message].join("\n"))
 }
 
 const revParse = (world: World, args: ReadonlyArray<string>): Outcome => {
@@ -647,9 +691,9 @@ const revParse = (world: World, args: ReadonlyArray<string>): Outcome => {
     else if (!arg.startsWith("-")) {
       if (abbrev) out.push(arg === "HEAD" || arg === "@" ? world.branch : arg)
       else {
-        const at = resolve(world, arg)
-        if (at === undefined) return unknownRev(arg)
-        out.push(shortHash ? short(world.repo.commits[at]!.hash) : world.repo.commits[at]!.hash)
+        const found = resolve(world, arg)
+        if (found === undefined) return unknownRev(arg)
+        out.push(shortHash ? short(found[0]!.hash) : found[0]!.hash)
       }
     }
   }
@@ -719,14 +763,20 @@ export const runGit = (segment: string, world: World, stdin?: string): Outcome =
       case "config":
         return ok(args.includes("user.name") ? "Dev" : args.includes("user.email") ? "dev@acme.dev" : "")
       case "merge-base":
-        return ok(world.repo.commits.at(-1)!.hash)
+        return ok(world.repo.reflog.at(-1)!.hash)
       case "describe":
         return fail("fatal: No names found, cannot describe anything.", 128)
-      case "blame":
-      case "grep":
-      case "shortlog":
       case "reflog":
-        return ok(sub === "reflog" ? world.repo.commits.map((commit, at) => `${short(commit.hash)} HEAD@{${at}}: commit: ${subjectOf(commit.message)}`).join("\n") : "")
+        return ok(world.repo.reflog.map((entry, at) => `${short(entry.hash)} HEAD@{${at}}: ${entry.action}`).join("\n"))
+      case "grep":
+        return ok(
+          Object.entries(world.repo.index)
+            .flatMap(([path, text]) => text.split("\n").flatMap((line, index) => (line.includes(args.find((arg) => !arg.startsWith("-")) ?? "\0") ? [`${path}:${args.includes("-n") ? `${index + 1}:` : ""}${line}`] : [])))
+            .join("\n"),
+        )
+      case "blame":
+      case "shortlog":
+        return ok("")
       default:
         return fail(`git: '${sub}' is not a git command. See 'git --help'.`, 1)
     }

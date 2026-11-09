@@ -347,7 +347,7 @@ export const newKernel = (listing: ReadonlyArray<Listed>, cwd: string): Kernel =
     Bun: modules["bun"],
     process: {
       cwd: () => cwd,
-      env: { HOME, PWD: cwd },
+      env: { HOME, PWD: cwd, PATH: "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin", SHELL: "/bin/zsh", USER: "dev" },
       platform: "darwin",
       exit: (code?: unknown) => {
         throw new Error(`The kernel's process exited (process.exit(${String(code ?? 0)})); its bindings are lost`)

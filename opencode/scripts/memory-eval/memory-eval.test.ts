@@ -107,6 +107,34 @@ describe("the fake shell", () => {
     expect(sh("sed -n '2,3p' internal/orders/total.go")).toBe("\n// Total is the amount due in cents.")
   })
 
+  test("substitutes $(…), globs as zsh does, makes temp dirs, and answers which, date and a little Python", () => {
+    const s = scenario("orders")
+    const world = newWorld(s.cwd, s.files, "main", s.noise)
+    const sh = (command: string) => runShell(command, world, s.rules)
+    expect(sh(`echo "branch: $(git branch --show-current)"`).out).toBe("branch: main")
+    expect(sh("ls internal/orders/*_test.go").out).toBe("internal/orders/repo_test.go\ninternal/orders/total_test.go")
+    expect(sh("ls internal/*.py")).toEqual({ out: "zsh: no matches found: internal/*.py\n(exit 1)", code: 1 })
+    const dir = sh("mktemp -d").out
+    expect(sh(`cd ${dir} && touch a.txt && ls && pwd`).out).toBe(`a.txt\n${dir}`)
+    expect(sh("cd /tmp && pwd").out).toBe("/tmp")
+    expect(sh("which go uv nope")).toEqual({ out: "/opt/homebrew/bin/go\n/opt/homebrew/bin/uv\nnope not found\n(exit 1)", code: 1 })
+    expect(sh("date").out).toBe("Mon Nov  9 11:20:00 UTC 2026")
+    expect(sh(`python3 -c "import sys; print('hi'); print(sys.executable)"`).out).toBe("hi\n/opt/homebrew/bin/python3")
+    expect(sh(`python3 -c "import sqlalchemy"`).out).toStartWith("Traceback (most recent call last):")
+  })
+
+  test("git: a reset is in the reflog and HEAD@{1} brings the commit back", () => {
+    const s = scenario("orders")
+    const world = newWorld(s.cwd, s.files, "main", s.noise)
+    const sh = (command: string) => runShell(command, world, s.rules).out
+    sh("echo x >> go.mod && git commit -am 'chore: x'")
+    sh("git reset --hard HEAD~1")
+    expect(sh("git reflog").split("\n").map((line) => line.replace(/^[0-9a-f]{7} /, ""))).toEqual(["HEAD@{0}: reset: moving to HEAD~1", "HEAD@{1}: commit: chore: x", "HEAD@{2}: commit: fix: handle empty cart"])
+    sh("git reset --hard HEAD@{1}")
+    expect(sh("git log -1 --format=%s")).toBe("chore: x")
+    expect(sh("tail -1 go.mod")).toBe("x")
+  })
+
   test("follows cd, lists the directories around the repository, and runs package scripts from the nearest package.json", () => {
     const s = scenario("dotfiles")
     const world = newWorld(s.cwd, s.files, "main", s.noise, s.outside)
@@ -170,6 +198,23 @@ describe("the billing world", () => {
     world.files["migrations/versions/0008_paid_at.py"] = "revision = '0009'\ndown_revision = '0007'\n"
     expect(runShell("uv run alembic upgrade head", world, s.rules).code).toBe(255)
     expect(sh("rm migrations/versions/0008_paid_at.py && uv run alembic heads").out).toBe("0008 (head)")
+  })
+
+  test("the checkout's .venv and billing.db are ignored; a scratch database through -c starts empty", () => {
+    const s = scenario("billing")
+    const world = newWorld(s.cwd, s.files, s.branches[0], s.noise, s.outside, s.history)
+    const sh = (command: string) => runShell(command, world, s.rules)
+    expect(sh("git status --short").out).toBe("(no output)")
+    expect(sh("ls -a").out).toContain(".venv/")
+    expect(sh("git add billing.db").code).toBe(1)
+    expect(sh(".venv/bin/pytest -q").out).toEndWith("4 passed in 0.40s")
+    expect(sh("sqlite3 billing.db 'select version_num from alembic_version'").out).toBe("0007")
+    sh("cp alembic.ini /tmp/scratch.ini && sed -i '' 's|sqlite:///./billing.db|sqlite:////tmp/scratch.db|' /tmp/scratch.ini")
+    expect(sh("uv run alembic -c /tmp/scratch.ini current").out).toBe("INFO  [alembic.runtime.migration] Context impl SQLiteImpl.\nINFO  [alembic.runtime.migration] Will assume non-transactional DDL.")
+    expect(sh("uv run alembic -c /tmp/scratch.ini upgrade head").out).toContain("Running upgrade  -> 0006, create invoices")
+    expect(sh("sqlite3 /tmp/scratch.db 'pragma table_info(invoices)'").out).toBe("0|id|INTEGER|1||1\n1|customer_id|INTEGER|1||0\n2|amount_cents|INTEGER|1||0\n3|status|VARCHAR(16)|1||0")
+    // The checkout's own database did not move.
+    expect(sh("uv run alembic current").out).toEndWith("0007 (head)")
   })
 })
 

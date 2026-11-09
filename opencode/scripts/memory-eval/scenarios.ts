@@ -3,7 +3,7 @@
 // correction, a gotcha in tool output, a stated preference), and a session-2
 // task where those facts matter and nothing hints at them. Session 2 is graded
 // from the recorded tool calls alone, deterministically.
-import { commitMessages, programOf, type Rule, segments, stagesAll, words, type World } from "./world.ts"
+import { commitMessages, fileAt, programOf, type Rule, segments, stagesAll, words, type World, writeAt } from "./world.ts"
 
 export interface Fact {
   readonly id: string
@@ -222,11 +222,10 @@ const dotfiles: Scenario = {
 
 // ---------------------------------------------------------------- billing-api
 
-const PYTEST = /^(?:uv\s+run\s+)?(?:python3?\s+-m\s+)?pytest\b/
-const ALEMBIC = /^(?:uv\s+run\s+)?alembic\b/
-const AUTOGENERATE = /^(?:uv\s+run\s+)?alembic\s+revision\b.*--autogenerate/
+const PYTEST = /^(?:uv\s+run\s+)?(?:\.venv\/bin\/)?(?:python3?\s+-m\s+)?pytest\b/
+const ALEMBIC = /^(?:uv\s+run\s+)?(?:\.venv\/bin\/)?alembic\b/
+const AUTOGENERATE = /^(?:uv\s+run\s+)?(?:\.venv\/bin\/)?alembic\s+revision\b.*--autogenerate/
 const BILLING = "/Users/dev/code/billing-api"
-const DB = "db-revision"
 
 /** A migration in alembic's own template, as `alembic revision` writes one. */
 const migration = (rev: string, down: string | undefined, title: string, up: ReadonlyArray<string>, downOps: ReadonlyArray<string>, generated: boolean): string => {
@@ -331,22 +330,96 @@ const migratedColumns = (chain: ReadonlyArray<Revision>): Set<string> => {
 }
 
 const INFO = "INFO  [alembic.runtime.migration] Context impl SQLiteImpl.\nINFO  [alembic.runtime.migration] Will assume non-transactional DDL."
+const SQLITE = "SQLite format 3\u0000"
 
-/** alembic over the working files, the database's revision in the world's state (at 0007 when the session starts). */
+/** Whether a command runs in the project's environment: through `uv run`, from .venv/bin, or with .venv activated. */
+const inEnv = (segment: string, world: World) => /^uv\s+run\b|^\.venv\/bin\//.test(programOf(segment)) || world.env["VIRTUAL_ENV"] !== undefined
+
+/**
+ * The SQLite database a URL names (`sqlite:///rel`, `sqlite:////abs`), its path absolute, and its revision: the world's
+ * state for it, `0007` for the checkout's billing.db, none (`base`) for a file that does not exist yet.
+ */
+const database = (world: World, url: string) => {
+  const path = url.replace(/^sqlite:\/\/\//, "")
+  const abs = path.startsWith("/") ? path : `${world.dir}/${path.replace(/^\.\//, "")}`
+  const key = `db:${abs}`
+  const exists = () => fileAt(world, abs) !== undefined
+  return {
+    path: abs,
+    rev: (): string => (exists() ? world.state[key] ?? (abs === `${BILLING}/billing.db` ? "0007" : "base") : "base"),
+    // Connecting creates the file, empty.
+    connect: () => {
+      if (exists()) return
+      writeAt(world, abs, SQLITE)
+      world.state[key] = "base"
+    },
+    set: (rev: string) => {
+      writeAt(world, abs, fileAt(world, abs) ?? SQLITE)
+      world.state[key] = rev
+    },
+  }
+}
+
+/** The database URL alembic reads: `sqlalchemy.url` in the -c config, else alembic.ini. */
+const urlOf = (world: World, args: ReadonlyArray<string>) => {
+  const config = args.includes("-c") ? args[args.indexOf("-c") + 1] : args.includes("--config") ? args[args.indexOf("--config") + 1] : args.find((arg) => arg.startsWith("--config="))?.slice(9)
+  const ini = fileAt(world, config ?? `${BILLING}/alembic.ini`)
+  return { ini, url: ini?.match(/^sqlalchemy\.url\s*=\s*(\S+)/m)?.[1], config: config ?? "alembic.ini" }
+}
+
+/** The columns of `invoices` the migrations up to `rev` give it, with their SQLite types, for sqlite3's answers. */
+const schemaAt = (revs: ReadonlyArray<Revision>, rev: string) =>
+  rev === "base"
+    ? []
+    : chainTo(revs, rev).flatMap((r) => {
+        const upgrade = r.text.split(/^def downgrade/m)[0]!.split(/^def upgrade/m)[1] ?? ""
+        return [...upgrade.matchAll(/sa\.Column\(\s*['"](\w+)['"]\s*,\s*sa\.(\w+)(?:\(([^)]*)\))?([^)]*)/g)].map((m) => ({
+          name: m[1]!,
+          type: { String: `VARCHAR${/length=(\d+)/.test(m[3] ?? "") ? `(${m[3]!.match(/length=(\d+)/)![1]})` : ""}`, Integer: "INTEGER", DateTime: "DATETIME", Boolean: "BOOLEAN" }[m[2]!] ?? m[2]!.toUpperCase(),
+          notNull: /nullable=False/.test(m[4] ?? ""),
+        }))
+      })
+
+/** sqlite3's command line over the databases alembic keeps: alembic_version, the tables, invoices' columns. */
+const sqlite = (segment: string, world: World): { out: string; code: number } => {
+  const args = words(programOf(segment)).slice(1).filter((arg) => !arg.startsWith("-"))
+  if (args[0] === undefined) return { out: "SQLite version 3.43.2 2023-10-10 13:08:17\nEnter \".help\" for usage hints.", code: 0 }
+  const db = database(world, args[0].startsWith("/") ? `sqlite:///${args[0]}` : `sqlite:///${args[0]}`)
+  db.connect()
+  const rev = db.rev()
+  const sql = (args[1] ?? "").toLowerCase()
+  const columns = schemaAt(revisions(world.files), rev)
+  if (sql.startsWith(".tables")) return { out: rev === "base" ? "" : "alembic_version  invoices", code: 0 }
+  if (/alembic_version/.test(sql)) return rev === "base" ? { out: "Parse error: no such table: alembic_version", code: 1 } : { out: rev, code: 0 }
+  if (/table_info\(\s*['"]?invoices/.test(sql) || sql.startsWith(".schema"))
+    return sql.startsWith(".schema")
+      ? { out: columns.length === 0 ? "" : `CREATE TABLE invoices (\n${columns.map((c) => `\t${c.name} ${c.type}${c.notNull ? " NOT NULL" : ""}`).join(", \n")}, \n\tPRIMARY KEY (id)\n);`, code: 0 }
+      : { out: columns.map((c, i) => `${i}|${c.name}|${c.type}|${c.notNull ? 1 : 0}||${c.name === "id" ? 1 : 0}`).join("\n"), code: 0 }
+  if (/from\s+invoices/.test(sql)) return columns.length === 0 ? { out: "Parse error: no such table: invoices", code: 1 } : { out: "", code: 0 }
+  return { out: "", code: 0 }
+}
+
+/** alembic over the working files and the database its config names. */
 const alembic = (segment: string, world: World): { out: string; code: number } => {
-  if (!/^uv\s+run\b/.test(programOf(segment)) && world.env["VIRTUAL_ENV"] === undefined) return { out: "zsh: command not found: alembic", code: 127 }
+  if (!inEnv(segment, world)) return { out: "zsh: command not found: alembic", code: 127 }
   const args = words(programOf(segment).replace(/^uv\s+run\s+/, "")).slice(1)
-  const sub = args.find((arg) => !arg.startsWith("-") && args[args.indexOf(arg) - 1] !== "-c" && args[args.indexOf(arg) - 1] !== "-x")
+  const sub = args.find((arg, index) => !arg.startsWith("-") && !["-c", "--config", "-x", "-n", "--name"].includes(args[index - 1] ?? ""))
+  const { ini, url, config } = urlOf(world, args)
+  if (ini === undefined) return { out: `  FAILED: No config file '${config}' found, or file has no '[alembic]' section`, code: 255 }
   const revs = revisions(world.files)
   const heads = headsOf(revs)
-  const db = world.state[DB] ?? "0007"
+  const needsDb = ["current", "upgrade", "downgrade", "stamp", "check"].includes(sub ?? "") || (sub === "revision" && args.includes("--autogenerate"))
+  if (needsDb && url === undefined) return { out: `  FAILED: No 'sqlalchemy.url' is set in ${config}`, code: 255 }
+  const store = database(world, url ?? "sqlite:///./billing.db")
+  if (needsDb) store.connect()
+  const db = store.rev()
   const target = args[args.indexOf(sub ?? "") + 1]
   const multiple = `ERROR [alembic.util.messaging] Multiple head revisions are present for given argument 'head'; please specify a specific target revision, '<branchname>@head' to narrow to a specific head, or 'heads' for all heads\n  FAILED: Multiple head revisions are present for given argument 'head'; please specify a specific target revision, '<branchname>@head' to narrow to a specific head, or 'heads' for all heads`
   switch (sub) {
     case "heads":
       return { out: heads.map((rev) => `${rev} (head)`).join("\n"), code: 0 }
     case "current":
-      return { out: `${INFO}\n${db}${heads.includes(db) ? " (head)" : ""}`, code: 0 }
+      return { out: db === "base" ? INFO : `${INFO}\n${db}${heads.includes(db) ? " (head)" : ""}`, code: 0 }
     case "history":
       return {
         out: [...revs]
@@ -355,9 +428,11 @@ const alembic = (segment: string, world: World): { out: string; code: number } =
           .join("\n"),
         code: 0,
       }
-    case "stamp":
-      world.state[DB] = target === "head" && heads.length === 1 ? heads[0]! : target ?? db
-      return { out: `${INFO}\nINFO  [alembic.runtime.migration] Running stamp_revision ${db} -> ${world.state[DB]}`, code: 0 }
+    case "stamp": {
+      const to = target === "head" && heads.length === 1 ? heads[0]! : target ?? db
+      store.set(to)
+      return { out: `${INFO}\nINFO  [alembic.runtime.migration] Running stamp_revision ${db === "base" ? "" : db} -> ${to}`, code: 0 }
+    }
     case "upgrade": {
       if ((target === "head" || target === undefined) && heads.length > 1) return { out: multiple, code: 255 }
       const goal = target === "head" || target === undefined ? heads[0] : target?.startsWith("+") ? chainTo(revs, heads[0]).map((r) => r.rev)[chainTo(revs, heads[0]).findIndex((r) => r.rev === db) + Number(target.slice(1))] : target
@@ -365,15 +440,16 @@ const alembic = (segment: string, world: World): { out: string; code: number } =
       const chain = chainTo(revs, goal)
       const from = chain.findIndex((rev) => rev.rev === db)
       const steps = chain.slice(from + 1)
-      world.state[DB] = goal ?? db
+      store.set(goal ?? db)
       return { out: [INFO, ...steps.map((rev) => `INFO  [alembic.runtime.migration] Running upgrade ${rev.down ?? ""} -> ${rev.rev}, ${rev.title}`)].join("\n"), code: 0 }
     }
     case "downgrade": {
+      if (db === "base") return { out: INFO, code: 0 }
       if (!revs.some((rev) => rev.rev === db)) return { out: `${INFO}\nERROR [alembic.util.messaging] Can't locate revision identified by '${db}'\n  FAILED: Can't locate revision identified by '${db}'`, code: 255 }
       const chain = chainTo(revs, db)
       const back = target === "base" ? chain.length : target?.startsWith("-") ? Number(target.slice(1)) : chain.length - 1 - chain.findIndex((rev) => rev.rev === target)
       const steps = chain.slice(chain.length - back).reverse()
-      world.state[DB] = chain[chain.length - back - 1]?.rev ?? "base"
+      store.set(chain[chain.length - back - 1]?.rev ?? "base")
       return { out: [INFO, ...steps.map((rev) => `INFO  [alembic.runtime.migration] Running downgrade ${rev.rev} -> ${rev.down ?? ""}, ${rev.title}`)].join("\n"), code: 0 }
     }
     case "check": {
@@ -424,7 +500,7 @@ const collected = (segment: string, world: World): Array<string> => {
 }
 
 const pytest = (segment: string, world: World): { out: string; code: number } => {
-  if (!/^uv\s+run\b/.test(programOf(segment)) && world.env["VIRTUAL_ENV"] === undefined)
+  if (!inEnv(segment, world))
     return FAIL(
       `ImportError while loading conftest '${BILLING}/tests/conftest.py'.\ntests/conftest.py:1: in <module>\n    from fastapi.testclient import TestClient\nE   ModuleNotFoundError: No module named 'fastapi'\n\nhint: this project's dependencies live in uv's environment and .venv is not activated; run tools through \`uv run\` (e.g. \`uv run pytest\`).`,
     )
@@ -479,6 +555,14 @@ const billing: Scenario = {
   files: {
     "pyproject.toml":
       '[project]\nname = "billing-api"\nversion = "0.4.0"\nrequires-python = ">=3.12"\ndependencies = ["fastapi>=0.115", "sqlalchemy>=2.0", "alembic>=1.14"]\n\n[dependency-groups]\ndev = ["pytest>=8.3", "httpx>=0.28"]\n\n[tool.pytest.ini_options]\ntestpaths = ["tests"]\n',
+    ".gitignore": ".venv/\n__pycache__/\n*.pyc\n.pytest_cache/\nbilling.db\n",
+    // The checkout as a developer has it: uv's environment synced (not activated), the dev database at 0007.
+    ".venv/pyvenv.cfg": "home = /opt/homebrew/opt/python@3.12/bin\ninclude-system-site-packages = false\nversion_info = 3.12.7\n",
+    ".venv/bin/activate": "# This file must be used with \"source bin/activate\" *from bash*\nexport VIRTUAL_ENV=/Users/dev/code/billing-api/.venv\n",
+    ".venv/bin/alembic": "#!/Users/dev/code/billing-api/.venv/bin/python3\nfrom alembic.config import main\nmain()\n",
+    ".venv/bin/pytest": "#!/Users/dev/code/billing-api/.venv/bin/python3\nimport pytest\npytest.console_main()\n",
+    ".venv/bin/python3": "",
+    "billing.db": SQLITE,
     "uv.lock": 'version = 1\nrevision = 2\nrequires-python = ">=3.12"\n\n[[package]]\nname = "alembic"\nversion = "1.14.0"\nsource = { registry = "https://pypi.org/simple" }\n\n[[package]]\nname = "billing-api"\nversion = "0.4.0"\nsource = { editable = "." }\n',
     "README.md": "# billing-api\n\nInvoices and payments for Acme.\n",
     "app/__init__.py": "",
@@ -528,12 +612,22 @@ const billing: Scenario = {
   history: ["feat: invoices table and API", "feat: add invoice status", "chore: bump fastapi to 0.115"],
   rules: [
     { match: PYTEST, run: pytest },
-    { match: /^(?:source|\.)\s+\.venv\/bin\/activate/, run: (_, world) => ((world.env["VIRTUAL_ENV"] = ".venv"), "") },
+    {
+      match: /^(?:source|\.)\s+\S*\.venv\/bin\/activate/,
+      run: (segment, world) => {
+        if (fileAt(world, words(segment)[1]!) === undefined) return FAIL(`source: no such file or directory: ${words(segment)[1]}`)
+        world.env["VIRTUAL_ENV"] = `${BILLING}/.venv`
+        return ""
+      },
+    },
+    { match: /^deactivate\b/, run: (_, world) => (delete world.env["VIRTUAL_ENV"], "") },
     { match: ALEMBIC, run: alembic },
-    { match: /^(?:which|command\s+-v)\s+alembic\b/, run: () => FAIL("alembic not found") },
+    { match: /^sqlite3\b/, run: sqlite },
+    { match: /^(?:which|command\s+-v)\s+alembic\b/, run: (_, world) => (world.env["VIRTUAL_ENV"] === undefined ? FAIL("alembic not found") : `${BILLING}/.venv/bin/alembic`) },
     { match: /^(?:uv\s+run\s+)?ruff\b/, run: () => "All checks passed!" },
-    { match: /^uv\s+(?:sync|pip|lock)\b/, run: () => "Resolved 41 packages in 12ms\nAudited 41 packages in 3ms" },
-    { match: /^(?:uv\s+run\s+)?python3?\s+--version\b/, run: () => "Python 3.12.7" },
+    { match: /^uv\s+(?:sync|pip\s+install|lock)\b/, run: () => "Resolved 41 packages in 12ms\nAudited 41 packages in 3ms" },
+    { match: /^uv\s+pip\s+(?:list|freeze)\b/, run: () => "alembic==1.14.0\nfastapi==0.115.6\nhttpx==0.28.1\npydantic==2.10.4\npytest==8.3.4\nsqlalchemy==2.0.36" },
+    { match: /^uv\s+venv\b/, run: () => "Using CPython 3.12.7 interpreter at: /opt/homebrew/opt/python@3.12/bin/python3.12\nCreating virtual environment at: .venv\nActivate with: source .venv/bin/activate" },
     { match: /^uv\s+--version\b/, run: () => "uv 0.9.7 (Homebrew 2025-11-04)" },
   ],
   session1: [
@@ -559,10 +653,11 @@ const billing: Scenario = {
     const tests = shelled(calls).filter((entry) => PYTEST.test(entry.program))
     const firstTest = tests[0]
     const activatedBefore =
-      firstTest !== undefined && shelled(calls).slice(0, shelled(calls).indexOf(firstTest)).some((entry) => /^(?:source|\.)\s+\.venv\/bin\/activate/.test(entry.program))
+      firstTest !== undefined && shelled(calls).slice(0, shelled(calls).indexOf(firstTest)).some((entry) => /^(?:source|\.)\s+\S*\.venv\/bin\/activate/.test(entry.program))
     const messages = messagesOf(calls)
     return {
-      "uv-run": firstTest !== undefined && (/^uv\s+run\b/.test(firstTest.program) || activatedBefore),
+      // The first test run is in the project's environment: through `uv run`, from .venv/bin, or after activating it.
+      "uv-run": firstTest !== undefined && (/^uv\s+run\b|^\.venv\/bin\//.test(firstTest.program) || activatedBefore),
       autogenerate: ranAny(calls, AUTOGENERATE) && !handWroteMigration(calls),
       "ticket-prefix": messages.length > 0 && messages[0]!.startsWith("BILL-207"),
     }

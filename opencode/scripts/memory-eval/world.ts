@@ -9,7 +9,7 @@
 // `sh -c '…'` runs its command, a heredoc feeds its command, `>` and `>>` write
 // a file, and rm, mv, cp, touch, test, sed and wc change or read the files.
 import { basename, dirname, join, normalize } from "node:path"
-import { DEFAULT_HISTORY, newRepo, type Repo, runGit, type Tree } from "./git.ts"
+import { DEFAULT_HISTORY, ignored, newRepo, type Repo, runGit, type Tree } from "./git.ts"
 
 export interface Outcome {
   readonly out: string
@@ -17,6 +17,12 @@ export interface Outcome {
 }
 
 export const HOME = "/Users/dev"
+/** macOS's per-user temporary directory, as $TMPDIR and mktemp give it. */
+const TMPDIR = "/var/folders/qd/s24njbd5/T"
+const BIN = "/opt/homebrew/bin"
+/** What Homebrew installed on this machine; a scenario's own rules answer for the rest (alembic is in no PATH). */
+const PROGRAMS = ["brew", "bun", "gh", "git", "go", "gofmt", "make", "node", "npm", "npx", "pytest", "python3", "rg", "sqlite3", "uv"]
+const NOW = "Mon Nov  9 11:20:00 UTC 2026"
 
 export interface World {
   /** The repository's root, absolute. */
@@ -31,6 +37,8 @@ export interface World {
   readonly outside: Readonly<Record<string, ReadonlyArray<string>>>
   /** Files the session wrote outside the repository (under /tmp, say), by absolute path. */
   readonly elsewhere: Record<string, string>
+  /** Directories the session made (mkdir, mktemp -d), absolute: an empty one exists too. */
+  readonly made: Set<string>
   branch: string
   /** The branches the session left, most recent last. */
   readonly branches: Array<string>
@@ -66,13 +74,14 @@ export const newWorld = (
   extra: Readonly<Record<string, ReadonlyArray<string>>> = {},
   history: ReadonlyArray<string> = DEFAULT_HISTORY,
 ): World => {
-  const outside: Record<string, Array<string>> = { [HOME]: ["Desktop/", "Downloads/", "Library/"] }
+  const outside: Record<string, Array<string>> = { [HOME]: ["Desktop/", "Downloads/", "Library/"], "/tmp": [], [TMPDIR]: [], [BIN]: [...PROGRAMS] }
   for (let child = cwd, parent = dirname(cwd); child !== HOME && parent.startsWith(HOME); child = parent, parent = dirname(parent))
     (outside[parent] ??= []).push(child.slice(parent.length + 1) + "/")
   for (const [dir, entries] of Object.entries(extra)) (outside[dir] ??= []).push(...entries)
   for (const dir of Object.keys(outside)) outside[dir] = [...new Set(outside[dir])].sort()
   const working: Tree = { ...files }
-  const head: Tree = { ...files }
+  // What .gitignore covers (a virtualenv, a local database) is in the checkout but never committed.
+  const head: Tree = Object.fromEntries(Object.entries(files).filter(([path]) => !ignored(files, path)))
   for (const line of noise) {
     const path = line.slice(3)
     if (line.startsWith(" M")) {
@@ -91,10 +100,11 @@ export const newWorld = (
     original: { ...working },
     outside,
     elsewhere: {},
+    made: new Set(),
     branch,
     branches: branch === "main" ? [] : ["main"],
     repo: newRepo(head, history),
-    env: {},
+    env: { PATH: `${BIN}:/usr/bin:/bin:/usr/sbin:/sbin`, SHELL: "/bin/zsh", USER: "dev", TMPDIR: `${TMPDIR}/` },
     state: {},
     lastCode: 0,
   }
@@ -103,7 +113,7 @@ export const newWorld = (
 /** A command's words, quotes removed: `grep -n "a b" x` → grep, -n, a b, x. */
 export const words = (command: string): Array<string> => {
   const out: Array<string> = []
-  for (const match of command.matchAll(/"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g)) out.push(match[1] ?? match[2] ?? match[3] ?? "")
+  for (const match of command.matchAll(/"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g)) out.push(match[1]?.replace(/\\(["\\$`])/g, "$1") ?? match[2] ?? match[3] ?? "")
   return out
 }
 
@@ -121,15 +131,27 @@ const inRepo = (world: World, abs: string): string | undefined =>
 /** A path as the repository keys it, read against `base` (the shell's directory by default); undefined outside it. */
 export const repoPath = (world: World, path: string, base: string = world.dir): string | undefined => inRepo(world, absolute(base, path))
 
-const isRepoDir = (world: World, rel: string) => rel === "" || Object.keys(world.files).some((file) => file.startsWith(rel + "/"))
+const isRepoDir = (world: World, rel: string) =>
+  rel === "" || world.made.has(`${world.cwd}/${rel}`) || Object.keys(world.files).some((file) => file.startsWith(rel + "/"))
 
-/** A directory's entries, one per line, or undefined when there is no such directory. */
+/** The entries directly under `abs` among absolute paths: `name` for a path, `name/` for one below it. */
+const childrenOf = (abs: string, paths: Iterable<string>, dirs: Iterable<string>): Array<string> => {
+  const names: Array<string> = []
+  for (const path of paths) if (path.startsWith(abs + "/")) names.push(path.slice(abs.length + 1).includes("/") ? path.slice(abs.length + 1).split("/")[0]! + "/" : path.slice(abs.length + 1))
+  for (const dir of dirs) if (dir.startsWith(abs + "/")) names.push(dir.slice(abs.length + 1).split("/")[0]! + "/")
+  return names
+}
+
+/** A directory's entries, or undefined when there is no such directory. */
 const entriesOf = (world: World, abs: string): Array<string> | undefined => {
   const rel = inRepo(world, abs)
-  if (rel === undefined) return world.outside[abs] === undefined ? undefined : [...world.outside[abs]]
+  if (rel === undefined) {
+    const found = [...(world.outside[abs] ?? []), ...childrenOf(abs, Object.keys(world.elsewhere), world.made)]
+    return world.outside[abs] === undefined && !world.made.has(abs) && found.length === 0 ? undefined : [...new Set(found)].sort()
+  }
   if (!isRepoDir(world, rel)) return undefined
   const prefix = rel === "" ? "" : rel + "/"
-  const names = new Set<string>()
+  const names = new Set<string>(childrenOf(abs, [], world.made))
   for (const path of Object.keys(world.files)) {
     if (!path.startsWith(prefix)) continue
     const rest = path.slice(prefix.length)
@@ -351,19 +373,15 @@ const packageOf = (world: World): { readonly dir: string; readonly scripts: Reco
 // ---------------------------------------------------------------- files
 
 /** A file's text at `path` (in the repository or written elsewhere this session), or undefined. */
-const fileAt = (world: World, path: string): string | undefined => {
+export const fileAt = (world: World, path: string): string | undefined => {
   const abs = absolute(world.dir, path)
   const rel = inRepo(world, abs)
   return rel === undefined ? world.elsewhere[abs] : world.files[rel]
 }
 
-const isDir = (world: World, path: string): boolean => {
-  const abs = absolute(world.dir, path)
-  const rel = inRepo(world, abs)
-  return rel === undefined ? world.outside[abs] !== undefined || abs === "/tmp" : isRepoDir(world, rel)
-}
+const isDir = (world: World, path: string): boolean => entriesOf(world, absolute(world.dir, path)) !== undefined
 
-const writeAt = (world: World, path: string, text: string): void => {
+export const writeAt = (world: World, path: string, text: string): void => {
   const abs = absolute(world.dir, path)
   const rel = inRepo(world, abs)
   if (rel === undefined) world.elsewhere[abs] = text
@@ -389,8 +407,10 @@ const removeAt = (world: World, path: string, recursive: boolean): string | unde
   }
   if (!isDir(world, path)) return `rm: ${path}: No such file or directory`
   if (!recursive) return `rm: ${path}: is a directory`
-  if (rel === undefined) for (const key of Object.keys(world.elsewhere)) if (key.startsWith(abs + "/")) delete world.elsewhere[key]
-  else for (const key of Object.keys(world.files)) if (key.startsWith(rel + "/")) delete world.files[key]
+  if (rel === undefined) {
+    for (const key of Object.keys(world.elsewhere)) if (key.startsWith(abs + "/")) delete world.elsewhere[key]
+  } else for (const key of Object.keys(world.files)) if (key.startsWith(rel + "/")) delete world.files[key]
+  for (const dir of world.made) if (dir === abs || dir.startsWith(abs + "/")) world.made.delete(dir)
   return undefined
 }
 
@@ -535,13 +555,15 @@ const lsCommand = (segment: string, world: World): Outcome => {
   const long = flags.includes("l")
   const dots = /a|A/.test(flags)
   const paths = args.filter((arg) => !arg.startsWith("-"))
+  // Files named on the line come first, one per line, then each directory's listing.
+  const files: Array<string> = []
   const outputs: Array<string> = []
   const row = (name: string, text: string | undefined) =>
     `${text === undefined ? "drwxr-xr-x" : "-rw-r--r--"}  1 dev  staff  ${String(text === undefined ? 128 : text.length).padStart(5)} Nov  9 10:12 ${name.replace(/\/$/, "")}`
   for (const path of paths.length === 0 ? ["."] : paths) {
     const text = fileAt(world, path)
     if (text !== undefined) {
-      outputs.push(long ? row(path, text) : path)
+      files.push(long ? row(path, text) : path)
       continue
     }
     const abs = absolute(world.dir, path)
@@ -553,7 +575,7 @@ const lsCommand = (segment: string, world: World): Outcome => {
       : names.join("\n")
     outputs.push(paths.length > 1 ? `${path}:\n${body}` : body)
   }
-  return { out: outputs.join("\n\n"), code: 0 }
+  return { out: [...(files.length === 0 ? [] : [files.join("\n")]), ...outputs].join("\n\n"), code: 0 }
 }
 
 const catCommand = (segment: string, world: World, stdin?: string): Outcome => {
@@ -587,12 +609,39 @@ const wcCommand = (segment: string, world: World, stdin?: string): Outcome => {
   return { out: rows.join("\n"), code: 0 }
 }
 
+const STDLIB = new Set(
+  "sys os json re pathlib sqlite3 subprocess datetime textwrap ast inspect importlib collections itertools functools typing glob shutil tempfile io time math string uuid decimal hashlib base64 configparser pprint traceback dataclasses enum argparse csv random unittest".split(" "),
+)
+
+/**
+ * A little of Python, enough for a model's checks: `--version`, a script's imports (a third-party module outside the
+ * project's environment raises ModuleNotFoundError, as it would), and the `print` calls of literal strings and of a
+ * few well-known values. What it cannot evaluate prints nothing, as a script with no print does.
+ */
+const python = (segment: string, world: World, stdin?: string): Outcome => {
+  const program = programOf(segment)
+  const inEnv = /^uv\s+run\b/.test(program) || world.env["VIRTUAL_ENV"] !== undefined || program.startsWith(".venv/bin/")
+  const args = words(program.replace(/^uv\s+run\s+/, "")).slice(1)
+  if (args.includes("--version") || args.includes("-V")) return { out: "Python 3.12.7", code: 0 }
+  const script = args.indexOf("-c") !== -1 ? args[args.indexOf("-c") + 1] ?? "" : args[0] === "-" || args.length === 0 ? stdin ?? "" : fileAt(world, args[0]!)
+  if (script === undefined) return { out: `${args[0] === "-m" ? `/opt/homebrew/bin/python3: No module named ${args[1]}` : `python3: can't open file '${absolute(world.dir, args[0]!)}': [Errno 2] No such file or directory`}`, code: args[0] === "-m" ? 1 : 2 }
+  const imported = [...script.matchAll(/^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))/gm)].map((match) => (match[1] ?? match[2]!).split(".")[0]!)
+  // The project's own package imports its dependencies.
+  const missing = imported.map((name) => (name === "app" || name === "tests" ? "sqlalchemy" : name)).find((name) => !STDLIB.has(name))
+  if (missing !== undefined && !inEnv)
+    return { out: `Traceback (most recent call last):\n  File "<string>", line 1, in <module>\nModuleNotFoundError: No module named '${missing}'`, code: 1 }
+  const known: Record<string, string> = { "sys.version": "3.12.7 (main, Oct  1 2026, 08:30:21) [Clang 17.0.0 (clang-1700.0.13.3)]", "sys.executable": inEnv ? `${world.cwd}/.venv/bin/python3` : `${BIN}/python3`, "os.getcwd()": world.dir }
+  const printed = [...script.matchAll(/print\(\s*(?:(f?)(["'])((?:(?!\2).)*)\2|([\w.()]+))\s*\)/g)].flatMap((match) =>
+    match[3] !== undefined ? (match[1] === "f" && match[3].includes("{") ? [] : [match[3]]) : known[match[4]!] === undefined ? [] : [known[match[4]!]!],
+  )
+  return { out: printed.join("\n"), code: 0 }
+}
+
 /** Commands every machine answers the same way: cd, git, files, package scripts, the usual small programs. */
 export const COMMON: ReadonlyArray<Rule> = [
   { match: /^cd\b/, run: (segment, world) => {
       const target = absolute(world.dir, words(segment)[1] ?? HOME)
-      const rel = inRepo(world, target)
-      if (rel === undefined ? world.outside[target] === undefined : !isRepoDir(world, rel)) return { out: `cd: no such file or directory: ${words(segment)[1]}`, code: 1 }
+      if (entriesOf(world, target) === undefined) return { out: `cd: no such file or directory: ${words(segment)[1]}`, code: 1 }
       world.dir = target
       return ""
     } },
@@ -612,13 +661,38 @@ export const COMMON: ReadonlyArray<Rule> = [
   { match: /^rm\b/, run: rmCommand },
   { match: /^cp\b/, run: (segment, world) => copyCommand(segment, world, false) },
   { match: /^mv\b/, run: (segment, world) => copyCommand(segment, world, true) },
-  { match: /^mkdir\b/, run: () => "" },
+  { match: /^mkdir\b/, run: (segment, world) => {
+      const args = words(segment).slice(1)
+      const parents = args.includes("-p")
+      for (const path of args.filter((arg) => !arg.startsWith("-"))) {
+        const abs = absolute(world.dir, path)
+        if (fileAt(world, path) !== undefined || (isDir(world, path) && !parents)) return { out: `mkdir: ${path}: File exists`, code: 1 }
+        if (!parents && !isDir(world, dirname(abs))) return { out: `mkdir: ${path}: No such file or directory`, code: 1 }
+        for (let dir = abs; dir !== "/" && !isDir(world, dir); dir = dirname(dir)) world.made.add(dir)
+      }
+      return ""
+    } },
+  { match: /^mktemp\b/, run: (segment, world) => {
+      const path = `${TMPDIR}/tmp.${(Object.keys(world.elsewhere).length + world.made.size).toString(36).padStart(4, "0")}Xq7Lk2`
+      if (/\s-d\b/.test(segment)) world.made.add(path)
+      else world.elsewhere[path] = ""
+      return path
+    } },
+  { match: /^date\b/, run: (segment) => (/\+%s/.test(segment) ? "1762687200" : /\+/.test(segment) ? "2026-11-09 11:20:00" : NOW) },
+  { match: /^(?:env|printenv)\b/, run: (segment, world) => {
+      const name = words(segment)[1]
+      if (name !== undefined) return world.env[name] === undefined ? { out: "", code: 1 } : world.env[name]!
+      return Object.entries({ HOME, PWD: world.dir, ...world.env }).map(([key, value]) => `${key}=${value}`).join("\n")
+    } },
+  { match: /^uname\b/, run: (segment) => (/-a/.test(segment) ? "Darwin dev-mbp 25.1.0 Darwin Kernel Version 25.1.0 arm64" : /-m/.test(segment) ? "arm64" : "Darwin") },
+  { match: /^(?:whoami|id\s+-un)\b/, run: () => "dev" },
   { match: /^touch\b/, run: (segment, world) => {
       for (const path of words(segment).slice(1).filter((arg) => !arg.startsWith("-"))) if (fileAt(world, path) === undefined) writeAt(world, path, "")
       return ""
     } },
   { match: /^(?:test\b|\[\s)/, run: testCommand },
   { match: /^wc\b/, run: wcCommand },
+  { match: /^(?:uv\s+run\s+)?(?:\.venv\/bin\/)?python3?\b(?!\s+-m\s+pytest)/, run: python },
   { match: /^true\b/, run: () => "" },
   { match: /^false\b/, run: () => ({ out: "", code: 1 }) },
   { match: /^find\b/, run: (segment, world) => {
@@ -645,7 +719,20 @@ export const COMMON: ReadonlyArray<Rule> = [
         .replace(/\$\{?PWD\}?/g, world.dir)
         .replace(/\$\{?(\w+)\}?/g, (_, name: string) => world.env[name] ?? "")
         .replace(/\\n/g, "\n") },
-  { match: /^(?:which|command\s+-v)\s+(\S+)/, run: (segment) => `/opt/homebrew/bin/${segment.split(/\s+/).at(-1)}` },
+  { match: /^(?:which|command\s+-v|type)\s+\S+/, run: (segment, world) => {
+      const names = words(segment.replace(/^command\s+-v/, "which")).slice(1).filter((arg) => !arg.startsWith("-"))
+      const builtin = new Set(["cd", "echo", "export", "test", "pwd", "printf", "true", "false"])
+      const system = new Set(["ls", "cat", "rm", "mv", "cp", "mkdir", "sed", "awk", "grep", "find", "head", "tail", "wc", "sort", "touch", "date", "env", "sh", "bash", "zsh", "curl", "tar", "diff", "xargs", "tee", "mktemp", "uname", "python3"])
+      let missing = false
+      const out = names.map((name) => {
+        if (world.outside[BIN]!.includes(name)) return `${BIN}/${name}`
+        if (builtin.has(name)) return `${name}: shell built-in command`
+        if (system.has(name)) return `/usr/bin/${name}`
+        missing = true
+        return `${name} not found`
+      })
+      return { out: out.join("\n"), code: missing ? 1 : 0 }
+    } },
   { match: /^(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?\S+/, run: (segment, world) => {
       const [tool, ...rest] = words(programOf(segment))
       const name = rest[0] === "run" ? rest[1] : rest[0]
@@ -664,11 +751,29 @@ export const COMMON: ReadonlyArray<Rule> = [
 /** A command line with each heredoc's body taken out: the line refers to body `n` as `<<__HEREDOC_n__`. */
 const heredocs = (command: string): { readonly line: string; readonly bodies: Array<string> } => {
   const bodies: Array<string> = []
-  const mask = quotedMask(command)
   let line = ""
   const pending: Array<string> = []
+  // The quote state is kept as the line is read, so a quote inside a body (it's) does not leak past it.
+  let quote: string | undefined
   for (let i = 0; i < command.length; i++) {
-    if (!mask[i] && command.startsWith("<<", i) && command[i + 2] !== "<") {
+    const ch = command[i]!
+    if (quote !== undefined) {
+      if (ch === quote) quote = undefined
+      else if (ch === "\\" && quote === '"' && i + 1 < command.length) {
+        line += ch
+        i++
+        line += command[i]
+        continue
+      }
+      line += ch
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+      line += ch
+      continue
+    }
+    if (command.startsWith("<<", i) && command[i + 2] !== "<") {
       const marker = command.slice(i).match(/^<<-?\s*(['"]?)(\w+)\1/)
       if (marker !== null) {
         pending.push(marker[2]!)
@@ -677,7 +782,7 @@ const heredocs = (command: string): { readonly line: string; readonly bodies: Ar
         continue
       }
     }
-    if (!mask[i] && command[i] === "\n" && pending.length > 0) {
+    if (ch === "\n" && pending.length > 0) {
       const lines = command.slice(i + 1).split("\n")
       let used = 0
       for (const tag of pending) {
@@ -718,12 +823,61 @@ const wrapped = (program: string): string | undefined => {
   return words(match[1]!)[0]
 }
 
+/** Each `$(…)` outside single quotes replaced by what its command prints, as the shell does before it runs a line. */
+const substitute = (segment: string, world: World, rules: ReadonlyArray<Rule>, bodies: ReadonlyArray<string>): string => {
+  let out = ""
+  let quote: string | undefined
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i]!
+    if (quote === "'" ? ch === "'" : quote === '"' ? ch === '"' : ch === "'" || ch === '"') quote = quote === undefined ? ch : undefined
+    if (quote !== "'" && segment.startsWith("$(", i)) {
+      let depth = 0
+      let end = i + 1
+      for (; end < segment.length; end++) {
+        if (segment[end] === "(") depth++
+        else if (segment[end] === ")" && --depth === 0) break
+      }
+      // The inner command may name a heredoc the whole line's reading took out.
+      const inner = segment.slice(i + 2, end).replace(/<<__HEREDOC_(\d+)__/g, (_, n: string) => `<<__EOF__\n${bodies[Number(n)] ?? ""}__EOF__\n`)
+      const printed = runShell(inner, world, rules).out.replace(/^\(no output\)$|\n?\(exit \d+\)$/, "").replace(/\n+$/, "")
+      out += quote === '"' ? printed.replace(/(["\\$`])/g, "\\$1") : printed
+      i = end
+      continue
+    }
+    out += ch
+  }
+  return out
+}
+
+/** zsh's globbing of an unquoted word with * or ?: the paths it matches, or zsh's error when none does. */
+const globbed = (segment: string, world: World): { readonly segment: string } | { readonly error: string } => {
+  let out = ""
+  let last = 0
+  for (const match of segment.matchAll(/"(?:[^"\\]|\\.)*"|'[^']*'|[^\s"']+/g)) {
+    const token = match[0]
+    if (!/[*?]/.test(token) || /["'$=`\\]/.test(token) || match.index === 0) continue
+    const pattern = new Bun.Glob(absolute(world.dir, token))
+    const candidates = new Set<string>([...Object.keys(world.elsewhere), ...world.made])
+    for (const file of Object.keys(world.files)) for (let path = `${world.cwd}/${file}`; path.startsWith(world.cwd + "/"); path = dirname(path)) candidates.add(path)
+    for (const [dir, names] of Object.entries(world.outside)) for (const name of names) candidates.add(`${dir}/${name.replace(/\/$/, "")}`)
+    const hits = [...candidates].filter((path) => pattern.match(path)).sort()
+    if (hits.length === 0) return { error: `zsh: no matches found: ${token}` }
+    const shownHits = hits.map((path) => (token.startsWith("/") || token.startsWith("~") ? path : path.startsWith(world.dir + "/") ? path.slice(world.dir.length + 1) : path))
+    out += segment.slice(last, match.index) + shownHits.join(" ")
+    last = match.index + token.length
+  }
+  return { segment: out + segment.slice(last) }
+}
+
 /** One segment, its pipeline and its redirection, answered. */
 const runSegment = (given: string, world: World, rules: ReadonlyArray<Rule>, bodies: ReadonlyArray<string>): Outcome => {
   // The parentheses of a subshell `(a; b)`, split across its segments.
   const opens = (given.match(/(?<!\$)\(/g) ?? []).length
   const closes = (given.match(/\)/g) ?? []).length
-  const whole = given.replace(opens > closes ? /^\(\s*/ : /^(?!)/, "").replace(closes > opens ? /\s*\)$/ : /^(?!)/, "")
+  const bare = given.replace(opens > closes ? /^\(\s*/ : /^(?!)/, "").replace(closes > opens ? /\s*\)$/ : /^(?!)/, "")
+  const expanded = globbed(substitute(bare, world, rules, bodies), world)
+  if ("error" in expanded) return { out: expanded.error, code: 1 }
+  const whole = expanded.segment
   const [first = "", ...later] = stages(whole)
   const { stage: redirected, to, append } = redirection(first)
   const marker = redirected.match(/\s*<<__HEREDOC_(\d+)__/)
