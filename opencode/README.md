@@ -840,7 +840,8 @@ The server plugin also offers `pr`, a direct tool (`pr.ts`, handlers in
   a watch is the `PrWatch` aggregate (`watch.ts`). Its notice is a steered
   synthetic message, a `◈` row that wakes the session. `green` tells each
   failure and goes on, and ends when the checks pass; any watch ends on a
-  merge or a close.
+  merge or a close. Checks are told only when they settle (pass or fail):
+  checks starting again after a push, or going back to none, stay silent.
 - `create`: `gh pr create` for the session's branch, asking the configured
   reviewers of the repository's owner (`biteinc`: andrewgoupil, antwandaher,
   narminmolina) unless `reviewers` says otherwise.

@@ -4,7 +4,8 @@
 // `decide` as Observe. It records Noticed, with the lines the notice says,
 // when a change matters to the watch, and the watch ends once what it waited
 // for came (green: the checks pass; reviewed: a review or a new decision) or
-// the request merged or closed. Any other difference is Seen, kept silently
+// the request merged or closed. Checks are told only when they settle (pass or
+// fail), never when they start again. Any other difference is Seen, kept silently
 // so the next read is compared with the newest one.
 import { Effect, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
@@ -138,13 +139,14 @@ export const changes = (before: Summary, after: Summary): ReadonlyArray<Change> 
     found.push({ line: spoken(after.state === "OPEN" ? "REOPENED" : after.state), matters: ALL, ends: ended(after.state) ? ALL : [] })
   if (after.head !== before.head) found.push({ line: `new head ${short(after.head)} (was ${short(before.head)})`, matters: ["changed"], ends: [] })
   const failing = after.failing.length > 0 ? `: ${after.failing.join(", ")}` : ""
+  // Only a conclusion is told: checks that start running again, or go back to none, are kept silently.
   if (after.verdict !== before.verdict) {
-    const settled = after.verdict === "pass" || after.verdict === "fail"
-    found.push({
-      line: `checks ${before.verdict} → ${after.verdict}${failing}`,
-      matters: settled ? ["green", "changed"] : ["changed"],
-      ends: after.verdict === "pass" ? ["green"] : [],
-    })
+    if (after.verdict === "pass" || after.verdict === "fail")
+      found.push({
+        line: `checks ${before.verdict} → ${after.verdict}${failing}`,
+        matters: ["green", "changed"],
+        ends: after.verdict === "pass" ? ["green"] : [],
+      })
   } else if (after.verdict === "fail" && !same(after.failing, before.failing))
     found.push({ line: `checks still fail${failing}`, matters: ["green", "changed"], ends: [] })
   if ((after.decision ?? "") !== (before.decision ?? ""))

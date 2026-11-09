@@ -121,6 +121,24 @@ describe("a read of a watched request", () => {
       Story.then(Noticed.make({ last: read({ head: "bbbbbbbb22" }), lines: ["new head bbbbbbbb (was aaaaaaaa)"], ended: false })),
     ))
 
+  test("changed: checks that run again or go back to none are Seen; only a pass or a failure is told", () =>
+    run(
+      Story.given(Watched.make({ watch: { ...watchOf("changed"), last: read({ verdict: "pass" }) } })),
+      Story.when(Observe.make({ read: READ })),
+      Story.then(Seen.make({ last: READ })),
+      Story.when(Observe.make({ read: read({ verdict: "none" }) })),
+      Story.then(Seen.make({ last: read({ verdict: "none" }) })),
+      Story.when(Observe.make({ read: read({ verdict: "fail", failing: ["test"] }) })),
+      Story.then(Noticed.make({ last: read({ verdict: "fail", failing: ["test"] }), lines: ["checks none → fail: test"], ended: false })),
+    ))
+
+  test("changed: a push tells its new head, not the checks starting again", () =>
+    run(
+      Story.given(Watched.make({ watch: { ...watchOf("changed"), last: read({ verdict: "pass" }) } })),
+      Story.when(Observe.make({ read: read({ head: "bbbbbbbb22" }) })),
+      Story.then(Noticed.make({ last: read({ head: "bbbbbbbb22" }), lines: ["new head bbbbbbbb (was aaaaaaaa)"], ended: false })),
+    ))
+
   test("any watch ends when the request merges", () =>
     run(
       Story.given(Watched.make({ watch: watchOf("reviewed") })),
