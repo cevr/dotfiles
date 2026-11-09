@@ -84,7 +84,7 @@ When there is no system to follow and the task is to choose one:
 | [Typography](references/typography/index.md) | Type scale, spacing, fonts, OpenType, wrapping, punctuation |
 | [Layout](references/layout/index.md) | Grouping, alignment, reading order, adaptive structure, RTL, translation room |
 | [Accessibility](references/accessibility/index.md) | Keyboard, focus, semantics, forms, screen readers, hit areas, motion and text size |
-| [Writing](references/writing/index.md) | Labels, buttons, errors, empty states, confirmations, voice |
+| [Writing](references/writing/index.md) | Writing or reviewing any user-facing string: whether it should exist (the ladder) first, then labels, buttons, errors, empty states, confirmations, voice |
 
 ## Verify
 
@@ -92,4 +92,4 @@ Report separately what was type-checked, what was exercised in tests, and what w
 
 ---
 
-Merged from Emil Kowalski's [skills](https://github.com/emilkowalski/skills) and Jakub Krehel's [skills](https://github.com/jakubkrehel/skills) (both MIT), the shadcn/ui skill's design guidance, Graphical's GUI guide, [Vercel's Web Interface Guidelines](https://github.com/vercel-labs/web-interface-guidelines), [Butterick's Practical Typography](https://practicaltypography.com/), [raunofreiberg/interfaces](https://github.com/raunofreiberg/interfaces), [ui-skills.com](https://ui-skills.com), and the screenshot passes, dated tells and dashboard rules of [taste-skill](https://github.com/Leonxlnx/taste-skill) (MIT).
+Merged from Emil Kowalski's [skills](https://github.com/emilkowalski/skills) and Jakub Krehel's [skills](https://github.com/jakubkrehel/skills) (both MIT), the shadcn/ui skill's design guidance, Graphical's GUI guide, [Vercel's Web Interface Guidelines](https://github.com/vercel-labs/web-interface-guidelines), [Butterick's Practical Typography](https://practicaltypography.com/), [raunofreiberg/interfaces](https://github.com/raunofreiberg/interfaces), [ui-skills.com](https://ui-skills.com), the copy ladder of the clean-copy skill ([rachel.systems](https://paste.rachel.systems/ukogokijaz.md), restated), and the screenshot passes, dated tells and dashboard rules of [taste-skill](https://github.com/Leonxlnx/taste-skill) (MIT).

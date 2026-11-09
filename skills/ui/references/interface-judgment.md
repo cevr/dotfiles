@@ -32,11 +32,11 @@ A specific product title is a sufficient start. Add metadata only when it helps 
 
 ## Keep Copy Useful
 
-Omit invented eyebrows (small labels above headings), taglines, sentimental subtitles, motivational empty-state prose, header/footer slogans, and decorative icon-and-text badges. Supporting copy earns its place only by supplying product context the title, content, or controls don't already give. An ordinary app screen is not a marketing hero unless that is the request. Personality comes from the theme and real content, not extra prose.
+Omit invented eyebrows (small labels above headings), taglines, sentimental subtitles, motivational empty-state prose, header/footer slogans, and decorative icon-and-text badges. An ordinary app screen is not a marketing hero unless that is the request. Personality comes from the theme and real content, not extra prose.
 
-Explain only what changes the user's understanding, decision, or next action. Omit workflow narration and implementation commentary ("Saved on this device · No account needed") from routine chrome. Surface a storage limit or technical detail at the relevant decision, and only when it has a concrete consequence. A friendly phrase does not need an icon, pill, or status dot; reserve those cues for real categories, actions, or state.
+Every string that remains goes down the [ladder in writing](writing/index.md#first-pass-should-the-string-exist) before anyone tunes its wording: it stays only when the reader cannot understand, decide, or act without it. Workflow narration and implementation commentary ("Saved on this device · No account needed") fail it in routine chrome; a storage limit or technical detail belongs at the decision where it has a concrete consequence. A friendly phrase does not need an icon, pill, or status dot; reserve those cues for real categories, actions, or state.
 
-Empty states: say what is missing when it isn't already clear, and give the next useful action. Skip the slogan, the paraphrase of the section title, and the explanation of what the button label already says. One action at the point of need; repeat it only when placement or a different responsive context makes it useful. Keep required labels, validation, accessibility, and instructions that prevent a real mistake.
+Empty states: say what is missing when it isn't already clear, and give the next useful action. Skip the slogan, the paraphrase of the section title, and the explanation of what the button label already says. One action at the point of need; repeat it only when placement or a different responsive context makes it useful.
 
 ## Give Information a Clear Home
 

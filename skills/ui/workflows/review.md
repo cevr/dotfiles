@@ -122,7 +122,7 @@ Read every reference below and complete each domain review before consolidation.
 | --- | --- | --- | --- |
 | 1 | Accessibility | [accessibility/index.md](../references/accessibility/index.md) | Keyboard and focus, semantics (ARIA, accessibility traits, semantics properties), names, forms, announcements, hit areas, motion and text size |
 | 2 | Layout | [layout/index.md](../references/layout/index.md) | Grouping, alignment, reading order, responsive and adaptive structure, room for translated text |
-| 3 | Writing | [writing/index.md](../references/writing/index.md) | Labels, errors, empty states, confirmations, voice |
+| 3 | Writing | [writing/index.md](../references/writing/index.md) | Whether each string should exist, then labels, errors, empty states, confirmations, voice |
 | 4 | Typography | [typography/index.md](../references/typography/index.md) | Scale, spacing, font features, wrapping, truncation, punctuation |
 | 5 | Color | [color/index.md](../references/color/index.md) | Palette, semantic tokens, contrast |
 | 6 | Theming | [theming.md](../references/theming.md) | Values come from tokens, roles over palette classes, library customization, portals, distinct states |
@@ -131,6 +131,8 @@ Read every reference below and complete each domain review before consolidation.
 | 9 | Interface judgment | [interface-judgment.md](../references/interface-judgment.md) | Whether each element earns its place; the closing pass that removes what adds nothing |
 
 A dashboard, admin or analytics screen also takes [dashboards](../references/dashboards.md), reported under Interface judgment.
+
+The writing pass opens with [the ladder](../references/writing/index.md#first-pass-should-the-string-exist) on every visible string, read beside what renders around it. A string that fails is one Writing row: `Before` the current string, `After` its rewrite or `cut`, `Why` the rung it failed. A string that passes gets no row.
 
 From each, take its principles, its sub-files and its verification checks. Any severity ladder or report format inside a reference is for standalone use; the ones in this file replace them.
 
