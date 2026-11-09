@@ -1,6 +1,6 @@
 // Runs scenarios/prime-wake.ts with the Prime look and the orchestrate plugin
-// against an OpenCode checkout: a worker moves a three-second shell command
-// to the background and ends its turn. While it waits its live row reads
+// against an OpenCode checkout: a worker moves a shell command (one that runs
+// until the scenario releases it) to the background and ends its turn. While it waits its live row reads
 // waiting (its still symbol) with what it said last; once the shell's notice wakes it, the answer it
 // writes then is the one its parent gets, as a background worker's stop
 // notice and as a foreground call's result. It needs OPENCODE_DEV, the fork
@@ -41,7 +41,7 @@ describe.skipIf(!fork)("a worker waiting on its own background shell (OPENCODE_D
       new Response(run.stdout).text(),
       new Response(run.stderr).text(),
     ])
-    if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
+    if (code !== 0) throw new Error(`the scenario exited ${code} (its frames and logs: ${out}):\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `wake-${name}.txt`), "utf8").split("\n")
   }, 300_000)
 

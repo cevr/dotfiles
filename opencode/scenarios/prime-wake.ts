@@ -1,10 +1,14 @@
 // A worker that waits on its own background shell command, in the Prime look
-// with the orchestrate plugin: it moves a three-second `sleep 3` to the
-// background and ends its turn, the shell's stop notice wakes it, and only
-// the answer it writes then reaches the parent. Once as a background worker
-// (its answer comes back as the parent's stop notice), once in the
-// foreground (as the subagent call's result). Replayed against OpenCode with
-// a scripted model.
+// with the orchestrate plugin: it moves a shell command to the background
+// and ends its turn, the shell's stop notice wakes it, and only the answer it
+// writes then reaches the parent. Once as a background worker (its answer
+// comes back as the parent's stop notice), once in the foreground (as the
+// subagent call's result). Replayed against OpenCode with a scripted model.
+//
+// The shell command waits for a release file the scenario writes once it has
+// the waiting frame, so the waiting state lasts as long as the frame takes to
+// come, however slow the host: a fixed `sleep 3` can end before the worker's
+// waiting row draws, and then the frame never comes.
 // Run: OPENCODE_DEV=<opencode checkout> OPENCODE_DRIVE_MEDIA_DIR=<dir> bunx opencode-drive run scenarios/prime-wake.ts
 //
 // The parent's model says which answer it got: `Root heard: …` for the one
@@ -15,13 +19,16 @@
 // - `wake-bg-waiting`: the background worker has ended its turn and waits on its shell;
 // - `wake-bg-done`: its answer has reached the parent;
 // - `wake-fg-waiting`, `wake-fg-done`: the same for the foreground worker.
-// Each frame is a `.txt` of its text and a `.json` of its styled lines.
+// Each frame is a `.txt` of its text and a `.json` of its styled lines. A
+// wait that times out writes `<frame>.timeout.txt` and keeps the run's server
+// and TUI logs in `<frame>.logs`.
 import { Effect, Schedule, Stream } from "effect"
-import { readFileSync, writeFileSync } from "node:fs"
+import { cpSync, readFileSync, writeFileSync } from "node:fs"
+import { resolve } from "node:path"
 import { Llm, OpenCodeDriver } from "opencode-drive"
 
 const root = process.cwd()
-const out = process.env.SCENARIO_OUT ?? "out"
+const out = resolve(process.env.SCENARIO_OUT ?? "out")
 type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string }> }> }
 const text = (frame: Frame) => frame.lines.map((l) => l.spans.map((s) => s.text).join("").trimEnd()).join("\n")
 
@@ -30,13 +37,14 @@ const AGAIN = "Now run it once more in the foreground."
 const STARTED = "Worker started."
 const WAITING = "Waiting for the check."
 const TOO_EARLY = "Root heard too early."
-// Each worker moves `sleep 3` to the background, ends its turn, and answers once its shell's notice wakes it.
+// Each worker moves its shell command to the background, ends its turn, and answers once its shell's notice wakes it.
 const WORKERS = {
   background: {
     id: "call_bg",
     description: "Run the slow check",
     prompt: "Worker brief B.",
     shell: "call_sleep_b",
+    release: `${out}/release-bg`,
     answer: "Background check passed after its shell.",
     heard: "Root heard: the background check passed.",
   },
@@ -45,6 +53,7 @@ const WORKERS = {
     description: "Check it in the foreground",
     prompt: "Worker brief F.",
     shell: "call_sleep_f",
+    release: `${out}/release-fg`,
     answer: "Foreground check passed after its shell.",
     heard: "Root heard: the foreground check passed.",
   },
@@ -53,14 +62,17 @@ type Worker = (typeof WORKERS)[keyof typeof WORKERS]
 
 const finish = (words: string) => Stream.make(Llm.text(words), Llm.finish())
 
+/** The worker's slow check: it ends once the scenario writes its release file, or after two minutes. */
+const check = (worker: Worker) => `for i in $(seq 600); do [ -e '${worker.release}' ] && exit 0; sleep 0.2; done`
+
 /** A worker's next step: start its shell, then wait, then answer once the shell's notice is in. */
 const work = (worker: Worker, request: string) => {
   if (!request.includes(worker.shell))
     return Stream.make(
-      Llm.toolCall({ index: 0, id: worker.shell, name: "shell", input: { command: "sleep 3", background: true } }),
+      Llm.toolCall({ index: 0, id: worker.shell, name: "shell", input: { command: check(worker), background: true } }),
       Llm.finish("tool-calls"),
     )
-  // The shell's stop notice: `<shell id="…" state="completed" command="sleep 3">`.
+  // The shell's stop notice: `<shell id="…" state="completed" command="…">`.
   if (request.includes("<shell id=")) return finish(worker.answer)
   return finish(WAITING)
 }
@@ -98,7 +110,7 @@ export default OpenCodeDriver.use(
       files: { ".opencode/themes/prime.json": readFileSync(`${root}/themes/prime.json`, "utf8") },
     },
   },
-  ({ ui, llm }) =>
+  ({ ui, llm, artifacts }) =>
     Effect.gen(function* () {
       yield* llm.serve((req) => {
         const s = JSON.stringify(req)
@@ -118,7 +130,11 @@ export default OpenCodeDriver.use(
           Effect.flatMap((frame) => (ready(text(frame)) && !text(frame).includes("Finishing startup") ? Effect.void : Effect.fail("pending"))),
           Effect.retry({ schedule: Schedule.spaced("100 millis"), times }),
           Effect.tapError(() =>
-            ui.capture().pipe(Effect.map((frame) => writeFileSync(`${out}/${name}.timeout.txt`, text(frame)))),
+            ui.capture().pipe(
+              Effect.map((frame) => writeFileSync(`${out}/${name}.timeout.txt`, text(frame))),
+              // The run's server and TUI logs go with the run; keep them beside the frame.
+              Effect.andThen(Effect.sync(() => cpSync(`${artifacts}/logs`, `${out}/${name}.logs`, { recursive: true }))),
+            ),
           ),
         )
       const save = (name: string) =>
@@ -133,15 +149,19 @@ export default OpenCodeDriver.use(
       const heard = (frame: string, worker: Worker) => frame.includes(worker.heard) || frame.includes(TOO_EARLY)
 
       yield* ui.submit(ASK)
-      // The worker has said it waits and ended its turn; its shell still sleeps.
+      const release = (worker: Worker) => Effect.sync(() => writeFileSync(worker.release, ""))
+
+      // The worker has said it waits and ended its turn; its shell still runs, until the release.
       yield* until("wake-bg-waiting", (frame) => frame.includes(STARTED) && waiting(frame, WORKERS.background))
       yield* save("wake-bg-waiting")
+      yield* release(WORKERS.background)
       yield* until("wake-bg-done", (frame) => heard(frame, WORKERS.background))
       yield* save("wake-bg-done")
 
       yield* ui.submit(AGAIN)
       yield* until("wake-fg-waiting", (frame) => waiting(frame, WORKERS.foreground))
       yield* save("wake-fg-waiting")
+      yield* release(WORKERS.foreground)
       yield* until("wake-fg-done", (frame) => heard(frame, WORKERS.foreground))
       yield* save("wake-fg-done")
     }),
