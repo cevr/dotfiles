@@ -16,9 +16,12 @@
 // is no reading: the pace fails open, never holds. No token is kept or logged.
 import { Clock, Effect, PubSub, Schema, Stream } from "effect"
 import type { QuotaRpc } from "../opencode/quota.ts"
-import type { QuotaReading, QuotaWindow } from "../quota.ts"
+import { accountWide, type QuotaReading, type QuotaWindow, type ResetCredit } from "../quota.ts"
 
 export const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+
+/** The reset credits' list beside a usage endpoint (codex-rs backend-client rate_limit_resets.rs). */
+export const creditsUrl = (usageUrl: string) => usageUrl.replace(/\/usage$/, "/rate-limit-reset-credits")
 
 /** A held reading younger than this answers `reading` without asking the endpoint again. */
 export const FRESH_MS = 60_000
@@ -52,7 +55,7 @@ const window = (usedPercent: number, minutes: number | undefined, resetSeconds: 
  * the limit is reached: until the last full window resets, else the first.
  */
 const readingOf = (windows: ReadonlyArray<QuotaWindow>, now: number, reached: boolean): QuotaReading => {
-  const full = windows.filter((w) => w.utilization >= 1).flatMap((w) => (w.resetAt === undefined ? [] : [w.resetAt]))
+  const full = windows.filter((w) => accountWide(w) && w.utilization >= 1).flatMap((w) => (w.resetAt === undefined ? [] : [w.resetAt]))
   const resets = windows.flatMap((w) => (w.resetAt === undefined ? [] : [w.resetAt]))
   const until = full.length ? Math.max(...full) : resets.length ? Math.min(...resets) : undefined
   return reached
@@ -60,17 +63,62 @@ const readingOf = (windows: ReadonlyArray<QuotaWindow>, now: number, reached: bo
     : { at: now, status: "allowed", windows }
 }
 
-/** The usage endpoint's answer as a reading; anything else is none. */
+/** A usage answer's `rate_limit` windows, each named by its length and, for a model's own limit, `:<limit name>`. */
+const usageWindows = (limit: unknown, scope?: string): ReadonlyArray<QuotaWindow> =>
+  !isRecord(limit)
+    ? []
+    : [limit.primary_window, limit.secondary_window].flatMap((w) => {
+        if (!isRecord(w) || !finite(w.used_percent) || !finite(w.limit_window_seconds)) return []
+        const read = window(w.used_percent, Math.round(w.limit_window_seconds / 60), finite(w.reset_at) ? w.reset_at : undefined)
+        return read === undefined ? [] : [scope === undefined ? read : { ...read, name: `${read.name}:${scope}` }]
+      })
+
+/**
+ * The usage endpoint's answer as a reading; anything else is none. A model's
+ * own limit (`additional_rate_limits`, by its `limit_name`; codex-rs
+ * backend-client types.rs) reads as windows scoped to it (`7d:<limit name>`),
+ * which never hold the account. The reset credits' count comes along when the
+ * answer carries it (`rate_limit_reset_credits.available_count`).
+ */
 export const fromUsage = (body: unknown, now: number): QuotaReading | undefined => {
   if (!isRecord(body) || !isRecord(body.rate_limit)) return undefined
   const limit = body.rate_limit
-  const windows = [limit.primary_window, limit.secondary_window].flatMap((w) => {
-    if (!isRecord(w) || !finite(w.used_percent) || !finite(w.limit_window_seconds)) return []
-    const read = window(w.used_percent, Math.round(w.limit_window_seconds / 60), finite(w.reset_at) ? w.reset_at : undefined)
-    return read === undefined ? [] : [read]
-  })
+  const windows = usageWindows(limit)
   if (!windows.length) return undefined
-  return readingOf(windows, now, limit.limit_reached === true || limit.allowed === false)
+  const additional = (Array.isArray(body.additional_rate_limits) ? body.additional_rate_limits : []).flatMap((extra) =>
+    isRecord(extra) && typeof extra.limit_name === "string" && extra.limit_name !== "" ? usageWindows(extra.rate_limit, extra.limit_name) : [],
+  )
+  const reading = readingOf([...windows, ...additional], now, limit.limit_reached === true || limit.allowed === false)
+  const credits = body.rate_limit_reset_credits
+  return isRecord(credits) && finite(credits.available_count)
+    ? { ...reading, resets: { available: Math.max(0, credits.available_count), credits: [] } }
+    : reading
+}
+
+/**
+ * A reading with the account's reset credits as their list answers
+ * (`wham/rate-limit-reset-credits`): each credit's id, status and expiry, what
+ * a claim needs. A malformed list leaves the reading as it was. Reading them
+ * never claims one.
+ */
+export const withCredits = (reading: QuotaReading, body: unknown): QuotaReading => {
+  if (!isRecord(body) || !Array.isArray(body.credits)) return reading
+  const credits = body.credits.flatMap((credit): ReadonlyArray<ResetCredit> => {
+    if (!isRecord(credit) || typeof credit.id !== "string" || typeof credit.status !== "string") return []
+    const expiresAt = typeof credit.expires_at === "string" ? Date.parse(credit.expires_at) : Number.NaN
+    return [
+      {
+        id: credit.id,
+        count: 1,
+        usable: credit.status === "available",
+        status: credit.status,
+        ...(Number.isFinite(expiresAt) ? { expiresAt } : {}),
+      },
+    ]
+  })
+  const ends = credits.flatMap((credit) => (credit.usable && credit.expiresAt !== undefined ? [credit.expiresAt] : []))
+  const available = finite(body.available_count) ? Math.max(0, body.available_count) : credits.filter((credit) => credit.usable).length
+  return { ...reading, resets: { available, ...(ends.length === 0 ? {} : { nextExpiresAt: Math.min(...ends) }), credits } }
 }
 
 const number = (text: string | null | undefined) => {
@@ -141,13 +189,11 @@ export const make = (options: Options) =>
         return PubSub.publish(published, { credentialID, reading }).pipe(Effect.asVoid)
       })
 
-    /** A fresh read of the usage endpoint; none on any failure, a refusal or a malformed answer. */
-    const fetchUsage = (credentialID: string) =>
+    /** A GET of `url` with the login's token and account: its JSON, or none on a refusal. */
+    const get = (url: string, login: Login) =>
       Effect.gen(function* () {
-        const login = yield* options.login(credentialID)
-        if (login === undefined) return undefined
         const response = yield* Effect.tryPromise((signal) =>
-          fetch(options.url ?? USAGE_URL, {
+          fetch(url, {
             headers: {
               authorization: `Bearer ${login.access}`,
               ...(login.accountID === undefined ? {} : { "chatgpt-account-id": login.accountID }),
@@ -158,8 +204,26 @@ export const make = (options: Options) =>
         )
         if (!response.ok) return undefined
         const body: unknown = yield* Effect.tryPromise(() => response.json())
-        const reading = fromUsage(body, yield* Clock.currentTimeMillis)
-        if (reading !== undefined) yield* keep(credentialID, reading)
+        return body
+      })
+
+    /**
+     * A fresh read of the usage endpoint; none on any failure, a refusal or a
+     * malformed answer. An account with reset credits has their list read too,
+     * for what a claim needs; a failed list read keeps the count alone.
+     */
+    const fetchUsage = (credentialID: string) =>
+      Effect.gen(function* () {
+        const login = yield* options.login(credentialID)
+        if (login === undefined) return undefined
+        const url = options.url ?? USAGE_URL
+        const usage = fromUsage(yield* get(url, login), yield* Clock.currentTimeMillis)
+        if (usage === undefined) return undefined
+        const reading =
+          (usage.resets?.available ?? 0) > 0
+            ? withCredits(usage, yield* get(creditsUrl(url), login).pipe(Effect.orElseSucceed(() => undefined)))
+            : usage
+        yield* keep(credentialID, reading)
         return reading
       }).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
 

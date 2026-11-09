@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Fiber, Stream } from "effect"
 import type { QuotaReading } from "../quota.ts"
-import { fromFrame, fromHeaders, fromUsage, make } from "./usage.ts"
+import { fromFrame, fromHeaders, fromUsage, make, withCredits } from "./usage.ts"
 
 const now = Date.parse("2026-11-05T14:21:00Z")
 const weekReset = Date.parse("2026-11-11T07:36:00Z") / 1000
@@ -42,6 +42,56 @@ describe("ChatGPT usage readings", () => {
     })
     expect(fromUsage({ detail: "Unauthorized" }, now)).toBeUndefined()
     expect(fromUsage({ rate_limit: { primary_window: null } }, now)).toBeUndefined()
+  })
+
+  test("reset credits: the usage endpoint's count, and the credit list with what a claim needs", () => {
+    // As measured on 2026-11-09: two credits, neither applicable while the account is not limited.
+    const withCount = { ...measured, rate_limit_reset_credits: { available_count: 2, applicable_available_count: 0 } }
+    const reading = fromUsage(withCount, now)
+    expect(reading?.resets).toEqual({ available: 2, credits: [] })
+    const listed = {
+      credits: [
+        { id: "credit-b", reset_type: "codex_rate_limits", status: "available", granted_at: "2026-11-01T22:37:04Z", expires_at: "2026-12-01T22:37:04.252537Z" },
+        { id: "credit-a", reset_type: "codex_rate_limits", status: "available", granted_at: "2026-10-31T20:04:23Z", expires_at: "2026-11-30T20:04:23.734225Z" },
+        { id: "credit-used", reset_type: "codex_rate_limits", status: "redeemed", granted_at: "2026-10-01T00:00:00Z", expires_at: null },
+        { status: "available" },
+      ],
+      available_count: 2,
+    }
+    expect(withCredits(reading as QuotaReading, listed).resets).toEqual({
+      available: 2,
+      nextExpiresAt: Date.parse("2026-11-30T20:04:23.734225Z"),
+      credits: [
+        { id: "credit-b", count: 1, usable: true, status: "available", expiresAt: Date.parse("2026-12-01T22:37:04.252537Z") },
+        { id: "credit-a", count: 1, usable: true, status: "available", expiresAt: Date.parse("2026-11-30T20:04:23.734225Z") },
+        { id: "credit-used", count: 1, usable: false, status: "redeemed" },
+      ],
+    })
+    // A malformed list leaves the count as the usage endpoint read it.
+    expect(withCredits(reading as QuotaReading, { detail: "nope" })).toEqual(reading as QuotaReading)
+    expect(fromUsage(measured, now)?.resets).toBeUndefined()
+  })
+
+  test("a model's own rate limit reads as a window scoped to it, never as the account's", () => {
+    const additional = {
+      ...measured,
+      additional_rate_limits: [
+        {
+          limit_name: "GPT-6-Astra",
+          metered_feature: "codex_other",
+          normal_model_slug: "gpt-6-astra",
+          rate_limit: { primary_window: { used_percent: 100, limit_window_seconds: 604_800, reset_at: weekReset } },
+        },
+      ],
+    }
+    expect(fromUsage(additional, now)).toEqual({
+      at: now,
+      status: "allowed",
+      windows: [
+        { name: "7d", utilization: 0.16, resetAt: weekReset * 1000 },
+        { name: "7d:GPT-6-Astra", utilization: 1, resetAt: weekReset * 1000 },
+      ],
+    })
   })
 
   test("a response's x-codex headers and a codex.rate_limits frame read the same", () => {
@@ -91,6 +141,45 @@ describe("the ChatGPT quota source", () => {
             expect(yield* source.rpc.usage({ credentialID: "expired" })).toEqual({})
             expect(yield* source.rpc.usage({ credentialID: "elsewhere" })).toEqual({})
             expect(seen.length).toBe(2)
+          }),
+        ),
+      )
+    } finally {
+      server.stop(true)
+    }
+  })
+
+  test("an account with reset credits has its credit list read beside its usage; one without is not asked", async () => {
+    const paths: Array<string> = []
+    let count = 1
+    const server = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        const path = new URL(request.url).pathname
+        paths.push(path)
+        if (path.endsWith("/wham/usage")) return Response.json({ ...measured, rate_limit_reset_credits: { available_count: count } })
+        if (path.endsWith("/wham/rate-limit-reset-credits"))
+          return Response.json({ available_count: 1, credits: [{ id: "credit-a", status: "available", expires_at: "2026-11-30T20:04:23Z" }] })
+        return new Response("no", { status: 404 })
+      },
+    })
+    try {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const source = yield* make({
+              login: () => Effect.succeed({ access: "good" }),
+              url: `http://127.0.0.1:${server.port}/backend-api/wham/usage`,
+            })
+            const answer = yield* source.rpc.usage({ credentialID: "chatgpt" })
+            expect(answer.reading?.resets).toEqual({
+              available: 1,
+              nextExpiresAt: Date.parse("2026-11-30T20:04:23Z"),
+              credits: [{ id: "credit-a", count: 1, usable: true, status: "available", expiresAt: Date.parse("2026-11-30T20:04:23Z") }],
+            })
+            count = 0
+            expect((yield* source.rpc.usage({ credentialID: "chatgpt" })).reading?.resets).toEqual({ available: 0, credits: [] })
+            expect(paths).toEqual(["/backend-api/wham/usage", "/backend-api/wham/rate-limit-reset-credits", "/backend-api/wham/usage"])
           }),
         ),
       )
