@@ -93,21 +93,29 @@ async function changeOf(source: Source): Promise<Change> {
 }
 
 type Managed = { outdated: string[]; modified: string[] };
+const okraDryRun = ['okra', 'skills', 'update', '--dry-run', '--json'];
+// A dry run of every managed skill takes about 10 s; a hung okra must not stall the scan.
+const okraTimeoutMs = 3 * 60_000;
 // okra-managed skills: what an update would change, and what it skips for local edits.
-function managed(): Managed {
+export function managed(command = okraDryRun, timeoutMs = okraTimeoutMs): Managed {
   let outdated: string[] = [];
   let modified: string[] = [];
+  const [file, ...args] = command;
   try {
-    const out = execFileSync('okra', ['skills', 'update', '--dry-run', '--json'], {
+    const out = execFileSync(file!, args, {
       encoding: 'utf8',
       env: { ...process.env, SKILLS_DIR: skillsDir },
       stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: timeoutMs,
+      killSignal: 'SIGKILL',
     });
     const report = JSON.parse(out);
     outdated = report.outdated.map((o: { name: string }) => o.name);
     modified = report.modified.map((o: { name: string }) => o.name);
-  } catch {
-    outdated = ['(okra skills update --dry-run failed)'];
+  } catch (error) {
+    const timedOut = (error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
+    const reason = timedOut ? `timed out after ${timeoutMs / 1000} s` : 'failed';
+    outdated = [`(okra skills update --dry-run ${reason})`];
   }
   return { outdated, modified };
 }

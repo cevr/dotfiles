@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { digest, sha256, urlChange, type UrlSource } from './upstreams';
+import { digest, managed, sha256, urlChange, type UrlSource } from './upstreams';
 
 const content = '# Cleaning copy\n\nWalk each string down the ladder.\n';
 const source = (hash: string): UrlSource => ({
@@ -28,5 +28,15 @@ describe('a URL source', () => {
     expect(text).toContain('1 of 1 moved');
     expect(text).toContain('### clean-copy (https://paste.example/raw/abc, none: restate, never copy) → ui');
     expect(text).toContain(`${before.slice(0, 7)}..${sha256(edited).slice(0, 7)}: ${edited.length} bytes now`);
+  });
+});
+
+describe('the okra-managed check', () => {
+  test('gives up on an okra call that hangs and names the timeout in the digest', () => {
+    const started = Date.now();
+    const m = managed(['sleep', '30'], 300);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(m.outdated).toEqual(['(okra skills update --dry-run timed out after 0.3 s)']);
+    expect(digest([], m)).toContain('timed out');
   });
 });
