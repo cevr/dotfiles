@@ -23,11 +23,17 @@ describe("the experiment's arms", () => {
     expect(units.every((unit) => armOf({ ...experiment, share: 1 }, unit) === "trial")).toBe(true)
   })
 
-  test("a follow-up, another role, a named model or no unit is in no arm", () => {
+  test("a free-form description is its own unit, so the start is still in an arm", () => {
+    const arm = start("Revise #197 ownership plan")
+    expect(arm?.unit).toBe("revise #197 ownership plan")
+    expect(start("  Revise #197   ownership plan ")).toEqual(arm)
+    expect(start("")).toBeUndefined()
+  })
+
+  test("a follow-up, another role, a named model or no description is in no arm", () => {
     expect(start("planner billing r2", { followUp: true })).toBeUndefined()
     expect(start("planner billing r1", { agent: "implementor" })).toBeUndefined()
     expect(start("planner billing r1", { namedModel: true })).toBeUndefined()
-    expect(start("plan the billing work")).toBeUndefined()
     expect(armFor(undefined, { agent: "planner", followUp: false, namedModel: false, description: "planner billing r1" })).toBeUndefined()
   })
 
