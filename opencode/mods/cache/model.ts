@@ -4,16 +4,21 @@
 // plugin calls these from the host's hooks and events and nothing else.
 //
 // - A request goes out (`sent`): its fingerprint waits for its usage. A retry
-//   replaces it: the last request is the one the step was billed for.
+//   replaces it: the last request is the one the step was billed for. A
+//   primary request and a compaction's summary request wait apart: with
+//   background compaction on, the host writes a summary while the next step's
+//   request is in flight, and each is billed by its own event.
 // - The step ends (`stepEnded`, with its assistant message and usage): the
-//   waiting request is judged and becomes the session's previous one, kept in
-//   the ledger too (`RequestLog.keep`). A session this copy judged nothing of
-//   is judged against the request the ledger kept, so the first request after
-//   a restart names what changed (its line `restored`) instead of `first`.
-// - A compaction ends (`compacted`, with its summary request's usage): the
-//   waiting compaction request is judged, and the next request is marked as
-//   after a compaction.
-// - The step fails (`stepFailed`): the waiting request is dropped; the
+//   waiting primary request is judged and becomes the session's previous one,
+//   kept in the ledger too (`RequestLog.keep`). A session this copy judged
+//   nothing of is judged against the request the ledger kept, so the first
+//   request after a restart names what changed (its line `restored`) instead
+//   of `first`.
+// - A compaction ends (`compacted`, with its summary requests' usage): the
+//   waiting summary request is judged against the request before it went out
+//   (a background summary is swapped in steps later), and the next request is
+//   marked as after a compaction.
+// - The step fails (`stepFailed`): the waiting primary request is dropped; the
 //   previous one stays the reference.
 //
 // The host runs a copy of the plugin per location, and every copy hears every
@@ -43,7 +48,10 @@ export class Recorder extends Context.Service<
 >()("dotfiles-opencode/cache/Recorder") {}
 
 interface SessionState {
+  /** The primary request waiting for its step's end. */
   pending?: Sent
+  /** The summary request waiting for its compaction's end, with the session's previous request when it went out. */
+  summary?: { readonly sent: Sent; readonly against?: Previous }
   previous?: Previous
   compacted: boolean
   /** The ledger's kept request was looked up for this session (once per copy). */
@@ -83,13 +91,18 @@ export const layer = (host: string) =>
         return true
       })
 
-      const settle = Effect.fn("Recorder.settle")(function* (sessionID: string, messageID: string | undefined, tokens: Tokens) {
+      /** Judges the session's waiting request of the kind: the primary one for a step's end, the summary for a compaction's. */
+      const settle = Effect.fn("Recorder.settle")(function* (sessionID: string, kind: Sent["kind"], messageID: string | undefined, tokens: Tokens) {
         const state = sessions.get(sessionID)
-        const sent = state?.pending
-        if (state === undefined || sent === undefined) return
-        delete state.pending
-        const restored = yield* restore(sessionID, state)
-        const judgement = judge(state.previous, sent, tokens, state.compacted)
+        if (state === undefined) return
+        const waiting: { readonly sent: Sent; readonly against?: Previous } | undefined =
+          kind === "compaction" ? state.summary : state.pending === undefined ? undefined : { sent: state.pending }
+        if (waiting === undefined) return
+        if (kind === "compaction") delete state.summary
+        else delete state.pending
+        const { sent, against } = waiting
+        const restored = against === undefined ? yield* restore(sessionID, state) : false
+        const judgement = judge(against ?? state.previous, sent, tokens, state.compacted)
         state.previous = { sent, tokens }
         state.compacted = sent.kind === "compaction"
         if (messageID !== undefined) {
@@ -105,16 +118,17 @@ export const layer = (host: string) =>
       return Recorder.of({
         sent: Effect.fn("Recorder.sent")(function* (sessionID, sent) {
           const at = yield* Clock.currentTimeMillis
-          stateOf(sessionID).pending = { ...sent, at }
+          const state = stateOf(sessionID)
+          if (sent.kind === "compaction") state.summary = { sent: { ...sent, at }, ...(state.previous === undefined ? {} : { against: state.previous }) }
+          else state.pending = { ...sent, at }
         }),
-        stepEnded: (sessionID, messageID, tokens) => settle(sessionID, messageID, tokens),
+        stepEnded: (sessionID, messageID, tokens) => settle(sessionID, "primary", messageID, tokens),
         stepFailed: (sessionID) =>
           Effect.sync(() => {
             const state = sessions.get(sessionID)
             if (state !== undefined) delete state.pending
           }),
-        compacted: (sessionID, tokens) =>
-          sessions.get(sessionID)?.pending?.kind === "compaction" ? settle(sessionID, undefined, tokens) : Effect.void,
+        compacted: (sessionID, tokens) => settle(sessionID, "compaction", undefined, tokens),
         steps: (sessionID) => Effect.sync(() => ({ steps: [...(sessions.get(sessionID)?.steps ?? [])] })),
       })
     }),

@@ -1182,7 +1182,11 @@ both). When the step ends it judges the request against the session's one
 before (`request-log.ts`): `first`, `hit`, `uncached`, `model`, `expired`,
 `login` (with both logins), `compaction`, `prefix` (the first segment that
 changed and about how many tokens in) or `unchanged` (the prompt held and
-the cache lost it anyway). The TUI asks for those causes over the
+the cache lost it anyway). A compaction's summary request waits apart from
+the step's, for its compaction's end, and is judged against the request before
+it went out: with background compaction on, the host writes a summary while
+the next step's request is in flight and swaps it in steps later, and each is
+billed by its own event. The TUI asks for those causes over the
 `dotfiles-opencode.cache` RPC, so a row inside the lifetime reads `prefix
 changed at system[1] ¶4, 3k tokens in` or `the cache lost an unchanged
 prefix`; without the server half the TUI's own causes stand.

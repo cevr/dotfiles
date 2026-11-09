@@ -196,6 +196,41 @@ describe("the cache ledger plugin", () => {
       }),
     ))
 
+  // The ledger, 2026-11-09 10:58:29: with background compaction on, a planner's background summary went out while
+  // its next step was in flight, and the step's end was written as the summary's line, a `hit` on the step's usage,
+  // while the step itself got no line.
+  test("a background summary sent while a step is in flight: the step is judged on its usage, the summary on its own", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const ledger = Memory.make()
+        const plugin = yield* start(ledger)
+        yield* plugin.send("ses_1", body("Friday", 3))
+        yield* plugin.ended("ses_1", "msg_1", 0, 40_000)
+        yield* TestClock.adjust(MINUTE)
+        yield* plugin.send("ses_1", body("Friday", 5))
+        // The host summarizes everything before the latest response in the background: the step's prefix, then its prompt.
+        yield* plugin.send("ses_1", { ...body("Friday", 3), messages: [...body("Friday", 3).messages, { role: "user", content: "summarize" }] }, { kind: "compaction" })
+        yield* plugin.ended("ses_1", "msg_2", 40_000, 2_000)
+        yield* TestClock.adjust(MINUTE)
+        yield* plugin.send("ses_1", body("Friday", 7))
+        yield* plugin.ended("ses_1", "msg_3", 42_000, 2_000)
+        // Later the automatic compaction swaps the held summary in, billed what its request cost.
+        yield* TestClock.adjust(MINUTE)
+        yield* plugin.emit("session.compaction.ended", { sessionID: "ses_1", tokens: plugin.usage(40_000, 1_000) })
+        yield* plugin.send("ses_1", { ...body("Friday", 1), messages: [{ role: "user", content: "the summary" }] })
+        yield* plugin.ended("ses_1", "msg_4", 0, 5_000)
+        expect(ledger.lines.map((line) => [line.kind, line.messageID, line.cause, line.read])).toEqual([
+          ["primary", "msg_1", "first", 0],
+          ["primary", "msg_2", "hit", 40_000],
+          ["primary", "msg_3", "hit", 42_000],
+          ["compaction", undefined, "hit", 40_000],
+          ["primary", "msg_4", "compaction", 0],
+        ])
+        // The summary is judged against the request before it went out, the way its cache was read.
+        expect(ledger.lines[3]?.gapMs).toBe(MINUTE)
+      }),
+    ))
+
   // The ledger, 2026-11-08 00:38:55: a build session's first request after a restart read 12,952 of
   // 198,763 tokens, and the line said only `first`: the request before it was the old process's.
   test("after a restart, a session's first request is judged against the last request the old process sent", () =>
