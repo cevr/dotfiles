@@ -11,11 +11,12 @@
 // It writes, under SCENARIO_OUT, `prime-goal-<name>.txt` and `.json` for the frames
 // `dock` (shell and wake, no goal), `active` (two rounds sent), `paused`,
 // `resumed` (one round since the resume) and `cancelled`, a screenshot of
-// each, `prime-goal-timeout.txt` when a wait times out and
+// each, `prime-goal-timeout.txt` (and the run's server and TUI logs in
+// `prime-goal-timeout.logs`) when a wait times out and
 // `prime-goal-requests.json` (each model request, tagged root, reviewer or
 // title).
 import { Effect, Schedule, Stream } from "effect"
-import { readFileSync, writeFileSync } from "node:fs"
+import { cpSync, readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
 
 const root = process.cwd()
@@ -49,7 +50,7 @@ export default OpenCodeDriver.use(
     tui: { viewport: { cols: 150, rows: 50 } },
     project: { git: true, files: { ".opencode/themes/prime.json": readFileSync(`${root}/themes/prime.json`, "utf8") } },
   },
-  ({ ui, llm }) =>
+  ({ ui, llm, artifacts }) =>
     Effect.gen(function* () {
       const requests: Array<{ readonly session: "root" | "reviewer" | "title"; readonly request: string }> = []
       let goal = false
@@ -89,6 +90,8 @@ export default OpenCodeDriver.use(
             ui.capture().pipe(
               Effect.map((frame) => writeFileSync(`${out}/${label}-timeout.txt`, text(frame))),
               Effect.andThen(dump),
+              // The run's server and TUI logs go with the run; keep them beside the frame.
+              Effect.andThen(Effect.sync(() => cpSync(`${artifacts}/logs`, `${out}/${label}-timeout.logs`, { recursive: true }))),
             ),
           ),
         )

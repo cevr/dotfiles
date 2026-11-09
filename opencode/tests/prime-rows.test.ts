@@ -78,7 +78,7 @@ describe.skipIf(!fork)("the live subagent rows in the Prime look (OPENCODE_DEV)"
       new Response(run.stdout).text(),
       new Response(run.stderr).text(),
     ])
-    if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
+    if (code !== 0) throw new Error(`the scenario exited ${code} (its frames and logs: ${out}):\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `rows-${name}.txt`), "utf8").split("\n")
     for (const name of ["thinking", "shell", "done"] as const) styled[name] = JSON.parse(readFileSync(join(out, `rows-${name}.json`), "utf8"))
   }, 300_000)

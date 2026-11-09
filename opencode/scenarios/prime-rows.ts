@@ -10,9 +10,11 @@
 // - `rows-shell`: one works on its described shell command, side by side with one waiting on its poll loop;
 // - `rows-done`: the first has finished, the second waits;
 // - `rows-dropped`: the finished one's row has gone, past its linger.
-// Each frame is a `.txt` of its text and a `.json` of its styled lines.
+// Each frame is a `.txt` of its text and a `.json` of its styled lines. A
+// wait that times out writes `<frame>.timeout.txt` and keeps the run's server
+// and TUI logs in `<frame>.logs`.
 import { Deferred, Effect, Schedule, Stream } from "effect"
-import { readFileSync, writeFileSync } from "node:fs"
+import { cpSync, readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
 
 const root = process.cwd()
@@ -74,7 +76,7 @@ export default OpenCodeDriver.use(
       files: { ".opencode/themes/prime.json": readFileSync(`${root}/themes/prime.json`, "utf8") },
     },
   },
-  ({ ui, llm }) =>
+  ({ ui, llm, artifacts }) =>
     Effect.gen(function* () {
       const think = yield* Deferred.make<void>()
       const end = yield* Deferred.make<void>()
@@ -116,7 +118,11 @@ export default OpenCodeDriver.use(
           Effect.flatMap((frame) => (ready(text(frame)) && !text(frame).includes("Finishing startup") ? Effect.void : Effect.fail("pending"))),
           Effect.retry({ schedule: Schedule.spaced("100 millis"), times }),
           Effect.tapError(() =>
-            ui.capture().pipe(Effect.map((frame) => writeFileSync(`${out}/${name}.timeout.txt`, text(frame)))),
+            ui.capture().pipe(
+              Effect.map((frame) => writeFileSync(`${out}/${name}.timeout.txt`, text(frame))),
+              // The run's server and TUI logs go with the run; keep them beside the frame.
+              Effect.andThen(Effect.sync(() => cpSync(`${artifacts}/logs`, `${out}/${name}.logs`, { recursive: true }))),
+            ),
           ),
         )
       const save = (name: string) =>
