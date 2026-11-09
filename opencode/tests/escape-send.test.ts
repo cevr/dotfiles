@@ -3,8 +3,8 @@
 // long shell call, with one prompt queued and a second in the composer: the
 // shell call is cut (as Escape cuts it), the turn reads `■ Interrupted`, and
 // both prompts go out in the next turn, the queued one first, each exactly
-// once (in the transcript and in what the model is sent); nothing waits
-// after, and a second press with nothing waiting interrupts nothing. Before
+// once (in the transcript and in what the model is sent), with no toast that
+// the turn is still running; nothing waits after, and a second press with nothing waiting interrupts nothing. Before
 // the press the hint line names the key. It runs once with Ctrl+Enter (sent
 // as the kitty keyboard protocol's `ESC [13;5u`, as Ghostty and herdr send
 // it) and once with the fallback chord, leader (Ctrl+X) then F. Needs
@@ -30,6 +30,7 @@ const count = (text: string, needle: string) => text.split(needle).length - 1
 describe.skipIf(!fork).each(["ctrl", "leader"])("%s chord interrupts a turn stuck in a shell call and sends what waits (OPENCODE_DEV)", (chord) => {
   let before = ""
   let after = ""
+  let checked = ""
   let tool = ""
   let requests: ReadonlyArray<ReadonlyArray<string>> = []
 
@@ -45,6 +46,7 @@ describe.skipIf(!fork).each(["ctrl", "leader"])("%s chord interrupts a turn stuc
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     before = readFileSync(join(out, "before.txt"), "utf8")
     after = readFileSync(join(out, "after.txt"), "utf8")
+    checked = readFileSync(join(out, "checked.txt"), "utf8")
     tool = readFileSync(join(out, "tool.txt"), "utf8")
     requests = JSON.parse(readFileSync(join(out, "requests.json"), "utf8"))
   }, 300_000)
@@ -68,6 +70,10 @@ describe.skipIf(!fork).each(["ctrl", "leader"])("%s chord interrupts a turn stuc
     expect(order.every((index) => index >= 0)).toBe(true)
     expect(order).toEqual(order.toSorted((a, b) => a - b))
     for (const prompt of [ASK, LATER, DRAFT]) expect(count(after, `┃ ${prompt}`)).toBe(1)
+    // 6.5 s after the press, the next turn still running: the interrupted turn stopped, so no "Still running" toast.
+    expect(checked).toContain(`┃ ${DRAFT}`)
+    expect(checked).toMatch(/Executing · \d+s/)
+    expect(checked).not.toContain("Still running")
     expect(after.lastIndexOf(ANSWER)).toBeGreaterThan(after.indexOf(`┃ ${DRAFT}`))
     // Nothing waits, the composer is empty (the second press typed nothing) and no hint is left.
     expect(after).not.toContain("◌")
