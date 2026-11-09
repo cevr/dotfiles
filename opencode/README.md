@@ -1850,10 +1850,13 @@ one line while the session or any of its subagents has questions open:
 With one question it reads `? 1 open question · <header> · assuming <assume> · shift+← /answer`;
 parts drop from the right as the width shrinks, the hotkey last but one. `/answer`,
 or shift+← on an empty composer, opens OpenCode's own question form (the one
-its built-in `question` tool shows) in the composer's place: one form per
-asking session, holding every question that session has open, from all its
-asks, oldest first; the session on screen's first, then each subagent's,
-which names it (`Asked by general`). shift+← is also the composer's
+its built-in `question` tool shows) in the composer's place: one form, in the
+session on screen, holding every question it has open, from all its asks,
+oldest first, then its subagents' (at any depth), each of which names who
+asked: `implementor auth r1 asks: …` (the subagent's title, the description
+it was started with, and its agent in parentheses when the title does not
+name it, `asker.ts`). So the owner answers an orchestrate role's question in
+the orchestrator's session, as they answer its own. shift+← is also the composer's
 select-left: with text in the composer the key stays the composer's and
 selects (the hotkey's layer sits above the textarea's and hands the key on);
 with no question open it does nothing. A session that already has its form
@@ -1861,7 +1864,7 @@ pending gets no second.
 
 ```
 Background questions
-Cache store  Old endpoint  Log format  Submit
+Cache store  Old endpoint  Log format  Test runner  Submit
 Which database should the cache use?
 1. SQLite
    assumed · one file, no server
@@ -1878,8 +1881,8 @@ the assumption, and moves to the next tab; until the submit the tab shows
 `dismissed`, and ctrl+x on it again undoes it. On a form of one question
 ctrl+x dismisses at once. (`esc dismiss` is the host's: it closes the form.)
 Answer some, dismiss some, leave others blank, and submit once on the Submit
-tab (a form of one question submits on Enter). Every answer given goes to the
-asking session as one message, which names the questions dismissed beside
+tab (a form of one question submits on Enter). The answers given to each
+asking session go to it as one message, which names the questions dismissed beside
 them (`q3 dismissed: your assumption stands (…)`); a submit that only
 dismisses closes those questions and sends nothing, since the assumption
 already stands and a message would wake an idle agent for nothing. To keep the
@@ -1887,7 +1890,8 @@ assumption and say something about it, pick the assumed choice with a note
 (`n`): that is an answer, which the agent reads. A blank question stays open,
 and Esc closes the form with all of them open. The form is the host's: its
 submit is the host's `form.replied` event, which the server plugin reads (the
-form's field keys are `ask_user_async:<id>`). The plugin is loaded once per
+form's field keys are `ask_user_async:<id>` for the form session's own
+questions and `ask_user_async:<session>:<id>` for a subagent's). The plugin is loaded once per
 directory the server has open, and each copy hears only its own directory's
 events (the fork scopes a plugin's `ctx.event.subscribe` to its location), so
 the asking session's directory alone records a submit. Dismissing is a form action,
@@ -1939,7 +1943,27 @@ before it is sent, so the batch is closed before it goes (a later submit
 takes a new id), and a message that did not go (the session refused it, the
 server stopped) goes again under the same id with the session's next answer
 or when the plugin starts; the session reads it once. Reading the open
-questions sends nothing. A deleted session's questions go.
+questions sends nothing. A deleted or archived session's questions go, so
+an ended subagent's do not linger in its root's tray.
+
+When the answers went to a subagent, the root session of its tree (found by
+walking `parentID` up) gets a notice too, a steer with `resume: false`: it
+does not wake the root, which reads it at its next turn. A submit in the root
+sends the subagents' answers first, so the root's own wake reads the notice.
+
+```
+The subagent implementor auth r1 had its background question q31 answered; the answer went to it:
+Q: Which database should the cache use?
+It assumed: SQLite
+A: Redis (differs from its assumption)
+
+The subagent revises its own work on it; this is for your record.
+```
+
+The transcript draws it as `◈ implementor auth r1's question q31 answered ·
+<question> → <answer>`; its metadata adds `notice: { sessionID, asker }`. A
+notice that cannot go (the root is gone) is logged and dropped; the answer
+already reached the subagent.
 
 The questions are kept in the plugin's storage (OpenCode's database), one
 sheet per session. The TUI reads them over the `dotfiles-opencode.questions`
@@ -1951,25 +1975,28 @@ is the `Questions` aggregate, deciding `Ask`, `AnswerQuestions`, `Dismiss`
 and `Delivered`; `ask.ts` the tool's input, description and receipt;
 `reply.ts` the answers' message; `form.ts` the form's fields and the answers
 its reply gives; `tray.ts` the line; `hotkey.ts` when shift+← opens the form;
-`model.ts` the `QuestionsModel` that keeps the sheets and sends the answers.
-It asks the `QuestionStore`, `Courier` and `Changes` contracts in
+`model.ts` the `QuestionsModel` that keeps the sheets and sends the answers;
+`asker.ts` names a subagent that asked.
+It asks the `QuestionStore`, `Courier`, `Family` and `Changes` contracts in
 `service.ts`, implemented in `opencode/` and `memory/`, with the laws in
 `laws.ts`; `opencode/form.ts` opens the host's forms. `tests/questions.test.ts`
 runs `scenarios/questions.ts` in real OpenCode, direct and from a kernel
 cell; `tests/questions-locations.test.ts` runs `tests/questions/run.ts` with
 two directories open on one server: one submit, one message, and no other
-directory's copy logging the question already closed; `cmd/questions/tui.test.ts`
+directory's copy logging the question already closed; then a root and its
+subagent: the root's form answers the subagent, which wakes on the letter,
+and the root reads the notice at its next turn; `cmd/questions/tui.test.ts`
 checks the hotkey's binding on a stand-in TUI.
 
 Where it departs from gent: a subagent may ask (gent refuses it in a child
-session), and its question shows in its parent's tray; ids are per session,
+session), and its question shows in its root's tray and form; ids are per session,
 not `<call>:<n>`, since every call from one kernel cell shares the cell's id;
 `withdraw` is new; questions outlive a restart.
 
-Under `daily`, orchestrate's roles (planner, implementor, verifier, worker)
-are not allowed `ask_user_async`: a role answers to the session that started
-it, which decides what reaches the owner. So in practice the root sessions
-ask, and a subagent asks only outside orchestrate's roles.
+Orchestrate's roles (planner, implementor, verifier, worker) are allowed
+`ask_user_async` beside their deny-all rule (`PERMISSIONS` in
+`scripts/agents.ts`): a role's question shows in the orchestrator's tray and
+form, its answer wakes the role, and the orchestrator reads the notice.
 
 ## Wakes
 
