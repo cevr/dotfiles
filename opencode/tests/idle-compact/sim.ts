@@ -8,6 +8,8 @@
  * - A compaction request (OpenCode's summary prompt): a summary in its template.
  * - The first request of `BACKGROUND_TASK`: a background `shell` call that
  *   outlives the cache (`BACKGROUND_SECONDS`).
+ * - `PRECOMPUTE_TASK`: a foreground `shell` call on a small prompt, then one
+ *   line on a prompt near the window's ceiling.
  * - Anything else: one line.
  *
  * @module
@@ -31,13 +33,25 @@ export const ANSWER = "sim: idle answer"
 export const SUMMARY = "## Objective\n- sim: the idle session's summary"
 /** The usage every answer reports: 1000 prompt tokens, 400 read from cache, 500 written to it. */
 export const PROMPT_TOKENS = 1_000
+/**
+ * A task that grows near the 128k window's ceiling (108.8k): its first step runs a foreground shell on a
+ * `PRECOMPUTE_FIRST`-token prompt, and its answer reports `PRECOMPUTE_PROMPT`, past the fork's background-summary
+ * trigger (the ceiling less half the room the cycle started with, 64.4k) and below the ceiling, so with
+ * `background_compaction` on the host writes and holds a summary as the turn ends.
+ */
+export const PRECOMPUTE_TASK = "idle compact on a held summary"
+export const PRECOMPUTE_FIRST = 20_000
+export const PRECOMPUTE_PROMPT = 90_000
 
 interface ChatMessage {
   readonly role: string
   readonly content?: unknown
 }
 
-type Reply = { readonly kind: "text"; readonly text: string } | { readonly kind: "shell"; readonly command: string }
+type Reply = (
+  | { readonly kind: "text"; readonly text: string }
+  | { readonly kind: "shell"; readonly command: string; readonly background: boolean }
+) & { readonly prompt: number }
 
 interface ChatRequest {
   readonly model?: string
@@ -73,13 +87,21 @@ const kindOf = (request: ChatRequest): Kind => {
   return "turn"
 }
 
-/** The background task's first step starts its shell; every other turn answers with one line. */
+/**
+ * The background task's first step starts its shell, the precompute task's first step runs one in the foreground;
+ * every other turn answers with one line.
+ */
 const replyOf = (kind: Kind, request: ChatRequest): Reply => {
   const messages = request.messages ?? []
   const first = text(messages.find((message) => message.role === "user")?.content)
-  if (kind === "turn" && first.includes(BACKGROUND_TASK) && !messages.some((message) => message.role === "tool"))
-    return { kind: "shell", command: `sleep ${BACKGROUND_SECONDS}` }
-  return { kind: "text", text: ANSWERS[kind] }
+  const started = messages.some((message) => message.role === "tool")
+  if (kind === "turn" && first.includes(BACKGROUND_TASK) && !started)
+    return { kind: "shell", command: `sleep ${BACKGROUND_SECONDS}`, background: true, prompt: PROMPT_TOKENS }
+  if (kind === "turn" && first.includes(PRECOMPUTE_TASK))
+    return started
+      ? { kind: "text", text: ANSWER, prompt: PRECOMPUTE_PROMPT }
+      : { kind: "shell", command: "true", background: false, prompt: PRECOMPUTE_FIRST }
+  return { kind: "text", text: ANSWERS[kind], prompt: PROMPT_TOKENS }
 }
 
 const events = (answer: Reply, model: string, id: string): string => {
@@ -91,9 +113,9 @@ const events = (answer: Reply, model: string, id: string): string => {
     choices: [{ index: 0, delta, finish_reason: finish }],
   })
   const usage = {
-    prompt_tokens: PROMPT_TOKENS,
+    prompt_tokens: answer.prompt,
     completion_tokens: 10,
-    total_tokens: PROMPT_TOKENS + 10,
+    total_tokens: answer.prompt + 10,
     prompt_tokens_details: { cached_tokens: 400, cache_write_tokens: 500 },
   }
   const body =
@@ -103,7 +125,7 @@ const events = (answer: Reply, model: string, id: string): string => {
           chunk(
             {
               tool_calls: [
-                { index: 0, id: `call_${id}`, type: "function", function: { name: "shell", arguments: JSON.stringify({ command: answer.command, background: true }) } },
+                { index: 0, id: `call_${id}`, type: "function", function: { name: "shell", arguments: JSON.stringify({ command: answer.command, background: answer.background }) } },
               ],
             },
             null,

@@ -50,6 +50,20 @@ describe("the server config", () => {
   })
 })
 
+describe("background compaction", () => {
+  test("turns the fork's flag on in the server config and keeps the other experimental settings", () => {
+    const existing = { experimental: { todo: true, background_compaction: false } }
+    expect(mergeServer(existing, [], {}, [MODS]).experimental).toEqual({ todo: true, background_compaction: true })
+    expect(mergeServer({}, [], {}, [MODS]).experimental).toEqual({ background_compaction: true })
+  })
+
+  const fork = process.env.OPENCODE_DEV
+  test.skipIf(!fork)("names a flag the fork defines (OPENCODE_DEV)", () => {
+    const registry = readFileSync(join(fork ?? "", "packages/schema/src/config/flag.ts"), "utf8")
+    expect(registry).toMatch(/^\s+background_compaction:/m)
+  })
+})
+
 describe("the pool's entry", () => {
   test("gives the pool the cache lifetime the config gives Claude, so a session stays on its cache's login as long as the cache lives", () => {
     const entry = poolEntry(`${MODS}/pool`, undefined)

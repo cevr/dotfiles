@@ -21,6 +21,10 @@
  * came after the compaction (the shell's notice waking the session) or
  * `WAKE_MS` has passed.
  *
+ * With `precompute`, background compaction is on and the prompt is
+ * `PRECOMPUTE_TASK`, whose turn ends near the window's ceiling, so the host
+ * holds a background summary before the idle compaction is due.
+ *
  * With `others`, the host opens that many other directories first, so it
  * runs a copy of the plugin for each of them too, as it does for every
  * directory it serves; the prompt waits until every copy has made its first
@@ -30,7 +34,7 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { BACKGROUND_TASK, EARLY_MS, LATE_MS, MARGIN_SECONDS, serve, TASK, TTL_SECONDS, WAKE_MS, type Seen } from "./sim.ts"
+import { BACKGROUND_TASK, EARLY_MS, LATE_MS, MARGIN_SECONDS, PRECOMPUTE_TASK, serve, TASK, TTL_SECONDS, WAKE_MS, type Seen } from "./sim.ts"
 
 export interface Spec {
   readonly base: string
@@ -38,6 +42,8 @@ export interface Spec {
   readonly plugin: string
   readonly background?: boolean
   readonly others?: number
+  /** Background compaction on (the fork's `background_compaction` flag), and the prompt `PRECOMPUTE_TASK`. */
+  readonly precompute?: boolean
 }
 
 /** A log line of the run: the plugin's own (`idle-compact: …`) or the host's `loading plugin` for it. */
@@ -87,6 +93,7 @@ const content = {
   },
   // A 1000-token prompt is over a 50-token threshold.
   plugins: [{ package: spec.plugin, options: { ttlSeconds: TTL_SECONDS, shortMarginSeconds: MARGIN_SECONDS, thresholdTokens: 50 } }],
+  ...(spec.precompute ? { experimental: { background_compaction: true } } : {}),
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
@@ -151,7 +158,7 @@ try {
     // Past each copy's first look, which waits for the catalog to settle (cmd/idle-compact/server.ts SETTLE).
     await sleep(3_000)
   }
-  await opencode.sessions.prompt({ sessionID: session.id, text: spec.background ? BACKGROUND_TASK : TASK })
+  await opencode.sessions.prompt({ sessionID: session.id, text: spec.background ? BACKGROUND_TASK : spec.precompute ? PRECOMPUTE_TASK : TASK })
   await opencode.experimental.session.wait({ sessionID: session.id })
   const turn = sim.seen.findLast((item) => item.kind === "turn")?.at ?? Date.now()
   await sleep(turn + EARLY_MS - Date.now())

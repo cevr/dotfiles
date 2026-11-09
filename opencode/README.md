@@ -45,7 +45,8 @@ service; the version change restarts that service as ours. It merges into
 the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the cache and the web tools, the role
 the Claude logins in `~/.local/share/opencode-prime/pool-auth`, gent's store format, when it exists, and with Claude's cache life as `cacheLifeMs`), orchestrate, the guard, the kernel, status, the queue, git, idle compaction, session mail, background questions, wakes, skills, the rift tool and tool names, the role
 models, a one-hour prompt cache for Claude
-(`providers.anthropic.settings.cache.ttl: "1h"`) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions and the
+(`providers.anthropic.settings.cache.ttl: "1h"`), background compaction
+(`experimental.background_compaction: true`, see Idle compaction) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork
 change.
 
@@ -1585,6 +1586,27 @@ fork's automatic compaction inside a request as the context nears the
 window; idle compaction runs only between requests,
 so the two never run at once, and orchestrate's `compaction` hook adds what it
 keeps to both.
+
+Background compaction is the fork's `background_compaction` flag, which
+`bun run daily` turns on in the server config. Once a session's context is
+within 60k tokens of its compaction ceiling (orchestrate's window included),
+or half the room its cycle started with when that is less, the host
+summarizes everything before the latest response in the background, while
+that response's cache has at least 30 s left, so the request reads the
+prefix from cache, and holds the summary. The automatic compaction that
+follows swaps it in with no summary request (its row reads finished at once,
+`◇ Compacted automatically · 88k → 500 tokens · 12ms`), and so does an idle
+compaction: the host's requested compaction takes a held summary too, so
+the plugin needs no change. `tests/idle-compact.test.ts` and
+`tests/prime-precompute.test.ts` show both on the scripted model. A held
+summary that is never used still cost its request: one summary call over
+the conversation up to the latest response, mostly cache reads, plus the
+summary's output tokens. It goes unused when the session never compacts
+(it ends, or the server restarts), when the tail since it outgrows 40% of
+the budget (a new one is written), or when the compaction is an overflow.
+A project config with its own `experimental` block hides the global flag
+(the host reads `experimental` from the highest-priority document that
+sets it).
 
 The model (the domain files at the root of `mods/idle-compact`): `idle.ts`
 decides from a session's facts (`due`), `cache.ts` holds the providers'

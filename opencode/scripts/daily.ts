@@ -174,8 +174,8 @@ const record = (value: unknown): Json => (typeof value === "object" && value !==
  * The global server config with ours merged in: our plugins (any entry from `owned` dirs, or an
  * earlier copy of one that names no directory, such as `-opencode.tool.schedule`, is replaced,
  * every other entry kept, ours first so the auth plugin precedes the pool), each
- * role's model (its other fields kept), and auto-update off so the stock release never
- * replaces the fork.
+ * role's model (its other fields kept), background compaction on (the other `experimental`
+ * settings kept), and auto-update off so the stock release never replaces the fork.
  */
 export const mergeServer = (
   existing: Json,
@@ -198,6 +198,10 @@ export const mergeServer = (
     // Claude's prompt cache lives an hour instead of Anthropic's 5-minute default, so a pause for a
     // review or a long tool call doesn't rewrite the whole context; a 1h write costs 2x input, not 1.25x.
     providers: { ...providers, anthropic: { ...anthropic, settings: { ...settings, cache: { ...record(settings.cache), ttl: CLAUDE_CACHE_TTL } } } },
+    // Background compaction (the fork's `background_compaction` flag, off in a released build): as a session nears
+    // its compaction ceiling, the summary is written from the warm cache in the background and held, so the
+    // automatic or idle compaction that follows swaps it in at once instead of waiting on a summary request.
+    experimental: { ...record(existing.experimental), background_compaction: true },
     plugins: [...plugins, ...others],
     agents: {
       ...agents,

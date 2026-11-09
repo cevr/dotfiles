@@ -23,7 +23,7 @@ const scratch = mkdtempSync(join(tmpdir(), "idle-compact-e2e-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** One run of real OpenCode in a scratch home; see tests/idle-compact/run.ts. */
-const run = async (name: string, options: { readonly background?: boolean; readonly others?: number } = {}): Promise<Result> => {
+const run = async (name: string, options: { readonly background?: boolean; readonly others?: number; readonly precompute?: boolean } = {}): Promise<Result> => {
   const base = join(scratch, name)
   const home = join(base, "home")
   mkdirSync(home, { recursive: true })
@@ -138,6 +138,28 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
         ["idle-compact: compaction scheduled", "settled"],
         ["idle-compact: compacting the idle session before its cache expires", "timer"],
       ])
+    },
+    120_000,
+  )
+
+  test(
+    "with background compaction on, the idle compaction swaps in the summary the host held, and asks the model for none",
+    async () => {
+      const result = await run("precompute", { precompute: true })
+      // The one summary request came as the turn ended (the host's background summary), long before the idle one was due.
+      const summaries = result.seen.filter((item) => item.kind === "compaction")
+      expect(summaries).toHaveLength(1)
+      const due = dueAfter(result.started.filter((item) => item.kind === "primary").at(-1))
+      expect(summaries[0]?.at).toBeLessThan(due - 5_000)
+      expect(compactions(result.early)).toEqual([])
+      // Then the plugin compacted on time, and the compaction took the held summary: no second request.
+      const session = result.log.find((line) => line.message === "idle-compact: compaction scheduled")?.sessionID
+      expect(result.log.some((line) => line.sessionID === session && line.message.startsWith("idle-compact: compacting"))).toBe(true)
+      const [compaction] = compactions(result.late)
+      expect(compaction?.status).toBe("completed")
+      expect(compaction?.summary).toContain(SUMMARY)
+      expect(result.started.filter((item) => item.kind === "compaction")).toHaveLength(1)
+      expect(result.seen.filter((item) => item.kind === "turn")).toHaveLength(2)
     },
     120_000,
   )
