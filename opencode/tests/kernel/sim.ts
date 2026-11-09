@@ -92,6 +92,31 @@ export const PIXEL_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQV
 /** One kernel call that attaches the pixel by its path relative to the session's directory. */
 export const ATTACH_CELL = `attach(${JSON.stringify(PIXEL_FILE)})`
 
+export const SHELL_TASK = "kernel shell"
+/** One kernel call that runs commands through `tools.shell` and prints what each handle method showed. */
+export const SHELL_CELL = [
+  `const seen = {}`,
+  `const fg = await tools.shell({ command: "printf 'fg-out\\\\n'" })`,
+  `seen.fgRun = fg.output`,
+  `await fg.wait()`,
+  `seen.fgWait = fg.output`,
+  `await fg.refresh()`,
+  `seen.fgRefresh = fg.output`,
+  `seen.chained = (await (await tools.shell({ command: "printf 'chained\\\\n'" })).wait()).output`,
+  `const bg = await tools.shell({ command: "sleep 0.3; printf 'bg-out\\\\n'", background: true })`,
+  `seen.bgRun = bg.output`,
+  `await bg.wait()`,
+  `seen.bgWait = bg.output`,
+  `const quick = await tools.shell({ command: "printf 'quick\\\\n'", background: true })`,
+  `await quick.wait()`,
+  `seen.quickWait = quick.output`,
+  `const both = await tools.shell({ command: "printf 'first\\\\n'; sleep 1; printf 'last\\\\n'", timeout: 300 })`,
+  `seen.bothRun = both.output`,
+  `await both.wait()`,
+  `seen.bothWait = both.output`,
+  `JSON.stringify(seen)`,
+].join("\n")
+
 export const MEMORY_TASK = "kernel memory"
 /** The note the memory task saves with a direct `memory_save` call. */
 export const MEMORY_NOTE = "The owner keeps the kernel's memory tools direct."
@@ -116,6 +141,8 @@ const reply = (request: ChatRequest, file: string): Reply => {
   const offersSave = (request.tools ?? []).some((tool) => tool.function?.name === "memory_save")
   if (firstUser(messages).endsWith(MEMORY_TASK) && offersSave)
     return results === 0 ? { kind: "tool", name: "memory_save", input: { text: MEMORY_NOTE, scope: "global" } } : { kind: "text", text: DONE }
+  if (firstUser(messages).endsWith(SHELL_TASK) && offersKernel)
+    return results === 0 ? { kind: "tool", name: "kernel", input: { code: SHELL_CELL } } : { kind: "text", text: DONE }
   if (firstUser(messages).endsWith(ATTACH_TASK) && offersKernel)
     return results === 0 ? { kind: "tool", name: "kernel", input: { code: ATTACH_CELL } } : { kind: "text", text: DONE }
   if (firstUser(messages).endsWith(KERNEL_TASK) && offersKernel) {

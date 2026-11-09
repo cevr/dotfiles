@@ -166,8 +166,9 @@ describe("a worker", () => {
         // Data only: the methods are not enumerable.
         expect(JSON.parse(opened.display)).toEqual({ ...base, state: "running", output: "one\n", next: 4, backgrounded: "start" })
 
-        expect((yield* run("(await h.refresh()) === h && [h.state, h.output, h.next]")).display).toBe('[ "running", "", 4 ]')
-        expect((yield* run("await h.wait(50); [h.state, h.exitCode, h.output, h.backgrounded]")).display).toBe('[ "exited", 0, "two\\n", "start" ]')
+        // Each method adds what is new to the output the handle holds: a refresh that sees nothing keeps it.
+        expect((yield* run("(await h.refresh()) === h && [h.state, h.output, h.next]")).display).toBe('[ "running", "one\\n", 4 ]')
+        expect((yield* run("await h.wait(50); [h.state, h.exitCode, h.output, h.backgrounded]")).display).toBe('[ "exited", 0, "one\\ntwo\\n", "start" ]')
         expect((yield* run("(await h.read({ lines: 2 })).output")).display).toBe("one\ntwo\n")
         expect((yield* run("await h.read({ offset: 4 }); await h.wait(); (await h.kill()).signal")).display).toBe("SIGTERM")
         expect(inputs).toEqual([

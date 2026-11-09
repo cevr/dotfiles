@@ -2,13 +2,14 @@
 // model: two kernel calls in one session share a binding, the first reads a
 // file through `tools.read`, `denyExecute` keeps code mode's `execute` from
 // the model, an image a cell attaches reaches the next request, and with the
-// memory mod loaded its tools are offered beside the kernel and called directly. The kernel on its own is tested beside its code in mods/kernel.
+// memory mod loaded its tools are offered beside the kernel and called directly, and a cell's
+// shell handle keeps a command's output through a wait. The kernel on its own is tested beside its code in mods/kernel.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./kernel/run.ts"
-import { ATTACH_CELL, ATTACH_TASK, cells, DONE, HELLO, KERNEL_TASK, MEMORY_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
+import { ATTACH_CELL, ATTACH_TASK, cells, DONE, HELLO, KERNEL_TASK, MEMORY_TASK, SHELL_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
 import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -111,6 +112,35 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       // The host's normalizer may re-encode the pixel, so the request carries a PNG data URI, not these bytes.
       expect(next?.images).toHaveLength(1)
       expect(next?.images?.[0]).toStartWith("data:image/png;base64,")
+    },
+    RUN_MS,
+  )
+
+  test(
+    "a cell's shell handle shows a command's output: on the run, and on a wait that sees the end",
+    async () => {
+      const result = await run("shell", { task: SHELL_TASK, denyExecute: true })
+      const [cell] = toolParts(result.messages)
+      expect(cell?.state.status).toBe("completed")
+      const text = (cell?.state.content ?? []).map((part) => part.text ?? "").join("")
+      // The cell's last value is the JSON of what each handle's output was after each call.
+      const seen = JSON.parse(text) as Record<string, string>
+      expect(seen).toEqual({
+        // A foreground command ended within the call: its handle carries the output, and a wait or a refresh after
+        // it, which see nothing new, keep it.
+        fgRun: "fg-out\n",
+        fgWait: "fg-out\n",
+        fgRefresh: "fg-out\n",
+        chained: "chained\n",
+        // A background command: nothing yet at the start, all of it once a wait sees the end.
+        bgRun: "",
+        bgWait: "bg-out\n",
+        quickWait: "quick\n",
+        // A foreground command moved to the background at its limit: the output the run showed stays in front of
+        // what the wait adds.
+        bothRun: "first\n",
+        bothWait: "first\nlast\n",
+      })
     },
     RUN_MS,
   )

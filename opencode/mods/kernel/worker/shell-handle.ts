@@ -15,8 +15,14 @@
  * them, and `tools.shell.handle(id)` builds a live one again.
  *
  * Each method calls the shell tool with the handle's id, writes the handle it
- * returns into this one, and resolves to this one. `output` is what the latest
- * call showed: the output since the look before it, or what `read` asked for.
+ * returns into this one, and resolves to this one. `output` is the output the
+ * handle has seen, newest last (up to `MAX_HANDLE_OUTPUT_CHARS`), or what
+ * `read({ offset | lines })` asked for. The tool shows what is new since the
+ * last look, and in a cell that look is the cell's own call, not the model's:
+ * a `wait()` after a run that already showed everything sees nothing new. So
+ * `refresh`, `wait`, `kill` and a bare `read` add what they see to the output
+ * the handle holds when it continues from there (`next`), and replace it when
+ * it does not (another handle on the same shell read in between).
  *
  * @module
  */
@@ -45,13 +51,13 @@ export interface ShellHandleData extends ShellState {
 
 /** A live handle: the data, updated in place by each method. */
 export interface ShellHandle extends ShellHandleData {
-  /** The output from byte `offset` (a handle's `next`), or the last `lines` lines; else what is new. */
+  /** The output from byte `offset` (a handle's `next`), or the last `lines` lines; else adds what is new. */
   read(options?: { readonly offset?: number; readonly lines?: number }): Promise<ShellHandle>
   /** Waits up to `ms` for the command to end. */
   wait(ms?: number): Promise<ShellHandle>
   /** Stops the command: SIGTERM to its process group, SIGKILL 3 s later. No end notice follows. */
   kill(): Promise<ShellHandle>
-  /** Its state now, and the output since the last look. */
+  /** Its state now, and adds the output that is new since the last look. */
   refresh(): Promise<ShellHandle>
 }
 
@@ -87,24 +93,42 @@ const method = (handle: object, name: string, value: (...args: never[]) => unkno
 /** `data` as a live handle whose methods reach the shell tool through `call`. */
 export const makeShellHandle = <Data extends ShellHandleData>(data: Data, call: CallShell): Data & ShellHandle => {
   const handle = { ...data } as Data & ShellHandle
-  const update = async (input: Record<string, Json>): Promise<ShellHandle> => {
+  // `follow`: the call shows what is new since the last look, which goes after the output this handle holds when
+  // it starts where that output ends; else the call's output is what it asked for, and replaces it.
+  const update = async (input: Record<string, Json>, follow: boolean): Promise<ShellHandle> => {
     const result = await call({ ...input, id: handle.id })
     if (!isShellHandle(result)) throw new Error(`The shell tool did not return a handle for ${handle.id}`)
-    Object.assign(handle, result)
+    const continues = follow && result.next - byteLength(result.output) === handle.next
+    Object.assign(handle, result, continues ? kept(handle.output + result.output, handle.truncated || result.truncated) : {})
     return handle
   }
   method(handle, "read", (options?: { readonly offset?: number; readonly lines?: number }) =>
-    update({
-      action: "check",
-      ...(options?.offset === undefined ? {} : { offset: options.offset }),
-      ...(options?.lines === undefined ? {} : { lines: options.lines }),
-    }),
+    update(
+      {
+        action: "check",
+        ...(options?.offset === undefined ? {} : { offset: options.offset }),
+        ...(options?.lines === undefined ? {} : { lines: options.lines }),
+      },
+      options?.offset === undefined && options?.lines === undefined,
+    ),
   )
-  method(handle, "wait", (ms?: number) => update({ action: "wait", ms: ms ?? DEFAULT_WAIT_MS }))
-  method(handle, "kill", () => update({ action: "kill" }))
-  method(handle, "refresh", () => update({ action: "check" }))
+  method(handle, "wait", (ms?: number) => update({ action: "wait", ms: ms ?? DEFAULT_WAIT_MS }, true))
+  method(handle, "kill", () => update({ action: "kill" }, true))
+  method(handle, "refresh", () => update({ action: "check" }, true))
   return handle
 }
+
+/** The most output a handle holds, in characters: what one cell can show. Older output stays readable by offset. */
+export const MAX_HANDLE_OUTPUT_CHARS = 64 * 1024
+
+const encoder = new TextEncoder()
+const byteLength = (text: string) => encoder.encode(text).length
+
+/** `output` cut to its newest `MAX_HANDLE_OUTPUT_CHARS`, and whether earlier output is missing from it. */
+const kept = (output: string, truncated: boolean) =>
+  output.length > MAX_HANDLE_OUTPUT_CHARS
+    ? { output: output.slice(-MAX_HANDLE_OUTPUT_CHARS), truncated: true }
+    : { output, truncated }
 
 /** The method a cell uses in place of each action that acts on a shell. */
 const ACTIONS: Readonly<Record<string, (id: string) => string>> = {
