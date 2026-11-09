@@ -3,7 +3,7 @@ import { Effect, Layer } from "effect"
 import { OAUTH_BETA } from "../betas.ts"
 import type { Endpoint } from "../endpoint.ts"
 import { parseJson } from "../json.ts"
-import { USAGE_MAX_BYTES, USAGE_PATH, USAGE_TIMEOUT_MS } from "../quota.ts"
+import { USAGE_MAX_BYTES, USAGE_PATH, USAGE_QUERY, USAGE_TIMEOUT_MS } from "../quota.ts"
 import { type UsageAnswer, UsageEndpoint, UsageFailed } from "../service.ts"
 import { readBoundedText } from "./body.ts"
 import type { Fetch } from "./token.ts"
@@ -17,6 +17,7 @@ export const layer = (fetch: Fetch, endpoint: Endpoint) =>
   Layer.succeed(UsageEndpoint, {
     read: (access, userAgent) => {
       const url = endpoint.apiUrl(USAGE_PATH)
+      url.search = USAGE_QUERY
       if (!endpoint.isTrusted(url)) return Effect.succeed<UsageAnswer>({ status: "unread" })
       return Effect.tryPromise({
         try: () =>

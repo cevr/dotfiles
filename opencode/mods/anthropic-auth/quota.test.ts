@@ -150,6 +150,111 @@ describe('readUsageBody', () => {
     })
   })
 
+  test('reads model-scoped weekly windows by their model: the limits list as measured, and model_scoped', () => {
+    // The shape /api/oauth/usage answered on 2026-11-09 (ids left out): Fable's
+    // weekly window is a `weekly_scoped` entry of `limits`, scoped to its model.
+    const measured = {
+      five_hour: { utilization: 1, resets_at: '2026-11-10T02:30:00.291433+00:00' },
+      seven_day: { utilization: 9, resets_at: '2026-11-16T09:00:00.291455+00:00' },
+      seven_day_opus: null,
+      limits: [
+        { kind: 'session', group: 'session', percent: 1, resets_at: '2026-11-10T02:30:00+00:00', scope: null, is_active: false },
+        { kind: 'weekly_all', group: 'weekly', percent: 9, resets_at: '2026-11-16T09:00:00+00:00', scope: null, is_active: true },
+        {
+          kind: 'weekly_scoped',
+          group: 'weekly',
+          percent: 12,
+          resets_at: '2026-11-16T09:00:00+00:00',
+          scope: { model: { id: null, display_name: 'Fable' }, surface: null },
+          is_active: false,
+        },
+      ],
+      weekly_scoped_shares: [{ limit_index: 2, used_percent_of_weekly: 0, allowance_percent_of_weekly: 50 }],
+    }
+    expect(readUsageBody(measured, NOW)?.windows).toEqual([
+      { name: '5h', utilization: 0.01, resetAt: Date.parse('2026-11-10T02:30:00.291433+00:00') },
+      { name: '7d', utilization: 0.09, resetAt: Date.parse('2026-11-16T09:00:00.291455+00:00') },
+      { name: '7d:Fable', utilization: 0.12, resetAt: Date.parse('2026-11-16T09:00:00+00:00') },
+    ])
+    // The CLI's `model_scoped` form (T3 Code's claudeUsageLimits.ts) reads the
+    // same, and one model's window is read once whichever form carries it.
+    const scoped = readUsageBody(
+      {
+        seven_day: { utilization: 40, resets_at: '2026-11-16T09:00:00Z' },
+        model_scoped: [
+          { display_name: 'Fable', utilization: 100, resets_at: '2026-11-16T09:00:00Z' },
+          { display_name: 'Unread', utilization: null, resets_at: null },
+        ],
+        limits: [{ kind: 'weekly_scoped', group: 'weekly', percent: 99, scope: { model: { display_name: 'Fable' } } }],
+      },
+      NOW,
+    )
+    expect(scoped?.windows).toEqual([
+      { name: '7d', utilization: 0.4, resetAt: Date.parse('2026-11-16T09:00:00Z') },
+      { name: '7d:Fable', utilization: 1, resetAt: Date.parse('2026-11-16T09:00:00Z') },
+    ])
+  })
+
+  test("reads the reset grants cedar_ember lists: resets left on usable grants, and the soonest end", () => {
+    const grant = (id: string, left: number, endsAt: string | null, more: Record<string, unknown> = {}) => ({
+      id,
+      resets_left: left,
+      ends_at: endsAt,
+      paused: false,
+      usable_now: true,
+      ...more,
+    })
+    const reading = readUsageBody(
+      {
+        seven_day: { utilization: 100, resets_at: '2027-01-20T00:00:00Z' },
+        cedar_ember: {
+          eligible: true,
+          grants: [
+            // As measured on 2026-11-09 (claude-cli 2.1.280), less its label and figures.
+            grant('g-1', 2, '2027-02-01T00:00:00Z', {
+              resets_total: 2,
+              starts_at: '2026-11-09T18:00:00+00:00',
+              clears: ['five_hour', 'seven_day_overage_included'],
+              use_requires_limit: false,
+              type: 'full',
+              gives_back_weekly: true,
+            }),
+            grant('g-2', 1, '2027-01-25T00:00:00Z', { paused: true }),
+            grant('g-3', 1, '2027-01-28T00:00:00Z'),
+            grant('g-old', 3, '2020-01-01T00:00:00Z'),
+            { id: 'malformed', resets_left: -1 },
+          ],
+          next_grant_id: 'g-1',
+        },
+      },
+      NOW,
+    )
+    expect(reading?.resets).toEqual({
+      available: 3,
+      nextExpiresAt: Date.parse('2027-01-28T00:00:00Z'),
+      credits: [
+        {
+          id: 'g-1',
+          count: 2,
+          usable: true,
+          expiresAt: Date.parse('2027-02-01T00:00:00Z'),
+          clears: ['five_hour', 'seven_day_overage_included'],
+        },
+        { id: 'g-2', count: 1, usable: false, expiresAt: Date.parse('2027-01-25T00:00:00Z') },
+        { id: 'g-3', count: 1, usable: true, expiresAt: Date.parse('2027-01-28T00:00:00Z') },
+        { id: 'g-old', count: 3, usable: false, expiresAt: Date.parse('2020-01-01T00:00:00Z') },
+      ],
+    })
+    // As measured on 2026-11-09 with an old claude-cli user agent: ineligible, no grant. That is a reading of none.
+    const ineligible = { eligible: false, ineligible_reason: 'cli_version', grants: [], next_grant_id: null }
+    expect(readUsageBody({ seven_day: { utilization: 9, resets_at: null }, cedar_ember: ineligible }, NOW)?.resets).toEqual({
+      available: 0,
+      credits: [],
+    })
+    // A body without the block (the plain endpoint) says nothing of resets.
+    expect(readUsageBody({ seven_day: { utilization: 9, resets_at: null }, cedar_ember: null }, NOW)?.resets).toBe(undefined)
+  })
+
   test('is undefined for a body without windows', () => {
     expect(readUsageBody({ error: 'nope' }, NOW)).toBe(undefined)
     expect(readUsageBody('text', NOW)).toBe(undefined)

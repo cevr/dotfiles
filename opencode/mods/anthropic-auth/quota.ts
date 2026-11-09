@@ -10,12 +10,12 @@
  * wire and epoch milliseconds here. A rejected window counts as full until
  * its reset.
  */
-import type { QuotaReading, QuotaRefusal, QuotaStatus, QuotaWindow } from "@dotfiles/opencode-pool/quota"
+import type { QuotaReading, QuotaRefusal, QuotaResets, QuotaStatus, QuotaWindow, ResetCredit } from "@dotfiles/opencode-pool/quota"
 import { isRecord } from "./json.ts"
 import type { RateLimitCategory } from "./rate-limit.ts"
 
 export { quotaProtocol } from "@dotfiles/opencode-pool/quota"
-export type { QuotaReading, QuotaRefusal, QuotaStatus, QuotaWindow } from "@dotfiles/opencode-pool/quota"
+export type { QuotaReading, QuotaRefusal, QuotaResets, QuotaStatus, QuotaWindow, ResetCredit } from "@dotfiles/opencode-pool/quota"
 
 /** The most credentials whose newest reading is kept. */
 export const MAX_QUOTA_CREDENTIALS = 256
@@ -31,6 +31,13 @@ export const SIGNIN_RETRY_MS = 30 * 60_000
 /** How old a sourced login's usage reading may get before a sweep refreshes its token to read it. */
 export const USAGE_REFRESH_AFTER_MS = 30 * 60_000
 export const USAGE_PATH = "/api/oauth/usage"
+/**
+ * Asks the usage endpoint for the account's reset grants too (`cedar_ember`,
+ * as T3 Code's claudeResetCredits.ts reads them), and to leave out the spend
+ * figures the pool does not read. The windows answer the same either way
+ * (measured 2026-11-09).
+ */
+export const USAGE_QUERY = "cedar_ember=1&skip_spend=1"
 export const USAGE_TIMEOUT_MS = 10_000
 export const USAGE_MAX_BYTES = 64 * 1024
 
@@ -107,13 +114,92 @@ const USAGE_WINDOWS: Readonly<Record<string, string>> = {
   seven_day: "7d",
 }
 
+/** The window a `limits` entry's group is: a weekly one is `7d`, a session one `5h`. */
+const LIMIT_GROUPS: Readonly<Record<string, string>> = {
+  weekly: "7d",
+  session: "5h",
+}
+
+const isoMs = (value: unknown): number | undefined => {
+  const parsed = typeof value === "string" ? Date.parse(value) : Number.NaN
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+const percentWindow = (name: string, percent: unknown, resetsAt: unknown): QuotaWindow | undefined => {
+  if (typeof percent !== "number" || !Number.isFinite(percent)) return undefined
+  const resetAt = isoMs(resetsAt)
+  return { name, utilization: Math.min(Math.max(percent / 100, 0), 1), ...(resetAt === undefined ? {} : { resetAt }) }
+}
+
+/**
+ * Each model's own window, named `<window>:<model>` (`7d:Fable`). The
+ * endpoint lists them in `limits` (a `weekly_scoped` entry with a model
+ * scope, as read on 2026-11-09); the CLI's `model_scoped` (T3 Code's
+ * claudeUsageLimits.ts) carries the weekly ones by display name. A model's
+ * window is read once, `model_scoped` first.
+ */
+function modelWindows(body: Record<string, unknown>): ReadonlyArray<QuotaWindow> {
+  const found = new Map<string, QuotaWindow>()
+  const add = (window: QuotaWindow | undefined) => {
+    if (window !== undefined && !found.has(window.name)) found.set(window.name, window)
+  }
+  for (const entry of Array.isArray(body.model_scoped) ? body.model_scoped : []) {
+    if (isRecord(entry) && typeof entry.display_name === "string" && entry.display_name !== "")
+      add(percentWindow(`7d:${entry.display_name}`, entry.utilization, entry.resets_at))
+  }
+  for (const entry of Array.isArray(body.limits) ? body.limits : []) {
+    if (!isRecord(entry) || !isRecord(entry.scope) || !isRecord(entry.scope.model)) continue
+    const model = entry.scope.model.display_name
+    const group = typeof entry.group === "string" ? (LIMIT_GROUPS[entry.group] ?? entry.group) : undefined
+    if (typeof model !== "string" || model === "" || group === undefined) continue
+    add(percentWindow(`${group}:${model}`, entry.percent, entry.resets_at))
+  }
+  return [...found.values()]
+}
+
+/**
+ * The reset grants of `cedar_ember` (asked for with `?cedar_ember=1`): each
+ * grant's resets left, and the resets usable now (not paused, usable, not
+ * ended). An account the program does not reach has none. Undefined when the
+ * body has no such block. Reading them never claims one.
+ */
+function readResets(block: unknown, now: number): QuotaResets | undefined {
+  if (!isRecord(block) || typeof block.eligible !== "boolean") return undefined
+  if (!block.eligible) return { available: 0, credits: [] }
+  const credits: ResetCredit[] = []
+  for (const grant of Array.isArray(block.grants) ? block.grants : []) {
+    if (!isRecord(grant) || typeof grant.id !== "string") continue
+    const left = grant.resets_left
+    if (typeof left !== "number" || !Number.isInteger(left) || left < 0) continue
+    const expiresAt = isoMs(grant.ends_at)
+    const usable = grant.paused !== true && grant.usable_now === true && (expiresAt === undefined || expiresAt > now)
+    const clears = Array.isArray(grant.clears) ? grant.clears.filter((name): name is string => typeof name === "string") : undefined
+    credits.push({
+      id: grant.id,
+      count: left,
+      usable,
+      ...(expiresAt === undefined ? {} : { expiresAt }),
+      ...(clears === undefined ? {} : { clears }),
+    })
+  }
+  const live = credits.filter((credit) => credit.usable && credit.count > 0)
+  const ends = live.flatMap((credit) => (credit.expiresAt === undefined ? [] : [credit.expiresAt]))
+  return {
+    available: live.reduce((total, credit) => total + credit.count, 0),
+    ...(ends.length === 0 ? {} : { nextExpiresAt: Math.min(...ends) }),
+    credits,
+  }
+}
+
 /**
  * The usage endpoint's answer as a reading. It names each window with a
  * utilization in percent and an ISO reset; a window it reports as `null` is
- * left out. Windows beyond the 5-hour and 7-day ones keep their own names.
+ * left out. Windows beyond the 5-hour and 7-day ones keep their own names,
+ * and each model's own window is `<window>:<model>`. The reset grants come
+ * along when the body carries them.
  */
 export function readUsageBody(body: unknown, now: number): QuotaReading | undefined {
-  if (typeof body !== "object" || body === null) return undefined
+  if (!isRecord(body)) return undefined
   const windows: QuotaWindow[] = []
   for (const [key, record] of Object.entries(body)) {
     if (!isRecord(record)) continue
@@ -126,8 +212,10 @@ export function readUsageBody(body: unknown, now: number): QuotaReading | undefi
       ...(Number.isFinite(resetAt) ? { resetAt } : {}),
     })
   }
+  windows.push(...modelWindows(body))
   if (windows.length === 0) return undefined
-  return { at: now, windows }
+  const resets = readResets(body.cedar_ember, now)
+  return { at: now, windows, ...(resets === undefined ? {} : { resets }) }
 }
 
 /**
