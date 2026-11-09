@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { catalog as FIXTURE } from "../../mods/kernel/catalog.fixture.ts"
-import { catalogLines, type Dispatch, kernelTool, listingOf, newKernel } from "./kernel.ts"
+import { argvLine, catalogLines, type Dispatch, kernelTool, listingOf, newKernel } from "./kernel.ts"
 import { ours } from "./memory.ts"
 import { SCENARIOS } from "./scenarios.ts"
 import type { ToolDef } from "./tools.ts"
@@ -100,6 +100,20 @@ describe("the kernel arm", () => {
       // A removal goes through the shell, so the fake world loses the file.
       expect(await kernel.run(`fs.unlinkSync("notes.txt")\nfs.existsSync("notes.txt")`, dispatch)).toEqual({ ok: true, text: "false" })
       expect((await kernel.run(`fs.unlinkSync("notes.txt")`, dispatch)).text).toBe("Error: rm: notes.txt: No such file or directory")
+    } finally {
+      await memory.close()
+    }
+  })
+
+  test("a spawned argv keeps each argument whole: bash -lc runs its whole command, not its first word", async () => {
+    // Round 5's Opus ran `Bun.spawnSync(["bash", "-lc", c])`; joined with bare spaces, the fake bash ran only `git`.
+    expect(argvLine(["bash", "-lc", "git add a.ts && git commit -m 'it'"])).toBe(`bash -lc 'git add a.ts && git commit -m '\\''it'\\'''`)
+    const { memory, kernel, dispatch } = await setup()
+    try {
+      const bun = await kernel.run(`Bun.spawnSync(["bash", "-lc", "git branch --show-current && echo done"]).stdout.toString()`, dispatch)
+      expect(bun.text).toBe("main\ndone")
+      const node = await kernel.run(`require("child_process").spawnSync("sh", ["-c", "git branch --show-current"]).stdout.toString()`, dispatch)
+      expect(node.text).toBe("main")
     } finally {
       await memory.close()
     }

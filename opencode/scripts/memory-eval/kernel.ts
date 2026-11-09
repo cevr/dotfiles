@@ -110,6 +110,13 @@ const unnumbered = (text: string) => text.replace(/^\d+: /gm, "")
  * episode as the matching tool (a command as `shell`, a file read as `read`,
  * a write as `write`), so the graders and the gotcha trigger see it.
  */
+/**
+ * An argv as the one shell line that runs it: a plain word stays bare, any other is single-quoted, so
+ * `["bash", "-lc", "git add a && git commit -m x"]` keeps its command whole as a process's argv does.
+ */
+export const argvLine = (argv: ReadonlyArray<string>): string =>
+  argv.map((arg) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`)).join(" ")
+
 const hostModules = (
   cwd: string,
   answer: (name: string, input: Record<string, unknown>) => Answered,
@@ -127,7 +134,9 @@ const hostModules = (
     return inherit ? null : result.output
   }
   const spawnSync = (command: unknown, args: unknown = []) => {
-    const line = [String(command), ...(Array.isArray(args) ? args.map(String) : [])].join(" ")
+    // A command with no args runs as written (`spawnSync("ls -la", { shell: true })`); with args, as an argv.
+    const rest = Array.isArray(args) ? args.map(String) : []
+    const line = rest.length === 0 ? String(command) : argvLine([String(command), ...rest])
     const result = run(line)
     return { status: result.error ? 1 : 0, stdout: result.output, stderr: "", output: [null, result.output, ""] }
   }
@@ -227,7 +236,7 @@ const hostModules = (
     file: (path: unknown) => ({ text: async () => readFileSync(path), json: async () => JSON.parse(readFileSync(path)), exists: async () => existsSync(path) }),
     write: async (path: unknown, content: unknown) => writeFileSync(path, content),
     spawnSync: (argv: unknown) => {
-      const result = spawnSync(Array.isArray(argv) ? argv.join(" ") : String(argv))
+      const result = Array.isArray(argv) ? spawnSync(argv[0], argv.slice(1)) : spawnSync(argv)
       return { exitCode: result.status, stdout: result.stdout, stderr: "", success: result.status === 0 }
     },
     $: shell,
