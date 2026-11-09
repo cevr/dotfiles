@@ -46,7 +46,11 @@ interface Part {
 interface Session {
   readonly id: string
   readonly parentID?: string
-  readonly messages: ReadonlyArray<{ readonly type?: string; readonly content?: ReadonlyArray<Part> | string; readonly metadata?: { readonly source?: string } }>
+  readonly messages: ReadonlyArray<{
+    readonly type?: string
+    readonly content?: ReadonlyArray<Part> | string
+    readonly metadata?: { readonly source?: string; readonly notice?: { readonly asker?: string } }
+  }>
 }
 
 /** What the model read: the JSON-escaped request, unescaped enough to read its strings. */
@@ -74,11 +78,11 @@ describe.skipIf(!fork)("background questions", () => {
       // The root's tray counts its own three, from two asks, and its subagent's one, oldest first.
       expect(lines(read("tray.txt"))).toContain("? 4 open questions · Cache store, Old endpoint, Log format, Test runner · shift+← /answer")
 
-      // /answer: the host's question form, a tab per question of the root's two asks, the assumed choice first, no Dismiss
-      // choice; the footer offers ctrl+x dismiss.
+      // /answer: the host's question form in the root, a tab per question of the root's two asks and then the subagent's,
+      // the assumed choice first, no Dismiss choice; the footer offers ctrl+x dismiss.
       expect(form(read("form.txt")).slice(0, 8)).toEqual([
         "Background questions",
-        "Cache store  Old endpoint  Log format  Submit",
+        "Cache store  Old endpoint  Log format  Test runner  Submit",
         "Which database should the cache use?",
         "1. SQLite",
         "assumed · one file, no server",
@@ -89,39 +93,37 @@ describe.skipIf(!fork)("background questions", () => {
       expect(form(read("form.txt")).join("\n")).not.toContain("Dismiss · keep the assumption")
       // Typed on the row under the assumption.
       expect(form(read("typed.txt")).slice(2, 6)).toEqual(["Should the old /v1 endpoint stay for a release?", "1. Keep it", "assumed", "2. Drop it after this release"])
-      // ctrl+x on the third: on to the submit tab, which lists it dismissed; back on its tab it shows dismissed.
-      expect(form(read("marked.txt"))).toContain("Log format: dismissed")
+      // ctrl+x on the third: on to the subagent's tab, which names who asked; back on the third it shows dismissed.
+      expect(form(read("marked.txt"))).toEqual(
+        expect.arrayContaining(["Runner check (general) asks: Which test runner should the suite use?", "1. bun test", "assumed", "2. vitest"]),
+      )
       expect(form(read("marked-tab.txt"))).toEqual(expect.arrayContaining(["Should the logs be JSON?", "✓ dismissed · ctrl+x again undoes"]))
-      // The submit tab: two answered, the third left blank (ctrl+x again undid its dismissal).
+      // The submit tab: three answered, the third left blank (ctrl+x again undid its dismissal).
       expect(form(read("review.txt"))).toEqual(
-        expect.arrayContaining(["Cache store: Redis", "Old endpoint: Drop it after this release", "Log format: (not answered)", "⇆ tab  enter submit  esc dismiss"]),
+        expect.arrayContaining([
+          "Cache store: Redis",
+          "Old endpoint: Drop it after this release",
+          "Log format: (not answered)",
+          "Test runner: vitest",
+          "⇆ tab  enter submit  esc dismiss",
+        ]),
       )
 
-      // One submit, one letter: the idle root wakes once on both answers; the blank one and the subagent's stay open.
+      // One submit: the idle root wakes once on one letter with both its answers, beside the notice of its subagent's
+      // answer; the blank one stays open.
       const answered = lines(read("answered.txt"))
       expect(answered.filter((line) => line.startsWith("◈ answered"))).toEqual([expect.stringMatching(/^◈ answered 2 · Which database should the cac… → Redis · /)])
+      expect(answered).toContain("◈ Runner check (general)'s question q1 answered · Which test runner should the suite use? → vitest")
       expect(answered).toContain("Root switched to Redis and dropped the endpoint")
-      expect(answered).toContain("? 2 open questions · Log format, Test runner · shift+← /answer")
-      // The same /answer opened the subagent's form, naming who asked.
-      expect(form(read("answered.txt")).slice(0, 3)).toEqual(["Background questions", "Asked by general", "Which test runner should the suite use?"])
+      expect(answered).toContain("? 1 open question · Log format · assuming JSON · shift+← /answer")
 
-      // shift+← on the empty composer: the left-over question on its own; Enter on the assumption answers it, in a letter of its own.
+      // shift+← on the empty composer: the left-over question on its own; Esc closes it, it stays open and the prompt has the focus back.
       expect(form(read("again.txt")).slice(0, 3)).toEqual(["Background questions", "Should the logs be JSON?", "1. JSON"])
-      expect(lines(read("subagent.txt"))).toContain("◈ answered · Should the logs be JSON? → JSON")
-      // Esc closes the subagent's form; its question stays open and the prompt has the focus back.
       const done = lines(read("done.txt"))
-      expect(done).toContain("? 1 open question · Test runner · assuming bun test · shift+← /answer")
+      expect(done).toContain("? 1 open question · Log format · assuming JSON · shift+← /answer")
       expect(done).toContain("┃ typed-after-answer")
-      // ctrl+x on the subagent's one-question form: its question closes, the tray goes, and nobody is sent a message.
-      expect(form(read("dismiss.txt")).slice(0, 7)).toEqual([
-        "Background questions",
-        "Asked by general",
-        "Which test runner should the suite use?",
-        "1. bun test",
-        "assumed",
-        "2. vitest",
-        "3. Type your own answer",
-      ])
+      // ctrl+x on the one-question form: its question closes, the tray goes, and nobody is sent a message.
+      expect(form(read("dismiss.txt")).slice(0, 5)).toEqual(["Background questions", "Should the logs be JSON?", "1. JSON", "assumed", "2. Plain text"])
       expect(form(read("dismiss.txt")).join("\n")).toContain("ctrl+x dismiss")
       expect(lines(read("dismissed.txt")).some((line) => line.includes("open question"))).toBe(false)
 
@@ -134,16 +136,22 @@ describe.skipIf(!fork)("background questions", () => {
       expect(root[lettered]).toContain(LETTER)
       expect(root[lettered]).toContain("A: Drop it after this release\nThis differs from your assumption.")
       expect(root[lettered]).toContain(LETTER_END)
-      expect(root.some((request) => request.includes("Answer to your background question q3") && request.includes("This is what you assumed: carry on."))).toBe(true)
-      // The subagent never reads an answer.
+      // The same wake reads the notice of the subagent's answer.
+      expect(root[lettered]).toContain("The subagent Runner check (general) had its background question q1 answered; the answer went to it:")
+      expect(root[lettered]).toContain("A: vitest (differs from its assumption)")
+      // The subagent reads its own answer, in the letter it woke on.
       const asked = requests.filter((request) => request.session === "subagent").map((request) => unescaped(request.request))
       expect(asked.some((request) => request.includes("- q1: Which test runner should the suite use? · assuming bun test"))).toBe(true)
-      expect(asked.some((request) => request.includes("background question"))).toBe(false)
+      expect(asked.some((request) => request.includes("Answer to your background question q1") && request.includes("You assumed: bun test\nA: vitest"))).toBe(true)
 
-      // Two answering submits, two synthetic messages in the root, their source `questions` (the ctrl+x dismiss sent none); a kernel cell leaves no ask_user_async part.
+      // In the root, the letter and the notice, their source `questions` (the ctrl+x dismiss sent none); in the subagent, its letter.
+      // A kernel cell leaves no ask_user_async part.
       const sessions: ReadonlyArray<Session> = JSON.parse(read("transcripts.json"))
       const rootSession = sessions.find((session) => session.parentID === undefined || session.parentID === null)
-      expect(rootSession?.messages.filter((message) => message.type === "synthetic" && message.metadata?.source === "questions")).toHaveLength(2)
+      const subSession = sessions.find((session) => typeof session.parentID === "string")
+      const ours = (session: Session | undefined) => session?.messages.filter((message) => message.type === "synthetic" && message.metadata?.source === "questions") ?? []
+      expect(ours(rootSession).map((message) => message.metadata?.notice?.asker ?? "letter")).toEqual(["Runner check (general)", "letter"])
+      expect(ours(subSession)).toHaveLength(1)
       const tools = sessions.flatMap((session) =>
         session.messages.flatMap((message) => (Array.isArray(message.content) ? message.content.flatMap((part) => (part.type === "tool" && part.name !== undefined ? [part.name] : [])) : [])),
       )
