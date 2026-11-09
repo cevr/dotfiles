@@ -7,13 +7,16 @@
 // service starts and restarts through the CLI as daily does (`service start`,
 // `service restart`), the TUI runs on a real pty (gamut's terminal host), and
 // the test reads its screen. Each case is a root, a subagent, a root whose
-// turn the restart cuts, and a worker whose Rift is gone; after the restart
-// the TUI shows the same session and follows a turn sent on the new service.
+// turn the restart cuts, a service still booting, and a worker whose Rift is
+// gone; after the restart the TUI shows the same session and follows a turn
+// sent on the new service.
 //
-// Green on prime-look d22f11a95e: the owner's report (a TUI back on the home
-// page after an install's restart) is not reproduced here yet, neither with an
-// old-version TUI on a new-version service, a service down 8 s, tabs off
-// (HERDR_ENV) nor the TUI started outside the session's directory.
+// The booting case is the owner's report (a TUI back on the home page after
+// an install's restart): a proxy in front of the service answers 503 for the
+// session's GET for a few seconds after the restart, as a service still
+// loading its plugins does. Before the fork's 0693cb3cd8 the TUI's reload
+// failed once and it went home for good; now it keeps the session and tries
+// again.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -31,6 +34,8 @@ const TIMEOUT_MS = 180_000
 const SERVER_PLUGINS = ["orchestrate", "guard", "kernel", "status", "queue", "git", "idle-compact", "questions", "skills", "rift", "tool-names", "cache", "web", "memory"]
 /** How long the TUI has, after the restarted service can serve, to show its session again. */
 const BACK_WITHIN_MS = 20_000
+/** How long the booting case refuses the session after the restarted service can serve. */
+const BOOTING_MS = 4_000
 
 /** As much of the fork's client as the test uses; the fork is found at run time, so it is typed here. */
 interface Client {
@@ -141,8 +146,55 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
     for (const host of hosts) await host.stop()
     if (existsSync(serviceFile)) await opencode("service", "stop")
     sim.stop(true)
+    proxyServer.stop(true)
     rmSync(root, { recursive: true, force: true })
   })
+
+  /**
+   * A stand-in for a service still booting: it passes every request to the
+   * service the service file names now, except a GET of a refused session,
+   * which it answers 503 `service_starting` until its time.
+   */
+  const refused = new Map<string, number>()
+  const proxyServer = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    idleTimeout: 0,
+    fetch: async (request) => {
+      const url = new URL(request.url)
+      const sessionID = /^\/api\/session\/([^/]+)$/.exec(url.pathname)?.[1]
+      if (request.method === "GET" && sessionID !== undefined && Date.now() < (refused.get(sessionID) ?? 0))
+        return Response.json({ code: "service_starting" }, { status: 503, headers: { "retry-after": "1" } })
+      const target = await ready(serviceFile, () => "the service behind the proxy")
+      const headers = new Headers(request.headers)
+      headers.delete("host")
+      const upstream = await fetch(new URL(url.pathname + url.search, target.url), {
+        method: request.method,
+        headers,
+        body: request.body,
+        signal: request.signal,
+        redirect: "manual",
+      }).catch(() => Response.json({ code: "service_starting" }, { status: 503, headers: { "retry-after": "1" } }))
+      // fetch hands back the body decoded; its encoding headers no longer describe it.
+      const back = new Headers(upstream.headers)
+      back.delete("content-encoding")
+      back.delete("content-length")
+      // A body the restart cuts ends, as the service's own would, rather than throwing in the test.
+      const reader = upstream.body?.getReader()
+      const body =
+        reader &&
+        new ReadableStream<Uint8Array>({
+          pull: (controller) =>
+            reader.read().then(
+              (chunk) => (chunk.done ? controller.close() : controller.enqueue(chunk.value)),
+              () => controller.close(),
+            ),
+          cancel: () => reader.cancel().catch(() => undefined),
+        })
+      return new Response(body, { status: upstream.status, headers: back })
+    },
+  })
+  const proxy = { url: proxyServer.url.toString().replace(/\/$/, ""), refuse: (sessionID: string, until: number) => refused.set(sessionID, until) }
 
   const pid = (service: Service) => fetch(new URL("/api/info", service.url), { headers: { authorization: `Basic ${btoa(`opencode:${service.password}`)}` } }).then((response) => response.json() as Promise<{ pid?: number }>)
 
@@ -183,10 +235,14 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
       await client.session.prompt({ sessionID: child.id, text: "say child-transcript-marker" })
       await client.experimental.session.wait({ sessionID: child.id })
 
-      const run = async (name: string, sessionID: string, marker: string, busy = false, gone?: string) => {
+      type Case = { readonly busy?: boolean; readonly gone?: string; readonly booting?: boolean }
+      const run = async (name: string, sessionID: string, marker: string, { busy = false, gone, booting = false }: Case = {}) => {
         const socket = join(root, `${name}.sock`)
         // A herdr pane's directory need not be the session's: the TUI starts in the HOME.
-        const host = serve({ socket, cwd: home, command: [...launch.base, "-s", sessionID], env, cols: 120, rows: 40 })
+        // A booting service is the proxy in front of it: the TUI reaches the service through it.
+        const command = booting ? [...launch.base, "--server", proxy.url, "-s", sessionID] : [...launch.base, "-s", sessionID]
+        const password: Record<string, string> = booting ? { OPENCODE_PASSWORD: service.password } : {}
+        const host = serve({ socket, cwd: home, command: command as [string, ...string[]], env: { ...env, ...password }, cols: 120, rows: 40 })
         hosts.push(host)
         await until(() => existsSync(socket), Boolean, () => `${name}: the terminal host`, 10_000)
         const screen = async () => (await hostCall(socket, { op: "read", scope: "screen" }).catch(() => ({ rows: [] as ReadonlyArray<string> }))).rows.join("\n")
@@ -199,8 +255,11 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
         if (gone !== undefined) rmSync(gone, { recursive: true, force: true })
 
         const before = await pid(await ready(serviceFile, () => "the service"))
+        if (booting) proxy.refuse(sessionID, Number.POSITIVE_INFINITY)
         const restarted = await opencode("service", "restart")
         expect(restarted.code).toBe(0)
+        // The new service still refuses the session for a while, as one still loading its plugins does.
+        if (booting) proxy.refuse(sessionID, Date.now() + BOOTING_MS)
         const after = await ready(serviceFile, () => `the restarted service (${restarted.err.slice(-500)})`)
         // A new service process, not the old one answering.
         expect((await pid(after)).pid).not.toBe(before.pid)
@@ -222,14 +281,15 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
 
       await run("root", parent.id, "parent-transcript-marker")
       await run("child", child.id, "child-transcript-marker")
-      await run("busy", parent.id, "parent-transcript-marker", true)
+      await run("busy", parent.id, "parent-transcript-marker", { busy: true })
+      await run("booting", parent.id, "parent-transcript-marker", { booting: true })
       // A worker's session in a Rift the run has since removed.
       const rift = join(root, "rift")
       mkdirSync(rift, { recursive: true })
       const worker = await client.session.create({ location: { directory: rift }, title: "Reconnect worker" })
       await client.session.prompt({ sessionID: worker.id, text: "say worker-transcript-marker" })
       await client.experimental.session.wait({ sessionID: worker.id })
-      await run("gone", worker.id, "worker-transcript-marker", false, rift)
+      await run("gone", worker.id, "worker-transcript-marker", { gone: rift })
     },
     TIMEOUT_MS,
   )
