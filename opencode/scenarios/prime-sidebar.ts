@@ -8,9 +8,11 @@
 // - `sidebar-wide`: 160 columns, the sidebar shows, the worker's row under the dock;
 // - `sidebar-narrow`: 106 columns, no sidebar, the worker's row under the dock;
 // - `sidebar-wide-again`: 160 columns again.
-// Each frame is a `.txt` of its text and a `.json` of its styled lines.
+// Each frame is a `.txt` of its text and a `.json` of its styled lines. A
+// wait that times out writes `<frame>.timeout.txt` and keeps the run's server
+// and TUI logs in `<frame>.logs`.
 import { Deferred, Effect, Schedule, Stream } from "effect"
-import { readFileSync, writeFileSync } from "node:fs"
+import { cpSync, readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
 
 const root = process.cwd()
@@ -46,7 +48,7 @@ export default OpenCodeDriver.use(
       files: { ".opencode/themes/prime.json": readFileSync(`${root}/themes/prime.json`, "utf8") },
     },
   },
-  ({ ui, llm }) =>
+  ({ ui, llm, artifacts }) =>
     Effect.gen(function* () {
       const end = yield* Deferred.make<void>()
       const hold = Stream.fromEffect(Deferred.await(end)).pipe(Stream.drain)
@@ -77,7 +79,11 @@ export default OpenCodeDriver.use(
           Effect.flatMap((frame) => (ready(text(frame)) ? Effect.void : Effect.fail("pending"))),
           Effect.retry({ schedule: Schedule.spaced("100 millis"), times }),
           Effect.tapError(() =>
-            ui.capture().pipe(Effect.map((frame) => writeFileSync(`${out}/${name}.timeout.txt`, text(frame)))),
+            ui.capture().pipe(
+              Effect.map((frame) => writeFileSync(`${out}/${name}.timeout.txt`, text(frame))),
+              // The run's server and TUI logs go with the run; keep them beside the frame.
+              Effect.andThen(Effect.sync(() => cpSync(`${artifacts}/logs`, `${out}/${name}.logs`, { recursive: true }))),
+            ),
           ),
         )
       const save = (name: string) =>
@@ -88,7 +94,9 @@ export default OpenCodeDriver.use(
           console.log("screenshot:", yield* ui.screenshot(name))
         })
       const running = (frame: string) => frame.includes("◆ 1 subagent ")
-      const row = (frame: string) => frame.includes(`worker gpt  ${WORKER.description}`)
+      // The row once it shows the worker's thought: before its first reasoning lands, it reads `starting`,
+      // and a frame saved then (a slow host can) has nothing for the test to read.
+      const row = (frame: string) => frame.includes(`worker gpt  ${WORKER.description}  ${WORKER.thought} · `)
       // The sidebar titles the session in its own column, right of the transcript.
       const sidebar = (frame: string) => frame.split("\n").some((line) => line.indexOf(TITLE) >= WIDE.cols - 42)
 

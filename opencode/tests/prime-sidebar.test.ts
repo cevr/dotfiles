@@ -41,7 +41,7 @@ describe.skipIf(!fork)("the subagent rows beside the sidebar in the Prime look (
       new Response(run.stdout).text(),
       new Response(run.stderr).text(),
     ])
-    if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
+    if (code !== 0) throw new Error(`the scenario exited ${code} (its frames and logs: ${out}):\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `sidebar-${name}.txt`), "utf8").split("\n")
   }, 300_000)
 
