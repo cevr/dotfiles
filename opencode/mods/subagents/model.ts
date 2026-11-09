@@ -2,6 +2,7 @@
 // version, never its provider or its effort.
 //
 //   anthropic/claude-opus-5-5        → opus 5.5
+//   anthropic/claude-fable-5-2       → fable 5.2
 //   claude-3-5-sonnet-20241022       → sonnet 3.5
 //   openai/gpt-6.1-sol               → sol 6.1
 //   gpt-5.1-codex-max                → codex 5.1
@@ -16,7 +17,6 @@ export type ModelName = { readonly name: string; readonly version?: string }
 const NOISE = new Set(["latest", "preview", "exp", "experimental", "low", "medium", "high", "xhigh", "max", "minimal", "none", "thinking"])
 /** GPT size and tier words: not a name of their own. */
 const SIZES = new Set(["mini", "nano", "pro", "turbo", "chat", "instant", "model", "sim", "search", "audio", "realtime"])
-const CLAUDES = ["opus", "sonnet", "haiku"]
 
 const date = (token: string) => /^\d{8}$/.test(token) || /^\d{4}$/.test(token)
 const numeric = (token: string) => /^\d+$/.test(token)
@@ -37,18 +37,19 @@ function version(tokens: ReadonlyArray<string>): string | undefined {
 }
 
 /**
- * The short name of the model `id` (with or without its provider, `:effort`
+ * The short name of the model `id` (with or without its provider, `:effort` or `#effort`
  * or a date), or undefined for an empty id.
  */
 export function modelName(id: string | undefined): ModelName | undefined {
-  const bare = (id ?? "").split("/").at(-1)?.split(/[:@]/)[0]?.trim().toLowerCase() ?? ""
+  const bare = (id ?? "").split("/").at(-1)?.split(/[:@#]/)[0]?.trim().toLowerCase() ?? ""
   const tokens = bare.split(/[-_\s]+/).filter((token) => token && !NOISE.has(token) && !date(token))
   if (tokens.length === 0) return undefined
   const named = (name: string, from: ReadonlyArray<string>): ModelName => {
     const found = version(from)
     return found === undefined ? { name } : { name, version: found }
   }
-  if (tokens.includes("claude")) return named(CLAUDES.find((family) => tokens.includes(family)) ?? "claude", tokens)
+  // Claude's family is the word beside it (opus, sonnet, haiku, fable, …), wherever the version sits.
+  if (tokens.includes("claude")) return named(tokens.find((token) => token !== "claude" && /^[a-z]+$/.test(token)) ?? "claude", tokens)
   const head = tokens[0] ?? ""
   if (head === "gpt" || head === "codex") {
     const rest = tokens.slice(1)
