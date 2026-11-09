@@ -69,9 +69,12 @@ const runSession = async (
   arm: Arm,
   memory: MemoryArm | undefined,
   session: 1 | 2,
+  repeat: number,
 ): Promise<SessionResult> => {
   const world = newWorld(scenario.cwd, scenario.files, scenario.branches[session - 1]!, scenario.noise, scenario.outside)
   const sessionID = `session-${session}`
+  /** The session as the pool places it: one account for its life, so its prompt cache stays there. */
+  const placed = `memory-eval/${arm}/${scenario.id}/${repeat}/s${session}`
   const extra = [...(arm === "ours+pointer" ? [POINTER] : []), ...(memory === undefined ? [] : await memory.system(sessionID))]
   const system = [basePrompt(scenario.cwd), ...extra].map((text) => ({ type: "text" as const, text }))
   const memoryTools = (memory?.tools ?? []) as ReadonlyArray<ToolDef>
@@ -149,7 +152,7 @@ const runSession = async (
     say(typeof turn === "string" ? turn : turn(calls))
     let ended = false
     for (let i = 0; i < STEPS_PER_TURN; i++) {
-      const response = await create(ledger, { system, tools, messages })
+      const response = await create(ledger, { system, tools, messages, session: placed })
       requests += 1
       addUsage(usage, response.usage)
       messages.push({ role: "assistant", content: response.content })
@@ -182,9 +185,9 @@ export const runEpisode = async (ledger: Ledger, scenario: Scenario, arm: Arm, r
   const dir = mkdtempSync(join(tmpdir(), "memory-eval-"))
   const memory = await memoryFor(arm, dir)
   try {
-    const s1 = arm === "none" ? undefined : await runSession(ledger, scenario, arm, memory, 1)
+    const s1 = arm === "none" ? undefined : await runSession(ledger, scenario, arm, memory, 1, repeat)
     const stored1 = memory?.stored() ?? { units: [], documents: [] }
-    const s2 = await runSession(ledger, scenario, arm, memory, 2)
+    const s2 = await runSession(ledger, scenario, arm, memory, 2, repeat)
     const stored2 = memory?.stored() ?? { units: [], documents: [] }
     const graded = grade(scenario, s1?.calls ?? [], s2.calls, s2.extra, stored1, stored2)
     return { model: MODEL, arm, scenario: scenario.id, repeat, ...(s1 === undefined ? {} : { s1 }), s2, stored1, stored2, graded }

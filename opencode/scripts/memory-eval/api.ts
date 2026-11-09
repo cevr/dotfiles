@@ -1,9 +1,11 @@
-// The Anthropic Messages API, called directly with fetch. The key is read at
-// runtime from OpenCode's auth file and never printed or written. Every request
-// goes through `Ledger.charge`, which counts tokens and dollars and refuses a
-// request once the run's cap is spent.
+// The Anthropic Messages API, reached through a transport: the pool's Claude
+// accounts by default (pool.ts), the API key in OpenCode's auth file with
+// `--api-key`. No token or key is ever printed or written. Every request goes
+// through `Ledger.charge`, which counts tokens and API-price dollars and
+// refuses a request once the run's cap is spent.
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { type Pool, PoolLimit } from "./pool.ts"
 
 /**
  * The models the eval may call, Haiku only, with their USD prices per million tokens (platform.claude.com pricing,
@@ -90,44 +92,96 @@ export interface Response {
   usage: Usage
 }
 
-let key: string | undefined
-const apiKey = async (): Promise<string> => {
-  if (key !== undefined) return key
-  const auth = (await Bun.file(join(homedir(), ".local/share/opencode/auth.json")).json()) as { anthropic?: { key?: string } }
-  const found = auth.anthropic?.key
-  if (typeof found !== "string" || found === "") throw new Error("no anthropic.key in ~/.local/share/opencode/auth.json")
-  key = found
-  return key
+/**
+ * How a Messages body reaches Anthropic: the pool's accounts (pool.ts, the default) or, with `--api-key`, the
+ * API key. `send` answers the HTTP status and body; `record` gives the pool the step's price.
+ */
+export interface Transport {
+  readonly send: (sessionID: string, body: Record<string, unknown>) => Promise<{ readonly status: number; readonly text: string }>
+  readonly record?: (sessionID: string, cost: number) => void
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+/** The pool's accounts as the transport (pool.ts). */
+export const poolTransport = (pool: Pool): Transport => ({
+  send: (sessionID, body) => pool.send(sessionID, String(body["model"]), body),
+  record: (sessionID, cost) => pool.record(sessionID, cost),
+})
+
+/** The API key in OpenCode's auth file, read at the first request and never printed: the explicit fallback. */
+export const keyTransport = (fetcher: typeof fetch = fetch): Transport => {
+  let key: string | undefined
+  const apiKey = async (): Promise<string> => {
+    if (key !== undefined) return key
+    const auth = (await Bun.file(join(homedir(), ".local/share/opencode/auth.json")).json()) as { anthropic?: { key?: string } }
+    const found = auth.anthropic?.key
+    if (typeof found !== "string" || found === "") throw new Error("no anthropic.key in ~/.local/share/opencode/auth.json")
+    key = found
+    return key
+  }
+  return {
+    send: async (_sessionID, body) => {
+      const response = await fetcher("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "x-api-key": await apiKey(), "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      return { status: response.status, text: await response.text() }
+    },
+  }
+}
+
+let transport: Transport | undefined
+export const useTransport = (next: Transport): void => {
+  transport = next
+}
+
+let sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+/** Tests wait no real time. */
+export const useSleep = (next: (ms: number) => Promise<void>): void => {
+  sleep = next
+}
+
+/** A pool hold this close is waited out; a longer one stops the run. */
+const WAIT_FOR_POOL_MS = 60_000
 
 /**
- * One Messages request. `system` and `tools` are the static prefix: the last system block carries a cache breakpoint,
- * and the top-level `cache_control` caches the conversation as it grows.
+ * One Messages request of the session `session`. `system` and `tools` are the static prefix: the last system block
+ * carries a cache breakpoint, and the top-level `cache_control` caches the conversation as it grows.
  */
 export const create = async (
   ledger: Ledger,
-  body: { system: Array<{ type: "text"; text: string }>; tools: ReadonlyArray<unknown>; messages: ReadonlyArray<Message>; maxTokens?: number },
+  body: {
+    system: Array<{ type: "text"; text: string }>
+    tools: ReadonlyArray<unknown>
+    messages: ReadonlyArray<Message>
+    maxTokens?: number
+    session?: string
+  },
 ): Promise<Response> => {
+  if (transport === undefined) throw new Error("no transport: call useTransport first (eval.ts does)")
+  const session = body.session ?? "eval"
   const system = body.system.map((block, index) => (index === body.system.length - 1 ? { ...block, cache_control: { type: "ephemeral" } } : block))
-  const payload = JSON.stringify({
+  const payload = {
     model: MODEL,
     max_tokens: body.maxTokens ?? 4096,
     cache_control: { type: "ephemeral" },
     system,
     tools: body.tools,
     messages: body.messages,
-  })
+  }
   for (let attempt = 0; ; attempt++) {
     ledger.guard()
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "x-api-key": await apiKey(), "anthropic-version": "2023-06-01", "content-type": "application/json" },
-      body: payload,
+    const sent = await transport.send(session, payload).catch(async (error: unknown) => {
+      // Every account held for a short while (a transient rate limit): wait it out; longer stops the run.
+      if (!(error instanceof PoolLimit) || error.retryAt === undefined || attempt >= 5) throw error
+      const wait = error.retryAt - Date.now()
+      if (wait > WAIT_FOR_POOL_MS) throw error
+      await sleep(Math.max(wait, 0) + 250)
+      return undefined
     })
-    if (response.ok) {
-      const json = (await response.json()) as {
+    if (sent === undefined) continue
+    if (sent.status >= 200 && sent.status < 300) {
+      const json = JSON.parse(sent.text) as {
         content: Array<Block>
         stop_reason: string
         usage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
@@ -139,11 +193,11 @@ export const create = async (
         cacheRead: json.usage.cache_read_input_tokens ?? 0,
       }
       ledger.charge(usage)
+      transport.record?.(session, costOf(usage))
       return { content: json.content, stop_reason: json.stop_reason, usage }
     }
-    const text = await response.text()
-    const retryable = response.status === 429 || response.status === 529 || response.status >= 500
-    if (!retryable || attempt >= 5) throw new Error(`Messages API ${response.status}: ${text.slice(0, 500)}`)
+    const retryable = sent.status === 429 || sent.status === 529 || sent.status >= 500
+    if (!retryable || attempt >= 5) throw new Error(`Messages API ${sent.status}: ${sent.text.slice(0, 500)}`)
     await sleep(2000 * 2 ** attempt)
   }
 }
