@@ -26,26 +26,67 @@ function textOf(payload: unknown) {
   return typeof payload.text === "string" ? payload.text : ""
 }
 
-/**
- * Whether the message is a prompt the runner has not taken: the transcript
- * leaves it out until it has, its row's gap too (the layout rule's
- * `messageID`, cmd/prime/tui.tsx), so it takes no space.
- */
-export function isWaiting(pending: ReadonlyArray<PendingItem>, messageID: string) {
+/** What decides whether a session's prompts wait: its inbox, its messages and whether the host says it runs. */
+export type Inbox = {
+  readonly pending: ReadonlyArray<PendingItem>
+  readonly messages: ReadonlyArray<Message>
+  readonly status: "idle" | "running"
+}
+
+/** The session's Inbox as the host reads it; inside a Solid computation each read stays reactive. */
+export function inboxOf(
+  host: {
+    pending(sessionID: string): ReadonlyArray<PendingItem>
+    messages(sessionID: string): ReadonlyArray<Message>
+    status(sessionID: string): "idle" | "running"
+  },
+  sessionID: string,
+): Inbox {
+  return { pending: host.pending(sessionID), messages: host.messages(sessionID), status: host.status(sessionID) }
+}
+
+/** Whether the message is still in the inbox: a prompt the runner has not taken. */
+function untaken(pending: ReadonlyArray<PendingItem>, messageID: string) {
   return pending.some((item) => item.id === messageID && item.type === "user")
 }
 
 /**
- * The prompts the queued rows show, as one list, oldest first: the reader's
- * steers the runner has not taken and the prompts sent to the queue. The
- * list replaces the host's own queued box (`N queued · …`, the fork's
- * `session.composer.queued` slot), so no prompt shows twice.
+ * Whether the runner is on a turn a prompt would wait behind: the host says
+ * the session runs and the current run (after its last idle marker) holds
+ * something the runner took, a prompt, a program's message, a model step or
+ * a compaction. An idle session has nothing to wait behind, and neither has a
+ * run that has taken nothing yet: it starts with the prompts in the inbox.
  */
-export function waitingPrompts(pending: ReadonlyArray<PendingItem>): ReadonlyArray<WaitingPrompt> {
-  return pending
+function busy(inbox: Inbox) {
+  if (inbox.status !== "running") return false
+  const run = inbox.messages.slice(inbox.messages.findLastIndex((message) => message.type === "idle") + 1)
+  return run.some((message) => !inbox.pending.some((item) => item.id === message.id))
+}
+
+/**
+ * The prompts the queued rows show, as one list, oldest first: while the
+ * runner is busy on a turn, the reader's steers it has not taken and the
+ * prompts sent to the queue. A prompt sent to an idle session is none: it is
+ * just being sent, and shows in the transcript at once. The list replaces
+ * the host's own queued box (`N queued · …`, the fork's
+ * `session.composer.queued` slot), and the transcript leaves out exactly
+ * these prompts (`isWaiting`), so a prompt shows once, as a row or a message.
+ */
+export function waitingPrompts(inbox: Inbox): ReadonlyArray<WaitingPrompt> {
+  if (!busy(inbox)) return []
+  return inbox.pending
     .filter((item) => item.type === "user")
     .toSorted((a, b) => a.time.created - b.time.created)
     .map((item) => ({ id: item.id, text: textOf(item.payload), delivery: item.delivery }))
+}
+
+/**
+ * Whether the message is a prompt the queued rows show (`waitingPrompts`):
+ * the transcript leaves it out until the runner takes it, its row's gap too
+ * (the layout rule's `messageID`, cmd/prime/tui.tsx), so it takes no space.
+ */
+export function isWaiting(inbox: Inbox, messageID: string) {
+  return busy(inbox) && untaken(inbox.pending, messageID)
 }
 
 /** The lead of a queued row: a steer goes in at the runner's next step, a queued prompt once the turn ends. */
@@ -127,7 +168,7 @@ export function loader(messages: ReadonlyArray<Message>, pending: ReadonlyArray<
   if (compaction?.type === "compaction" && compaction.status === "running") return undefined
   const step = run.find((message) => message.type === "assistant")
   if (step) return { since: step.time.created }
-  const taken = run.filter((message) => message.type === "user" && !isWaiting(pending, message.id))
+  const taken = run.filter((message) => message.type === "user" && !untaken(pending, message.id))
   const prompt = taken.at(-1)
   return { since: prompt?.time.created }
 }

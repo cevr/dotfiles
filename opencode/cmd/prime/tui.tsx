@@ -12,7 +12,7 @@ import { Plugin } from "@opencode/plugin/tui"
 import { nextDetail, rowGap, type Detail } from "@dotfiles/opencode-prime/detail"
 import { goals } from "@dotfiles/opencode-prime/opencode/goal"
 import { host } from "@dotfiles/opencode-prime/opencode/host"
-import { isWaiting } from "@dotfiles/opencode-prime/pending"
+import { inboxOf, isWaiting } from "@dotfiles/opencode-prime/pending"
 import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
 import { hints as wakeHints, WakeTab } from "@dotfiles/opencode-prime/tui/composer"
 import { Dock, GoalLine, ModeHint, Queued, Splash, TopBar, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
@@ -31,7 +31,7 @@ export default Plugin.define({
     // A prompt the runner has not taken draws nothing in the transcript (tui/transcript.tsx UserBand), so its row takes no gap either.
     const hidden = (messageID: string | undefined) => {
       const sessionID = h.route()
-      return messageID !== undefined && sessionID !== undefined && isWaiting(h.pending(sessionID), messageID)
+      return messageID !== undefined && sessionID !== undefined && isWaiting(inboxOf(h, sessionID), messageID)
     }
 
     context.ui.layout({

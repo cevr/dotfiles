@@ -17,7 +17,7 @@ import {
   trayModel,
   usageLabel,
 } from "../chrome.ts"
-import { loader, queuedRow, SEND_COMMAND, sendHint, waitingPrompts } from "../pending.ts"
+import { inboxOf, loader, queuedRow, SEND_COMMAND, sendHint, waitingPrompts } from "../pending.ts"
 import { elapsed } from "../clock.ts"
 import { detailHint, type Detail } from "../detail.ts"
 import { GOAL_LINGER_MS, goalLine, goalShown, type Goal } from "../goal.ts"
@@ -119,7 +119,7 @@ export function ModeHint(props: { host: Host; sessionID: string; detail: Accesso
     sendHint({
       shortcut: props.host.shortcut(SEND_COMMAND),
       running: props.host.status(props.sessionID) === "running",
-      waiting: waitingPrompts(props.host.pending(props.sessionID)).length,
+      waiting: waitingPrompts(inboxOf(props.host, props.sessionID)).length,
     }),
   )
   const navigation = createMemo(() =>
@@ -325,7 +325,8 @@ export function GoalLine(props: { host: Host; sessionID: string }) {
 
 /**
  * Above the composer, in place of the host's queued box, one row per prompt
- * the runner has not taken, steers and queued prompts in one list, oldest
+ * waiting behind the turn the runner is busy on (a prompt sent to an idle
+ * session is none), steers and queued prompts in one list, oldest
  * first (`◌ queued · Also update the docs.`, `◌ after the turn · …`,
  * pending.ts): the prompt leaves the transcript until the runner takes it,
  * and its row goes the moment it does. A click offers that kind's actions
@@ -333,7 +334,7 @@ export function GoalLine(props: { host: Host; sessionID: string }) {
  */
 export function Queued(props: { host: Host; sessionID: string }) {
   const theme = () => props.host.theme()
-  const prompts = createMemo(() => waitingPrompts(props.host.pending(props.sessionID)))
+  const prompts = createMemo(() => waitingPrompts(inboxOf(props.host, props.sessionID)))
   const terminal = useTerminalDimensions()
   const [measured, setMeasured] = createSignal<number>()
   return (

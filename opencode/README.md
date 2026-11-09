@@ -203,6 +203,11 @@ that kind's actions, as the host's own rows do: a steer `Move to queue` or
 `Delete`, a queued prompt `Send now` or `Delete`; the host's Queued prompts
 picker (its `undo`, back to the composer) stays on its command. A hidden
 prompt's transcript row gets no gap through the layout rule's `messageID`.
+Only a prompt that waits behind a turn the runner is busy on is listed: the
+host says the session runs and the current run has taken something. A
+prompt sent to an idle session is just being sent and shows in the
+transcript at once, never as a row (`waitingPrompts` and `isWaiting` share
+that one rule, so a prompt shows once, as a row or a message).
 Both hooks are on the fork's `prime-look`; an older fork fails Prime's
 typecheck on them.
 
@@ -228,7 +233,12 @@ and one queued prompt sent during an automatic compaction wait above the
 composer as one list under the compaction's timed row, with no blank row for them in the
 transcript and no host box, then the steers read in the transcript in the
 order sent under `Executing`, and the queued prompt after them once that
-turn ends.
+turn ends. `tests/prime-idle-send.test.ts` runs `scenarios/prime-idle-send.ts`
+and reads frames captured back to back from each Enter: a prompt sent to an
+idle session (a new one, and one whose turn ended) shows no queued row in
+any frame and stays in the transcript from its first; a steer and a queued
+prompt sent during a turn show as rows and move to the transcript without a
+frame that shows them in both.
 
 The shells count is the session's running shell commands. A click on it
 opens the session's shell list (`shells.ts`, `opencode/shells.ts`), read

@@ -3,7 +3,7 @@
 import { RGBA, type BoxRenderable } from "@opentui/core"
 import { createMemo, createSignal, Show } from "solid-js"
 import { governingAsk, oneLine } from "../ask.ts"
-import { isWaiting } from "../pending.ts"
+import { inboxOf, isWaiting } from "../pending.ts"
 import { attachedLine, promptText } from "../prompt.ts"
 import type { Host, Overlay, Palette } from "./host.ts"
 
@@ -48,8 +48,8 @@ export function UserBand(props: { host: Host; sessionID: string; messageID: stri
   })
   const text = createMemo(() => promptText(message()))
   const attached = createMemo(() => attachedLine(message()))
-  // A prompt the runner has not taken shows in the queued rows above the composer (chrome.tsx Queued), not here.
-  const waiting = createMemo(() => isWaiting(props.host.pending(props.sessionID), props.messageID))
+  // A prompt waiting behind a running turn shows in the queued rows above the composer (chrome.tsx Queued), not here; one sent to an idle session shows here at once.
+  const waiting = createMemo(() => isWaiting(inboxOf(props.host, props.sessionID), props.messageID))
   const theme = () => props.host.theme()
   return (
     <Show when={!waiting() && (text() || attached())}>
