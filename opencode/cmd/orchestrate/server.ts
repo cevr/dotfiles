@@ -40,6 +40,14 @@
  *   default `~/.claude/skills/orchestrate/scripts/log.ts`.
  * - `skill`: the orchestrate skill's dir, whose git history versions it,
  *   default `~/.claude/skills/orchestrate`.
+ * - `experiment`: `{ role, model, share }`, the model experiment
+ *   (mods/orchestrate/experiment.ts): `share` of the role's units, by a hash
+ *   of the unit's name, start on `model` at the role's effort (the trial arm),
+ *   the rest on the role's own (control). Only a new start that names no model
+ *   of its own (or the role's) is in an arm; a follow-up keeps its model. A
+ *   trial start the host does not offer `model` for, or whose pace holds it,
+ *   takes the normal chain (the role's model, then Codex). Each start's line
+ *   records `experiment: { arm, model[, fellBack] }`. Absent, no experiment.
  *
  * - Skill drift: when a root that owns a run goes idle and the installed
  *   skill is newer than the version the run last saw (`<run dir>/skill-version`),
@@ -176,8 +184,15 @@ const Codex = Schema.Struct({
   pool: Schema.optional(Schema.Boolean),
 })
 
+const Experiment = Schema.Struct({
+  role: Schema.Literals(ROLES),
+  model: Schema.String.check(Schema.isPattern(/^[^/#\s]+\/[^#\s]+$/)),
+  share: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
+})
+
 export const Options = Schema.Struct({
   log: Schema.String.pipe(withDefault(DEFAULT_LOG)),
+  experiment: Schema.optional(Experiment),
   now: Schema.optional(Instant),
   place: Place.pipe(withDefault<Place>(KNOWLTON)),
   fullAgent: Schema.Boolean.pipe(withDefault(false)),
@@ -402,6 +417,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
         fullAgent: options.fullAgent,
         ...(options.now === undefined ? {} : { now: options.now }),
         ...(options.codex === false ? {} : { codex: { providers: options.codex.providers, ...(options.codex.pool === undefined ? {} : { pool: options.codex.pool }) } }),
+        ...(options.experiment === undefined ? {} : { experiment: options.experiment }),
       }
       const services = yield* Layer.build(
         Layer.mergeAll(

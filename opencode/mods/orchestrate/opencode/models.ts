@@ -50,5 +50,15 @@ export const layer = (port: Port) => {
       const at = found.variants.some((item) => item.id === variant) ? `#${variant}` : ""
       return `${found.providerID}/${found.id}${at}`
     }, orNone),
+    at: Effect.fn("Models.at")(function* (sessionID: string, model: string, variant: string | undefined) {
+      const slash = model.indexOf("/")
+      if (slash <= 0) return undefined
+      const providerID = model.slice(0, slash)
+      const id = model.slice(slash + 1)
+      const { directory } = yield* port.session(sessionID)
+      const found = (yield* port.offered(directory)).find((item) => item.providerID === providerID && item.id === id)
+      if (found === undefined) return undefined
+      return variant !== undefined && found.variants.some((item) => item.id === variant) ? `${model}#${variant}` : model
+    }, orNone),
   })
 }
