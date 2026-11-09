@@ -22,6 +22,32 @@ test("it pools accounts, honors short-window holds and never treats a reset read
   expect(poolPace([account(1, now - 1)], now).ok).toBe(true)
   expect(poolPace([], now)).toMatchObject({ ok: true, measured: false })
 })
+test("a model's own weekly window holds only that model's starts; the main windows hold every start", () => {
+  const fable = (used: number, scoped: number, five = 0.1): AccountStatus => ({
+    ...account(used),
+    reading: {
+      at: now,
+      windows: [
+        { name: "7d", utilization: used, resetAt: now + 3.5 * day },
+        { name: "5h", utilization: five, resetAt: now + 3600000 },
+        { name: "7d:Fable", utilization: scoped, resetAt: now + 2 * day },
+      ],
+    },
+  })
+  // Fable's week spent: an Opus start (or one naming no model) goes ahead...
+  expect(poolPace([fable(0.3, 1)], now).ok).toBe(true)
+  expect(poolPace([fable(0.3, 1)], now, undefined, "claude-opus-5-5").ok).toBe(true)
+  // ...a Fable start waits for Fable's reset.
+  expect(poolPace([fable(0.3, 1)], now, undefined, "claude-fable-5-2")).toMatchObject({ ok: false, measured: true, retryAt: now + 2 * day })
+  // Another account with Fable room takes the start.
+  expect(poolPace([fable(0.3, 1), { ...fable(0.3, 0.4), credentialID: "b" }], now, undefined, "claude-fable-5-2").ok).toBe(true)
+  // Fable spends the main windows too: a full 5-hour window or a held account holds a Fable start with room of its own.
+  expect(poolPace([fable(0.3, 0.2, 0.95)], now, undefined, "claude-fable-5-2")).toMatchObject({ ok: false, retryAt: now + 3600000 })
+  const held = { ...fable(0.3, 0.2), hold: { kind: "rate-limit" as const, at: now, until: now + 10000 } }
+  expect(poolPace([held], now, undefined, "claude-fable-5-2")).toMatchObject({ ok: false, retryAt: now + 10000 })
+  // A Fable window that has reset holds nothing.
+  expect(poolPace([fable(0.3, 1)], now + 2 * day, undefined, "claude-fable-5-2").ok).toBe(true)
+})
 test("agents started in the fleet count until they settle, so a wave holds the next start before the readings show it", () => {
   const minute = 60000
   const inflight = (starts: ReadonlyArray<number>) => ({ starts, cost: 0.005, settleMs: 10 * minute })

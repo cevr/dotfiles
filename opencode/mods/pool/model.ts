@@ -133,8 +133,11 @@ export class Pool extends Context.Service<
     readonly follow: Effect.Effect<void>
     /** Read every login's usage, and forget what has expired. */
     readonly sweep: Effect.Effect<void>
-    /** Whether a new agent on the provider may start now. */
-    readonly pace: (providerID: string) => Effect.Effect<Pace, LoginsUnavailable>
+    /**
+     * Whether a new agent on the provider may start now; of `model`, when
+     * named, so a window of that model's own (`7d:Fable`) can hold it too.
+     */
+    readonly pace: (providerID: string, model?: string) => Effect.Effect<Pace, LoginsUnavailable>
     /** Each pool's accounts, holds and readings, and its outside stores. */
     readonly status: Effect.Effect<PoolsStatus, LoginsUnavailable>
     /** The account a session is on, with its label, hold and reading; nothing when the pool has none to name. */
@@ -343,7 +346,7 @@ export const layer = (config: Config) =>
           return events
         }).pipe(fleetLock.withPermits(1))
 
-      const pace = Effect.fn("Pool.pace")(function* (providerID: string) {
+      const pace = Effect.fn("Pool.pace")(function* (providerID: string, model?: string) {
         const paced = poolOf(measuredBy(config, providerID))
         if (paced === undefined) return UNPOOLED
         yield* refresh(paced, false)
@@ -356,11 +359,12 @@ export const layer = (config: Config) =>
         const starts = FleetModel.inflight(fleet, now, fleetConfig.settleMs)
           .filter((start) => measuredBy(config, start.providerID) === paced.id)
           .map((start) => start.at)
-        return poolPace(status(yield* SynchronizedRef.get(paced.pool), now, rules), now, {
-          starts,
-          cost: fleetConfig.startCost,
-          settleMs: fleetConfig.settleMs,
-        })
+        return poolPace(
+          status(yield* SynchronizedRef.get(paced.pool), now, rules),
+          now,
+          { starts, cost: fleetConfig.startCost, settleMs: fleetConfig.settleMs },
+          model,
+        )
       })
 
       const started = (providerID: string) => sendFleet(FleetModel.RecordStart.make({ providerID })).pipe(Effect.asVoid)

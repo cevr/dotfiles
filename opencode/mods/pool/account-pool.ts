@@ -28,7 +28,7 @@ import {
   stepIdentity,
   WINDOW_MS,
 } from "./accounts.ts"
-import { QuotaReading } from "./quota.ts"
+import { accountWide, carryOver, QuotaReading } from "./quota.ts"
 import { Hold } from "./status.ts"
 
 /** One pool: the integration whose logins it holds (`anthropic`). Several providers may share one. */
@@ -192,14 +192,17 @@ const takeReading = (
   command: TakeReading,
   now: number,
 ): Effect.Effect<ReadonlyArray<ReadingTaken>> => {
-  const { credentialID, reading } = command
+  const { credentialID } = command
+  const reading = carryOver(state.readings[credentialID], command.reading, now)
   const refusal = reading.refusal
   const refused =
     refusal !== undefined && (refusal.until === undefined || refusal.until > now)
       ? { kind: refusal.kind, until: refusal.until ?? now + DEFAULT_HOLD_MS }
       : undefined
+  // A window of one model's own (`7d:Fable`) never holds the account: the
+  // other models' requests still go out on it.
   const exhausted = reading.windows
-    .filter((window) => window.utilization >= 1 && window.resetAt !== undefined && window.resetAt > now)
+    .filter((window) => accountWide(window) && window.utilization >= 1 && window.resetAt !== undefined && window.resetAt > now)
     .reduce<number | undefined>((latest, window) => Math.max(latest ?? 0, window.resetAt ?? 0), undefined)
   const until = Math.max(refused?.until ?? 0, exhausted ?? 0)
   const current = state.holds[credentialID]

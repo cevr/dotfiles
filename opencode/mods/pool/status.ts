@@ -15,7 +15,10 @@ import { QuotaReading, RefusalKind } from "./quota.ts"
 export const POOL_STATUS = {
   id: "dotfiles-opencode.pool",
   methods: {
-    pace: { input: { type: "object", properties: { providerID: { type: "string" } }, required: ["providerID"] }, output: { type: "object" } },
+    pace: {
+      input: { type: "object", properties: { providerID: { type: "string" }, model: { type: "string" } }, required: ["providerID"] },
+      output: { type: "object" },
+    },
     status: { input: { type: "object" }, output: { type: "object" } },
     session: {
       input: {

@@ -417,7 +417,7 @@ export const make = (
       // RPC that cannot be registered stops the plugin.
       yield* ctx.rpc
         .register(POOL_STATUS, {
-          pace: (input) => pool.pace(providerOf(input)).pipe(Effect.orDie),
+          pace: (input) => pool.pace(providerOf(input), modelOf(input)).pipe(Effect.orDie),
           status: () => pool.status.pipe(Effect.orDie),
           // A malformed question names no session: it has no account to name.
           session: (input) =>
@@ -444,5 +444,9 @@ const decodeStartedQuery = Schema.decodeUnknownOption(StartedQuery)
 
 const providerOf = (input: unknown) =>
   typeof input === "object" && input !== null && "providerID" in input ? String(input.providerID) : ""
+
+/** The model a pace question names, if it names one as a string. */
+const modelOf = (input: unknown) =>
+  typeof input === "object" && input !== null && "model" in input && typeof input.model === "string" ? input.model : undefined
 
 export default make(live)

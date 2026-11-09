@@ -11,6 +11,7 @@
 // share of one account's week until it has, so a wave on one host holds the
 // next start on any host before the readings show it.
 import { Schema } from "effect"
+import { limitsModel, scopeOf } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
 
 const WEEK = 7 * 86400000
@@ -42,13 +43,48 @@ export interface Inflight {
 
 export const NO_INFLIGHT: Inflight = { starts: [], cost: 0, settleMs: 0 }
 
-/** The pace of a pool whose accounts read `accounts` at `now`, with the agents `inflight` charged on top. */
-export function poolPace(accounts: ReadonlyArray<AccountStatus>, now: number, inflight: Inflight = NO_INFLIGHT): Pace {
+/**
+ * Until when an account cannot take a start of `model`: its hold, and, for a
+ * model with a window of its own on the account (`7d:Fable` for
+ * `claude-fable-5-2`), that window while it is spent. None when it can.
+ */
+const blockedUntil = (account: AccountStatus, now: number, model: string | undefined): number | undefined => {
+  const untils = [
+    ...(account.hold !== undefined && account.hold.until > now ? [account.hold.until] : []),
+    ...(model === undefined
+      ? []
+      : (account.reading?.windows ?? []).flatMap((w) => {
+          const scope = scopeOf(w.name)
+          return scope !== undefined && limitsModel(scope, model) && w.utilization >= 1 && w.resetAt !== undefined && w.resetAt > now
+            ? [w.resetAt]
+            : []
+        })),
+  ]
+  return untils.length ? Math.max(...untils) : undefined
+}
+
+/**
+ * The pace of a pool whose accounts read `accounts` at `now`, with the agents
+ * `inflight` charged on top, for a start of `model` when one is named. A
+ * model's own weekly window (`7d:Fable`) holds only that model's starts; the
+ * account's 5-hour and weekly windows hold every start, since every model's
+ * requests spend them.
+ */
+export function poolPace(accounts: ReadonlyArray<AccountStatus>, now: number, inflight: Inflight = NO_INFLIGHT, model?: string): Pace {
   if (!accounts.length) return { ok: true, measured: false, reason: "no pooled account readings" }
-  const available = accounts.filter((a) => !a.hold || a.hold.until <= now)
+  const available = accounts.filter((a) => blockedUntil(a, now, model) === undefined)
   if (!available.length) {
-    const untils = accounts.flatMap((a) => (a.hold === undefined ? [] : [a.hold.until]))
-    return { ok: false, measured: true, reason: "all pool accounts are held", retryAt: Math.min(...untils) }
+    const untils = accounts.flatMap((a) => {
+      const until = blockedUntil(a, now, model)
+      return until === undefined ? [] : [until]
+    })
+    const scoped = accounts.some((a) => a.hold === undefined || a.hold.until <= now)
+    return {
+      ok: false,
+      measured: true,
+      reason: scoped ? `every pool account has spent ${model}'s own weekly window` : "all pool accounts are held",
+      retryAt: Math.min(...untils),
+    }
   }
   const known = accounts.flatMap((a) => {
     const w = a.reading?.windows.find((w) => w.name === "7d")
