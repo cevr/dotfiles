@@ -99,7 +99,8 @@ describe("the dry run", () => {
   test("prints each schedule's entry, prompt file, differences and pause, and touches nothing", async () => {
     const dir = mkdtempSync(join(tmpdir(), "migrate-schedules-"))
     const file = join(dir, "rows.json")
-    writeFileSync(file, JSON.stringify(rows))
+    // The script plans at the real clock, so the PR watch's end moves with it; a fixed end would expire.
+    writeFileSync(file, JSON.stringify(rows.map((item) => (item.id === "sch_watch" ? { ...item, ends_at: Date.now() + 3 * 86_400_000 } : item))))
     const prompts = join(dir, "prompts")
     const child = Bun.spawn([process.execPath, join(import.meta.dir, "migrate-schedules.ts"), "--rows", file, "--prompts", prompts], { stdout: "pipe", stderr: "pipe", env: { PATH: process.env.PATH ?? "", HOME: dir } })
     const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited])
