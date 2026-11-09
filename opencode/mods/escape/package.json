@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Escape on a busy session takes back the prompt just sent, then interrupts.",
+  "description": "Escape on a busy session takes back the prompt just sent, then interrupts; Ctrl+Enter interrupts and sends what waits.",
   "exports": {
     "./*": "./*.ts"
   }

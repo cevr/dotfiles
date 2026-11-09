@@ -5,8 +5,18 @@
 // focused editor whenever Escape reaches the base keymap mode on a session
 // (a dialog, the autocomplete popup, a form and the composer panel each push
 // a mode of their own), so its text is the renderer's `currentFocusedEditor`
-// text; an attachment sits in that text as its label.
+// text; an attachment sits in that text as its label. Ctrl+Enter reads the
+// same view and, from the inbox, the prompts still waiting (`waiting`).
 import type { Prompt, View } from "../escape.ts"
+import type { Waiting } from "../send.ts"
+
+/** One item of the session's inbox (`data.session.pending`), as far as the plugin reads it. */
+export interface InboxItem {
+  readonly id: string
+  readonly type: string
+  readonly delivery?: "steer" | "queue"
+  readonly time?: { readonly created: number }
+}
 
 /**
  * The reads the view needs from the plugin's `context.data`, narrowed to what
@@ -17,7 +27,7 @@ export interface Reads {
     get(sessionID: string): { readonly parentID?: string; readonly revert?: { readonly messageID?: string } } | undefined
     family(sessionID: string): ReadonlyArray<string>
     status(sessionID: string): "idle" | "running"
-    readonly pending: { list(sessionID: string): ReadonlyArray<{ readonly id: string; readonly type: string }> }
+    readonly pending: { list(sessionID: string): ReadonlyArray<InboxItem> }
     readonly permission: { list(sessionID: string): ReadonlyArray<unknown> | undefined }
     readonly form: { list(sessionID: string): ReadonlyArray<unknown> | undefined }
     readonly message: { list(sessionID: string): ReadonlyArray<Message> }
@@ -75,3 +85,15 @@ export const read = (reads: Reads, route: Route, editor: Editor): View | undefin
     composer: editor === null || editor === undefined ? "none" : editor.plainText === "" ? "empty" : "draft",
   }
 }
+
+/**
+ * The prompts the session's runner has not taken, oldest first: the user
+ * items of its inbox (a program's synthetic note or a compaction is not the
+ * reader's to send). An item with no delivery is read as a steer.
+ */
+export const waiting = (reads: Reads, sessionID: string): ReadonlyArray<Waiting> =>
+  reads.session.pending
+    .list(sessionID)
+    .filter((item) => item.type === "user")
+    .toSorted((a, b) => (a.time?.created ?? 0) - (b.time?.created ?? 0))
+    .map((item) => ({ id: item.id, delivery: item.delivery ?? "steer" }))
