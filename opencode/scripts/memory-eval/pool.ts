@@ -122,6 +122,27 @@ export class PoolLimit extends Error {
   }
 }
 
+/**
+ * The account whose weekly reading rose most since `start`, when it rose more than `limit` points, else undefined.
+ * An account with no reading at either end is skipped: nothing is known of it. The readings include the owner's own
+ * sessions, so a run stops on their use too.
+ */
+export const weeklyDrift = (
+  start: Record<string, number | undefined>,
+  now: Record<string, number | undefined>,
+  limit: number,
+): { readonly credentialID: string; readonly points: number } | undefined => {
+  let most: { credentialID: string; points: number } | undefined
+  for (const [credentialID, after] of Object.entries(now)) {
+    const before = start[credentialID]
+    if (before === undefined || after === undefined) continue
+    // A rise only: a fall is the week's window resetting, which spends nothing.
+    const points = after - before
+    if (points > limit && (most === undefined || points > most.points)) most = { credentialID, points }
+  }
+  return most
+}
+
 /** One answer of Anthropic, its tool names turned back. */
 export interface Sent {
   readonly status: number
@@ -224,6 +245,16 @@ export class Pool {
         return `${account.credentialID} 5h ${pct(five?.utilization)} 7d ${pct(week?.utilization)}${account.hold === undefined ? "" : ` held (${account.hold.kind})`}`
       })
       .join(" · ")
+  }
+
+  /** Each eval account's 7-day utilization in points (0–100), as last read; undefined with no reading. */
+  weekly(): Record<string, number | undefined> {
+    return Object.fromEntries(
+      status(this.state, this.now(), this.rules).map((account) => {
+        const week = account.reading?.windows.find((window) => window.name === "7d")
+        return [account.credentialID, week === undefined ? undefined : week.utilization * 100]
+      }),
+    )
   }
 
   /** The step a session's request cost, on the account it went out on. */

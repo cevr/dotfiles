@@ -3,8 +3,8 @@
 // pool does (away from the owner's live sessions and holds), fails over on a
 // 429 and stops when the pace or every account says so.
 import { describe, expect, test } from "bun:test"
-import { create, Ledger, poolTransport, useSleep, useTransport } from "./api.ts"
-import { type Live, Pool, PoolLimit, type Source } from "./pool.ts"
+import { costOf, create, Ledger, MODEL, poolTransport, useModel, useSleep, useTransport } from "./api.ts"
+import { type Live, Pool, PoolLimit, type Source, weeklyDrift } from "./pool.ts"
 import type { AccountStatus } from "../../mods/pool/status.ts"
 import type { Pace } from "../../mods/pool/pace.ts"
 
@@ -128,6 +128,28 @@ describe("the pool transport", () => {
 
     const room = new Pool({ source: source(["gent:a"]), live: live([account("gent:a")]), now: () => NOW })
     expect((await room.pace()).ok).toBe(true)
+  })
+
+  test("Opus runs only with the owner's approval; Haiku needs none", () => {
+    expect(() => useModel("claude-opus-5-5")).toThrow("needs the owner's approval")
+    expect(() => useModel("claude-sonnet-5")).toThrow("--model must be one of")
+    useModel("claude-opus-5-5", true)
+    expect(MODEL).toBe("claude-opus-5-5")
+    expect(costOf({ input: 1e6, output: 1e6, cacheWrite: 1e6, cacheRead: 1e6 })).toBeCloseTo(29.2)
+    useModel("claude-haiku-5-5")
+    expect(MODEL).toBe("claude-haiku-5-5")
+  })
+
+  test("weekly: each account's 7-day reading in points; a rise past the limit names the account, a reset does not", async () => {
+    const reading = (week: number) => ({ at: NOW, windows: [{ name: "7d", utilization: week, resetAt: NOW + 48 * HOUR }] })
+    const pool = new Pool({ source: source(["gent:a", "gent:b"]), live: live([account("gent:a", { reading: reading(0.42) })]), now: () => NOW })
+    await pool.refresh()
+    expect(pool.weekly()).toEqual({ "gent:a": 42, "gent:b": undefined })
+
+    const start = { "gent:a": 42, "gent:b": 10, "gent:c": undefined }
+    expect(weeklyDrift(start, { "gent:a": 46, "gent:b": 14, "gent:c": 90 }, 5)).toBeUndefined()
+    expect(weeklyDrift(start, { "gent:a": 48, "gent:b": 17, "gent:c": 90 }, 5)).toEqual({ credentialID: "gent:b", points: 7 })
+    expect(weeklyDrift(start, { "gent:a": 2, "gent:b": 10 }, 5)).toBeUndefined()
   })
 
   test("create sends through the pool, charges the ledger and waits out a hold that ends soon", async () => {

@@ -6,6 +6,7 @@
 //   bun scripts/memory-eval/eval.ts [--dry] [--repeats 8] [--cap 5] [--concurrency 4] [--model claude-haiku-5-5]
 //                                   [--arms none,ours,ours+pointer,native,kernel,ours+nudge,kernel+nudge,kernel+direct,kernel+direct+describe,kernel+direct+followup] [--scenarios webapp,dotfiles,billing,orders]
 //                                   [--out out/memory-eval/<stamp>] [--api-key] [--gent-dir <dir>]
+//                                   [--weekly-limit 5] [--owner-approved-opus]
 //
 // --dry runs one episode per arm. The run stops starting requests once --cap
 // dollars (API prices, a measure of size on the pool) are spent. Each episode
@@ -13,13 +14,15 @@
 //
 // Requests go out on the pool's Claude accounts (pool.ts), placed as the pool
 // places them; before each episode the live pool's pace and the eval accounts'
-// own are asked, and a no stops the run. `--api-key` sends with the API key
+// own are asked, and a no stops the run, as does any eval account's weekly
+// reading rising more than --weekly-limit points since the start. `--model
+// claude-opus-5-5` runs only with `--owner-approved-opus`. `--api-key` sends with the API key
 // in OpenCode's auth file instead; `--gent-dir` names another gent store.
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { CapReached, keyTransport, Ledger, MODEL, poolTransport, useModel, useTransport } from "./api.ts"
 import { type Arm, ARMS, type EpisodeResult, runEpisode } from "./episode.ts"
-import { gentSource, liveServer, Pool, PoolLimit } from "./pool.ts"
+import { gentSource, liveServer, Pool, PoolLimit, weeklyDrift } from "./pool.ts"
 import { report } from "./report.ts"
 import { type Scenario, SCENARIOS } from "./scenarios.ts"
 
@@ -27,7 +30,9 @@ const flag = (name: string): string | undefined => {
   const index = process.argv.indexOf(`--${name}`)
   return index === -1 ? undefined : process.argv[index + 1]
 }
-useModel(flag("model") ?? MODEL)
+useModel(flag("model") ?? MODEL, process.argv.includes("--owner-approved-opus"))
+/** The most any eval account's weekly reading may rise over the run, in points, before the run stops. */
+const weeklyLimit = Number(flag("weekly-limit") ?? 5)
 const dry = process.argv.includes("--dry")
 const repeats = Number(flag("repeats") ?? 8)
 const cap = Number(flag("cap") ?? 5)
@@ -70,6 +75,7 @@ else {
   if (pool.accounts.length === 0) fail("the gent store lists no account: pass --gent-dir, or --api-key")
   if (!pace.ok) fail(`the pool says wait: ${pace.reason}`)
 }
+const weeklyStart = pool?.weekly() ?? {}
 
 console.log(`memory-eval: ${jobs.length} episodes on ${MODEL} via ${pool === undefined ? "the API key" : "the pool"}, concurrency ${concurrency}, cap $${cap}, out ${out}`)
 
@@ -80,6 +86,12 @@ const worker = async () => {
     if (pace !== undefined && !pace.ok) {
       stopped = true
       console.log(`■ the pool says wait: ${pace.reason}; stopping · ${pool!.line()}`)
+      return
+    }
+    const drift = pool === undefined ? undefined : weeklyDrift(weeklyStart, pool.weekly(), weeklyLimit)
+    if (drift !== undefined) {
+      stopped = true
+      console.log(`■ ${drift.credentialID}'s weekly reading rose ${drift.points.toFixed(1)} points since the start (limit ${weeklyLimit}); stopping · ${pool!.line()}`)
       return
     }
     // Another worker may have taken the last job while this one asked.

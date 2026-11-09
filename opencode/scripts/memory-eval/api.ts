@@ -8,20 +8,26 @@ import { join } from "node:path"
 import { type Pool, PoolLimit } from "./pool.ts"
 
 /**
- * The models the eval may call, Haiku only, with their USD prices per million tokens (platform.claude.com pricing,
- * 2026-10-07; Haiku 5.5 for prompts up to 100k tokens). The newest Haiku is the default; the older one is there for when
- * the key cannot reach it.
+ * The models the eval may call, with their USD prices per million tokens (platform.claude.com pricing, 2026-10-07;
+ * Haiku 5.5 for prompts up to 100k tokens; Opus 5.5 from models.dev, 2026-11-09). The newest Haiku is the default; the
+ * older one is there for when the key cannot reach it. Opus is the model production runs; a run on it needs the
+ * owner's approval, given with `--owner-approved-opus` (round 5 had it, for one round).
  */
 export const MODELS = {
   "claude-haiku-5-5": { input: 0.1, output: 0.5, cacheWrite: 0.125, cacheRead: 0.01 },
   "claude-haiku-4-5-20251001": { input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1 },
+  "claude-opus-5-5": { input: 4, output: 20, cacheWrite: 5, cacheRead: 0.2 },
 } as const
 export type ModelId = keyof typeof MODELS
 
+/** The models that need the owner's approval for a run. */
+const APPROVAL = new Set<string>(["claude-opus-5-5"])
+
 export let MODEL: ModelId = "claude-haiku-5-5"
 
-export const useModel = (id: string): void => {
-  if (!(id in MODELS)) throw new Error(`--model must be one of ${Object.keys(MODELS).join(", ")}: this eval calls Haiku only`)
+export const useModel = (id: string, approved = false): void => {
+  if (!(id in MODELS)) throw new Error(`--model must be one of ${Object.keys(MODELS).join(", ")}`)
+  if (APPROVAL.has(id) && !approved) throw new Error(`${id} needs the owner's approval for this run: pass --owner-approved-opus only when the owner gave it; otherwise use a Haiku`)
   MODEL = id as ModelId
 }
 
