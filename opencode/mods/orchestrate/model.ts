@@ -263,7 +263,7 @@ export const layer = (config: Config) =>
       /** The hold on a model, if any, with each pace's reply as asked: the pool's, the Codex admission's. */
       const holdOf = Effect.fnUntraced(function* (ref: ModelRef, agent: string) {
         const whose = config.codex?.providers.includes(ref.providerID) ? "codex" : "pool"
-        const poolReply = whose === "pool" || config.codex?.pool === true ? yield* pool.pace(ref.providerID) : undefined
+        const poolReply = whose === "pool" || config.codex?.pool === true ? yield* pool.pace(ref.providerID, ref.id) : undefined
         const pooled = poolReply === undefined ? undefined : paceOfReply(poolReply)
         const codexReply =
           whose === "codex" && (pooled === undefined || !pooled.measured) ? yield* codex.admit(ref.id, isRole(agent) ? agent : "none") : undefined

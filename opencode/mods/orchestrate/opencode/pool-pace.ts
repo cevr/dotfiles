@@ -7,8 +7,12 @@ import { Cause, Effect, Layer, Schema } from "effect"
 import { Answered, FailedOpen, Pace } from "../pace.ts"
 import { PoolPace } from "../service.ts"
 
-/** The pool's `pace` method, as the plugin's RPC client calls it. */
-export type Ask = (input: { readonly providerID: string }) => Effect.Effect<unknown, unknown>
+/**
+ * The pool's `pace` method, as the plugin's RPC client calls it: of a start's
+ * `model` by its bare id (`claude-fable-5-2`), the form the pool matches a
+ * model's own window (`7d:Fable`) against.
+ */
+export type Ask = (input: { readonly providerID: string; readonly model?: string }) => Effect.Effect<unknown, unknown>
 
 /** The pool's `started` method. */
 export type Tell = (input: { readonly providerID: string }) => Effect.Effect<unknown, unknown>
@@ -27,8 +31,9 @@ const decode = Schema.decodeUnknownOption(Pace)
 export const layer = (ask: Ask, tell: Tell) =>
   Layer.succeed(PoolPace, {
     pace: Effect.fn("PoolPace.pace")(
-      function* (providerID: string) {
-        const answer = yield* ask({ providerID }).pipe(Effect.timeoutOption(TIMEOUT))
+      function* (providerID: string, model?: string) {
+        const id = model === undefined ? undefined : bareId(model)
+        const answer = yield* ask({ providerID, ...(id === undefined || id === "" ? {} : { model: id }) }).pipe(Effect.timeoutOption(TIMEOUT))
         if (answer._tag === "None") return FailedOpen.make({ why: `timeout: no answer in ${TIMEOUT}` })
         const pace = decode(answer.value)
         return pace._tag === "Some" ? Answered.make({ pace: pace.value }) : FailedOpen.make({ why: `undecodable: ${clip(JSON.stringify(answer.value) ?? String(answer.value))}` })
@@ -42,6 +47,9 @@ export const layer = (ask: Ask, tell: Tell) =>
       Effect.catchCause(() => Effect.void),
     ),
   })
+
+/** A model's bare id: `anthropic/claude-fable-5-2#high` → `claude-fable-5-2`. */
+const bareId = (model: string) => model.slice(model.indexOf("/") + 1).split("#")[0]!
 
 /** Why an ask failed, in a few words: no pool, the host's RPC failure, or the error's message. */
 const whyOf = (cause: Cause.Cause<unknown>) => {

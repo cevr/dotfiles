@@ -22,6 +22,29 @@ const told = () => Effect.succeed({})
 const replyOf = (ask: OpenCodePoolPace.Ask) =>
   PoolPace.use((pool) => pool.pace("anthropic")).pipe(Effect.provide(OpenCodePoolPace.layer(ask, told)))
 
+test("the pool is asked of a start's model by its bare id, however it is named, and of the provider alone when none is", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Array<unknown> = []
+      const ask: OpenCodePoolPace.Ask = (input) => Effect.sync(() => asked.push(input)).pipe(Effect.as({ ok: true, measured: false, reason: "room" }))
+      const pool = OpenCodePoolPace.layer(ask, told)
+      yield* PoolPace.use((pace) =>
+        Effect.all([
+          pace.pace("anthropic", "claude-fable-5-2"),
+          pace.pace("anthropic", "anthropic/claude-fable-5-2#high"),
+          pace.pace("anthropic", "claude-opus-5-5#max"),
+          pace.pace("anthropic"),
+        ]),
+      ).pipe(Effect.provide(pool))
+      expect(asked).toEqual([
+        { providerID: "anthropic", model: "claude-fable-5-2" },
+        { providerID: "anthropic", model: "claude-fable-5-2" },
+        { providerID: "anthropic", model: "claude-opus-5-5" },
+        { providerID: "anthropic" },
+      ])
+    }),
+  ))
+
 test("a measured answer is the pool's own", () =>
   Effect.runPromise(
     Effect.gen(function* () {

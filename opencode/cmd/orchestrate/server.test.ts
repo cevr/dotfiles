@@ -29,6 +29,8 @@ import * as OpenCodePoolPace from "@dotfiles/opencode-orchestrate/opencode/pool-
 import * as OpenCodeRuns from "@dotfiles/opencode-orchestrate/opencode/runs"
 import * as OpenCodeSteer from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
+import { NO_INFLIGHT, poolPace } from "@dotfiles/opencode-pool/pace"
+import type { AccountStatus } from "@dotfiles/opencode-pool/status"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { BACKOFF_MS, NOTICE_TITLE, RESUME_PROMPT, resumePrompt } from "@dotfiles/opencode-orchestrate/restart"
 import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
@@ -1037,6 +1039,57 @@ describe("the model experiment", () => {
         const call = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x" })
         expect(call.input).toMatchObject({ model: "anthropic/claude-opus#high" })
         expect(line(plugin.logged())).toMatchObject({ experiment: { arm: "trial", fellBack: "anthropic/claude-fable is not offered" } })
+      }),
+    ))
+
+  test("the account's Fable week is spent and its main windows are free: a trial start falls back to Opus, saying why; an Opus start starts on Opus", () =>
+    scenario(
+      Effect.gen(function* () {
+        const day = 86_400_000
+        // The pool's own pace over one account: room in its 5-hour and weekly windows, none in Fable's week.
+        const account: AccountStatus = {
+          credentialID: "a",
+          load: 0,
+          live: 0,
+          noRoom: false,
+          reading: {
+            at: now,
+            windows: [
+              { name: "5h", utilization: 0.1, resetAt: now + 3_600_000 },
+              { name: "7d", utilization: 0.1, resetAt: now + 3 * day },
+              { name: "7d:Fable", utilization: 1, resetAt: now + 2 * day },
+            ],
+          },
+        }
+        const asked: Array<unknown> = []
+        const poolAsk: OpenCodePoolPace.Ask = (input) =>
+          Effect.sync(() => {
+            asked.push(input)
+            return poolPace([account], now, NO_INFLIGHT, input.model)
+          })
+        const plugin = yield* start(options, { model, variants: ["high"], others: [fable, sol], poolAsk, codex: room })
+        const trial = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x" })
+        expect(trial.input).toMatchObject({ model: "anthropic/claude-opus#high" })
+        const control = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner auth r1", prompt: "x" })
+        expect(control.input).toMatchObject({ model: "anthropic/claude-opus#high" })
+        const [trialLine, controlLine] = plugin.logged().map((text) => JSON.parse(text) as Record<string, unknown>)
+        expect(trialLine).toMatchObject({
+          model: "anthropic/claude-opus#high",
+          pace: { ok: true, measured: true },
+          experiment: {
+            arm: "trial",
+            model: "anthropic/claude-fable",
+            fellBack: "anthropic/claude-fable#high held: every pool account has spent claude-fable's own weekly window",
+          },
+        })
+        expect(trialLine!.fallback).toBeUndefined()
+        expect(controlLine).toMatchObject({ model: "anthropic/claude-opus#high", pace: { ok: true, measured: true }, experiment: { arm: "control" } })
+        // The pool is asked of each model by its bare id, as its windows name models.
+        expect(asked).toEqual([
+          { providerID: "anthropic", model: "claude-fable" },
+          { providerID: "anthropic", model: "claude-opus" },
+          { providerID: "anthropic", model: "claude-opus" },
+        ])
       }),
     ))
 
