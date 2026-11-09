@@ -6,20 +6,34 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { addUsage, type Block, create, emptyUsage, type Ledger, type Message, MODEL, type ModelId, type Usage } from "./api.ts"
 import { grade, type Graded } from "./grade.ts"
-import { type MemoryArm, native, ours, type Stored } from "./memory.ts"
+import { type MemoryArm, native, ours, type Stored, type Variant, VARIANTS } from "./memory.ts"
 import type { Call, Scenario } from "./scenarios.ts"
 import { kernelTool, listingOf, newKernel } from "./kernel.ts"
 import { NUDGE, retryFixed, type ShellRun } from "./retry.ts"
 import { basePrompt, DISTRACTORS, SHELL, type ToolDef } from "./tools.ts"
 import { newWorld, runDistractor, runShell } from "./world.ts"
 
-export const ARMS = ["none", "ours", "ours+pointer", "native", "kernel", "ours+nudge", "kernel+nudge", "kernel+direct"] as const
+export const ARMS = [
+  "none",
+  "ours",
+  "ours+pointer",
+  "native",
+  "kernel",
+  "ours+nudge",
+  "kernel+nudge",
+  "kernel+direct",
+  "kernel+direct+describe",
+  "kernel+direct+followup",
+] as const
 export type Arm = (typeof ARMS)[number]
 
 /** The arms that reach memory through the kernel (kernel.ts): its only tool, or beside the memory tools. */
 export const throughKernel = (arm: Arm): boolean => arm.startsWith("kernel")
-/** The kernel arm as production runs it since 9535f78: the memory tools offered directly beside the kernel. */
-export const directBeside = (arm: Arm): boolean => arm === "kernel+direct"
+/** The kernel arm as production runs it since 9535f78: the memory tools offered directly beside the kernel; round 4's candidates on it. */
+export const directBeside = (arm: Arm): boolean => arm.startsWith("kernel+direct")
+/** The words of memory_save an arm offers: production's, or a round-4 candidate's (memory.ts). */
+export const variantOf = (arm: Arm): Variant =>
+  arm === "kernel+direct+describe" ? VARIANTS.describe : arm === "kernel+direct+followup" ? VARIANTS.followup : VARIANTS.production
 /** The arms whose shell results carry the gotcha trigger (retry.ts). */
 export const nudged = (arm: Arm): boolean => arm.endsWith("+nudge")
 /** The arms on our memory, with its digest. */
@@ -73,7 +87,7 @@ const runSession = async (
   session: 1 | 2,
   repeat: number,
 ): Promise<SessionResult> => {
-  const world = newWorld(scenario.cwd, scenario.files, scenario.branches[session - 1]!, scenario.noise, scenario.outside)
+  const world = newWorld(scenario.cwd, scenario.files, scenario.branches[session - 1]!, scenario.noise, scenario.outside, scenario.history)
   const sessionID = `session-${session}`
   /** The session as the pool places it: one account for its life, so its prompt cache stays there. */
   const placed = `memory-eval/${arm}/${scenario.id}/${repeat}/s${session}`
@@ -184,7 +198,7 @@ const runSession = async (
 const memoryFor = async (arm: Arm, dir: string): Promise<MemoryArm | undefined> => {
   if (arm === "none") return undefined
   if (arm === "native") return native(dir)
-  return ours(dir)
+  return ours(dir, variantOf(arm))
 }
 
 /** One episode on `arm`, its scratch store in a temp directory removed at the end. */

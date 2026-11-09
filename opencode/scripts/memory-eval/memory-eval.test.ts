@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { HEADING } from "../../mods/memory/digest.ts"
 import { grade, isRead } from "./grade.ts"
-import { native, nativeCommand, ours, resolveMemoryPath } from "./memory.ts"
+import { FOLLOWUP_LINE, GOTCHA_SENTENCE, native, nativeCommand, ours, resolveMemoryPath, VARIANTS } from "./memory.ts"
 import { type Call, SCENARIOS } from "./scenarios.ts"
 import { commitMessages, newWorld, runShell, segments, stagesAll } from "./world.ts"
 
@@ -47,12 +47,92 @@ describe("the fake shell", () => {
   test("lists, finds and greps the fake repository, through pipes and absolute paths", () => {
     const s = scenario("orders")
     const world = newWorld(s.cwd, s.files, "main", s.noise)
-    expect(runShell(`ls -la ${s.cwd}/internal/orders/`, world, s.rules).out).toBe("repo_test.go\nsku.go\ntotal.go\ntotal_test.go")
+    expect(runShell(`ls ${s.cwd}/internal/orders/`, world, s.rules).out).toBe("repo_test.go\nsku.go\ntotal.go\ntotal_test.go")
+    // -l is the long form, as ls prints it; -a adds the dot entries.
+    const long = runShell(`ls -la ${s.cwd}/internal/orders/`, world, s.rules).out.split("\n")
+    expect(long[0]).toBe("total 48")
+    expect(long.at(-1)).toMatch(/^-rw-r--r--  1 dev  staff +\d+ Nov  9 10:12 total_test.go$/)
     expect(runShell(`find ${s.cwd} -name "*_test.go" -type f 2>/dev/null | head -1`, world, s.rules).out).toBe(`${s.cwd}/internal/orders/total_test.go`)
     expect(runShell(`grep -rn "ParseSKU" internal/`, world, s.rules).out).toContain("internal/orders/sku.go:11:func ParseSKU")
     expect(runShell("cat go.mod | head -1", world, s.rules).out).toBe("module github.com/acme/orders")
-    runShell(`git commit -m "fix: sku case"`, world, s.rules)
+    runShell(`sed -i '' 's/invalid sku/bad sku/' internal/orders/sku.go`, world, s.rules)
+    runShell(`git add internal/orders/sku.go && git commit -m "fix: sku case"`, world, s.rules)
     expect(runShell("git log --oneline -2", world, s.rules).out.split("\n")[0]).toEndWith("(HEAD -> main) fix: sku case")
+  })
+
+  test("git keeps HEAD, the index and the files in step: status, diff, commit, amend and reset agree", () => {
+    const s = scenario("webapp")
+    const world = newWorld(s.cwd, s.files, "main", s.noise)
+    const sh = (command: string) => runShell(command, world, s.rules)
+    expect(sh("git status --short").out).toBe("?? .env.local\n?? notes/")
+    expect(sh(`git commit -m "nothing"`).code).toBe(1)
+    sh(`sed -i '' 's/-"/"/' src/lib/slug.ts`)
+    sh("touch src/lib/new.ts")
+    expect(sh("git status --short").out).toBe(" M src/lib/slug.ts\n?? .env.local\n?? notes/\n?? src/lib/new.ts")
+    expect(sh("git diff").out).toContain('@@ -1,3 +1,3 @@\n export function slugify(input: string): string {\n-  return input.toLowerCase().replace(/[^a-z0-9]+/g, "-")\n+  return input.toLowerCase().replace(/[^a-z0-9]+/g, "")\n }')
+    sh("git add src/lib/slug.ts")
+    expect(sh("git status --short").out).toStartWith("M  src/lib/slug.ts")
+    expect(sh("git diff").out).toBe("(no output)")
+    expect(sh("git diff --cached --stat").out).toBe(" src/lib/slug.ts | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)")
+    const committed = sh(`git commit -m "fix: slug"`).out
+    expect(committed).toMatch(/^\[main [0-9a-f]{7}\] fix: slug\n 1 file changed, 1 insertion\(\+\), 1 deletion\(-\)$/)
+    expect(sh("git status --short").out).toBe("?? .env.local\n?? notes/\n?? src/lib/new.ts")
+    expect(sh("git show --stat HEAD").out).toContain("    fix: slug\n\n src/lib/slug.ts | 2 +-")
+    expect(sh("git show HEAD --name-only --format=%s").out).toBe("fix: slug\n\nsrc/lib/slug.ts")
+    sh(`git commit --amend -m "fix: trim slug"`)
+    expect(sh("git log --oneline").out.split("\n")).toHaveLength(4)
+    expect(sh("git log -1 --format=%s").out).toBe("fix: trim slug")
+    expect(sh("git reset --hard HEAD~1").out).toMatch(/^HEAD is now at [0-9a-f]{7} fix: handle empty cart$/)
+    expect(sh("cat src/lib/slug.ts").out).toContain(`"-")`)
+    // Untracked files survive a hard reset, as in git.
+    expect(sh("git status --short").out).toBe("?? .env.local\n?? notes/\n?? src/lib/new.ts")
+  })
+
+  test("runs && || and ; as a shell does, keeps $?, unwraps sh -c, feeds heredocs and writes redirections", () => {
+    const s = scenario("orders")
+    const world = newWorld(s.cwd, s.files, "main", s.noise)
+    const sh = (command: string) => runShell(command, world, s.rules).out
+    expect(sh("test -f go.mod && echo EXISTS || echo GONE")).toBe("EXISTS")
+    expect(sh("test -f nope.go && echo EXISTS || echo GONE")).toBe("GONE")
+    expect(sh("go test ./... ; echo code=$?")).toEndWith("code=1")
+    expect(sh(`bash -lc "cat go.mod | head -1"`)).toBe("module github.com/acme/orders")
+    sh("cat > notes.txt <<'EOF'\nfirst line\nsecond line\nEOF")
+    expect(sh("cat notes.txt")).toBe("first line\nsecond line")
+    sh(`echo "third line" >> notes.txt`)
+    expect(sh("wc -l notes.txt")).toBe("       3 notes.txt")
+    sh("mv notes.txt internal/notes.txt")
+    expect(sh("ls internal")).toBe("notes.txt\norders/")
+    expect(sh("rm internal/notes.txt && ls internal")).toBe("orders/")
+    expect(runShell("rm internal/notes.txt", world, s.rules).code).toBe(1)
+    expect(sh("sed -n '2,3p' internal/orders/total.go")).toBe("\n// Total is the amount due in cents.")
+  })
+
+  test("substitutes $(…), globs as zsh does, makes temp dirs, and answers which, date and a little Python", () => {
+    const s = scenario("orders")
+    const world = newWorld(s.cwd, s.files, "main", s.noise)
+    const sh = (command: string) => runShell(command, world, s.rules)
+    expect(sh(`echo "branch: $(git branch --show-current)"`).out).toBe("branch: main")
+    expect(sh("ls internal/orders/*_test.go").out).toBe("internal/orders/repo_test.go\ninternal/orders/total_test.go")
+    expect(sh("ls internal/*.py")).toEqual({ out: "zsh: no matches found: internal/*.py\n(exit 1)", code: 1 })
+    const dir = sh("mktemp -d").out
+    expect(sh(`cd ${dir} && touch a.txt && ls && pwd`).out).toBe(`a.txt\n${dir}`)
+    expect(sh("cd /tmp && pwd").out).toBe("/tmp")
+    expect(sh("which go uv nope")).toEqual({ out: "/opt/homebrew/bin/go\n/opt/homebrew/bin/uv\nnope not found\n(exit 1)", code: 1 })
+    expect(sh("date").out).toBe("Mon Nov  9 11:20:00 UTC 2026")
+    expect(sh(`python3 -c "import sys; print('hi'); print(sys.executable)"`).out).toBe("hi\n/opt/homebrew/bin/python3")
+    expect(sh(`python3 -c "import sqlalchemy"`).out).toStartWith("Traceback (most recent call last):")
+  })
+
+  test("git: a reset is in the reflog and HEAD@{1} brings the commit back", () => {
+    const s = scenario("orders")
+    const world = newWorld(s.cwd, s.files, "main", s.noise)
+    const sh = (command: string) => runShell(command, world, s.rules).out
+    sh("echo x >> go.mod && git commit -am 'chore: x'")
+    sh("git reset --hard HEAD~1")
+    expect(sh("git reflog").split("\n").map((line) => line.replace(/^[0-9a-f]{7} /, ""))).toEqual(["HEAD@{0}: reset: moving to HEAD~1", "HEAD@{1}: commit: chore: x", "HEAD@{2}: commit: fix: handle empty cart"])
+    sh("git reset --hard HEAD@{1}")
+    expect(sh("git log -1 --format=%s")).toBe("chore: x")
+    expect(sh("tail -1 go.mod")).toBe("x")
   })
 
   test("follows cd, lists the directories around the repository, and runs package scripts from the nearest package.json", () => {
@@ -76,6 +156,68 @@ describe("the fake shell", () => {
   })
 })
 
+describe("the billing world", () => {
+  test("session 1 done the way the owner wants reads true end to end: autogenerate, uv run pytest, a clean commit", () => {
+    const s = scenario("billing")
+    const world = newWorld(s.cwd, s.files, s.branches[0], s.noise, s.outside, s.history)
+    const sh = (command: string) => runShell(command, world, s.rules)
+    expect(sh("pytest").out).toContain("hint: this project's dependencies live in uv's environment")
+    expect(sh("alembic heads").out).toBe("zsh: command not found: alembic\n(exit 127)")
+    expect(sh("uv run alembic heads").out).toBe("0007 (head)")
+    expect(sh("uv run alembic current").out).toEndWith("\n0007 (head)")
+    // Nothing to detect before the model changes.
+    expect(sh("uv run alembic check").out).toEndWith("No new upgrade operations detected.")
+    world.files["app/models.py"] = world.files["app/models.py"]!.replace(
+      'server_default="open")\n',
+      'server_default="open")\n    currency: Mapped[str] = mapped_column(String(3), default="USD", server_default="USD")\n',
+    )
+    const generated = sh(`uv run alembic revision --autogenerate -m "add invoice currency"`).out
+    expect(generated).toContain("Detected added column 'invoices.currency'")
+    expect(generated).toEndWith("Generating /Users/dev/code/billing-api/migrations/versions/0008_add_invoice_currency.py ...  done")
+    const file = world.files["migrations/versions/0008_add_invoice_currency.py"]!
+    expect(file).toContain("down_revision: Union[str, None] = '0007'")
+    expect(file).toContain("op.add_column('invoices', sa.Column('currency', sa.String(length=3), server_default='USD', nullable=False))")
+    expect(file).toContain("op.drop_column('invoices', 'currency')")
+    expect(sh("uv run alembic upgrade head").out).toEndWith("Running upgrade 0007 -> 0008, add invoice currency")
+    expect(sh("uv run alembic heads").out).toBe("0008 (head)")
+    expect(sh("uv run pytest -q").out).toBe(`${"....".padEnd(72)} [100%]\n4 passed in 0.40s`)
+    expect(sh("git status --short").out).toBe(" M app/models.py\n?? migrations/versions/0008_add_invoice_currency.py")
+    sh("git add app/models.py migrations/versions/0008_add_invoice_currency.py")
+    expect(sh(`git commit -m "BILL-142: add invoice currency"`).out).toContain("2 files changed")
+    expect(sh("git status").out).toBe("On branch BILL-142-invoice-currency\nnothing to commit, working tree clean")
+    expect(sh("git log --oneline -2").out).toMatch(/^[0-9a-f]{7} \(HEAD -> BILL-142-invoice-currency\) BILL-142: add invoice currency\n[0-9a-f]{7} chore: bump fastapi to 0.115$/)
+  })
+
+  test("a nullable timestamp generates as one; a hand-written revision beside a generated one makes two heads", () => {
+    const s = scenario("billing")
+    const world = newWorld(s.cwd, s.files, s.branches[1], s.noise, s.outside, s.history)
+    const sh = (command: string) => runShell(command, world, s.rules)
+    world.files["app/models.py"] += "    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)\n"
+    sh(`uv run alembic revision --autogenerate -m "add invoice paid_at"`)
+    expect(world.files["migrations/versions/0008_add_invoice_paid_at.py"]).toContain("sa.Column('paid_at', sa.DateTime(timezone=True), nullable=True)")
+    world.files["migrations/versions/0008_paid_at.py"] = "revision = '0009'\ndown_revision = '0007'\n"
+    expect(runShell("uv run alembic upgrade head", world, s.rules).code).toBe(255)
+    expect(sh("rm migrations/versions/0008_paid_at.py && uv run alembic heads").out).toBe("0008 (head)")
+  })
+
+  test("the checkout's .venv and billing.db are ignored; a scratch database through -c starts empty", () => {
+    const s = scenario("billing")
+    const world = newWorld(s.cwd, s.files, s.branches[0], s.noise, s.outside, s.history)
+    const sh = (command: string) => runShell(command, world, s.rules)
+    expect(sh("git status --short").out).toBe("(no output)")
+    expect(sh("ls -a").out).toContain(".venv/")
+    expect(sh("git add billing.db").code).toBe(1)
+    expect(sh(".venv/bin/pytest -q").out).toEndWith("4 passed in 0.40s")
+    expect(sh("sqlite3 billing.db 'select version_num from alembic_version'").out).toBe("0007")
+    sh("cp alembic.ini /tmp/scratch.ini && sed -i '' 's|sqlite:///./billing.db|sqlite:////tmp/scratch.db|' /tmp/scratch.ini")
+    expect(sh("uv run alembic -c /tmp/scratch.ini current").out).toBe("INFO  [alembic.runtime.migration] Context impl SQLiteImpl.\nINFO  [alembic.runtime.migration] Will assume non-transactional DDL.")
+    expect(sh("uv run alembic -c /tmp/scratch.ini upgrade head").out).toContain("Running upgrade  -> 0006, create invoices")
+    expect(sh("sqlite3 /tmp/scratch.db 'pragma table_info(invoices)'").out).toBe("0|id|INTEGER|1||1\n1|customer_id|INTEGER|1||0\n2|amount_cents|INTEGER|1||0\n3|status|VARCHAR(16)|1||0")
+    // The checkout's own database did not move.
+    expect(sh("uv run alembic current").out).toEndWith("0007 (head)")
+  })
+})
+
 describe("the graders", () => {
   test("webapp: branch prefix, TEST_ENV on the first test run, staging by path", () => {
     const good = [shell("git checkout -b cvr/slug-dashes"), shell("TEST_ENV=unit bun run test"), shell("git add src/lib/slug.ts && git commit -m 'fix: trim dashes'")]
@@ -90,13 +232,18 @@ describe("the graders", () => {
     expect(scenario("orders").grade([shell("gh pr review 318 --request-review mlee")]).reviewer).toBe(false)
   })
 
-  test("billing: a hand-written migration fails the autogenerate fact", () => {
-    const calls: Array<Call> = [
-      { session: 2, step: 0, name: "write", input: { path: "migrations/versions/0008_paid_at.py", content: "" }, output: "", error: false },
-      shell("uv run pytest"),
-      shell(`git commit -m "BILL-207: add paid_at"`),
-    ]
-    expect(scenario("billing").grade(calls)).toEqual({ "uv-run": true, autogenerate: false, "ticket-prefix": true })
+  test("billing: a hand-written migration fails the autogenerate fact; checking the generated one does not", () => {
+    const write = (path: string): Call => ({ session: 2, step: 0, name: "write", input: { path, content: "" }, output: "", error: false })
+    const generate = shell(
+      `uv run alembic revision --autogenerate -m "add paid_at"`,
+      "  Generating /Users/dev/code/billing-api/migrations/versions/0008_add_paid_at.py ...  done",
+    )
+    const commit = shell(`git commit -m "BILL-207: add paid_at"`)
+    const s = scenario("billing")
+    expect(s.grade([write("migrations/versions/0008_paid_at.py"), generate, shell("uv run pytest"), commit])).toEqual({ "uv-run": true, autogenerate: false, "ticket-prefix": true })
+    expect(s.grade([shell("cat > migrations/versions/0008_paid_at.py <<'EOF'\nx\nEOF"), generate]).autogenerate).toBe(false)
+    // Fixing the generated file's column type is checking it, not hand-writing it.
+    expect(s.grade([generate, write("/Users/dev/code/billing-api/migrations/versions/0008_add_paid_at.py"), shell("pytest"), commit])).toEqual({ "uv-run": false, autogenerate: true, "ticket-prefix": true })
   })
 
   test("a fact is saved when every key matches one stored document; off-list notes are counted", () => {
@@ -131,6 +278,21 @@ describe("the native memory handler", () => {
 })
 
 describe("our plugin as the eval hosts it", () => {
+  test("round 4's variants change only memory_save: one sentence in its description, or one line after its answer", async () => {
+    const plain = await ours(scratch())
+    const describe_ = await ours(scratch(), VARIANTS.describe)
+    const followup = await ours(scratch(), VARIANTS.followup)
+    try {
+      const saveOf = (arm: typeof plain) => (arm.tools as Array<{ name: string; description: string }>).find((tool) => tool.name === "memory_save")!.description
+      expect(saveOf(describe_)).toBe(saveOf(plain).replace("its cause.", `its cause. ${GOTCHA_SENTENCE}`))
+      expect(saveOf(followup)).toBe(saveOf(plain))
+      expect((await followup.call("s", "memory_save", { text: "acme-web: tests need TEST_ENV=unit" })).text).toBe(`Saved #1 (project).\n\n${FOLLOWUP_LINE}`)
+      expect((await plain.call("s", "memory_save", { text: "acme-web: tests need TEST_ENV=unit" })).text).toBe("Saved #1 (project).")
+    } finally {
+      await Promise.all([plain.close(), describe_.close(), followup.close()])
+    }
+  })
+
   test("offers its three tools; a note saved in one session is the next session's digest", async () => {
     const arm = await ours(scratch())
     try {

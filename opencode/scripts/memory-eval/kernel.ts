@@ -148,15 +148,50 @@ const hostModules = (
   }
   const existsSync = (path: unknown) => !answer("read", { path: String(path) }).error
   const readdirSync = (path: unknown) => readFileSync(path).split("\n").filter((line) => line !== "").map((line) => line.replace(/\/$/, ""))
+  // The rest of fs as the shell commands that do the same, so a removal or a move changes the fake world too.
+  const quoted = (path: unknown) => `'${String(path).replace(/'/g, `'\\''`)}'`
+  const shellOrThrow = (command: string) => {
+    const result = run(command)
+    if (result.error) throw Object.assign(new Error(result.output.replace(/\n?\(exit \d+\)$/, "")), { code: /No such file/.test(result.output) ? "ENOENT" : "EIO" })
+  }
+  const unlinkSync = (path: unknown) => shellOrThrow(`rm ${quoted(path)}`)
+  const rmSync = (path: unknown, options?: { readonly recursive?: boolean; readonly force?: boolean }) =>
+    shellOrThrow(`rm ${options?.recursive === true || options?.force === true ? `-${options.recursive === true ? "r" : ""}${options.force === true ? "f" : ""} ` : ""}${quoted(path)}`)
+  const mkdirSync = (path: unknown) => shellOrThrow(`mkdir -p ${quoted(path)}`)
+  const renameSync = (from: unknown, to: unknown) => shellOrThrow(`mv ${quoted(from)} ${quoted(to)}`)
+  const copyFileSync = (from: unknown, to: unknown) => shellOrThrow(`cp ${quoted(from)} ${quoted(to)}`)
+  const appendFileSync = (path: unknown, content: unknown) => writeFileSync(path, (existsSync(path) ? readFileSync(path) : "") + String(content))
+  const statSync = (path: unknown) => {
+    const result = answer("read", { path: String(path) })
+    if (result.error) throw missing(path)
+    // The read tool numbers a file's lines and lists a directory's entries bare.
+    const file = /^\d+: /.test(result.output)
+    const size = file ? unnumbered(result.output).length : 128
+    return { isFile: () => file, isDirectory: () => !file, size, mtimeMs: 1_762_683_120_000 }
+  }
   const fs = {
     readFileSync,
     writeFileSync,
     existsSync,
     readdirSync,
+    unlinkSync,
+    rmSync,
+    mkdirSync,
+    renameSync,
+    copyFileSync,
+    appendFileSync,
+    statSync,
     promises: {
       readFile: async (path: unknown) => readFileSync(path),
       writeFile: async (path: unknown, content: unknown) => writeFileSync(path, content),
       readdir: async (path: unknown) => readdirSync(path),
+      unlink: async (path: unknown) => unlinkSync(path),
+      rm: async (path: unknown, options?: { readonly recursive?: boolean; readonly force?: boolean }) => rmSync(path, options),
+      mkdir: async (path: unknown) => mkdirSync(path),
+      rename: async (from: unknown, to: unknown) => renameSync(from, to),
+      copyFile: async (from: unknown, to: unknown) => copyFileSync(from, to),
+      appendFile: async (path: unknown, content: unknown) => appendFileSync(path, content),
+      stat: async (path: unknown) => statSync(path),
     },
   }
   /** `Bun.$`: a template that runs one command line, throwing on a failure unless `.nothrow()`. */
@@ -312,7 +347,7 @@ export const newKernel = (listing: ReadonlyArray<Listed>, cwd: string): Kernel =
     Bun: modules["bun"],
     process: {
       cwd: () => cwd,
-      env: { HOME, PWD: cwd },
+      env: { HOME, PWD: cwd, PATH: "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin", SHELL: "/bin/zsh", USER: "dev" },
       platform: "darwin",
       exit: (code?: unknown) => {
         throw new Error(`The kernel's process exited (process.exit(${String(code ?? 0)})); its bindings are lost`)
