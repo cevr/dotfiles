@@ -7,6 +7,8 @@
  * - `memory save`: saves a global note, saves a near repeat of it, searches.
  * - `memory recall`: saves a project note mid-session, then answers.
  * - `memory again`: answers at once.
+ * - `memory strings`: sends an id, a limit and tags as strings (`"1"`, `"5"`,
+ *   `'["deploy"]'`), saves, corrects, searches and forgets; then forgets `"one"`.
  *
  * @module
  */
@@ -14,11 +16,14 @@
 export const SAVE_TASK = "memory save"
 export const RECALL_TASK = "memory recall"
 export const AGAIN_TASK = "memory again"
+export const STRINGS_TASK = "memory strings"
 export const DONE = "sim: memory done"
 
 export const FACT = "The user prefers bun over npm"
 export const REPEAT = "The user prefers bun over npm for scripts"
 export const LATE = "Run the gate before every push"
+export const DEPLOY = "Deploys need a changeset"
+export const DEPLOY_FIXED = "Deploys need a changeset and a green gate"
 
 interface ChatMessage {
   readonly role: string
@@ -50,6 +55,14 @@ const SCRIPTS: Readonly<Record<string, ReadonlyArray<Reply>>> = {
   ],
   [RECALL_TASK]: [{ kind: "tool", name: "memory_save", input: { text: LATE } }],
   [AGAIN_TASK]: [],
+  // Numbers and lists sent as strings, as models do: a JSON-array string for tags, a numeric string for an id or a limit.
+  [STRINGS_TASK]: [
+    { kind: "tool", name: "memory_save", input: { text: DEPLOY, tags: '["deploy"]' } },
+    { kind: "tool", name: "memory_save", input: { id: "1", text: DEPLOY_FIXED, tags: '["deploy","release"]' } },
+    { kind: "tool", name: "memory_search", input: { query: "changeset", limit: "5" } },
+    { kind: "tool", name: "memory_forget", input: { id: "1" } },
+    { kind: "tool", name: "memory_forget", input: { id: "one" } },
+  ],
 }
 
 const events = (answer: Reply, model: string, id: string): string => {

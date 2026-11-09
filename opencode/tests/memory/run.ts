@@ -5,7 +5,8 @@
  * `bun tests/memory/run.ts <spec.json>`.
  *
  * Three root sessions run one after the other: `memory save` (a save, a near
- * repeat, a search), `memory recall` (a save mid-session) and `memory again`.
+ * repeat, a search), `memory recall` (a save mid-session) and `memory again`;
+ * the spec's `tasks` names others (`memory strings`).
  * It writes each session's messages and the system prompts the model got for
  * each to `<base>/result.json`.
  *
@@ -19,6 +20,8 @@ export interface Spec {
   readonly base: string
   readonly fork: string
   readonly plugin: string
+  /** The tasks to run, one root session each, in order; default the three below. */
+  readonly tasks?: ReadonlyArray<string>
 }
 
 export interface Result {
@@ -79,7 +82,7 @@ try {
   })
   try {
     const messages: Record<string, unknown> = {}
-    for (const task of [SAVE_TASK, RECALL_TASK, AGAIN_TASK]) {
+    for (const task of spec.tasks ?? [SAVE_TASK, RECALL_TASK, AGAIN_TASK]) {
       const session = await opencode.sessions.create({ location: { directory: work } })
       await opencode.sessions.prompt({ sessionID: session.id, text: task })
       await opencode.experimental.session.wait({ sessionID: session.id })

@@ -3,7 +3,9 @@
 // keep one note, which a search finds; the next session starts with that note
 // in its system prompt, and a note it saves mid-session leaves every one of
 // its requests' system prompts as they were (the cached prefix holds) and
-// shows in the session after. The CLI then reads the same file. The plugin on
+// shows in the session after. The CLI then reads the same file. A second run
+// sends an id, a limit and tags as strings, as models do, and they are read as
+// the number and the list (decider/tool-input.ts). The plugin on
 // its own is tested beside its code in mods/memory and cmd/memory.
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -11,7 +13,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { main } from "../cmd/memory/cli.ts"
 import type { Result, Spec } from "./memory/run.ts"
-import { AGAIN_TASK, LATE, RECALL_TASK, REPEAT, SAVE_TASK } from "./memory/sim.ts"
+import { AGAIN_TASK, DEPLOY, DEPLOY_FIXED, LATE, RECALL_TASK, REPEAT, SAVE_TASK, STRINGS_TASK } from "./memory/sim.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/memory.test.ts: the OpenCode run skips. Set OPENCODE_DEV to the fork.")
@@ -21,12 +23,12 @@ const scratch = mkdtempSync(join(tmpdir(), "memory-e2e-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** One run of real OpenCode in a scratch home; see tests/memory/run.ts. */
-const run = async (): Promise<Result> => {
-  const base = join(scratch, "run")
+const run = async (name = "run", tasks?: ReadonlyArray<string>): Promise<Result> => {
+  const base = join(scratch, name)
   const home = join(base, "home")
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
-  writeFileSync(file, JSON.stringify({ base, fork: resolve(fork ?? ""), plugin: join(ROOT, "cmd/memory") } satisfies Spec))
+  writeFileSync(file, JSON.stringify({ base, fork: resolve(fork ?? ""), plugin: join(ROOT, "cmd/memory"), ...(tasks === undefined ? {} : { tasks }) } satisfies Spec))
   const child = Bun.spawn([process.execPath, join(import.meta.dir, "memory/run.ts"), file], {
     env: {
       PATH: process.env.PATH ?? "",
@@ -99,6 +101,26 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(audit.total).toBe(2)
       expect(audit.notes[0]).toMatchObject({ id: 1, scope: "global", uses: 2, shown: 2 })
       expect(audit.notes[1]).toMatchObject({ id: 2, scope: "project", shown: 1 })
+    },
+    150_000,
+  )
+
+  test(
+    "an id, a limit and tags sent as strings are read as the number and the list; a word for an id is refused",
+    async () => {
+      const result = await run("strings", [STRINGS_TASK])
+      const [saved, corrected, searched, forgot, refused, ...rest] = toolParts(result.messages[STRINGS_TASK])
+      expect(rest).toEqual([])
+      expect(said(saved)).toBe("Saved #1 (project).")
+      expect(said(corrected)).toBe(`Corrected #1 (project); it said: "${DEPLOY}".`)
+      expect(said(searched)).toContain(`#1 [project] ${DEPLOY_FIXED} [deploy, release]`)
+      expect(forgot?.state.status).toBe("completed")
+      expect(said(forgot)).toBe(`Forgot #1: "${DEPLOY_FIXED}".`)
+      expect(refused?.state.status).toBe("error")
+      expect(JSON.stringify(refused?.state)).toContain('Invalid arguments for tool \\"memory_forget\\":\\n- id: Expected number')
+
+      const stats = await main(["stats", "--json"], { db: result.db, now: Date.now() })
+      expect(JSON.parse(stats.out).total).toBe(0)
     },
     150_000,
   )
