@@ -201,6 +201,7 @@ export function Dock(props: { host: Host; sessionID?: string }) {
       shells: shells(),
       wakes: entries.filter((entry) => entry.kind === "alarm").length,
       monitors: entries.filter((entry) => entry.kind === "monitor").length,
+      notices: wakes()?.notices ?? 0,
     })
   })
   return (
