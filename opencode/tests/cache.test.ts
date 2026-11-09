@@ -7,6 +7,8 @@
 // line per request, the second judged expired.
 // Run again with the model's cache living an hour and the build agent asking
 // for 2s of its own, the same miss is an expiry by the agent's lifetime.
+// scenarios/cache-compaction.ts runs /compact between two turns: the summary
+// request's miss sits under the compaction's row, not at the next turn's end.
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -120,6 +122,39 @@ describe.skipIf(!fork)("the cache mod in a real TUI", () => {
         { cause: "first", ttlMs: 3_600_000, write: 48_000 },
         { cause: "unchanged", ttlMs: 3_600_000, write: 50_000, missed: 48_000 },
       ])
+    } finally {
+      rmSync(out, { recursive: true, force: true })
+    }
+  }, 150_000)
+
+  test("a compaction's miss sits under the compaction, not under the turn after it", async () => {
+    const out = mkdtempSync(join(tmpdir(), "cache-compaction-scenario-"))
+    try {
+      const child = owned(["bunx", "opencode-drive", "run", "scenarios/cache-compaction.ts"], {
+        cwd: join(import.meta.dir, ".."),
+        env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media") },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+      const timeout = join(out, "cache-compaction.timeout.txt")
+      if (code !== 0)
+        throw new Error(`the cache compaction scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
+      const text = readFileSync(join(out, "cache-compaction.txt"), "utf8")
+      const frame: Frame = JSON.parse(readFileSync(join(out, "cache-compaction.json"), "utf8"))
+      const lines = text.split("\n")
+
+      // One row: the summary request read none of the 48k the first turn cached, inside the hour.
+      const rows = lines.flatMap((line, y) => (line.includes("cache miss") ? [y] : []))
+      expect(rows, text).toHaveLength(1)
+      const [y = -1] = rows
+      expect(lines[y], text).toMatch(/^ {2}◌ cache miss · 48k tokens · \$0\.17 · the compaction request missed the cached prefix(?: {2,}.*)?$/)
+      // Under the compaction's row and above the next turn's prompt, not at that turn's end.
+      expect(y, text).toBeGreaterThan(lines.findIndex((line) => line.includes("◇ Compacted")))
+      expect(y, text).toBeLessThan(lines.findIndex((line) => line.includes("Check it again.")))
+      const glyph = (lines[y] ?? "").indexOf("◌")
+      expect(fgAt(frame, y, glyph)).toBe(WARNING)
+      expect(fgAt(frame, y, glyph + 2)).toBe(MUTED)
     } finally {
       rmSync(out, { recursive: true, force: true })
     }
