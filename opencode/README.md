@@ -206,6 +206,12 @@ typecheck on them.
 ◌ after the turn · Afterwards tag the release.
 ```
 
+While a turn runs and a prompt waits, the hint line above the composer
+names the escape plugin's key that interrupts the turn and sends what waits
+(`Ctrl+Enter interrupt and send`, `sendHint` in `pending.ts`; the key read by
+the command's id through the host's `keymap.shortcuts`, so the hint shows
+only while that plugin binds one; see Escape).
+
 The loader under the transcript reads `Executing · 13s`, from the run's first
 step, so a waiting prompt never restarts the clock. While a compaction of
 the current run runs there is no loader: the compaction's own row spins and
@@ -1080,6 +1086,52 @@ view) and acts. `tests/prime-escape.test.ts` runs `scenarios/prime-escape.ts`;
 `tests/escape-states.test.ts` runs `scenarios/escape-states.ts` once per
 state (a steer or a queued prompt sent while the model works, a running
 shell call, a draft, a stalled link to the server).
+
+### Ctrl+Enter: interrupt and send
+
+On a busy session, Ctrl+Enter interrupts the turn and sends what waits as
+the next turn: the draft in the composer, then every prompt still waiting
+in the inbox (steers and prompts queued for after the turn), oldest first,
+each exactly once. With an empty composer and nothing waiting it does
+nothing: it never interrupts alone (Escape does that). On an idle session
+it submits, as Enter. A permission or question, a subagent's view and a
+screen with no editor focused keep the key. The interrupt is the one Escape
+sends, so a running shell call or kernel cell stops (`· cancelled`) and a
+shell already moved to the background keeps running.
+
+The order is what keeps a prompt from being lost to the turn the
+interrupt kills or sent twice. A draft goes to the queue first, through the
+host's own `prompt.queue` (attachments and all): a queued prompt is parked,
+and a stopping turn never takes one. The interrupt goes once the server has
+admitted it (its `session.inbox.enqueued` event). With only steers waiting,
+the interrupt resumes them (`resume`), as one next turn. With queued
+prompts it does not resume; once the server has taken it, each queued
+prompt moves to the steers (the inbox's `update`), oldest first and one at
+a time, and each move rings for the turn after, which starts when the
+stopping turn settles and takes every steer then waiting; a move that lands
+after it took the first goes in at that turn's next step. The only new
+prompt is the draft, sent once by the host; the rest are moves of prompts
+already in the inbox, and the server refuses the move of one the session
+already took, which is no news (a move that fails for a prompt still
+waiting is a toast). A draft the host will not queue (a `!` shell command,
+a slash command, editor context) interrupts nothing and says so; a second
+press while the first still sends says `Still sending the queued prompts`;
+a turn still running 5 s later is the same toast as Escape's.
+
+A terminal tells Ctrl+Enter from Enter only with the kitty keyboard
+protocol on, which OpenTUI asks for: Ghostty sends `ESC [13;5u`, and a herdr
+pane passes it on as the same bytes to a program that asked for the
+protocol (Enter stays `\r`, Shift+Enter `ESC [13;2u`). A terminal without
+the protocol (Terminal.app, tmux without `extended-keys`) sends Ctrl+Enter as
+a plain Enter, which steers. The fallback chord works in every terminal:
+leader (Ctrl+X) then F. Both are one command, `dotfiles.escape.send`
+(`send.ts`, the third keymap layer in `cmd/escape/setup.ts`, base mode at
+priority 1, above the composer's own Ctrl+Enter newline).
+`tests/escape-send.test.ts` runs `scenarios/escape-send.ts` with each chord:
+a turn stuck in a shell call, one prompt queued and one in the composer;
+the call is cut, the turn reads `■ Interrupted`, both prompts go out after
+it, the queued one first, each once in the transcript and in what the model
+is sent, and a second press with nothing waiting interrupts nothing.
 
 ## Cache
 
