@@ -29,11 +29,12 @@ const jsonl = (path: string) =>
     .filter((line) => line.trim() !== "")
     .map((line) => JSON.parse(line) as Record<string, unknown>)
 
-/** The row lines beneath the dock's count line, up to the first blank line. */
+/** The row lines beneath the dock's rule and its count line (gone while nothing is active), up to the first blank line. */
 function rows(frame: ReadonlyArray<string>): ReadonlyArray<string> {
-  const dock = frame.findIndex((line) => / ◆ \d+ subagents?  ·/.test(line))
-  if (dock < 0) return []
-  const after = frame.slice(dock + 1)
+  const rule = frame.findLastIndex((line) => /^ ─{20,}$/.test(line))
+  if (rule < 0) return []
+  const counted = / ◆ \d+ subagents?  ·/.test(frame[rule + 1] ?? "")
+  const after = frame.slice(rule + (counted ? 2 : 1))
   const blank = after.findIndex((line) => !line.trim())
   return (blank < 0 ? after : after.slice(0, blank)).map((line) => line.trim())
 }

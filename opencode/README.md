@@ -100,6 +100,11 @@ The dock under the composer counts the session's work:
 ◆ 0 subagents  ·  1 shell  ·  1 wake
 ```
 
+The count line shows only while something is active: a subagent working, a
+shell running, or a wake or monitor pending. With all four at zero it is not
+drawn at all (no row, no blank), and it comes back with the first one;
+unread notices alone do not keep it.
+
 Beneath it, one row per subagent (`mods/subagents`) names the orchestrate
 step it runs by the role's noun, as the skill and the agents name it, not a
 gerund: the state is the leading diamond, so `implementing` beside a done

@@ -23,11 +23,10 @@ function split(frame: ReadonlyArray<string>) {
   const hint = frame.findIndex((line) => /mode \(Ctrl\+O/.test(line))
   return { transcript: frame.slice(0, hint).filter((line) => line.trim() !== ""), composer: frame[hint + 1] ?? "" }
 }
-/** The Dock's top row. */
+/** The Dock's top row: the tray, right above its rule (the activity counts under it show only while something is active). */
 const dock = (frame: ReadonlyArray<string>) => {
-  // The row above the rule that sits over the activity counts.
-  const counts = frame.findIndex((line) => line.startsWith(" ◆ ") && line.includes("subagent"))
-  return counts >= 2 ? (frame[counts - 2] ?? "") : ""
+  const rule = frame.findLastIndex((line) => /^ ─{20,}$/.test(line))
+  return rule >= 1 ? (frame[rule - 1] ?? "") : ""
 }
 
 describe.skipIf(!fork)("Escape cancels within the grace and interrupts after it, in the Prime look (OPENCODE_DEV)", () => {
@@ -49,8 +48,8 @@ describe.skipIf(!fork)("Escape cancels within the grace and interrupts after it,
   }, 300_000)
 
   test("just after sending, the Dock shows no Escape hint", () => {
-    // The Dock is drawn (its counts row is there), and its top row carries no hint.
-    expect(frames["cancel-hint"].some((line) => line.startsWith(" ◆ ") && line.includes("subagent"))).toBe(true)
+    // The Dock is drawn (its tray row is there), and its top row carries no hint.
+    expect(dock(frames["cancel-hint"])).toMatch(/\S/)
     expect(dock(frames["cancel-hint"])).not.toContain("esc ")
   })
 

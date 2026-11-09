@@ -93,7 +93,8 @@ export default OpenCodeDriver.use(
       yield* until(`${label}-started`, (frame) => frame.includes(STARTED) && frame.includes("◆ 3 subagents"))
       yield* save(`${label}-started`)
       yield* Deferred.succeed(release, undefined)
-      yield* until(`${label}-finishing`, (frame) => frame.includes("◆ 0 subagents"))
+      // All three done and no shell running: the dock's count line is gone.
+      yield* until(`${label}-finishing`, (frame) => !/◆ \d+ subagents?  ·/.test(frame))
       yield* Deferred.succeed(busy, undefined)
       yield* until(label, (frame) => frame.includes("Noted."))
       yield* Effect.sleep("1500 millis")

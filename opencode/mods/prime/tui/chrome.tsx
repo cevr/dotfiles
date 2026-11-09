@@ -1,13 +1,14 @@
 // The frame around the transcript in the Prime look: a one-line top bar, a
 // text splash, the detail-mode hint and the goal line above the editor, and
-// the tray, rule, dock line (subagents, shells, wakes) and a live row
-// per subagent under it. The words are
+// the tray, rule, dock line (subagents, shells, wakes; drawn only while one
+// is active) and a live row per subagent under it. The words are
 // chrome.ts's; this file draws them.
 import type { BoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, onCleanup, Show, type Accessor } from "solid-js"
 import {
   cost,
+  dockShown,
   plural,
   splashAgent,
   splashModel,
@@ -192,6 +193,16 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   // The shells count opens the session's shell list, where one can be read or killed.
   const [shellsHover, setShellsHover] = createSignal(false)
   const sep = () => <span style={{ fg: theme().text.faint }}>{DOCK_SEP}</span>
+  // The count line shows only while something is active (chrome.ts `dockShown`), read from the same live values it draws.
+  const shown = createMemo(() => {
+    const entries = wakes()?.entries ?? []
+    return dockShown({
+      subagents: subagents(),
+      shells: shells(),
+      wakes: entries.filter((entry) => entry.kind === "alarm").length,
+      monitors: entries.filter((entry) => entry.kind === "monitor").length,
+    })
+  })
   return (
     <box flexDirection="column" flexGrow={1} flexShrink={1}>
       <box flexDirection="row" justifyContent="flex-end" height={1}>
@@ -200,6 +211,7 @@ export function Dock(props: { host: Host; sessionID?: string }) {
         </text>
       </box>
       <box height={1} border={["top"]} borderColor={theme().border.base} />
+      <Show when={shown()}>
       <box
         flexDirection="row"
         height={1}
@@ -264,6 +276,7 @@ export function Dock(props: { host: Host; sessionID?: string }) {
           </Show>
         </text>
       </box>
+      </Show>
       {/* A row per subagent under the count, sidebar open or closed; inside a subagent they sit above its picker (cmd/prime/tui.tsx). */}
       <Show when={props.sessionID && !props.host.session(props.sessionID)?.parentID ? props.sessionID : undefined}>
         {(id) => <SubagentRows host={props.host} sessionID={id()} child={false} />}

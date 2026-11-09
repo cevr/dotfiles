@@ -5,7 +5,7 @@
 // it through its handle, and starts one in the background; the reader's
 // ctrl+b moves a blocking
 // call; the dock's count opens the shell list, where ctrl+k kills one; the
-// dock's count follows each move and kill.
+// dock's count follows each move and kill, and its line goes once none runs.
 import { beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -91,7 +91,8 @@ describe.skipIf(!fork)("background shells in Prime", () => {
     expect(lineOf(killed, /^● Waited on sh_/)).toBe(`● Waited on ${long}`)
     expect(lineOf(killed, `● Killed ${long}`)).toBe(`● Killed ${long}`)
     expect(lineOf(killed, `● Killed ${bg}`)).toBe(`● Killed ${bg}`)
-    expect(lineOf(killed, DOCK)).toBe("◆ 0 subagents  ·  0 shells")
+    // Nothing left active: the dock's count line is not drawn.
+    expect(lineOf(killed, DOCK)).toBeUndefined()
     expect(requests.some((request) => request.includes(`<shell id=\\"${long}\\"`) || request.includes(`<shell id=\\"${bg}\\"`))).toBe(false)
     // The reader's kill later does send one: the check above can see a notice.
     expect(requests.some((request) => request.includes(`<shell id=\\"`))).toBe(true)
@@ -114,13 +115,13 @@ describe.skipIf(!fork)("background shells in Prime", () => {
     expect(lineOf(user, DOCK)).toBe("◆ 0 subagents  ·  1 shell")
   })
 
-  test("ctrl+k in the list kills the shell; the list shows it ended; the agent is told with its final handle; the dock counts none", () => {
+  test("ctrl+k in the list kills the shell; the list shows it ended; the agent is told with its final handle; the dock's count line goes", () => {
     const list = transcript(frames["user-list"]).join("\n")
     expect(list).toMatch(/Ended\s*\n(.*\n)*.*Blocking sleeper killed · \d+s · no output/)
     expect(list).toMatch(/Long sleeper killed · \d+s · tick 1/)
     expect(list).toMatch(/Background sleeper killed · \d+s · bg/)
     expect(lineOf(frames["user-killed"], "Heard the blocking sleeper was killed.")).toBeDefined()
     expect(requests.some((request) => /<shell id=\\"sh_\w+\\" [^>]*command=\\"sleep 300\\">\\nsh_\w+ · killed SIGTERM · /.test(request))).toBe(true)
-    expect(lineOf(frames["user-killed"], DOCK)).toBe("◆ 0 subagents  ·  0 shells")
+    expect(lineOf(frames["user-killed"], DOCK)).toBeUndefined()
   })
 })

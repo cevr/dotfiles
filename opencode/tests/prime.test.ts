@@ -198,7 +198,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     expect(details.text).not.toContain("Approved: the loop")
   })
 
-  test("the dock: hint, fx rail composer, tray with context use, rule and activity counts", () => {
+  test("the dock: hint, fx rail composer, tray with context use, rule, and no activity counts with nothing active", () => {
     const details = frames.details
     const hint = indexOf(details, /^ {40,}Details mode \(Ctrl\+O to expand\)$/)
     expect(hint).toBeGreaterThan(0)
@@ -206,12 +206,13 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       " ┃",
       expect.stringMatching(/^ {20,}gpt-sim-model · 64k \(24%\)$/),
       ` ${"─".repeat(104)}`,
-      " ◆ 0 subagents  ·  0 shells",
+      // Nothing works, runs or is pending: no count line, the finished reviewer's lingering row sits right under the rule.
+      " ◆ general gpt  code-reviewer  1 step",
     ])
+    expect(details.text).not.toMatch(/◆ \d+ subagents?|\d+ shells?\b/)
     // The composer is fx's bare rail: drawn in the text colour, with no fill behind it.
     expect(cellAt(details, hint + 1, 1).fg).toBe(TEXT)
     expect(cellAt(details, hint + 1, 3).bg).not.toBe(BAND)
-    expect(cell(details, "◆ 0 subagents").fg).not.toBe(SUCCESS)
   })
 
   test("while the reviewer runs: a running group, the Executing line and one subagent", () => {

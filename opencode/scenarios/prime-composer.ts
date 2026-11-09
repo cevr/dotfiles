@@ -3,11 +3,13 @@
 // turn; ↓ on the empty prompt opens the host's panel (Subagents first), → moves
 // to Wakes, which lists the alarm, Enter shows it whole, ctrl+d cancels it and the tab says it has
 // none; → moves to Monitors, which lists the monitor with its last output;
-// Escape closes the panel, and the dock counts the monitor and no wake.
+// Escape closes the panel, and the dock counts the monitor and no wake. Then
+// ctrl+d cancels the monitor, and with nothing active the dock's count line is
+// gone; a second turn sets one alarm alone, and the line is back counting it.
 // Run: OPENCODE_DEV=<opencode checkout> SCENARIO_OUT=out bunx opencode-drive run scenarios/prime-composer.ts
 //
 // It writes, under SCENARIO_OUT, `composer-<name>.txt` and `.json` for each
-// kept frame (`set`, `panel`, `wakes`, `detail`, `cancelled`, `monitors`, `closed`), and
+// kept frame (`set`, `panel`, `wakes`, `detail`, `cancelled`, `monitors`, `closed`, `none`, `alarm`), and
 // `composer-timeout.txt` when a wait times out.
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
@@ -21,6 +23,11 @@ const call = (id: string, name: string, input: ToolInput) => Stream.make(Llm.too
 const say = (text: string) => Stream.make(Llm.text(text), Llm.finish())
 
 const reply = (s: string) => {
+  // The second turn sets one alarm alone, so the dock counts a wake and nothing else.
+  if (s.includes("Set one alarm.")) {
+    if (!s.includes("call_wake_beta")) return call("call_wake_beta", "wake", { afterSeconds: 900, note: "BETA: look again" })
+    return say("Alarm set.")
+  }
   if (!s.includes("call_wake_alpha")) return call("call_wake_alpha", "wake", { afterSeconds: 600, note: "ALPHA: check the deploy" })
   if (!s.includes("call_monitor_gamma"))
     return call("call_monitor_gamma", "monitor", { command: "echo still-waiting", intervalSeconds: 1, until: "^READY$", note: "GAMMA: the service is up" })
@@ -96,5 +103,24 @@ export default OpenCodeDriver.use(
       yield* ui.press("escape")
       yield* until((frame) => frame.includes("1 monitor") && !frame.includes("Monitors"), 50)
       yield* keep("closed")
+      // Cancel the monitor too: with no subagent, shell, wake or monitor, the dock's count line is gone.
+      yield* ui.press("down")
+      yield* until((frame) => frame.includes("Wakes") && frame.includes("Monitors"), 50)
+      for (let step = 0; step < 8; step++) {
+        const frame = text(yield* ui.capture())
+        if (frame.includes("echo still-waiting · every 1s")) break
+        yield* ui.press("right")
+        yield* Effect.sleep("150 millis")
+      }
+      yield* until((frame) => frame.includes("echo still-waiting · every 1s"), 50)
+      yield* ui.press("d", { ctrl: true })
+      yield* until((frame) => frame.includes("No monitors"), 80)
+      yield* ui.press("escape")
+      yield* until((frame) => !frame.includes("No monitors") && !frame.includes("Monitors") && !frame.includes("1 monitor"), 50)
+      yield* keep("none")
+      // A turn that sets one alarm alone: the line is back, counting the wake.
+      yield* ui.submit("Set one alarm.")
+      yield* until((frame) => frame.includes("Alarm set.") && frame.includes("1 wake"))
+      yield* keep("alarm")
     }),
 )
