@@ -8,12 +8,198 @@ tool, (3) the use cases are weak. This note gives the eval, its results and a
 recommendation. The script is `scripts/memory-eval/`; the design of memory
 itself is `notes/memory.md`.
 
-Three rounds ran. Round 1 compared our tools, a pointer line, the native tool
+Four rounds ran. Round 1 compared our tools, a pointer line, the native tool
 and no memory. Round 2 took up round 1's three follow-ups: string tags, a
 `kernel` arm for the production surface, and a trigger for gotchas. Round 3
 measured the fix round 2 proposed and production shipped in 9535f78: the
-memory tools offered directly beside the kernel (`kernel+direct`). The newest
-round comes first below.
+memory tools offered directly beside the kernel (`kernel+direct`). Round 4
+fixed the billing scenario's fake world and tested two fixed-text levers for
+saving gotchas against `kernel+direct`. The newest round comes first below.
+
+## Round 4: two gotcha-save levers, and a billing world that holds up
+
+### Recommendation (round 4)
+
+1. **Ship neither lever; production stays as it is.** Neither candidate
+   clearly won. Over 24 episodes per arm on Haiku 5.5, gotchas saved in
+   session 1 went from 0 of 24 (`kernel+direct`) to 2 of 24 with the
+   `memory_save` description sentence (`describe`), and to 0 of 24 with the
+   line after the save (`followup`) (measured). Two of 24 is within noise.
+   Both `describe` saves rode inside the note on the owner's correction
+   ("generate migrations with `uv run alembic revision --autogenerate` …
+   plain `alembic` is not on PATH"), not in a note of their own. Neither arm
+   added an off-list or task-state note (0 in every session). The other facts
+   did not get worse: corrections saved 20/24 in both arms against 18/24, and
+   preferences 20/24 against 18/24. So `describe` is harmless and slightly
+   up. It is not the clear win the bar asks for, and `mods/memory` is
+   unchanged.
+2. **Wording does not move gotcha saves on Haiku.** Rounds 2–4 tried
+   round 2's shell retry nudge, round 3's direct tools, and this round's
+   description sentence and after-save line. Gotcha saves stayed near zero
+   every time (0–2 of 24 in rounds 3 and 4). The model saves what the owner says, and it does not treat its own
+   recovered failures as worth keeping. A next round should change the
+   model (Sonnet or Opus, the models production sessions run on), not the
+   words.
+3. **The gotcha that the repository shows is relearned anyway.** In session
+   2, billing/uv-run was honoured in 5, 6 and 6 of 6 episodes, though at most
+   2 of 6 had saved it. The `uv.lock`, the `.venv` and the hint in pytest's
+   error lead the model there. The two gotchas that nothing on screen gives
+   away (webapp/unit-env, orders/go-short) were honoured 0 times in every
+   arm. Saving gotchas matters most for that second kind, and there no arm
+   saved any.
+
+### What changed in billing, and why (measured)
+
+Round 3's billing numbers were a harness limit. Haiku 5.5 doubted the fake
+shell ("The tool results don't match what the commands should do") and
+stopped before the owner's correction. In round 3, 1 of 12 billing session-1
+episodes reached the amended `BILL-142:` commit. In round 4, 17 of 18 did.
+
+- **The shell behaves like zsh** (`world.ts`):
+  - `&&`, `||` and `;` run as a shell runs them, and `$?` is kept;
+  - `sh -c` is unwrapped, heredocs are fed to the command, `>` and `>>`
+    write files, `$(…)` is substituted, and an unmatched glob fails as zsh
+    does ("zsh: no matches found");
+  - rm, mv, cp, touch, test, sed, wc, `ls -l`/`-a`, mkdir, mktemp, date,
+    env, which and uname work;
+  - there is a little Python (imports, `--version`, `print` of literals and
+    a few well-known values);
+  - `/tmp`, `$TMPDIR` and a `PATH` exist.
+- **Git is a three-tree model** (`git.ts`, new): HEAD, the index and the
+  working files, with history, objects, a reflog, `.gitignore` and a stash.
+  Committing with nothing staged fails, `--amend` rewrites, and `diff
+  --cached` agrees with `status`.
+- **Kernel cells** go through the same shell for fs `unlinkSync`, `rmSync`,
+  `mkdirSync`, `renameSync`, `copyFileSync`, `appendFileSync` and
+  `statSync`, and `process.env` has a `PATH`.
+- **The billing repository is a real one:**
+  - an app, a conftest and 4 tests that pytest counts;
+  - migrations 0006 and 0007 in alembic's own template;
+  - a `.gitignore`, a `.venv`, and a `billing.db` at 0007;
+  - alembic with heads, current, history, stamp, upgrade, downgrade, check,
+    `-c`, and `revision --autogenerate`, which takes its columns and types
+    from the model;
+  - a `sqlite3` stand-in.
+- **The correction no longer names `uv run`.** In rounds 1–3, the owner's
+  words were "generate them with `uv run alembic revision --autogenerate`".
+  A note that kept the correction also kept the gotcha by accident. The
+  correction now says `alembic revision --autogenerate`, and only a note
+  that adds `uv run` (or `.venv/bin`) on its own counts as the gotcha.
+
+Changed assertions, all in `scripts/memory-eval/memory-eval.test.ts`:
+
+- **billing/autogenerate is graded on what was written.** It fails only
+  when the agent writes a migration file that alembic did not generate,
+  through `write`, `>`, `tee`, `cp` or `mv`. Editing the generated file
+  passes. The old grader looked for an alembic command and a write in any
+  order, and the fake world could not generate a file. The test now has a
+  generated case, a heredoc-written case and an edited-generated case.
+- **billing/uv-run also passes** for a first test run from `.venv/bin/` or
+  after `source .venv/bin/activate`. These run in the project's environment
+  too.
+- **The orders `ls -la` test expects a long listing** (`total 48`, then
+  `-rw-r--r--` rows), since `-l` is now honoured. A plain `ls` keeps the
+  list of names.
+- **The orders commit test edits and stages before it commits**, since
+  committing with nothing staged now fails, as it does in git.
+
+Dry runs (one billing episode per arm, 3 per run, about $0.13 each at API
+prices):
+
+- **Dry run 1** (`~/.cache/memory-eval/2026-11-09-run4-dry/`) still showed
+  doubt. There was no `/tmp`, no `PATH`, and Python printed nothing. Those
+  holes are fixed in d849863.
+- **Dry run 2** (`…-run4-dry2/`): all 3 episodes autogenerated the
+  migration and amended to `2da40bc BILL-142: add invoice currency`.
+
+Some doubt remains in the full run: 4 of 18 billing transcripts question a
+tool result.
+
+- One case is production behaviour, not the fake world. A kernel shell
+  handle's `wait()` returns the output "since your last look". That is empty
+  when the call that started the command already returned the output, and
+  one episode read the empty result as a broken shell.
+- The other cases are SQLAlchemy scripts that print nothing, and the
+  `write` tool refusing `/tmp`, which is outside the project. In each case
+  the model worked around it and finished.
+
+### How round 4 ran (measured)
+
+- `claude-haiku-5-5` through the pool, 6 repeats × 4 scenarios × 3 arms,
+  concurrency 4. 72 of 72 episodes graded, with no failure and no refusal.
+  The pool's pace said "within its weekly pace" before every episode.
+- 2,239 requests, 28.4M cache-read tokens (93–94% of input), 1.97M cache
+  writes and 862k output tokens: $0.96 at API prices, in 23 minutes.
+  Between the first and last pool readings, the accounts' 5-hour figures
+  moved by −13 to +3 points (the 5-hour window rolled during the run), and
+  the weekly figures did not move. The readings include the owner's own
+  sessions.
+- The arms are fixed text, so the system text and the tool definitions stay
+  the same for the whole session (cache-safe). They are defined as
+  `VARIANTS` in `scripts/memory-eval/memory.ts`:
+  - `kernel+direct+describe` adds one sentence to `memory_save`'s
+    description, after "a fix that took real effort and its cause.": "A
+    command that failed and worked only once you ran it another way (a
+    variable, a flag, a wrapper, a path) is such a fix: save the way that
+    works, so the next session does not fail first."
+  - `kernel+direct+followup` puts a fixed line after `memory_save`'s
+    answer: "If this session also taught you something a later session
+    would need, such as a command that failed until you ran it another way,
+    save that too, one fact per note." This line only appears after a save,
+    so it can only add a second note.
+- Raw data: `~/.cache/memory-eval/2026-11-09-run4/` (log
+  `~/.cache/memory-eval/run4.log`).
+
+### Round 4 results (24 episodes per arm, Haiku 5.5)
+
+| arm | n | facts saved (s1) | s2 digest | s2 facts honoured | s2 all honoured | honoured when saved | off-list notes s1/s2 | task-state notes s1/s2 | requests s1/s2 | $/episode |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| kernel+direct | 24 | 50% (36/72) | 75% (18/24) | 63% (45/72) | 17% (4/24) | 97% (35/36) | 0.0 / 0.0 | 0.0 / 0.0 | 20.5 / 12.8 | $0.0152 |
+| kernel+direct+describe | 24 | 58% (42/72) | 83% (20/24) | 64% (46/72) | 17% (4/24) | 95% (40/42) | 0.0 / 0.0 | 0.0 / 0.0 | 19.7 / 10.1 | $0.0127 |
+| kernel+direct+followup | 24 | 56% (40/72) | 83% (20/24) | 58% (42/72) | 8% (2/24) | 88% (35/40) | 0.0 / 0.0 | 0.0 / 0.0 | 17.5 / 12.6 | $0.0122 |
+
+| arm | correction saved → honoured | gotcha saved → honoured | preference saved → honoured |
+| --- | --- | --- | --- |
+| kernel+direct | 18/24 → 18/24 | 0/24 → 8/24 | 18/24 → 19/24 |
+| kernel+direct+describe | 20/24 → 19/24 | 2/24 → 8/24 | 20/24 → 19/24 |
+| kernel+direct+followup | 20/24 → 17/24 | 0/24 → 7/24 | 20/24 → 18/24 |
+
+Per fact, saved in session 1 → honoured in session 2 (of 6 each):
+
+| fact | kernel+direct | +describe | +followup |
+| --- | --- | --- | --- |
+| webapp/branch-prefix (preference) | 6 → 6 | 6 → 6 | 6 → 6 |
+| webapp/unit-env (gotcha) | 0 → 0 | 0 → 0 | 0 → 0 |
+| webapp/stage-by-path (correction) | 6 → 6 | 6 → 6 | 6 → 6 |
+| dotfiles/gate-home (gotcha) | 0 → 3 | 0 → 2 | 0 → 1 |
+| dotfiles/no-config (correction) | 5 → 5 | 6 → 6 | 6 → 6 |
+| dotfiles/no-push (preference) | 5 → 6 | 6 → 6 | 6 → 6 |
+| billing/uv-run (gotcha) | 0 → 5 | 2 → 6 | 0 → 6 |
+| billing/autogenerate (correction) | 1 → 1 | 2 → 2 | 2 → 1 |
+| billing/ticket-prefix (preference) | 1 → 1 | 2 → 2 | 2 → 2 |
+| orders/go-short (gotcha) | 0 → 0 | 0 → 0 | 0 → 0 |
+| orders/staging-first (correction) | 6 → 6 | 6 → 5 | 6 → 4 |
+| orders/reviewer (preference) | 6 → 6 | 6 → 5 | 6 → 4 |
+
+What the cells show:
+
+- **Billing now finishes, but the model rarely saves there.** Session 1
+  reached the amended commit in 17 of 18 episodes, but at most 2 of 6 per
+  arm saved the correction or the preference. In the other three scenarios
+  every arm saved them 5 or 6 times. The billing correction comes with a
+  redo (regenerate the migration, re-run, amend). In the transcripts the
+  model finishes the redo and ends without a save (inferred from the 18
+  billing transcripts, not counted by the grader). This is a memory
+  result, not a harness one: the task is done and nothing in the world
+  stops a save.
+- **`followup` cannot reach an episode that never saves**, and it rarely
+  added a second note in the episodes that did save. Its line followed the
+  first save in 20 episodes. A second note followed in only one of them
+  (billing #1), and that note held the commit prefix, not the gotcha. Every
+  arm had about one two-note episode: 1, 2 and 1 (measured).
+- Round 3's `kernel+direct` saved 54% (39/72) of facts and this round's
+  saved 50% (36/72). The billing world changed in between, so compare this
+  round's arms with each other.
 
 ## Round 3: the memory tools beside the kernel
 
@@ -488,6 +674,7 @@ bun scripts/memory-eval/eval.ts --repeats 8 --cap 5        # the full run
 bun scripts/memory-eval/eval.ts --model claude-haiku-4-5-20251001 --repeats 8 --cap 4.35
 bun scripts/memory-eval/eval.ts --arms ours,kernel,ours+nudge --repeats 4 --cap 2.5   # round 2's run
 bun scripts/memory-eval/eval.ts --arms kernel,kernel+direct --repeats 6 --cap 3        # round 3's run
+bun scripts/memory-eval/eval.ts --arms kernel+direct,kernel+direct+describe,kernel+direct+followup --repeats 6 --cap 3   # round 4's run
 bun scripts/memory-eval/report.ts <out>/episodes.jsonl     # regrade and summarize a run
 bun scripts/memory-eval/show.ts <out>/episodes.jsonl native orders --s2   # read transcripts
 ```
