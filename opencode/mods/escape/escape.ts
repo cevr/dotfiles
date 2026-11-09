@@ -20,6 +20,14 @@ export const SETTLE_MS = 10_000
 /** How long after an Escape the session may still run before the TUI says the server has not stopped it. */
 export const STOP_MS = 5_000
 
+/**
+ * Whether the turn a press asked to stop has not stopped, STOP_MS after it:
+ * the server never said the turn ended (`ended`) and the session still runs.
+ * A turn that ended counts as stopped though the session runs again: the
+ * interrupt's resume and Ctrl+Enter's sent prompts start the next turn at once.
+ */
+export const hung = (turn: { readonly ended: boolean; readonly running: boolean }) => !turn.ended && turn.running
+
 /** The session's newest user prompt with text, as Escape reads it. */
 export interface Prompt {
   readonly id: string

@@ -8,9 +8,10 @@
  * interrupts, waits, reverts and puts the prompt back in the composer (or
  * takes a pending prompt back out of the inbox, the run it waited behind
  * interrupted beside it); an interrupt goes through the client. A refused
- * interrupt, or a session still running (or a prompt still queued) STOP_MS
- * after the press, is a toast, so a press the server never answers is never
- * silent. In the composer mode, the host's Subagents picker in a
+ * interrupt, or a turn not stopped (or a prompt still queued) STOP_MS after
+ * the press, is a toast, so a press the server never answers is never
+ * silent; the next turn a resume or a sent prompt starts is not the stopped
+ * one. In the composer mode, the host's Subagents picker in a
  * subagent's view, it interrupts a busy subagent before the picker closes.
  * Anything Escape means nothing to falls through to the host.
  *
@@ -21,7 +22,7 @@
  * prompt is in the inbox, and the waiting prompts go out as `plan` orders;
  * on an idle session it is the host's `prompt.submit`, as Enter.
  */
-import { decide, DEFAULT_GRACE_MS, STOP_MS, type Taking } from "@dotfiles/opencode-escape/escape"
+import { decide, DEFAULT_GRACE_MS, hung, STOP_MS, type Taking } from "@dotfiles/opencode-escape/escape"
 import { read, waiting, type Editor, type Reads, type Route } from "@dotfiles/opencode-escape/opencode/view"
 import { decideSend, plan, SEND_COMMAND, SEND_FALLBACK, SEND_KEY, type Waiting } from "@dotfiles/opencode-escape/send"
 import { Schema } from "effect"
@@ -50,10 +51,21 @@ export interface Enqueued {
   readonly data: { readonly sessionID: string; readonly inboxID: string; readonly item: { readonly type: string } }
 }
 
+/** The host's events that a session's turn ended: it finished, failed or was interrupted. */
+export const ENDED = ["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"] as const
+
+/** One of the `ENDED` events, as far as the plugin reads it. */
+export interface Ended {
+  readonly data: { readonly sessionID: string }
+}
+
+/** The host's events the plugin hears, by type. */
+export type Events = { readonly "session.inbox.enqueued": Enqueued } & { readonly [Type in (typeof ENDED)[number]]: Ended }
+
 /** The parts of the TUI plugin context the plugin uses; `Plugin.Context` satisfies it. */
 export interface Host {
   readonly options: Readonly<Record<string, unknown>>
-  readonly data: Reads & { on(type: "session.inbox.enqueued", handler: (event: Enqueued) => void): () => void }
+  readonly data: Reads & { on<Type extends keyof Events>(type: Type, handler: (event: Events[Type]) => void): () => void }
   readonly renderer: { readonly currentFocusedEditor: Editor }
   readonly client: {
     readonly session: {
@@ -105,13 +117,36 @@ export const setup = (host: Host, clock: Clock = realClock) => {
   const pending = (sessionID: string, messageID: string) => host.data.session.pending.list(sessionID).some((item) => item.id === messageID)
 
   /**
-   * Interrupts `sessionID`; a refusal says why, and a run still going STOP_MS
-   * later says the server has not stopped it. Resolves whether the server
-   * took the interrupt.
+   * Watches the turn `sessionID` runs now, and runs `report` when it has not
+   * stopped STOP_MS later (`hung`): the server never said it ended and the
+   * session still runs. The next turn, which a resume or a sent prompt starts
+   * at once, is not the one watched.
+   */
+  const watch = (sessionID: string, report: () => void) => {
+    let ended = false
+    const offs = ENDED.map((type) =>
+      host.data.on(type, (event) => {
+        if (event.data.sessionID === sessionID) ended = true
+      }),
+    )
+    clock.after(STOP_MS, () => {
+      for (const off of offs) off()
+      if (hung({ ended, running: running(sessionID) })) report()
+    })
+  }
+
+  /**
+   * Interrupts `sessionID`; a refusal says why, and a turn not stopped
+   * STOP_MS later says the server has not stopped it. Resolves whether the
+   * server took the interrupt.
    */
   const interrupt = (sessionID: string, resume: boolean, key = "Escape") => {
     let refused = false
-    const taken = host.client.session.interrupt({ sessionID, resume }).then(
+    // Before the call: the turn may end before the server's answer arrives.
+    watch(sessionID, () => {
+      if (!refused) toast(notStopped(key), "error")
+    })
+    return host.client.session.interrupt({ sessionID, resume }).then(
       () => true,
       (error: unknown) => {
         refused = true
@@ -119,10 +154,6 @@ export const setup = (host: Host, clock: Clock = realClock) => {
         return false
       },
     )
-    clock.after(STOP_MS, () => {
-      if (!refused && running(sessionID)) toast(notStopped(key), "error")
-    })
-    return taken
   }
 
   const escape = () => {
@@ -145,10 +176,11 @@ export const setup = (host: Host, clock: Clock = realClock) => {
         host.keymap.dispatch(UNDO)
         // A pending prompt waited behind a run: stop that too, without resuming the inbox ahead of the cancel.
         if (action.stop) void interrupt(sessionID, false)
-        else
+        else if (action.pending)
           clock.after(STOP_MS, () => {
-            if (action.pending ? pending(sessionID, action.messageID) : running(sessionID)) toast(action.pending ? NOT_TAKEN : NOT_STOPPED, "error")
+            if (pending(sessionID, action.messageID)) toast(NOT_TAKEN, "error")
           })
+        else watch(sessionID, () => toast(NOT_STOPPED, "error"))
         // A revert restores files, not what a shell command did outside them.
         if (action.ranShell && !action.pending) toast("Cancelled; shell commands it ran are not undone", "warning")
         return

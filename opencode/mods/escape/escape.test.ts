@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { decide, DEFAULT_GRACE_MS, SETTLE_MS, type View } from "./escape.ts"
+import { decide, DEFAULT_GRACE_MS, hung, SETTLE_MS, type View } from "./escape.ts"
 
 const SENT = 100_000
 
@@ -84,5 +84,20 @@ describe("decide", () => {
   test("in a subagent's view Escape interrupts that subagent while it runs, else closes the picker as before", () => {
     expect(decide(view({ subagent: true, sessionID: "ses_child" }), at(1_000))).toEqual({ _tag: "Interrupt", sessionID: "ses_child" })
     expect(decide(view({ subagent: true, busy: false }), at(1_000))).toEqual({ _tag: "Pass" })
+  })
+})
+
+describe("hung", () => {
+  test("a turn the server never ended, the session still running, has not stopped", () => {
+    expect(hung({ ended: false, running: true })).toBe(true)
+  })
+
+  test("a turn that ended has stopped, though the next turn (resumed or sent) already runs", () => {
+    expect(hung({ ended: true, running: true })).toBe(false)
+    expect(hung({ ended: true, running: false })).toBe(false)
+  })
+
+  test("an idle session has stopped, though its end was not heard", () => {
+    expect(hung({ ended: false, running: false })).toBe(false)
   })
 })

@@ -11,6 +11,7 @@ import { STOP_MS } from "@dotfiles/opencode-escape/escape"
 import type { InboxItem, Message } from "@dotfiles/opencode-escape/opencode/view"
 import { SEND_COMMAND } from "@dotfiles/opencode-escape/send"
 import {
+  type Ended,
   type Enqueued,
   type Host,
   type Layer,
@@ -61,7 +62,11 @@ const start = (options: Record<string, unknown> = {}) => {
   const calls: Array<string> = []
   const toasts: Array<{ message: string; variant: string; duration?: number }> = []
   const timers: Array<{ at: number; run: () => void }> = []
-  const listeners: Array<(event: Enqueued) => void> = []
+  /** The plugin's event subscriptions, by event type. */
+  const listeners: Record<string, Array<(event: Enqueued & Ended) => void>> = {}
+  const emit = (type: string, event: Enqueued & Ended) => {
+    for (const listener of (listeners[type] ?? []).slice()) listener(event)
+  }
   let minted = 0
   const dispatch = (id: string) => {
     dispatched.push(id)
@@ -72,16 +77,24 @@ const start = (options: Record<string, unknown> = {}) => {
     state.editor = { plainText: "" }
     sessions.ses_root!.pending.push({ id: inboxID, type: "user", delivery: "queue", time: { created: state.now } })
     if (state.admits)
-      queueMicrotask(() => {
-        for (const listener of listeners.slice()) listener({ data: { sessionID: "ses_root", inboxID, item: { type: "user" } } })
-      })
+      queueMicrotask(() => emit("session.inbox.enqueued", { data: { sessionID: "ses_root", inboxID, item: { type: "user" } } }))
+  }
+  /** The session's turn ends (`interrupted`, `succeeded` or `failed`), as the server says: the session goes idle. */
+  const end = (sessionID = "ses_root", outcome: "interrupted" | "succeeded" | "failed" = "interrupted") => {
+    sessions[sessionID]!.status = "idle"
+    emit(`session.execution.${outcome}`, { data: { sessionID, inboxID: "", item: { type: "" } } })
+  }
+  /** A new turn starts on the session (the interrupt's resume, or a promoted prompt's): it runs again. */
+  const begin = (sessionID = "ses_root") => {
+    sessions[sessionID]!.status = "running"
   }
   const host: Host = {
     options,
     data: {
-      on: (_type, handler) => {
-        listeners.push(handler)
-        return () => void listeners.splice(listeners.indexOf(handler), 1)
+      on: (type: string, handler: (event: Enqueued & Ended) => void) => {
+        const list = (listeners[type] ??= [])
+        list.push(handler)
+        return () => void list.splice(list.indexOf(handler), 1)
       },
       session: {
         get: (id) => sessions[id],
@@ -147,7 +160,7 @@ const start = (options: Record<string, unknown> = {}) => {
     await flush()
   }
   const messages = () => toasts.map((toast) => toast.message)
-  return { host, sessions, state, layers, base, composer, dispatched, interrupts, moves, calls, toasts, messages, press, send, flush, advance }
+  return { host, sessions, state, layers, base, composer, dispatched, interrupts, moves, calls, toasts, messages, press, send, flush, advance, end, begin }
 }
 
 /** A prompt waiting in the inbox: `queue` for after the turn, `steer` for its next step. */
@@ -238,6 +251,17 @@ describe("escape plugin", () => {
     run.state.now = SENT + 7_000
     run.press()
     run.sessions.ses_root!.status = "idle"
+    await run.advance(STOP_MS)
+    expect(run.toasts).toEqual([])
+  })
+
+  test("a turn that stops, its waiting steers resumed as the next turn, says nothing though the session runs again", async () => {
+    const run = start()
+    run.state.now = SENT + 7_000
+    run.press()
+    await run.advance(50)
+    run.end()
+    run.begin()
     await run.advance(STOP_MS)
     expect(run.toasts).toEqual([])
   })
@@ -418,6 +442,38 @@ describe("Ctrl+Enter", () => {
     for (let at = 0; at < STOP_MS; at += 50) await run.advance(50)
     expect(run.messages()).toEqual([notStopped("Ctrl+Enter")])
     expect(run.moves.map((move) => move.inboxID)).toEqual(["msg_2"])
+  })
+
+  test("a turn that stops, the next one already running STOP_MS after the press, says nothing: the steers resumed, or the queued prompts sent", async () => {
+    const steers = start()
+    steers.sessions.ses_root!.pending = [waitingPrompt("msg_2", "steer", SENT + 1)]
+    steers.send()
+    await steers.advance(50)
+    steers.end()
+    steers.begin()
+    await steers.advance(STOP_MS)
+    expect(steers.sessions.ses_root!.status).toBe("running")
+    expect(steers.toasts).toEqual([])
+    const queued = start()
+    queued.state.editor = { plainText: "Stop and fix the test instead." }
+    queued.sessions.ses_root!.pending = [waitingPrompt("msg_2", "queue", SENT + 1)]
+    queued.send()
+    await queued.advance(50)
+    expect(queued.moves.map((move) => move.inboxID)).toEqual(["msg_2", "msg_q1"])
+    queued.end()
+    queued.begin()
+    await queued.advance(STOP_MS)
+    expect(queued.toasts).toEqual([])
+  })
+
+  test("another session's turn ending does not count as this one stopping", async () => {
+    const run = start()
+    run.sessions.ses_root!.pending = [waitingPrompt("msg_2", "steer", SENT + 1)]
+    run.send()
+    await run.advance(50)
+    run.end("ses_child")
+    await run.advance(STOP_MS)
+    expect(run.messages()).toEqual([notStopped("Ctrl+Enter")])
   })
 
   test("a refused interrupt says why and moves nothing", async () => {

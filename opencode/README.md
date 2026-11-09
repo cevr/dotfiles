@@ -1077,12 +1077,14 @@ going behind it. When the taken-back run called a shell, a toast says
 not what a command did outside them.
 
 A press never goes unanswered. A refused interrupt is a toast with the
-client's error (`Could not interrupt: …`); a session still running 5 s after
-the press (`STOP_MS`), or a pending prompt still queued, is a toast that the
-server has not stopped it (`Still running 5 s after Escape: the server has
-not stopped it (is it reachable?)`), which is what a stalled or 503-ing
-server looks like; the host's own `Connection lost…` overlay covers a dropped
-event stream. A draft is never replaced: a sent prompt is taken back only
+client's error (`Could not interrupt: …`); a turn not stopped 5 s after the
+press (`STOP_MS`: the server never said it ended and the session still runs),
+or a pending prompt still queued, is a toast that the server has not stopped
+it (`Still running 5 s after Escape: the server has not stopped it (is it
+reachable?)`), which is what a stalled or 503-ing server looks like. The next
+turn, which resumed steers or Ctrl+Enter's sent prompts start at once, is not
+the turn the press stopped, so it is no toast (`hung` in `escape.ts`). The
+host's own `Connection lost…` overlay covers a dropped event stream. A draft is never replaced: a sent prompt is taken back only
 into an empty composer. A permission request or a question keeps its own
 Escape, an idle session's Escape is the host's, and a second Escape for the
 prompt being taken back does nothing for 10 s but say
