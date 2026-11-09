@@ -332,6 +332,13 @@ export const parts = (command: string): Array<Part> => {
  */
 export const segments = (command: string): Array<string> => parts(command).map((part) => part.text)
 
+/** A command's segments, with the command of each `sh -c '…'` (or `bash -lc "…"`) split in its place, as the shell runs it. */
+export const unwrapped = (command: string): Array<string> =>
+  segments(command).flatMap((segment) => {
+    const inner = wrapped(programOf(segment))
+    return inner === undefined ? [segment] : unwrapped(inner)
+  })
+
 /** A segment without its leading `VAR=value` assignments: the program and its arguments. */
 export const programOf = (segment: string): string => segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/, "")
 
@@ -356,7 +363,7 @@ export const commitMessages = (command: string): Array<string> => {
   if (!/git\s+commit\b/.test(command)) return []
   const heredoc = command.match(/<<-?\s*['"]?(\w+)['"]?[^\n]*\n\s*([^\n]*)/)
   if (heredoc !== null) return [heredoc[2]!.trim()]
-  return segments(command)
+  return unwrapped(command)
     .filter((segment) => /^git\s+commit\b/.test(programOf(segment)))
     .map(commitMessage)
 }

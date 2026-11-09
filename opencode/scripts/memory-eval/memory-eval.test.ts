@@ -246,6 +246,22 @@ describe("the graders", () => {
     expect(s.grade([generate, write("/Users/dev/code/billing-api/migrations/versions/0008_add_paid_at.py"), shell("pytest"), commit])).toEqual({ "uv-run": false, autogenerate: true, "ticket-prefix": true })
   })
 
+  test("a command inside `sh -c` or `bash -lc` is graded as the shell runs it", () => {
+    // Round 5's Opus wrapped its commits so it could read their output from a file; the commit is still a commit.
+    const dotfiles = scenario("dotfiles")
+    const wrappedCommit = shell(`cd /Users/dev/Developer/dotfiles && sh -c 'git add opencode/mods/notes/text.ts && git commit -q -m '\\''notes: fix'\\'' && git log --oneline -1' > .k.out 2>&1; echo "exit=$?" >> .k.out`)
+    expect(dotfiles.grade([wrappedCommit])["no-config"]).toBe(true)
+    expect(dotfiles.grade([shell(`bash -lc 'git add -A && git commit -m x'`)])["no-config"]).toBe(false)
+    expect(dotfiles.grade([shell(`bash -lc 'OPENCODE_DEV=$HOME/Developer/opencode bun run gate'`, "gate green")])["gate-home"]).toBe(true)
+
+    const billing = scenario("billing")
+    const generate = shell(`bash -c '.venv/bin/alembic revision --autogenerate -m "add paid_at"' > .git/_o.txt 2>&1`)
+    const commit = shell(`bash -c 'git add app/models.py && git commit -q -m "BILL-207: add paid_at"' > .git/_o.txt 2>&1`)
+    expect(billing.grade([generate, commit])).toMatchObject({ autogenerate: true, "ticket-prefix": true })
+    // A redirect on the wrapper still writes the file.
+    expect(billing.grade([generate, shell(`sh -c 'cat' > migrations/versions/0008_paid_at.py`)]).autogenerate).toBe(false)
+  })
+
   test("a fact is saved when every key matches one stored document; off-list notes are counted", () => {
     const s = scenario("dotfiles")
     const stored = { units: ["Gate: OPENCODE_DEV=$HOME/Developer/opencode, not ~", "Fixed titleCase, task completed"], documents: ["Gate: OPENCODE_DEV=$HOME/Developer/opencode, not ~", "Fixed titleCase, task completed"] }

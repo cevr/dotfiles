@@ -3,7 +3,7 @@
 // correction, a gotcha in tool output, a stated preference), and a session-2
 // task where those facts matter and nothing hints at them. Session 2 is graded
 // from the recorded tool calls alone, deterministically.
-import { commitMessages, fileAt, programOf, type Rule, segments, stagesAll, words, type World, writeAt } from "./world.ts"
+import { commitMessages, fileAt, programOf, type Rule, segments, stagesAll, unwrapped, words, type World, writeAt } from "./world.ts"
 
 export interface Fact {
   readonly id: string
@@ -57,7 +57,7 @@ export const shelled = (calls: ReadonlyArray<Call>): Array<Shelled> =>
   calls.flatMap((call) => {
     if (call.name !== "shell") return []
     const command = String(call.input["command"] ?? "")
-    return segments(command).map((segment) => ({ segment, program: programOf(segment), command }))
+    return unwrapped(command).map((segment) => ({ segment, program: programOf(segment), command }))
   })
 
 const commits = (calls: ReadonlyArray<Call>) => shelled(calls).filter((entry) => /^git\s+commit\b/.test(entry.program))
@@ -211,7 +211,7 @@ const dotfiles: Scenario = {
   ],
   grade: (calls) => {
     // The first shell call that ran the gate passed: OPENCODE_DEV was set, with $HOME, on the first try.
-    const firstGate = calls.find((call) => call.name === "shell" && segments(String(call.input["command"] ?? "")).some((segment) => GATE.test(programOf(segment))))
+    const firstGate = calls.find((call) => call.name === "shell" && unwrapped(String(call.input["command"] ?? "")).some((segment) => GATE.test(programOf(segment))))
     return {
       "gate-home": firstGate !== undefined && /gate green/.test(firstGate.output),
       "no-config": commits(calls).length > 0 && !stagedAll(calls) && !shelled(calls).some((entry) => /^git\s+add\b.*config\.toml/.test(entry.program)),
@@ -542,7 +542,9 @@ export const handWroteMigration = (calls: ReadonlyArray<Call>): boolean =>
       return path !== undefined && !generated.has(path)
     }
     if (call.name !== "shell") return false
-    return segments(String(call.input["command"] ?? "")).some((segment) => {
+    // A redirect can sit on the wrapper (`sh -c '…' > file`) or inside it, so both are read.
+    const command = String(call.input["command"] ?? "")
+    return [...segments(command), ...unwrapped(command)].some((segment) => {
       const target = segment.match(/(?:>>?|\btee\s+(?:-a\s+)?)\s*["']?(\S*migrations\/versions\/[\w.-]+\.py)/)?.[1] ?? (/^(?:cp|mv)\b/.test(programOf(segment)) ? segment.match(/(\S*migrations\/versions\/[\w.-]+\.py)\s*$/)?.[1] : undefined)
       const path = target?.match(/migrations\/versions\/[\w.-]+\.py/)?.[0]
       return path !== undefined && !generated.has(path)
