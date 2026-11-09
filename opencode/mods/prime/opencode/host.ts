@@ -65,6 +65,7 @@ export function host(context: Plugin.Context, goal: (sessionID: string) => Goal 
     notify: (message, tone) => context.ui.toast.show({ message, variant: tone }),
     // Priority 1, as the host's own tabs bind theirs; the tab mounts only while it is the active one.
     composerKeys: (commands) => context.keymap.layer(() => ({ mode: "composer", priority: 1, commands: [...commands()] })),
+    shortcut: (commandID) => context.keymap.shortcuts(commandID)[0],
     Markdown: context.ui.Markdown,
     Code: context.ui.Code,
   }

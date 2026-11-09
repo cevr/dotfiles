@@ -63,6 +63,31 @@ export function queuedRow(prompt: WaitingPrompt, width: number) {
   return head + oneLine(prompt.text, Math.max(1, width - [...head].length))
 }
 
+/**
+ * The escape plugin's Ctrl+Enter command (`SEND_COMMAND` in
+ * mods/escape/send.ts): interrupt the turn and send what waits. The hint
+ * reads its key by this id, so it shows only while that plugin binds one.
+ */
+export const SEND_COMMAND = "dotfiles.escape.send"
+
+/** A key as the hint line writes it (`Ctrl+O`): each part capitalised, `return` as `Enter`. */
+export function keyLabel(shortcut: string) {
+  return shortcut
+    .split("+")
+    .map((part) => (part.toLowerCase() === "return" ? "Enter" : part.charAt(0).toUpperCase() + part.slice(1)))
+    .join("+")
+}
+
+/**
+ * The hint above the composer for the send key, while a turn runs and a
+ * prompt waits behind it: `Ctrl+Enter interrupt and send`. Empty otherwise,
+ * or when no key is bound to the command.
+ */
+export function sendHint(input: { readonly shortcut: string | undefined; readonly running: boolean; readonly waiting: number }) {
+  if (!input.shortcut || !input.running || input.waiting === 0) return ""
+  return `${keyLabel(input.shortcut)} interrupt and send`
+}
+
 /** What a queued row's click offers, as the host's own pending rows do; `value` is the inbox move. */
 export type PendingAction = {
   readonly title: string

@@ -1,7 +1,7 @@
 // What the runner has not taken: which prompts wait, the queued rows that show
 // them, and when the loader shows and what it times.
 import { describe, expect, test } from "bun:test"
-import { isWaiting, loader, pendingActions, queuedRow, waitingPrompts, type PendingItem } from "./pending.ts"
+import { isWaiting, keyLabel, loader, pendingActions, queuedRow, sendHint, waitingPrompts, type PendingItem } from "./pending.ts"
 import type { Message } from "./session.ts"
 
 const steer = (id: string, created: number, text: string): PendingItem => ({
@@ -68,6 +68,14 @@ describe("the prompts the runner has not taken", () => {
       ["Send now", "steer"],
       ["Delete", "cancel"],
     ])
+  })
+
+  test("the send hint shows while a turn runs and a prompt waits, with the key the escape plugin binds", () => {
+    expect(sendHint({ shortcut: "ctrl+return", running: true, waiting: 1 })).toBe("Ctrl+Enter interrupt and send")
+    expect(sendHint({ shortcut: "ctrl+return", running: false, waiting: 1 })).toBe("")
+    expect(sendHint({ shortcut: "ctrl+return", running: true, waiting: 0 })).toBe("")
+    expect(sendHint({ shortcut: undefined, running: true, waiting: 1 })).toBe("")
+    expect(keyLabel("ctrl+shift+s")).toBe("Ctrl+Shift+S")
   })
 })
 

@@ -16,7 +16,7 @@ import {
   trayModel,
   usageLabel,
 } from "../chrome.ts"
-import { loader, queuedRow, waitingPrompts } from "../pending.ts"
+import { loader, queuedRow, SEND_COMMAND, sendHint, waitingPrompts } from "../pending.ts"
 import { elapsed } from "../clock.ts"
 import { detailHint, type Detail } from "../detail.ts"
 import { GOAL_LINGER_MS, goalLine, goalShown, type Goal } from "../goal.ts"
@@ -107,10 +107,23 @@ export function Splash(props: { host: Host; sessionID: string }) {
   )
 }
 
-/** The hints above the composer: how to move among subagents on the left, the detail mode on the right. */
+/**
+ * The hints above the composer: how to move among subagents and, while a
+ * turn runs with a prompt waiting, the key that interrupts it and sends
+ * (pending.ts `sendHint`) on the left; the detail mode on the right.
+ */
 export function ModeHint(props: { host: Host; sessionID: string; detail: Accessor<Detail> }) {
   const family = useFamily(props.host, () => props.sessionID)
-  const navigation = createMemo(() => navigationHint({ child: family.child(), others: family.others() }))
+  const send = createMemo(() =>
+    sendHint({
+      shortcut: props.host.shortcut(SEND_COMMAND),
+      running: props.host.status(props.sessionID) === "running",
+      waiting: waitingPrompts(props.host.pending(props.sessionID)).length,
+    }),
+  )
+  const navigation = createMemo(() =>
+    [navigationHint({ child: family.child(), others: family.others() }), send()].filter(Boolean).join(" · "),
+  )
   return (
     <box flexDirection="row" justifyContent="space-between" marginTop={1} flexShrink={0}>
       <text wrapMode="none" truncate fg={props.host.theme().text.faint} paddingLeft={GUTTER}>
