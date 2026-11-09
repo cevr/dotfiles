@@ -13,11 +13,13 @@ import { NUDGE, retryFixed, type ShellRun } from "./retry.ts"
 import { basePrompt, DISTRACTORS, SHELL, type ToolDef } from "./tools.ts"
 import { newWorld, runDistractor, runShell } from "./world.ts"
 
-export const ARMS = ["none", "ours", "ours+pointer", "native", "kernel", "ours+nudge", "kernel+nudge"] as const
+export const ARMS = ["none", "ours", "ours+pointer", "native", "kernel", "ours+nudge", "kernel+nudge", "kernel+direct"] as const
 export type Arm = (typeof ARMS)[number]
 
-/** The arms that reach memory as production does: through the kernel, its only tool (kernel.ts). */
+/** The arms that reach memory through the kernel (kernel.ts): its only tool, or beside the memory tools. */
 export const throughKernel = (arm: Arm): boolean => arm.startsWith("kernel")
+/** The kernel arm as production runs it since 9535f78: the memory tools offered directly beside the kernel. */
+export const directBeside = (arm: Arm): boolean => arm === "kernel+direct"
 /** The arms whose shell results carry the gotcha trigger (retry.ts). */
 export const nudged = (arm: Arm): boolean => arm.endsWith("+nudge")
 /** The arms on our memory, with its digest. */
@@ -78,7 +80,9 @@ const runSession = async (
   const extra = [...(arm === "ours+pointer" ? [POINTER] : []), ...(memory === undefined ? [] : await memory.system(sessionID))]
   const system = [basePrompt(scenario.cwd), ...extra].map((text) => ({ type: "text" as const, text }))
   const memoryTools = (memory?.tools ?? []) as ReadonlyArray<ToolDef>
-  const tools = throughKernel(arm) ? [kernelTool(memoryTools)] : [SHELL, ...DISTRACTORS, ...memoryTools]
+  const tools = throughKernel(arm)
+    ? [kernelTool(memoryTools, directBeside(arm)), ...(directBeside(arm) ? memoryTools : [])]
+    : [SHELL, ...DISTRACTORS, ...memoryTools]
   const kernel = throughKernel(arm) ? newKernel(listingOf(memoryTools), scenario.cwd) : undefined
   const messages: Array<Message> = []
   const calls: Array<Call> = []
@@ -114,12 +118,13 @@ const runSession = async (
 
   /** A tool_use block's result: a direct call, or a kernel cell and the calls it made. */
   const answer = async (name: string, input: Record<string, unknown>): Promise<{ output: string; error: boolean }> => {
-    // With the kernel, it is the only tool: a call of any other name is refused as OpenCode refuses it.
-    if (kernel !== undefined && name !== "kernel") {
+    // With the kernel, a call of a tool it does not offer is refused as OpenCode refuses it; `kernel+direct` offers memory's.
+    const offered = name === "kernel" || (directBeside(arm) && memory !== undefined && memory.names.has(name))
+    if (kernel !== undefined && !offered) {
       transcript.push(`→ ${name} (not a tool here)`)
       return { output: `Tool is not available for this request: ${name}`, error: true }
     }
-    if (kernel === undefined) {
+    if (kernel === undefined || name !== "kernel") {
       const result = await dispatch(name, input)
       if (!result.nudge) return result
       nudges += 1

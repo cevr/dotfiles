@@ -17,6 +17,9 @@
 //   direct calls do; every other catalog tool throws, unavailable here. A
 //   failed call throws. The answer is what the cell printed, then its last
 //   value, cut to viewChars, as answer.ts reads it.
+// - `kernel+direct` is production since 9535f78 (cmd/kernel's `direct`
+//   option): the memory tools are also offered beside the kernel with their own
+//   definitions, off its list; a cell still reaches them on `tools`.
 // - What differs from production: the cell's `child_process`, `fs`, `Bun`
 //   and `process` are small stand-ins over the fake world (hostModules), no
 //   attach, no restarts.
@@ -49,24 +52,32 @@ type MemoryTool = { readonly name: string; readonly description: string; readonl
 
 const isMemory = (name: string) => name.startsWith("memory_")
 
-/** The catalog's lines: production's for every tool but memory's, memory's from their real schemas; sorted by name. */
-export const catalogLines = (memory: ReadonlyArray<MemoryTool>): ReadonlyArray<string> => {
+/**
+ * The catalog's lines: production's for every tool but memory's, memory's from their real schemas; sorted by name.
+ * Memory's lines are left out when its tools are offered directly beside the kernel (`direct`).
+ */
+export const catalogLines = (memory: ReadonlyArray<MemoryTool>, direct = false): ReadonlyArray<string> => {
   const others = FIXTURE.filter((tool) => !isMemory(tool.id)).map((tool) => {
     const input = IN_A_CELL[tool.id]?.input ?? KERNEL_INPUTS[tool.id]
     if (input === undefined) throw new Error(`kernel-inputs.ts has no input for ${tool.id}`)
     return { name: tool.id, line: `- ${pathOf(tool.id)}(input: ${input}): ${IN_A_CELL[tool.id]?.line ?? firstSentence(tool.description)}` }
   })
-  const ours = catalog(memory.map((tool) => ({ name: tool.name, description: tool.description, input: tool.input_schema })))
+  const ours = catalog((direct ? [] : memory).map((tool) => ({ name: tool.name, description: tool.description, input: tool.input_schema })))
     .split("\n")
     .filter((line) => line !== "")
     .map((line) => ({ name: /^- tools\.(\w+)\(/.exec(line)![1]!, line }))
   return [...others, ...ours].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)).map((entry) => entry.line)
 }
 
-/** The kernel tool as the model sees it, its description listing the catalog. */
-export const kernelTool = (memory: ReadonlyArray<MemoryTool>): ToolDef => ({
+/**
+ * The kernel tool as the model sees it, its description listing the catalog. With `direct`, as cmd/kernel's
+ * `direct` option offers it (its default since 9535f78): the memory tools are offered beside the kernel with their
+ * own definitions, the description says so, and the list leaves them out.
+ */
+export const kernelTool = (memory: ReadonlyArray<MemoryTool>, direct = false): ToolDef => ({
   name: "kernel",
-  description: description(KERNEL_LIMITS, []) + catalogLines(memory).join("\n"),
+  description:
+    description({ ...KERNEL_LIMITS, ...(direct ? { direct: memory.map((tool) => tool.name) } : {}) }, []) + catalogLines(memory, direct).join("\n"),
   input_schema: jsonSchemaOf(KernelInput as never),
 })
 
