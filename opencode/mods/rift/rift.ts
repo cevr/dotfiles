@@ -4,12 +4,13 @@
 // One input with an `action`, like the shell tool's; the words the model
 // reads for each answer and each refusal are here.
 import { Schema } from "effect"
+import { toolInput } from "@dotfiles/decider/tool-input"
 import type { Workspace } from "./workspace.ts"
 
 /** The actions that run the workbox's own scripts as they are. */
 export const WORKBOX_ACTIONS = ["init", "refresh", "deps", "check", "sources", "prune", "storage"] as const
 
-export const RiftInput = Schema.Struct({
+export const RiftInput = toolInput(Schema.Struct({
   action: Schema.Literals(["create", "list", "remove", "land", ...WORKBOX_ACTIONS]).annotate({
     description:
       "create: a new Rift for a branch. list: the Rifts of this repository's warm source, with their branch and unsaved work. remove: move a Rift to the trash when its work is done. land: merge the Rifts onto main as one batch, gate once, push, remove them, check in the background (a PR repository, rift.push false: gate and check only, and answer each Rift green or red). Workbox only (workrift): init, refresh, deps, check, sources, prune (a dry run), storage.",
@@ -37,7 +38,7 @@ export const RiftInput = Schema.Struct({
   withChildren: Schema.optional(Schema.Boolean).annotate({
     description: "remove: remove the Rift's own Rifts with it (each still refused while it holds unsaved work, unless force).",
   }),
-})
+}))
 export type RiftInput = typeof RiftInput.Type
 
 export const RIFT_DESCRIPTION = [

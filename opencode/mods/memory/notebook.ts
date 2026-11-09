@@ -1,6 +1,7 @@
 // The memory tools as the agent sees them: their names, inputs and
 // descriptions, what each answers, and what the agent reads when one refuses.
 import { Schema, SchemaGetter } from "effect"
+import { toolInput } from "@dotfiles/decider/tool-input"
 import { MAX_TAGS, MAX_TEXT, type Note, type NoteTooLong, type EmptyNote, type EmptyQuery, type NoteNotFound, Scope, type SubagentWrite } from "./note.ts"
 
 export const SAVE = "memory_save"
@@ -30,7 +31,7 @@ export const Tags = Schema.Union([
   ),
 ])
 
-export const SaveInput = Schema.Struct({
+export const SaveInput = toolInput(Schema.Struct({
   text: Schema.String.annotate({
     description: `The note: one self-contained line of at most ${MAX_TEXT} characters, true without this session's context (name the tool, path or person it is about)`,
   }),
@@ -38,19 +39,19 @@ export const SaveInput = Schema.Struct({
     description: "global: about the user, true in every project; project (the default): this repository's conventions, commands and fixes",
   }),
   tags: Schema.optional(Tags).annotate({ description: `Up to ${MAX_TAGS} one-word tags that help a later search` }),
-  id: Schema.optional(Schema.Number).annotate({ description: "A note's id (#12 → 12) to correct it in place; its text and tags are replaced" }),
-})
+  id: Schema.optional(Schema.Int).annotate({ description: "A note's id (#12 → 12) to correct it in place; its text and tags are replaced" }),
+}))
 export type SaveInput = typeof SaveInput.Type
 
-export const SearchInput = Schema.Struct({
+export const SearchInput = toolInput(Schema.Struct({
   query: Schema.String.annotate({ description: "Words to look for; a note matching more of them ranks higher" }),
-  limit: Schema.optional(Schema.Number).annotate({ description: `How many notes to answer, at most ${MAX_RESULTS}; default ${DEFAULT_RESULTS}` }),
-})
+  limit: Schema.optional(Schema.Int).annotate({ description: `How many notes to answer, at most ${MAX_RESULTS}; default ${DEFAULT_RESULTS}` }),
+}))
 export type SearchInput = typeof SearchInput.Type
 
-export const ForgetInput = Schema.Struct({
-  id: Schema.Number.annotate({ description: "The note's id (#12 → 12)" }),
-})
+export const ForgetInput = toolInput(Schema.Struct({
+  id: Schema.Int.annotate({ description: "The note's id (#12 → 12)" }),
+}))
 export type ForgetInput = typeof ForgetInput.Type
 
 /**

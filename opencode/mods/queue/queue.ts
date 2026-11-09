@@ -5,6 +5,7 @@
 // Also the queue's RPC, which the sidebar reads.
 import { Effect, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
+import { toolInput } from "@dotfiles/decider/tool-input"
 import { InvalidItem, Item, ItemInput, itemOf, UnknownState } from "./item.ts"
 
 export interface QueueState {
@@ -37,13 +38,13 @@ export class UnclearChange extends Schema.TaggedError<UnclearChange>()("UnclearC
 export type Rejection = InvalidItem | UnknownState | DuplicateItem | UnknownItem | UnclearChange
 
 /** The tool's input: a whole new list, or a patch. */
-export const QueueInput = Schema.Struct({
+export const QueueInput = toolInput(Schema.Struct({
   set: Schema.optional(Schema.Array(ItemInput)).annotate({ description: "Replace the whole queue with these items." }),
   upsert: Schema.optional(Schema.Array(ItemInput)).annotate({
     description: "Add these items, or change the items with these ids (fields you leave out keep their value; an empty string clears one).",
   }),
   remove: Schema.optional(Schema.Array(Schema.String)).annotate({ description: "Remove the items with these ids." }),
-})
+}))
 export type QueueInput = typeof QueueInput.Type
 
 /** The command the tool's input asks for. */

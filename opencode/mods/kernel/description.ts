@@ -1,6 +1,7 @@
 // What the model reads about the kernel tool, and the input it calls it with.
 // The words are the model's contract: they change only on purpose.
 import { Schema } from "effect"
+import { toolInput } from "@dotfiles/decider/tool-input"
 import { MAX_DISPLAY_CHARS } from "./limits.ts"
 import { catalog, IMAGE_NOTE, type Reached } from "./tools.ts"
 
@@ -9,14 +10,14 @@ import { catalog, IMAGE_NOTE, type Reached } from "./tools.ts"
  * cell, which the transcript shows as the call's header; it is optional, so
  * a call made before it existed still decodes.
  */
-export const KernelInput = Schema.Struct({
+export const KernelInput = toolInput(Schema.Struct({
   code: Schema.String.annotate({ description: "TypeScript to run at the kernel's top level" }),
   description: Schema.optional(Schema.String).annotate({
     description:
       'A few words in the present tense saying what this cell does, shown to the user as its header, e.g. "Merge the skill-dollar worker". Give one whenever the cell calls tools or changes anything; leave it out for a quick computation.',
   }),
   reset: Schema.optional(Schema.Boolean).annotate({ description: "Drop every binding and start an empty kernel first" }),
-})
+}))
 export interface KernelInput extends Schema.Schema.Type<typeof KernelInput> {}
 
 /** The limits the description names. */

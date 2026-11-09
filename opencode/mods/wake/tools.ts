@@ -3,6 +3,7 @@
 // names take `_` where gent's take `.`: a tool name with a dot is refused by
 // Anthropic's API.
 import { Schema } from "effect"
+import { toolInput } from "@dotfiles/decider/tool-input"
 import { DEFAULT_JOB_TIMEOUT_SECONDS, DEFAULT_WAIT_MS, MAX_JOB_TIMEOUT_SECONDS, MAX_WAIT_MS } from "./job.ts"
 import {
   DEFAULT_INTERVAL_SECONDS,
@@ -21,10 +22,10 @@ const WakeMode = Mode.annotate({
   description: "`wake` (default): the fire starts a turn. `notify`: the fire waits for your next turn and is shown to the user meanwhile, without starting one.",
 })
 
-export const WakeInput = Schema.Struct({
-  afterSeconds: Schema.optional(Schema.Number).annotate({ description: "Seconds from now until the alarm fires." }),
+export const WakeInput = toolInput(Schema.Struct({
+  afterSeconds: Schema.optional(Schema.Finite).annotate({ description: "Seconds from now until the alarm fires." }),
   at: Schema.optional(Schema.String).annotate({ description: "ISO 8601 time at which the alarm fires, e.g. 2026-11-05T14:30:00-05:00." }),
-  everySeconds: Schema.optional(Schema.Number).annotate({
+  everySeconds: Schema.optional(Schema.Finite).annotate({
     description: `Repeat every this many seconds after the first fire, until wake_cancel. At least ${MIN_EVERY_SECONDS}. Omit for one fire.`,
   }),
   mode: Schema.optional(WakeMode),
@@ -35,17 +36,17 @@ export const WakeInput = Schema.Struct({
       prompt: Schema.String.annotate({ description: "The new session's first message: self-contained, since it starts with no context." }),
     }),
   ).annotate({ description: "Start a fresh session at the time instead of waking this one." }),
-})
+}))
 export type WakeInput = typeof WakeInput.Type
 
-export const MonitorInput = Schema.Struct({
+export const MonitorInput = toolInput(Schema.Struct({
   command: Schema.String.annotate({
     description: "Command run by /bin/sh on every check, with no shell startup files. Without `until`, exit 0 means done (e.g. `gh run view 123 --exit-status`).",
   }),
   cwd: Schema.optional(Schema.String).annotate({ description: "Absolute working directory for the command. Default: this session's directory." }),
-  intervalSeconds: Schema.optional(Schema.Number).annotate({ description: `Seconds between checks. Default ${DEFAULT_INTERVAL_SECONDS}.` }),
+  intervalSeconds: Schema.optional(Schema.Finite).annotate({ description: `Seconds between checks. Default ${DEFAULT_INTERVAL_SECONDS}.` }),
   until: Schema.optional(Schema.String).annotate({ description: "Regular expression; when it matches the command's stdout (multiline) the monitor is done." }),
-  timeoutSeconds: Schema.optional(Schema.Number).annotate({
+  timeoutSeconds: Schema.optional(Schema.Finite).annotate({
     description: `Give up after this long and wake anyway (a repeat: stop watching, and say so). Default ${DEFAULT_TIMEOUT_SECONDS}, at most ${MAX_TIMEOUT_SECONDS}; with repeat default ${DEFAULT_REPEAT_TIMEOUT_SECONDS}, at most ${MAX_REPEAT_TIMEOUT_SECONDS}.`,
   }),
   mode: Schema.optional(WakeMode),
@@ -54,12 +55,12 @@ export const MonitorInput = Schema.Struct({
     description:
       "Keep watching after a match instead of ending. `match`: wake on each new match (a match after a check that did not match). `change`: wake each time a matching check's stdout differs from the last one's; the first match is the baseline. Omit for one wake.",
   }),
-})
+}))
 export type MonitorInput = typeof MonitorInput.Type
 
-export const CancelInput = Schema.Struct({
+export const CancelInput = toolInput(Schema.Struct({
   id: Schema.optional(Schema.String).annotate({ description: "The alarm, monitor or notice to cancel. Omit to cancel every one of this session." }),
-})
+}))
 export type CancelInput = typeof CancelInput.Type
 
 export const ListInput = Schema.Struct({})
@@ -91,7 +92,7 @@ export const LIST_DESCRIPTION =
 
 export const JobAction = Schema.Literals(["run", "check", "wait", "kill", "list"])
 
-export const JobInput = Schema.Struct({
+export const JobInput = toolInput(Schema.Struct({
   action: Schema.optional(JobAction).annotate({
     description:
       "`run` (default): start `command`. `check`: how job `id` stands, with its progress and log tail. `wait`: block up to `ms` for job `id` to end. `kill`: stop job `id`. `list`: this session's jobs.",
@@ -102,12 +103,12 @@ export const JobInput = Schema.Struct({
     description: "For run: what to do when the job ends, and what result means success. Arrives verbatim in the letter that wakes you.",
   }),
   heavy: Schema.optional(Schema.Boolean).annotate({ description: "For run: a CPU-heavy command (a build, a full test suite); it runs at a lower priority (nice 10)." }),
-  timeoutSeconds: Schema.optional(Schema.Number).annotate({
+  timeoutSeconds: Schema.optional(Schema.Finite).annotate({
     description: `For run: stop the command past this long. Default ${DEFAULT_JOB_TIMEOUT_SECONDS}, at most ${MAX_JOB_TIMEOUT_SECONDS}.`,
   }),
   id: Schema.optional(Schema.String).annotate({ description: "For check, wait and kill: the job's id." }),
-  ms: Schema.optional(Schema.Number).annotate({ description: `For wait: how long to wait. Default ${DEFAULT_WAIT_MS}, at most ${MAX_WAIT_MS}.` }),
-})
+  ms: Schema.optional(Schema.Finite).annotate({ description: `For wait: how long to wait. Default ${DEFAULT_WAIT_MS}, at most ${MAX_WAIT_MS}.` }),
+}))
 export type JobInput = typeof JobInput.Type
 
 export const JOB_DESCRIPTION = [

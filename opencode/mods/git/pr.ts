@@ -1,16 +1,17 @@
 // The `pr` tool's surface: its input, what it says it does, and how it names
 // the requests and reviewers it is given. The handlers are in pulls.ts.
 import { Schema } from "effect"
+import { toolInput } from "@dotfiles/decider/tool-input"
 import { Until, type PrRef } from "./watch.ts"
 
 export const Action = Schema.Literals(["status", "watch", "unwatch", "list", "create"])
 export type Action = typeof Action.Type
 
 /** A request: its number in the session's repository, `owner/name#123`, or its URL. */
-export const Target = Schema.Union([Schema.Number, Schema.String])
+export const Target = Schema.Union([Schema.Int, Schema.String])
 export type Target = typeof Target.Type
 
-export const PrInput = Schema.Struct({
+export const PrInput = toolInput(Schema.Struct({
   action: Action.annotate({ description: "status, watch, unwatch, list or create." }),
   prs: Schema.optional(Schema.Array(Target)).annotate({
     description:
@@ -27,7 +28,7 @@ export const PrInput = Schema.Struct({
   reviewers: Schema.optional(Schema.Union([Schema.Array(Schema.String), Schema.Literals(["default", "none"])])).annotate({
     description: "create: logins to request review from; default (the default) asks the repository owner's configured reviewers, none asks no one.",
   }),
-})
+}))
 export type PrInput = typeof PrInput.Type
 
 export const DESCRIPTION = [

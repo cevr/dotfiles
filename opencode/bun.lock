@@ -261,10 +261,16 @@
     "mods/mail": {
       "name": "@dotfiles/opencode-mail",
       "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+      },
     },
     "mods/memory": {
       "name": "@dotfiles/opencode-memory",
       "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+      },
     },
     "mods/orchestrate": {
       "name": "@dotfiles/opencode-orchestrate",
@@ -312,6 +318,7 @@
       "name": "@dotfiles/opencode-rift",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-guard": "workspace:*",
       },
     },
@@ -342,6 +349,7 @@
       "name": "@dotfiles/opencode-wake",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-guard": "workspace:*",
       },
     },

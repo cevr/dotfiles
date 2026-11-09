@@ -6,5 +6,8 @@
   "description": "Session mail for OpenCode: a session lists the server's other sessions and sends them messages, which arrive as synthetic messages naming the sender.",
   "exports": {
     "./*": "./*.ts"
+  },
+  "dependencies": {
+    "@dotfiles/decider": "workspace:*"
   }
 }

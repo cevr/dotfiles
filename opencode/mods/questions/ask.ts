@@ -2,6 +2,7 @@
 // what it answers (the agent carries on, on its assumption) and what it reads
 // when a call is refused.
 import { Schema } from "effect"
+import { toolInput } from "@dotfiles/decider/tool-input"
 import { Ask, Choice, MAX_ASKED, MAX_HEADER, MAX_OPEN, MAX_OPTIONS, type Question, type Reason, type Rejection } from "./question.ts"
 
 export const NAME = "ask_user_async"
@@ -13,12 +14,12 @@ export const AskedQuestion = Schema.Struct({
   assume: Schema.String.annotate({ description: "What you do until an answer arrives. You continue on it now" }),
 })
 
-export const AskInput = Schema.Struct({
+export const AskInput = toolInput(Schema.Struct({
   questions: Schema.optional(Schema.Array(AskedQuestion)).annotate({ description: `1-${MAX_ASKED} questions to ask in the background` }),
   withdraw: Schema.optional(Schema.Array(Schema.String)).annotate({
     description: "Ids of your open questions that no longer matter (q1, q2, …); they leave the user's tray",
   }),
-})
+}))
 export type AskInput = typeof AskInput.Type
 
 export const DESCRIPTION = [

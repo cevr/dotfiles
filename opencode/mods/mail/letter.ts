@@ -5,6 +5,7 @@
 // it at its next step; an idle one is woken to read it, unless the sender
 // says not to, and then it waits for the session's next turn.
 import { Schema } from "effect"
+import { toolInput } from "@dotfiles/decider/tool-input"
 import type { AmbiguousTitle, NoSuchSession, SelfAddressed } from "./address.ts"
 import { nameOf } from "./directory.ts"
 
@@ -20,7 +21,7 @@ export interface Party {
 const named = (party: Party): string =>
   `session ${JSON.stringify(nameOf(party))} (${party.id})${party.host === undefined ? "" : ` on host ${party.host}`}`
 
-export const MessageInput = Schema.Struct({
+export const MessageInput = toolInput(Schema.Struct({
   to: Schema.String.annotate({
     description: "The session to write to: its id (ses_…), or its title (an exact title, or text only one title contains). The sessions tool lists both.",
   }),
@@ -31,7 +32,7 @@ export const MessageInput = Schema.Struct({
   replyTo: Schema.optional(Schema.String).annotate({
     description: "The session the receiver should answer (an id or a title). Default: your session.",
   }),
-})
+}))
 export type MessageInput = typeof MessageInput.Type
 
 export const MESSAGE_DESCRIPTION = [

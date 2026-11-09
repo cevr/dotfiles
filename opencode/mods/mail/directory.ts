@@ -3,6 +3,7 @@
 // default, subagents on request, narrowed by text in the title, directory or
 // id, a paired host's marked with it.
 import { Schema } from "effect"
+import { toolInput } from "@dotfiles/decider/tool-input"
 
 /** A session as mail reads it. */
 export interface SessionCard {
@@ -33,7 +34,7 @@ export const nameOf = (card: { readonly id: string; readonly title?: string | un
 export const MAX_LISTED = 100
 const DEFAULT_LISTED = 20
 
-export const SessionsInput = Schema.Struct({
+export const SessionsInput = toolInput(Schema.Struct({
   search: Schema.optional(Schema.String).annotate({
     description: "Only sessions whose title, directory or id contains this text (any case).",
   }),
@@ -43,7 +44,7 @@ export const SessionsInput = Schema.Struct({
   limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MAX_LISTED }))).annotate({
     description: `How many sessions to show, newest activity first. Default ${DEFAULT_LISTED}.`,
   }),
-})
+}))
 export type SessionsInput = typeof SessionsInput.Type
 
 export const SESSIONS_DESCRIPTION = [

@@ -275,11 +275,12 @@
                   "*",
                   "!effect",
                   "!effect/*",
+                  "!@dotfiles/decider/*",
                   "*/**/effect",
                   "!./*.ts",
                   "!bun:test"
                 ],
-                "message": "The rift domain fence: the rift tool's domain files import effect, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
+                "message": "The rift domain fence: the rift tool's domain files import effect, @dotfiles/decider/*, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders."
               }
             ]
           }
@@ -325,11 +326,12 @@
                   "*",
                   "!effect",
                   "!effect/*",
+                  "!@dotfiles/decider/*",
                   "*/**/effect",
                   "!./*.ts",
                   "!bun:test"
                 ],
-                "message": "The memory domain fence: its domain files import effect, its own root files and bun:test only; never @opencode/*, node:*, bun (bun:sqlite lives in sqlite/), a vendor package or one of its folders."
+                "message": "The memory domain fence: its domain files import effect, @dotfiles/decider/*, its own root files and bun:test only; never @opencode/*, node:*, bun (bun:sqlite lives in sqlite/), a vendor package or one of its folders."
               }
             ]
           }
@@ -375,11 +377,12 @@
                   "*",
                   "!effect",
                   "!effect/*",
+                  "!@dotfiles/decider/*",
                   "*/**/effect",
                   "!./*.ts",
                   "!bun:test"
                 ],
-                "message": "The mail domain fence: its domain files import effect, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or its opencode/ folder."
+                "message": "The mail domain fence: its domain files import effect, @dotfiles/decider/*, its own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or its opencode/ folder."
               }
             ]
           }
@@ -716,11 +719,12 @@
                   "*",
                   "!effect",
                   "!effect/*",
+                  "!@dotfiles/decider/*",
                   "*/**/effect",
                   "!./*.ts",
                   "!bun:test"
                 ],
-                "message": "The wake domain fence: the wakes' domain files import effect, their own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders (memory/, opencode/, process/, cron/)."
+                "message": "The wake domain fence: the wakes' domain files import effect, @dotfiles/decider/*, their own root files and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders (memory/, opencode/, process/, cron/)."
               }
             ]
           }
