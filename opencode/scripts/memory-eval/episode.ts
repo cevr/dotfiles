@@ -95,15 +95,17 @@ const runSession = async (
   let nudges = 0
 
   /** One tool call, answered and recorded; `nudge` when it is a shell retry that fixed a failure, on an arm with the trigger. */
-  const dispatch = (name: string, input: Record<string, unknown>): Dispatched | Promise<Dispatched> => {
+  /** `inCell` when a kernel cell made the call: the transcript indents it under the cell. */
+  const dispatch = (name: string, input: Record<string, unknown>, inCell = kernel !== undefined): Dispatched | Promise<Dispatched> => {
     step += 1
     const at = step
-    if (memory !== undefined && memory.names.has(name)) return memory.call(sessionID, name, input).then((answer) => record(at, name, input, answer.text, answer.error))
+    if (memory !== undefined && memory.names.has(name))
+      return memory.call(sessionID, name, input).then((answer) => record(at, name, input, answer.text, answer.error, inCell))
     const outcome = name === "shell" ? runShell(String(input["command"] ?? ""), world, scenario.rules) : runDistractor(name, input, world)
-    return record(at, name, input, outcome.out, outcome.code !== 0)
+    return record(at, name, input, outcome.out, outcome.code !== 0, inCell)
   }
 
-  const record = (at: number, name: string, input: Record<string, unknown>, output: string, error: boolean): Dispatched => {
+  const record = (at: number, name: string, input: Record<string, unknown>, output: string, error: boolean, inCell: boolean): Dispatched => {
     let nudge = false
     if (name === "shell") {
       const run = { command: String(input["command"] ?? ""), failed: error }
@@ -111,7 +113,7 @@ const runSession = async (
       shellRuns.push(run)
     }
     calls.push({ session, step: at, name, input, output, error })
-    transcript.push(`${kernel === undefined ? "→" : "  ⇢"} ${name} ${short(JSON.stringify(input), 300)}`, `${kernel === undefined ? "←" : "  ⇠"} ${short(output, 240)}`)
+    transcript.push(`${inCell ? "  ⇢" : "→"} ${name} ${short(JSON.stringify(input), 300)}`, `${inCell ? "  ⇠" : "←"} ${short(output, 240)}`)
     if (nudge) transcript.push("  [nudge]")
     return { output, error, nudge }
   }
@@ -125,7 +127,7 @@ const runSession = async (
       return { output: `Tool is not available for this request: ${name}`, error: true }
     }
     if (kernel === undefined || name !== "kernel") {
-      const result = await dispatch(name, input)
+      const result = await dispatch(name, input, false)
       if (!result.nudge) return result
       nudges += 1
       return { output: `${result.output}\n\n${NUDGE}`, error: result.error }
