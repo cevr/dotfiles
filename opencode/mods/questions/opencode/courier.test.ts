@@ -47,6 +47,17 @@ describe("delivering through the host", () => {
     ])
   })
 
+  test("a notice goes as a steer that does not wake the session", async () => {
+    const calls: Array<Synthetic> = []
+    const courier = layer(host(new Map([["ses_root", []]]), calls), () => "msg_2")
+    await Effect.runPromise(
+      Courier.use((service) => service.notify("ses_root", "msg_2", { text: "N", description: "x's question q1 answered · Q → A", metadata: { source: "questions", answers: [] } })).pipe(
+        Effect.provide(courier),
+      ),
+    )
+    expect(calls.map((call) => [call.sessionID, call.id, call.delivery, call.resume])).toEqual([["ses_root", "msg_2", "steer", false]])
+  })
+
   test("another failure of the host is refused with its message", async () => {
     const failing = layer({ synthetic: () => Effect.fail(new Error("inbox closed")) })
     const failure = await Effect.runPromise(

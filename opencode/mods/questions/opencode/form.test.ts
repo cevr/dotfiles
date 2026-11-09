@@ -1,4 +1,5 @@
-// /answer over a stand-in host: the forms it opens, one per asking session.
+// /answer over a stand-in host: the one form it opens in the session on
+// screen, holding that session's questions and its subagents'.
 import { expect, test } from "bun:test"
 import type { FormInput } from "../form.ts"
 import type { Question } from "../question.ts"
@@ -11,24 +12,33 @@ const host = (pending: Record<string, ReadonlyArray<{ fields: ReadonlyArray<{ ke
   const view: FormHost = {
     pending: (sessionID) => pending[sessionID] ?? [],
     create: (sessionID, input) => (failing.includes(sessionID) ? Promise.reject(new Error("no")) : Promise.resolve(void created.push([sessionID, input]))),
-    asker: (sessionID) => (sessionID === "ses_child" ? "general" : sessionID),
+    asker: (sessionID) => (sessionID === "ses_child" ? "implementor auth r1" : sessionID),
   }
   return { view, created }
 }
 
-test("one form per asking session: the screen's first with every one of its questions, the subagent's naming it", async () => {
+test("one form in the session on screen: its own questions first, then its subagents', each naming who asked", async () => {
   const { view, created } = host()
   const done = await openForms(view, "ses_root", [asked("ses_child", "q1", 1), asked("ses_root", "q2", 3), asked("ses_root", "q1", 2)])
-  expect(done).toEqual({ opened: 2, already: 0, failed: [] })
-  expect(created.map(([sessionID, input]) => [sessionID, input.fields.map((field) => field.key), input.metadata.message])).toEqual([
-    ["ses_root", ["ask_user_async:q1", "ask_user_async:q2"], undefined],
-    ["ses_child", ["ask_user_async:q1"], "Asked by general"],
+  expect(done).toEqual({ opened: 1, already: 0, failed: [] })
+  expect(created.map(([sessionID, input]) => [sessionID, input.fields.map((field) => [field.key, field.description])])).toEqual([
+    [
+      "ses_root",
+      [
+        ["ask_user_async:q1", "ses_root q1?"],
+        ["ask_user_async:q2", "ses_root q2?"],
+        ["ask_user_async:ses_child:q1", "implementor auth r1 asks: ses_child q1?"],
+      ],
+    ],
   ])
 })
 
 test("a session with one of our forms pending gets no second; another form does not count; a failure is named", async () => {
-  const { view, created } = host({ ses_root: [{ fields: [{ key: "ask_user_async:q1" }] }], ses_child: [{ fields: [{ key: "q0" }] }] }, ["ses_other"])
-  const done = await openForms(view, "ses_root", [asked("ses_root", "q1", 1), asked("ses_child", "q1", 2), asked("ses_other", "q1", 3)])
-  expect(done).toEqual({ opened: 1, already: 1, failed: ["ses_other"] })
-  expect(created.map(([sessionID]) => sessionID)).toEqual(["ses_child"])
+  const pending = host({ ses_root: [{ fields: [{ key: "ask_user_async:q1" }] }] })
+  expect(await openForms(pending.view, "ses_root", [asked("ses_root", "q1", 1), asked("ses_child", "q1", 2)])).toEqual({ opened: 0, already: 1, failed: [] })
+  expect(pending.created).toEqual([])
+  const other = host({ ses_root: [{ fields: [{ key: "q0" }] }] })
+  expect(await openForms(other.view, "ses_root", [asked("ses_child", "q1", 2)])).toEqual({ opened: 1, already: 0, failed: [] })
+  const failing = host({}, ["ses_root"])
+  expect(await openForms(failing.view, "ses_root", [asked("ses_root", "q1", 1)])).toEqual({ opened: 0, already: 0, failed: ["ses_root"] })
 })

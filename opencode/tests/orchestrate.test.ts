@@ -41,6 +41,19 @@ describe.skipIf(!skill)("the role agents", () => {
     expect(ROLES.map((role) => effort(role))).toEqual(["high", "medium", "medium", undefined])
   })
 
+  test("every role may ask the owner in the background: ask_user_async is not denied under the deny-all rule", () => {
+    // The fork hides a tool whose last matching rule denies every resource (packages/core/src/tool.ts `whollyDisabled`).
+    const disabled = (action: string, rules: ReadonlyArray<{ action: string; resource: string; effect: string }>) => {
+      const rule = rules.findLast((candidate) => candidate.action === "*" || candidate.action === action)
+      return rule?.resource === "*" && rule.effect === "deny"
+    }
+    const written = JSON.parse(readFileSync(join(ROOT, OUT), "utf8")) as { agents: Record<string, { permissions: ReadonlyArray<{ action: string; resource: string; effect: string }> }> }
+    for (const role of ROLES) {
+      expect([role, disabled("ask_user_async", written.agents[role]!.permissions)]).toEqual([role, false])
+      expect([role, disabled("question", written.agents[role]!.permissions)]).toEqual([role, true])
+    }
+  })
+
   test("--check passes on the written file and fails on a hand edit", () => {
     const root = join(scratch, "check")
     mkdirSync(join(root, "mods/orchestrate"), { recursive: true })

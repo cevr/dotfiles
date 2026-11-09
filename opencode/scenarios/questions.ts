@@ -3,28 +3,28 @@
 // kernel cell (QUESTIONS_VIA=kernel), then a third in a second call, and
 // carries on; then it starts a background subagent that asks one of its own
 // the same way. The root's tray counts all four. /answer opens the host's own
-// question form (the built-in `question` tool's) with the root's three
-// questions as tabs: the user moves off the assumption on the first, types an
-// answer of their own on the second, leaves the third blank and submits once,
-// so the idle root wakes on ONE letter with both answers. The same /answer
-// opened the subagent's form too, naming who asked; it shows next, and Esc
-// closes it, leaving its question open. shift+← on the empty composer then
-// opens the forms again: the root's left-over question, which the user
-// answers with its assumption (its own letter), and the subagent's, closed
-// again with Esc. Last, shift+← opens the subagent's form once more and the
-// user presses ctrl+x (dismiss): the question closes, the tray goes, and
-// nothing is sent. On the root's form, ctrl+x on the third tab marks it
-// dismissed, and ctrl+x again there undoes it before the submit.
+// question form (the built-in `question` tool's) in the root, with the root's
+// three questions and then the subagent's as tabs, the subagent's naming who
+// asked: the user moves off the assumption on the first, types an answer of
+// their own on the second, leaves the third blank, moves off the subagent's
+// assumption, and submits once. The subagent wakes on its own letter, the
+// root gets a notice of it (which does not wake it) and then wakes on ONE
+// letter with both its answers, reading the notice too. shift+← on the empty
+// composer then opens the root's left-over question; Esc closes it, leaving
+// it open. Last, shift+← opens it once more and the user presses ctrl+x
+// (dismiss): the question closes, the tray goes, and nothing is sent. On the
+// form, ctrl+x on the third tab marks it dismissed, and ctrl+x again there
+// undoes it before the submit.
 // Run: OPENCODE_DEV=<opencode checkout> SCENARIO_OUT=out QUESTIONS_VIA=kernel bunx opencode-drive run scenarios/questions.ts
 //
 // It writes, under SCENARIO_OUT, `questions-<via>-<name>.txt` for the frames
 // `tray` (four open), `form` (the form on the first question), `moved` (the
 // cursor on Redis), `typed` (an answer typed on the second), `marked` (the
-// third dismissed with ctrl+x, on the Submit tab), `marked-tab` (back on the
-// third: dismissed), `review` (the submit tab, the third undone), `answered`
-// (the root's letter and the tray after), `again` (the left-over question's
-// form), `subagent` (the subagent's form), `done` (after Esc), `dismiss` (the
-// subagent's form before ctrl+x) and `dismissed` (after it, no tray); `-timeout.txt` when a wait times out; `-requests.json` (each
+// third dismissed with ctrl+x, on the subagent's tab), `marked-tab` (back on
+// the third: dismissed), `review` (the submit tab, the third undone),
+// `answered` (the root's letter, the notice and the tray after), `again` (the
+// left-over question's form), `done` (after Esc), `dismiss` (its form before
+// ctrl+x) and `dismissed` (after it, no tray); `-timeout.txt` when a wait times out; `-requests.json` (each
 // model request, by the session it came from) and `-transcripts.json`.
 import { Deferred, Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
@@ -99,17 +99,22 @@ export default OpenCodeDriver.use(
     Effect.gen(function* () {
       const requests: Array<{ readonly session: string; readonly request: string }> = []
       const subagentAsked = yield* Deferred.make<void>()
+      const subagentAnswered = yield* Deferred.make<void>()
       yield* llm.serve((request) => {
         const s = JSON.stringify(request)
         const session = sessionOf(s)
         requests.push({ session, request: s })
         if (session === "title") return say("Questions fixture")
         if (session === "subagent") {
+          if (s.includes("Answer to your background question q1"))
+            return Stream.fromEffect(Deferred.succeed(subagentAnswered, undefined)).pipe(
+              Stream.drain,
+              Stream.concat(say(s.includes("A: vitest") ? "Subagent switched to vitest" : "Subagent missed the answer")),
+            )
           if (!s.includes("call_sub_ask")) return call("call_sub_ask", "ask_user_async", SUB_ASK)
           return Stream.fromEffect(Deferred.succeed(subagentAsked, undefined)).pipe(Stream.drain, Stream.concat(say("Subagent asked and carried on")))
         }
-        // The root: the answers it reads, newest first.
-        if (s.includes("Answer to your background question q3")) return say("Root kept JSON logs")
+        // The root: the answers it reads.
         if (s.includes("Answers to your background questions q1 and q2"))
           return say(s.includes("revise the work that rests on q1 and q2") ? "Root switched to Redis and dropped the endpoint" : "Root missed the difference")
         if (!s.includes("call_ask")) return call("call_ask", "ask_user_async", ASK)
@@ -165,54 +170,49 @@ export default OpenCodeDriver.use(
       yield* keep("typed")
       yield* ui.press("return")
       yield* until((frame) => frame.includes("Should the logs be JSON?"))
-      // The third: ctrl+x dismisses it and moves on to the submit tab; back on it, ctrl+x again undoes it.
+      // The third: ctrl+x dismisses it and moves on to the subagent's question; back on it, ctrl+x again undoes it.
       yield* ui.press("x", { ctrl: true })
-      yield* until((frame) => frame.includes("Log format: dismissed"))
+      yield* until((frame) => frame.includes("Which test runner should the suite use?"))
       yield* keep("marked")
       yield* ui.press("tab", { shift: true })
       yield* until((frame) => frame.includes("✓ dismissed"))
       yield* keep("marked-tab")
       yield* ui.press("x", { ctrl: true })
       yield* until((frame) => !frame.includes("✓ dismissed"))
-      // The third stays blank: on to the submit tab.
+      // The third stays blank: on to the subagent's, answered off its assumption, then the submit tab.
       yield* ui.press("tab")
+      yield* until((frame) => frame.includes("asks: Which test runner should the suite use?"))
+      yield* ui.press("down")
+      yield* ui.press("return")
       yield* until((frame) => frame.includes("(not answered)"))
       yield* keep("review")
       console.log("screenshot:", yield* ui.screenshot(`${label}-review`))
       yield* ui.press("return")
-      // One letter wakes the root; the subagent's form, opened by the same /answer, shows next.
-      yield* until(
-        (frame) =>
-          frame.includes("Root switched to Redis and dropped the endpoint") && frame.includes("2 open questions") && frame.includes("Which test runner should the suite use?"),
-      )
+      // One letter wakes the root, which reads the notice of its subagent's answer; the subagent wakes on its own letter.
+      yield* until((frame) => frame.includes("Root switched to Redis and dropped the endpoint") && frame.includes("1 open question"))
+      yield* Deferred.await(subagentAnswered)
       yield* keep("answered")
       console.log("screenshot:", yield* ui.screenshot(`${label}-answered`))
-      // Esc closes it; the question stays open.
-      yield* ui.press("escape")
-      yield* until((frame) => !frame.includes("Which test runner should the suite use?") && frame.includes("2 open questions"))
 
-      // shift+← on the empty composer: the left-over question, then the subagent's again.
+      // shift+← on the empty composer: the left-over question on its own; Esc closes it and it stays open.
       yield* ui.press("left", { shift: true })
       yield* until((frame) => frame.includes("Should the logs be JSON?") && !frame.includes("Which database should the cache use?"))
       yield* keep("again")
-      yield* ui.press("return")
-      yield* until((frame) => frame.includes("Which test runner should the suite use?") && frame.includes("Root kept JSON logs"))
-      yield* keep("subagent")
       yield* ui.press("escape")
-      yield* until((frame) => !frame.includes("Which test runner should the suite use?") && frame.includes("1 open question"))
+      yield* until((frame) => !frame.includes("Should the logs be JSON?") && frame.includes("1 open question"))
       // The prompt has the focus back.
       yield* ui.type("typed-after-answer")
       yield* until((frame) => frame.includes("typed-after-answer"))
       yield* keep("done")
 
-      // The subagent's question, dismissed: the composer emptied, shift+← opens its form, ctrl+x dismisses it.
+      // The left-over question, dismissed: the composer emptied, shift+← opens its form, ctrl+x dismisses it.
       for (let left = "typed-after-answer".length; left > 0; left--) yield* ui.press("backspace")
       yield* until((frame) => !frame.includes("typed-after-answer"))
       yield* ui.press("left", { shift: true })
-      yield* until((frame) => frame.includes("Which test runner should the suite use?"))
+      yield* until((frame) => frame.includes("Should the logs be JSON?"))
       yield* keep("dismiss")
       yield* ui.press("x", { ctrl: true })
-      yield* until((frame) => !frame.includes("Which test runner should the suite use?") && !frame.includes("open question"))
+      yield* until((frame) => !frame.includes("Should the logs be JSON?") && !frame.includes("open question"))
       yield* keep("dismissed")
       yield* dump
     }),

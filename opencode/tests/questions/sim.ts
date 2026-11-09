@@ -4,6 +4,8 @@
  *
  * - `questions ask`: asks one question through `ask_user_async`, then answers
  *   `ASKED`; once the answer's letter is in the conversation, `ANSWERED`.
+ * - `questions root`: `ROOT_TOLD` once the notice of its subagent's answer is
+ *   in the conversation, else `ROOT_UNTOLD`.
  * - anything else (the other location's session): `IDLE` at once.
  *
  * @module
@@ -11,6 +13,13 @@
 
 export const ASK_TASK = "questions ask"
 export const IDLE_TASK = "questions idle"
+/** The root session of the subagent run: it answers by whether the notice of its subagent's answer is in its conversation. */
+export const ROOT_TASK = "questions root"
+export const ROOT_UNTOLD = "sim: root has no word of the subagent's question"
+export const ROOT_TOLD = "sim: root knows the subagent's question was answered"
+/** What the root's notice opens with (mods/questions/reply.ts `noticeOf`), for the subagent titled `SUBAGENT`. */
+export const SUBAGENT = "implementor auth r1"
+export const NOTICE = `The subagent ${SUBAGENT} had its background question q1 answered`
 export const ASKED = "sim: asked, carrying on with SQLite"
 export const ANSWERED = "sim: switched to Redis"
 export const IDLE = "sim: nothing to do here"
@@ -76,8 +85,9 @@ export const serve = () => {
       .join("\n")
     if (system.includes("You name conversations")) return { kind: "text", text: "Questions run" }
     const task = text(messages.find((message) => message.role === "user")?.content).trim()
-    if (!task.endsWith(ASK_TASK)) return { kind: "text", text: IDLE }
     const conversation = messages.map((message) => text(message.content)).join("\n")
+    if (task.endsWith(ROOT_TASK)) return { kind: "text", text: conversation.includes(NOTICE) ? ROOT_TOLD : ROOT_UNTOLD }
+    if (!task.endsWith(ASK_TASK)) return { kind: "text", text: IDLE }
     if (conversation.includes(LETTER)) return { kind: "text", text: ANSWERED }
     if (messages.some((message) => message.role === "tool")) return { kind: "text", text: ASKED }
     return { kind: "tool", name: "ask_user_async", input: { questions: [QUESTION] } }

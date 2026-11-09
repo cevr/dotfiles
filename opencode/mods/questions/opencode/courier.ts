@@ -7,7 +7,8 @@
 //   packages/core/src/session/session.ts:287-327) admits a synthetic inbox item
 //   under the given `id` (packages/client/src/effect/api/api.ts:240
 //   `SessionSyntheticInput.id`) and wakes the session unless `resume: false`.
-//   A steer is read at a running execution's next step.
+//   A steer is read at a running execution's next step. A notice goes with
+//   `resume: false`: admitted, it waits for the session's next turn.
 // - one message per id: admission reconciles by id, first admission wins
 //   (packages/core/src/session/inbox.ts:177-222 `reconcile`/`admit`), so a
 //   delivery sent again after it stopped short adds nothing.
@@ -32,7 +33,8 @@ export interface Synthetic {
   readonly description: string
   readonly metadata: Record<string, unknown>
   readonly delivery: "steer"
-  readonly resume: true
+  /** An answer wakes the session; a notice waits for its next turn. */
+  readonly resume: boolean
 }
 
 /** The host's inbox. It fails with a `Session.NotFoundError` for a session it does not have. */
@@ -74,29 +76,28 @@ export const minter = (now: () => number = Date.now, random: (bytes: Uint8Array)
   }
 }
 
-export const layer = (host: Host, mint: () => string = minter()) =>
-  Layer.succeed(Courier, {
-    newDelivery: Effect.sync(mint),
-    deliver: (sessionID: string, delivery: string, letter: Letter) =>
-      host
-        .synthetic({
-          sessionID,
-          id: delivery,
-          text: letter.text,
-          description: letter.description,
-          metadata: { ...letter.metadata },
-          delivery: "steer",
-          resume: true,
-        })
-        .pipe(
-          Effect.asVoid,
-          Effect.mapError((cause) =>
-            notFound(cause)
-              ? new DeliveryRefused({ sessionID, message: "no such session", gone: true })
-              : new DeliveryRefused({ sessionID, message: messageOf(cause), gone: false }),
-          ),
+export const layer = (host: Host, mint: () => string = minter()) => {
+  const put = (resume: boolean) => (sessionID: string, delivery: string, letter: Letter) =>
+    host
+      .synthetic({
+        sessionID,
+        id: delivery,
+        text: letter.text,
+        description: letter.description,
+        metadata: { ...letter.metadata },
+        delivery: "steer",
+        resume,
+      })
+      .pipe(
+        Effect.asVoid,
+        Effect.mapError((cause) =>
+          notFound(cause)
+            ? new DeliveryRefused({ sessionID, message: "no such session", gone: true })
+            : new DeliveryRefused({ sessionID, message: messageOf(cause), gone: false }),
         ),
-  })
+      )
+  return Layer.succeed(Courier, { newDelivery: Effect.sync(mint), deliver: put(true), notify: put(false) })
+}
 
 type Input = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 

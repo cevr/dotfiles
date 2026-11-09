@@ -8,6 +8,8 @@ describe("modelName", () => {
     ["claude-3-5-sonnet-20241022", "sonnet 3.5"],
     ["claude-sonnet-4-5", "sonnet 4.5"],
     ["claude-haiku-4-5:high", "haiku 4.5"],
+    ["anthropic/claude-fable-5-2#high", "fable 5.2"],
+    ["claude-fable-5", "fable 5"],
     ["openai/gpt-6.1-sol", "sol 6.1"],
     ["gpt-6.1-luna-max", "luna 6.1"],
     ["gpt-5.1-codex-max", "codex 5.1"],

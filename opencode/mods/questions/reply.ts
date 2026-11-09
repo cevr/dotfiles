@@ -23,6 +23,8 @@ export interface Letter {
   readonly description: string
   readonly metadata: {
     readonly source: "questions"
+    /** On a notice to the root session: the subagent whose questions were answered, and its name. */
+    readonly notice?: { readonly sessionID: string; readonly asker: string }
     /** The ids of the questions dismissed beside the answers, when there are any. */
     readonly dismissed?: ReadonlyArray<string>
     readonly answers: ReadonlyArray<{
@@ -96,6 +98,55 @@ const textOfMany = (answered: ReadonlyArray<Answered>, same: ReadonlyArray<boole
 /** The line that names a question dismissed beside the answers. */
 export const dismissedLine = (question: Question): string =>
   `${question.id} dismissed: your assumption stands (${question.question} You assumed: ${question.assume})`
+
+/** The subagent whose questions a notice reports: its session and its name (asker.ts). */
+export interface Asker {
+  readonly sessionID: string
+  readonly name: string
+}
+
+const verdict = (same: boolean) => (same ? "(as it assumed)" : "(differs from its assumption)")
+
+/**
+ * The notice the root session of a subagent's tree gets when the owner
+ * answers the subagent's questions: what was asked, assumed and answered, so
+ * the orchestrator knows the decision. The answers went to the subagent, which
+ * acts on them; the notice asks nothing of the root.
+ */
+export const noticeOf = (asker: Asker, given: ReadonlyArray<Answered>): Letter => {
+  const letter = letterOf(given)
+  const answered = given.filter((entry) => entry.dismissed !== true)
+  const dismissed = given.filter((entry) => entry.dismissed === true).map((entry) => entry.question)
+  const ids = answered.map(({ question }) => question.id)
+  const only = answered.length === 1 ? answered[0] : undefined
+  const same = answered.map(({ question, answer }) => matches(answer, question.assume))
+  const head =
+    only !== undefined
+      ? `The subagent ${asker.name} had its background question ${only.question.id} answered; the answer went to it:`
+      : `The subagent ${asker.name} had its background questions ${listed(ids)} answered; the answers went to it:`
+  const blocks =
+    only !== undefined
+      ? [[`Q: ${only.question.question}`, `It assumed: ${only.question.assume}`, `A: ${only.answer} ${verdict(same[0] === true)}`].join("\n")]
+      : answered.map(({ question, answer }, at) =>
+          ["", `${question.id}: ${question.question}`, `It assumed: ${question.assume}`, `A: ${answer} ${verdict(same[at] === true)}`].join("\n"),
+        )
+  const named = dismissed.map((question) => `${question.id} dismissed: its assumption stands (${question.question} It assumed: ${question.assume})`)
+  const lineOfDismissed = dismissed.length === 0 ? "" : ` · ${listed(dismissed.map((question) => question.id))} dismissed`
+  return {
+    text: [
+      [head, ...blocks].join("\n"),
+      ...named,
+      `The subagent revises its own work on ${only !== undefined ? "it" : "them"}; this is for your record.`,
+    ].join("\n\n"),
+    description:
+      (only !== undefined
+        ? `${asker.name}'s question ${only.question.id} answered · ${excerpt(only.question.question, LINE_QUESTION)} → ${excerpt(only.answer, LINE_ANSWER)}`
+        : `${asker.name}'s questions answered ${answered.length} · ${answered
+            .map(({ question, answer }) => `${excerpt(question.question, LINE_QUESTION_OF_MANY)} → ${excerpt(answer, LINE_ANSWER_OF_MANY)}`)
+            .join(" · ")}`) + lineOfDismissed,
+    metadata: { ...letter.metadata, notice: { sessionID: asker.sessionID, asker: asker.name } },
+  }
+}
 
 /**
  * The one message that carries `given` (at least one answer), in the order

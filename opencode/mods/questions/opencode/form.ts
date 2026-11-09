@@ -1,9 +1,9 @@
-// /answer through the host's question form: one form per asking session, for
-// the open questions the tray of the session on screen shows (its own and its
-// subagents'). The host's session view shows a pending form in the composer's
-// place, its own and its subagents' one after another, exactly as it shows
-// the built-in `question` tool's. A session that already has one of our
-// forms pending gets no second.
+// /answer through the host's question form: one form, in the session on
+// screen, for the open questions its tray shows (its own and its subagents',
+// at any depth), so the owner answers a subagent's question where they look,
+// as they answer the session's own. The host's session view shows a pending
+// form in the composer's place, exactly as it shows the built-in `question`
+// tool's. A session that already has one of our forms pending gets no second.
 //
 // `openForms` works on a plain view of the TUI plugin context, so the seam
 // test runs it over a stand-in; `fromContext` takes the view from the context.
@@ -17,6 +17,7 @@
 // `FormPrompt` (packages/tui/src/routes/session/index.tsx, form.tsx). Its
 // submit is `form.replied`, which the server plugin reads.
 import type { Plugin } from "@opencode/plugin/tui"
+import { askerOf } from "../asker.ts"
 import { type FormInput, formOf, isOurs } from "../form.ts"
 import type { Question } from "../question.ts"
 
@@ -37,29 +38,16 @@ export interface Opened {
   readonly failed: ReadonlyArray<string>
 }
 
-/** Open a form for each asking session among `questions`, the session on screen first, then in the order they asked. */
+/** Open one form in the session on screen for `questions`, its own and its subagents' (formOf), unless one of ours is pending there. */
 export const openForms = async (host: FormHost, screen: string, questions: ReadonlyArray<Question>): Promise<Opened> => {
-  const bySession = new Map<string, Array<Question>>()
-  for (const question of questions.toSorted((left, right) => Number(right.sessionID === screen) - Number(left.sessionID === screen) || left.askedAt - right.askedAt))
-    bySession.set(question.sessionID, [...(bySession.get(question.sessionID) ?? []), question])
-  let opened = 0
-  let already = 0
-  const failed: Array<string> = []
-  for (const [sessionID, asked] of bySession) {
-    if (host.pending(sessionID).some(isOurs)) {
-      already += 1
-      continue
-    }
-    const input = formOf(asked, sessionID === screen ? undefined : host.asker(sessionID))
-    if (input === undefined) continue
-    const made = await host.create(sessionID, input).then(
-      () => true,
-      () => false,
-    )
-    if (made) opened += 1
-    else failed.push(sessionID)
-  }
-  return { opened, already, failed }
+  if (host.pending(screen).some(isOurs)) return { opened: 0, already: 1, failed: [] }
+  const input = formOf(questions, screen, host.asker)
+  if (input === undefined) return { opened: 0, already: 0, failed: [] }
+  const made = await host.create(screen, input).then(
+    () => true,
+    () => false,
+  )
+  return made ? { opened: 1, already: 0, failed: [] } : { opened: 0, already: 0, failed: [screen] }
 }
 
 /** The host's forms through the TUI plugin context. */
@@ -69,6 +57,6 @@ export const fromContext = (ctx: Plugin.Context): FormHost => ({
     ctx.client.session.form.create({ sessionID, title: input.title, metadata: { ...input.metadata }, actions: input.actions, fields: input.fields }),
   asker: (sessionID) => {
     const session = ctx.data.session.get(sessionID)
-    return session?.agent ?? session?.title ?? sessionID
+    return askerOf({ id: sessionID, title: session?.title, agent: session?.agent })
   },
 })

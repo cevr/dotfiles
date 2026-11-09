@@ -39,15 +39,25 @@ test("with no choice naming it, the assumption is a choice of its own; with no h
   })
 })
 
-test("a form holds every open question of the session, oldest first, and names an asker that is not on screen", () => {
+test("a form holds every open question of the session, oldest first", () => {
   const form = formOf([endpoint, cache])
   expect(form?.title).toBe("Background questions")
   expect(form?.metadata).toEqual({ source: "questions" })
   expect(form?.fields.map((field) => field.key)).toEqual(["ask_user_async:q1", "ask_user_async:q3"])
-  expect(formOf([cache], "general")?.metadata).toEqual({ source: "questions", message: "Asked by general" })
   expect(formOf([])).toBeUndefined()
   expect(isOurs(formOf([cache])!)).toBe(true)
   expect(isOurs({ fields: [{ key: "q0" }] })).toBe(false)
+})
+
+test("in the session on screen, its subagents' questions follow its own in the one form, keyed by their session and naming who asked", () => {
+  const sub: Question = { ...cache, id: "q1", sessionID: "ses_child", askedAt: AT - 5 }
+  const form = formOf([sub, endpoint, cache], "ses_a", (sessionID) => (sessionID === "ses_child" ? "implementor auth r1" : sessionID))
+  expect(form?.fields.map((field) => [field.key, field.title, field.description])).toEqual([
+    ["ask_user_async:q1", "Cache store", "Which database should the cache use?"],
+    ["ask_user_async:q3", "Should the old /v1 endp…", "Should the old /v1 endpoint stay for a release?"],
+    ["ask_user_async:ses_child:q1", "Cache store", "implementor auth r1 asks: Which database should the cache use?"],
+  ])
+  expect(fieldOf(sub, "implementor auth r1").options).toEqual(fieldOf(cache).options)
 })
 
 test("the form's one action is ctrl+x, dismiss, answering with the dismiss value and shown as dismissed", () => {
@@ -55,25 +65,48 @@ test("the form's one action is ctrl+x, dismiss, answering with the dismiss value
 })
 
 test("a reply gives the answers by question id, blank ones left out; another form's reply gives none", () => {
-  expect(replyOf({ [`${KEY_PREFIX}q1`]: " Redis ", [`${KEY_PREFIX}q3`]: "", [`${KEY_PREFIX}q4`]: ["a", "b"] })).toEqual({
-    answers: [
-      { id: "q1", answer: "Redis" },
-      { id: "q4", answer: "a, b" },
-    ],
-    dismissed: [],
-  })
-  expect(replyOf({ q0: "Redis" })).toBeUndefined()
-  expect(replyOf({})).toBeUndefined()
+  expect(replyOf({ [`${KEY_PREFIX}q1`]: " Redis ", [`${KEY_PREFIX}q3`]: "", [`${KEY_PREFIX}q4`]: ["a", "b"] }, "ses_a")).toEqual([
+    {
+      sessionID: "ses_a",
+      answers: [
+        { id: "q1", answer: "Redis" },
+        { id: "q4", answer: "a, b" },
+      ],
+      dismissed: [],
+    },
+  ])
+  expect(replyOf({ q0: "Redis" }, "ses_a")).toBeUndefined()
+  expect(replyOf({}, "ses_a")).toBeUndefined()
 })
 
 test("a question the dismiss action answered is dismissed; the rest are answers", () => {
-  expect(replyOf({ [`${KEY_PREFIX}q1`]: DISMISS_VALUE, [`${KEY_PREFIX}q3`]: "Keep it (note: log a warning)", [`${KEY_PREFIX}q4`]: "Redis" })).toEqual({
-    answers: [
-      { id: "q3", answer: "Keep it (note: log a warning)" },
-      { id: "q4", answer: "Redis" },
-    ],
-    dismissed: ["q1"],
-  })
+  expect(replyOf({ [`${KEY_PREFIX}q1`]: DISMISS_VALUE, [`${KEY_PREFIX}q3`]: "Keep it (note: log a warning)", [`${KEY_PREFIX}q4`]: "Redis" }, "ses_a")).toEqual([
+    {
+      sessionID: "ses_a",
+      answers: [
+        { id: "q3", answer: "Keep it (note: log a warning)" },
+        { id: "q4", answer: "Redis" },
+      ],
+      dismissed: ["q1"],
+    },
+  ])
   // A typed answer that reads like the action is an answer, not a dismissal.
-  expect(replyOf({ [`${KEY_PREFIX}q1`]: DISMISS.label })).toEqual({ answers: [{ id: "q1", answer: "dismiss" }], dismissed: [] })
+  expect(replyOf({ [`${KEY_PREFIX}q1`]: DISMISS.label }, "ses_a")).toEqual([{ sessionID: "ses_a", answers: [{ id: "q1", answer: "dismiss" }], dismissed: [] }])
+})
+
+test("a reply that answers subagents too gives each asking session its own, the subagents' first and the form's session last", () => {
+  expect(
+    replyOf(
+      {
+        [`${KEY_PREFIX}q1`]: "Redis",
+        [`${KEY_PREFIX}ses_child:q1`]: "vitest",
+        [`${KEY_PREFIX}ses_child:q2`]: DISMISS_VALUE,
+        [`${KEY_PREFIX}ses_other:q4`]: "",
+      },
+      "ses_root",
+    ),
+  ).toEqual([
+    { sessionID: "ses_child", answers: [{ id: "q1", answer: "vitest" }], dismissed: ["q2"] },
+    { sessionID: "ses_root", answers: [{ id: "q1", answer: "Redis" }], dismissed: [] },
+  ])
 })

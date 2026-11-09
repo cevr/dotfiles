@@ -150,6 +150,21 @@ export const courierLaws = (name: string, make: Effect.Effect<CourierProbe, neve
         }),
       ))
 
+    test("a notice goes into the session under its id, once, and to a session that does not exist is refused as gone", () =>
+      scenario(
+        Effect.gen(function* () {
+          const probe = yield* make
+          const run = using(probe)
+          yield* probe.open("ses_a")
+          const id = yield* run((courier) => courier.newDelivery)
+          yield* run((courier) => courier.notify("ses_a", id, letter))
+          yield* run((courier) => courier.notify("ses_a", id, letter))
+          expect(yield* probe.received("ses_a")).toEqual([{ id, letter }])
+          const failure = yield* run((courier) => courier.notify("ses_gone", id, letter)).pipe(Effect.flip)
+          expect(failure.gone).toBe(true)
+        }),
+      ))
+
     test("a session that does not exist refuses with DeliveryRefused naming it, as gone", () =>
       scenario(
         Effect.gen(function* () {

@@ -1,6 +1,8 @@
 // `bun run daily`: makes the fork, with these mods loaded, the `opencode` a new terminal runs.
 //
-// 0. On the Mac, which owns the fork, merges upstream OpenCode into prime-look first, in a
+// 0. Fast-forwards the fork checkout's prime-look to origin/prime-look, which may have moved from
+//    another checkout; a branch with commits origin lacks, or uncommitted tracked changes, is left
+//    as it is and said so (scripts/upstream.ts `syncFork`). Then, on the Mac, which owns the fork, merges upstream OpenCode into prime-look first, in a
 //    worktree of its own, and lands it only when the merge is clean and its checks pass
 //    (scripts/upstream.ts); a conflict or a red check leaves prime-look as it was, writes
 //    `~/.local/state/opencode-daily/upstream-conflict.md` and the install goes on. `--no-upstream`
@@ -26,7 +28,7 @@ import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } from "../testbeds/gamut/gamut.ts"
 import { checkFork } from "./fork.ts"
-import { forkChecks, mergeUpstream } from "./upstream.ts"
+import { forkChecks, mergeUpstream, syncFork } from "./upstream.ts"
 
 const MODS = resolve(import.meta.dir, "../mods")
 const CMD = resolve(import.meta.dir, "../cmd")
@@ -270,6 +272,8 @@ if (import.meta.main) {
       report: join(state, "upstream-conflict.md"),
       log: console.log,
     })
+  // Before the merge and the build, so neither starts from a prime-look origin has moved past.
+  const synced = syncFork({ fork, dryRun: process.argv.includes("--dry-run"), log: console.log })
   if (process.argv.includes("--dry-run")) {
     const outcome = await upstream(true)
     if (outcome.kind === "skipped") console.log(`upstream: skipped (${outcome.reason})`)
@@ -283,6 +287,8 @@ if (import.meta.main) {
   // changes a package's node_modules drops links it did not make. The TUI plugins resolve `solid-js`
   // through those links at load time (scripts/link-fork.ts).
   const linkFork = () => $`bun ${join(import.meta.dir, "link-fork.ts")}`.env({ ...process.env, OPENCODE_DEV: fork }).quiet()
+  // The build skips its install; the commits from origin may have changed the fork's dependencies.
+  if (synced.kind === "fast-forwarded" && (await $`git -C ${fork} rev-parse HEAD`.text()).trim() === synced.to) await $`bun install --frozen-lockfile`.cwd(fork).quiet()
   await linkFork()
   await $`bun install --frozen-lockfile`.cwd(resolve(import.meta.dir, "..")).quiet()
   await linkFork()

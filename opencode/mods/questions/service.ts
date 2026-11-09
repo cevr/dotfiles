@@ -39,14 +39,32 @@ export class QuestionStore extends Context.Service<
  *   a running session reads at its next step, and an idle one wakes to read.
  *   Delivering an id twice puts one message in the session. A session that
  *   does not exist refuses with `gone`.
+ * - `notify`: the same, but an idle session is not woken: it reads the
+ *   message at its next turn. For a notice the session only needs to know.
  */
 export class Courier extends Context.Service<
   Courier,
   {
     readonly newDelivery: Effect.Effect<string>
     readonly deliver: (sessionID: string, delivery: string, letter: Letter) => Effect.Effect<void, DeliveryRefused>
+    readonly notify: (sessionID: string, delivery: string, letter: Letter) => Effect.Effect<void, DeliveryRefused>
   }
 >()("dotfiles-opencode/questions/Courier") {}
+
+/** A session as the questions name it and find its parent. */
+export interface SessionInfo {
+  readonly id: string
+  /** The session that started it, for a subagent. */
+  readonly parentID?: string | undefined
+  /** A subagent's title is the description it was started with. */
+  readonly title?: string | undefined
+  readonly agent?: string | undefined
+}
+
+/** Who a session is and who started it; a session the host does not have is undefined. */
+export class Family extends Context.Service<Family, { readonly info: (sessionID: string) => Effect.Effect<SessionInfo | undefined> }>()(
+  "dotfiles-opencode/questions/Family",
+) {}
 
 /** Word that a session's questions changed, so whatever shows them reads again. */
 export class Changes extends Context.Service<Changes, { readonly changed: (sessionID: string) => Effect.Effect<void> }>()(

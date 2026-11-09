@@ -32,7 +32,7 @@ const start = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses
   Effect.gen(function* () {
     const rpc: Record<string, Record<string, Handler>> = {}
     const emitted: Array<readonly [string, unknown]> = []
-    const deletions = yield* Queue.unbounded<{ readonly type: "session.deleted"; readonly data: { readonly sessionID: string } }>()
+    const deletions = yield* Queue.unbounded<{ readonly type: "session.deleted" | "session.archived"; readonly data: { readonly sessionID: string } }>()
     const replies = yield* Queue.unbounded<{ readonly type: "form.replied"; readonly data: { readonly id: string; readonly sessionID: string; readonly answer: Record<string, unknown> } }>()
     let added: Added | undefined
     const host = {
@@ -46,7 +46,9 @@ const start = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses
       },
       event: {
         subscribe: (input: { readonly types: ReadonlyArray<string> }) =>
-          input.types.includes("form.replied") ? Stream.fromQueue(replies) : Stream.fromQueue(deletions),
+          input.types.includes("form.replied")
+            ? Stream.fromQueue(replies)
+            : Stream.fromQueue(deletions).pipe(Stream.filter((event) => input.types.includes(event.type))),
       },
       rpc: {
         register: (definition: { readonly id: string }, handlers: Record<string, Handler>) =>
@@ -80,6 +82,7 @@ const start = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses
     const reply = (name: "answer" | "dismiss", input: unknown) =>
       method(name).pipe(Effect.flatMap((handler) => handler(input)), Effect.flatMap(Schema.decodeUnknownEffect(Reply)), Effect.orDie)
     const deleteSession = (sessionID: string) => Queue.offer(deletions, { type: "session.deleted", data: { sessionID } })
+    const archiveSession = (sessionID: string) => Queue.offer(deletions, { type: "session.archived", data: { sessionID } })
     const inbox = (sessionID: string) => (sessions.inboxes.get(sessionID) ?? []).map((message) => message.letter)
     /** The host's form submitted in `sessionID` with `answer`. */
     const submit = (sessionID: string, answer: Record<string, unknown>) =>
@@ -90,7 +93,7 @@ const start = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses
         Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
         Effect.orDie,
       )
-    return { tool, call, fail, open, reply, deleteSession, inbox, emitted, submit, received }
+    return { tool, call, fail, open, reply, deleteSession, archiveSession, inbox, emitted, submit, received }
   })
 
 const port = { question: "Which port should the dev server use?", header: "Port", options: [{ label: "8080" }, { label: "3000" }], assume: "8080" }
@@ -197,6 +200,41 @@ describe("answering", () => {
       }),
     ))
 
+  test("the root's one form answers its subagent too: the subagent gets its letter, the root its own and a notice naming the subagent", () =>
+    scenario(
+      Effect.gen(function* () {
+        const sessions = MemoryCourier.empty("ses_root")
+        MemoryCourier.child(sessions, { id: "ses_child", parentID: "ses_root", title: "implementor auth r1", agent: "implementor" })
+        const plugin = yield* start(MemoryStore.empty(), sessions)
+        yield* plugin.call({ questions: [port] })
+        yield* plugin.call({ questions: [{ question: "Scan vendored code too?", assume: "no" }, { question: "Keep the cache?", assume: "yes" }] }, "ses_child")
+        yield* plugin.submit("ses_root", { "ask_user_async:q1": "3000", "ask_user_async:ses_child:q1": "yes", "ask_user_async:ses_child:q2": "" })
+        yield* plugin.received("ses_root", 2)
+        yield* plugin.received("ses_child", 1)
+        expect(plugin.inbox("ses_child").map((letter) => letter.description)).toEqual(["answered · Scan vendored code too? → yes"])
+        // The subagent's answers go first, so the root's own wake reads the notice too; the notice does not wake it.
+        expect(sessions.inboxes.get("ses_root")?.map((message) => [message.letter.description, sessions.quiet.has(message.id)])).toEqual([
+          ["implementor auth r1's question q1 answered · Scan vendored code too? → yes", true],
+          ["answered · Which port should the dev server use? → 3000", false],
+        ])
+        expect((yield* plugin.open("ses_root", "ses_child")).map((question) => [question.sessionID, question.id])).toEqual([["ses_child", "q2"]])
+      }),
+    ))
+
+  test("a subagent's withdraw takes its question off the root's list", () =>
+    scenario(
+      Effect.gen(function* () {
+        const sessions = MemoryCourier.empty("ses_root")
+        MemoryCourier.child(sessions, { id: "ses_child", parentID: "ses_root", title: "implementor auth r1", agent: "implementor" })
+        const plugin = yield* start(MemoryStore.empty(), sessions)
+        yield* plugin.call({ questions: [port] }, "ses_child")
+        expect((yield* plugin.open("ses_root", "ses_child")).map((question) => question.sessionID)).toEqual(["ses_child"])
+        yield* plugin.call({ withdraw: ["q1"] }, "ses_child")
+        expect(yield* plugin.open("ses_root", "ses_child")).toEqual([])
+        expect(plugin.emitted.at(-1)).toEqual(["changed", { sessionID: "ses_child" }])
+      }),
+    ))
+
   test("the form's dismiss (ctrl+x) alone closes the question and sends nothing; the assumed choice with a note sends the note on it", () =>
     scenario(
       Effect.gen(function* () {
@@ -275,6 +313,22 @@ describe("answering", () => {
           Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
         )
         expect(sheets.sheets.has("ses_root")).toBe(false)
+      }),
+    ))
+
+  test("an archived (ended) subagent's questions go, and the root is told they changed", () =>
+    scenario(
+      Effect.gen(function* () {
+        const sheets = MemoryStore.empty()
+        const plugin = yield* start(sheets)
+        yield* plugin.call({ questions: [port] }, "ses_child")
+        yield* plugin.archiveSession("ses_child")
+        yield* Effect.suspend(() => (sheets.sheets.has("ses_child") ? Effect.fail("present") : Effect.void)).pipe(
+          Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
+          Effect.orDie,
+        )
+        expect(yield* plugin.open("ses_root", "ses_child")).toEqual([])
+        expect(plugin.emitted.at(-1)).toEqual(["changed", { sessionID: "ses_child" }])
       }),
     ))
 })
