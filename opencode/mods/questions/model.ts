@@ -3,7 +3,9 @@
 // delivered. The answers of one submit share one message id and go as one
 // message. Changes to the sheets are serialized; a delivery runs outside the
 // lock, under the id recorded with its answers, so a repeated send puts one
-// message in the session. Each change is announced through `Changes`.
+// message in the session. Each change is announced through `Changes`. When
+// the answers went to a subagent, the root session of its tree (`Family`)
+// gets a notice naming it, which does not wake it.
 import { Clock, Context, Effect, Layer, Semaphore } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import { type Asked, type AskInput, commandOf } from "./ask.ts"
@@ -25,8 +27,9 @@ import {
   type ReplyRejection,
   type Sheet,
 } from "./question.ts"
-import { type Answered, letterOf } from "./reply.ts"
-import { Changes, Courier, type DeliveryRefused, QuestionStore, type QuestionsUnreadable } from "./service.ts"
+import { askerOf } from "./asker.ts"
+import { type Answered, letterOf, noticeOf } from "./reply.ts"
+import { Changes, Courier, type DeliveryRefused, Family, QuestionStore, type QuestionsUnreadable } from "./service.ts"
 
 export class QuestionsModel extends Context.Service<
   QuestionsModel,
@@ -63,6 +66,7 @@ export const layer = Layer.effect(
     const store = yield* QuestionStore
     const courier = yield* Courier
     const changes = yield* Changes
+    const family = yield* Family
     const lock = yield* Semaphore.make(1)
 
     /** Decide on the session's sheet and store what it records; the events. */
@@ -79,10 +83,36 @@ export const layer = Layer.effect(
         }),
       )
 
+    /** The root of the session's tree, walking parents up; undefined for a root. A parent the host lost ends the walk there. */
+    const rootOf = Effect.fn("QuestionsModel.rootOf")(function* (sessionID: string) {
+      const seen = new Set([sessionID])
+      let parent = (yield* family.info(sessionID))?.parentID
+      let root: string | undefined
+      while (parent !== undefined && !seen.has(parent)) {
+        seen.add(parent)
+        root = parent
+        parent = (yield* family.info(parent))?.parentID
+      }
+      return root
+    })
+
+    /**
+     * A subagent's answers went to it: tell the root of its tree, which does
+     * not wake for it. Best effort: the answer already reached the one that asked.
+     */
+    const notifyRoot = (sessionID: string, batch: ReadonlyArray<Answered>) =>
+      Effect.gen(function* () {
+        const root = yield* rootOf(sessionID)
+        if (root === undefined) return
+        const asker = yield* family.info(sessionID)
+        const notice = noticeOf({ sessionID, name: askerOf(asker ?? { id: sessionID }) }, batch)
+        yield* courier.notify(root, yield* courier.newDelivery, notice)
+      }).pipe(Effect.catchCause((cause) => Effect.logWarning("questions: the root session was not told of a subagent's answer", { sessionID, cause })))
+
     /**
      * Deliver every batch of answers the session's sheet holds, oldest first,
-     * each as one message under its recorded id, then close what it answered;
-     * how many messages went.
+     * each as one message under its recorded id, then close what it answered,
+     * and tell the root of a subagent's tree; how many messages went.
      */
     const flush = Effect.fn("QuestionsModel.flush")(function* (sessionID: string) {
       const sheet = yield* store.read(sessionID)
@@ -95,8 +125,11 @@ export const layer = Layer.effect(
       }
       // Delivery ids ascend, so the older submit goes first.
       for (const delivery of [...batches.keys()].toSorted()) {
-        yield* courier.deliver(sessionID, delivery, letterOf(batches.get(delivery) ?? []))
-        yield* apply(sessionID, (current) => decideDelivered(current, Delivered.make({ delivery })))
+        const batch = batches.get(delivery) ?? []
+        yield* courier.deliver(sessionID, delivery, letterOf(batch))
+        const closed = yield* apply(sessionID, (current) => decideDelivered(current, Delivered.make({ delivery })))
+        // Told once: a delivery seen before closes nothing.
+        if (closed.length > 0) yield* notifyRoot(sessionID, batch)
       }
       return batches.size
     })

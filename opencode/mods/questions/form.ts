@@ -1,13 +1,16 @@
-// The /answer form: one session's open questions in the host's own question
-// form (the one OpenCode's `question` tool shows: a tab per question, its
-// choices, a line to type an answer of one's own, one submit). The TUI opens
-// it through the host's `session.form.create`; the server reads its reply off
-// the host's `form.replied` event and records every answer given as one
-// message. A question left blank stays open; one dismissed with ctrl+x (the
-// form's one action) closes on its assumption.
+// The /answer form: the open questions of the session on screen and of its
+// subagents in the host's own question form (the one OpenCode's `question`
+// tool shows: a tab per question, its choices, a line to type an answer of
+// one's own, one submit). The TUI opens it in the session on screen through
+// the host's `session.form.create`; the server reads its reply off the host's
+// `form.replied` event and records the answers each asking session was given
+// as one message to it. A question left blank stays open; one dismissed with
+// ctrl+x (the form's one action) closes on its assumption.
 //
 // The form is the host's, so it is told apart by its field keys: each is
-// `ask_user_async:<question id>`, a prefix no host form uses.
+// `ask_user_async:<question id>` for the form session's own question and
+// `ask_user_async:<session id>:<question id>` for a subagent's, a prefix no
+// host form uses.
 import { normalize, type Given, type Question } from "./question.ts"
 import { excerpt } from "./reply.ts"
 
@@ -57,7 +60,7 @@ export interface FormField {
 /** What `session.form.create` takes, but the session. */
 export interface FormInput {
   readonly title: string
-  readonly metadata: { readonly source: "questions"; readonly message?: string }
+  readonly metadata: { readonly source: "questions" }
   readonly actions: ReadonlyArray<FormAction>
   readonly fields: readonly [FormField, ...Array<FormField>]
 }
@@ -73,8 +76,10 @@ const option = (label: string, description: string | undefined): FormOption => (
  * built-in tool puts its recommended choice, and where the cursor starts),
  * marked `assumed`; with no choice naming the assumption, the assumption is a
  * choice of its own at the top. The host adds "Type your own answer" last.
+ * `asker` names the subagent that asked, when the form is another session's:
+ * the key then names the asking session too, and the question says who asks.
  */
-export const fieldOf = (question: Question): FormField => {
+export const fieldOf = (question: Question, asker?: string): FormField => {
   const choices = question.options ?? []
   const assumed = choices.find((choice) => normalize(choice.label) === normalize(question.assume))
   const first =
@@ -82,24 +87,30 @@ export const fieldOf = (question: Question): FormField => {
       ? option(question.assume, ASSUMED)
       : option(assumed.label, assumed.description === undefined ? ASSUMED : `${ASSUMED} · ${assumed.description}`)
   return {
-    key: `${KEY_PREFIX}${question.id}`,
+    key: asker === undefined ? `${KEY_PREFIX}${question.id}` : `${KEY_PREFIX}${question.sessionID}:${question.id}`,
     type: "string",
     title: question.header ?? excerpt(question.question, TAB),
-    description: question.question,
+    description: asker === undefined ? question.question : `${asker} asks: ${question.question}`,
     options: [first, ...choices.filter((choice) => choice !== assumed).map((choice) => option(choice.label, choice.description))],
     custom: true,
   }
 }
 
-/** The form for one session's open questions, oldest first; `from` names the asker when it is not the session on screen. */
-export const formOf = (questions: ReadonlyArray<Question>, from?: string): FormInput | undefined => {
-  const [first, ...rest] = questions.toSorted((left, right) => left.askedAt - right.askedAt)
+/**
+ * The form, in session `screen`, for the open questions its tray shows: its
+ * own, oldest first, then its subagents', oldest first, each naming who asked
+ * (`askerOf`). With no `screen`, every question is the form session's own.
+ */
+export const formOf = (questions: ReadonlyArray<Question>, screen?: string, askerOf: (sessionID: string) => string = (sessionID) => sessionID): FormInput | undefined => {
+  const theirs = (question: Question) => screen !== undefined && question.sessionID !== screen
+  const [first, ...rest] = questions.toSorted((left, right) => Number(theirs(left)) - Number(theirs(right)) || left.askedAt - right.askedAt)
   if (first === undefined) return undefined
+  const field = (question: Question) => fieldOf(question, theirs(question) ? askerOf(question.sessionID) : undefined)
   return {
     title: TITLE,
-    metadata: { source: "questions", ...(from === undefined ? {} : { message: `Asked by ${from}` }) },
+    metadata: { source: "questions" },
     actions: [DISMISS],
-    fields: [fieldOf(first), ...rest.map(fieldOf)],
+    fields: [field(first), ...rest.map(field)],
   }
 }
 
@@ -107,29 +118,40 @@ export const formOf = (questions: ReadonlyArray<Question>, from?: string): FormI
 export const isOurs = (form: { readonly fields: ReadonlyArray<{ readonly key: string }> }): boolean =>
   form.fields.length > 0 && form.fields.every((field) => field.key.startsWith(KEY_PREFIX))
 
-/** What a form's reply gives: the answers, and the questions dismissed. */
+/** What a form's reply gives one asking session: its answers, and its questions dismissed. */
 export interface FormReply {
+  readonly sessionID: string
   readonly answers: ReadonlyArray<Given>
   readonly dismissed: ReadonlyArray<string>
 }
 
 /**
- * What a form's reply gives, in its keys' order, when every key is ours; a
- * blank one is left out, and one the dismiss action answered is dismissed.
- * None when the reply is another form's.
+ * What a reply to a form in `sessionID` gives each asking session, in its
+ * keys' order, when every key is ours; a blank one is left out, and one the
+ * dismiss action answered is dismissed. A key `<session>:<id>` is a
+ * subagent's question, a bare `<id>` the form session's own. The subagents
+ * come first and the form's session last, so a wake the form's session takes
+ * on its own answers reads the notices of its subagents' too. A session with
+ * nothing given is left out; none when the reply is another form's.
  */
-export const replyOf = (answer: Readonly<Record<string, unknown>>): FormReply | undefined => {
+export const replyOf = (answer: Readonly<Record<string, unknown>>, sessionID: string): ReadonlyArray<FormReply> | undefined => {
   const keys = Object.keys(answer)
   if (keys.length === 0 || !keys.every((key) => key.startsWith(KEY_PREFIX))) return undefined
-  const answers: Array<Given> = []
-  const dismissed: Array<string> = []
+  const sessions = new Map<string, { readonly answers: Array<Given>; readonly dismissed: Array<string> }>()
   for (const key of keys) {
-    const id = key.slice(KEY_PREFIX.length)
+    const rest = key.slice(KEY_PREFIX.length)
+    const at = rest.lastIndexOf(":")
+    const asking = at < 0 ? sessionID : rest.slice(0, at)
+    const id = rest.slice(at + 1)
     const value = answer[key]
     const text = (Array.isArray(value) ? value.map(String).join(", ") : value === undefined || value === null ? "" : String(value)).trim()
     if (text === "") continue
-    if (text === DISMISS_VALUE) dismissed.push(id)
-    else answers.push({ id, answer: text })
+    const given = sessions.get(asking) ?? { answers: [], dismissed: [] }
+    sessions.set(asking, given)
+    if (text === DISMISS_VALUE) given.dismissed.push(id)
+    else given.answers.push({ id, answer: text })
   }
-  return { answers, dismissed }
+  return [...sessions]
+    .toSorted(([left], [right]) => Number(left === sessionID) - Number(right === sessionID))
+    .map(([asking, given]) => ({ sessionID: asking, ...given }))
 }

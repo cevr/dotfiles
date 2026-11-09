@@ -7,33 +7,37 @@
  *
  * - `ask_user_async({ questions?, withdraw? })` asks in the calling session and
  *   returns at once with the ids and assumptions; the agent carries on. A
- *   subagent's questions are its own, and its answer goes to it. A direct tool,
- *   so a kernel cell reaches it as `tools.ask_user_async(...)`.
+ *   subagent's questions are its own, and its answer goes to it; they show,
+ *   and are answered, in the root session's tray and form with its own. A
+ *   direct tool, so a kernel cell reaches it as `tools.ask_user_async(...)`.
  * - `open({ sessionIDs })`, `answer(...)`, `dismiss(...)` for the TUI; every
  *   change publishes `changed({ sessionID })`.
- * - The TUI's /answer opens the host's question form for a session's open
- *   questions (`@dotfiles/opencode-questions/form`); its submit comes back as
- *   the host's `form.replied` event, and every answer it gives arrives in the
- *   asking session as one synthetic steer message that wakes it when idle.
- *   ctrl+x on a tab dismisses its question (the form's one action): beside
- *   answers the message names it; alone, nothing is sent.
+ * - The TUI's /answer opens the host's question form, in the session on
+ *   screen, for its open questions and its subagents'
+ *   (`@dotfiles/opencode-questions/form`); its submit comes back as the host's
+ *   `form.replied` event, and the answers each asking session was given
+ *   arrive in it as one synthetic steer message that wakes it when idle. The
+ *   root of a subagent's tree gets a notice of the subagent's answers, which
+ *   does not wake it. ctrl+x on a tab dismisses its question (the form's one
+ *   action): beside answers the message names it; alone, nothing is sent.
  *   Answers recorded but not delivered go with the session's next answer, and
  *   when the plugin starts.
- * - A deleted session's questions go.
+ * - A deleted or archived session's questions go.
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Ref, Schema, Stream } from "effect"
 import { AskInput, DESCRIPTION, explain, NAME, receipt } from "@dotfiles/opencode-questions/ask"
 import * as Model from "@dotfiles/opencode-questions/model"
 import * as OpenCodeCourier from "@dotfiles/opencode-questions/opencode/courier"
+import * as OpenCodeFamily from "@dotfiles/opencode-questions/opencode/family"
 import * as OpenCodeStore from "@dotfiles/opencode-questions/opencode/store"
 import { replyOf } from "@dotfiles/opencode-questions/form"
 import { Given, type Open, QUESTIONS, type Rejection, type Reply } from "@dotfiles/opencode-questions/question"
-import { Changes, type Courier, type DeliveryRefused, type QuestionStore, type QuestionsUnreadable } from "@dotfiles/opencode-questions/service"
+import { Changes, type Courier, type DeliveryRefused, type Family, type QuestionStore, type QuestionsUnreadable } from "@dotfiles/opencode-questions/service"
 
-/** The live externals: the plugin's storage and the session inbox. */
-export const live = (ctx: Plugin.Context): Layer.Layer<QuestionStore | Courier> =>
-  Layer.mergeAll(OpenCodeStore.fromContext(ctx), OpenCodeCourier.fromContext(ctx))
+/** The live externals: the plugin's storage, the session inbox, and who each session is. */
+export const live = (ctx: Plugin.Context): Layer.Layer<QuestionStore | Courier | Family> =>
+  Layer.mergeAll(OpenCodeStore.fromContext(ctx), OpenCodeCourier.fromContext(ctx), OpenCodeFamily.fromContext(ctx))
 
 /** What the agent or the user reads when a call fails. */
 const messageOf = (failure: Rejection | QuestionsUnreadable | DeliveryRefused) => {
@@ -52,7 +56,7 @@ const refused = (failure: Rejection | QuestionsUnreadable | DeliveryRefused): Re
 const malformed = (error: Schema.SchemaError): Reply => ({ ok: false, message: `malformed request: ${error.message}` })
 
 /** The plugin on `externals`: the plugin's storage and inbox in OpenCode, the memory doubles in the seam test. */
-export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionStore | Courier>) =>
+export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionStore | Courier | Family>) =>
   Plugin.define({
     id: QUESTIONS.id,
     effect: Effect.fn("Questions.plugin")(function* (ctx) {
@@ -77,24 +81,28 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionSto
         })
       })
 
-      // The /answer form's submit: every answer given goes to the asking session as one message, naming the
-      // questions dismissed beside them; a submit that only dismisses sends nothing.
+      // The /answer form's submit: the answers each asking session was given (the form's own session and its
+      // subagents') go to it as one message, naming the questions dismissed beside them; a session given only
+      // dismissals is sent nothing. The subagents' go first, and each tells the root of its tree.
       yield* Effect.forkScoped(
         ctx.event.subscribe({ types: ["form.replied"] }).pipe(
-          Stream.runForEach((event) => {
-            const reply = replyOf(event.data.answer)
-            if (reply === undefined || reply.answers.length + reply.dismissed.length === 0) return Effect.void
-            return questions.answer(event.data.sessionID, reply.answers, reply.dismissed).pipe(
-              Effect.catchCause((cause) => Effect.logWarning("questions: the form's answers were not recorded", { sessionID: event.data.sessionID, cause })),
-            )
-          }),
+          Stream.runForEach((event) =>
+            Effect.forEach(
+              replyOf(event.data.answer, event.data.sessionID) ?? [],
+              (reply) =>
+                questions.answer(reply.sessionID, reply.answers, reply.dismissed).pipe(
+                  Effect.catchCause((cause) => Effect.logWarning("questions: the form's answers were not recorded", { sessionID: reply.sessionID, cause })),
+                ),
+              { discard: true },
+            ),
+          ),
           Effect.ignoreCause,
         ),
       )
 
-      // A deleted session's questions go.
+      // A deleted or archived (ended) session's questions go, so none lingers in its root's tray.
       yield* Effect.forkScoped(
-        ctx.event.subscribe({ types: ["session.deleted"] }).pipe(
+        ctx.event.subscribe({ types: ["session.deleted", "session.archived"] }).pipe(
           Stream.runForEach((event) => questions.forget(event.data.sessionID).pipe(Effect.ignoreCause)),
           Effect.ignoreCause,
         ),

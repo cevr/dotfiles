@@ -20,12 +20,14 @@ const rig = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses_a
         newDelivery: inner.newDelivery,
         deliver: (sessionID: string, delivery: string, letter: Parameters<typeof inner.deliver>[2]) =>
           Effect.sync(() => onDeliver(sessionID)).pipe(Effect.andThen(inner.deliver(sessionID, delivery, letter))),
+        notify: inner.notify,
       }
     }),
   ).pipe(Layer.provide(MemoryCourier.layer(sessions)))
   const layer = Model.layer.pipe(
     Layer.provide(MemoryStore.layer(sheets)),
     Layer.provide(courier),
+    Layer.provide(MemoryCourier.layer(sessions)),
     Layer.provide(Layer.succeed(Changes, { changed: (sessionID) => Effect.sync(() => void changed.push(sessionID)) })),
   )
   const run = <A, E>(body: (model: QuestionsModel["Service"]) => Effect.Effect<A, E>) => Effect.runPromise(QuestionsModel.use(body).pipe(Effect.provide(layer)))
@@ -231,6 +233,91 @@ describe("QuestionsModel", () => {
     expect(sheets.sheets.get("ses_a")?.rows.map((row) => row.id)).toEqual(["q2"])
     expect(await run((model) => model.resend)).toBe(0)
     expect(texts("ses_a")).toHaveLength(1)
+  })
+
+  describe("a subagent's questions", () => {
+    /** An orchestrator, the implementor it started, and a worker the implementor started. */
+    const tree = () => {
+      const sessions = MemoryCourier.empty("ses_root")
+      MemoryCourier.child(sessions, { id: "ses_impl", parentID: "ses_root", title: "implementor auth r1", agent: "implementor" })
+      MemoryCourier.child(sessions, { id: "ses_worker", parentID: "ses_impl", title: "Port scan", agent: "worker" })
+      return rig(MemoryStore.empty(), sessions)
+    }
+    const notices = (sessions: MemoryCourier.MemorySessions, sessionID: string) =>
+      (sessions.inboxes.get(sessionID) ?? []).filter((message) => sessions.quiet.has(message.id)).map((message) => message.letter)
+
+    test("an answer goes to the subagent that asked and wakes it; the root of its tree gets a notice naming it, without being woken", async () => {
+      const { run, texts, sessions } = tree()
+      await run((model) => model.ask("ses_impl", { questions: [port] }))
+      await run((model) => model.answer("ses_impl", [{ id: "q1", answer: "3000" }]))
+      expect(texts("ses_impl")).toEqual([expect.stringMatching(/^Answer to your background question q1 \(asked /)])
+      expect(notices(sessions, "ses_impl")).toEqual([])
+      const [notice, ...more] = notices(sessions, "ses_root")
+      expect(more).toEqual([])
+      expect(texts("ses_root")).toHaveLength(1)
+      expect(notice?.text).toStartWith("The subagent implementor auth r1 had its background question q1 answered; the answer went to it:")
+      expect(notice?.description).toBe("implementor auth r1's question q1 answered · Which port? → 3000")
+      expect(notice?.metadata.notice).toEqual({ sessionID: "ses_impl", asker: "implementor auth r1" })
+    })
+
+    test("a subagent of a subagent: the notice goes to the root, not to the parent between", async () => {
+      const { run, texts, sessions } = tree()
+      await run((model) => model.ask("ses_worker", { questions: [runner] }))
+      await run((model) => model.answer("ses_worker", [{ id: "q1", answer: "vitest" }]))
+      expect(texts("ses_worker")).toHaveLength(1)
+      expect(texts("ses_impl")).toEqual([])
+      expect(notices(sessions, "ses_root").map((letter) => letter.description)).toEqual(["Port scan (worker)'s question q1 answered · Which test runner? → vitest"])
+    })
+
+    test("a root's own answer sends no notice, and a subagent's submit that only dismisses sends nothing anywhere", async () => {
+      const { run, sessions } = tree()
+      await run((model) => model.ask("ses_root", { questions: [flag] }))
+      await run((model) => model.ask("ses_impl", { questions: [port] }))
+      await run((model) => model.answer("ses_root", [{ id: "q1", answer: "no" }]))
+      await run((model) => model.answer("ses_impl", [], ["q1"]))
+      expect(notices(sessions, "ses_root")).toEqual([])
+      expect(sessions.inboxes.get("ses_root")).toHaveLength(1)
+      expect(sessions.inboxes.get("ses_impl")).toEqual([])
+    })
+
+    test("a withdraw leaves what the root's tray reads", async () => {
+      const { run } = tree()
+      await run((model) => model.ask("ses_impl", { questions: [port, flag] }))
+      expect((await run((model) => model.open(["ses_root", "ses_impl", "ses_worker"]))).map((question) => [question.sessionID, question.id])).toEqual([
+        ["ses_impl", "q1"],
+        ["ses_impl", "q2"],
+      ])
+      await run((model) => model.ask("ses_impl", { withdraw: ["q1"] }))
+      expect((await run((model) => model.open(["ses_root", "ses_impl", "ses_worker"]))).map((question) => question.id)).toEqual(["q2"])
+    })
+
+    test("a root that is gone loses the notice, not the answer", async () => {
+      const { run, texts, sessions } = tree()
+      await run((model) => model.ask("ses_impl", { questions: [port] }))
+      sessions.inboxes.delete("ses_root")
+      expect(await run((model) => model.answer("ses_impl", [{ id: "q1", answer: "3000" }]))).toEqual({ answered: ["q1"], dismissed: [], skipped: [] })
+      expect(texts("ses_impl")).toHaveLength(1)
+      expect(await run((model) => model.open(["ses_impl"]))).toEqual([])
+    })
+
+    test("a subagent's answer a restart left unsent goes with its notice at the next start", async () => {
+      const { run, fail, texts, sessions } = tree()
+      await run((model) => model.ask("ses_impl", { questions: [port] }))
+      sessions.refusing.set("ses_impl", "down")
+      await fail((model) => model.answer("ses_impl", [{ id: "q1", answer: "3000" }]))
+      expect(notices(sessions, "ses_root")).toEqual([])
+      sessions.refusing.delete("ses_impl")
+      expect(await run((model) => model.resend)).toBe(1)
+      expect(texts("ses_impl")).toHaveLength(1)
+      expect(notices(sessions, "ses_root")).toHaveLength(1)
+    })
+
+    test("a subagent forgotten (deleted or ended) has no open question left at the root", async () => {
+      const { run } = tree()
+      await run((model) => model.ask("ses_impl", { questions: [port] }))
+      await run((model) => model.forget("ses_impl"))
+      expect(await run((model) => model.open(["ses_root", "ses_impl"]))).toEqual([])
+    })
   })
 
   test("forget removes the session's sheet and announces it", async () => {
