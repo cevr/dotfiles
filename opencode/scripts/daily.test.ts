@@ -6,7 +6,7 @@ import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, plannerExperiment, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
-import { exposedTests, HELD_BRANCH, mergeUpstream, type Options as UpstreamOptions } from "./upstream.ts"
+import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
 const CMD = "/repo/opencode/cmd"
@@ -350,6 +350,59 @@ describe("the upstream merge", () => {
     expect(f.head(f.fork, "prime-look")).toBe(before)
     expect(existsSync(f.options().worktree)).toBe(false)
     expect(f.calls).toEqual([])
+  })
+
+  // The fork checkout can fall behind origin when prime-look moved from another checkout; merging
+  // upstream into the stale branch redoes conflicts origin already resolved and builds old code.
+  test("a fork behind origin fast-forwards to origin/prime-look, untracked files kept, so the merge starts from it", async () => {
+    const f = fixture()
+    const stale = f.head(f.fork, "prime-look")
+    commitTo(f.origin, "prime-look", { "c.txt": "pushed elsewhere\n" })
+    writeFileSync(join(f.fork, "scratch.txt"), "untracked\n")
+    const lines: string[] = []
+    expect(syncFork({ fork: f.fork, dryRun: false, log: (line) => lines.push(line) })).toMatchObject({ kind: "fast-forwarded", from: stale, commits: 1 })
+    expect(f.head(f.fork, "prime-look")).toBe(f.head(f.origin, "prime-look"))
+    expect(readFileSync(join(f.fork, "c.txt"), "utf8")).toBe("pushed elsewhere\n")
+    expect(readFileSync(join(f.fork, "scratch.txt"), "utf8")).toBe("untracked\n")
+    expect(lines.join("\n")).toContain("fast-forwarded")
+    const pushed = f.head(f.origin, "prime-look")
+    commitTo(f.upstream, "dev", { "b.txt": "upstream\n" })
+    // The merge starts from origin's head, not the stale one, and lands as a fast-forward of origin.
+    expect(await mergeUpstream(f.options())).toMatchObject({ kind: "merged", from: pushed, pushed: true })
+    expect(git(f.fork, "rev-parse", "prime-look^1")).toBe(pushed)
+    // Current: nothing to do.
+    expect(syncFork({ fork: f.fork, dryRun: false, log: () => {} })).toEqual({ kind: "current" })
+  })
+
+  test("a fork with local commits or tracked changes is left alone, and says so", () => {
+    const f = fixture()
+    commitTo(f.origin, "prime-look", { "c.txt": "pushed elsewhere\n" })
+    writeFileSync(join(f.fork, "d.txt"), "local\n")
+    git(f.fork, "add", "d.txt")
+    git(f.fork, "commit", "--quiet", "-m", "local only")
+    const diverged = f.head(f.fork, "prime-look")
+    const lines: string[] = []
+    expect(syncFork({ fork: f.fork, dryRun: false, log: (line) => lines.push(line) })).toMatchObject({ kind: "left" })
+    expect(f.head(f.fork, "prime-look")).toBe(diverged)
+    expect(lines.join("\n")).toContain("1 commit not on origin")
+
+    const g = fixture()
+    commitTo(g.origin, "prime-look", { "c.txt": "pushed elsewhere\n" })
+    const before = g.head(g.fork, "prime-look")
+    writeFileSync(join(g.fork, "a.txt"), "edited\n")
+    const said: string[] = []
+    expect(syncFork({ fork: g.fork, dryRun: false, log: (line) => said.push(line) })).toMatchObject({ kind: "left" })
+    expect(g.head(g.fork, "prime-look")).toBe(before)
+    expect(readFileSync(join(g.fork, "a.txt"), "utf8")).toBe("edited\n")
+    expect(said.join("\n")).toContain("uncommitted changes")
+  })
+
+  test("a dry run says it would fast-forward and moves nothing", () => {
+    const f = fixture()
+    const before = f.head(f.fork, "prime-look")
+    commitTo(f.origin, "prime-look", { "c.txt": "pushed elsewhere\n" })
+    expect(syncFork({ fork: f.fork, dryRun: true, log: () => {} })).toEqual({ kind: "would-fast-forward", commits: 1 })
+    expect(f.head(f.fork, "prime-look")).toBe(before)
   })
 
   test("the checks run Prime's, the TUI's CPU, mail and orchestrate acceptance tests", () => {

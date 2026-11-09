@@ -10,6 +10,8 @@
 // with the fork as it is, so the merge never blocks it.
 //
 // Only the fork's owner runs it (the Mac, `FORK_OWNER`); the workbox pulls origin prime-look.
+// Before it, on every host, `syncFork` fast-forwards prime-look to origin/prime-look, so the merge
+// never starts from a branch origin has moved past.
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
@@ -207,6 +209,52 @@ export const mergeUpstream = async (options: Options): Promise<Outcome> => {
       : `upstream: ${BRANCH} ${base.slice(0, 10)} -> ${merge.slice(0, 10)}; push to origin failed: ${pushed.err}`,
   )
   return { kind: "merged", from: base, merge, commits, pushed: pushed.ok }
+}
+
+export type SyncOutcome =
+  | { readonly kind: "fetch-failed"; readonly error: string }
+  | { readonly kind: "current" }
+  | { readonly kind: "would-fast-forward"; readonly commits: number }
+  | { readonly kind: "fast-forwarded"; readonly from: string; readonly to: string; readonly commits: number }
+  | { readonly kind: "left"; readonly reason: string }
+
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
+
+/**
+ * Brings the fork's `prime-look` up to `origin/prime-look` before the merge and the build: the
+ * branch may have moved from another checkout (the workbox, an agent's Rift), and a stale one
+ * would redo merges origin already holds and build old code. Only a fast-forward: a branch with
+ * commits origin lacks, or a checkout with uncommitted tracked changes, is left as it is and the
+ * run goes on with it. Untracked files never stop it.
+ */
+export const syncFork = (options: { readonly fork: string; readonly dryRun: boolean; readonly log: (line: string) => void }): SyncOutcome => {
+  const { fork, log } = options
+  const tracking = `refs/remotes/origin/${BRANCH}`
+  const fetched = git(fork, "fetch", "--quiet", "origin", `+refs/heads/${BRANCH}:${tracking}`)
+  if (!fetched.ok) {
+    log(`fork: fetching origin ${BRANCH} failed, building ${BRANCH} as it is: ${fetched.err}`)
+    return { kind: "fetch-failed", error: fetched.err }
+  }
+  const local = must(fork, "rev-parse", `refs/heads/${BRANCH}`)
+  const remote = must(fork, "rev-parse", tracking)
+  const behind = Number(must(fork, "rev-list", "--count", `${local}..${remote}`))
+  if (behind === 0) return { kind: "current" }
+  const leave = (reason: string): SyncOutcome => {
+    log(`fork: ${BRANCH} is ${plural(behind, "commit")} behind origin but ${reason}; left as it is, building it unchanged`)
+    return { kind: "left", reason }
+  }
+  const ahead = Number(must(fork, "rev-list", "--count", `${remote}..${local}`))
+  if (ahead > 0) return leave(`has ${plural(ahead, "commit")} not on origin`)
+  const holder = checkedOut(fork, BRANCH)
+  if (holder !== undefined && git(holder, "status", "--porcelain", "--untracked-files=no").out !== "") return leave(`${holder} has uncommitted changes`)
+  if (options.dryRun) {
+    log(`fork: would fast-forward ${BRANCH} ${plural(behind, "commit")} to origin (${remote.slice(0, 10)})`)
+    return { kind: "would-fast-forward", commits: behind }
+  }
+  const moved = holder === undefined ? git(fork, "update-ref", `refs/heads/${BRANCH}`, remote, local) : git(holder, "merge", "--ff-only", "--quiet", remote)
+  if (!moved.ok) return leave(`the fast-forward failed: ${moved.err || moved.out}`)
+  log(`fork: fast-forwarded ${BRANCH} ${local.slice(0, 10)} -> ${remote.slice(0, 10)} (${plural(behind, "commit")} from origin)`)
+  return { kind: "fast-forwarded", from: local, to: remote, commits: behind }
 }
 
 /** The dotfiles acceptance tests most exposed to host changes: Prime's, the TUI's CPU, mail, orchestrate. */
