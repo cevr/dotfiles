@@ -5,7 +5,7 @@ description: Distill what changed in the outside skills we folded into our own (
 
 # Upstreams
 
-Our own skills distill outside skills. `upstreams.json` records, for each source, the repo paths we read, the skills they feed (`into`), the license, and the upstream commit we last reviewed. Every review moves that commit forward, whether or not anything was taken.
+Our own skills distill outside skills. `upstreams.json` records, for each source, the repo paths we read, the skills they feed (`into`), the license, and the upstream commit we last reviewed (a hash of the content for a source with no repo). Every review moves that commit forward, whether or not anything was taken.
 
 The script is `scripts/upstreams.ts` (run with `bun`). A weekly launchd job (`mac/launchd/com.cvr.upstreams-scan.plist`, Monday 09:00) runs `scan --notify`: it writes `~/.cache/upstreams/digest.md` and posts a notification when something moved. Nothing is folded without a session.
 
@@ -51,3 +51,5 @@ Report per source: taken (with the commit), already have, rejected (why), out of
 ## Adding a source
 
 When we fold a new outside skill, add an entry to `upstreams.json` (`name`, `repo`, `paths` as git pathspecs, `into`, `license`) in the same commit as the fold, then `mark <name>` to record the head you read. For an older fold, `mark <name> --before <fold commit time>` records the last upstream commit before it.
+
+A source with no repo (a paste, a page) takes `url` in place of `repo` and `paths`: the raw content's address, not the HTML page around it, so a site redesign does not read as a change. `mark` stores the sha256 of that content as `folded.hash` and keeps a snapshot in `~/.cache/upstreams/url/`; `scan` reports the source as moved when the hash differs, and `diff` compares the content against that snapshot.

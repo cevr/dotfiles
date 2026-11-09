@@ -1,6 +1,6 @@
 # Writing
 
-Write and review interface copy such as labels, errors, empty states and confirmations, along with the terms that run through them. Match the product's existing voice and flag copy that misleads people or leaves them without a way forward.
+Write and review interface copy such as labels, errors, empty states and confirmations, along with the terms that run through them. Cut copy that should not exist, match the product's existing voice, and flag copy that misleads people or leaves them without a way forward.
 
 A deliberate brand voice is not a defect. Raise a departure from plain language only when it creates inconsistency, ambiguity, translation risk or a tone the stakes don't support. Rewording that merely suits your taste is not a finding.
 
@@ -24,6 +24,27 @@ Before writing or reviewing, find where the copy lives and read the copy around 
 3. Note the case used per element type and any voice or content style guide.
 
 New copy uses the terms on that list. A synonym is a finding only where the same thing is named two ways.
+
+## First pass: should the string exist
+
+Most weak copy is copy that should not be on screen, and tuning its tone only makes the wrong string read better. Before any phrasing rule, walk every string you write or review down the ladder, reading it beside what renders around it (the label, the value, the control): a repeat is invisible when the string is read alone. Stop at the first rung that fires.
+
+1. **Would the reader ever wonder?** A string that answers a question nobody brought plants the question. "Your photo is stored securely" makes a person ask whether it might not be.
+2. **Does the value need a label?** A caption stays only when the thing beside it means nothing without it. A field named "Session timeout" needs no "how long before we sign you out" under it; a bare "15" needs "minutes".
+3. **Does it rule out a failure instead of describing behavior?** That is the team's history leaking onto the screen: a note about a bug since fixed, a defense of a design decision, a hedge about something that works ("this can take a moment; it hasn't frozen"). The reader arrived without the worry and leaves with it. A fixed bug needs no caption; the code change already answered it.
+4. **Rewrite without the part that failed; when nothing remains, delete the element.** The empty hint prop comes off the component and the explanatory paragraph goes, never a shortened stub of it.
+
+Cut whole clauses, not words: finding the half of a hint that does no work beats trimming filler from both halves. A string needed only in a rare state moves into that state instead of sitting on the page for everyone.
+
+A string survives when the reader cannot act without it:
+
+- A consequence they cannot infer, shown at the moment they choose: "Unsynced changes are lost" under a reset button. Only the consequence: a trailing "use this only when sync is stuck" rations a button they can already see.
+- A scope or compatibility fact the control does not show, such as which accounts a setting applies to.
+- What an empty place means and how to fill it ([empty states](#empty-states-point-forward)).
+- The unit, scale or format of a bare value.
+- Required labels, validation, accessible names and instructions that prevent a real mistake.
+
+The rest of this file phrases what passes.
 
 ## One voice, one vocabulary
 
@@ -134,6 +155,8 @@ Each platform writing file lists the code patterns to grep for these.
 
 | Detection pattern | Fix |
 | --- | --- |
+| A hint, caption or description that restates its label or value | `cut` (rung 2) |
+| Helper text with `never`, `always`, `no longer`, `don't worry`, `as before` or `may look` | Rewrite to the behavior, or `cut` (rung 3) |
 | `Click here`, a link reading `here` or two identical `Learn more` links | Name the destination |
 | `Oops`, `Something went wrong` or `!` in an error string | Say what failed and the next step |
 | A sentence concatenated around a variable, or a hand-written plural suffix | One message with a plural argument |
@@ -148,16 +171,16 @@ Each platform writing file lists the code patterns to grep for these.
 
 ## Reporting
 
-**Severity.** `HIGH` misleads the user or hides how to recover from an error. An error that names no way to recover is always `HIGH`, as is a destructive action with neither confirmation nor undo. `MEDIUM` breaks voice, terminology or capitalization consistency. `LOW` is isolated wording polish.
+**Severity.** `HIGH` misleads the user or hides how to recover from an error. An error that names no way to recover is always `HIGH`, as is a destructive action with neither confirmation nor undo. `MEDIUM` breaks voice, terminology or capitalization consistency, or plants a worry (a string failing rung 1 or 3). `LOW` is a redundant caption (rung 2) or isolated wording polish.
 
-**Verification.** Check every label against the action it invokes, every error for a stated fix and every term against the inventory. Read locale files as well as components. Report strings supplied by the server or a CMS that you could not see as `Not verified`.
+**Verification.** Walk every string down the ladder, then check every label against the action it invokes, every error for a stated fix and every term against the inventory. Read locale files as well as components. Report strings supplied by the server or a CMS that you could not see as `Not verified`.
 
 **Format.** Group findings under the principle each violates, ordered by severity, one row per root cause listing every location it appears in:
 
 | Severity | Location | Before | After | Why |
 | --- | --- | --- | --- | --- |
 
-`Location` is `path/to/file:line`. `Why` names the principle and the user impact.
+`Location` is `path/to/file:line` and `Before` the current string. For a string that fails the ladder, `After` is its rewrite or `cut`, and `Why` names the rung in a few words ("rung 3: rules out a fixed bug"). A string that passes gets no row. Otherwise `Why` names the principle and the user impact.
 
 End with `Block` when any `HIGH` remains, `Approve` otherwise, leaving the rest in the table as work to do. Never `Approve` coverage you did not inspect. With nothing to report, state "No actionable writing findings" and report verification.
 
