@@ -128,9 +128,9 @@ describe("the pool's fleet", () => {
       "claude-opus-5-5": { family: "claude-opus", release_date: "2026-09-22" },
     } } }
     const experiment = plannerExperiment(catalog as never)
-    expect(experiment).toEqual({ role: "planner", model: "anthropic/claude-fable-5-2", share: 0.5 })
+    expect(experiment).toEqual({ role: "planner", model: "anthropic/claude-fable-5-2", share: 1 })
     const entry = orchestrateEntry(`${MODS}/orchestrate`, experiment)
-    expect(entry).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true }, experiment: { role: "planner", model: "anthropic/claude-fable-5-2", share: 0.5 } } })
+    expect(entry).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true }, experiment: { role: "planner", model: "anthropic/claude-fable-5-2", share: 1 } } })
     const earlier = { package: `${MODS}/orchestrate`, options: { codex: { pool: true }, experiment: { role: "planner", model: "anthropic/claude-fable-5-1", share: 0.2 } } }
     expect(mergeServer({ plugins: [earlier, "/x"] }, [entry], {}, [MODS]).plugins).toEqual([entry, "/x"])
     // A catalog with no Fable runs no experiment, and the entry names none.
