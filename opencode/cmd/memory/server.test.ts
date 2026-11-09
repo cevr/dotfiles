@@ -1,5 +1,5 @@
 // The plugin seam: the composition root on a stand-in host whose tools and
-// `context` hook the test calls, over the SQLite store in memory and the
+// request hooks (`context`, `compaction`, `generate`) the test calls, over the SQLite store in memory and the
 // OpenCode sessions adapter over a world of sessions. It checks save, repeat,
 // correct, search, scope and forget as the agent meets them, the subagent
 // rule, and the digest: in the system prompt, bounded, and the same on every
@@ -36,7 +36,7 @@ const SESSIONS: Record<string, OpenCodeSessions.SessionView> = {
 const start = (options: Record<string, unknown> = {}) =>
   Effect.gen(function* () {
     const tools = new Map<string, ToolDef>()
-    const hooks: Array<(event: ContextEvent) => Effect.Effect<void>> = []
+    const hooks = new Map<string, Array<(event: ContextEvent) => Effect.Effect<void>>>()
     const host = {
       options,
       tool: {
@@ -49,7 +49,7 @@ const start = (options: Record<string, unknown> = {}) =>
       session: {
         hook: (name: string, callback: (event: ContextEvent) => Effect.Effect<void>) =>
           Effect.sync(() => {
-            if (name === "context") hooks.push(callback)
+            hooks.set(name, [...(hooks.get(name) ?? []), callback])
             return { dispose: Effect.void }
           }),
       },
@@ -67,10 +67,10 @@ const start = (options: Record<string, unknown> = {}) =>
         Effect.map((result) => ({ ok: true as const, text: result.content.map((part) => part.text).join("\n") })),
         Effect.catch((error) => Effect.succeed({ ok: false as const, text: error.message })),
       )
-    /** One request's system prompt as the `context` hook leaves it. */
-    const request = Effect.fn(function* (sessionID: string) {
+    /** One request's system prompt as the hooks of its kind leave it: `context` for a primary request. */
+    const request = Effect.fn(function* (sessionID: string, kind: "context" | "compaction" | "generate" | "title" = "context") {
       const event: ContextEvent = { sessionID, system: [{ type: "text", text: "the host's instructions" }] }
-      for (const hook of hooks) yield* hook(event)
+      for (const hook of hooks.get(kind) ?? []) yield* hook(event)
       return event.system.map((part) => part.text)
     })
     return { tools, call, request }
@@ -176,6 +176,20 @@ describe("the memory plugin", () => {
         // A subagent starts with its project's digest too; another project sees the global note only.
         expect((yield* plugin.request("child"))[1]).toContain("#2 Run the gate")
         expect((yield* plugin.request("b"))[1]).not.toContain("Run the gate")
+      }),
+    ))
+
+  test("a compaction's summary request and a generate request carry the session's digest too; a title request none", () =>
+    run(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        yield* plugin.call("memory_save", "a", { text: "The user prefers bun over npm", scope: "global" })
+        const turn = yield* plugin.request("a2")
+        expect(turn).toHaveLength(2)
+        // Each resends the conversation: the same system prompt keeps the cached prefix.
+        expect(yield* plugin.request("a2", "compaction")).toEqual(turn)
+        expect(yield* plugin.request("a2", "generate")).toEqual(turn)
+        expect(yield* plugin.request("a2", "title")).toEqual(["the host's instructions"])
       }),
     ))
 

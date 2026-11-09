@@ -8,10 +8,12 @@
  *   `memory_forget({ id })`: direct tools, so a kernel cell reaches them as
  *   `tools.memory_save(...)` and the rest. A subagent searches; only a main
  *   session saves and forgets.
- * - The `context` hook (every primary request): the session's digest, chosen
- *   at its first request and kept in the file, goes last in the system prompt,
- *   the same text on every request of the session so the cached prefix holds.
- *   Compaction, title and generate requests get none.
+ * - The `context`, `compaction` and `generate` hooks (every request that sends
+ *   the session's conversation: a primary one, a compaction's summary, a
+ *   generate on the session's context): the session's digest, chosen at its
+ *   first request and kept in the file, goes last in the system prompt, the
+ *   same text on every request of the session so the cached prefix holds. A
+ *   title request, on a prompt of its own, gets none.
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `path`: the SQLite file; default `$XDG_STATE_HOME/opencode-memory/memory.db`.
@@ -120,15 +122,20 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
         })
       })
 
-      // Last in the system prompt, after the instructions, so a session's digest never moves what precedes it.
-      yield* ctx.session.hook("context", (event) =>
+      // Last in the system prompt, after the instructions, so a session's digest never moves what precedes it. A
+      // compaction's summary request and a generate request (the host's goal check, cache warming) get it too: each
+      // resends the conversation for the cache to read, and a system prompt one block short there reads only the
+      // tools and the blocks before it.
+      const withDigest = (event: { readonly sessionID: string; readonly system: Array<{ type: "text"; text: string }> }) =>
         memory.digest(event.sessionID).pipe(
           Effect.map((digest) => {
             if (digest !== "") event.system.push({ type: "text", text: digest })
           }),
           Effect.catch((failure) => Effect.logWarning("memory: no digest for the session", { sessionID: event.sessionID, failure: messageOf(failure) })),
-        ),
-      )
+        )
+      yield* ctx.session.hook("context", withDigest)
+      yield* ctx.session.hook("compaction", withDigest)
+      yield* ctx.session.hook("generate", withDigest)
     }),
   })
 

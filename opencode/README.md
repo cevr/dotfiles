@@ -1186,7 +1186,11 @@ both). When the step ends it judges the request against the session's one
 before (`request-log.ts`): `first`, `hit`, `uncached`, `model`, `expired`,
 `login` (with both logins), `compaction`, `prefix` (the first segment that
 changed and about how many tokens in) or `unchanged` (the prompt held and
-the cache lost it anyway). The TUI asks for those causes over the
+the cache lost it anyway). A compaction's summary request waits apart from
+the step's, for its compaction's end, and is judged against the request before
+it went out: with background compaction on, the host writes a summary while
+the next step's request is in flight and swaps it in steps later, and each is
+billed by its own event. The TUI asks for those causes over the
 `dotfiles-opencode.cache` RPC, so a row inside the lifetime reads `prefix
 changed at system[1] ¶4, 3k tokens in` or `the cache lost an unchanged
 prefix`; without the server half the TUI's own causes stand.
@@ -2236,9 +2240,13 @@ what is already known); its refusal tells it to put the fact in its answer.
 starts with: the highest by `(1 + log2(1 + uses)) · ½^(days since updated / 60)`,
 at most `digestNotes` (30) whose lines fit `digestChars` (4,000 characters,
 about 1k tokens), laid out global first, then the project's, by id, under a
-`# Memory` heading. It goes last in the system prompt through the `context`
-hook, and is kept in the file per session, so every request of the session
-(and of a server restart) carries the same block and the cached prefix holds;
+`# Memory` heading. It goes last in the system prompt through the `context`,
+`compaction` and `generate` hooks, and is kept in the file per session, so
+every request of the session that resends its conversation (a compaction's
+summary request included, and after a server restart) carries the same block
+and the cached prefix holds (a summary request without it read only the tools
+and the system blocks before it: about 6–26k tokens of a 130–330k prompt in
+the ledger of 2026-11-08, `tests/compaction-prefix.test.ts`);
 a note saved mid-session shows from the next session on. A session with no
 notes keeps an empty one. `uses` counts searches and repeated saves; `shown`
 counts digests and never ranks, so the injected notes cannot keep themselves
