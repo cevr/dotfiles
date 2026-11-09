@@ -347,8 +347,9 @@ export function Queued(props: { host: Host; sessionID: string }) {
 
 /**
  * While a turn runs: a blank row, then a braille spinner in the primary
- * accent (Prime #7c6faf) and what runs, `Executing · 13s` or
- * `Compacting · 4s` (Prime's loader rows), timed as pending.ts `loader` says.
+ * accent (Prime #7c6faf) and `Executing · 13s` (Prime's loader row), timed
+ * as pending.ts `loader` says. While the run compacts it draws nothing: the
+ * compaction's own row spins and counts (`Automatic compaction · 4s`).
  */
 export function Working(props: { host: Host; sessionID: string }) {
   const running = createMemo(() => props.host.status(props.sessionID) === "running")
@@ -368,13 +369,15 @@ export function Working(props: { host: Host; sessionID: string }) {
     onCleanup(() => clearInterval(timer))
   })
   return (
-    <Show when={running()}>
-      <box paddingLeft={GUTTER} marginTop={1} flexShrink={0}>
-        <text wrapMode="none" fg={props.host.theme().text.muted}>
-          <span style={{ fg: props.host.theme().hue.accent[300] }}>{SPINNER[frame()]} </span>
-          {shown().label} · {elapsed(now() - (shown().since ?? seen()))}
-        </text>
-      </box>
+    <Show when={running() ? shown() : undefined}>
+      {(loader) => (
+        <box paddingLeft={GUTTER} marginTop={1} flexShrink={0}>
+          <text wrapMode="none" fg={props.host.theme().text.muted}>
+            <span style={{ fg: props.host.theme().hue.accent[300] }}>{SPINNER[frame()]} </span>
+            Executing · {elapsed(now() - (loader().since ?? seen()))}
+          </text>
+        </box>
+      )}
     </Show>
   )
 }

@@ -5,7 +5,8 @@
 // queue (leader+Enter) meanwhile. Until the runner takes them, the prompts are
 // not in the transcript and take no row there: one list above the composer
 // shows all three, oldest first, in place of the host's own `N queued · …`
-// box, and the loader says `Compacting`. The runner takes the steers at its
+// box, and the compaction's own row spins and counts, with no loader beside
+// it. The runner takes the steers at its
 // next step (`Executing`), the queued prompt once that turn ends; each enters
 // the transcript in the order sent and leaves the list.
 // Replayed against OpenCode with a scripted model.

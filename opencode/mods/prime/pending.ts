@@ -1,6 +1,6 @@
 // What the runner has not taken yet, without rendering: the prompts that wait
 // in the session's inbox, the queued rows above the composer that show them
-// until the runner takes them, and what the loader names and times.
+// until the runner takes them, and when the loader shows and what it times.
 import { oneLine } from "./ask.ts"
 import type { Message } from "./session.ts"
 
@@ -81,28 +81,28 @@ export function pendingActions(delivery: WaitingPrompt["delivery"]): ReadonlyArr
     : [{ title: "Send now", value: "steer", description: "at the turn's next step" }, remove]
 }
 
-/** What the loader says, and since when it counts. */
-export type Loader = { readonly label: "Compacting" | "Executing"; readonly since: number | undefined }
+/** Since when the `Executing` loader counts; undefined counts from when the loader saw the run. */
+export type Loader = { readonly since: number | undefined }
 
 /**
- * What runs and since when. A compaction running in the current run (after
- * its last idle marker) is `Compacting`, from the compaction's start;
- * otherwise `Executing`, from the run's first model step, which starts when
- * the runner takes the prompt (a prompt that waited behind a compaction
- * counts from then, not from when it was sent). Before that first step it
- * counts from the run's newest prompt the runner took, and with none from
- * when the loader saw the run (undefined); a waiting prompt never moves the
- * clock.
+ * Whether the `Executing` loader shows, and since when it counts. While a
+ * compaction of the current run (after its last idle marker) runs, none
+ * shows: the compaction's own row carries the spinner and its time
+ * (compaction.ts `compactionLine`), so the wait reads as one row. Otherwise
+ * it counts from the run's first model step, which starts when the runner
+ * takes the prompt (a prompt that waited behind a compaction counts from
+ * then, not from when it was sent). Before that first step it counts from
+ * the run's newest prompt the runner took, and with none from when the
+ * loader saw the run (undefined); a waiting prompt never moves the clock.
  */
-export function loader(messages: ReadonlyArray<Message>, pending: ReadonlyArray<PendingItem>): Loader {
+export function loader(messages: ReadonlyArray<Message>, pending: ReadonlyArray<PendingItem>): Loader | undefined {
   const idle = messages.findLastIndex((message) => message.type === "idle")
   const run = messages.slice(idle + 1)
   const compaction = run.findLast((message) => message.type === "compaction")
-  if (compaction?.type === "compaction" && compaction.status === "running")
-    return { label: "Compacting", since: compaction.time.created }
+  if (compaction?.type === "compaction" && compaction.status === "running") return undefined
   const step = run.find((message) => message.type === "assistant")
-  if (step) return { label: "Executing", since: step.time.created }
+  if (step) return { since: step.time.created }
   const taken = run.filter((message) => message.type === "user" && !isWaiting(pending, message.id))
   const prompt = taken.at(-1)
-  return { label: "Executing", since: prompt?.time.created }
+  return { since: prompt?.time.created }
 }

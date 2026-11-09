@@ -1,5 +1,5 @@
 // What the runner has not taken: which prompts wait, the queued rows that show
-// them, and what the loader names and times while a compaction or a turn runs.
+// them, and when the loader shows and what it times.
 import { describe, expect, test } from "bun:test"
 import { isWaiting, loader, pendingActions, queuedRow, waitingPrompts, type PendingItem } from "./pending.ts"
 import type { Message } from "./session.ts"
@@ -72,34 +72,33 @@ describe("the prompts the runner has not taken", () => {
 })
 
 describe("the loader", () => {
-  test("a compaction running in the current run is `Compacting`, from the compaction's start", () => {
+  test("no loader while a compaction of the current run runs: its own row spins and counts", () => {
     const messages = [user("msg_1", 100), step("msg_2", 110), compaction("msg_3", 500, "running"), user("msg_4", 600)]
-    expect(loader(messages, [steer("msg_4", 600, "next")])).toEqual({ label: "Compacting", since: 500 })
+    expect(loader(messages, [steer("msg_4", 600, "next")])).toBeUndefined()
   })
 
   test("after the compaction the turn is `Executing` again, from its first step, not from the prompt that waited", () => {
     const messages = [user("msg_1", 100), step("msg_2", 110), compaction("msg_3", 500, "completed"), user("msg_4", 600), step("msg_5", 900)]
-    expect(loader(messages, [])).toEqual({ label: "Executing", since: 110 })
+    expect(loader(messages, [])).toEqual({ since: 110 })
   })
 
   test("a prompt that waited behind a compaction of an idle session counts from the step that took it", () => {
     const messages = [user("msg_1", 100), step("msg_2", 110), idle("msg_3", 120), compaction("msg_4", 500, "completed"), user("msg_5", 600), step("msg_6", 2_000)]
-    expect(loader(messages, [])).toEqual({ label: "Executing", since: 2_000 })
+    expect(loader(messages, [])).toEqual({ since: 2_000 })
   })
 
   test("a waiting steer never moves the clock; before the first step it counts from the prompt the runner took", () => {
     const run = [user("msg_1", 100), step("msg_2", 110), idle("msg_3", 120), user("msg_4", 1_000)]
-    expect(loader(run, [])).toEqual({ label: "Executing", since: 1_000 })
+    expect(loader(run, [])).toEqual({ since: 1_000 })
     expect(loader([...run, step("msg_5", 1_010), user("msg_6", 5_000)], [steer("msg_6", 5_000, "more")])).toEqual({
-      label: "Executing",
       since: 1_010,
     })
     // Only a waiting prompt in the run: the loader times from when it saw the run.
-    expect(loader([...run.slice(0, 3), user("msg_7", 9_000)], [steer("msg_7", 9_000, "x")]).since).toBeUndefined()
+    expect(loader([...run.slice(0, 3), user("msg_7", 9_000)], [steer("msg_7", 9_000, "x")])).toEqual({ since: undefined })
   })
 
   test("a compaction an earlier run left running is not this run's", () => {
     const messages = [compaction("msg_1", 50, "running"), idle("msg_2", 60), user("msg_3", 100), step("msg_4", 105)]
-    expect(loader(messages, [])).toEqual({ label: "Executing", since: 105 })
+    expect(loader(messages, [])).toEqual({ since: 105 })
   })
 })

@@ -4,6 +4,7 @@
 // summary or the error.
 import { span } from "./call.ts"
 import { compactTokens } from "./chrome.ts"
+import { elapsed } from "./clock.ts"
 import type { CompactionMessage, Message, Tokens } from "./session.ts"
 
 /** The tokens of the compaction request's prompt: the context it compacted. */
@@ -28,6 +29,11 @@ export function compactionTime(message: CompactionMessage, next: Message | undef
   return Math.max(0, next.time.created - message.time.created)
 }
 
+/** How long a running compaction has run at `now`: `57s`, `1m 05s`. */
+function ranFor(message: CompactionMessage, now: number) {
+  return elapsed(now - message.time.created)
+}
+
 /** The one line a compaction draws below All; a running one is the live spinner line, with today's words. */
 export type CompactionLine = {
   readonly glyph: "spinner" | "◇"
@@ -39,12 +45,18 @@ export type CompactionLine = {
  * The compaction's line below All. `automatically` covers reason `auto`
  * (idle compaction, the fork's window-triggered one); the token counts are
  * the compaction request's own: its prompt (the context it compacted) to
- * its output (the summary that replaces it).
+ * its output (the summary that replaces it). A running one is the only row
+ * the wait draws (the `Executing` loader stands aside, pending.ts `loader`),
+ * so it carries the time it has run at `now`: `Automatic compaction · 57s`.
  */
-export function compactionLine(message: CompactionMessage, next: Message | undefined): CompactionLine {
+export function compactionLine(message: CompactionMessage, next: Message | undefined, now: number): CompactionLine {
   const auto = message.reason === "auto"
   if (message.status === "running")
-    return { glyph: "spinner", tone: "muted", text: auto ? "Automatic compaction" : "Compaction" }
+    return {
+      glyph: "spinner",
+      tone: "muted",
+      text: `${auto ? "Automatic compaction" : "Compaction"} · ${ranFor(message, now)}`,
+    }
   if (message.status === "failed") {
     if (cancelled(message)) return { glyph: "◇", tone: "warning", text: "Compaction cancelled" }
     const reason = (message.error.message.split("\n")[0] ?? "").trim()
@@ -78,13 +90,13 @@ export type CompactionBlock = {
   /** A failure the reader did not cause: `✗`, in the error tone. */
   readonly failed: boolean
   readonly label: string
-  /** `cancelled`, then the request's usage (`171.0K in · 6.0K out`). */
+  /** `cancelled`, then the request's usage (`171.0K in · 6.0K out`); while it runs, the time it has run (`57s`). */
   readonly details: ReadonlyArray<string>
   /** The summary, or a failure's error; empty for a cancel. */
   readonly body: string
 }
 
-export function compactionBlock(message: CompactionMessage): CompactionBlock {
+export function compactionBlock(message: CompactionMessage, now: number): CompactionBlock {
   const cut = cancelled(message)
   const usage = (() => {
     if (message.status === "running" || !message.tokens) return undefined
@@ -102,7 +114,11 @@ export function compactionBlock(message: CompactionMessage): CompactionBlock {
     running: message.status === "running",
     failed: message.status === "failed" && !cut,
     label,
-    details: [cut ? "cancelled" : undefined, usage].filter((value): value is string => value !== undefined),
+    details: [
+      cut ? "cancelled" : undefined,
+      usage,
+      message.status === "running" ? ranFor(message, now) : undefined,
+    ].filter((value): value is string => value !== undefined),
     body: (message.status === "failed" ? (cut ? "" : message.error.message) : message.summary).trim(),
   }
 }

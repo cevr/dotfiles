@@ -2,8 +2,9 @@
 // checkout and asserts how prompts sent during an automatic compaction read:
 // two steers and one prompt sent to the queue wait in one list above the
 // composer, oldest first, in place of the host's `N queued · …` box, out of
-// the transcript with no blank row left there, while the loader says
-// `Compacting`; the steers enter the transcript in the order sent under
+// the transcript with no blank row left there, while the compaction's own
+// row spins and counts (`Automatic compaction · 4s`) with no loader beside
+// it; the steers enter the transcript in the order sent under
 // `Executing`, timed from the turn's start, the queued prompt still listed;
 // once that turn ends the queued prompt enters too and the list is empty.
 // Needs OPENCODE_DEV, a fork whose layout rule sees the row's message and
@@ -45,26 +46,28 @@ describe.skipIf(!fork)("prompts sent during a compaction wait above the composer
     for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
   }, 300_000)
 
-  test("while the compaction runs: no prompt in the transcript, one list of all three, and `Compacting`", () => {
+  test("while the compaction runs: no prompt in the transcript, one list of all three, and the compaction's one timed row", () => {
     const shown = above(frames.queued)
-    expect(shown.slice(-7)).toEqual([
+    expect(shown.slice(-6)).toEqual([
       "  ● Ran true",
       "    │ (no output)",
-      expect.stringMatching(/^ {2}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Automatic compaction$/),
-      expect.stringMatching(LOADER("Compacting")),
+      expect.stringMatching(LOADER("Automatic compaction")),
       "  ◌ queued · Also update the docs.",
       "  ◌ queued · Then bump the version.",
       LATER,
     ])
-    // One blank row between the compaction and the loader, the loader's own: the hidden prompts' rows add none.
-    const loader = frames.queued.findIndex((line) => LOADER("Compacting").test(line))
-    expect(frames.queued[loader - 1]?.trim()).toBe("")
-    expect(frames.queued[loader - 2]).toMatch(/Automatic compaction$/)
+    // The compaction's row is the wait's only one: no loader row beside it.
+    const row = frames.queued.findIndex((line) => LOADER("Automatic compaction").test(line))
+    expect(Number(LOADER("Automatic compaction").exec(frames.queued[row] ?? "")?.[1])).toBeGreaterThanOrEqual(1)
+    expect(frames.queued.join("\n")).not.toContain("Compacting")
+    expect(frames.queued.join("\n")).not.toContain("Executing")
+    // One blank row above the compaction, its own gap: the hidden prompts' rows add none.
+    expect(frames.queued[row - 1]?.trim()).toBe("")
+    expect(frames.queued[row - 2]).toBe("    │ (no output)")
     for (const prompt of ["Also update the docs.", "Then bump the version.", "Afterwards tag the release."])
       expect(shown.some((line) => line.includes(`┃ ${prompt}`))).toBe(false)
     // The host's own queued box is replaced, not drawn beside the list.
     expect(frames.queued.join("\n")).not.toMatch(/\d+ queued/)
-    expect(frames.queued.join("\n")).not.toContain("Executing")
   })
 
   test("once the runner takes the steers: both in the transcript in order under `Executing` from the turn's start, the queued prompt still listed", () => {

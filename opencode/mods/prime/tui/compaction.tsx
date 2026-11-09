@@ -1,12 +1,14 @@
 // A compaction in the Prime look. Below All it is one line,
-// `◇ Compacted automatically · 171k → 6k tokens · 12s`, with a live spinner
-// while it runs and a failure or cancel in the warning tone. At All (Ctrl+O)
+// `◇ Compacted automatically · 171k → 6k tokens · 12s`; while it runs, a
+// live spinner and its time (`Automatic compaction · 57s`), the wait's only
+// row; a failure or cancel in the warning tone. At All (Ctrl+O)
 // it is everything the host draws today: a rule with its label and usage,
 // then the summary or the error (compaction.ts).
 import { createMemo, createSignal, For, Match, onCleanup, Show, Switch, type Accessor } from "solid-js"
 import { SPINNER, SPINNER_MS } from "../chrome.ts"
 import { compactionAt, compactionBlock, compactionLine } from "../compaction.ts"
 import type { Detail } from "../detail.ts"
+import { useNow } from "./clock.ts"
 import type { Host } from "./host.ts"
 import { toneColor } from "./tone.ts"
 import { GUTTER } from "./transcript.tsx"
@@ -25,14 +27,16 @@ export function Compaction(props: { host: Host; sessionID: string; messageID: st
   const found = createMemo(() => compactionAt(props.host.messages(props.sessionID), props.messageID))
   const running = () => found()?.message.status === "running"
   const spinner = useSpinner(running)
+  // While it runs the row is the wait's only one, so it counts its own time on the shared clock.
+  const now = useNow(running)
   return (
     <Show when={found()}>
       {(at) => (
         <Show
           when={props.detail() === "all"}
-          fallback={<Line host={props.host} line={compactionLine(at().message, at().next)} spinner={spinner} />}
+          fallback={<Line host={props.host} line={compactionLine(at().message, at().next, now())} spinner={spinner} />}
         >
-          <Block host={props.host} block={compactionBlock(at().message)} spinner={spinner} />
+          <Block host={props.host} block={compactionBlock(at().message, now())} spinner={spinner} />
         </Show>
       )}
     </Show>

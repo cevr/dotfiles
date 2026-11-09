@@ -174,7 +174,8 @@ A compaction reads as one line below All, such as
 `◇ Compacted automatically · 171k → 6k tokens · 12.0s` (`compaction.ts`,
 `tui/compaction.tsx`). A manual one says `Compacted`. A failed or cancelled
 one says so in the warning tone, and a running one is the live spinner
-line. The two numbers are the compaction request's own tokens: its prompt
+line with the time it has run (`Automatic compaction · 57s`), the wait's
+only row. The two numbers are the compaction request's own tokens: its prompt
 (the context it compacted), then its output (the summary). The time runs to
 the next message the run writes, because the host keeps no end time on a
 compaction. At All (Ctrl+O) it is the host's whole block, with its rule and
@@ -204,12 +205,15 @@ typecheck on them.
 ◌ after the turn · Afterwards tag the release.
 ```
 
-The loader under the transcript names what runs: `Compacting · 4s` while a
-compaction of the current run runs, from its start, else `Executing · 13s`,
-from the run's first step, so a waiting prompt never restarts the clock.
+The loader under the transcript reads `Executing · 13s`, from the run's first
+step, so a waiting prompt never restarts the clock. While a compaction of
+the current run runs there is no loader: the compaction's own row spins and
+counts from its start (`Automatic compaction · 57s`, `Compaction · 4s` for a
+manual one), so the wait is one row, and reads as the finished compaction
+row once it ends.
 `tests/prime-queued.test.ts` runs `scenarios/prime-queued.ts`: two steers
 and one queued prompt sent during an automatic compaction wait above the
-composer as one list under `Compacting`, with no blank row for them in the
+composer as one list under the compaction's timed row, with no blank row for them in the
 transcript and no host box, then the steers read in the transcript in the
 order sent under `Executing`, and the queued prompt after them once that
 turn ends.
