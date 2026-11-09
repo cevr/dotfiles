@@ -1885,7 +1885,10 @@ assumption and say something about it, pick the assumed choice with a note
 (`n`): that is an answer, which the agent reads. A blank question stays open,
 and Esc closes the form with all of them open. The form is the host's: its
 submit is the host's `form.replied` event, which the server plugin reads (the
-form's field keys are `ask_user_async:<id>`). Dismissing is a form action,
+form's field keys are `ask_user_async:<id>`). The plugin is loaded once per
+directory the server has open, and each copy hears only its own directory's
+events (the fork scopes a plugin's `ctx.event.subscribe` to its location), so
+the asking session's directory alone records a submit. Dismissing is a form action,
 the fork's generic `Form.Action` (`key`, footer `label`, `value`, `mark`):
 ctrl+x answers the tab with `ask_user_async:dismiss` (`form.ts`), and inside
 the form it takes the key before the leader (ctrl+x is the default leader).
@@ -1951,8 +1954,10 @@ It asks the `QuestionStore`, `Courier` and `Changes` contracts in
 `service.ts`, implemented in `opencode/` and `memory/`, with the laws in
 `laws.ts`; `opencode/form.ts` opens the host's forms. `tests/questions.test.ts`
 runs `scenarios/questions.ts` in real OpenCode, direct and from a kernel
-cell; `cmd/questions/tui.test.ts` checks the hotkey's binding on a stand-in
-TUI.
+cell; `tests/questions-locations.test.ts` runs `tests/questions/run.ts` with
+two directories open on one server: one submit, one message, and no other
+directory's copy logging the question already closed; `cmd/questions/tui.test.ts`
+checks the hotkey's binding on a stand-in TUI.
 
 Where it departs from gent: a subagent may ask (gent refuses it in a child
 session), and its question shows in its parent's tray; ids are per session,
