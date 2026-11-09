@@ -283,5 +283,17 @@
       "sha": "d0b4a3326718309793459160e94b35abee517b23",
       "date": "2026-11-02"
     }
+  },
+  {
+    "name": "clean-copy",
+    "url": "https://paste.rachel.systems/raw/ukogokijaz",
+    "into": [
+      "ui"
+    ],
+    "license": "none: restate, never copy",
+    "folded": {
+      "hash": "a568ecd85c277768d7b6774d9d4864974f31eb03581bb2dd85397078d734648f",
+      "date": "2026-11-09"
+    }
   }
 ]
