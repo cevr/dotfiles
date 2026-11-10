@@ -403,14 +403,14 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
       await hostCall(socket, { op: "keys", names: ["enter"] })
       await until(screen, (text) => /Connection lost|Reconnecting to the server/.test(text) || (!/\bSessions\b/.test(text) && /sim-model/.test(text)), (last) => `selection did not leave the picker or wait for reconnection:\n${last}`, 5_000)
       if (cache === "cached") expect(Date.now(), "cached composer accepts input while the service still answers 503").toBeLessThan(unavailableUntil)
-      else await until(screen, (text) => text.includes("Reconnect parent") && text.includes("sim-model") && !/Connection lost|Reconnecting to the server/.test(text), (last) => `uncached selection did not wait for its session:\n${last}`, BACK_WITHIN_MS)
+      else await until(screen, (text) => text.includes("Reconnect parent") && text.includes("sim-model") && !/\bSessions\b|Connection lost|Reconnecting to the server/.test(text), (last) => `uncached selection did not wait for its session:\n${last}`, BACK_WITHIN_MS)
       const marker = `opened-during-boot-${cache}-marker`
       await hostCall(socket, { op: "type", text: `say ${marker}` })
       await hostCall(socket, { op: "keys", names: ["enter"] })
       // Earlier transcript text can scroll off screen as turns accumulate.
       // The stable header and the session-specific admission prove identity.
       await until(screen, (text) => text.includes(marker) && text.includes("Reconnect parent"), (last) => `opening/submitting during boot did not recover:\n${last}`, BACK_WITHIN_MS)
-      await until(() => submissions, (requests) => requests.some((request) => request.path === `/api/session/${parent.id}/prompt` && request.body.includes(marker)), () => "the boot-time prompt never reached the selected session", BACK_WITHIN_MS)
+      await until(async () => ({ requests: submissions, screen: await screen() }), ({ requests }) => requests.some((request) => request.path === `/api/session/${parent.id}/prompt` && request.body.includes(marker)), (last) => `the boot-time prompt never reached ${parent.id}:\n${JSON.stringify(last.requests)}\n${last.screen}`, BACK_WITHIN_MS)
       await until(() => modelPrompts, (prompts) => prompts.some((prompt) => prompt.includes(marker)), () => "the session never sent the boot-time prompt to its model", BACK_WITHIN_MS)
       expect(refusedRequests.slice(beforeRefusals).length, "selection really crossed the 503 window").toBeGreaterThan(0)
       await host.stop()
