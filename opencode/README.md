@@ -2000,7 +2000,14 @@ two directories open on one server: one submit, one message, and no other
 directory's copy logging the question already closed; then a root and its
 subagent: the root's form answers the subagent, which wakes on the letter,
 and the root reads the notice at its next turn; `cmd/questions/tui.test.ts`
-checks the hotkey's binding on a stand-in TUI.
+checks the hotkey's binding on a stand-in TUI. `tests/question-scroll.test.ts`
+runs `scenarios/question-scroll.ts` at a phone's size (45 by 25): a question
+of sixty lines, through the built-in tool and through /answer, opens on its
+first line, scrolls by wheel and PageDown (the transcript's page keys) to
+its options, and the pick reaches the session. The scrolling is the fork's
+form (`packages/tui/src/routes/session/form.tsx`, prime-look `0e620d7588`):
+the session's dock gives way to the terminal's height and the form's body
+scrolls in what it gets, so the plugin needs no change of its own.
 
 Where it departs from gent: a subagent may ask (gent refuses it in a child
 session), and its question shows in its root's tray and form; ids are per session,
