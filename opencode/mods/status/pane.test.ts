@@ -2,7 +2,7 @@
 // running agents named by their call, unit lines, and which read failed.
 import { describe, expect, test } from "bun:test"
 import { Option, Schema } from "effect"
-import { accountRows, agentRows, fleetRows, PaneFleet, PanePools, resetsLine, stamp, unavailable, unitLine } from "./pane.ts"
+import { accountRows, agentRows, fleetRows, PaneFleet, PanePools, PaneResets, resetRows, resetsLine, stamp, unavailable, unitLine } from "./pane.ts"
 
 const now = Date.parse("2026-11-04T15:00:00Z")
 
@@ -153,6 +153,33 @@ describe("fleetRows", () => {
       ]),
     )
     expect(Option.isNone(Schema.decodeUnknownOption(PaneFleet)({ host: "x" }))).toBe(true)
+  })
+})
+
+describe("resetRows", () => {
+  test("a question waiting on the owner first, flagged, then the claims newest first with what they did to the week, then the closed ones", () => {
+    // As the pool's resets method answers, with the fields the pane does not draw.
+    const answer = {
+      resets: [
+        { key: "k3", pool: "anthropic", provider: "claude", credentialID: "cred-a", label: "Max 1", creditID: "g", requestID: "pool-x", why: "held", stage: "asked", at: now, attempts: 0, sessionID: "ses_root", question: "Claim it?" },
+        { key: "k2", pool: "openai", provider: "codex", credentialID: "c", label: "work", creditID: "c1", requestID: "pool-y", why: "held", stage: "settled", at: now - 60_000, attempts: 1, outcome: "reset" },
+        { key: "k1", pool: "anthropic", provider: "claude", credentialID: "cred-b", label: "Max 2", creditID: "g", requestID: "pool-z", why: "held", stage: "withdrawn", at: now - 120_000, attempts: 0, message: "the hold lifted" },
+      ],
+      claims: [
+        { key: "k2", pool: "openai", provider: "codex", credentialID: "c", label: "work", creditID: "c1", requestID: "pool-y", at: now - 60_000, outcome: "reset", before: [], after: [], weekly: "moved" },
+      ],
+    }
+    expect(Option.map(Schema.decodeUnknownOption(PaneResets)(answer), resetRows)).toEqual(
+      Option.some([
+        { asking: true, text: "Claude · Max 1 · asked the owner, waiting for an answer · 2026-11-04 15:00Z" },
+        { asking: false, text: "claimed Codex · work · reset · weekly reset moved · 2026-11-04 14:59Z" },
+        { asking: false, text: "Claude · Max 2 · question withdrawn (the hold lifted) · 2026-11-04 14:58Z" },
+      ]),
+    )
+  })
+
+  test("a pool that has worked no reset draws none", () => {
+    expect(resetRows({ resets: [], claims: [] })).toEqual([])
   })
 })
 

@@ -2,7 +2,8 @@
 // 5-hour and 7-day windows, each running agent with its role and what it was
 // asked, each run's units, and the fleet: the agents this host and each of the
 // owner's other hosts admitted that still count on the pace, and a host that
-// cannot be read. The pane reads the pool's RPC
+// cannot be read; and the rate-limit resets the pool works: a question waiting
+// on the owner, a claim under way, the claims made. The pane reads the pool's RPC
 // (dotfiles-opencode.pool) and this mod's (status.ts) and draws these rows.
 import { Schema } from "effect"
 import type { AgentCall, Unit } from "./status.ts"
@@ -139,6 +140,82 @@ export const fleetRows = (fleet: PaneFleet): ReadonlyArray<FleetRow> => [
       : { down: true, text: `${peer.name} · unreachable since ${stamp(peer.missed.since)}: ${peer.missed.message}; the pace goes on without it` },
   ),
   ...(fleet.peers.length === 0 ? [{ down: false, text: "No other hosts: the pace counts this one's new agents only." }] : []),
+]
+
+/**
+ * The pool's resets answer as the pane reads it: as much of the pool's
+ * `ResetsStatus` (`@dotfiles/opencode-pool/status`) as the pane draws, each
+ * reset being worked and each claim made, newest first.
+ */
+export const PaneResets = Schema.Struct({
+  resets: Schema.Array(
+    Schema.Struct({
+      provider: Schema.String,
+      label: Schema.String,
+      stage: Schema.String,
+      why: Schema.String,
+      at: Schema.Number,
+      outcome: Schema.optionalKey(Schema.String),
+      message: Schema.optionalKey(Schema.String),
+    }),
+  ),
+  claims: Schema.Array(
+    Schema.Struct({
+      provider: Schema.String,
+      label: Schema.String,
+      at: Schema.Number,
+      outcome: Schema.String,
+      message: Schema.optionalKey(Schema.String),
+      weekly: Schema.String,
+    }),
+  ),
+})
+export type PaneResets = typeof PaneResets.Type
+
+export interface ResetRow {
+  /** One waiting on the owner: a question in the tray. */
+  readonly asking: boolean
+  readonly text: string
+}
+
+const PROVIDER_NAMES: Readonly<Record<string, string>> = { claude: "Claude", codex: "Codex" }
+
+/** What a reset's stage says on its row. */
+const STAGES: Readonly<Record<string, string>> = {
+  asked: "asked the owner, waiting for an answer",
+  claiming: "claiming",
+  failed: "claim did not go through, will retry",
+  settled: "settled",
+  declined: "the owner said no",
+  withdrawn: "question withdrawn",
+}
+
+/** The weekly window after a claim, as the row says it. */
+const WEEKLY: Readonly<Record<string, string>> = { moved: "weekly reset moved", kept: "weekly reset kept", unread: "weekly reset unread" }
+
+/**
+ * Each reset being worked (`Claude · Max 1 · asked the owner, waiting for an
+ * answer · 2026-11-09 12:00Z`), then the claims made, newest first (`claimed
+ * Codex · work · reset · weekly reset moved · <time>`). None when the pool
+ * has worked none.
+ */
+export const resetRows = (resets: PaneResets): ReadonlyArray<ResetRow> => [
+  ...resets.resets
+    .filter((reset) => reset.stage === "asked" || reset.stage === "claiming" || reset.stage === "failed")
+    .map((reset) => ({
+      asking: reset.stage === "asked",
+      text: `${PROVIDER_NAMES[reset.provider] ?? reset.provider} · ${reset.label} · ${STAGES[reset.stage] ?? reset.stage}${reset.why === "expiring" ? " (credit expiring)" : ""} · ${stamp(reset.at)}`,
+    })),
+  ...resets.claims.map((claim) => ({
+    asking: false,
+    text: `claimed ${PROVIDER_NAMES[claim.provider] ?? claim.provider} · ${claim.label} · ${claim.outcome}${claim.message === undefined ? "" : ` (${claim.message})`} · ${WEEKLY[claim.weekly] ?? claim.weekly} · ${stamp(claim.at)}`,
+  })),
+  ...resets.resets
+    .filter((reset) => reset.stage === "declined" || reset.stage === "withdrawn")
+    .map((reset) => ({
+      asking: false,
+      text: `${PROVIDER_NAMES[reset.provider] ?? reset.provider} · ${reset.label} · ${STAGES[reset.stage] ?? reset.stage}${reset.message === undefined || reset.stage !== "withdrawn" ? "" : ` (${reset.message})`} · ${stamp(reset.at)}`,
+    })),
 ]
 
 /** A running child session of the pane's session, as OpenCode knows it. */
