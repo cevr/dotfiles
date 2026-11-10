@@ -7,6 +7,7 @@ import type { Event, LedgerState, PoolId } from "./account-pool.ts"
 import type { StoreRefreshes } from "./alerts.ts"
 import type { Event as FleetEvent, FleetState } from "./fleet.ts"
 import type { ClaimAnswer, QuotaReading } from "./quota.ts"
+import type { Event as ResetsEvent, ResetsState } from "./resets.ts"
 import type { Report, SourceStatus } from "./status.ts"
 
 /**
@@ -111,6 +112,58 @@ export class Peers extends Context.Service<
     readonly report: (peer: string) => Effect.Effect<Report, PeerUnreachable>
   }
 >()("dotfiles-opencode/pool/Peers") {}
+
+/**
+ * Where this host keeps the Resets aggregate's state (resets.ts): each pool's
+ * newest held start, each hold's reset and the claims made. Every plugin
+ * instance on the host reads and records the same state, so a hold is worked
+ * once. A failed read is empty; a failed write is lost.
+ */
+export class ResetsStore extends Context.Service<
+  ResetsStore,
+  {
+    readonly read: Effect.Effect<ResetsState>
+    /** Write what `events` change; `state` is the state with them folded in. */
+    readonly record: (events: ReadonlyArray<ResetsEvent>, state: ResetsState) => Effect.Effect<void>
+  }
+>()("dotfiles-opencode/pool/ResetsStore") {}
+
+/** A question the pool asks the owner about one hold's reset. */
+export interface OwnerQuestion {
+  /** The session whose start waits; the question shows in its tree's root. */
+  readonly sessionID: string
+  /** The hold's key: the question is asked once under it. */
+  readonly key: string
+  readonly question: string
+  readonly header: string
+  readonly options: ReadonlyArray<{ readonly label: string; readonly description?: string }>
+  readonly assume: string
+}
+
+/** One of the pool's questions as it stands: its key, and the owner's answer once given. */
+export interface OwnerAnswer {
+  readonly key: string
+  readonly answer?: string
+}
+
+/**
+ * The owner, asked through the background questions (the questions plugin),
+ * in the root session of the start that waits. An answer waits on its
+ * question until the pool reads it and withdraws it.
+ */
+export class Owner extends Context.Service<
+  Owner,
+  {
+    /** Ask once under the key; false when the question could not be asked. */
+    readonly ask: (question: OwnerQuestion) => Effect.Effect<boolean>
+    /** The pool's questions as they stand, open and answered; none when they cannot be read. */
+    readonly answers: Effect.Effect<ReadonlyArray<OwnerAnswer> | undefined>
+    /** The question under `key` goes, open or answered. */
+    readonly withdraw: (key: string) => Effect.Effect<void>
+    /** A beat each time the questions change, until interrupted: the pool reads its answers then. */
+    readonly changes: Stream.Stream<void>
+  }
+>()("dotfiles-opencode/pool/Owner") {}
 
 /**
  * Where this host keeps the Fleet aggregate's state: its own starts and what

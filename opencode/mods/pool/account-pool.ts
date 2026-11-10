@@ -356,10 +356,28 @@ const pruneLedger = (
   return Effect.succeed([LedgerPruned.make({ steps, holds, runs, caches })])
 }
 
+// ── ClearHold ──
+// A reset was claimed on an account: its hold goes, so the next reading says
+// whether it is held still (a window the claim did not clear holds it again).
+
+export const ClearHold = Schema.TaggedStruct("ClearHold", { credentialID: Schema.String })
+export interface ClearHold extends Schema.Schema.Type<typeof ClearHold> {}
+
+export const HoldCleared = Schema.TaggedStruct("HoldCleared", { credentialID: Schema.String })
+export interface HoldCleared extends Schema.Schema.Type<typeof HoldCleared> {}
+
+export declare namespace ClearHold {
+  export type Rejections = never
+}
+
+/** Nothing when the account is not held. */
+const clearHold = (state: AccountPoolState, command: ClearHold): Effect.Effect<ReadonlyArray<HoldCleared>> =>
+  Effect.succeed(state.holds[command.credentialID] === undefined ? [] : [HoldCleared.make({ credentialID: command.credentialID })])
+
 // ── The aggregate ──
 
-export type Command = ListLogins | PlaceRequest | TakeReading | RefuseRequest | RecordStep | ReleaseRun | PruneLedger
-export type Event = LoginsListed | RequestPlaced | ReadingTaken | RequestRefused | StepRecorded | RunReleased | LedgerPruned
+export type Command = ListLogins | PlaceRequest | TakeReading | RefuseRequest | RecordStep | ReleaseRun | PruneLedger | ClearHold
+export type Event = LoginsListed | RequestPlaced | ReadingTaken | RequestRefused | StepRecorded | RunReleased | LedgerPruned | HoldCleared
 export type Rejection = NoAccount
 
 const without = <A>(record: Readonly<Record<string, A>>, keys: ReadonlyArray<string>): Record<string, A> => {
@@ -399,6 +417,8 @@ export const AccountPool = (rules: Rules): Decider<AccountPoolState, Command, Ev
         return releaseRun(state, command)
       case "PruneLedger":
         return pruneLedger(rules, state, command, now)
+      case "ClearHold":
+        return clearHold(state, command)
     }
   },
   evolve: (state, event) => {
@@ -446,6 +466,8 @@ export const AccountPool = (rules: Rules): Decider<AccountPoolState, Command, Ev
           ),
         }
       }
+      case "HoldCleared":
+        return { ...state, holds: without(state.holds, [event.credentialID]) }
     }
   },
 })
