@@ -508,8 +508,8 @@ export const ceilingOf = (env = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW): nu
 // minute, which the replay's token cost does not count: a larger window costs
 // the replay a few percent more tokens but compacts the main session far less.
 //
-// The worker runs at WORKER_MAX: a worker hands off at its first compaction
-// (protocol.md), so a tuned 120k window, which compacts at about 87k, ended
+// The worker runs at WORKER_MAX: a worker used to hand off at its first
+// compaction, so a tuned 120k window, which compacts at about 87k, ended
 // fresh workers before their first edit.
 //
 // The planner, the implementor and the verifier run at ROLE_MAX. Each holds

@@ -34,7 +34,7 @@ You run one step of the unit's machine. When it is done, end with a final messag
 | implementor | `<unit dir>/round-N-request.md`, committed | `ready` or `blocked` |
 | verifier | `<run dir>/batch-<k>-findings.md`, with a `round-N-findings.md` in each unit's dir | `accepted`, `changes` or `stuck` |
 
-A verifier verifies a batch, so its line names the batch where the others name a unit: `verifier batch-<k> r1`. The first line of your file states the same verdict. At your first compaction, in any role, finish the edit at hand, write what you have to your file and `state.md`, and end `blocked` with the reason `compacted`; a fresh agent continues from the files. Past one compaction the kept context is mostly stale, and every turn rereads it. Keep the rest of the final message to a few lines: the orchestrator reads files, not transcripts.
+A verifier verifies a batch, so its line names the batch where the others name a unit: `verifier batch-<k> r1`. The first line of your file states the same verdict. A compaction does not end your step, in any role: keep `state.md` current so little rests on the summary alone, and after a compaction read the spec and `state.md` again, then go on. Keep the rest of the final message to a few lines: the orchestrator reads files, not transcripts.
 
 **Questions.** When something blocks you, write `<unit dir>/blocked.md` with what blocks you, what you tried, and the options with your recommendation. End with verdict `blocked` and that path. The orchestrator answers in a message to you.
 
@@ -56,7 +56,7 @@ A round is one request and its verdict, numbered 1, 2, 3, … for the life of th
 
 ## Implementor
 
-You are the sole writer. You work in the spec's workspace (a Rift or worktree on the unit's branch), and you change only the files the spec gives your unit. You hand back `ready` once your focused checks are green; the unit lands in a batch and is verified there. Round 2 arrives as a message naming the findings, after your round 1 landed: when the batch pushed main, start the round from main's head (fast-forward your branch to it, or work in the fresh workspace the message names); in a PR repo, go on on your own branch. A fresh implementor (round 3 on, or after the last one compacted) starts from the spec, every `round-*-findings.md`, `state.md` and the branch: read them all before any edit, then continue on the branch.
+You are the sole writer. You work in the spec's workspace (a Rift or worktree on the unit's branch), and you change only the files the spec gives your unit. You hand back `ready` once your focused checks are green; the unit lands in a batch and is verified there. Round 2 arrives as a message naming the findings, after your round 1 landed: when the batch pushed main, start the round from main's head (fast-forward your branch to it, or work in the fresh workspace the message names); in a PR repo, go on on your own branch. A fresh implementor (round 3 on) starts from the spec, every `round-*-findings.md`, `state.md` and the branch: read them all before any edit, then continue on the branch.
 
 **Read first:** the spec, the run's `common.md` if it exists, and `NORTH_STAR.md` → Owner rules. `common.md` adds project facts to this protocol and never overrides it; where it contradicts this protocol without a `Departs from` line, follow this protocol and name the line in your request.
 

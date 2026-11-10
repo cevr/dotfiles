@@ -3,11 +3,11 @@ import { describe, expect, test } from "bun:test"
 import { codexFallback, definitions, ROLES, route, unspecific } from "./role.ts"
 
 describe("the agents' prompts", () => {
-  test("the worker, like each role, hands off at its first compaction, and its parent is told to start a fresh one", () => {
-    for (const role of ROLES) expect(definitions[role].system).toContain("At your first compaction")
-    expect(definitions.worker.system).toContain(
-      "end your turn with this result: `compacted: <path of the handoff>. Start a fresh worker from this handoff; do not continue this session.`",
-    )
+  test("the worker, like each role, goes on after a compaction instead of handing off", () => {
+    for (const role of ROLES) {
+      expect(definitions[role].system).toContain(role === "worker" ? "A compaction does not end your task" : "A compaction does not end your step")
+      expect(definitions[role].system).not.toContain("At your first compaction")
+    }
   })
 })
 

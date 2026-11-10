@@ -33,7 +33,7 @@ You run one step of the unit's machine. When it is done, end with a final messag
 | implementor | `<unit dir>/round-N-request.md`, committed | `ready` or `blocked` |
 | verifier | `<run dir>/batch-<k>-findings.md`, with a `round-N-findings.md` in each unit's dir | `accepted`, `changes` or `stuck` |
 
-A verifier verifies a batch, so its line names the batch where the others name a unit: `verifier batch-<k> r1`. The first line of your file states the same verdict. At your first compaction, in any role, finish the edit at hand, write what you have to your file and `state.md`, and end `blocked` with the reason `compacted`; a fresh agent continues from the files. Past one compaction the kept context is mostly stale, and every turn rereads it. Keep the rest of the final message to a few lines: the orchestrator reads files, not transcripts.
+A verifier verifies a batch, so its line names the batch where the others name a unit: `verifier batch-<k> r1`. The first line of your file states the same verdict. A compaction does not end your step, in any role: keep `state.md` current so little rests on the summary alone, and after a compaction read the spec and `state.md` again, then go on. Keep the rest of the final message to a few lines: the orchestrator reads files, not transcripts.
 
 **Questions.** When something blocks you, write `<unit dir>/blocked.md` with what blocks you, what you tried, and the options with your recommendation. End with verdict `blocked` and that path. The orchestrator answers in a message to you.
 
