@@ -19,8 +19,10 @@
 // them now and records what is due. The model (model.ts) carries it out.
 import { Effect, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
-import { accountWide, QuotaWindow, type ResetCredit } from "./quota.ts"
+import { accountWide, ClaimOutcome, QuotaWindow, type ResetCredit } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
+
+export { ClaimOutcome } from "./quota.ts"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -52,27 +54,6 @@ export type ResetProvider = typeof ResetProvider.Type
 /** A start the pace held: when, and the session that made the call, if the pace was told. */
 export const Wait = Schema.Struct({ at: Schema.Number, sessionID: Schema.optionalKey(Schema.String) })
 export type Wait = typeof Wait.Type
-
-/**
- * What a claim came to, as the providers answer: `reset` (the windows were
- * emptied), `nothing-to-reset` (not limited), `no-credit` (none left, or
- * ineligible), `already-redeemed` (this request id was claimed before),
- * `cooldown`, `rate-limited`, `unconfirmed` (the provider could not say),
- * `signed-out` (the login was refused), `failed` (no answer, or one that does
- * not read).
- */
-export const ClaimOutcome = Schema.Literals([
-  "reset",
-  "nothing-to-reset",
-  "no-credit",
-  "already-redeemed",
-  "cooldown",
-  "rate-limited",
-  "unconfirmed",
-  "signed-out",
-  "failed",
-])
-export type ClaimOutcome = typeof ClaimOutcome.Type
 
 /** The outcomes worth sending the same claim again for, later. */
 export const retryable = (outcome: ClaimOutcome): boolean =>

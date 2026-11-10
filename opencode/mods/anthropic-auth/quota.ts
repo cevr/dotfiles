@@ -10,12 +10,12 @@
  * wire and epoch milliseconds here. A rejected window counts as full until
  * its reset.
  */
-import type { QuotaReading, QuotaRefusal, QuotaResets, QuotaStatus, QuotaWindow, ResetCredit } from "@dotfiles/opencode-pool/quota"
+import type { ClaimAnswer, QuotaReading, QuotaRefusal, QuotaResets, QuotaStatus, QuotaWindow, ResetCredit } from "@dotfiles/opencode-pool/quota"
 import { isRecord } from "./json.ts"
 import type { RateLimitCategory } from "./rate-limit.ts"
 
 export { quotaProtocol } from "@dotfiles/opencode-pool/quota"
-export type { QuotaReading, QuotaRefusal, QuotaResets, QuotaStatus, QuotaWindow, ResetCredit } from "@dotfiles/opencode-pool/quota"
+export type { ClaimAnswer, ClaimOutcome, QuotaReading, QuotaRefusal, QuotaResets, QuotaStatus, QuotaWindow, ResetCredit } from "@dotfiles/opencode-pool/quota"
 
 /** The most credentials whose newest reading is kept. */
 export const MAX_QUOTA_CREDENTIALS = 256
@@ -40,6 +40,50 @@ export const USAGE_PATH = "/api/oauth/usage"
 export const USAGE_QUERY = "cedar_ember=1&skip_spend=1"
 export const USAGE_TIMEOUT_MS = 10_000
 export const USAGE_MAX_BYTES = 64 * 1024
+
+/** The login's profile, which names its organization (`organization.uuid`), as Claude Code reads it. */
+export const PROFILE_PATH = "/api/oauth/profile"
+/** Where a reset grant is claimed for an organization (Claude Code's and T3 Code's claudeResetCredits.ts). */
+export const resetPath = (organization: string) => `/api/organizations/${encodeURIComponent(organization)}/reset_rate_limits`
+/** The grant program the usage endpoint lists (`?cedar_ember=1`) and a claim names. */
+export const RESET_PROGRAM = "cedar_ember"
+/** A claim's time to answer; a claim that times out goes again under the same request id. */
+export const RESET_TIMEOUT_MS = 25_000
+/** A grant id and a request id as the endpoint takes them (T3 Code's checks). */
+export const GRANT_ID = /^[a-z0-9_-]{1,40}$/
+export const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/
+
+/** The organization a profile body names; none when it names none. */
+export const organizationOf = (body: unknown): string | undefined => {
+  const organization = isRecord(body) ? body.organization : undefined
+  const uuid = isRecord(organization) ? organization.uuid : undefined
+  return typeof uuid === "string" && uuid.trim() !== "" ? uuid.trim() : undefined
+}
+
+const CLAIM_RESULTS: Readonly<Record<string, ClaimAnswer["outcome"]>> = {
+  reset: "reset",
+  not_limited: "nothing-to-reset",
+  already_used: "already-redeemed",
+  ineligible: "no-credit",
+  cooldown: "cooldown",
+  unavailable: "unconfirmed",
+}
+
+/**
+ * A claim's answer, by its status and body: 429 is rate limited, 401 or 403
+ * a login refused, another failure or an unknown `result` failed, else the
+ * `result` in the pool's words.
+ */
+export const claimAnswerOf = (status: number, body: unknown): ClaimAnswer => {
+  if (status === 429) return { outcome: "rate-limited", message: "Claude is rate limiting resets" }
+  if (status === 401 || status === 403) return { outcome: "signed-out", message: `the claim was refused: ${status}` }
+  if (status < 200 || status >= 300) return { outcome: "failed", message: `the claim answered ${status}` }
+  const result = isRecord(body) ? body.result : undefined
+  const outcome = typeof result === "string" ? CLAIM_RESULTS[result] : undefined
+  return outcome === undefined
+    ? { outcome: "failed", message: `the claim's answer does not read: ${JSON.stringify(result) ?? "none"}` }
+    : { outcome, ...(typeof result === "string" && outcome !== "reset" ? { message: result } : {}) }
+}
 
 const STATUSES = new Set<string>(["allowed", "allowed_warning", "rejected"])
 const isStatus = (value: string | null): value is QuotaStatus => value !== null && STATUSES.has(value)

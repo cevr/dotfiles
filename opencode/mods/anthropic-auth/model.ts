@@ -19,6 +19,7 @@ import {
 } from "./oauth.ts"
 import { pkceFrom } from "./pkce.ts"
 import {
+  type ClaimAnswer,
   earliestRelease,
   MAX_QUOTA_CREDENTIALS,
   MIN_UNAUTHORIZED_HOLD_MS,
@@ -126,6 +127,13 @@ export class Auth extends Context.Service<
     readonly reading: (credentialID: string) => Effect.Effect<QuotaReading | undefined>
     /** Read the usage endpoint for one credential now: the pool's sweep. */
     readonly usage: (credentialID: string) => Effect.Effect<QuotaReading | undefined, LoginFailed | LoginRefused | UsageFailed>
+    /**
+     * Claim the reset grant `grantID` on a credential's account, under the
+     * idempotency key `requestID`. A claim that reset the windows drops the
+     * refusal the credential's reading held, so the next usage read says
+     * what is left. Never fails: a login that cannot be had is `signed-out`.
+     */
+    readonly claim: (credentialID: string, grantID: string, requestID: string) => Effect.Effect<ClaimAnswer>
     /** Refresh a Claude Pro/Max credential OpenCode keeps; a token is sent at most once. */
     readonly refresh: (credential: OAuthCredential) => Effect.Effect<OAuthCredential, RefreshFailed>
     /** Begin a sign-in. */
@@ -440,6 +448,25 @@ export const layer = (config: Config) =>
           }),
         reading: (credentialID) => Effect.sync(() => readings.get(credentialID)),
         usage,
+        claim: (credentialID, grantID, requestID) =>
+          login(credentialID).pipe(
+            Effect.matchEffect({
+              onFailure: (error) => Effect.succeed<ClaimAnswer>({ outcome: "signed-out", message: error.message }),
+              onSuccess: (resolved) =>
+                resolved === undefined
+                  ? Effect.succeed<ClaimAnswer>({ outcome: "signed-out", message: "no Claude Pro/Max login" })
+                  : usageEndpoint.reset(resolved.access, formatUserAgent(version), grantID, requestID).pipe(
+                      Effect.tap((answer) =>
+                        Effect.sync(() => {
+                          const held = readings.get(credentialID)
+                          if (answer.outcome !== "reset" || held?.refusal === undefined) return
+                          const { refusal: _refusal, ...rest } = held
+                          readings.set(credentialID, rest)
+                        }),
+                      ),
+                    ),
+            }),
+          ),
         refresh,
         authorize,
         label: () => createConnectionLabel(entropy.bytes(4)),
