@@ -316,13 +316,13 @@ describe("the guard", () => {
     scenario(
       Effect.gen(function* () {
         const model = { providerID: "anthropic", id: "claude" }
-        const offered = yield* start({ now: WEDNESDAY }, { model, variants: ["high"] })
+        const offered = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"] })
         expect((yield* offered.call("subagent", "root", { agent: "orchestrate-planner", model: "" })).input).toEqual({
           agent: "planner",
-          model: "anthropic/claude#high",
+          model: "anthropic/claude#medium",
         })
         expect(offered.logged()).toEqual([
-          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"orchestrate-planner","agent":"planner","reason":"renamed","model":"anthropic/claude#high","pace":{"ok":true,"measured":false,"reason":"provider is not pooled"}}',
+          '{"kind":"call","sessionID":"root","callID":"call","from":"build","asked":"orchestrate-planner","agent":"planner","reason":"renamed","model":"anthropic/claude#medium","pace":{"ok":true,"measured":false,"reason":"provider is not pooled"}}',
         ])
         // A model the call names is kept; so is the model's own effort when it has no such variant.
         expect((yield* offered.call("subagent", "root", { agent: "planner", model: "openai/gpt#low" })).input).toEqual({
@@ -959,7 +959,7 @@ describe("Opus first, Codex second", () => {
 describe("the model experiment", () => {
   const now = Date.parse(WEDNESDAY)
   const model = { providerID: "anthropic", id: "claude-opus" }
-  const fable: Offered = { providerID: "anthropic", id: "claude-fable", family: "claude-fable", variants: [{ id: "high" }, { id: "max" }] }
+  const fable: Offered = { providerID: "anthropic", id: "claude-fable", family: "claude-fable", variants: [{ id: "medium" }, { id: "max" }] }
   const sol: Offered = { providerID: "openai", id: "gpt-6.1-sol", family: "gpt-sol", time: { released: 2 }, variants: [{ id: "high" }] }
   const options = { now: WEDNESDAY, experiment: { role: "planner", model: "anthropic/claude-fable", share: 0.5 } }
   const room = () => ({ ok: true, measured: true, reason: "scripted room" })
@@ -969,23 +969,23 @@ describe("the model experiment", () => {
   test("a trial unit's new planner starts on the trial's model at the role's effort; a control unit's on the role's own", () =>
     scenario(
       Effect.gen(function* () {
-        const plugin = yield* start(options, { model, variants: ["high"], others: [fable, sol] })
+        const plugin = yield* start(options, { model, variants: ["medium"], others: [fable, sol] })
         const trial = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x" })
-        expect(trial.input).toMatchObject({ model: "anthropic/claude-fable#high" })
+        expect(trial.input).toMatchObject({ model: "anthropic/claude-fable#medium" })
         const control = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner auth r1", prompt: "x" })
-        expect(control.input).toMatchObject({ model: "anthropic/claude-opus#high" })
+        expect(control.input).toMatchObject({ model: "anthropic/claude-opus#medium" })
         const [trialLine, controlLine] = plugin.logged().map((text) => JSON.parse(text) as Record<string, unknown>)
-        expect(trialLine).toMatchObject({ model: "anthropic/claude-fable#high", experiment: { arm: "trial", model: "anthropic/claude-fable" } })
-        expect(controlLine).toMatchObject({ model: "anthropic/claude-opus#high", experiment: { arm: "control", model: "anthropic/claude-fable" } })
+        expect(trialLine).toMatchObject({ model: "anthropic/claude-fable#medium", experiment: { arm: "trial", model: "anthropic/claude-fable" } })
+        expect(controlLine).toMatchObject({ model: "anthropic/claude-opus#medium", experiment: { arm: "control", model: "anthropic/claude-fable" } })
       }),
     ))
 
   test("a replan of a trial unit is a new start in the same arm; a resumed round keeps its child's model and is in no arm", () =>
     scenario(
       Effect.gen(function* () {
-        const plugin = yield* start(options, { model, variants: ["high"], others: [fable], sessions: { child: { parentID: "root", agent: "planner" } } })
+        const plugin = yield* start(options, { model, variants: ["medium"], others: [fable], sessions: { child: { parentID: "root", agent: "planner" } } })
         const replan = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r2", prompt: "x" })
-        expect(replan.input).toMatchObject({ model: "anthropic/claude-fable#high" })
+        expect(replan.input).toMatchObject({ model: "anthropic/claude-fable#medium" })
         const resumed = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r2", prompt: "go on", sessionID: "child" })
         expect(resumed.input).toEqual({ agent: "planner", description: "planner billing r2", prompt: "go on", sessionID: "child" })
         const lines = plugin.logged().map((text) => JSON.parse(text) as Record<string, unknown>)
@@ -1010,13 +1010,13 @@ describe("the model experiment", () => {
     scenario(
       Effect.gen(function* () {
         const held = { anthropic: { ok: false, measured: true, reason: "all pool accounts are held", retryAt: now + 600_000 } }
-        const plugin = yield* start(options, { model, variants: ["high"], others: [fable, sol], pool: held, codex: room })
+        const plugin = yield* start(options, { model, variants: ["medium"], others: [fable, sol], pool: held, codex: room })
         const call = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x" })
         expect(call.input).toMatchObject({ model: "openai/gpt-6.1-sol#high" })
         expect(line(plugin.logged())).toMatchObject({
           model: "openai/gpt-6.1-sol#high",
-          fallback: "anthropic/claude-opus#high held: all pool accounts are held",
-          experiment: { arm: "trial", model: "anthropic/claude-fable", fellBack: "anthropic/claude-fable#high held: all pool accounts are held" },
+          fallback: "anthropic/claude-opus#medium held: all pool accounts are held",
+          experiment: { arm: "trial", model: "anthropic/claude-fable", fellBack: "anthropic/claude-fable#medium held: all pool accounts are held" },
         })
       }),
     ))
@@ -1025,7 +1025,7 @@ describe("the model experiment", () => {
     scenario(
       Effect.gen(function* () {
         const held = { anthropic: { ok: false, measured: true, reason: "all pool accounts are held", retryAt: now + 600_000 } }
-        const plugin = yield* start(options, { model, variants: ["high"], pool: held })
+        const plugin = yield* start(options, { model, variants: ["medium"], pool: held })
         yield* plugin.call("subagent", "root", { agent: "planner", description: "planner auth r1", prompt: "x" })
         expect(plugin.kept[0]!.context).toEqual({ reason: "kept", experiment: { arm: "control", model: "anthropic/claude-fable" } })
         expect(line(plugin.logged())).toMatchObject({ kind: "latched", experiment: { arm: "control" } })
@@ -1035,9 +1035,9 @@ describe("the model experiment", () => {
   test("a host that does not offer the trial's model starts the trial unit on the role's own", () =>
     scenario(
       Effect.gen(function* () {
-        const plugin = yield* start(options, { model, variants: ["high"] })
+        const plugin = yield* start(options, { model, variants: ["medium"] })
         const call = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x" })
-        expect(call.input).toMatchObject({ model: "anthropic/claude-opus#high" })
+        expect(call.input).toMatchObject({ model: "anthropic/claude-opus#medium" })
         expect(line(plugin.logged())).toMatchObject({ experiment: { arm: "trial", fellBack: "anthropic/claude-fable is not offered" } })
       }),
     ))
@@ -1067,23 +1067,23 @@ describe("the model experiment", () => {
             asked.push(input)
             return poolPace([account], now, NO_INFLIGHT, input.model)
           })
-        const plugin = yield* start(options, { model, variants: ["high"], others: [fable, sol], poolAsk, codex: room })
+        const plugin = yield* start(options, { model, variants: ["medium"], others: [fable, sol], poolAsk, codex: room })
         const trial = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x" })
-        expect(trial.input).toMatchObject({ model: "anthropic/claude-opus#high" })
+        expect(trial.input).toMatchObject({ model: "anthropic/claude-opus#medium" })
         const control = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner auth r1", prompt: "x" })
-        expect(control.input).toMatchObject({ model: "anthropic/claude-opus#high" })
+        expect(control.input).toMatchObject({ model: "anthropic/claude-opus#medium" })
         const [trialLine, controlLine] = plugin.logged().map((text) => JSON.parse(text) as Record<string, unknown>)
         expect(trialLine).toMatchObject({
-          model: "anthropic/claude-opus#high",
+          model: "anthropic/claude-opus#medium",
           pace: { ok: true, measured: true },
           experiment: {
             arm: "trial",
             model: "anthropic/claude-fable",
-            fellBack: "anthropic/claude-fable#high held: every pool account has spent claude-fable's own weekly window",
+            fellBack: "anthropic/claude-fable#medium held: every pool account has spent claude-fable's own weekly window",
           },
         })
         expect(trialLine!.fallback).toBeUndefined()
-        expect(controlLine).toMatchObject({ model: "anthropic/claude-opus#high", pace: { ok: true, measured: true }, experiment: { arm: "control" } })
+        expect(controlLine).toMatchObject({ model: "anthropic/claude-opus#medium", pace: { ok: true, measured: true }, experiment: { arm: "control" } })
         // The pool is asked of each model by its bare id, as its windows name models, from the session whose start would wait.
         expect(asked).toEqual([
           { providerID: "anthropic", model: "claude-fable", sessionID: "root" },
@@ -1096,9 +1096,9 @@ describe("the model experiment", () => {
   test("with no experiment set, every planner starts on the role's own model and no line names an arm", () =>
     scenario(
       Effect.gen(function* () {
-        const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["high"], others: [fable] })
+        const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: [fable] })
         const call = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x" })
-        expect(call.input).toMatchObject({ model: "anthropic/claude-opus#high" })
+        expect(call.input).toMatchObject({ model: "anthropic/claude-opus#medium" })
         expect(line(plugin.logged()).experiment).toBeUndefined()
       }),
     ))
