@@ -1,6 +1,6 @@
 // The plugin seam: setup.ts on a stand-in TUI. It checks the layers it adds
-// (base mode above the host's session.interrupt, and the composer mode only in
-// a subagent's view) and what one Escape does there: the host's session.undo
+// (base mode above the host's session.interrupt, none in a panel's mode, which
+// owns Escape while open) and what one Escape does there: the host's session.undo
 // within the grace, the client's interrupt after it or over a draft, both for
 // a pending prompt behind a running turn, the host's own handling when the
 // session is idle, and a toast whenever the press does not take: a refused
@@ -138,7 +138,7 @@ const start = (options: Record<string, unknown> = {}) => {
     },
   }
   setup(host, { now: () => state.now, after: (ms, run) => void timers.push({ at: state.now + ms, run }) })
-  const [base, composer, sendLayer] = layers
+  const [base, sendLayer] = layers
   /** Escape through the layer active in the current view: `false` falls through to the host. */
   const press = (layer = base) => {
     if (layer?.enabled?.() === false) return "inactive"
@@ -160,21 +160,20 @@ const start = (options: Record<string, unknown> = {}) => {
     await flush()
   }
   const messages = () => toasts.map((toast) => toast.message)
-  return { host, sessions, state, layers, base, composer, dispatched, interrupts, moves, calls, toasts, messages, press, send, flush, advance, end, begin }
+  return { host, sessions, state, layers, base, dispatched, interrupts, moves, calls, toasts, messages, press, send, flush, advance, end, begin }
 }
 
 /** A prompt waiting in the inbox: `queue` for after the turn, `steer` for its next step. */
 const waitingPrompt = (id: string, delivery: "steer" | "queue", created: number): InboxItem => ({ id, type: "user", delivery, time: { created } })
 
 describe("escape plugin", () => {
-  test("Escape: one base-mode layer at the composer's priority and one composer-mode layer; Ctrl+Enter and its leader+F fallback: one base-mode layer, its command named", () => {
+  test("Escape: one base-mode layer at the composer's priority, none in a panel's mode, so an open panel owns Escape; Ctrl+Enter and its leader+F fallback: one base-mode layer, its command named", () => {
     const { layers } = start()
     expect(layers.map((layer) => [layer.mode ?? "base", layer.priority, layer.commands.map((command) => command.bind)])).toEqual([
       ["base", 1, ["escape"]],
-      ["composer", 2, ["escape"]],
       ["base", 1, ["ctrl+return,<leader>f"]],
     ])
-    expect(layers[2]?.commands[0]?.id).toBe(SEND_COMMAND)
+    expect(layers[1]?.commands[0]?.id).toBe(SEND_COMMAND)
   })
 
   test("Escape at 1 s runs the host's session.undo once; a second press while it settles says so and does nothing else", () => {
@@ -307,15 +306,15 @@ describe("escape plugin", () => {
     expect(run.toasts).toEqual([{ message: "Cancelled; shell commands it ran are not undone", variant: "warning", duration: 5_000 }])
   })
 
-  test("in a subagent's view the composer-mode layer interrupts the running subagent; elsewhere it is off", () => {
+  test("in a subagent's view, its picker put away, Escape on the prompt interrupts the running subagent; an idle one is the host's", () => {
     const run = start()
-    expect(run.press(run.composer)).toBe("inactive")
     run.state.sessionID = "ses_child"
-    run.state.editor = null
-    expect(run.press(run.composer)).toBeUndefined()
+    run.state.editor = { plainText: "" }
+    expect(run.press()).toBeUndefined()
     expect(run.interrupts).toEqual([{ sessionID: "ses_child", resume: true }])
+    expect(run.dispatched).toEqual([])
     run.sessions.ses_child!.status = "idle"
-    expect(run.press(run.composer)).toBe(false)
+    expect(run.press()).toBe(false)
   })
 })
 

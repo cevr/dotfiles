@@ -42,7 +42,7 @@ export interface Prompt {
 /** The session on screen, as Escape reads it. */
 export interface View {
   readonly sessionID: string
-  /** A subagent's view: the host shows its Subagents picker in place of the composer. */
+  /** A subagent's view: it opens on the host's Subagents picker, whose own Escape puts it away to the prompt; Escape on that prompt interrupts the subagent. */
   readonly subagent: boolean
   /** The session's run is going (`data.session.status` is "running"). */
   readonly busy: boolean
