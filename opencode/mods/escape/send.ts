@@ -3,9 +3,10 @@
 // turn: a draft in the composer goes to the session's queue first, then the
 // turn stops and every prompt still waiting goes out, oldest first. With
 // nothing to send it does nothing, so it never interrupts by itself. On an
-// idle session it submits, as Enter does. A permission or question keeps the
-// key, as does a subagent's view (which has no composer) and a screen with no
-// editor focused. cmd/escape/setup.ts acts on the decision; the order it acts
+// idle session it submits, as Enter does. A subagent's view is a session like
+// any other here: it is how a subagent is interrupted (Escape there goes back
+// to the parent). A permission or question keeps the key, as does a screen
+// with no editor focused. cmd/escape/setup.ts acts on the decision; the order it acts
 // in is what keeps every prompt sent exactly once (see `plan`).
 import type { View } from "./escape.ts"
 
@@ -46,7 +47,7 @@ const pass: Send = { _tag: "Pass" }
 
 /** The decision for one Ctrl+Enter, given the session's prompts still waiting in its inbox. */
 export const decideSend = (view: View | undefined, waiting: ReadonlyArray<Waiting>): Send => {
-  if (view === undefined || view.blocked || view.subagent || view.composer === "none") return pass
+  if (view === undefined || view.blocked || view.composer === "none") return pass
   if (!view.busy) return { _tag: "Submit" }
   const draft = view.composer === "draft"
   if (!draft && waiting.length === 0) return { _tag: "Nothing" }

@@ -6,8 +6,9 @@
 // or no editor focused, Escape interrupts and the prompt stays. A prompt still
 // waiting in the session's inbox (queued, or a steer not yet delivered) comes
 // back to the composer whatever the grace, and the run it waited behind stops
-// too; nothing in the inbox is dropped. In a subagent's view, Escape
-// interrupts that subagent. opencode/view.ts reads the view from the TUI's
+// too; nothing in the inbox is dropped. In a subagent's view, Escape goes
+// back to the parent session and leaves the subagent running (Ctrl+Enter
+// interrupts it there). opencode/view.ts reads the view from the TUI's
 // data; cmd/escape/setup.ts acts on the decision and says when the session
 // did not stop.
 
@@ -42,7 +43,7 @@ export interface Prompt {
 /** The session on screen, as Escape reads it. */
 export interface View {
   readonly sessionID: string
-  /** A subagent's view: it opens on the host's Subagents picker, whose own Escape puts it away to the prompt; Escape on that prompt interrupts the subagent. */
+  /** A subagent's view: it opens on the host's Subagents picker, whose own Escape puts it away to the prompt; Escape on that prompt goes back to the parent. */
   readonly subagent: boolean
   /** The session's run is going (`data.session.status` is "running"). */
   readonly busy: boolean
@@ -80,6 +81,12 @@ export type Action =
     }
   /** Stop the run; the prompt and its partial answer stay. */
   | { readonly _tag: "Interrupt"; readonly sessionID: string }
+  /**
+   * A subagent's view: go back to its parent (the host's `session.parent`).
+   * The subagent keeps running and a message sent to it still reaches it;
+   * Ctrl+Enter is what interrupts it.
+   */
+  | { readonly _tag: "Parent"; readonly sessionID: string }
   /** A take-back of this prompt is still settling: nothing new to do, which the TUI says. */
   | { readonly _tag: "Settling"; readonly sessionID: string }
   /** Leave the key to the host. */
@@ -90,7 +97,7 @@ const pass: Action = { _tag: "Pass" }
 /** The decision for one Escape at `now`, given the grace and the take-back still settling, if any. */
 export const decide = (view: View | undefined, input: { readonly now: number; readonly grace: number; readonly taking?: Taking }): Action => {
   if (view === undefined || view.blocked) return pass
-  if (view.subagent) return view.busy ? { _tag: "Interrupt", sessionID: view.sessionID } : pass
+  if (view.subagent) return { _tag: "Parent", sessionID: view.sessionID }
   const latest = view.latest
   if (!view.busy && latest?.pending !== true) return pass
   // A pending prompt is appended to whatever the composer holds; a sent one is taken back only into an empty composer.

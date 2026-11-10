@@ -35,11 +35,17 @@ describe("decideSend", () => {
     expect(decideSend(view({ busy: false, composer: "draft" }), [queued])).toEqual({ _tag: "Submit" })
   })
 
-  test("off a session, under a question or permission, in a subagent's view or with no editor focused, the key is the host's", () => {
+  test("off a session, under a question or permission, or with no editor focused, the key is the host's", () => {
     expect(decideSend(undefined, [queued])).toEqual({ _tag: "Pass" })
     expect(decideSend(view({ blocked: true, composer: "draft" }), [queued])).toEqual({ _tag: "Pass" })
-    expect(decideSend(view({ subagent: true }), [queued])).toEqual({ _tag: "Pass" })
     expect(decideSend(view({ composer: "none" }), [queued])).toEqual({ _tag: "Pass" })
+  })
+
+  test("in a subagent's view it interrupts that subagent and sends, as on any session", () => {
+    const child = view({ subagent: true, sessionID: "ses_child", composer: "draft" })
+    expect(decideSend(child, [])).toEqual({ _tag: "InterruptSend", sessionID: "ses_child", draft: true })
+    expect(decideSend(view({ subagent: true, sessionID: "ses_child" }), [steer])).toEqual({ _tag: "InterruptSend", sessionID: "ses_child", draft: false })
+    expect(decideSend(view({ subagent: true, sessionID: "ses_child", busy: false }), [])).toEqual({ _tag: "Submit" })
   })
 })
 

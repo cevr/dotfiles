@@ -1096,7 +1096,10 @@ view opens on its Subagents picker; the first Escape puts the picker away and
 leaves the view on the subagent, still running, the prompt focused, so a
 message sent there steers that subagent (as its own agent; ↓ on the empty
 prompt brings the picker back, ↑ goes to the parent). The next Escape,
-nothing open, interrupts the subagent as on any session. Its one option is `grace`, in milliseconds (default 5000; 0
+nothing open, goes back to the parent session (the host's `session.parent`,
+as ↑) and never interrupts the subagent: it keeps running, and a message sent
+to it still reaches it when its turn takes it. Ctrl+Enter is what interrupts
+a subagent, from its view, and sends at once. Its one option is `grace`, in milliseconds (default 5000; 0
 always interrupts). An absent option takes its default. The grace is timed from when the prompt was sent, so a prompt another client
 sent to the session in the last 5 s can be taken back too.
 
@@ -1112,8 +1115,9 @@ a subagent's view it hides the picker instead of going to the parent.
 state (a steer or a queued prompt sent while the model works, a running
 shell call, a draft, a stalled link to the server);
 `tests/escape-subagent.test.ts` runs `scenarios/escape-subagent.ts` for the
-layering in a running subagent's view (picker put away, a steer sent, then
-the interrupt).
+layering in a running subagent's view (picker put away, a steer sent, back
+to the parent with the subagent running and the steer reaching it, then
+Ctrl+Enter in the subagent's view interrupting it and sending).
 
 ### Ctrl+Enter: interrupt and send
 

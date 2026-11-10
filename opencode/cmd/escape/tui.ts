@@ -5,9 +5,10 @@
  * default: the run stops, the session reverts and the prompt is back in the
  * composer) and interrupts after it or over a draft; a pending prompt comes
  * back whatever the grace and the turn it waited behind stops, a press the
- * server does not answer is a toast, and a subagent's view interrupts that
- * subagent. Ctrl+Enter (or leader+F) on a busy session interrupts the turn
- * and sends the draft and every waiting prompt as the next turn. setup.ts registers
+ * server does not answer is a toast, and in a subagent's view Escape goes
+ * back to the parent, the subagent left running. Ctrl+Enter (or leader+F) on
+ * a busy session, a subagent's too, interrupts the turn and sends the draft
+ * and every waiting prompt as the next turn. setup.ts registers
  * the keymap layers. It has no server half: it acts through the host's own
  * `session.undo` command and the TUI client's interrupt.
  */

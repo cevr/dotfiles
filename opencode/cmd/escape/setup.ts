@@ -14,12 +14,13 @@
  * one. It adds nothing in the composer mode: an open panel (the Subagents
  * picker a subagent's view opens on, a plugin tab) owns Escape and only puts
  * itself away, so the prompt under it can message the subagent; the next
- * Escape, with nothing open, interrupts it. Anything Escape means nothing to
- * falls through to the host.
+ * Escape, with nothing open, goes back to the parent (the host's
+ * `session.parent`) and never interrupts the subagent. Anything Escape means
+ * nothing to falls through to the host.
  *
  * A second layer, in the base mode above the composer's own Ctrl+Enter (a
  * newline), adds Ctrl+Enter: interrupt the turn and send what waits
- * (`send.ts`). A draft goes to the queue through the host's own
+ * (`send.ts`), in a subagent's view too. A draft goes to the queue through the host's own
  * `prompt.queue` (attachments and all), the turn is interrupted once that
  * prompt is in the inbox, and the waiting prompts go out as `plan` orders;
  * on an idle session it is the host's `prompt.submit`, as Enter.
@@ -88,6 +89,8 @@ export const UNDO = "session.undo"
 export const SUBMIT = "prompt.submit"
 /** The host command leader+Enter runs: send the composer to the queue, for after the turn. */
 export const QUEUE = "prompt.queue"
+/** The host command that shows a subagent's parent session (↑ past the first row). */
+export const PARENT = "session.parent"
 
 /** The time the plugin reads and the timer it sets; a test supplies its own. */
 export interface Clock {
@@ -169,6 +172,10 @@ export const setup = (host: Host, clock: Clock = realClock) => {
         return
       case "Interrupt":
         void interrupt(action.sessionID, true)
+        return
+      case "Parent":
+        // The host's own ↑ past the first row: the subagent keeps running, and what was sent to it still reaches it.
+        host.keymap.dispatch(PARENT)
         return
       case "TakeBack": {
         taking = { messageID: action.messageID, at }

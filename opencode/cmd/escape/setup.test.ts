@@ -19,6 +19,7 @@ import {
   NOT_STOPPED,
   NOT_TAKEN,
   notStopped,
+  PARENT,
   QUEUE,
   SENDING,
   SETTLING,
@@ -74,10 +75,10 @@ const start = (options: Record<string, unknown> = {}) => {
     // The host's prompt.queue: the composer clears at once, the prompt reaches the inbox, then the server's echo.
     if (id !== QUEUE || !state.editor?.plainText) return
     const inboxID = `msg_q${++minted}`
+    const sessionID = state.sessionID
     state.editor = { plainText: "" }
-    sessions.ses_root!.pending.push({ id: inboxID, type: "user", delivery: "queue", time: { created: state.now } })
-    if (state.admits)
-      queueMicrotask(() => emit("session.inbox.enqueued", { data: { sessionID: "ses_root", inboxID, item: { type: "user" } } }))
+    sessions[sessionID]!.pending.push({ id: inboxID, type: "user", delivery: "queue", time: { created: state.now } })
+    if (state.admits) queueMicrotask(() => emit("session.inbox.enqueued", { data: { sessionID, inboxID, item: { type: "user" } } }))
   }
   /** The session's turn ends (`interrupted`, `succeeded` or `failed`), as the server says: the session goes idle. */
   const end = (sessionID = "ses_root", outcome: "interrupted" | "succeeded" | "failed" = "interrupted") => {
@@ -306,15 +307,19 @@ describe("escape plugin", () => {
     expect(run.toasts).toEqual([{ message: "Cancelled; shell commands it ran are not undone", variant: "warning", duration: 5_000 }])
   })
 
-  test("in a subagent's view, its picker put away, Escape on the prompt interrupts the running subagent; an idle one is the host's", () => {
+  test("in a subagent's view, its picker put away, Escape goes back to the parent through the host's session.parent and never interrupts the subagent", async () => {
     const run = start()
     run.state.sessionID = "ses_child"
     run.state.editor = { plainText: "" }
     expect(run.press()).toBeUndefined()
-    expect(run.interrupts).toEqual([{ sessionID: "ses_child", resume: true }])
-    expect(run.dispatched).toEqual([])
+    run.state.editor = { plainText: "Check the cents too." }
+    expect(run.press()).toBeUndefined()
     run.sessions.ses_child!.status = "idle"
-    expect(run.press()).toBe(false)
+    expect(run.press()).toBeUndefined()
+    await run.advance(STOP_MS)
+    expect(run.dispatched).toEqual([PARENT, PARENT, PARENT])
+    expect(run.interrupts).toEqual([])
+    expect(run.toasts).toEqual([])
   })
 })
 
@@ -486,14 +491,23 @@ describe("Ctrl+Enter", () => {
     expect(run.moves).toEqual([])
   })
 
-  test("a subagent's view or no editor focused leaves the key to the host", () => {
+  test("no editor focused leaves the key to the host", () => {
     const run = start()
     run.sessions.ses_root!.pending = [waitingPrompt("msg_2", "queue", SENT + 1)]
     run.state.editor = null
     expect(run.send()).toBe(false)
-    run.state.editor = { plainText: "" }
-    run.state.sessionID = "ses_child"
-    expect(run.send()).toBe(false)
     expect(run.calls).toEqual([])
+  })
+
+  test("in a running subagent's view it queues the draft to that subagent, interrupts it, and sends what waits", async () => {
+    const run = start()
+    run.state.sessionID = "ses_child"
+    run.state.editor = { plainText: "Stop and check the cents." }
+    run.sessions.ses_child!.pending = [waitingPrompt("msg_2", "queue", SENT + 1)]
+    expect(run.send()).toBeUndefined()
+    await run.flush()
+    expect(run.calls).toEqual([QUEUE, "interrupt false", "steer msg_2", "steer msg_q1"])
+    expect(run.interrupts).toEqual([{ sessionID: "ses_child", resume: false }])
+    expect(run.sessions.ses_root!.pending).toEqual([])
   })
 })

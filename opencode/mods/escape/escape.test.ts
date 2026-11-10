@@ -81,9 +81,14 @@ describe("decide", () => {
     expect(decide(view({ composer: "draft" }), { ...at(6_500), taking })).toEqual(interrupt)
   })
 
-  test("in a subagent's view Escape interrupts that subagent while it runs, else leaves the key to the host", () => {
-    expect(decide(view({ subagent: true, sessionID: "ses_child" }), at(1_000))).toEqual({ _tag: "Interrupt", sessionID: "ses_child" })
-    expect(decide(view({ subagent: true, busy: false }), at(1_000))).toEqual({ _tag: "Pass" })
+  test("in a subagent's view Escape goes back to the parent and never interrupts the subagent, running or idle, draft or not", () => {
+    const parent = { _tag: "Parent", sessionID: "ses_child" } as const
+    expect(decide(view({ subagent: true, sessionID: "ses_child" }), at(1_000))).toEqual(parent)
+    expect(decide(view({ subagent: true, sessionID: "ses_child" }), at(60_000))).toEqual(parent)
+    expect(decide(view({ subagent: true, sessionID: "ses_child", composer: "draft" }), at(1_000))).toEqual(parent)
+    expect(decide(view({ subagent: true, sessionID: "ses_child", busy: false }), at(1_000))).toEqual(parent)
+    const queued = { id: "msg_2", created: SENT, pending: true, ranShell: false }
+    expect(decide(view({ subagent: true, sessionID: "ses_child", latest: queued }), at(1_000))).toEqual(parent)
   })
 })
 
