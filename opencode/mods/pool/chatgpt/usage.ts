@@ -14,14 +14,48 @@
 // It serves the pool what an auth plugin's quota RPC would (opencode/quota.ts's
 // QuotaRpc), since OpenCode's ChatGPT login has none. A failed or refused read
 // is no reading: the pace fails open, never holds. No token is kept or logged.
-import { Clock, Effect, PubSub, Schema, Stream } from "effect"
+import { Cause, Clock, Effect, PubSub, Schema, Stream } from "effect"
 import type { QuotaRpc } from "../opencode/quota.ts"
-import { accountWide, type QuotaReading, type QuotaWindow, type ResetCredit } from "../quota.ts"
+import { accountWide, type ClaimAnswer, type QuotaReading, type QuotaWindow, type ResetCredit } from "../quota.ts"
 
 export const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 
 /** The reset credits' list beside a usage endpoint (codex-rs backend-client rate_limit_resets.rs). */
 export const creditsUrl = (usageUrl: string) => usageUrl.replace(/\/usage$/, "/rate-limit-reset-credits")
+
+/**
+ * Where a reset credit is consumed (codex-rs backend-client
+ * rate_limit_resets.rs `consume_rate_limit_reset_credit_url`), with
+ * `{ redeem_request_id, credit_id }`; `redeem_request_id` is the idempotency key.
+ */
+export const consumeUrl = (usageUrl: string) => `${creditsUrl(usageUrl)}/consume`
+
+/** How long a claim has to answer. */
+const CLAIM_TIMEOUT_MS = 25_000
+
+const CODES: Readonly<Record<string, ClaimAnswer["outcome"]>> = {
+  reset: "reset",
+  nothing_to_reset: "nothing-to-reset",
+  no_credit: "no-credit",
+  already_redeemed: "already-redeemed",
+}
+
+/**
+ * A consume's answer, by its status and body (`{ code, windows_reset }`,
+ * codex-rs backend-client types.rs `ConsumeRateLimitResetCreditResponse`):
+ * 401 or 403 is a refused login, 429 rate limited, any other failure or an
+ * unknown code failed.
+ */
+export const claimOf = (status: number, body: unknown): ClaimAnswer => {
+  if (status === 401 || status === 403) return { outcome: "signed-out", message: `the claim was refused: ${status}` }
+  if (status === 429) return { outcome: "rate-limited", message: "ChatGPT is rate limiting resets" }
+  if (status < 200 || status >= 300) return { outcome: "failed", message: `the claim answered ${status}` }
+  const code = isRecord(body) ? body.code : undefined
+  const outcome = typeof code === "string" ? CODES[code] : undefined
+  if (outcome === undefined) return { outcome: "failed", message: `the claim's answer does not read: ${JSON.stringify(code) ?? "none"}` }
+  const windows = isRecord(body) && finite(body.windows_reset) ? `${body.windows_reset} windows reset` : undefined
+  return { outcome, ...(windows === undefined ? (outcome === "reset" ? {} : { message: String(code) }) : { message: windows }) }
+}
 
 /** A held reading younger than this answers `reading` without asking the endpoint again. */
 export const FRESH_MS = 60_000
@@ -163,6 +197,7 @@ export interface Source {
   readonly rpc: {
     readonly reading: (input: { readonly credentialID: string }) => Effect.Effect<{ readonly reading?: QuotaReading }>
     readonly usage: (input: { readonly credentialID: string }) => Effect.Effect<{ readonly reading?: QuotaReading }>
+    readonly claim: (input: { readonly credentialID: string; readonly creditID: string; readonly requestID: string }) => Effect.Effect<ClaimAnswer>
     readonly published: Stream.Stream<{ readonly credentialID: string; readonly reading: QuotaReading }>
   }
   /** A reading a response or frame of the login `credentialID` carried. */
@@ -189,16 +224,18 @@ export const make = (options: Options) =>
         return PubSub.publish(published, { credentialID, reading }).pipe(Effect.asVoid)
       })
 
+    const headersOf = (login: Login) => ({
+      authorization: `Bearer ${login.access}`,
+      ...(login.accountID === undefined ? {} : { "chatgpt-account-id": login.accountID }),
+      "user-agent": "codex-cli",
+    })
+
     /** A GET of `url` with the login's token and account: its JSON, or none on a refusal. */
     const get = (url: string, login: Login) =>
       Effect.gen(function* () {
         const response = yield* Effect.tryPromise((signal) =>
           fetch(url, {
-            headers: {
-              authorization: `Bearer ${login.access}`,
-              ...(login.accountID === undefined ? {} : { "chatgpt-account-id": login.accountID }),
-              "user-agent": "codex-cli",
-            },
+            headers: headersOf(login),
             signal: AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]),
           }),
         )
@@ -227,7 +264,30 @@ export const make = (options: Options) =>
         return reading
       }).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
 
+    /** Consume one credit; never fails, a failure is its outcome. */
+    const claim = (input: { readonly credentialID: string; readonly creditID: string; readonly requestID: string }) =>
+      Effect.gen(function* () {
+        const login = yield* options.login(input.credentialID)
+        if (login === undefined) return { outcome: "signed-out", message: "not a ChatGPT login" } satisfies ClaimAnswer
+        const response = yield* Effect.tryPromise((signal) =>
+          fetch(consumeUrl(options.url ?? USAGE_URL), {
+            method: "POST",
+            headers: { ...headersOf(login), "content-type": "application/json" },
+            body: JSON.stringify({ redeem_request_id: input.requestID, credit_id: input.creditID }),
+            signal: AbortSignal.any([signal, AbortSignal.timeout(CLAIM_TIMEOUT_MS)]),
+          }),
+        )
+        const body: unknown = response.ok ? yield* Effect.tryPromise(() => response.json()).pipe(Effect.orElseSucceed(() => undefined)) : undefined
+        return claimOf(response.status, body)
+      }).pipe(
+        Effect.catchCause((cause) => {
+          const error = Cause.squash(cause)
+          return Effect.succeed<ClaimAnswer>({ outcome: "failed", message: error instanceof Error ? error.message : String(error) })
+        }),
+      )
+
     const rpc: Source["rpc"] = {
+      claim,
       reading: ({ credentialID }) =>
         Effect.gen(function* () {
           const before = held.get(credentialID)

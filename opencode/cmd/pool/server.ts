@@ -229,6 +229,7 @@ export const live = (
         return {
           reading: (input) => client.reading(input),
           usage: (input) => client.usage(input),
+          claim: (input) => client.claim(input),
           published: client.events.subscribe("reading"),
         }
       }),

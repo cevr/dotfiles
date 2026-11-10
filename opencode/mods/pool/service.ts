@@ -6,7 +6,7 @@ import { Context, type Effect, Schema, type Stream } from "effect"
 import type { Event, LedgerState, PoolId } from "./account-pool.ts"
 import type { StoreRefreshes } from "./alerts.ts"
 import type { Event as FleetEvent, FleetState } from "./fleet.ts"
-import type { QuotaReading } from "./quota.ts"
+import type { ClaimAnswer, QuotaReading } from "./quota.ts"
 import type { Report, SourceStatus } from "./status.ts"
 
 /**
@@ -80,6 +80,15 @@ export class Quota extends Context.Service<
     readonly usage: (pool: PoolId, credentialID: string) => Effect.Effect<QuotaReading | undefined>
     /** Readings the auth plugin publishes as they come. */
     readonly readings: (pool: PoolId) => Stream.Stream<PublishedReading>
+    /**
+     * Claim the reset `creditID` names on a login, under the idempotency key
+     * `requestID`. Only the Resets decision calls it. Never fails: a failure
+     * is its outcome.
+     */
+    readonly claim: (
+      pool: PoolId,
+      input: { readonly credentialID: string; readonly creditID: string; readonly requestID: string },
+    ) => Effect.Effect<ClaimAnswer>
   }
 >()("dotfiles-opencode/pool/Quota") {}
 
