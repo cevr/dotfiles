@@ -100,7 +100,11 @@ export class PoolPace extends Context.Service<
      * Of `model`, when named (`claude-fable-5-2`, or `provider/id[#variant]`):
      * a window of that model's own (`7d:Fable`) holds only its starts.
      */
-    readonly pace: (providerID: string, model?: string) => Effect.Effect<PaceReply>
+    /**
+     * `sessionID` is the session whose start would wait: the pool asks the
+     * owner there (in its tree's root) when a reset could lift the hold.
+     */
+    readonly pace: (providerID: string, model?: string, sessionID?: string) => Effect.Effect<PaceReply>
     /** A new agent started on the provider: the pool counts it until its spend shows. Telling never fails. */
     readonly started: (providerID: string) => Effect.Effect<void>
   }
