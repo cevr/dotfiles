@@ -6,7 +6,7 @@ import * as MemoryCourier from "./courier.ts"
 import * as MemoryStore from "./store.ts"
 import * as Model from "../model.ts"
 import { QuestionsModel } from "../model.ts"
-import type { Sheet } from "../question.ts"
+import { AskFor, type Sheet } from "../question.ts"
 import { Changes, Courier } from "../service.ts"
 
 /** The model over `sheets` and `sessions`, as one server would build it; `onDeliver` runs as a message goes. */
@@ -317,6 +317,64 @@ describe("QuestionsModel", () => {
       await run((model) => model.ask("ses_impl", { questions: [port] }))
       await run((model) => model.forget("ses_impl"))
       expect(await run((model) => model.open(["ses_root", "ses_impl"]))).toEqual([])
+    })
+  })
+
+  describe("a plugin's questions", () => {
+    const reset = (key: string) =>
+      AskFor.make({
+        sessionID: "ses_a",
+        from: { plugin: "dotfiles-opencode.pool", key },
+        question: "Claude reset on account 4 now: … Claim it?",
+        header: "Claude reset · 4",
+        options: [{ label: "Claim it" }, { label: "Don't claim" }],
+        assume: "Don't claim: the start waits for the window to reset",
+      })
+
+    test("asked once per key, shown in the tray beside the agent's; its answer is no message, and waits for the plugin until it withdraws it", async () => {
+      const { run, texts, changed } = rig()
+      await run((model) => model.ask("ses_a", { questions: [port] }))
+      await run((model) => model.askFor(reset("hold-1")))
+      await run((model) => model.askFor(reset("hold-1")))
+      expect((await run((model) => model.open(["ses_a"]))).map((question) => [question.id, question.from?.key])).toEqual([
+        ["q1", undefined],
+        ["q2", "hold-1"],
+      ])
+      expect(await run((model) => model.asked("dotfiles-opencode.pool"))).toEqual([{ sessionID: "ses_a", id: "q2", key: "hold-1" }])
+      expect(await run((model) => model.answer("ses_a", [{ id: "q1", answer: "3000" }, { id: "q2", answer: "Claim it" }]))).toEqual({
+        answered: ["q1", "q2"],
+        dismissed: [],
+        skipped: [],
+      })
+      expect(texts("ses_a")).toHaveLength(1)
+      expect(texts("ses_a")[0]).not.toContain("Claim it")
+      expect(await run((model) => model.asked("dotfiles-opencode.pool"))).toEqual([{ sessionID: "ses_a", id: "q2", key: "hold-1", answer: "Claim it" }])
+      expect(await run((model) => model.resend)).toBe(0)
+      expect(await run((model) => model.askFor(reset("hold-1")))).toBeUndefined()
+      expect(await run((model) => model.asked("dotfiles-opencode.pool"))).toHaveLength(1)
+      changed.length = 0
+      await run((model) => model.withdrawFor({ plugin: "dotfiles-opencode.pool", key: "hold-1" }))
+      expect(await run((model) => model.asked("dotfiles-opencode.pool"))).toEqual([])
+      expect(changed).toEqual(["ses_a"])
+    })
+
+    test("the agent cannot withdraw, replace or drop a plugin's question", async () => {
+      const { run, fail } = rig()
+      await run((model) => model.askFor(reset("hold-1")))
+      expect((await fail((model) => model.ask("ses_a", { withdraw: ["q1"] })))._tag).toBe("UnknownQuestion")
+      await run((model) => model.ask("ses_a", { questions: [{ question: "Claude reset on account 4 now: … Claim it?", assume: "no" }] }))
+      for (let at = 0; at < 8; at++) await run((model) => model.ask("ses_a", { questions: [{ question: `Q${at}?`, assume: "no" }] }))
+      expect(await run((model) => model.asked("dotfiles-opencode.pool"))).toEqual([{ sessionID: "ses_a", id: "q1", key: "hold-1" }])
+    })
+
+    test("withdrawn while open, it leaves the tray; dismissed by the owner, it is gone from what the plugin reads", async () => {
+      const { run } = rig()
+      await run((model) => model.askFor(reset("hold-1")))
+      await run((model) => model.withdrawFor({ plugin: "dotfiles-opencode.pool", key: "hold-1" }))
+      expect(await run((model) => model.open(["ses_a"]))).toEqual([])
+      await run((model) => model.askFor(reset("hold-2")))
+      await run((model) => model.dismiss("ses_a", "q2"))
+      expect(await run((model) => model.asked("dotfiles-opencode.pool"))).toEqual([])
     })
   })
 

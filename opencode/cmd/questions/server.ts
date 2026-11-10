@@ -12,6 +12,11 @@
  *   direct tool, so a kernel cell reaches it as `tools.ask_user_async(...)`.
  * - `open({ sessionIDs })`, `answer(...)`, `dismiss(...)` for the TUI; every
  *   change publishes `changed({ sessionID })`.
+ * - `askFor`, `asked`, `withdrawFor` for another plugin (the pool): it asks
+ *   the owner in a session under its own key, once per key; the question shows
+ *   in the tray and form like the agent's, but its answer is no message: it
+ *   waits on the row until the plugin reads it (`asked`, on a `changed`) and
+ *   withdraws it. The agent cannot withdraw, replace or drop it.
  * - The TUI's /answer opens the host's question form, in the session on
  *   screen, for its open questions and its subagents'
  *   (`@dotfiles/opencode-questions/form`); its submit comes back as the host's
@@ -32,7 +37,7 @@ import * as OpenCodeCourier from "@dotfiles/opencode-questions/opencode/courier"
 import * as OpenCodeFamily from "@dotfiles/opencode-questions/opencode/family"
 import * as OpenCodeStore from "@dotfiles/opencode-questions/opencode/store"
 import { replyOf } from "@dotfiles/opencode-questions/form"
-import { Given, type Open, QUESTIONS, type Rejection, type Reply } from "@dotfiles/opencode-questions/question"
+import { AskFor, Choice, Given, type Open, type PluginAsked, QUESTIONS, type Rejection, type Reply } from "@dotfiles/opencode-questions/question"
 import { Changes, type Courier, type DeliveryRefused, type Family, type QuestionStore, type QuestionsUnreadable } from "@dotfiles/opencode-questions/service"
 
 /** The live externals: the plugin's storage, the session inbox, and who each session is. */
@@ -50,6 +55,17 @@ const messageOf = (failure: Rejection | QuestionsUnreadable | DeliveryRefused) =
 const OpenInput = Schema.Struct({ sessionIDs: Schema.Array(Schema.String) })
 const AnswerInput = Schema.Struct({ sessionID: Schema.String, answers: Schema.Array(Given) })
 const DismissInput = Schema.Struct({ sessionID: Schema.String, id: Schema.String })
+const AskForInput = Schema.Struct({
+  sessionID: Schema.String,
+  plugin: Schema.String,
+  key: Schema.String,
+  question: Schema.String,
+  header: Schema.optional(Schema.String),
+  options: Schema.optional(Schema.Array(Choice)),
+  assume: Schema.String,
+})
+const PluginInput = Schema.Struct({ plugin: Schema.String })
+const WithdrawForInput = Schema.Struct({ plugin: Schema.String, key: Schema.String })
 
 const done: Reply = { ok: true }
 const refused = (failure: Rejection | QuestionsUnreadable | DeliveryRefused): Reply => ({ ok: false, message: messageOf(failure) })
@@ -125,6 +141,30 @@ export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<QuestionSto
                     Effect.map(({ skipped }): Reply => (skipped.length === 0 ? done : { ok: true, message: `No longer open, so not sent: ${skipped.join(", ")}.` })),
                     Effect.catch((failure) => Effect.succeed(refused(failure))),
                   ),
+              }),
+            ),
+          askFor: (input) =>
+            Schema.decodeUnknownEffect(AskForInput)(input).pipe(
+              Effect.matchEffect({
+                onFailure: (error) => Effect.succeed(malformed(error)),
+                onSuccess: ({ plugin, key, ...asked }) =>
+                  questions.askFor(AskFor.make({ ...asked, from: { plugin, key } })).pipe(
+                    Effect.as(done),
+                    Effect.catch((failure) => Effect.succeed(refused(failure))),
+                  ),
+              }),
+            ),
+          asked: (input) =>
+            Schema.decodeUnknownEffect(PluginInput)(input).pipe(
+              Effect.flatMap(({ plugin }) => questions.asked(plugin)),
+              Effect.map((asked): PluginAsked => ({ questions: [...asked] })),
+              Effect.orElseSucceed((): PluginAsked => ({ questions: [] })),
+            ),
+          withdrawFor: (input) =>
+            Schema.decodeUnknownEffect(WithdrawForInput)(input).pipe(
+              Effect.matchEffect({
+                onFailure: (error) => Effect.succeed(malformed(error)),
+                onSuccess: (from) => questions.withdrawFor(from).pipe(Effect.as(done)),
               }),
             ),
           dismiss: (input) =>

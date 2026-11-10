@@ -93,7 +93,7 @@ const start = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses
         Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
         Effect.orDie,
       )
-    return { tool, call, fail, open, reply, deleteSession, archiveSession, inbox, emitted, submit, received }
+    return { tool, call, fail, open, reply, method, deleteSession, archiveSession, inbox, emitted, submit, received }
   })
 
 const port = { question: "Which port should the dev server use?", header: "Port", options: [{ label: "8080" }, { label: "3000" }], assume: "8080" }
@@ -266,6 +266,24 @@ describe("answering", () => {
         expect(yield* plugin.open("ses_root")).toEqual([])
         expect(plugin.inbox("ses_root")).toEqual([])
         expect(plugin.emitted.length).toBe(2)
+      }),
+    ))
+
+  test("another plugin asks over the RPC, reads the answer the form gave, and withdraws it; the session is sent nothing", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        const ask = { sessionID: "ses_root", plugin: "dotfiles-opencode.pool", key: "hold-1", question: "Claim it?", options: [{ label: "Claim it" }, { label: "Don't claim" }], assume: "Don't claim" }
+        const call = (name: string, input: unknown) => plugin.method(name).pipe(Effect.flatMap((handler) => handler(input)), Effect.orDie)
+        expect(yield* call("askFor", ask)).toEqual({ ok: true })
+        expect(yield* call("askFor", ask)).toEqual({ ok: true })
+        expect((yield* plugin.open("ses_root")).map((question) => question.id)).toEqual(["q1"])
+        expect(yield* plugin.reply("answer", { sessionID: "ses_root", answers: [{ id: "q1", answer: "Claim it" }] })).toEqual({ ok: true })
+        expect(yield* call("asked", { plugin: "dotfiles-opencode.pool" })).toEqual({ questions: [{ sessionID: "ses_root", id: "q1", key: "hold-1", answer: "Claim it" }] })
+        expect(plugin.inbox("ses_root")).toEqual([])
+        expect(yield* call("withdrawFor", { plugin: "dotfiles-opencode.pool", key: "hold-1" })).toEqual({ ok: true })
+        expect(yield* call("asked", { plugin: "dotfiles-opencode.pool" })).toEqual({ questions: [] })
+        expect(((yield* call("askFor", { plugin: "x" })) as { ok: boolean }).ok).toBe(false)
       }),
     ))
 

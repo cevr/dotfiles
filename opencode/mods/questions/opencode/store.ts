@@ -40,6 +40,7 @@ const rowJson = (row: Row): Schema.Json => {
     json.options = row.options.map((option): Schema.Json =>
       option.description === undefined ? { label: option.label } : { label: option.label, description: option.description },
     )
+  if (row.from !== undefined) json.from = { plugin: row.from.plugin, key: row.from.key }
   if (row.answered !== undefined) json.answered = { answer: row.answered.answer, delivery: row.answered.delivery }
   return json
 }
