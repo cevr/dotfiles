@@ -204,6 +204,12 @@ export const mergeUpstream = async (options: Options): Promise<Outcome> => {
     return { kind: "stuck", reason, merge, upstream }
   }
   rmSync(options.report, { force: true })
+  // The push runs the fork's pre-push check (lint, typecheck) in the checkout, whose packages are
+  // still the old merge's: install the merged lockfile first, or a package upstream changed fails it.
+  if (holder !== undefined && existsSync(join(holder, "bun.lock"))) {
+    const installed = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], { cwd: holder, stdout: "pipe", stderr: "pipe" })
+    if (installed.exitCode !== 0) log(`upstream: bun install in ${holder} failed before the push: ${installed.stderr.toString().trim().split("\n").at(-1)}`)
+  }
   const pushed = git(fork, "push", "--quiet", "origin", BRANCH)
   log(
     pushed.ok
