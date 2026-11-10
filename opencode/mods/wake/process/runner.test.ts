@@ -119,6 +119,48 @@ describe("the process runner", () => {
     expect(await Effect.runPromise(runner.kill("jnone00"))).toBe(false)
   })
 
+  /** The whole lines the job's command has dripped so far, once there are `count`. */
+  const dripped = async (id: string, count: number): Promise<ReadonlyArray<string>> => {
+    const deadline = Date.now() + 10_000
+    for (;;) {
+      const lines = (await Effect.runPromise(runner.drip(id, 0))).text.split("\n").filter((line) => line !== "")
+      if (lines.length >= count) return lines
+      if (Date.now() > deadline) throw new Error(`job ${id} dripped ${lines.length} lines`)
+      await Bun.sleep(20)
+    }
+  }
+
+  test("a kill records the signal even when the command's shell outlives it and exits 0", async () => {
+    // The shell traps SIGTERM and exits 0 once its children die of it: the
+    // kill still ended the job, so its exit is the signal, not that 0.
+    const spec = specOf(`trap 'exit 0' TERM; sleep 30 & echo up >> "$JOB_DRIP"; wait`)
+    await Effect.runPromise(runner.launch(spec))
+    await dripped(spec.id, 1)
+    expect(await Effect.runPromise(runner.kill(spec.id))).toBe(true)
+    const run = await until(spec.id, ended)
+    expect(run.state === "ended" && run.exit).toMatchObject({ exitCode: null, signal: "SIGTERM", timedOut: false, killed: true })
+  })
+
+  test("a kill ends every process of the group, one that ignores SIGTERM too, before the exit is recorded", async () => {
+    // The leader dies of the SIGTERM at once; a member that ignores it is left for the SIGKILL at the grace's end.
+    const spec = specOf(`sh -c 'trap "" TERM; echo $$ >> "$JOB_DRIP"; exec sleep 30' & sleep 30`)
+    await Effect.runPromise(runner.launch(spec))
+    const stubborn = Number((await dripped(spec.id, 1))[0])
+    try {
+      expect(ProcessRunner.alive(stubborn)).toBe(true)
+      expect(await Effect.runPromise(runner.kill(spec.id))).toBe(true)
+      const run = await until(spec.id, ended)
+      expect(run.state === "ended" && run.exit).toMatchObject({ exitCode: null, signal: "SIGTERM", timedOut: false, killed: true })
+      // Killed by the time the exit is recorded; its parent is gone, so pid 1 may take a moment to reap it.
+      const deadline = Date.now() + 2000
+      while (ProcessRunner.alive(stubborn) && Date.now() < deadline) await Bun.sleep(20)
+      expect(ProcessRunner.alive(stubborn)).toBe(false)
+    } finally {
+      // Left running only when the runner failed to end it: still this test's process then.
+      if (ProcessRunner.alive(stubborn)) process.kill(stubborn, "SIGKILL")
+    }
+  })
+
   test("a kill the moment the job reads running ends it as killed, never lost", async () => {
     const specs = Array.from({ length: 5 }, () => specOf("sleep 30"))
     for (const spec of specs) {

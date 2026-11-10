@@ -4,7 +4,9 @@
 // process group of its own (when heavy, through the guard's launcher: `nice -n
 // 10`, and on Linux with a user systemd a scope with `MemoryMax=12G`), its stdout and stderr to
 // <dir>/log, `$JOB_DRIP` naming <dir>/drip and `$JOB_ID` the job; stops it at
-// its timeout or on SIGTERM (TERM to the group, KILL after a grace); records
+// its timeout or on SIGTERM (TERM to the group, KILL after a grace to what is
+// left of the group, even once its leader is gone; the exit then names the
+// signal, whatever the leader exited with); records
 // the exit in <dir>/exit.json, atomically; then calls `notify` with the job's
 // descriptor, so the wakes fire its letter now instead of at the next poll.
 //
@@ -61,12 +63,19 @@ export const argvOf = (spec: Pick<JobSpec, "command" | "heavy">, scope: boolean)
   return spec.heavy ? heavyArgv(argv, DEFAULT_LIMITS, scope) : argv
 }
 
-const signalGroup = (pid: number, signal: NodeJS.Signals) => {
+/** Signal the process group `pid` leads; false when the group is already gone. */
+const signalGroup = (pid: number, signal: NodeJS.Signals | 0): boolean => {
   try {
     process.kill(-pid, signal)
+    return true
   } catch {
-    // The group is already gone.
+    return false
   }
+}
+
+/** Resolves once the group `pid` leads is empty, or at `until` (epoch ms), whichever comes first. */
+const groupGone = async (pid: number, until: number) => {
+  while (signalGroup(pid, 0) && Date.now() < until) await Bun.sleep(20)
 }
 
 const readEnv = (dir: string): Record<string, string> => {
@@ -89,12 +98,21 @@ export const supervise = async (dir: string, notify?: (descriptor: Descriptor) =
   let child: ReturnType<typeof Bun.spawn> | undefined
   let timedOut = false
   let killed = false
+  /** The strongest signal this runner delivered to the command's group while the group was there. */
+  let sent: "SIGTERM" | "SIGKILL" | undefined
+  /** When a stop's grace ends: the SIGKILL then reaches what is left of the group. */
+  let hardAt: number | undefined
   let hard: ReturnType<typeof setTimeout> | undefined
   const stop = () => {
     const pid = child?.pid
-    if (pid === undefined) return
-    signalGroup(pid, "SIGTERM")
-    hard ??= setTimeout(() => signalGroup(pid, "SIGKILL"), grace)
+    // No group left: the command ended by itself before the stop reached it.
+    if (pid === undefined || !signalGroup(pid, "SIGTERM")) return
+    sent ??= "SIGTERM"
+    if (hard !== undefined) return
+    hardAt = Date.now() + grace
+    hard = setTimeout(() => {
+      if (signalGroup(pid, "SIGKILL")) sent = "SIGKILL"
+    }, grace)
   }
   const onSignal = () => {
     killed = true
@@ -147,14 +165,26 @@ export const supervise = async (dir: string, notify?: (descriptor: Descriptor) =
 
   const exitCode = await spawned.exited
   clearTimeout(timer)
-  if (hard !== undefined) clearTimeout(hard)
-  const signal = spawned.signalCode == null ? undefined : String(spawned.signalCode)
+  // A stop ends the whole group, not just its leader: the leader can end at
+  // the SIGTERM while a member that ignores it runs on, so what is left at the
+  // grace's end gets the SIGKILL, before the exit is recorded.
+  if (hard !== undefined && hardAt !== undefined) {
+    await groupGone(spawned.pid, hardAt)
+    clearTimeout(hard)
+    if (signalGroup(spawned.pid, "SIGKILL")) sent = "SIGKILL"
+  }
+  // A stop that reached the group ended the job, whatever its leader made of
+  // the signal (a shell that traps SIGTERM, or whose children die of it, can
+  // exit 0): the exit names the signal, as the memory runner's does. A stop
+  // that found no group came after the command had ended by itself, so its
+  // own exit stands and it is neither killed nor timed out.
+  const signal = (spawned.signalCode == null ? undefined : String(spawned.signalCode)) ?? sent
   return record({
     exitCode: signal === undefined ? exitCode : null,
     ...(signal === undefined ? {} : { signal }),
     startedAt,
     endedAt: Date.now(),
-    timedOut,
-    killed: killed && !timedOut,
+    timedOut: timedOut && sent !== undefined,
+    killed: killed && !timedOut && sent !== undefined,
   })
 }

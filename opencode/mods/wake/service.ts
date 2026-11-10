@@ -153,7 +153,9 @@ export class JobRefused extends Schema.TaggedError<JobRefused>()("JobRefused", {
  * - `drip`: the progress written since byte `from`, whole lines only, and
  *   the offset after them; a line still being written waits.
  * - `kill`: ask the runner to stop the command (SIGTERM to its process
- *   group, SIGKILL after a grace); it records the exit as killed. Whether a
+ *   group, SIGKILL after a grace to what is left of it); it records the exit
+ *   as killed, with the signal. A command that had ended by itself before the
+ *   signal reached it keeps its own exit, not killed. Whether a
  *   running job was asked; an ended or unknown one is not, and is no failure.
  */
 export class Runner extends Context.Service<
