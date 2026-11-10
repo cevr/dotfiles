@@ -153,13 +153,14 @@ export interface Experiment {
 }
 
 /**
- * The planner on the newest Fable: every start for now (the owner's call, 2026-11-09; Opus only when
- * the pool holds Fable). A share below 1 makes it an A/B the model eval (`models.ts --experiment`) compares.
+ * The planner on the newest Fable for half the units, Opus for the rest: an A/B the model eval
+ * (`models.ts --experiment`) compares (the owner's call, 2026-11-10, until 2026-11-16; Opus also
+ * when the pool holds Fable).
  * None when the catalog has no Fable release.
  */
 export const plannerExperiment = (catalog: Catalog): Experiment | undefined => {
   const fable = newestRelease(catalog, "anthropic", "claude-fable")
-  return fable === undefined ? undefined : { role: "planner", model: `anthropic/${fable}`, share: 1 }
+  return fable === undefined ? undefined : { role: "planner", model: `anthropic/${fable}`, share: 0.5 }
 }
 
 /**
