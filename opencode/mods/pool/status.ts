@@ -10,13 +10,18 @@
 // answer carries a secret.
 import { Schema } from "effect"
 import { QuotaReading, RefusalKind } from "./quota.ts"
+import { Claim, Reset } from "./resets.ts"
 
 /** The pool's own RPC: each pooled provider's accounts, holds and readings. No secrets. */
 export const POOL_STATUS = {
   id: "dotfiles-opencode.pool",
   methods: {
     pace: {
-      input: { type: "object", properties: { providerID: { type: "string" }, model: { type: "string" } }, required: ["providerID"] },
+      input: {
+        type: "object",
+        properties: { providerID: { type: "string" }, model: { type: "string" }, sessionID: { type: "string" } },
+        required: ["providerID"],
+      },
       output: { type: "object" },
     },
     status: { input: { type: "object" }, output: { type: "object" } },
@@ -36,6 +41,7 @@ export const POOL_STATUS = {
     started: { input: { type: "object", properties: { providerID: { type: "string" } }, required: ["providerID"] }, output: { type: "object" } },
     report: { input: { type: "object" }, output: { type: "object" } },
     fleet: { input: { type: "object" }, output: { type: "object" } },
+    resets: { input: { type: "object" }, output: { type: "object" } },
   },
   events: {},
 } as const
@@ -225,3 +231,10 @@ export const FleetStatus = Schema.Struct({
   peers: Schema.Array(PeerStatus),
 })
 export type FleetStatus = typeof FleetStatus.Type
+
+/** The resets method's answer: each hold's reset as it is worked, newest first, and the claims made, newest first. */
+export const ResetsStatus = Schema.Struct({
+  resets: Schema.Array(Reset),
+  claims: Schema.Array(Claim),
+})
+export type ResetsStatus = typeof ResetsStatus.Type
