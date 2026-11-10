@@ -59,6 +59,15 @@
  *   counts `startCost` (default 0.005, half a percentage point of one account's
  *   week) on the pace here and on every peer for `settleMinutes` (default 10),
  *   until its spend shows in a reading. Default no peers.
+ * - `resets`: work the accounts' rate-limit resets (`@dotfiles/opencode-pool/resets`).
+ *   Default true. When a start is held and every account of a ChatGPT pool is
+ *   held by a spent window, the pool claims one Codex reset credit (and one
+ *   about to expire unused on a half-spent week); for the `anthropic` pool it
+ *   never claims unasked: it asks the owner once per hold in the waiting
+ *   session's root (the questions plugin's `askFor`), with the days left before
+ *   the account's weekly reset, and claims only on a yes. After a claim it reads
+ *   the account again and records whether the weekly reset moved. `resets`
+ *   answers what is being worked and the claims made, for the /pool pane.
  *
  * `started` records a new agent (orchestrate calls it once a subagent starts),
  * `report` answers a peer with this host's starts and its readings (never a
@@ -85,11 +94,15 @@ import * as Model from "@dotfiles/opencode-pool/model"
 import * as FleetStoreLive from "@dotfiles/opencode-pool/opencode/fleet"
 import * as LedgerLive from "@dotfiles/opencode-pool/opencode/ledger"
 import * as LoginsLive from "@dotfiles/opencode-pool/opencode/logins"
+import * as OwnerLive from "@dotfiles/opencode-pool/opencode/owner"
 import * as QuotaLive from "@dotfiles/opencode-pool/opencode/quota"
+import * as ResetsStoreLive from "@dotfiles/opencode-pool/opencode/resets"
 import { quotaProtocol, type QuotaReading } from "@dotfiles/opencode-pool/quota"
-import type { FleetStore, Ledger, Logins, Peers, Quota } from "@dotfiles/opencode-pool/service"
+import type { ResetProvider } from "@dotfiles/opencode-pool/resets"
+import type { FleetStore, Ledger, Logins, Owner, Peers, Quota, ResetsStore } from "@dotfiles/opencode-pool/service"
 import * as PeersLive from "@dotfiles/opencode-pool/ssh/peers"
 import { LoginsQuery, POOL_STATUS, SessionQuery, StartedQuery } from "@dotfiles/opencode-pool/status"
+import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 
 export { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 
@@ -149,11 +162,25 @@ export const Options = Schema.Struct({
   paced: Schema.Record(Schema.String, PoolId).pipe(withDefault<Readonly<Record<string, PoolId>>>({})),
   usageURL: Schema.optional(Schema.String),
   fleet: FleetOption.pipe(withDefault<typeof FleetOption.Type>(Schema.decodeSync(FleetOption)({}))),
+  resets: Schema.Boolean.pipe(withDefault(true)),
 })
 export type Options = typeof Options.Type
 
 /** The outside systems the model runs on. */
-export type Externals = Logins | Quota | Ledger | Peers | FleetStore
+export type Externals = Logins | Quota | Ledger | Peers | FleetStore | ResetsStore | Owner
+
+/**
+ * Whose rate-limit resets each pool holds, when `resets` is on: the pool of
+ * the `anthropic` provider holds Claude grants, which are asked about; a
+ * ChatGPT pool holds Codex credits, which are claimed.
+ */
+export const resetsOf = (options: Options): Readonly<Record<string, ResetProvider>> => {
+  if (!options.resets) return {}
+  const resets: Record<string, ResetProvider> = {}
+  if (options.providers.anthropic !== undefined) resets[options.providers.anthropic] = "claude"
+  for (const pool of chatgptPools(options)) resets[pool] = "codex"
+  return resets
+}
 
 /** The pools paced only, never placed: each reads the ChatGPT account's quota. */
 const chatgptPools = (options: Options): ReadonlyArray<PoolId> => {
@@ -229,6 +256,7 @@ export const live = (
         return {
           reading: (input) => client.reading(input),
           usage: (input) => client.usage(input),
+          claim: (input) => client.claim(input),
           published: client.events.subscribe("reading"),
         }
       }),
@@ -236,7 +264,23 @@ export const live = (
       PeersLive.layer(options.fleet.peers),
       // The plugin's storage is the host's: every instance of the plugin reads the same fleet.
       FleetStoreLive.layer(ctx.storage),
+      // And the same resets, so a hold is worked once on the host.
+      ResetsStoreLive.layer(ctx.storage),
+      OwnerLive.layer(questionsHost(ctx)),
     )
+
+/** The questions plugin's RPC and the host's sessions, as the pool asks the owner through them. */
+const questionsHost = (ctx: Plugin.Context): OwnerLive.Host => {
+  // Reached at each call, not at setup: the questions plugin may start after the pool.
+  const client = () => ctx.rpc(QUESTIONS)
+  return {
+    askFor: (input) => Effect.suspend(() => client().askFor({ ...input, options: [...input.options] })),
+    asked: (input) => Effect.suspend(() => client().asked(input)),
+    withdrawFor: (input) => Effect.suspend(() => client().withdrawFor(input)),
+    changed: Stream.suspend(() => client().events.subscribe("changed")),
+    parentOf: (sessionID) => ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map((session) => session.parentID)),
+  }
+}
 
 /** The first sweep waits a moment so the providers' auth plugins have set up. */
 const FIRST_SWEEP = "1 second"
@@ -277,6 +321,7 @@ export const make = (
             startCost: options.fleet.startCost,
             pollMs: options.fleet.pollSeconds * 1000,
           },
+          resets: resetsOf(options),
         }).pipe(Layer.provideMerge(externals(ctx, options, sources, chatgpt))),
       )
       const pool = Context.get(services, Model.Pool)
@@ -404,6 +449,9 @@ export const make = (
 
       yield* Effect.forkScoped(pool.follow)
 
+      // The owner's answer to a reset's question is read as soon as the questions change.
+      if (Object.keys(resetsOf(options)).length > 0) yield* Effect.forkScoped(pool.followAnswers)
+
       if (options.sweepMinutes > 0)
         yield* Effect.forkScoped(
           pool.sweep.pipe(Effect.repeat(Schedule.spaced(`${options.sweepMinutes} minutes`)), Effect.delay(FIRST_SWEEP)),
@@ -417,7 +465,7 @@ export const make = (
       // RPC that cannot be registered stops the plugin.
       yield* ctx.rpc
         .register(POOL_STATUS, {
-          pace: (input) => pool.pace(providerOf(input), modelOf(input)).pipe(Effect.orDie),
+          pace: (input) => pool.pace(providerOf(input), modelOf(input), sessionOf(input)).pipe(Effect.orDie),
           status: () => pool.status.pipe(Effect.orDie),
           // A malformed question names no session: it has no account to name.
           session: (input) =>
@@ -433,6 +481,7 @@ export const make = (
             }),
           report: () => pool.report,
           fleet: () => pool.fleet,
+          resets: () => pool.resets,
         })
         .pipe(Effect.orDie)
     }),
@@ -448,5 +497,11 @@ const providerOf = (input: unknown) =>
 /** The model a pace question names, if it names one as a string. */
 const modelOf = (input: unknown) =>
   typeof input === "object" && input !== null && "model" in input && typeof input.model === "string" ? input.model : undefined
+
+/** The session a pace question comes from, if it names one: the one whose start waits when the pace holds it. */
+const sessionOf = (input: unknown) =>
+  typeof input === "object" && input !== null && "sessionID" in input && typeof input.sessionID === "string" && input.sessionID !== ""
+    ? input.sessionID
+    : undefined
 
 export default make(live)

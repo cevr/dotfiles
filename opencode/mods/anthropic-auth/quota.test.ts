@@ -265,7 +265,7 @@ describe('quotaProtocol', () => {
   test('derives its id from the integration, so a pool needs no import', () => {
     const protocol = quotaProtocol('anthropic')
     expect(protocol.id).toBe('credential-quota.anthropic')
-    expect(Object.keys(protocol.methods)).toEqual(['reading', 'usage'])
+    expect(Object.keys(protocol.methods)).toEqual(['reading', 'usage', 'claim'])
     expect(Object.keys(protocol.events)).toEqual(['reading'])
   })
 })

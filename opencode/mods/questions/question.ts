@@ -20,6 +20,14 @@ export const Choice = Schema.Struct({
 })
 export type Choice = typeof Choice.Type
 
+/**
+ * A question another plugin asked on the owner's behalf, by its own `key`
+ * (the pool's hold): its answer is not a message to the session but waits on
+ * the row for that plugin to read (`asked`) and settle (`withdrawFor`).
+ */
+export const From = Schema.Struct({ plugin: Schema.String, key: Schema.String })
+export type From = typeof From.Type
+
 /** An open question as the sheet keeps it and the tray and pane read it. */
 export const Question = Schema.Struct({
   /** `q<n>`, unique within its session. */
@@ -33,6 +41,8 @@ export const Question = Schema.Struct({
   assume: Schema.String,
   /** Epoch ms. */
   askedAt: Schema.Number,
+  /** The plugin that asked, when a plugin did; the agent's own questions have none. */
+  from: Schema.optional(From),
 })
 export type Question = typeof Question.Type
 
@@ -65,6 +75,12 @@ export const MAX_OPTIONS = 4
 
 /** The rows the user can still answer. */
 export const openOf = (rows: ReadonlyArray<Row>): ReadonlyArray<Row> => rows.filter((row) => row.answered === undefined)
+
+/** The agent's own rows: a plugin's questions are not the agent's to withdraw, replace or drop, and their answers are no message. */
+export const ownOf = (rows: ReadonlyArray<Row>): ReadonlyArray<Row> => rows.filter((row) => row.from === undefined)
+
+/** The rows `plugin` asked. */
+export const fromOf = (rows: ReadonlyArray<Row>, plugin: string): ReadonlyArray<Row> => rows.filter((row) => row.from?.plugin === plugin)
 
 /** A row as the reader sees it, without its recorded answer. */
 export const questionOf = (row: Row): Question => {
@@ -129,7 +145,26 @@ export interface Dismiss extends Schema.Schema.Type<typeof Dismiss> {}
 export const Delivered = Schema.TaggedStruct("Delivered", { delivery: Schema.String })
 export interface Delivered extends Schema.Schema.Type<typeof Delivered> {}
 
-export type Command = Ask | AnswerQuestions | Dismiss | Delivered
+/**
+ * A plugin asks one question in `sessionID` under its own key. Asked again
+ * under a key it already has a row for (open or answered), nothing changes:
+ * a plugin asks once per key.
+ */
+export const AskFor = Schema.TaggedStruct("AskFor", {
+  sessionID: Schema.String,
+  from: From,
+  question: Schema.String,
+  header: Schema.optional(Schema.String),
+  options: Schema.optional(Schema.Array(Choice)),
+  assume: Schema.String,
+})
+export interface AskFor extends Schema.Schema.Type<typeof AskFor> {}
+
+/** A plugin withdraws its question under `key`, open or answered: it no longer matters, or its answer was read. */
+export const WithdrawFor = Schema.TaggedStruct("WithdrawFor", { from: From })
+export interface WithdrawFor extends Schema.Schema.Type<typeof WithdrawFor> {}
+
+export type Command = Ask | AnswerQuestions | Dismiss | Delivered | AskFor | WithdrawFor
 
 // ── Events ──
 
@@ -215,7 +250,7 @@ export const decideAsk = (state: Sheet, command: Ask, now: number): Effect.Effec
     const texts = asked.map((question) => normalize(question.question))
     const twice = texts.findIndex((text, at) => texts.indexOf(text) !== at)
     if (twice >= 0) return yield* new InvalidQuestion({ index: twice + 1, reason: "the same question is asked twice in one call" })
-    const open = openOf(state.rows)
+    const open = openOf(ownOf(state.rows))
     const withdraw = [...new Set(command.withdraw.map((id) => id.trim()))]
     const unknown = withdraw.filter((id) => !open.some((row) => row.id === id))
     if (unknown.length > 0) return yield* new UnknownQuestion({ ids: unknown, open: open.map((row) => row.id) })
@@ -277,9 +312,25 @@ export const decideDismiss = (state: Sheet, command: Dismiss): Effect.Effect<Rea
 /** What a delivery records: the questions it answered close; a delivery seen before records nothing. */
 export const decideDelivered = (state: Sheet, command: Delivered): Effect.Effect<ReadonlyArray<Event>> =>
   Effect.succeed(
-    state.rows
+    ownOf(state.rows)
       .filter((row) => row.answered?.delivery === command.delivery)
       .map((row) => QuestionClosed.make({ id: row.id, reason: row.answered?.dismissed === true ? "dismissed" : "delivered" })),
+  )
+
+/** What a plugin's question records: it opens, unless the plugin has a row under its key already. */
+export const decideAskFor = (state: Sheet, command: AskFor, now: number): Effect.Effect<ReadonlyArray<Event>, InvalidQuestion> =>
+  Effect.gen(function* () {
+    if (fromOf(state.rows, command.from.plugin).some((row) => row.from?.key === command.from.key)) return []
+    const question = yield* validated(command, 0)
+    return [QuestionOpened.make({ question: { id: `q${state.next}`, sessionID: command.sessionID, ...question, askedAt: now, from: command.from } })]
+  })
+
+/** What a plugin's withdrawal records: its row under the key closes, whether answered or not; none, nothing. */
+export const decideWithdrawFor = (state: Sheet, command: WithdrawFor): Effect.Effect<ReadonlyArray<Event>> =>
+  Effect.succeed(
+    fromOf(state.rows, command.from.plugin)
+      .filter((row) => row.from?.key === command.from.key)
+      .map((row) => QuestionClosed.make({ id: row.id, reason: "withdrawn" })),
   )
 
 export const Questions: Decider<Sheet, Command, Event, Rejection> = {
@@ -294,6 +345,10 @@ export const Questions: Decider<Sheet, Command, Event, Rejection> = {
         return decideDismiss(state, command)
       case "Delivered":
         return decideDelivered(state, command)
+      case "AskFor":
+        return decideAskFor(state, command, now)
+      case "WithdrawFor":
+        return decideWithdrawFor(state, command)
     }
   },
   evolve: (state, event) => {
@@ -329,11 +384,35 @@ const text = { type: "string" } as const
  *   session's questions as one message; `Reply` says whether it reached the
  *   session. The TUI answers through the host's form instead (form.ts).
  * - `dismiss({ sessionID, id })`: drop one without telling the agent.
+ * - `askFor({ sessionID, plugin, key, question, header?, options?, assume })`:
+ *   another plugin asks the owner in `sessionID` (the tray of its tree's
+ *   root shows it), once per key; `Reply`.
+ * - `asked({ plugin })`: that plugin's questions, open and answered, each with
+ *   its key and, once given, its answer (`Asked`).
+ * - `withdrawFor({ plugin, key })`: the plugin's question under `key` goes,
+ *   open or answered (the plugin read its answer); `Reply`.
  * - `changed({ sessionID })`: published after every change to a session's questions.
  */
 export const QUESTIONS = {
   id: "dotfiles-opencode.questions",
   methods: {
+    askFor: {
+      input: object(
+        {
+          sessionID: text,
+          plugin: text,
+          key: text,
+          question: text,
+          header: text,
+          options: { type: "array", items: object({ label: text, description: text }, ["label"]) },
+          assume: text,
+        },
+        ["sessionID", "plugin", "key", "question", "assume"],
+      ),
+      output: { type: "object" },
+    },
+    asked: { input: object({ plugin: text }, ["plugin"]), output: { type: "object" } },
+    withdrawFor: { input: object({ plugin: text, key: text }, ["plugin", "key"]), output: { type: "object" } },
     open: { input: object({ sessionIDs: { type: "array", items: text } }, ["sessionIDs"]), output: { type: "object" } },
     answer: {
       input: object({ sessionID: text, answers: { type: "array", items: object({ id: text, answer: text }, ["id", "answer"]) } }, ["sessionID", "answers"]),
@@ -349,6 +428,14 @@ export const QUESTIONS = {
 /** What `open` answers. */
 export const Open = Schema.Struct({ questions: Schema.Array(Question) })
 export type Open = typeof Open.Type
+
+/** One question a plugin asked, as `asked` answers it: its session, id and key, and the answer once given. */
+export const PluginQuestion = Schema.Struct({ sessionID: Schema.String, id: Schema.String, key: Schema.String, answer: Schema.optional(Schema.String) })
+export type PluginQuestion = typeof PluginQuestion.Type
+
+/** What `asked` answers. */
+export const PluginAsked = Schema.Struct({ questions: Schema.Array(PluginQuestion) })
+export type PluginAsked = typeof PluginAsked.Type
 
 /** What `answer` and `dismiss` answer: done, or why not. */
 export const Reply = Schema.Struct({ ok: Schema.Boolean, message: Schema.optional(Schema.String) })

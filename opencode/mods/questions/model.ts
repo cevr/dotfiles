@@ -11,6 +11,15 @@ import { fold } from "@dotfiles/decider/decider"
 import { type Asked, type AskInput, commandOf } from "./ask.ts"
 import {
   AnswerQuestions,
+  type AskFor,
+  decideAskFor,
+  decideWithdrawFor,
+  type From,
+  fromOf,
+  type InvalidQuestion,
+  ownOf,
+  type PluginQuestion,
+  WithdrawFor,
   type AskRejection,
   Delivered,
   decideAnswers,
@@ -57,6 +66,12 @@ export class QuestionsModel extends Context.Service<
     /** Send every answer recorded in a stored sheet and not yet delivered (a restart's leftovers); how many went. A sheet whose session is gone is removed. */
     readonly resend: Effect.Effect<number>
     readonly forget: (sessionID: string) => Effect.Effect<void>
+    /** Another plugin asks one question in `sessionID` under its key, once per key; the question as it stands. */
+    readonly askFor: (command: AskFor) => Effect.Effect<void, InvalidQuestion | QuestionsUnreadable>
+    /** The questions `plugin` asked, open and answered, oldest first. A sheet that cannot be read shows none. */
+    readonly asked: (plugin: string) => Effect.Effect<ReadonlyArray<PluginQuestion>>
+    /** The plugin's question under `key` goes, open or answered, from every session that has it. */
+    readonly withdrawFor: (from: From) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/questions/QuestionsModel") {}
 
@@ -117,7 +132,8 @@ export const layer = Layer.effect(
     const flush = Effect.fn("QuestionsModel.flush")(function* (sessionID: string) {
       const sheet = yield* store.read(sessionID)
       const batches = new Map<string, Array<Answered>>()
-      for (const row of sheet.rows) {
+      // A plugin's answers wait on their rows for it; only the agent's own go as a message.
+      for (const row of ownOf(sheet.rows)) {
         if (row.answered === undefined) continue
         const batch = batches.get(row.answered.delivery) ?? []
         batch.push({ question: questionOf(row), answer: row.answered.answer, ...(row.answered.dismissed === true ? { dismissed: true } : {}) })
@@ -176,6 +192,26 @@ export const layer = Layer.effect(
         return sent.reduce((sum, count) => sum + count, 0)
       }),
       forget: (sessionID) => lock.withPermits(1)(store.remove(sessionID)).pipe(Effect.andThen(changes.changed(sessionID))),
+      askFor: (command) => apply(command.sessionID, (sheet, now) => decideAskFor(sheet, command, now)).pipe(Effect.asVoid),
+      asked: Effect.fn("QuestionsModel.asked")(function* (plugin: string) {
+        const sessions = yield* store.sessions
+        const sheets = yield* Effect.forEach(sessions, (sessionID) => store.read(sessionID).pipe(Effect.orElseSucceed(() => undefined)))
+        return sheets
+          .flatMap((sheet) => (sheet === undefined ? [] : fromOf(sheet.rows, plugin)))
+          .toSorted((left, right) => left.askedAt - right.askedAt)
+          .map(
+            (row): PluginQuestion => ({
+              sessionID: row.sessionID,
+              id: row.id,
+              key: row.from?.key ?? "",
+              ...(row.answered === undefined ? {} : { answer: row.answered.answer }),
+            }),
+          )
+      }),
+      withdrawFor: Effect.fn("QuestionsModel.withdrawFor")(function* (from: From) {
+        for (const sessionID of yield* store.sessions)
+          yield* apply(sessionID, (sheet) => decideWithdrawFor(sheet, WithdrawFor.make({ from }))).pipe(Effect.ignore)
+      }),
     }
   }),
 )

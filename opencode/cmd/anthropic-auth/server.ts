@@ -19,14 +19,18 @@
  *   version rejection, names a 429 for what it is and records the quota each
  *   response carries.
  * - The quota RPC (`credential-quota.anthropic`) answers each login's newest
- *   reading and reads its usage endpoint, and publishes each new reading.
+ *   reading and reads its usage endpoint, and publishes each new reading;
+ *   its `claim` claims one of a login's `cedar_ember` reset grants for the
+ *   pool (the organization from `/api/oauth/profile`, then
+ *   `POST /api/organizations/<org>/reset_rate_limits` with the pool's
+ *   request id as the idempotency key). Only the pool's decision calls it.
  *
  * Environment: `ANTHROPIC_BASE_URL` (a custom endpoint OAuth may go to),
  * `ANTHROPIC_INSECURE` (warned about: a plugin cannot turn TLS off) and
  * `ANTHROPIC_CLAUDE_CODE_VERSION` (the version reported), read at setup.
  */
 import { Agent, Credential, Integration, Plugin } from "@opencode/plugin/effect"
-import { Clock, Context, Effect, Layer } from "effect"
+import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
 import { makeEndpoint } from "@dotfiles/opencode-anthropic-auth/endpoint"
 import { makeAliasLeases, makeConnections, makeOwnership, type Ownership } from "@dotfiles/opencode-anthropic-auth/fetch/ownership"
 import { onRequest, onResponse } from "@dotfiles/opencode-anthropic-auth/fetch/exchange"
@@ -93,6 +97,11 @@ const toHost = (credential: OAuthCredential): Credential.OAuth => ({
   access: credential.access,
   expires: credential.expires,
 })
+
+/** A claim as the pool asks for it. */
+const decodeClaim = Schema.decodeUnknownOption(
+  Schema.Struct({ credentialID: Schema.NonEmptyString, creditID: Schema.NonEmptyString, requestID: Schema.NonEmptyString }),
+)
 
 /** The credential an RPC call names; a call that names none fails. */
 const credentialOf = (input: unknown) => {
@@ -162,6 +171,12 @@ export const make = (options: Options) =>
               Effect.map((reading) => ({ reading: reading ?? null })),
               Effect.orDie,
             ),
+          // A claim the pool decided on (never a read's side effect); a malformed one claims nothing.
+          claim: (input) =>
+            Option.match(decodeClaim(input), {
+              onNone: () => Effect.succeed({ outcome: "failed", message: "malformed claim" }),
+              onSome: ({ credentialID, creditID, requestID }) => auth.claim(credentialID, creditID, requestID),
+            }),
         })
         .pipe(Effect.orDie)
       emit.current = (credentialID, reading) => quota.events.emit("reading", { credentialID, reading })

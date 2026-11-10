@@ -76,6 +76,8 @@ const writesOf = (event: Event): ReadonlyArray<Write> => {
         ...event.holds.map((credentialID) => remove(holdKey(credentialID))),
         ...event.caches.map((cache) => removeExpiredMark(cache.sessionID, cache.at)),
       ]
+    case "HoldCleared":
+      return [remove(holdKey(event.credentialID))]
     case "LoginsListed":
     case "RunReleased":
       return []

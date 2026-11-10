@@ -15,7 +15,8 @@ import {
 import { fold } from "@dotfiles/decider/decider"
 import { type Event as FleetEvent, Fleet, PeerMissed, PeerReported, PollClaimed, StartRecorded, StartsExpired } from "./fleet.ts"
 import type { QuotaReading } from "./quota.ts"
-import { FleetStore, Ledger, Logins, Peers, Quota, type PublishedReading } from "./service.ts"
+import { type Claim, ClaimDue, ClaimSettled, type Event as ResetsEvent, MAX_CLAIMS, type Reset, Resets, ResetsForgotten, WaitNoted } from "./resets.ts"
+import { FleetStore, Ledger, Logins, Peers, Quota, ResetsStore, type PublishedReading } from "./service.ts"
 import type { Report } from "./status.ts"
 
 const pool = PoolId.make("law-pool")
@@ -424,6 +425,98 @@ export const fleetStoreLaws = (name: string, host: () => () => Layer.Layer<Fleet
           yield* record(one, [start(T0), start(T0 + 1), start(T0 + 2)])
           yield* record(two, [StartsExpired.make({ before: T0 + 1 })])
           expect((yield* one.read).starts).toEqual([{ providerID: "anthropic", at: T0 + 2 }])
+        }),
+      )
+    })
+  })
+
+// ── ResetsStore ──
+
+/** What every ResetsStore owes: it reads back what was recorded, and two instances on one host share it. */
+export const resetsStoreLaws = (name: string, host: () => () => Layer.Layer<ResetsStore>) =>
+  describe(`${name} keeps the ResetsStore laws`, () => {
+    const T0 = 1_800_000_000_000
+    const record = (store: ResetsStore["Service"], events: ReadonlyArray<ResetsEvent>) =>
+      Effect.gen(function* () {
+        const state = fold(Resets, events, yield* store.read)
+        yield* store.record(events, state)
+        return state
+      })
+    const reset = (key: string, at = T0): Reset => ({
+      key,
+      pool: "openai",
+      provider: "codex",
+      credentialID: "codex-a",
+      label: "codex a",
+      creditID: "credit-a",
+      requestID: `pool-${key.length}`,
+      why: "held",
+      stage: "claiming",
+      at,
+      attempts: 0,
+    })
+    const claim = (key: string, at: number): Claim => ({
+      key,
+      pool: "openai",
+      provider: "codex",
+      credentialID: "codex-a",
+      label: "codex a",
+      creditID: "credit-a",
+      requestID: "pool-1",
+      at,
+      outcome: "reset",
+      before: [{ name: "7d", utilization: 1, resetAt: T0 + 1000 }],
+      after: [{ name: "7d", utilization: 0, resetAt: T0 + 7 * 86_400_000 }],
+      weekly: "moved",
+    })
+
+    test("a host never recorded reads empty", () =>
+      check(
+        host()(),
+        Effect.gen(function* () {
+          expect(yield* (yield* ResetsStore).read).toEqual({ waits: {}, resets: {}, claims: [] })
+        }),
+      ))
+
+    test("reads back the waits, the resets (keys with any characters) and the claims it recorded, as the aggregate folds them", () =>
+      check(
+        host()(),
+        Effect.gen(function* () {
+          const store = yield* ResetsStore
+          yield* record(store, [WaitNoted.make({ pool: "anthropic/x", wait: { at: T0, sessionID: "ses_1" } })])
+          yield* record(store, [ClaimDue.make({ reset: reset("codex:openai:a/b:1") })])
+          const state = yield* record(store, [ClaimSettled.make({ claim: claim("codex:openai:a/b:1", T0 + 5), stage: "settled" })])
+          expect(yield* store.read).toEqual(state)
+          expect(state.resets["codex:openai:a/b:1"]).toMatchObject({ stage: "settled", attempts: 1, outcome: "reset" })
+          yield* record(store, [ResetsForgotten.make({ keys: ["codex:openai:a/b:1"] })])
+          expect((yield* store.read).resets).toEqual({})
+          expect((yield* store.read).claims).toHaveLength(1)
+        }),
+      ))
+
+    test("keeps the newest MAX_CLAIMS claims, oldest first", () =>
+      check(
+        host()(),
+        Effect.gen(function* () {
+          const store = yield* ResetsStore
+          for (let at = 0; at < MAX_CLAIMS + 3; at++) {
+            yield* record(store, [ClaimDue.make({ reset: reset(`k${at}`) })])
+            yield* record(store, [ClaimSettled.make({ claim: claim(`k${at}`, T0 + at), stage: "settled" })])
+          }
+          const claims = (yield* store.read).claims
+          expect(claims).toHaveLength(MAX_CLAIMS)
+          expect(claims[0]?.at).toBe(T0 + 3)
+        }),
+      ))
+
+    test("two instances on one host work the same holds", () => {
+      const instance = host()
+      return Effect.runPromise(
+        Effect.gen(function* () {
+          const one = yield* ResetsStore.pipe(Effect.provide(instance()))
+          const two = yield* ResetsStore.pipe(Effect.provide(instance()))
+          yield* record(one, [ClaimDue.make({ reset: reset("k") })])
+          expect(Object.keys((yield* two.read).resets)).toEqual(["k"])
         }),
       )
     })

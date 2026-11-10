@@ -1084,11 +1084,11 @@ describe("the model experiment", () => {
         })
         expect(trialLine!.fallback).toBeUndefined()
         expect(controlLine).toMatchObject({ model: "anthropic/claude-opus#high", pace: { ok: true, measured: true }, experiment: { arm: "control" } })
-        // The pool is asked of each model by its bare id, as its windows name models.
+        // The pool is asked of each model by its bare id, as its windows name models, from the session whose start would wait.
         expect(asked).toEqual([
-          { providerID: "anthropic", model: "claude-fable" },
-          { providerID: "anthropic", model: "claude-opus" },
-          { providerID: "anthropic", model: "claude-opus" },
+          { providerID: "anthropic", model: "claude-fable", sessionID: "root" },
+          { providerID: "anthropic", model: "claude-opus", sessionID: "root" },
+          { providerID: "anthropic", model: "claude-opus", sessionID: "root" },
         ])
       }),
     ))

@@ -252,7 +252,7 @@ export const layer = (config: Config) =>
         const ref = parseModel(model) ?? (yield* models.base(sessionID, agent))
         const none: Asked = {}
         if (ref === undefined) return { ref, hold: undefined, asked: none }
-        const { hold, replies } = yield* holdOf(ref, agent)
+        const { hold, replies } = yield* holdOf(ref, agent, sessionID)
         const asked: Asked = {
           ...(replies.pool === undefined ? {} : { pace: replies.pool }),
           ...(replies.codex === undefined ? {} : { codex: replies.codex }),
@@ -261,9 +261,9 @@ export const layer = (config: Config) =>
       })
 
       /** The hold on a model, if any, with each pace's reply as asked: the pool's, the Codex admission's. */
-      const holdOf = Effect.fnUntraced(function* (ref: ModelRef, agent: string) {
+      const holdOf = Effect.fnUntraced(function* (ref: ModelRef, agent: string, sessionID: string) {
         const whose = config.codex?.providers.includes(ref.providerID) ? "codex" : "pool"
-        const poolReply = whose === "pool" || config.codex?.pool === true ? yield* pool.pace(ref.providerID, ref.id) : undefined
+        const poolReply = whose === "pool" || config.codex?.pool === true ? yield* pool.pace(ref.providerID, ref.id, sessionID) : undefined
         const pooled = poolReply === undefined ? undefined : paceOfReply(poolReply)
         const codexReply =
           whose === "codex" && (pooled === undefined || !pooled.measured) ? yield* codex.admit(ref.id, isRole(agent) ? agent : "none") : undefined
@@ -293,7 +293,7 @@ export const layer = (config: Config) =>
         const model = yield* models.newest(sessionID, providers, family, variant)
         const at = parseModel(model)
         if (model === undefined || at === undefined) return undefined
-        const { hold, replies } = yield* holdOf(at, agent)
+        const { hold, replies } = yield* holdOf(at, agent, sessionID)
         const fallback: Fallback = { model, ...(hold === undefined ? {} : { hold }) }
         return { fallback, asked: fallbackAsked(replies) }
       })
@@ -325,7 +325,7 @@ export const layer = (config: Config) =>
         const model = yield* models.at(sessionID, experiment.model, start.level === "" ? undefined : start.level)
         const ref = parseModel(model)
         if (model === undefined || ref === undefined) return { record: record(`${experiment.model} is not offered`) }
-        const { hold, replies } = yield* holdOf(ref, start.agent)
+        const { hold, replies } = yield* holdOf(ref, start.agent, sessionID)
         if (hold !== undefined) return { record: record(`${model} held: ${hold.reason}`) }
         const asked: Asked = {
           ...(replies.pool === undefined ? {} : { pace: replies.pool }),
@@ -477,7 +477,7 @@ export const layer = (config: Config) =>
         const primary = kept?.primary ?? latch.model
         const paced = resting || ran ? undefined : yield* paceOf(latch.parent, latch.agent, primary)
         const fallbackAt = parseModel(kept?.fallback)
-        const fallbackPaced = paced?.hold !== undefined && fallbackAt !== undefined ? yield* holdOf(fallbackAt, latch.agent) : undefined
+        const fallbackPaced = paced?.hold !== undefined && fallbackAt !== undefined ? yield* holdOf(fallbackAt, latch.agent, latch.parent) : undefined
         const fallbackHold = fallbackPaced?.hold
         const asked: Asked = { ...paced?.asked, ...(fallbackPaced === undefined ? {} : fallbackAsked(fallbackPaced.replies)) }
         const fallback: Fallback | undefined =

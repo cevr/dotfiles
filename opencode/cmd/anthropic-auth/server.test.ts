@@ -74,6 +74,7 @@ interface Registration {
 interface QuotaHandlers {
   readonly reading: (input: unknown) => Promise<Tree>
   readonly usage: (input: unknown) => Promise<Tree>
+  readonly claim: (input: unknown) => Promise<Tree>
 }
 
 /** The method and RPC handlers as the host receives them. */
@@ -242,11 +243,12 @@ function makeMockContext() {
       },
     },
     rpc: {
-      register: (definition: { id: string }, handlers: Record<'reading' | 'usage', HostHandler>) =>
+      register: (definition: { id: string }, handlers: Record<'reading' | 'usage' | 'claim', HostHandler>) =>
         Effect.sync(() => {
           rpcHandlers.set(definition.id, {
             reading: (input) => run(handlers.reading(input)).then((value) => value as Tree),
             usage: (input) => run(handlers.usage(input)).then((value) => value as Tree),
+            claim: (input) => run(handlers.claim(input)).then((value) => value as Tree),
           })
           return {
             events: {
@@ -3931,6 +3933,96 @@ describe('credential choice, wire extras and quota readings', () => {
     } finally {
       network.fetch = originalFetch
     }
+  })
+
+  describe('claiming a reset grant (a stand-in Anthropic; never the real endpoint)', () => {
+    /** A network that answers the profile with `org-1` and a claim with `claim`, recording each request. */
+    const claimNetwork = (claim: () => Response) => {
+      const seen: Array<{ readonly request: Request; readonly body: string }> = []
+      const fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+        const request = new Request(input, init)
+        seen.push({ request, body: init?.body === undefined ? '' : String(init.body) })
+        const path = new URL(request.url).pathname
+        if (path === '/api/oauth/profile') return Response.json({ account: { uuid: 'acct-1' }, organization: { uuid: 'org-1' } })
+        if (path === '/api/organizations/org-1/reset_rate_limits') return claim()
+        return Response.json({
+          five_hour: { utilization: 0, resets_at: new Date(Date.now() + 5 * HOUR).toISOString() },
+          seven_day: { utilization: 40, resets_at: null },
+        })
+      })
+      return { seen, fetch }
+    }
+
+    test('claims for the login\'s organization under the pool\'s request id, and a reset drops the held refusal', async () => {
+      const { ctx, sessionHooks, rpcHandlers, accessOf } = twoAccounts()
+      await plugin.setup(ctx)
+      const sent = await send(sessionHooks, { 'x-opencode-credential-id': 'cred-a' })
+      await answer(
+        sessionHooks,
+        sent,
+        Response.json({ type: 'error', error: { type: 'rate_limit_error', message: 'Rate limited.' } }, { status: 429, headers: { 'retry-after': '600' } }),
+      )
+      const stand = claimNetwork(() => Response.json({ result: 'reset' }))
+      const originalFetch = network.fetch
+      network.fetch = stand.fetch
+      try {
+        const quota = rpcHandlers.get('credential-quota.anthropic')
+        expect<unknown>(await quota.claim({ credentialID: 'cred-a', creditID: 'grant_4', requestID: 'pool-0123abcd' })).toEqual({ outcome: 'reset' })
+        expect(stand.seen.map(({ request }) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
+          'GET /api/oauth/profile',
+          'POST /api/organizations/org-1/reset_rate_limits',
+        ])
+        expect(JSON.parse(lastOf(stand.seen).body)).toEqual({ program: 'cedar_ember', grant_id: 'grant_4', request_id: 'pool-0123abcd' })
+        expect(lastOf(stand.seen).request.headers.get('authorization')).toBe(`Bearer ${accessOf['cred-a']}`)
+        const after = await quota.usage({ credentialID: 'cred-a' })
+        expect<unknown>(after.reading.refusal).toBeUndefined()
+      } finally {
+        network.fetch = originalFetch
+      }
+    })
+
+    test('each answer in the pool\'s words: not limited, already used, ineligible, cooldown, unavailable, 429 and 401', async () => {
+      const cases: ReadonlyArray<readonly [Response, unknown]> = [
+        [Response.json({ result: 'not_limited' }), { outcome: 'nothing-to-reset', message: 'not_limited' }],
+        [Response.json({ result: 'already_used' }), { outcome: 'already-redeemed', message: 'already_used' }],
+        [Response.json({ result: 'ineligible' }), { outcome: 'no-credit', message: 'ineligible' }],
+        [Response.json({ result: 'cooldown' }), { outcome: 'cooldown', message: 'cooldown' }],
+        [Response.json({ result: 'unavailable' }), { outcome: 'unconfirmed', message: 'unavailable' }],
+        [Response.json({ result: 'surprise' }), { outcome: 'failed', message: 'the claim\'s answer does not read: "surprise"' }],
+        [new Response('slow down', { status: 429 }), { outcome: 'rate-limited', message: 'Claude is rate limiting resets' }],
+        [new Response('no', { status: 401 }), { outcome: 'signed-out', message: 'the claim was refused: 401' }],
+      ]
+      const { ctx, rpcHandlers } = twoAccounts()
+      await plugin.setup(ctx)
+      const originalFetch = network.fetch
+      try {
+        for (const [response, expected] of cases) {
+          network.fetch = claimNetwork(() => response.clone()).fetch
+          expect<unknown>(await rpcHandlers.get('credential-quota.anthropic').claim({ credentialID: 'cred-a', creditID: 'grant_4', requestID: 'pool-1' })).toEqual(expected)
+        }
+      } finally {
+        network.fetch = originalFetch
+      }
+    })
+
+    test('a malformed grant id or claim is never sent', async () => {
+      const { ctx, rpcHandlers } = twoAccounts()
+      await plugin.setup(ctx)
+      const stand = claimNetwork(() => Response.json({ result: 'reset' }))
+      const originalFetch = network.fetch
+      network.fetch = stand.fetch
+      try {
+        const quota = rpcHandlers.get('credential-quota.anthropic')
+        expect<unknown>(await quota.claim({ credentialID: 'cred-a', creditID: 'grant/../x', requestID: 'pool-1' })).toEqual({
+          outcome: 'failed',
+          message: 'refusing to claim with a malformed grant or request id',
+        })
+        expect<unknown>(await quota.claim({ credentialID: 'cred-a' })).toEqual({ outcome: 'failed', message: 'malformed claim' })
+        expect(stand.seen).toEqual([])
+      } finally {
+        network.fetch = originalFetch
+      }
+    })
   })
 
   describe('a credential another plugin keeps (a credential source)', () => {

@@ -1,6 +1,8 @@
 /**
  * A fake Anthropic API on a loopback port, for the pool's deterministic
- * tests: `POST /v1/messages` (streamed or not), `GET /api/oauth/usage` and
+ * tests: `POST /v1/messages` (streamed or not), `GET /api/oauth/usage` (with
+ * `cedar_ember` reset grants when asked), `GET /api/oauth/profile`, the
+ * claim of a grant (`POST /api/organizations/<org>/reset_rate_limits`) and
  * `POST /v1/oauth/token` (a JSON body, as the auth plugin sends, or a form,
  * as gent sends). It answers with the headers the real API sends a
  * Claude plan login: the unified quota headers on every answer, a refusal
@@ -94,12 +96,39 @@ export interface FakeAnthropicOptions {
   readonly now?: () => number
   /** The answer to each refresh of a known refresh token. Default: rotate at once. */
   readonly token?: (account: string) => FakeTokenAnswer
+  /** The `cedar_ember` reset grants the usage endpoint lists for an account (asked with `?cedar_ember=1`). Default none. */
+  readonly grants?: (account: string) => ReadonlyArray<FakeGrant>
+  /** The answer to a claim of a grant. Default `reset`, and `already_used` for a request id claimed before. */
+  readonly claim?: (account: string, grant: string) => FakeClaimResult
+}
+
+/** A reset grant as the usage endpoint lists it. */
+export interface FakeGrant {
+  readonly id: string
+  readonly resetsLeft: number
+  readonly endsAt: number
+  readonly clears?: ReadonlyArray<string>
+}
+
+/** What a claim answers: a `result`, or a 429. */
+export type FakeClaimResult = "reset" | "not_limited" | "already_used" | "cooldown" | "ineligible" | "unavailable" | "rate-limited"
+
+/** A claim the fake received: never a token. */
+export interface ReceivedClaim {
+  readonly account: string | undefined
+  readonly organization: string
+  readonly program: unknown
+  readonly grant: unknown
+  readonly requestID: unknown
+  readonly result: string
 }
 
 export interface FakeAnthropic {
   readonly url: string
   readonly port: number
   readonly received: ReadonlyArray<ReceivedRequest>
+  /** Every claim of a reset grant, in order. */
+  readonly claims: ReadonlyArray<ReceivedClaim>
   /** The account's current tokens: they change when it refreshes. */
   readonly tokens: (account: string) => FakeAccount
   readonly stop: () => Promise<void>
@@ -228,6 +257,8 @@ export const startFakeAnthropic = (options: FakeAnthropicOptions): FakeAnthropic
   const current = new Map<string, FakeAccount>(Object.entries(options.accounts))
   const counts = new Map<string, number>()
   const received: ReceivedRequest[] = []
+  const claims: ReceivedClaim[] = []
+  const claimed = new Set<string>()
 
   const accountOf = (request: Request): string | undefined => {
     const token = request.headers.get("authorization")?.replace(/^Bearer /, "")
@@ -345,7 +376,49 @@ export const startFakeAnthropic = (options: FakeAnthropicOptions): FakeAnthropic
       utilization: value.utilization * 100,
       resets_at: new Date(value.resetAt).toISOString(),
     })
-    return Response.json({ five_hour: window(quota.fiveHour), seven_day: window(quota.sevenDay) })
+    const grants = new URL(request.url).searchParams.get("cedar_ember") === "1" ? (options.grants?.(account) ?? []) : undefined
+    return Response.json({
+      five_hour: window(quota.fiveHour),
+      seven_day: window(quota.sevenDay),
+      ...(grants === undefined
+        ? {}
+        : {
+            cedar_ember: {
+              eligible: grants.length > 0,
+              grants: grants.map((grant) => ({
+                id: grant.id,
+                resets_left: grant.resetsLeft,
+                ends_at: new Date(grant.endsAt).toISOString(),
+                paused: false,
+                usable_now: grant.resetsLeft > 0,
+                ...(grant.clears === undefined ? {} : { clears: grant.clears }),
+              })),
+            },
+          }),
+    })
+  }
+
+  /** The login's profile: its organization is `org-<account>`. */
+  const profile = (request: Request, path: string) => {
+    const account = accountOf(request)
+    record(request, path, account, account === undefined ? 401 : 200)
+    if (account === undefined) return new Response(errorBody("authentication_error", "invalid token"), { status: 401 })
+    return Response.json({ account: { uuid: `acct-${account}` }, organization: { uuid: `org-${account}` } })
+  }
+
+  /** A claim of a grant: answered by the test's `claim`, a request id seen before `already_used`. */
+  const claim = async (request: Request, path: string, organization: string) => {
+    const account = accountOf(request)
+    const body = (await request.json()) as Record<string, unknown>
+    const known = account !== undefined && organization === `org-${account}`
+    const seen = typeof body.request_id === "string" && claimed.has(body.request_id)
+    const result = !known ? "unauthorized" : seen ? "already_used" : (options.claim?.(account, String(body.grant_id)) ?? "reset")
+    if (typeof body.request_id === "string" && result === "reset") claimed.add(body.request_id)
+    claims.push({ account, organization, program: body.program, grant: body.grant_id, requestID: body.request_id, result })
+    const status = result === "unauthorized" ? 403 : result === "rate-limited" ? 429 : 200
+    record(request, path, account, status)
+    if (status !== 200) return new Response(errorBody("permission_error", result), { status })
+    return Response.json({ result })
   }
 
   /** A refresh as JSON (the auth plugin's) or as a form (gent's). */
@@ -398,6 +471,9 @@ export const startFakeAnthropic = (options: FakeAnthropicOptions): FakeAnthropic
       if (request.method === "POST" && path === "/v1/messages") return messages(request, path)
       if (request.method === "GET" && path === "/api/oauth/usage") return usage(request, path)
       if (request.method === "POST" && path === "/v1/oauth/token") return token(request, path)
+      if (request.method === "GET" && path === "/api/oauth/profile") return profile(request, path)
+      const claimPath = /^\/api\/organizations\/([^/]+)\/reset_rate_limits$/.exec(path)
+      if (request.method === "POST" && claimPath !== null) return claim(request, path, decodeURIComponent(claimPath[1] ?? ""))
       record(request, path, accountOf(request), 404)
       return new Response("not found", { status: 404 })
     },
@@ -407,6 +483,7 @@ export const startFakeAnthropic = (options: FakeAnthropicOptions): FakeAnthropic
     url: `http://127.0.0.1:${server.port}`,
     port: server.port ?? 0,
     received,
+    claims,
     tokens: (account) => {
       const found = current.get(account)
       if (found === undefined) throw new Error(`no fake account ${account}`)

@@ -5,7 +5,7 @@
 import { Context, type Effect, Schema } from "effect"
 import type { ConnectionInfo } from "./rate-limit.ts"
 import type { CallbackParams, OAuthCredential, TokenGrant } from "./oauth.ts"
-import type { QuotaReading } from "./quota.ts"
+import type { ClaimAnswer, QuotaReading } from "./quota.ts"
 import type { SourcedCredential } from "./credential-source.ts"
 
 // ── failures ──
@@ -122,11 +122,17 @@ export type UsageAnswer =
   /** Not read: an untrusted endpoint, or an answer that is not a success. */
   | { readonly status: "unread" }
 
-/** Anthropic's usage endpoint: what a login has left of its windows. */
+/** Anthropic's usage endpoints: what a login has left of its windows, and the claim of one of its reset grants. */
 export class UsageEndpoint extends Context.Service<
   UsageEndpoint,
   {
     readonly read: (access: string, userAgent: string) => Effect.Effect<UsageAnswer, UsageFailed>
+    /**
+     * Claim the `cedar_ember` grant `grantID` for the login's organization
+     * (read from its profile), under the idempotency key `requestID`: the
+     * same id claims once. Never fails: a failure is its outcome.
+     */
+    readonly reset: (access: string, userAgent: string, grantID: string, requestID: string) => Effect.Effect<ClaimAnswer>
   }
 >()("dotfiles-opencode/anthropic-auth/UsageEndpoint") {}
 

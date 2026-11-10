@@ -116,6 +116,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/opencode-pool": "workspace:*",
+        "@dotfiles/opencode-questions": "workspace:*",
       },
     },
     "cmd/prime": {

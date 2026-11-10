@@ -34,6 +34,7 @@ test("the pool is asked of a start's model by its bare id, however it is named, 
           pace.pace("anthropic", "anthropic/claude-fable-5-2#high"),
           pace.pace("anthropic", "claude-opus-5-5#max"),
           pace.pace("anthropic"),
+          pace.pace("anthropic", "claude-opus-5-5", "ses_parent"),
         ]),
       ).pipe(Effect.provide(pool))
       expect(asked).toEqual([
@@ -41,6 +42,7 @@ test("the pool is asked of a start's model by its bare id, however it is named, 
         { providerID: "anthropic", model: "claude-fable-5-2" },
         { providerID: "anthropic", model: "claude-opus-5-5" },
         { providerID: "anthropic" },
+        { providerID: "anthropic", model: "claude-opus-5-5", sessionID: "ses_parent" },
       ])
     }),
   ))

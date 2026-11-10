@@ -47,3 +47,12 @@ test("a sheet is stored as plain JSON, with no undefined fields", async () => {
   )
   expect(JSON.stringify(entries.get(keyOf("ses_a")))).toBe('{"next":2,"rows":[{"id":"q1","sessionID":"ses_a","question":"Port?","assume":"a","askedAt":1,"options":[{"label":"a"}]}]}')
 })
+
+test("a plugin's question keeps who asked it, and under which key, across a read", async () => {
+  const entries = new Map<string, Schema.Json>()
+  const row = { id: "q1", sessionID: "ses_a", question: "Claim it?", assume: "no", askedAt: 1, from: { plugin: "dotfiles-opencode.pool", key: "hold-1" } }
+  const read = await Effect.runPromise(
+    QuestionStore.use((store) => store.write("ses_a", { next: 2, rows: [row] }).pipe(Effect.andThen(store.read("ses_a")))).pipe(Effect.provide(layer(storage(entries)))),
+  )
+  expect(read.rows).toEqual([row])
+})

@@ -6,10 +6,11 @@
 // plugin on the host shares.
 // The aggregate is the one decision entry point, so the stories run exactly
 // what these do. The plugin calls these and nothing else.
-import { Clock, Context, Effect, Layer, Semaphore, Stream, SynchronizedRef } from "effect"
+import { Clock, Context, Effect, Layer, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import {
   AccountPool,
+  ClearHold,
   ListLogins,
   PlaceRequest,
   PruneLedger,
@@ -27,7 +28,12 @@ import { held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, t
 import * as FleetModel from "./fleet.ts"
 import { poolPace, UNPOOLED, type Pace } from "./pace.ts"
 import type { QuotaReading } from "./quota.ts"
-import { FleetStore, Ledger, Logins, Peers, Quota, type LoginsUnavailable } from "./service.ts"
+import * as ResetsModel from "./resets.ts"
+import type { ResetProvider } from "./resets.ts"
+import { FleetStore, Ledger, Logins, Owner, Peers, Quota, ResetsStore, type LoginsUnavailable } from "./service.ts"
+
+/** A question gone from the owner's tray this long after it was asked, with no answer, was dismissed. */
+const ANSWER_GRACE_MS = 60_000
 import type {
   Alerts,
   FleetStatus,
@@ -37,6 +43,7 @@ import type {
   LostLogin,
   PoolsStatus,
   RefreshOutage,
+  ResetsStatus,
   SessionAnswer,
   SessionLogins,
   SessionQuery,
@@ -58,6 +65,12 @@ export interface Config extends Rules {
   readonly paced?: Readonly<Record<string, PoolId>>
   /** This host in the fleet, and what an admitted agent costs the pace until it settles; default `DEFAULT_FLEET`. */
   readonly fleet?: FleetConfig
+  /**
+   * The pools whose rate-limit resets the pool works, by pool, and whose they
+   * are: a Claude pool's grants are asked about, a Codex pool's credits
+   * claimed (resets.ts). A pool not named has its resets left alone.
+   */
+  readonly resets?: Readonly<Record<string, ResetProvider>>
 }
 
 export interface FleetConfig {
@@ -137,7 +150,7 @@ export class Pool extends Context.Service<
      * Whether a new agent on the provider may start now; of `model`, when
      * named, so a window of that model's own (`7d:Fable`) can hold it too.
      */
-    readonly pace: (providerID: string, model?: string) => Effect.Effect<Pace, LoginsUnavailable>
+    readonly pace: (providerID: string, model?: string, sessionID?: string) => Effect.Effect<Pace, LoginsUnavailable>
     /** Each pool's accounts, holds and readings, and its outside stores. */
     readonly status: Effect.Effect<PoolsStatus, LoginsUnavailable>
     /** The account a session is on, with its label, hold and reading; nothing when the pool has none to name. */
@@ -158,6 +171,16 @@ export class Pool extends Context.Service<
     readonly poll: Effect.Effect<void>
     /** This host's starts and each peer, for the pane. */
     readonly fleet: Effect.Effect<FleetStatus>
+    /**
+     * Work the resets: read the owner's answers, then have the Resets
+     * aggregate review every pool, and carry out what it decides (claims,
+     * questions, withdrawals). The sweep and a held pace run it.
+     */
+    readonly reviewResets: Effect.Effect<void>
+    /** Read the owner's answers each time the questions change, until interrupted. */
+    readonly followAnswers: Effect.Effect<void>
+    /** The resets being worked and the claims made, for the pane. */
+    readonly resets: Effect.Effect<ResetsStatus>
   }
 >()("dotfiles-opencode/pool/Pool") {}
 
@@ -175,6 +198,13 @@ export const layer = (config: Config) =>
       const fleetConfig = config.fleet ?? DEFAULT_FLEET
       // The fleet is decided one command at a time in this instance; another instance's write between a read and a record loses nothing, a start being a key of its own.
       const fleetLock = yield* Semaphore.make(1)
+      const resetsStore = yield* ResetsStore
+      const owner = yield* Owner
+      const scope = yield* Scope.Scope
+      // The resets are decided one command at a time in this instance; another instance's claim of the same hold is the same claim (its request id).
+      const resetsLock = yield* Semaphore.make(1)
+      // One review at a time: a review carries out claims, which take seconds.
+      const reviewing = yield* Semaphore.make(1)
 
       /**
        * Have the aggregate decide a command against the pool's state, fold
@@ -335,7 +365,11 @@ export const layer = (config: Config) =>
             yield* apply(where.pool, where.id, PruneLedger.make({}))
           }),
         { discard: true },
-      ).pipe(Effect.withSpan("Pool.sweep"))
+      ).pipe(
+        // The fresh readings may lift a hold (a question withdrawn) or let a credit expire unused (a claim due).
+        Effect.andThen(Effect.suspend(() => reviewResets)),
+        Effect.withSpan("Pool.sweep"),
+      )
 
       /** Have the Fleet aggregate decide a command against the host's fleet, and record what it decides. */
       const sendFleet = (command: FleetModel.Command) =>
@@ -346,7 +380,161 @@ export const layer = (config: Config) =>
           return events
         }).pipe(fleetLock.withPermits(1))
 
-      const pace = Effect.fn("Pool.pace")(function* (providerID: string, model?: string) {
+      // ── Resets ──
+
+      /** Have the Resets aggregate decide a command against the host's state, and record what it decides. */
+      const sendResets = (command: ResetsModel.Command) =>
+        Effect.gen(function* () {
+          const state = yield* resetsStore.read
+          const events = yield* ResetsModel.Resets.decide(state, command, yield* Clock.currentTimeMillis)
+          if (events.length > 0) yield* resetsStore.record(events, fold(ResetsModel.Resets, events, state))
+          return events
+        }).pipe(resetsLock.withPermits(1))
+
+      /** Every pool whose resets are worked, as the review reads it: its accounts now, each with its label. */
+      const resetViews = Effect.gen(function* () {
+        const views: Array<ResetsModel.PoolView> = []
+        const now = yield* Clock.currentTimeMillis
+        for (const [id, provider] of Object.entries(config.resets ?? {})) {
+          const where = poolOf(PoolId.make(id))
+          if (where === undefined) continue
+          const accounts = status(yield* SynchronizedRef.get(where.pool), now, rules)
+          const labels: Record<string, string> = {}
+          for (const account of accounts) labels[account.credentialID] = yield* logins.label(where.id, account.credentialID)
+          views.push({ id, provider, accounts, labels })
+        }
+        return views
+      })
+
+      const windowsText = (windows: ReadonlyArray<{ readonly name: string; readonly utilization: number; readonly resetAt?: number }> | undefined) =>
+        (windows ?? [])
+          .filter((window) => window.name === "5h" || window.name === "7d")
+          .map((window) => `${window.name} ${Math.round(window.utilization * 100)}%${window.resetAt === undefined ? "" : ` (resets ${new Date(window.resetAt).toISOString()})`}`)
+          .join(", ")
+
+      /**
+       * Send a claim the aggregate decided, then read the account's usage
+       * again, record the outcome with the windows before and after, and log
+       * what it did to them: whether the weekly reset moved answers what a
+       * Claude grant does to the week.
+       */
+      const claim = Effect.fn("Pool.claim")(function* (reset: ResetsModel.Reset) {
+        const where = poolOf(PoolId.make(reset.pool))
+        if (where === undefined) return
+        const before = (yield* SynchronizedRef.get(where.pool)).readings[reset.credentialID]?.windows ?? []
+        const answer = yield* quota.claim(where.id, { credentialID: reset.credentialID, creditID: reset.creditID, requestID: reset.requestID })
+        // A claim that emptied the windows frees the account; the reading taken next holds it again if a window is still spent.
+        if (answer.outcome === "reset" || answer.outcome === "already-redeemed")
+          yield* apply(where.pool, where.id, ClearHold.make({ credentialID: reset.credentialID }))
+        const after = yield* quota.usage(where.id, reset.credentialID)
+        yield* take(where, reset.credentialID, after)
+        const settled = yield* sendResets(
+          ResetsModel.SettleClaim.make({
+            key: reset.key,
+            outcome: answer.outcome,
+            ...(answer.message === undefined ? {} : { message: answer.message }),
+            before,
+            ...(after === undefined ? {} : { after: after.windows }),
+          }),
+        )
+        const record = settled.flatMap((event) => (event._tag === "ClaimSettled" ? [event.claim] : []))[0]
+        yield* Effect.logInfo(
+          `pool resets: claimed a ${reset.provider} reset on ${reset.label} (${reset.why}): ${answer.outcome}${answer.message === undefined ? "" : ` (${answer.message})`}; ` +
+            `before ${windowsText(before) || "unread"}; after ${windowsText(after?.windows) || "unread"}; the weekly reset ${record?.weekly ?? "unread"}`,
+        )
+      })
+
+      /** Carry out what the aggregate decided. */
+      const carry = (events: ReadonlyArray<ResetsModel.Event>): Effect.Effect<void> =>
+        Effect.forEach(
+          events,
+          (event) => {
+            switch (event._tag) {
+              case "ClaimDue":
+                return claim(event.reset)
+              case "OwnerAsked":
+                return owner
+                  .ask({
+                    sessionID: event.reset.sessionID ?? "",
+                    key: event.reset.key,
+                    question: event.reset.question ?? "",
+                    header: ResetsModel.claudeHeader(event.reset.label),
+                    options: [{ label: ResetsModel.CLAIM }, { label: ResetsModel.KEEP }],
+                    assume: ResetsModel.ASSUME,
+                  })
+                  .pipe(
+                    Effect.tap((asked) =>
+                      asked
+                        ? Effect.logInfo(`pool resets: asked the owner about a Claude reset on ${event.reset.label}`)
+                        : Effect.logWarning(`pool resets: the owner could not be asked about a Claude reset on ${event.reset.label}`),
+                    ),
+                  )
+              case "AskWithdrawn":
+                return owner.withdraw(event.key).pipe(Effect.andThen(Effect.logInfo(`pool resets: withdrew the question (${event.why})`)))
+              case "AnswerDeclined":
+                return owner.withdraw(event.key)
+              case "WaitNoted":
+              case "ClaimSettled":
+              case "ResetsForgotten":
+                return Effect.void
+            }
+          },
+          { discard: true },
+        )
+
+      /**
+       * The owner's answers to the questions open: an answer is taken (a yes
+       * claims), and a question gone without one (dismissed, its session
+       * deleted) is a no once it has had a minute to be written.
+       */
+      const takeAnswers = Effect.gen(function* () {
+        const state = yield* resetsStore.read
+        const open = Object.values(state.resets).filter((reset) => reset.stage === "asked")
+        if (open.length === 0) return
+        const answers = yield* owner.answers
+        if (answers === undefined) return
+        const now = yield* Clock.currentTimeMillis
+        for (const reset of open) {
+          const found = answers.find((row) => row.key === reset.key)
+          if (found !== undefined && found.answer === undefined) continue
+          if (found === undefined && now - reset.at < ANSWER_GRACE_MS) continue
+          yield* carry(yield* sendResets(ResetsModel.TakeAnswer.make({ key: reset.key, ...(found?.answer === undefined ? {} : { answer: found.answer }) })))
+          if (found !== undefined) yield* owner.withdraw(reset.key)
+        }
+      })
+
+      const reviewResets = Effect.gen(function* () {
+        if (Object.keys(config.resets ?? {}).length === 0) return
+        yield* takeAnswers
+        yield* carry(yield* sendResets(ResetsModel.Review.make({ pools: yield* resetViews })))
+      }).pipe(
+        reviewing.withPermits(1),
+        Effect.catchCause((cause) => Effect.logWarning("pool resets: a review failed", cause)),
+        Effect.withSpan("Pool.reviewResets"),
+      )
+
+      const followAnswers = owner.changes.pipe(Stream.runForEach(() => reviewResets))
+
+      const resetsStatus = Effect.gen(function* () {
+        const state = yield* resetsStore.read
+        return {
+          resets: Object.values(state.resets).toSorted((left, right) => right.at - left.at),
+          claims: [...state.claims].reverse(),
+        } satisfies ResetsStatus
+      }).pipe(Effect.withSpan("Pool.resets"))
+
+      const pace = Effect.fn("Pool.pace")(function* (providerID: string, model?: string, sessionID?: string) {
+        const answer = yield* paceOf(providerID, model)
+        const id = measuredBy(config, providerID)
+        // A start held by a measured pace waits: the resets are reviewed for it, without holding up the answer.
+        if (!answer.ok && answer.measured && id !== undefined && config.resets?.[id] !== undefined) {
+          yield* sendResets(ResetsModel.NoteWait.make({ pool: id, ...(sessionID === undefined ? {} : { sessionID }) }))
+          yield* Effect.forkIn(reviewResets, scope)
+        }
+        return answer
+      })
+
+      const paceOf = Effect.fn("Pool.paceOf")(function* (providerID: string, model?: string) {
         const paced = poolOf(measuredBy(config, providerID))
         if (paced === undefined) return UNPOOLED
         yield* refresh(paced, false)
@@ -485,6 +673,9 @@ export const layer = (config: Config) =>
         report,
         poll,
         fleet: fleetStatus,
+        reviewResets,
+        followAnswers,
+        resets: resetsStatus,
       }
     }),
   )

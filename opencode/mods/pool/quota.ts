@@ -62,6 +62,31 @@ export const QuotaResets = Schema.Struct({
 })
 export type QuotaResets = typeof QuotaResets.Type
 
+/**
+ * What a claim of a reset came to, in one vocabulary for both providers:
+ * `reset` (the windows were emptied), `nothing-to-reset` (not limited),
+ * `no-credit` (none left, or ineligible), `already-redeemed` (this request id
+ * was claimed before), `cooldown`, `rate-limited`, `unconfirmed` (the
+ * provider could not say), `signed-out` (the login was refused), `failed` (no
+ * answer, or one that does not read).
+ */
+export const ClaimOutcome = Schema.Literals([
+  "reset",
+  "nothing-to-reset",
+  "no-credit",
+  "already-redeemed",
+  "cooldown",
+  "rate-limited",
+  "unconfirmed",
+  "signed-out",
+  "failed",
+])
+export type ClaimOutcome = typeof ClaimOutcome.Type
+
+/** The quota RPC's `claim` answer: the outcome, and the provider's own word when it had one. */
+export const ClaimAnswer = Schema.Struct({ outcome: ClaimOutcome, message: Schema.optionalKey(Schema.String) })
+export type ClaimAnswer = typeof ClaimAnswer.Type
+
 export const QuotaReading = Schema.Struct({
   at: Schema.Number,
   status: Schema.optionalKey(QuotaStatus),
@@ -170,7 +195,9 @@ export function asReading(value: unknown): QuotaReading | undefined {
 /**
  * The quota RPC a provider's auth plugin serves for its integration: the
  * newest reading it holds of a login, a fresh read of the login's usage
- * endpoint, and each reading as it comes. The wire contract, kept byte for byte.
+ * endpoint, a claim of one of its resets (`claim`: the reset `creditID`
+ * names, under the idempotency key `requestID`; never called by a read), and
+ * each reading as it comes. The wire contract, kept byte for byte.
  */
 export function quotaProtocol(integrationID: string) {
   const credential = {
@@ -179,11 +206,17 @@ export function quotaProtocol(integrationID: string) {
     required: ["credentialID"],
   } as const
   const answer = { type: "object", properties: { reading: {} } } as const
+  const claim = {
+    type: "object",
+    properties: { credentialID: { type: "string" }, creditID: { type: "string" }, requestID: { type: "string" } },
+    required: ["credentialID", "creditID", "requestID"],
+  } as const
   return {
     id: `credential-quota.${integrationID}`,
     methods: {
       reading: { input: credential, output: answer },
       usage: { input: credential, output: answer },
+      claim: { input: claim, output: { type: "object", properties: { outcome: { type: "string" }, message: { type: "string" } } } },
     },
     events: {
       reading: {

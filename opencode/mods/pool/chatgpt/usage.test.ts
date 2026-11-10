@@ -188,6 +188,53 @@ describe("the ChatGPT quota source", () => {
     }
   })
 
+  test("a claim consumes the credit under the pool's request id on a stand-in backend (never the real one), each code in the pool's words", async () => {
+    const posts: Array<{ readonly path: string; readonly body: unknown; readonly auth: string | null; readonly account: string | null }> = []
+    let answer: () => Response = () => Response.json({ code: "reset", windows_reset: 2 })
+    const server = Bun.serve({
+      port: 0,
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname
+        if (request.method !== "POST") return new Response("no", { status: 405 })
+        posts.push({ path, body: await request.json(), auth: request.headers.get("authorization"), account: request.headers.get("chatgpt-account-id") })
+        return answer()
+      },
+    })
+    try {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const source = yield* make({
+              login: (credentialID) => Effect.succeed(credentialID === "chatgpt" ? { access: "good", accountID: "acct-1" } : undefined),
+              url: `http://127.0.0.1:${server.port}/backend-api/wham/usage`,
+            })
+            const claim = (credentialID = "chatgpt") => source.rpc.claim({ credentialID, creditID: "credit-a", requestID: "pool-1" })
+            expect(yield* claim()).toEqual({ outcome: "reset", message: "2 windows reset" })
+            expect(posts).toEqual([
+              { path: "/backend-api/wham/rate-limit-reset-credits/consume", body: { redeem_request_id: "pool-1", credit_id: "credit-a" }, auth: "Bearer good", account: "acct-1" },
+            ])
+            const cases: ReadonlyArray<readonly [Response, unknown]> = [
+              [Response.json({ code: "nothing_to_reset" }), { outcome: "nothing-to-reset", message: "nothing_to_reset" }],
+              [Response.json({ code: "no_credit" }), { outcome: "no-credit", message: "no_credit" }],
+              [Response.json({ code: "already_redeemed" }), { outcome: "already-redeemed", message: "already_redeemed" }],
+              [Response.json({ code: "later" }), { outcome: "failed", message: 'the claim\'s answer does not read: "later"' }],
+              [new Response("slow", { status: 429 }), { outcome: "rate-limited", message: "ChatGPT is rate limiting resets" }],
+              [new Response("no", { status: 401 }), { outcome: "signed-out", message: "the claim was refused: 401" }],
+              [new Response("oops", { status: 500 }), { outcome: "failed", message: "the claim answered 500" }],
+            ]
+            for (const [response, expected] of cases) {
+              answer = () => response.clone()
+              expect<unknown>(yield* claim()).toEqual(expected)
+            }
+            expect(yield* claim("not-chatgpt")).toEqual({ outcome: "signed-out", message: "not a ChatGPT login" })
+          }),
+        ),
+      )
+    } finally {
+      server.stop(true)
+    }
+  })
+
   test("a reading a response carried is held and published, unless it is older than the one held", async () => {
     await Effect.runPromise(
       Effect.scoped(

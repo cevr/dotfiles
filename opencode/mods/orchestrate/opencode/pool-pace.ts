@@ -10,9 +10,10 @@ import { PoolPace } from "../service.ts"
 /**
  * The pool's `pace` method, as the plugin's RPC client calls it: of a start's
  * `model` by its bare id (`claude-fable-5-2`), the form the pool matches a
- * model's own window (`7d:Fable`) against.
+ * model's own window (`7d:Fable`) against, and from the session whose start
+ * would wait, where the pool asks the owner about a reset.
  */
-export type Ask = (input: { readonly providerID: string; readonly model?: string }) => Effect.Effect<unknown, unknown>
+export type Ask = (input: { readonly providerID: string; readonly model?: string; readonly sessionID?: string }) => Effect.Effect<unknown, unknown>
 
 /** The pool's `started` method. */
 export type Tell = (input: { readonly providerID: string }) => Effect.Effect<unknown, unknown>
@@ -31,9 +32,13 @@ const decode = Schema.decodeUnknownOption(Pace)
 export const layer = (ask: Ask, tell: Tell) =>
   Layer.succeed(PoolPace, {
     pace: Effect.fn("PoolPace.pace")(
-      function* (providerID: string, model?: string) {
+      function* (providerID: string, model?: string, sessionID?: string) {
         const id = model === undefined ? undefined : bareId(model)
-        const answer = yield* ask({ providerID, ...(id === undefined || id === "" ? {} : { model: id }) }).pipe(Effect.timeoutOption(TIMEOUT))
+        const answer = yield* ask({
+          providerID,
+          ...(id === undefined || id === "" ? {} : { model: id }),
+          ...(sessionID === undefined ? {} : { sessionID }),
+        }).pipe(Effect.timeoutOption(TIMEOUT))
         if (answer._tag === "None") return FailedOpen.make({ why: `timeout: no answer in ${TIMEOUT}` })
         const pace = decode(answer.value)
         return pace._tag === "Some" ? Answered.make({ pace: pace.value }) : FailedOpen.make({ why: `undecodable: ${clip(JSON.stringify(answer.value) ?? String(answer.value))}` })
