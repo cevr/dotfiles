@@ -57,18 +57,18 @@ describe.skipIf(!fork)("background shells in Prime", () => {
     const moved = frames.moved
     expect(lineOf(moved, "Ran printf")).toBe("● Ran printf 'tick 1\\n'; sleep 600 · moved to the background")
     // The row's body is the handle's output, without the header the row already says.
-    expect(transcript(moved).join("\n")).toMatch(/moved to the background\n\s*│ tick 1\n\s*│ It keeps running/)
+    expect(transcript(moved).join("\n")).toMatch(/moved to the background\n\s*│ tick 1\n\s*│ PID: \d+\n\s*│\n\s*│ Do not start another copy while it is running\.\n/)
     expect(lineOf(moved, "Started printf")).toBe("● Started printf 'bg\\n'; sleep 600 in the background")
     expect(lineOf(moved, DOCK)).toBe("◆ 0 subagents  ·  2 shells")
   })
 
   test("the agent gets the shell's handle at the move: its header, its output so far and how to act on it", () => {
     const [moved] = results()
-    expect(moved).toMatch(/^(sh_\w+) · running · \d+\.\d s · moved to the background at its 2 s limit\ntick 1\nIt keeps running, and you will be notified when it ends\. /)
+    expect(moved).toMatch(/^(sh_\w+) · running · \d+\.\d s · moved to the background at its 2 s limit\ntick 1\nPID: \d+\n\nDo not start another copy while it is running\.\n\nIt keeps running, and you will be notified when it ends\. /)
     expect(moved).toMatch(/shell\(\{ action: "check", id: "sh_\w+" \}\) checks it, shell\(\{ action: "wait", id: "sh_\w+", ms: <ms> \}\) waits for it to end, shell\(\{ action: "kill", id: "sh_\w+" \}\) stops it\./)
     const started = results()[4]
     // Its `bg` line may or may not have been written by the time the handle is taken.
-    expect(started).toMatch(/^sh_\w+ · running · \d+\.\d s · started in the background\n(\(no output yet\)|bg)\nIt keeps running/)
+    expect(started).toMatch(/^sh_\w+ · running · \d+\.\d s · started in the background\n(\(no output yet\)|bg)\nPID: \d+\n\nIt keeps running/)
   })
 
   test("the agent lists, checks, waits on and kills through the handle; a kill it asked for sends it no stop notice", () => {
