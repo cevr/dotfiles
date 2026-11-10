@@ -8,6 +8,7 @@
     "./server": "./server.ts"
   },
   "dependencies": {
-    "@dotfiles/opencode-pool": "workspace:*"
+    "@dotfiles/opencode-pool": "workspace:*",
+    "@dotfiles/opencode-questions": "workspace:*"
   }
 }

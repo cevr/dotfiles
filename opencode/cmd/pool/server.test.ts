@@ -15,13 +15,16 @@ import { CACHE_LIFE_MS, WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
 import * as FleetTest from "@dotfiles/opencode-pool/memory/fleet"
 import * as LedgerTest from "@dotfiles/opencode-pool/memory/ledger"
 import * as LoginsTest from "@dotfiles/opencode-pool/memory/logins"
+import * as OwnerTest from "@dotfiles/opencode-pool/memory/owner"
 import * as PeersTest from "@dotfiles/opencode-pool/memory/peers"
 import * as QuotaTest from "@dotfiles/opencode-pool/memory/quota"
+import * as ResetsTest from "@dotfiles/opencode-pool/memory/resets"
 import type { Pace } from "@dotfiles/opencode-pool/pace"
 import type { QuotaReading } from "@dotfiles/opencode-pool/quota"
 import type { PublishedReading } from "@dotfiles/opencode-pool/service"
 import { GentSource } from "@dotfiles/opencode-pool/gent/store"
-import type { Alerts, FleetStatus, PoolsStatus, Report, SessionAnswer, SessionLogins } from "@dotfiles/opencode-pool/status"
+import type { Alerts, FleetStatus, PoolsStatus, Report, ResetsStatus, SessionAnswer, SessionLogins } from "@dotfiles/opencode-pool/status"
+import { spentAccount, startFakeChatGPT } from "../../tests/fake-chatgpt.ts"
 import Pool, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, live, make } from "./server.ts"
 
 const MINUTE = 60_000
@@ -67,6 +70,10 @@ interface World {
   readonly credentials: Map<string, unknown>
   /** The integration's active login, by integration. */
   readonly active: Map<string, string>
+  /** The owner the pool asks about a Claude reset. */
+  readonly owner: OwnerTest.MemoryOwner
+  /** Each subagent session's parent, by id. */
+  readonly parents: Map<string, string>
 }
 
 const world = (): World => ({
@@ -78,6 +85,8 @@ const world = (): World => ({
   peers: new Map(),
   credentials: new Map(),
   active: new Map(),
+  owner: OwnerTest.empty(),
+  parents: new Map(),
 })
 
 /** The outside systems as test layers over `state`. */
@@ -88,6 +97,8 @@ const testLayers = (state: World, published: Queue.Dequeue<PublishedReading>) =>
     LedgerTest.layer(state.storage),
     PeersTest.layer(state.peers),
     FleetTest.layer(state.storage),
+    ResetsTest.layer(state.storage),
+    OwnerTest.layer(state.owner),
   )
 
 /** A hook or RPC handler the plugin registered; a missing one fails the test. */
@@ -117,12 +128,59 @@ const start = (
     const published = yield* Queue.unbounded<PublishedReading>()
     const answer = ({ credentialID }: { readonly credentialID: string }) =>
       Effect.sync(() => ({ reading: state.readings.get(credentialID) ?? null }))
+    // The auth plugin's claim: recorded, never sent anywhere; a reset empties the account's 5-hour window.
+    const claims: Array<{ readonly credentialID: string; readonly creditID: string; readonly requestID: string }> = []
+    const claimOf = (input: { readonly credentialID: string; readonly creditID: string; readonly requestID: string }) =>
+      Effect.sync(() => {
+        claims.push(input)
+        const held = state.readings.get(input.credentialID)
+        if (held !== undefined)
+          state.readings.set(input.credentialID, {
+            ...held,
+            at: held.at + 1,
+            windows: held.windows.map((window) => (window.name === "5h" ? { ...window, utilization: 0 } : window)),
+          })
+        return { outcome: "reset" }
+      })
+    // The questions plugin's RPC over the world's owner: a question asked as the pool, read back and withdrawn.
+    const questionsRpc = {
+      askFor: (input: { readonly key: string; readonly plugin: string } & Record<string, unknown>) =>
+        Effect.sync(() => {
+          const question = input as unknown as OwnerTest.MemoryOwner["asked"][number]
+          if (!state.owner.questions.has(input.key)) {
+            state.owner.questions.set(input.key, { question })
+            state.owner.asked.push(question)
+          }
+          return { ok: true }
+        }),
+      asked: () =>
+        Effect.sync(() => ({
+          questions: [...state.owner.questions].map(([key, held]) => ({
+            sessionID: held.question.sessionID,
+            id: key,
+            key,
+            ...(held.answer === undefined ? {} : { answer: held.answer }),
+          })),
+        })),
+      withdrawFor: ({ key }: { readonly key: string }) =>
+        Effect.sync(() => {
+          state.owner.questions.delete(key)
+          state.owner.withdrawn.push(key)
+          return { ok: true }
+        }),
+      events: { subscribe: () => Stream.fromQueue(state.owner.beats) },
+    }
     const host = {
       options,
       session: {
         get: ({ sessionID }: { readonly sessionID: string }) => {
           const source = state.forks.get(sessionID)
-          return Effect.succeed({ id: sessionID, ...(source === undefined ? {} : { fork: { sessionID: source, boundary: {} } }) })
+          const parentID = state.parents.get(sessionID)
+          return Effect.succeed({
+            id: sessionID,
+            ...(source === undefined ? {} : { fork: { sessionID: source, boundary: {} } }),
+            ...(parentID === undefined ? {} : { parentID }),
+          })
         },
         hook: (name: string, callback: Hook) =>
           Effect.sync(() => {
@@ -165,8 +223,9 @@ const start = (
       },
       rpc: Object.assign(
         (definition: { readonly id: string }) => {
+          if (definition.id === "dotfiles-opencode.questions") return questionsRpc
           quotaIDs.push(definition.id)
-          return { reading: answer, usage: answer, events: { subscribe: () => Stream.fromQueue(published) } }
+          return { reading: answer, usage: answer, claim: claimOf, events: { subscribe: () => Stream.fromQueue(published) } }
         },
         {
           register: (definition: { readonly id: string }, handlers: Record<string, Handler>) =>
@@ -208,8 +267,11 @@ const start = (
       yield* (yield* registered(hooks, "experimental.idle"))({ sessionID, background: [] })
     })
     const method = (name: string) => Effect.flatMap(registered(rpc, "dotfiles-opencode.pool"), (handlers) => registered(handlers, name))
-    const pace = Effect.fn(function* (providerID: string) {
-      return (yield* (yield* method("pace"))({ providerID })) as Pace
+    const pace = Effect.fn(function* (providerID: string, sessionID?: string) {
+      return (yield* (yield* method("pace"))({ providerID, ...(sessionID === undefined ? {} : { sessionID }) })) as Pace
+    })
+    const resets = Effect.gen(function* () {
+      return (yield* (yield* method("resets"))({})) as ResetsStatus
     })
     const status = Effect.gen(function* () {
       return (yield* (yield* method("status"))({})) as PoolsStatus
@@ -264,6 +326,8 @@ const start = (
       started,
       report,
       fleet,
+      resets,
+      claims,
       responded,
       received,
       emit,
@@ -1177,3 +1241,125 @@ describe("a paced provider on the live adapters", () => {
       }),
     ))
 })
+
+describe("resets on the live adapters", () => {
+  const OPENAI = PoolId.make("openai")
+  const DAY = 86_400_000
+
+  /** A Claude login whose 5-hour window is spent, its week resetting in three days, with one reset grant. */
+  const spentClaude = (now: number): QuotaReading => ({
+    at: now,
+    windows: [
+      { name: "5h", utilization: 1, resetAt: now + 2 * HOUR },
+      { name: "7d", utilization: 0.4, resetAt: now + 3 * DAY },
+    ],
+    resets: {
+      available: 1,
+      credits: [{ id: "grant-1", count: 1, usable: true, expiresAt: now + 120 * DAY, clears: ["five_hour", "seven_day_overage_included"] }],
+    },
+  })
+
+  test("every Codex account spent and a start held: the pool consumes one credit, once, on the ChatGPT backend, and asks no one", async () => {
+    const fake = startFakeChatGPT()
+    const now = Date.now()
+    fake.accounts.set("acct-1", spentAccount("access-1", "credit-1", now))
+    try {
+      await scenario(
+        Effect.gen(function* () {
+          const state = world()
+          state.integration.connections.set(OPENAI, [{ type: "credential", id: "chatgpt-1", label: "ChatGPT", method: "oauth" }])
+          state.credentials.set("chatgpt-1", { type: "oauth", access: "access-1", refresh: "r", expires: now + DAY, metadata: { accountID: "acct-1" } })
+          const plugin = yield* start({ sweepMinutes: 0, paced: { openai: "openai" }, usageURL: fake.usageURL }, state, live)
+          expect(yield* plugin.pace("openai", "ses_root")).toMatchObject({ ok: false, measured: true })
+          yield* waitFor(() => fake.consumes.length > 0)
+          yield* plugin.pace("openai", "ses_root")
+          yield* settle
+          expect(fake.consumes.map(({ account, creditID, code }) => ({ account, creditID, code }))).toEqual([
+            { account: "acct-1", creditID: "credit-1", code: "reset" },
+          ])
+          expect(String(fake.consumes[0]?.requestID)).toMatch(/^pool-[0-9a-f]{24}$/)
+          expect(state.owner.asked).toEqual([])
+          const resets = yield* plugin.resets
+          expect(resets.claims.map(({ provider, outcome, weekly }) => ({ provider, outcome, weekly }))).toEqual([
+            { provider: "codex", outcome: "reset", weekly: "moved" },
+          ])
+          expect(JSON.stringify(resets)).not.toContain("access-1")
+        }),
+      )
+    } finally {
+      await fake.stop()
+    }
+  })
+
+  test("a Claude login: the owner is asked in the waiting subagent's root session, and the grant is claimed only on a yes", () =>
+    scenario(
+      Effect.gen(function* () {
+        const now = Date.now()
+        const state = world()
+        state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
+        state.readings.set("cred-a", spentClaude(now))
+        state.parents.set("ses_child", "ses_root")
+        const plugin = yield* start({ sweepMinutes: 0 }, state, live)
+        expect(yield* plugin.pace("anthropic", "ses_child")).toMatchObject({ ok: false, measured: true })
+        yield* waitFor(() => state.owner.asked.length > 0)
+        const asked = state.owner.asked[0]! as OwnerTest.MemoryOwner["asked"][number] & { readonly plugin?: string }
+        expect(asked).toMatchObject({ sessionID: "ses_root", plugin: "dotfiles-opencode.pool", header: "Claude reset · Anthropic 1" })
+        expect(asked.question).toContain("3.0 days remain before the weekly reset")
+        expect(plugin.claims).toEqual([])
+        // The owner says yes; the questions change, and the pool reads the answer.
+        yield* OwnerTest.answer(state.owner, asked.key, "Claim it")
+        yield* waitFor(() => plugin.claims.length > 0)
+        yield* settle
+        expect(plugin.claims.map(({ credentialID, creditID }) => [credentialID, creditID])).toEqual([["cred-a", "grant-1"]])
+        expect(state.owner.questions.size).toBe(0)
+        const resets = yield* plugin.resets
+        expect(resets.claims.map(({ provider, outcome, weekly }) => ({ provider, outcome, weekly }))).toEqual([
+          { provider: "claude", outcome: "reset", weekly: "kept" },
+        ])
+      }),
+    ))
+
+  test("a no claims nothing", () =>
+    scenario(
+      Effect.gen(function* () {
+        const now = Date.now()
+        const state = world()
+        state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
+        state.readings.set("cred-a", spentClaude(now))
+        const plugin = yield* start({ sweepMinutes: 0 }, state, live)
+        yield* plugin.pace("anthropic", "ses_root")
+        yield* waitFor(() => state.owner.asked.length > 0)
+        yield* OwnerTest.answer(state.owner, state.owner.asked[0]!.key, "Don't claim")
+        yield* waitFor(() => state.owner.questions.size === 0)
+        yield* plugin.pace("anthropic", "ses_root")
+        yield* settle
+        expect(plugin.claims).toEqual([])
+        expect(state.owner.asked).toHaveLength(1)
+        expect((yield* plugin.resets).resets.map((reset) => reset.stage)).toEqual(["declined"])
+      }),
+    ))
+
+  test("resets: false works none", () =>
+    scenario(
+      Effect.gen(function* () {
+        const state = world()
+        state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
+        state.readings.set("cred-a", spentClaude(Date.now()))
+        const plugin = yield* start({ sweepMinutes: 0, resets: false }, state, live)
+        expect(yield* plugin.pace("anthropic", "ses_root")).toMatchObject({ ok: false })
+        yield* settle
+        expect(state.owner.asked).toEqual([])
+        expect(yield* plugin.resets).toEqual({ resets: [], claims: [] })
+      }),
+    ))
+})
+
+/** Wait, in real time, until `done` holds; a second without it fails the test. */
+const waitFor = (done: () => boolean) =>
+  Effect.promise(async () => {
+    const deadline = Date.now() + 1000
+    while (!done()) {
+      if (Date.now() > deadline) throw new Error("waited a second in vain")
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+  })
