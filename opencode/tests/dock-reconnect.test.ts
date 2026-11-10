@@ -67,9 +67,13 @@ const unavailable = () => Response.json({ code: "service_starting" }, { status: 
 
 /** The answers `hold` streams, open until `endHolds` ends them. */
 const holds = new Set<ReadableStreamDefaultController<Uint8Array>>()
-/** Ends every held answer mid-stream, with no finish, as a provider connection torn down ends: their turns end. */
+/** Finish held turns while the TUI cannot hear them. A truncated provider
+ * response is retryable, so EOF alone no longer means the turn has ended. */
 const endHolds = () => {
-  for (const controller of holds) controller.close()
+  for (const controller of holds) {
+    controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(chunk({}, "stop"))}\n\ndata: [DONE]\n\n`))
+    controller.close()
+  }
   holds.clear()
 }
 
