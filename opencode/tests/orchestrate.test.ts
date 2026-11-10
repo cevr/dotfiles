@@ -38,7 +38,7 @@ describe.skipIf(!skill)("the role agents", () => {
       expect(built.agents[role]!.description).toBe(claude.fields.description!)
     }
     // Claude-family efforts from the skill role table; the worker uses the model default.
-    expect(ROLES.map((role) => effort(role))).toEqual(["high", "medium", "medium", undefined])
+    expect(ROLES.map((role) => effort(role))).toEqual(["medium", "medium", "medium", undefined])
   })
 
   test("every role may ask the owner in the background: ask_user_async is not denied under the deny-all rule", () => {

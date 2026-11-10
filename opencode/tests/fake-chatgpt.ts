@@ -58,7 +58,7 @@ export const spentAccount = (access: string, creditID: string, now = Date.now(),
 
 const seconds = (at: number) => Math.round(at / 1000)
 
-export const startFakeChatGPT = (): FakeChatGPT => {
+export const startFakeChatGPT = (options: { readonly beforeConsumeResponse?: () => Promise<void> } = {}): FakeChatGPT => {
   const accounts = new Map<string, FakeChatGPTAccount>()
   const consumes: Array<FakeConsume> = []
   const redeemed = new Set<string>()
@@ -118,6 +118,8 @@ export const startFakeChatGPT = (): FakeChatGPT => {
           account.fiveHourResetAt = now + 5 * HOUR
           account.weeklyResetAt = now + 7 * DAY
         }
+        // Let a test hold the reply after consumption, before the pool can settle its claim.
+        if (options.beforeConsumeResponse !== undefined) await options.beforeConsumeResponse()
         return Response.json({ code, ...(code === "reset" ? { windows_reset: 2 } : {}) })
       }
       return new Response("not found", { status: 404 })

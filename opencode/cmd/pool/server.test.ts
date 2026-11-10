@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Effect, Layer, Queue, Schema, Stream } from "effect"
+import { Effect, Layer, Queue, Schedule, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
@@ -1260,7 +1260,8 @@ describe("resets on the live adapters", () => {
   })
 
   test("every Codex account spent and a start held: the pool consumes one credit, once, on the ChatGPT backend, and asks no one", async () => {
-    const fake = startFakeChatGPT()
+    const reply = Promise.withResolvers<void>()
+    const fake = startFakeChatGPT({ beforeConsumeResponse: () => reply.promise })
     const now = Date.now()
     fake.accounts.set("acct-1", spentAccount("access-1", "credit-1", now))
     try {
@@ -1273,13 +1274,23 @@ describe("resets on the live adapters", () => {
           expect(yield* plugin.pace("openai", "ses_root")).toMatchObject({ ok: false, measured: true })
           yield* waitFor(() => fake.consumes.length > 0)
           yield* plugin.pace("openai", "ses_root")
-          yield* settle
+          // Consumption precedes the HTTP reply and the post-claim usage read.
+          // Keep that boundary open: a second pace must not lose or duplicate the claim.
+          const pending = yield* plugin.resets
+          expect(pending.claims).toEqual([])
+          expect(pending.resets.map((reset) => reset.stage)).toEqual(["claiming"])
+          reply.resolve()
+          // Observe completion through the public RPC, not a fixed sleep after consumption.
+          const resets = yield* plugin.resets.pipe(
+            Effect.repeat({ until: (status) => status.claims.length > 0, schedule: Schedule.spaced("5 millis") }),
+            Effect.timeout("1 second"),
+          )
+          yield* plugin.pace("openai", "ses_root")
           expect(fake.consumes.map(({ account, creditID, code }) => ({ account, creditID, code }))).toEqual([
             { account: "acct-1", creditID: "credit-1", code: "reset" },
           ])
           expect(String(fake.consumes[0]?.requestID)).toMatch(/^pool-[0-9a-f]{24}$/)
           expect(state.owner.asked).toEqual([])
-          const resets = yield* plugin.resets
           expect(resets.claims.map(({ provider, outcome, weekly }) => ({ provider, outcome, weekly }))).toEqual([
             { provider: "codex", outcome: "reset", weekly: "moved" },
           ])
@@ -1287,6 +1298,7 @@ describe("resets on the live adapters", () => {
         }),
       )
     } finally {
+      reply.resolve()
       await fake.stop()
     }
   })
