@@ -363,6 +363,7 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
     async (cache) => {
       // Release any targeted refusal left by a failed preceding case.
       refused.clear()
+      unavailableUntil = 0
       // A second pane sits at home with its session picker already populated.
       // Select from that cached list while *every* HTTP request returns the
       // same 503 as the service's actual plugin-loading readiness window.
