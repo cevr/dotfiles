@@ -1089,21 +1089,31 @@ host's own `Connection lost…` overlay covers a dropped event stream. A draft i
 into an empty composer. A permission request or a question keeps its own
 Escape, an idle session's Escape is the host's, and a second Escape for the
 prompt being taken back does nothing for 10 s but say
-`Still taking the prompt back`. In a
-subagent's view Escape interrupts that subagent before the host's Subagents
-picker closes. Its one option is `grace`, in milliseconds (default 5000; 0
+`Still taking the prompt back`. Escape is layered: an open panel (the
+host's composer panel with its Subagents, Shell, Wakes and Monitors tabs, a
+dialog, the autocomplete) owns it and only puts itself away. A subagent's
+view opens on its Subagents picker; the first Escape puts the picker away and
+leaves the view on the subagent, still running, the prompt focused, so a
+message sent there steers that subagent (as its own agent; ↓ on the empty
+prompt brings the picker back, ↑ goes to the parent). The next Escape,
+nothing open, interrupts the subagent as on any session. Its one option is `grace`, in milliseconds (default 5000; 0
 always interrupts). An absent option takes its default. The grace is timed from when the prompt was sent, so a prompt another client
 sent to the session in the last 5 s can be taken back too.
 
 The decision is `decide` in `mods/escape/escape.ts`, over the view
-`opencode/view.ts` reads from the TUI's data; `cmd/escape/setup.ts` adds the
-two keymap layers on Escape (the base mode at priority 1, above the host's
+`opencode/view.ts` reads from the TUI's data; `cmd/escape/setup.ts` adds one
+keymap layer on Escape (the base mode at priority 1, above the host's
 `session.interrupt` and below the composer's own Escape layers such as shell
-mode or a plugin panel; the composer mode at priority 2 in a subagent's
-view) and acts. `tests/prime-escape.test.ts` runs `scenarios/prime-escape.ts`;
+mode or a plugin panel; none in a panel's mode, so an open panel owns the
+key) and acts. The fork's composer panel takes `onDismiss` for Escape, so in
+a subagent's view it hides the picker instead of going to the parent.
+`tests/prime-escape.test.ts` runs `scenarios/prime-escape.ts`;
 `tests/escape-states.test.ts` runs `scenarios/escape-states.ts` once per
 state (a steer or a queued prompt sent while the model works, a running
-shell call, a draft, a stalled link to the server).
+shell call, a draft, a stalled link to the server);
+`tests/escape-subagent.test.ts` runs `scenarios/escape-subagent.ts` for the
+layering in a running subagent's view (picker put away, a steer sent, then
+the interrupt).
 
 ### Ctrl+Enter: interrupt and send
 

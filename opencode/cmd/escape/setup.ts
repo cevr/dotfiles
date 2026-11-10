@@ -1,6 +1,6 @@
 /**
  * The escape plugin's setup, over the parts of the TUI plugin context it uses,
- * so the seam test can run it on a stand-in host. It adds two keymap layers
+ * so the seam test can run it on a stand-in host. It adds one keymap layer
  * on Escape. In the base mode, above the host's own `session.interrupt` and
  * below the composer's own Escape layers (shell mode, the sidebar, a plugin
  * panel), it reads the session on screen (`opencode/view.ts`), decides
@@ -11,11 +11,13 @@
  * interrupt, or a turn not stopped (or a prompt still queued) STOP_MS after
  * the press, is a toast, so a press the server never answers is never
  * silent; the next turn a resume or a sent prompt starts is not the stopped
- * one. In the composer mode, the host's Subagents picker in a
- * subagent's view, it interrupts a busy subagent before the picker closes.
- * Anything Escape means nothing to falls through to the host.
+ * one. It adds nothing in the composer mode: an open panel (the Subagents
+ * picker a subagent's view opens on, a plugin tab) owns Escape and only puts
+ * itself away, so the prompt under it can message the subagent; the next
+ * Escape, with nothing open, interrupts it. Anything Escape means nothing to
+ * falls through to the host.
  *
- * A third layer, in the base mode above the composer's own Ctrl+Enter (a
+ * A second layer, in the base mode above the composer's own Ctrl+Enter (a
  * newline), adds Ctrl+Enter: interrupt the turn and send what waits
  * (`send.ts`). A draft goes to the queue through the host's own
  * `prompt.queue` (attachments and all), the turn is interrupted once that
@@ -258,23 +260,12 @@ export const setup = (host: Host, clock: Clock = realClock) => {
     }
   }
 
-  const route = () => host.ui.router.current()
-  const subagent = () => {
-    const current = route()
-    return current.type === "session" && "sessionID" in current && host.data.session.get(current.sessionID)?.parentID !== undefined
-  }
   // Priority 1 is the composer's: above the host's session.interrupt (0); the composer's own Escape layers (shell mode)
-  // and a focused plugin panel's, registered later at the same priority, still come first.
+  // and a focused plugin panel's, registered later at the same priority, still come first. Nothing in another mode: an
+  // open panel (the composer panel, a dialog, a form) pushes its own mode and owns Escape, which puts it away.
   host.keymap.layer(() => ({
     priority: 1,
     commands: [{ title: "Take back or interrupt", group: "Session", bind: "escape", run: escape }],
-  }))
-  // The Subagents picker stands in for the composer in a subagent's view; its Escape (priority 1) closes it.
-  host.keymap.layer(() => ({
-    mode: "composer",
-    priority: 2,
-    enabled: subagent,
-    commands: [{ title: "Interrupt the subagent", group: "Session", bind: "escape", run: escape }],
   }))
   // Ctrl+Enter, above the composer's own (a newline, the managed textarea's layer at 0), and leader+F for a terminal
   // that sends Ctrl+Enter as Enter; an id so a hint can name its key.

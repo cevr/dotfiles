@@ -81,7 +81,7 @@ describe("decide", () => {
     expect(decide(view({ composer: "draft" }), { ...at(6_500), taking })).toEqual(interrupt)
   })
 
-  test("in a subagent's view Escape interrupts that subagent while it runs, else closes the picker as before", () => {
+  test("in a subagent's view Escape interrupts that subagent while it runs, else leaves the key to the host", () => {
     expect(decide(view({ subagent: true, sessionID: "ses_child" }), at(1_000))).toEqual({ _tag: "Interrupt", sessionID: "ses_child" })
     expect(decide(view({ subagent: true, busy: false }), at(1_000))).toEqual({ _tag: "Pass" })
   })
