@@ -246,7 +246,7 @@ interface Program {
   readonly close: () => Promise<void>
 }
 
-const startProgram = (config: HostConfig, command: readonly [string, ...string[]]): Program => {
+const startProgram = (config: HostConfig, command: readonly [string, ...string[]], onFrame?: (rows: ReadonlyArray<string>) => void): Program => {
   const screen = new Terminal({
     cols: config.cols,
     rows: config.rows,
@@ -268,11 +268,19 @@ const startProgram = (config: HostConfig, command: readonly [string, ...string[]
       // The program exited between the check and the write.
     }
   }
-  pty.onData((data) => screen.write(typeof data === "string" ? data : new Uint8Array(data)))
+  // Observe every parsed terminal write, including a toast erased before the
+  // next socket read. Observation is optional and stays inside the PTY owner.
+  pty.onData((data) => screen.write(typeof data === "string" ? data : new Uint8Array(data), () => onFrame?.(viewport())))
   // Answer the program's terminal queries (device attributes, cursor position) and colour queries.
   screen.onData(write)
   answerColorQueries(screen, write)
   const drained = () => new Promise<void>((resolve) => screen.write("", resolve))
+  const viewport = () => {
+    const buffer = screen.buffer.active
+    return Array.from({ length: screen.rows }, (_, y) =>
+      (buffer.getLine(buffer.viewportY + y)?.translateToString(false, 0, screen.cols) ?? "").trimEnd(),
+    )
+  }
   const rows = async (scope: "viewport" | "all") => {
     await drained()
     const buffer = screen.buffer.active
@@ -330,8 +338,8 @@ export interface ServedHost {
  * a `down` request. However the host ends (a `down`, a socket that will not
  * bind, `stop`), its program is closed with it.
  */
-export const serve = (config: HostConfig): ServedHost => {
-  let program = startProgram(config, config.command)
+export const serve = (config: HostConfig, onFrame?: (rows: ReadonlyArray<string>) => void): ServedHost => {
+  let program = startProgram(config, config.command, onFrame)
   let mark: ReadonlyArray<string> = []
   let ended = false
   // One restart or down at a time, each run to its end once begun: two
@@ -414,7 +422,7 @@ export const serve = (config: HostConfig): ServedHost => {
             )
           }
           await program.close()
-          program = startProgram(config, request.command)
+          program = startProgram(config, request.command, onFrame)
           mark = []
           return null
         })

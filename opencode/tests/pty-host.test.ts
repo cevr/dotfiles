@@ -60,10 +60,10 @@ const scratch = () => {
 }
 
 /** Serve `script` under `sh`; the host stops on `down` or after the test. */
-const hosted = async (script: string) => {
+const hosted = async (script: string, onFrame?: (rows: ReadonlyArray<string>) => void) => {
   const dir = scratch()
   const socket = join(dir, "host.sock")
-  const host: ServedHost = serve({ socket, cwd: dir, command: ["/bin/sh", "-c", script], env: ENV, ...SIZE })
+  const host: ServedHost = serve({ socket, cwd: dir, command: ["/bin/sh", "-c", script], env: ENV, ...SIZE }, onFrame)
   cleanups.push(() => host.stop())
   await until("the host to listen", () => (existsSync(socket) ? true : undefined))
   return { socket, host, dir }
@@ -113,6 +113,16 @@ const RECORDS_ITS_PID = `echo $$ >> pids; exec sleep 60`
 const processArgs = () => Bun.spawnSync(["ps", "-axo", "args="]).stdout.toString()
 
 describe("terminal host", () => {
+  test("the frame observer sees text erased before the first screen read", async () => {
+    const frames: string[] = []
+    const { socket } = await hosted(`printf 'transient toast'; read line; printf '\\033[2J\\033[Hcleared'; while read line; do :; done`, (rows) => frames.push(rows.join("\n")))
+    await until("the transient frame", () => frames.some((frame) => frame.includes("transient toast")) || undefined)
+    await typeLine(socket, "clear")
+    const screen = await screenShows(socket, "cleared")
+    expect(screen.rows.join("\n")).not.toContain("transient toast")
+    expect(frames.some((frame) => frame.includes("transient toast"))).toBe(true)
+  })
+
   test("typed text and keys reach the program, and a read has only the rows added since the last", async () => {
     const { socket } = await hosted(`printf 'hello\\n'; while read line; do echo "got $line"; done`)
     await screenShows(socket, "hello")
