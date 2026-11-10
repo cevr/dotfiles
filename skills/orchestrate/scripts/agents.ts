@@ -33,7 +33,7 @@ export type Role = keyof typeof ROLES;
 // The Codex efforts in SKILL.md's role table. The model is the spawn's (the newest
 // sol or luna), so no file pins one; an effort in the file wins over a Codex spawn's,
 // and a Claude Code orchestrator's mcp__codex__start effort wins over the file's.
-// A verifier runs at medium; a batch holding a deep unit's round 1 passes max to its one call.
+// A verifier runs at medium, always.
 const CODEX_EFFORT: Record<Role, string> = { planner: 'high', implementor: 'max', verifier: 'medium' };
 
 /** protocol.md's `## ` sections by heading. */
