@@ -22,6 +22,23 @@ const readService = (file: string): Service | undefined => {
   }
 }
 
+/**
+ * A loopback port free now, for a scratch service's `service set port`.
+ *
+ * A service with no port set binds its channel's fixed default
+ * (`service-config.ts` `defaultPort`: 0xC0DF, 49375, for a build from
+ * source), whatever its HOME. Two scratch services in test files that run in
+ * parallel then share one port: the second `service start` waits 15 s for the
+ * port and exits 1 ("Managed service port … is already in use").
+ */
+export const freePort = (): number => {
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() })
+  const port = server.port
+  server.stop(true)
+  if (port === undefined) throw new Error("no free loopback port")
+  return port
+}
+
 /** What `/api/info` says of the boot, as the fork's own client reads it (packages/client/src/service-probe.ts `probeResult`). */
 const probe = async (service: Service): Promise<"ready" | "waiting" | { failed: number }> => {
   const response = await fetch(new URL("/api/info", service.url), {

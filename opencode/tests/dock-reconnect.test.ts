@@ -25,7 +25,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
-import { ready, type Service } from "./service.ts"
+import { freePort, ready, type Service } from "./service.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/dock-reconnect.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -268,8 +268,10 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
         join(home, ".config/opencode/cli.json"),
         JSON.stringify({ plugins: [...TUI_PLUGINS.map((name) => join(ROOT, "cmd", name)), "-opencode.btw"], session: { sidebar: "hide" }, theme: { name: "prime" } }),
       )
+      // A port of its own: the other test files' scratch services would share the channel's fixed one (tests/service.ts).
+      expect(await opencode("service", "set", "port", String(freePort()))).toMatchObject({ code: 0 })
       const started = await opencode("service", "start")
-      expect(started.code).toBe(0)
+      expect(started).toMatchObject({ code: 0 })
       await ready(serviceFile, () => `the service (${started.err.slice(-500)})`)
       return ((await import(join(fork ?? "", "packages/client/src/promise/index.ts"))) as ClientModule).OpenCode
     })())
@@ -312,7 +314,7 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
       await until(() => active(service), (running) => children.every((child) => !(child.id in running)), () => `${name}: the children still run`, 30_000)
       const before = await pid(service)
       const restarted = await opencode("service", "restart")
-      expect(restarted.code).toBe(0)
+      expect(restarted).toMatchObject({ code: 0 })
       const after = await ready(serviceFile, () => `the restarted service (${restarted.err.slice(-500)})`)
       expect((await pid(after)).pid).not.toBe(before.pid)
       // Nothing resumes a turn that ended: the new service runs neither child.

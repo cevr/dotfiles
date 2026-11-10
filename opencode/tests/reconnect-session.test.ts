@@ -23,7 +23,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
-import { ready, type Service } from "./service.ts"
+import { freePort, ready, type Service } from "./service.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/reconnect-session.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -223,8 +223,10 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
         join(home, ".config/opencode/cli.json"),
         JSON.stringify({ plugins: [...TUI_PLUGINS.map((name) => join(ROOT, "cmd", name)), "-opencode.btw"], session: { sidebar: "hide" }, theme: { name: "prime" } }),
       )
+      // A port of its own: the other test files' scratch services would share the channel's fixed one (tests/service.ts).
+      expect(await opencode("service", "set", "port", String(freePort()))).toMatchObject({ code: 0 })
       const started = await opencode("service", "start")
-      expect(started.code).toBe(0)
+      expect(started).toMatchObject({ code: 0 })
       const service = await ready(serviceFile, () => `the service (${started.err.slice(-500)})`)
       const { OpenCode } = (await import(join(fork ?? "", "packages/client/src/promise/index.ts"))) as ClientModule
       const client = OpenCode.make({ baseUrl: service.url, headers: { authorization: `Basic ${btoa(`opencode:${service.password}`)}` } })
@@ -257,7 +259,7 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
         const before = await pid(await ready(serviceFile, () => "the service"))
         if (booting) proxy.refuse(sessionID, Number.POSITIVE_INFINITY)
         const restarted = await opencode("service", "restart")
-        expect(restarted.code).toBe(0)
+        expect(restarted).toMatchObject({ code: 0 })
         // The new service still refuses the session for a while, as one still loading its plugins does.
         if (booting) proxy.refuse(sessionID, Date.now() + BOOTING_MS)
         const after = await ready(serviceFile, () => `the restarted service (${restarted.err.slice(-500)})`)

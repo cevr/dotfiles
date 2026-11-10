@@ -14,6 +14,7 @@ import { ROUTES } from "../mods/mail/peer.ts"
 import { keyed, token } from "../mods/mail/node/keyed.ts"
 import { launcher, residentConfig, residentDir } from "../scripts/daily.ts"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
+import { freePort } from "./service.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/mail-start.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -87,6 +88,8 @@ describe.skipIf(!fork)("the mail listener from the service's start", () => {
       const pairs = join(home, ".local/state/opencode-mail/pairs.json")
       writeFileSync(pairs, JSON.stringify({ name: "workbox", peers: { mac: { url: "http://127.0.0.1:9", secret, paired: Date.now() } }, invites: [] }), { mode: 0o600 })
 
+      // A port of its own: the other test files' scratch services would share the channel's fixed one (tests/service.ts).
+      expect(await opencode("service", "set", "port", String(freePort()))).toMatchObject({ code: 0 })
       const started = await opencode("service", "start")
       expect([started.code, started.err]).toEqual([0, ""])
 
