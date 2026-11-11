@@ -34,9 +34,15 @@
 //                    than `cadence.waitMs`, and an implementor still runs (with
 //                    none running there is nothing to wait for);
 //   VerdictPending   a land while a landed batch has no verdict: no verifier
-//                    started for it yet, or its verifier still runs;
+//                    started for it yet, or its verifier still runs. The
+//                    batch and its verifier say so (`unverified`, the
+//                    verifier's `units`), not a unit's slot, which a covered
+//                    unit's next round takes over;
 //   FindingUnfolded  a land while a finding of the last verdict is not folded
-//                    into a ready unit the land takes;
+//                    into a ready unit the land takes, or while a `changes`
+//                    verdict's report did not read (`unresolved`: its
+//                    findings are not known, never none; the plugin reads
+//                    it again before each start and land, `ReportRead`);
 //   LandPartial      a land that leaves a ready unit out.
 //
 // A call that states why it goes against them (`departs`) passes, and records
@@ -103,9 +109,32 @@ export interface Start extends Schema.Schema.Type<typeof Start> {}
 export const Verdict = Schema.Literals(["ready", "blocked", "accepted", "changes", "stuck", "none"])
 export type Verdict = typeof Verdict.Type
 
-/** A hand-back; a verifier's `changes` carries its findings (`<unit>/<id>`) as the plugin read them from its report. */
-export const HandBack = Schema.TaggedStruct("HandBack", { role: Role, name: Schema.String, verdict: Verdict, findings: Schema.optionalKey(Schema.Array(Schema.String)) })
+/**
+ * A verdict whose findings are not known: its report could not be read (the
+ * hand-back named none, the file is missing, a unit's findings file it names
+ * is missing). `report` is the path the hand-back named, `why` what failed.
+ * It is never an empty set of findings: the next land waits for it.
+ */
+export const Unresolved = Schema.Struct({ report: Schema.optionalKey(Schema.String), why: Schema.String })
+export interface Unresolved extends Schema.Schema.Type<typeof Unresolved> {}
+
+/**
+ * A hand-back. A verifier's `changes` carries its findings (`<unit>/<id>`) as
+ * the plugin read them from its report, or `unread` when it could not: a
+ * `changes` with neither is unresolved too (its report was never read).
+ */
+export const HandBack = Schema.TaggedStruct("HandBack", {
+  role: Role,
+  name: Schema.String,
+  verdict: Verdict,
+  findings: Schema.optionalKey(Schema.Array(Schema.String)),
+  unread: Schema.optionalKey(Unresolved),
+})
 export interface HandBack extends Schema.Schema.Type<typeof HandBack> {}
+
+/** An unresolved verdict's report, read since: its findings. */
+export const ReportRead = Schema.TaggedStruct("ReportRead", { batch: Schema.String, findings: Schema.Array(Schema.String) })
+export interface ReportRead extends Schema.Schema.Type<typeof ReportRead> {}
 
 /** A `rift` land about to run, with the Rifts it names. */
 export const Land = Schema.TaggedStruct("Land", { rifts: Schema.Array(Schema.String), departs: Schema.optionalKey(Schema.String) })
@@ -119,8 +148,8 @@ export interface Landed extends Schema.Schema.Type<typeof Landed> {}
 export const Spawned = Schema.TaggedStruct("Spawned", { role: Role, name: Schema.String, child: Schema.String })
 export interface Spawned extends Schema.Schema.Type<typeof Spawned> {}
 
-export const Command = Schema.Union([Start, HandBack, Land, Landed, Spawned])
-export type Command = Start | HandBack | Land | Landed | Spawned
+export const Command = Schema.Union([Start, HandBack, Land, Landed, Spawned, ReportRead])
+export type Command = Start | HandBack | Land | Landed | Spawned | ReportRead
 
 // ── The events ──
 
@@ -142,9 +171,19 @@ export const VerifierStarted = Schema.TaggedStruct("VerifierStarted", {
 })
 export interface VerifierStarted extends Schema.Schema.Type<typeof VerifierStarted> {}
 
-/** A verifier's verdict, with the findings it opened. */
-export const VerifierEnded = Schema.TaggedStruct("VerifierEnded", { batch: Schema.String, verdict: Verdict, findings: Schema.optionalKey(Schema.Array(Schema.String)), at: Schema.Number })
+/** A verifier's verdict, with the findings it opened, or, for a `changes` whose report did not read, why its findings are unknown. */
+export const VerifierEnded = Schema.TaggedStruct("VerifierEnded", {
+  batch: Schema.String,
+  verdict: Verdict,
+  findings: Schema.optionalKey(Schema.Array(Schema.String)),
+  unresolved: Schema.optionalKey(Unresolved),
+  at: Schema.Number,
+})
 export interface VerifierEnded extends Schema.Schema.Type<typeof VerifierEnded> {}
+
+/** An unresolved verdict's report read at last: its findings open. */
+export const ReportResolved = Schema.TaggedStruct("ReportResolved", { batch: Schema.String, findings: Schema.Array(Schema.String), at: Schema.Number })
+export interface ReportResolved extends Schema.Schema.Type<typeof ReportResolved> {}
 
 /** A finding of a verdict went into `into`: a running implementor's round, or a new fix unit. */
 export const FindingFolded = Schema.TaggedStruct("FindingFolded", { finding: Schema.String, into: Schema.String, at: Schema.Number })
@@ -158,8 +197,8 @@ export interface Departed extends Schema.Schema.Type<typeof Departed> {}
 export const StepSpawned = Schema.TaggedStruct("StepSpawned", { role: Role, name: Schema.String, child: Schema.String, at: Schema.Number })
 export interface StepSpawned extends Schema.Schema.Type<typeof StepSpawned> {}
 
-export const Event = Schema.Union([UnitStarted, UnitHandedBack, BatchLanded, VerifierStarted, VerifierEnded, FindingFolded, Departed, StepSpawned])
-export type Event = UnitStarted | UnitHandedBack | BatchLanded | VerifierStarted | VerifierEnded | FindingFolded | Departed | StepSpawned
+export const Event = Schema.Union([UnitStarted, UnitHandedBack, BatchLanded, VerifierStarted, VerifierEnded, ReportResolved, FindingFolded, Departed, StepSpawned])
+export type Event = UnitStarted | UnitHandedBack | BatchLanded | VerifierStarted | VerifierEnded | ReportResolved | FindingFolded | Departed | StepSpawned
 
 /** The call went against `rule`; `message` quotes the rule and says what to do instead. */
 export class Refused extends Schema.TaggedError<Refused>()("Refused", { rule: Rule, message: Schema.String }) {}
@@ -186,12 +225,24 @@ export interface Finding {
 
 export interface MachineState {
   readonly units: Readonly<Record<string, Unit>>
-  /** The running verifier: its batch, since when, and its session once known. */
-  readonly verifier?: { readonly batch: string; readonly since: number; readonly child?: string }
+  /**
+   * The running verifier: its batch, since when, the units it covers (as it
+   * started; a covered unit's next round leaves its unit slot, not this),
+   * and its session once known.
+   */
+  readonly verifier?: { readonly batch: string; readonly since: number; readonly units?: ReadonlyArray<string>; readonly child?: string }
+  /**
+   * The units landed with no verifier started over them yet, whatever round
+   * each has moved on to since; absent when none. With the verifier, it is
+   * what makes a verdict pending: no unit's state says it.
+   */
+  readonly unverified?: ReadonlyArray<string>
   /** The last verdicts' findings not landed yet, by `<unit>/<id>`; absent when none. */
   readonly findings?: Readonly<Record<string, Finding>>
   /** Findings folded into units that landed, for the next verifier to check as folded; absent when none. */
   readonly carried?: Readonly<Record<string, Required<Finding>>>
+  /** The `changes` verdicts whose findings are not known (their report did not read), by batch; absent when none. */
+  readonly unresolved?: Readonly<Record<string, Unresolved>>
 }
 
 /** The units in any of `states`, in the order they entered the state record. */
@@ -218,15 +269,35 @@ export const foldsOf = (state: MachineState, start: Start): ReadonlyArray<string
     .filter(([key, finding]) => finding.into !== start.name && (unitOfFinding(key) === start.name || (start.folds ?? []).some((ref) => ref === key || ref === unitOfFinding(key))))
     .map(([key]) => key)
 
-/** A state with its findings and carried findings, each left out when empty. */
-const withFindings = (state: MachineState, findings: Record<string, Finding>, carried: Record<string, Required<Finding>>): MachineState => {
-  const { findings: _, carried: __, ...rest } = state
+/** A state with its optional records, each left out when empty. */
+const tidy = (state: MachineState): MachineState => {
+  const { findings, carried, unresolved, unverified, ...rest } = state
   return {
     ...rest,
-    ...(Object.keys(findings).length === 0 ? {} : { findings }),
-    ...(Object.keys(carried).length === 0 ? {} : { carried }),
+    ...(unverified === undefined || unverified.length === 0 ? {} : { unverified }),
+    ...(findings === undefined || Object.keys(findings).length === 0 ? {} : { findings }),
+    ...(carried === undefined || Object.keys(carried).length === 0 ? {} : { carried }),
+    ...(unresolved === undefined || Object.keys(unresolved).length === 0 ? {} : { unresolved }),
   }
 }
+
+/** The verdicts whose findings are not known, as `[batch, unresolved]`. */
+export const unresolvedOf = (state: MachineState): ReadonlyArray<readonly [string, Unresolved]> => Object.entries(state.unresolved ?? {})
+
+/**
+ * Whether a landed batch has no verdict yet: a verifier runs, or units landed
+ * with none started over them. Read from the batch and its verifier, never
+ * from a unit's slot alone, which its next round takes over; a unit `landed`
+ * or `verify` counts too (a checkpoint from before `unverified` was kept).
+ */
+export const verdictPending = (state: MachineState): boolean =>
+  state.verifier !== undefined || (state.unverified ?? []).length > 0 || unitsIn(state, "landed", "verify").length > 0
+
+/** What a landed batch waiting for its verifier holds: the units landed with none started over them. */
+const unverifiedOf = (state: MachineState): ReadonlyArray<string> => [...new Set([...(state.unverified ?? []), ...unitsIn(state, "landed")])]
+
+/** The units the running verifier covers: as it started, else (an older checkpoint) those in `verify`. */
+const coveredOf = (state: MachineState): ReadonlyArray<string> => state.verifier?.units ?? unitsIn(state, "verify")
 
 /**
  * The unit a land's entry names: by its name, its branch (`<run>/<unit>`,
@@ -259,9 +330,9 @@ export const dueOf = (state: MachineState, now: number, cadence: Cadence): strin
 const waiting = (state: MachineState, now: number, cadence: Cadence) =>
   unitsIn(state, "ready").length > 0 && dueOf(state, now, cadence) === undefined && unitsIn(state, "implement").length > 0
 
-/** What a batch verifier would cover now: what is landed, else what is ready. */
+/** What a batch verifier would cover now: what is landed and unverified (whatever round each unit is on since), else what is ready. */
 export const coverOf = (state: MachineState): ReadonlyArray<string> => {
-  const landed = unitsIn(state, "landed")
+  const landed = unverifiedOf(state)
   return landed.length > 0 ? landed : unitsIn(state, "ready")
 }
 
@@ -290,14 +361,23 @@ const instead = (state: MachineState, rule: Rule, call: Command, now: number, ca
     }
     case "VerdictPending":
       return state.verifier === undefined
-        ? `Start \`verifier batch-<k> r1\` for ${list(unitsIn(state, "landed"))} first; the next batch lands once its verdict is in, with each of its findings folded into a ready unit. Keep the next batch's implementors working meanwhile.`
-        : `Verifier ${state.verifier.batch} still runs over ${list(unitsIn(state, "verify"))}: keep the next batch's implementors working, fold its findings into them when its verdict comes, then land.`
+        ? `Start \`verifier batch-<k> r1\` for ${list(coverOf(state))} first; the next batch lands once its verdict is in, with each of its findings folded into a ready unit. Keep the next batch's implementors working meanwhile.`
+        : `Verifier ${state.verifier.batch} still runs over ${list(coveredOf(state))}: keep the next batch's implementors working, fold its findings into them when its verdict comes, then land.`
     case "FindingUnfolded": {
       const lands = call._tag === "Land" ? named(state, call.rifts) : ready
       const unfolded = unfoldedOf(state, lands)
+      const debts = unresolvedOf(state)
       return [
-        `Fold each finding into a unit this land takes: ${unfolded.map((key) => foldedLine(state, key)).join(", ")}.`,
-        `A finding folded into a unit still implementing lands when that unit hands back ready. One not folded goes to a running implementor that owns its files (a subagent call with its sessionID, description \`implementor <unit> r<N> (folds: ${unfolded[0] ?? "<unit>/<id>"})\`), or to a new fix implementor (\`implementor ${unitOfFinding(unfolded[0] ?? "<unit>")}-fix1 r1 (folds: ${unfolded[0] ?? "<unit>/<id>"})\`).`,
+        ...debts.map(
+          ([batch, debt]) =>
+            `The findings of ${batch}'s \`changes\` are not known: ${debt.why}. Read its report${debt.report === undefined ? " (ask its verifier for the path, or write the batch findings file)" : ` at ${debt.report}`} and make it readable: the plugin reads it again at the next start or land, then fold each of its findings into a unit this land takes.`,
+        ),
+        ...(unfolded.length === 0
+          ? []
+          : [
+              `Fold each finding into a unit this land takes: ${unfolded.map((key) => foldedLine(state, key)).join(", ")}.`,
+              `A finding folded into a unit still implementing lands when that unit hands back ready. One not folded goes to a running implementor that owns its files (a subagent call with its sessionID, description \`implementor <unit> r<N> (folds: ${unfolded[0]})\`), or to a new fix implementor (\`implementor ${unitOfFinding(unfolded[0]!)}-fix1 r1 (folds: ${unfolded[0]})\`).`,
+            ]),
       ].join(" ")
     }
     case "LandPartial":
@@ -316,7 +396,7 @@ export const refusalOf = (state: MachineState, rule: Rule, call: Command, now: n
   const findings = openFindings(state)
   return [
     `orchestrate: refused by the machine (${RULES[rule].name}): "${RULES[rule].words}"`,
-    `Now: ready ${list(unitsIn(state, "ready"))}; implementing ${list(unitsIn(state, "implement"))}; landed and not verified ${list(unitsIn(state, "landed"))}${state.verifier === undefined ? "" : `; verifier ${state.verifier.batch} running`}${findings.length === 0 ? "" : `; findings ${findings.map(([key]) => foldedLine(state, key)).join(", ")}`}.`,
+    `Now: ready ${list(unitsIn(state, "ready"))}; implementing ${list(unitsIn(state, "implement"))}; landed and not verified ${list(unverifiedOf(state))}${state.verifier === undefined ? "" : `; verifier ${state.verifier.batch} running`}${findings.length === 0 ? "" : `; findings ${findings.map(([key]) => foldedLine(state, key)).join(", ")}`}${unresolvedOf(state).length === 0 ? "" : `; findings not known: ${unresolvedOf(state).map(([batch]) => batch).join(", ")}`}.`,
     instead(state, rule, call, now, cadence),
     `To go against the rule on purpose (the owner asked, or the run's rules depart from it), make the same call again and ${how}. It then passes, and the plugin records the departure.`,
   ].join("\n")
@@ -349,13 +429,13 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           const rules: Array<Rule> = []
           if (!batch && any) rules.push("VerifierPerUnit")
           if (state.verifier !== undefined) rules.push("VerifierRunning")
-          if (unitsIn(state, "landed").length === 0 && waiting(state, now, cadence)) rules.push("BatchNotDue")
+          if (unverifiedOf(state).length === 0 && waiting(state, now, cadence)) rules.push("BatchNotDue")
           const departed = yield* guard(rules, command.departs)
           // A root that runs no unit is left alone: its reviewer is none of the machine's.
           if (!batch && !any) return departed
           // A unit-named verifier that departs covers its unit alone.
           const unit = state.units[command.name]
-          const units = !batch && unit !== undefined && (unit.state === "ready" || unit.state === "landed") ? [command.name] : coverOf(state)
+          const units = !batch && unit !== undefined && (unit.state === "ready" || unverifiedOf(state).includes(command.name)) ? [command.name] : coverOf(state)
           const carried = Object.entries(state.carried ?? {}).map(([key, finding]) => `${key} → ${finding.into}`)
           return [...departed, VerifierStarted.make({ batch: command.name, units, ...(carried.length === 0 ? {} : { findings: carried }), at: now })]
         }
@@ -363,18 +443,26 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           if (command.role === "implementor")
             return state.units[command.name]?.state === "implement" ? [UnitHandedBack.make({ unit: command.name, ready: command.verdict === "ready", at: now })] : []
           if (command.role === "verifier" && state.verifier?.batch === command.name) {
-            const findings = command.verdict === "changes" ? (command.findings ?? []) : []
+            if (command.verdict !== "changes") return [VerifierEnded.make({ batch: command.name, verdict: command.verdict, at: now })]
+            // A `changes` whose findings were not read is unresolved, never an empty set.
+            if (command.findings === undefined) {
+              const unresolved = command.unread ?? { why: "the plugin read no findings report for it" }
+              return [VerifierEnded.make({ batch: command.name, verdict: command.verdict, unresolved, at: now })]
+            }
+            const findings = command.findings
             return [VerifierEnded.make({ batch: command.name, verdict: command.verdict, ...(findings.length === 0 ? {} : { findings }), at: now })]
           }
           return []
         }
+        case "ReportRead":
+          return state.unresolved?.[command.batch] === undefined ? [] : [ReportResolved.make({ batch: command.batch, findings: command.findings, at: now })]
         case "Land": {
           const lands = named(state, command.rifts)
           // A land of nothing the machine holds is none of its business.
           if (lands.length === 0) return []
           const rules: Array<Rule> = []
-          if (unitsIn(state, "landed", "verify").length > 0) rules.push("VerdictPending")
-          if (unfoldedOf(state, lands).length > 0) rules.push("FindingUnfolded")
+          if (verdictPending(state)) rules.push("VerdictPending")
+          if (unfoldedOf(state, lands).length > 0 || unresolvedOf(state).length > 0) rules.push("FindingUnfolded")
           if (unitsIn(state, "ready").length > lands.length) rules.push("LandPartial")
           if (waiting(state, now, cadence)) rules.push("BatchNotDue")
           return yield* guard(rules, command.departs)
@@ -396,9 +484,15 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
     const findings: Record<string, Finding> = { ...state.findings }
     const carried: Record<string, Required<Finding>> = { ...state.carried }
     switch (event._tag) {
-      case "UnitStarted":
+      case "UnitStarted": {
+        // A covered unit's next round takes its slot: the batch it is in keeps it, even from a checkpoint
+        // written before the verifier kept its cover.
+        const prior = state.units[event.unit]?.state
+        const verifier = prior === "verify" && state.verifier !== undefined && state.verifier.units === undefined ? { ...state.verifier, units: coveredOf(state) } : state.verifier
+        const unverified = prior === "landed" ? [...new Set([...(state.unverified ?? []), event.unit])] : state.unverified
         units[event.unit] = { state: "implement", round: event.round, since: event.at, direct: event.direct }
-        return { ...state, units }
+        return tidy({ ...state, units, ...(verifier === undefined ? {} : { verifier }), ...(unverified === undefined ? {} : { unverified }) })
+      }
       case "UnitHandedBack": {
         const unit = units[event.unit]
         if (unit === undefined) return state
@@ -406,14 +500,19 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
         units[event.unit] = { ...rest, state: event.ready ? "ready" : "ended", since: event.at }
         return { ...state, units }
       }
-      case "BatchLanded":
+      case "BatchLanded": {
+        const unverified = new Set(state.unverified ?? [])
         for (const name of event.units) {
           const unit = units[name]
           if (unit === undefined) continue
           if (unit.direct) delete units[name]
-          else units[name] = { ...unit, state: "landed", since: event.at }
+          else {
+            units[name] = { ...unit, state: "landed", since: event.at }
+            unverified.add(name)
+          }
         }
-        // Each finding folded into a unit that landed goes to the next verifier; one not folded was departed from.
+        // Each finding folded into a unit that landed goes to the next verifier; one not folded, or not
+        // known, was departed from.
         for (const [key, finding] of Object.entries(findings)) {
           if (finding.into === undefined) delete findings[key]
           else if (event.units.includes(finding.into)) {
@@ -421,14 +520,24 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
             delete findings[key]
           }
         }
-        return withFindings({ ...state, units }, findings, carried)
-      case "VerifierStarted":
+        return tidy({ ...state, units, unverified: [...unverified], findings, carried, unresolved: {} })
+      }
+      case "VerifierStarted": {
+        const unverified = state.unverified ?? []
         for (const name of event.units) {
           const unit = units[name]
-          if (unit !== undefined) units[name] = { ...unit, state: "verify", since: event.at }
+          // A covered unit's slot shows `verify` unless its next round took it over (a ready unit that is not the
+          // landed one: with landed units to cover, only those are verified).
+          if (unit !== undefined && (unit.state === "landed" || (unit.state === "ready" && !unverified.includes(name))))
+            units[name] = { ...unit, state: "verify", since: event.at }
         }
-        return { ...state, units, verifier: { batch: event.batch, since: event.at } }
+        const left = unverified.filter((name) => !event.units.includes(name))
+        // A second verifier (one that departed) takes over what the first one covered too: neither has a verdict yet.
+        const covers = [...new Set([...(state.verifier === undefined ? [] : coveredOf(state)), ...event.units])]
+        return tidy({ ...state, units, unverified: left, verifier: { batch: event.batch, since: event.at, units: covers } })
+      }
       case "VerifierEnded": {
+        const covered = coveredOf(state)
         for (const [name, unit] of Object.entries(units)) {
           if (unit.state !== "verify") continue
           // A verifier that died gave no verdict: its units are landed and unverified again.
@@ -436,16 +545,23 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           else delete units[name]
         }
         const { verifier: _, ...rest } = state
-        if (event.verdict === "none") return { ...rest, units }
-        // The verdict is in: what it checked as folded is done, and its own findings open.
+        // A dead verifier's units, whatever round each is on now, still wait for a verdict.
+        if (event.verdict === "none") return tidy({ ...rest, units, unverified: [...new Set([...(state.unverified ?? []), ...covered])] })
+        // The verdict is in: what it checked as folded is done, and its own findings open, or its debt when they did not read.
         for (const key of event.findings ?? []) findings[key] = { batch: event.batch }
-        return withFindings({ ...rest, units }, findings, {})
+        const unresolved = { ...state.unresolved, ...(event.unresolved === undefined ? {} : { [event.batch]: event.unresolved }) }
+        return tidy({ ...rest, units, findings, carried: {}, unresolved })
+      }
+      case "ReportResolved": {
+        const { [event.batch]: _, ...unresolved } = state.unresolved ?? {}
+        for (const key of event.findings) findings[key] = { batch: event.batch }
+        return tidy({ ...state, findings, unresolved })
       }
       case "FindingFolded": {
         const finding = findings[event.finding]
         if (finding === undefined) return state
         findings[event.finding] = { batch: finding.batch, into: event.into }
-        return withFindings(state, findings, carried)
+        return tidy({ ...state, findings, carried })
       }
       case "Departed":
         return state
@@ -479,20 +595,22 @@ export const notesOf = (state: MachineState, command: Command, now: number, cade
     return carried.length === 0 ? [] : [`orchestrate: ${command.role} ${command.name} also checks these findings as folded: ${foldedList(state, carried)}; the plugin added them to its prompt.`]
   }
   const why = dueOf(state, now, cadence)
-  const landed = unitsIn(state, "landed")
-  const pending = unitsIn(state, "landed", "verify").length > 0
+  const landed = unverifiedOf(state)
+  const pending = verdictPending(state)
+  const debts = unresolvedOf(state)
   const folds = command.role === "implementor" ? foldsOf(state, command) : []
   const after = Object.keys(state.findings ?? {}).filter((key) => !folds.includes(key) && state.findings![key]!.into === undefined)
   const open = Object.keys(state.findings ?? {})
   const unknown = (command.folds ?? []).filter((ref) => !open.includes(ref) && !open.some((key) => unitOfFinding(key) === ref))
   return [
-    ...(why === undefined || pending || unfoldedOf(state, unitsIn(state, "ready")).length > 0
+    ...(why === undefined || pending || debts.length > 0 || unfoldedOf(state, unitsIn(state, "ready")).length > 0
       ? []
       : [`orchestrate: a batch is due (${why}): ${unitsIn(state, "ready").join(", ")}; land it, then start verifier batch-<k> r1.`]),
     ...(landed.length > 0 && state.verifier === undefined ? [`orchestrate: landed and not verified: ${landed.join(", ")}; start verifier batch-<k> r1.`] : []),
     ...(folds.length === 0 ? [] : [`orchestrate: folded into ${command.name}: ${folds.join(", ")}.`]),
     ...(unknown.length === 0 ? [] : [`orchestrate: no open finding is named ${unknown.join(", ")}; open: ${open.length === 0 ? "none" : open.join(", ")}.`]),
     ...(after.length === 0 ? [] : [`orchestrate: not folded yet: ${after.join(", ")}; fold each into a running implementor that owns its files, or a new fix implementor, before the next land.`]),
+    ...debts.map(([batch, debt]) => `orchestrate: the findings of ${batch}'s changes are not known (${debt.why}); read ${debt.report ?? "its report"} and make it readable, then fold them: the next land waits for it.`),
     ...(command.role === "implementor" && command.round >= 4
       ? [`orchestrate: round ${command.round} of ${command.name}: at the third failed round a unit goes to decide, for a rewrite on a new spec (SKILL.md, rewrite).`]
       : []),
@@ -527,7 +645,9 @@ const BRIEF_ORDER: ReadonlyArray<UnitState> = ["implement", "ready", "landed", "
 export const briefOf = (state: MachineState, now: number, cadence: Cadence): string => {
   const findings = Object.entries(state.findings ?? {})
   const carried = Object.keys(state.carried ?? {})
-  if (Object.keys(state.units).length === 0 && state.verifier === undefined && findings.length === 0 && carried.length === 0) return ""
+  const debts = unresolvedOf(state)
+  if (Object.keys(state.units).length === 0 && state.verifier === undefined && findings.length === 0 && carried.length === 0 && debts.length === 0 && unverifiedOf(state).length === 0)
+    return ""
   const aged = (unit: string) => `${unit} (${Math.floor((now - state.units[unit]!.since) / 60_000)} min)`
   const why = dueOf(state, now, cadence)
   const next = unitsIn(state, "implement", "ready").map((unit) => `${unit} (${state.units[unit]!.state})`)
@@ -538,11 +658,12 @@ export const briefOf = (state: MachineState, now: number, cadence: Cadence): str
       const units = unitsIn(state, name)
       return units.length === 0 ? [] : [`${name}: ${(name === "ready" ? units.map(aged) : units).join(", ")}`]
     }),
-    ...(state.verifier === undefined ? [] : [`${state.verifier.batch} verifying: ${list(unitsIn(state, "verify"))}${carried.length === 0 ? "" : `; checks as folded: ${foldedList(state, carried)}`}`]),
+    ...(state.verifier === undefined ? [] : [`${state.verifier.batch} verifying: ${list(coveredOf(state))}${carried.length === 0 ? "" : `; checks as folded: ${foldedList(state, carried)}`}`]),
     ...(state.verifier === undefined && findings.length === 0
       ? []
       : [`next batch: units ${list(next)}; folded findings: ${folded.length === 0 ? "none" : folded.join(", ")}`]),
     ...(unfolded.length === 0 ? [] : [`not folded: ${unfolded.join(", ")} (the next batch lands once each is folded into a ready unit)`]),
+    ...debts.map(([batch, debt]) => `findings not known: ${batch} changes, ${debt.why}${debt.report === undefined ? "" : ` (${debt.report})`}; the next batch lands once its report reads and each finding is folded`),
     ...(state.verifier === undefined && carried.length > 0 ? [`landed with folded findings, for the next verifier: ${foldedList(state, carried)}`] : []),
     ...(why === undefined ? [] : [`a batch is due (${why})`]),
   ].join("\n")

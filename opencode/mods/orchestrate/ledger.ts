@@ -21,7 +21,7 @@
 // what the compaction kept, and never less than `bytes`, so a compaction runs
 // at most once per that many bytes written.
 import { Effect, Option, Schema, Semaphore } from "effect"
-import { type Cadence, type Command, Event, machine, type MachineState, Refused } from "./machine.ts"
+import { type Cadence, type Command, Event, machine, type MachineState, Refused, Unresolved } from "./machine.ts"
 import type { Decided, GuardMode } from "./service.ts"
 
 /** One line as written. */
@@ -84,9 +84,13 @@ const Unit = Schema.Struct({
 })
 const State = Schema.Struct({
   units: Schema.Record(Schema.String, Unit),
-  verifier: Schema.optionalKey(Schema.Struct({ batch: Schema.String, since: Schema.Number, child: Schema.optionalKey(Schema.String) })),
+  verifier: Schema.optionalKey(
+    Schema.Struct({ batch: Schema.String, since: Schema.Number, units: Schema.optionalKey(Schema.Array(Schema.String)), child: Schema.optionalKey(Schema.String) }),
+  ),
+  unverified: Schema.optionalKey(Schema.Array(Schema.String)),
   findings: Schema.optionalKey(Schema.Record(Schema.String, Schema.Struct({ batch: Schema.String, into: Schema.optionalKey(Schema.String) }))),
   carried: Schema.optionalKey(Schema.Record(Schema.String, Schema.Struct({ batch: Schema.String, into: Schema.String }))),
+  unresolved: Schema.optionalKey(Schema.Record(Schema.String, Unresolved)),
 })
 
 /** A root's whole state as one line, stamped with its last line's time. */
@@ -130,7 +134,7 @@ export const stateOf = (cadence: Cadence, lines: ReadonlyArray<unknown>): Machin
 }
 
 const holds = (state: MachineState) =>
-  Object.keys(state.units).length > 0 || state.verifier !== undefined || state.findings !== undefined || state.carried !== undefined
+  Object.keys(state.units).length > 0 || state.verifier !== undefined || state.findings !== undefined || state.carried !== undefined || state.unverified !== undefined || state.unresolved !== undefined
 const isAudit = (line: unknown) => isRecord(line) && (line.kind === "Departed" || line.kind === "Refused")
 
 /**

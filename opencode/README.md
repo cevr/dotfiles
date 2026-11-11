@@ -660,9 +660,11 @@ call against it at the point of action (`mods/orchestrate/machine.ts`).
   named `batch-<k>` (VerifierPerUnit), a second verifier while one runs
   (VerifierRunning), a land or a verifier before the cadence while an
   implementor still runs (BatchNotDue), a land while a landed batch has no
-  verdict, its verifier not started or still running (VerdictPending), a
-  land with a finding of the last verdict not folded into a ready unit it
-  takes (FindingUnfolded), a land that leaves a ready unit out
+  verdict, its verifier not started or still running, whatever round its
+  units have moved on to (VerdictPending), a land with a finding of the last
+  verdict not folded into a ready unit it takes, or with a `changes` whose
+  report did not read (FindingUnfolded: an unread report is never an empty
+  set; the plugin reads it again before each start and land), a land that leaves a ready unit out
   (LandPartial). No rule holds an implementor's start. A refused call
   starts, latches and counts nothing.
 - **The pipeline.** While batch N's verifier runs, batch N+1's implementors
