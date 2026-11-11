@@ -17,7 +17,7 @@ import { host } from "@dotfiles/opencode-prime/opencode/host"
 import { inboxOf, isWaiting } from "@dotfiles/opencode-prime/pending"
 import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
 import { hints as wakeHints, WakeTab } from "@dotfiles/opencode-prime/tui/composer"
-import { Dock, GoalLine, ModeHint, Queued, Splash, TopBar, UpdateNotice, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
+import { Dock, GoalLine, HintLine, Queued, Splash, TopBar, UpdateNotice, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
 import { SubagentRows } from "@dotfiles/opencode-prime/tui/live"
 import { Completion, StepEnd } from "@dotfiles/opencode-prime/tui/notice"
 import { GroupRow, ToolRow } from "@dotfiles/opencode-prime/tui/tools"
@@ -95,9 +95,10 @@ export default Plugin.define({
       replace: "session.composer.queued",
       render: (input) => <Queued host={h} sessionID={input.sessionID} />,
     })
+    // Navigation hints on the left, the update notice on the right; no standing Ctrl+O hint (tui/chrome.tsx).
     context.ui.slot({
       append: "session.composer.top",
-      render: (input) => <ModeHint host={h} sessionID={input.sessionID} detail={detail} />,
+      render: (input) => <HintLine host={h} sessionID={input.sessionID} />,
     })
     // The goal line sits right above the composer while the session has a goal (tui/chrome.tsx).
     context.ui.slot({
@@ -123,7 +124,7 @@ export default Plugin.define({
       replace: "prompt.footer",
       render: (input) => <Dock host={h} sessionID={input.sessionID} />,
     })
-    // On the home screen the update notice sits in the footer's status, beside the MCP count (the dock's model line holds it in a session).
+    // On the home screen the update notice sits in the footer's status, beside the MCP count (the line above the composer holds it in a session).
     context.ui.slot({
       append: "home.footer.status",
       render: () => <UpdateNotice host={h} />,
