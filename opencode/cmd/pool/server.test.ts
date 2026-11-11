@@ -27,7 +27,7 @@ import type { PublishedReading } from "@dotfiles/opencode-pool/service"
 import { GentSource } from "@dotfiles/opencode-pool/gent/store"
 import type { Alerts, FleetStatus, PoolsStatus, Report, ResetsStatus, SessionAnswer, SessionLogins } from "@dotfiles/opencode-pool/status"
 import { spentAccount, startFakeChatGPT } from "../../tests/fake-chatgpt.ts"
-import Pool, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, live, make } from "./server.ts"
+import Pool, { CACHE_TTL_HEADER, CLAIMER, claimerOf, CREDENTIAL_HEADER, live, make } from "./server.ts"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -1510,6 +1510,28 @@ describe("resets on the live adapters", () => {
         expect(yield* plugin.resets).toEqual({ resets: [], claims: [] })
       }),
     ))
+})
+
+describe("the fleet's claimer", () => {
+  const fleet = (host: string, peers: ReadonlyArray<{ readonly name: string; readonly ssh: string }>, claimer = CLAIMER) => ({
+    host,
+    peers,
+    pollSeconds: 30,
+    settleMinutes: 10,
+    startCost: 0.005,
+    claimer,
+  })
+
+  test("as the install sets the fleet up (scripts/daily.ts FLEET): the Mac claims, the workbox forwards to its Mac peer", () => {
+    expect(claimerOf(fleet("Cristians-MacBook-Pro.local", [{ name: "workbox", ssh: "bite-workbox" }]))).toEqual({ here: true })
+    expect(claimerOf(fleet("bite-cristian", [{ name: "macbook", ssh: "cvr@cristians-macbook-pro" }]))).toEqual({ here: false, peer: "macbook" })
+  })
+
+  test("a host with no peers is its own claimer; one whose peers name no claimer forwards nowhere", () => {
+    expect(claimerOf(fleet("bite-cristian", []))).toEqual({ here: true })
+    expect(claimerOf(fleet("bite-cristian", [{ name: "other", ssh: "other-host" }]))).toEqual({ here: false, peer: undefined })
+    expect(claimerOf(fleet("bite-cristian", [{ name: "other", ssh: "other-host" }], "other"))).toEqual({ here: false, peer: "other" })
+  })
 })
 
 /** Wait, in real time, until `done` holds; a second without it fails the test. */
