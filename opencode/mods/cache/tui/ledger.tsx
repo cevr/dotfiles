@@ -3,9 +3,9 @@
 // waits this TUI saw. Approval waits leave no record in the session's
 // messages (the fork's `permission.asked` and `permission.replied` events are
 // ephemeral), so a wait this TUI did not see while it happened reads as the
-// tool call it held up. A subagent's messages are fetched when the sidebar
-// asks for them and again when one of its steps ends: the TUI holds only the
-// sessions it shows. The login each step went out on comes from the pool's
+// tool call it held up. The ledger never fetches a transcript: it reads the
+// ones the TUI holds (the session shown, a subagent opened), and the
+// sidebar's cache share comes from every session's own token totals. The login each step went out on comes from the pool's
 // `logins` RPC, asked when a session is first read and again when one of its
 // steps ends; an answer that fails or does not decode names no login, and the
 // misses read as if the pool had kept every step on one. How the cache mod's
@@ -79,8 +79,6 @@ export function createLedger(ctx: Plugin.Context, options: { readonly releaseMs?
   const releaseMs = options.releaseMs ?? RELEASE_MS
   const waits = new Map<string, ReadonlyArray<Span>>()
   const asked = new Map<string, { readonly sessionID: string; readonly at: number }>()
-  const fetched = new Set<string>()
-  const opened = new Set<string>()
   const sessions = new Map<string, Session>()
   const timers = new Set<ReturnType<typeof setTimeout>>()
   const abort = new AbortController()
@@ -92,7 +90,6 @@ export function createLedger(ctx: Plugin.Context, options: { readonly releaseMs?
     timers.add(timer)
     return timer
   }
-  const sync = (sessionID: string) => void ctx.data.session.message.sync(sessionID).catch(() => undefined)
   /** Set an answer on the session's memos if it is still read. */
   const answer = (sessionID: string, session: Session, set: (session: Session) => void) => {
     if (!abort.signal.aborted && sessions.get(sessionID) === session) set(session)
@@ -237,10 +234,6 @@ export function createLedger(ctx: Plugin.Context, options: { readonly releaseMs?
       const created = open(sessionID)
       session = created
       sessions.set(sessionID, created)
-      const again = opened.has(sessionID)
-      opened.add(sessionID)
-      // Read again after a while unread: the step ends it missed are asked for now.
-      if (again && fetched.has(sessionID)) sync(sessionID)
       askLogins(sessionID, created)
       askSteps(sessionID, created)
     }
@@ -269,13 +262,12 @@ export function createLedger(ctx: Plugin.Context, options: { readonly releaseMs?
       waits.set(open.sessionID, all)
       sessions.get(open.sessionID)?.setWaits(all)
     }),
-    // A shown session's new step: fetch a subagent's messages again, and ask
-    // the pool where it went out and the server how it judged it.
+    // A shown session's new step: ask the pool where it went out and the
+    // server how it judged it.
     ctx.data.on("session.step.ended", (event) => {
       const sessionID = event.data.sessionID
       const session = sessions.get(sessionID)
       if (session === undefined) return
-      if (fetched.has(sessionID)) sync(sessionID)
       askLogins(sessionID, session)
       askSteps(sessionID, session)
       // The server judges the step from the same event: ask again once it has.
@@ -289,12 +281,11 @@ export function createLedger(ctx: Plugin.Context, options: { readonly releaseMs?
     rows: (sessionID, messageID) => hold(sessionID).rows(messageID),
     sidebar(sessionID) {
       const ids = descendants(ctx.data, sessionID)
-      for (const id of ids)
-        if (id !== sessionID && !fetched.has(id)) {
-          fetched.add(id)
-          sync(id)
-        }
-      const all = ids.map((id) => hold(id).judged())
+      // The share comes from each session's own token totals. The misses need a transcript, so they count
+      // the session and the subagents whose transcripts the TUI already holds: a family of hundreds of
+      // subagents would otherwise load every transcript to draw one line.
+      const held = ids.filter((id) => id === sessionID || ctx.data.session.message.list(id).length > 0)
+      const all = held.map((id) => hold(id).judged())
       return sidebarText(hits(ctx.data, ids), missedUsd(all), costliestCause(all))
     },
     dispose() {
