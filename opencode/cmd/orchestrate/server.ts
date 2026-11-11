@@ -92,6 +92,22 @@
  *   user or the parent cancelled is not resumed, nor is a root session.
  *   `resume: false` turns it off; `resume.backoffMs` sets the waits.
  *
+ * - Batch machine: the plugin keeps each root's machine (mods/orchestrate/
+ *   machine.ts) in a ledger, one JSONL line per event or refusal, from the
+ *   role starts, hand-backs and `rift` lands it sees, and refuses a call
+ *   against its five rules in the skill's words: a verifier not named for a
+ *   batch, a second verifier, a land or verifier before the cadence while an
+ *   implementor runs, a land that leaves a ready unit out, a land over an
+ *   unverified batch. `(departs: <why>)` in a description, or `departs` in a
+ *   land's input, lets the call through and records it. A step whose session
+ *   no longer works is handed back as `none` first. After a root's
+ *   compaction, it gets one message (no new turn): SKILL.md's machine section
+ *   and its run from the ledger (the brief).
+ *   Options: `ledger` (default `~/.cache/orchestrate/machine.jsonl`),
+ *   `cadence: { ready, waitMs }` (default 3 and 30 minutes), `guard`:
+ *   `refuse` (default) or `warn` (the call passes, its answer carries the
+ *   rule's words, the ledger records the departure).
+ *
  * Each new subagent is told to the pool (`started`), which counts it on its
  * provider's pace, here and on the owner's other hosts, until its spend shows
  * in a reading.
