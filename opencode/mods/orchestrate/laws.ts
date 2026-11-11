@@ -5,8 +5,10 @@ import { Effect, Layer, type Scope } from "effect"
 import type { CallLine } from "./call-line.ts"
 import { type ModelRef, type Pace, paceOfReply } from "./pace.ts"
 import { type Holds, NO_HOLDS, type Run } from "./idle.ts"
+import { HandBack, Land, Landed, type MachineState, Start } from "./machine.ts"
 import {
   CallLog,
+  Ledger,
   CodexAdmission,
   type LatchRequest,
   Latches,
@@ -665,6 +667,117 @@ export const steerLaws = (
           expect(refused.message).toContain("session not found")
         }),
       ))
+  })
+
+// ── Ledger ──
+
+/** A ledger under test, on one store. */
+export interface LedgerProbe {
+  /** A ledger service on the store; a second one is the ledger after a restart, on what the first wrote. */
+  readonly open: () => Layer.Layer<Ledger>
+  /** The store's lines, read back. */
+  readonly lines: () => ReadonlyArray<Record<string, unknown>>
+  /** Write a line that does not read: a cut last line. */
+  readonly cut: () => void
+}
+
+const T = 1_800_000_000_000
+const MIN = 60_000
+const impl = (name: string) => Start.make({ role: "implementor", name, round: 1, direct: false })
+const ready = (name: string) => HandBack.make({ role: "implementor", name, verdict: "ready" })
+const unitStates = (state: MachineState) => Object.fromEntries(Object.entries(state.units).map(([name, unit]) => [name, unit.state]))
+
+/** `make` gives a fresh, empty store. */
+export const ledgerLaws = (name: string, make: () => LedgerProbe) =>
+  describe(`${name} keeps the Ledger laws`, () => {
+    test("a root's state is the fold of its lines, and the same after a restart; other roots' lines are not its", async () => {
+      const probe = make()
+      const first = await check(
+        probe.open(),
+        Effect.gen(function* () {
+          const ledger = yield* Ledger
+          yield* ledger.decide("root", T, () => Effect.succeed([impl("alpha"), impl("beta")]))
+          yield* ledger.decide("other", T, () => Effect.succeed([impl("gamma")]))
+          yield* ledger.decide("root", T + MIN, () => Effect.succeed([ready("alpha"), Landed.make({ rifts: ["feat/alpha"] })]))
+          return yield* ledger.state("root")
+        }),
+      )
+      expect(unitStates(first)).toEqual({ alpha: "landed", beta: "implement" })
+      const again = await check(probe.open(), Effect.flatMap(Ledger, (ledger) => ledger.state("root")))
+      expect(again).toEqual(first)
+      expect(probe.lines().map((line) => [line.sessionID, line.kind])).toEqual([
+        ["root", "UnitStarted"],
+        ["root", "UnitStarted"],
+        ["other", "UnitStarted"],
+        ["root", "UnitHandedBack"],
+        ["root", "BatchLanded"],
+      ])
+      expect(probe.lines()[4]).toMatchObject({ at: new Date(T + MIN).toISOString(), units: ["alpha"] })
+    })
+
+    test("decisions of one root apply in the order asked, each on the state the last left, though they arrive together", async () => {
+      const probe = make()
+      const outcome = await check(
+        probe.open(),
+        Effect.gen(function* () {
+          const ledger = yield* Ledger
+          yield* ledger.decide("root", T, () => Effect.succeed([impl("alpha"), ready("alpha")]))
+          // A kernel cell: an implementor's start and a land at once. The start, asked first, reads slowly.
+          return yield* Effect.all(
+            [
+              ledger.decide("root", T + MIN, () => Effect.sleep(20).pipe(Effect.as([impl("beta")]))).pipe(Effect.result),
+              ledger.decide("root", T + MIN, () => Effect.succeed([Land.make({ rifts: ["alpha"] })])).pipe(Effect.result),
+            ],
+            { concurrency: "unbounded" },
+          )
+        }),
+      )
+      expect(outcome[0]._tag).toBe("Success")
+      // The land saw beta implementing: one ready unit, not due, so it waits.
+      expect(outcome[1]._tag === "Failure" && outcome[1].failure._tag === "Refused" ? outcome[1].failure.rule : undefined).toBe("BatchNotDue")
+    })
+
+    test("a refusal is a line with its rule and call, and changes no state", async () => {
+      const probe = make()
+      const { before, after, refused } = await check(
+        probe.open(),
+        Effect.gen(function* () {
+          const ledger = yield* Ledger
+          const before = (yield* ledger.decide("root", T, () => Effect.succeed([impl("alpha"), ready("alpha")]))).state
+          const refused = yield* Effect.flip(ledger.decide("root", T, () => Effect.succeed([Start.make({ role: "verifier", name: "alpha", round: 1, direct: false })])))
+          return { before, after: yield* ledger.state("root"), refused }
+        }),
+      )
+      expect(refused).toMatchObject({ _tag: "Refused", rule: "VerifierPerUnit" })
+      expect(after).toEqual(before)
+      expect(probe.lines().at(-1)).toMatchObject({ sessionID: "root", kind: "Refused", rule: "VerifierPerUnit", call: { _tag: "Start", name: "alpha" } })
+      // The refusal folds into nothing after a restart either.
+      expect(await check(probe.open(), Effect.flatMap(Ledger, (ledger) => ledger.state("root")))).toEqual(before)
+    })
+
+    test("under warn a refused call passes, its departure recorded, and the refusal handed back", async () => {
+      const probe = make()
+      const decided = await check(
+        probe.open(),
+        Effect.gen(function* () {
+          const ledger = yield* Ledger
+          yield* ledger.decide("root", T, () => Effect.succeed([impl("alpha"), ready("alpha")]))
+          return yield* ledger.decide("root", T, () => Effect.succeed([Start.make({ role: "verifier", name: "alpha", round: 1, direct: false })]), "warn")
+        }),
+      )
+      expect(decided.warned?.rule).toBe("VerifierPerUnit")
+      expect(decided.events.map((event) => event._tag)).toEqual(["Departed", "VerifierStarted"])
+      expect(probe.lines().map((line) => line.kind)).not.toContain("Refused")
+    })
+
+    test("a line that does not read is skipped, and the next one reads", async () => {
+      const probe = make()
+      await check(probe.open(), Effect.flatMap(Ledger, (ledger) => ledger.decide("root", T, () => Effect.succeed([impl("alpha")]))))
+      probe.cut()
+      await check(probe.open(), Effect.flatMap(Ledger, (ledger) => ledger.decide("root", T + MIN, () => Effect.succeed([ready("alpha")]))))
+      const state = await check(probe.open(), Effect.flatMap(Ledger, (ledger) => ledger.state("root")))
+      expect(unitStates(state)).toEqual({ alpha: "ready" })
+    })
   })
 
 // ── Restarts ──

@@ -4,6 +4,7 @@
 import { Context, type Effect, Schema } from "effect"
 import type { CallLine } from "./call-line.ts"
 import type { Holds, Run } from "./idle.ts"
+import type { Command as MachineCommand, Event as MachineEvent, MachineState, Refused } from "./machine.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
 import type { Entry } from "./restart.ts"
 import type { Relation } from "./skill-drift.ts"
@@ -214,6 +215,50 @@ export class NudgeRefused extends Schema.TaggedError<NudgeRefused>()("NudgeRefus
 /** Steers a session with one line, marked as the nudge (`MARK`), which wakes it if idle. */
 export class Steer extends Context.Service<Steer, { readonly nudge: (sessionID: string, line: string) => Effect.Effect<void, NudgeRefused> }>()(
   "dotfiles-opencode/orchestrate/Steer",
+) {}
+
+// ── The batch machine (machine.ts) ──
+
+/**
+ * What a call against the machine gets: `refuse` fails it with the rule's
+ * words; `warn` lets it pass, records the departure, and its answer carries
+ * the words.
+ */
+export type GuardMode = "refuse" | "warn"
+
+/** What one decision recorded: every event, in order, the root's state after them, and the refusal a `warn` let pass. */
+export interface Decided {
+  readonly events: ReadonlyArray<MachineEvent>
+  readonly state: MachineState
+  readonly warned?: Refused
+}
+
+/**
+ * Each root's batch machine, kept as lines (`{ at, sessionID, kind, ... }`,
+ * one per event or refusal), its state the fold of its lines.
+ * - `state`: the root's state now; the initial state for a root with no line.
+ * - `decide`: under the root's lock, `plan` reads the state and gives the
+ *   commands to decide, each on the state the last left; each one's events
+ *   are lines. A refused command is a `Refused` line, changes nothing, and
+ *   stops the rest; under `warn` it is decided again with a departure and
+ *   passes. Decisions of one root apply in the order asked.
+ */
+export class Ledger extends Context.Service<
+  Ledger,
+  {
+    readonly state: (sessionID: string) => Effect.Effect<MachineState>
+    readonly decide: <E, R>(
+      sessionID: string,
+      now: number,
+      plan: (state: MachineState) => Effect.Effect<ReadonlyArray<MachineCommand>, E, R>,
+      mode?: GuardMode,
+    ) => Effect.Effect<Decided, Refused | E, R>
+  }
+>()("dotfiles-opencode/orchestrate/Ledger") {}
+
+/** Whether a step's session still works: it runs a turn, is latched, or keeps background work of its own. */
+export class Liveness extends Context.Service<Liveness, { readonly alive: (sessionID: string) => Effect.Effect<boolean> }>()(
+  "dotfiles-opencode/orchestrate/Liveness",
 ) {}
 
 // ── A run's skill drift (skill-drift.ts) ──
