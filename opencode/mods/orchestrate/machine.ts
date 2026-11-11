@@ -102,6 +102,8 @@ export const Start = Schema.TaggedStruct("Start", {
   direct: Schema.Boolean,
   folds: Schema.optionalKey(Schema.Array(Schema.String)),
   departs: Schema.optionalKey(Schema.String),
+  /** An implementor's: the Rifts its prompt names (`workspacesOf`), its unit's workspaces from now on. */
+  workspaces: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 export interface Start extends Schema.Schema.Type<typeof Start> {}
 
@@ -153,7 +155,14 @@ export type Command = Start | HandBack | Land | Landed | Spawned | ReportRead
 
 // ── The events ──
 
-export const UnitStarted = Schema.TaggedStruct("UnitStarted", { unit: Schema.String, round: Schema.Number, direct: Schema.Boolean, at: Schema.Number })
+/** A unit's round started; `workspaces`, the Rifts its implementor was started in, are the unit's as well as any it had. */
+export const UnitStarted = Schema.TaggedStruct("UnitStarted", {
+  unit: Schema.String,
+  round: Schema.Number,
+  direct: Schema.Boolean,
+  workspaces: Schema.optionalKey(Schema.Array(Schema.String)),
+  at: Schema.Number,
+})
 export interface UnitStarted extends Schema.Schema.Type<typeof UnitStarted> {}
 
 export const UnitHandedBack = Schema.TaggedStruct("UnitHandedBack", { unit: Schema.String, ready: Schema.Boolean, at: Schema.Number })
@@ -215,6 +224,11 @@ export interface Unit {
   readonly direct: boolean
   /** Its implementor's session, once known. */
   readonly child?: string
+  /**
+   * The Rifts its implementors were started in (paths, as their prompts named them): a land names the unit by
+   * any of them, whatever the Rift is called (`reset-use-3` for unit `reset-use`). Absent when none was named.
+   */
+  readonly workspaces?: ReadonlyArray<string>
 }
 
 /** A finding of a verdict: the verifier's batch, and the unit it was folded into, once it was. */
@@ -299,21 +313,44 @@ const unverifiedOf = (state: MachineState): ReadonlyArray<string> => [...new Set
 /** The units the running verifier covers: as it started, else (an older checkpoint) those in `verify`. */
 const coveredOf = (state: MachineState): ReadonlyArray<string> => state.verifier?.units ?? unitsIn(state, "verify")
 
+/** A Rift's path as a prompt names it: under a `.rifts/` directory, up to a space, a quote or a bracket. */
+const RIFT_PATH = /[^\s`'"()<>[\]]*\/\.rifts\/[^\s`'"()<>[\]]+/g
+
+/** The Rifts a prompt names, by path, each once, trailing punctuation dropped: an implementor's workspaces. */
+export const workspacesOf = (prompt: string | undefined): ReadonlyArray<string> => [
+  ...new Set([...(prompt ?? "").matchAll(RIFT_PATH)].map((match) => match[0].replace(/[.,;:!?]+$/, "").replace(/\/+$/, ""))),
+]
+
+/** A land's entry names `workspace`: its whole path, or its last segments (`reset-use-3`, `dotfiles/reset-use-3`). */
+const namesWorkspace = (entry: string, workspace: string) => entry === workspace || workspace.endsWith(`/${entry}`)
+
+const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
 /**
- * The unit a land's entry names: by its name, its branch (`<run>/<unit>`,
- * `feat/<unit>`), its path (`…/.rifts/<repo>/<unit>`) or workrift's
- * directory (`<run>-<unit>`). The longest unit name that fits wins
- * (`fix-auth` over `auth`); an entry that is no unit's is none.
+ * The unit a land's entry names. First by the workspaces the ledger holds for
+ * each unit (`workspaces`: the Rifts its implementors were started in), when
+ * exactly one unit's fits. Else by the unit's name: its name, its branch
+ * (`<run>/<unit>`, `feat/<unit>`), its path (`…/.rifts/<repo>/<unit>`),
+ * workrift's directory (`<run>-<unit>`), each maybe with a later round's
+ * number (`<unit>-3`); the longest unit name that fits wins (`fix-auth` over
+ * `auth`). An entry that is no unit's is none.
  */
-export const unitOfRift = (rift: string, units: ReadonlyArray<string>): string | undefined => {
+export const unitOfRift = (rift: string, units: ReadonlyArray<string>, workspaces: Readonly<Record<string, ReadonlyArray<string>>> = {}): string | undefined => {
   const entry = rift.trim().replace(/\/+$/, "")
-  return units.filter((unit) => entry === unit || entry.endsWith(`/${unit}`) || entry.endsWith(`-${unit}`)).sort((a, b) => b.length - a.length)[0]
+  const owners = units.filter((unit) => (workspaces[unit] ?? []).some((workspace) => namesWorkspace(entry, workspace)))
+  if (owners.length === 1) return owners[0]
+  return units.filter((unit) => new RegExp(`(?:^|[/-])${escaped(unit)}(?:-\\d+)?$`).test(entry)).sort((a, b) => b.length - a.length)[0]
 }
+
+/** Each unit's workspaces, as the ledger holds them. */
+const workspacesIn = (state: MachineState): Readonly<Record<string, ReadonlyArray<string>>> =>
+  Object.fromEntries(Object.entries(state.units).flatMap(([name, unit]) => (unit.workspaces === undefined ? [] : [[name, unit.workspaces]])))
 
 /** The ready units a land's `rifts` name. */
 const named = (state: MachineState, rifts: ReadonlyArray<string>): ReadonlyArray<string> => {
   const all = Object.keys(state.units)
-  return unitsIn(state, "ready").filter((unit) => rifts.some((rift) => unitOfRift(rift, all) === unit))
+  const workspaces = workspacesIn(state)
+  return unitsIn(state, "ready").filter((unit) => rifts.some((rift) => unitOfRift(rift, all, workspaces) === unit))
 }
 
 /** Why the ready units' batch is due now (`3 ready`, `alpha ready 42 min`), or none. */
@@ -421,7 +458,13 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           // No rule holds an implementor: the next batch fans out while a verifier runs.
           if (command.role === "implementor")
             return [
-              UnitStarted.make({ unit: command.name, round: command.round, direct: command.direct, at: now }),
+              UnitStarted.make({
+                unit: command.name,
+                round: command.round,
+                direct: command.direct,
+                ...(command.workspaces === undefined || command.workspaces.length === 0 ? {} : { workspaces: command.workspaces }),
+                at: now,
+              }),
               ...foldsOf(state, command).map((finding) => FindingFolded.make({ finding, into: command.name, at: now })),
             ]
           const batch = BATCH.test(command.name)
@@ -490,7 +533,9 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
         const prior = state.units[event.unit]?.state
         const verifier = prior === "verify" && state.verifier !== undefined && state.verifier.units === undefined ? { ...state.verifier, units: coveredOf(state) } : state.verifier
         const unverified = prior === "landed" ? [...new Set([...(state.unverified ?? []), event.unit])] : state.unverified
-        units[event.unit] = { state: "implement", round: event.round, since: event.at, direct: event.direct }
+        // The unit keeps the workspaces of its earlier rounds: a land may name any of them.
+        const workspaces = [...new Set([...(state.units[event.unit]?.workspaces ?? []), ...(event.workspaces ?? [])])]
+        units[event.unit] = { state: "implement", round: event.round, since: event.at, direct: event.direct, ...(workspaces.length === 0 ? {} : { workspaces }) }
         return tidy({ ...state, units, ...(verifier === undefined ? {} : { verifier }), ...(unverified === undefined ? {} : { unverified }) })
       }
       case "UnitHandedBack": {

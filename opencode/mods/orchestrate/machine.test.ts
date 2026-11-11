@@ -51,6 +51,7 @@ import {
   startOf,
   unitOfRift,
   verifierPromptOf,
+  workspacesOf,
 } from "./machine.ts"
 
 const CADENCE: Cadence = { ready: 3, waitMs: 30 * 60_000 }
@@ -613,6 +614,77 @@ describe("the machine's stories", () => {
     expect(unitOfRift("wf10-auth", ["auth"])).toBe("auth")
     expect(unitOfRift("fix-auth", ["auth", "fix-auth"])).toBe("fix-auth")
     expect(unitOfRift("author", ["auth"])).toBeUndefined()
+    // A later round's numbered Rift is its unit's.
+    expect(unitOfRift("reset-use-3", ["reset-use", "land-upstream"])).toBe("reset-use")
+    expect(unitOfRift("/u/.rifts/dotfiles/land-upstream-2", ["reset-use", "land-upstream"])).toBe("land-upstream")
+    expect(unitOfRift("auth-2", ["auth", "auth-2"])).toBe("auth-2")
+    expect(unitOfRift("auth-2x", ["auth"])).toBeUndefined()
+    // A workspace the ledger holds names its unit whatever it is called; two units holding it fall back to the name.
+    expect(unitOfRift("scratch-b", ["reset-use", "web"], { "reset-use": ["/u/.rifts/dotfiles/scratch-b"] })).toBe("reset-use")
+    expect(unitOfRift("dotfiles/scratch-b", ["reset-use"], { "reset-use": ["/u/.rifts/dotfiles/scratch-b"] })).toBe("reset-use")
+    expect(unitOfRift("web", ["reset-use", "web"], { "reset-use": ["/u/.rifts/dotfiles/web"], web: ["/u/.rifts/dotfiles/web"] })).toBe("web")
+  })
+
+  test("property: over arbitrary unit names and rounds, each unit's Rift (by name, branch, path, numbered round, or any workspace its starts named) is that unit's", () => {
+    const random = rng(1111)
+    const word = () => Array.from({ length: 1 + Math.floor(random() * 6) }, () => "abcdefghijklmnopqrstuvwxyz"[Math.floor(random() * 26)]).join("")
+    for (let trial = 0; trial < 300; trial++) {
+      // Names of one to three words, no word a number: a numbered Rift is never another unit's name.
+      const units = [...new Set(Array.from({ length: 1 + Math.floor(random() * 5) }, () => Array.from({ length: 1 + Math.floor(random() * 3) }, word).join("-")))]
+      // Each unit's workspaces: arbitrary Rift names, made unique per unit.
+      const workspaces = Object.fromEntries(units.map((unit, i) => [unit, [`/home/me/.rifts/repo/${word()}-${i}-ws`, `/home/me/.rifts/repo/${unit}-${2 + i}`]]))
+      for (const unit of units) {
+        const round = 2 + Math.floor(random() * 9)
+        // Another unit whose name ends with this one's could take its name-based entries: the longest wins, by design.
+        const longer = units.some((other) => other !== unit && other.endsWith(`-${unit}`))
+        const byName = [`${unit}-${round}`, `/home/me/.rifts/repo/${unit}-${round}`, `run/${unit}`, `feat/${unit}`, unit]
+        if (!longer) for (const entry of byName) expect([entry, unitOfRift(entry, units)]).toEqual([entry, unit])
+        for (const workspace of workspaces[unit]!) {
+          expect(unitOfRift(workspace, units, workspaces)).toBe(unit)
+          expect(unitOfRift(workspace.split("/").at(-1)!, units, workspaces)).toBe(unit)
+        }
+      }
+    }
+  })
+
+  test("the ledger binds a unit to the Rifts its implementors' prompts named, across rounds, and a land by any of them is the unit's (orch-pipeline OB1)", async () => {
+    const verifier = (name: string) => Start.make({ role: "verifier", name, round: 1, direct: false })
+    const at = (name: string, round: number, rift: string) => Start.make({ role: "implementor", name, round, direct: false, workspaces: [rift] })
+    const steps: Array<readonly [Command, number]> = [
+      [at("reset-use", 2, "/u/.rifts/dotfiles/reset-use"), 0],
+      [at("land-upstream", 1, "/u/.rifts/dotfiles/land-upstream"), 0],
+      [ready("reset-use"), MIN],
+      [ready("land-upstream"), MIN],
+      [Land.make({ rifts: ["reset-use", "land-upstream"] }), 2 * MIN],
+      [Landed.make({ rifts: ["reset-use", "land-upstream"] }), 2 * MIN],
+      [verifier("batch-f"), 3 * MIN],
+      [HandBack.make({ role: "verifier", name: "batch-f", verdict: "changes", findings: ["reset-use/B1", "reset-use/M1", "land-upstream/M1"] }), 40 * MIN],
+      // The next rounds run in Rifts named for neither unit's name alone.
+      [at("reset-use", 4, "/u/.rifts/dotfiles/reset-use-3"), 41 * MIN],
+      [at("land-upstream", 2, "/u/.rifts/dotfiles/lu-second-try"), 41 * MIN],
+      [ready("reset-use"), 50 * MIN],
+      [ready("land-upstream"), 50 * MIN],
+    ]
+    const before = await run(steps)
+    expect(before.state.units["reset-use"]?.workspaces).toEqual(["/u/.rifts/dotfiles/reset-use-3"])
+    expect(before.state.findings).toEqual({
+      "reset-use/B1": { batch: "batch-f", into: "reset-use" },
+      "reset-use/M1": { batch: "batch-f", into: "reset-use" },
+      "land-upstream/M1": { batch: "batch-f", into: "land-upstream" },
+    })
+    // By the Rifts' names, as the orchestrator lands them: no refusal, and both land.
+    const landed = await run([...steps, [Land.make({ rifts: ["reset-use-3", "lu-second-try"] }), 51 * MIN], [Landed.make({ rifts: ["reset-use-3", "lu-second-try"] }), 51 * MIN]])
+    expect(landed.last).toEqual({ events: [expect.objectContaining({ _tag: "BatchLanded", units: ["reset-use", "land-upstream"] })] })
+    // And by their paths.
+    expect((await run([...steps, [Land.make({ rifts: ["/u/.rifts/dotfiles/reset-use-3", "/u/.rifts/dotfiles/lu-second-try"] }), 51 * MIN]])).last).toEqual({ events: [] })
+  })
+
+  test("workspacesOf reads the Rift paths a prompt names, each once, without trailing punctuation", () => {
+    expect(
+      workspacesOf("You work in the Rift /Users/me/Developer/personal/.rifts/dotfiles/land-upstream-2 (a copy). Logs in `/tmp/x`. Rift `/Users/me/Developer/personal/.rifts/dotfiles/land-upstream-2`."),
+    ).toEqual(["/Users/me/Developer/personal/.rifts/dotfiles/land-upstream-2"])
+    expect(workspacesOf("~/.rifts/app/a, and /w/.rifts/app/b/; none else")).toEqual(["~/.rifts/app/a", "/w/.rifts/app/b"])
+    expect(workspacesOf(undefined)).toEqual([])
   })
 
   test("the notes ride on a start's answer: a due batch, a landed batch with no verifier, a fourth round", async () => {
