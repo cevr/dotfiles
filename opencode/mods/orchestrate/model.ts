@@ -40,17 +40,21 @@ import {
   briefOf,
   type Cadence,
   type Command as MachineCommand,
+  type Event as MachineEvent,
   HandBack,
   handBackOf as stepHandBackOf,
   Land,
   Landed,
+  machine,
   type MachineState,
   notesOf,
   type Refused,
+  ReportRead,
   reportOf,
   Spawned,
   type Start,
   startOf as stepOfCall,
+  unresolvedOf,
   verifierPromptOf,
 } from "./machine.ts"
 import { formatRef, namesModel, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
@@ -956,6 +960,38 @@ export const machineLayer = (config: MachineConfig) =>
           return dead
         })
 
+      /** A `changes` hand-back's findings as its report gives them, or why they are not known. */
+      const readReport = (report: string | undefined) =>
+        Effect.gen(function* () {
+          if (report === undefined) return { unread: { why: "its hand-back names no findings report" } }
+          const read = yield* findings.read(report)
+          return read._tag === "Read" ? { findings: read.findings } : { unread: { report, why: read.why } }
+        })
+
+      /** Each unresolved verdict whose report reads now: its findings, read again before a decision. */
+      const reread = (state: MachineState) =>
+        Effect.gen(function* () {
+          const read: Array<MachineCommand> = []
+          for (const [batch, debt] of unresolvedOf(state)) {
+            if (debt.report === undefined) continue
+            const again = yield* findings.read(debt.report)
+            if (again._tag === "Read") read.push(ReportRead.make({ batch, findings: again.findings }))
+          }
+          return read
+        })
+
+      /** `state` after `commands` that never refuse (a report read again), as the ledger will decide them. */
+      const decider = machine(config.cadence)
+      const advance = (state: MachineState, commands: ReadonlyArray<MachineCommand>, at: number) =>
+        Effect.gen(function* () {
+          let current = state
+          for (const command of commands) {
+            const events = yield* decider.decide(current, command, at).pipe(Effect.orElseSucceed((): ReadonlyArray<MachineEvent> => []))
+            current = events.reduce(decider.evolve, current)
+          }
+          return current
+        })
+
       const now = Clock.currentTimeMillis
       const warnedNote = (decided: Decided) => (decided.warned === undefined ? [] : [decided.warned.message])
 
@@ -978,9 +1014,12 @@ export const machineLayer = (config: MachineConfig) =>
           (state) =>
             Effect.gen(function* () {
               const dead = command.role === "verifier" ? yield* reconcile(input.root, state) : []
-              notes = notesOf(state, command, at, config.cadence)
-              prompt = verifierPromptOf(state, command)
-              return [...dead, command]
+              // An unresolved verdict's report that reads now opens its findings first: this start may fold them.
+              const read = yield* reread(state)
+              const seen = yield* advance(state, read, at)
+              notes = notesOf(seen, command, at, config.cadence)
+              prompt = verifierPromptOf(seen, command)
+              return [...dead, ...read, command]
             }),
           config.mode,
         )
@@ -1002,7 +1041,7 @@ export const machineLayer = (config: MachineConfig) =>
         const decided = yield* ledger.decide(
           input.root,
           yield* now,
-          (state) => reconcile(input.root, state).pipe(Effect.map((dead) => [...dead, command])),
+          (state) => Effect.all([reconcile(input.root, state), reread(state)]).pipe(Effect.map(([dead, read]) => [...dead, ...read, command])),
           config.mode,
         )
         return { notes: warnedNote(decided) }
@@ -1020,17 +1059,16 @@ export const machineLayer = (config: MachineConfig) =>
         const words = yield* sessions.lastWordsOf(sessionID)
         const back = stepHandBackOf(agent, words)
         if (back === undefined) return
-        // A verifier's `changes` opens the findings its report holds: each folds into the next batch.
-        const report = back.role === "verifier" && back.verdict === "changes" ? reportOf(words) : undefined
-        const found = report === undefined ? undefined : yield* findings.read(report)
-        const said = found === undefined ? back : HandBack.make({ ...back, findings: found })
+        // A verifier's `changes` opens the findings its report holds: each folds into the next batch. A report that
+        // does not read, or none named, leaves the verdict unresolved: never an empty set of findings.
+        const said = back.role === "verifier" && back.verdict === "changes" ? HandBack.make({ ...back, ...(yield* readReport(reportOf(words))) }) : back
         // The session that handed back is the step's: a step started before its session was known gets it here.
         yield* ledger.decide(root, yield* now, () => Effect.succeed([said])).pipe(Effect.ignore)
       })
 
       const brief = Effect.fn("Machines.brief")(function* (root: string) {
         const at = yield* now
-        const decided = yield* ledger.decide(root, at, (state) => reconcile(root, state)).pipe(Effect.orElseSucceed(() => undefined))
+        const decided = yield* ledger.decide(root, at, (state) => Effect.all([reconcile(root, state), reread(state)]).pipe(Effect.map(([dead, read]) => [...dead, ...read]))).pipe(Effect.orElseSucceed(() => undefined))
         const state = decided?.state ?? (yield* ledger.state(root))
         return briefOf(state, at, config.cadence)
       })

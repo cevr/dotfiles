@@ -1,7 +1,9 @@
 // A verifier's findings, read from its report (service.ts `Findings`). The
 // report is a unit's `round-N-findings.md`, or a batch's findings file that
 // names each unit's (protocol.md, Verifier: a row per unit with its findings
-// path, absolute or relative to the batch file). A unit file whose first line
+// path, absolute or relative to the batch file). What does not read (the
+// report, a unit file it names, or a batch file naming none) is `Unread`,
+// never an empty set. A unit file whose first line
 // is not a `changes` verdict holds none; one that is holds each Blocker and
 // Major by its id (`### M1 — …`, `- **B2** …`) under the Blockers and Major
 // headings, as `<unit>/<id>`, the unit being its directory's name. A `changes`
@@ -10,7 +12,7 @@ import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 import { Effect, Layer } from "effect"
-import { Findings } from "../service.ts"
+import { Findings, type FindingsRead } from "../service.ts"
 
 const UNIT_FILE = /^round-\d+-findings\.md$/
 const UNIT_PATH = /[^\s`'"()[\]<>|]*round-\d+-findings\.md/g
@@ -41,17 +43,26 @@ const expand = (path: string, from: string) => {
   return isAbsolute(home) ? home : resolve(from, home)
 }
 
-/** The findings `report` holds, reading files with `read`; none when the report cannot be read. */
-export const findingsIn = (report: string, read: (path: string) => string | undefined): ReadonlyArray<string> | undefined => {
+/**
+ * The findings `report` holds, reading files with `read`. `Unread` when the
+ * report does not read, names no unit's findings file, or names one that does
+ * not read: what is not read is never taken for no findings.
+ */
+export const findingsIn = (report: string, read: (path: string) => string | undefined): FindingsRead => {
   const path = expand(report, process.cwd())
   const text = read(path)
-  if (text === undefined) return undefined
-  if (UNIT_FILE.test(basename(path))) return unitFindings(basename(dirname(path)), text)
+  if (text === undefined) return { _tag: "Unread", why: `the report ${path} does not read` }
+  if (UNIT_FILE.test(basename(path))) return { _tag: "Read", findings: unitFindings(basename(dirname(path)), text) }
   const units = [...new Set((text.match(UNIT_PATH) ?? []).map((found) => expand(found, dirname(path))))]
-  return units.flatMap((unit) => {
+  if (units.length === 0) return { _tag: "Unread", why: `the report ${path} names no unit's round-N-findings.md` }
+  const findings: Array<string> = []
+  const missing: Array<string> = []
+  for (const unit of units) {
     const found = read(unit)
-    return found === undefined ? [] : unitFindings(basename(dirname(unit)), found)
-  })
+    if (found === undefined) missing.push(unit)
+    else findings.push(...unitFindings(basename(dirname(unit)), found))
+  }
+  return missing.length === 0 ? { _tag: "Read", findings } : { _tag: "Unread", why: `the unit findings ${missing.length === 1 ? "file" : "files"} ${missing.join(", ")} of ${path} ${missing.length === 1 ? "does" : "do"} not read` }
 }
 
 const readText = (path: string) => {

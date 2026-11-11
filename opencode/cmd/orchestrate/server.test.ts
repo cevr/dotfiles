@@ -34,7 +34,7 @@ import type { AccountStatus } from "@dotfiles/opencode-pool/status"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { BACKOFF_MS, NOTICE_TITLE, RESUME_PROMPT, resumePrompt } from "@dotfiles/opencode-orchestrate/restart"
 import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
-import { Findings, Liveness, type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
+import { Findings, type FindingsRead, Liveness, type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import { DEFAULT_CADENCE, RULES } from "@dotfiles/opencode-orchestrate/machine"
 import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
 import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, greenOf, make, Options, type Resume, SKILL_DIR, UNIT_LOG } from "./server.ts"
@@ -86,7 +86,7 @@ interface World {
   readonly ledger?: Array<unknown>
   /** Which step sessions still run a turn; any other does not. */
   readonly alive?: Readonly<Record<string, boolean>>
-  /** The findings each verifier report holds, by its path; a report not here cannot be read. */
+  /** The findings each verifier report holds, by its path, read at each read (a test may add one later); a report not here does not read. */
   readonly findings?: Readonly<Record<string, ReadonlyArray<string>>>
 }
 
@@ -172,7 +172,13 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     const briefs: Array<OpenCodeSteer.Synthetic> = []
     const externals = (start: OpenCodeLatches.Start, resume: Resume, background: Background) => Layer.mergeAll(
       MemoryLedger.layer(DEFAULT_CADENCE, ledger),
-      Layer.succeed(Findings, { read: (report: string) => Effect.succeed(world.findings?.[report]) }),
+      Layer.succeed(Findings, {
+        read: (report: string) =>
+          Effect.sync((): FindingsRead => {
+            const found = world.findings?.[report]
+            return found === undefined ? { _tag: "Unread", why: `the report ${report} does not read` } : { _tag: "Read", findings: found }
+          }),
+      }),
       Layer.succeed(Liveness, { alive: (sessionID: string) => Effect.succeed(world.alive?.[sessionID] === true || background(sessionID) > 0) }),
       OpenCodeSteer.remindLayer((input) => Effect.sync(() => void briefs.push(input))),
       RestartsTest.layer(world.restarts ?? RestartsTest.empty(), resume),
@@ -1967,6 +1973,99 @@ describe("the batch machine", () => {
         const departed = yield* plugin.call("rift", "root", { action: "land", rifts: ["beta"], departs: "the owner ships beta today" })
         expect(departed.refused).toBeUndefined()
         expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "Departed", rule: "VerdictPending", why: "the owner ships beta today" }))
+      }),
+    ))
+
+  // Round 1, M2 (the verifier's live probe, promoted): a covered unit's next round does not end its batch's wait.
+  test("a covered unit restarted while its batch's verifier runs cannot land until the verdict is in", () =>
+    scenario(
+      Effect.gen(function* () {
+        const sessions = steps({
+          ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" },
+          ses_v: { agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md" },
+          ses_a2: { agent: "implementor", lastWords: "implementor alpha r2: ready x" },
+        })
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true }, findings: {} })
+        const land = (rifts: ReadonlyArray<string>) => plugin.call("rift", "root", { action: "land", rifts })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        yield* land(["alpha"])
+        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        // alpha's round 2 starts and hands back ready while batch-1's verifier still runs.
+        yield* begin(plugin, { agent: "implementor", description: "implementor alpha r2", prompt: "go", background: true }, "ses_a2")
+        yield* plugin.idle("ses_a2")
+        const early = yield* land(["alpha"])
+        expect(early.refused?.message).toContain(RULES.VerdictPending.words)
+        expect(early.refused?.message).toContain("Verifier batch-1 still runs over alpha")
+        // The verdict comes in: alpha's round 2 is kept, and lands.
+        yield* plugin.idle("ses_v")
+        expect((yield* land(["alpha"])).refused).toBeUndefined()
+        expect(plugin.ledger.filter((line) => (line as { kind: string }).kind === "Departed")).toEqual([])
+      }),
+    ))
+
+  // Round 1, M1 (the verifier's live probe, promoted): a `changes` whose report does not read is never an empty set.
+  test("a changes whose report does not read holds the next land, naming it; once the report reads its findings open and fold, and the land passes", () =>
+    scenario(
+      Effect.gen(function* () {
+        const report = "/nonexistent/loop-probe-x/missing-findings.md"
+        const reports: Record<string, ReadonlyArray<string>> = {}
+        const sessions = steps({
+          ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" },
+          ses_v: { agent: "verifier", lastWords: `verifier batch-1 r1: changes ${report}` },
+          ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" },
+          ses_f: { agent: "implementor", lastWords: "implementor alpha-fix1 r1: ready x" },
+        })
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true }, findings: reports })
+        const land = (rifts: ReadonlyArray<string>) => plugin.call("rift", "root", { action: "land", rifts })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        yield* land(["alpha"])
+        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        yield* plugin.idle("ses_b")
+        yield* plugin.idle("ses_v")
+        expect(plugin.ledger).toContainEqual(
+          expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "changes", unresolved: { report, why: `the report ${report} does not read` } }),
+        )
+        const held = yield* land(["beta"])
+        expect(held.refused?.message).toContain(RULES.FindingUnfolded.words)
+        expect(held.refused?.message).toContain(`The findings of batch-1's \`changes\` are not known: the report ${report} does not read`)
+        // The report reads now: the next land reads it again, opens its finding, and waits for it to be folded.
+        reports[report] = ["alpha/M1"]
+        const unfolded = yield* land(["beta"])
+        expect(unfolded.refused?.message).toContain("alpha/M1 (not folded)")
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "ReportResolved", batch: "batch-1", findings: ["alpha/M1"] }))
+        yield* begin(plugin, { agent: "implementor", description: "implementor alpha-fix1 r1 (folds: alpha/M1)", prompt: "fix", background: true }, "ses_f")
+        yield* plugin.idle("ses_f")
+        expect((yield* land(["beta", "alpha-fix1"])).refused).toBeUndefined()
+      }),
+    ))
+
+  test("a changes that names no report holds the next land until it departs", () =>
+    scenario(
+      Effect.gen(function* () {
+        const sessions = steps({
+          ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" },
+          ses_v: { agent: "verifier", lastWords: "verifier batch-1 r1: changes, see my notes" },
+          ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" },
+        })
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true }, findings: {} })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })
+        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        yield* plugin.idle("ses_b")
+        yield* plugin.idle("ses_v")
+        const held = yield* plugin.call("rift", "root", { action: "land", rifts: ["beta"] })
+        expect(held.refused?.message).toContain("its hand-back names no findings report")
+        const departed = yield* plugin.call("rift", "root", { action: "land", rifts: ["beta"], departs: "the owner read the verdict himself" })
+        expect(departed.refused).toBeUndefined()
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "Departed", rule: "FindingUnfolded", why: "the owner read the verdict himself" }))
       }),
     ))
 

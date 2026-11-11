@@ -270,11 +270,13 @@ export class Remind extends Context.Service<
  * A verifier's findings, read from the report its hand-back names (a batch's
  * `batch-<k>-findings.md` or a unit's `round-N-findings.md`): each Blocker and
  * Major of a unit whose verdict is `changes`, as `<unit>/<id>` (the unit
- * alone when its file names no id). None when the report cannot be read.
+ * alone when its file names no id). A report that cannot be read in full
+ * (it, or a unit's findings file it names, is missing, or it names none) is
+ * `Unread`, with why: never an empty set of findings.
  */
-export class Findings extends Context.Service<Findings, { readonly read: (report: string) => Effect.Effect<ReadonlyArray<string> | undefined> }>()(
-  "dotfiles-opencode/orchestrate/Findings",
-) {}
+export type FindingsRead = { readonly _tag: "Read"; readonly findings: ReadonlyArray<string> } | { readonly _tag: "Unread"; readonly why: string }
+
+export class Findings extends Context.Service<Findings, { readonly read: (report: string) => Effect.Effect<FindingsRead> }>()("dotfiles-opencode/orchestrate/Findings") {}
 
 /** Whether a step's session still works: it runs a turn, is latched, or keeps background work of its own. */
 export class Liveness extends Context.Service<Liveness, { readonly alive: (sessionID: string) => Effect.Effect<boolean> }>()(

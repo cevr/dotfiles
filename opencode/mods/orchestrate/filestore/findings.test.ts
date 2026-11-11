@@ -11,8 +11,9 @@ const files: Record<string, string> = {
     "| auth | 1 | changes | auth/round-1-findings.md |",
     "| billing | 2 | accepted | [findings](../run/billing/round-2-findings.md) |",
     "| search | 1 | changes | `/run/search/round-1-findings.md` |",
-    "| gone | 1 | changes | gone/round-1-findings.md |",
   ].join("\n"),
+  "/run/batch-3-findings.md": "Verdict: CHANGES REQUIRED\n| auth | 1 | changes | auth/round-1-findings.md |\n| gone | 1 | changes | gone/round-1-findings.md |\n",
+  "/run/batch-4-findings.md": "Verdict: CHANGES REQUIRED\nauth must fix its cache.\n",
   "/run/auth/round-1-findings.md": [
     "Verdict: CHANGES REQUIRED",
     "## Check",
@@ -31,11 +32,17 @@ const files: Record<string, string> = {
 const read = (path: string) => files[path]
 
 test("a batch report names each unit's findings file; only a `changes` unit's Blockers and Majors are findings", () => {
-  expect(findingsIn("/run/batch-2-findings.md", read)).toEqual(["auth/B1", "auth/M1", "auth/M2", "search"])
+  expect(findingsIn("/run/batch-2-findings.md", read)).toEqual({ _tag: "Read", findings: ["auth/B1", "auth/M1", "auth/M2", "search"] })
 })
 
-test("a unit's own findings file is read alone; a report that cannot be read has none to say", () => {
-  expect(findingsIn("/run/auth/round-1-findings.md", read)).toEqual(["auth/B1", "auth/M1", "auth/M2"])
-  expect(findingsIn("/run/missing.md", read)).toBeUndefined()
+test("a unit's own findings file is read alone", () => {
+  expect(findingsIn("/run/auth/round-1-findings.md", read)).toEqual({ _tag: "Read", findings: ["auth/B1", "auth/M1", "auth/M2"] })
   expect(unitFindings("billing", files["/run/billing/round-2-findings.md"]!)).toEqual([])
+})
+
+// Round 1, M1: what does not read is never an empty set of findings.
+test("a missing report, a missing unit findings file it names, and a batch file naming none are each unread, saying which", () => {
+  expect(findingsIn("/run/missing.md", read)).toEqual({ _tag: "Unread", why: "the report /run/missing.md does not read" })
+  expect(findingsIn("/run/batch-3-findings.md", read)).toEqual({ _tag: "Unread", why: "the unit findings file /run/gone/round-1-findings.md of /run/batch-3-findings.md does not read" })
+  expect(findingsIn("/run/batch-4-findings.md", read)).toEqual({ _tag: "Unread", why: "the report /run/batch-4-findings.md names no unit's round-N-findings.md" })
 })
