@@ -23,6 +23,13 @@
  *   with a fixture `rift` tool written beside the fake pace plugin and the
  *   plugin's ledger in the scratch dir; the result carries the lands, the
  *   root's children, its ledger lines and its own requests.
+ * - `pipeline`: one root, each turn one `probe:` call, runs two batches as
+ *   a pipeline: batch-1's verifier runs in the background (the sim holds it
+ *   until the test opens its gate) while batch-2 fans out; its findings file
+ *   is written to `run/`; one finding folds into a running implementor (a
+ *   follow-up with its sessionID), one into a new fix unit; batch-2 lands
+ *   and its verifier starts. The result carries the root's ledger lines, the
+ *   lands and every model request.
  * - `move`: two roots, each turn one `probe:` call, move between `work` and
  *   `other` (two plugin copies, one per location) between their steps: one
  *   lands one of two ready units, the other keeps the machine through a land,
@@ -36,7 +43,7 @@ import { join } from "node:path"
 import { ESCAPE_TASK, HAND_BACK, isMachineRoot, MACHINE_TASK, machineTokens, PROBE, RESTART_TASK, ROOT_TASK, serve, UNITS_TASK } from "./sim.ts"
 
 export interface Spec {
-  readonly scenario: "subagents" | "compaction" | "units" | "restart" | "machine" | "move"
+  readonly scenario: "subagents" | "compaction" | "units" | "restart" | "machine" | "move" | "pipeline"
   readonly base: string
   readonly fork: string
   readonly plugin: string
@@ -81,6 +88,14 @@ export interface MachineResult extends Result {
   readonly rootRequests: ReadonlyArray<{ readonly last: string; readonly messages: ReadonlyArray<unknown> }>
 }
 
+/** What the `pipeline` scenario adds (tests/orchestrate-machine.test.ts). */
+export interface PipelineResult extends Result {
+  /** The `rifts` of each land the fixture rift tool ran, in order. */
+  readonly riftLands: ReadonlyArray<ReadonlyArray<string>>
+  /** The ledger's lines of the root. */
+  readonly ledger: ReadonlyArray<Record<string, unknown>>
+}
+
 /** What the `move` scenario adds (tests/orchestrate-machine.test.ts). */
 export interface MoveResult extends Result {
   /** The `rifts` of each land the fixture rift tool ran, in order. */
@@ -104,7 +119,7 @@ const sim = serve(spec.scenario === "machine" ? machineTokens : typeof tokens ==
 const riftPlugin = join(spec.base, "fake-rift")
 const riftLog = join(spec.base, "rift-lands.jsonl")
 const ledgerFile = join(spec.base, "machine.jsonl")
-const machined = spec.scenario === "machine" || spec.scenario === "move"
+const machined = spec.scenario === "machine" || spec.scenario === "move" || spec.scenario === "pipeline"
 if (machined) {
   mkdirSync(riftPlugin, { recursive: true })
   writeFileSync(join(riftPlugin, "package.json"), JSON.stringify({ type: "module", exports: { "./server": "./server.js" } }))
@@ -278,6 +293,73 @@ try {
       sessions[name] = { messages: await messages(id) }
     const children = [...(await childrenOf(root.id)), ...(await childrenOf(escaped.id))].map((id) => ({ id }))
     result = { children, sessions, seen: sim.seen, log: [] }
+  } else if (spec.scenario === "pipeline") {
+    const lines = () =>
+      (existsSync(ledgerFile) ? readFileSync(ledgerFile, "utf8").split("\n") : []).flatMap((line) => {
+        try {
+          return [JSON.parse(line) as Record<string, unknown>]
+        } catch {
+          return []
+        }
+      })
+    // Batch-1's findings, as its verifier writes them: a batch file naming each unit's findings file.
+    const run = join(spec.base, "run")
+    for (const unit of ["auth", "billing"]) {
+      mkdirSync(join(run, unit), { recursive: true })
+      writeFileSync(join(run, unit, "round-1-findings.md"), `Verdict: CHANGES REQUIRED\n\n## Blockers\nNone.\n\n## Major\n\n### M1 — ${unit} drops a line\n`)
+    }
+    const report = join(run, "batch-1-findings.md")
+    writeFileSync(report, "changes\n\n| Unit | Round | Verdict | Findings |\n| --- | --- | --- | --- |\n| auth | 1 | changes | auth/round-1-findings.md |\n| billing | 1 | changes | billing/round-1-findings.md |\n")
+    const root = await opencode.sessions.create({ location })
+    const call = (name: string, input: Record<string, unknown>) => turn(root.id, `${PROBE}${JSON.stringify({ name, input })}`)
+    const implement = (unit: string, extra: Record<string, unknown> = {}, gate?: string) =>
+      call("subagent", {
+        agent: "implementor",
+        description: `implementor ${unit} r1`,
+        prompt: `${gate === undefined ? "" : `gate:${gate}\n`}${HAND_BACK} implementor ${unit} r1: ready /nonexistent/loop-probe-x/request.md`,
+        ...extra,
+      })
+    const land = (rifts: ReadonlyArray<string>) => call("rift", { action: "land", rifts })
+    const has = (match: (line: Record<string, unknown>) => boolean) => until(() => lines().some((line) => line.sessionID === root.id && match(line)), 20_000)
+    // Batch 1: two units, landed together; its verifier runs in the background, held until the gate opens.
+    await implement("auth")
+    await implement("billing")
+    await land(["auth", "billing"])
+    await call("subagent", { agent: "verifier", description: "verifier batch-1 r1", prompt: `gate:verify-1\n${HAND_BACK} verifier batch-1 r1: changes ${report}`, background: true })
+    // Batch 2 fans out while it verifies: search hands back, export still runs.
+    await implement("search")
+    await implement("export", { background: true }, "export")
+    await land(["search"])
+    // The verdict comes in; its findings are not folded yet.
+    sim.open("verify-1")
+    if (!(await has((line) => line.kind === "VerifierEnded"))) throw new Error("batch-1's verdict never reached the ledger")
+    await land(["search"])
+    // auth/M1 goes to export's running implementor as a round message, billing/M1 to a new fix unit.
+    const exported = lines().find((line) => line.sessionID === root.id && line.kind === "StepSpawned" && line.name === "export")
+    if (exported === undefined) throw new Error("export's session never reached the ledger")
+    await call("subagent", {
+      agent: "implementor",
+      description: "implementor export r1 (folds: auth/M1)",
+      prompt: `Fold auth/M1 (${join(run, "auth/round-1-findings.md")}) into this round.`,
+      sessionID: exported.child,
+      background: true,
+    })
+    await implement("billing-fix1", { description: "implementor billing-fix1 r1 (folds: billing/M1)" })
+    sim.open("export")
+    if (!(await has((line) => line.kind === "UnitHandedBack" && line.unit === "export" && line.ready === true))) throw new Error("export never handed back ready")
+    await opencode.experimental.session.wait({ sessionID: String(exported.child) })
+    await land(["search", "export", "billing-fix1"])
+    await call("subagent", { agent: "verifier", description: "verifier batch-2 r1", prompt: `${HAND_BACK} verifier batch-2 r1: accepted /nonexistent/loop-probe-x/findings.md` })
+    const piped: PipelineResult = {
+      children: [],
+      sessions: {},
+      seen: sim.seen,
+      log: [],
+      riftLands: (existsSync(riftLog) ? readFileSync(riftLog, "utf8").split("\n").filter((line) => line !== "") : []).map((line) => JSON.parse(line) as ReadonlyArray<string>),
+      ledger: lines().filter((line) => line.sessionID === root.id),
+      root: { id: root.id, messages: await messages(root.id) },
+    }
+    result = piped
   } else if (spec.scenario === "move") {
     const other = join(spec.base, "other")
     mkdirSync(other, { recursive: true })

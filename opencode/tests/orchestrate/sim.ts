@@ -224,6 +224,19 @@ export const serve = (promptTokens: number | ((task: string, messages: ReadonlyA
   // Hanging requests, and whether a hang task's first request still hangs.
   let hanging = 0
   let released = false
+  // Gates: a task whose first message holds a `gate:<name>` line answers its first request once the gate opens.
+  const gates = new Map<string, { readonly opened: Promise<void>; readonly open: () => void }>()
+  const gate = (name: string) => {
+    const found = gates.get(name)
+    if (found !== undefined) return found
+    let open = () => {}
+    const opened = new Promise<void>((resolve) => {
+      open = resolve
+    })
+    const made = { opened, open }
+    gates.set(name, made)
+    return made
+  }
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -245,6 +258,9 @@ export const serve = (promptTokens: number | ((task: string, messages: ReadonlyA
       })
       served += 1
       const task = lastLine(text(messages.find((message) => message.role === "user")?.content))
+      const first = messages.find((message) => message.role === "user")
+      const gated = /^gate:(\S+)$/m.exec(text(first?.content))?.[1]
+      if (gated !== undefined && text(messages.at(-1)?.content) === text(first?.content)) await gate(gated).opened
       if (task === HANG_TASK && lastLine(text(messages.at(-1)?.content)) === HANG_TASK && !released) {
         hanging += 1
         // An open stream that never ends: the request runs until the server's shutdown cuts it.
@@ -264,5 +280,7 @@ export const serve = (promptTokens: number | ((task: string, messages: ReadonlyA
     release: () => {
       released = true
     },
+    /** A gated task's first request answers. */
+    open: (name: string) => gate(name).open(),
   }
 }
