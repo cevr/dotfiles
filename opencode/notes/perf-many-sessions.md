@@ -425,6 +425,6 @@ The workbox ran at a load of 35–52 on 16 vCPUs throughout, so a single round c
 
 ## Left
 
-- The answer's typed text is lost if the server refuses the reply for a reason other than not-found or already-settled. The form comes back, but empty.
+- ~~The answer's typed text is lost on a refusal.~~ Fixed in round 2 (fork `8ab6661adf`). A refused reply or cancel, such as a 500 or a connection dropped by a service restart, now brings the form back with what was typed and the error. A read of the forms already in flight when the reply goes out no longer lists the sent form again. The guards are `form.test.tsx` "a refused reply brings the form back with the typed answer and its error" and `data.test.tsx` "a read of the forms in flight when a form's reply goes out does not bring the form back". Both fail at `40879daaa7`. The latency held on the Mac (medians, closed / shown / request): small async 16/29/16 and builtin 9/25/10; 1,500 groups async 16/61/84 and builtin 11/75/98. **measured**
 - The async `shown` time still trails `closed` by 30–60 ms on the workbox: the notice row waits for `session.inbox.enqueued` to arrive and for the next frame. **inferred** from traces
 ||||||| 7d3553b8
