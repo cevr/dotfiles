@@ -48,7 +48,55 @@ models, a one-hour prompt cache for Claude
 (`providers.anthropic.settings.cache.ttl: "1h"`), background compaction
 (`experimental.background_compaction: true`, see Idle compaction) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork
-change.
+change. At its end it writes what the host now runs to
+`~/.local/state/opencode-fleet/installed.json` (the checkout and its commit,
+the fork commit, the version).
+
+## The fleet install
+
+```sh
+bun run fleet-install                 # install the MacBook, then the workbox
+bun run fleet-install --wait          # and print each host's line when it ends
+bun run fleet-install --upstream      # merge upstream into the fork first (the daily install)
+bun run fleet-install --force         # install a host already on the target
+```
+
+One command installs both hosts from origin/main and the fork's
+origin/prime-look (`scripts/fleet-install.ts`, its rules in `scripts/fleet.ts`).
+It records a request in `~/.local/state/opencode-fleet/requests.jsonl` and
+starts the coordinator: on the Mac a one-shot launchd job
+(`dev.cvr.opencode-fleet-install`: RunAtLoad, no KeepAlive, never `launchctl
+submit`, which reruns it), outside the OpenCode server's process tree, since
+the Mac's install restarts that server; from another host the request goes
+to the Mac over ssh. A coordinator already running takes the request.
+
+The coordinator waits until no request came for two minutes, so requests
+close together are one install, then goes host by host, the Mac first (it
+owns the fork; its daily may merge upstream and push `prime-look`, which the
+workbox then builds). Each host's step is `scripts/fleet/host-sync.sh`: the
+dotfiles checkout reaches origin/main (the Mac fast-forwards only; the
+workbox, whose files Syncthing keeps in step with the Mac's, moves HEAD, puts
+back each tracked file that differs except `codex/config.toml`,
+`skills/.system/` and `workbox/herdr-config.toml`, and deletes Syncthing's
+conflict copies), then `fleet-install.ts host` from that code: a host whose
+`installed.json` names the target is skipped; a host whose 1-minute load is
+at its gate (the Mac 40, the workbox 64) defers; else `bun install`, the
+fork's links and `bun run daily`. The Mac's step runs in the coordinator; the
+workbox's over `ssh bite-workbox` in a transient systemd unit of its own
+(`opencode-fleet-install`), so neither its server's restart nor a plugin
+reload stops it, and a second install there waits for the first. A deferred
+or unreachable host is tried again every ten minutes, for up to twelve
+hours; a request that comes during a pass starts one more. After a pass that
+installed, the Mac's `upstream.json` goes to the workbox. Each host's line
+(`workbox: installed 2.2.5-prime.1a2b3c4d (dotfiles 89abcde0) in 6m12s`) is
+in `fleet.log`, each pass's whole output in `runs/`, and an install that
+ends is a macOS notification on the Mac.
+
+An accepted batch verdict starts one by itself: when the batch machine's
+ledger records a verifier's `accepted` (once per verdict, whichever
+location's copy sees it), orchestrate runs `fleet-install.ts request --reason
+"<batch> accepted"` (its `install` option, which `daily` sets on the owner's
+hosts; `cmd/orchestrate/server.ts`).
 
 Why a fork: stock OpenCode's plugin API covers the pool, the `/pool` pane,
 the orchestrate guard, the Sabbath and the pace hold. It has no hook for the
