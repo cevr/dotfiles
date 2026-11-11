@@ -44,17 +44,20 @@ export const MACHINE_TASK = "machine-run"
 export const MACHINE_SUMMARY = "## Objective\n- machine-run summary: three implementors handed back ready"
 /** The input tokens the reply that starts the third implementor reports: past the root's window, so it compacts. */
 export const MACHINE_FULL = 500_000
+/** The machine run root's last words, once its batch's verifier has handed back. */
+export const MACHINE_DONE = "root: batch-1 landed and verified"
 
 /** What the machine run's root was last told, newest first, and what it does next. */
 const MACHINE_SCRIPT: ReadonlyArray<readonly [string, Reply]> = [
-  ["verifier batch-1 r1: accepted", { kind: "text", text: "root: batch-1 landed and verified" }],
+  ["verifier batch-1 r1: accepted", { kind: "text", text: MACHINE_DONE }],
   [
     "Landed 3 Rift(s)",
     { kind: "tool", name: "subagent", input: { agent: "verifier", description: "verifier batch-1 r1", prompt: `${HAND_BACK} verifier batch-1 r1: accepted /run/batch-1-findings.md` } },
   ],
   ["Land every ready unit at once when the cadence fires", { kind: "tool", name: "rift", input: { action: "land", rifts: ["alpha", "beta", "gamma"] } }],
   ["One verifier per batch, fresh", { kind: "tool", name: "rift", input: { action: "land", rifts: ["alpha"] } }],
-  [MACHINE_SUMMARY, { kind: "tool", name: "subagent", input: { agent: "verifier", description: "verifier alpha r1", prompt: `${HAND_BACK} verifier alpha r1: accepted /run/alpha/round-1-findings.md` } }],
+  // Compacted while gamma still runs in the background: the root waits for its report.
+  [MACHINE_SUMMARY, { kind: "text", text: "root: waiting for gamma" }],
   ["implementor gamma r1: ready", { kind: "tool", name: "subagent", input: { agent: "verifier", description: "verifier alpha r1", prompt: `${HAND_BACK} verifier alpha r1: accepted /run/alpha/round-1-findings.md` } }],
   ...(["gamma", "beta"] as const).map((unit, index): readonly [string, Reply] => [
     `implementor ${index === 0 ? "beta" : "alpha"} r1: ready`,
@@ -77,8 +80,16 @@ export const machineStep = (messages: ReadonlyArray<ChatMessage>): readonly [str
 export const isMachineRoot = (seen: Pick<Seen, "system" | "messages">): boolean =>
   !seen.system.includes("You name conversations") && seen.messages.some((message) => text(message.content).includes(MACHINE_TASK))
 
-/** The input tokens a machine run's request reports: full on the request that starts the third implementor. */
-export const machineTokens = (_task: string, messages: ReadonlyArray<ChatMessage>): number => messages.some((message) => text(message.content).includes(MACHINE_TASK)) && machineStep(messages)?.[0] === "implementor beta r1: ready" ? MACHINE_FULL : 100
+/** What the subagent call answers as the child starts in the background. */
+const BACKGROUND = "The subagent is working in the background"
+
+/** The input tokens a machine run's request reports: full on the request that starts the third implementor, until the root has compacted. */
+export const machineTokens = (_task: string, messages: ReadonlyArray<ChatMessage>): number =>
+  messages.some((message) => text(message.content).includes(MACHINE_TASK)) &&
+  !messages.some((message) => text(message.content).includes(MACHINE_SUMMARY)) &&
+  machineStep(messages)?.[0] === "implementor beta r1: ready"
+    ? MACHINE_FULL
+    : 100
 
 export interface ChatMessage {
   readonly role: string
@@ -157,7 +168,11 @@ export const reply = (request: ChatRequest): Reply => {
     .map((line) => line.trim())
     .find((line) => line.startsWith(HAND_BACK))
   if (handBack !== undefined && !task.startsWith(UNITS_TASK)) return { kind: "text", text: `${handBack.slice(HAND_BACK.length).trim()}\nThe gate is green.` }
-  if (isMachineRoot({ system, messages })) return machineStep(messages)?.[1] ?? { kind: "text", text: "root: lost the machine script" }
+  if (isMachineRoot({ system, messages })) {
+    // OpenCode runs every subagent in the background: the root ends its turn and waits for the child's report.
+    if (messages.at(-1)?.role === "tool" && last.includes(BACKGROUND)) return { kind: "text", text: "root: waiting for the subagent" }
+    return machineStep(messages)?.[1] ?? { kind: "text", text: "root: lost the machine script" }
+  }
   if (task === ROOT_TASK && offersSubagent) {
     if (results === 0)
       return { kind: "tool", name: "subagent", input: { description: "Untyped task", prompt: UNTYPED_TASK } }

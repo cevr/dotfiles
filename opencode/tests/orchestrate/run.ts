@@ -36,7 +36,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { HAND_BACK, isMachineRoot, MACHINE_TASK, machineTokens, PROBE, ROOT_TASK, serve, UNITS_TASK } from "./sim.ts"
+import { HAND_BACK, isMachineRoot, MACHINE_DONE, MACHINE_TASK, machineTokens, PROBE, ROOT_TASK, serve, UNITS_TASK } from "./sim.ts"
 
 export interface Spec {
   readonly scenario: "subagents" | "compaction" | "units" | "machine" | "move" | "pipeline"
@@ -413,7 +413,13 @@ try {
   } else if (spec.scenario === "machine") {
     const root = await opencode.sessions.create({ location })
     await turn(root.id, MACHINE_TASK)
-    // The verifier's hand-back reaches the ledger on its idle, just after the root's call returns.
+    // OpenCode runs every subagent in the background: each child's report wakes the root for its next step,
+    // until the batch's verifier hands back and the root says it is done.
+    const done = await until(async () => JSON.stringify(await messages(root.id)).includes(MACHINE_DONE), 90_000)
+    if (!done) throw new Error("the machine run's root never finished its script")
+    await opencode.experimental.session.wait({ sessionID: root.id })
+    // The verifier's hand-back reaches the ledger on its idle.
+    await until(() => readFileSync(ledgerFile, "utf8").includes("VerifierEnded"), 10_000)
     const page = await opencode.sessions.list({ parentID: root.id, directory: work })
     const children = await Promise.all(page.data.map((item) => opencode.sessions.get({ sessionID: item.id })))
     const created = (child: SessionInfo) => {
