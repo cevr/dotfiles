@@ -31,6 +31,9 @@ export const RiftInput = toolInput(Schema.Struct({
     description:
       "land: the Rifts to land, in order, each by path (a path starts with / or .), by name, or by its branch (exact, else with / as -); a name two Rifts answer to is refused, naming both.",
   }),
+  departs: Schema.optional(Schema.String).annotate({
+    description: "land: why this land goes against the orchestrate skill's batch rules; the orchestrate plugin records it as the reason. The land does nothing else with it.",
+  }),
   repository: Schema.optional(Schema.String).annotate({ description: "init: the repository to clone as a new warm source (a Git URL)." }),
   force: Schema.optional(Schema.Boolean).annotate({
     description: "remove: remove it although it holds uncommitted changes, stashes or commits found nowhere else. Only when the user said to drop that work.",

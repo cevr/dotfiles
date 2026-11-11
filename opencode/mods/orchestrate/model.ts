@@ -36,15 +36,35 @@ import {
   ReportDraft,
   unitsOf,
 } from "./idle.ts"
+import {
+  briefOf,
+  type Cadence,
+  type Command as MachineCommand,
+  HandBack,
+  handBackOf as stepHandBackOf,
+  Land,
+  Landed,
+  type MachineState,
+  notesOf,
+  type Refused,
+  Spawned,
+  type Start,
+  startOf as stepOfCall,
+} from "./machine.ts"
 import { formatRef, namesModel, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
 import * as Restart from "./restart.ts"
-import { codexFallback, effort, isRole, Reason, WORKER } from "./role.ts"
+import { codexFallback, effort, isRole, Reason, route, unspecific, WORKER } from "./role.ts"
 import { resumesAt, SabbathRest, type Place } from "./sabbath.ts"
 import {
   CallLog,
   CodexAdmission,
+  type Decided,
+  type GuardMode,
   Latches,
+  Ledger,
+  Liveness,
   Models,
+  Remind,
   PoolPace,
   Restarts,
   type ResumeStart,
@@ -810,6 +830,199 @@ export const idleLayer = (config: Pick<Config, "place" | "now">) =>
       const forget = (sessionID: string) => Effect.sync(() => void roots.delete(sessionID)).pipe(Effect.withSpan("IdleRoots.forget"))
 
       return { idle, heard, draft, forget }
+    }),
+  )
+
+// ── The batch machine (machine.ts) ──
+
+/** The machine's settings, from the plugin's options. */
+export interface MachineConfig {
+  readonly cadence: Cadence
+  readonly mode: GuardMode
+  /** An untyped or general call runs as asked (Config `fullAgent`). */
+  readonly fullAgent: boolean
+  /** The machine block a compacted root is told: SKILL.md's "The machine" section (agents.json `machine`). */
+  readonly block: string
+}
+
+/** A role's start the machine let through, still in its call: alive though its session is not known yet. */
+interface InFlight {
+  readonly root: string
+  readonly role: Start["role"]
+  readonly name: string
+}
+
+/** What telling a compacted root came to, for the plugin's log. */
+export type BriefOutcome =
+  | { readonly _tag: "Told"; readonly brief: string }
+  | { readonly _tag: "Quiet"; readonly why: string }
+  | { readonly _tag: "Refused"; readonly message: string }
+
+/** The notice row the brief draws. */
+export const BRIEF_DESCRIPTION = "orchestrate: the machine and your run, after the compaction"
+
+/** The message a compacted root reads: the machine (SKILL.md's section), its run from the ledger, and the re-read. */
+export const briefText = (block: string, brief: string): string =>
+  [
+    block.trim(),
+    `Your run now, from the plugin's ledger:\n${brief}`,
+    "Re-read ~/.claude/skills/orchestrate/SKILL.md and protocol.md, and your plan, before any other action.",
+  ].join("\n\n")
+
+/** What a call the machine let through answers with first: its notes, and under `warn` the rule it broke. */
+export interface Passed {
+  readonly notes: ReadonlyArray<string>
+}
+
+export class Machines extends Context.Service<
+  Machines,
+  {
+    /**
+     * A subagent call of `root`, about to start (`key` names the call: a kernel cell's calls share one id).
+     * A role's step is decided on the root's ledger: refused, the call fails with the rule's words; let
+     * through, it answers with the notes. Any other call passes with none.
+     */
+    readonly start: (input: { readonly root: string; readonly key: string; readonly input: unknown }) => Effect.Effect<Passed, Refused>
+    /** The call `key` answered: its child's session, or none when it did not start. */
+    readonly started: (input: { readonly root: string; readonly key: string; readonly child?: string }) => Effect.Effect<void>
+    /** A `rift` land of `root`, about to run. */
+    readonly land: (input: { readonly root: string; readonly rifts: ReadonlyArray<string>; readonly departs?: string }) => Effect.Effect<Passed, Refused>
+    /** The Rifts a land of `root` answered green. */
+    readonly landed: (input: { readonly root: string; readonly rifts: ReadonlyArray<string> }) => Effect.Effect<void>
+    /** A session went idle: a step's hand-back moves its unit or ends its verifier. */
+    readonly handBack: (sessionID: string) => Effect.Effect<void>
+    /** The root's run as its ledger holds it, its dead steps handed back first; empty for a root that runs no unit. */
+    readonly brief: (root: string) => Effect.Effect<string>
+    /**
+     * A session's compaction ended: a root whose brief is not empty is told the machine and its run, in one
+     * message that rides on its next request. The plugin calls it once per compaction.
+     */
+    readonly compacted: (sessionID: string) => Effect.Effect<BriefOutcome>
+  }
+>()("dotfiles-opencode/orchestrate/Machines") {}
+
+/** The machine's handlers: the plugin feeds each call it sees, and the ledger decides it. */
+export const machineLayer = (config: MachineConfig) =>
+  Layer.effect(
+    Machines,
+    Effect.gen(function* () {
+      const ledger = yield* Ledger
+      const sessions = yield* Sessions
+      const liveness = yield* Liveness
+      const remind = yield* Remind
+      const inFlight = new Map<string, InFlight>()
+
+      const flying = (root: string, role: Start["role"], name: string) =>
+        [...inFlight.values()].some((step) => step.root === root && step.role === role && step.name === name)
+
+      /** Whether a step still works: its call is in flight, or its session runs, is latched, or keeps work of its own. */
+      const working = (root: string, role: Start["role"], name: string, child: string | undefined) =>
+        Effect.gen(function* () {
+          if (flying(root, role, name)) return true
+          if (child === undefined) return false
+          return (yield* liveness.alive(child)) || (yield* sessions.latchOf(child)) !== undefined
+        })
+
+      /**
+       * The ledger can miss an end (a restart, a cancelled latch, a child that never handed back): each
+       * implementor and the verifier that no longer works is handed back as `none` before a decision reads them.
+       */
+      const reconcile = (root: string, state: MachineState) =>
+        Effect.gen(function* () {
+          const dead: Array<MachineCommand> = []
+          for (const [name, unit] of Object.entries(state.units)) {
+            if (unit.state === "implement" && !(yield* working(root, "implementor", name, unit.child)))
+              dead.push(HandBack.make({ role: "implementor", name, verdict: "none" }))
+          }
+          const verifier = state.verifier
+          if (verifier !== undefined && !(yield* working(root, "verifier", verifier.batch, verifier.child)))
+            dead.push(HandBack.make({ role: "verifier", name: verifier.batch, verdict: "none" }))
+          return dead
+        })
+
+      const now = Clock.currentTimeMillis
+      const warnedNote = (decided: Decided) => (decided.warned === undefined ? [] : [decided.warned.message])
+
+      const start = Effect.fn("Machines.start")(function* (input: { readonly root: string; readonly key: string; readonly input: unknown }) {
+        if (typeof input.input !== "object" || input.input === null) return { notes: [] }
+        const fields = input.input as Record<string, unknown>
+        const description = typeof fields.description === "string" ? fields.description : undefined
+        // The role it runs as, as the guard routes it: a follow-up naming no agent keeps its child's.
+        const child = typeof fields.sessionID === "string" && fields.sessionID !== "" ? fields.sessionID : undefined
+        const routed = route(fields.agent, config.fullAgent, description).agent
+        const agent = child !== undefined && unspecific(fields.agent) ? ((yield* sessions.agentOf(child)) ?? routed) : routed
+        const command = stepOfCall(agent, description)
+        if (command === undefined) return { notes: [] }
+        const at = yield* now
+        let notes: ReadonlyArray<string> = []
+        const decided = yield* ledger.decide(
+          input.root,
+          at,
+          (state) =>
+            Effect.gen(function* () {
+              const dead = command.role === "verifier" ? yield* reconcile(input.root, state) : []
+              notes = notesOf(state, command, at, config.cadence)
+              return [...dead, command]
+            }),
+          config.mode,
+        )
+        inFlight.set(input.key, { root: input.root, role: command.role, name: command.name })
+        return { notes: [...warnedNote(decided), ...notes] }
+      })
+
+      const started = Effect.fn("Machines.started")(function* (input: { readonly root: string; readonly key: string; readonly child?: string }) {
+        const step = inFlight.get(input.key)
+        if (step === undefined) return
+        inFlight.delete(input.key)
+        const child = input.child
+        if (child === undefined || step.role === "planner") return
+        yield* ledger.decide(input.root, yield* now, () => Effect.succeed([Spawned.make({ role: step.role, name: step.name, child })])).pipe(Effect.ignore)
+      })
+
+      const land = Effect.fn("Machines.land")(function* (input: { readonly root: string; readonly rifts: ReadonlyArray<string>; readonly departs?: string }) {
+        const command = Land.make({ rifts: input.rifts, ...(input.departs === undefined ? {} : { departs: input.departs }) })
+        const decided = yield* ledger.decide(
+          input.root,
+          yield* now,
+          (state) => reconcile(input.root, state).pipe(Effect.map((dead) => [...dead, command])),
+          config.mode,
+        )
+        return { notes: warnedNote(decided) }
+      })
+
+      const landed = Effect.fn("Machines.landed")(function* (input: { readonly root: string; readonly rifts: ReadonlyArray<string> }) {
+        yield* ledger.decide(input.root, yield* now, () => Effect.succeed([Landed.make({ rifts: input.rifts })])).pipe(Effect.ignore)
+      })
+
+      const handBack = Effect.fn("Machines.handBack")(function* (sessionID: string) {
+        const agent = yield* sessions.agentOf(sessionID)
+        if (agent === undefined || !isStep(agent)) return
+        const root = yield* sessions.parentOf(sessionID)
+        if (root === undefined) return
+        const said = stepHandBackOf(agent, yield* sessions.lastWordsOf(sessionID))
+        if (said === undefined) return
+        // The session that handed back is the step's: a step started before its session was known gets it here.
+        yield* ledger.decide(root, yield* now, () => Effect.succeed([said])).pipe(Effect.ignore)
+      })
+
+      const brief = Effect.fn("Machines.brief")(function* (root: string) {
+        const at = yield* now
+        const decided = yield* ledger.decide(root, at, (state) => reconcile(root, state)).pipe(Effect.orElseSucceed(() => undefined))
+        const state = decided?.state ?? (yield* ledger.state(root))
+        return briefOf(state, at, config.cadence)
+      })
+
+      const compacted = Effect.fn("Machines.compacted")(function* (sessionID: string) {
+        if ((yield* sessions.parentOf(sessionID)) !== undefined) return { _tag: "Quiet", why: "a subagent" } as const
+        const state = yield* brief(sessionID)
+        if (state === "") return { _tag: "Quiet", why: "runs no unit" } as const
+        return yield* remind.remind(sessionID, { text: briefText(config.block, state), description: BRIEF_DESCRIPTION }).pipe(
+          Effect.as<BriefOutcome>({ _tag: "Told", brief: state }),
+          Effect.catchTag("NudgeRefused", (refused) => Effect.succeed<BriefOutcome>({ _tag: "Refused", message: refused.message })),
+        )
+      })
+
+      return { start, started, land, landed, handBack, brief, compacted }
     }),
   )
 

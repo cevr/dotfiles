@@ -193,6 +193,16 @@ describe("land", () => {
     expect(twice.landing.steps).toEqual([])
   })
 
+  test("a land's departs is the orchestrate plugin's: the land runs as it would without it", async () => {
+    const LEXER = "/code/.rifts/app/fu-lexer"
+    const state = () => MemoryRifts.world([SOURCE], [MemoryRifts.clean(LEXER, "run/lexer")])
+    const plain = bench(state(), MemoryLanding.world(configured))
+    const departing = bench(state(), MemoryLanding.world(configured))
+    const answer = await call(plain, { action: "land", rifts: ["run/lexer"] })
+    expect(await call(departing, { action: "land", rifts: ["run/lexer"], departs: "the owner asked for lexer alone" })).toBe(answer)
+    expect(departing.landing.steps).toEqual(plain.landing.steps)
+  })
+
   test("a landed Rift whose only stash is the warm source's own is trashed; one with a stash of its own stays, named", async () => {
     const made = bench(MemoryRifts.world([SOURCE]), MemoryLanding.world(configured))
     MemoryRifts.stash(made.rifts, SOURCE, "5a5a5a5")

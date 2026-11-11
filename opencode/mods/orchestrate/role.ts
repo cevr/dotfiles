@@ -39,6 +39,9 @@ const Generated = Schema.Struct({
 /** Each role's definition. agents.json is checked by `bun run agents -- --check`, so a bad file fails at load. */
 export const definitions: Readonly<Record<Role, Definition>> = Schema.decodeUnknownSync(Generated)(generated).agents
 
+/** SKILL.md's machine section, as agents.json holds it: what a root is told after its compaction (model.ts `Machines`). */
+export const MACHINE_BLOCK: string = Schema.decodeUnknownSync(Schema.Struct({ machine: Schema.String }))(generated).machine
+
 /** A role's reasoning effort, a model variant id such as `high`. The worker runs at the model's own. */
 export const effort = (role: Role): string | undefined => definitions[role].effort
 
