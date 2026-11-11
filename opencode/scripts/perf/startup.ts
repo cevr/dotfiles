@@ -14,13 +14,13 @@
 // bun scripts/perf/startup.ts (--fork <checkout> | --bin <compiled opencode>) --db <file> --session <id> --out <dir>
 //   [--plugins <comma list of TUI plugin paths>] [--ready <text the session shows>] [--limit 180000]
 //   [--cols 160] [--rows 45] [--prof <ms,...>] [--cli <json merged into cli.json>] [--hold <ms past ready>]
-//   [--replies] [--trace [--trace-ms 6000]]
+//   [--replies] [--trace [--trace-ms 6000] [--trace-profile]] [--warm] [--settle <ms>]
 // `end` is the TUI's CPU and RSS when the run stops, `peakRss` the most it held.
 //
 // The server and TUI run in process groups of their own, killed at the end.
 // Point `--db` only at a copy: the server writes to it.
 import { Terminal } from "@xterm/headless"
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 import { join } from "node:path"
 import { spawn as spawnPty } from "zigpty"
@@ -109,6 +109,17 @@ for (;;) {
   await Bun.sleep(200)
 }
 console.log(`server up in ${Date.now() - serverReady} ms on ${port}`)
+// `--warm`: load the TUI's location on the server first, as a long-running service has it loaded
+// already; otherwise the TUI's first read of it pays for building it.
+if (args.includes("--warm")) {
+  const warming = Date.now()
+  const response = await fetch(`http://127.0.0.1:${port}/api/location?location[directory]=${encodeURIComponent(out)}`, {
+    headers: { authorization: `Basic ${btoa(`opencode:${env.OPENCODE_PASSWORD}`)}` },
+  })
+  console.log(`location warmed in ${Date.now() - warming} ms (${response.status})`)
+}
+// `--settle 5000`: wait that long before the TUI starts, so the server's own start work is done.
+await Bun.sleep(Number(opt("settle", "0")))
 
 const terminal = new Terminal({ cols, rows, allowProposedApi: true })
 const started = Date.now()
@@ -119,7 +130,17 @@ const replies = args.includes("--replies")
 // `--trace`: the fork's boot trace (OPENCODE_BOOT_TRACE): marks of each boot step and a CPU profile from
 // the first import, written to <out>/trace by the TUI alone.
 const trace = args.includes("--trace") ? join(out, "trace") : undefined
-const tuiEnv = trace ? { ...env, OPENCODE_BOOT_TRACE: trace, OPENCODE_BOOT_TRACE_MS: opt("trace-ms", "6000")! } : env
+// An earlier run's trace in the same `--out` would read as this one's.
+if (trace) rmSync(trace, { recursive: true, force: true })
+// `--trace-profile` adds the CPU profile (<out>/trace/boot-<pid>.cpuprofile).
+const tuiEnv = trace
+  ? {
+      ...env,
+      OPENCODE_BOOT_TRACE: trace,
+      OPENCODE_BOOT_TRACE_MS: opt("trace-ms", "6000")!,
+      ...(args.includes("--trace-profile") ? { OPENCODE_BOOT_TRACE_PROFILE: "1" } : {}),
+    }
+  : env
 const tui = spawnPty(entry[0]!, [...entry.slice(1), "-s", session, "--server", `http://127.0.0.1:${port}`], {
   cols,
   rows,
@@ -235,16 +256,29 @@ const bootTrace = async () => {
     const file = existsSync(trace) ? readdirSync(trace).find((name) => /^boot-\d+\.json$/.test(name)) : undefined
     if (file) {
       await Bun.sleep(300)
-      return (JSON.parse(readFileSync(join(trace, file), "utf8")) as { marks: Array<{ name: string; ms: number }> }).marks
+      return JSON.parse(readFileSync(join(trace, file), "utf8")) as {
+        timeOrigin: number
+        marks: Array<{ name: string; ms: number }>
+      }
     }
     await Bun.sleep(200)
   }
   return undefined
 }
-const marks = await bootTrace()
+const booted = await bootTrace()
+// The trace's clock starts when the TUI's runtime does, after the binary is loaded; `origin` is how long
+// after the spawn that was, and each mark is shifted by it to read on the same clock as the frames.
+const origin = booted && Math.round(booted.timeOrigin - started)
 const result = {
-  // The first time each step was marked.
-  marks: marks && Object.fromEntries(marks.toReversed().map((mark) => [mark.name, Math.round(mark.ms)])),
+  origin,
+  // The first time each step was marked, in ms since the spawn.
+  marks:
+    booted &&
+    Object.fromEntries(
+      booted.marks
+        .filter((mark, index) => booted.marks.findIndex((each) => each.name === mark.name) === index)
+        .map((mark) => [mark.name, Math.round(mark.ms + (origin ?? 0))]),
+    ),
   session,
   plugins: plugins.length,
   first,
