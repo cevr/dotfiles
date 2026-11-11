@@ -75,7 +75,12 @@
  *   spent when, at its burn this period, the use given back would mostly be
  *   spent before the natural reset (early in the week, not late), with the
  *   fleet's starts in flight. The pace raises an account's line by what a
- *   reset in hand gives back, and starts it again from a claim.
+ *   reset in hand gives back, and starts it again from a claim. A claim no one
+ *   asked for is made only on a reading of the account taken in the last 15
+ *   minutes and after its last claim, one at a time per account.
+ *   `{ "auto": false }` works resets but claims none no one asked for (no
+ *   expiring claim, no Codex credit for a held start): offers and questions
+ *   go on, and a yes still claims. `true` is `{ "auto": true }`.
  *
  * `started` records a new agent (orchestrate calls it once a subagent starts),
  * `report` answers a peer with this host's starts and its readings (never a
@@ -180,7 +185,9 @@ export const Options = Schema.Struct({
   paced: Schema.Record(Schema.String, PoolId).pipe(withDefault<Readonly<Record<string, PoolId>>>({})),
   usageURL: Schema.optional(Schema.String),
   fleet: FleetOption.pipe(withDefault<typeof FleetOption.Type>(Schema.decodeSync(FleetOption)({}))),
-  resets: Schema.Boolean.pipe(withDefault(true)),
+  resets: Schema.Union([Schema.Boolean, Schema.Struct({ auto: Schema.Boolean.pipe(withDefault(true)) })]).pipe(
+    withDefault<boolean | { readonly auto: boolean }>(true),
+  ),
   limitsFile: Schema.optional(Schema.String),
 })
 export type Options = typeof Options.Type
@@ -360,6 +367,7 @@ export const make = (
             pollMs: options.fleet.pollSeconds * 1000,
           },
           resets: resetsOf(options),
+          autoClaims: typeof options.resets === "boolean" || options.resets.auto,
         }).pipe(Layer.provideMerge(externals(ctx, options, sources, chatgpt))),
       )
       const pool = Context.get(services, Model.Pool)

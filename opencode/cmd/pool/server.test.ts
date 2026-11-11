@@ -1457,6 +1457,46 @@ describe("resets on the live adapters", () => {
       }),
     ))
 
+  test("resets: { auto: false } claims nothing no one asked for: the reset about to expire is left, the held start's question is still asked, and a yes claims", () =>
+    scenario(
+      Effect.gen(function* () {
+        const now = Date.now()
+        const state = world()
+        state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
+        // As above: Fable's week spent, its reset ends in two hours; with auto on it is claimed at once.
+        state.readings.set("cred-a", {
+          at: now,
+          windows: [
+            { name: "5h", utilization: 1, resetAt: now + 3 * HOUR },
+            { name: "7d", utilization: 0.6, resetAt: now + 5 * DAY },
+            { name: "7d:Fable", utilization: 1, resetAt: now + 5 * DAY, ofWeekly: 0.5 },
+          ],
+          resets: {
+            available: 1,
+            credits: [{ id: "fable-1", count: 1, usable: true, expiresAt: now + 2 * HOUR, clears: ["five_hour", "seven_day_overage_included"], kind: "fable", givesBack: true }],
+          },
+        })
+        state.parents.set("ses_child", "ses_root")
+        const plugin = yield* start({ sweepMinutes: 0, resets: { auto: false } }, state, live)
+        expect(yield* plugin.pace("anthropic", "ses_child")).toMatchObject({ ok: false, measured: true })
+        yield* waitFor(() => state.owner.asked.length > 0)
+        yield* settle
+        expect(plugin.claims).toEqual([])
+        expect(state.owner.asked).toHaveLength(1)
+        expect(state.owner.asked[0]).toMatchObject({ sessionID: "ses_root", header: "Claude reset · Anthropic 1" })
+        yield* OwnerTest.answer(state.owner, state.owner.asked[0]!.key, "Claim it")
+        yield* waitFor(() => plugin.claims.length > 0)
+        expect(plugin.claims.map(({ credentialID, creditID }) => [credentialID, creditID])).toEqual([["cred-a", "fable-1"]])
+      }),
+    ))
+
+  test("malformed resets options stop the plugin", async () => {
+    for (const resets of [{ auto: "no" }, "yes", 1]) {
+      const exit = await Effect.runPromise(Effect.exit(Effect.scoped(start({ sweepMinutes: 0, resets }))))
+      expect(exit._tag).toBe("Failure")
+    }
+  })
+
   test("resets: false works none", () =>
     scenario(
       Effect.gen(function* () {

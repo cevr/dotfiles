@@ -73,6 +73,8 @@ export interface Config extends Rules {
    * claimed (resets.ts). A pool not named has its resets left alone.
    */
   readonly resets?: Readonly<Record<string, ResetProvider>>
+  /** Whether resets are claimed with no one asked (resets.ts `Review.auto`); default true. False: only on the owner's yes. */
+  readonly autoClaims?: boolean
 }
 
 export interface FleetConfig {
@@ -625,7 +627,7 @@ export const layer = (config: Config) =>
       const reviewResets = Effect.gen(function* () {
         if (Object.keys(config.resets ?? {}).length === 0) return
         yield* takeAnswers
-        yield* carry(yield* sendResets(ResetsModel.Review.make({ pools: yield* resetViews })))
+        yield* carry(yield* sendResets(ResetsModel.Review.make({ pools: yield* resetViews, auto: config.autoClaims !== false })))
       }).pipe(
         reviewing.withPermits(1),
         Effect.catchCause((cause) => Effect.logWarning("pool resets: a review failed", cause)),
