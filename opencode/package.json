@@ -18,6 +18,7 @@
     "accept:affected": "bun scripts/accept.ts --affected",
     "gamut": "bun testbeds/gamut/gamut.ts",
     "daily": "bun scripts/daily.ts",
+    "fleet-install": "bun scripts/fleet-install.ts",
     "lint": "oxlint"
   },
   "devDependencies": {

@@ -23,6 +23,9 @@
 // 4. Writes how far upstream/dev is past the build, and whether its merge is blocked, to
 //    `~/.local/state/opencode-daily/upstream.json` for the TUI's corner (`upstreamReading`), then
 //    restarts the background service so it loads the server plugins.
+// 5. Writes what the host now runs (`~/.local/state/opencode-fleet/installed.json`: the checkout,
+//    its commit, the fork commit, the version), so `bun run fleet-install` (scripts/fleet.ts), which
+//    runs this on each host, skips a host already on its target.
 import { $ } from "bun"
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, hostname } from "node:os"
@@ -30,6 +33,7 @@ import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } from "../testbeds/gamut/gamut.ts"
 import { checkFork } from "./fork.ts"
+import { stampFile, writeStamp } from "./fleet.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { forkChecks, mergeUpstream, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
 
@@ -171,12 +175,16 @@ export const plannerExperiment = (catalog: Catalog): Experiment | undefined => {
 /**
  * Orchestrate's plugin entry: a Codex provider's new agents take the pool's pace first, which
  * paces OpenAI on the ChatGPT account (`poolEntry`'s `paced`); the admission script answers only
- * when the pool has no measure of it. With `experiment`, the model experiment runs.
+ * when the pool has no measure of it. With `experiment`, the model experiment runs. With `install`
+ * (on the owner's hosts), an accepted batch verdict asks for a fleet install through that script.
  */
-export const orchestrateEntry = (orchestrate: string, experiment?: Experiment): PluginEntry => ({
+export const orchestrateEntry = (orchestrate: string, experiment?: Experiment, install?: string): PluginEntry => ({
   package: orchestrate,
-  options: { codex: { pool: true }, ...(experiment === undefined ? {} : { experiment }) },
+  options: { codex: { pool: true }, ...(experiment === undefined ? {} : { experiment }), ...(install === undefined ? {} : { install: { script: install } }) },
 })
+
+/** The fleet install's command (scripts/fleet-install.ts), for orchestrate on the owner's hosts; none elsewhere. */
+export const installScript = (host: string): string | undefined => (peersOf(host).length === 0 ? undefined : resolve(import.meta.dir, "fleet-install.ts"))
 
 /**
  * Mail's plugin entry: on one of the owner's hosts (`FLEET`) whose Tailscale address is known,
@@ -350,7 +358,7 @@ if (import.meta.main) {
   const server: PluginEntry[] = [
     auth,
     poolEntry(pool, existsSync(gent) ? gent : undefined, { host: hostname() }),
-    orchestrateEntry(pluginDir("orchestrate"), experiment),
+    orchestrateEntry(pluginDir("orchestrate"), experiment, installScript(hostname())),
     pluginDir("guard"),
     pluginDir("kernel"),
     pluginDir("status"),
@@ -387,6 +395,15 @@ if (import.meta.main) {
   console.log(reading === undefined ? "upstream: no upstream/dev to count against" : `upstream: ${reading.commits} commits past this build${reading.blocked ? ", merge blocked" : ""}`)
 
   const restart = await $`${link} service restart`.nothrow().quiet()
+  // What this host now runs, for `bun run fleet-install`, which skips a host already on its target (scripts/fleet.ts).
+  const checkout = resolve(import.meta.dir, "../..")
+  writeStamp(stampFile(home), {
+    checkout,
+    dotfiles: (await $`git -C ${checkout} rev-parse HEAD`.text()).trim(),
+    fork: (await $`git -C ${fork} rev-parse HEAD`.text()).trim(),
+    version,
+    at: new Date().toISOString(),
+  })
   console.log(`opencode -> ${binary} (${reported})`)
   console.log(`server plugins: ${server.map(packageOf).join(", ")}`)
   console.log(`roles: ${Object.entries(models).map(([role, model]) => `${role} ${model}`).join(", ")}`)

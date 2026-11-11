@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, plannerExperiment, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, installScript, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, plannerExperiment, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
@@ -139,6 +139,15 @@ describe("the pool's fleet", () => {
     expect(mergeServer({ plugins: [earlier] }, [orchestrateEntry(`${MODS}/orchestrate`, undefined)], {}, [MODS]).plugins).toEqual([
       { package: `${MODS}/orchestrate`, options: { codex: { pool: true } } },
     ])
+  })
+
+  test("on the owner's hosts orchestrate's entry names the fleet install, which an accepted verdict asks for; elsewhere none", () => {
+    for (const host of ["Cristians-MacBook-Pro.local", "bite-cristian"]) {
+      const script = installScript(host)
+      expect(script).toBe(resolve(import.meta.dir, "fleet-install.ts"))
+      expect(orchestrateEntry(`${MODS}/orchestrate`, undefined, script)).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true }, install: { script } } })
+    }
+    expect(installScript("ci-runner")).toBeUndefined()
   })
 })
 
