@@ -31,7 +31,7 @@ const MINUTE = 60 * SECOND
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
 const TIMEOUT_MS = 180_000
-/** How long account b's first 5-hour hold lasts: its question is withdrawn once it lifts. */
+/** How long account b's first 5-hour hold lasts from the pool's first reading of it: its question is withdrawn once it lifts. */
 const SHORT_HOLD_MS = 25 * SECOND
 const SESSION = "ses_resets_root"
 
@@ -95,12 +95,15 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
 
       const accounts = { a: fakeAccount(), b: fakeAccount() }
       // a: spent for two hours, its week resetting in three days (the most time left, so asked first).
-      // b: spent for SHORT_HOLD_MS, its week resetting in two days.
+      // b: spent for SHORT_HOLD_MS from the pool's first reading of it, its week resetting in two days. Not from
+      // the test's start: on a loaded host the service took longer than that to boot, b's hold lifted before
+      // the pool got to it, and nothing was asked.
       const quotas = new Map<string, FakeQuota>([
         ["a", { fiveHour: { utilization: 1, resetAt: now + 2 * HOUR }, sevenDay: { utilization: 0.4, resetAt: now + 3 * DAY } }],
-        ["b", { fiveHour: { utilization: 1, resetAt: now + SHORT_HOLD_MS }, sevenDay: { utilization: 0.4, resetAt: now + 2 * DAY } }],
       ])
       const quotaOf = (account: string): FakeQuota => {
+        if (account === "b" && !quotas.has("b"))
+          quotas.set("b", { fiveHour: { utilization: 1, resetAt: Date.now() + SHORT_HOLD_MS }, sevenDay: { utilization: 0.4, resetAt: now + 2 * DAY } })
         const quota = quotas.get(account)!
         // A window past its reset reads empty, as the real one does.
         return Date.now() < quota.fiveHour.resetAt ? quota : { ...quota, fiveHour: { utilization: 0, resetAt: Date.now() + 5 * HOUR } }

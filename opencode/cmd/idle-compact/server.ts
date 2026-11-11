@@ -23,8 +23,8 @@
  * - `session.deleted`: the session is forgotten. Disposing the plugin ends every timer.
  * - At start, and on `provider.updated`, `model.updated` or `agent.updated`, once
  *   the catalog has been quiet for `SETTLE`: the recent main sessions are decided
- *   (again). A session's lifetime comes from the catalog's settings, which a
- *   reload rebuilds: OpenCode loads its config plugins after ours
+ *   (again; the start's look skips one the plugin has seen since). A session's
+ *   lifetime comes from the catalog's settings, which a reload rebuilds: OpenCode loads its config plugins after ours
  *   (packages/core/src/plugin/internal.ts `post`), so while it reloads ours, a
  *   provider reads without its configured `cache.ttl` and the lifetime falls back
  *   to the provider's default (5 minutes for Anthropic instead of the config's
