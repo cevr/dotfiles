@@ -44,6 +44,8 @@ export default OpenCodeDriver.use(
       tabs: { mode: "off" },
       theme: { name: "prime", mode: "dark" },
       plugins: [`${root}/cmd/prime`],
+      // Each shell call its own row, as these frames read them; the default (low) folds a turn's calls into one.
+      session: { verbosity: "medium" },
     },
     tui: { viewport: { cols: 150, rows: 50 } },
     project: { git: true, files: { ".opencode/themes/prime.json": readFileSync(`${root}/themes/prime.json`, "utf8") } },
@@ -146,7 +148,14 @@ export default OpenCodeDriver.use(
       yield* until((frame) => frame.includes("Press ctrl+b to move running work to the background") && dock("1 shell")(frame))
       yield* keep("blocking")
       yield* ui.press("b", { ctrl: true })
-      yield* until((frame) => frame.includes("Moved: sh_") && frame.includes("Noted the move.") && dock("1 shell")(frame) && idle(frame))
+      // The call's handle and the host's notice of the move reach the agent in one request, which it answers once.
+      yield* until(
+        (frame) =>
+          frame.includes("Ran sleep 300 · moved to the background") &&
+          frame.includes("Noted the move.") &&
+          dock("1 shell")(frame) &&
+          idle(frame),
+      )
       yield* Effect.sleep("500 millis")
       yield* keep("user")
 
