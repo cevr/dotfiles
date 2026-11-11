@@ -76,6 +76,14 @@
  * pool lists replaces an older one held here. A peer that cannot be read is
  * logged once, and the pace goes on without it.
  *
+ * - `limitsFile`: where the limit tally is kept (`@dotfiles/opencode-pool/limits`):
+ *   what each model family costs in points of one account's limit per million
+ *   tokens. Default `$XDG_STATE_HOME/opencode-pool/limits.json`. Each step's
+ *   tokens count on the login it went out on (a paced provider's: the
+ *   integration's active login), each reading closes a window period's row,
+ *   each sweep writes the tally there, and a peer's report adds the tokens it
+ *   sent on the same logins. `limits` answers the tally and its line.
+ *
  * `alerts` names every gent login whose refresh token the token endpoint
  * refused, with the command that signs it in again, until its file holds
  * another login, and every source whose refreshes are out, with the
@@ -99,7 +107,9 @@ import * as QuotaLive from "@dotfiles/opencode-pool/opencode/quota"
 import * as ResetsStoreLive from "@dotfiles/opencode-pool/opencode/resets"
 import { quotaProtocol, type QuotaReading } from "@dotfiles/opencode-pool/quota"
 import type { ResetProvider } from "@dotfiles/opencode-pool/resets"
-import type { FleetStore, Ledger, Logins, Owner, Peers, Quota, ResetsStore } from "@dotfiles/opencode-pool/service"
+import type { Tokens } from "@dotfiles/opencode-pool/limits"
+import * as LimitsLive from "@dotfiles/opencode-pool/opencode/limits"
+import type { FleetStore, Ledger, Limits, Logins, Owner, Peers, Quota, ResetsStore } from "@dotfiles/opencode-pool/service"
 import * as PeersLive from "@dotfiles/opencode-pool/ssh/peers"
 import { LoginsQuery, POOL_STATUS, SessionQuery, StartedQuery } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
@@ -163,6 +173,7 @@ export const Options = Schema.Struct({
   usageURL: Schema.optional(Schema.String),
   fleet: FleetOption.pipe(withDefault<typeof FleetOption.Type>(Schema.decodeSync(FleetOption)({}))),
   resets: Schema.Boolean.pipe(withDefault(true)),
+  limitsFile: Schema.optional(Schema.String),
 })
 export type Options = typeof Options.Type
 
@@ -239,8 +250,9 @@ export const live = (
   options: Options,
   sources: ReadonlyArray<GentSource>,
   chatgpt: ReadonlyMap<PoolId, ChatGPT.Source>,
-): Layer.Layer<Externals> =>
+): Layer.Layer<Externals | Limits> =>
     Layer.mergeAll(
+      LimitsLive.layer(ctx.storage, options.limitsFile ?? LimitsLive.defaultPath()),
       LoginsLive.layer(
         {
           connections: (pool) =>
@@ -279,6 +291,24 @@ const questionsHost = (ctx: Plugin.Context): OwnerLive.Host => {
     withdrawFor: (input) => Effect.suspend(() => client().withdrawFor(input)),
     changed: Stream.suspend(() => client().events.subscribe("changed")),
     parentOf: (sessionID) => ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map((session) => session.parentID)),
+  }
+}
+
+/** How many started steps' models are held at most until their steps end. */
+const STEP_MODELS = 1_000
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
+const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0)
+
+/** A step's tokens as the host's event carries them (`TokenUsage.Info`), output with its reasoning; none when it carries none. */
+export const tokensOf = (tokens: unknown): Tokens | undefined => {
+  if (!isRecord(tokens)) return undefined
+  const cache = isRecord(tokens.cache) ? tokens.cache : {}
+  return {
+    input: count(tokens.input),
+    output: count(tokens.output) + count(tokens.reasoning),
+    cacheRead: count(cache.read),
+    cacheWrite: count(cache.write),
   }
 }
 
@@ -435,14 +465,39 @@ export const make = (
 
       yield* ctx.session.hook("experimental.idle", (event) => pool.release(event.sessionID))
 
-      // A session going idle ends its run; a step's price counts on its account.
+      // The model each step runs, by its assistant message, from its start until it ends: the end names none.
+      const stepModels = new Map<string, { readonly providerID: string; readonly id: string }>()
+
+      /** What an ended step used, for the limit tally: a paced provider's step went out on the integration's active login. */
+      const usageOf = (data: { readonly assistantMessageID?: string; readonly tokens?: unknown }): Effect.Effect<Model.StepUsage | undefined> => {
+        const model = data.assistantMessageID === undefined ? undefined : stepModels.get(data.assistantMessageID)
+        if (data.assistantMessageID !== undefined) stepModels.delete(data.assistantMessageID)
+        const tokens = tokensOf(data.tokens)
+        if (model === undefined || tokens === undefined) return Effect.succeed(undefined)
+        const usage = { providerID: model.providerID, model: model.id, tokens }
+        const paced = Object.hasOwn(options.paced, model.providerID) ? options.paced[model.providerID] : undefined
+        if (paced === undefined || Object.hasOwn(options.providers, model.providerID)) return Effect.succeed<Model.StepUsage>(usage)
+        return ctx.integration.connection.active(paced).pipe(
+          Effect.map((connection): Model.StepUsage => (connection?.type === "credential" ? { ...usage, credentialID: connection.id } : usage)),
+          Effect.orElseSucceed((): Model.StepUsage => usage),
+        )
+      }
+
+      // A session going idle ends its run; a step's price counts on its account, and its tokens in the limit tally.
       yield* Effect.forkScoped(
-        ctx.event.subscribe({ types: ["session.step.ended", "session.idle"] }).pipe(
-          Stream.runForEach((event) =>
-            event.type === "session.idle"
-              ? pool.release(event.data.sessionID)
-              : pool.stepEnded(event.data.sessionID, Number(event.data.cost), event.data.assistantMessageID),
-          ),
+        ctx.event.subscribe({ types: ["session.step.started", "session.step.ended", "session.idle"] }).pipe(
+          Stream.runForEach((event) => {
+            if (event.type === "session.idle") return pool.release(event.data.sessionID)
+            if (event.type === "session.step.started") {
+              // A step that never ends leaves its entry: past a bound, the oldest go.
+              if (stepModels.size >= STEP_MODELS) stepModels.delete(stepModels.keys().next().value ?? "")
+              if (event.data.model !== undefined) stepModels.set(event.data.assistantMessageID, event.data.model)
+              return Effect.void
+            }
+            return usageOf(event.data).pipe(
+              Effect.flatMap((usage) => pool.stepEnded(event.data.sessionID, Number(event.data.cost), event.data.assistantMessageID, usage)),
+            )
+          }),
           Effect.ignoreCause,
         ),
       )
@@ -482,6 +537,7 @@ export const make = (
           report: () => pool.report,
           fleet: () => pool.fleet,
           resets: () => pool.resets,
+          limits: () => pool.limits,
         })
         .pipe(Effect.orDie)
     }),

@@ -14,6 +14,8 @@ import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
 import * as FleetTest from "@dotfiles/opencode-pool/memory/fleet"
 import * as LedgerTest from "@dotfiles/opencode-pool/memory/ledger"
+import * as LimitsLive from "@dotfiles/opencode-pool/opencode/limits"
+import type { LimitsAnswer } from "@dotfiles/opencode-pool/model"
 import * as LoginsTest from "@dotfiles/opencode-pool/memory/logins"
 import * as OwnerTest from "@dotfiles/opencode-pool/memory/owner"
 import * as PeersTest from "@dotfiles/opencode-pool/memory/peers"
@@ -45,9 +47,18 @@ const CONNECTIONS = [
 const model = { providerID: "anthropic", id: "claude-haiku-4-5" }
 
 interface SessionEvent {
-  readonly type: "session.step.ended" | "session.idle"
-  readonly data: { readonly sessionID: string; readonly cost?: number; readonly assistantMessageID?: string }
+  readonly type: "session.step.started" | "session.step.ended" | "session.idle"
+  readonly data: {
+    readonly sessionID: string
+    readonly cost?: number
+    readonly assistantMessageID?: string
+    readonly model?: { readonly providerID: string; readonly id: string }
+    readonly tokens?: { readonly input: number; readonly output: number; readonly reasoning: number; readonly cache: { readonly read: number; readonly write: number } }
+  }
 }
+
+// The live adapters keep the limit tally under XDG_STATE_HOME: never the owner's, in a test.
+process.env["XDG_STATE_HOME"] = mkdtempSync(join(tmpdir(), "pool-state-"))
 
 /**
  * What the outside systems hold for one test. The test layers read it, and so
@@ -99,6 +110,7 @@ const testLayers = (state: World, published: Queue.Dequeue<PublishedReading>) =>
     FleetTest.layer(state.storage),
     ResetsTest.layer(state.storage),
     OwnerTest.layer(state.owner),
+    LimitsLive.layer(LedgerTest.storage(state.storage), join(mkdtempSync(join(tmpdir(), "pool-limits-")), "limits.json")),
   )
 
 /** A hook or RPC handler the plugin registered; a missing one fails the test. */
@@ -297,6 +309,9 @@ const start = (
     const fleet = Effect.gen(function* () {
       return (yield* (yield* method("fleet"))({})) as FleetStatus
     })
+    const limits = Effect.gen(function* () {
+      return (yield* (yield* method("limits"))({})) as LimitsAnswer
+    })
     /** A response of `providerID`'s model came back carrying `headers`. */
     const responded = Effect.fn(function* (providerID: string, headers: Record<string, string>, sessionID = "ses_1") {
       yield* (yield* registered(hooks, "http.response"))({
@@ -326,6 +341,7 @@ const start = (
       started,
       report,
       fleet,
+      limits,
       resets,
       claims,
       responded,
@@ -502,6 +518,46 @@ describe("the hooks", () => {
         yield* plugin.idle("ses_2")
         const live = (yield* plugin.status).anthropic?.accounts.map((account) => account.live)
         expect(live).toEqual([1, 1])
+      }),
+    ))
+})
+
+describe("the limit tally", () => {
+  const opus = { providerID: "anthropic", id: "claude-opus-5-5" }
+  const million = { input: 1_000_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+
+  test("a step's tokens count on its login once, and a reading of the login's window rates them", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        yield* TestClock.adjust(HOUR)
+        expect(yield* plugin.request("ses_1")).toBe("cred-a")
+        yield* plugin.emit({ type: "session.step.started", data: { sessionID: "ses_1", assistantMessageID: "msg_1", model: opus } })
+        yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "ses_1", cost: 4, assistantMessageID: "msg_1", tokens: million } })
+        // Another copy of the plugin saw the same step: it counts once.
+        yield* plugin.emit({ type: "session.step.started", data: { sessionID: "ses_1", assistantMessageID: "msg_1", model: opus } })
+        yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "ses_1", cost: 4, assistantMessageID: "msg_1", tokens: million } })
+        yield* TestClock.adjust(MINUTE)
+        yield* plugin.publish({ credentialID: "cred-a", reading: { at: HOUR + MINUTE, windows: [{ name: "5h", utilization: 0.02, resetAt: 5 * HOUR }] } })
+        const answer = yield* plugin.limits
+        expect(answer.tally?.recent.map((w) => [w.pool, w.window, w.families.map((f) => [f.family, f.weighted.rate, f.n])])).toEqual([
+          ["anthropic", "5h", [["Opus", 2, 1]]],
+        ])
+        expect(answer.line).toBe("limit/Mtok 5h: Opus 2.0% n 1 (last 7 days)")
+        // What a peer reads of this host: its tokens on the open row.
+        expect((yield* plugin.report).limits?.rows.map((row) => row.sums)).toEqual([{ Opus: { w: 1_000_000, raw: 1_000_000 } }])
+      }),
+    ))
+
+  test("a step whose start the plugin never saw names no model: it counts in no tally", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        yield* TestClock.adjust(HOUR)
+        expect(yield* plugin.request("ses_1")).toBe("cred-a")
+        yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "ses_1", cost: 4, assistantMessageID: "msg_1", tokens: million } })
+        yield* plugin.publish({ credentialID: "cred-a", reading: { at: HOUR + MINUTE, windows: [{ name: "5h", utilization: 0.02, resetAt: 5 * HOUR }] } })
+        expect((yield* plugin.limits).tally?.recent).toEqual([])
       }),
     ))
 })
@@ -1123,6 +1179,8 @@ describe("the fleet", () => {
             { pool: "anthropic", credentialID: "cred-a", reading: week(0.5, now) },
             { pool: "anthropic", credentialID: "cred-b", reading: week(0.5, now) },
           ],
+          // No step has counted yet: the limit tally tells the peer of no tokens.
+          limits: { since: expect.any(Number), rows: [] },
         })
         expect(JSON.stringify(report)).not.toContain("token")
         expect((yield* plugin.fleet).starts).toBe(2)

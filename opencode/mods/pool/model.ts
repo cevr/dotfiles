@@ -6,7 +6,7 @@
 // plugin on the host shares.
 // The aggregate is the one decision entry point, so the stories run exactly
 // what these do. The plugin calls these and nothing else.
-import { Clock, Context, Effect, Layer, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
+import { Clock, Context, Effect, Layer, Option, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import {
   AccountPool,
@@ -27,10 +27,11 @@ import {
 import { held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as FleetModel from "./fleet.ts"
 import { poolPace, UNPOOLED, type Pace } from "./pace.ts"
+import { limitsLine, type Tally, type Tokens } from "./limits.ts"
 import type { QuotaReading } from "./quota.ts"
 import * as ResetsModel from "./resets.ts"
 import type { ResetProvider } from "./resets.ts"
-import { FleetStore, Ledger, Logins, Owner, Peers, Quota, ResetsStore, type LoginsUnavailable } from "./service.ts"
+import { FleetStore, Ledger, Limits, Logins, Owner, Peers, Quota, ResetsStore, type LoginsUnavailable } from "./service.ts"
 
 /** A question gone from the owner's tray this long after it was asked, with no answer, was dismissed. */
 const ANSWER_GRACE_MS = 60_000
@@ -106,6 +107,23 @@ export interface Placed {
   readonly cacheLifeMs?: number
 }
 
+/**
+ * What a step used, for the limit tally: its model, its tokens, and, for a
+ * provider only paced (never placed), the login the host sent it on.
+ */
+export interface StepUsage {
+  readonly providerID: string
+  readonly model: string
+  readonly tokens: Tokens
+  readonly credentialID?: string
+}
+
+/** The limits method's answer: the tally and its line, when the pool keeps one. */
+export interface LimitsAnswer {
+  readonly tally?: Tally
+  readonly line?: string
+}
+
 /** The pools a config names: each integration once, in the order the providers name them, then the paced ones. */
 export const poolsOf = (config: Config): ReadonlyArray<PoolId> => [
   ...new Set([...Object.values(config.providers), ...Object.values(config.paced ?? {})]),
@@ -140,8 +158,14 @@ export class Pool extends Context.Service<
     readonly retry: (input: { readonly providerID: string; readonly sessionID: string }) => Effect.Effect<boolean>
     /** A session went idle: its run ends in every pool. */
     readonly release: (sessionID: string) => Effect.Effect<void>
-    /** A step of a session ended with its price, in USD as the host reported it, writing the assistant message `messageID`. */
-    readonly stepEnded: (sessionID: string, cost: number, messageID?: string) => Effect.Effect<void>
+    /**
+     * A step of a session ended with its price, in USD as the host reported it,
+     * writing the assistant message `messageID`; with `usage`, its tokens count
+     * in the limit tally on the account the step went out on.
+     */
+    readonly stepEnded: (sessionID: string, cost: number, messageID?: string, usage?: StepUsage) => Effect.Effect<void>
+    /** The limit tally (limits.ts) and its line; none when the pool keeps no tally. */
+    readonly limits: Effect.Effect<LimitsAnswer>
     /** Take in the readings each pool's auth plugin publishes, as they come, until interrupted. */
     readonly follow: Effect.Effect<void>
     /** Read every login's usage, and forget what has expired. */
@@ -200,6 +224,8 @@ export const layer = (config: Config) =>
       const fleetLock = yield* Semaphore.make(1)
       const resetsStore = yield* ResetsStore
       const owner = yield* Owner
+      // The limit tally is optional: a pool built without it tallies nothing.
+      const limits = Option.getOrUndefined(yield* Effect.serviceOption(Limits))
       const scope = yield* Scope.Scope
       // The resets are decided one command at a time in this instance; another instance's claim of the same hold is the same claim (its request id).
       const resetsLock = yield* Semaphore.make(1)
@@ -249,6 +275,7 @@ export const layer = (config: Config) =>
           ? Effect.void
           : apply(pool, id, TakeReading.make({ credentialID, reading })).pipe(
               Effect.andThen(logins.markSignIn(id, credentialID, reading.refusal?.kind === "signin")),
+              Effect.andThen(limits?.observe(id, credentialID, reading) ?? Effect.void),
             )
 
       /** The provider's newest reading of one login, as its auth plugin holds it now. */
@@ -323,12 +350,36 @@ export const layer = (config: Config) =>
         return latest === undefined || latest.at < 0 ? undefined : latest.where
       })
 
-      const stepEnded = Effect.fn("Pool.stepEnded")(function* (sessionID: string, cost: number, messageID?: string) {
+      /**
+       * A step's tokens in the limit tally, on the account it went out on: the
+       * session's primary placement in a placed pool, the login the host named
+       * in a pool only paced. Nothing without a message to key it by.
+       */
+      const tallyStep = Effect.fn(function* (sessionID: string, messageID: string, usage: StepUsage) {
+        if (limits === undefined) return
+        const at = yield* Clock.currentTimeMillis
+        const placed = pooled(usage.providerID)
+        const id = placed?.id ?? measuredBy(config, usage.providerID)
+        const credentialID =
+          placed === undefined ? usage.credentialID : placedOn(yield* SynchronizedRef.get(placed.pool), sessionID, "primary")
+        if (id === undefined || credentialID === undefined) return
+        yield* limits.use(messageID, { at, pool: id, credentialID, model: usage.model, tokens: usage.tokens })
+      })
+
+      const stepEnded = Effect.fn("Pool.stepEnded")(function* (sessionID: string, cost: number, messageID?: string, usage?: StepUsage) {
+        if (messageID !== undefined && usage !== undefined) yield* tallyStep(sessionID, messageID, usage)
         // The step's event names no model: it belongs to the pool that placed the session's newest request.
         const where = yield* newest(sessionID)
         if (where === undefined) return
         yield* apply(where.pool, where.id, RecordStep.make({ sessionID, cost, ...(messageID === undefined ? {} : { messageID }) }))
       })
+
+      const limitsAnswer = Effect.gen(function* () {
+        if (limits === undefined) return {}
+        const tally = yield* limits.tally
+        const line = limitsLine(tally)
+        return { tally, ...(line === undefined ? {} : { line }) } satisfies LimitsAnswer
+      }).pipe(Effect.withSpan("Pool.limits"))
 
       const sessionLogins = Effect.fn("Pool.logins")(function* (query: LoginsQuery) {
         const steps: Array<StepLogin & { readonly at: number }> = []
@@ -366,6 +417,8 @@ export const layer = (config: Config) =>
           }),
         { discard: true },
       ).pipe(
+        // The fresh readings close and count the tally's rows.
+        Effect.andThen(limits?.flush ?? Effect.void),
         // The fresh readings may lift a hold (a question withdrawn) or let a credit expire unused (a claim due).
         Effect.andThen(Effect.suspend(() => reviewResets)),
         Effect.withSpan("Pool.sweep"),
@@ -566,7 +619,9 @@ export const layer = (config: Config) =>
             if (reading !== undefined) readings.push({ pool: id, credentialID, reading })
           }
         }
-        return FleetModel.report(yield* fleetStore.read, fleetConfig.host, yield* Clock.currentTimeMillis, fleetConfig.settleMs, readings)
+        const answer = FleetModel.report(yield* fleetStore.read, fleetConfig.host, yield* Clock.currentTimeMillis, fleetConfig.settleMs, readings)
+        // The tokens this host sent count in a peer's tally of the same accounts.
+        return limits === undefined ? answer : { ...answer, limits: yield* limits.report }
       }).pipe(Effect.withSpan("Pool.report"))
 
       /**
@@ -583,6 +638,7 @@ export const layer = (config: Config) =>
         const held = state.readings[shared.credentialID]
         if (held !== undefined && held.at >= shared.reading.at) return
         yield* apply(target.pool, target.id, TakeReading.make({ credentialID: shared.credentialID, reading: shared.reading }))
+        if (limits !== undefined) yield* limits.observe(target.id, shared.credentialID, shared.reading)
       })
 
       const mergeReports = (fleet: FleetModel.FleetState) =>
@@ -608,6 +664,7 @@ export const layer = (config: Config) =>
                 yield* sendFleet(FleetModel.TakeReport.make({ peer, report: answer }))
                 if (missed !== undefined) yield* Effect.logInfo(`pool fleet: ${peer} answers again`)
                 yield* Effect.forEach(answer.readings, merge, { discard: true })
+                if (limits !== undefined && answer.limits !== undefined) yield* limits.takePeer(peer, answer.limits)
               }),
           }),
         )
@@ -662,6 +719,7 @@ export const layer = (config: Config) =>
         retry,
         release,
         stepEnded,
+        limits: limitsAnswer,
         follow,
         sweep,
         pace,

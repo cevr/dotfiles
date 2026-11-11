@@ -42,6 +42,8 @@ export const POOL_STATUS = {
     report: { input: { type: "object" }, output: { type: "object" } },
     fleet: { input: { type: "object" }, output: { type: "object" } },
     resets: { input: { type: "object" }, output: { type: "object" } },
+    /** The limit tally (limits.ts `Tally`) and its one line, `{ tally?, line? }`. */
+    limits: { input: { type: "object" }, output: { type: "object" } },
   },
   events: {},
 } as const
@@ -206,6 +208,15 @@ export const Report = Schema.Struct({
   at: Schema.Number,
   starts: Schema.Array(Start),
   readings: Schema.Array(SharedReading),
+  /** The tokens the host sent on each open row of the limit tally (limits.ts), from a host that keeps one. */
+  limits: Schema.optionalKey(
+    Schema.Struct({
+      since: Schema.Number,
+      rows: Schema.Array(
+        Schema.Struct({ key: Schema.String, sums: Schema.Record(Schema.String, Schema.Struct({ w: Schema.Number, raw: Schema.Number })) }),
+      ),
+    }),
+  ),
 })
 export type Report = typeof Report.Type
 

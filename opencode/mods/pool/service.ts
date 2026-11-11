@@ -6,6 +6,7 @@ import { Context, type Effect, Schema, type Stream } from "effect"
 import type { Event, LedgerState, PoolId } from "./account-pool.ts"
 import type { StoreRefreshes } from "./alerts.ts"
 import type { Event as FleetEvent, FleetState } from "./fleet.ts"
+import type { LimitsReport, Tally, Use } from "./limits.ts"
 import type { ClaimAnswer, QuotaReading } from "./quota.ts"
 import type { Event as ResetsEvent, ResetsState } from "./resets.ts"
 import type { Report, SourceStatus } from "./status.ts"
@@ -127,6 +128,31 @@ export class ResetsStore extends Context.Service<
     readonly record: (events: ReadonlyArray<ResetsEvent>, state: ResetsState) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/pool/ResetsStore") {}
+
+/**
+ * The limit tally (limits.ts): the tokens each request a pool served used, the
+ * readings, and the peers' reports, kept so a restart loses none of it. Every
+ * plugin instance on the host records the same requests and readings; the
+ * store keeps each request once. Optional: a pool without it tallies nothing.
+ * A failed read starts empty; a failed write is lost.
+ */
+export class Limits extends Context.Service<
+  Limits,
+  {
+    /** A request ended: its tokens count on its account, once per assistant message. */
+    readonly use: (messageID: string, use: Use) => Effect.Effect<void>
+    /** A reading of one account came in. */
+    readonly observe: (pool: PoolId, credentialID: string, reading: QuotaReading) => Effect.Effect<void>
+    /** What this host tells its peers of its tokens. */
+    readonly report: Effect.Effect<LimitsReport>
+    /** A peer's report of its tokens. */
+    readonly takePeer: (peer: string, report: LimitsReport) => Effect.Effect<void>
+    /** Count the open rows again, keep the tally where the next process and the CLI read it, and forget old requests. */
+    readonly flush: Effect.Effect<void>
+    /** The tally now. */
+    readonly tally: Effect.Effect<Tally>
+  }
+>()("dotfiles-opencode/pool/Limits") {}
 
 /** A question the pool asks the owner about one hold's reset. */
 export interface OwnerQuestion {
