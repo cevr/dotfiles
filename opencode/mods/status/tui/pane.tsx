@@ -2,21 +2,22 @@
 // orchestrate runs. Thin: it reads the pool's RPC and the status RPC every 2 seconds,
 // takes the running child sessions from the same collection Prime's dock
 // counts, and draws the rows pane.ts projects from them. An answer that fails
-// or does not decode keeps the last reading and says so; a pool with no fleet
-// or resets method (one from before it) hides that section, as does a pool
-// that has worked no reset. cmd/status/tui.tsx
+// or does not decode keeps the last reading and says so; a pool with no fleet,
+// resets or limits method (one from before it) hides that section or line, as
+// does a pool that has worked no reset or tallied no limit yet. cmd/status/tui.tsx
 // registers it.
 import type { Plugin } from "@opencode/plugin/tui"
 import { Option, Schema } from "effect"
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
-import { accountRows, agentRows, fleetRows, PaneFleet, PanePools, PaneResets, resetRows, resetsLine, stamp, unavailable, unitLine } from "../pane.ts"
+import { accountRows, agentRows, fleetRows, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, stamp, unavailable, unitLine } from "../pane.ts"
 import { Snapshot, STATUS } from "../status.ts"
 
 const decodePools = Schema.decodeUnknownOption(PanePools)
 const decodeSnapshot = Schema.decodeUnknownOption(Snapshot)
 const decodeFleet = Schema.decodeUnknownOption(PaneFleet)
 const decodeResets = Schema.decodeUnknownOption(PaneResets)
+const decodeLimits = Schema.decodeUnknownOption(PaneLimits)
 
 /** What an answer decodes to; a call that failed decodes to nothing. */
 const answer = <A,>(result: PromiseSettledResult<unknown>, decode: (input: unknown) => Option.Option<A>) =>
@@ -35,6 +36,7 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
   const [snapshot, setSnapshot] = createSignal<Snapshot>()
   const [fleet, setFleet] = createSignal<PaneFleet>()
   const [claims, setClaims] = createSignal<PaneResets>()
+  const [limits, setLimits] = createSignal<string>()
   const [errors, setErrors] = createSignal<ReadonlyArray<string>>([])
   const [at, setAt] = createSignal<number>()
   const abort = new AbortController()
@@ -44,11 +46,12 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
     if (pending) return
     pending = true
     const location = ctx.location
-    const [poolResult, statusResult, fleetResult, resetsResult] = await Promise.allSettled([
+    const [poolResult, statusResult, fleetResult, resetsResult, limitsResult] = await Promise.allSettled([
       ctx.client.rpc(POOL_STATUS).status({}, { location, signal: abort.signal }),
       ctx.client.rpc(STATUS).status({}, { location, signal: abort.signal }),
       ctx.client.rpc(POOL_STATUS).fleet({}, { location, signal: abort.signal }),
       ctx.client.rpc(POOL_STATUS).resets({}, { location, signal: abort.signal }),
+      ctx.client.rpc(POOL_STATUS).limits({}, { location, signal: abort.signal }),
     ])
     if (closed) return
     const pools = answer(poolResult, decodePools)
@@ -57,6 +60,7 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
     if (Option.isSome(status)) setSnapshot(status.value)
     setFleet(Option.getOrUndefined(answer(fleetResult, decodeFleet)))
     setClaims(Option.getOrUndefined(answer(resetsResult, decodeResets)))
+    setLimits(Option.getOrUndefined(answer(limitsResult, decodeLimits))?.line)
     setErrors(unavailable(Option.isNone(pools), Option.isNone(status)))
     setAt(Date.now())
     pending = false
@@ -106,6 +110,7 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
         <For each={snapshot()?.errors}>{(error) => <text fg={theme().text.feedback.warning.base}>{error}</text>}</For>
         {heading("Accounts")}
         <Show when={resets()}>{(line) => <text fg={theme().text.base}>{line()}</text>}</Show>
+        <Show when={limits()}>{(line) => <text fg={theme().text.base}>{line()}</text>}</Show>
         <Show when={accounts()} fallback={muted("Loading accounts…")}>
           {(rows) => (
             <For each={rows()} fallback={muted("No pool accounts.")}>

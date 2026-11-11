@@ -2,7 +2,7 @@
 // running agents named by their call, unit lines, and which read failed.
 import { describe, expect, test } from "bun:test"
 import { Option, Schema } from "effect"
-import { accountRows, agentRows, fleetRows, PaneFleet, PanePools, PaneResets, resetRows, resetsLine, stamp, unavailable, unitLine } from "./pane.ts"
+import { accountRows, agentRows, fleetRows, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, stamp, unavailable, unitLine } from "./pane.ts"
 
 const now = Date.parse("2026-11-04T15:00:00Z")
 
@@ -187,6 +187,15 @@ describe("unitLine", () => {
   test("a unit with its round, and one with none yet", () => {
     expect(unitLine({ unit: "wake", state: "implement", round: "1", since: "2026-11-04T15:00Z" })).toBe("  wake · implement · r1 · 2026-11-04T15:00Z")
     expect(unitLine({ unit: "fresh", state: "plan", round: "", since: "" })).toBe("  fresh · plan · r? · ")
+  })
+})
+
+describe("PaneLimits", () => {
+  test("reads the line of the pool's limits answer, whatever tally rides with it; a pool with no tally yet has none", () => {
+    const decode = Schema.decodeUnknownOption(PaneLimits)
+    const line = "limit/Mtok 7d: Opus 0.90% 0.70–1.1 n 12 · Fable 1.6% n 5 (own week 0.30%) (last 7 days)"
+    expect(Option.getOrUndefined(decode({ tally: { recent: [], cumulative: [] }, line }))?.line).toBe(line)
+    expect(Option.getOrUndefined(decode({}))).toEqual({})
   })
 })
 

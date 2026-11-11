@@ -79,6 +79,14 @@ export const accountRows = (pools: PanePools): ReadonlyArray<AccountRow> =>
     }),
   )
 
+/**
+ * The pool's limits answer as the pane reads it: only its line, what each model
+ * family costs in % of one account's limit per Mtok (the pool's limits.ts
+ * `limitsLine`). No line until a window period has been read with tokens in it.
+ */
+export const PaneLimits = Schema.Struct({ line: Schema.optionalKey(Schema.String) })
+export type PaneLimits = typeof PaneLimits.Type
+
 /** The provider each pool's resets are known by. */
 const RESET_NAMES: Readonly<Record<string, string>> = { anthropic: "Claude", openai: "Codex" }
 
