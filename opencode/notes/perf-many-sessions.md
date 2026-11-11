@@ -388,3 +388,69 @@ The setup was the same as above (the database copy, the owner's eleven plugins a
 ## Installed for this run (removed at the end)
 
 - Workbox: `/tmp/opencode/family-batch/` (the fork and dotfiles clones, the database copy, the compiled builds and the runs) and `/tmp/opencode/fb-setup.sh`. Both were removed after this run.
+
+# The boot before the session (workbox, 2026-11-11, round 4)
+
+The goal was the same: a usable session in under 1 s on the compiled build. This round adds a boot trace to the fork. Run with `OPENCODE_BOOT_TRACE=<dir>`, the TUI writes `boot-<pid>.json` after `OPENCODE_BOOT_TRACE_MS` (15 s by default). That file holds a `performance.now()` mark for each step, from the binary's first import to the session's messages. `OPENCODE_BOOT_TRACE_PROFILE=1` also writes a CPU profile that starts at the first import. Without the variable, the trace does nothing. `scripts/perf/startup.ts --trace` collects it, and `--trace-profile` adds the profile.
+
+## Harness artifacts, ruled out first
+
+Each of these cost time in the harness only. The owner does not pay them. **measured** (trace and profile)
+- **Terminal queries:** the TUI waits up to 1 s (`renderer.waitForThemeMode(1000)`) for the terminal to answer OSC 10/11. `@xterm/headless` never answers, and herdr's binary contains the reply format. `--replies` answers as a desktop terminal does. Without it, both builds lose about 1 s: 2.6 s (before) and 2.0 s (after) to ready.
+- **A fresh server:** the harness starts its own server. Its first `server.info` took 350–460 ms, and the location's first read through `fs.list` took 200–1,350 ms. The owner's long-running service has both warm. `--warm` loads the location on the server first, and `--settle 5000` lets the server settle.
+- **The Solid transform cache:** each run name keeps its own cache, so the first run of a name compiles every plugin through Babel. That alone took 700 ms of the main thread in one profile. `cmp.sh` runs each build once before it records anything.
+- **Tabs:** the harness runs with tabs on. The owner runs in herdr (`HERDR_ENV=1`), where `"auto"` turns them off.
+
+The 0.8 s from process start to "cli starting" in the last section is not there on a settled box. The binary's first import comes 80–145 ms after spawn, and "cli starting" follows 1–20 ms later. **measured**
+
+## Where the time went (before)
+
+The profile showed the JS thread fully busy from the first frame until ready. **measured** (profile, 3cd1e36717)
+1. **The session's reads waited for the plugins.** `session.sync`, `message.sync` and `pending.sync` started at the route's mount, which happens after `plugins.ready()`. The session's info was written only after every page of its children: 572 children, 3 pages of 200.
+2. **Hundreds of children on the transcript's first draw.** Once the family was in the store, the subagent views worked through all 572 children: `subagents/opencode/view.ts` `read`/`sessionOf`, `subagent-row.ts` `order`/`rowsOf`, `works.ts` `worksOf`, `prime/subagent.ts` `subagentOrder` and `questions/tray.ts` `under`. Each family walk grouped children by copying the parent's list for each child, which is quadratic. `under` also checked membership with `Array.includes`. In the client, `registerSession` checked each family member through the store's proxy: 82 ms of `includes` self time.
+3. **Plugin read and evaluation, 574 ms**, after the renderer was up. It started only when the plugin provider mounted.
+
+## Fixes
+
+Fork, on `1e840dd4b8`:
+- `3cd1e36717` `perf(cli)`: the boot trace.
+- `160cf043d8` `perf(client)`: a family read writes the session's own info as soon as `session.get` returns. Guard: `data.test.tsx` "a family read shows the session's own info before its children's pages arrive" (red on the old code).
+- `7c9ac11ba3` `perf(tui)`: the session's reads start when the event stream connects, while the plugins load.
+- `0552528337` `perf(tui)`: `plugin/prewarm.ts` starts importing the configured local plugins as soon as the config is read. Imports are kept per entrypoint for the whole process, so the provider's first reconciliation finds each graph already evaluated. Guard: `test/plugin/prewarm.test.ts`.
+- `e2c00fcdc9` `perf(client)`: a family read writes its children one page at a time, after the session's own info.
+- `36dc222658` `perf(tui)`: the shown session's children are read 750 ms after the first frame past its synced transcript. A background tab still reads its own family.
+- `7e96275974` `perf(client)`: the family index checks membership on the raw arrays.
+- `b96b5e07e4` `perf(tui)`: trace marks for the family's size and for when the children are read.
+- `2f97d666b6` `perf(tui)`: `-s` starts on its session's route. Before, the route was home until the app mounted, so the tabs' read at connect took the shown session for a background tab and read its whole family. Guard: `app-lifecycle.test.tsx` "a session opened with -s reads its children well after its messages" (red at `3cd1e36717` and `7c9ac11ba3`). In the same file, the fake server in "session title generated while an untitled session is loading remains visible" now returns the new title for a read it starts after the rename, as the real server does. The deferred children read is such a read. The stale read that started before the rename is still the one the test guards.
+
+Dotfiles: the family walks (`questions/tray.ts`, `subagents/works.ts`, `subagents/subagent-row.ts`, `prime/subagent.ts`) now group children in linear time.
+
+## Before and after
+
+Setup: the workbox, the database copy, the owner's eleven plugins, 160×45, load 19–24, with `--trace --replies --warm --settle 5000`. Five runs of each build alternated, after one unrecorded run of each. Before is `3cd1e36717` (the trace only) with the mods at `b3a401c7`. After is the fork head with the mods at this branch. Medians in ms from spawn: **measured**
+
+| Phase | Before | After |
+| --- | --- | --- |
+| cli starting | 105 | 131 |
+| CLI default handler | 181 | 231 |
+| TUI location read | 203 | 394 |
+| first frame (loader) | 372 | 539 |
+| plugins: reconcile start | 265 | 531 |
+| plugins: first reconcile done | 665 | 724 |
+| plugins ready | 910 | 806 |
+| session info | 488 | 613 |
+| session messages | 1,108 | 904 |
+| **ready** (transcript with the composer's model) | **1,697** (1,479–2,150) | **1,180** (1,031–1,768) |
+| **key echo** | **1,804** (1,582–2,336) | **1,282** (1,134–1,975) |
+
+The steps before the plugins come later now: the plugins' imports run on the same thread while the location loads. They finish sooner, and the session's reads overlap them. In the three runs right after the `-s` route fix, ready was 1,640, 957 and 875 ms and key echo was 1,691, 1,114 and 927 ms (the first of the three ran with a cold cache). **measured**
+
+Under 1 s is reached on some warm runs and not on the median. What remains: **measured** (profile)
+- **About 250–350 ms from the session's messages to ready.** This is the transcript's first draw (styles, rows) together with the plugins' second reconciliation, which runs when the server's TUI plugin list arrives. Its watch stage took about 0.5 s in a debug log.
+- **About 150 ms of plugin evaluation on the main thread** before the location read returns.
+
+The family cost in the session's header now climbs as the children's pages arrive, about 1 s after the transcript shows.
+
+## Installed for this run (removed at the end)
+
+- Workbox: `/tmp/opencode/tui-boot/` (the fork and dotfiles clones, the database copy, the compiled builds and the runs) and `/tmp/opencode/tb-setup.sh`.
