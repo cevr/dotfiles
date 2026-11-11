@@ -17,6 +17,12 @@ export const QuotaWindow = Schema.Struct({
   utilization: Schema.Number,
   /** Epoch ms. */
   resetAt: Schema.optionalKey(Schema.Number),
+  /**
+   * For a model's own window: its whole allowance as a share of the account's
+   * weekly window (0 to 1), as the usage endpoint's `weekly_scoped_shares`
+   * says (`allowance_percent_of_weekly`, 50 for Fable on 2026-11-09).
+   */
+  ofWeekly: Schema.optionalKey(Schema.Number),
 })
 export type QuotaWindow = typeof QuotaWindow.Type
 
@@ -29,6 +35,27 @@ export const QuotaRefusal = Schema.Struct({
   until: Schema.optionalKey(Schema.Number),
 })
 export type QuotaRefusal = typeof QuotaRefusal.Type
+
+/**
+ * What a reset gives back, as the provider's tools name it. Claude Code
+ * (2.1.318, its `cedar_ember` grant reader) names a grant's kind by its
+ * fields: `fable` when it gives back to the weekly window what Fable used
+ * (`gives_back_weekly`), else its `type` (`session`, `weekly`, `full`), else by
+ * what it clears (the 5-hour window alone `session`, other windows alone
+ * `weekly`, both `full`). A Codex reset credit restarts the account's
+ * windows: `codex`.
+ */
+export const ResetKind = Schema.Literals(["session", "weekly", "fable", "full", "codex"])
+export type ResetKind = typeof ResetKind.Type
+
+/** A Claude grant's kind by Claude Code's rule: `fable` when it gives back to the weekly window, else its `type`, else by what it clears. */
+export const grantKind = (grant: { readonly clears: ReadonlyArray<string>; readonly type?: unknown; readonly givesBack: boolean }): ResetKind => {
+  if (grant.givesBack) return "fable"
+  if (grant.type === "session" || grant.type === "weekly" || grant.type === "full") return grant.type
+  const session = grant.clears.includes("five_hour")
+  const other = grant.clears.some((name) => name !== "five_hour")
+  return session && !other ? "session" : other && !session ? "weekly" : "full"
+}
 
 /**
  * One grant of rate-limit resets: a Claude `cedar_ember` grant (`count` resets
@@ -48,6 +75,18 @@ export const ResetCredit = Schema.Struct({
    * (the model's own week), not `seven_day`.
    */
   clears: Schema.optionalKey(Schema.Array(Schema.String)),
+  /** Its kind, when the reading names one (a Codex credit is always `codex`). */
+  kind: Schema.optionalKey(ResetKind),
+  /**
+   * A claim gives back to the weekly window what the model's own week used of
+   * it (Claude's `gives_back_weekly`: a Fable reset empties Fable's week and
+   * takes Fable's part of the weekly use off it; the weekly reset stays).
+   */
+  givesBack: Schema.optionalKey(Schema.Boolean),
+  /** It can be claimed only once the account is at a limit it clears (Claude's `use_requires_limit`, true unless said). */
+  requiresLimit: Schema.optionalKey(Schema.Boolean),
+  /** Paused by the provider: not claimable until it resumes. */
+  paused: Schema.optionalKey(Schema.Boolean),
 })
 export type ResetCredit = typeof ResetCredit.Type
 
@@ -137,6 +176,7 @@ export const carryOver = (held: QuotaReading | undefined, next: QuotaReading, no
 
 const isRefusalKind = Schema.is(RefusalKind)
 const isStatus = Schema.is(QuotaStatus)
+const isKind = Schema.is(ResetKind)
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value)
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 
@@ -153,6 +193,10 @@ const asResets = (value: unknown): QuotaResets | undefined => {
             ...(typeof credit.status === "string" ? { status: credit.status } : {}),
             ...(finite(credit.expiresAt) ? { expiresAt: credit.expiresAt } : {}),
             ...(Array.isArray(credit.clears) ? { clears: credit.clears.filter((name) => typeof name === "string") } : {}),
+            ...(isKind(credit.kind) ? { kind: credit.kind } : {}),
+            ...(typeof credit.givesBack === "boolean" ? { givesBack: credit.givesBack } : {}),
+            ...(typeof credit.requiresLimit === "boolean" ? { requiresLimit: credit.requiresLimit } : {}),
+            ...(typeof credit.paused === "boolean" ? { paused: credit.paused } : {}),
           },
         ]
       : [],
@@ -176,6 +220,7 @@ export function asReading(value: unknown): QuotaReading | undefined {
       name: window.name,
       utilization: Math.min(Math.max(window.utilization, 0), 1),
       ...(finite(window.resetAt) ? { resetAt: window.resetAt } : {}),
+      ...(finite(window.ofWeekly) && window.ofWeekly > 0 ? { ofWeekly: Math.min(window.ofWeekly, 1) } : {}),
     })
   }
   const refusal = value.refusal
