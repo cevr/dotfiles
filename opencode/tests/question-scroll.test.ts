@@ -46,8 +46,10 @@ describe.skipIf(!fork)("a question taller than a phone's pane", () => {
 
       // Paged to the end: the last line, every option and the custom answer, the keys still under them.
       const end = lines(read("end"))
-      expect(end).toEqual(expect.arrayContaining(["line 60 of the question", "1. Keep it", "2. Drop it", "3. Type your own answer", "↑↓ select  pgdn scroll  enter submit"]))
-      expect(end.indexOf("line 60 of the question")).toBeLessThan(end.indexOf("1. Keep it"))
+      // A background question marks its assumed option in the label; the question tool has no assumption.
+      const first = via === "async" ? "1. Keep it (assumed)" : "1. Keep it"
+      expect(end).toEqual(expect.arrayContaining(["line 60 of the question", first, "2. Drop it", "3. Type your own answer", "↑↓ select  pgdn scroll  enter submit"]))
+      expect(end.indexOf("line 60 of the question")).toBeLessThan(end.indexOf(first))
 
       // ↓ and Enter picked the second option, and the model read it.
       expect(lines(read("done"))).toContain("Root read Drop it")
