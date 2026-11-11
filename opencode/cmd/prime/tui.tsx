@@ -11,11 +11,13 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { nextDetail, rowGap, type Detail } from "@dotfiles/opencode-prime/detail"
 import { goals } from "@dotfiles/opencode-prime/opencode/goal"
+import { readUpstream } from "@dotfiles/opencode-prime/filestore/upstream"
+import { builds } from "@dotfiles/opencode-prime/opencode/build"
 import { host } from "@dotfiles/opencode-prime/opencode/host"
 import { inboxOf, isWaiting } from "@dotfiles/opencode-prime/pending"
 import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
 import { hints as wakeHints, WakeTab } from "@dotfiles/opencode-prime/tui/composer"
-import { Dock, GoalLine, ModeHint, Queued, Splash, TopBar, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
+import { Dock, GoalLine, ModeHint, Queued, Splash, TopBar, UpdateNotice, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
 import { SubagentRows } from "@dotfiles/opencode-prime/tui/live"
 import { Completion, StepEnd } from "@dotfiles/opencode-prime/tui/notice"
 import { GroupRow, ToolRow } from "@dotfiles/opencode-prime/tui/tools"
@@ -26,7 +28,8 @@ export default Plugin.define({
   id: "gent.prime",
   setup(context) {
     const goal = goals(context)
-    const h = host(context, goal.read)
+    const build = builds(context, () => readUpstream())
+    const h = host(context, goal.read, build)
     const [detail, setDetail] = createSignal<Detail>("details")
     // A prompt the runner has not taken draws nothing in the transcript (tui/transcript.tsx UserBand), so its row takes no gap either.
     const hidden = (messageID: string | undefined) => {
@@ -120,6 +123,11 @@ export default Plugin.define({
       replace: "prompt.footer",
       render: (input) => <Dock host={h} sessionID={input.sessionID} />,
     })
+    // On the home screen the update notice sits in the footer's status, beside the MCP count (the dock's model line holds it in a session).
+    context.ui.slot({
+      append: "home.footer.status",
+      render: () => <UpdateNotice host={h} />,
+    })
 
     // The composer panel's Wakes and Monitors tabs, after the host's own (the fork's ui.composerTab; an older build has none).
     for (const [id, title, tab] of [["wakes", "Wakes", "alarm"], ["monitors", "Monitors", "monitor"]] as const)
@@ -183,6 +191,9 @@ export default Plugin.define({
         },
       ],
     }))
-    return () => goal.stop()
+    return () => {
+      goal.stop()
+      build.stop()
+    }
   },
 })

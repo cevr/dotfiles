@@ -80,7 +80,8 @@ theme. The mod has three parts.
   (`ask.ts`), subagent navigation (`subagent.ts`), the top bar and dock
   (`chrome.ts`), the dock's wake item (`wakes.ts`), the goal line
   (`goal.ts`), the prompts waiting in the inbox and the loader's words
-  (`pending.ts`), and the detail levels with their row gaps (`detail.ts`).
+  (`pending.ts`), the update notice (`update.ts`), and the detail levels
+  with their row gaps (`detail.ts`).
   `session.ts` holds the session data it reads, typed as plain values.
 - The components are in `tui/`. They read the host only through the `Host`
   contract in `tui/host.ts`.
@@ -154,6 +155,30 @@ The objective truncates first, then the commands drop, then the count. The
 continuations themselves draw no rows (the host hides a synthetic message
 without a description). `tests/prime-goal.test.ts` runs
 `scenarios/prime-goal.ts` for the dock and the goal line.
+
+An install restarts the service onto the new build, while a TUI already
+open keeps the one it started with. While the service's version (its
+`/api/info`) differs from the TUI's own, a quiet notice sits at the left end
+of the dock's model line, and in the home footer's status on the home
+screen; no toast, nothing while the two match (`update.ts`, `UpdateNotice`
+in `tui/chrome.tsx`):
+
+```
+update available · restart to update  ·  upstream +12 · merge blocked     claude-opus-5-5 · 64k (32%)
+```
+
+The upstream part counts the commits of upstream OpenCode (`upstream/dev`)
+the installed build lacks, and says `merge blocked` while daily's last merge
+of them stopped (its report `upstream-conflict.md` is there); it shows only
+past 0. `bun run daily` writes it to
+`~/.local/state/opencode-daily/upstream.json` before it restarts the
+service (`upstreamReading` in `scripts/upstream.ts`; a host that does not
+own the fork fetches its `upstream` remote first, and with no such remote
+writes none). The service's version and that file are read at the TUI's
+start and again each time its event stream connects, which every install's
+restart brings about, the version tried again while the new service still
+boots (`opencode/build.ts`, `filestore/upstream.ts`); never per frame.
+`tests/update-badge.test.ts` proves both on a real TUI.
 
 A model step's tool calls are one group: a header over a `├`/`└` tree,
 ended early by answer text. The step's thought is the tree's first node, its
