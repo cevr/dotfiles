@@ -868,14 +868,37 @@ describe("Opus first, Codex second", () => {
       }),
     ))
 
-  test("a light, direct or mechanical step falls back to the newest luna at max", () =>
+  test("Codex never implements: a held implementor latches on Opus, mechanical or not, and Codex is never asked", () =>
     scenario(
       Effect.gen(function* () {
         const asked: Array<string> = []
         const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked), pool: held })
         const call = yield* plugin.call("subagent", "root", { agent: "implementor", description: "pkg-lower implementor (mechanical)", prompt: "x" })
-        expect((call.input as { model?: string }).model).toBe("openai/gpt-6-luna#max")
-        expect(asked).toEqual(["gpt-6-luna implementor"])
+        expect(call.input).toMatchObject({ model: "anthropic/claude-opus#medium", sessionID: "ses_latched1" })
+        expect(asked).toEqual([])
+      }),
+    ))
+
+  test("Codex never implements: an implementor naming a Codex model runs on its role's model, its line says model-dropped", () =>
+    scenario(
+      Effect.gen(function* () {
+        const asked: Array<string> = []
+        const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked) })
+        const call = yield* plugin.call("subagent", "root", { agent: "implementor", model: "openai/gpt-6.1-sol", prompt: "x" })
+        expect(call.input).toEqual({ agent: "implementor", prompt: "x", model: "anthropic/claude-opus#medium" })
+        expect(asked).toEqual([])
+        expect(plugin.logged()[0]).toContain('"reason":"model-dropped"')
+      }),
+    ))
+
+  test("the spend-evenly pace alone holds a planner or verifier but not an implementor, which starts on Opus", () =>
+    scenario(
+      Effect.gen(function* () {
+        const asked: Array<string> = []
+        const paced = { anthropic: { ok: false, measured: true, soft: true, reason: "the pool's weekly pace is over (457.0% spent across 6 accounts)", retryAt: Date.parse(WEDNESDAY) + 86_400_000 } }
+        const plugin = yield* start({ now: WEDNESDAY }, { model, variants: ["medium"], others: codexOffered, codex: admits(asked), pool: paced })
+        expect((yield* plugin.call("subagent", "root", { agent: "implementor", prompt: "x" })).input).toEqual({ agent: "implementor", prompt: "x", model: "anthropic/claude-opus#medium" })
+        expect((yield* plugin.call("subagent", "root", { agent: "verifier", prompt: "x" })).input).toMatchObject({ model: "openai/gpt-6.1-sol#medium" })
       }),
     ))
 

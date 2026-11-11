@@ -10,6 +10,8 @@ export const Pace = Schema.Struct({
   measured: Schema.Boolean,
   reason: Schema.String,
   retryAt: Schema.optional(Schema.Number),
+  /** A hold of the pool's spend-evenly target only: its accounts still have quota. */
+  soft: Schema.optional(Schema.Boolean),
 })
 export interface Pace extends Schema.Schema.Type<typeof Pace> {}
 

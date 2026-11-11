@@ -142,16 +142,8 @@ export const capEffort = (
   return { model: model.slice(0, at), lowered: WORKER_CEILING }
 }
 
-/** A step the orchestrator marks as plain work ends its description with one of these notes, such as `pkg-lower implementor (mechanical)`. */
-const LIGHT = /\((?:light|direct|mechanical)\)\s*$/i
-
 /**
- * The Codex model a new agent falls back to when the pace holds its first
- * model: a model family and the effort to run it at. Light, direct or
- * mechanical work (its description's last note) runs on luna at max; the rest
- * on sol, the verifier at medium and everything else at high.
+ * The Codex model a held planner or verifier falls back to: the newest sol,
+ * the verifier at medium and the planner at high. Codex never implements.
  */
-export const codexFallback = (agent: string, description: string | undefined): { readonly family: string; readonly variant: string } =>
-  description !== undefined && LIGHT.test(description)
-    ? { family: "gpt-luna", variant: "max" }
-    : { family: "gpt-sol", variant: agent === "verifier" ? "medium" : "high" }
+export const codexFallback = (agent: string): { readonly family: string; readonly variant: string } => ({ family: "gpt-sol", variant: agent === "verifier" ? "medium" : "high" })

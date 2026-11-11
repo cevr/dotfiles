@@ -24,6 +24,8 @@ export const Pace = Schema.Struct({
   measured: Schema.Boolean,
   reason: Schema.String,
   retryAt: Schema.optionalKey(Schema.Number),
+  /** A hold of the spend-evenly target only: the accounts still have quota. */
+  soft: Schema.optionalKey(Schema.Boolean),
 })
 export type Pace = typeof Pace.Type
 
@@ -113,6 +115,7 @@ export function poolPace(accounts: ReadonlyArray<AccountStatus>, now: number, in
   return {
     ok: false,
     measured: true,
+    soft: true,
     reason: `the pool's weekly pace is over (${(100 * read).toFixed(1)}% spent across ${known.length} accounts${starting})`,
     retryAt: Math.min(Math.ceil(catchesUp) + 1, ...settles, ...known.map((a) => a.resetAt)),
   }
