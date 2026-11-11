@@ -20,7 +20,9 @@
 //    agents' models, no auto-update) and `cli.json` (TUI plugins, the Prime theme), keeping
 //    every other key and plugin. Paths are this checkout's, so nothing machine-specific is
 //    committed.
-// 4. Restarts the background service so it loads the server plugins.
+// 4. Writes how far upstream/dev is past the build, and whether its merge is blocked, to
+//    `~/.local/state/opencode-daily/upstream.json` for the TUI's corner (`upstreamReading`), then
+//    restarts the background service so it loads the server plugins.
 import { $ } from "bun"
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, hostname } from "node:os"
@@ -28,7 +30,8 @@ import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } from "../testbeds/gamut/gamut.ts"
 import { checkFork } from "./fork.ts"
-import { forkChecks, mergeUpstream, syncFork } from "./upstream.ts"
+import { upstreamFile } from "../mods/prime/update.ts"
+import { forkChecks, mergeUpstream, syncFork, upstreamReading } from "./upstream.ts"
 
 const MODS = resolve(import.meta.dir, "../mods")
 const CMD = resolve(import.meta.dir, "../cmd")
@@ -372,6 +375,13 @@ if (import.meta.main) {
   writeJson(join(config, "cli.json"), mergeCli(readJson(join(config, "cli.json")), [pluginDir("prime"), pluginDir("status"), pluginDir("herdr"), pluginDir("git"), pluginDir("cache"), pluginDir("questions"), pluginDir("btw"), pluginDir("skills"), pluginDir("recover"), pluginDir("orchestrate"), pluginDir("escape"), BUILTIN_BTW_OFF], owned))
   mkdirSync(join(config, "themes"), { recursive: true })
   copyFileSync(THEME, join(config, "themes/prime.json"))
+
+  // Upstream against this build, for the TUI's corner (mods/prime/update.ts), written before the
+  // restart that makes every open TUI reconnect and read it again.
+  const reading = upstreamReading(fork, join(state, "upstream-conflict.md"), outcome.kind === "skipped" && !process.argv.includes("--no-upstream"))
+  if (reading === undefined) rmSync(upstreamFile(home), { force: true })
+  else writeJson(upstreamFile(home), reading)
+  console.log(reading === undefined ? "upstream: no upstream/dev to count against" : `upstream: ${reading.commits} commits past this build${reading.blocked ? ", merge blocked" : ""}`)
 
   const restart = await $`${link} service restart`.nothrow().quiet()
   console.log(`opencode -> ${binary} (${reported})`)

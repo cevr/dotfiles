@@ -22,6 +22,7 @@ import { elapsed } from "../clock.ts"
 import { detailHint, type Detail } from "../detail.ts"
 import { GOAL_LINGER_MS, goalLine, goalShown, type Goal } from "../goal.ts"
 import { navigationHint, neighbour, othersWorking, subagentOrder, topTitle } from "../subagent.ts"
+import { UPDATE_LEAD, UPDATE_REST, upstreamNotice } from "../update.ts"
 import { wakeItem } from "../wakes.ts"
 import type { Host } from "./host.ts"
 import { SubagentRows, working } from "./live.tsx"
@@ -161,6 +162,38 @@ function useGoal(host: Host, sessionID: () => string | undefined): Accessor<Goal
   })
 }
 
+/**
+ * `update available · restart to update` while this TUI runs an older build
+ * than its service, then `upstream +12` (` · merge blocked`) while upstream
+ * OpenCode has commits the installed build lacks (update.ts). Quiet: each
+ * lead muted, the rest faint, no toast. Nothing while neither holds. The
+ * dock's model line holds it in a session, the home footer's status on the
+ * home screen.
+ */
+export function UpdateNotice(props: { host: Host }) {
+  const theme = () => props.host.theme()
+  const upstream = createMemo(() => upstreamNotice(props.host.upstream()))
+  return (
+    <Show when={props.host.update() || upstream()}>
+      <text wrapMode="none" truncate fg={theme().text.faint}>
+        <Show when={props.host.update()}>
+          <span style={{ fg: theme().text.muted }}>{UPDATE_LEAD}</span>
+          {UPDATE_REST}
+        </Show>
+        <Show when={upstream()}>
+          {(shown) => (
+            <>
+              {props.host.update() ? DOCK_SEP : ""}
+              <span style={{ fg: theme().text.muted }}>{shown().lead}</span>
+              {shown().rest}
+            </>
+          )}
+        </Show>
+      </text>
+    </Show>
+  )
+}
+
 /** The cells a dock item takes. */
 const cellsOf = (text: string) => [...text].length
 const DOCK_SEP = "  ·  "
@@ -206,7 +239,9 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   })
   return (
     <box flexDirection="column" flexGrow={1} flexShrink={1}>
-      <box flexDirection="row" justifyContent="flex-end" height={1}>
+      <box flexDirection="row" height={1} gap={2}>
+        <UpdateNotice host={props.host} />
+        <box flexGrow={1} />
         <text wrapMode="none" truncate fg={theme().text.faint}>
           {[model(), usage()].filter(Boolean).join(" · ")}
         </text>

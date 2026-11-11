@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { acceptance, awaitCalm, CALM_WAIT_MS, failedFiles, type Host, type TestRun } from "./upstream.ts"
+import { acceptance, awaitCalm, CALM_WAIT_MS, failedFiles, type Host, type TestRun, upstreamReading } from "./upstream.ts"
 
 /** A host whose load follows `loads`, one reading per check, on a clock that sleeping advances. */
 const fakeHost = (loads: ReadonlyArray<number>) => {
@@ -107,6 +107,72 @@ describe("the failed files", () => {
       expect(failedFiles(readFileSync(report, "utf8"))).toEqual(["./red.test.ts", "./top.test.ts"])
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("the upstream reading", () => {
+  const git = (dir: string, ...args: ReadonlyArray<string>) => {
+    const ran = Bun.spawnSync(["git", "-C", dir, ...args], {
+      env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    if (ran.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${ran.stderr.toString()}`)
+    return ran.stdout.toString().trim()
+  }
+  /** An upstream with `ahead` commits past the fork's HEAD, the fork fetched from it as `upstream` before those commits when `stale`. */
+  const repos = (ahead: number, stale = false) => {
+    const root = mkdtempSync(join(tmpdir(), "upstream-reading-"))
+    const upstream = join(root, "upstream")
+    const fork = join(root, "fork")
+    git(root, "init", "--quiet", "-b", "dev", upstream)
+    git(upstream, "commit", "--quiet", "--allow-empty", "-m", "base")
+    git(root, "clone", "--quiet", "-o", "upstream", upstream, fork)
+    for (let i = 0; i < ahead; i++) git(upstream, "commit", "--quiet", "--allow-empty", "-m", `upstream ${i}`)
+    if (!stale) git(fork, "fetch", "--quiet", "upstream", "dev")
+    return { root, fork, report: join(root, "upstream-conflict.md") }
+  }
+  const at = new Date("2026-11-11T16:36:01.987Z")
+
+  test("counts the upstream commits the build at HEAD lacks", () => {
+    const { root, fork, report } = repos(3)
+    try {
+      const reading = upstreamReading(fork, report, false, at)
+      expect(reading).toMatchObject({ commits: 3, blocked: false, build: git(fork, "rev-parse", "HEAD"), at: at.toISOString() })
+      expect(reading?.upstream).toBe(git(fork, "rev-parse", "upstream/dev"))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("the merge is blocked while its report is there", () => {
+    const { root, fork, report } = repos(2)
+    try {
+      writeFileSync(report, "# Upstream merge conflicts in 8 files\n")
+      expect(upstreamReading(fork, report, false, at)).toMatchObject({ commits: 2, blocked: true })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("a host that fetched nothing fetches upstream first, so its count is current", () => {
+    const { root, fork, report } = repos(4, true)
+    try {
+      expect(upstreamReading(fork, report, false, at)).toMatchObject({ commits: 0 })
+      expect(upstreamReading(fork, report, true, at)).toMatchObject({ commits: 4 })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("a fork with no upstream/dev has no reading", () => {
+    const { root, fork, report } = repos(1)
+    try {
+      git(fork, "remote", "remove", "upstream")
+      expect(upstreamReading(fork, report, true, at)).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
     }
   })
 })

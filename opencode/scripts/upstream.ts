@@ -16,6 +16,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { loadavg, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import type { UpstreamReading } from "../mods/prime/update.ts"
 
 /** The host that owns the fork, as `peersOf` names hosts (lower case, no `.local`). */
 export const FORK_OWNER = "cristians-macbook-pro"
@@ -219,6 +220,24 @@ export const mergeUpstream = async (options: Options): Promise<Outcome> => {
       : `upstream: ${BRANCH} ${base.slice(0, 10)} -> ${merge.slice(0, 10)}; push to origin failed: ${pushed.err}`,
   )
   return { kind: "merged", from: base, merge, commits, pushed: pushed.ok }
+}
+
+/**
+ * Upstream OpenCode against the build at the fork's HEAD, for the TUI's corner
+ * (mods/prime/update.ts): the commits of `upstream/dev` the build lacks, and
+ * whether the last merge is blocked (its `report` is there: a conflict, a red
+ * check or a merge that could not land; `mergeUpstream` removes it once the
+ * fork is current). With `fetch` (a host that does not own the fork, so the
+ * merge step fetched nothing) it fetches upstream first, once, if the fork has
+ * the remote. None when the fork has no `upstream/dev` to count against.
+ */
+export const upstreamReading = (fork: string, report: string, fetch: boolean, now: Date = new Date()): UpstreamReading | undefined => {
+  if (fetch && git(fork, "remote", "get-url", UPSTREAM_REMOTE).ok) git(fork, "fetch", "--quiet", UPSTREAM_REMOTE, UPSTREAM_BRANCH)
+  const upstream = git(fork, "rev-parse", "--verify", "--quiet", `refs/remotes/${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}`)
+  if (!upstream.ok) return undefined
+  const build = must(fork, "rev-parse", "HEAD")
+  const commits = Number(must(fork, "rev-list", "--count", `${build}..${upstream.out}`))
+  return { commits, blocked: existsSync(report), upstream: upstream.out, build, at: now.toISOString() }
 }
 
 export type SyncOutcome =
