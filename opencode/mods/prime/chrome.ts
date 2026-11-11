@@ -36,12 +36,16 @@ export function compactTokens(tokens: number) {
 }
 
 /** How full the context is, as the host counts it. */
-export type Usage = { readonly tokens: number; readonly percent?: number | undefined }
+export type Usage = { readonly tokens: number; readonly percent?: number | undefined; readonly cache?: number | undefined }
 
-/** The tray's usage: `64k`, or `64k (32%)` when the host knows the window. */
+/**
+ * The tray's usage: `64k`, or `64k (32%)` when the host knows the window,
+ * then ` · cache 95%` when the latest turn's cache share is known (usage.ts).
+ */
 export function usageLabel(usage: Usage | undefined) {
   if (!usage) return undefined
-  return usage.percent === undefined ? compactTokens(usage.tokens) : `${compactTokens(usage.tokens)} (${usage.percent}%)`
+  const context = usage.percent === undefined ? compactTokens(usage.tokens) : `${compactTokens(usage.tokens)} (${usage.percent}%)`
+  return usage.cache === undefined ? context : `${context} · cache ${usage.cache}%`
 }
 
 /** The tray's model: `claude-opus:high` with a variant, else the model alone. */

@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -20,7 +21,7 @@ const files = { details: "compaction", all: "compaction-all", overview: "compact
 /** The frame's transcript from the prompt on, with the blank rows dropped. */
 function transcript(frame: ReadonlyArray<string>): ReadonlyArray<string> {
   const start = frame.findIndex((line) => line.includes("┃ Check the build."))
-  const end = frame.findIndex((line, index) => index > start && /mode \(Ctrl\+O/.test(line))
+  const end = hintRow(frame)
   return frame.slice(start, end < 0 ? undefined : end).filter((line) => line.trim() !== "")
 }
 

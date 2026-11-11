@@ -186,3 +186,36 @@ test("a session no row or sidebar reads is let go: its step ends ask nothing", a
   expect(calls.rpc).toBe(after)
   ledger.dispose()
 })
+
+test("the sidebar line of a family of hundreds reads token totals, and fetches no subagent's transcript", () => {
+  const { store, calls, ctx } = world(3)
+  const children = Array.from({ length: 300 }, (_, index) => `child_${index}`)
+  const tokens = { input: 1_000, cache: { read: 9_000, write: 0 } }
+  const synced: string[] = []
+  const data = (ctx as unknown as { data: Record<string, Record<string, unknown>> }).data
+  const session = data.session!
+  const message = session.message as Record<string, unknown>
+  session.get = (id: string) =>
+    id === "root" || children.includes(id) ? { id, parentID: id === "root" ? null : "root", tokens } : undefined
+  session.family = () => ["root", ...children]
+  message.sync = (id: string) => {
+    synced.push(id)
+    return Promise.resolve()
+  }
+  // One subagent's transcript is already held, as when it was opened.
+  message.list = (id: string) => (id === "child_7" ? store.messages.root! : (store.messages[id] ?? []))
+  const ledger = createLedger(ctx)
+  const asked = calls.rpc
+  const line = createRoot((stop) => {
+    const view = createMemo(() => ledger.sidebar("root"))
+    const text = view()
+    stop()
+    return text
+  })
+  // The share is the family's: 9,000 read of 10,000 prompt tokens in each of 301 sessions.
+  expect(line?.startsWith("Cache 90%")).toBe(true)
+  expect(synced).toEqual([])
+  // Only the root and the held subagent are judged, so only they ask the pool and the server.
+  expect(calls.rpc - asked).toBe(4)
+  ledger.dispose()
+})

@@ -56,7 +56,9 @@ describe.skipIf(!fork).each(["ctrl", "leader"])("%s chord interrupts a turn stuc
     expect(before).toMatch(/[●○] Running sleep 600/)
     expect(before).toContain(`◌ after the turn · ${LATER}`)
     expect(before).toContain(` ┃ ${DRAFT}`)
-    expect(before).toMatch(/^ Ctrl\+Enter interrupt and send +Details mode \(Ctrl\+O to expand\)$/m)
+    // The hint stands alone on its line: no standing Ctrl+O hint, and no update notice in the scenario's scratch state.
+    expect(before).toMatch(/^ Ctrl\+Enter interrupt and send$/m)
+    expect(before).not.toContain("Ctrl+O to")
   })
 
   test("the press cuts the shell call, as Escape does, and the turn reads interrupted once", () => {

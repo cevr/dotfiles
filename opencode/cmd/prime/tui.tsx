@@ -11,22 +11,25 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { nextDetail, rowGap, type Detail } from "@dotfiles/opencode-prime/detail"
 import { goals } from "@dotfiles/opencode-prime/opencode/goal"
+import { readUpstream } from "@dotfiles/opencode-prime/filestore/upstream"
+import { builds } from "@dotfiles/opencode-prime/opencode/build"
 import { host } from "@dotfiles/opencode-prime/opencode/host"
 import { inboxOf, isWaiting } from "@dotfiles/opencode-prime/pending"
 import { Compaction } from "@dotfiles/opencode-prime/tui/compaction"
 import { hints as wakeHints, WakeTab } from "@dotfiles/opencode-prime/tui/composer"
-import { Dock, GoalLine, ModeHint, Queued, Splash, TopBar, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
+import { Dock, GoalLine, HintLine, Queued, Splash, TopBar, UpdateNotice, useFamily, Working } from "@dotfiles/opencode-prime/tui/chrome"
 import { SubagentRows } from "@dotfiles/opencode-prime/tui/live"
 import { Completion, StepEnd } from "@dotfiles/opencode-prime/tui/notice"
 import { GroupRow, ToolRow } from "@dotfiles/opencode-prime/tui/tools"
-import { AssistantText, PinnedAsk, UserBand } from "@dotfiles/opencode-prime/tui/transcript"
+import { AssistantText, GUTTER, PinnedAsk, UserBand } from "@dotfiles/opencode-prime/tui/transcript"
 import { createSignal, Show } from "solid-js"
 
 export default Plugin.define({
   id: "gent.prime",
   setup(context) {
     const goal = goals(context)
-    const h = host(context, goal.read)
+    const build = builds(context, () => readUpstream())
+    const h = host(context, goal.read, build)
     const [detail, setDetail] = createSignal<Detail>("details")
     // A prompt the runner has not taken draws nothing in the transcript (tui/transcript.tsx UserBand), so its row takes no gap either.
     const hidden = (messageID: string | undefined) => {
@@ -36,6 +39,8 @@ export default Plugin.define({
 
     context.ui.layout({
       inset: 1,
+      // The host's own rows (a program's notice, a `+ N commands` summary, an error) start where Prime's do (the fork's layout `gutter`).
+      gutter: GUTTER,
       composer: { chrome: "rail" },
       rowGap: (row) => (hidden(row.messageID) ? 0 : rowGap(detail(), row)),
       // Prime shows every tool call and thought on its own row.
@@ -92,9 +97,10 @@ export default Plugin.define({
       replace: "session.composer.queued",
       render: (input) => <Queued host={h} sessionID={input.sessionID} />,
     })
+    // Navigation hints on the left, the update notice on the right; no standing Ctrl+O hint (tui/chrome.tsx).
     context.ui.slot({
       append: "session.composer.top",
-      render: (input) => <ModeHint host={h} sessionID={input.sessionID} detail={detail} />,
+      render: (input) => <HintLine host={h} sessionID={input.sessionID} />,
     })
     // The goal line sits right above the composer while the session has a goal (tui/chrome.tsx).
     context.ui.slot({
@@ -119,6 +125,11 @@ export default Plugin.define({
     context.ui.slot({
       replace: "prompt.footer",
       render: (input) => <Dock host={h} sessionID={input.sessionID} />,
+    })
+    // On the home screen the update notice sits in the footer's status, beside the MCP count (the line above the composer holds it in a session).
+    context.ui.slot({
+      append: "home.footer.status",
+      render: () => <UpdateNotice host={h} />,
     })
 
     // The composer panel's Wakes and Monitors tabs, after the host's own (the fork's ui.composerTab; an older build has none).
@@ -183,6 +194,9 @@ export default Plugin.define({
         },
       ],
     }))
-    return () => goal.stop()
+    return () => {
+      goal.stop()
+      build.stop()
+    }
   },
 })

@@ -3,7 +3,7 @@
 // leaves a link that points nowhere. The script runs from a copy in a scratch
 // workspace (its root is the folder above the script), against a scratch fork.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -28,7 +28,7 @@ const makeFork = (dir: string, options: { readonly checkout?: boolean } = {}) =>
 }
 
 const run = (dev: string | undefined) => {
-  const env: Record<string, string | undefined> = { ...process.env, OPENCODE_DEV: dev }
+  const env: Record<string, string | undefined> = { ...process.env, OPENCODE_DEV: dev, OPENCODE_FORK_ANCHORS: join(scratch, "state/opencode-fork") }
   if (dev === undefined) delete env.OPENCODE_DEV
   const child = Bun.spawnSync([process.execPath, join(workspace, "scripts/link-fork.ts")], { cwd: workspace, env, stdout: "pipe", stderr: "pipe" })
   return { code: child.exitCode, err: child.stderr.toString() }
@@ -76,9 +76,30 @@ describe("link-fork", () => {
   test("links the fork's modules into every package, each one resolving", () => {
     expect(run(fork)).toMatchObject({ code: 0 })
     for (const dir of packages()) {
-      expect(readlinkSync(join(dir, "node_modules/solid-js"))).toBe(join(fork, "packages/tui/node_modules/solid-js"))
+      expect(realpathSync(join(dir, "node_modules/solid-js"))).toBe(realpathSync(join(fork, "packages/tui/node_modules/solid-js")))
       expect(existsSync(join(dir, "node_modules/@opencode/plugin/package.json"))).toBe(true)
     }
+    expect(dangling()).toEqual([])
+  })
+
+  test("a link names no machine's fork: pointing the checkout at another fork rewrites no synced link", () => {
+    expect(run(fork)).toMatchObject({ code: 0 })
+    const links = snapshot()
+    expect(links.filter((entry) => entry.includes(" -> ")).length).toBe(9)
+    for (const entry of links) expect(entry).not.toContain(" -> /")
+    for (const entry of links) expect(entry).not.toContain(fork)
+    // Another machine's fork, as the workbox holds one where the Mac holds its own.
+    const other = makeFork(join(scratch, "other"))
+    expect(run(other)).toMatchObject({ code: 0 })
+    expect(snapshot()).toEqual(links)
+    for (const dir of packages())
+      expect(realpathSync(join(dir, "node_modules/solid-js"))).toBe(realpathSync(join(other, "packages/tui/node_modules/solid-js")))
+  })
+
+  test("replaces the absolute links an older run left, through the anchor", () => {
+    for (const dir of packages()) symlinkSync(join(fork, "packages/tui/node_modules/solid-js"), join(dir, "node_modules/solid-js"))
+    expect(run(fork)).toMatchObject({ code: 0 })
+    for (const entry of snapshot()) expect(entry).not.toContain(" -> /")
     expect(dangling()).toEqual([])
   })
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { partOf, type AssistantMessage } from "./session.ts"
-import { contextUsage, type Metered } from "./usage.ts"
+import { contextUsage, effectiveWindow, type Metered } from "./usage.ts"
 
 const model = { providerID: "anthropic", id: "opus" }
 const tokens = (input: number) => ({ input, output: 200, reasoning: 0, cache: { read: 800, write: 0 } })
@@ -9,11 +9,11 @@ const window = (known: number | undefined) => () => known
 
 describe("contextUsage", () => {
   test("counts the newest step's tokens against its model's window", () => {
-    expect(contextUsage([step("a", 100), step("b", 1000)], window(8000))).toEqual({ tokens: 2000, percent: 25 })
+    expect(contextUsage([step("a", 100), step("b", 1000)], window(8000))).toMatchObject({ tokens: 2000, percent: 25 })
   })
 
   test("has no percent while the window is unknown", () => {
-    expect(contextUsage([step("a", 1000)], window(undefined))).toEqual({ tokens: 2000, percent: undefined })
+    expect(contextUsage([step("a", 1000)], window(undefined))).toMatchObject({ tokens: 2000, percent: undefined })
   })
 
   test("reads nothing before a completed compaction, and stops at the revert point", () => {
@@ -21,13 +21,84 @@ describe("contextUsage", () => {
     expect(contextUsage(compacted, window(8000))).toBeUndefined()
     const running: ReadonlyArray<Metered> = [step("a", 1000), { id: "c", type: "compaction", status: "running" }]
     expect(contextUsage(running, window(8000))?.tokens).toBe(2000)
-    expect(contextUsage([step("a", 100), step("b", 1000)], window(8000), "b")).toEqual({ tokens: 1100, percent: 14 })
+    expect(contextUsage([step("a", 100), step("b", 1000)], window(8000), "b")).toMatchObject({ tokens: 1100, percent: 14 })
     expect(contextUsage([step("a", 100)], window(8000), "gone")).toBeUndefined()
+  })
+
+  test("asks the window for the step's own model and agent", () => {
+    const seen: Array<[string, string | undefined]> = []
+    const usage = contextUsage([{ ...step("a", 1000), agent: "planner" }], (ref, agent) => {
+      seen.push([ref.id, agent])
+      return 8000
+    })
+    expect(usage).toMatchObject({ tokens: 2000, percent: 25 })
+    expect(seen).toEqual([["opus", "planner"]])
   })
 
   test("is undefined until a step reports tokens", () => {
     expect(contextUsage([{ id: "a", type: "assistant", model }], window(8000))).toBeUndefined()
     expect(contextUsage([], window(8000))).toBeUndefined()
+  })
+})
+
+describe("the latest turn's cache share", () => {
+  const metered = (id: string, input: number, read: number, write: number): Metered => ({
+    id,
+    type: "assistant",
+    model,
+    tokens: { input, output: 10, reasoning: 0, cache: { read, write } },
+  })
+  const user = (id: string): Metered => ({ id, type: "user" })
+
+  test("is the read share of the last turn's prompt tokens, rounded down, as the cache sidebar measures", () => {
+    // Two steps: 100 + 9,000 + 900 and 50 + 9,800 + 150 prompt tokens, 18,800 of 20,000 read: 94%.
+    const usage = contextUsage([user("u"), metered("a", 100, 9_000, 900), metered("b", 50, 9_800, 150)], window(100_000))
+    expect(usage?.cache).toBe(94)
+  })
+
+  test("counts only the steps since the turn's prompt: an expiry after an idle shows at once", () => {
+    const warm = [user("u1"), metered("a", 10, 9_990, 0), metered("b", 10, 9_990, 0)]
+    // The next turn re-wrote its whole prefix: 0%, not the session's ~66%.
+    const usage = contextUsage([...warm, user("u2"), metered("c", 10, 0, 9_990)], window(100_000))
+    expect(usage?.cache).toBe(0)
+  })
+
+  test("is absent without cache activity: a provider that reports none reads as nothing, not 0%", () => {
+    expect(contextUsage([user("u"), metered("a", 5_000, 0, 0)], window(100_000))).toEqual({ tokens: 5_010, percent: 5 })
+  })
+
+  test("stops at the revert point with the step it reads", () => {
+    const messages = [user("u1"), metered("a", 10, 990, 0), user("u2"), metered("b", 1_000, 0, 0)]
+    expect(contextUsage(messages, window(100_000), "u2")?.cache).toBe(99)
+  })
+})
+
+describe("effectiveWindow", () => {
+  test("a 1M model under a 400k compaction window reads 207k as 52%, not 21%", () => {
+    const window = effectiveWindow({ context: 1_000_000 }, 400_000)
+    expect(window).toBe(400_000)
+    const usage = contextUsage([{ ...step("a", 0), tokens: { input: 207_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } }], () => window)
+    expect(usage).toEqual({ tokens: 207_000, percent: 52 })
+  })
+
+  test("a window under the cap keeps its own: a 200k worker reads against 200k", () => {
+    expect(effectiveWindow({ context: 200_000 }, 400_000)).toBe(200_000)
+  })
+
+  test("with no compaction window, or a malformed one, the model's window", () => {
+    for (const cap of [undefined, 0, -5, 1.5, "400000", null]) expect(effectiveWindow({ context: 1_000_000 }, cap)).toBe(1_000_000)
+  })
+
+  test("the model's window is its input limit within its context, either alone when the other is unknown", () => {
+    expect(effectiveWindow({ context: 400_000, input: 272_000 }, undefined)).toBe(272_000)
+    expect(effectiveWindow({ context: 0, input: 272_000 }, undefined)).toBe(272_000)
+    expect(effectiveWindow({ context: 400_000, input: 272_000 }, 200_000)).toBe(200_000)
+  })
+
+  test("an unknown model takes the cap, and nothing is known with neither", () => {
+    expect(effectiveWindow(undefined, 400_000)).toBe(400_000)
+    expect(effectiveWindow({ context: 0 }, 400_000)).toBe(400_000)
+    expect(effectiveWindow(undefined, undefined)).toBeUndefined()
   })
 })
 

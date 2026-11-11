@@ -5,6 +5,7 @@
 // - `<label>-running`: while the reviewer subagent works;
 // - `<label>`: the finished turn, in Details mode;
 // - with SCENARIO_CYCLE=1, `<label>-all` and `<label>-overview` after each Ctrl+O.
+// With SCENARIO_WINDOW=<tokens>, the build agent compacts at that window (see `WINDOW`).
 // Each frame is a `.txt` of its text and a `.json` of its styled lines.
 import { Deferred, Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
@@ -21,7 +22,20 @@ const ASK =
   "Fix the flaky retry test in src/net.py and have a reviewer check it. It fails about one run in five on CI, always on the last attempt."
 const REVIEW = "Review the diff in src/net.py."
 // The last turn's usage: 64k of the 262k window below, as in Prime's tray.
-const USAGE = { prompt_tokens: 63_000, completion_tokens: 1_000, total_tokens: 64_000 }
+// SCENARIO_CACHED=<tokens> reports that many of its prompt tokens read from the cache, for the tray's cache share.
+const CACHED = process.env.SCENARIO_CACHED === undefined ? undefined : Number(process.env.SCENARIO_CACHED)
+const USAGE = {
+  prompt_tokens: 63_000,
+  completion_tokens: 1_000,
+  total_tokens: 64_000,
+  ...(CACHED === undefined ? {} : { prompt_tokens_details: { cached_tokens: CACHED } }),
+}
+// SCENARIO_WINDOW=<tokens> gives the build agent that compaction window, as cmd/orchestrate gives each primary agent
+// its 400k one (`request.settings.compactionWindow`); the tray's share then reads against it, not the model's window.
+const WINDOW = process.env.SCENARIO_WINDOW === undefined ? undefined : Number(process.env.SCENARIO_WINDOW)
+const windowFixture = `export default {id: "fixture.window", async setup(ctx) {
+  await ctx.agent.transform((editor) => editor.update("build", (agent) => { agent.request.settings.compactionWindow = ${WINDOW} }));
+}}`
 
 const NET_PY = [
   "def fetch(url, retries=3):",
@@ -48,6 +62,8 @@ export default OpenCodeDriver.use(
       theme: { name: process.env.SCENARIO_THEME ?? "opencode", mode: "dark" },
       // SCENARIO_PRIME=1 loads the Prime look plugin from cmd/prime.
       ...(process.env.SCENARIO_PRIME ? { plugins: [`${process.cwd()}/cmd/prime`] } : {}),
+      // Each call its own row, as these frames read them; the default (low) folds a turn's calls into one.
+      session: { verbosity: "medium" },
     },
     // Tall enough that the splash stays on screen in every Ctrl+O mode.
     tui: { viewport: { cols: 106, rows: 56 } },
@@ -57,6 +73,12 @@ export default OpenCodeDriver.use(
         ".opencode/themes/prime.json": readFileSync(`${process.cwd()}/themes/prime.json`, "utf8"),
         "src/net.py": NET_PY,
         "tests/test_net.py": "from src.net import fetch\n\ndef test_retries():\n    assert fetch('x', retries=3)\n",
+        ...(WINDOW === undefined
+          ? {}
+          : {
+              ".opencode/plugins/fixture/package.json": JSON.stringify({ name: "fixture-window", type: "module", exports: { "./server": "./server.ts" } }),
+              ".opencode/plugins/fixture/server.ts": windowFixture,
+            }),
       },
     },
   },

@@ -41,6 +41,8 @@ export default OpenCodeDriver.use(
       tabs: { mode: "off" },
       theme: { name: "prime", mode: "dark" },
       plugins: [`${root}/cmd/prime`, `${root}/cmd/escape`],
+      // The shell call its own row, as these frames read it; the default (low) folds a turn's calls into one.
+      session: { verbosity: "medium" },
     },
     tui: { viewport: { cols: 106, rows: 40 } },
     tools: ["shell"],

@@ -24,13 +24,16 @@ const lineOf = (lines: ReadonlyArray<string>, needle: string | RegExp) =>
     .map((line) => line.trim())
     .find((line) => (typeof needle === "string" ? line.includes(needle) : needle.test(line)))
 const DOCK = /^◆ \d+ subagents?  ·  \d+ shells?/
-/** The tool results the scripted model was sent, in order. */
+/**
+ * The tool results the scripted model was sent, in order: each request's results after its last assistant
+ * message. A host notice (the reader's ctrl+b) may follow a result in the same request.
+ */
 const results = () =>
   requests.flatMap((request) => {
     const body = JSON.parse(request) as { body?: { messages?: ReadonlyArray<{ role: string; content: unknown }> }; messages?: ReadonlyArray<{ role: string; content: unknown }> }
     const messages = body.body?.messages ?? body.messages ?? []
-    const last = messages.at(-1)
-    return last?.role === "tool" ? [String(last.content)] : []
+    const turn = messages.slice(messages.findLastIndex((message) => message.role === "assistant") + 1)
+    return turn.filter((message) => message.role === "tool").map((message) => String(message.content))
   })
 
 const fork = process.env.OPENCODE_DEV

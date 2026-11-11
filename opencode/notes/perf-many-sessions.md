@@ -280,6 +280,115 @@ The owner saw slowness with questions and background questions open, and questio
 
 - Workbox: strobe 0.19.0 and Bun 1.4.4's profile build, left over from 2026-11-08 and reused; the recordings `rec_a8206d`, `rec_c2db3a`, `rec_b75bd0`, `rec_17d3ba`, `rec_094c04` and `rec_03779c`; and the scratch checkouts in `/tmp/opencode/question-perf/`. All of them were removed after this run. No daemon, no sysctl.
 
+# Opening a large session cold (workbox, 2026-11-11)
+
+The bite-20590 TUI (session `ses_e56b9128cffefdrzi81wdvK7mF`: 5,226 messages, 559 child sessions) showed "Finishing startup…" for 80–90 s at about 105% CPU and 518 MB RSS before the session appeared. Its plugins had finished loading 1.5 s in. The orchestrator measured this at 16:40Z, at load about 30.
+
+## How it was measured
+
+`scripts/perf/startup.ts` starts a server and a TUI from a fork checkout. The TUI runs in a pty of its own and is read through `@xterm/headless`. It reports the ms until the first frame that shows the transcript with no startup loader, and the TUI's CPU seconds and RSS at that point (from `/proc`). With `--prof`, it sends `SIGPROF` to the TUI, which makes the fork write a 10 s JS profile.
+
+All runs used the same setup:
+- a copy of the workbox database in `/tmp/opencode/startup-perf/db` (the server writes to its copy, never to the owner's);
+- the owner's eleven TUI plugins;
+- the owner's `cli.json` settings (theme `prime`, sidebar hidden);
+- 160×45 cells, load 23–46 on 16 vCPUs.
+
+From source, the bare TUI takes 6.6–7.4 s and 9–10 CPU s to reach its home frame, in every run. That boot includes transpiling, which an installed build does not do (**inferred**), so the useful figure is the time after that.
+
+One scratch-only workaround: `solid-js` was linked into the scratch dotfiles' `node_modules`. Without it, `cmd/prime`, `cmd/herdr` and `cmd/skills` fail to load from source with "Cannot find package 'solid-js'". This is the same failure behind the `tests/questions.test.ts` result above.
+
+## What it says
+
+- **Each of the 559 children's permission and form syncs re-ran every reader of the whole family.** This is core code. **measured**
+  - On opening, the session route syncs the pending permissions and forms of every descendant (`routes/session/index.tsx`, `descendantSessionIDs`): 1,118 requests.
+  - Each answer, even an empty one, wrote a new key into `store.session.permission` or `store.session.form`.
+  - Each write re-ran the readers that walk every member of the family: the session tabs' `status` with `family()`, `program-status`'s report, and the tab rail.
+  - That makes the cost about 1,118 × 559 store reads. In the base profile (3–13 s), 9,181 samples: `session-tabs.tsx:138` held 5,713 of them inclusive, the two syncs 4,025 and 3,940, and `program-status.ts:32` 2,972. By own time, it was Solid's `readSignal` (21%), store `get` (19%) and `cleanNode` (11%).
+- **The cache plugin's sidebar line loads every descendant's transcript.** When the sidebar is shown, `mods/cache/tui/ledger.tsx` `sidebar()` syncs the messages of all 559 children, judges each one, and runs again as each one arrives. **measured** in a run with the sidebar shown (no config, three plugins not loaded): the transcript appeared at 18.8 s and RSS reached 1.4 GB. The profile showed `message.sync` at 4,093 samples and `sidebar` at 2,676. The owner hides the sidebar, so this cost does not reach the owner today.
+
+## Fixes
+
+1. **Fork `a401573897` (pushed to `prime-look`):** `perf(client)`. A permission or form sync that finds nothing pending, where nothing was pending before, writes nothing. Every reader already reads a missing list as empty. A list that becomes empty is still written, so a cleared request still reaches its readers.
+   - The guard is `data.test.tsx`, "syncing a family whose members have nothing pending leaves the readers of the family unrun". On the old code a family reader runs 41 times where 1 is expected. On the new code it passes.
+   - Time from launch to the transcript, same fixture, owner's plugins and settings: **measured**
+
+     | | Transcript shown | TUI CPU by then |
+     | --- | --- | --- |
+     | Before, 2 runs | 31.7 s, 35.8 s | 36.5 s, 40.9 s |
+     | After, 5 runs | 9.7 s, 11.1 s, 10.4 s, 9.8 s, 10.0 s | 12.0 s, 14.6 s, 13.7 s, 11.8 s, 12.2 s |
+     | No plugins, before | 19.3 s | 22.0 s |
+     | No plugins, after | 7.6 s, 7.6 s | 10.0 s, 10.2 s |
+
+   - Peak RSS stayed in the 430–590 MB range.
+   - After the fix, the transcript shows 2.6–3.7 s after the home frame. The profile of that window has 1,288 samples spread across mounting the transcript and the plugins' slots, with no single hot spot.
+2. **Fork `abe903b282` (pushed):** `perf(tui)`. A transcript rebuild whose rows only grew at the end, or did not change, now appends the new rows (or does nothing). Before, it re-keyed and reconciled every row. This was the r1 follow-up: a finished subagent's report, or an idle marker, still goes through a reduce, but no longer through the keyed reconcile.
+   - The guard is `data.test.tsx`, "a message that only adds rows at the end appends them and leaves the transcript's rows as they were". It fails on the old code, because the old code re-keys the live row.
+   - Cost per rebuild on the Mac (bench of `reduceSessionRows` plus the store pass; reconcile and compare times are 2-run means): **measured**
+
+     | Transcript | Before | After |
+     | --- | --- | --- |
+     | 800 messages, 2,000 rows | 6.7–7.4 ms | 2.8–3.3 ms |
+     | 200 messages, 500 rows | 1.9 ms | 0.8–0.9 ms |
+
+   - This was not re-measured with the r1 subagent scenario on the workbox.
+3. **Dotfiles:** `scripts/perf/startup.ts`, the harness behind these numbers.
+
+## Next, by size
+
+- **One request for the family's pending requests instead of 1,118.** The server's `permission.request.list` and `form.list` are per location. A family-wide list, or a pending flag on each session's info, would let the route sync only the members that have something pending. **inferred**
+- **The cache sidebar line should not load 559 transcripts.** Possible approaches: judge only the live and recent children, or have the server's `CACHE_LEDGER` answer for a whole family. This matters only when the sidebar is shown. **measured** above.
+- **The owner's 80–90 s vs. 32–36 s here.** That TUI runs the installed 2.2.x build in a herdr pane next to four others, at a similar load. The gap is not explained. The fix removes the quadratic either way. **guess**
+
+## Installed for this run (removed at the end)
+
+- Workbox: `/tmp/opencode/startup-perf/` (fork and dotfiles clones, the database copy, the runs and their profiles) and `/tmp/opencode/sp-setup.sh`. Both were removed after this run. Strobe was not needed: the fork's `SIGPROF` profiles named the code.
+
+# Opening it on a compiled build (workbox, 2026-11-11, later)
+
+The same session, now on compiled builds (`bun run script/build.ts --single`), so the boot is the installed one. `scripts/perf/startup.ts --bin` reports, in ms from the TUI's spawn:
+- `first`: the first frame of any kind, which ends the TUI's own boot;
+- `transcript`: the first frame past the loader that shows the transcript;
+- `ready`: the frame with the `--ready` text, here the questions plugin's "Nothing is waiting for your answer now.";
+- `open` = ready − first;
+- `interactive`: when keys typed at `ready` echo in the composer.
+
+The setup was the same as above (the database copy, the owner's eleven plugins and `cli.json`, 160×45), at load 37–49. Each build ran 3 times in alternation; the first run of each started with an empty cache.
+
+| Build | first | transcript | ready | open | interactive |
+| --- | --- | --- | --- | --- | --- |
+| Before (`abe903b282`) | 3.9, 2.5, 2.8 s | 6.6, 5.5, 5.5 s | 6.6, 5.5, 5.5 s | 2.7, 3.0, 2.8 s | 6.8, 5.6, 5.6 s |
+| After (the three commits below) | 3.4, 2.7, 2.8 s | 4.7, 3.9, 3.7 s | 4.9, 4.2, 4.0 s | 1.5, 1.5, 1.2 s | 5.0, 4.3, 4.1 s |
+
+**measured**. Under 1 s for the open is not reached. What remains, from the TUI log at debug level: **measured**
+- About 0.8 s passes from process start to "cli starting". Another 1.2–1.6 s passes before "event stream connecting". The first frame (the plugin loader) lands about there. This is the boot, and it is half of the time.
+- Plugin reconciliation took 1.4–1.8 s before; the owner waits for the plugins before the session draws (owner's ruling, 2026-11-11). On a warm cache it takes about 0.7 s. The per-plugin read stage was led by prime at 842 ms before.
+- The transcript draws 0.1–0.3 s after the plugins are ready.
+
+## Fixes
+
+1. **Fork `cc890ed507`:** `perf(session)`. Opening a session made 1,118 requests (one permission sync and one form sync per member). It now makes one: `GET /api/session/:sessionID/family/request` returns the family's member ids, pending permissions and forms. Members whose instance is not live are skipped. The client writes the lists and marks each covered member's syncs as done, so only a member the read did not cover (a newer child, or an older server) is synced on its own. The guards are `data.test.tsx` "one family read fills every member's pending requests, and a member it covered is not read again" and `packages/server/test/session-family-request.test.ts`.
+2. **Fork `078cd8dec6`:** `perf(tui)`. OpenTUI runs every plugin `.ts`/`.tsx` through Babel on each start: 456 files in about 0.9 s on the Mac (**measured**, bench). A release build now keeps each compile on disk under `<cache>/solid-transform/<version>/`, keyed by the sha256 of the path and the source. A changed source compiles again. Guard: `test/plugin/solid-transform-cache.test.ts`.
+3. **Fork `9c2035d3f8`:** `fix(tui)`. The loader appeared after 0.5 s and then held "Finishing startup…" over a session that was already drawn until 3 s after it appeared. It now leaves when the plugins are loaded. This is most of the drop in `ready`. Guard: `test/component/startup-loading.test.tsx` (red on the old code).
+4. **Dotfiles:** the cache sidebar line (`mods/cache/tui/ledger.tsx`) reads the share from each session's token totals and judges only the transcripts the TUI already holds. It no longer fetches a transcript. With the sidebar shown (`"sidebar":"auto"`), the after build, the owner's plugins, and `--hold 40000`: **measured**
+
+   | | ready | TUI CPU by then | peak RSS | sidebar line |
+   | --- | --- | --- | --- | --- |
+   | Before | 101.2 s | 101.4 s | 1,468 MB | Cache 95% |
+   | After | 4.3 s | 5.1 s (6.1 s at 44 s) | 438 MB | Cache 95% |
+
+   Guard: `ledger.test.ts` "the sidebar line of a family of hundreds reads token totals, and fetches no subagent's transcript" (on the old code it syncs 302 transcripts).
+5. **Dotfiles:** `scripts/link-fork.ts` linked each package to the fork with absolute links. Syncthing carried the Mac's links to the workbox, where they point nowhere: on 2026-11-11 the workbox's `mods/*/node_modules/solid-js` pointed at `/Users/cvr/...`. A TUI started there then fails to load prime, herdr and skills ("Cannot find package 'solid-js'"). The links now go through a per-machine anchor, `~/.local/state/opencode-fork/<checkout path under home>/modules`, and are relative to it. Every machine writes the same link text, and pointing a checkout at another fork rewrites only its anchor. The workbox needs one `link-fork` run (the daily build does it) to create its anchor. Until then, the synced links point nowhere there, as they do today.
+
+## Next, by size
+
+- **Boot, 2–2.5 s of the ~4 s:** process start to "cli starting" (0.8 s), then to the event stream (1.2–1.6 s). Nothing is logged in between; profile the compiled boot. **measured** (log)
+- **Plugin load, 0.7–1.8 s:** prime's read stage is the largest. Reconciliation resolves plugins one at a time (`plugin/context.tsx`). **measured** (log), **inferred** (sequential)
+
+## Installed for this run (removed at the end)
+
+- Workbox: `/tmp/opencode/family-batch/` (the fork and dotfiles clones, the database copy, the compiled builds and the runs) and `/tmp/opencode/fb-setup.sh`. Both were removed after this run.
+
 # From an answer's submit key to its effect (2026-11-11)
 
 The target: the form closes on the next frame, the answer shows in the transcript within 100 ms, and the model request starts within 300 ms, whatever the transcript's size. `scenarios/answer-latency.ts` times both paths from the return key that submits: `async` (a background question answered through /answer's form) and `builtin` (the built-in `question` tool). It reports three times: `closed` (first frame without the form), `shown` (first frame with the answer in the transcript) and `request` (the simulated model receives the request that carries the answer). Sizes: a fixture of 20 tool groups (small), 1,500 groups (Mac large), and on the workbox a read-only copy of the owner's session `ses_e56b9128…` (5,286 messages, 559 children, 19 MB) opened with `LAT_SESSION`. The figures are medians in ms, written closed / shown / request. **measured**
@@ -318,3 +427,4 @@ The workbox ran at a load of 35–52 on 16 vCPUs throughout, so a single round c
 
 - The answer's typed text is lost if the server refuses the reply for a reason other than not-found or already-settled. The form comes back, but empty.
 - The async `shown` time still trails `closed` by 30–60 ms on the workbox: the notice row waits for `session.inbox.enqueued` to arrive and for the next frame. **inferred** from traces
+||||||| 7d3553b8

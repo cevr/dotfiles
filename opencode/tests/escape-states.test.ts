@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -17,10 +18,10 @@ const cases = ["steer", "queue", "tool", "draft", "offline"] as const
 let out = ""
 const frame = (name: string) => readFileSync(join(out, `${name}.txt`), "utf8")
 
-/** The rows above the composer (the transcript, down to Prime's mode hint) and the composer's first row. */
+/** The rows above the composer (the transcript, down to Prime's hint line; tests/composer.ts) and the composer's first row. */
 function split(name: string) {
   const lines = frame(name).split("\n")
-  const hint = lines.findIndex((line) => /mode \(Ctrl\+O/.test(line))
+  const hint = hintRow(lines)
   return { transcript: lines.slice(0, hint).filter((line) => line.trim() !== ""), composer: lines[hint + 1] ?? "" }
 }
 

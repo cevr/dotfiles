@@ -10,12 +10,6 @@ export function nextDetail(current: Detail): Detail {
   return details[(details.indexOf(current) + 1) % details.length] ?? "overview"
 }
 
-export function detailHint(detail: Detail) {
-  if (detail === "overview") return "Collapsed mode (Ctrl+O to expand)"
-  if (detail === "details") return "Details mode (Ctrl+O to expand)"
-  return "Expanded mode (Ctrl+O to collapse)"
-}
-
 /** The kinds of transcript row the host lays out (the fork's `TranscriptRowKind`). */
 export type RowKind = "user" | "text" | "reasoning" | "tool" | "group" | "footer" | "notice" | "other"
 

@@ -9,19 +9,30 @@ import type { Plugin } from "@opencode/plugin/tui"
 import type { Goal } from "../goal.ts"
 import { partOf } from "../session.ts"
 import type { Host } from "../tui/host.ts"
-import { contextUsage } from "../usage.ts"
+import { updateAvailable, type UpstreamReading } from "../update.ts"
+import { contextUsage, effectiveWindow } from "../usage.ts"
 import { openPending } from "./pending.ts"
 import { openShells } from "./shells.ts"
 import { cancelWake, readWakes } from "./wakes.ts"
 
-/** The Host over `context`, with each session's goal read through `goal` (`goals` in opencode/goal.ts). */
-export function host(context: Plugin.Context, goal: (sessionID: string) => Goal | undefined): Host {
+/**
+ * The Host over `context`, with each session's goal read through `goal`
+ * (`goals` in opencode/goal.ts) and the service's build and upstream's
+ * reading through `build` (`builds` in opencode/build.ts).
+ */
+export function host(
+  context: Plugin.Context,
+  goal: (sessionID: string) => Goal | undefined,
+  build: { readonly served: () => string | undefined; readonly upstream: () => UpstreamReading | undefined },
+): Host {
   const data = context.data
   // The rows, the dock's count and the hints all read the family; a token re-reads only its own message.
   const family = familyReader()
   return {
     theme: () => context.theme,
     version: () => context.app.version,
+    update: () => updateAvailable(context.app.version, build.served()),
+    upstream: build.upstream,
     session: (sessionID) => data.session.get(sessionID),
     sessions: () => data.session.list(),
     messages: (sessionID) => data.session.message.list(sessionID),
@@ -33,9 +44,15 @@ export function host(context: Plugin.Context, goal: (sessionID: string) => Goal 
       const session = data.session.get(sessionID)
       if (!session) return undefined
       const models = data.location.model.list(session.location)
+      const agents = data.location.agent.list(session.location)
+      // Against the window compaction plans for: the model's, capped by the step's agent's compaction window.
       return contextUsage(
         data.session.message.list(sessionID),
-        (model) => models?.find((item) => item.providerID === model.providerID && item.id === model.id)?.limit.context,
+        (model, agent) =>
+          effectiveWindow(
+            models?.find((item) => item.providerID === model.providerID && item.id === model.id)?.limit,
+            agents?.find((item) => item.id === agent)?.request.settings["compactionWindow"],
+          ),
         session.revert?.messageID,
       )
     },

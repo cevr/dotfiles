@@ -8,6 +8,7 @@ import type { Accessor, JSX } from "solid-js"
 import type { CurrentModel, Usage } from "../chrome.ts"
 import type { Goal } from "../goal.ts"
 import type { PendingItem, WaitingPrompt } from "../pending.ts"
+import type { UpstreamReading } from "../update.ts"
 import type { Wakes } from "../wakes.ts"
 import type { Message, Part, Session } from "../session.ts"
 
@@ -61,6 +62,10 @@ export interface Host {
   theme(): Palette
   /** The running OpenCode's version. */
   version(): string
+  /** Whether this TUI runs an older build than its service, the newest installed (update.ts `updateAvailable`). */
+  update(): boolean
+  /** Upstream OpenCode against the installed build, as daily last counted it (update.ts `UpstreamReading`). */
+  upstream(): UpstreamReading | undefined
 
   // Session data.
   session(sessionID: string): Session | undefined

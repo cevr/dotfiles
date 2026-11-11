@@ -83,7 +83,9 @@ describe.skipIf(!fork)("/btw", () => {
     expect(side.tools).toEqual(check.tools)
     expect(side.prompt_cache_key).toBeDefined()
     expect(side.prompt_cache_key).toBe(check.prompt_cache_key)
-    const [note = "", question] = side.messages.slice(check.messages.length).map(textOf)
+    // OpenCode's own fork notice opens every fork (core plugin/fork-notice.ts, upstream #63235); btw's note follows it.
+    const [notice = "", note = "", question] = side.messages.slice(check.messages.length).map(textOf)
+    expect(notice).toStartWith("<fork-notice>")
     expect(note).toStartWith("A side question, asked in a fork of session ses_")
     expect(question).toBe("Why is the check slow?")
     // The follow-up extends the fork's request, the note sent once.

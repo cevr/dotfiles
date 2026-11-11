@@ -9,6 +9,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -18,9 +19,9 @@ const root = join(import.meta.dir, "..")
 const names = ["cancel-hint", "cancelled", "interrupt-hint", "interrupted"] as const
 const frames = {} as Record<(typeof names)[number], ReadonlyArray<string>>
 
-/** The rows above the composer (the transcript, down to Prime's mode hint) and the composer's first row. */
+/** The rows above the composer (the transcript, down to Prime's hint line; tests/composer.ts) and the composer's first row. */
 function split(frame: ReadonlyArray<string>) {
-  const hint = frame.findIndex((line) => /mode \(Ctrl\+O/.test(line))
+  const hint = hintRow(frame)
   return { transcript: frame.slice(0, hint).filter((line) => line.trim() !== ""), composer: frame[hint + 1] ?? "" }
 }
 /** The Dock's top row: the tray, right above its rule (the activity counts under it show only while something is active). */

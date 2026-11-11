@@ -198,10 +198,14 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     expect(details.text).not.toContain("Approved: the loop")
   })
 
-  test("the dock: hint, fx rail composer, tray with context use, rule, and no activity counts with nothing active", () => {
+  test("the dock: an empty hint line, fx rail composer, tray with context use, rule, and no activity counts with nothing active", () => {
     const details = frames.details
-    const hint = indexOf(details, /^ {40,}Details mode \(Ctrl\+O to expand\)$/)
+    // The hint line keeps its row but stands empty: no subagent to move to, no standing Ctrl+O hint, and no update
+    // notice (opencode-drive's scratch XDG state dir holds no upstream reading, update.ts `upstreamFile`).
+    const hint = details.lines.findLastIndex((line) => line === " ┃") - 1
     expect(hint).toBeGreaterThan(0)
+    expect(details.lines[hint]).toBe("")
+    expect(details.text).not.toContain("Ctrl+O to")
     expect(details.lines.slice(hint + 1, hint + 5)).toEqual([
       " ┃",
       expect.stringMatching(/^ {20,}gpt-sim-model · 64k \(24%\)$/),
@@ -240,7 +244,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
 
   test("All: a row per call with Prime's counts, the whole diff, output and the agent's reply", () => {
     const all = frames.all
-    expect(all.text).toMatch(/^ {40,}Expanded mode \(Ctrl\+O to collapse\)$/m)
+    expect(all.text).not.toContain("Ctrl+O to")
     const lines = [
       // A lone call is the group's line: what hangs under it has no rail.
       "  ✓ shell · printf 'test_net.py F\\n1 failed\\n' · ↑ 1 ↓ 2 lines · <t>",
@@ -283,7 +287,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
 
   test("Overview: each group is its header, plus a row per failure; no thinking, no diffs, no blank rows", () => {
     const overview = frames.overview
-    expect(overview.text).toMatch(/^ {40,}Collapsed mode \(Ctrl\+O to expand\)$/m)
+    expect(overview.text).not.toContain("Ctrl+O to")
     expect(overview.text).not.toContain("Look at the test first")
     expect(overview.text).not.toContain("range(retries - 1)")
     const rows = [

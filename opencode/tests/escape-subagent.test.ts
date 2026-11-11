@@ -11,6 +11,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { composerRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -21,11 +22,10 @@ let out = ""
 const frame = (name: string) => readFileSync(join(out, `${name}.txt`), "utf8")
 /** The picker's header row: the host's composer panel, its Subagents tab first. */
 const picker = (name: string) => frame(name).split("\n").some((line) => /^\s*┃\s+Subagents(\s|$)/.test(line))
-/** The composer's first row: the first bar row under Prime's mode hint (the dock's session row sits between). */
+/** The composer's first row (tests/composer.ts; the dock's session row sits above it). */
 const composer = (name: string) => {
   const lines = frame(name).split("\n")
-  const hint = lines.findIndex((line) => /mode \(Ctrl\+O/.test(line))
-  return lines.slice(hint + 1).find((line) => line.startsWith(" ┃")) ?? ""
+  return lines[composerRow(lines)] ?? ""
 }
 const requests = () => readFileSync(join(out, "requests.txt"), "utf8").trim().split("\n")
 /** The parent's own prompt, which only its view shows. */

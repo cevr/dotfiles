@@ -31,7 +31,14 @@ export default OpenCodeDriver.use(
   {
     opencode: { dev: process.env.OPENCODE_DEV!, env: { ...gh.env, PATH: `${gh.bin}:${process.env.PATH ?? ""}` } },
     config: { autoupdate: false, plugins: [{ package: `${root}/cmd/git`, options: { intervalSeconds: 0.5 } }] },
-    tuiConfig: { animations: false, tabs: { mode: "off" }, theme: { name: theme, mode: "dark" }, plugins: [`${root}/cmd/prime`] },
+    // The pr call its own row, as these frames read it; the default (low) verbosity folds a turn's calls into one.
+    tuiConfig: {
+      animations: false,
+      tabs: { mode: "off" },
+      theme: { name: theme, mode: "dark" },
+      plugins: [`${root}/cmd/prime`],
+      session: { verbosity: "medium" },
+    },
     tui: { viewport: { cols: Number(process.env.SCENARIO_COLS ?? 144), rows: 50 } },
     project: { git: true, files: { "a.ts": "one\n" } },
   },
