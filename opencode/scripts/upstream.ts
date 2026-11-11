@@ -163,6 +163,8 @@ export const mergeUpstream = async (options: Options): Promise<Outcome> => {
       "## To resolve",
       "",
       `In a checkout of ${BRANCH} (not the one a build is using): \`git fetch ${UPSTREAM_REMOTE} && git merge ${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}\`, resolve, run the checks, push origin ${BRANCH}. The next \`bun run daily\` then finds ${BRANCH} current.`,
+      "",
+      "Prefer upstream (opencode/AGENTS.md): where upstream now does what a fork change does, take upstream's and drop ours, keeping only a difference the owner relies on; tell the owner what changes for them before dropping ours, and list each dropped or slimmed fork change in the hand-back.",
     ])
     return { kind: "conflict", files, upstream }
   }
