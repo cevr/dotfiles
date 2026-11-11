@@ -60,10 +60,13 @@
  *   week) on the pace here and on every peer for `settleMinutes` (default 10),
  *   until its spend shows in a reading. Default no peers. No host is the
  *   master of the resets: before a claim, a host asks each peer for the
- *   account's lease over SSH (`@dotfiles/opencode-pool/ssh/lease`, the peer's
- *   `lease`), claims only when none refused, and passes over a peer that does
- *   not answer in 10 s once the account read again still calls for the claim
- *   (the claim's record names the fallback).
+ *   provider's lease over SSH (`@dotfiles/opencode-pool/ssh/lease`, the
+ *   peer's `lease`). A claim no one asked for is sent only once every peer
+ *   granted it; with a peer that does not answer in 10 s, it is not sent and
+ *   the owner is asked instead ("<peer> is unreachable, so I can't rule out
+ *   it claiming too"), and a yes claims past it (the claim's record says
+ *   so). A host just started lends nothing for 5 minutes, and none claims on
+ *   a reading taken less than 5 minutes after a claim it sent or was told of.
  * - `resets`: work the accounts' rate-limit resets (`@dotfiles/opencode-pool/resets`).
  *   Default true. When a start is held and every account of a ChatGPT pool is
  *   held by a spent window, the pool claims one Codex reset credit (and one
