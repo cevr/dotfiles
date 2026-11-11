@@ -133,7 +133,11 @@ describe("the process runner", () => {
   test("a kill records the signal even when the command's shell outlives it and exits 0", async () => {
     // The shell traps SIGTERM and exits 0 once its children die of it: the
     // kill still ended the job, so its exit is the signal, not that 0.
-    const spec = specOf(`trap 'exit 0' TERM; sleep 30 & echo up >> "$JOB_DRIP"; wait`)
+    // The background child drips itself, from a fresh sh: a SIGTERM that
+    // reaches a child of the trapping shell between its fork and its exec is
+    // taken as a pending trap and lost at the exec (bash 3.2, ~1 in 8 under
+    // load), and that sleep then rightly dies of the SIGKILL instead.
+    const spec = specOf(`trap 'exit 0' TERM; sh -c 'echo up >> "$JOB_DRIP"; exec sleep 30' & wait`)
     await Effect.runPromise(runner.launch(spec))
     await dripped(spec.id, 1)
     expect(await Effect.runPromise(runner.kill(spec.id))).toBe(true)
