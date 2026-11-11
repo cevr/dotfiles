@@ -519,9 +519,12 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
       const first = gamut("read")
       // The scripted turn ran the suite through the shell tool and quoted its last line.
       expect(first.out).toContain("run the tests")
-      expect(first.out).toContain(`● Ran ${SIM_COMMAND}`)
+      // The testbed keeps the owner's default (low) verbosity, which folds the turn's one shell call into a count;
+      // `status` below reads the call itself (`shell 2`, the suite's result).
+      expect(first.out).toMatch(/^ {2}\+ 1 command$/m)
       expect(first.out).toContain("sim: the suite says Ran 15 tests across 5 files.")
-      // Prime's look, not the stock one: its call row (`● Ran …` above), and no standing Ctrl+O hint over the composer.
+      // Prime's look, not the stock one: its tray line under the composer (model · context use), and no standing Ctrl+O hint over it.
+      expect(first.out).toMatch(/^ +sim-model · \d+ \(\d+%\)$/m)
       expect(first.out).not.toContain("Ctrl+O to")
 
       expect(gamut("send", "hello there").code).toBe(0)
