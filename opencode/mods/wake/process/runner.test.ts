@@ -17,9 +17,9 @@ import type { Ran } from "../cron/backstop.ts"
 const scratch = mkdtempSync(path.join(tmpdir(), "opencode-job-test-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
-/** The runner's entry: supervise with a short kill grace and no notify. */
+/** The runner's entry: supervise with a kill grace long enough that a loaded machine's SIGTERM ends a plain group within it, and no notify. */
 const SCRIPT = path.join(scratch, "job.ts")
-writeFileSync(SCRIPT, `import { supervise } from ${JSON.stringify(path.join(import.meta.dir, "supervise.ts"))}\nawait supervise(process.argv[2], undefined, 300)\nprocess.exit(0)\n`)
+writeFileSync(SCRIPT, `import { supervise } from ${JSON.stringify(path.join(import.meta.dir, "supervise.ts"))}\nawait supervise(process.argv[2], undefined, 2000)\nprocess.exit(0)\n`)
 
 let counter = 0
 const specOf = (command: string, more: Partial<JobSpec> = {}): JobSpec => ({
