@@ -19,6 +19,8 @@ import {
   digest,
   explainLand,
   landedText,
+  postLandedText,
+  postLandSkippedText,
   type LandConfig,
   type Landed,
   type Outcome,
@@ -189,6 +191,31 @@ export const layer = Layer.effect(
           ),
         )
 
+    /**
+     * The repository's post-land step in the integration Rift, one at a time with the accept checks, then the wake
+     * with its report. Skipped, and said so, while the host's load is at or past its cores: the next land runs it
+     * again. Runs in the background.
+     */
+    const postLand = (sessionID: string, integration: string, units: ReadonlyArray<Unit>, command: string, base: string, head: string) =>
+      accepts
+        .withPermits(1)(
+          Effect.gen(function* () {
+            const load = yield* landing.hostLoad
+            if (load.load >= load.cores)
+              return yield* notices.wake(sessionID, { text: postLandSkippedText(units, load), description: "rift land · post-land skipped (load)" })
+            const ran = yield* landing.postLand(integration, command, { RIFT_LAND_BASE: base, RIFT_LAND_HEAD: head })
+            yield* notices.wake(sessionID, { text: postLandedText(units, ran), description: `rift land · post-land ${ran.code === 0 ? "ran" : "failed"}` })
+          }),
+        )
+        .pipe(
+          Effect.catch((failure: RiftFailed) =>
+            notices.wake(sessionID, {
+              text: `rift land: the post-land step after ${branchList(units)} did not run: ${failureText(failure)}. The batch is already pushed; the next land runs it again.`,
+              description: "rift land · post-land did not run",
+            }),
+          ),
+        )
+
     /** Each Rift green, its own branch pushed when `pushBranches` is set; a refused push is named, never fatal. */
     const greens = (merged: ReadonlyArray<Unit>, pushBranches: boolean): Effect.Effect<ReadonlyArray<Outcome>> =>
       Effect.forEach(merged, (unit) =>
@@ -328,12 +355,22 @@ export const layer = Layer.effect(
           if (why !== undefined) kept.push({ path: unit.path, why })
         }
         const landed: Landed = { units, main: config.main, base: started.base, pushed, gate, locks: [...new Set(locks)], kept }
-        if (config.accept !== undefined) {
-          busy.set(integration, `the accept check of ${units.map((unit) => unit.branch).join(", ")} runs there`)
+        // After the push, in the background and in order: the accept check, then the repository's post-land step.
+        const head = pushed.split(" ")[0] ?? ""
+        const background = [
+          ...(config.accept === undefined ? [] : [accept(sessionID, integration, units, config.accept, started.base)]),
+          ...(config.postLand === undefined ? [] : [postLand(sessionID, integration, units, config.postLand, started.base, head)]),
+        ]
+        if (background.length > 0) {
+          const what = [config.accept === undefined ? [] : ["the accept check"], config.postLand === undefined ? [] : ["the post-land step"]].flat().join(" and ")
+          busy.set(integration, `${what} of ${branchList(units)} ${background.length > 1 ? "run" : "runs"} there`)
           accepting = true
-          yield* Effect.forkIn(accept(sessionID, integration, units, config.accept, started.base).pipe(Effect.ensuring(Effect.sync(() => busy.delete(integration)))), scope)
+          yield* Effect.forkIn(Effect.all(background, { discard: true }).pipe(Effect.ensuring(Effect.sync(() => busy.delete(integration)))), scope)
         }
-        return { text: landedText(landed, integration, accepting), metadata: { action: "land" as const, source, path: integration, rifts: paths } }
+        return {
+          text: landedText(landed, integration, config.accept !== undefined, config.postLand !== undefined),
+          metadata: { action: "land" as const, source, path: integration, rifts: paths },
+        }
       }).pipe(Effect.ensuring(Effect.sync(() => (accepting ? undefined : busy.delete(integration)))))
     })
 

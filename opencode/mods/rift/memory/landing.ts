@@ -2,7 +2,7 @@
 // each Rift's own changes, the merge of each branch, the checks, the push,
 // and the steps taken, in order, for the test to read.
 import { Effect, Layer } from "effect"
-import type { LandConfig, Merged, Ran, Unit } from "../land.ts"
+import type { HostLoad, LandConfig, Merged, PostLanded, Ran, Unit } from "../land.ts"
 import { Landing, RiftFailed } from "../service.ts"
 
 export interface World {
@@ -20,11 +20,15 @@ export interface World {
   regenerateFails: string | undefined
   /** `<path> <gate|accept>` to its exit code and output; absent: 0, `1 pass`. */
   readonly checks: Map<string, { readonly code: number; readonly output: string }>
+  /** The post-land step's exit, output and report; absent: 0, a report saying it ran. */
+  postLandRun: { readonly code: number; readonly output: string; readonly report: string | undefined } | undefined
+  /** The host's load the post-land step reads first; absent: idle on 8 cores. */
+  load: HostLoad | undefined
   /** What Git says when the push fails. */
   pushFails: string | undefined
   /** Each branch whose own push fails, to what Git says. */
   readonly branchFails: Map<string, string>
-  /** The steps taken: `start <path> <main>`, `merge <branch>`, `install`, `regenerate`, `commit <files>` (what it rewrote, one commit), `gate <path>`, `push <path>`, `push-branch <branch>`, `sync <path>`, `accept <path> <RIFT_LAND_BASE>`. */
+  /** The steps taken: `start <path> <main>`, `merge <branch>`, `install`, `regenerate`, `commit <files>` (what it rewrote, one commit), `gate <path>`, `push <path>`, `push-branch <branch>`, `sync <path>`, `accept <path> <RIFT_LAND_BASE>`, `load`, `post-land <path> <RIFT_LAND_BASE> <RIFT_LAND_HEAD>`. */
   readonly steps: Array<string>
 }
 
@@ -32,7 +36,7 @@ export const config = (
   main: string,
   gate: string | undefined,
   accept: string | undefined,
-  options: { readonly push?: boolean; readonly pushBranches?: boolean; readonly generated?: ReadonlyArray<string>; readonly regenerate?: string } = {},
+  options: { readonly push?: boolean; readonly pushBranches?: boolean; readonly generated?: ReadonlyArray<string>; readonly regenerate?: string; readonly postLand?: string } = {},
 ): LandConfig => ({
   main,
   gate,
@@ -41,6 +45,7 @@ export const config = (
   regenerate: options.regenerate,
   push: options.push ?? true,
   pushBranches: options.pushBranches ?? false,
+  postLand: options.postLand,
 })
 
 export const world = (configs: Readonly<Record<string, LandConfig>> = {}): World => ({
@@ -51,6 +56,8 @@ export const world = (configs: Readonly<Record<string, LandConfig>> = {}): World
   regenerates: [],
   regenerateFails: undefined,
   checks: new Map(),
+  postLandRun: undefined,
+  load: undefined,
   pushFails: undefined,
   branchFails: new Map(),
   steps: [],
@@ -89,6 +96,16 @@ export const layer = (state: World) =>
           const scripted = state.checks.get(`${path} ${label}`) ?? { code: 0, output: "1 pass\n" }
           return { ...scripted, seconds: 3, log: `/logs/${label}.log` }
         }),
+      postLand: (path, _command, env) =>
+        Effect.sync((): PostLanded => {
+          state.steps.push(`post-land ${path} ${env["RIFT_LAND_BASE"] ?? ""} ${env["RIFT_LAND_HEAD"] ?? ""}`)
+          const scripted = state.postLandRun ?? { code: 0, output: "post-land ran\n", report: "post-land: nothing to do\n" }
+          return { ...scripted, seconds: 4, log: "/logs/post-land.log" }
+        }),
+      hostLoad: Effect.sync(() => {
+        state.steps.push("load")
+        return state.load ?? { load: 0.5, cores: 8 }
+      }),
       push: Effect.fn("Landing.push")(function* (path: string, main: string) {
         state.steps.push(`push ${path}`)
         if (state.pushFails !== undefined) return yield* new RiftFailed({ operation: "git push", message: state.pushFails })

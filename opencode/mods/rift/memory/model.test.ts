@@ -177,6 +177,70 @@ describe("land", () => {
     expect([...made.rifts.rifts.keys()]).toEqual([INTEGRATE])
   })
 
+  describe("with rift.postLand set", () => {
+    const withPostLand = (accept: string | undefined) =>
+      bench(
+        MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), MemoryRifts.clean(OTHER, "feat/y")]),
+        MemoryLanding.world({ [SOURCE]: MemoryLanding.config("main", "bun run gate", accept, { postLand: "bun scripts/post-land.ts" }) }),
+      )
+
+    test("each pushed batch runs the post-land step once, in the integration Rift after the accept check, with the batch's base and head, and wakes the session with its report", async () => {
+      const made = withPostLand("bun run accept")
+      made.landing.postLandRun = { code: 0, output: "lots of output\n", report: "upstream: merged 3 commits and pushed prime-look\nfork work: none\n" }
+      const [answer] = await calls(made, [{ action: "land", rifts: ["feat-x"] }])
+      expect(answer).toEndWith(
+        `Then the repository's post-land step (rift.postLand) runs there in the background, after the accept check; this session is woken with its report, and the next land waits for it.`,
+      )
+      expect(made.landing.steps.slice(-3)).toEqual([`accept ${INTEGRATE} base0`, "load", `post-land ${INTEGRATE} base0 abc1234`])
+      expect(made.landing.steps.filter((step) => step.startsWith("post-land"))).toHaveLength(1)
+      expect(made.woken.map((woken) => woken.notice.description)).toEqual(["rift land · accept passed", "rift land · post-land ran"])
+      expect(made.woken[1]!.notice.text).toBe(
+        "rift land: the post-land step after feat/x ran in 4s. Log: /logs/post-land.log\nupstream: merged 3 commits and pushed prime-look\nfork work: none",
+      )
+      // A second land, once the first one's background work is done, runs it once more: once per land.
+      const again = withPostLand(undefined)
+      await calls(again, [{ action: "land", rifts: ["feat-x"] }])
+      await calls(again, [{ action: "land", rifts: ["feat-y"] }])
+      // While it runs, the next land waits: one at a time.
+      const busy = withPostLand(undefined)
+      const [, second] = await calls(busy, [{ action: "land", rifts: ["feat-x"] }, { action: "land", rifts: ["feat-y"] }])
+      expect(second).toBe(`refused: Did not land anything: ${INTEGRATE} is busy: the post-land step of feat/x runs there. Land again after its wake.`)
+      expect(again.landing.steps.filter((step) => step.startsWith("post-land"))).toEqual([`post-land ${INTEGRATE} base0 abc1234`, `post-land ${INTEGRATE} base0 abc1234`])
+    })
+
+    test("a failed post-land step wakes with its exit and output; one under load is skipped and said to run at the next land; no step is run for a batch that was not pushed", async () => {
+      const failed = withPostLand(undefined)
+      failed.landing.postLandRun = { code: 1, output: "error: the fork is not a checkout\n", report: undefined }
+      await calls(failed, [{ action: "land", rifts: ["feat-x"] }])
+      expect(failed.woken[0]!.notice).toEqual({
+        text: "rift land: the post-land step after feat/x FAILED (exit 1) in 4s. The batch is already pushed. Log: /logs/post-land.log\n  error: the fork is not a checkout",
+        description: "rift land · post-land failed",
+      })
+      const loaded = withPostLand(undefined)
+      loaded.landing.load = { load: 12.5, cores: 10 }
+      await calls(loaded, [{ action: "land", rifts: ["feat-x"] }])
+      expect(loaded.landing.steps.filter((step) => step.startsWith("post-land"))).toEqual([])
+      expect(loaded.woken[0]!.notice).toEqual({
+        text: "rift land: the post-land step after feat/x was skipped: the 1-minute load is 12.5, at or past the host's 10 cores. The next land runs it again.",
+        description: "rift land · post-land skipped (load)",
+      })
+      // The next land, on a calm host, runs it.
+      loaded.landing.load = { load: 2, cores: 10 }
+      await calls(loaded, [{ action: "land", rifts: ["feat-y"] }])
+      expect(loaded.landing.steps.filter((step) => step.startsWith("post-land"))).toHaveLength(1)
+      const red = withPostLand("bun run accept")
+      red.landing.checks.set(`${INTEGRATE} gate`, { code: 1, output: "1 fail\n" })
+      await calls(red, [{ action: "land", rifts: ["feat-x"] }])
+      expect(red.landing.steps.filter((step) => step.startsWith("post-land") || step === "load")).toEqual([])
+      const pr = bench(
+        MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x")]),
+        MemoryLanding.world({ [SOURCE]: MemoryLanding.config("main", "bun run gate", undefined, { push: false, postLand: "bun scripts/post-land.ts" }) }),
+      )
+      await calls(pr, [{ action: "land", rifts: ["feat-x"] }])
+      expect(pr.landing.steps.filter((step) => step.startsWith("post-land"))).toEqual([])
+    })
+  })
+
   test("land finds each Rift by its branch too, and refuses a name two Rifts answer to, naming both", async () => {
     const LEXER = "/code/.rifts/app/fu-lexer"
     const PARSER = "/code/.rifts/app/fu-parser"

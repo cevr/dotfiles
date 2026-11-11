@@ -1,7 +1,7 @@
 // Landing over Git and the shell, run as child processes. The repository's
 // commands come from its warm source's Git config (`rift.gate`,
 // `rift.accept`, `rift.generated`, `rift.regenerate`, `rift.push`,
-// `rift.pushBranches`, the default branch from
+// `rift.pushBranches`, `rift.postLand`, the default branch from
 // `workrift.main` else origin's HEAD) and run through `sh -c`, their output
 // kept in a log under `logs`; the gate and the acceptance run always run
 // heavy, through the guard's launcher (`checkArgv`). A lock file is installed again with its package
@@ -9,10 +9,11 @@
 // committed when the install rewrote it. `rift.regenerate` runs after every
 // batch's merges, and what it rewrote is committed.
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs"
+import { availableParallelism, loadavg } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { DEFAULT_LIMITS, heavyArgv, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
 import { Effect, Layer } from "effect"
-import { INTEGRATION, type LandConfig, type Merged, type Ran, type Started, type Unit } from "../land.ts"
+import { type HostLoad, INTEGRATION, type LandConfig, type Merged, type PostLanded, type Ran, type Started, type Unit } from "../land.ts"
 import { Landing, RiftFailed } from "../service.ts"
 import { commands, lines } from "./command.ts"
 
@@ -113,6 +114,7 @@ export const layer = (options: Options) => {
       regenerate: yield* setting(source, "rift.regenerate"),
       push: (yield* flag(source, "rift.push")) ?? true,
       pushBranches: (yield* flag(source, "rift.pushBranches")) ?? false,
+      postLand: yield* setting(source, "rift.postLand"),
     } satisfies LandConfig
   })
 
@@ -189,7 +191,7 @@ export const layer = (options: Options) => {
     return files
   })
 
-  const check = Effect.fn("Landing.check")(function* (path: string, label: "gate" | "accept", command: string, env: Readonly<Record<string, string>>) {
+  const check = Effect.fn("Landing.check")(function* (path: string, label: "gate" | "accept" | "post-land", command: string, env: Readonly<Record<string, string>>) {
     mkdirSync(options.logs, { recursive: true })
     const log = join(options.logs, `${basename(path)}.${label}.log`)
     const started = Date.now()
@@ -197,6 +199,16 @@ export const layer = (options: Options) => {
     const output = existsSync(log) ? readFileSync(log, "utf8") : ran.stderr
     return { code: ran.code, seconds: Math.round((Date.now() - started) / 1000), log, output } satisfies Ran
   })
+
+  const postLand = Effect.fn("Landing.postLand")(function* (path: string, command: string, env: Readonly<Record<string, string>>) {
+    mkdirSync(options.logs, { recursive: true })
+    const report = join(options.logs, `${basename(path)}.post-land.report.md`)
+    rmSync(report, { force: true })
+    const ran = yield* check(path, "post-land", command, { ...env, RIFT_POST_LAND_REPORT: report })
+    return { ...ran, report: existsSync(report) ? readFileSync(report, "utf8") : undefined } satisfies PostLanded
+  })
+
+  const hostLoad = Effect.sync((): HostLoad => ({ load: loadavg()[0] ?? 0, cores: availableParallelism() }))
 
   const push = Effect.fn("Landing.push")(function* (path: string, main: string) {
     yield* git(path, "fetch", "-q", "origin")
@@ -216,5 +228,5 @@ export const layer = (options: Options) => {
     yield* git(path, "fetch", "-q", "origin")
   })
 
-  return Layer.succeed(Landing, Landing.of({ config, ownChanges, start, merge, install, regenerate, check, push, pushBranch, sync }))
+  return Layer.succeed(Landing, Landing.of({ config, ownChanges, start, merge, install, regenerate, check, postLand, hostLoad, push, pushBranch, sync }))
 }

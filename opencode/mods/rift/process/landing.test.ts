@@ -65,7 +65,7 @@ const bench = () => {
   const integration = clone("integrate", "integrate")
   const x = clone("feat-x", "feat/x")
   const y = clone("feat-y", "feat/y")
-  const settings = { main: "main", gate: undefined, accept: undefined, generated: ["gen.txt"], regenerate: "ls pkgs > gen.txt", push: true, pushBranches: false }
+  const settings = { main: "main", gate: undefined, accept: undefined, generated: ["gen.txt"], regenerate: "ls pkgs > gen.txt", push: true, pushBranches: false, postLand: undefined }
   const run = <A, E>(use: (landing: typeof Landing.Service) => Effect.Effect<A, E>) =>
     Effect.runPromise(Effect.flatMap(Landing, use).pipe(Effect.provide(ProcessLanding.layer({ logs: join(scratch, "logs"), env: ENV }))))
   return { scratch, origin, source, integration, x, y, settings, run }
@@ -78,6 +78,7 @@ describe("process Landing", () => {
     sh(made.source, "git", "config", "--add", "rift.generated", "gen.txt")
     sh(made.source, "git", "config", "--add", "rift.generated", "other.json")
     sh(made.source, "git", "config", "rift.regenerate", "ls pkgs > gen.txt")
+    sh(made.source, "git", "config", "rift.postLand", "bun scripts/post-land.ts")
     expect(await made.run((landing) => landing.config(made.source))).toEqual({
       main: "main",
       gate: "bun run gate",
@@ -86,6 +87,7 @@ describe("process Landing", () => {
       regenerate: "ls pkgs > gen.txt",
       push: true,
       pushBranches: false,
+      postLand: "bun scripts/post-land.ts",
     })
     sh(made.source, "git", "config", "workrift.main", "trunk")
     // A repository that lands through pull requests: Git's own booleans.
@@ -200,6 +202,22 @@ describe("process Landing", () => {
     expect(ran.code).toBe(3)
     expect(ran.log).toBe(join(made.scratch, "logs", "integrate.gate.log"))
     expect(ran.output).toBe(" 3 pass\noops\n")
+  })
+
+  test("postLand runs like a check with base, head and a fresh report file, and answers what it wrote there; none written, none answered", async () => {
+    const made = bench()
+    const write = 'echo working; printf "merged %s..%s\\n" "$RIFT_LAND_BASE" "$RIFT_LAND_HEAD" > "$RIFT_POST_LAND_REPORT"'
+    const ran = await made.run((landing) => landing.postLand(made.integration, write, { RIFT_LAND_BASE: "b0", RIFT_LAND_HEAD: "h1" }))
+    expect(ran).toMatchObject({ code: 0, output: "working\n", report: "merged b0..h1\n", log: join(made.scratch, "logs", "integrate.post-land.log") })
+    // A report left by the last run is never read as this one's.
+    const silent = await made.run((landing) => landing.postLand(made.integration, "echo quiet; exit 2", {}))
+    expect(silent).toMatchObject({ code: 2, output: "quiet\n", report: undefined })
+  })
+
+  test("hostLoad reads the 1-minute load and the cores", async () => {
+    const load = await bench().run((landing) => landing.hostLoad)
+    expect(load.cores).toBeGreaterThan(0)
+    expect(load.load).toBeGreaterThanOrEqual(0)
   })
 
   test("the gate and acceptance run always go through the guard's launcher: niced, and in a scope under MemoryMax=12G on systemd", () => {
