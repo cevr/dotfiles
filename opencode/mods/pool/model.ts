@@ -528,6 +528,8 @@ export const layer = (config: Config) =>
           `pool resets: claimed a ${reset.provider} reset on ${reset.label} (${reset.why}): ${answer.outcome}${answer.message === undefined ? "" : ` (${answer.message})`}; ` +
             `before ${windowsText(before) || "unread"}; after ${windowsText(after?.windows) || "unread"}; the weekly reset ${record?.weekly ?? "unread"}`,
         )
+        // What the settling decided beside the record (the owner told of a claim made on its own) is carried out too.
+        yield* carry(settled.filter((event) => event._tag === "OwnerTold"))
       })
 
       /** Carry out what the aggregate decided. */

@@ -865,7 +865,35 @@ const claudeDue = (state: ResetsState, view: PoolView, current: ReadonlySet<stri
   return [OwnerAsked.make({ reset: { ...reset, sessionID: wait.sessionID, question: claudeQuestion(reset.label, best.account, best.credit, now) } })]
 }
 
-const review = (state: ResetsState, command: Review, now: number): ReadonlyArray<Event> => {
+/**
+ * The pools with each credit claimed since its account's reading was taken
+ * left out: that reading predates the claim, so its count is stale. A newer
+ * reading lists the credit again when resets are left on it.
+ */
+const withoutClaimed = (state: ResetsState, pools: ReadonlyArray<PoolView>): ReadonlyArray<PoolView> =>
+  pools.map((view) => ({
+    ...view,
+    accounts: view.accounts.map((account) => {
+      const reading = account.reading
+      if (reading?.resets === undefined) return account
+      const claimed = new Set(
+        state.claims
+          .filter(
+            (claim) =>
+              claim.pool === view.id &&
+              claim.credentialID === account.credentialID &&
+              (claim.outcome === "reset" || claim.outcome === "already-redeemed") &&
+              claim.at >= reading.at,
+          )
+          .map((claim) => claim.creditID),
+      )
+      if (claimed.size === 0) return account
+      return { ...account, reading: { ...reading, resets: { ...reading.resets, credits: reading.resets.credits.filter((credit) => !claimed.has(credit.id)) } } }
+    }),
+  }))
+
+const review = (state: ResetsState, received: Review, now: number): ReadonlyArray<Event> => {
+  const command = { ...received, pools: withoutClaimed(state, received.pools) }
   const current = currentKeys(command.pools, now)
   const events: Array<Event> = []
   // A question whose hold lifted by itself, or whose grant is gone, is withdrawn first.

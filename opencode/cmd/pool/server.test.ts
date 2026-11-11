@@ -1417,6 +1417,46 @@ describe("resets on the live adapters", () => {
       }),
     ))
 
+  test("a Claude reset about to expire unused is claimed with no one asked, and the owner is told after in the waiting session's root", () =>
+    scenario(
+      Effect.gen(function* () {
+        const now = Date.now()
+        const state = world()
+        state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]!])
+        // Fable's own week spent, resetting in five days; its reset ends in two hours: lost unless claimed now.
+        state.readings.set("cred-a", {
+          at: now,
+          windows: [
+            { name: "5h", utilization: 1, resetAt: now + 3 * HOUR },
+            { name: "7d", utilization: 0.6, resetAt: now + 5 * DAY },
+            { name: "7d:Fable", utilization: 1, resetAt: now + 5 * DAY, ofWeekly: 0.5 },
+          ],
+          resets: {
+            available: 1,
+            credits: [{ id: "fable-1", count: 1, usable: true, expiresAt: now + 2 * HOUR, clears: ["five_hour", "seven_day_overage_included"], kind: "fable", givesBack: true }],
+          },
+        })
+        state.parents.set("ses_child", "ses_root")
+        const plugin = yield* start({ sweepMinutes: 0 }, state, live)
+        expect(yield* plugin.pace("anthropic", "ses_child")).toMatchObject({ ok: false, measured: true })
+        yield* waitFor(() => plugin.claims.length > 0 && state.owner.asked.length > 0)
+        expect(plugin.claims.map(({ credentialID, creditID }) => [credentialID, creditID])).toEqual([["cred-a", "fable-1"]])
+        // No question before the claim: the one asked is the notice after it.
+        expect(state.owner.asked).toHaveLength(1)
+        expect(state.owner.asked[0]).toMatchObject({ sessionID: "ses_root", header: "Pool reset claimed", options: [{ label: "OK" }] })
+        expect(state.owner.asked[0]?.question).toContain("The pool claimed the Fable reset on account Anthropic 1 before it expired unused")
+        // Read, it leaves the tray.
+        // The reading the memory quota keeps still lists the grant: it is not offered again under another key.
+        yield* OwnerTest.answer(state.owner, state.owner.asked[0]!.key, "OK")
+        yield* waitFor(() => state.owner.questions.size === 0)
+        yield* plugin.pace("anthropic", "ses_child")
+        yield* settle
+        expect(state.owner.asked).toHaveLength(1)
+        expect(plugin.claims).toHaveLength(1)
+        expect((yield* plugin.resets).resets.map(({ why, kind, stage }) => ({ why, kind, stage }))).toEqual([{ why: "expiring", kind: "fable", stage: "settled" }])
+      }),
+    ))
+
   test("resets: false works none", () =>
     scenario(
       Effect.gen(function* () {

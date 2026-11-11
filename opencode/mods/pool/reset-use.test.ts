@@ -245,6 +245,30 @@ describe("offered on demand", () => {
     expect(run([[T0 + 2 * MINUTE, TakeAnswer.make({ key, answer: "Claim it" })]], asked.state).events).toMatchObject([{ _tag: "ClaimDue", reset: { key, why: "offer" } }])
   })
 
+  test("a reset just claimed is offered or claimed by no rule while the account's reading predates the claim", () => {
+    // A Fable reset expiring in two hours on a spent Fable week: claimed on its own; the reading after it was taken before the claim settled.
+    const reading = () =>
+      account(
+        "a",
+        [window("5h", 0.2, T0 + 3 * HOUR), window("7d", 0.6, T0 + 5 * DAY), { ...window("7d:Fable", 1, T0 + 5 * DAY), ofWeekly: 0.5 }],
+        [grant("g", T0 + 2 * HOUR, FABLE)],
+      )
+    const stale = (at: number) => {
+      const item = reading()
+      return { ...item, reading: { ...item.reading!, at } }
+    }
+    const claimed = run([
+      [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
+      [T0, Review.make({ pools: [pool("claude", [stale(T0), roomy])] })],
+      [T0 + MINUTE, SettleClaim.make({ key: expiringKey("anthropic", "g", "claude", 1), outcome: "reset", before: [] })],
+    ])
+    expect(tags(claimed.events)).toEqual(["WaitNoted", "ClaimDue", "ClaimSettled", "OwnerTold"])
+    // The same stale reading, reviewed again with a start waiting: no offer of the grant just claimed.
+    expect(run([[T0 + 2 * MINUTE, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })], [T0 + 2 * MINUTE, Review.make({ pools: [pool("claude", [stale(T0), roomy])] })]], claimed.state).events).toEqual([
+      { _tag: "WaitNoted", pool: "anthropic", wait: { at: T0 + 2 * MINUTE, sessionID: "ses_root" } },
+    ])
+  })
+
   test("no offer when a spent window it does not clear would still hold the account, or for the 5-hour window alone", () => {
     const fiveSpent = pool("claude", [account("a", [window("5h", 1, T0 + 3 * HOUR), window("7d", 1, T0 + 6 * DAY)], [grant("g", T0 + 60 * DAY, WEEKLY)]), roomy])
     const session = pool("claude", [account("a", [window("5h", 1, T0 + 3 * HOUR), window("7d", 0.3, T0 + 6 * DAY)], [grant("g", T0 + 60 * DAY, SESSION)]), roomy])
