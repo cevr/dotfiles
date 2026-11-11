@@ -160,7 +160,13 @@ export const layer = Layer.effect(
       }),
       open: Effect.fn("QuestionsModel.open")(function* (sessionIDs: ReadonlyArray<string>) {
         // Reading sends nothing: a recorded answer goes when it is given, again with the session's next answer, and at the plugin's start.
-        const sheets = yield* Effect.forEach(sessionIDs, (sessionID) => store.read(sessionID).pipe(Effect.orElseSucceed(() => undefined)))
+        // Only the sessions that have a sheet are read: the tray asks for a whole family, hundreds of subagents
+        // of which a few asked, every two seconds and on every change.
+        const asked = new Set(yield* store.sessions)
+        const sheets = yield* Effect.forEach(
+          sessionIDs.filter((sessionID) => asked.has(sessionID)),
+          (sessionID) => store.read(sessionID).pipe(Effect.orElseSucceed(() => undefined)),
+        )
         return sheets
           .flatMap((sheet) => (sheet === undefined ? [] : openOf(sheet.rows).map(questionOf)))
           .toSorted((left, right) => left.askedAt - right.askedAt)

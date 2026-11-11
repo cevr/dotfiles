@@ -388,3 +388,43 @@ The setup was the same as above (the database copy, the owner's eleven plugins a
 ## Installed for this run (removed at the end)
 
 - Workbox: `/tmp/opencode/family-batch/` (the fork and dotfiles clones, the database copy, the compiled builds and the runs) and `/tmp/opencode/fb-setup.sh`. Both were removed after this run.
+
+# From an answer's submit key to its effect (2026-11-11)
+
+The target: the form closes on the next frame, the answer shows in the transcript within 100 ms, and the model request starts within 300 ms, whatever the transcript's size. `scenarios/answer-latency.ts` times both paths from the return key that submits: `async` (a background question answered through /answer's form) and `builtin` (the built-in `question` tool). It reports three times: `closed` (first frame without the form), `shown` (first frame with the answer in the transcript) and `request` (the simulated model receives the request that carries the answer). Sizes: a fixture of 20 tool groups (small), 1,500 groups (Mac large), and on the workbox a read-only copy of the owner's session `ses_e56b9128…` (5,286 messages, 559 children, 19 MB) opened with `LAT_SESSION`. The figures are medians in ms, written closed / shown / request. **measured**
+
+| Where | Before, async | Before, builtin | After, async | After, builtin |
+| --- | --- | --- | --- | --- |
+| Mac, small | 35 / 64 / 25 | 46 / 46 / 36 | 15 / 35 / 20 | 23 / 41 / 15 |
+| Mac, 1,500 groups | 24 / 96 / 90 | 18 / 56 / 83 | 13 / 61 / 80 | 10 / 56 / 70 |
+| Workbox, small | 94 / 175 / 47 | 152 / 152 / 61 | 38 / 90 / 41 | 34 / 34 / 36 |
+| Workbox, owner session copy | 123 / 243 / 164 | 141 / 141 / 119 | 45 / 74 / 130 | 31 / 31 / 97 |
+
+The workbox ran at a load of 35–52 on 16 vCPUs throughout, so a single round can still be slow: in the 5-round after-run on the owner session copy, async rounds ranged 32–131 / 67–158 / 95–234.
+
+## What it was
+
+- **The server was not the cause.** It finished a reply in about 15 ms, and nothing in the path debounced or polled. A 1 ms timer probe on the workbox showed a p99 lateness of 6 ms, so the delay was CPU work, not scheduling. **measured** with trace lines in a scratch copy
+- **The TUI's event loop stayed busy for 80–150 ms after the key.** **measured** with the fork's `SIGPROF` profiles
+  - The form waited for the server's `form.replied` event before it closed.
+  - Closing the form remounted the composer (about 30 ms of CPU).
+  - Every flip of a keymap layer's or command's `enabled` (run status, typed text, the stash) registered the whole layer again: 31 session commands, 63 app commands. Each registration recomputed every view of the keymap.
+  - `useShortcuts` built one keymap selector per caller, which is one per assistant footer in the transcript. Every keymap change formatted every command's bindings once per footer.
+  - Each `session.sync` on a run start and end replaced the session's info, and that woke every reader of every field of the session (subagent rows, tabs, status).
+- **On the server, the drain's prompt preparation ran inside the wake.** On a large session, that held the answer's own events and the HTTP reply back by 50–80 ms. **measured**
+- **The questions tray read a sheet for every session in the family.** That is hundreds of subagents, every 2 s and on every change. **measured** in the profile as `mods/questions` frames
+
+## Fixes
+
+- Fork (pushed to `prime-look`):
+  - `perf(client)`: a form closes as its reply is sent. On a refusal other than not-found or already-settled, it comes back where it was. A session refresh reconciles the info instead of replacing it.
+  - `perf(tui)`: an `enabled` accessor becomes a reactive matcher, so a flip no longer registers its layer again. Shortcuts, commands, and pending and active keys are each one memo per keymap provider.
+  - `perf(tui)`: the composer stays mounted, hidden and disabled, under forms, permissions and pickers.
+  - `perf(core)`: a drain starts on the next turn of the event loop, after the writes of what woke it.
+- Dotfiles: `perf(questions)`: reading the open questions of a family reads only the sessions that have a sheet.
+
+## Left
+
+- The answer's typed text is lost if the server refuses the reply for a reason other than not-found or already-settled. The form comes back, but empty.
+- The async `shown` time still trails `closed` by 30–60 ms on the workbox: the notice row waits for `session.inbox.enqueued` to arrive and for the next frame. **inferred** from traces
+||||||| 7d3553b8
