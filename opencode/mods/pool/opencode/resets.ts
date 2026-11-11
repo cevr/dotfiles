@@ -72,7 +72,8 @@ export const layer = (storage: Storage) =>
               return reset === undefined ? Effect.void : storage.set(resetKey(reset.key), encodeReset(reset))
             }
             case "AnswerDeclined":
-            case "AskWithdrawn": {
+            case "AskWithdrawn":
+            case "OwnerTold": {
               const reset = state.resets[event.key]
               return reset === undefined ? Effect.void : storage.set(resetKey(reset.key), encodeReset(reset))
             }

@@ -482,6 +482,37 @@ export const tally = (state: LimitsState, now: number): Tally => {
   }
 }
 
+/**
+ * Weekly points per point of each model's own week in a pool, by the own
+ * week's name (`7d:Fable`): the model's rate on the weekly window over its
+ * rate on its own week, both per weighted Mtok of the same tokens. The range
+ * divides the low end of one by the high end of the other, and the other way.
+ * The last 7 days' fit when it has the model on both windows, else every
+ * row's. None for a model either fit lacks or rates 0 on its own week.
+ */
+export const weeklyRatios = (
+  tally: Tally,
+  pool: string,
+): Readonly<Record<string, { readonly rate: number; readonly low?: number; readonly high?: number; readonly source: "tally" }>> => {
+  const ratios: Record<string, { rate: number; low?: number; high?: number; source: "tally" }> = {}
+  for (const windows of [tally.cumulative, tally.recent]) {
+    const weekly = windows.find((window) => window.pool === pool && window.window === "7d")
+    if (weekly === undefined) continue
+    for (const own of windows.filter((window) => window.pool === pool && window.window.startsWith("7d:"))) {
+      const scope = scopeOf(own.window)
+      if (scope === undefined) continue
+      const ownRate = own.families.find((family) => family.n > 0 && limitsModel(scope, family.family))?.weighted
+      const weeklyRate = weekly.families.find((family) => family.n > 0 && limitsModel(scope, family.family))?.weighted
+      if (ownRate === undefined || weeklyRate === undefined || !(ownRate.rate > 0)) continue
+      const low = weeklyRate.low !== undefined && ownRate.high !== undefined && ownRate.high > 0 ? weeklyRate.low / ownRate.high : undefined
+      const high = weeklyRate.high !== undefined && ownRate.low !== undefined && ownRate.low > 0 ? weeklyRate.high / ownRate.low : undefined
+      // The recent fit, read second, wins where it has the model.
+      ratios[own.window] = { rate: weeklyRate.rate / ownRate.rate, ...(low === undefined ? {} : { low }), ...(high === undefined ? {} : { high }), source: "tally" }
+    }
+  }
+  return ratios
+}
+
 // ── The line ──
 
 const num = (value: number) => (value >= 10 ? value.toFixed(0) : value >= 1 ? value.toFixed(1) : value.toFixed(2))

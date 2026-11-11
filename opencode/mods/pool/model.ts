@@ -27,7 +27,8 @@ import {
 import { held, lastPlacedAt, placedOn, sessionAccount, shouldFailOver, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as FleetModel from "./fleet.ts"
 import { poolPace, UNPOOLED, type Pace } from "./pace.ts"
-import { limitsLine, type Tally, type Tokens } from "./limits.ts"
+import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
+import type { AccountStatus } from "./status.ts"
 import type { QuotaReading } from "./quota.ts"
 import * as ResetsModel from "./resets.ts"
 import type { ResetProvider } from "./resets.ts"
@@ -448,15 +449,34 @@ export const layer = (config: Config) =>
       const resetViews = Effect.gen(function* () {
         const views: Array<ResetsModel.PoolView> = []
         const now = yield* Clock.currentTimeMillis
+        const tally = limits === undefined ? undefined : yield* limits.tally
+        const fleet = yield* fleetStore.read
+        const inflight = FleetModel.inflight(fleet, now, fleetConfig.settleMs)
         for (const [id, provider] of Object.entries(config.resets ?? {})) {
           const where = poolOf(PoolId.make(id))
           if (where === undefined) continue
           const accounts = status(yield* SynchronizedRef.get(where.pool), now, rules)
           const labels: Record<string, string> = {}
           for (const account of accounts) labels[account.credentialID] = yield* logins.label(where.id, account.credentialID)
-          views.push({ id, provider, accounts, labels })
+          views.push({
+            id,
+            provider,
+            accounts,
+            labels,
+            ...(tally === undefined ? {} : { ratios: weeklyRatios(tally, id) }),
+            // The fleet's demand on the pool: every start of a provider it paces not settled yet, on any host.
+            inflight: inflight.filter((start) => measuredBy(config, start.providerID) === id).length,
+          })
         }
         return views
+      })
+
+      /** Each account's spend-evenly line moved by its resets (resets.ts `pacePlans`), for a pool whose resets are worked. */
+      const plansOf = Effect.fn(function* (id: string, accounts: ReadonlyArray<AccountStatus>, now: number) {
+        const provider = config.resets?.[id]
+        if (provider === undefined) return {}
+        const tally = limits === undefined ? undefined : yield* limits.tally
+        return ResetsModel.pacePlans(provider, accounts, (yield* resetsStore.read).claims, now, tally === undefined ? {} : weeklyRatios(tally, id))
       })
 
       const windowsText = (windows: ReadonlyArray<{ readonly name: string; readonly utilization: number; readonly resetAt?: number }> | undefined) =>
@@ -505,30 +525,51 @@ export const layer = (config: Config) =>
             switch (event._tag) {
               case "ClaimDue":
                 return claim(event.reset)
-              case "OwnerAsked":
+              case "OwnerAsked": {
+                const offer = event.reset.why === "offer"
+                const what = offer ? `a ${event.reset.provider} reset offer` : "a Claude reset"
                 return owner
                   .ask({
                     sessionID: event.reset.sessionID ?? "",
                     key: event.reset.key,
                     question: event.reset.question ?? "",
-                    header: ResetsModel.claudeHeader(event.reset.label),
+                    header: event.reset.header ?? ResetsModel.claudeHeader(event.reset.label),
                     options: [{ label: ResetsModel.CLAIM }, { label: ResetsModel.KEEP }],
-                    assume: ResetsModel.ASSUME,
+                    assume: offer ? ResetsModel.OFFER_ASSUME : ResetsModel.ASSUME,
                   })
                   .pipe(
                     Effect.tap((asked) =>
                       asked
-                        ? Effect.logInfo(`pool resets: asked the owner about a Claude reset on ${event.reset.label}`)
-                        : Effect.logWarning(`pool resets: the owner could not be asked about a Claude reset on ${event.reset.label}`),
+                        ? Effect.logInfo(`pool resets: asked the owner about ${what} on ${event.reset.label}`)
+                        : Effect.logWarning(`pool resets: the owner could not be asked about ${what} on ${event.reset.label}`),
                     ),
                   )
+              }
+              case "OwnerTold":
+                return Effect.logInfo(`pool resets: ${event.text}`).pipe(
+                  Effect.andThen(
+                    event.sessionID === undefined
+                      ? Effect.void
+                      : owner.ask({
+                          sessionID: event.sessionID,
+                          key: ResetsModel.toldKey(event.key),
+                          question: event.text,
+                          header: "Pool reset claimed",
+                          options: [{ label: ResetsModel.SEEN }],
+                          assume: ResetsModel.SEEN_ASSUME,
+                        }),
+                  ),
+                  Effect.asVoid,
+                )
               case "AskWithdrawn":
                 return owner.withdraw(event.key).pipe(Effect.andThen(Effect.logInfo(`pool resets: withdrew the question (${event.why})`)))
               case "AnswerDeclined":
                 return owner.withdraw(event.key)
+              case "ResetsForgotten":
+                // A notice not yet read goes with its reset.
+                return Effect.forEach(event.keys, (key) => owner.withdraw(ResetsModel.toldKey(key)), { discard: true })
               case "WaitNoted":
               case "ClaimSettled":
-              case "ResetsForgotten":
                 return Effect.void
             }
           },
@@ -543,9 +584,15 @@ export const layer = (config: Config) =>
       const takeAnswers = Effect.gen(function* () {
         const state = yield* resetsStore.read
         const open = Object.values(state.resets).filter((reset) => reset.stage === "asked")
-        if (open.length === 0) return
+        const told = Object.values(state.resets).filter((reset) => reset.told !== undefined)
+        if (open.length === 0 && told.length === 0) return
         const answers = yield* owner.answers
         if (answers === undefined) return
+        // A notice read (answered) is done: it leaves the tray.
+        for (const reset of told) {
+          const found = answers.find((row) => row.key === ResetsModel.toldKey(reset.key))
+          if (found?.answer !== undefined) yield* owner.withdraw(found.key)
+        }
         const now = yield* Clock.currentTimeMillis
         for (const reset of open) {
           const found = answers.find((row) => row.key === reset.key)
@@ -600,11 +647,13 @@ export const layer = (config: Config) =>
         const starts = FleetModel.inflight(fleet, now, fleetConfig.settleMs)
           .filter((start) => measuredBy(config, start.providerID) === paced.id)
           .map((start) => start.at)
+        const accounts = status(yield* SynchronizedRef.get(paced.pool), now, rules)
         return poolPace(
-          status(yield* SynchronizedRef.get(paced.pool), now, rules),
+          accounts,
           now,
           { starts, cost: fleetConfig.startCost, settleMs: fleetConfig.settleMs },
           model,
+          yield* plansOf(paced.id, accounts, now),
         )
       })
 
