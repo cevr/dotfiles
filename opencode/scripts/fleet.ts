@@ -1,5 +1,5 @@
 // The fleet install's rules (`bun run fleet-install`, scripts/fleet-install.ts): which host installs,
-// in what order, when it waits for load, when it is already done, and what each says when it ends.
+// in what order, when it is already done, and what each says when it ends.
 // Every outside effect is a seam (`HostSteps`, `FleetSteps`, `CoordinatorSteps`), so the tests run
 // the whole flow on fake hosts and nothing here installs anything.
 //
@@ -10,8 +10,10 @@
 //   when the checkout's HEAD is behind it) is skipped: the install is idempotent.
 // - The hosts go one after another, the Mac first: it owns the fork, and its daily may merge
 //   upstream into prime-look and push it, which the workbox then builds.
-// - A host whose 1-minute load is at its gate or over defers; the coordinator tries the deferred
-//   hosts again every `retryMs`, up to `giveUpMs`.
+// - No load gate (the owner's call, 2026-11-11): a host installs whatever its load. A host that
+//   cannot install now (unreachable, or an install already running there) defers; the coordinator
+//   tries the deferred hosts again every `retryMs`, up to `giveUpMs`.
+// - No notification (the owner's call, 2026-11-11): each host's line goes to the log only.
 // - Requests coalesce: the coordinator starts a pass once no request came for `quietMs`, and a
 //   request that comes during a pass starts one more pass after it.
 // Only node built-ins and this folder's dependency-free files are imported: the host step runs
@@ -36,8 +38,6 @@ export interface FleetHost {
    * whose files Syncthing keeps in step with the Mac's, so a merge refuses files it already has).
    */
   readonly sync: "ff" | "reset"
-  /** It installs only while its 1-minute load is under this. */
-  readonly maxLoad: number
   /** What daily needs besides `OPENCODE_DEV`, relative to the home directory. */
   readonly env: Readonly<Record<string, string>>
 }
@@ -50,8 +50,6 @@ export const HOSTS: ReadonlyArray<FleetHost> = [
     ssh: "cvr@cristians-macbook-pro",
     fork: "Developer/personal/.rifts/opencode/prime-look",
     sync: "ff",
-    // The owner's rule: install the Mac only when its 1-minute load is under 40.
-    maxLoad: 40,
     env: {},
   },
   {
@@ -60,8 +58,6 @@ export const HOSTS: ReadonlyArray<FleetHost> = [
     ssh: "bite-workbox",
     fork: "Developer/personal/opencode",
     sync: "reset",
-    // Four per core of its 16; its load sits near 60 while it works.
-    maxLoad: 64,
     env: { GAMUT_GENT_AUTH: ".gent/auth" },
   },
 ]
@@ -135,7 +131,7 @@ const short = (commit: string) => commit.slice(0, 8)
 
 export type Outcome = "installed" | "skipped" | "deferred" | "failed" | "unreachable"
 
-/** One host's end: its outcome and the line the log and the notice show. */
+/** One host's end: its outcome and the line the log shows. */
 export interface HostResult {
   readonly host: string
   readonly outcome: Outcome
@@ -153,9 +149,6 @@ export interface Flags {
 /** What a host's step reaches, so a test runs it with no checkout, no build and no service. */
 export interface HostSteps {
   readonly name: string
-  readonly maxLoad: number
-  /** The 1-minute load now. */
-  readonly load: () => number
   /** The fork's owner merges upstream (scripts/post-land.ts); answers its outcome line. Absent elsewhere. */
   readonly upstream?: () => Promise<string>
   readonly target: () => Promise<Target>
@@ -169,24 +162,13 @@ export interface HostSteps {
 
 const minutes = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.floor(ms / 60_000)}m${String(Math.round((ms % 60_000) / 1000)).padStart(2, "0")}s`)
 
-const gate = (steps: HostSteps): HostResult | undefined => {
-  const load = steps.load()
-  return load < steps.maxLoad ? undefined : { host: steps.name, outcome: "deferred", line: `${steps.name}: deferred, load ${load.toFixed(1)} is not under ${steps.maxLoad}` }
-}
-
-/** One host's install: its upstream merge when asked, the skip, the load gate, then daily. */
+/** One host's install: its upstream merge when asked, the skip, then daily. */
 export const hostInstall = async (steps: HostSteps, flags: Flags): Promise<HostResult> => {
-  if (flags.upstream && steps.upstream !== undefined) {
-    const held = gate(steps)
-    if (held !== undefined) return held
-    steps.log(await steps.upstream())
-  }
+  if (flags.upstream && steps.upstream !== undefined) steps.log(await steps.upstream())
   const target = await steps.target()
   const stamp = steps.stamp()
   if (!flags.force && installedAt(stamp, target))
     return { host: steps.name, outcome: "skipped", line: `${steps.name}: already on ${stamp!.version} (dotfiles ${short(target.dotfiles)}, fork ${short(target.fork)})` }
-  const held = gate(steps)
-  if (held !== undefined) return held
   const began = steps.now()
   const ran = await steps.install()
   if (!ran.ok) return { host: steps.name, outcome: "failed", line: `${steps.name}: failed, ${ran.why}` }
@@ -219,7 +201,7 @@ export const parseResult = (output: string): HostResult | undefined => {
 
 // ── A pass over the fleet ──────────────────────────────────────────────
 
-/** What a pass reaches: each host's step, wherever it runs, and the notices. */
+/** What a pass reaches: each host's step, wherever it runs, and the log. */
 export interface FleetSteps {
   /** The hosts' names, in install order. */
   readonly hosts: ReadonlyArray<string>
@@ -227,8 +209,6 @@ export interface FleetSteps {
   readonly install: (host: string, flags: Flags) => Promise<HostResult>
   /** Copies the Mac's `upstream.json` (the TUI's corner) to the other hosts; answers its line. */
   readonly copyUpstream: () => Promise<string>
-  /** The owner's one-line notice that a host's install ended. */
-  readonly notify: (line: string) => void
   readonly log: (line: string) => void
 }
 
@@ -240,7 +220,6 @@ export const fleetPass = async (steps: FleetSteps, flags: Flags, only?: Readonly
     const result = await steps.install(host, flags).catch((error: unknown): HostResult => ({ host, outcome: "failed", line: `${host}: failed, ${String(error)}` }))
     results.push(result)
     steps.log(result.line)
-    if (result.outcome === "installed" || result.outcome === "failed") steps.notify(result.line)
   }
   if (results.some((result) => result.outcome === "installed")) steps.log(await steps.copyUpstream().catch((error: unknown) => `upstream.json: not copied, ${String(error)}`))
   return results
@@ -324,7 +303,6 @@ export const coordinate = async (steps: CoordinatorSteps, timing: Timing = TIMIN
     if (steps.now() - since >= timing.giveUpMs) {
       const line = `gave up on ${waiting.join(", ")} after ${minutes(steps.now() - since)}; the next request tries again`
       steps.log(line)
-      steps.notify(line)
       steps.consume(through)
       retry = undefined
       continue

@@ -79,8 +79,8 @@ workbox, whose files Syncthing keeps in step with the Mac's, moves HEAD, puts
 back each tracked file that differs except `codex/config.toml`,
 `skills/.system/` and `workbox/herdr-config.toml`, and deletes Syncthing's
 conflict copies), then `fleet-install.ts host` from that code: a host whose
-`installed.json` names the target is skipped; a host whose 1-minute load is
-at its gate (the Mac 40, the workbox 64) defers; else `bun install`, the
+`installed.json` names the target is skipped; else, whatever the host's
+load (no gate, the owner's call), `bun install`, the
 fork's links and `bun run daily`. The Mac's step runs in the coordinator; the
 workbox's over `ssh bite-workbox` in a transient systemd unit of its own
 (`opencode-fleet-install`), so neither its server's restart nor a plugin
@@ -89,8 +89,8 @@ or unreachable host is tried again every ten minutes, for up to twelve
 hours; a request that comes during a pass starts one more. After a pass that
 installed, the Mac's `upstream.json` goes to the workbox. Each host's line
 (`workbox: installed 2.2.5-prime.1a2b3c4d (dotfiles 89abcde0) in 6m12s`) is
-in `fleet.log`, each pass's whole output in `runs/`, and an install that
-ends is a macOS notification on the Mac.
+in `fleet.log` and each pass's whole output in `runs/`; nothing else tells
+of it (no notification, no message to a session: the owner's call).
 
 An accepted batch verdict starts one by itself: when the batch machine's
 ledger records a verifier's `accepted` (once per verdict, whichever

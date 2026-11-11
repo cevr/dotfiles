@@ -40,11 +40,6 @@ const fakeHost = (over: Partial<HostSteps> & { stampAfter?: Stamp } = {}) => {
   let clock = 0
   const steps: HostSteps = {
     name: "workbox",
-    maxLoad: 64,
-    load: () => {
-      did.push("load")
-      return 10
-    },
     target: async () => {
       did.push("target")
       return TARGET
@@ -64,7 +59,7 @@ const fakeHost = (over: Partial<HostSteps> & { stampAfter?: Stamp } = {}) => {
 }
 
 describe("a host's step", () => {
-  test("a host whose stamp names the target is skipped: no load read, no install", async () => {
+  test("a host whose stamp names the target is skipped: no install", async () => {
     const { steps, did } = fakeHost({ stamp: () => STAMP })
     const result = await hostInstall(steps, PLAIN)
     expect(result).toEqual({ host: "workbox", outcome: "skipped", line: "workbox: already on 2.2.5-prime.ffffffff (dotfiles dddddddd, fork ffffffff)" })
@@ -75,7 +70,7 @@ describe("a host's step", () => {
     const { steps, did } = fakeHost({ stamp: () => ({ ...STAMP, dotfiles: "0".repeat(40) }), stampAfter: { ...STAMP, version: "2.2.5-prime.12345678" } })
     const result = await hostInstall(steps, PLAIN)
     expect(result).toEqual({ host: "workbox", outcome: "installed", line: "workbox: installed 2.2.5-prime.12345678 (dotfiles dddddddd) in 1m30s" })
-    expect(did).toEqual(["target", "load", "install"])
+    expect(did).toEqual(["target", "install"])
   })
 
   test("another checkout, or another fork commit, is not the target", async () => {
@@ -91,12 +86,6 @@ describe("a host's step", () => {
     expect(did).toContain("install")
   })
 
-  test("at or over its load gate the host defers and installs nothing", async () => {
-    const { steps, did } = fakeHost({ load: () => 64 })
-    expect(await hostInstall(steps, PLAIN)).toEqual({ host: "workbox", outcome: "deferred", line: "workbox: deferred, load 64.0 is not under 64" })
-    expect(did).not.toContain("install")
-  })
-
   test("a daily that fails, or ends with no stamp, fails the host", async () => {
     const failing = fakeHost({ install: async () => ({ ok: false, why: "daily exited 1; the log has its output" }) })
     expect(await hostInstall(failing.steps, PLAIN)).toEqual({ host: "workbox", outcome: "failed", line: "workbox: failed, daily exited 1; the log has its output" })
@@ -104,12 +93,10 @@ describe("a host's step", () => {
     expect((await hostInstall(silent.steps, PLAIN)).line).toBe("workbox: failed, daily ended without writing its stamp")
   })
 
-  test("--upstream merges first on the fork's owner, under the load gate, before the target is read", async () => {
+  test("--upstream merges first on the fork's owner, before the target is read", async () => {
     const { steps, did } = fakeHost({ stamp: () => STAMP, upstream: async () => "upstream: up to date" })
     await hostInstall(steps, { force: false, upstream: true })
-    expect(did).toEqual(["load", "log upstream: up to date", "target"])
-    const busy = fakeHost({ load: () => 80, upstream: async () => "never" })
-    expect((await hostInstall(busy.steps, { force: false, upstream: true })).outcome).toBe("deferred")
+    expect(did).toEqual(["log upstream: up to date", "target"])
   })
 
   test("a host with no upstream step ignores --upstream", async () => {
@@ -147,7 +134,6 @@ describe("the target and the stamp", () => {
 /** A fleet of fake hosts, each answering from `answers` in turn. */
 const fakeFleet = (answers: Record<string, ReadonlyArray<HostResult["outcome"]>>) => {
   const order: Array<string> = []
-  const notices: Array<string> = []
   const lines: Array<string> = []
   const tries: Record<string, number> = {}
   const steps: FleetSteps = {
@@ -159,26 +145,25 @@ const fakeFleet = (answers: Record<string, ReadonlyArray<HostResult["outcome"]>>
       return { host, outcome, line: `${host}: ${outcome}` }
     },
     copyUpstream: async () => "upstream.json: copied to workbox",
-    notify: (line) => void notices.push(line),
     log: (line) => void lines.push(line),
   }
-  return { steps, order, notices, lines }
+  /** The log's lines of hosts that installed or failed, and of hosts given up on. */
+  const ended = () => lines.filter((line) => / (installed|failed)\b|^gave up/.test(line) && !line.startsWith("upstream.json"))
+  return { steps, order, lines, ended }
 }
 
 describe("a pass over the fleet", () => {
-  test("the Mac goes first, then the workbox; each install that ends is one notice; upstream.json goes across after an install", async () => {
+  test("the Mac goes first, then the workbox; each host is one log line; upstream.json goes across after an install", async () => {
     const fleet = fakeFleet({ macbook: ["installed"], workbox: ["installed"] })
     const results = await fleetPass(fleet.steps, PLAIN)
     expect(results.map((result) => result.line)).toEqual(["macbook: installed", "workbox: installed"])
     expect(fleet.order).toEqual(["macbook", "workbox"])
-    expect(fleet.notices).toEqual(["macbook: installed", "workbox: installed"])
     expect(fleet.lines).toEqual(["macbook: installed", "workbox: installed", "upstream.json: copied to workbox"])
   })
 
-  test("hosts already on the target: no notice and nothing copied", async () => {
+  test("hosts already on the target: nothing copied", async () => {
     const fleet = fakeFleet({})
     await fleetPass(fleet.steps, PLAIN)
-    expect(fleet.notices).toEqual([])
     expect(fleet.lines).toEqual(["macbook: skipped", "workbox: skipped"])
   })
 
@@ -187,7 +172,7 @@ describe("a pass over the fleet", () => {
     const steps: FleetSteps = { ...fleet.steps, install: async (host, flags) => (host === "macbook" ? Promise.reject(new Error("spawn failed")) : fleet.steps.install(host, flags)) }
     const results = await fleetPass(steps, PLAIN)
     expect(results.map((result) => result.outcome)).toEqual(["failed", "installed"])
-    expect(fleet.notices[0]).toBe("macbook: failed, Error: spawn failed")
+    expect(fleet.lines[0]).toBe("macbook: failed, Error: spawn failed")
   })
 })
 
@@ -250,14 +235,14 @@ describe("the coordinator", () => {
     })
     await coordinate(run.steps, TIMING)
     expect(run.fleet.order).toEqual(["macbook", "workbox", "macbook", "workbox"])
-    expect(run.fleet.notices).toEqual(["macbook: installed", "workbox: installed"])
+    expect(run.fleet.ended()).toEqual(["macbook: installed", "workbox: installed"])
   })
 
-  test("a host that defers on load is tried again alone every retry, until it installs", async () => {
+  test("a host that defers (an install already runs there) is tried again alone every retry, until it installs", async () => {
     const run = fakeCoordinator({ macbook: ["installed"], workbox: ["deferred", "deferred", "installed"] }, [{ at: 0, reason: "batch-1 accepted" }])
     await coordinate(run.steps, TIMING)
     expect(run.fleet.order).toEqual(["macbook", "workbox", "workbox", "workbox"])
-    expect(run.fleet.notices).toEqual(["macbook: installed", "workbox: installed"])
+    expect(run.fleet.ended()).toEqual(["macbook: installed", "workbox: installed"])
   })
 
   test("a host still deferred past the give-up time is given up on, said once, and the requests are done", async () => {
@@ -266,7 +251,7 @@ describe("the coordinator", () => {
     // Its first try ends at 4m; each retry is 10m asleep and 1m trying; at 6 retries (66m) it is past the hour.
     expect(run.fleet.order.filter((host) => host === "workbox").length).toBe(7)
     expect(run.fleet.order.filter((host) => host === "macbook").length).toBe(1)
-    expect(run.fleet.notices).toEqual([expect.stringMatching(/^gave up on workbox after \d+m\d+s; the next request tries again$/)])
+    expect(run.fleet.ended()).toEqual([expect.stringMatching(/^gave up on workbox after \d+m\d+s; the next request tries again$/)])
   })
 
   test("with no request waiting it does nothing", async () => {
@@ -312,10 +297,10 @@ describe("the commands it runs", () => {
     expect(quote("batch-1 accepted; it's done")).toBe(`'batch-1 accepted; it'\\''s done'`)
   })
 
-  test("the Mac installs first and gates at 40; the workbox resets over Syncthing", () => {
-    expect(HOSTS.map((host) => [host.name, host.sync, host.maxLoad])).toEqual([
-      ["macbook", "ff", 40],
-      ["workbox", "reset", 64],
+  test("the Mac installs first and fast-forwards; the workbox resets over Syncthing", () => {
+    expect(HOSTS.map((host) => [host.name, host.sync])).toEqual([
+      ["macbook", "ff"],
+      ["workbox", "reset"],
     ])
   })
 })

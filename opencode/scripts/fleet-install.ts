@@ -18,14 +18,14 @@
 //       (the TUI's corner) is copied to the workbox, whose fork has no upstream remote.
 //   bun scripts/fleet-install.ts host [--force] [--upstream]
 //       One host's step, run by scripts/fleet/host-sync.sh once the dotfiles checkout reached
-//       origin/main: skip when the stamp names the target, wait for load, then `bun install`, the
+//       origin/main: skip when the stamp names the target, else `bun install`, the
 //       fork's links and `bun run daily`, which writes the stamp. Its last line is the result.
 //
 // Everything is under ~/.local/state/opencode-fleet: `fleet.log` (one line per host per pass),
 // `runs/<time>.log` (each pass's whole output), `last.json`, `requests.jsonl`, `installed.json`
-// (the host's stamp). Each install that ends shows a macOS notification on the Mac.
+// (the host's stamp). Nothing else tells of it: no notification, no message to a session.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { homedir, hostname, loadavg } from "node:os"
+import { homedir, hostname } from "node:os"
 import { join, resolve } from "node:path"
 import {
   CHECKOUT,
@@ -167,8 +167,6 @@ const hostStep = async (argv: ReadonlyArray<string>) => {
   const result = await hostInstall(
     {
       name: spec.name,
-      maxLoad: spec.maxLoad,
-      load: () => loadavg()[0] ?? 0,
       ...(spec.host === FORK_OWNER
         ? {
             upstream: async () => {
@@ -204,12 +202,6 @@ const hostStep = async (argv: ReadonlyArray<string>) => {
 }
 
 // ── The coordinator ────────────────────────────────────────────────────
-
-const notifyOwner = (line: string) => {
-  if (process.platform !== "darwin") return
-  const text = line.replaceAll("\\", "\\\\").replaceAll('"', '\\"')
-  run(["osascript", "-e", `display notification "${text}" with title "OpenCode install"`])
-}
 
 const coordinatorRun = async () => {
   const home = homedir()
@@ -263,7 +255,6 @@ const coordinatorRun = async () => {
         hosts: HOSTS.map((host) => host.name),
         install,
         copyUpstream,
-        notify: notifyOwner,
         log,
         pending,
         consume: (through) => {
