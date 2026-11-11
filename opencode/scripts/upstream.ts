@@ -222,6 +222,36 @@ export const mergeUpstream = async (options: Options): Promise<Outcome> => {
   return { kind: "merged", from: base, merge, commits, pushed: pushed.ok }
 }
 
+/** Whether process `pid` is running, asked of `ps` (never a signal). */
+const running = (pid: number): boolean =>
+  Number.isInteger(pid) && pid > 0 && Bun.spawnSync(["ps", "-p", String(pid), "-o", "pid="], { stdout: "pipe", stderr: "pipe" }).exitCode === 0
+
+/**
+ * Runs `merge` holding `<state>/upstream.lock`, so `bun run daily`'s step 0 and a land's post-land
+ * step never merge in the one worktree at once. Answers nothing, running nothing, while a live
+ * process holds it; a lock its process left behind is taken over.
+ */
+export const withUpstreamLock = async <A>(state: string, merge: () => Promise<A>): Promise<A | undefined> => {
+  mkdirSync(state, { recursive: true })
+  const lock = join(state, "upstream.lock")
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(lock, `${process.pid}\n`, { flag: "wx" })
+    } catch {
+      const holder = Number(existsSync(lock) ? readFileSync(lock, "utf8").trim() : "")
+      if (running(holder)) return undefined
+      rmSync(lock, { force: true })
+      continue
+    }
+    try {
+      return await merge()
+    } finally {
+      rmSync(lock, { force: true })
+    }
+  }
+  return undefined
+}
+
 /**
  * Upstream OpenCode against the build at the fork's HEAD, for the TUI's corner
  * (mods/prime/update.ts): the commits of `upstream/dev` the build lacks, and
