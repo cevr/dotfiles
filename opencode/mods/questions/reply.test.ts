@@ -38,6 +38,14 @@ test("one answer that is the assumption tells the agent to carry on", () => {
   expect(letter.metadata.answers[0]).not.toHaveProperty("header")
 })
 
+test("an answer that is the choice the assumption names is the assumption: carry on", () => {
+  const recommended = { ...port, options: [{ label: "8080 (Recommended)" }, { label: "3000" }], assume: "8080, the dev default" }
+  const letter = letterOf([{ question: recommended, answer: "8080 (Recommended)" }])
+  expect(letter.text.split("\n").at(-1)).toBe("This is what you assumed: carry on.")
+  expect(letter.metadata.answers[0]?.matches).toBe(true)
+  expect(letterOf([{ question: recommended, answer: "3000" }]).metadata.answers[0]?.matches).toBe(false)
+})
+
 test("three answers are one letter: each question, assumption and answer, and one line naming what to revise", () => {
   const letter = letterOf([
     { question: port, answer: "3000" },

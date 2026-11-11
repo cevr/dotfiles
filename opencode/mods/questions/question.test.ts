@@ -10,6 +10,7 @@ import {
   type Event,
   EmptyAnswer,
   InvalidQuestion,
+  assumedChoice,
   matches,
   NotOpen,
   NothingAsked,
@@ -272,10 +273,32 @@ describe("AnswerQuestions, Dismiss and Delivered", () => {
 })
 
 test("an answer matches its assumption regardless of case and spacing", () => {
-  expect(matches(" Yes ", "yes")).toBe(true)
-  expect(matches("use  8080", "Use 8080")).toBe(true)
-  expect(matches("3000", "8080")).toBe(false)
+  expect(matches(" Yes ", { assume: "yes" })).toBe(true)
+  expect(matches("use  8080", { assume: "Use 8080" })).toBe(true)
+  expect(matches("3000", { assume: "8080" })).toBe(false)
   // An option chosen with a note in the question form is still the option.
-  expect(matches("Postgres (note: keep SQLite for tests)", "Postgres")).toBe(true)
-  expect(matches("SQLite (note: Postgres later)", "Postgres")).toBe(false)
+  expect(matches("Postgres (note: keep SQLite for tests)", { assume: "Postgres" })).toBe(true)
+  expect(matches("SQLite (note: Postgres later)", { assume: "Postgres" })).toBe(false)
+})
+
+test("the assumption names the choice whose label it is or starts with, without a (Recommended) mark; the longest wins", () => {
+  const ports = [{ label: "8080 (Recommended)" }, { label: "3000" }, { label: "80" }]
+  expect(assumedChoice({ options: ports, assume: "8080" })?.label).toBe("8080 (Recommended)")
+  expect(assumedChoice({ options: ports, assume: " 8080 (recommended) " })?.label).toBe("8080 (Recommended)")
+  expect(assumedChoice({ options: ports, assume: "8080, the dev default" })?.label).toBe("8080 (Recommended)")
+  expect(assumedChoice({ options: ports, assume: "3000" })?.label).toBe("3000")
+  // A label that is only the start of a word is not named: "80" is not in "8080", nor "Keep" in "Keeping".
+  expect(assumedChoice({ options: [{ label: "80" }], assume: "8080" })).toBeUndefined()
+  expect(assumedChoice({ options: [{ label: "Keep" }], assume: "Keeping it" })).toBeUndefined()
+  // Named in the middle, or not at all: no choice.
+  expect(assumedChoice({ options: ports, assume: "Use 3000 for now" })).toBeUndefined()
+  expect(assumedChoice({ assume: "Keep it" })).toBeUndefined()
+  expect(assumedChoice({ options: [{ label: "Keep" }, { label: "Keep it" }], assume: "Keep it for a release" })?.label).toBe("Keep it")
+})
+
+test("an answer that is the choice the assumption names matches the assumption", () => {
+  const question = { options: [{ label: "JSON (Recommended)" }, { label: "Plain text" }], assume: "JSON, what the log reader parses" }
+  expect(matches("JSON (Recommended)", question)).toBe(true)
+  expect(matches("JSON (Recommended) (note: keep the timestamps)", question)).toBe(true)
+  expect(matches("Plain text", question)).toBe(false)
 })

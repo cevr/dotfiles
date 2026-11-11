@@ -79,23 +79,23 @@ describe.skipIf(!fork)("background questions", () => {
       expect(lines(read("tray.txt"))).toContain("? 4 open questions · Cache store, Old endpoint, Log format, Test runner · shift+← /answer")
 
       // /answer: the host's question form in the root, a tab per question of the root's two asks and then the subagent's,
-      // the assumed choice first, no Dismiss choice; the footer offers ctrl+x dismiss.
+      // the assumed choice first, marked "(assumed)" in its label, no Dismiss choice; the footer offers ctrl+x dismiss.
       expect(form(read("form.txt")).slice(0, 8)).toEqual([
         "Background questions",
         "Cache store  Old endpoint  Log format  Test runner  Submit",
         "Which database should the cache use?",
-        "1. SQLite",
-        "assumed · one file, no server",
+        "1. SQLite (assumed)",
+        "one file, no server",
         "2. Redis",
         "3. Type your own answer",
         "⇆ tab  ↑↓ select  enter confirm  n notes  ctrl+x dismiss  esc dismiss",
       ])
       expect(form(read("form.txt")).join("\n")).not.toContain("Dismiss · keep the assumption")
       // Typed on the row under the assumption.
-      expect(form(read("typed.txt")).slice(2, 6)).toEqual(["Should the old /v1 endpoint stay for a release?", "1. Keep it", "assumed", "2. Drop it after this release"])
+      expect(form(read("typed.txt")).slice(2, 5)).toEqual(["Should the old /v1 endpoint stay for a release?", "1. Keep it (assumed)", "2. Drop it after this release"])
       // ctrl+x on the third: on to the subagent's tab, which names who asked; back on the third it shows dismissed.
       expect(form(read("marked.txt"))).toEqual(
-        expect.arrayContaining(["Runner check (general) asks: Which test runner should the suite use?", "1. bun test", "assumed", "2. vitest"]),
+        expect.arrayContaining(["Runner check (general) asks: Which test runner should the suite use?", "1. bun test (assumed)", "2. vitest"]),
       )
       expect(form(read("marked-tab.txt"))).toEqual(expect.arrayContaining(["Should the logs be JSON?", "✓ dismissed · ctrl+x again undoes"]))
       // The submit tab: three answered, the third left blank (ctrl+x again undid its dismissal).
@@ -118,12 +118,19 @@ describe.skipIf(!fork)("background questions", () => {
       expect(answered).toContain("? 1 open question · Log format · assuming JSON · shift+← /answer")
 
       // shift+← on the empty composer: the left-over question on its own; Esc closes it, it stays open and the prompt has the focus back.
-      expect(form(read("again.txt")).slice(0, 3)).toEqual(["Background questions", "Should the logs be JSON?", "1. JSON"])
+      expect(form(read("again.txt")).slice(0, 3)).toEqual(["Background questions", "Should the logs be JSON?", "1. JSON (recommended, assumed)"])
       const done = lines(read("done.txt"))
       expect(done).toContain("? 1 open question · Log format · assuming JSON · shift+← /answer")
       expect(done).toContain("┃ typed-after-answer")
-      // ctrl+x on the one-question form: its question closes, the tray goes, and nobody is sent a message.
-      expect(form(read("dismiss.txt")).slice(0, 5)).toEqual(["Background questions", "Should the logs be JSON?", "1. JSON", "assumed", "2. Plain text"])
+      // ctrl+x on the one-question form: its question closes, the tray goes, and nobody is sent a message. Its assumed
+      // choice is also the recommended one: one option, marked with both.
+      expect(form(read("dismiss.txt")).slice(0, 5)).toEqual([
+        "Background questions",
+        "Should the logs be JSON?",
+        "1. JSON (recommended, assumed)",
+        "2. Plain text",
+        "3. Type your own answer",
+      ])
       expect(form(read("dismiss.txt")).join("\n")).toContain("ctrl+x dismiss")
       expect(lines(read("dismissed.txt")).some((line) => line.includes("open question"))).toBe(false)
 

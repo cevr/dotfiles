@@ -21,7 +21,7 @@ test("a question is a string field with its choices, the assumed one first and m
     title: "Cache store",
     description: "Which database should the cache use?",
     options: [
-      { value: "SQLite", label: "SQLite", description: "assumed · one file, no server" },
+      { value: "SQLite", label: "SQLite (assumed)", description: "one file, no server" },
       { value: "Redis", label: "Redis" },
     ],
     custom: true,
@@ -34,9 +34,47 @@ test("with no choice naming it, the assumption is a choice of its own; with no h
     type: "string",
     title: "Should the old /v1 endp…",
     description: "Should the old /v1 endpoint stay for a release?",
-    options: [{ value: "Keep it", label: "Keep it", description: "assumed" }],
+    options: [{ value: "Keep it", label: "Keep it (assumed)" }],
     custom: true,
   })
+})
+
+test("an assumed choice that is also the recommended one is one option, marked (recommended, assumed), answering with its label", () => {
+  const logs: Question = {
+    id: "q2",
+    sessionID: "ses_a",
+    question: "Should the logs be JSON?",
+    options: [{ label: "Plain text" }, { label: "JSON (Recommended)", description: "what the reader parses" }],
+    assume: "JSON",
+    askedAt: AT,
+  }
+  expect(fieldOf(logs).options).toEqual([
+    { value: "JSON (Recommended)", label: "JSON (recommended, assumed)", description: "what the reader parses" },
+    { value: "Plain text", label: "Plain text" },
+  ])
+  // Picking it records what picking "JSON (Recommended)" recorded before: the choice's own label.
+  const [picked] = fieldOf(logs).options
+  expect(replyOf({ [`${KEY_PREFIX}q2`]: picked!.value }, "ses_a")).toEqual([{ sessionID: "ses_a", answers: [{ id: "q2", answer: "JSON (Recommended)" }], dismissed: [] }])
+})
+
+test("an assumption that starts with a choice's label marks that choice; one naming none stays its own option, marked", () => {
+  const port = (assume: string): Question => ({
+    id: "q4",
+    sessionID: "ses_a",
+    question: "Which port?",
+    options: [{ label: "3000" }, { label: "8080" }],
+    assume,
+    askedAt: AT,
+  })
+  expect(fieldOf(port("8080, the dev default")).options).toEqual([
+    { value: "8080", label: "8080 (assumed)" },
+    { value: "3000", label: "3000" },
+  ])
+  expect(fieldOf(port("Use whichever is free")).options).toEqual([
+    { value: "Use whichever is free", label: "Use whichever is free (assumed)" },
+    { value: "3000", label: "3000" },
+    { value: "8080", label: "8080" },
+  ])
 })
 
 test("a form holds every open question of the session, oldest first", () => {

@@ -1972,15 +1972,22 @@ pending gets no second.
 Background questions
 Cache store  Old endpoint  Log format  Test runner  Submit
 Which database should the cache use?
-1. SQLite
-   assumed · one file, no server
+1. SQLite (assumed)
+   one file, no server
 2. Redis
 3. Type your own answer
 ⇆ tab  ↑↓ select  enter confirm  n notes  ctrl+x dismiss  esc dismiss
 ```
 
 Each question is a tab; its choices come with the assumed one first, marked
-`assumed` (a choice of its own when no choice names it), and the last row
+`(assumed)` in its label the way the built-in question marks a choice
+`(Recommended)`. A choice that is both shows once, as `JSON (recommended,
+assumed)`. The assumption names a choice when, ignoring case, spacing and a
+`(Recommended)` mark, it is that choice's label or starts with it as whole
+words (`8080, the dev default` names `8080`; the longest label wins). Picking
+it answers with the choice's own label, which the agent reads as its
+assumption. An assumption that names no choice is a choice of its own at the
+top, marked the same. The last row
 types an answer of your own. ctrl+x on a tab dismisses its question, keeping
 the assumption, and moves to the next tab; until the submit the tab shows
 `✓ dismissed · ctrl+x again undoes` and the Submit tab lists it as

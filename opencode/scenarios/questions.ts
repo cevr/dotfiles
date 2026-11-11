@@ -49,7 +49,7 @@ const ASK: ToolInput = {
   ],
 }
 const ASK_MORE: ToolInput = {
-  questions: [{ question: "Should the logs be JSON?", header: "Log format", options: [{ label: "JSON" }, { label: "Plain text" }], assume: "JSON" }],
+  questions: [{ question: "Should the logs be JSON?", header: "Log format", options: [{ label: "JSON (Recommended)" }, { label: "Plain text" }], assume: "JSON" }],
 }
 const SUB_ASK: ToolInput = {
   questions: [{ question: "Which test runner should the suite use?", header: "Test runner", options: [{ label: "bun test" }, { label: "vitest" }], assume: "bun test" }],
