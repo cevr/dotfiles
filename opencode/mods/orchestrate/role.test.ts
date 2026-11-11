@@ -60,14 +60,8 @@ describe("the guard's routing", () => {
 })
 
 describe("the Codex fallback", () => {
-  test("light, direct or mechanical work runs on luna at max", () => {
-    for (const note of ["(light)", "(direct)", "(mechanical)", "(Mechanical) "])
-      expect(codexFallback("implementor", `pkg-lower implementor ${note}`)).toEqual({ family: "gpt-luna", variant: "max" })
-  })
-
-  test("the rest run on sol: the verifier at medium, everything else at high", () => {
-    expect(codexFallback("verifier", "verifier sso r1")).toEqual({ family: "gpt-sol", variant: "medium" })
-    for (const agent of ["planner", "implementor", "worker", "explore"]) expect(codexFallback(agent, undefined)).toEqual({ family: "gpt-sol", variant: "high" })
-    expect(codexFallback("implementor", "a light (mechanical) refactor, then more")).toEqual({ family: "gpt-sol", variant: "high" })
+  test("a planner or verifier runs on sol: the verifier at medium, the planner at high", () => {
+    expect(codexFallback("verifier")).toEqual({ family: "gpt-sol", variant: "medium" })
+    expect(codexFallback("planner")).toEqual({ family: "gpt-sol", variant: "high" })
   })
 })
