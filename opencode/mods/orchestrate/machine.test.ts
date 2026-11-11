@@ -51,7 +51,7 @@ import {
   startOf,
   unitOfRift,
   verifierPromptOf,
-  workspacesOf,
+  workspaceOf,
 } from "./machine.ts"
 
 const CADENCE: Cadence = { ready: 3, waitMs: 30 * 60_000 }
@@ -619,30 +619,56 @@ describe("the machine's stories", () => {
     expect(unitOfRift("/u/.rifts/dotfiles/land-upstream-2", ["reset-use", "land-upstream"])).toBe("land-upstream")
     expect(unitOfRift("auth-2", ["auth", "auth-2"])).toBe("auth-2")
     expect(unitOfRift("auth-2x", ["auth"])).toBeUndefined()
-    // A workspace the ledger holds names its unit whatever it is called; two units holding it fall back to the name.
+    // A workspace the ledger holds names its unit whatever it is called.
     expect(unitOfRift("scratch-b", ["reset-use", "web"], { "reset-use": ["/u/.rifts/dotfiles/scratch-b"] })).toBe("reset-use")
     expect(unitOfRift("dotfiles/scratch-b", ["reset-use"], { "reset-use": ["/u/.rifts/dotfiles/scratch-b"] })).toBe("reset-use")
-    expect(unitOfRift("web", ["reset-use", "web"], { "reset-use": ["/u/.rifts/dotfiles/web"], web: ["/u/.rifts/dotfiles/web"] })).toBe("web")
+    // A unit's exact name always wins, even over a workspace another unit holds by that name.
+    expect(unitOfRift("web", ["api", "web"], { api: ["/u/.rifts/app/web"] })).toBe("web")
+    expect(unitOfRift("/u/.rifts/app/web", ["api", "web"], { api: ["/u/.rifts/app/web"] })).toBe("web")
+    // Two units holding one workspace: none, never a wrong one.
+    expect(unitOfRift("shared-x", ["api", "web"], { api: ["/u/.rifts/app/shared-x"], web: ["/u/.rifts/app/shared-x"] })).toBeUndefined()
   })
 
-  test("property: over arbitrary unit names and rounds, each unit's Rift (by name, branch, path, numbered round, or any workspace its starts named) is that unit's", () => {
+  test("a unit's own workspace is the one its brief names as its own; other Rifts the brief mentions are none of it (round-2 probe)", () => {
+    const apiPrompt = "You work in the Rift /u/.rifts/app/api. Do not touch /u/.rifts/app/web (unit web's)."
+    expect(workspaceOf(apiPrompt)).toBe("/u/.rifts/app/api")
+    // web on a workrift (no .rifts path) or from a ledger older than workspaces: a land of `web` is web's.
+    const workspaces = { api: [workspaceOf(apiPrompt)!], web: [workspaceOf("You work in /workspaces/web on the workbox.")].filter((path) => path !== undefined) }
+    expect(unitOfRift("web", ["api", "web"], workspaces)).toBe("web")
+    expect(unitOfRift("web", ["api", "web"], { api: [workspaceOf(apiPrompt)!] })).toBe("web")
+    // Even a ledger written by round 2, which held every mentioned Rift, cannot take web's own name.
+    expect(unitOfRift("web", ["api", "web"], { api: ["/u/.rifts/app/api", "/u/.rifts/app/web"] })).toBe("web")
+  })
+
+  test("workspaceOf reads the brief's own workspace: a Workspace: or Rift: line, \"you work in the Rift …\", the spec's ## Workspace; none otherwise", () => {
+    expect(workspaceOf("You work in the Rift /Users/me/Developer/personal/.rifts/dotfiles/land-upstream-2 (a copy). Logs in `/tmp/x`.")).toBe("/Users/me/Developer/personal/.rifts/dotfiles/land-upstream-2")
+    expect(workspaceOf("Round 2.\nDo not touch ~/.rifts/app/web.\nWorkspace: `/w/.rifts/app/api/`, branch feat/api")).toBe("/w/.rifts/app/api")
+    expect(workspaceOf("- **Rift:** /workspaces/api-3.")).toBe("/workspaces/api-3")
+    expect(workspaceOf("# api — spec\n\n## Workspace\n/u/.rifts/app/api, branch `feat/api`, base `abc`.")).toBe("/u/.rifts/app/api")
+    expect(workspaceOf("Read the spec at /run/api/spec.md. Do not touch /u/.rifts/app/web.")).toBeUndefined()
+    expect(workspaceOf(undefined)).toBeUndefined()
+  })
+
+  test("property: over arbitrary units, rounds and briefs that also name other units' Rifts, a land's entry names the unit it was started in or named for", () => {
     const random = rng(1111)
     const word = () => Array.from({ length: 1 + Math.floor(random() * 6) }, () => "abcdefghijklmnopqrstuvwxyz"[Math.floor(random() * 26)]).join("")
     for (let trial = 0; trial < 300; trial++) {
       // Names of one to three words, no word a number: a numbered Rift is never another unit's name.
       const units = [...new Set(Array.from({ length: 1 + Math.floor(random() * 5) }, () => Array.from({ length: 1 + Math.floor(random() * 3) }, word).join("-")))]
-      // Each unit's workspaces: arbitrary Rift names, made unique per unit.
-      const workspaces = Object.fromEntries(units.map((unit, i) => [unit, [`/home/me/.rifts/repo/${word()}-${i}-ws`, `/home/me/.rifts/repo/${unit}-${2 + i}`]]))
+      // Each unit's own Rift: an arbitrary name, or its name with a round.
+      const own = Object.fromEntries(units.map((unit, i) => [unit, random() < 0.5 ? `/home/me/.rifts/repo/${word()}-${i}-ws` : `/home/me/.rifts/repo/${unit}-${2 + i}`]))
+      // Each brief names its own Rift, then other units' Rifts and names in "do not touch" lines.
+      const brief = (unit: string) =>
+        [
+          ...units.filter((other) => other !== unit && random() < 0.7).map((other) => `Do not touch ${own[other]} or /home/me/.rifts/repo/${other} (unit ${other}).`),
+          `${random() < 0.5 ? "You work in the Rift" : "Workspace:"} ${own[unit]}${random() < 0.5 ? "." : " (a copy)."}`,
+        ].join("\n")
+      const workspaces = Object.fromEntries(units.map((unit) => [unit, [workspaceOf(brief(unit))!]]))
       for (const unit of units) {
+        expect(workspaces[unit]).toEqual([own[unit]])
         const round = 2 + Math.floor(random() * 9)
-        // Another unit whose name ends with this one's could take its name-based entries: the longest wins, by design.
-        const longer = units.some((other) => other !== unit && other.endsWith(`-${unit}`))
-        const byName = [`${unit}-${round}`, `/home/me/.rifts/repo/${unit}-${round}`, `run/${unit}`, `feat/${unit}`, unit]
-        if (!longer) for (const entry of byName) expect([entry, unitOfRift(entry, units)]).toEqual([entry, unit])
-        for (const workspace of workspaces[unit]!) {
-          expect(unitOfRift(workspace, units, workspaces)).toBe(unit)
-          expect(unitOfRift(workspace.split("/").at(-1)!, units, workspaces)).toBe(unit)
-        }
+        const entries = [unit, `feat/${unit}`, `run/${unit}`, `/home/me/.rifts/repo/${unit}`, `${unit}-${round}`, `/home/me/.rifts/repo/${unit}-${round}`, own[unit]!, own[unit]!.split("/").at(-1)!]
+        for (const entry of entries) expect([entry, unitOfRift(entry, units, workspaces)]).toEqual([entry, unit])
       }
     }
   })
@@ -679,13 +705,6 @@ describe("the machine's stories", () => {
     expect((await run([...steps, [Land.make({ rifts: ["/u/.rifts/dotfiles/reset-use-3", "/u/.rifts/dotfiles/lu-second-try"] }), 51 * MIN]])).last).toEqual({ events: [] })
   })
 
-  test("workspacesOf reads the Rift paths a prompt names, each once, without trailing punctuation", () => {
-    expect(
-      workspacesOf("You work in the Rift /Users/me/Developer/personal/.rifts/dotfiles/land-upstream-2 (a copy). Logs in `/tmp/x`. Rift `/Users/me/Developer/personal/.rifts/dotfiles/land-upstream-2`."),
-    ).toEqual(["/Users/me/Developer/personal/.rifts/dotfiles/land-upstream-2"])
-    expect(workspacesOf("~/.rifts/app/a, and /w/.rifts/app/b/; none else")).toEqual(["~/.rifts/app/a", "/w/.rifts/app/b"])
-    expect(workspacesOf(undefined)).toEqual([])
-  })
 
   test("the notes ride on a start's answer: a due batch, a landed batch with no verifier, a fourth round", async () => {
     const due = await run([[impl("a1"), 0], [impl("b1"), 0], [impl("c1"), 0], [ready("a1"), MIN], [ready("b1"), MIN], [ready("c1"), MIN]])

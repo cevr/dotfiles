@@ -102,7 +102,7 @@ export const Start = Schema.TaggedStruct("Start", {
   direct: Schema.Boolean,
   folds: Schema.optionalKey(Schema.Array(Schema.String)),
   departs: Schema.optionalKey(Schema.String),
-  /** An implementor's: the Rifts its prompt names (`workspacesOf`), its unit's workspaces from now on. */
+  /** An implementor's: the workspace its brief names as its own (`workspaceOf`), its unit's from now on. */
   workspaces: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 export interface Start extends Schema.Schema.Type<typeof Start> {}
@@ -313,13 +313,32 @@ const unverifiedOf = (state: MachineState): ReadonlyArray<string> => [...new Set
 /** The units the running verifier covers: as it started, else (an older checkpoint) those in `verify`. */
 const coveredOf = (state: MachineState): ReadonlyArray<string> => state.verifier?.units ?? unitsIn(state, "verify")
 
-/** A Rift's path as a prompt names it: under a `.rifts/` directory, up to a space, a quote or a bracket. */
-const RIFT_PATH = /[^\s`'"()<>[\]]*\/\.rifts\/[^\s`'"()<>[\]]+/g
+/** A path as a brief writes it: absolute or from home, up to a space, a quote, a bracket or a comma. */
+const PATH = String.raw`(?:~|/)[^\s\x60'"()<>[\],]*`
 
-/** The Rifts a prompt names, by path, each once, trailing punctuation dropped: an implementor's workspaces. */
-export const workspacesOf = (prompt: string | undefined): ReadonlyArray<string> => [
-  ...new Set([...(prompt ?? "").matchAll(RIFT_PATH)].map((match) => match[0].replace(/[.,;:!?]+$/, "").replace(/\/+$/, ""))),
+/**
+ * Where a brief says the implementor works, first match wins: a `Workspace:` or `Rift:` line (the
+ * spec's and a round message's), "you work in the Rift <path>", or the spec's `## Workspace` heading
+ * with its path below. Every other path a prompt names (a "do not touch" line, a log directory,
+ * another unit's Rift) is none of this unit's.
+ */
+const OWN_WORKSPACE: ReadonlyArray<RegExp> = [
+  new RegExp(String.raw`^[\s>*_-]*(?:workspace|rift)[*_]*\s*:[*_\s]*\x60?(${PATH})`, "im"),
+  new RegExp(String.raw`\bwork(?:s|ing)?\s+in\s+(?:the\s+|a\s+|its\s+|your\s+)?(?:rift|worktree|workspace)\s+\x60?(${PATH})`, "i"),
+  new RegExp(String.raw`^#+\s*workspace\s*\n+\s*\x60?(${PATH})`, "im"),
 ]
+
+/**
+ * The workspace an implementor's start names as its own (`OWN_WORKSPACE`), trailing punctuation and
+ * slashes dropped; none when the brief names none. Never a path the brief only mentions.
+ */
+export const workspaceOf = (prompt: string | undefined): string | undefined => {
+  for (const pattern of OWN_WORKSPACE) {
+    const path = pattern.exec(prompt ?? "")?.[1]?.replace(/[.,;:!?]+$/, "").replace(/\/+$/, "")
+    if (path !== undefined && path.length > 1) return path
+  }
+  return undefined
+}
 
 /** A land's entry names `workspace`: its whole path, or its last segments (`reset-use-3`, `dotfiles/reset-use-3`). */
 const namesWorkspace = (entry: string, workspace: string) => entry === workspace || workspace.endsWith(`/${entry}`)
@@ -327,17 +346,22 @@ const namesWorkspace = (entry: string, workspace: string) => entry === workspace
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 
 /**
- * The unit a land's entry names. First by the workspaces the ledger holds for
- * each unit (`workspaces`: the Rifts its implementors were started in), when
- * exactly one unit's fits. Else by the unit's name: its name, its branch
- * (`<run>/<unit>`, `feat/<unit>`), its path (`…/.rifts/<repo>/<unit>`),
- * workrift's directory (`<run>-<unit>`), each maybe with a later round's
- * number (`<unit>-3`); the longest unit name that fits wins (`fix-auth` over
- * `auth`). An entry that is no unit's is none.
+ * The unit a land's entry names, or none, never a wrong one:
+ *
+ * 1. a unit's exact name, as the entry or its last segment (`web`, `feat/web`, `…/.rifts/app/web`)
+ *    always wins;
+ * 2. else the unit whose recorded workspace (`workspaces`: the Rift each round's brief named as
+ *    its own) the entry names; two units holding it is none;
+ * 3. else by name: `<run>/<unit>`, workrift's `<run>-<unit>`, a later round's `<unit>-3`; the
+ *    longest unit name that fits wins (`fix-auth` over `auth`).
  */
 export const unitOfRift = (rift: string, units: ReadonlyArray<string>, workspaces: Readonly<Record<string, ReadonlyArray<string>>> = {}): string | undefined => {
   const entry = rift.trim().replace(/\/+$/, "")
+  const last = entry.split("/").at(-1) ?? entry
+  if (units.includes(entry)) return entry
+  if (units.includes(last)) return last
   const owners = units.filter((unit) => (workspaces[unit] ?? []).some((workspace) => namesWorkspace(entry, workspace)))
+  if (owners.length > 1) return undefined
   if (owners.length === 1) return owners[0]
   return units.filter((unit) => new RegExp(`(?:^|[/-])${escaped(unit)}(?:-\\d+)?$`).test(entry)).sort((a, b) => b.length - a.length)[0]
 }
