@@ -14,6 +14,7 @@
 // bun scripts/perf/startup.ts (--fork <checkout> | --bin <compiled opencode>) --db <file> --session <id> --out <dir>
 //   [--plugins <comma list of TUI plugin paths>] [--ready <text the session shows>] [--limit 180000]
 //   [--cols 160] [--rows 45] [--prof <ms,...>] [--cli <json merged into cli.json>] [--hold <ms past ready>]
+//   [--replies] [--trace [--trace-ms 6000]]
 // `end` is the TUI's CPU and RSS when the run stops, `peakRss` the most it held.
 //
 // The server and TUI run in process groups of their own, killed at the end.
@@ -111,17 +112,32 @@ console.log(`server up in ${Date.now() - serverReady} ms on ${port}`)
 
 const terminal = new Terminal({ cols, rows, allowProposedApi: true })
 const started = Date.now()
+// `--replies`: answer the terminal's queries as a desktop terminal does. @xterm/headless answers device
+// attributes and status reports; the background and foreground color queries (OSC 11 and 10), which the
+// TUI waits on for its light or dark mode, it leaves unanswered, so they are answered here, dark.
+const replies = args.includes("--replies")
+// `--trace`: the fork's boot trace (OPENCODE_BOOT_TRACE): marks of each boot step and a CPU profile from
+// the first import, written to <out>/trace by the TUI alone.
+const trace = args.includes("--trace") ? join(out, "trace") : undefined
+const tuiEnv = trace ? { ...env, OPENCODE_BOOT_TRACE: trace, OPENCODE_BOOT_TRACE_MS: opt("trace-ms", "6000")! } : env
 const tui = spawnPty(entry[0]!, [...entry.slice(1), "-s", session, "--server", `http://127.0.0.1:${port}`], {
   cols,
   rows,
   cwd: out,
-  env,
+  env: tuiEnv,
   terminal: {
     data(_term, data: Uint8Array) {
       terminal.write(data)
+      if (replies) answerColors(new TextDecoder().decode(data))
     },
   },
 })
+if (replies) terminal.onData((data) => tui.write(data))
+const COLOR_QUERY = new RegExp(String.raw`\u001b\](1[01]);\?(\u0007|\u001b\\)`, "g")
+function answerColors(text: string) {
+  for (const match of text.matchAll(COLOR_QUERY))
+    tui.write(`\x1b]${match[1]};rgb:${match[1] === "11" ? "1e1e/1e1e/1e1e" : "d4d4/d4d4/d4d4"}${match[2]}`)
+}
 stopAll.push(() => {
   try {
     process.kill(-tui.pid, "SIGTERM")
@@ -212,7 +228,23 @@ if (profAt.length > 0) await Bun.sleep(Math.max(0, profAt.at(-1)! + 11_000 - (Da
 const log = join(xdg, "data/opencode/log")
 if (existsSync(log))
   for (const file of readdirSync(log).filter((name) => name.startsWith(`cpu-`))) copyFileSync(join(log, file), join(out, file))
+// The TUI writes its trace OPENCODE_BOOT_TRACE_MS after it starts; the marks are ms since its process began.
+const bootTrace = async () => {
+  if (!trace) return undefined
+  for (let waited = 0; waited < 15_000; waited += 200) {
+    const file = existsSync(trace) ? readdirSync(trace).find((name) => /^boot-\d+\.json$/.test(name)) : undefined
+    if (file) {
+      await Bun.sleep(300)
+      return (JSON.parse(readFileSync(join(trace, file), "utf8")) as { marks: Array<{ name: string; ms: number }> }).marks
+    }
+    await Bun.sleep(200)
+  }
+  return undefined
+}
+const marks = await bootTrace()
 const result = {
+  // The first time each step was marked.
+  marks: marks && Object.fromEntries(marks.toReversed().map((mark) => [mark.name, Math.round(mark.ms)])),
   session,
   plugins: plugins.length,
   first,
