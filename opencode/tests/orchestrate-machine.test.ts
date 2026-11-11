@@ -139,10 +139,13 @@ describe.skipIf(!fork)("a root that compacts mid-run and drifts still lands as a
 // fix unit; batch-2 lands once the verdict is in and both are folded into
 // ready units, and its one verifier is told them.
 describe.skipIf(!fork)("a root runs batches as a pipeline", () => {
+  // One run of the scenario serves both tests: the pipeline, and round 1's edges on a root of their own.
+  let piped: Promise<PipelineResult> | undefined
+  const pipeline = () => (piped ??= run<PipelineResult>("pipeline"))
   test(
     "fan-out during verify, a fold into a running implementor and one into a fix unit, the land after the verdict, the next verifier told the folds; a land before the verdict and one with a finding unfolded are refused",
     async () => {
-      const result = await run<PipelineResult>("pipeline")
+      const result = await pipeline()
       const lines = result.ledger
       const kinds = lines.map((line) => line.kind)
       // Batch-2's implementors started while batch-1's verifier ran: no start was refused.
@@ -166,6 +169,36 @@ describe.skipIf(!fork)("a root runs batches as a pipeline", () => {
       const told = result.seen.find((seen) => JSON.stringify(seen.messages).includes("verifier batch-2 r1: accepted") && !JSON.stringify(seen.messages).includes("probe:"))
       expect(JSON.stringify(told?.messages)).toContain("- batch-1 auth/M1 → export\\n- batch-1 billing/M1 → billing-fix1")
       expect(kinds).not.toContain("Departed")
+    },
+    200_000,
+  )
+
+  // orch-pipeline r1's live probes, promoted: M2, a covered unit's next round does not end its batch's wait; M1, a
+  // `changes` whose report does not read is never an empty set of findings.
+  test(
+    "a covered unit's round 2 cannot land while its batch's verifier runs; a changes whose report does not read holds the land until it reads and its finding folds",
+    async () => {
+      const { edges } = await pipeline()
+      const lines = edges.ledger
+      const refused = lines.filter((line) => line.kind === "Refused")
+      expect(refused.map((line) => line.rule)).toEqual(["VerdictPending", "FindingUnfolded", "FindingUnfolded"])
+      // M2: refused while batch-r1's verifier ran, after repeat r2 handed back ready; landed once the verdict was in.
+      const verdict = lines.findIndex((line) => line.kind === "VerifierEnded" && line.batch === "batch-r1")
+      expect(lines.indexOf(refused[0]!)).toBeLessThan(verdict)
+      expect(lines.slice(0, verdict).filter((line) => line.kind === "BatchLanded")).toHaveLength(1)
+      expect(String(refused[0]!.message)).toContain("Verifier batch-r1 still runs over repeat")
+      // M1: the verdict whose report did not read is unresolved, not empty; the refusal says which report.
+      expect(lines.find((line) => line.kind === "VerifierEnded" && line.batch === "batch-m1")).toMatchObject({
+        verdict: "changes",
+        unresolved: { report: expect.stringContaining("batch-m1-findings.md"), why: expect.stringContaining("does not read") },
+      })
+      expect(String(refused[1]!.message)).toContain("The findings of batch-m1's `changes` are not known")
+      // Written since, the report is read again at the next land: its finding opens, unfolded, then folds into a fix unit.
+      expect(lines.find((line) => line.kind === "ReportResolved")).toMatchObject({ batch: "batch-m1", findings: ["repeat/M1"] })
+      expect(String(refused[2]!.message)).toContain("repeat/M1 (not folded)")
+      expect(lines.filter((line) => line.kind === "FindingFolded").map((line) => [line.finding, line.into])).toEqual([["repeat/M1", "repeat-fix1"]])
+      expect(edges.riftLands).toEqual([["repeat"], ["repeat"], ["after", "repeat-fix1"]])
+      expect(lines.map((line) => line.kind)).not.toContain("Departed")
     },
     200_000,
   )

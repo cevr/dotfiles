@@ -94,6 +94,12 @@ export interface PipelineResult extends Result {
   readonly riftLands: ReadonlyArray<ReadonlyArray<string>>
   /** The ledger's lines of the root. */
   readonly ledger: ReadonlyArray<Record<string, unknown>>
+  /** The second root's run of round 1's edges (M2, a covered unit's next round; M1, an unread report): its lines, its lands and its messages. */
+  readonly edges: {
+    readonly ledger: ReadonlyArray<Record<string, unknown>>
+    readonly riftLands: ReadonlyArray<ReadonlyArray<string>>
+    readonly messages: unknown
+  }
 }
 
 /** What the `move` scenario adds (tests/orchestrate-machine.test.ts). */
@@ -350,14 +356,47 @@ try {
     await opencode.experimental.session.wait({ sessionID: String(exported.child) })
     await land(["search", "export", "billing-fix1"])
     await call("subagent", { agent: "verifier", description: "verifier batch-2 r1", prompt: `${HAND_BACK} verifier batch-2 r1: accepted /nonexistent/loop-probe-x/findings.md` })
+    const riftLands = () => (existsSync(riftLog) ? readFileSync(riftLog, "utf8").split("\n").filter((line) => line !== "") : []).map((line) => JSON.parse(line) as ReadonlyArray<string>)
+    const lands = riftLands()
+
+    // The edges round 1's verifier proved live (orch-pipeline r1 M1, M2), on a root of their own.
+    const edge = await opencode.sessions.create({ location })
+    const at = (name: string, input: Record<string, unknown>) => turn(edge.id, `${PROBE}${JSON.stringify({ name, input })}`)
+    const step = (unit: string, round = 1, extra: Record<string, unknown> = {}) =>
+      at("subagent", { agent: "implementor", description: `implementor ${unit} r${round}`, prompt: `${HAND_BACK} implementor ${unit} r${round}: ready /nonexistent/loop-probe-x/request.md`, ...extra })
+    const landEdge = (rifts: ReadonlyArray<string>) => at("rift", { action: "land", rifts })
+    const edgeHas = (match: (line: Record<string, unknown>) => boolean) => until(() => lines().some((line) => line.sessionID === edge.id && match(line)), 20_000)
+    // M2: the covered unit's round 2 hands back while its batch's verifier runs; its land waits for the verdict.
+    await step("repeat")
+    await landEdge(["repeat"])
+    await at("subagent", { agent: "verifier", description: "verifier batch-r1 r1", prompt: `gate:repeat-verifier\n${HAND_BACK} verifier batch-r1 r1: accepted /nonexistent/loop-probe-x/findings.md`, background: true })
+    await step("repeat", 2)
+    await landEdge(["repeat"])
+    sim.open("repeat-verifier")
+    if (!(await edgeHas((line) => line.kind === "VerifierEnded" && line.batch === "batch-r1"))) throw new Error("batch-r1's verdict never reached the ledger")
+    await landEdge(["repeat"])
+    // M1: a `changes` whose report does not read yet holds the next land; once written, it is read again, and its finding folds.
+    const edgeRun = join(run, "edge")
+    const missing = join(edgeRun, "batch-m1-findings.md")
+    await at("subagent", { agent: "verifier", description: "verifier batch-m1 r1", prompt: `${HAND_BACK} verifier batch-m1 r1: changes ${missing}` })
+    if (!(await edgeHas((line) => line.kind === "VerifierEnded" && line.batch === "batch-m1"))) throw new Error("batch-m1's verdict never reached the ledger")
+    await step("after")
+    await landEdge(["after"])
+    mkdirSync(join(edgeRun, "repeat"), { recursive: true })
+    writeFileSync(join(edgeRun, "repeat", "round-1-findings.md"), "Verdict: CHANGES REQUIRED\n\n## Major\n\n### M1 — repeat drops a line\n")
+    writeFileSync(missing, "changes\n\n| repeat | 1 | changes | repeat/round-1-findings.md |\n")
+    await landEdge(["after"])
+    await step("repeat-fix1", 1, { description: "implementor repeat-fix1 r1 (folds: repeat/M1)" })
+    await landEdge(["after", "repeat-fix1"])
     const piped: PipelineResult = {
       children: [],
       sessions: {},
       seen: sim.seen,
       log: [],
-      riftLands: (existsSync(riftLog) ? readFileSync(riftLog, "utf8").split("\n").filter((line) => line !== "") : []).map((line) => JSON.parse(line) as ReadonlyArray<string>),
+      riftLands: lands,
       ledger: lines().filter((line) => line.sessionID === root.id),
       root: { id: root.id, messages: await messages(root.id) },
+      edges: { ledger: lines().filter((line) => line.sessionID === edge.id), riftLands: riftLands().slice(lands.length), messages: await messages(edge.id) },
     }
     result = piped
   } else if (spec.scenario === "move") {
