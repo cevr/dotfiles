@@ -655,13 +655,25 @@ call against it at the point of action (`mods/orchestrate/machine.ts`).
   20 departures and refusals of the last week; a root idle a week is dropped,
   and only the 64 most recently active roots are kept. The next compaction
   waits for twice what this one kept.
-- **The five rules**, each refused in the skill's own words (held to SKILL.md
+- **The six rules**, each refused in the skill's own words (held to SKILL.md
   by `git/machine-words.test.ts`) with what to do instead: a verifier not
   named `batch-<k>` (VerifierPerUnit), a second verifier while one runs
   (VerifierRunning), a land or a verifier before the cadence while an
-  implementor still runs (BatchNotDue), a land that leaves a ready unit out
-  (LandPartial), a land while an earlier batch has no verifier
-  (BatchUnverified). A refused call starts, latches and counts nothing.
+  implementor still runs (BatchNotDue), a land while a landed batch has no
+  verdict, its verifier not started or still running (VerdictPending), a
+  land with a finding of the last verdict not folded into a ready unit it
+  takes (FindingUnfolded), a land that leaves a ready unit out
+  (LandPartial). No rule holds an implementor's start. A refused call
+  starts, latches and counts nothing.
+- **The pipeline.** While batch N's verifier runs, batch N+1's implementors
+  start. On the verifier's `changes`, the plugin reads its report (the
+  batch findings file and each unit's `round-N-findings.md` it names) and
+  opens each Blocker and Major as `<unit>/<id>`. An implementor's start
+  folds its own unit's findings, and those its description names in
+  `(folds: auth/M1, billing)`, a `FindingFolded` line each: a follow-up to a
+  running implementor (its `sessionID`) or a new fix unit. The next land
+  carries the folded findings to the next batch verifier, whose prompt ends
+  with them and whose start answers with them.
 - **Departures.** The same call passes with `(departs: <why>)` at the end of
   a role call's description, or `departs: "<why>"` in a land's input; the
   ledger records a `Departed` line per rule it broke.
@@ -670,7 +682,8 @@ call against it at the point of action (`mods/orchestrate/machine.ts`).
   nor keeps background work of its own (as its last idle listed it), and
   whose call is not in flight, is handed back as `none`.
 - **Notes.** A planner's or implementor's start answers first with a due
-  batch, a landed batch with no verifier, or a fourth round.
+  batch, a landed batch with no verifier, the findings it folds, the ones
+  still unfolded, a `folds` that names no open finding, or a fourth round.
 - **The brief.** When a root's compaction ends, it gets one steered message
   (`resume: false`, so it starts no turn; mark
   `dotfiles-opencode.orchestrate.brief`, so it is no new input to the idle

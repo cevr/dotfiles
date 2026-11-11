@@ -97,10 +97,14 @@
  *   the root session alone, read afresh by every location's copy, compacted
  *   past 256 KiB), from the
  *   role starts, hand-backs and `rift` lands it sees, and refuses a call
- *   against its five rules in the skill's words: a verifier not named for a
+ *   against its six rules in the skill's words: a verifier not named for a
  *   batch, a second verifier, a land or verifier before the cadence while an
- *   implementor runs, a land that leaves a ready unit out, a land over an
- *   unverified batch. `(departs: <why>)` in a description, or `departs` in a
+ *   implementor runs, a land before the last batch's verdict, a land with a
+ *   finding of it not folded into a ready unit, a land that leaves a ready
+ *   unit out. The machine is a pipeline: implementors start while a verifier
+ *   runs; a verifier's findings (read from its report) fold into the next
+ *   batch by an implementor's start, and the next batch verifier's prompt
+ *   lists them. `(departs: <why>)` in a description, or `departs` in a
  *   land's input, lets the call through and records it. A step whose session
  *   no longer works is handed back as `none` first. After a root's
  *   compaction, it gets one message (no new turn): SKILL.md's machine section
