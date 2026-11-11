@@ -424,7 +424,8 @@ try {
     await moveTo(legal.id, work)
     await call(legal.id, "rift", { action: "land", rifts: ["legal-a", "legal-b"] })
     await moveTo(legal.id, other)
-    await call(legal.id, "subagent", { agent: "verifier", description: "verifier batch-1 r1", prompt: `${HAND_BACK} verifier batch-1 r1: changes /nonexistent/loop-probe-x/findings.md` })
+    // `accepted`: a `changes` whose report does not read would hold legal-c's land (orch-pipeline r1 M1), and this run is the compliant one.
+    await call(legal.id, "subagent", { agent: "verifier", description: "verifier batch-1 r1", prompt: `${HAND_BACK} verifier batch-1 r1: accepted /nonexistent/loop-probe-x/findings.md` })
     await moveTo(legal.id, work)
     await implement(legal.id, "legal-c")
     await call(legal.id, "rift", { action: "land", rifts: ["legal-c"] })

@@ -215,7 +215,7 @@ describe.skipIf(!fork)("a root that moves between locations is held to one machi
       expect(result.partial.filter((line) => line.kind === "Refused").map((line) => line.rule)).toEqual(["LandPartial"])
       expect(result.legal.filter((line) => line.kind === "Refused")).toEqual([])
       expect(result.legal.filter((line) => line.kind === "BatchLanded").map((line) => line.units)).toEqual([["legal-a", "legal-b"], ["legal-c"]])
-      expect(result.legal.find((line) => line.kind === "VerifierEnded")).toMatchObject({ batch: "batch-1", verdict: "changes" })
+      expect(result.legal.find((line) => line.kind === "VerifierEnded")).toMatchObject({ batch: "batch-1", verdict: "accepted" })
       expect(result.riftLands).toEqual([["legal-a", "legal-b"], ["legal-c"]])
     },
     200_000,
