@@ -234,35 +234,6 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   )
 
   test(
-    "restart: a subagent a shutdown cut is resumed once, by OpenCode's own restart notice and never again by the plugin, and its parent hears its answer",
-    async () => {
-      const result = await run("restart", { scenario: "restart", now: WEDNESDAY, resumeBackoffMs: [500, 500, 500] })
-      type Message = { type: string; text?: string; metadata?: Record<string, unknown>; content?: ReadonlyArray<{ type: string; text?: string }> }
-      const messages = (name: string) => result.sessions[name]!.messages as Message[]
-      const prompts = (name: string) => messages(name).filter((message) => message.type === "user" && message.text?.startsWith("Your turn ended when OpenCode restarted"))
-      const restarts = (name: string) => messages(name).filter((message) => message.type === "synthetic" && message.metadata?.notice === "restart")
-      const notices = (name: string) => messages(name).filter((message) => message.type === "synthetic" && message.metadata?.source === "orchestrate")
-      // OpenCode runs every subagent in the background and continues a cut one itself: the child got
-      // its restart notice once, answered after it, and the plugin added no resume of its own.
-      expect(restarts("child").length).toBe(1)
-      expect(prompts("child")).toEqual([])
-      const after = messages("child").slice(messages("child").indexOf(restarts("child")[0]!) + 1)
-      expect(after.some((message) => message.type === "assistant" && message.content?.some((part) => part.text?.startsWith("sim: ")))).toBe(true)
-      expect(result.log.filter((line) => line.kind === "resumed")).toEqual([])
-      expect(notices("root")).toEqual([])
-      // Its parent heard the answer through OpenCode's subagent report.
-      const child = result.children[0]!.id
-      expect(messages("root").some((message) => JSON.stringify(message).includes(`<subagent sessionID=\\"${child}\\"`))).toBe(true)
-      // The plugin never resumed the interrupted root's child either.
-      expect(prompts("escapedChild")).toEqual([])
-      expect(notices("escaped")).toEqual([])
-      // No child was made again.
-      expect(result.children.length).toBe(2)
-    },
-    RUN_MS,
-  )
-
-  test(
     "Sabbath: on Friday evening the subagent calls are refused with when work resumes, and no child starts",
     async () => {
       const result = await run("sabbath", { scenario: "subagents", now: FRIDAY_EVENING })

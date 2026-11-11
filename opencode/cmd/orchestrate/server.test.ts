@@ -16,7 +16,6 @@ import * as CallLogTest from "@dotfiles/opencode-orchestrate/memory/call-log"
 import * as CodexAdmissionTest from "@dotfiles/opencode-orchestrate/memory/codex-admission"
 import * as ModelsTest from "@dotfiles/opencode-orchestrate/memory/models"
 import * as PoolPaceTest from "@dotfiles/opencode-orchestrate/memory/pool-pace"
-import * as RestartsTest from "@dotfiles/opencode-orchestrate/memory/restarts"
 import * as SessionsTest from "@dotfiles/opencode-orchestrate/memory/sessions"
 import * as SkillTest from "@dotfiles/opencode-orchestrate/memory/skill"
 import { DRIFT_MARK, RECONCILE } from "@dotfiles/opencode-orchestrate/skill-drift"
@@ -32,12 +31,11 @@ import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { NO_INFLIGHT, poolPace } from "@dotfiles/opencode-pool/pace"
 import type { AccountStatus } from "@dotfiles/opencode-pool/status"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
-import { BACKOFF_MS, NOTICE_TITLE, RESUME_PROMPT, resumePrompt } from "@dotfiles/opencode-orchestrate/restart"
 import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
 import { Findings, type FindingsRead, Liveness, type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import { DEFAULT_CADENCE, RULES } from "@dotfiles/opencode-orchestrate/machine"
 import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
-import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, greenOf, make, Options, type Resume, SKILL_DIR, UNIT_LOG } from "./server.ts"
+import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, greenOf, make, Options, SKILL_DIR, UNIT_LOG } from "./server.ts"
 
 /** The orchestrate skill's log.ts in this checkout: the units' logs are written for real, in scratch dirs. */
 const LOG_SCRIPT = join(import.meta.dir, "../../../skills/orchestrate/scripts/log.ts")
@@ -76,8 +74,6 @@ interface World {
   readonly holds?: Readonly<Record<string, Holds>>
   /** The host refuses every nudge with this. */
   readonly refuseNudge?: string
-  /** The sessions a restart may have cut, their transcripts, and the notices told. */
-  readonly restarts?: RestartsTest.MemoryRestarts
   /** The orchestrate skill's history; absent, no version can be read. */
   readonly skill?: SkillTest.MemorySkill
   /** Each run dir's seen skill version and departures. */
@@ -170,7 +166,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       })
     const ledger = world.ledger ?? []
     const briefs: Array<OpenCodeSteer.Synthetic> = []
-    const externals = (start: OpenCodeLatches.Start, resume: Resume, background: Background) => Layer.mergeAll(
+    const externals = (start: OpenCodeLatches.Start, background: Background) => Layer.mergeAll(
       MemoryLedger.layer(DEFAULT_CADENCE, ledger),
       Layer.succeed(Findings, {
         read: (report: string) =>
@@ -181,7 +177,6 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       }),
       Layer.succeed(Liveness, { alive: (sessionID: string) => Effect.succeed(world.alive?.[sessionID] === true || background(sessionID) > 0) }),
       OpenCodeSteer.remindLayer((input) => Effect.sync(() => void briefs.push(input))),
-      RestartsTest.layer(world.restarts ?? RestartsTest.empty(), resume),
       CallLogTest.layer(lines),
       SessionsTest.layer(world.sessions ?? {}),
       ModelsTest.layer(world.model, world.variants, world.others),
@@ -201,7 +196,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     )
     const nudges: Array<OpenCodeSteer.Synthetic> = []
     const notes: Array<OpenCodeSteer.Synthetic> = []
-    yield* make((_ctx, _options, start, resume, background) => externals(start, resume, background)).effect(host)
+    yield* make((_ctx, _options, start, background) => externals(start, background)).effect(host)
 
     // The subagent tool, as the host's editor holds it after the plugin's transform: it records each run.
     const ran: Array<Ran> = []
@@ -1593,140 +1588,6 @@ describe("the agents", () => {
     ))
 })
 
-describe("after a restart", () => {
-  type View = RestartsTest.MemorySession["messages"][number]
-  const user = (created: number, text = "Write the export."): View => ({ type: "user", created, text })
-  const aborted = (id: string, created: number, calls: ReadonlyArray<{ readonly id: string; readonly child: string; readonly interrupted?: boolean }> = []): View => ({
-    type: "assistant",
-    id,
-    agent: "build",
-    created,
-    completed: created + 1,
-    error: { type: "aborted" },
-    content: calls.map((call) => ({
-      type: "tool",
-      id: call.id,
-      name: "subagent",
-      state:
-        call.interrupted === false
-          ? { status: "completed", input: { background: true }, metadata: { sessionID: call.child, status: "running" } }
-          : { status: "error", input: {}, error: { type: "aborted", message: `Tool execution interrupted (sessionID: ${call.child})` } },
-    })),
-  })
-  const answered = (id: string, created: number): View => ({ type: "assistant", id, agent: "build", created, completed: created + 1, content: [] })
-  const idle = (created: number, outcome: "succeeded" | "interrupted"): View => ({ type: "idle", created, outcome })
-
-  /** Sessions as the last shutdown left them, `minutes` minutes before now. */
-  const shutdown = () => {
-    const now = Date.now()
-    const ago = (minutes: number) => now - minutes * 60_000
-    const memory = RestartsTest.empty({ directory: "/work" })
-    const session = (id: string, parentID: string | undefined, messages: Array<View>, extra: Partial<RestartsTest.MemorySession> = {}) => {
-      memory.sessions[id] = { id, ...(parentID === undefined ? {} : { parentID }), title: `${id} task`, agent: "implementor", directory: "/work", updated: ago(5), messages, ...extra }
-    }
-    // The root's turn was cut while it waited on a foreground child; OpenCode continued the root itself.
-    session("root", undefined, [
-      user(ago(30)),
-      aborted("msg_root", ago(10), [
-        { id: "call-fg", child: "ses_fg" },
-        { id: "call-bg", child: "ses_bg", interrupted: false },
-      ]),
-      { type: "synthetic", created: ago(4), metadata: { notice: "restart" } },
-      answered("msg_root2", ago(4)),
-      idle(ago(4), "succeeded"),
-    ])
-    // The foreground child: the parent's interrupted call cancelled it.
-    session("ses_fg", "root", [user(ago(29)), aborted("msg_fg", ago(10)), idle(ago(10), "interrupted")])
-    // A background child the shutdown cut, and a shell notice OpenCode's recovery left it.
-    session("ses_bg", "root", [user(ago(29)), aborted("msg_bg", ago(10)), { type: "synthetic", created: ago(4), metadata: { source: "shell" } }])
-    // Resumed after three restarts in a row already: left to its parent.
-    session("ses_thrice", "root", [user(ago(60)), user(ago(40), resumePrompt), user(ago(30), resumePrompt), user(ago(20), `${RESUME_PROMPT} again`), aborted("msg_3", ago(10))])
-    // The owner's Escape on a parent: neither it nor its child is resumed.
-    session("escaped", undefined, [user(ago(30)), aborted("msg_esc", ago(10), [{ id: "call-esc", child: "ses_esc" }]), idle(ago(10), "interrupted")])
-    session("ses_esc", "escaped", [user(ago(29)), aborted("msg_e", ago(10)), idle(ago(10), "interrupted")])
-    // Finished, cut long ago, or of another location: left alone.
-    session("ses_done", "root", [user(ago(29)), answered("msg_d", ago(20)), idle(ago(20), "succeeded")])
-    session("ses_old", "root", [user(ago(500)), aborted("msg_o", ago(420))], { updated: ago(300) })
-    session("ses_away", "root", [user(ago(29)), aborted("msg_a", ago(10))], { directory: "/elsewhere" })
-    return memory
-  }
-
-  /** Waits until `ready` holds, a few seconds at most. */
-  const until = (ready: () => boolean) =>
-    Effect.gen(function* () {
-      for (let tries = 0; tries < 200 && !ready(); tries += 1) yield* Effect.sleep(10)
-    })
-
-  test("the children the shutdown cut are resumed in the background once, each logged, and their parent is told once", () =>
-    scenario(
-      Effect.gen(function* () {
-        const restarts = shutdown()
-        const plugin = yield* start({ now: WEDNESDAY, resume: { backoffMs: [0, 0, 0] } }, { restarts })
-        yield* until(() => restarts.told.length > 0)
-        // Through the subagent tool, in the background on each child, in the parent's call to it, with the prompt as given.
-        expect(plugin.ran.map(({ input, context }) => ({ input, context: { sessionID: context.sessionID, agent: context.agent, messageID: context.messageID, id: context.id } }))).toEqual([
-          {
-            input: { agent: "implementor", description: "ses_fg task", prompt: resumePrompt, sessionID: "ses_fg", background: true },
-            context: { sessionID: "root", agent: "build", messageID: "msg_root", id: "call-fg" },
-          },
-          {
-            input: { agent: "implementor", description: "ses_bg task", prompt: resumePrompt, sessionID: "ses_bg", background: true },
-            context: { sessionID: "root", agent: "build", messageID: "msg_root", id: "call-bg" },
-          },
-        ])
-        expect(plugin.logged()).toEqual([
-          '{"kind":"resumed","sessionID":"root","callID":"call-fg","child":"ses_fg","agent":"implementor","description":"ses_fg task","cause":"restart","attempt":1}',
-          '{"kind":"resumed","sessionID":"root","callID":"call-bg","child":"ses_bg","agent":"implementor","description":"ses_bg task","cause":"restart","attempt":1}',
-        ])
-        expect(restarts.told.map(({ sessionID, description, delivery, resume }) => ({ sessionID, description, delivery, resume }))).toEqual([
-          { sessionID: "root", description: NOTICE_TITLE, delivery: "steer", resume: false },
-        ])
-        expect(restarts.told[0]!.metadata).toEqual({ source: "orchestrate", notice: "resumed", children: ["ses_fg", "ses_bg", "ses_thrice"] })
-        const text = restarts.told[0]!.text
-        expect(text).toContain("Resumed in the background: ses_fg task (sessionID: ses_fg); ses_bg task (sessionID: ses_bg).")
-        expect(text).toContain("Not resumed: ses_thrice task (sessionID: ses_thrice), cut by 3 restarts in a row.")
-        for (const child of ["ses_esc", "ses_done", "ses_old", "ses_away", "ses_thrice"]) expect(text).not.toContain(`Resumed in the background: ${child}`)
-
-        // A second start (a plugin reload) finds them continued: nothing is resumed or told twice.
-        const again = yield* start({ now: WEDNESDAY, resume: { backoffMs: [0, 0, 0] } }, { restarts })
-        yield* Effect.sleep(200)
-        expect(again.ran).toEqual([])
-        expect(again.logged()).toEqual([])
-        expect(restarts.told.length).toBe(1)
-      }),
-    ))
-
-  test("a child left only because its resume failed wakes its parent with why; over the Sabbath nothing is resumed", () =>
-    scenario(
-      Effect.gen(function* () {
-        const failing = shutdown()
-        failing.fail = "Unknown agent: implementor"
-        const plugin = yield* start({ now: WEDNESDAY, resume: { backoffMs: [0, 0, 0] } }, { restarts: failing })
-        yield* until(() => failing.told.length > 0)
-        expect(plugin.logged()).toEqual([])
-        expect(failing.told.map(({ sessionID, resume }) => ({ sessionID, resume }))).toEqual([{ sessionID: "root", resume: true }])
-        expect(failing.told[0]!.text).toContain("Not resumed: ses_fg task (sessionID: ses_fg), it could not be resumed: Unknown agent: implementor.")
-
-        const resting = shutdown()
-        const friday = yield* start({ now: FRIDAY_EVENING, resume: { backoffMs: [0, 0, 0] } }, { restarts: resting })
-        yield* Effect.sleep(200)
-        expect(friday.ran).toEqual([])
-        expect(resting.told).toEqual([])
-      }),
-    ))
-
-  test("`resume: false` resumes nothing", () =>
-    scenario(
-      Effect.gen(function* () {
-        const restarts = shutdown()
-        const plugin = yield* start({ now: WEDNESDAY, resume: false }, { restarts })
-        yield* Effect.sleep(200)
-        expect(plugin.ran).toEqual([])
-        expect(restarts.told).toEqual([])
-      }),
-    ))
-})
-
 describe("the batch machine", () => {
   /** A root's step sessions: each a role's child of `root`, with the hand-back it ends on. */
   const steps = (said: Readonly<Record<string, { readonly agent: string; readonly lastWords?: string }>>) => ({
@@ -2088,16 +1949,12 @@ describe("the options", () => {
     codex: { providers: ["openai"], script: CODEX_BUDGET },
     unitLog: UNIT_LOG,
     skill: SKILL_DIR,
-    resume: { backoffMs: BACKOFF_MS },
   }
 
   test("each absent option takes its default; an undefined one is absent", () => {
     expect(decode({})).toEqual(defaults)
-    expect(decode({ log: undefined, now: undefined, place: undefined, codex: undefined, resume: undefined })).toEqual(defaults)
+    expect(decode({ log: undefined, now: undefined, place: undefined, codex: undefined })).toEqual(defaults)
     expect(decode({ codex: {} }).codex).toEqual(defaults.codex)
-    expect(decode({ resume: {} }).resume).toEqual(defaults.resume)
-    expect(decode({ resume: false }).resume).toBe(false)
-    expect(decode({ resume: { backoffMs: [0, 5] } }).resume).toEqual({ backoffMs: [0, 5] })
   })
 
   test("the ones given are read as the plugin uses them", () => {
@@ -2115,7 +1972,6 @@ describe("the options", () => {
       codex: { providers: ["openai", "sim"], script: CODEX_BUDGET },
       unitLog: UNIT_LOG,
       skill: SKILL_DIR,
-      resume: { backoffMs: BACKOFF_MS },
     })
     expect(decode({ skill: "/s" }).skill).toBe("/s")
     expect(decode({ codex: false }).codex).toBe(false)
@@ -2134,8 +1990,6 @@ describe("the options", () => {
       [{ fullAgent: "yes" }, '["fullAgent"]'],
       [{ codex: true }, '["codex"]'],
       [{ codex: { providers: ["openai", 7] } }, '["codex"]["providers"][1]'],
-      [{ resume: true }, '["resume"]'],
-      [{ resume: { backoffMs: ["10s"] } }, '["resume"]["backoffMs"][0]'],
       [{ skill: 7 }, '["skill"]'],
       [{ guard: "loud" }, '["guard"]'],
       [{ cadence: { ready: 0, waitMs: 1 } }, '["cadence"]["ready"]'],

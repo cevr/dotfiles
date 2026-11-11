@@ -3,7 +3,7 @@
 import { expect, test } from "bun:test"
 import { Effect } from "effect"
 import { type SessionsWorld, sessionsLaws } from "../laws.ts"
-import { lastWords } from "./sessions.ts"
+import { lastWords, samePlace } from "./sessions.ts"
 import * as OpenCodeSessions from "./sessions.ts"
 
 sessionsLaws("OpenCode's Sessions", (world) => {
@@ -30,4 +30,9 @@ test("the last words are the newest assistant message that wrote text, its text 
   ).toBe("implementor auth r1: ready /r/auth/round-1-request.md\nGate green.")
   expect(lastWords([{ type: "user", text: "go" }, said({ type: "reasoning", text: "thinking" })])).toBeUndefined()
   expect(lastWords([])).toBeUndefined()
+})
+
+test("a location is its directory, with or without a trailing separator, and its workspace", () => {
+  expect(samePlace({ directory: "/work/" }, { directory: "/work" })).toBe(true)
+  expect(samePlace({ directory: "/work", workspaceID: "w1" }, { directory: "/work" })).toBe(false)
 })

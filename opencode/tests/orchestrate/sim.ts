@@ -31,12 +31,6 @@ export const UNITS_TASK = "units"
 export const HAND_BACK = "handback:"
 /** A root turn that makes one given call: `probe:` and `{ name, input }` as JSON. */
 export const PROBE = "probe:"
-/** A root task that calls one foreground subagent on `HANG_TASK`, then closes. */
-export const RESTART_TASK = "restart-root"
-/** The same, for the root the user interrupts. */
-export const ESCAPE_TASK = "escape-root"
-/** A subagent task whose first request hangs until the sim is released: the turn a shutdown cuts. */
-export const HANG_TASK = "task-hang"
 
 /**
  * The root's task in a machine run: three implementors, then (after the
@@ -170,10 +164,6 @@ export const reply = (request: ChatRequest): Reply => {
       }
     return { kind: "text", text: "root: both subagents answered" }
   }
-  if ((task === RESTART_TASK || task === ESCAPE_TASK) && offersSubagent) {
-    if (results === 0) return { kind: "tool", name: "subagent", input: { description: `${task} child`, prompt: HANG_TASK } }
-    return { kind: "text", text: "root: the subagent is back" }
-  }
   return { kind: "text", text: `sim: ${lastLine(last) || "nothing"}` }
 }
 
@@ -221,9 +211,6 @@ export const serve = (promptTokens: number | ((task: string, messages: ReadonlyA
   const tokensOf = typeof promptTokens === "number" ? () => promptTokens : promptTokens
   const seen: Seen[] = []
   let served = 0
-  // Hanging requests, and whether a hang task's first request still hangs.
-  let hanging = 0
-  let released = false
   // Gates: a task whose first message holds a `gate:<name>` line answers its first request once the gate opens.
   const gates = new Map<string, { readonly opened: Promise<void>; readonly open: () => void }>()
   const gate = (name: string) => {
@@ -261,11 +248,6 @@ export const serve = (promptTokens: number | ((task: string, messages: ReadonlyA
       const first = messages.find((message) => message.role === "user")
       const gated = /^gate:(\S+)$/m.exec(text(first?.content))?.[1]
       if (gated !== undefined && text(messages.at(-1)?.content) === text(first?.content)) await gate(gated).opened
-      if (task === HANG_TASK && lastLine(text(messages.at(-1)?.content)) === HANG_TASK && !released) {
-        hanging += 1
-        // An open stream that never ends: the request runs until the server's shutdown cuts it.
-        return new Response(new ReadableStream({ start: () => {} }), { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } })
-      }
       return new Response(events(reply(body), body.model ?? "sim", `sim${served}`, tokensOf(task, messages)), {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       })
@@ -274,12 +256,6 @@ export const serve = (promptTokens: number | ((task: string, messages: ReadonlyA
   return {
     server,
     seen,
-    /** How many requests hang now or did. */
-    hanging: () => hanging,
-    /** From now on a hang task answers. */
-    release: () => {
-      released = true
-    },
     /** A gated task's first request answers. */
     open: (name: string) => gate(name).open(),
   }
