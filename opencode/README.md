@@ -646,6 +646,15 @@ call against it at the point of action (`mods/orchestrate/machine.ts`).
   is the fold of its lines, read back after a restart. No run dir is needed:
   a root is held to the machine once it starts `implementor <unit> rN` agents;
   a root that runs no unit is left alone.
+- **One ledger per root, wherever it is.** A root is keyed by its session
+  alone. The plugin has one copy per location, and a root that moves (a
+  Rift's `session_move`) is decided by each in turn, so each decision reads
+  the file afresh, under one lock shared by every copy in the process.
+- **Bounded.** Past 256 KiB the file is compacted: each root becomes one
+  `Checkpoint` line of its state (none when it holds nothing) and its newest
+  20 departures and refusals of the last week; a root idle a week is dropped,
+  and only the 64 most recently active roots are kept. The next compaction
+  waits for twice what this one kept.
 - **The five rules**, each refused in the skill's own words (held to SKILL.md
   by `git/machine-words.test.ts`) with what to do instead: a verifier not
   named `batch-<k>` (VerifierPerUnit), a second verifier while one runs

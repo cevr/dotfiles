@@ -93,7 +93,9 @@
  *   `resume: false` turns it off; `resume.backoffMs` sets the waits.
  *
  * - Batch machine: the plugin keeps each root's machine (mods/orchestrate/
- *   machine.ts) in a ledger, one JSONL line per event or refusal, from the
+ *   machine.ts) in a ledger, one JSONL line per event or refusal (keyed by
+ *   the root session alone, read afresh by every location's copy, compacted
+ *   past 256 KiB), from the
  *   role starts, hand-backs and `rift` lands it sees, and refuses a call
  *   against its five rules in the skill's words: a verifier not named for a
  *   batch, a second verifier, a land or verifier before the cadence while an
