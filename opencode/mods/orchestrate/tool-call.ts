@@ -103,6 +103,8 @@ export const SubagentStarted = Schema.TaggedStruct("SubagentStarted", {
   fallback: Schema.optionalKey(Schema.String),
   /** A worker asked for this variant (`max`) and runs at its model's default: the worker's ceiling (role.ts `capEffort`). */
   lowered: Schema.optionalKey(Schema.String),
+  /** The model the call named and does not run on: the role's own, or a Codex model an implementor named (Codex never implements). */
+  dropped: Schema.optionalKey(Schema.String),
 })
 export interface SubagentStarted extends Schema.Schema.Type<typeof SubagentStarted> {}
 
@@ -129,6 +131,8 @@ export const SubagentLatched = Schema.TaggedStruct("SubagentLatched", {
   fallback: Schema.optionalKey(Schema.String),
   /** A worker asked for this variant (`max`) and latched at its model's default. */
   lowered: Schema.optionalKey(Schema.String),
+  /** The model the call named and does not run on. */
+  dropped: Schema.optionalKey(Schema.String),
   hold: Hold,
   /** The pace's owner, for a pace hold. */
   whose: Schema.optionalKey(Whose),
@@ -237,6 +241,7 @@ const decideStart = (
     ...(command.background ? { background: true as const } : {}),
     ...(command.description === undefined ? {} : { description: command.description }),
     ...(capped.lowered === undefined ? {} : { lowered: capped.lowered }),
+    ...(command.dropped === undefined ? {} : { dropped: command.dropped }),
   }
   const rests = resumes === undefined ? undefined : { resumes, place: command.place }
   return Effect.succeed([admit(fields, now, rests, command.hold, command.child === undefined ? command.fallback : undefined)])

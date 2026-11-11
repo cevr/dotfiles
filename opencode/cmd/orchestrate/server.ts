@@ -785,8 +785,9 @@ export const make = (
             // Run the call as the guard routed it, on the role's model when one was chosen.
             const input: Record<string, unknown> = { ...event.input, agent: routed.agent }
             if (routed.model !== undefined) input.model = routed.model
-            // A role's own model, named, was dropped: with no variant chosen, the role runs on its own model.
-            else if (routed.reason === "model-dropped") delete input.model
+            // A named model was dropped (the role's own, or a Codex model an implementor named): with no variant chosen,
+            // the role runs on its own model, a follow-up on its child's.
+            else if (routed.reason === "model-dropped" || routed.dropped !== undefined) delete input.model
             // A fallback's answer tells the parent where it ran and why; a lowered worker's, at what effort and why.
             // The machine's notes go first.
             if (outcome.value._tag === "SubagentStarted") {

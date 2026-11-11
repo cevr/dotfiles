@@ -894,6 +894,30 @@ describe("Opus first, Codex second", () => {
       }),
     ))
 
+  test("Codex never implements, whatever the codex option says: over fallback on, off or on other providers, a new or continued implementor naming any Codex model runs off it", () =>
+    scenario(
+      Effect.gen(function* () {
+        // no-codex-impl r1 M1 (batch c): with `codex: false` the prohibition read an empty provider list.
+        const codexOptions: ReadonlyArray<Record<string, unknown>> = [{}, { codex: false }, { codex: { providers: ["azure"] } }, { codex: { providers: ["openai", "azure"] } }]
+        const named = ["openai/gpt-6.1-sol", "openai/gpt-6.1-sol#high", "openai/gpt-6.1-luna#max", "azure/gpt-6.1-sol", "openrouter/gpt-6.1-sol", "anthropic/claude-opus-4", undefined]
+        for (const option of codexOptions)
+          for (const asks of named)
+            for (const followUp of [false, true]) {
+              const sessions = { root: {}, ses_i: { parentID: "root", agent: "implementor" } }
+              const plugin = yield* start({ now: WEDNESDAY, ...option }, { model, variants: ["medium"], others: codexOffered, codex: admits([]), sessions })
+              const input = { agent: "implementor", prompt: "x", ...(asks === undefined ? {} : { model: asks }), ...(followUp ? { sessionID: "ses_i" } : {}) }
+              const call = yield* plugin.call("subagent", "root", input)
+              const runs = (call.input as { model?: string }).model
+              const where = JSON.stringify({ option, asks, followUp, runs })
+              expect([where, call.refused]).toEqual([where, undefined])
+              // The oracle: a Codex model is one of its gpt- families, on any provider.
+              expect([where, runs !== undefined && /(^|\/)gpt-/.test(runs)]).toEqual([where, false])
+              // A model that is no Codex model, named, is kept as named.
+              if (asks === "anthropic/claude-opus-4") expect([where, runs]).toEqual([where, asks])
+            }
+      }),
+    ))
+
   test("the spend-evenly pace alone holds a planner or verifier but not an implementor, which starts on Opus", () =>
     scenario(
       Effect.gen(function* () {

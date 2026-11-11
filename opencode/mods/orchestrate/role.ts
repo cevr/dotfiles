@@ -142,6 +142,22 @@ export const capEffort = (
   return { model: model.slice(0, at), lowered: WORKER_CEILING }
 }
 
+/** The providers Codex runs on, whatever the plugin's `codex` option names. */
+export const CODEX_PROVIDERS: ReadonlyArray<string> = ["openai"]
+
+/**
+ * Whether a model reference (`provider/model#variant`) is a Codex model: on
+ * a Codex provider (`CODEX_PROVIDERS`, or one the `codex` option names), or
+ * of a Codex family (`gpt-…`) on any provider. It reads no fallback setting:
+ * Codex never implements, whether the fallback is on or off.
+ */
+export const isCodexModel = (ref: string, providers: ReadonlyArray<string> = []): boolean => {
+  const at = ref.indexOf("/")
+  const provider = at < 0 ? "" : ref.slice(0, at)
+  const id = at < 0 ? ref : ref.slice(at + 1)
+  return CODEX_PROVIDERS.includes(provider) || providers.includes(provider) || /^gpt-/i.test(id)
+}
+
 /**
  * The Codex model a held planner or verifier falls back to: the newest sol,
  * the verifier at medium and the planner at high. Codex never implements.

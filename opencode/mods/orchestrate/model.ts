@@ -55,7 +55,7 @@ import {
 } from "./machine.ts"
 import { formatRef, namesModel, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
 import * as Restart from "./restart.ts"
-import { codexFallback, effort, isRole, Reason, route, unspecific, WORKER } from "./role.ts"
+import { codexFallback, effort, isCodexModel, isRole, Reason, route, unspecific, WORKER } from "./role.ts"
 
 /** The owner's rule: Codex plans and verifies, never implements; every other agent stays on its own model. */
 const onCodex = (agent: string) => agent === "planner" || agent === "verifier"
@@ -401,9 +401,10 @@ export const layer = (config: Config) =>
         // A new role start naming the role's own model (any variant or none) runs as if it named none: the
         // orchestrator meant the role, and only an unnamed start gets the role's effort, the fallback and the latch.
         const bound = asks !== undefined && child === undefined && isRole(routed.agent) ? yield* models.base(call.sessionID, routed.agent) : undefined
-        // An implementor naming a Codex model runs on its role's model instead: Codex never implements.
-        const codexNamed = asks !== undefined && routed.agent === "implementor" && (config.codex?.providers ?? []).some((provider) => asks.startsWith(`${provider}/`))
-        const dropped = asks !== undefined && bound !== undefined && (namesModel(asks, bound) || codexNamed) ? asks : undefined
+        // An implementor naming a Codex model runs on its role's model instead, a follow-up on the one it has: Codex never
+        // implements, whether the Codex fallback is on or off (no-codex-impl r1 M1).
+        const codexNamed = asks !== undefined && routed.agent === "implementor" && isCodexModel(asks, config.codex?.providers ?? [])
+        const dropped = asks !== undefined && ((bound !== undefined && namesModel(asks, bound)) || codexNamed) ? asks : undefined
         const level = isRole(routed.agent) ? effort(routed.agent) : undefined
         const trial = yield* trialOf(call.sessionID, {
           agent: routed.agent,

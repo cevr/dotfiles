@@ -63,13 +63,13 @@ describe("a subagent starts", () => {
       Story.state(Finished.make({ status: "running" })),
     ))
 
-  test("a new start whose named model was the role's own says so: model-dropped; a follow-up keeps its reason", () =>
+  test("a new start whose named model was the role's own says so: model-dropped; a follow-up keeps its reason, and both name the model dropped", () =>
     run(
       Story.clock(WEDNESDAY),
       Story.when(start("verifier", { model: "anthropic/claude-opus#medium", dropped: "anthropic/claude-opus" })),
-      Story.then(started({ asked: "verifier", agent: "verifier", reason: "model-dropped", model: "anthropic/claude-opus#medium" })),
+      Story.then(started({ asked: "verifier", agent: "verifier", reason: "model-dropped", model: "anthropic/claude-opus#medium", dropped: "anthropic/claude-opus" })),
       Story.when(start(undefined, { child: "child-1", childAgent: "verifier", dropped: "anthropic/claude-opus" })),
-      Story.then(started({ agent: "verifier", reason: "continued", child: "child-1" })),
+      Story.then(started({ agent: "verifier", reason: "continued", child: "child-1", dropped: "anthropic/claude-opus" })),
     ))
 
   test("a worker asked at max runs at its model's default, and says it was lowered", () =>
