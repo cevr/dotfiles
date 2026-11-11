@@ -5,6 +5,7 @@
 // - `<label>-running`: while the reviewer subagent works;
 // - `<label>`: the finished turn, in Details mode;
 // - with SCENARIO_CYCLE=1, `<label>-all` and `<label>-overview` after each Ctrl+O.
+// With SCENARIO_WINDOW=<tokens>, the build agent compacts at that window (see `WINDOW`).
 // Each frame is a `.txt` of its text and a `.json` of its styled lines.
 import { Deferred, Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
@@ -22,6 +23,12 @@ const ASK =
 const REVIEW = "Review the diff in src/net.py."
 // The last turn's usage: 64k of the 262k window below, as in Prime's tray.
 const USAGE = { prompt_tokens: 63_000, completion_tokens: 1_000, total_tokens: 64_000 }
+// SCENARIO_WINDOW=<tokens> gives the build agent that compaction window, as cmd/orchestrate gives each primary agent
+// its 400k one (`request.settings.compactionWindow`); the tray's share then reads against it, not the model's window.
+const WINDOW = process.env.SCENARIO_WINDOW === undefined ? undefined : Number(process.env.SCENARIO_WINDOW)
+const windowFixture = `export default {id: "fixture.window", async setup(ctx) {
+  await ctx.agent.transform((editor) => editor.update("build", (agent) => { agent.request.settings.compactionWindow = ${WINDOW} }));
+}}`
 
 const NET_PY = [
   "def fetch(url, retries=3):",
@@ -57,6 +64,12 @@ export default OpenCodeDriver.use(
         ".opencode/themes/prime.json": readFileSync(`${process.cwd()}/themes/prime.json`, "utf8"),
         "src/net.py": NET_PY,
         "tests/test_net.py": "from src.net import fetch\n\ndef test_retries():\n    assert fetch('x', retries=3)\n",
+        ...(WINDOW === undefined
+          ? {}
+          : {
+              ".opencode/plugins/fixture/package.json": JSON.stringify({ name: "fixture-window", type: "module", exports: { "./server": "./server.ts" } }),
+              ".opencode/plugins/fixture/server.ts": windowFixture,
+            }),
       },
     },
   },
