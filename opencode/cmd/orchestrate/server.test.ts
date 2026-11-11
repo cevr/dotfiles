@@ -34,8 +34,10 @@ import type { AccountStatus } from "@dotfiles/opencode-pool/status"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { BACKOFF_MS, NOTICE_TITLE, RESUME_PROMPT, resumePrompt } from "@dotfiles/opencode-orchestrate/restart"
 import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
-import { type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
-import Orchestrate, { CODEX_BUDGET, DEFAULT_LOG, make, Options, type Resume, SKILL_DIR, UNIT_LOG } from "./server.ts"
+import { Liveness, type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
+import { DEFAULT_CADENCE, RULES } from "@dotfiles/opencode-orchestrate/machine"
+import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
+import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, greenOf, make, Options, type Resume, SKILL_DIR, UNIT_LOG } from "./server.ts"
 
 /** The orchestrate skill's log.ts in this checkout: the units' logs are written for real, in scratch dirs. */
 const LOG_SCRIPT = join(import.meta.dir, "../../../skills/orchestrate/scripts/log.ts")
@@ -80,6 +82,10 @@ interface World {
   readonly skill?: SkillTest.MemorySkill
   /** Each run dir's seen skill version and departures. */
   readonly records?: SkillTest.MemoryRecords
+  /** The machine's ledger lines, shared: a second plugin on the same array is the plugin after a restart. */
+  readonly ledger?: Array<unknown>
+  /** Which step sessions still run a turn; any other does not. */
+  readonly alive?: Readonly<Record<string, boolean>>
 }
 
 /** A tool as the host's tool editor hands it out: only what the plugin touches. */
@@ -133,7 +139,8 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
           }),
         reload: () => Effect.void,
       },
-      session: { hook: register },
+      session: { hook: register, get: () => Effect.succeed({ location: { directory: "/work" } }) },
+      location: { directory: "/work" },
       event: { subscribe: () => Stream.fromQueue(published) },
       tool: {
         hook: register,
@@ -159,7 +166,12 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
         kept.push({ ...ask, child })
         return { outcome: "latched", id: `w00000${kept.length}`, child }
       })
-    const externals = (start: OpenCodeLatches.Start, resume: Resume) => Layer.mergeAll(
+    const ledger = world.ledger ?? []
+    const briefs: Array<OpenCodeSteer.Synthetic> = []
+    const externals = (start: OpenCodeLatches.Start, resume: Resume, background: Background) => Layer.mergeAll(
+      MemoryLedger.layer(DEFAULT_CADENCE, ledger),
+      Layer.succeed(Liveness, { alive: (sessionID: string) => Effect.succeed(world.alive?.[sessionID] === true || background(sessionID) > 0) }),
+      OpenCodeSteer.remindLayer((input) => Effect.sync(() => void briefs.push(input))),
       RestartsTest.layer(world.restarts ?? RestartsTest.empty(), resume),
       CallLogTest.layer(lines),
       SessionsTest.layer(world.sessions ?? {}),
@@ -180,7 +192,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     )
     const nudges: Array<OpenCodeSteer.Synthetic> = []
     const notes: Array<OpenCodeSteer.Synthetic> = []
-    yield* make((_ctx, _options, start, resume) => externals(start, resume)).effect(host)
+    yield* make((_ctx, _options, start, resume, background) => externals(start, resume, background)).effect(host)
 
     // The subagent tool, as the host's editor holds it after the plugin's transform: it records each run.
     const ran: Array<Ran> = []
@@ -239,7 +251,9 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       const handler = rpc["dotfiles-opencode.orchestrate.idle"]?.draft
       return handler === undefined ? Effect.die(new Error("no idle RPC")) : handler(input)
     }
-    return { call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, draft, nudges, notes }
+    /** A session's compaction ended: the host's durable event, with its id. */
+    const compacted = (sessionID: string, id: string) => Queue.offer(published, { id, type: "session.compaction.ended", data: { sessionID } })
+    return { call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, draft, nudges, notes, ledger, briefs, compacted }
   })
 
 /** Waits for the plugin's background work: `check` passes within a second. */
@@ -1657,10 +1671,194 @@ describe("after a restart", () => {
     ))
 })
 
+describe("the batch machine", () => {
+  /** A root's step sessions: each a role's child of `root`, with the hand-back it ends on. */
+  const steps = (said: Readonly<Record<string, { readonly agent: string; readonly lastWords?: string }>>) => ({
+    root: {},
+    ...Object.fromEntries(Object.entries(said).map(([id, session]) => [id, { parentID: "root", ...session }])),
+  })
+  const implementor = (unit: string) => ({ agent: "implementor", description: `implementor ${unit} r1`, prompt: "go", background: true })
+  type Plugin = Effect.Success<ReturnType<typeof start>>
+  /** A background step started and answered with its child, as the host does. */
+  const begin = (plugin: Plugin, input: Record<string, unknown>, child: string) =>
+    Effect.gen(function* () {
+      const called = yield* plugin.call("subagent", "root", input)
+      expect(called.refused).toBeUndefined()
+      yield* plugin.finish({ input, status: "completed", result: { metadata: { sessionID: child, status: "running" } } })
+    })
+  const kinds = (plugin: Plugin) => plugin.ledger.map((line) => (line as { kind: string }).kind)
+
+  test("a verifier for one unit is refused in the skill's words before anything starts; the batch's starts", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready /u/alpha/round-1-request.md" } }) })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        const lines = plugin.logged().length
+        const refused = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier alpha r1", prompt: "verify" })
+        expect(refused.refused?.message).toContain(RULES.VerifierPerUnit.words)
+        expect(refused.refused?.message).toContain("verifier batch-<k> r1")
+        expect(refused.refused?.message).toContain("(departs: <why>)")
+        // Nothing of the refused call: no line, no latch, no rewritten input.
+        expect(plugin.logged()).toHaveLength(lines)
+        expect(plugin.kept).toEqual([])
+        expect(kinds(plugin)).toEqual(["UnitStarted", "StepSpawned", "UnitHandedBack", "Refused"])
+        const batch = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier batch-1 r1", prompt: "verify" })
+        expect(batch.refused).toBeUndefined()
+        expect(plugin.ledger.at(-1)).toMatchObject({ kind: "VerifierStarted", batch: "batch-1", units: ["alpha"] })
+      }),
+    ))
+
+  test("a departure stated in the description passes and is recorded", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" } }) })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        const departed = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier alpha r1 (departs: the owner asked)", prompt: "v" })
+        expect(departed.refused).toBeUndefined()
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "Departed", rule: "VerifierPerUnit", why: "the owner asked" }))
+      }),
+    ))
+
+  test("one kernel cell starting an implementor and landing at once: the land is decided after the start, and waits", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" } }) })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        const [started, landed] = yield* Effect.all(
+          [plugin.call("subagent", "root", implementor("beta")), plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })],
+          { concurrency: "unbounded" },
+        )
+        expect(started.refused).toBeUndefined()
+        expect(landed.refused?.message).toContain(RULES.BatchNotDue.words)
+        expect(landed.refused?.message).toContain('departs: "<why>"')
+      }),
+    ))
+
+  test("a dead implementor and a dead verifier hold nothing: each is handed back as none before the next decision", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor" } }) })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        yield* plugin.idle("ses_a")
+        // beta's session runs no turn and keeps nothing: it died. The land of alpha alone passes.
+        expect((yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })).refused).toBeUndefined()
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitHandedBack", unit: "beta", ready: false }))
+        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        // The verifier died with no hand-back: the next batch's verifier starts all the same.
+        expect((yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier batch-2 r1", prompt: "v" })).refused).toBeUndefined()
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "none" }))
+      }),
+    ))
+
+  test("an implementor idle with its own shell still running has not ended: the batch still waits for it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor" } }) })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        yield* plugin.idle("ses_a")
+        yield* plugin.idle("ses_b", [{ kind: "shell", sessionID: "ses_b", shellID: "sh_1", command: "bun test" }])
+        expect((yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })).refused?.message).toContain(RULES.BatchNotDue.words)
+      }),
+    ))
+
+  test("a foreground step is alive while its call is in flight, before its session is known", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" } }) })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        expect((yield* plugin.call("subagent", "root", { agent: "implementor", description: "implementor beta r1", prompt: "go" })).refused).toBeUndefined()
+        expect((yield* plugin.call("rift", "root", { action: "land", rifts: ["feat/alpha"] })).refused?.message).toContain(RULES.BatchNotDue.words)
+      }),
+    ))
+
+  test("after a restart the ledger is read back: the same land is refused by the new plugin", () =>
+    scenario(
+      Effect.gen(function* () {
+        const ledger: Array<unknown> = []
+        const sessions = steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" } })
+        const before = yield* start({ now: WEDNESDAY }, { sessions, ledger, alive: { ses_b: true } })
+        yield* begin(before, implementor("alpha"), "ses_a")
+        yield* begin(before, implementor("beta"), "ses_b")
+        yield* before.idle("ses_a")
+        const after = yield* start({ now: WEDNESDAY }, { sessions, ledger, alive: { ses_b: true } })
+        expect((yield* after.call("rift", "root", { action: "land", rifts: ["alpha"] })).refused?.message).toContain(RULES.BatchNotDue.words)
+      }),
+    ))
+
+  test("a root that compacted is told the machine and its run once, on its next request; a subagent and an idle root without units are not", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: { ...steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" } }), quiet: {} } })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        yield* plugin.compacted("root", "evt_1")
+        yield* plugin.compacted("root", "evt_1")
+        yield* plugin.compacted("ses_a", "evt_2")
+        yield* plugin.compacted("quiet", "evt_3")
+        yield* eventually(() => expect(plugin.briefs).toHaveLength(1))
+        yield* settle
+        expect(plugin.briefs).toHaveLength(1)
+        const brief = plugin.briefs[0]!
+        expect(brief).toMatchObject({ sessionID: "root", delivery: "steer", resume: false, metadata: { [OpenCodeSteer.BRIEF_MARK]: true } })
+        expect(brief.text).toStartWith("## The machine")
+        expect(brief.text).toContain("ONE fresh verifier per batch")
+        expect(brief.text).toContain("Your run now, from the plugin's ledger:\nready: alpha")
+        expect(brief.text).toEndWith("Re-read ~/.claude/skills/orchestrate/SKILL.md and protocol.md, and your plan, before any other action.")
+      }),
+    ))
+
+  test("the brief arriving is not new input to an idle root", () =>
+    scenario(
+      Effect.gen(function* () {
+        const runs: ReadonlyArray<Run> = [{ name: "web", units: [{ unit: "auth", state: "implement" }] }]
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: { root: {} }, steps: { root: ["auth"] }, runs })
+        yield* plugin.idle("root")
+        yield* eventually(() => expect(plugin.nudges).toHaveLength(1))
+        yield* plugin.enqueue("root", { type: "synthetic", metadata: { [OpenCodeSteer.BRIEF_MARK]: true } })
+        yield* settle
+        yield* plugin.idle("root")
+        yield* settle
+        expect(plugin.nudges).toHaveLength(1)
+      }),
+    ))
+
+  test("under guard warn the call passes, its answer carries the rule's words, and the departure is recorded", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ now: WEDNESDAY, guard: "warn" }, { sessions: steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor" } }) })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        const input = { agent: "verifier", description: "verifier alpha r1", prompt: "v" }
+        const called = yield* plugin.call("subagent", "root", input)
+        expect(called.refused).toBeUndefined()
+        const answer = yield* plugin.runTool(called.input)
+        expect(String(answer.content)).toContain(RULES.VerifierPerUnit.words)
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "Departed", rule: "VerifierPerUnit" }))
+        expect(kinds(plugin)).not.toContain("Refused")
+      }),
+    ))
+
+  test("a checked land lands only the Rifts it answered green or pending", () => {
+    const text = ["Checked 2 Rift(s) as one batch", "- run/alpha (/r/run-alpha): green", "- run/beta (/r/run-beta): red; conflict", "- run/gamma (/r/run-gamma): pending"].join("\n")
+    expect(greenOf(["alpha", "beta", "gamma"], text)).toEqual(["run/alpha", "/r/run-alpha", "run/gamma", "/r/run-gamma"])
+    expect(greenOf(["alpha"], "Landed 1 Rift(s) as one push")).toEqual(["alpha"])
+  })
+})
+
 describe("the options", () => {
   const decode = Schema.decodeUnknownSync(Options)
   const defaults = {
     log: DEFAULT_LOG,
+    ledger: DEFAULT_LEDGER,
+    cadence: DEFAULT_CADENCE,
+    guard: "refuse" as const,
     place: KNOWLTON,
     fullAgent: false,
     codex: { providers: ["openai"], script: CODEX_BUDGET },
@@ -1684,6 +1882,9 @@ describe("the options", () => {
       decode({ log: "/l.jsonl", now: WEDNESDAY, place, fullAgent: true, codex: { providers: ["openai", "sim"] } }),
     ).toEqual({
       log: "/l.jsonl",
+      ledger: DEFAULT_LEDGER,
+      cadence: DEFAULT_CADENCE,
+      guard: "refuse",
       now: Date.parse(WEDNESDAY),
       place,
       fullAgent: true,
@@ -1697,6 +1898,7 @@ describe("the options", () => {
     expect(decode({ codex: { pool: true } }).codex).toEqual({ ...defaults.codex, pool: true })
     const experiment = { role: "planner", model: "anthropic/claude-fable-5-2", share: 0.5 } as const
     expect(decode({ experiment }).experiment).toEqual(experiment)
+    expect(decode({ ledger: "/m.jsonl", cadence: { ready: 2, waitMs: 60_000 }, guard: "warn" })).toMatchObject({ ledger: "/m.jsonl", cadence: { ready: 2, waitMs: 60_000 }, guard: "warn" })
   })
 
   test("a malformed option stops the plugin at setup, naming the option", async () => {
@@ -1711,6 +1913,8 @@ describe("the options", () => {
       [{ resume: true }, '["resume"]'],
       [{ resume: { backoffMs: ["10s"] } }, '["resume"]["backoffMs"][0]'],
       [{ skill: 7 }, '["skill"]'],
+      [{ guard: "loud" }, '["guard"]'],
+      [{ cadence: { ready: 0, waitMs: 1 } }, '["cadence"]["ready"]'],
       [{ experiment: { role: "planner", model: "anthropic/claude-fable", share: 1.5 } }, '["experiment"]["share"]'],
       [{ experiment: { role: "build", model: "anthropic/claude-fable", share: 0.5 } }, '["experiment"]["role"]'],
       [{ experiment: { role: "planner", model: "claude-fable", share: 0.5 } }, '["experiment"]["model"]'],

@@ -256,6 +256,16 @@ export class Ledger extends Context.Service<
   }
 >()("dotfiles-opencode/orchestrate/Ledger") {}
 
+/**
+ * Puts one message in a session's context for its next request, marked
+ * `BRIEF_MARK`, without starting a turn: an idle session reads it with its
+ * next input.
+ */
+export class Remind extends Context.Service<
+  Remind,
+  { readonly remind: (sessionID: string, note: { readonly text: string; readonly description: string }) => Effect.Effect<void, NudgeRefused> }
+>()("dotfiles-opencode/orchestrate/Remind") {}
+
 /** Whether a step's session still works: it runs a turn, is latched, or keeps background work of its own. */
 export class Liveness extends Context.Service<Liveness, { readonly alive: (sessionID: string) => Effect.Effect<boolean> }>()(
   "dotfiles-opencode/orchestrate/Liveness",

@@ -109,6 +109,7 @@ import { WAKES } from "@dotfiles/opencode-wake/wake"
 import * as CodexAdmissionLive from "@dotfiles/opencode-orchestrate/codex/admission"
 import { keepMessage, WINDOW } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogLive from "@dotfiles/opencode-orchestrate/filestore/call-log"
+import * as LedgerLive from "@dotfiles/opencode-orchestrate/filestore/ledger"
 import * as StepLogLive from "@dotfiles/opencode-orchestrate/filestore/step-log"
 import * as RunRecordsLive from "@dotfiles/opencode-orchestrate/filestore/run-records"
 import * as UnitLogsLive from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
@@ -125,15 +126,21 @@ import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
 import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
 import { BACKOFF_MS } from "@dotfiles/opencode-orchestrate/restart"
-import { definitions, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
+import { DEFAULT_CADENCE, type Refused } from "@dotfiles/opencode-orchestrate/machine"
+import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/restarts"
+import { definitions, MACHINE_BLOCK, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
 import { KNOWLTON, local, Place, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
 import {
   type CallLog,
   type CodexAdmission,
+  type GuardMode,
   type Latches,
+  type Ledger,
+  Liveness,
   type LatchStart,
   type Models,
   type PoolPace,
+  type Remind,
   type Restarts,
   type ResumeStart,
   type RootHolds,
@@ -149,6 +156,8 @@ import {
 import type { Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
 
 export const DEFAULT_LOG = join(homedir(), ".cache/orchestrate/opencode-agents.jsonl")
+/** The batch machine's ledger: one line per event or refusal, of every root. */
+export const DEFAULT_LEDGER = join(homedir(), ".cache/orchestrate/machine.jsonl")
 /** The orchestrate skill's Codex admission: `admit: …` exit 0, `hold: …[; opens about <time>Z]` exit 1. */
 export const CODEX_BUDGET = join(homedir(), ".claude/skills/orchestrate/scripts/budget.ts")
 /** The orchestrate skill's log.ts, the units' logs' one writer. */
@@ -190,8 +199,16 @@ const Experiment = Schema.Struct({
   share: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
 })
 
+const Cadence = Schema.Struct({
+  ready: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  waitMs: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+})
+
 export const Options = Schema.Struct({
   log: Schema.String.pipe(withDefault(DEFAULT_LOG)),
+  ledger: Schema.String.pipe(withDefault(DEFAULT_LEDGER)),
+  cadence: Cadence.pipe(withDefault<typeof Cadence.Type>(DEFAULT_CADENCE)),
+  guard: Schema.Literals(["refuse", "warn"]).pipe(withDefault<GuardMode>("refuse")),
   experiment: Schema.optional(Experiment),
   now: Schema.optional(Instant),
   place: Place.pipe(withDefault<Place>(KNOWLTON)),
@@ -223,6 +240,12 @@ export type Externals =
   | Skill
   | RunRecords
   | Tell
+  | Ledger
+  | Liveness
+  | Remind
+
+/** How much background work a session keeps of its own, as its last idle listed it. */
+export type Background = (sessionID: string) => number
 
 /** A cut child's resume: the subagent tool, run in the background on the child with the prompt as given. */
 export type Resume = (start: ResumeStart) => Effect.Effect<void, unknown>
@@ -235,8 +258,23 @@ type SyntheticInput = Parameters<Plugin.Context["session"]["synthetic"]>[0]
  * `start` runs a latched child, and `resume` a child a restart cut, through
  * the subagent tool.
  */
-export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, resume: Resume): Layer.Layer<Externals> =>
+export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, resume: Resume, background: Background): Layer.Layer<Externals> =>
   Layer.mergeAll(
+    LedgerLive.layer(options.ledger, options.cadence),
+    SteerLive.remindLayer(synthetic(ctx)),
+    // A step's session works while it runs a turn (its newest start is after its last end) or keeps background
+    // work of its own; a session that cannot be read does not.
+    Layer.succeed(Liveness, {
+      alive: (sessionID) =>
+        ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
+          Effect.map((session) => {
+            const busy = msOf(session.time.busy)
+            const idle = msOf(session.time.idle)
+            return (busy !== undefined && (idle === undefined || busy > idle)) || background(sessionID) > 0
+          }),
+          Effect.orElseSucceed(() => background(sessionID) > 0),
+        ),
+    }),
     RestartsLive.fromContext(ctx, resume),
     CallLogLive.layer(options.log),
     SessionsLive.layer(
@@ -284,6 +322,14 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
     SkillLive.layer(options.skill),
     RunRecordsLive.layer,
   )
+
+/** A host time (epoch ms, a Date or a DateTime) as epoch ms. */
+const msOf = (time: unknown): number | undefined => {
+  if (typeof time === "number") return time
+  if (time instanceof Date) return time.getTime()
+  if (isObject(time) && typeof time.epochMilliseconds === "number") return time.epochMilliseconds
+  return undefined
+}
 
 /** A steered synthetic message, as the host's `session.synthetic` takes it. */
 const synthetic = (ctx: Plugin.Context) => (input: SteerLive.Synthetic) =>
@@ -372,11 +418,70 @@ const SPAWNED = "You are a subagent spawned by another session."
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 
+/** The rift tool, whose `land` the machine decides. */
+const RIFT = "rift"
+
+/** A `rift` land's Rifts and its stated departure; none for any other call. */
+const landOf = (tool: string, input: unknown): { readonly rifts: ReadonlyArray<string>; readonly departs?: string } | undefined => {
+  if (tool !== RIFT || !isObject(input) || input.action !== "land" || !Array.isArray(input.rifts)) return undefined
+  const rifts = input.rifts.filter((rift): rift is string => typeof rift === "string")
+  return typeof input.departs === "string" && input.departs.trim() !== "" ? { rifts, departs: input.departs.trim() } : { rifts }
+}
+
+const callKey = (sessionID: string, callID: string) => `${sessionID}/${callID}`
+
+/** What the root reads when the machine refuses its call: the refusal's own message. */
+const refusedError = (refused: Refused) => new Tool.Error({ message: refused.message, error: refused })
+
+/** The text a tool's result shows the model. */
+const textOf = (result: Tool.Result): string =>
+  typeof result.content === "string"
+    ? result.content
+    : Array.isArray(result.content)
+      ? result.content.map((part: unknown) => (isObject(part) && typeof part.text === "string" ? part.text : "")).join("\n")
+      : ""
+
+/** `result` with `note` first in what the model reads. */
+const prepend = (result: Tool.Result, note: string): Tool.Result => ({
+  ...result,
+  content:
+    typeof result.content === "string"
+      ? `${note}\n${result.content}`
+      : Array.isArray(result.content)
+        ? [{ type: "text" as const, text: note }, ...result.content]
+        : result.content,
+})
+
+/** A latched call's answer with the machine's notes first. */
+const withNotes = (answer: ReturnType<typeof latchedResult>, said: ReadonlyArray<string>): ReturnType<typeof latchedResult> => {
+  if (said.length === 0) return answer
+  const output = `${said.join("\n")}\n${answer.output.output}`
+  return { ...answer, output: { ...answer.output, output }, content: output }
+}
+
+/** One Rift's line in a checked land's answer (mods/rift land.ts `checkedText`): `- <branch> (<path>): green|red|pending`. */
+const OUTCOME = /^- (\S+) \((.+)\): (green|red|pending)\b/
+
+/**
+ * The Rifts a completed land landed: in a checked land (`rift.push` false), each Rift answered green or
+ * pending (its gate passed), by its branch and path; in a pushed one, every Rift it was asked to land.
+ */
+export const greenOf = (rifts: ReadonlyArray<string>, text: string): ReadonlyArray<string> => {
+  const outcomes = text.split("\n").flatMap((line) => {
+    const match = OUTCOME.exec(line.trim())
+    return match === null ? [] : [{ branch: match[1]!, path: match[2]!, verdict: match[3]! }]
+  })
+  if (outcomes.length === 0) return rifts
+  return outcomes.filter((outcome) => outcome.verdict !== "red").flatMap((outcome) => [outcome.branch, outcome.path])
+}
+
 type Execute = Tool.Info["execute"]
 type ToolContext = Parameters<Execute>[1]
 
 /** The plugin on `externals`: the live systems in OpenCode, test layers in the seam tests. */
-export const make = (externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, resume: Resume) => Layer.Layer<Externals>) =>
+export const make = (
+  externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, resume: Resume, background: Background) => Layer.Layer<Externals>,
+) =>
   Plugin.define({
     id: "dotfiles-opencode.orchestrate",
     effect: Effect.fn("Orchestrate.plugin")(function* (ctx) {
@@ -419,15 +524,21 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
         ...(options.codex === false ? {} : { codex: { providers: options.codex.providers, ...(options.codex.pool === undefined ? {} : { pool: options.codex.pool }) } }),
         ...(options.experiment === undefined ? {} : { experiment: options.experiment }),
       }
+      // Each session's background work of its own, as its last idle listed it: a step that went idle with a
+      // shell still running has not ended.
+      const backgrounds = new Map<string, number>()
+      const ownBackground: Background = (sessionID) => backgrounds.get(sessionID) ?? 0
       const services = yield* Layer.build(
         Layer.mergeAll(
           Model.layer(config),
+          Model.machineLayer({ cadence: options.cadence, mode: options.guard, fullAgent: options.fullAgent, block: MACHINE_BLOCK }),
           Model.idleLayer({ place: options.place, ...(options.now === undefined ? {} : { now: options.now }) }),
           Model.driftLayer({ place: options.place, ...(options.now === undefined ? {} : { now: options.now }) }),
           Model.restarter(config, options.resume === false ? [] : options.resume.backoffMs),
-        ).pipe(Layer.provideMerge(externals(ctx, options, start, resume))),
+        ).pipe(Layer.provideMerge(externals(ctx, options, start, resume, ownBackground))),
       )
       const orchestrate = Context.get(services, Model.Orchestrate)
+      const machines = Context.get(services, Model.Machines)
       const idleRoots = Context.get(services, Model.IdleRoots)
       const scope = yield* Effect.scope
 
@@ -456,13 +567,42 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
       yield* ctx.session.hook("experimental.idle", (event) =>
         drifts.idle(event.sessionID).pipe(Effect.flatMap(driftLogged(event.sessionID)), Effect.ignoreCause, Effect.forkIn(scope), Effect.asVoid),
       )
+      // A root that compacted is told the machine and its run, once per compaction, by this location's copy only.
+      const told = new Set<string>()
+      const briefLogged = (sessionID: string) => (outcome: Model.BriefOutcome) =>
+        outcome._tag === "Told"
+          ? Effect.logInfo("orchestrate: told a compacted root its machine and run").pipe(Effect.annotateLogs({ sessionID }))
+          : outcome._tag === "Refused"
+            ? Effect.logWarning("orchestrate: the brief did not reach the root").pipe(Effect.annotateLogs({ sessionID, message: outcome.message }))
+            : Effect.logDebug("orchestrate: no brief").pipe(Effect.annotateLogs({ sessionID, why: outcome.why }))
+      const compacted = (id: string, sessionID: string) => {
+        if (told.has(id)) return Effect.void
+        told.add(id)
+        return ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
+          Effect.flatMap((session) =>
+            samePlace(
+              { directory: session.location.directory, workspaceID: session.location.workspaceID },
+              { directory: ctx.location.directory, workspaceID: ctx.location.workspaceID },
+            )
+              ? machines.compacted(sessionID).pipe(Effect.flatMap(briefLogged(sessionID)))
+              : Effect.void,
+          ),
+          Effect.ignoreCause,
+          Effect.forkIn(scope),
+          Effect.asVoid,
+        )
+      }
       yield* Effect.forkScoped(
-        ctx.event.subscribe({ types: ["session.inbox.enqueued", "session.deleted"] }).pipe(
+        ctx.event.subscribe({ types: ["session.inbox.enqueued", "session.deleted", "session.compaction.ended"] }).pipe(
           Stream.runForEach((event) => {
-            if (event.type === "session.deleted") return idleRoots.forget(event.data.sessionID)
+            if (event.type === "session.compaction.ended") return compacted(event.id, event.data.sessionID)
+            if (event.type === "session.deleted")
+              return Effect.sync(() => void backgrounds.delete(event.data.sessionID)).pipe(Effect.andThen(idleRoots.forget(event.data.sessionID)))
             const item = event.data.item
-            // New input: the owner's prompt or another plugin's message; never the nudge itself.
-            const heard = item.type === "user" || (item.type === "synthetic" && item.payload.metadata?.[MARK] === undefined)
+            // New input: the owner's prompt or another plugin's message; never the nudge or the brief.
+            const heard =
+              item.type === "user" ||
+              (item.type === "synthetic" && item.payload.metadata?.[MARK] === undefined && item.payload.metadata?.[SteerLive.BRIEF_MARK] === undefined)
             return heard ? idleRoots.heard(event.data.sessionID) : Effect.void
           }),
           Effect.ignoreCause,
@@ -525,6 +665,8 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
       const latched = new Map<string, ReturnType<typeof latchedResult>>()
       // A fallback agent's note, by its call (noteKey), put first in the subagent tool's answer.
       const notes = new Map<string, string>()
+      // A land's note under `warn` (the rule it broke), by its call, put first in the rift tool's answer.
+      const landNotes = new Map<string, string>()
       yield* ctx.tool.transform((editor) =>
         editor.update(SUBAGENT, (tool) => {
           const execute = tool.execute
@@ -579,11 +721,36 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
 
       yield* ctx.tool.hook("execute.before", (event) => {
         const call = { sessionID: event.sessionID, callID: event.id }
-        if (event.tool !== SUBAGENT)
-          return orchestrate.useTool({ call, tool: event.tool }).pipe(Effect.mapError((rejection) => refusal(event.tool, rejection, options.place)))
-        return orchestrate.startSubagent({ call, from: event.agent, messageID: event.messageID, input: event.input }).pipe(
-          Effect.mapError((rejection) => refusal(event.tool, rejection, options.place)),
-          Effect.map((outcome) => {
+        if (event.tool !== SUBAGENT) {
+          const used = orchestrate.useTool({ call, tool: event.tool }).pipe(Effect.mapError((rejection) => refusal(event.tool, rejection, options.place)))
+          const land = landOf(event.tool, event.input)
+          if (land === undefined) return used
+          // A land is decided on the root's machine before it runs; a refused one never reaches the rift tool.
+          return used.pipe(
+            Effect.andThen(machines.land({ root: event.sessionID, ...land }).pipe(Effect.mapError(refusedError))),
+            Effect.map((passed) => {
+              if (passed.notes.length > 0) landNotes.set(callKey(event.sessionID, event.id), passed.notes.join("\n"))
+            }),
+          )
+        }
+        const key = noteKey(event.sessionID, event.id, event.input)
+        // The machine decides first: a refused step starts, latches and counts nothing.
+        return machines.start({ root: event.sessionID, key, input: event.input }).pipe(
+          Effect.mapError(refusedError),
+          Effect.flatMap((passed) =>
+            orchestrate.startSubagent({ call, from: event.agent, messageID: event.messageID, input: event.input }).pipe(
+              Effect.mapError((rejection) => refusal(event.tool, rejection, options.place)),
+              // Refused by the Sabbath or the pace: the step did not start.
+              Effect.tapError(() => machines.started({ root: event.sessionID, key })),
+              Effect.map((outcome) => ({ outcome, passed })),
+            ),
+          ),
+          Effect.flatMap(({ outcome, passed }) => {
+            if (Option.isSome(outcome) && outcome.value._tag === "LatchedStart")
+              return machines.started({ root: event.sessionID, key, child: outcome.value.child }).pipe(Effect.as({ outcome, passed }))
+            return Effect.succeed({ outcome, passed })
+          }),
+          Effect.map(({ outcome, passed }) => {
             if (Option.isNone(outcome) || !isObject(event.input)) return
             const routed = outcome.value._tag === "LatchedStart" ? outcome.value.latched : outcome.value
             // Run the call as the guard routed it, on the role's model when one was chosen.
@@ -592,16 +759,18 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
             // A role's own model, named, was dropped: with no variant chosen, the role runs on its own model.
             else if (routed.reason === "model-dropped") delete input.model
             // A fallback's answer tells the parent where it ran and why; a lowered worker's, at what effort and why.
+            // The machine's notes go first.
             if (outcome.value._tag === "SubagentStarted") {
               const said = [
+                ...passed.notes,
                 ...(outcome.value.fallback === undefined ? [] : [fallbackNote(outcome.value)]),
                 ...(outcome.value.lowered === undefined ? [] : [effortNote(outcome.value)]),
               ]
-              if (said.length > 0) notes.set(noteKey(event.sessionID, event.id, event.input), said.join("\n"))
+              if (said.length > 0) notes.set(key, said.join("\n"))
             }
             // A latched call names its child, whose answer the subagent tool gives back at once.
             if (outcome.value._tag === "LatchedStart") {
-              latched.set(outcome.value.child, latchedResult(outcome.value, options.place))
+              latched.set(outcome.value.child, withNotes(latchedResult(outcome.value, options.place), passed.notes))
               input.sessionID = outcome.value.child
             }
             event.input = input
@@ -610,10 +779,25 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
       })
 
       // A role's subagent that goes idle may have handed back: its unit moves in the run's log.
-      yield* ctx.session.hook("experimental.idle", (event) => orchestrate.handBack({ sessionID: event.sessionID }))
-
+      yield* ctx.session.hook("experimental.idle", (event) =>
+        Effect.gen(function* () {
+          // What still runs of its own: a step idle with its shell or subagent running has not ended.
+          backgrounds.set(event.sessionID, event.background.filter((work) => work.sessionID === event.sessionID).length)
+          yield* orchestrate.handBack({ sessionID: event.sessionID })
+          // Its hand-back moves its unit, or ends its verifier, on its root's machine.
+          yield* machines.handBack(event.sessionID)
+        }),
+      )
       yield* ctx.tool.hook("execute.after", (event) => {
-        if (event.tool !== SUBAGENT) return Effect.void
+        if (event.tool !== SUBAGENT) {
+          const land = landOf(event.tool, event.input)
+          if (land === undefined) return Effect.void
+          const said = landNotes.get(callKey(event.sessionID, event.id))
+          landNotes.delete(callKey(event.sessionID, event.id))
+          if (event.status !== "completed") return Effect.void
+          if (said !== undefined) event.result = prepend(event.result, said)
+          return machines.landed({ root: event.sessionID, rifts: greenOf(land.rifts, textOf(event.result)) })
+        }
         const metadata = event.status === "completed" ? event.result.metadata : undefined
         const child = isObject(metadata) && typeof metadata.sessionID === "string" ? metadata.sessionID : undefined
         const status: Status =
@@ -622,11 +806,17 @@ export const make = (externals: (ctx: Plugin.Context, options: Options, start: L
             : isObject(metadata) && (metadata.status === "running" || metadata.status === "latched")
               ? metadata.status
               : "completed"
-        return orchestrate.finishSubagent({
-          call: { sessionID: event.sessionID, callID: event.id },
-          ...(child === undefined ? {} : { child }),
-          status,
-        })
+        return Effect.all(
+          [
+            orchestrate.finishSubagent({
+              call: { sessionID: event.sessionID, callID: event.id },
+              ...(child === undefined ? {} : { child }),
+              status,
+            }),
+            machines.started({ root: event.sessionID, key: noteKey(event.sessionID, event.id, event.input), ...(child === undefined ? {} : { child }) }),
+          ],
+          { discard: true },
+        )
       })
     }),
   })
