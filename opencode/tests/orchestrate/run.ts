@@ -28,7 +28,8 @@
  *   until the test opens its gate) while batch-2 fans out; its findings file
  *   is written to `run/`; one finding folds into a running implementor (a
  *   follow-up with its sessionID), one into a new fix unit; batch-2 lands
- *   and its verifier starts. The result carries the root's ledger lines, the
+ *   without export, whose finding rides with it, and its verifier starts;
+ *   export lands as batch-3, whose verifier is told its finding. The result carries the root's ledger lines, the
  *   lands and every model request.
  * - `move`: two roots, each turn one `probe:` call, move between `work` and
  *   `other` (two plugin copies, one per location) between their steps: one
@@ -351,11 +352,17 @@ try {
       background: true,
     })
     await implement("billing-fix1", { description: "implementor billing-fix1 r1 (folds: billing/M1)" })
+    await implement("docs")
+    // auth/M1 rides with export, still implementing: it holds no land, so the three ready units land without it.
+    await land(["search", "billing-fix1", "docs"])
+    await call("subagent", { agent: "verifier", description: "verifier batch-2 r1", prompt: `${HAND_BACK} verifier batch-2 r1: accepted /nonexistent/loop-probe-x/findings.md` })
+    if (!(await has((line) => line.kind === "VerifierEnded" && line.batch === "batch-2"))) throw new Error("batch-2's verdict never reached the ledger")
+    // Export hands back and lands in its own batch; that batch's verifier is told auth/M1.
     sim.open("export")
     if (!(await has((line) => line.kind === "UnitHandedBack" && line.unit === "export" && line.ready === true))) throw new Error("export never handed back ready")
     await opencode.experimental.session.wait({ sessionID: String(exported.child) })
-    await land(["search", "export", "billing-fix1"])
-    await call("subagent", { agent: "verifier", description: "verifier batch-2 r1", prompt: `${HAND_BACK} verifier batch-2 r1: accepted /nonexistent/loop-probe-x/findings.md` })
+    await land(["export"])
+    await call("subagent", { agent: "verifier", description: "verifier batch-3 r1", prompt: `${HAND_BACK} verifier batch-3 r1: accepted /nonexistent/loop-probe-x/findings.md` })
     const riftLands = () => (existsSync(riftLog) ? readFileSync(riftLog, "utf8").split("\n").filter((line) => line !== "") : []).map((line) => JSON.parse(line) as ReadonlyArray<string>)
     const lands = riftLands()
 

@@ -100,7 +100,8 @@
  *   against its six rules in the skill's words: a verifier not named for a
  *   batch, a second verifier, a land or verifier before the cadence while an
  *   implementor runs, a land before the last batch's verdict, a land with a
- *   finding of it not folded into a ready unit, a land that leaves a ready
+ *   finding of it folded into no unit (one folded into a running implementor
+ *   rides with that unit's later land), a land that leaves a ready
  *   unit out. The machine is a pipeline: implementors start while a verifier
  *   runs; a verifier's findings (read from its report) fold into the next
  *   batch by an implementor's start, and the next batch verifier's prompt

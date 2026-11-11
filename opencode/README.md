@@ -665,7 +665,9 @@ call against it at the point of action (`mods/orchestrate/machine.ts`).
   implementor still runs (BatchNotDue), a land while a landed batch has no
   verdict, its verifier not started or still running, whatever round its
   units have moved on to (VerdictPending), a land with a finding of the last
-  verdict not folded into a ready unit it takes, or with a `changes` whose
+  verdict folded into no unit, or into one the land does not take that is not
+  still implementing (a finding folded into a running implementor holds no
+  land: it rides with that unit's later land, whose verifier is told it), or with a `changes` whose
   report did not read (FindingUnfolded: an unread report is never an empty
   set; the plugin reads it again before each start and land), a land that leaves a ready unit out
   (LandPartial). No rule holds an implementor's start. A refused call

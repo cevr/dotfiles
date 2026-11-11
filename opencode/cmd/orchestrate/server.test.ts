@@ -1943,8 +1943,11 @@ describe("the batch machine", () => {
           expect.objectContaining({ finding: "alpha/M1", into: "gamma" }),
           expect.objectContaining({ finding: "alpha/M2", into: "alpha-fix1" }),
         ])
-        // Folded into gamma, which still implements: the land waits for its hand-back.
-        expect((yield* land(["beta", "alpha-fix1"])).refused?.message).toContain("alpha/M1 → gamma")
+        // Folded into gamma, which still implements: alpha/M1 rides with gamma and holds no land. Only the cadence holds
+        // this one (two ready while gamma runs), never the finding.
+        const riding = yield* land(["beta", "alpha-fix1"])
+        expect(riding.refused?.message).toContain(RULES.BatchNotDue.words)
+        expect(riding.refused?.message).not.toContain(RULES.FindingUnfolded.words)
         yield* plugin.idle("ses_g")
         expect((yield* land(["beta", "gamma", "alpha-fix1"])).refused).toBeUndefined()
         yield* landed(["beta", "gamma", "alpha-fix1"])
@@ -1954,11 +1957,11 @@ describe("the batch machine", () => {
         expect(String((two.input as { prompt: string }).prompt)).toContain("verify batch-2\n\nFindings of the batch before, folded into this batch")
         expect(String((two.input as { prompt: string }).prompt)).toContain("- batch-1 alpha/M1 → gamma\n- batch-1 alpha/M2 → alpha-fix1")
         expect(plugin.ledger.at(-1)).toMatchObject({ kind: "VerifierStarted", batch: "batch-2", units: ["beta", "gamma", "alpha-fix1"], findings: ["alpha/M1 → gamma", "alpha/M2 → alpha-fix1"] })
-        expect(plugin.ledger.filter((line) => (line as { kind: string }).kind === "Refused").map((line) => (line as { rule: string }).rule)).toEqual(["VerdictPending", "FindingUnfolded", "FindingUnfolded"])
+        expect(plugin.ledger.filter((line) => (line as { kind: string }).kind === "Refused").map((line) => (line as { rule: string }).rule)).toEqual(["VerdictPending", "FindingUnfolded", "BatchNotDue"])
       }),
     ))
 
-  test("a unit's next round in a Rift of another name: the ledger records the Rift its prompt names, and a land by that Rift is the unit's, its folded findings with it (orch-pipeline OB1)", () =>
+  test("a unit's next round in a Rift of another name: the ledger records the Rift its brief names as its own (not one it only mentions), and a land by that Rift is the unit's, its folded findings with it (orch-pipeline OB1)", () =>
     scenario(
       Effect.gen(function* () {
         const report = "/run/batch-1-findings.md"
@@ -1978,7 +1981,7 @@ describe("the batch machine", () => {
         yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "verify batch-1", background: true }, "ses_v")
         yield* plugin.idle("ses_v")
         // Round 2 runs in a Rift named for no unit: the ledger binds it to reset-use from the prompt.
-        yield* begin(plugin, { agent: "implementor", description: "implementor reset-use r2", prompt: "Round 2. You work in the Rift /u/.rifts/dotfiles/scratch-17 (a copy).", background: true }, "ses_a2")
+        yield* begin(plugin, { agent: "implementor", description: "implementor reset-use r2", prompt: "Round 2. Do not touch /u/.rifts/dotfiles/web (unit web's).\nYou work in the Rift /u/.rifts/dotfiles/scratch-17 (a copy).", background: true }, "ses_a2")
         expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitStarted", unit: "reset-use", round: 2, workspaces: ["/u/.rifts/dotfiles/scratch-17"] }))
         yield* plugin.idle("ses_a2")
         expect((yield* land(["scratch-17"])).refused).toBeUndefined()

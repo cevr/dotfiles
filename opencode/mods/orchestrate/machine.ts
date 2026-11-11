@@ -15,8 +15,10 @@
 // from the verifier's findings by the plugin, `<unit>/<id>`) goes into a unit
 // of batch N+1, by that unit's implementor's start: its own unit's findings
 // by themselves, others named in `(folds: …)`. Batch N+1 lands once verdict
-// N is in, with every finding folded into a ready unit it takes; its verifier
-// checks the findings as folded.
+// N is in, with every finding folded into a unit: one folded into a ready
+// unit lands with it; one folded into a unit still implementing does not
+// hold the other ready units, it rides with its unit's later land, whose
+// verifier checks it as folded.
 //
 // A unit is `implement` (its implementor runs), `ended` (its implementor
 // stopped without `ready`), `ready`, `landed` (no verifier started for it
@@ -39,7 +41,9 @@
 //                    verifier's `units`), not a unit's slot, which a covered
 //                    unit's next round takes over;
 //   FindingUnfolded  a land while a finding of the last verdict is not folded
-//                    into a ready unit the land takes, or while a `changes`
+//                    into a unit, or is folded into one that is neither in
+//                    the land nor still implementing (a ready unit the land
+//                    leaves out, an implementor that ended), or while a `changes`
 //                    verdict's report did not read (`unresolved`: its
 //                    findings are not known, never none; the plugin reads
 //                    it again before each start and land, `ReportRead`);
@@ -77,7 +81,7 @@ export const RULES: Readonly<Record<Rule, { readonly name: string; readonly word
   VerifierRunning: { name: "Verify a batch", words: "never more than one runs on a machine at a time" },
   BatchNotDue: { name: "Batch cadence", words: "Land when 3 units are ready or the oldest ready unit has waited 30 minutes." },
   VerdictPending: { name: "The pipeline", words: "Batch N+1 lands only once batch N's verdict is in" },
-  FindingUnfolded: { name: "The pipeline", words: "only with every finding of batch N folded into a ready unit of batch N+1" },
+  FindingUnfolded: { name: "The pipeline", words: "only with every finding of batch N folded into a unit of batch N+1" },
   LandPartial: { name: "Land a batch", words: "Land every ready unit at once when the cadence fires" },
 }
 
@@ -102,7 +106,7 @@ export const Start = Schema.TaggedStruct("Start", {
   direct: Schema.Boolean,
   folds: Schema.optionalKey(Schema.Array(Schema.String)),
   departs: Schema.optionalKey(Schema.String),
-  /** An implementor's: the Rifts its prompt names (`workspacesOf`), its unit's workspaces from now on. */
+  /** An implementor's: the workspace its brief names as its own (`workspaceOf`), its unit's from now on. */
   workspaces: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 export interface Start extends Schema.Schema.Type<typeof Start> {}
@@ -271,10 +275,16 @@ export const unitOfFinding = (finding: string): string => finding.split("/")[0]!
 /** The open findings, as `[key, finding]`. */
 const openFindings = (state: MachineState): ReadonlyArray<readonly [string, Finding]> => Object.entries(state.findings ?? {})
 
-/** The open findings a land of `lands` would leave unfolded: none folded, or folded into a unit it does not take. */
+/** A finding folded into a unit still implementing: it holds no land, and rides with its unit's. */
+export const riding = (state: MachineState, finding: Finding): boolean => finding.into !== undefined && state.units[finding.into]?.state === "implement"
+
+/**
+ * The open findings a land of `lands` would leave unfolded: none folded, or folded into a unit it
+ * does not take that is not still implementing (one still implementing rides with its own land).
+ */
 export const unfoldedOf = (state: MachineState, lands: ReadonlyArray<string>): ReadonlyArray<string> =>
   openFindings(state)
-    .filter(([, finding]) => finding.into === undefined || !lands.includes(finding.into))
+    .filter(([, finding]) => finding.into === undefined || (!lands.includes(finding.into) && !riding(state, finding)))
     .map(([key]) => key)
 
 /** The open findings an implementor's start folds into its unit: its own unit's, and those its `folds` name. */
@@ -313,13 +323,32 @@ const unverifiedOf = (state: MachineState): ReadonlyArray<string> => [...new Set
 /** The units the running verifier covers: as it started, else (an older checkpoint) those in `verify`. */
 const coveredOf = (state: MachineState): ReadonlyArray<string> => state.verifier?.units ?? unitsIn(state, "verify")
 
-/** A Rift's path as a prompt names it: under a `.rifts/` directory, up to a space, a quote or a bracket. */
-const RIFT_PATH = /[^\s`'"()<>[\]]*\/\.rifts\/[^\s`'"()<>[\]]+/g
+/** A path as a brief writes it: absolute or from home, up to a space, a quote, a bracket or a comma. */
+const PATH = String.raw`(?:~|/)[^\s\x60'"()<>[\],]*`
 
-/** The Rifts a prompt names, by path, each once, trailing punctuation dropped: an implementor's workspaces. */
-export const workspacesOf = (prompt: string | undefined): ReadonlyArray<string> => [
-  ...new Set([...(prompt ?? "").matchAll(RIFT_PATH)].map((match) => match[0].replace(/[.,;:!?]+$/, "").replace(/\/+$/, ""))),
+/**
+ * Where a brief says the implementor works, first match wins: a `Workspace:` or `Rift:` line (the
+ * spec's and a round message's), "you work in the Rift <path>", or the spec's `## Workspace` heading
+ * with its path below. Every other path a prompt names (a "do not touch" line, a log directory,
+ * another unit's Rift) is none of this unit's.
+ */
+const OWN_WORKSPACE: ReadonlyArray<RegExp> = [
+  new RegExp(String.raw`^[\s>*_-]*(?:workspace|rift)[*_]*\s*:[*_\s]*\x60?(${PATH})`, "im"),
+  new RegExp(String.raw`\bwork(?:s|ing)?\s+in\s+(?:the\s+|a\s+|its\s+|your\s+)?(?:rift|worktree|workspace)\s+\x60?(${PATH})`, "i"),
+  new RegExp(String.raw`^#+\s*workspace\s*\n+\s*\x60?(${PATH})`, "im"),
 ]
+
+/**
+ * The workspace an implementor's start names as its own (`OWN_WORKSPACE`), trailing punctuation and
+ * slashes dropped; none when the brief names none. Never a path the brief only mentions.
+ */
+export const workspaceOf = (prompt: string | undefined): string | undefined => {
+  for (const pattern of OWN_WORKSPACE) {
+    const path = pattern.exec(prompt ?? "")?.[1]?.replace(/[.,;:!?]+$/, "").replace(/\/+$/, "")
+    if (path !== undefined && path.length > 1) return path
+  }
+  return undefined
+}
 
 /** A land's entry names `workspace`: its whole path, or its last segments (`reset-use-3`, `dotfiles/reset-use-3`). */
 const namesWorkspace = (entry: string, workspace: string) => entry === workspace || workspace.endsWith(`/${entry}`)
@@ -327,17 +356,22 @@ const namesWorkspace = (entry: string, workspace: string) => entry === workspace
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 
 /**
- * The unit a land's entry names. First by the workspaces the ledger holds for
- * each unit (`workspaces`: the Rifts its implementors were started in), when
- * exactly one unit's fits. Else by the unit's name: its name, its branch
- * (`<run>/<unit>`, `feat/<unit>`), its path (`…/.rifts/<repo>/<unit>`),
- * workrift's directory (`<run>-<unit>`), each maybe with a later round's
- * number (`<unit>-3`); the longest unit name that fits wins (`fix-auth` over
- * `auth`). An entry that is no unit's is none.
+ * The unit a land's entry names, or none, never a wrong one:
+ *
+ * 1. a unit's exact name, as the entry or its last segment (`web`, `feat/web`, `…/.rifts/app/web`)
+ *    always wins;
+ * 2. else the unit whose recorded workspace (`workspaces`: the Rift each round's brief named as
+ *    its own) the entry names; two units holding it is none;
+ * 3. else by name: `<run>/<unit>`, workrift's `<run>-<unit>`, a later round's `<unit>-3`; the
+ *    longest unit name that fits wins (`fix-auth` over `auth`).
  */
 export const unitOfRift = (rift: string, units: ReadonlyArray<string>, workspaces: Readonly<Record<string, ReadonlyArray<string>>> = {}): string | undefined => {
   const entry = rift.trim().replace(/\/+$/, "")
+  const last = entry.split("/").at(-1) ?? entry
+  if (units.includes(entry)) return entry
+  if (units.includes(last)) return last
   const owners = units.filter((unit) => (workspaces[unit] ?? []).some((workspace) => namesWorkspace(entry, workspace)))
+  if (owners.length > 1) return undefined
   if (owners.length === 1) return owners[0]
   return units.filter((unit) => new RegExp(`(?:^|[/-])${escaped(unit)}(?:-\\d+)?$`).test(entry)).sort((a, b) => b.length - a.length)[0]
 }
@@ -398,7 +432,7 @@ const instead = (state: MachineState, rule: Rule, call: Command, now: number, ca
     }
     case "VerdictPending":
       return state.verifier === undefined
-        ? `Start \`verifier batch-<k> r1\` for ${list(coverOf(state))} first; the next batch lands once its verdict is in, with each of its findings folded into a ready unit. Keep the next batch's implementors working meanwhile.`
+        ? `Start \`verifier batch-<k> r1\` for ${list(coverOf(state))} first; the next batch lands once its verdict is in, with each of its findings folded into a unit (one folded into a unit still implementing rides with that unit's later land). Keep the next batch's implementors working meanwhile.`
         : `Verifier ${state.verifier.batch} still runs over ${list(coveredOf(state))}: keep the next batch's implementors working, fold its findings into them when its verdict comes, then land.`
     case "FindingUnfolded": {
       const lands = call._tag === "Land" ? named(state, call.rifts) : ready
@@ -413,7 +447,7 @@ const instead = (state: MachineState, rule: Rule, call: Command, now: number, ca
           ? []
           : [
               `Fold each finding into a unit this land takes: ${unfolded.map((key) => foldedLine(state, key)).join(", ")}.`,
-              `A finding folded into a unit still implementing lands when that unit hands back ready. One not folded goes to a running implementor that owns its files (a subagent call with its sessionID, description \`implementor <unit> r<N> (folds: ${unfolded[0]})\`), or to a new fix implementor (\`implementor ${unitOfFinding(unfolded[0]!)}-fix1 r1 (folds: ${unfolded[0]})\`).`,
+              `A finding folded into a unit still implementing holds no land: it rides with that unit's later land, whose verifier checks it. One folded into a ready unit lands with it: take that unit too. One not folded goes to a running implementor that owns its files (a subagent call with its sessionID, description \`implementor <unit> r<N> (folds: ${unfolded[0]})\`), or to a new fix implementor (\`implementor ${unitOfFinding(unfolded[0]!)}-fix1 r1 (folds: ${unfolded[0]})\`).`,
             ]),
       ].join(" ")
     }
@@ -698,6 +732,7 @@ export const briefOf = (state: MachineState, now: number, cadence: Cadence): str
   const next = unitsIn(state, "implement", "ready").map((unit) => `${unit} (${state.units[unit]!.state})`)
   const folded = findings.filter(([, finding]) => finding.into !== undefined).map(([key, finding]) => `${finding.batch} ${key} → ${finding.into}`)
   const unfolded = findings.filter(([, finding]) => finding.into === undefined).map(([key, finding]) => `${finding.batch} ${key}`)
+  const rides = findings.filter(([, finding]) => riding(state, finding)).map(([key, finding]) => `${finding.batch} ${key} → ${finding.into}`)
   return [
     ...BRIEF_ORDER.flatMap((name) => {
       const units = unitsIn(state, name)
@@ -707,7 +742,10 @@ export const briefOf = (state: MachineState, now: number, cadence: Cadence): str
     ...(state.verifier === undefined && findings.length === 0
       ? []
       : [`next batch: units ${list(next)}; folded findings: ${folded.length === 0 ? "none" : folded.join(", ")}`]),
-    ...(unfolded.length === 0 ? [] : [`not folded: ${unfolded.join(", ")} (the next batch lands once each is folded into a ready unit)`]),
+    ...(unfolded.length === 0 ? [] : [`not folded: ${unfolded.join(", ")} (the next batch lands once each is folded into a unit)`]),
+    ...(rides.length === 0
+      ? []
+      : [`riding with a unit still implementing: ${rides.join(", ")} (holds no land; each lands with its unit, and that land's verifier must name it as folded)`]),
     ...debts.map(([batch, debt]) => `findings not known: ${batch} changes, ${debt.why}${debt.report === undefined ? "" : ` (${debt.report})`}; the next batch lands once its report reads and each finding is folded`),
     ...(state.verifier === undefined && carried.length > 0 ? [`landed with folded findings, for the next verifier: ${foldedList(state, carried)}`] : []),
     ...(why === undefined ? [] : [`a batch is due (${why})`]),

@@ -13,7 +13,9 @@
 //       comes only when the cadence is met or no implementor is running;
 //   I4  no land passes while a landed batch has no verdict (no verifier yet,
 //       or its verifier still runs), or while a finding of the last verdict
-//       is not folded into a unit it lands, unless it departed;
+//       is folded into no unit, or into one it does not land that is not
+//       still implementing (that one rides with its unit's land), unless it
+//       departed;
 //   I5  a unit is in `verify` only while a verifier runs;
 //   I6  an implementor's start is never refused: the next batch fans out
 //       while a verifier runs (the pipeline);
@@ -51,7 +53,7 @@ import {
   startOf,
   unitOfRift,
   verifierPromptOf,
-  workspacesOf,
+  workspaceOf,
 } from "./machine.ts"
 
 const CADENCE: Cadence = { ready: 3, waitMs: 30 * 60_000 }
@@ -109,8 +111,11 @@ const notDue = (shadow: Shadow, now: number) => {
   const oldest = Math.min(...ready.map((unit) => shadow.units.get(unit)!.since))
   return now - oldest < CADENCE.waitMs && inState(shadow, "implement").length > 0
 }
-/** The findings a land of `lands` leaves unfolded. */
-const unfolded = (shadow: Shadow, lands: ReadonlyArray<string>) => [...shadow.findings].filter(([, finding]) => finding.into === undefined || !lands.includes(finding.into)).map(([key]) => key)
+/** The findings a land of `lands` leaves unfolded: none folded, or folded into a unit it does not take that is not still implementing (that one rides with its unit's land). */
+const unfolded = (shadow: Shadow, lands: ReadonlyArray<string>) =>
+  [...shadow.findings]
+    .filter(([, finding]) => finding.into === undefined || (!lands.includes(finding.into) && shadow.units.get(finding.into)?.state !== "implement"))
+    .map(([key]) => key)
 /** The rules `command` breaks on `shadow`, in the order they are checked. */
 const broken = (shadow: Shadow, command: Command, now: number): ReadonlyArray<Rule> => {
   if (command._tag === "Start" && command.role === "verifier") {
@@ -436,8 +441,13 @@ describe("the machine's stories", () => {
     const folded = await run(steps)
     expect(folded.state.findings).toEqual({ "auth/M1": { batch: "batch-1", into: "export" }, "billing/M1": { batch: "batch-1", into: "billing-fix1" } })
     expect(briefOf(folded.state, T0 + 43 * MIN, CADENCE)).toContain("next batch: units search (ready), export (implement), billing-fix1 (implement); folded findings: batch-1 auth/M1 → export, batch-1 billing/M1 → billing-fix1")
-    // Folded into units still implementing: the land waits for them.
-    expect((await run([...steps, [Land.make({ rifts: ["search"] }), 70 * MIN]])).last).toMatchObject({ refused: "FindingUnfolded" })
+    // Folded into units still implementing: they hold no land; search lands alone, and both findings stay open, riding
+    // with their units.
+    expect((await run([...steps, [Land.make({ rifts: ["search"] }), 70 * MIN]])).last).toEqual({ events: [] })
+    const alone = await run([...steps, [Land.make({ rifts: ["search"] }), 70 * MIN], [Landed.make({ rifts: ["search"] }), 70 * MIN]])
+    expect(alone.last).toMatchObject({ events: [{ _tag: "BatchLanded", units: ["search"] }] })
+    expect(alone.state.findings).toEqual({ "auth/M1": { batch: "batch-1", into: "export" }, "billing/M1": { batch: "batch-1", into: "billing-fix1" } })
+    expect(alone.state.carried).toBeUndefined()
     steps.push([ready("export"), 50 * MIN], [ready("billing-fix1"), 51 * MIN])
     const landed = await run([...steps, [Land.make({ rifts: ["search", "export", "billing-fix1"] }), 52 * MIN], [Landed.make({ rifts: ["search", "export", "billing-fix1"] }), 52 * MIN]])
     expect(landed.last).toMatchObject({ events: [{ _tag: "BatchLanded" }] })
@@ -455,6 +465,60 @@ describe("the machine's stories", () => {
       const done = evolve(after, [{ _tag: "VerifierEnded", batch: "batch-2", verdict: "accepted", at: T0 + 60 * MIN }])
       expect(done).toEqual({ units: {} })
     }
+  })
+
+  test("a finding folded into a long redesign still implementing holds no land of three independent ready units; it rides with the redesign's later land, whose verifier is told it; one not folded, or folded into an ended unit, still holds the land", async () => {
+    const verifier = (name: string) => Start.make({ role: "verifier", name, round: 1, direct: false })
+    const steps: Array<readonly [Command, number]> = [
+      [impl("redesign"), 0],
+      [ready("redesign"), MIN],
+      [Land.make({ rifts: ["redesign"] }), 2 * MIN],
+      [Landed.make({ rifts: ["redesign"] }), 2 * MIN],
+      [verifier("batch-1"), 3 * MIN],
+      [HandBack.make({ role: "verifier", name: "batch-1", verdict: "changes", findings: ["redesign/M1"] }), 20 * MIN],
+      [impl("a"), 21 * MIN],
+      [impl("b"), 21 * MIN],
+      [impl("c"), 21 * MIN],
+      [ready("a"), 30 * MIN],
+      [ready("b"), 30 * MIN],
+      [ready("c"), 30 * MIN],
+    ]
+    // Not folded at all: the land is held.
+    expect((await run([...steps, [Land.make({ rifts: ["a", "b", "c"] }), 31 * MIN]])).last).toMatchObject({ refused: "FindingUnfolded" })
+    // Folded into the redesign's next round, still implementing: a, b and c land, with no departure.
+    steps.push([impl("redesign", 2), 30 * MIN])
+    const riding = await run(steps)
+    expect(briefOf(riding.state, T0 + 31 * MIN, CADENCE)).toContain(
+      "riding with a unit still implementing: batch-1 redesign/M1 → redesign (holds no land; each lands with its unit, and that land's verifier must name it as folded)",
+    )
+    expect(notesOf(riding.state, impl("d"), T0 + 31 * MIN, CADENCE).join("\n")).toContain("a batch is due (3 ready): a, b, c")
+    expect((await run([...steps, [Land.make({ rifts: ["a", "b", "c"] }), 31 * MIN]])).last).toEqual({ events: [] })
+    steps.push([Land.make({ rifts: ["a", "b", "c"] }), 31 * MIN], [Landed.make({ rifts: ["a", "b", "c"] }), 31 * MIN])
+    const three = await run(steps)
+    expect(three.last).toMatchObject({ events: [{ _tag: "BatchLanded", units: ["a", "b", "c"] }] })
+    expect(three.state.findings).toEqual({ "redesign/M1": { batch: "batch-1", into: "redesign" } })
+    // Batch 2's verifier checks a, b and c; the riding finding is not its.
+    steps.push([verifier("batch-2"), 32 * MIN])
+    const two = await run(steps)
+    expect(two.last).toEqual({ events: [expect.not.objectContaining({ findings: expect.anything() })] })
+    steps.push([HandBack.make({ role: "verifier", name: "batch-2", verdict: "accepted" }), 40 * MIN])
+    // The redesign hands back and lands; its batch's verifier is told the finding, in its prompt.
+    steps.push([ready("redesign"), 90 * MIN], [Land.make({ rifts: ["redesign"] }), 91 * MIN], [Landed.make({ rifts: ["redesign"] }), 91 * MIN])
+    const later = await run(steps)
+    expect(later.state.carried).toEqual({ "redesign/M1": { batch: "batch-1", into: "redesign" } })
+    expect(verifierPromptOf(later.state, verifier("batch-3"))).toContain("- batch-1 redesign/M1 → redesign")
+    expect(await decide(later.state, verifier("batch-3"), T0 + 92 * MIN)).toEqual({
+      events: [expect.objectContaining({ _tag: "VerifierStarted", batch: "batch-3", units: ["redesign"], findings: ["redesign/M1 → redesign"] })],
+    })
+    // Folded into a unit whose implementor ended without ready: it rides with nothing, and holds the land.
+    const ended = await run([
+      ...steps.slice(0, 12),
+      [impl("redesign", 2), 30 * MIN],
+      [HandBack.make({ role: "implementor", name: "redesign", verdict: "blocked" }), 25 * MIN],
+      [Land.make({ rifts: ["a", "b", "c"] }), 31 * MIN],
+    ])
+    expect(ended.last).toMatchObject({ refused: "FindingUnfolded" })
+    if ("refused" in ended.last) expect(ended.last.message).toContain("redesign/M1 → redesign")
   })
 
   test("a unit's own next round folds its findings by itself; a fold naming no open finding is said, not refused", async () => {
@@ -619,30 +683,56 @@ describe("the machine's stories", () => {
     expect(unitOfRift("/u/.rifts/dotfiles/land-upstream-2", ["reset-use", "land-upstream"])).toBe("land-upstream")
     expect(unitOfRift("auth-2", ["auth", "auth-2"])).toBe("auth-2")
     expect(unitOfRift("auth-2x", ["auth"])).toBeUndefined()
-    // A workspace the ledger holds names its unit whatever it is called; two units holding it fall back to the name.
+    // A workspace the ledger holds names its unit whatever it is called.
     expect(unitOfRift("scratch-b", ["reset-use", "web"], { "reset-use": ["/u/.rifts/dotfiles/scratch-b"] })).toBe("reset-use")
     expect(unitOfRift("dotfiles/scratch-b", ["reset-use"], { "reset-use": ["/u/.rifts/dotfiles/scratch-b"] })).toBe("reset-use")
-    expect(unitOfRift("web", ["reset-use", "web"], { "reset-use": ["/u/.rifts/dotfiles/web"], web: ["/u/.rifts/dotfiles/web"] })).toBe("web")
+    // A unit's exact name always wins, even over a workspace another unit holds by that name.
+    expect(unitOfRift("web", ["api", "web"], { api: ["/u/.rifts/app/web"] })).toBe("web")
+    expect(unitOfRift("/u/.rifts/app/web", ["api", "web"], { api: ["/u/.rifts/app/web"] })).toBe("web")
+    // Two units holding one workspace: none, never a wrong one.
+    expect(unitOfRift("shared-x", ["api", "web"], { api: ["/u/.rifts/app/shared-x"], web: ["/u/.rifts/app/shared-x"] })).toBeUndefined()
   })
 
-  test("property: over arbitrary unit names and rounds, each unit's Rift (by name, branch, path, numbered round, or any workspace its starts named) is that unit's", () => {
+  test("a unit's own workspace is the one its brief names as its own; other Rifts the brief mentions are none of it (round-2 probe)", () => {
+    const apiPrompt = "You work in the Rift /u/.rifts/app/api. Do not touch /u/.rifts/app/web (unit web's)."
+    expect(workspaceOf(apiPrompt)).toBe("/u/.rifts/app/api")
+    // web on a workrift (no .rifts path) or from a ledger older than workspaces: a land of `web` is web's.
+    const workspaces = { api: [workspaceOf(apiPrompt)!], web: [workspaceOf("You work in /workspaces/web on the workbox.")].filter((path) => path !== undefined) }
+    expect(unitOfRift("web", ["api", "web"], workspaces)).toBe("web")
+    expect(unitOfRift("web", ["api", "web"], { api: [workspaceOf(apiPrompt)!] })).toBe("web")
+    // Even a ledger written by round 2, which held every mentioned Rift, cannot take web's own name.
+    expect(unitOfRift("web", ["api", "web"], { api: ["/u/.rifts/app/api", "/u/.rifts/app/web"] })).toBe("web")
+  })
+
+  test("workspaceOf reads the brief's own workspace: a Workspace: or Rift: line, \"you work in the Rift …\", the spec's ## Workspace; none otherwise", () => {
+    expect(workspaceOf("You work in the Rift /Users/me/Developer/personal/.rifts/dotfiles/land-upstream-2 (a copy). Logs in `/tmp/x`.")).toBe("/Users/me/Developer/personal/.rifts/dotfiles/land-upstream-2")
+    expect(workspaceOf("Round 2.\nDo not touch ~/.rifts/app/web.\nWorkspace: `/w/.rifts/app/api/`, branch feat/api")).toBe("/w/.rifts/app/api")
+    expect(workspaceOf("- **Rift:** /workspaces/api-3.")).toBe("/workspaces/api-3")
+    expect(workspaceOf("# api — spec\n\n## Workspace\n/u/.rifts/app/api, branch `feat/api`, base `abc`.")).toBe("/u/.rifts/app/api")
+    expect(workspaceOf("Read the spec at /run/api/spec.md. Do not touch /u/.rifts/app/web.")).toBeUndefined()
+    expect(workspaceOf(undefined)).toBeUndefined()
+  })
+
+  test("property: over arbitrary units, rounds and briefs that also name other units' Rifts, a land's entry names the unit it was started in or named for", () => {
     const random = rng(1111)
     const word = () => Array.from({ length: 1 + Math.floor(random() * 6) }, () => "abcdefghijklmnopqrstuvwxyz"[Math.floor(random() * 26)]).join("")
     for (let trial = 0; trial < 300; trial++) {
       // Names of one to three words, no word a number: a numbered Rift is never another unit's name.
       const units = [...new Set(Array.from({ length: 1 + Math.floor(random() * 5) }, () => Array.from({ length: 1 + Math.floor(random() * 3) }, word).join("-")))]
-      // Each unit's workspaces: arbitrary Rift names, made unique per unit.
-      const workspaces = Object.fromEntries(units.map((unit, i) => [unit, [`/home/me/.rifts/repo/${word()}-${i}-ws`, `/home/me/.rifts/repo/${unit}-${2 + i}`]]))
+      // Each unit's own Rift: an arbitrary name, or its name with a round.
+      const own = Object.fromEntries(units.map((unit, i) => [unit, random() < 0.5 ? `/home/me/.rifts/repo/${word()}-${i}-ws` : `/home/me/.rifts/repo/${unit}-${2 + i}`]))
+      // Each brief names its own Rift, then other units' Rifts and names in "do not touch" lines.
+      const brief = (unit: string) =>
+        [
+          ...units.filter((other) => other !== unit && random() < 0.7).map((other) => `Do not touch ${own[other]} or /home/me/.rifts/repo/${other} (unit ${other}).`),
+          `${random() < 0.5 ? "You work in the Rift" : "Workspace:"} ${own[unit]}${random() < 0.5 ? "." : " (a copy)."}`,
+        ].join("\n")
+      const workspaces = Object.fromEntries(units.map((unit) => [unit, [workspaceOf(brief(unit))!]]))
       for (const unit of units) {
+        expect(workspaces[unit]).toEqual([own[unit]])
         const round = 2 + Math.floor(random() * 9)
-        // Another unit whose name ends with this one's could take its name-based entries: the longest wins, by design.
-        const longer = units.some((other) => other !== unit && other.endsWith(`-${unit}`))
-        const byName = [`${unit}-${round}`, `/home/me/.rifts/repo/${unit}-${round}`, `run/${unit}`, `feat/${unit}`, unit]
-        if (!longer) for (const entry of byName) expect([entry, unitOfRift(entry, units)]).toEqual([entry, unit])
-        for (const workspace of workspaces[unit]!) {
-          expect(unitOfRift(workspace, units, workspaces)).toBe(unit)
-          expect(unitOfRift(workspace.split("/").at(-1)!, units, workspaces)).toBe(unit)
-        }
+        const entries = [unit, `feat/${unit}`, `run/${unit}`, `/home/me/.rifts/repo/${unit}`, `${unit}-${round}`, `/home/me/.rifts/repo/${unit}-${round}`, own[unit]!, own[unit]!.split("/").at(-1)!]
+        for (const entry of entries) expect([entry, unitOfRift(entry, units, workspaces)]).toEqual([entry, unit])
       }
     }
   })
@@ -679,13 +769,6 @@ describe("the machine's stories", () => {
     expect((await run([...steps, [Land.make({ rifts: ["/u/.rifts/dotfiles/reset-use-3", "/u/.rifts/dotfiles/lu-second-try"] }), 51 * MIN]])).last).toEqual({ events: [] })
   })
 
-  test("workspacesOf reads the Rift paths a prompt names, each once, without trailing punctuation", () => {
-    expect(
-      workspacesOf("You work in the Rift /Users/me/Developer/personal/.rifts/dotfiles/land-upstream-2 (a copy). Logs in `/tmp/x`. Rift `/Users/me/Developer/personal/.rifts/dotfiles/land-upstream-2`."),
-    ).toEqual(["/Users/me/Developer/personal/.rifts/dotfiles/land-upstream-2"])
-    expect(workspacesOf("~/.rifts/app/a, and /w/.rifts/app/b/; none else")).toEqual(["~/.rifts/app/a", "/w/.rifts/app/b"])
-    expect(workspacesOf(undefined)).toEqual([])
-  })
 
   test("the notes ride on a start's answer: a due batch, a landed batch with no verifier, a fourth round", async () => {
     const due = await run([[impl("a1"), 0], [impl("b1"), 0], [impl("c1"), 0], [ready("a1"), MIN], [ready("b1"), MIN], [ready("c1"), MIN]])
