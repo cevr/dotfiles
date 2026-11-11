@@ -38,8 +38,14 @@ export const UpstreamReading = Schema.Struct({
 })
 export type UpstreamReading = typeof UpstreamReading.Type
 
-/** Where daily writes the reading under `home`, and the TUI reads it. */
-export const upstreamFile = (home: string) => `${home}/.local/state/opencode-daily/upstream.json`
+/**
+ * Where daily writes the reading, and the TUI reads it: under `state` (the
+ * XDG state dir, `XDG_STATE_HOME`) when set, else `home`'s `.local/state`.
+ * A harness that gives OpenCode a scratch state dir (opencode-drive does)
+ * so never sees the host's own reading.
+ */
+export const upstreamFile = (home: string, state = process.env.XDG_STATE_HOME) =>
+  `${state || `${home}/.local/state`}/opencode-daily/upstream.json`
 
 const decodeReading = Schema.decodeUnknownOption(Schema.fromJsonString(UpstreamReading))
 

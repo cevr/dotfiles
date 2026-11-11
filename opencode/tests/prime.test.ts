@@ -200,11 +200,11 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
 
   test("the dock: an empty hint line, fx rail composer, tray with context use, rule, and no activity counts with nothing active", () => {
     const details = frames.details
-    // The hint line keeps its row with no standing Ctrl+O hint and nothing on its left (no subagent to move to). Its right
-    // end is the update notice's: the demo's TUI reads the machine's own upstream reading (~/.local/state/opencode-daily).
+    // The hint line keeps its row but stands empty: no subagent to move to, no standing Ctrl+O hint, and no update
+    // notice (opencode-drive's scratch XDG state dir holds no upstream reading, update.ts `upstreamFile`).
     const hint = details.lines.findLastIndex((line) => line === " ┃") - 1
     expect(hint).toBeGreaterThan(0)
-    expect(details.lines[hint]).toMatch(/^(?: {20,}upstream \+\d+(?: · merge blocked)?)?$/)
+    expect(details.lines[hint]).toBe("")
     expect(details.text).not.toContain("Ctrl+O to")
     expect(details.lines.slice(hint + 1, hint + 5)).toEqual([
       " ┃",
