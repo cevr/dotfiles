@@ -29,7 +29,7 @@ import * as FleetModel from "./fleet.ts"
 import { poolPace, UNPOOLED, type Pace } from "./pace.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
-import type { QuotaReading } from "./quota.ts"
+import type { ClaimAnswer, QuotaReading } from "./quota.ts"
 import * as ResetsModel from "./resets.ts"
 import type { ResetProvider } from "./resets.ts"
 import { FleetStore, Ledger, Limits, Logins, Owner, Peers, Quota, ResetsStore, type LoginsUnavailable } from "./service.ts"
@@ -75,6 +75,32 @@ export interface Config extends Rules {
   readonly resets?: Readonly<Record<string, ResetProvider>>
   /** Whether resets are claimed with no one asked (resets.ts `Review.auto`); default true. False: only on the owner's yes. */
   readonly autoClaims?: boolean
+  /** Where this host's claims are sent: default here (`HERE`). */
+  readonly claimer?: Claimer
+}
+
+/**
+ * Which host of the fleet spends resets. Only the claimer claims, the ones
+ * no one asked for and the ones behind a yes alike: a host that is not
+ * claims nothing on its own, and forwards a yes to the claimer `peer`
+ * (`Peers.claim`); none when no peer is the claimer, and then a yes claims
+ * nothing. Two hosts reading one account so never both spend it.
+ */
+export type Claimer = { readonly here: true } | { readonly here: false; readonly peer: string | undefined }
+export const HERE: Claimer = { here: true }
+
+/**
+ * One claim at a time per provider in this process, across every instance
+ * of the plugin it runs and every pool: each takes a fresh reading of its
+ * account under the lock and is judged on it (resets.ts `staleReason`).
+ */
+const claimLocks = new Map<string, Semaphore.Semaphore>()
+const claimLock = (provider: string) => {
+  const held = claimLocks.get(provider)
+  if (held !== undefined) return held
+  const lock = Semaphore.makeUnsafe(1)
+  claimLocks.set(provider, lock)
+  return lock
 }
 
 export interface FleetConfig {
@@ -208,6 +234,13 @@ export class Pool extends Context.Service<
     readonly followAnswers: Effect.Effect<void>
     /** The resets being worked and the claims made, for the pane. */
     readonly resets: Effect.Effect<ResetsStatus>
+    /**
+     * Work a claim another host forwarded (the owner said yes there), on the
+     * fleet's claimer: find the account whose reading lists the reset, and
+     * claim it as a claim decided here, judged on a fresh reading first.
+     * Another host answers `failed`: it is not the claimer.
+     */
+    readonly claimFor: (claim: ResetsModel.ForwardedClaim) => Effect.Effect<ClaimAnswer>
   }
 >()("dotfiles-opencode/pool/Pool") {}
 
@@ -506,11 +539,57 @@ export const layer = (config: Config) =>
        * what it did to them: whether the weekly reset moved answers what a
        * Claude grant does to the week.
        */
+      const claimer = config.claimer ?? HERE
+
+      /**
+       * Send a claim on this host, the fleet's claimer, under the provider's
+       * claim lock: read the account first, and send only what that reading
+       * still finds worth it (`staleReason`); else settle it unsent.
+       */
+      const sendHere = (where: Pooled, reset: ResetsModel.Reset) =>
+        claimLock(reset.provider).withPermits(1)(
+          Effect.gen(function* () {
+            const fresh = yield* quota.usage(where.id, reset.credentialID)
+            if (fresh === undefined)
+              return { answer: { outcome: "failed", message: "the account could not be read just before the claim" } as ClaimAnswer, before: [] }
+            yield* take(where, reset.credentialID, fresh)
+            const now = yield* Clock.currentTimeMillis
+            const view = (yield* resetViews).find((item) => item.id === reset.pool)
+            const account = status(yield* SynchronizedRef.get(where.pool), now, rules).find((item) => item.credentialID === reset.credentialID)
+            const why =
+              view === undefined || account === undefined
+                ? "the account is no longer in the pool"
+                : ResetsModel.staleReason(view, { ...account, reading: fresh }, reset, now)
+            if (why !== undefined) return { answer: { outcome: "nothing-to-reset", message: `not sent: ${why}` } as ClaimAnswer, before: fresh.windows }
+            const answer = yield* quota.claim(where.id, { credentialID: reset.credentialID, creditID: reset.creditID, requestID: reset.requestID })
+            return { answer, before: fresh.windows }
+          }),
+        )
+
+      /** Forward a claim to the fleet's claimer: this host spends no reset. */
+      const forward = (reset: ResetsModel.Reset, peer: string | undefined) =>
+        Effect.gen(function* () {
+          const before = (yield* SynchronizedRef.get(poolOf(PoolId.make(reset.pool))!.pool)).readings[reset.credentialID]?.windows ?? []
+          if (peer === undefined) return { answer: { outcome: "failed", message: "no peer is the fleet's claimer" } as ClaimAnswer, before }
+          const forwarded: ResetsModel.ForwardedClaim = {
+            host: fleetConfig.host,
+            key: reset.key,
+            provider: reset.provider,
+            creditID: reset.creditID,
+            requestID: reset.requestID,
+            why: reset.why,
+            label: reset.label,
+          }
+          const answer = yield* peers
+            .claim(peer, forwarded)
+            .pipe(Effect.catch((error) => Effect.succeed<ClaimAnswer>({ outcome: "failed", message: `the claimer ${peer} could not be reached: ${error.message}` })))
+          return { answer, before }
+        })
+
       const claim = Effect.fn("Pool.claim")(function* (reset: ResetsModel.Reset) {
         const where = poolOf(PoolId.make(reset.pool))
-        if (where === undefined) return
-        const before = (yield* SynchronizedRef.get(where.pool)).readings[reset.credentialID]?.windows ?? []
-        const answer = yield* quota.claim(where.id, { credentialID: reset.credentialID, creditID: reset.creditID, requestID: reset.requestID })
+        if (where === undefined) return { outcome: "failed", message: "no such pool" } as ClaimAnswer
+        const { answer, before } = claimer.here ? yield* sendHere(where, reset) : yield* forward(reset, claimer.peer)
         // A claim that emptied the windows frees the account; the reading taken next holds it again if a window is still spent.
         if (answer.outcome === "reset" || answer.outcome === "already-redeemed")
           yield* apply(where.pool, where.id, ClearHold.make({ credentialID: reset.credentialID }))
@@ -532,7 +611,52 @@ export const layer = (config: Config) =>
         )
         // What the settling decided beside the record (the owner told of a claim made on its own) is carried out too.
         yield* carry(settled.filter((event) => event._tag === "OwnerTold"))
+        return answer
       })
+
+      const claimFor = (forwarded: ResetsModel.ForwardedClaim) =>
+        Effect.gen(function* () {
+          if (!claimer.here) return { outcome: "failed", message: `${fleetConfig.host} is not the fleet's claimer` } satisfies ClaimAnswer
+          // The account is the one whose reading lists the reset: read again each of the provider's logins that does not yet.
+          const pools = Object.entries(config.resets ?? {}).flatMap(([id, provider]) => {
+            const where = provider === forwarded.provider ? poolOf(PoolId.make(id)) : undefined
+            return where === undefined ? [] : [where]
+          })
+          const listing = (where: Pooled) =>
+            Effect.gen(function* () {
+              const readings = (yield* SynchronizedRef.get(where.pool)).readings
+              return Object.entries(readings).find(([, reading]) => reading.resets?.credits.some((credit) => credit.id === forwarded.creditID))?.[0]
+            })
+          let found: { where: Pooled; credentialID: string } | undefined
+          for (const where of pools) {
+            const listed = yield* listing(where)
+            if (listed !== undefined) {
+              found = { where, credentialID: listed }
+              break
+            }
+          }
+          if (found === undefined)
+            for (const where of pools) {
+              yield* refresh(where, false).pipe(Effect.ignore)
+              const credentials = (yield* SynchronizedRef.get(where.pool)).credentials
+              yield* Effect.forEach(credentials, (credentialID) => quota.usage(where.id, credentialID).pipe(Effect.flatMap((reading) => take(where, credentialID, reading))), {
+                discard: true,
+              })
+              const listed = yield* listing(where)
+              if (listed !== undefined) {
+                found = { where, credentialID: listed }
+                break
+              }
+            }
+          if (found === undefined) return { outcome: "no-credit", message: `no ${forwarded.provider} account here lists the reset` } satisfies ClaimAnswer
+          const label = yield* logins.label(found.where.id, found.credentialID)
+          const events = yield* sendResets(ResetsModel.TakeForwarded.make({ claim: forwarded, pool: found.where.id, credentialID: found.credentialID, label }))
+          const due = events.find((event) => event._tag === "ClaimDue")
+          if (due !== undefined) return yield* claim(due.reset)
+          // Worked already: what it came to, or that it is still in flight.
+          const held = (yield* resetsStore.read).resets[ResetsModel.forwardedKey(forwarded)]
+          return { outcome: held?.outcome ?? "unconfirmed", ...(held?.message === undefined ? {} : { message: held.message }) } satisfies ClaimAnswer
+        }).pipe(Effect.withSpan("Pool.claimFor"))
 
       /** Carry out what the aggregate decided. */
       const carry = (events: ReadonlyArray<ResetsModel.Event>): Effect.Effect<void> =>
@@ -541,7 +665,7 @@ export const layer = (config: Config) =>
           (event) => {
             switch (event._tag) {
               case "ClaimDue":
-                return claim(event.reset)
+                return Effect.asVoid(claim(event.reset))
               case "OwnerAsked": {
                 const offer = event.reset.why === "offer"
                 const what = offer ? `a ${event.reset.provider} reset offer` : "a Claude reset"
@@ -627,7 +751,8 @@ export const layer = (config: Config) =>
       const reviewResets = Effect.gen(function* () {
         if (Object.keys(config.resets ?? {}).length === 0) return
         yield* takeAnswers
-        yield* carry(yield* sendResets(ResetsModel.Review.make({ pools: yield* resetViews, auto: config.autoClaims !== false })))
+        // Only the fleet's claimer claims a reset no one asked for.
+        yield* carry(yield* sendResets(ResetsModel.Review.make({ pools: yield* resetViews, auto: config.autoClaims !== false && claimer.here })))
       }).pipe(
         reviewing.withPermits(1),
         Effect.catchCause((cause) => Effect.logWarning("pool resets: a review failed", cause)),
@@ -806,6 +931,7 @@ export const layer = (config: Config) =>
         reviewResets,
         followAnswers,
         resets: resetsStatus,
+        claimFor,
       }
     }),
   )

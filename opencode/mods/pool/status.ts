@@ -42,6 +42,8 @@ export const POOL_STATUS = {
     report: { input: { type: "object" }, output: { type: "object" } },
     fleet: { input: { type: "object" }, output: { type: "object" } },
     resets: { input: { type: "object" }, output: { type: "object" } },
+    /** A claim another host forwards to this one, the fleet's claimer (resets.ts `ForwardedClaim`), and what it came to (`ClaimAnswer`). */
+    claimFor: { input: { type: "object" }, output: { type: "object" } },
     /** The limit tally (limits.ts `Tally`) and its one line, `{ tally?, line? }`. */
     limits: { input: { type: "object" }, output: { type: "object" } },
   },

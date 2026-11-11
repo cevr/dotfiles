@@ -5,6 +5,8 @@
 // does not answer in time, refuses, or answers something that is not a report
 // is unreachable.
 import { Effect, Layer, Schema } from "effect"
+import { ClaimAnswer } from "../quota.ts"
+import type { ForwardedClaim } from "../resets.ts"
 import { Peers, PeerUnreachable } from "../service.ts"
 import { Report } from "../status.ts"
 
@@ -30,7 +32,11 @@ export const sshCommand = (destination: string): ReadonlyArray<string> => [
   'PATH="$HOME/.bun/bin:$PATH" bun run -',
 ]
 
+/** How long the claimer has to read the account, claim and answer, the SSH handshake included. */
+export const CLAIM_TIMEOUT_MS = 45_000
+
 const decodeReport = Schema.decodeUnknownOption(Schema.fromJsonString(Report))
+const decodeAnswer = Schema.decodeUnknownOption(Schema.fromJsonString(ClaimAnswer))
 
 /** The last line of what a failed command wrote, for the log and the pane. */
 const lastLine = (text: string) =>
@@ -45,16 +51,17 @@ export const layer = (peers: ReadonlyArray<Peer>, timeoutMs = TIMEOUT_MS) =>
     Peers,
     Effect.gen(function* () {
       const program = yield* Effect.promise(() => Bun.file(new URL("./report.ts", import.meta.url)).text())
+      const claimProgram = yield* Effect.promise(() => Bun.file(new URL("./claim.ts", import.meta.url)).text())
       const byName = new Map(peers.map((peer) => [peer.name, peer]))
 
-      const run = (peer: Peer) =>
+      const run = (peer: Peer, text = program, timeout = timeoutMs) =>
         Effect.tryPromise({
           try: async () => {
             const child = Bun.spawn([...(peer.command ?? sshCommand(peer.ssh))], {
-              stdin: new Blob([program]),
+              stdin: new Blob([text]),
               stdout: "pipe",
               stderr: "pipe",
-              timeout: timeoutMs,
+              timeout,
             })
             const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
             return { out, err, code, killed: child.signalCode !== null }
@@ -75,6 +82,19 @@ export const layer = (peers: ReadonlyArray<Peer>, timeoutMs = TIMEOUT_MS) =>
             if (report._tag === "None") return yield* new PeerUnreachable({ peer: name, message: "its answer is not a report" })
             return report.value
           }).pipe(Effect.withSpan("Peers.report", { attributes: { peer: name } })),
+        // The claim rides in the program, as a JSON literal on its first line: no argument, no file, no token.
+        claim: (name: string, claim: ForwardedClaim) =>
+          Effect.gen(function* () {
+            const peer = byName.get(name)
+            if (peer === undefined) return yield* new PeerUnreachable({ peer: name, message: "not a peer" })
+            const text = `globalThis.POOL_CLAIM = ${JSON.stringify(claim)};\n${claimProgram}`
+            const { out, err, code, killed } = yield* run(peer, text, CLAIM_TIMEOUT_MS)
+            if (killed) return yield* new PeerUnreachable({ peer: name, message: `no answer in ${CLAIM_TIMEOUT_MS / 1000}s` })
+            if (code !== 0) return yield* new PeerUnreachable({ peer: name, message: lastLine(err) ?? `exited ${code}` })
+            const answer = decodeAnswer(out)
+            if (answer._tag === "None") return yield* new PeerUnreachable({ peer: name, message: "its answer is not a claim's" })
+            return answer.value
+          }).pipe(Effect.withSpan("Peers.claim", { attributes: { peer: name } })),
       }
     }),
   )
