@@ -6,16 +6,21 @@
 // and restore it there (beforeAll/afterAll), or pass the value to the code
 // under test instead.
 //
-// "While it is loaded" is module scope, and also the body of a `describe`
-// callback (which runs at collection, before any hook), at any depth of
-// nested describes. A function, hook or test body defers the write, so it is
-// left alone. A write is any of: `=` and the compound operators, `++`/`--`,
-// `delete`, a destructuring target, replacing `process.env` itself (the
-// spread form `process.env = { ...process.env, X }`), and `Object.assign`,
-// `Object.defineProperty`, `Object.defineProperties`, `Reflect.set`,
-// `Reflect.defineProperty` and `Reflect.deleteProperty` on it. The environment
-// is `process.env` or `Bun.env` (the same object). An alias
-// (`const env = process.env; env.X = …`) is not followed.
+// "While it is loaded" is module scope, a static class block or field, an
+// IIFE, and the body of a `describe` callback (which runs at collection,
+// before any hook), at any depth of nested describes. Any other function, a
+// hook or test body, or a class field defers the write, so it is left alone.
+// A write is any of: `=` and the compound operators, `++`/`--`, `delete`, a
+// destructuring target (with a default or a rest), replacing `process.env`
+// itself (the spread form `process.env = { ...process.env, X }`), and
+// `Object.assign`, `Object.defineProperty`, `Object.defineProperties`,
+// `Reflect.set`, `Reflect.defineProperty` and `Reflect.deleteProperty` on it,
+// through a type assertion, `!`, `satisfies` or `?.` as well. The environment
+// is `process.env` or `Bun.env` (the same object), by dot or by string key.
+// An alias (`const env = process.env; env.X = …`) is not followed.
+//
+// lint/test-env.test.ts holds a case for each of these, so removing any one's
+// handling turns a case red.
 
 interface Node {
   readonly type: string
@@ -41,9 +46,10 @@ interface Context {
   readonly report: (report: { readonly node: Node; readonly message: string }) => void
 }
 
-const WRAPPERS = new Set(["TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "TSTypeAssertion", "ParenthesizedExpression", "ChainExpression"])
+// oxlint's tree keeps no node for parentheses, so `(process.env).X` needs no entry.
+const WRAPPERS = new Set(["TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "TSTypeAssertion", "ChainExpression"])
 
-/** The node under any type assertion or parentheses. */
+/** The node under any type assertion, `!` or optional chain. */
 const bare = (node: Node | null | undefined): Node | undefined => {
   let at = node ?? undefined
   while (at && WRAPPERS.has(at.type)) at = at.expression
@@ -112,16 +118,20 @@ const calleeRoot = (callee: Node | undefined): string | undefined => {
   return at?.type === "Identifier" ? at.name : undefined
 }
 
-/** A function passed to `describe(…)`: bun runs it when it collects the file, so its body is module scope in effect. */
-const isDescribeBody = (fn: Node): boolean => {
+/**
+ * A function whose body runs where it stands: one called on the spot (an
+ * IIFE), or one passed to `describe(…)`, which bun runs when it collects the
+ * file, so its body is module scope in effect.
+ */
+const runsInPlace = (fn: Node): boolean => {
   const call = fn.parent
-  return call?.type === "CallExpression" && call.callee !== fn && calleeRoot(call.callee) === "describe"
+  return call?.type === "CallExpression" && (bare(call.callee) === fn || calleeRoot(call.callee) === "describe")
 }
 
-/** Whether the node runs when the file is loaded: at module scope, or in a describe body, with no other function between. */
+/** Whether the node runs when the file is loaded: at module scope, or in a describe body or an IIFE, with no other function between. */
 const runsAtLoad = (node: Node): boolean => {
   for (let at = node.parent; at; at = at.parent) {
-    if (FUNCTIONS.has(at.type) && !isDescribeBody(at)) return false
+    if (FUNCTIONS.has(at.type) && !runsInPlace(at)) return false
     // A class field's initializer runs per instance, later; a static one runs with the class.
     if (at.type === "PropertyDefinition" && !at.static) return false
   }
