@@ -6,7 +6,11 @@
 import { basename } from 'node:path';
 import type { Round } from './opencode.ts';
 import type { Outcome } from './outcomes.ts';
+import { familyOf, limitOf, limitText, sumLimits, type Limit, type Rates } from './limits.ts';
 import { costOf, type Tokens } from './prices.ts';
+
+/** The planner experiment (Fable against Opus) runs from here: its view's default start. */
+export const EXPERIMENT_SINCE = Date.parse('2026-11-10T15:45:00Z');
 
 /** Below this many starts in an arm, the view says the comparison is too small to call. */
 export const MIN_PER_ARM = 10;
@@ -35,7 +39,19 @@ export type ArmStats = {
   judged: number;
   replans: number; // planner starts past the first, over the arm's units
   stuck: number; // units with a stuck verdict
+  done: number; // finished units: merged for the planner, accepted for another role
+  priced: number; // joined starts whose model has a measured limit rate
+  limitPerStart?: Limit; // mean limit % of one account per priced start, on the model it ran (with `limits`)
+  limitPerDone?: Limit; // the priced starts' limit over the arm's finished units
+  minutes?: number; // median wall minutes per joined start
 };
+
+const scale = (l: Limit, k: number): Limit => ({
+  pct: l.pct * k,
+  ...(l.low !== undefined ? { low: l.low * k } : {}),
+  ...(l.high !== undefined ? { high: l.high * k } : {}),
+  ...(l.own !== undefined ? { own: l.own * k } : {}),
+});
 
 const mean = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0);
 const median = (xs: number[]) => {
@@ -44,11 +60,16 @@ const median = (xs: number[]) => {
 };
 const top = (counts: Record<string, number>) => Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0];
 
+/** What the limit columns read: each child's wall minutes, and the pool's limit rates (models/limits.ts). */
+export type LimitInputs = { minutesOf: (child: string) => number | undefined; rates: Rates };
+
 /**
  * Each arm's stats. `tokensOf` gives a child session's tokens (an OpenCode agent's); `outcomes`
- * are every unit round's verdicts, matched to a start by the unit's name.
+ * are every unit round's verdicts, matched to a start by the unit's name. With `limits`, each arm
+ * also gets the limit % of one account each start spent on the model it ran, per start and per
+ * finished unit (a merged one for the planner, an accepted one for another role), and its minutes.
  */
-export function armStats(rounds: Round[], tokensOf: (child: string) => Tokens | undefined, outcomes: Outcome[]): { role: string; trial: string; models: string[]; arms: ArmStats[] } | undefined {
+export function armStats(rounds: Round[], tokensOf: (child: string) => Tokens | undefined, outcomes: Outcome[], limits?: LimitInputs): { role: string; trial: string; models: string[]; arms: ArmStats[] } | undefined {
   const starts = rounds.filter((r) => r.experiment && r.fate !== 'denied');
   if (!starts.length) return undefined;
   const role = top(Object.fromEntries([...new Set(starts.map((r) => r.role))].map((x) => [x, starts.filter((r) => r.role === x).length])))!;
@@ -61,7 +82,11 @@ export function armStats(rounds: Round[], tokensOf: (child: string) => Tokens | 
     const mine = starts.filter((r) => r.experiment!.arm === arm);
     const ran: Record<string, number> = {};
     for (const r of mine) ran[r.ran ?? '?'] = (ran[r.ran ?? '?'] ?? 0) + 1;
-    const used = mine.flatMap((r) => (r.child ? [tokensOf(r.child)].filter((t): t is Tokens => t !== undefined) : []));
+    const joinedStarts = mine.flatMap((r) => {
+      const t = r.child ? tokensOf(r.child) : undefined;
+      return t ? [{ r, t }] : [];
+    });
+    const used = joinedStarts.map((j) => j.t);
     const tokens: Tokens = {
       input: mean(used.map((t) => t.input)),
       cacheWrite: mean(used.map((t) => t.cacheWrite)),
@@ -71,7 +96,7 @@ export function armStats(rounds: Round[], tokensOf: (child: string) => Tokens | 
     const cost = Object.fromEntries(models.map((m) => [m, used.length ? (used.some((t) => costOf(m, t) === null) ? null : mean(used.map((t) => costOf(m, t)!))) : null]));
     const units = [...new Set(mine.map((r) => unitOf(r.description)).filter((u): u is string => u !== undefined))];
     const passes: number[] = [];
-    let judged = 0, first = 0, stuck = 0, replans = 0;
+    let judged = 0, first = 0, stuck = 0, replans = 0, done = 0;
     for (const unit of units) {
       const os = outcomes.filter((o) => basename(o.unit) === unit && o.phase !== 'decide');
       const accepted = os.filter((o) => (o.phase === 'implement' || o.phase === 'verify') && o.result === 'accepted').map((o) => o.round);
@@ -83,7 +108,13 @@ export function armStats(rounds: Round[], tokensOf: (child: string) => Tokens | 
       }
       if (os.some((o) => o.result === 'stuck')) stuck += 1;
       replans += Math.max(0, planners.filter((r) => unitOf(r.description) === unit).length - 1);
+      if (role === 'planner' ? os.some((o) => o.fate === 'merged') : accepted.length > 0) done += 1;
     }
+    // The limit each joined start spent on the model it ran; a start on a model with no measured rate (a fallback to
+    // another provider's budget) is left out, and `priced` says how many counted.
+    const spent = limits ? joinedStarts.flatMap((j) => [limitOf(limits.rates, j.r.ran ?? trialId, j.t)].filter((l): l is Limit => l !== undefined)) : [];
+    const total = spent.length ? sumLimits(spent) : undefined;
+    const minutes = limits ? joinedStarts.flatMap((j) => [limits.minutesOf(j.r.child!)].filter((m): m is number => m !== undefined)) : [];
     return {
       arm,
       starts: mine.length,
@@ -99,6 +130,10 @@ export function armStats(rounds: Round[], tokensOf: (child: string) => Tokens | 
       judged,
       replans,
       stuck,
+      done,
+      priced: spent.length,
+      ...(total ? { limitPerStart: scale(total, 1 / spent.length), ...(done ? { limitPerDone: scale(total, 1 / done) } : {}) } : {}),
+      ...(minutes.length ? { minutes: median(minutes)! } : {}),
     };
   });
   return { role, trial, models, arms };
@@ -119,6 +154,22 @@ export function experimentTable(stats: ReturnType<typeof armStats>): string[] {
     const pass = a.passRounds === null ? '-' : `${a.passRounds} (${a.passed})`;
     const r1 = a.firstPass === null ? '-' : `${Math.round(a.firstPass * 100)}% (${a.judged})`;
     lines.push(`  ${a.arm.padEnd(7)} ${String(a.starts).padStart(3)} ${String(a.units).padStart(6)} ${String(a.fellBack).padStart(9)} ${String(a.joined).padStart(7)} ${k(a.tokens.input).padStart(6)} ${k(a.tokens.output).padStart(6)} ${k(a.tokens.cacheRead).padStart(7)} ${k(a.tokens.cacheWrite).padStart(8)}  ${cost}  ${pass.padStart(11)}  ${r1.padStart(11)}  ${String(a.replans).padStart(7)}  ${String(a.stuck).padStart(5)}  ${ran}`);
+  }
+  // Efficiency per finished task: the limit a start spends, its time, and how often its unit finishes.
+  if (arms.some((a) => a.limitPerStart !== undefined || a.minutes !== undefined)) {
+    const task = role === 'planner' ? 'plan' : 'start';
+    const fin = role === 'planner' ? 'merged' : 'accepted';
+    lines.push(
+      `  Limit (% of one account's shared week per ${task}, on the model each start ran; 95% range from the pool's rates):`,
+      ...arms.map((a) => {
+        const family = familyOf(top(a.ran) ?? '?');
+        const per = a.limitPerStart ? `${limitText(a.limitPerStart)} / ${task}` : `? / ${task} (no rate for ${family})`;
+        const done = a.limitPerDone ? `, ${limitText(a.limitPerDone)} / ${fin} unit` : '';
+        const time = a.minutes !== undefined ? `, ${a.minutes.toFixed(0)} min` : '';
+        const rate = a.units ? `, ${fin} ${Math.round((100 * a.done) / a.units)}% (${a.done} of ${a.units} units)` : '';
+        return `    ${a.arm.padEnd(7)} ${family} ${role}: ${per}${done}${time}${rate}; n ${a.priced} priced of ${a.joined} joined starts`;
+      }),
+    );
   }
   const small = arms.filter((a) => a.starts < MIN_PER_ARM);
   lines.push(

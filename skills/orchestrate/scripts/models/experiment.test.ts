@@ -74,6 +74,25 @@ describe('the experiment view', () => {
     expect(experimentTable(undefined)[0]).toContain('no start in the call log carries an arm');
   });
 
+  test('with the pool’s rates: the limit per plan, per merged unit, minutes and merged share per arm', () => {
+    const rates = { Fable: { week: { rate: 1 } }, Opus: { week: { rate: 0.5, low: 0.4, high: 0.6 } } };
+    const merged = [...outcomes, { ...outcome('auth', 'plan', 1, 'merged'), fate: 'merged' }];
+    const minutes: Record<string, number> = { ses_t1: 20, ses_t2: 40, ses_c1: 30 };
+    const limited = armStats(roundsOf(log), (child) => tokens[child], merged, { minutesOf: (child) => minutes[child], rates })!;
+    const [t, c] = limited.arms;
+    // Weighted at Fable's prices: input + write × 10/8 + read × 0.2/8 + output × 40/8.
+    const fable = (x: (typeof tokens)[string]) => (x.input + (x.cacheWrite * 10 + x.cacheRead * 0.2 + x.output * 40) / 8) / M;
+    expect(t!.limitPerStart!.pct).toBeCloseTo((fable(tokens.ses_t1!) + fable(tokens.ses_t2!)) / 2);
+    expect(t).toMatchObject({ done: 0, minutes: 40 });
+    expect(t!.limitPerDone).toBeUndefined();
+    const opus = (1000 + (100_000 * 5 + M * 0.2 + 10_000 * 20) / 4) / M;
+    expect(c!.limitPerStart).toEqual({ pct: expect.closeTo(opus * 0.5, 9), low: expect.closeTo(opus * 0.4, 9), high: expect.closeTo(opus * 0.6, 9) });
+    expect(c).toMatchObject({ done: 1, minutes: 30 });
+    const lines = experimentTable(limited);
+    expect(lines.find((l) => l.trim().startsWith('control') && l.includes('/ plan'))).toContain(`Opus planner: ${(opus * 0.5).toFixed(2)}% (${(opus * 0.4).toFixed(2)}–${(opus * 0.6).toFixed(2)}) / plan`);
+    expect(lines.find((l) => l.trim().startsWith('control') && l.includes('/ plan'))).toContain('30 min, merged 50% (1 of 2 units)');
+  });
+
   test('ten starts per arm is enough to compare', () => {
     const many = jsonl(Array.from({ length: 10 }, (_, i) => [...start(`t${i}`, `u${i}`, 1, `${FABLE}#high`, 'trial'), ...start(`c${i}`, `v${i}`, 1, 'anthropic/claude-opus-5-5#high', 'control')]).flat());
     expect(experimentTable(armStats(roundsOf(many), () => undefined, [])).at(-1)).toStartWith('  n is enough to compare');

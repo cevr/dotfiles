@@ -6,13 +6,19 @@
 // start, and whether it started, latched or was denied) come from the orchestrate
 // mod's call log. Run it on each host: units and transcripts live where they ran.
 // `--experiment` prints only the model experiment's view (models/experiment.ts): per arm of the
-// role the mod splits across two models, the starts, tokens and cost per start, and the units' fates.
-// Usage: bun models.ts [--since 2026-10-17] [--json] [--no-opencode] [--experiment]
+// role the mod splits across two models, the starts, tokens and cost per start, and the units' fates,
+// counted from EXPERIMENT_SINCE (models/experiment.ts) unless --since says otherwise.
+// Both views add the limit % of one account each agent spent (models/limits.ts), from the OpenCode
+// pool's limit tally ($XDG_STATE_HOME/opencode-pool/limits.json, or --limits <file>, the output of
+// opencode/scripts/pool-limits.ts --json): per arm per plan, and per phase and model family per
+// finished task, with the time and the finished share.
+// Usage: bun models.ts [--since 2026-10-17] [--json] [--no-opencode] [--experiment] [--limits <file>]
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { probe, serviceEndpoint } from '../../retro/scripts/mine/opencode.ts';
-import { armStats, experimentTable } from './models/experiment.ts';
+import { armStats, EXPERIMENT_SINCE, experimentTable } from './models/experiment.ts';
+import { limitRows, limitTable, readRates } from './models/limits.ts';
 import { opencodeAgents, roundsOf, roundsTable, ROUNDS_HEADER } from './models/opencode.ts';
 import { joinUnits, outcomeOf, type Outcome, type Phase } from './models/outcomes.ts';
 import { bridgeUnits, claudeAgents, codexAgents, type Agent } from './models/sources.ts';
@@ -20,8 +26,12 @@ import { ROOTS, unitDirs } from './runs.ts';
 
 const args = process.argv.slice(2);
 const sinceAt = args.indexOf('--since');
-const since = sinceAt >= 0 ? Date.parse(args[sinceAt + 1]) : Date.now() - 7 * 86400e3;
+// The planner experiment's arms run from EXPERIMENT_SINCE: its view counts no start before it unless --since says so.
+const since = sinceAt >= 0 ? Date.parse(args[sinceAt + 1]) : args.includes('--experiment') ? EXPERIMENT_SINCE : Date.now() - 7 * 86400e3;
 const json = args.includes('--json');
+// The pool's limit rates (models/limits.ts): the tally file it writes, or --limits <file> (pool-limits.ts --json's output).
+const limitsAt = args.indexOf('--limits');
+const rates = readRates(limitsAt >= 0 ? args[limitsAt + 1] : undefined);
 
 // codex-bridge's state dir, as the bridge finds it.
 const bridge = process.env.CODEX_BRIDGE_DIR ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), '.local/state'), 'codex-bridge');
@@ -64,8 +74,11 @@ for (const r of rows)
 // The model experiment's arms (the mod's `experiment` option): starts, tokens and cost per start, and the units' fates.
 if (args.includes('--experiment')) {
   const tokens = new Map(opencode.map((a) => [a.id, a.tokens]));
+  const minutes = new Map(opencode.map((a) => [a.id, a.min]));
   const outcomes = rows.flatMap((r) => (r.outcome ? [r.outcome] : []));
-  for (const line of experimentTable(armStats(rounds, (child) => tokens.get(child), outcomes))) console.log(line);
+  for (const line of experimentTable(armStats(rounds, (child) => tokens.get(child), outcomes, { minutesOf: (child) => minutes.get(child), rates })))
+    console.log(line);
+  if (!Object.keys(rates).length) console.log('  (no limit rates: the pool has written no tally yet; pass --limits <pool-limits.ts --json output>)');
   if (!opencode.length) console.log('  (no OpenCode service answered: tokens and cost are unjoined)');
   process.exit(0);
 }
@@ -120,6 +133,13 @@ for (const [key, rs] of group(joined, (r) => `${r.outcome!.phase}\t${label(r.age
   const os = [...new Map(rs.map((r) => [`${r.outcome!.unit} ${r.outcome!.round}`, r.outcome!])).values()];
   const results = phase === 'decide' ? '' : group(os, (o) => o.result).map(([k, v]) => `${k} ${v.length}`).join(', ');
   console.log(`         ${phase.padEnd(10)} ${model.padEnd(20)} ${String(os.length).padStart(4)}   ${HEADLINE[phase](os)}${results ? `; ${results}` : ''}`);
+}
+
+// Efficiency per finished task: per phase and model family, the limit % of one account each spent (the pool's rates).
+const limited = limitRows(rows, rates);
+if (limited.length) {
+  console.log(`\nLimit: phase      family         % of one account's shared week (95% range) per finished task · per agent · time · finished share${Object.keys(rates).length ? '' : '   (no rates: the pool has written no tally; --limits <file>)'}`);
+  for (const line of limitTable(limited)) console.log(line);
 }
 
 // OpenCode's rounds: every start the orchestrate mod logged, by the role it ran as and the model the call named.
