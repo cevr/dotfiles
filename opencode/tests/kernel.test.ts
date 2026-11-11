@@ -206,7 +206,8 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect((started!.state.content ?? []).map((part) => part.text ?? "").join("")).toBe("started")
       const calls = readFileSync(join(weekday.base, "agents.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as { kind: string; agent?: string; status?: string })
       expect(calls.filter((call) => call.kind === "call").map((call) => call.agent)).toEqual(["worker"])
-      expect(calls.filter((call) => call.kind === "done").map((call) => call.status)).toEqual(["completed"])
+      // OpenCode runs every subagent in the background: the call ends as the worker starts, so it logs `running`.
+      expect(calls.filter((call) => call.kind === "done").map((call) => call.status)).toEqual(["running"])
     },
     RUN_MS,
   )
