@@ -1,6 +1,6 @@
 // Runs scenarios/prime-fallback.ts with the Prime look, the orchestrate and
 // wakes plugins, a stand-in pool and a stand-in Codex provider against an
-// OpenCode checkout: a worker the pool holds on its first model starts at
+// OpenCode checkout: a planner (Codex plans and verifies, never implements) the pool holds on its first model starts at
 // once on the newest Codex sol, which the admission script admits, instead
 // of latching. The call log says it fell back and why, the pool counts it on
 // the Codex provider, the worker's request goes to sol, and the parent reads
@@ -28,7 +28,7 @@ const jsonl = <A = Record<string, unknown>>(path: string) =>
     .filter((line) => line.trim() !== "")
     .map((line) => JSON.parse(line) as A)
 
-const NOTE = "orchestrate: this agent runs on codex/gpt-6.1-sol#high, the Codex fallback (simulation/gpt-sim-model held: scripted 5h window is full)."
+const NOTE = "orchestrate: this agent runs on codex/gpt-6.1-sol#high, the Codex fallback (simulation/gpt-sim-model#medium held: scripted 5h window is full)."
 
 describe.skipIf(!fork)("a held subagent falls back to Codex (OPENCODE_DEV)", () => {
   beforeAll(async () => {
@@ -53,15 +53,15 @@ describe.skipIf(!fork)("a held subagent falls back to Codex (OPENCODE_DEV)", () 
       "held simulation",
       "started codex",
     ])
-    expect(admits).toEqual([["--codex", "--admit", "--model", "gpt-6.1-sol", "--role", "worker"]])
+    expect(admits).toEqual([["--codex", "--admit", "--model", "gpt-6.1-sol", "--role", "planner"]])
   })
 
   test("it starts at once on sol, never latched, and the call log says why", () => {
     expect(calls.map((line) => line.kind)).toEqual(["call", "done"])
     expect(calls[0]).toMatchObject({
-      agent: "worker",
+      agent: "planner",
       model: "codex/gpt-6.1-sol#high",
-      fallback: "simulation/gpt-sim-model held: scripted 5h window is full",
+      fallback: "simulation/gpt-sim-model#medium held: scripted 5h window is full",
     })
     expect(calls[1]).toMatchObject({ status: "completed" })
   })
@@ -73,6 +73,6 @@ describe.skipIf(!fork)("a held subagent falls back to Codex (OPENCODE_DEV)", () 
   test("the parent reads where it ran and why, first in the answer, and its row shows sol", () => {
     expect(requests.parent).toContain(JSON.stringify(`${NOTE}\n<subagent sessionID=`).slice(1, -1))
     expect(frame.join("\n")).toContain("Root heard: the export check passed.")
-    expect(frame.map((line) => line.trim())).toContainEqual(expect.stringMatching(/^◆ worker sol 6\.1  Check the export  /))
+    expect(frame.map((line) => line.trim())).toContainEqual(expect.stringMatching(/^◆ planner sol 6\.1  Check the export  /))
   })
 })

@@ -1,7 +1,7 @@
 // Opus first, Codex second, in real OpenCode with the Prime look: the
 // orchestrate and wakes plugins, a stand-in pool whose pace holds every new
 // agent on the first model's provider, and a second provider standing in for
-// Codex, with two sol models. The parent starts a worker in the foreground;
+// Codex, with two sol models. The parent starts a planner in the foreground (Codex plans and verifies, never implements);
 // the pool holds its model, the Codex admission script admits the newest
 // sol, so the worker starts at once on it instead of latching, runs, and its
 // answer, led by the line saying where it ran and why, reaches the parent.
@@ -129,7 +129,7 @@ export default OpenCodeDriver.use(
         // The worker's request carries its brief, never the parent's prompt.
         if (!s.includes(ASK)) return s.includes(BRIEF) ? finish(ANSWER) : finish("?")
         if (s.includes(ANSWER)) return finish(HEARD)
-        if (!s.includes("call_worker")) return call("call_worker", "subagent", { agent: "worker", description: "Check the export", prompt: BRIEF })
+        if (!s.includes("call_worker")) return call("call_worker", "subagent", { agent: "planner", description: "Check the export", prompt: BRIEF })
         return finish("?")
       })
       const until = (name: string, ready: (frame: string) => boolean, times = 400) =>
