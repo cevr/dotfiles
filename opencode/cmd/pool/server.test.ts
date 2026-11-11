@@ -1513,21 +1513,18 @@ describe("resets on the live adapters", () => {
 })
 
 describe("the lease RPC", () => {
-  test("a peer's ask is granted while the account is free, refused to another host while lent, and free again once released; a malformed message lends nothing", () =>
+  test("a peer's ask reaches the process's leases, which lend nothing while the process is newly started (it may have lent a lease it forgot); a release is taken; a malformed message lends nothing", () =>
     scenario(
       Effect.gen(function* () {
         const plugin = yield* start()
         const lease = plugin.rpc["dotfiles-opencode.pool"]!.lease!
         const now = Date.now()
-        // Reset ids no other test lends: the plugin keeps the process's leases.
         const grants = [`grant-rpc-${now}`]
         const ask = (host: string, id: string) => ({ _tag: "Ask", host, id, provider: "claude", grants, readAt: now, requestedAt: now, holdMs: 60_000 })
         expect(yield* lease({ _tag: "Ask", host: "mac" })).toEqual({ granted: false, reason: "not a lease message" })
-        expect(yield* lease(ask("mac", "a"))).toEqual({ granted: true })
-        expect(yield* lease(ask("workbox", "b"))).toMatchObject({ granted: false, reason: expect.stringContaining("mac holds the account's lease") })
+        // The grant, the refusal while lent and the release are lease.test.ts's and fleet-claims.test.ts's: the table here is the process's.
+        expect(yield* lease(ask("mac", "a"))).toMatchObject({ granted: false, reason: expect.stringContaining("started lately and lends nothing until") })
         expect(yield* lease({ _tag: "Release", host: "mac", id: "a", provider: "claude", grants })).toEqual({ granted: true })
-        expect(yield* lease(ask("workbox", "b"))).toEqual({ granted: true })
-        yield* lease({ _tag: "Release", host: "workbox", id: "b", provider: "claude", grants })
       }),
     ))
 })
