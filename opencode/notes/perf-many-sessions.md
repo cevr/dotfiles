@@ -453,4 +453,4 @@ The family cost in the session's header now climbs as the children's pages arriv
 
 ## Installed for this run (removed at the end)
 
-- Workbox: `/tmp/opencode/tui-boot/` (the fork and dotfiles clones, the database copy, the compiled builds and the runs) and `/tmp/opencode/tb-setup.sh`.
+- Workbox: `/tmp/opencode/tui-boot/` (the fork and dotfiles clones, the database copy, the compiled builds and the runs) and `/tmp/opencode/tb-setup.sh`. Both were removed after this run.
