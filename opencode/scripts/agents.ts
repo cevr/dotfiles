@@ -6,6 +6,9 @@
 // word. The worker's prompt and description come from its hand-written
 // Claude Code agent file.
 //
+// It also writes SKILL.md's machine section (`machineOf`) as `machine`: the
+// block the orchestrate plugin tells a root after its compaction.
+//
 // Out: mods/orchestrate/agents.json, each role as the fields of an
 // OpenCode agent (`Agent.Info`: description, mode, permissions, system) plus
 // its Claude-family reasoning effort (the skill's role table). The
@@ -86,6 +89,19 @@ export interface Definition {
 
 export const OUT = "mods/orchestrate/agents.json"
 
+/**
+ * SKILL.md's machine section, as a compacted root is told it: from the line
+ * `## The machine` up to, not including, the line that starts `**States.**`.
+ * A skill with no such section fails the script.
+ */
+export const machineOf = (skill: string): string => {
+  const lines = skill.split("\n")
+  const start = lines.findIndex((line) => line === "## The machine")
+  const end = lines.findIndex((line, index) => index > start && line.startsWith("**States.**"))
+  if (start < 0 || end < 0) throw new Error("SKILL.md has no machine section: a `## The machine` line followed by a `**States.**` line")
+  return lines.slice(start, end).join("\n").trimEnd()
+}
+
 const loadSource = async (dir: string): Promise<Source> => {
   const script = join(dir, "scripts/agents.ts")
   if (!existsSync(script)) throw new Error(`no orchestrate skill at ${dir}: ${script} is missing`)
@@ -119,7 +135,8 @@ export const build = async (root = ROOT, sourceDir = DEFAULT_SOURCE): Promise<Bu
   }
   const worker = parseAgent(readFileSync(join(source.AGENTS, `${WORKER}.md`), "utf8"))
   agents[WORKER] = define(worker.fields.description!, worker.body)
-  return { path: join(root, OUT), text: `${JSON.stringify({ written: WRITTEN, agents }, null, 2)}\n` }
+  const machine = machineOf(readFileSync(join(sourceDir, "SKILL.md"), "utf8"))
+  return { path: join(root, OUT), text: `${JSON.stringify({ written: WRITTEN, agents, machine }, null, 2)}\n` }
 }
 
 /** Whether the file on disk differs from what the source makes. */
