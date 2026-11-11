@@ -101,6 +101,11 @@ export type ResetCredit = typeof ResetCredit.Type
  * usable one expires, and each grant as listed (none when only the count was read).
  */
 export const QuotaResets = Schema.Struct({
+  /**
+   * When they were read, when not with the reading that holds them: a reading
+   * that carries them over from an older one (`carryOver`) names the older's time.
+   */
+  at: Schema.optionalKey(Schema.Number),
   available: Schema.Number,
   nextExpiresAt: Schema.optionalKey(Schema.Number),
   credits: Schema.Array(ResetCredit),
@@ -176,7 +181,8 @@ export const carryOver = (held: QuotaReading | undefined, next: QuotaReading, no
   const kept = held.windows.filter(
     (window) => !accountWide(window) && !named.has(window.name) && window.resetAt !== undefined && window.resetAt > now,
   )
-  const resets = next.resets === undefined && held.resets !== undefined ? { resets: held.resets } : {}
+  // Carried resets keep the time they were read: a claim no one asked for needs them fresh (resets.ts `freshEvidence`).
+  const resets = next.resets === undefined && held.resets !== undefined ? { resets: { at: held.resets.at ?? held.at, ...held.resets } } : {}
   return kept.length === 0 && Object.keys(resets).length === 0 ? next : { ...next, windows: [...next.windows, ...kept], ...resets }
 }
 
@@ -207,7 +213,12 @@ const asResets = (value: unknown): QuotaResets | undefined => {
         ]
       : [],
   )
-  return { available: value.available, ...(finite(value.nextExpiresAt) ? { nextExpiresAt: value.nextExpiresAt } : {}), credits }
+  return {
+    ...(finite(value.at) ? { at: value.at } : {}),
+    available: value.available,
+    ...(finite(value.nextExpiresAt) ? { nextExpiresAt: value.nextExpiresAt } : {}),
+    credits,
+  }
 }
 
 /**

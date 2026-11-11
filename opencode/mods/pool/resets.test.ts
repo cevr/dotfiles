@@ -111,6 +111,12 @@ const run = (commands: ReadonlyArray<readonly [number, Command]>, state: ResetsS
 
 const tags = (events: ReadonlyArray<Event>) => events.map((event) => event._tag)
 
+/** The pool as the sweep read it at `at`: a claim no one asked for needs fresh evidence. */
+const readAt = (view: PoolView, at: number): PoolView => ({
+  ...view,
+  accounts: view.accounts.map((item) => (item.reading === undefined ? item : { ...item, reading: { ...item.reading, at } })),
+})
+
 const spentCodex = (credits: ReadonlyArray<ResetCredit>) => [
   account("codex-a", { fiveHour: 1, credits }),
   account("codex-b", { sevenDay: 1, weekResetsIn: 3 * DAY }),
@@ -195,7 +201,7 @@ describe("Codex", () => {
   test("a credit expiring within a day is claimed on a half-spent week, with no start waiting; not on a fresh week", () => {
     const half = run([[T0, Review.make({ pools: [codex([account("codex-a", { sevenDay: 0.5, credits: [codexCredit("ending", 20 * HOUR)] })])] })]])
     expect(half.events).toHaveLength(1)
-    expect(half.events[0]).toMatchObject({ _tag: "ClaimDue", reset: { key: expiringKey("openai", "ending"), why: "expiring", creditID: "ending" } })
+    expect(half.events[0]).toMatchObject({ _tag: "ClaimDue", reset: { key: expiringKey("codex", "openai", "codex-a", "7d", T0 + 4.5 * DAY), why: "expiring", creditID: "ending" } })
     const again = run([[T0 + MINUTE, Review.make({ pools: [codex([account("codex-a", { sevenDay: 0.5, credits: [codexCredit("ending", 20 * HOUR)] })])] })]], half.state)
     expect(again.events).toEqual([])
     const fresh = run([[T0, Review.make({ pools: [codex([account("codex-a", { sevenDay: 0.4, credits: [codexCredit("ending", 20 * HOUR)] })])] })]])
@@ -218,7 +224,7 @@ describe("Codex", () => {
       const at = T0 + (attempt - 1) * RETRY_MS
       const retried = run(
         [
-          [at, Review.make({ pools: [view] })],
+          [at, Review.make({ pools: [readAt(view, at)] })],
           [at, SettleClaim.make({ key, outcome: "failed", before: [] })],
         ],
         state,
@@ -237,7 +243,9 @@ describe("Codex", () => {
       [T0, Review.make({ pools: [view] })],
     ])
     expect(run([[T0 + MINUTE, Review.make({ pools: [view] })]], state).events).toEqual([])
-    expect(tags(run([[T0 + RETRY_MS, Review.make({ pools: [view] })]], state).events)).toEqual(["ClaimDue"])
+    // Sent again on a reading taken after it; the one it was sent on says nothing of it.
+    expect(run([[T0 + RETRY_MS, Review.make({ pools: [view] })]], state).events).toEqual([])
+    expect(tags(run([[T0 + RETRY_MS, Review.make({ pools: [readAt(view, T0 + RETRY_MS)] })]], state).events)).toEqual(["ClaimDue"])
   })
 })
 

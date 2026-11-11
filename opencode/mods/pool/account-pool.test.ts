@@ -452,7 +452,8 @@ describe("an account is held", () => {
     const carried: QuotaReading = {
       ...headers,
       windows: [...headers.windows, { name: "7d:Fable", utilization: 0.3, resetAt: T0 + 10 * HOUR }],
-      resets,
+      // Carried resets name when they were read, the usage reading's time, so a claim no one asked for sees their age.
+      resets: { at: usage.at, ...resets },
     }
     // A reading that reads the model windows and resets itself replaces them.
     const fresh = reading({ at: T0 + 3 * HOUR, windows: [{ name: "7d", utilization: 0.7 }], resets: { available: 0, credits: [] } })
