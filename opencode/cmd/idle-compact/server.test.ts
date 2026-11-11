@@ -715,6 +715,28 @@ describe("one copy per location", () => {
       }),
     ))
 
+  test("the host's background summary of an idle session refreshes its cache and moves its compaction, not cancels it", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        const work = yield* start(state)
+        yield* work.turn("ses_1")
+        // With background compaction on, the host summarizes the idle session ahead (a compaction request, outside
+        // any execution): it reads the prefix from cache, so the cache lives on from it, and nothing settles after.
+        yield* work.until(30_000)
+        yield* work.hook("model.request", { sessionID: "ses_1", agent: "build", model: { providerID: "anthropic", id: "claude-x" }, kind: "compaction", headers: {} })
+        yield* work.until(30_000 + 4 * MINUTE - 1)
+        expect(state.compactions).toEqual([])
+        yield* work.until(30_000 + 4 * MINUTE)
+        expect(state.compactions).toEqual(["ses_1"])
+        expect(decisions("ses_1")).toEqual([
+          ["idle-compact: compaction scheduled", "settled"],
+          ["idle-compact: compaction scheduled", "refresh"],
+          ["idle-compact: compacting the idle session before its cache expires", "timer"],
+        ])
+      }),
+    ))
+
   test("a session of a location with no copy is no copy's to decide", () =>
     onTestClock(
       Effect.gen(function* () {
