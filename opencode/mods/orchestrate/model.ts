@@ -71,6 +71,7 @@ import {
   type GuardMode,
   Latches,
   Findings,
+  Installs,
   Ledger,
   Liveness,
   Models,
@@ -908,7 +909,7 @@ export class Machines extends Context.Service<
     readonly land: (input: { readonly root: string; readonly rifts: ReadonlyArray<string>; readonly departs?: string }) => Effect.Effect<Passed, Refused>
     /** The Rifts a land of `root` answered green. */
     readonly landed: (input: { readonly root: string; readonly rifts: ReadonlyArray<string> }) => Effect.Effect<void>
-    /** A session went idle: a step's hand-back moves its unit or ends its verifier. */
+    /** A session went idle: a step's hand-back moves its unit or ends its verifier; an accepted verdict asks for a fleet install. */
     readonly handBack: (sessionID: string) => Effect.Effect<void>
     /** The root's run as its ledger holds it, its dead steps handed back first; empty for a root that runs no unit. */
     readonly brief: (root: string) => Effect.Effect<string>
@@ -920,6 +921,9 @@ export class Machines extends Context.Service<
   }
 >()("dotfiles-opencode/orchestrate/Machines") {}
 
+/** The batch an event accepts: a verifier's `accepted` verdict; none for any other event. */
+export const acceptedBatch = (event: MachineEvent): ReadonlyArray<string> => (event._tag === "VerifierEnded" && event.verdict === "accepted" ? [event.batch] : [])
+
 /** The machine's handlers: the plugin feeds each call it sees, and the ledger decides it. */
 export const machineLayer = (config: MachineConfig) =>
   Layer.effect(
@@ -930,6 +934,7 @@ export const machineLayer = (config: MachineConfig) =>
       const liveness = yield* Liveness
       const remind = yield* Remind
       const findings = yield* Findings
+      const installs = yield* Installs
       const inFlight = new Map<string, InFlight>()
 
       const flying = (root: string, role: Start["role"], name: string) =>
@@ -1063,7 +1068,11 @@ export const machineLayer = (config: MachineConfig) =>
         // does not read, or none named, leaves the verdict unresolved: never an empty set of findings.
         const said = back.role === "verifier" && back.verdict === "changes" ? HandBack.make({ ...back, ...(yield* readReport(reportOf(words))) }) : back
         // The session that handed back is the step's: a step started before its session was known gets it here.
-        yield* ledger.decide(root, yield* now, () => Effect.succeed([said])).pipe(Effect.ignore)
+        const decided = yield* ledger.decide(root, yield* now, () => Effect.succeed([said])).pipe(Effect.option)
+        // An accepted batch is on main: the fleet installs it. Only the event the ledger just recorded asks, so a
+        // hand-back seen again (another location's copy, a second idle) asks nothing more.
+        const accepted = Option.match(decided, { onNone: () => [], onSome: (value) => value.events.flatMap(acceptedBatch) })
+        for (const batch of accepted) yield* installs.request(`${batch} accepted`)
       })
 
       const brief = Effect.fn("Machines.brief")(function* (root: string) {

@@ -14,6 +14,7 @@ import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import { KEEP } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogTest from "@dotfiles/opencode-orchestrate/memory/call-log"
 import * as CodexAdmissionTest from "@dotfiles/opencode-orchestrate/memory/codex-admission"
+import * as InstallsTest from "@dotfiles/opencode-orchestrate/memory/installs"
 import * as ModelsTest from "@dotfiles/opencode-orchestrate/memory/models"
 import * as PoolPaceTest from "@dotfiles/opencode-orchestrate/memory/pool-pace"
 import * as RestartsTest from "@dotfiles/opencode-orchestrate/memory/restarts"
@@ -88,6 +89,8 @@ interface World {
   readonly alive?: Readonly<Record<string, boolean>>
   /** The findings each verifier report holds, by its path, read at each read (a test may add one later); a report not here does not read. */
   readonly findings?: Readonly<Record<string, ReadonlyArray<string>>>
+  /** The fleet installs asked for, by reason, shared: a second plugin on the same array is another location's copy. */
+  readonly installs?: Array<string>
 }
 
 /** A tool as the host's tool editor hands it out: only what the plugin touches. */
@@ -169,9 +172,11 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
         return { outcome: "latched", id: `w00000${kept.length}`, child }
       })
     const ledger = world.ledger ?? []
+    const installs = world.installs ?? []
     const briefs: Array<OpenCodeSteer.Synthetic> = []
     const externals = (start: OpenCodeLatches.Start, resume: Resume, background: Background) => Layer.mergeAll(
       MemoryLedger.layer(DEFAULT_CADENCE, ledger),
+      InstallsTest.layer(installs),
       Layer.succeed(Findings, {
         read: (report: string) =>
           Effect.sync((): FindingsRead => {
@@ -262,7 +267,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     }
     /** A session's compaction ended: the host's durable event, with its id. */
     const compacted = (sessionID: string, id: string) => Queue.offer(published, { id, type: "session.compaction.ended", data: { sessionID } })
-    return { call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, draft, nudges, notes, ledger, briefs, compacted }
+    return { call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, draft, nudges, notes, ledger, briefs, compacted, installs }
   })
 
 /** Waits for the plugin's background work: `check` passes within a second. */
@@ -1743,6 +1748,44 @@ describe("the batch machine", () => {
       yield* plugin.finish({ input, status: "completed", result: { metadata: { sessionID: child, status: "running" } } })
     })
   const kinds = (plugin: Plugin) => plugin.ledger.map((line) => (line as { kind: string }).kind)
+
+  test("an accepted verdict asks for one fleet install; seen again, or by another location's copy, it asks none; a changes verdict asks none", () =>
+    scenario(
+      Effect.gen(function* () {
+        const report = "/run/batch-2-findings.md"
+        const sessions = steps({
+          ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" },
+          ses_v: { agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md" },
+          ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" },
+          ses_w: { agent: "verifier", lastWords: `verifier batch-2 r1: changes ${report}` },
+        })
+        const world = { sessions, alive: { ses_v: true, ses_w: true }, findings: { [report]: ["beta/M1"] }, ledger: [] as Array<unknown>, installs: [] as Array<string> }
+        const plugin = yield* start({ now: WEDNESDAY }, world)
+        const other = yield* start({ now: WEDNESDAY }, world)
+        const land = (rifts: ReadonlyArray<string>) =>
+          Effect.gen(function* () {
+            expect((yield* plugin.call("rift", "root", { action: "land", rifts })).refused).toBeUndefined()
+            yield* plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
+          })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        yield* land(["alpha"])
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        expect(world.installs).toEqual([])
+        yield* plugin.idle("ses_v")
+        expect(world.installs).toEqual(["batch-1 accepted"])
+        yield* plugin.idle("ses_v")
+        yield* other.idle("ses_v")
+        expect(world.installs).toEqual(["batch-1 accepted"])
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        yield* plugin.idle("ses_b")
+        yield* land(["beta"])
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-2 r1", prompt: "v", background: true }, "ses_w")
+        yield* plugin.idle("ses_w")
+        expect(world.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-2", verdict: "changes" }))
+        expect(world.installs).toEqual(["batch-1 accepted"])
+      }),
+    ))
 
   test("a verifier for one unit is refused in the skill's words before anything starts; the batch's starts", () =>
     scenario(

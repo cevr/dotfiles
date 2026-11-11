@@ -114,6 +114,14 @@
  *   `refuse` (default) or `warn` (the call passes, its answer carries the
  *   rule's words, the ledger records the departure).
  *
+ * - Fleet install: a verifier's `accepted` verdict, as the ledger records
+ *   it (once per verdict), asks for a fleet install: `install.script` (the
+ *   dotfiles' `scripts/fleet-install.ts`, set by `bun run daily` on the
+ *   owner's hosts) run with `request --reason "<batch> accepted"`. The
+ *   script coalesces requests close together, waits for load, skips a host
+ *   already on the target and runs outside this server, which it restarts.
+ *   Absent, nothing is asked.
+ *
  * Each new subagent is told to the pool (`started`), which counts it on its
  * provider's pace, here and on the owner's other hosts, until its spend shows
  * in a reading.
@@ -140,6 +148,7 @@ import * as SkillLive from "@dotfiles/opencode-orchestrate/git/skill"
 import { Draft, IDLE, MARK } from "@dotfiles/opencode-orchestrate/idle"
 import * as Model from "@dotfiles/opencode-orchestrate/model"
 import * as HoldsLive from "@dotfiles/opencode-orchestrate/opencode/holds"
+import * as InstallsLive from "@dotfiles/opencode-orchestrate/process/installs"
 import * as LatchesLive from "@dotfiles/opencode-orchestrate/opencode/latches"
 import * as ModelsLive from "@dotfiles/opencode-orchestrate/opencode/models"
 import * as PoolPaceLive from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
@@ -159,6 +168,7 @@ import {
   type GuardMode,
   type Latches,
   type Findings,
+  type Installs,
   type Ledger,
   Liveness,
   type LatchStart,
@@ -240,6 +250,7 @@ export const Options = Schema.Struct({
   codex: Schema.Union([Schema.Literal(false), Codex]).pipe(withDefault<false | typeof Codex.Type>(CODEX_DEFAULT)),
   unitLog: Schema.String.pipe(withDefault(UNIT_LOG)),
   skill: Schema.String.pipe(withDefault(SKILL_DIR)),
+  install: Schema.optional(Schema.Struct({ script: Schema.String })),
   resume: Schema.Union([
     Schema.Literal(false),
     Schema.Struct({ backoffMs: Schema.Array(Schema.Finite).pipe(withDefault<ReadonlyArray<number>>(BACKOFF_MS)) }),
@@ -268,6 +279,7 @@ export type Externals =
   | Liveness
   | Remind
   | Findings
+  | Installs
 
 /** How much background work a session keeps of its own, as its last idle listed it. */
 export type Background = (sessionID: string) => number
@@ -287,6 +299,7 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
   Layer.mergeAll(
     LedgerLive.layer(options.ledger, options.cadence),
     FindingsLive.layer,
+    InstallsLive.layer(options.install === undefined ? undefined : options.install.script),
     SteerLive.remindLayer(synthetic(ctx)),
     // A step's session works while it runs a turn (its newest start is after its last end) or keeps background
     // work of its own; a session that cannot be read does not.

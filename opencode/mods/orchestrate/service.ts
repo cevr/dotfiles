@@ -278,6 +278,15 @@ export type FindingsRead = { readonly _tag: "Read"; readonly findings: ReadonlyA
 
 export class Findings extends Context.Service<Findings, { readonly read: (report: string) => Effect.Effect<FindingsRead> }>()("dotfiles-opencode/orchestrate/Findings") {}
 
+/**
+ * The fleet install (dotfiles `scripts/fleet-install.ts`), asked for once per accepted batch verdict.
+ * Asking never fails and returns at once: the install coalesces the requests that come close
+ * together, waits for load, and runs outside this server, which it restarts.
+ */
+export class Installs extends Context.Service<Installs, { readonly request: (reason: string) => Effect.Effect<void> }>()(
+  "dotfiles-opencode/orchestrate/Installs",
+) {}
+
 /** Whether a step's session still works: it runs a turn, is latched, or keeps background work of its own. */
 export class Liveness extends Context.Service<Liveness, { readonly alive: (sessionID: string) => Effect.Effect<boolean> }>()(
   "dotfiles-opencode/orchestrate/Liveness",
