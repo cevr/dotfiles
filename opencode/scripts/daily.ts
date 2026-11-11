@@ -379,8 +379,8 @@ if (import.meta.main) {
   // Upstream against this build, for the TUI's corner (mods/prime/update.ts), written before the
   // restart that makes every open TUI reconnect and read it again.
   const reading = upstreamReading(fork, join(state, "upstream-conflict.md"), outcome.kind === "skipped" && !process.argv.includes("--no-upstream"))
-  if (reading === undefined) rmSync(upstreamFile(home), { force: true })
-  else writeJson(upstreamFile(home), reading)
+  if (reading === undefined) rmSync(upstreamFile(home, process.env.XDG_STATE_HOME), { force: true })
+  else writeJson(upstreamFile(home, process.env.XDG_STATE_HOME), reading)
   console.log(reading === undefined ? "upstream: no upstream/dev to count against" : `upstream: ${reading.commits} commits past this build${reading.blocked ? ", merge blocked" : ""}`)
 
   const restart = await $`${link} service restart`.nothrow().quiet()

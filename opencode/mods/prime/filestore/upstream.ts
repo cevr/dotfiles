@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { parseUpstream, upstreamFile, type UpstreamReading } from "../update.ts"
 
-export function readUpstream(file = upstreamFile(homedir())): UpstreamReading | undefined {
+export function readUpstream(file = upstreamFile(homedir(), process.env.XDG_STATE_HOME)): UpstreamReading | undefined {
   try {
     return parseUpstream(readFileSync(file, "utf8"))
   } catch {
