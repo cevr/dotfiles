@@ -21,7 +21,7 @@ import { Dock, GoalLine, ModeHint, Queued, Splash, TopBar, UpdateNotice, useFami
 import { SubagentRows } from "@dotfiles/opencode-prime/tui/live"
 import { Completion, StepEnd } from "@dotfiles/opencode-prime/tui/notice"
 import { GroupRow, ToolRow } from "@dotfiles/opencode-prime/tui/tools"
-import { AssistantText, PinnedAsk, UserBand } from "@dotfiles/opencode-prime/tui/transcript"
+import { AssistantText, GUTTER, PinnedAsk, UserBand } from "@dotfiles/opencode-prime/tui/transcript"
 import { createSignal, Show } from "solid-js"
 
 export default Plugin.define({
@@ -39,6 +39,8 @@ export default Plugin.define({
 
     context.ui.layout({
       inset: 1,
+      // The host's own rows (a program's notice, a `+ N commands` summary, an error) start where Prime's do (the fork's layout `gutter`).
+      gutter: GUTTER,
       composer: { chrome: "rail" },
       rowGap: (row) => (hidden(row.messageID) ? 0 : rowGap(detail(), row)),
       // Prime shows every tool call and thought on its own row.
