@@ -1958,6 +1958,36 @@ describe("the batch machine", () => {
       }),
     ))
 
+  test("a unit's next round in a Rift of another name: the ledger records the Rift its prompt names, and a land by that Rift is the unit's, its folded findings with it (orch-pipeline OB1)", () =>
+    scenario(
+      Effect.gen(function* () {
+        const report = "/run/batch-1-findings.md"
+        const sessions = steps({
+          ses_a: { agent: "implementor", lastWords: "implementor reset-use r1: ready x" },
+          ses_v: { agent: "verifier", lastWords: `verifier batch-1 r1: changes ${report}` },
+          ses_a2: { agent: "implementor", lastWords: "implementor reset-use r2: ready x" },
+        })
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true }, findings: { [report]: ["reset-use/B1", "reset-use/M1"] } })
+        const land = (rifts: ReadonlyArray<string>) => plugin.call("rift", "root", { action: "land", rifts })
+        const landed = (rifts: ReadonlyArray<string>) =>
+          plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: `Landed ${rifts.length} Rift(s) as one push` }] } })
+        yield* begin(plugin, { ...implementor("reset-use"), prompt: "Work in the Rift /u/.rifts/dotfiles/reset-use on branch feat/reset-use." }, "ses_a")
+        yield* plugin.idle("ses_a")
+        yield* land(["reset-use"])
+        yield* landed(["reset-use"])
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "verify batch-1", background: true }, "ses_v")
+        yield* plugin.idle("ses_v")
+        // Round 2 runs in a Rift named for no unit: the ledger binds it to reset-use from the prompt.
+        yield* begin(plugin, { agent: "implementor", description: "implementor reset-use r2", prompt: "Round 2. You work in the Rift /u/.rifts/dotfiles/scratch-17 (a copy).", background: true }, "ses_a2")
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitStarted", unit: "reset-use", round: 2, workspaces: ["/u/.rifts/dotfiles/scratch-17"] }))
+        yield* plugin.idle("ses_a2")
+        expect((yield* land(["scratch-17"])).refused).toBeUndefined()
+        yield* landed(["scratch-17"])
+        expect(plugin.ledger.at(-1)).toMatchObject({ kind: "BatchLanded", units: ["reset-use"] })
+        expect(kinds(plugin)).not.toContain("Refused")
+      }),
+    ))
+
   test("a land before the verdict passes when it departs, and the departure is recorded", () =>
     scenario(
       Effect.gen(function* () {
