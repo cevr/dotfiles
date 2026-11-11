@@ -445,6 +445,18 @@ export const layer = (config: Config) =>
           return events
         }).pipe(resetsLock.withPermits(1))
 
+      /**
+       * The session of the newest start that asked each pool's pace, held or
+       * not, in this instance: where an offer or a notice is asked when no
+       * held start names one. Kept in memory: a restart forgets it, and the
+       * next start names one again.
+       */
+      const askers = new Map<string, { readonly at: number; readonly sessionID: string }>()
+      const askerOf = (pool: string, now: number) => {
+        const asker = askers.get(pool)
+        return asker !== undefined && now - asker.at < ResetsModel.WAIT_MS ? asker.sessionID : undefined
+      }
+
       /** Every pool whose resets are worked, as the review reads it: its accounts now, each with its label. */
       const resetViews = Effect.gen(function* () {
         const views: Array<ResetsModel.PoolView> = []
@@ -466,6 +478,7 @@ export const layer = (config: Config) =>
             ...(tally === undefined ? {} : { ratios: weeklyRatios(tally, id) }),
             // The fleet's demand on the pool: every start of a provider it paces not settled yet, on any host.
             inflight: inflight.filter((start) => measuredBy(config, start.providerID) === id).length,
+            ...(askerOf(id, now) === undefined ? {} : { asker: askerOf(id, now) }),
           })
         }
         return views
@@ -545,13 +558,16 @@ export const layer = (config: Config) =>
                     ),
                   )
               }
-              case "OwnerTold":
+              case "OwnerTold": {
+                // The session that waited last, else the newest that asked any pool's pace.
+                const sessionID =
+                  event.sessionID ?? [...askers.values()].filter((asker) => event.at - asker.at < ResetsModel.WAIT_MS).toSorted((left, right) => right.at - left.at)[0]?.sessionID
                 return Effect.logInfo(`pool resets: ${event.text}`).pipe(
                   Effect.andThen(
-                    event.sessionID === undefined
+                    sessionID === undefined
                       ? Effect.void
                       : owner.ask({
-                          sessionID: event.sessionID,
+                          sessionID,
                           key: ResetsModel.toldKey(event.key),
                           question: event.text,
                           header: "Pool reset claimed",
@@ -561,6 +577,7 @@ export const layer = (config: Config) =>
                   ),
                   Effect.asVoid,
                 )
+              }
               case "AskWithdrawn":
                 return owner.withdraw(event.key).pipe(Effect.andThen(Effect.logInfo(`pool resets: withdrew the question (${event.why})`)))
               case "AnswerDeclined":
@@ -626,6 +643,8 @@ export const layer = (config: Config) =>
       const pace = Effect.fn("Pool.pace")(function* (providerID: string, model?: string, sessionID?: string) {
         const answer = yield* paceOf(providerID, model)
         const id = measuredBy(config, providerID)
+        if (id !== undefined && sessionID !== undefined && config.resets?.[id] !== undefined)
+          askers.set(id, { at: yield* Clock.currentTimeMillis, sessionID })
         // A start held by a measured pace waits: the resets are reviewed for it, without holding up the answer.
         if (!answer.ok && answer.measured && id !== undefined && config.resets?.[id] !== undefined) {
           yield* sendResets(ResetsModel.NoteWait.make({ pool: id, ...(sessionID === undefined ? {} : { sessionID }) }))

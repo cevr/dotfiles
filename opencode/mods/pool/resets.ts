@@ -16,7 +16,8 @@
 //   reset's last day when the window is half used. A reset whose windows all
 //   reset before it expires is left. The owner is told after (`OwnerTold`).
 // - Demand: a reset gives use back but keeps the weekly reset date, so it is
-//   worth most early in the week. When a start waits (the pool holds work),
+//   worth most early in the week. When a start waits, or several are in
+//   flight across the fleet (`demandOf`),
 //   an account has (nearly) spent a week-long window a reset gives back, and
 //   at the account's burn this week the use given back would mostly be spent
 //   before the window's natural reset, the owner is offered the reset, once
@@ -72,6 +73,8 @@ export const MIN_RESTORE = 0.1
 export const WORTH_SHARE = 0.5
 /** An offer is about a window at least this long: a week, not the 5-hour window, which a held start's question covers. */
 const OFFER_WINDOW_MS = DAY
+/** Starts in flight across the fleet that make demand without a held start. */
+export const DEMAND_STARTS = 3
 
 /** Whose resets a pool holds: Claude grants are asked about, Codex credits claimed. */
 export const ResetProvider = Schema.Literals(["claude", "codex"])
@@ -422,6 +425,8 @@ export interface PoolView {
   readonly ratios?: Readonly<Record<string, Ratio>>
   /** The starts of the pool's provider in flight across the fleet (this host's and its peers'), not settled into a reading yet. */
   readonly inflight?: number
+  /** The session of the newest start that asked the pool's pace in the last WAIT_MS, held or not: where an offer is asked without a held start. */
+  readonly asker?: string
 }
 
 /** A start on the pool was held by its pace, from the session `sessionID` when the pace was told. */
@@ -764,12 +769,33 @@ const offersOf = (view: PoolView, now: number): ReadonlyArray<Offer> =>
 
 const windowNoun = (name: string) => (name === "5h" ? "5-hour window" : name === "7d" ? "weekly window" : `${scopeOf(name) ?? name} week`)
 
+/** The demand an offer is made on, and the session to ask in. */
+interface Demand {
+  readonly held: boolean
+  readonly inflight: number
+  readonly sessionID: string
+}
+
+/**
+ * The pool's demand now: a start its pace held, from a session; else
+ * DEMAND_STARTS starts in flight across the fleet (Mac and workbox alike) and
+ * a session that asked the pace lately to ask in. None otherwise.
+ */
+const demandOf = (state: ResetsState, view: PoolView, now: number): Demand | undefined => {
+  const inflight = view.inflight ?? 0
+  const wait = waiting(state, view.id, now)
+  if (wait?.sessionID !== undefined) return { held: true, inflight, sessionID: wait.sessionID }
+  return inflight >= DEMAND_STARTS && view.asker !== undefined ? { held: false, inflight, sessionID: view.asker } : undefined
+}
+
 /** The offer's question: the demand seen, what it gives back, the days left, the use expected before the natural reset, and its expiry. */
-export const offerQuestion = (label: string, offer: Offer, inflight: number): string => {
-  const demand = `a start is held${inflight > 0 ? ` and ${inflight} more ${inflight === 1 ? "is" : "are"} in flight across the fleet` : ""}`
+export const offerQuestion = (label: string, offer: Offer, demand: Pick<Demand, "held" | "inflight">): string => {
+  const { held, inflight } = demand
+  const flight = `${inflight} ${inflight === 1 ? "start is" : "starts are"} in flight across the fleet`
+  const said = held ? `a start is held${inflight > 0 ? ` and ${flight}` : ""}` : flight
   const ends = offer.credit.expiresAt === undefined ? "" : ` The reset expires ${dayOf(offer.credit.expiresAt)}.`
   return (
-    `${KIND_LABEL[offer.kind]} on account ${label} now? Demand: ${demand}. It gives back ${buysOf(offer.gives)}. ` +
+    `${KIND_LABEL[offer.kind]} on account ${label} now? Demand: ${said}. It gives back ${buysOf(offer.gives)}. ` +
     `${spanOf(offer.left)} remain before the ${windowNoun(offer.window)} resets by itself (${dayOf(offer.resetAt)}), which a claim does not move; ` +
     `at its burn this period (${percent(offer.gives.find((give) => give.window === offer.window)?.from ?? 0)} in ${spanOf(offer.elapsed)}) ` +
     `~${percent(offer.expected)} of the ${percent(offer.restored)} given back would be used by then.${ends} Claim it?`
@@ -786,13 +812,13 @@ export const offerHeader = (label: string) => {
 export const OFFER_ASSUME = "Don't claim: the pace holds starts until the window resets"
 
 /**
- * The offer due in a pool: while a start waits from a session and no
- * question of the pool is open, the best offer not made before for its
- * account, kind and window period.
+ * The offer due in a pool: on demand (`demandOf`) while no question of the
+ * pool is open, the best offer not made before for its account, kind and
+ * window period.
  */
 const offerDue = (state: ResetsState, view: PoolView, now: number, busy: ReadonlySet<string>): ReadonlyArray<Event> => {
-  const wait = waiting(state, view.id, now)
-  if (wait?.sessionID === undefined) return []
+  const demand = demandOf(state, view, now)
+  if (demand === undefined) return []
   if (Object.values(state.resets).some((reset) => reset.pool === view.id && reset.stage === "asked")) return []
   const best = offersOf(view, now)
     .filter((offer) => state.resets[offer.key] === undefined && !busy.has(offer.credit.id))
@@ -803,8 +829,8 @@ const offerDue = (state: ResetsState, view: PoolView, now: number, busy: Readonl
     OwnerAsked.make({
       reset: {
         ...reset,
-        sessionID: wait.sessionID,
-        question: offerQuestion(reset.label, best, view.inflight ?? 0),
+        sessionID: demand.sessionID,
+        question: offerQuestion(reset.label, best, demand),
         header: offerHeader(reset.label),
         buys: buysOf(best.gives),
       },

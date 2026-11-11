@@ -22,6 +22,7 @@ import type { QuotaWindow, ResetCredit } from "./quota.ts"
 import {
   ABOUT_SPENT,
   type Command,
+  DEMAND_STARTS,
   effectOf,
   type Event,
   EXPIRING_MS,
@@ -166,25 +167,37 @@ describe("use it or lose it", () => {
 })
 
 describe("offered on demand", () => {
-  const offerView = (elapsedDays: number, used: number, inflight = 0) =>
-    pool(
+  const offerView = (elapsedDays: number, used: number, inflight = 0, asker?: string) => ({
+    ...pool(
       "claude",
       [account("a", [window("5h", 0.2, T0 + 3 * HOUR), window("7d", used, T0 + WEEK - elapsedDays * DAY)], [grant("g", T0 + 60 * DAY, WEEKLY)]), roomy],
       {},
       inflight,
-    )
+    ),
+    ...(asker === undefined ? {} : { asker }),
+  })
 
-  test("over day of the week × demand × use: offered iff a start waits to ask in, the week is (nearly) spent, and its burn would spend most of it back before the reset", () => {
+  test("over day of the week × demand × use: offered iff there is demand to ask in, the week is (nearly) spent, and its burn would spend most of it back before the reset", () => {
+    // Demand: a held start from a session, or DEMAND_STARTS starts in flight across the fleet with a session that asked lately.
+    const demands = {
+      none: { waits: [], inflight: 0, asker: undefined, offered: false },
+      "held, no session": { waits: [NoteWait.make({ pool: "anthropic" })], inflight: 0, asker: undefined, offered: false },
+      held: { waits: [NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })], inflight: 0, asker: undefined, offered: true },
+      "few in flight": { waits: [], inflight: DEMAND_STARTS - 1, asker: "ses_root", offered: false },
+      "in flight, no asker": { waits: [], inflight: DEMAND_STARTS, asker: undefined, offered: false },
+      "in flight": { waits: [], inflight: DEMAND_STARTS, asker: "ses_root", offered: true },
+    } as const
     for (const elapsedDays of [0.5, 1, 3, 4.5, 5, 6.5])
-      for (const demand of ["none", "no session", "held"] as const)
+      for (const [name, demand] of Object.entries(demands))
         for (const used of [0.5, ABOUT_SPENT, 1]) {
-          const waits: Array<readonly [number, Command]> =
-            demand === "none" ? [] : [[T0, NoteWait.make({ pool: "anthropic", ...(demand === "held" ? { sessionID: "ses_root" } : {}) })]]
-          const { events } = run([...waits, [T0, Review.make({ pools: [offerView(elapsedDays, used, 3)] })]])
+          const { events } = run([
+            ...demand.waits.map((wait) => [T0, wait] as const),
+            [T0, Review.make({ pools: [offerView(elapsedDays, used, demand.inflight, demand.asker)] })],
+          ])
           // The burn this week (used / elapsed) times the days left, against the use given back: at least half of it.
           const left = 7 - elapsedDays
-          const offered = demand === "held" && used >= ABOUT_SPENT && Math.min(used, (used / elapsedDays) * left) >= 0.5 * used
-          const label = `day ${elapsedDays}, demand ${demand}, used ${used}`
+          const offered = demand.offered && used >= ABOUT_SPENT && Math.min(used, (used / elapsedDays) * left) >= 0.5 * used
+          const label = `day ${elapsedDays}, demand ${name}, used ${used}`
           expect(events.filter((event) => event._tag === "OwnerAsked").length, label).toBe(offered ? 1 : 0)
           expect(events.some((event) => event._tag === "ClaimDue"), label).toBe(false)
         }
@@ -203,7 +216,7 @@ describe("offered on demand", () => {
         header: "Reset now · a",
         key: offerKey("claude", "anthropic", "a", "weekly", "7d", T0 + 6 * DAY),
         question:
-          "weekly reset on account a now? Demand: a start is held and 3 more are in flight across the fleet. It gives back weekly 100% → 0%. " +
+          "weekly reset on account a now? Demand: a start is held and 3 starts are in flight across the fleet. It gives back weekly 100% → 0%. " +
           "6.0 days remain before the weekly window resets by itself (2026-11-15), which a claim does not move; " +
           "at its burn this period (100% in 1.0 days) ~100% of the 100% given back would be used by then. The reset expires 2027-01-08. Claim it?",
       },
