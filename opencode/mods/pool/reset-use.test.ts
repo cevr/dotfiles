@@ -319,6 +319,22 @@ describe("a Fable reset", () => {
     ])
   })
 
+  test("Fable's part as the usage endpoint reports it wins over any estimate, never more than the weekly use", () => {
+    for (const reported of [0, 0.1, 0.4, 0.9])
+      for (const weekly of [0.2, 0.6])
+        expect(
+          shareOf({ ...window("7d:Fable", 0.8, fableWeek), ofWeekly: 0.5, weeklyUsed: reported }, window("7d", weekly, fableWeek), { rate: 1, source: "tally" }),
+        ).toEqual({ points: Math.min(reported, weekly), low: Math.min(reported, weekly), high: Math.min(reported, weekly), source: "reported" })
+    // As measured on 2026-11-09: Fable's week 12% used took none of the weekly window, so a Fable reset gives the weekly nothing back.
+    const measured = account(
+      "a",
+      [window("7d", 0.09, T0 + 6 * DAY), { ...window("7d:Fable", 0.12, fableWeek), ofWeekly: 0.5, weeklyUsed: 0 }],
+      [grant("g", T0 + 60 * DAY, FABLE)],
+    )
+    const gives = effectOf("claude", measured, grant("g", T0 + 60 * DAY, FABLE))
+    expect(gives.find((give) => give.window === "7d")).toMatchObject({ from: 0.09, to: 0.09, share: { points: 0, source: "reported" } })
+  })
+
   test("Fable's part, as a property: ratio × its week's use, within the range, never more than the weekly use; the endpoint's share when the tally has none; else unread", () => {
     for (const own of [0, 0.25, 0.5, 1])
       for (const weekly of [0, 0.2, 0.6, 1])

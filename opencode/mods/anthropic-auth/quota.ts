@@ -193,12 +193,16 @@ function modelWindows(body: Record<string, unknown>): ReadonlyArray<QuotaWindow>
       add(percentWindow(`7d:${entry.display_name}`, entry.utilization, entry.resets_at))
   }
   const limits = Array.isArray(body.limits) ? body.limits : []
-  // `weekly_scoped_shares` names a `limits` entry by its index, with its allowance as a percent of the weekly window.
-  const shares = new Map<number, number>()
-  for (const share of Array.isArray(body.weekly_scoped_shares) ? body.weekly_scoped_shares : []) {
-    if (!isRecord(share) || typeof share.limit_index !== "number") continue
-    const percent = share.allowance_percent_of_weekly
-    if (typeof percent === "number" && Number.isFinite(percent) && percent > 0) shares.set(share.limit_index, Math.min(percent / 100, 1))
+  // `weekly_scoped_shares` names a `limits` entry by its index: its allowance, and the use it took, as percents of the weekly window.
+  const shares = new Map<number, { ofWeekly?: number; weeklyUsed?: number }>()
+  const share = (value: unknown, positive: boolean) =>
+    typeof value === "number" && Number.isFinite(value) && (positive ? value > 0 : value >= 0) ? Math.min(value / 100, 1) : undefined
+  for (const entry of Array.isArray(body.weekly_scoped_shares) ? body.weekly_scoped_shares : []) {
+    if (!isRecord(entry) || typeof entry.limit_index !== "number") continue
+    const ofWeekly = share(entry.allowance_percent_of_weekly, true)
+    const weeklyUsed = share(entry.used_percent_of_weekly, false)
+    if (ofWeekly !== undefined || weeklyUsed !== undefined)
+      shares.set(entry.limit_index, { ...(ofWeekly === undefined ? {} : { ofWeekly }), ...(weeklyUsed === undefined ? {} : { weeklyUsed }) })
   }
   limits.forEach((entry, index) => {
     if (!isRecord(entry) || !isRecord(entry.scope) || !isRecord(entry.scope.model)) return
@@ -206,16 +210,15 @@ function modelWindows(body: Record<string, unknown>): ReadonlyArray<QuotaWindow>
     const group = typeof entry.group === "string" ? (LIMIT_GROUPS[entry.group] ?? entry.group) : undefined
     if (typeof model !== "string" || model === "" || group === undefined) return
     const window = percentWindow(`${group}:${model}`, entry.percent, entry.resets_at)
-    const share = shares.get(index)
-    add(window === undefined || share === undefined ? window : { ...window, ofWeekly: share })
+    add(window === undefined ? window : { ...window, ...shares.get(index) })
   })
-  // A model's window `model_scoped` carried first takes the share its `limits` entry names.
-  for (const [index, share] of shares) {
+  // A model's window `model_scoped` carried first takes the shares its `limits` entry names.
+  for (const [index, shared] of shares) {
     const entry = limits[index]
     const model = isRecord(entry) && isRecord(entry.scope) && isRecord(entry.scope.model) ? entry.scope.model.display_name : undefined
     const name = typeof model === "string" ? `7d:${model}` : undefined
     const held = name === undefined ? undefined : found.get(name)
-    if (name !== undefined && held !== undefined && held.ofWeekly === undefined) found.set(name, { ...held, ofWeekly: share })
+    if (name !== undefined && held !== undefined) found.set(name, { ...shared, ...held })
   }
   return [...found.values()]
 }

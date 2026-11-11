@@ -237,23 +237,29 @@ export interface Ratio {
 }
 
 /**
- * The weekly use a model's own week took, estimated: the week's use times the
- * ratio (weekly points per own-week point). The ratio is the limit tally's,
- * when it has fitted the model on both windows (its 95% range from the fit's),
- * else the usage endpoint's allowance share (the own week's whole allowance as
- * a share of the weekly: exact if every own-week point costs the weekly the
- * same, which no reading has confirmed), else unread: none counted.
+ * The weekly use a model's own week took. The usage endpoint's own figure
+ * when it reports one (`used_percent_of_weekly`): exact. Else estimated, the
+ * week's use times a ratio (weekly points per own-week point): the limit
+ * tally's, when it has fitted the model on both windows (its 95% range from
+ * the fit's), else the endpoint's allowance share (the own week's whole
+ * allowance as a share of the weekly: exact only if every own-week point
+ * costs the weekly the same, which no reading has confirmed). Else unread:
+ * none counted.
  */
 export interface Share {
   readonly points: number
   readonly low: number
   readonly high: number
-  readonly source: "tally" | "api" | "unread"
+  readonly source: "reported" | "tally" | "api" | "unread"
 }
 
 export const shareOf = (scoped: QuotaWindow, weekly: QuotaWindow | undefined, ratio: Ratio | undefined): Share => {
-  const found: Ratio | undefined = ratio ?? (scoped.ofWeekly === undefined ? undefined : { rate: scoped.ofWeekly, source: "api" })
   const cap = weekly?.utilization ?? 0
+  if (scoped.weeklyUsed !== undefined) {
+    const points = Math.min(Math.max(scoped.weeklyUsed, 0), cap)
+    return { points, low: points, high: points, source: "reported" }
+  }
+  const found: Ratio | undefined = ratio ?? (scoped.ofWeekly === undefined ? undefined : { rate: scoped.ofWeekly, source: "api" })
   if (found === undefined) return { points: 0, low: 0, high: 0, source: "unread" }
   const clamp = (value: number) => Math.min(Math.max(value, 0), cap)
   return {
@@ -305,7 +311,8 @@ export const effectOf = (
     points: sum((share) => share.points),
     low: sum((share) => share.low),
     high: sum((share) => share.high),
-    source: shares.every((share) => share.source === "unread") ? "unread" : shares.some((share) => share.source === "tally") ? "tally" : "api",
+    // The weakest source among the windows names the sum's.
+    source: (["unread", "api", "tally", "reported"] as const).find((source) => shares.some((share) => share.source === source)) ?? "unread",
   }
   return [
     ...gives.filter((give) => give.window !== "7d"),
@@ -316,10 +323,17 @@ export const effectOf = (
 const percent = (value: number) => `${Math.round(value * 100)}%`
 const windowLabel = (name: string) => (name === "5h" ? "5h" : name === "7d" ? "weekly" : `${scopeOf(name) ?? name} week`)
 
+const SOURCES: Readonly<Record<Share["source"], string>> = {
+  reported: "as the usage endpoint reports it",
+  tally: "by the limit tally",
+  api: "by the usage endpoint's allowance share",
+  unread: "",
+}
+
 const shareText = (share: Share) =>
   share.source === "unread"
     ? "Fable's part unread, none counted"
-    : `Fable's part ${percent(share.points)}${share.low === share.high ? "" : ` (${percent(share.low)}–${percent(share.high)})`} by the ${share.source === "tally" ? "limit tally" : "usage endpoint's allowance share"}`
+    : `Fable's part ${percent(share.points)}${share.low === share.high ? "" : ` (${percent(share.low)}–${percent(share.high)})`} ${SOURCES[share.source]}`
 
 /** What a reset gives back, as the owner reads it: `5h 100% → 0%, Fable week 80% → 0%, weekly 45% → ~39% (Fable's part 6% (4%–8%) by the limit tally)`. */
 export const buysOf = (gives: ReadonlyArray<Giveback>): string =>

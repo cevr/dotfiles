@@ -384,8 +384,8 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
         () => `the notice of c's claim (${seen.slice(0, 3000)})`,
       )).find((row) => row.header === "Pool reset claimed")!
       expect(notice.question).toContain("The pool claimed the Fable reset on account Claude c before it expired unused")
-      // Fable's part of the week: its use (100%) times its allowance share (50%), from the usage endpoint.
-      expect(notice.question).toContain("weekly 60% → ~10% (Fable's part 50% by the usage endpoint's allowance share)")
+      // Fable's part of the week, as the fake's usage endpoint reports it (`used_percent_of_weekly`: its use times its allowance share).
+      expect(notice.question).toContain("weekly 60% → ~10% (Fable's part 50% as the usage endpoint reports it)")
       expect(anthropic.claims.map(({ account, grant }) => [account, grant])).toEqual([
         ["d", "weekly-d"],
         ["c", "fable-c"],

@@ -23,6 +23,12 @@ export const QuotaWindow = Schema.Struct({
    * says (`allowance_percent_of_weekly`, 50 for Fable on 2026-11-09).
    */
   ofWeekly: Schema.optionalKey(Schema.Number),
+  /**
+   * For a model's own window: the share of the account's weekly window its use
+   * took (0 to 1), as the endpoint reports it (`used_percent_of_weekly`; 0 on
+   * 2026-11-09 with Fable's week 12% used).
+   */
+  weeklyUsed: Schema.optionalKey(Schema.Number),
 })
 export type QuotaWindow = typeof QuotaWindow.Type
 
@@ -221,6 +227,7 @@ export function asReading(value: unknown): QuotaReading | undefined {
       utilization: Math.min(Math.max(window.utilization, 0), 1),
       ...(finite(window.resetAt) ? { resetAt: window.resetAt } : {}),
       ...(finite(window.ofWeekly) && window.ofWeekly > 0 ? { ofWeekly: Math.min(window.ofWeekly, 1) } : {}),
+      ...(finite(window.weeklyUsed) && window.weeklyUsed >= 0 ? { weeklyUsed: Math.min(window.weeklyUsed, 1) } : {}),
     })
   }
   const refusal = value.refusal

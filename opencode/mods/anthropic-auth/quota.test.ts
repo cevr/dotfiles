@@ -174,8 +174,8 @@ describe('readUsageBody', () => {
     expect(readUsageBody(measured, NOW)?.windows).toEqual([
       { name: '5h', utilization: 0.01, resetAt: Date.parse('2026-11-10T02:30:00.291433+00:00') },
       { name: '7d', utilization: 0.09, resetAt: Date.parse('2026-11-16T09:00:00.291455+00:00') },
-      // `weekly_scoped_shares` names Fable's entry (index 2): its whole allowance is half the weekly window.
-      { name: '7d:Fable', utilization: 0.12, resetAt: Date.parse('2026-11-16T09:00:00+00:00'), ofWeekly: 0.5 },
+      // `weekly_scoped_shares` names Fable's entry (index 2): its whole allowance is half the weekly window, and its use took none of it.
+      { name: '7d:Fable', utilization: 0.12, resetAt: Date.parse('2026-11-16T09:00:00+00:00'), ofWeekly: 0.5, weeklyUsed: 0 },
     ])
     // The CLI's `model_scoped` form (T3 Code's claudeUsageLimits.ts) reads the
     // same, and one model's window is read once whichever form carries it.
