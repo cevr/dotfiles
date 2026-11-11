@@ -52,6 +52,8 @@ import { BRANCH, FORK_OWNER } from "./upstream.ts"
 
 const OPENCODE = resolve(import.meta.dir, "..")
 const HOST_SYNC = join(import.meta.dir, "fleet/host-sync.sh")
+/** ssh that never prompts, gives up on a host it cannot reach, and notices a link that died mid-install. */
+const SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=4"] as const
 /** The coordinator's launchd label. */
 export const LABEL = "dev.cvr.opencode-fleet-install"
 
@@ -234,10 +236,10 @@ const coordinatorRun = async () => {
       const ran = await follow(["bash", HOST_SYNC, spec.sync, join(home, CHECKOUT), ...flagArgs(flags)], runLog, { FLEET_HOST: spec.name })
       return parseResult(ran.output) ?? { host: name, outcome: "failed", line: `${name}: failed, its step exited ${ran.code} with no result; ${runLog}` }
     }
-    const copied = run(["ssh", spec.ssh, `mkdir -p "$HOME/${STATE}" && cat > "$HOME/${STATE}/host-sync.sh"`], { stdin: HOST_SYNC })
+    const copied = run([...SSH, spec.ssh, `mkdir -p "$HOME/${STATE}" && cat > "$HOME/${STATE}/host-sync.sh"`], { stdin: HOST_SYNC })
     if (copied.code === 255) return { host: name, outcome: "unreachable", line: `${name}: unreachable over ssh ${spec.ssh} (${copied.err.split("\n").at(-1)})` }
     if (copied.code !== 0) return { host: name, outcome: "failed", line: `${name}: failed, copying host-sync.sh exited ${copied.code}: ${copied.err}` }
-    const ran = await follow(["ssh", spec.ssh, remoteCommand(spec, flags)], runLog)
+    const ran = await follow([...SSH, spec.ssh, remoteCommand(spec, flags)], runLog)
     const result = parseResult(ran.output)
     if (result !== undefined) return result
     if (ran.code === 255) return { host: name, outcome: "unreachable", line: `${name}: unreachable over ssh ${spec.ssh}` }
@@ -250,29 +252,36 @@ const coordinatorRun = async () => {
     const others = HOSTS.filter((host) => host.host !== me)
     const copied = others.map((host) => ({
       host,
-      code: run(["ssh", host.ssh, `mkdir -p "$HOME/.local/state/opencode-daily" && cat > "$HOME/.local/state/opencode-daily/upstream.json"`], { stdin: file }).code,
+      code: run([...SSH, host.ssh, `mkdir -p "$HOME/.local/state/opencode-daily" && cat > "$HOME/.local/state/opencode-daily/upstream.json"`], { stdin: file }).code,
     }))
     return `upstream.json: ${copied.map(({ host, code }) => (code === 0 ? `copied to ${host.name}` : `not copied to ${host.name} (exit ${code})`)).join(", ")}`
   }
+  const pending = () => pendingIn(paths.requests, paths.consumed)
   try {
-    const results = await coordinate({
-      hosts: HOSTS.map((host) => host.name),
-      install,
-      copyUpstream,
-      notify: notifyOwner,
-      log,
-      pending: () => pendingIn(paths.requests, paths.consumed),
-      consume: (through) => {
-        writeFileSync(paths.consumed, String(through))
-        // The file keeps only what waits.
-        writeFileSync(paths.requests, pendingIn(paths.requests, paths.consumed).map(requestLine).join(""))
-      },
-      now: Date.now,
-      sleep: (ms) => Bun.sleep(ms),
-    })
-    writeFileSync(paths.last, `${JSON.stringify({ at: Date.now(), log: runLog, results }, null, 2)}\n`)
+    for (;;) {
+      const results = await coordinate({
+        hosts: HOSTS.map((host) => host.name),
+        install,
+        copyUpstream,
+        notify: notifyOwner,
+        log,
+        pending,
+        consume: (through) => {
+          writeFileSync(paths.consumed, String(through))
+          // The file keeps only what waits.
+          writeFileSync(paths.requests, pending().map(requestLine).join(""))
+        },
+        now: Date.now,
+        sleep: (ms) => Bun.sleep(ms),
+      })
+      writeFileSync(paths.last, `${JSON.stringify({ at: Date.now(), log: runLog, results }, null, 2)}\n`)
+      rmSync(paths.lock, { force: true })
+      // A request that came as the last pass ended saw the lock still held and started nothing: take it now.
+      if (pending().length === 0 || lockHolder(paths.lock) !== undefined) return
+      writeFileSync(paths.lock, String(process.pid))
+    }
   } finally {
-    rmSync(paths.lock, { force: true })
+    if (lockHolder(paths.lock) === process.pid) rmSync(paths.lock, { force: true })
   }
 }
 
@@ -291,8 +300,15 @@ const launch = (home: string): string => {
   // The warm checkout's copy, whatever checkout asked: the coordinator installs from it.
   writeFileSync(file, plist({ bun, script: join(home, CHECKOUT, "opencode/scripts/fleet-install.ts"), log: join(paths.state, "coordinator.log"), env: { PATH: path, HOME: home } }))
   const started = run(["launchctl", "bootstrap", `gui/${process.getuid?.() ?? 501}`, file])
+  if (started.code === 0) return `started the coordinator (launchd ${LABEL})`
   // Two requests at once: the second finds the first's job loaded, and its line waits for that job.
-  return started.code === 0 ? `started the coordinator (launchd ${LABEL})` : `the coordinator did not start (launchctl exit ${started.code}: ${started.err}); the request waits for the next one`
+  if (lockHolder(paths.lock) !== undefined || run(["launchctl", "list", LABEL]).code === 0) return `the coordinator runs; it takes this request`
+  // No GUI domain to load into (a request over ssh with no console login): a process group of its own,
+  // detached from this one, which the Mac's install does not reach either.
+  const log = Bun.file(join(paths.state, "coordinator.log"))
+  const child = Bun.spawn([bun, join(home, CHECKOUT, "opencode/scripts/fleet-install.ts"), "run"], { env: { ...process.env, PATH: path }, stdin: "ignore", stdout: log, stderr: log, detached: true })
+  child.unref()
+  return `started the coordinator in its own process group (pid ${child.pid}; launchctl exit ${started.code}: ${started.err})`
 }
 
 const request = async (argv: ReadonlyArray<string>) => {
@@ -303,7 +319,7 @@ const request = async (argv: ReadonlyArray<string>) => {
   const flags = parseFlags(argv)
   const coordinator = coordinatorOf()
   if (hostKey(hostname()) !== coordinator.host) {
-    const forwarded = run(["ssh", coordinator.ssh, `cd "$HOME/${CHECKOUT}/opencode" && bun scripts/fleet-install.ts request --reason ${quote(reason)} ${flagArgs(flags).join(" ")}`])
+    const forwarded = run([...SSH, coordinator.ssh, `cd "$HOME/${CHECKOUT}/opencode" && bun scripts/fleet-install.ts request --reason ${quote(reason)} ${flagArgs(flags).join(" ")}`])
     say(forwarded.code === 0 ? `${coordinator.name}: ${forwarded.out}` : `the request did not reach ${coordinator.name} over ssh ${coordinator.ssh} (exit ${forwarded.code}): ${forwarded.err}`)
     process.exit(forwarded.code === 0 ? 0 : 1)
   }
