@@ -343,3 +343,48 @@ One scratch-only workaround: `solid-js` was linked into the scratch dotfiles' `n
 ## Installed for this run (removed at the end)
 
 - Workbox: `/tmp/opencode/startup-perf/` (fork and dotfiles clones, the database copy, the runs and their profiles) and `/tmp/opencode/sp-setup.sh`. Both were removed after this run. Strobe was not needed: the fork's `SIGPROF` profiles named the code.
+
+# Opening it on a compiled build (workbox, 2026-11-11, later)
+
+The same session, now on compiled builds (`bun run script/build.ts --single`), so the boot is the installed one. `scripts/perf/startup.ts --bin` reports, in ms from the TUI's spawn:
+- `first`: the first frame of any kind, which ends the TUI's own boot;
+- `transcript`: the first frame past the loader that shows the transcript;
+- `ready`: the frame with the `--ready` text, here the questions plugin's "Nothing is waiting for your answer now.";
+- `open` = ready − first;
+- `interactive`: when keys typed at `ready` echo in the composer.
+
+The setup was the same as above (the database copy, the owner's eleven plugins and `cli.json`, 160×45), at load 37–49. Each build ran 3 times in alternation; the first run of each started with an empty cache.
+
+| Build | first | transcript | ready | open | interactive |
+| --- | --- | --- | --- | --- | --- |
+| Before (`abe903b282`) | 3.9, 2.5, 2.8 s | 6.6, 5.5, 5.5 s | 6.6, 5.5, 5.5 s | 2.7, 3.0, 2.8 s | 6.8, 5.6, 5.6 s |
+| After (the three commits below) | 3.4, 2.7, 2.8 s | 4.7, 3.9, 3.7 s | 4.9, 4.2, 4.0 s | 1.5, 1.5, 1.2 s | 5.0, 4.3, 4.1 s |
+
+**measured**. Under 1 s for the open is not reached. What remains, from the TUI log at debug level: **measured**
+- About 0.8 s passes from process start to "cli starting". Another 1.2–1.6 s passes before "event stream connecting". The first frame (the plugin loader) lands about there. This is the boot, and it is half of the time.
+- Plugin reconciliation took 1.4–1.8 s before; the owner waits for the plugins before the session draws (owner's ruling, 2026-11-11). On a warm cache it takes about 0.7 s. The per-plugin read stage was led by prime at 842 ms before.
+- The transcript draws 0.1–0.3 s after the plugins are ready.
+
+## Fixes
+
+1. **Fork `cc890ed507`:** `perf(session)`. Opening a session made 1,118 requests (one permission sync and one form sync per member). It now makes one: `GET /api/session/:sessionID/family/request` returns the family's member ids, pending permissions and forms. Members whose instance is not live are skipped. The client writes the lists and marks each covered member's syncs as done, so only a member the read did not cover (a newer child, or an older server) is synced on its own. The guards are `data.test.tsx` "one family read fills every member's pending requests, and a member it covered is not read again" and `packages/server/test/session-family-request.test.ts`.
+2. **Fork `078cd8dec6`:** `perf(tui)`. OpenTUI runs every plugin `.ts`/`.tsx` through Babel on each start: 456 files in about 0.9 s on the Mac (**measured**, bench). A release build now keeps each compile on disk under `<cache>/solid-transform/<version>/`, keyed by the sha256 of the path and the source. A changed source compiles again. Guard: `test/plugin/solid-transform-cache.test.ts`.
+3. **Fork `9c2035d3f8`:** `fix(tui)`. The loader appeared after 0.5 s and then held "Finishing startup…" over a session that was already drawn until 3 s after it appeared. It now leaves when the plugins are loaded. This is most of the drop in `ready`. Guard: `test/component/startup-loading.test.tsx` (red on the old code).
+4. **Dotfiles:** the cache sidebar line (`mods/cache/tui/ledger.tsx`) reads the share from each session's token totals and judges only the transcripts the TUI already holds. It no longer fetches a transcript. With the sidebar shown (`"sidebar":"auto"`), the after build, the owner's plugins, and `--hold 40000`: **measured**
+
+   | | ready | TUI CPU by then | peak RSS | sidebar line |
+   | --- | --- | --- | --- | --- |
+   | Before | 101.2 s | 101.4 s | 1,468 MB | Cache 95% |
+   | After | 4.3 s | 5.1 s (6.1 s at 44 s) | 438 MB | Cache 95% |
+
+   Guard: `ledger.test.ts` "the sidebar line of a family of hundreds reads token totals, and fetches no subagent's transcript" (on the old code it syncs 302 transcripts).
+5. **Dotfiles:** `scripts/link-fork.ts` linked each package to the fork with absolute links. Syncthing carried the Mac's links to the workbox, where they point nowhere: on 2026-11-11 the workbox's `mods/*/node_modules/solid-js` pointed at `/Users/cvr/...`. A TUI started there then fails to load prime, herdr and skills ("Cannot find package 'solid-js'"). The links now go through a per-machine anchor, `~/.local/state/opencode-fork/<checkout path under home>/modules`, and are relative to it. Every machine writes the same link text, and pointing a checkout at another fork rewrites only its anchor. The workbox needs one `link-fork` run (the daily build does it) to create its anchor. Until then, the synced links point nowhere there, as they do today.
+
+## Next, by size
+
+- **Boot, 2–2.5 s of the ~4 s:** process start to "cli starting" (0.8 s), then to the event stream (1.2–1.6 s). Nothing is logged in between; profile the compiled boot. **measured** (log)
+- **Plugin load, 0.7–1.8 s:** prime's read stage is the largest. Reconciliation resolves plugins one at a time (`plugin/context.tsx`). **measured** (log), **inferred** (sequential)
+
+## Installed for this run (removed at the end)
+
+- Workbox: `/tmp/opencode/family-batch/` (the fork and dotfiles clones, the database copy, the compiled builds and the runs) and `/tmp/opencode/fb-setup.sh`. Both were removed after this run.

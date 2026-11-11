@@ -5,13 +5,16 @@
 // `timeline.jsonl` (each screen change: ms since the TUI started, the TUI's CPU
 // seconds, the first lines), `frame-<ms>.txt` for the first frame that shows the
 // session and the last, and `result.json` (ms to the first frame without the
-// startup loader that shows the transcript, CPU at that point, RSS).
+// startup loader that shows the transcript, CPU at that point, RSS; the first
+// frame of any kind, which ends the TUI's own boot; and `interactive`, when
+// keys typed at the transcript's first frame echo in the composer).
 // `--prof 5000,15000` sends the TUI SIGPROF at those ms: the fork writes a 10 s
 // JS CPU profile into its log dir, which is copied to `--out`.
 //
-// bun scripts/perf/startup.ts --fork <checkout> --db <file> --session <id> --out <dir>
+// bun scripts/perf/startup.ts (--fork <checkout> | --bin <compiled opencode>) --db <file> --session <id> --out <dir>
 //   [--plugins <comma list of TUI plugin paths>] [--ready <text the session shows>] [--limit 180000]
-//   [--cols 160] [--rows 45] [--prof <ms,...>] [--cli <json merged into cli.json>]
+//   [--cols 160] [--rows 45] [--prof <ms,...>] [--cli <json merged into cli.json>] [--hold <ms past ready>]
+// `end` is the TUI's CPU and RSS when the run stops, `peakRss` the most it held.
 //
 // The server and TUI run in process groups of their own, killed at the end.
 // Point `--db` only at a copy: the server writes to it.
@@ -26,7 +29,8 @@ const opt = (name: string, fallback?: string) => {
   const at = args.indexOf(`--${name}`)
   return at === -1 ? fallback : args[at + 1]
 }
-const fork = opt("fork")!
+const fork = opt("fork")
+const bin = opt("bin")
 const db = opt("db")!
 const session = opt("session")!
 const out = opt("out")!
@@ -36,7 +40,10 @@ const limit = Number(opt("limit", "180000"))
 const cols = Number(opt("cols", "160"))
 const rows = Number(opt("rows", "45"))
 const profAt = (opt("prof") ?? "").split(",").filter(Boolean).map(Number)
-if (!fork || !db || !session || !out) throw new Error("usage: --fork <checkout> --db <file> --session <id> --out <dir>")
+// `--hold 30000`: stay that long past ready, for the work a session starts in the background.
+const hold = Number(opt("hold", "0"))
+if ((!fork && !bin) || !db || !session || !out)
+  throw new Error("usage: (--fork <checkout> | --bin <compiled opencode>) --db <file> --session <id> --out <dir>")
 
 const xdg = join(out, "xdg")
 for (const dir of ["data", "config/opencode", "state", "cache"]) mkdirSync(join(xdg, dir), { recursive: true })
@@ -63,13 +70,17 @@ const env: Record<string, string> = {
   OPENCODE_DB: db,
   // The server asks for a password; this run's own.
   OPENCODE_PASSWORD: crypto.randomUUID(),
+  // `OPENCODE_LOG_LEVEL=DEBUG` adds the TUI's plugin trace spans to its log.
+  ...(process.env.OPENCODE_LOG_LEVEL ? { OPENCODE_LOG_LEVEL: process.env.OPENCODE_LOG_LEVEL } : {}),
 }
-const entry = [
-  "bun",
-  "--conditions=browser",
-  `--preload=${join(fork, "packages/tui/node_modules/@opentui/solid/scripts/preload.js")}`,
-  join(fork, "packages/cli/src/index.ts"),
-]
+const entry = bin
+  ? [bin]
+  : [
+      "bun",
+      "--conditions=browser",
+      `--preload=${join(fork!, "packages/tui/node_modules/@opentui/solid/scripts/preload.js")}`,
+      join(fork!, "packages/cli/src/index.ts"),
+    ]
 
 const server = Bun.spawn([...entry, "serve", "--port", String(port)], {
   env,
@@ -146,8 +157,14 @@ const shown = (lines: ReadonlyArray<string>) => {
 
 const timeline: Array<string> = []
 let last = ""
+let first: { ms: number; cpu: number; rss: number } | undefined
+let transcript: { ms: number; cpu: number; rss: number } | undefined
 let ready: { ms: number; cpu: number; rss: number } | undefined
+// Typed into the composer once the transcript shows; interactive is when it echoes.
+const typed = "zqxj"
+let key: { sent: number; echoed?: number } | undefined
 const profiles = [...profAt]
+let peakRss = 0
 while (Date.now() - started < limit) {
   await Bun.sleep(50)
   const ms = Date.now() - started
@@ -163,13 +180,28 @@ while (Date.now() - started < limit) {
     last = text
     const usage = cpu(tuiPid)
     timeline.push(JSON.stringify({ ms, ...usage, head: lines.filter((line) => line.trim()).slice(0, 3).map((line) => line.trim().slice(0, 100)) }))
+    // The TUI's own boot ends with its first drawn frame (the loader, home or the session).
+    if (!first && lines.some((line) => line.trim().length > 0)) first = { ms, ...usage }
+    // The first frame past the loader that shows a transcript, before `--ready`'s text settles in.
+    if (!transcript && !loader.test(text) && lines.filter((line) => line.trim().length > 0).length > 8) {
+      transcript = { ms, ...usage }
+      writeFileSync(join(out, "frame-transcript.txt"), text)
+    }
     if (!ready && shown(lines)) {
       ready = { ms, ...usage }
       writeFileSync(join(out, `frame-ready.txt`), text)
       console.log(`ready at ${ms} ms, cpu ${usage.cpu} s, rss ${usage.rss} MB`)
+      tui.write(typed)
+      key = { sent: ms }
+    }
+    if (key && key.echoed === undefined && text.includes(typed)) {
+      key.echoed = ms
+      console.log(`key echoed at ${ms} ms`)
     }
   }
-  if (ready && profiles.length === 0 && ms - ready.ms > 3000) break
+  peakRss = Math.max(peakRss, cpu(tuiPid).rss)
+  if (ready && profiles.length === 0 && ms - ready.ms > Math.max(3000, hold) && key?.echoed !== undefined) break
+  if (ready && ms - ready.ms > Math.max(30_000, hold)) break
   if (!existsSync(`/proc/${tuiPid}`) && process.platform === "linux") break
 }
 const end = { ms: Date.now() - started, ...cpu(tuiPid) }
@@ -180,7 +212,20 @@ if (profAt.length > 0) await Bun.sleep(Math.max(0, profAt.at(-1)! + 11_000 - (Da
 const log = join(xdg, "data/opencode/log")
 if (existsSync(log))
   for (const file of readdirSync(log).filter((name) => name.startsWith(`cpu-`))) copyFileSync(join(log, file), join(out, file))
-const result = { session, plugins: plugins.length, ready, end, cols, rows }
+const result = {
+  session,
+  plugins: plugins.length,
+  first,
+  transcript,
+  ready,
+  // From the first frame to the transcript: the session's own open, apart from the TUI's boot.
+  open: first && ready ? ready.ms - first.ms : undefined,
+  interactive: key?.echoed,
+  end,
+  peakRss,
+  cols,
+  rows,
+}
 writeFileSync(join(out, "result.json"), JSON.stringify(result, null, 2))
 console.log(JSON.stringify(result))
 stopAll.forEach((stop) => stop())

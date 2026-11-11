@@ -13,7 +13,6 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -23,8 +22,14 @@ const root = join(import.meta.dir, "..")
 const names = ["queued", "taken", "after"] as const
 const frames = {} as Record<(typeof names)[number], ReadonlyArray<string>>
 
-/** The rows above Prime's hint line (the transcript, then the queued rows; tests/composer.ts), blank rows dropped. */
-const above = (frame: ReadonlyArray<string>) => frame.slice(0, hintRow(frame)).filter((line) => line.trim() !== "")
+/** The hint line's index: the row right above the composer's rail, the frame's last run of ` ┃` rows. */
+const hintAt = (frame: ReadonlyArray<string>) => {
+  let at = frame.findLastIndex((line) => line.startsWith(" ┃"))
+  while (at > 0 && frame[at - 1]?.startsWith(" ┃")) at--
+  return at - 1
+}
+/** The rows above Prime's hint line (the transcript, then the queued rows), blank rows dropped. */
+const above = (frame: ReadonlyArray<string>) => frame.slice(0, hintAt(frame)).filter((line) => line.trim() !== "")
 const LOADER = (label: string) => new RegExp(`^ {2}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ${label} · (\\d+)s$`)
 const LATER = "  ◌ after the turn · Afterwards tag the release."
 

@@ -55,6 +55,8 @@ export default OpenCodeDriver.use(
       theme: { name: process.env.SCENARIO_THEME ?? "opencode", mode: "dark" },
       // SCENARIO_PRIME=1 loads the Prime look plugin from cmd/prime.
       ...(process.env.SCENARIO_PRIME ? { plugins: [`${process.cwd()}/cmd/prime`] } : {}),
+      // Each call its own row, as these frames read them; the default (low) folds a turn's calls into one.
+      session: { verbosity: "medium" },
     },
     // Tall enough that the splash stays on screen in every Ctrl+O mode.
     tui: { viewport: { cols: 106, rows: 56 } },
