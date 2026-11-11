@@ -279,17 +279,19 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
   test(
     "after `service restart` the TUI keeps its root/subagent session without an error toast in any frame",
     async () => {
-      type Case = { readonly busy?: boolean; readonly gone?: string; readonly booting?: boolean }
-      const run = async (name: string, sessionID: string, marker: string, { busy = false, gone, booting = false }: Case = {}) => {
+      type Case = { readonly busy?: boolean; readonly gone?: string; readonly booting?: boolean; readonly bootingAll?: boolean; readonly draft?: boolean; readonly starting?: boolean }
+      const run = async (name: string, sessionID: string, marker: string, { busy = false, gone, booting = false, bootingAll = false, draft = false, starting = false }: Case = {}) => {
         const socket = join(root, `${name}.sock`)
         // A herdr pane's directory need not be the session's: the TUI starts in the HOME.
         // A booting service is the proxy in front of it: the TUI reaches the service through it.
-        const explicit = booting || Boolean(binary)
+        const explicit = booting || bootingAll || starting || Boolean(binary)
         const command = explicit ? [...tui, "--server", proxy.url, "-s", sessionID] : [...tui, "-s", sessionID]
         const password: Record<string, string> = explicit ? { OPENCODE_PASSWORD: service.password } : {}
         const frames: string[] = []
         const badFrames: string[] = []
         let recording = false
+        // Opened while the service still boots (an install restarted it a moment before): the TUI waits for it.
+        if (starting) unavailableUntil = Date.now() + BOOTING_MS
         const host = serve({ socket, cwd: home, command: command as [string, ...string[]], env: { ...env, ...(binary ? { BUN_OPTIONS: "" } : {}), ...password }, cols: 120, rows: 40 }, (rows) => {
           if (!recording) return
           const frame = rows.join("\n")
@@ -311,18 +313,32 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
           await until(screen, (text) => text.includes("holding"), (last) => `${name}: the turn never started:\n${last}`, 30_000)
         }
         if (gone !== undefined) rmSync(gone, { recursive: true, force: true })
+        // Text typed in the composer and not sent: the restart must not take it.
+        const draftText = `${name}-unsent-draft-marker`
+        if (draft) {
+          await hostCall(socket, { op: "type", text: draftText })
+          await until(screen, (text) => text.includes(draftText), (last) => `${name}: the draft never showed:\n${last}`, 10_000)
+        }
 
         const before = await pid(await ready(serviceFile, () => "the service"))
         recording = true
         if (booting) proxy.refuse(sessionID, Number.POSITIVE_INFINITY)
+        if (bootingAll) unavailableUntil = Number.POSITIVE_INFINITY
         const restarted = await opencode("service", "restart")
         expect(restarted).toMatchObject({ code: 0 })
         // The new service still refuses the session for a while, as one still loading its plugins does.
         if (booting) proxy.refuse(sessionID, Date.now() + BOOTING_MS)
+        // Or every request, its event stream and info too, as the service does until its routes are built.
+        if (bootingAll) unavailableUntil = Date.now() + BOOTING_MS
         const after = await ready(serviceFile, () => `the restarted service (${restarted.err.slice(-500)})`)
         // A new service process, not the old one answering.
         expect((await pid(after)).pid).not.toBe(before.pid)
         await until(screen, showing, (last) => `${name}: ${BACK_WITHIN_MS / 1000}s after the restart the TUI does not show ${marker}:\n${last}`, BACK_WITHIN_MS)
+        // Back on the session with the draft still in the composer, once the service serves again.
+        if (draft) {
+          await until(() => Date.now(), (now) => now >= unavailableUntil, () => "the booting window", BOOTING_MS + 1_000)
+          await until(screen, (text) => text.includes(draftText) && showing(text), (last) => `${name}: the draft is gone after the restart:\n${last}`, BACK_WITHIN_MS)
+        }
         // And it is live on the new service: a turn sent there shows up, so the screen is not a stale frame.
         const live = OpenCode.make({ baseUrl: after.url, headers: { authorization: `Basic ${btoa(`opencode:${after.password}`)}` } })
         if (gone !== undefined) {
@@ -346,6 +362,14 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
       await run("child", child.id, "child-transcript-marker")
       await run("busy", parent.id, "parent-transcript-marker", { busy: true })
       await run("booting", parent.id, "parent-transcript-marker", { booting: true })
+      // The owner's panes: a draft in the composer, and a service that refuses everything while it boots.
+      // A session of their own, so the parent's growing transcript does not scroll the marker away.
+      const drafted = await client.session.create({ location: { directory: work }, title: "Reconnect draft" })
+      await client.session.prompt({ sessionID: drafted.id, text: "say draft-transcript-marker" })
+      await client.experimental.session.wait({ sessionID: drafted.id })
+      await run("draft", drafted.id, "draft-transcript-marker", { draft: true, starting: true })
+      await run("booting-all", drafted.id, "draft-transcript-marker", { bootingAll: true, draft: true })
+      unavailableUntil = 0
 
       // A worker's session in a Rift the run has since removed.
       const rift = join(root, "rift")
