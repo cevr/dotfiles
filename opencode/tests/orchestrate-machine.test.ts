@@ -136,14 +136,16 @@ describe.skipIf(!fork)("a root that compacts mid-run and drifts still lands as a
 // The pipeline (SKILL.md, "The pipeline"), in real OpenCode: batch-2 fans out
 // while batch-1's verifier runs; the verdict's two findings fold forward, one
 // into a running implementor (a follow-up with its sessionID), one into a new
-// fix unit; batch-2 lands once the verdict is in and both are folded into
-// ready units, and its one verifier is told them.
+// fix unit; batch-2 lands once the verdict is in and both are folded, without
+// export, whose finding rides with it while it still implements; export lands
+// as batch-3, and each batch's one verifier is told the findings that landed
+// with it.
 describe.skipIf(!fork)("a root runs batches as a pipeline", () => {
   // One run of the scenario serves both tests: the pipeline, and round 1's edges on a root of their own.
   let piped: Promise<PipelineResult> | undefined
   const pipeline = () => (piped ??= run<PipelineResult>("pipeline"))
   test(
-    "fan-out during verify, a fold into a running implementor and one into a fix unit, the land after the verdict, the next verifier told the folds; a land before the verdict and one with a finding unfolded are refused",
+    "fan-out during verify, a fold into a running implementor and one into a fix unit, the land after the verdict without the running implementor, whose finding rides with its own later land; each verifier told the folds that landed with it; a land before the verdict and one with a finding unfolded are refused",
     async () => {
       const result = await pipeline()
       const lines = result.ledger
@@ -157,17 +159,21 @@ describe.skipIf(!fork)("a root runs batches as a pipeline", () => {
       const root = JSON.stringify(result.root!.messages)
       expect(root).toContain(RULES.VerdictPending.words)
       expect(root).toContain(RULES.FindingUnfolded.words)
-      expect(result.riftLands).toEqual([["auth", "billing"], ["search", "export", "billing-fix1"]])
+      expect(result.riftLands).toEqual([["auth", "billing"], ["search", "billing-fix1", "docs"], ["export"]])
       // The verdict's findings, read from its report, and where each was folded.
       expect(lines.find((line) => line.kind === "VerifierEnded")).toMatchObject({ batch: "batch-1", verdict: "changes", findings: ["auth/M1", "billing/M1"] })
       expect(lines.filter((line) => line.kind === "FindingFolded").map((line) => [line.finding, line.into])).toEqual([["auth/M1", "export"], ["billing/M1", "billing-fix1"]])
-      expect(lines.find((line) => line.kind === "BatchLanded" && (line.units as ReadonlyArray<string>).includes("export"))).toMatchObject({ units: ["search", "export", "billing-fix1"] })
-      // One verifier for batch-2, told batch-1's findings as folded, in its prompt.
-      expect(lines.filter((line) => line.kind === "VerifierStarted").map((line) => line.batch)).toEqual(["batch-1", "batch-2"])
-      expect(lines.findLast((line) => line.kind === "VerifierStarted")).toMatchObject({ units: ["search", "export", "billing-fix1"], findings: ["auth/M1 → export", "billing/M1 → billing-fix1"] })
+      expect(lines.filter((line) => line.kind === "BatchLanded").map((line) => line.units)).toEqual([["auth", "billing"], ["search", "billing-fix1", "docs"], ["export"]])
+      // One verifier per batch, each told the batch-1 findings that landed with it, in its prompt.
+      expect(lines.filter((line) => line.kind === "VerifierStarted").map((line) => line.batch)).toEqual(["batch-1", "batch-2", "batch-3"])
+      const started = lines.filter((line) => line.kind === "VerifierStarted")
+      expect(started[1]).toMatchObject({ units: ["search", "billing-fix1", "docs"], findings: ["billing/M1 → billing-fix1"] })
+      expect(started[2]).toMatchObject({ units: ["export"], findings: ["auth/M1 → export"] })
       // The verifier's own request: its prompt, not the root's probe that asked for it.
-      const told = result.seen.find((seen) => JSON.stringify(seen.messages).includes("verifier batch-2 r1: accepted") && !JSON.stringify(seen.messages).includes("probe:"))
-      expect(JSON.stringify(told?.messages)).toContain("- batch-1 auth/M1 → export\\n- batch-1 billing/M1 → billing-fix1")
+      const told = (batch: string) => result.seen.find((seen) => JSON.stringify(seen.messages).includes(`verifier ${batch} r1: accepted`) && !JSON.stringify(seen.messages).includes("probe:"))
+      expect(JSON.stringify(told("batch-2")?.messages)).toContain("- batch-1 billing/M1 → billing-fix1")
+      expect(JSON.stringify(told("batch-2")?.messages)).not.toContain("auth/M1 → export")
+      expect(JSON.stringify(told("batch-3")?.messages)).toContain("- batch-1 auth/M1 → export")
       expect(kinds).not.toContain("Departed")
     },
     200_000,

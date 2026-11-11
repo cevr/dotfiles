@@ -1943,8 +1943,11 @@ describe("the batch machine", () => {
           expect.objectContaining({ finding: "alpha/M1", into: "gamma" }),
           expect.objectContaining({ finding: "alpha/M2", into: "alpha-fix1" }),
         ])
-        // Folded into gamma, which still implements: the land waits for its hand-back.
-        expect((yield* land(["beta", "alpha-fix1"])).refused?.message).toContain("alpha/M1 → gamma")
+        // Folded into gamma, which still implements: alpha/M1 rides with gamma and holds no land. Only the cadence holds
+        // this one (two ready while gamma runs), never the finding.
+        const riding = yield* land(["beta", "alpha-fix1"])
+        expect(riding.refused?.message).toContain(RULES.BatchNotDue.words)
+        expect(riding.refused?.message).not.toContain(RULES.FindingUnfolded.words)
         yield* plugin.idle("ses_g")
         expect((yield* land(["beta", "gamma", "alpha-fix1"])).refused).toBeUndefined()
         yield* landed(["beta", "gamma", "alpha-fix1"])
@@ -1954,7 +1957,7 @@ describe("the batch machine", () => {
         expect(String((two.input as { prompt: string }).prompt)).toContain("verify batch-2\n\nFindings of the batch before, folded into this batch")
         expect(String((two.input as { prompt: string }).prompt)).toContain("- batch-1 alpha/M1 → gamma\n- batch-1 alpha/M2 → alpha-fix1")
         expect(plugin.ledger.at(-1)).toMatchObject({ kind: "VerifierStarted", batch: "batch-2", units: ["beta", "gamma", "alpha-fix1"], findings: ["alpha/M1 → gamma", "alpha/M2 → alpha-fix1"] })
-        expect(plugin.ledger.filter((line) => (line as { kind: string }).kind === "Refused").map((line) => (line as { rule: string }).rule)).toEqual(["VerdictPending", "FindingUnfolded", "FindingUnfolded"])
+        expect(plugin.ledger.filter((line) => (line as { kind: string }).kind === "Refused").map((line) => (line as { rule: string }).rule)).toEqual(["VerdictPending", "FindingUnfolded", "BatchNotDue"])
       }),
     ))
 

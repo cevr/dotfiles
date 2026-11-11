@@ -15,8 +15,10 @@
 // from the verifier's findings by the plugin, `<unit>/<id>`) goes into a unit
 // of batch N+1, by that unit's implementor's start: its own unit's findings
 // by themselves, others named in `(folds: …)`. Batch N+1 lands once verdict
-// N is in, with every finding folded into a ready unit it takes; its verifier
-// checks the findings as folded.
+// N is in, with every finding folded into a unit: one folded into a ready
+// unit lands with it; one folded into a unit still implementing does not
+// hold the other ready units, it rides with its unit's later land, whose
+// verifier checks it as folded.
 //
 // A unit is `implement` (its implementor runs), `ended` (its implementor
 // stopped without `ready`), `ready`, `landed` (no verifier started for it
@@ -39,7 +41,9 @@
 //                    verifier's `units`), not a unit's slot, which a covered
 //                    unit's next round takes over;
 //   FindingUnfolded  a land while a finding of the last verdict is not folded
-//                    into a ready unit the land takes, or while a `changes`
+//                    into a unit, or is folded into one that is neither in
+//                    the land nor still implementing (a ready unit the land
+//                    leaves out, an implementor that ended), or while a `changes`
 //                    verdict's report did not read (`unresolved`: its
 //                    findings are not known, never none; the plugin reads
 //                    it again before each start and land, `ReportRead`);
@@ -77,7 +81,7 @@ export const RULES: Readonly<Record<Rule, { readonly name: string; readonly word
   VerifierRunning: { name: "Verify a batch", words: "never more than one runs on a machine at a time" },
   BatchNotDue: { name: "Batch cadence", words: "Land when 3 units are ready or the oldest ready unit has waited 30 minutes." },
   VerdictPending: { name: "The pipeline", words: "Batch N+1 lands only once batch N's verdict is in" },
-  FindingUnfolded: { name: "The pipeline", words: "only with every finding of batch N folded into a ready unit of batch N+1" },
+  FindingUnfolded: { name: "The pipeline", words: "only with every finding of batch N folded into a unit of batch N+1" },
   LandPartial: { name: "Land a batch", words: "Land every ready unit at once when the cadence fires" },
 }
 
@@ -271,10 +275,16 @@ export const unitOfFinding = (finding: string): string => finding.split("/")[0]!
 /** The open findings, as `[key, finding]`. */
 const openFindings = (state: MachineState): ReadonlyArray<readonly [string, Finding]> => Object.entries(state.findings ?? {})
 
-/** The open findings a land of `lands` would leave unfolded: none folded, or folded into a unit it does not take. */
+/** A finding folded into a unit still implementing: it holds no land, and rides with its unit's. */
+export const riding = (state: MachineState, finding: Finding): boolean => finding.into !== undefined && state.units[finding.into]?.state === "implement"
+
+/**
+ * The open findings a land of `lands` would leave unfolded: none folded, or folded into a unit it
+ * does not take that is not still implementing (one still implementing rides with its own land).
+ */
 export const unfoldedOf = (state: MachineState, lands: ReadonlyArray<string>): ReadonlyArray<string> =>
   openFindings(state)
-    .filter(([, finding]) => finding.into === undefined || !lands.includes(finding.into))
+    .filter(([, finding]) => finding.into === undefined || (!lands.includes(finding.into) && !riding(state, finding)))
     .map(([key]) => key)
 
 /** The open findings an implementor's start folds into its unit: its own unit's, and those its `folds` name. */
@@ -422,7 +432,7 @@ const instead = (state: MachineState, rule: Rule, call: Command, now: number, ca
     }
     case "VerdictPending":
       return state.verifier === undefined
-        ? `Start \`verifier batch-<k> r1\` for ${list(coverOf(state))} first; the next batch lands once its verdict is in, with each of its findings folded into a ready unit. Keep the next batch's implementors working meanwhile.`
+        ? `Start \`verifier batch-<k> r1\` for ${list(coverOf(state))} first; the next batch lands once its verdict is in, with each of its findings folded into a unit (one folded into a unit still implementing rides with that unit's later land). Keep the next batch's implementors working meanwhile.`
         : `Verifier ${state.verifier.batch} still runs over ${list(coveredOf(state))}: keep the next batch's implementors working, fold its findings into them when its verdict comes, then land.`
     case "FindingUnfolded": {
       const lands = call._tag === "Land" ? named(state, call.rifts) : ready
@@ -437,7 +447,7 @@ const instead = (state: MachineState, rule: Rule, call: Command, now: number, ca
           ? []
           : [
               `Fold each finding into a unit this land takes: ${unfolded.map((key) => foldedLine(state, key)).join(", ")}.`,
-              `A finding folded into a unit still implementing lands when that unit hands back ready. One not folded goes to a running implementor that owns its files (a subagent call with its sessionID, description \`implementor <unit> r<N> (folds: ${unfolded[0]})\`), or to a new fix implementor (\`implementor ${unitOfFinding(unfolded[0]!)}-fix1 r1 (folds: ${unfolded[0]})\`).`,
+              `A finding folded into a unit still implementing holds no land: it rides with that unit's later land, whose verifier checks it. One folded into a ready unit lands with it: take that unit too. One not folded goes to a running implementor that owns its files (a subagent call with its sessionID, description \`implementor <unit> r<N> (folds: ${unfolded[0]})\`), or to a new fix implementor (\`implementor ${unitOfFinding(unfolded[0]!)}-fix1 r1 (folds: ${unfolded[0]})\`).`,
             ]),
       ].join(" ")
     }
@@ -722,6 +732,7 @@ export const briefOf = (state: MachineState, now: number, cadence: Cadence): str
   const next = unitsIn(state, "implement", "ready").map((unit) => `${unit} (${state.units[unit]!.state})`)
   const folded = findings.filter(([, finding]) => finding.into !== undefined).map(([key, finding]) => `${finding.batch} ${key} → ${finding.into}`)
   const unfolded = findings.filter(([, finding]) => finding.into === undefined).map(([key, finding]) => `${finding.batch} ${key}`)
+  const rides = findings.filter(([, finding]) => riding(state, finding)).map(([key, finding]) => `${finding.batch} ${key} → ${finding.into}`)
   return [
     ...BRIEF_ORDER.flatMap((name) => {
       const units = unitsIn(state, name)
@@ -731,7 +742,10 @@ export const briefOf = (state: MachineState, now: number, cadence: Cadence): str
     ...(state.verifier === undefined && findings.length === 0
       ? []
       : [`next batch: units ${list(next)}; folded findings: ${folded.length === 0 ? "none" : folded.join(", ")}`]),
-    ...(unfolded.length === 0 ? [] : [`not folded: ${unfolded.join(", ")} (the next batch lands once each is folded into a ready unit)`]),
+    ...(unfolded.length === 0 ? [] : [`not folded: ${unfolded.join(", ")} (the next batch lands once each is folded into a unit)`]),
+    ...(rides.length === 0
+      ? []
+      : [`riding with a unit still implementing: ${rides.join(", ")} (holds no land; each lands with its unit, and that land's verifier must name it as folded)`]),
     ...debts.map(([batch, debt]) => `findings not known: ${batch} changes, ${debt.why}${debt.report === undefined ? "" : ` (${debt.report})`}; the next batch lands once its report reads and each finding is folded`),
     ...(state.verifier === undefined && carried.length > 0 ? [`landed with folded findings, for the next verifier: ${foldedList(state, carried)}`] : []),
     ...(why === undefined ? [] : [`a batch is due (${why})`]),
