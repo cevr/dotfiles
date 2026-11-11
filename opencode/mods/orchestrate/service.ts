@@ -266,6 +266,16 @@ export class Remind extends Context.Service<
   { readonly remind: (sessionID: string, note: { readonly text: string; readonly description: string }) => Effect.Effect<void, NudgeRefused> }
 >()("dotfiles-opencode/orchestrate/Remind") {}
 
+/**
+ * A verifier's findings, read from the report its hand-back names (a batch's
+ * `batch-<k>-findings.md` or a unit's `round-N-findings.md`): each Blocker and
+ * Major of a unit whose verdict is `changes`, as `<unit>/<id>` (the unit
+ * alone when its file names no id). None when the report cannot be read.
+ */
+export class Findings extends Context.Service<Findings, { readonly read: (report: string) => Effect.Effect<ReadonlyArray<string> | undefined> }>()(
+  "dotfiles-opencode/orchestrate/Findings",
+) {}
+
 /** Whether a step's session still works: it runs a turn, is latched, or keeps background work of its own. */
 export class Liveness extends Context.Service<Liveness, { readonly alive: (sessionID: string) => Effect.Effect<boolean> }>()(
   "dotfiles-opencode/orchestrate/Liveness",

@@ -128,6 +128,7 @@ import * as CodexAdmissionLive from "@dotfiles/opencode-orchestrate/codex/admiss
 import { keepMessage, WINDOW } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogLive from "@dotfiles/opencode-orchestrate/filestore/call-log"
 import * as LedgerLive from "@dotfiles/opencode-orchestrate/filestore/ledger"
+import * as FindingsLive from "@dotfiles/opencode-orchestrate/filestore/findings"
 import * as StepLogLive from "@dotfiles/opencode-orchestrate/filestore/step-log"
 import * as RunRecordsLive from "@dotfiles/opencode-orchestrate/filestore/run-records"
 import * as UnitLogsLive from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
@@ -153,6 +154,7 @@ import {
   type CodexAdmission,
   type GuardMode,
   type Latches,
+  type Findings,
   type Ledger,
   Liveness,
   type LatchStart,
@@ -261,6 +263,7 @@ export type Externals =
   | Ledger
   | Liveness
   | Remind
+  | Findings
 
 /** How much background work a session keeps of its own, as its last idle listed it. */
 export type Background = (sessionID: string) => number
@@ -279,6 +282,7 @@ type SyntheticInput = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, resume: Resume, background: Background): Layer.Layer<Externals> =>
   Layer.mergeAll(
     LedgerLive.layer(options.ledger, options.cadence),
+    FindingsLive.layer,
     SteerLive.remindLayer(synthetic(ctx)),
     // A step's session works while it runs a turn (its newest start is after its last end) or keeps background
     // work of its own; a session that cannot be read does not.
@@ -769,6 +773,9 @@ export const make = (
             return Effect.succeed({ outcome, passed })
           }),
           Effect.map(({ outcome, passed }) => {
+            // A batch verifier's prompt ends with the findings it checks as folded.
+            if (passed.prompt !== undefined && isObject(event.input) && typeof event.input.prompt === "string")
+              event.input = { ...event.input, prompt: `${event.input.prompt}\n\n${passed.prompt}` }
             if (Option.isNone(outcome) || !isObject(event.input)) return
             const routed = outcome.value._tag === "LatchedStart" ? outcome.value.latched : outcome.value
             // Run the call as the guard routed it, on the role's model when one was chosen.

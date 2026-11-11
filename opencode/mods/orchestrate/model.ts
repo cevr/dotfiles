@@ -47,9 +47,11 @@ import {
   type MachineState,
   notesOf,
   type Refused,
+  reportOf,
   Spawned,
   type Start,
   startOf as stepOfCall,
+  verifierPromptOf,
 } from "./machine.ts"
 import { formatRef, namesModel, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
 import * as Restart from "./restart.ts"
@@ -64,6 +66,7 @@ import {
   type Decided,
   type GuardMode,
   Latches,
+  Findings,
   Ledger,
   Liveness,
   Models,
@@ -881,6 +884,8 @@ export const briefText = (block: string, brief: string): string =>
 /** What a call the machine let through answers with first: its notes, and under `warn` the rule it broke. */
 export interface Passed {
   readonly notes: ReadonlyArray<string>
+  /** What the call's prompt gains at its end: a batch verifier's findings to check as folded. */
+  readonly prompt?: string
 }
 
 export class Machines extends Context.Service<
@@ -919,6 +924,7 @@ export const machineLayer = (config: MachineConfig) =>
       const sessions = yield* Sessions
       const liveness = yield* Liveness
       const remind = yield* Remind
+      const findings = yield* Findings
       const inFlight = new Map<string, InFlight>()
 
       const flying = (root: string, role: Start["role"], name: string) =>
@@ -964,6 +970,7 @@ export const machineLayer = (config: MachineConfig) =>
         if (command === undefined) return { notes: [] }
         const at = yield* now
         let notes: ReadonlyArray<string> = []
+        let prompt: string | undefined
         const decided = yield* ledger.decide(
           input.root,
           at,
@@ -971,12 +978,13 @@ export const machineLayer = (config: MachineConfig) =>
             Effect.gen(function* () {
               const dead = command.role === "verifier" ? yield* reconcile(input.root, state) : []
               notes = notesOf(state, command, at, config.cadence)
+              prompt = verifierPromptOf(state, command)
               return [...dead, command]
             }),
           config.mode,
         )
         inFlight.set(input.key, { root: input.root, role: command.role, name: command.name })
-        return { notes: [...warnedNote(decided), ...notes] }
+        return { notes: [...warnedNote(decided), ...notes], ...(prompt === undefined ? {} : { prompt }) }
       })
 
       const started = Effect.fn("Machines.started")(function* (input: { readonly root: string; readonly key: string; readonly child?: string }) {
@@ -1008,8 +1016,13 @@ export const machineLayer = (config: MachineConfig) =>
         if (agent === undefined || !isStep(agent)) return
         const root = yield* sessions.parentOf(sessionID)
         if (root === undefined) return
-        const said = stepHandBackOf(agent, yield* sessions.lastWordsOf(sessionID))
-        if (said === undefined) return
+        const words = yield* sessions.lastWordsOf(sessionID)
+        const back = stepHandBackOf(agent, words)
+        if (back === undefined) return
+        // A verifier's `changes` opens the findings its report holds: each folds into the next batch.
+        const report = back.role === "verifier" && back.verdict === "changes" ? reportOf(words) : undefined
+        const found = report === undefined ? undefined : yield* findings.read(report)
+        const said = found === undefined ? back : HandBack.make({ ...back, findings: found })
         // The session that handed back is the step's: a step started before its session was known gets it here.
         yield* ledger.decide(root, yield* now, () => Effect.succeed([said])).pipe(Effect.ignore)
       })

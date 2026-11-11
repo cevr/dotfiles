@@ -34,7 +34,7 @@ import type { AccountStatus } from "@dotfiles/opencode-pool/status"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { BACKOFF_MS, NOTICE_TITLE, RESUME_PROMPT, resumePrompt } from "@dotfiles/opencode-orchestrate/restart"
 import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
-import { Liveness, type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
+import { Findings, Liveness, type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import { DEFAULT_CADENCE, RULES } from "@dotfiles/opencode-orchestrate/machine"
 import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
 import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, greenOf, make, Options, type Resume, SKILL_DIR, UNIT_LOG } from "./server.ts"
@@ -86,6 +86,8 @@ interface World {
   readonly ledger?: Array<unknown>
   /** Which step sessions still run a turn; any other does not. */
   readonly alive?: Readonly<Record<string, boolean>>
+  /** The findings each verifier report holds, by its path; a report not here cannot be read. */
+  readonly findings?: Readonly<Record<string, ReadonlyArray<string>>>
 }
 
 /** A tool as the host's tool editor hands it out: only what the plugin touches. */
@@ -170,6 +172,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     const briefs: Array<OpenCodeSteer.Synthetic> = []
     const externals = (start: OpenCodeLatches.Start, resume: Resume, background: Background) => Layer.mergeAll(
       MemoryLedger.layer(DEFAULT_CADENCE, ledger),
+      Layer.succeed(Findings, { read: (report: string) => Effect.succeed(world.findings?.[report]) }),
       Layer.succeed(Liveness, { alive: (sessionID: string) => Effect.succeed(world.alive?.[sessionID] === true || background(sessionID) > 0) }),
       OpenCodeSteer.remindLayer((input) => Effect.sync(() => void briefs.push(input))),
       RestartsTest.layer(world.restarts ?? RestartsTest.empty(), resume),
@@ -1865,6 +1868,81 @@ describe("the batch machine", () => {
         expect(String(answer.content)).toContain(RULES.VerifierPerUnit.words)
         expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "Departed", rule: "VerifierPerUnit" }))
         expect(kinds(plugin)).not.toContain("Refused")
+      }),
+    ))
+
+  test("the pipeline through the plugin: the next batch fans out while batch-1 verifies; its findings fold into a running implementor and a fix unit; batch-2 lands and its verifier is told the folds", () =>
+    scenario(
+      Effect.gen(function* () {
+        const report = "/run/batch-1-findings.md"
+        const sessions = steps({
+          ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready /run/alpha/round-1-request.md" },
+          ses_v: { agent: "verifier", lastWords: `verifier batch-1 r1: changes ${report}` },
+          ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" },
+          ses_g: { agent: "implementor", lastWords: "implementor gamma r1: ready x" },
+          ses_f: { agent: "implementor", lastWords: "implementor alpha-fix1 r1: ready x" },
+        })
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true, ses_g: true }, findings: { [report]: ["alpha/M1", "alpha/M2"] } })
+        const land = (rifts: ReadonlyArray<string>) => plugin.call("rift", "root", { action: "land", rifts })
+        const landed = (rifts: ReadonlyArray<string>) =>
+          plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: `Landed ${rifts.length} Rift(s) as one push` }] } })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        expect((yield* land(["alpha"])).refused).toBeUndefined()
+        yield* landed(["alpha"])
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "verify batch-1", background: true }, "ses_v")
+        // While batch-1 verifies, batch-2 fans out, and its land waits for the verdict.
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        yield* begin(plugin, implementor("gamma"), "ses_g")
+        yield* plugin.idle("ses_b")
+        const early = yield* land(["beta"])
+        expect(early.refused?.message).toContain(RULES.VerdictPending.words)
+        // The verdict is in: its findings are read from its report, and the land waits for them to be folded.
+        yield* plugin.idle("ses_v")
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "changes", findings: ["alpha/M1", "alpha/M2"] }))
+        const unfolded = yield* land(["beta"])
+        expect(unfolded.refused?.message).toContain(RULES.FindingUnfolded.words)
+        expect(unfolded.refused?.message).toContain("alpha/M1 (not folded)")
+        // alpha/M1 to gamma's running implementor, as a round message; alpha/M2 to a new fix unit.
+        const round = { agent: "implementor", description: "implementor gamma r1 (folds: alpha/M1)", prompt: "fold alpha/M1", sessionID: "ses_g", background: true }
+        expect((yield* plugin.call("subagent", "root", round)).refused).toBeUndefined()
+        yield* plugin.finish({ input: round, status: "completed", result: { metadata: { sessionID: "ses_g", status: "running" } } })
+        yield* begin(plugin, { agent: "implementor", description: "implementor alpha-fix1 r1 (folds: alpha/M2)", prompt: "fix alpha/M2", background: true }, "ses_f")
+        yield* plugin.idle("ses_f")
+        expect(plugin.ledger.filter((line) => (line as { kind: string }).kind === "FindingFolded")).toEqual([
+          expect.objectContaining({ finding: "alpha/M1", into: "gamma" }),
+          expect.objectContaining({ finding: "alpha/M2", into: "alpha-fix1" }),
+        ])
+        // Folded into gamma, which still implements: the land waits for its hand-back.
+        expect((yield* land(["beta", "alpha-fix1"])).refused?.message).toContain("alpha/M1 → gamma")
+        yield* plugin.idle("ses_g")
+        expect((yield* land(["beta", "gamma", "alpha-fix1"])).refused).toBeUndefined()
+        yield* landed(["beta", "gamma", "alpha-fix1"])
+        // Batch-2's one verifier covers its units and is told batch-1's findings as folded.
+        const two = yield* plugin.call("subagent", "root", { agent: "verifier", description: "verifier batch-2 r1", prompt: "verify batch-2", background: true })
+        expect(two.refused).toBeUndefined()
+        expect(String((two.input as { prompt: string }).prompt)).toContain("verify batch-2\n\nFindings of the batch before, folded into this batch")
+        expect(String((two.input as { prompt: string }).prompt)).toContain("- batch-1 alpha/M1 → gamma\n- batch-1 alpha/M2 → alpha-fix1")
+        expect(plugin.ledger.at(-1)).toMatchObject({ kind: "VerifierStarted", batch: "batch-2", units: ["beta", "gamma", "alpha-fix1"], findings: ["alpha/M1 → gamma", "alpha/M2 → alpha-fix1"] })
+        expect(plugin.ledger.filter((line) => (line as { kind: string }).kind === "Refused").map((line) => (line as { rule: string }).rule)).toEqual(["VerdictPending", "FindingUnfolded", "FindingUnfolded"])
+      }),
+    ))
+
+  test("a land before the verdict passes when it departs, and the departure is recorded", () =>
+    scenario(
+      Effect.gen(function* () {
+        const sessions = steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" } })
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true } })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })
+        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed 1 Rift(s) as one push" }] } })
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        yield* plugin.idle("ses_b")
+        const departed = yield* plugin.call("rift", "root", { action: "land", rifts: ["beta"], departs: "the owner ships beta today" })
+        expect(departed.refused).toBeUndefined()
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "Departed", rule: "VerdictPending", why: "the owner ships beta today" }))
       }),
     ))
 
