@@ -6,7 +6,7 @@
 // missed event. Never per render. A failed read keeps the last reading; with
 // no questions plugin loaded, none are open. Create it inside a Solid root;
 // disposing the root stops it.
-import { changedSession, decodeOpen } from "@dotfiles/opencode-questions/reading"
+import { changedSession, decodeOpen, sameQuestions } from "@dotfiles/opencode-questions/reading"
 import type { Question } from "@dotfiles/opencode-questions/question"
 import { labelOf } from "@dotfiles/opencode-questions/tray"
 import { Option } from "effect"
@@ -30,7 +30,7 @@ const sameIds = (a: ReadonlyArray<string>, b: ReadonlyArray<string>) => a.length
 /** Follow the open questions of `sessions` (the view's members); what each session has open, oldest first. */
 export const followAsked = (source: Source, sessions: Accessor<ReadonlyArray<string>>): AskedOf => {
   const members = createMemo(sessions, [], { equals: sameIds })
-  const [open, setOpen] = createSignal<ReadonlyArray<Question>>([])
+  const [open, setOpen] = createSignal<ReadonlyArray<Question>>([], { equals: sameQuestions })
   const abort = new AbortController()
   let pending = false
   let again = false

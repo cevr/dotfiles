@@ -240,3 +240,42 @@ A guard `systemd-run` shim that gave such units the launcher's limits was tried 
 
 - Workbox: `~/.local/opt/strobe-0.19.0/` (17 MB; `npm pack @hona/strobe-linux-x64@0.19.0`, the newest release, the same way as 0.14.0), `~/.local/opt/bun-1.4.4-profile/` (476 MB, `bun-linux-x64-profile.zip` of Bun v1.4.4), `~/.local/share/strobe/` (7.6 MB, the recordings above), and `/tmp/opencode/load-perf/` (scripts and analyses; the database copy is deleted). No `strobe up`, no daemon, no sysctl.
 - Mac: `~/.local/opt/strobe-0.19.0/` (darwin-arm64) and `~/.local/share/strobe/` (16 MB, rec_944687 and rec_b94bf2).
+
+# Questions and background questions under load (workbox, 2026-11-11)
+
+The owner saw slowness with questions and background questions open, and questions that did not scroll. The workbox load was 38–42 on 16 vCPUs at the start and 18–40 while measuring.
+
+## What it says
+
+- **The owner's five TUIs could not scroll a long question: they run code from before the fix.** They run `opencode-2.2.5-prime.d22f11a9`, started about 41 hours earlier. That build has none of `ebac2e977f` (scroll a question taller than the form dock), `0e620d7588` (the dock gives way to a docked form) or `7a649c0281` (the crash fix). **measured** with `git merge-base --is-ancestor`. Restarting them on the current build fixes it.
+- **On the current build (`cd6d8ecd`), both forms scroll under the workbox's load.** `scenarios/question-scroll.ts` ran on the workbox at load 30–40, for the built-in `question` form and for `/answer`'s form. In both, the wheel moved the form off line 1, PageDown reached line 60 and the options, and ↓ Enter picked "Drop it", which the model then read. **measured** from the frames the scenario saved. `tests/question-scroll.test.ts` still fails on the workbox, and it fails the same way at the base commit. Its expected key line is `↑↓ select  pgdn scroll  enter submit`, but the workbox frame has one more column of left chrome, so the line wraps after `pgdn scroll`. The same test passes on the Mac. `tests/questions.test.ts` fails on the workbox at the base commit too: `cmd/prime` failed to load in that run, and the composer line came out as `┃  typed-after-answer`. Both failures come from the environment, not from scrolling. **measured**
+- **The questions themselves cost almost nothing.** These figures come from `scenarios/question-latency.ts` on a scratch service with the owner's TUI plugins, using the fork's `SIGPROF` JS profiles of the scratch TUI. Counts are profile samples, about 1 ms of JS each. **measured**
+  - TUI CPU at idle: 0.058 cores with no questions, 0.058 with four background questions and the tray, and 0.061 with `/answer`'s form open (400 tool groups, no subagents). The main thread was 1.2–1.3% busy in all three.
+  - Typing in `/answer`'s custom answer cost about 555 JS samples in 10 s outside the test harness. Of those, the form took 1 and the dock took 8, mostly `changedSession` (6) and the 2 s poll.
+  - Per key, from the key to the frame that shows it: composer p50 14–20 ms, form arrows 18–26 ms, form typing 10–14 ms. A held key at 30/s settled 6–35 ms after the last key. The harness's own frame captures are about half of the TUI's CPU in these windows, so the absolute figures run high.
+- **The slow keys come from the transcript: the root session re-reduced all of its rows on writes that changed nothing it shows.** This is core (fork) code. **measured**
+  - With 30 background subagents in the family, composer keys had a p90 of 49–344 ms and a max of 84–1,922 ms. The stalls came as the subagents finished.
+  - The profile put `createSessionRows`' `rebuild` (`packages/tui/src/routes/session/rows.ts`) at about 1,000 samples in 10 s. It ran inside the event batch flush and `session.sync`.
+  - Counting each trigger over one run (30 subagents, 200 groups) gave 203 full rebuilds: 49 from the revert boundary, 38 from the queued inputs and 116 from the message list. Solid's `on(deps, …)` runs on every run of `deps`, and `deps` ran again on every replacement of the session's info (each refresh of a running session), its pending list or its message list, even when its value was the same.
+  - The owner's families have up to 171 sessions and 18,487 messages, and a rebuild walks the whole transcript, so there each extra rebuild costs more. **inferred**
+
+## Fixes
+
+1. **Fork `314c9607bf` (pushed to `prime-look`):** `perf(tui)`. Each rebuild trigger in `rows.ts` is now a memo that notifies only when its value changes: the boundary as a string, and the queued and message triggers as key lists. The guard is `data.test.tsx` "a fresh read of the session that moves no revert boundary, or an answer streaming in, leaves its transcript rows unreduced". It fails on the old code (9 reduces where 4 are expected, and 4 where 3 are expected with only the boundary memo) and passes on the new one.
+   - Rebuilds in the same run went from 203 to 49: boundary 49 → 0, queued 38 → 0, messages 116 → 47.
+   - During the 200-group first turn alone, rebuilds went from 77 to 6. **measured**
+   - Composer keys, A/B on the same scenario (alternating before and after, three runs each, load 24–39):
+     - p90: 306, 49, 344 ms before; 146, 126, 126 ms after.
+     - max: 909, 84, 848 ms before; 277, 741, 535 ms after.
+     - The runs are noisy. The 47 rebuilds left are the subagents' completion messages, each a full re-reduce, and that is where the remaining stalls come from. **measured**, ranges as listed
+2. **Dotfiles `235d789c`:** `perf(questions)`. A reading of the open questions that changes nothing no longer sets new state. This covers the dock's 2 s poll (`tui/questions.tsx`) and herdr's reader (`mods/herdr/opencode/asked.ts`). `changedSession` also turns away an event of any other type before the Effect Schema decoder runs, since every event of every session passes through it. The share is small: 6–8 samples in 10 s. **measured**
+3. **Dotfiles `12e0643d`:** `scenarios/question-latency.ts`, the scenario behind these numbers.
+
+## Next, by size
+
+- **Make the remaining rebuild incremental.** When the message trigger's only change is a new message at the end, the live handlers have already appended it (`appendMessage`), so the full re-reduce could be skipped. Expected: most of the 47 rebuilds left, and the stalls when many subagents finish together. **inferred**
+- **The owner's TUIs at idle are 39–71% timers.** On 2.2.5, 0.08–0.19 cores and a main thread 6–15% busy (rec_a8206d, rec_c2db3a, rec_b75bd0, rec_17d3ba, rec_094c04), with no second at 90% or more. Naming those timers needs a `SIGPROF` profile of an owner TUI, which only the owner may send. The server was at 0.20 cores (rec_03779c). **measured**
+
+## Installed for this run (removed at the end)
+
+- Workbox: strobe 0.19.0 and Bun 1.4.4's profile build, left over from 2026-11-08 and reused; the recordings `rec_a8206d`, `rec_c2db3a`, `rec_b75bd0`, `rec_17d3ba`, `rec_094c04` and `rec_03779c`; and the scratch checkouts in `/tmp/opencode/question-perf/`. All of them were removed after this run. No daemon, no sysctl.

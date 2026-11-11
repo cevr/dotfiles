@@ -5,6 +5,7 @@
 // use it.
 import { createSignal } from "solid-js"
 import type { Question } from "../question.ts"
+import { sameQuestions } from "../reading.ts"
 
 export interface Questions {
   readonly open: (sessionID: string) => ReadonlyArray<Question>
@@ -15,6 +16,7 @@ export const createQuestions = (): Questions => {
   const [open, setOpenAll] = createSignal<Readonly<Record<string, ReadonlyArray<Question>>>>({})
   return {
     open: (sessionID) => open()[sessionID] ?? [],
-    setOpen: (sessionID, questions) => setOpenAll((all) => ({ ...all, [sessionID]: questions })),
+    // The dock reads every 2 seconds; a reading that changed nothing redraws nothing.
+    setOpen: (sessionID, questions) => setOpenAll((all) => (sameQuestions(all[sessionID] ?? [], questions) ? all : { ...all, [sessionID]: questions })),
   }
 }
