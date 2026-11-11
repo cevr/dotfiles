@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { parseUpstream, updateAvailable, upstreamNotice, type UpstreamReading } from "./update.ts"
+import { parseUpstream, updateAvailable, upstreamFile, upstreamNotice, type UpstreamReading } from "./update.ts"
 
 describe("updateAvailable", () => {
   test("a service on another build than the TUI's has an update for it", () => {
@@ -37,6 +37,17 @@ describe("upstreamNotice", () => {
     expect(upstreamNotice(reading(0, false))).toBeUndefined()
     expect(upstreamNotice(reading(0, true))).toBeUndefined()
     expect(upstreamNotice(undefined)).toBeUndefined()
+  })
+})
+
+describe("upstreamFile", () => {
+  test("under the XDG state dir when one is set, so a harness's scratch state hides the host's reading", () => {
+    expect(upstreamFile("/home/x", "/scratch/state")).toBe("/scratch/state/opencode-daily/upstream.json")
+  })
+
+  test("under the home's .local/state otherwise", () => {
+    expect(upstreamFile("/home/x", undefined)).toBe("/home/x/.local/state/opencode-daily/upstream.json")
+    expect(upstreamFile("/home/x", "")).toBe("/home/x/.local/state/opencode-daily/upstream.json")
   })
 })
 

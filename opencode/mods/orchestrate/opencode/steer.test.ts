@@ -5,7 +5,7 @@ import { expect, test } from "bun:test"
 import { Effect } from "effect"
 import { MARK } from "../idle.ts"
 import { steerLaws } from "../laws.ts"
-import { Steer } from "../service.ts"
+import { Remind, Steer } from "../service.ts"
 import * as OpenCodeSteer from "./steer.ts"
 
 steerLaws("OpenCode's Steer", (world) => {
@@ -16,6 +16,18 @@ steerLaws("OpenCode's Steer", (world) => {
     ),
     sent: () => sent,
   }
+})
+
+test("the brief is a steered message carrying its own mark, which starts no turn", async () => {
+  const asked: Array<OpenCodeSteer.Synthetic> = []
+  await Effect.runPromise(
+    Remind.use((remind) => remind.remind("ses_root", { text: "the brief", description: "the row" })).pipe(
+      Effect.provide(OpenCodeSteer.remindLayer((input) => Effect.sync(() => void asked.push(input)))),
+    ),
+  )
+  expect(asked).toEqual([
+    { sessionID: "ses_root", text: "the brief", description: "the row", metadata: { [OpenCodeSteer.BRIEF_MARK]: true }, delivery: "steer", resume: false },
+  ])
 })
 
 test("the host is asked for a steered message carrying the mark, which wakes the session", async () => {

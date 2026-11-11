@@ -97,6 +97,17 @@ export interface Hits {
 }
 
 /**
+ * The share of `hits`' prompt tokens the cache served, in whole percent,
+ * rounded down (99.6% is not every token). Undefined without cache activity
+ * (no read and no write): a provider that reports none would read as 0%.
+ * The sidebar line and Prime's tray both read it.
+ */
+export const cacheShare = (hits: Hits): number | undefined => {
+  if (hits.promptTokens <= 0 || hits.cacheReadTokens + hits.cacheWriteTokens <= 0) return undefined
+  return Math.floor((hits.cacheReadTokens * 100) / hits.promptTokens)
+}
+
+/**
  * The sidebar line: the share of the family's prompt tokens the cache served,
  * rounded down (99.6% is not every token), and what its misses cost, when they
  * cost a cent or more, with the cause that cost the most (`shortCause`) when
@@ -104,8 +115,9 @@ export interface Hits {
  * provider that reports none would read as 0%.
  */
 export const sidebarText = (hits: Hits, missedUsd: number, cause?: string): string | undefined => {
-  if (hits.promptTokens <= 0 || hits.cacheReadTokens + hits.cacheWriteTokens <= 0) return undefined
-  const share = `Cache ${Math.floor((hits.cacheReadTokens * 100) / hits.promptTokens)}%`
+  const percent = cacheShare(hits)
+  if (percent === undefined) return undefined
+  const share = `Cache ${percent}%`
   if (missedUsd < MIN_NAMED_USD) return share
   return [share, `missed ${formatUsd(missedUsd)}`, ...(cause === undefined ? [] : [cause])].join(" · ")
 }

@@ -11,6 +11,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -25,10 +26,10 @@ const ROW = /◌ (queued|after the turn) · /
 const names = ["first", "second", "busy"] as const
 const frames = {} as Record<(typeof names)[number], ReadonlyArray<string>>
 
-/** The rows above Prime's mode hint: the transcript, then the queued rows (the composer, with its own `┃` rail, is below). */
+/** The rows above Prime's hint line (tests/composer.ts): the transcript, then the queued rows (the composer, with its own `┃` rail, is below). */
 const above = (frame: string) => {
   const lines = frame.split("\n")
-  const hint = lines.findIndex((line) => /mode \(Ctrl\+O/.test(line))
+  const hint = hintRow(lines)
   return hint < 0 ? lines : lines.slice(0, hint)
 }
 

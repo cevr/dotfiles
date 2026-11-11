@@ -631,6 +631,51 @@ idle nudge above is its own. The rules are in `skill-drift.ts`, the handler
 `SkillDrifts` in `model.ts`, over the contracts `Skill` (`git/skill.ts`),
 `RunRecords` (`filestore/run-records.ts`) and `Tell` (`opencode/steer.ts`).
 
+### The batch machine, kept and enforced
+
+The audit of 2026-11-11 found roots that drifted from the skill's machine
+after compactions (a verifier per unit, a land of the one unit that just
+handed back) while their summaries still quoted the rule. So the plugin keeps
+each root's machine itself, from the calls it already sees, and refuses a
+call against it at the point of action (`mods/orchestrate/machine.ts`).
+
+- **The ledger.** One JSONL line per event or refusal, `{ at, sessionID,
+  kind, ... }`, in `~/.cache/orchestrate/machine.jsonl` (option `ledger`): a
+  role's start (`<role> <unit> r<N>`), its hand-back (on its idle), its
+  session once known, a `rift` land and what it landed green. A root's state
+  is the fold of its lines, read back after a restart. No run dir is needed:
+  a root is held to the machine once it starts `implementor <unit> rN` agents;
+  a root that runs no unit is left alone.
+- **The five rules**, each refused in the skill's own words (held to SKILL.md
+  by `git/machine-words.test.ts`) with what to do instead: a verifier not
+  named `batch-<k>` (VerifierPerUnit), a second verifier while one runs
+  (VerifierRunning), a land or a verifier before the cadence while an
+  implementor still runs (BatchNotDue), a land that leaves a ready unit out
+  (LandPartial), a land while an earlier batch has no verifier
+  (BatchUnverified). A refused call starts, latches and counts nothing.
+- **Departures.** The same call passes with `(departs: <why>)` at the end of
+  a role call's description, or `departs: "<why>"` in a land's input; the
+  ledger records a `Departed` line per rule it broke.
+- **Dead steps hold nothing.** Before a verifier start or a land, each
+  implementor or verifier whose session neither runs a turn, nor is latched,
+  nor keeps background work of its own (as its last idle listed it), and
+  whose call is not in flight, is handed back as `none`.
+- **Notes.** A planner's or implementor's start answers first with a due
+  batch, a landed batch with no verifier, or a fourth round.
+- **The brief.** When a root's compaction ends, it gets one steered message
+  (`resume: false`, so it starts no turn; mark
+  `dotfiles-opencode.orchestrate.brief`, so it is no new input to the idle
+  nudge): SKILL.md's "The machine" section (agents.json `machine`, written by
+  `bun run agents`), its run from the ledger, and the re-read.
+- **Options.** `cadence: { ready, waitMs }` (default 3 and 30 minutes) and
+  `guard`: `refuse` (default) or `warn`, under which a call against the
+  machine passes, its answer carries the rule's words, and the ledger records
+  the departure.
+
+`tests/orchestrate-machine.test.ts` drives it in real OpenCode: a root that
+compacts mid-run and then drifts is refused twice and still lands one batch
+and starts one verifier.
+
 ## Pool
 
 `mods/pool` pools a provider's OAuth logins; its plugin is `cmd/pool`. It chooses the login each

@@ -697,6 +697,24 @@ describe("one copy per location", () => {
       }),
     ))
 
+  test("a turn that settles before the copies' first look keeps its one decision: the look is for sessions idle before they started", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        const bus = yield* PubSub.unbounded<HostEvent>()
+        const work = yield* start(state, {}, { directory: "/work", bus })
+        yield* start(state, {}, { directory: "/a", bus })
+        // As on a loaded host: the turn ends within the first look's settle.
+        yield* work.turn("ses_1", {}, { streams: 1_000 })
+        yield* work.until(4 * MINUTE)
+        expect(state.compactions).toEqual(["ses_1"])
+        expect(decisions("ses_1")).toEqual([
+          ["idle-compact: compaction scheduled", "settled"],
+          ["idle-compact: compacting the idle session before its cache expires", "timer"],
+        ])
+      }),
+    ))
+
   test("a session of a location with no copy is no copy's to decide", () =>
     onTestClock(
       Effect.gen(function* () {

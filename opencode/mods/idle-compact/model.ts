@@ -258,6 +258,10 @@ export const layer = (policy: Policy) =>
         forget: drop,
         resume: (trigger) =>
           sessions.recent.pipe(
+            // The start's look is for sessions idle before the plugin ran. One this copy has seen since (a request,
+            // a wake, a settle) has had or will get its own decision, on fresher facts: on a loaded host the look,
+            // held back by the catalog's settle, comes after a turn's end and would decide its idle window twice.
+            Effect.map((ids) => (trigger === "resume" ? ids.filter((sessionID) => !watches.has(sessionID)) : ids)),
             Effect.flatMap((ids) => Effect.forEach(ids, (sessionID) => decide(sessionID, trigger), { discard: true })),
             Effect.catchTag("SessionUnreadable", (error) =>
               Effect.logInfo("idle-compact: cannot list the sessions").pipe(Effect.annotateLogs({ trigger, error: error.message })),

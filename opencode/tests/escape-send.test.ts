@@ -56,8 +56,8 @@ describe.skipIf(!fork).each(["ctrl", "leader"])("%s chord interrupts a turn stuc
     expect(before).toMatch(/[●○] Running sleep 600/)
     expect(before).toContain(`◌ after the turn · ${LATER}`)
     expect(before).toContain(` ┃ ${DRAFT}`)
-    // No standing Ctrl+O hint beside it; the right end is the update notice's, here the machine's own upstream reading.
-    expect(before).toMatch(/^ Ctrl\+Enter interrupt and send(?: {2,}upstream \+\d+(?: · merge blocked)?)?$/m)
+    // The hint stands alone on its line: no standing Ctrl+O hint, and no update notice in the scenario's scratch state.
+    expect(before).toMatch(/^ Ctrl\+Enter interrupt and send$/m)
     expect(before).not.toContain("Ctrl+O to")
   })
 

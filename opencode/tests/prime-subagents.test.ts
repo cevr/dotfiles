@@ -26,7 +26,15 @@ const INSIDE = "↑ back to parent · ←/→ other subagents"
 
 /** The worker whose session a frame shows, by its top bar. */
 const shown = (frame: ReadonlyArray<string>) => WORKERS.find((worker) => frame[0]?.includes(`${PARENT} › ${worker.title}`))
-const hint = (frame: ReadonlyArray<string>) => frame.find((line) => line.includes("mode (Ctrl+O"))?.trim()
+/**
+ * Prime's hint line, trimmed: the row above the composer's rail (the frame's
+ * last run of ` ┃` rows) and the subagent rows over it (`› ◇ general gpt …`).
+ */
+const hint = (frame: ReadonlyArray<string>) => {
+  let at = frame.findLastIndex((line) => line.startsWith(" ┃"))
+  while (at > 0 && /^ (?:┃|[› ] [◇◆] )/.test(frame[at - 1] ?? "")) at--
+  return frame[at - 1]?.trim()
+}
 
 /** A subagent's frame reads like the main session's: its brief, its own steps, its loader, the way back. */
 function expectSubagent(frame: ReadonlyArray<string>, worker: (typeof WORKERS)[number]) {

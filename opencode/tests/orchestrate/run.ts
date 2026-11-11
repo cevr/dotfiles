@@ -18,15 +18,20 @@
  *   then OpenCode shuts down while the first waits, and starts again on the
  *   same database. The run ends once the first root's child answered after
  *   the plugin resumed it, or after a minute.
+ * - `machine`: the root runs the sim's machine task (three implementors, a
+ *   compaction, a refused verifier and land, the batch's land and verifier),
+ *   with a fixture `rift` tool written beside the fake pace plugin and the
+ *   plugin's ledger in the scratch dir; the result carries the lands, the
+ *   root's children, its ledger lines and its own requests.
  *
  * @module
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { ESCAPE_TASK, RESTART_TASK, ROOT_TASK, serve, UNITS_TASK } from "./sim.ts"
+import { ESCAPE_TASK, isMachineRoot, MACHINE_TASK, machineTokens, RESTART_TASK, ROOT_TASK, serve, UNITS_TASK } from "./sim.ts"
 
 export interface Spec {
-  readonly scenario: "subagents" | "compaction" | "units" | "restart"
+  readonly scenario: "subagents" | "compaction" | "units" | "restart" | "machine"
   readonly base: string
   readonly fork: string
   readonly plugin: string
@@ -59,6 +64,18 @@ export interface Result {
   readonly unitLog?: ReadonlyArray<string>
 }
 
+/** What the `machine` scenario adds (tests/orchestrate-machine.test.ts). */
+export interface MachineResult extends Result {
+  /** The `rifts` of each land the fixture rift tool ran, in order. */
+  readonly riftLands: ReadonlyArray<ReadonlyArray<string>>
+  /** Each child of the root, in the order made: its agent and its call's description. */
+  readonly steps: ReadonlyArray<{ readonly agent: string; readonly description: string }>
+  /** The ledger's lines for the root. */
+  readonly ledger: ReadonlyArray<Record<string, unknown>>
+  /** The root's own model requests in order, its summary request among them. */
+  readonly rootRequests: ReadonlyArray<{ readonly last: string; readonly messages: ReadonlyArray<unknown> }>
+}
+
 const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
 const work = join(spec.base, "work")
 const config = join(spec.base, "config")
@@ -67,7 +84,40 @@ mkdirSync(work, { recursive: true })
 mkdirSync(config, { recursive: true })
 
 const tokens = spec.promptTokens
-const sim = serve(typeof tokens === "object" ? (task) => tokens[task.split(":")[0]!] ?? 100 : tokens)
+const sim = serve(spec.scenario === "machine" ? machineTokens : typeof tokens === "object" ? (task) => tokens[task.split(":")[0]!] ?? 100 : tokens)
+// The machine run's `rift` tool: a fixture that only records each land's Rifts and answers as a pushed land does.
+const riftPlugin = join(spec.base, "fake-rift")
+const riftLog = join(spec.base, "rift-lands.jsonl")
+const ledgerFile = join(spec.base, "machine.jsonl")
+if (spec.scenario === "machine") {
+  mkdirSync(riftPlugin, { recursive: true })
+  writeFileSync(join(riftPlugin, "package.json"), JSON.stringify({ type: "module", exports: { "./server": "./server.js" } }))
+  writeFileSync(
+    join(riftPlugin, "server.js"),
+    [
+      'import { appendFileSync } from "node:fs"',
+      "export default {",
+      '  id: "fixture.rift",',
+      "  async setup(ctx) {",
+      "    await ctx.tool.transform((editor) =>",
+      "      editor.add({",
+      '        name: "rift",',
+      '        description: "Lands Rifts as one batch: rift({ action: \\"land\\", rifts: [...] }).",',
+      '        input: { type: "object", properties: { action: { type: "string" }, rifts: { type: "array", items: { type: "string" } }, departs: { type: "string" } }, required: ["action"] },',
+      "        options: { codemode: false },",
+      "        execute: async (input) => {",
+      `          appendFileSync(${JSON.stringify(riftLog)}, JSON.stringify(input.rifts ?? []) + "\\n")`,
+      "          const rifts = input.rifts ?? []",
+      '          return { content: [{ type: "text", text: `Landed ${rifts.length} Rift(s) as one push: ${rifts.join(", ")}.` }], metadata: { action: "land" } }',
+      "        },",
+      "      }),",
+      "    )",
+      "  },",
+      "}",
+      "",
+    ].join("\n"),
+  )
+}
 const pacePlugin = join(spec.base, "fake-pace")
 if (spec.pace !== undefined) {
   mkdirSync(pacePlugin, { recursive: true })
@@ -110,9 +160,11 @@ const content = {
         unitLog: join(spec.plugin, "../../../skills/orchestrate/scripts/log.ts"),
         ...codexOption,
         ...(spec.resumeBackoffMs === undefined ? {} : { resume: { backoffMs: spec.resumeBackoffMs } }),
+        ...(spec.scenario === "machine" ? { ledger: ledgerFile } : {}),
       },
     },
     ...(spec.pace !== undefined ? [{ package: pacePlugin }] : []),
+    ...(spec.scenario === "machine" ? [{ package: riftPlugin }] : []),
   ],
 }
 
@@ -121,6 +173,8 @@ interface SessionInfo {
   readonly id: string
   readonly parentID?: string
   readonly agent?: string
+  readonly title?: string
+  readonly time?: { readonly created?: unknown }
   readonly model?: Child["model"]
 }
 interface Embedded {
@@ -207,6 +261,37 @@ try {
       sessions[name] = { messages: await messages(id) }
     const children = [...(await childrenOf(root.id)), ...(await childrenOf(escaped.id))].map((id) => ({ id }))
     result = { children, sessions, seen: sim.seen, log: [] }
+  } else if (spec.scenario === "machine") {
+    const root = await opencode.sessions.create({ location })
+    await turn(root.id, MACHINE_TASK)
+    // The verifier's hand-back reaches the ledger on its idle, just after the root's call returns.
+    const page = await opencode.sessions.list({ parentID: root.id, directory: work })
+    const children = await Promise.all(page.data.map((item) => opencode.sessions.get({ sessionID: item.id })))
+    const created = (child: SessionInfo) => {
+      const at = child.time?.created
+      return typeof at === "number" ? at : Date.parse(String(at))
+    }
+    const lines = (file: string) => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter((line) => line !== "") : [])
+    const machine: MachineResult = {
+      root: { id: root.id, messages: await messages(root.id) },
+      children: children.map((child) => ({ id: child.id, ...(child.agent ? { agent: child.agent } : {}) })),
+      sessions: {},
+      seen: sim.seen,
+      log: [],
+      riftLands: lines(riftLog).map((line) => JSON.parse(line) as ReadonlyArray<string>),
+      steps: [...children].sort((a, b) => created(a) - created(b)).map((child) => ({ agent: child.agent ?? "", description: child.title ?? "" })),
+      ledger: lines(ledgerFile)
+        .flatMap((line) => {
+          try {
+            return [JSON.parse(line) as Record<string, unknown>]
+          } catch {
+            return []
+          }
+        })
+        .filter((line) => line.sessionID === root.id),
+      rootRequests: sim.seen.filter(isMachineRoot).map((seen) => ({ last: seen.last, messages: seen.messages })),
+    }
+    result = machine
   } else if (spec.scenario === "subagents") {
     const root = await opencode.sessions.create({ location, ...(spec.rootModel ? { model: spec.rootModel } : {}) })
     await turn(root.id, ROOT_TASK)

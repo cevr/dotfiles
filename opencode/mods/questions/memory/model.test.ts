@@ -7,7 +7,7 @@ import * as MemoryStore from "./store.ts"
 import * as Model from "../model.ts"
 import { QuestionsModel } from "../model.ts"
 import { AskFor, type Sheet } from "../question.ts"
-import { Changes, Courier } from "../service.ts"
+import { Changes, Courier, QuestionStore } from "../service.ts"
 
 /** The model over `sheets` and `sessions`, as one server would build it; `onDeliver` runs as a message goes. */
 const rig = (sheets = MemoryStore.empty(), sessions = MemoryCourier.empty("ses_a"), onDeliver: (sessionID: string) => void = () => {}) => {
@@ -384,5 +384,30 @@ describe("QuestionsModel", () => {
     await run((model) => model.forget("ses_a"))
     expect(sheets.sheets.has("ses_a")).toBe(false)
     expect(changed).toEqual(["ses_a", "ses_a"])
+  })
+
+  test("reading a large family's questions reads only the sheets of the sessions that asked", async () => {
+    const { run, sheets } = rig()
+    await run((model) => model.ask("ses_a", { questions: [port] }))
+    const reads: Array<string> = []
+    const counted = Layer.effect(
+      QuestionStore,
+      Effect.gen(function* () {
+        const inner = yield* QuestionStore
+        return {
+          ...inner,
+          read: (sessionID: string) => Effect.sync(() => void reads.push(sessionID)).pipe(Effect.andThen(inner.read(sessionID))),
+        }
+      }),
+    ).pipe(Layer.provide(MemoryStore.layer(sheets)))
+    const layer = Model.layer.pipe(
+      Layer.provide(counted),
+      Layer.provide(MemoryCourier.layer(MemoryCourier.empty("ses_a"))),
+      Layer.provide(Layer.succeed(Changes, { changed: () => Effect.void })),
+    )
+    const family = ["ses_a", ...Array.from({ length: 500 }, (_, at) => `ses_child_${at}`)]
+    const open = await Effect.runPromise(QuestionsModel.use((model) => model.open(family)).pipe(Effect.provide(layer)))
+    expect(open.map((question) => question.id)).toEqual(["q1"])
+    expect(reads).toEqual(["ses_a"])
   })
 })

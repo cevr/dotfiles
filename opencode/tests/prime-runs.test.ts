@@ -19,11 +19,18 @@ const names = ["running", "details", "all", "overview"] as const
 const frames: Record<(typeof names)[number], ReadonlyArray<string>> = { running: [], details: [], all: [], overview: [] }
 const files = { running: "runs-running", details: "runs", all: "runs-all", overview: "runs-overview" }
 
-/** The frame's transcript from the prompt on, with the blank rows dropped. */
+/** The hint line's index: the row right above the composer's rail, the frame's last run of ` ┃` rows. */
+function hintAt(frame: ReadonlyArray<string>) {
+  let at = frame.findLastIndex((line) => line.startsWith(" ┃"))
+  while (at > 0 && frame[at - 1]?.startsWith(" ┃")) at--
+  return at - 1
+}
+
+/** The frame's transcript from the prompt on, up to Prime's hint line, with the blank rows dropped. */
 function transcript(frame: ReadonlyArray<string>): ReadonlyArray<string> {
   const start = frame.findIndex((line) => line.includes("┃ Check the build"))
-  const end = frame.findIndex((line, index) => index > start && /mode \(Ctrl\+O/.test(line))
-  return frame.slice(start, end < 0 ? undefined : end).filter((line) => line.trim() !== "")
+  const end = hintAt(frame)
+  return frame.slice(start, end > start ? end : undefined).filter((line) => line.trim() !== "")
 }
 
 /** A row's exact line; `<t>` stands for a duration such as `12ms` or `6.0s`. */

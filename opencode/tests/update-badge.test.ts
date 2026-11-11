@@ -173,7 +173,7 @@ describe.skipIf(!fork)("the update notice", () => {
 
   /** What `bun run daily` writes for the TUI's corner: `commits` of upstream/dev past the build, the merge `blocked` or not. */
   const writeUpstream = (commits: number, blocked: boolean) => {
-    const file = upstreamFile(home)
+    const file = upstreamFile(home, env.XDG_STATE_HOME)
     mkdirSync(dirname(file), { recursive: true })
     writeFileSync(file, JSON.stringify({ commits, blocked, upstream: "72616be4dbe772dc645640b5623cb3d6f4453bd3", build: "314c9607bf6ca4254f1a7b478a8d5deb15c3b910", at: new Date().toISOString() }))
   }
