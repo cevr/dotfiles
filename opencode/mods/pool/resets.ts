@@ -28,12 +28,15 @@
 //   expiring claim is keyed by account, window and period, not credit or
 //   pool, so a window period takes one. `Review.auto: false` (the owner's
 //   kill switch) claims nothing no one asked for.
-// - The model, the send: one claim at a time per provider in the process,
-//   each judged again on a reading taken right before it (`staleReason`):
-//   the provider is the authority, so a claim made since from any pool or
-//   host shows there, and what no longer pays is recorded unsent.
-// - The fleet: only one host, the claimer, sends claims; the others offer,
-//   and forward a yes to it (`ForwardedClaim`).
+// - The model, the send: one claim at a time per provider on the host, each
+//   judged again on a reading taken right before it (`staleReason`): the
+//   provider is the authority, so a claim made since from any pool or host
+//   shows there, and what no longer pays is recorded unsent.
+// - The fleet: no host is the master. Before a claim, a host asks each peer
+//   it reaches for the account's lease (lease.ts); a peer that does not
+//   answer in time is passed over on a fresh reading, as a fallback the
+//   claim's record names. Two hosts that both claim one account's reset for
+//   one period send one request id (`claimRequestID`).
 // - Demand: a reset gives use back but keeps the weekly reset date, so it is
 //   worth most early in the week. When a start waits, or several are in
 //   flight across the fleet (`demandOf`),
@@ -132,7 +135,7 @@ export const Reset = Schema.Struct({
   /** The account's name as its store lists it, never a secret. */
   label: Schema.String,
   creditID: Schema.String,
-  /** The claim's idempotency key, from the hold's key. */
+  /** The claim's idempotency key (`claimRequestID`): the account, the kind and its period, the same on every host. */
   requestID: Schema.String,
   why: ResetWhy,
   stage: Stage,
@@ -175,6 +178,8 @@ export const Claim = Schema.Struct({
   before: Schema.Array(QuotaWindow),
   after: Schema.optionalKey(Schema.Array(QuotaWindow)),
   weekly: WeeklyMove,
+  /** How the fleet agreed to it (lease.ts): the peers that granted the lease, or the fallback taken when some did not answer. */
+  lease: Schema.optionalKey(Schema.String),
 })
 export type Claim = typeof Claim.Type
 
@@ -412,6 +417,37 @@ const fnv = (text: string) => {
  */
 export const requestIdOf = (key: string) => `pool-${fnv(key)}${fnv(`${key}#`)}${fnv(`#${key}`)}`
 
+/**
+ * The provider account a reading is of, as every host that reads it names
+ * it: the ids of the resets it lists (usable or spent), which the provider
+ * gives that account alone. A login's id is the host's; these are the
+ * provider's. Empty when the reading lists none: no claim is made then.
+ */
+export const grantsOf = (account: Pick<AccountStatus, "reading">): ReadonlyArray<string> =>
+  [...new Set((account.reading?.resets?.credits ?? []).map((credit) => credit.id))].toSorted()
+
+/**
+ * A claim's request id, the provider's idempotency key, from what every host
+ * reading the account sees alike: the account (`grantsOf`, its first id),
+ * the reset's kind, the period it serves (the 5-hour window's for a 5-hour
+ * reset, the hold's for a Codex credit, else the week) and how many resets of
+ * the kind are left. Never the window a host ranked first, the grant it
+ * picked, the pool or the host: two hosts that both claim one account's reset
+ * for one period send one id, and a provider that keys on it spends one.
+ * The resets left set apart a second claim of the kind in the period once
+ * the first shows in a reading. A claim sent again keeps the id it was
+ * decided with (`Reset.requestID`).
+ */
+export const claimRequestID = (provider: ResetProvider, account: AccountStatus, credit: ResetCredit, now: number): string => {
+  const kind = kindOf(provider, credit)
+  const windowOf = (name: string) => account.reading?.windows.find((window) => window.name === name && accountWide(window))?.resetAt
+  const period = (kind === "session" ? windowOf("5h") : provider === "codex" ? spentUntil(account, now) : undefined) ?? windowOf("7d") ?? credit.expiresAt ?? 0
+  const left = usableCredits(account, now)
+    .filter((item) => kindOf(provider, item) === kind)
+    .reduce((total, item) => total + item.count, 0)
+  return requestIdOf(`${provider}:${grantsOf(account)[0] ?? account.credentialID}:${kind}:${Math.floor(period / KEY_BUCKET_MS)}:${left}`)
+}
+
 // ── The question a Claude reset asks ──
 
 const dayOf = (at: number) => new Date(at).toISOString().slice(0, 10)
@@ -506,40 +542,12 @@ export const SettleClaim = Schema.TaggedStruct("SettleClaim", {
   message: Schema.optionalKey(Schema.String),
   before: Schema.Array(QuotaWindow),
   after: Schema.optionalKey(Schema.Array(QuotaWindow)),
+  /** How the fleet agreed to the claim (`Claim.lease`). */
+  lease: Schema.optionalKey(Schema.String),
 })
 export interface SettleClaim extends Schema.Schema.Type<typeof SettleClaim> {}
 
-/**
- * A claim another host of the fleet sends this one, the fleet's claimer: the
- * owner said yes there. Its key and request id are the asking host's, so the
- * same yes sent again is the same claim; the account is named by the reset it
- * spends (`creditID`), which only that account lists, and the claimer finds
- * it among its own logins.
- */
-export const ForwardedClaim = Schema.Struct({
-  host: Schema.String,
-  key: Schema.String,
-  provider: ResetProvider,
-  creditID: Schema.String,
-  requestID: Schema.String,
-  why: ResetWhy,
-  label: Schema.String,
-})
-export type ForwardedClaim = typeof ForwardedClaim.Type
-
-/** The key a forwarded claim is worked under on the claimer. */
-export const forwardedKey = (claim: Pick<ForwardedClaim, "host" | "key">) => `forwarded:${claim.host}:${claim.key}`
-
-/** Work a forwarded claim on the account `credentialID` of `pool`, the one whose reading lists its reset. */
-export const TakeForwarded = Schema.TaggedStruct("TakeForwarded", {
-  claim: ForwardedClaim,
-  pool: Schema.String,
-  credentialID: Schema.String,
-  label: Schema.String,
-})
-export interface TakeForwarded extends Schema.Schema.Type<typeof TakeForwarded> {}
-
-export type Command = NoteWait | Review | TakeAnswer | SettleClaim | TakeForwarded
+export type Command = NoteWait | Review | TakeAnswer | SettleClaim
 
 export const WaitNoted = Schema.TaggedStruct("WaitNoted", { pool: Schema.String, wait: Wait })
 export interface WaitNoted extends Schema.Schema.Type<typeof WaitNoted> {}
@@ -690,7 +698,7 @@ const resetOf = (
   credentialID: account.credentialID,
   label: view.labels[account.credentialID] ?? account.credentialID,
   creditID: credit.id,
-  requestID: requestIdOf(key),
+  requestID: claimRequestID(view.provider, account, credit, now),
   why,
   stage,
   at: now,
@@ -1128,6 +1136,7 @@ const settleClaim = (state: ResetsState, command: SettleClaim, now: number): Rea
     before: command.before,
     ...(command.after === undefined ? {} : { after: command.after }),
     weekly: weeklyMove(command.before, command.after),
+    ...(command.lease === undefined ? {} : { lease: command.lease }),
   }
   const settled = ClaimSettled.make({ claim, stage: retryable(command.outcome) ? "failed" : "settled" })
   if (reset.why !== "expiring" || (command.outcome !== "reset" && command.outcome !== "already-redeemed")) return [settled]
@@ -1138,34 +1147,6 @@ const settleClaim = (state: ResetsState, command: SettleClaim, now: number): Rea
   const kind = reset.kind === undefined ? "reset" : KIND_LABEL[reset.kind]
   const text = `The pool claimed the ${kind} on account ${reset.label} before it expired unused${reset.buys === undefined ? "" : `: it gave back ${reset.buys}`}.`
   return [settled, OwnerTold.make({ key: reset.key, at: now, text, ...(newest?.sessionID === undefined ? {} : { sessionID: newest.sessionID }) })]
-}
-
-/**
- * A forwarded claim is sent once, under the asking host's request id: again
- * only once it came back failed or was lost in flight past RETRY_MS (the
- * asking host sends it again then), never once settled.
- */
-const takeForwarded = (state: ResetsState, command: TakeForwarded, now: number): ReadonlyArray<Event> => {
-  const key = forwardedKey(command.claim)
-  const held = state.resets[key]
-  if (held !== undefined && (held.stage === "settled" || (held.stage === "claiming" && now - held.at < RETRY_MS) || held.attempts >= MAX_ATTEMPTS)) return []
-  return [
-    ClaimDue.make({
-      reset: {
-        key,
-        pool: command.pool,
-        provider: command.claim.provider,
-        credentialID: command.credentialID,
-        label: command.label,
-        creditID: command.claim.creditID,
-        requestID: command.claim.requestID,
-        why: command.claim.why,
-        stage: "claiming",
-        at: now,
-        attempts: held?.attempts ?? 0,
-      },
-    }),
-  ]
 }
 
 /**
@@ -1201,8 +1182,6 @@ export const Resets: Decider<ResetsState, Command, Event> = {
         return Effect.succeed(takeAnswer(state, command, now))
       case "SettleClaim":
         return Effect.succeed(settleClaim(state, command, now))
-      case "TakeForwarded":
-        return Effect.succeed(takeForwarded(state, command, now))
     }
   },
   evolve: (state, event) => evolve(state, event),

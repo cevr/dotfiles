@@ -19,7 +19,7 @@ import {
   MAX_ATTEMPTS,
   NoteWait,
   type PoolView,
-  requestIdOf,
+  claimRequestID,
   Resets,
   type ResetsState,
   RETRY_MS,
@@ -123,7 +123,7 @@ const spentCodex = (credits: ReadonlyArray<ResetCredit>) => [
 ]
 
 describe("Codex", () => {
-  test("every account held and a start waiting: the soonest-expiring credit is claimed, under a request id from the hold", () => {
+  test("every account held and a start waiting: the soonest-expiring credit is claimed, under a request id from the account, kind and hold", () => {
     const credits = [codexCredit("late", 22 * DAY), codexCredit("soon", 21 * DAY)]
     const { events } = run([
       [T0, NoteWait.make({ pool: "openai", sessionID: "ses_root" })],
@@ -137,12 +137,12 @@ describe("Codex", () => {
       key,
       credentialID: "codex-a",
       creditID: "soon",
-      requestID: requestIdOf(key),
+      requestID: claimRequestID("codex", spentCodex(credits)[0]!, credits[1]!, T0 + MINUTE),
       why: "held",
       stage: "claiming",
       label: "codex codex-a",
     })
-    expect(requestIdOf(key)).toMatch(/^[A-Za-z0-9_-]{1,64}$/)
+    expect(due.reset.requestID).toMatch(/^[A-Za-z0-9_-]{1,64}$/)
   })
 
   test("an account with room, or no start waiting, claims nothing", () => {
@@ -213,11 +213,13 @@ describe("Codex", () => {
   test("a claim that did not go through goes again as the same claim after RETRY_MS, at most MAX_ATTEMPTS times", () => {
     const view = codex(spentCodex([codexCredit("soon", 21 * DAY)]))
     const key = holdKey("codex", "openai", "codex-a", T0 + 2 * HOUR)
-    let state = run([
+    const first = run([
       [T0, NoteWait.make({ pool: "openai" })],
       [T0, Review.make({ pools: [view] })],
       [T0, SettleClaim.make({ key, outcome: "failed", message: "timeout", before: [] })],
-    ]).state
+    ])
+    const requestID = first.events.flatMap((event) => (event._tag === "ClaimDue" ? [event.reset.requestID] : []))[0]
+    let state = first.state
     expect(state.resets[key]).toMatchObject({ stage: "failed", attempts: 1 })
     expect(run([[T0 + RETRY_MS - 1, Review.make({ pools: [view] })]], state).events).toEqual([])
     for (let attempt = 2; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -230,7 +232,7 @@ describe("Codex", () => {
         state,
       )
       expect(tags(retried.events)).toEqual(["ClaimDue", "ClaimSettled"])
-      expect(retried.events[0]).toMatchObject({ reset: { requestID: requestIdOf(key) } })
+      expect(retried.events[0]).toMatchObject({ reset: { requestID } })
       state = retried.state
     }
     expect(run([[T0 + 10 * RETRY_MS, Review.make({ pools: [view] })]], state).events).toEqual([])
@@ -290,7 +292,7 @@ describe("Claude", () => {
     expect(asked.reset.question).toContain("its weekly window is spent too and the grant clears five_hour, seven_day_overage_included, not seven_day: it may not lift the hold")
   })
 
-  test("a yes claims under the hold's request id; a no, or a dismissal, declines and never asks again for that hold", () => {
+  test("a yes claims under the request id the question was asked with; a no, or a dismissal, declines and never asks again for that hold", () => {
     const start = run([
       [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
       [T0, Review.make({ pools: [claude(held)] })],
@@ -298,7 +300,7 @@ describe("Claude", () => {
     const key = holdKey("claude", "anthropic", "cred-4", T0 + 2 * HOUR)
     const yes = run([[T0 + MINUTE, TakeAnswer.make({ key, answer: "Claim it" })]], start.state)
     expect(yes.events).toHaveLength(1)
-    expect(yes.events[0]).toMatchObject({ _tag: "ClaimDue", reset: { key, requestID: requestIdOf(key), stage: "claiming", attempts: 0 } })
+    expect(yes.events[0]).toMatchObject({ _tag: "ClaimDue", reset: { key, requestID: start.state.resets[key]!.requestID, stage: "claiming", attempts: 0 } })
     expect(yes.state.resets[key]?.attempts).toBe(1)
     expect(run([[T0 + 2 * MINUTE, TakeAnswer.make({ key, answer: "Claim it" })]], yes.state).events).toEqual([])
     for (const answer of [KEEP_ANSWER, `${ASSUME} (note: later)`, undefined]) {

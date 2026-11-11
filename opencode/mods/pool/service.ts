@@ -8,7 +8,8 @@ import type { StoreRefreshes } from "./alerts.ts"
 import type { Event as FleetEvent, FleetState } from "./fleet.ts"
 import type { LimitsReport, Tally, Use } from "./limits.ts"
 import type { ClaimAnswer, QuotaReading } from "./quota.ts"
-import type { ForwardedClaim, Event as ResetsEvent, ResetsState } from "./resets.ts"
+import type { LeaseAnswer, LeaseMessage } from "./lease.ts"
+import type { Event as ResetsEvent, ResetsState } from "./resets.ts"
 import type { Report, SourceStatus } from "./status.ts"
 
 /**
@@ -112,11 +113,10 @@ export class Peers extends Context.Service<
     readonly names: ReadonlyArray<string>
     readonly report: (peer: string) => Effect.Effect<Report, PeerUnreachable>
     /**
-     * Have the peer, the fleet's claimer, work a claim the owner said yes to
-     * here (its pool's `claimFor`), and answer what it came to. Only the
-     * claimer spends a reset, so two hosts never spend one account twice.
+     * Ask the peer for an account's claim lease, or release one (lease.ts),
+     * through its pool's `lease`: its answer. The caller bounds the wait.
      */
-    readonly claim: (peer: string, claim: ForwardedClaim) => Effect.Effect<ClaimAnswer, PeerUnreachable>
+    readonly lease: (peer: string, message: LeaseMessage) => Effect.Effect<LeaseAnswer, PeerUnreachable>
   }
 >()("dotfiles-opencode/pool/Peers") {}
 

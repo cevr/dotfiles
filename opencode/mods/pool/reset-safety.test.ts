@@ -182,10 +182,11 @@ describe("B1: one claim at a time per account", () => {
     expect(claimsOf(review([spent(T0 + HOUR)], T0 + HOUR, settled.state).events)).toEqual([])
   })
 
-  test("the key and the request id name the account, the window and its period, not the grant", () => {
-    const one = claimsOf(review([account([window("7d", 1, T0 + 3 * DAY)], [grant("g1", T0 + 2 * HOUR, WEEKLY)])]).events)[0]!
-    const other = claimsOf(review([account([window("7d", 1, T0 + 3 * DAY)], [grant("g2", T0 + 2 * HOUR, WEEKLY)])]).events)[0]!
+  test("the key names the account, the window and its period, and the request id the account, the kind and its period: not the grant a host picked", () => {
+    const one = claimsOf(review([account([window("7d", 1, T0 + 3 * DAY)], [grant("g1", T0 + 2 * HOUR, WEEKLY), grant("g2", T0 + 3 * HOUR, WEEKLY)])]).events)[0]!
+    const other = claimsOf(review([account([window("7d", 1, T0 + 3 * DAY)], [grant("g1", T0 + 3 * HOUR, WEEKLY), grant("g2", T0 + 2 * HOUR, WEEKLY)])]).events)[0]!
     expect(one.key).toBe(expiringKey("claude", "a", "7d", T0 + 3 * DAY))
+    expect([one.creditID, other.creditID]).toEqual(["g1", "g2"])
     expect(other.key).toBe(one.key)
     expect(other.requestID).toBe(one.requestID)
     // A restart keeps it: the state round-trips through JSON and the retry is the same claim.
@@ -273,6 +274,24 @@ describe("B1 across pools and hosts: an account is its login, and a claim is jud
     expect(other.events.filter((event) => event._tag === "AskWithdrawn")).toMatchObject([{ key: ask.key }])
     const yes = run([[T0 + 2, TakeAnswer.make({ key: ask.key, answer: "Claim it" })]], other.state)
     expect(claimsOf(yes.events)).toEqual([])
+  })
+
+  test("two hosts reading one account apart (windows ranked otherwise, grants listed in another order) that both claim send one request id, per kind", () => {
+    const expiresAt = T0 + 2 * HOUR
+    const grids = [0.2, 0.8, 1].flatMap((five) => [0.8, 1].map((seven) => [five, seven] as const))
+    for (const grants of [
+      [grant("g1", expiresAt, FULL), grant("g2", expiresAt, FULL)],
+      [grant("g1", expiresAt, SESSION), grant("g2", expiresAt, WEEKLY), grant("g3", expiresAt, FULL)],
+    ])
+      for (const [leftFive, leftSeven] of grids)
+        for (const [rightFive, rightSeven] of grids) {
+          const read = (five: number, seven: number, credits: ReadonlyArray<ResetCredit>) =>
+            account([window("5h", five, T0 + 4 * HOUR), window("7d", seven, T0 + 3 * DAY)], credits)
+          const decided = [read(leftFive, leftSeven, grants), read(rightFive, rightSeven, grants.toReversed())].flatMap((host) => claimsOf(review([host]).events))
+          const byKind = new Map<string, Set<string>>()
+          for (const reset of decided) byKind.set(reset.kind ?? "", (byKind.get(reset.kind ?? "") ?? new Set()).add(reset.requestID))
+          for (const [kind, ids] of byKind) expect(ids.size, `${kind}: left ${leftFive}/${leftSeven}, right ${rightFive}/${rightSeven}`).toBe(1)
+        }
   })
 
   test("decided on divergent host readings, sent one after the other, each judged again on the provider's reading: no grant spent for nothing, and full grants spend one", () => {

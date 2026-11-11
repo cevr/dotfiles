@@ -27,7 +27,7 @@ import type { PublishedReading } from "@dotfiles/opencode-pool/service"
 import { GentSource } from "@dotfiles/opencode-pool/gent/store"
 import type { Alerts, FleetStatus, PoolsStatus, Report, ResetsStatus, SessionAnswer, SessionLogins } from "@dotfiles/opencode-pool/status"
 import { spentAccount, startFakeChatGPT } from "../../tests/fake-chatgpt.ts"
-import Pool, { CACHE_TTL_HEADER, CLAIMER, claimerOf, CREDENTIAL_HEADER, live, make } from "./server.ts"
+import Pool, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, live, make } from "./server.ts"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -1512,26 +1512,24 @@ describe("resets on the live adapters", () => {
     ))
 })
 
-describe("the fleet's claimer", () => {
-  const fleet = (host: string, peers: ReadonlyArray<{ readonly name: string; readonly ssh: string }>, claimer = CLAIMER) => ({
-    host,
-    peers,
-    pollSeconds: 30,
-    settleMinutes: 10,
-    startCost: 0.005,
-    claimer,
-  })
-
-  test("as the install sets the fleet up (scripts/daily.ts FLEET): the Mac claims, the workbox forwards to its Mac peer", () => {
-    expect(claimerOf(fleet("Cristians-MacBook-Pro.local", [{ name: "workbox", ssh: "bite-workbox" }]))).toEqual({ here: true })
-    expect(claimerOf(fleet("bite-cristian", [{ name: "macbook", ssh: "cvr@cristians-macbook-pro" }]))).toEqual({ here: false, peer: "macbook" })
-  })
-
-  test("a host with no peers is its own claimer; one whose peers name no claimer forwards nowhere", () => {
-    expect(claimerOf(fleet("bite-cristian", []))).toEqual({ here: true })
-    expect(claimerOf(fleet("bite-cristian", [{ name: "other", ssh: "other-host" }]))).toEqual({ here: false, peer: undefined })
-    expect(claimerOf(fleet("bite-cristian", [{ name: "other", ssh: "other-host" }], "other"))).toEqual({ here: false, peer: "other" })
-  })
+describe("the lease RPC", () => {
+  test("a peer's ask is granted while the account is free, refused to another host while lent, and free again once released; a malformed message lends nothing", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start()
+        const lease = plugin.rpc["dotfiles-opencode.pool"]!.lease!
+        const now = Date.now()
+        // Reset ids no other test lends: the plugin keeps the process's leases.
+        const grants = [`grant-rpc-${now}`]
+        const ask = (host: string, id: string) => ({ _tag: "Ask", host, id, provider: "claude", grants, readAt: now, requestedAt: now, holdMs: 60_000 })
+        expect(yield* lease({ _tag: "Ask", host: "mac" })).toEqual({ granted: false, reason: "not a lease message" })
+        expect(yield* lease(ask("mac", "a"))).toEqual({ granted: true })
+        expect(yield* lease(ask("workbox", "b"))).toMatchObject({ granted: false, reason: expect.stringContaining("mac holds the account's lease") })
+        expect(yield* lease({ _tag: "Release", host: "mac", id: "a", provider: "claude", grants })).toEqual({ granted: true })
+        expect(yield* lease(ask("workbox", "b"))).toEqual({ granted: true })
+        yield* lease({ _tag: "Release", host: "workbox", id: "b", provider: "claude", grants })
+      }),
+    ))
 })
 
 /** Wait, in real time, until `done` holds; a second without it fails the test. */

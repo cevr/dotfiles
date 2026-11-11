@@ -58,11 +58,12 @@
  *   plugin's storage, and each peer is read by one of them); an agent `started`
  *   counts `startCost` (default 0.005, half a percentage point of one account's
  *   week) on the pace here and on every peer for `settleMinutes` (default 10),
- *   until its spend shows in a reading. Default no peers. `claimer` names the
- *   one host that spends resets (default `cristians-macbook-pro`, the Mac,
- *   as for the fork): the others claim nothing on their own and forward a yes
- *   to it over SSH (`@dotfiles/opencode-pool/ssh/claim`, its `claimFor`). A
- *   host with no peers is its own claimer.
+ *   until its spend shows in a reading. Default no peers. No host is the
+ *   master of the resets: before a claim, a host asks each peer for the
+ *   account's lease over SSH (`@dotfiles/opencode-pool/ssh/lease`, the peer's
+ *   `lease`), claims only when none refused, and passes over a peer that does
+ *   not answer in 10 s once the account read again still calls for the claim
+ *   (the claim's record names the fallback).
  * - `resets`: work the accounts' rate-limit resets (`@dotfiles/opencode-pool/resets`).
  *   Default true. When a start is held and every account of a ChatGPT pool is
  *   held by a spent window, the pool claims one Codex reset credit (and one
@@ -127,7 +128,8 @@ import * as OwnerLive from "@dotfiles/opencode-pool/opencode/owner"
 import * as QuotaLive from "@dotfiles/opencode-pool/opencode/quota"
 import * as ResetsStoreLive from "@dotfiles/opencode-pool/opencode/resets"
 import { quotaProtocol, type QuotaReading } from "@dotfiles/opencode-pool/quota"
-import { ForwardedClaim, type ResetProvider } from "@dotfiles/opencode-pool/resets"
+import type { ResetProvider } from "@dotfiles/opencode-pool/resets"
+import { LeaseMessage } from "@dotfiles/opencode-pool/lease"
 import type { Tokens } from "@dotfiles/opencode-pool/limits"
 import * as LimitsLive from "@dotfiles/opencode-pool/opencode/limits"
 import type { FleetStore, Ledger, Limits, Logins, Owner, Peers, Quota, ResetsStore } from "@dotfiles/opencode-pool/service"
@@ -174,8 +176,6 @@ const PeerOption = Schema.Struct({
 
 const Positive = Schema.Finite.check(Schema.isGreaterThan(0))
 
-/** The host that spends the fleet's resets by default: the Mac, the fork's owner too (scripts/upstream.ts `FORK_OWNER`). */
-export const CLAIMER = "cristians-macbook-pro"
 
 const FleetOption = Schema.Struct({
   host: Schema.NonEmptyString.pipe(withDefault(hostname())),
@@ -183,7 +183,6 @@ const FleetOption = Schema.Struct({
   pollSeconds: Positive.pipe(withDefault(30)),
   settleMinutes: Positive.pipe(withDefault(Model.DEFAULT_FLEET.settleMs / 60_000)),
   startCost: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })).pipe(withDefault(Model.DEFAULT_FLEET.startCost)),
-  claimer: Schema.NonEmptyString.pipe(withDefault(CLAIMER)),
 })
 
 export const Options = Schema.Struct({
@@ -380,7 +379,6 @@ export const make = (
           },
           resets: resetsOf(options),
           autoClaims: typeof options.resets === "boolean" || options.resets.auto,
-          claimer: claimerOf(options.fleet),
         }).pipe(Layer.provideMerge(externals(ctx, options, sources, chatgpt))),
       )
       const pool = Context.get(services, Model.Pool)
@@ -566,11 +564,11 @@ export const make = (
           report: () => pool.report,
           fleet: () => pool.fleet,
           resets: () => pool.resets,
-          // A malformed claim is no claim: nothing is spent.
-          claimFor: (input) =>
-            Option.match(decodeForwarded(input), {
-              onNone: () => Effect.succeed({ outcome: "failed", message: "not a claim" }),
-              onSome: pool.claimFor,
+          // A malformed lease message is refused: no lease is lent on it.
+          lease: (input) =>
+            Option.match(decodeLease(input), {
+              onNone: () => Effect.succeed({ granted: false, reason: "not a lease message" }),
+              onSome: pool.lease,
             }),
           limits: () => pool.limits,
         })
@@ -581,22 +579,7 @@ export const make = (
 const decodeSessionQuery = Schema.decodeUnknownOption(SessionQuery)
 const decodeLoginsQuery = Schema.decodeUnknownOption(LoginsQuery)
 const decodeStartedQuery = Schema.decodeUnknownOption(StartedQuery)
-const decodeForwarded = Schema.decodeUnknownOption(ForwardedClaim)
-
-/** A host as the fleet names it: lower case, without `.local` (scripts/upstream.ts `hostKey`). */
-const hostKey = (host: string) => host.toLowerCase().replace(/\.local$/, "")
-
-/**
- * The fleet's claimer as this host sees it: itself, when it is the claimer
- * or has no peers (a fleet of one); else the peer whose name or SSH host is
- * the claimer, or none.
- */
-export const claimerOf = (fleet: Options["fleet"]): Model.Claimer => {
-  const claimer = hostKey(fleet.claimer)
-  if (fleet.peers.length === 0 || hostKey(fleet.host) === claimer) return Model.HERE
-  const peer = fleet.peers.find((item) => hostKey(item.name) === claimer || hostKey(item.ssh.split("@").at(-1) ?? "") === claimer)
-  return { here: false, peer: peer?.name }
-}
+const decodeLease = Schema.decodeUnknownOption(LeaseMessage)
 
 const providerOf = (input: unknown) =>
   typeof input === "object" && input !== null && "providerID" in input ? String(input.providerID) : ""
