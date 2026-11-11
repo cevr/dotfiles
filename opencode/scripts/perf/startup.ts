@@ -14,12 +14,13 @@
 // bun scripts/perf/startup.ts (--fork <checkout> | --bin <compiled opencode>) --db <file> --session <id> --out <dir>
 //   [--plugins <comma list of TUI plugin paths>] [--ready <text the session shows>] [--limit 180000]
 //   [--cols 160] [--rows 45] [--prof <ms,...>] [--cli <json merged into cli.json>] [--hold <ms past ready>]
+//   [--replies] [--trace [--trace-ms 6000] [--trace-profile]] [--warm] [--settle <ms>]
 // `end` is the TUI's CPU and RSS when the run stops, `peakRss` the most it held.
 //
 // The server and TUI run in process groups of their own, killed at the end.
 // Point `--db` only at a copy: the server writes to it.
 import { Terminal } from "@xterm/headless"
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 import { join } from "node:path"
 import { spawn as spawnPty } from "zigpty"
@@ -108,20 +109,56 @@ for (;;) {
   await Bun.sleep(200)
 }
 console.log(`server up in ${Date.now() - serverReady} ms on ${port}`)
+// `--warm`: load the TUI's location on the server first, as a long-running service has it loaded
+// already; otherwise the TUI's first read of it pays for building it.
+if (args.includes("--warm")) {
+  const warming = Date.now()
+  const response = await fetch(`http://127.0.0.1:${port}/api/location?location[directory]=${encodeURIComponent(out)}`, {
+    headers: { authorization: `Basic ${btoa(`opencode:${env.OPENCODE_PASSWORD}`)}` },
+  })
+  console.log(`location warmed in ${Date.now() - warming} ms (${response.status})`)
+}
+// `--settle 5000`: wait that long before the TUI starts, so the server's own start work is done.
+await Bun.sleep(Number(opt("settle", "0")))
 
 const terminal = new Terminal({ cols, rows, allowProposedApi: true })
 const started = Date.now()
+// `--replies`: answer the terminal's queries as a desktop terminal does. @xterm/headless answers device
+// attributes and status reports; the background and foreground color queries (OSC 11 and 10), which the
+// TUI waits on for its light or dark mode, it leaves unanswered, so they are answered here, dark.
+const replies = args.includes("--replies")
+// `--trace`: the fork's boot trace (OPENCODE_BOOT_TRACE): marks of each boot step and a CPU profile from
+// the first import, written to <out>/trace by the TUI alone.
+const trace = args.includes("--trace") ? join(out, "trace") : undefined
+// An earlier run's trace in the same `--out` would read as this one's.
+if (trace) rmSync(trace, { recursive: true, force: true })
+// `--trace-profile` adds the CPU profile (<out>/trace/boot-<pid>.cpuprofile).
+const tuiEnv = trace
+  ? {
+      ...env,
+      OPENCODE_BOOT_TRACE: trace,
+      OPENCODE_BOOT_TRACE_MS: opt("trace-ms", "6000")!,
+      ...(args.includes("--trace-profile") ? { OPENCODE_BOOT_TRACE_PROFILE: "1" } : {}),
+    }
+  : env
 const tui = spawnPty(entry[0]!, [...entry.slice(1), "-s", session, "--server", `http://127.0.0.1:${port}`], {
   cols,
   rows,
   cwd: out,
-  env,
+  env: tuiEnv,
   terminal: {
     data(_term, data: Uint8Array) {
       terminal.write(data)
+      if (replies) answerColors(new TextDecoder().decode(data))
     },
   },
 })
+if (replies) terminal.onData((data) => tui.write(data))
+const COLOR_QUERY = new RegExp(String.raw`\u001b\](1[01]);\?(\u0007|\u001b\\)`, "g")
+function answerColors(text: string) {
+  for (const match of text.matchAll(COLOR_QUERY))
+    tui.write(`\x1b]${match[1]};rgb:${match[1] === "11" ? "1e1e/1e1e/1e1e" : "d4d4/d4d4/d4d4"}${match[2]}`)
+}
 stopAll.push(() => {
   try {
     process.kill(-tui.pid, "SIGTERM")
@@ -212,7 +249,36 @@ if (profAt.length > 0) await Bun.sleep(Math.max(0, profAt.at(-1)! + 11_000 - (Da
 const log = join(xdg, "data/opencode/log")
 if (existsSync(log))
   for (const file of readdirSync(log).filter((name) => name.startsWith(`cpu-`))) copyFileSync(join(log, file), join(out, file))
+// The TUI writes its trace OPENCODE_BOOT_TRACE_MS after it starts; the marks are ms since its process began.
+const bootTrace = async () => {
+  if (!trace) return undefined
+  for (let waited = 0; waited < 15_000; waited += 200) {
+    const file = existsSync(trace) ? readdirSync(trace).find((name) => /^boot-\d+\.json$/.test(name)) : undefined
+    if (file) {
+      await Bun.sleep(300)
+      return JSON.parse(readFileSync(join(trace, file), "utf8")) as {
+        timeOrigin: number
+        marks: Array<{ name: string; ms: number }>
+      }
+    }
+    await Bun.sleep(200)
+  }
+  return undefined
+}
+const booted = await bootTrace()
+// The trace's clock starts when the TUI's runtime does, after the binary is loaded; `origin` is how long
+// after the spawn that was, and each mark is shifted by it to read on the same clock as the frames.
+const origin = booted && Math.round(booted.timeOrigin - started)
 const result = {
+  origin,
+  // The first time each step was marked, in ms since the spawn.
+  marks:
+    booted &&
+    Object.fromEntries(
+      booted.marks
+        .filter((mark, index) => booted.marks.findIndex((each) => each.name === mark.name) === index)
+        .map((mark) => [mark.name, Math.round(mark.ms + (origin ?? 0))]),
+    ),
   session,
   plugins: plugins.length,
   first,

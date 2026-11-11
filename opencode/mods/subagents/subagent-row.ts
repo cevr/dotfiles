@@ -40,7 +40,7 @@ import { canonical, firstSentence, lastHeard, lastSentence, liveCall, once, runn
 import type { Call, Family, Latch, Message, Session } from "./family.ts"
 import { modelName, type ModelName } from "./model.ts"
 import { label } from "./shell.ts"
-import { worksNow, type Works } from "./works.ts"
+import { childrenOf, worksNow, type Works } from "./works.ts"
 
 /**
  * How a subagent stands. `working`, `waiting` and `latched` are live (see
@@ -102,9 +102,7 @@ export function tone(role: string): Tone {
  * creation time. The root itself is not a subagent.
  */
 export function order(family: Family, rootSessionID: string): ReadonlyArray<{ readonly session: Session; readonly depth: number }> {
-  const children = new Map<string, Session[]>()
-  for (const session of family.sessions.toSorted((a, b) => a.time.created - b.time.created))
-    if (session.parentID) children.set(session.parentID, [...(children.get(session.parentID) ?? []), session])
+  const children = childrenOf(family.sessions.toSorted((a, b) => a.time.created - b.time.created))
   const walk = (id: string, path: ReadonlySet<string>, depth: number): Array<{ readonly session: Session; readonly depth: number }> =>
     (children.get(id) ?? []).flatMap((session) =>
       path.has(session.id) ? [] : [{ session, depth }, ...walk(session.id, new Set([...path, session.id]), depth + 1)],
@@ -345,9 +343,7 @@ export function subagents(family: Family, rootSessionID: string, options: ReadOp
 
 function rowsOf(family: Family, rootSessionID: string, options: ReadOptions): ReadonlyArray<Row> {
   const byID = new Map(family.sessions.map((session) => [session.id, session]))
-  const children = new Map<string, Session[]>()
-  for (const session of family.sessions)
-    if (session.parentID) children.set(session.parentID, [...(children.get(session.parentID) ?? []), session])
+  const children = childrenOf(family.sessions)
   const now = worksNow(family)
   return order(family, rootSessionID).map(({ session, depth }): Row => {
     const parent = session.parentID ? (byID.get(session.parentID)?.messages ?? []) : []

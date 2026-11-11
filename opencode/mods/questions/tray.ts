@@ -59,14 +59,17 @@ export const under = (sessionID: string, members: ReadonlyArray<Member>): Readon
   const children = new Map<string, Array<string>>()
   for (const member of members) {
     if (member.parentID === undefined) continue
-    children.set(member.parentID, [...(children.get(member.parentID) ?? []), member.id])
+    const siblings = children.get(member.parentID)
+    if (siblings) siblings.push(member.id)
+    else children.set(member.parentID, [member.id])
   }
-  const found: Array<string> = []
+  // A set, not the list's `includes`: a family of hundreds was quadratic here on every change.
+  const found = new Set<string>()
   const visit = (id: string) => {
-    if (found.includes(id)) return
-    found.push(id)
+    if (found.has(id)) return
+    found.add(id)
     for (const child of children.get(id) ?? []) visit(child)
   }
   visit(sessionID)
-  return found
+  return [...found]
 }
