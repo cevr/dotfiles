@@ -31,6 +31,7 @@ import {
   type Command,
   type Event,
   HandBack,
+  handBackOf,
   Land,
   Landed,
   machine,
@@ -38,7 +39,9 @@ import {
   notesOf,
   type Rule,
   RULES,
+  Spawned,
   Start,
+  startOf,
   unitOfRift,
 } from "./machine.ts"
 
@@ -325,6 +328,29 @@ describe("the machine's stories", () => {
     expect(notesOf(landed.state, impl("beta"), T0 + 3 * MIN, CADENCE).join("\n")).toContain("landed and not verified: alpha")
     expect(notesOf(M.initial, impl("alpha", 4), T0, CADENCE).join("\n")).toContain("round 4 of alpha")
     expect(notesOf(M.initial, impl("alpha", 2), T0, CADENCE)).toEqual([])
+  })
+
+  test("a call reads as its step: the role it runs as, its unit or batch, its round, (direct) and (departs: …)", () => {
+    expect(startOf("verifier", "verifier batch-2 r1")).toEqual(Start.make({ role: "verifier", name: "batch-2", round: 1, direct: false }))
+    expect(startOf("implementor", "implementor docs r3 (direct)")).toEqual(Start.make({ role: "implementor", name: "docs", round: 3, direct: true }))
+    expect(startOf("verifier", "verifier alpha r1 (departs: the owner asked for alpha alone)")).toEqual(
+      Start.make({ role: "verifier", name: "alpha", round: 1, direct: false, departs: "the owner asked for alpha alone" }),
+    )
+    expect(startOf("verifier", "alpha verifier r2 (departs: owner)")).toMatchObject({ name: "alpha", round: 2, departs: "owner" })
+    expect(startOf("implementor", "verifier alpha r1")).toBeUndefined()
+    expect(startOf("worker", "Fix the verifier's timeout")).toBeUndefined()
+    expect(handBackOf("verifier", "**verifier batch-1 r1: accepted** /tmp/run/batch-1-findings.md")).toEqual(HandBack.make({ role: "verifier", name: "batch-1", verdict: "accepted" }))
+    expect(handBackOf("implementor", "implementor alpha r2: ready /u/round-2-request.md")).toMatchObject({ verdict: "ready" })
+    expect(handBackOf("implementor", "verifier alpha r2: accepted x")).toBeUndefined()
+  })
+
+  test("a step's session is kept until its hand-back, and a refusal says how to depart", async () => {
+    const { state } = await run([[impl("alpha"), 0], [Spawned.make({ role: "implementor", name: "alpha", child: "ses_a" }), 0]])
+    expect(state.units.alpha?.child).toBe("ses_a")
+    const back = await run([[impl("alpha"), 0], [Spawned.make({ role: "implementor", name: "alpha", child: "ses_a" }), 0], [ready("alpha"), MIN]])
+    expect(back.state.units.alpha?.child).toBeUndefined()
+    const land = await run([[impl("alpha"), 0], [impl("beta"), 0], [ready("alpha"), MIN], [Land.make({ rifts: ["alpha"] }), 2 * MIN]])
+    if ("refused" in land.last) expect(land.last.message).toContain('departs: "<why>"')
   })
 
   test("the brief a compacted root gets names every unit by its state, what runs and what is due", async () => {
