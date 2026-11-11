@@ -1,11 +1,12 @@
 // What every implementation of a contract in service.ts owes, as shared test
 // suites. Each implementation's test beside it runs the suite over its Layer.
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer, type Scope } from "effect"
+import { Context, Effect, Layer, type Scope } from "effect"
 import type { CallLine } from "./call-line.ts"
 import { type ModelRef, type Pace, paceOfReply } from "./pace.ts"
 import { type Holds, NO_HOLDS, type Run } from "./idle.ts"
-import { HandBack, Land, Landed, type MachineState, Start } from "./machine.ts"
+import { type Command, DEFAULT_CADENCE, type Event, HandBack, Land, Landed, machine, type MachineState, type Rule, Start } from "./machine.ts"
+import type { Retention } from "./ledger.ts"
 import {
   CallLog,
   Ledger,
@@ -673,8 +674,14 @@ export const steerLaws = (
 
 /** A ledger under test, on one store. */
 export interface LedgerProbe {
-  /** A ledger service on the store; a second one is the ledger after a restart, on what the first wrote. */
-  readonly open: () => Layer.Layer<Ledger>
+  /**
+   * A ledger service on the store, kept within `retention` (the default when
+   * none). A second one is another location's plugin copy on the same store,
+   * or the ledger after a restart.
+   */
+  readonly open: (retention?: Retention) => Layer.Layer<Ledger>
+  /** The store's size in bytes. */
+  readonly size: () => number
   /** The store's lines, read back. */
   readonly lines: () => ReadonlyArray<Record<string, unknown>>
   /** Write a line that does not read: a cut last line. */
@@ -686,6 +693,68 @@ const MIN = 60_000
 const impl = (name: string) => Start.make({ role: "implementor", name, round: 1, direct: false })
 const ready = (name: string) => HandBack.make({ role: "implementor", name, verdict: "ready" })
 const unitStates = (state: MachineState) => Object.fromEntries(Object.entries(state.units).map(([name, unit]) => [name, unit.state]))
+
+/** One step of a run against the ledger: a root, a command, and when. */
+interface Step {
+  readonly root: string
+  readonly command: Command
+  readonly at: number
+}
+
+/** What one decision came to: the rule that refused it, or the root's state after it. */
+type Outcome = { readonly refused: Rule } | { readonly state: MachineState }
+
+/** The reference: each root's state folded by the machine alone, one command at a time, as one ledger would. */
+const referenceOf = (steps: ReadonlyArray<Step>): Array<Outcome> => {
+  const decider = machine(DEFAULT_CADENCE)
+  const states = new Map<string, MachineState>()
+  return steps.map(({ root, command, at }) => {
+    const state = states.get(root) ?? decider.initial
+    const outcome = Effect.runSync(Effect.result(decider.decide(state, command, at)))
+    if (outcome._tag === "Failure") return { refused: outcome.failure.rule }
+    const next = outcome.success.reduce<MachineState>((folded, event: Event) => decider.evolve(folded, event), state)
+    states.set(root, next)
+    return { state: next }
+  })
+}
+
+/** What `ledger` came to on `step`. */
+const outcomeOf = (ledger: (typeof Ledger)["Service"], step: Step) =>
+  ledger.decide(step.root, step.at, () => Effect.succeed([step.command])).pipe(
+    Effect.map((decided): Outcome => ({ state: decided.state })),
+    Effect.catchTag("Refused", (refused) => Effect.succeed<Outcome>({ refused: refused.rule })),
+  )
+
+const verifier = (name: string) => Start.make({ role: "verifier", name, round: 1, direct: false })
+const verdict = (name: string) => HandBack.make({ role: "verifier", name, verdict: "changes" })
+
+/**
+ * Two roots' runs, interleaved: `legal` keeps the machine (two ready units,
+ * their land, the batch's verifier and its verdict, a third unit and its
+ * land, the next verifier); `drift` lands one of two ready units, then all.
+ */
+const RUNS: ReadonlyArray<ReadonlyArray<Command>> = [
+  [impl("a"), ready("a"), impl("b"), ready("b"), Land.make({ rifts: ["a", "b"] }), Landed.make({ rifts: ["a", "b"] }), verifier("batch-1"), verdict("batch-1"), impl("c"), ready("c"), Land.make({ rifts: ["c"] }), Landed.make({ rifts: ["c"] }), verifier("batch-2")],
+  [impl("x"), ready("x"), impl("y"), ready("y"), Land.make({ rifts: ["x"] }), Land.make({ rifts: ["x", "y"] }), Landed.make({ rifts: ["x", "y"] }), verifier("batch-1")],
+]
+
+/** A seeded generator in [0, 1): the same seed, the same run. */
+const random = (seed: number) => () => {
+  seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648
+  return seed / 2_147_483_648
+}
+
+/** The two runs merged in an order `next` picks, each step a minute after the last. */
+const interleave = (next: () => number): ReadonlyArray<Step> => {
+  const at = [0, 0]
+  const steps: Array<Step> = []
+  while (at[0]! < RUNS[0]!.length || at[1]! < RUNS[1]!.length) {
+    const run = at[1]! >= RUNS[1]!.length || (at[0]! < RUNS[0]!.length && next() < 0.5) ? 0 : 1
+    steps.push({ root: run === 0 ? "legal" : "drift", command: RUNS[run]![at[run]!]!, at: T + steps.length * MIN })
+    at[run] = at[run]! + 1
+  }
+  return steps
+}
 
 /** `make` gives a fresh, empty store. */
 export const ledgerLaws = (name: string, make: () => LedgerProbe) =>
@@ -777,6 +846,71 @@ export const ledgerLaws = (name: string, make: () => LedgerProbe) =>
       await check(probe.open(), Effect.flatMap(Ledger, (ledger) => ledger.decide("root", T + MIN, () => Effect.succeed([ready("alpha")]))))
       const state = await check(probe.open(), Effect.flatMap(Ledger, (ledger) => ledger.state("root")))
       expect(unitStates(state)).toEqual({ alpha: "ready" })
+    })
+
+    test("two ledgers open on one store are one ledger: a root's steps, alternating between them, come to what one ledger's do", async () => {
+      // A root that moves A→B→A: each location's plugin copy is a ledger on the one store.
+      const moved: ReadonlyArray<readonly [0 | 1, Command]> = [
+        [0, impl("legal-a")],
+        [0, ready("legal-a")],
+        [1, impl("legal-b")],
+        [1, ready("legal-b")],
+        [0, Land.make({ rifts: ["legal-a", "legal-b"] })],
+        [0, Landed.make({ rifts: ["legal-a", "legal-b"] })],
+        [1, verifier("batch-1")],
+        [1, verdict("batch-1")],
+        [0, impl("legal-c")],
+        [0, ready("legal-c")],
+        [0, Land.make({ rifts: ["legal-c"] })],
+      ]
+      const trials: Array<ReadonlyArray<readonly [0 | 1, Step]>> = [moved.map(([at, command], index) => [at, { root: "root", command, at: T + index * MIN }] as const)]
+      for (let seed = 1; seed <= 40; seed += 1) {
+        const next = random(seed)
+        trials.push(interleave(next).map((step) => [next() < 0.5 ? 0 : 1, step] as const))
+      }
+      for (const trial of trials) {
+        const probe = make()
+        const outcomes = await Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const ledgers = [Context.get(yield* Layer.build(probe.open()), Ledger), Context.get(yield* Layer.build(probe.open()), Ledger)] as const
+              return yield* Effect.forEach(trial, ([which, step]) => outcomeOf(ledgers[which], step))
+            }),
+          ),
+        )
+        expect(outcomes).toEqual(referenceOf(trial.map(([, step]) => step)))
+      }
+    })
+
+    test("the store stays within its bound, and every root it keeps decides as an unbounded ledger does", async () => {
+      const retention: Retention = { bytes: 16_384, idleMs: 24 * 60 * MIN, roots: 8, audit: 3 }
+      const probe = make()
+      // One root that lands a direct unit 300 times over; two roots' runs interleaved; each drift refused again and again.
+      const cycles = Array.from({ length: 300 }, (_, round): ReadonlyArray<Command> => [
+        Start.make({ role: "implementor", name: "unit", round: round + 1, direct: true }),
+        ready("unit"),
+        Landed.make({ rifts: ["unit"] }),
+      ]).flat()
+      const steps: Array<Step> = cycles.map((command, index) => ({ root: "done", command, at: T + index * 1000 }))
+      const runs = interleave(random(7))
+      for (const [index, step] of runs.entries()) steps.splice(index * 60, 0, { ...step, at: steps[index * 60]?.at ?? step.at })
+      for (let refusal = 0; refusal < 30; refusal += 1) steps.push({ root: "drift", command: verifier("x"), at: steps.at(-1)!.at + 1000 })
+      const sizes: Array<number> = []
+      const outcomes = await check(
+        probe.open(retention),
+        Effect.flatMap(Ledger, (ledger) => Effect.forEach(steps, (step) => Effect.tap(outcomeOf(ledger, step), () => Effect.sync(() => void sizes.push(probe.size()))))),
+      )
+      const reference = referenceOf(steps)
+      expect(outcomes).toEqual(reference)
+      expect(Math.max(...sizes)).toBeLessThanOrEqual(retention.bytes)
+      // After a restart on what is kept, each root's state is the same.
+      const kept = await check(probe.open(retention), Effect.flatMap(Ledger, (ledger) => Effect.all([ledger.state("done"), ledger.state("legal"), ledger.state("drift")])))
+      const last = (root: string) => (reference.filter((outcome, index) => steps[index]!.root === root && "state" in outcome).at(-1) as { state: MachineState }).state
+      expect(kept).toEqual([last("done"), last("legal"), last("drift")])
+      // Refusals are kept to the newest few: the oldest went, the newest stays.
+      const refusals = probe.lines().filter((line) => line.sessionID === "drift" && line.kind === "Refused")
+      expect(refusals.length).toBeLessThan(30)
+      expect(refusals.at(-1)?.at).toBe(new Date(steps.at(-1)!.at).toISOString())
     })
   })
 

@@ -237,7 +237,7 @@ export interface Decided {
  * Each root's batch machine, kept as lines (`{ at, sessionID, kind, ... }`,
  * one per event or refusal), its state the fold of its lines.
  * - `state`: the root's state now; the initial state for a root with no line.
- * - `decide`: under the root's lock, `plan` reads the state and gives the
+ * - `decide`: under the store's one lock (every ledger on the store shares it), `plan` reads the state and gives the
  *   commands to decide, each on the state the last left; each one's events
  *   are lines. A refused command is a `Refused` line, changes nothing, and
  *   stops the rest; under `warn` it is decided again with a departure and

@@ -1,12 +1,18 @@
 // The ledger as a JSONL file (default `~/.cache/orchestrate/machine.jsonl`),
-// one line per event or refusal (ledger.ts). A root's lines are read once,
-// when it is first decided, and kept. A cut last line (a crash mid-write) is
+// one line per event, refusal or checkpoint (ledger.ts). The file is read
+// afresh at each decision, so every plugin copy of this process sees every
+// line, and it stays small: a compaction writes the kept lines to a file
+// beside it and renames that over it. A cut last line (a crash mid-write) is
 // skipped, and the next line starts on a line of its own. A line that cannot
-// be written is dropped: the state in memory holds, and a restart loses it.
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync } from "node:fs"
-import { dirname } from "node:path"
+// be written is dropped, and a restart loses it.
+//
+// One process writes the file: the OpenCode server on its host. Two servers
+// on one file would each compact what they read and could drop the other's
+// newest lines.
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs"
+import { dirname, resolve } from "node:path"
 import { Effect, Layer } from "effect"
-import { make, type Line } from "../ledger.ts"
+import { DEFAULT_RETENTION, type Line, make, type Retention } from "../ledger.ts"
 import type { Cadence } from "../machine.ts"
 import { Ledger } from "../service.ts"
 
@@ -36,17 +42,16 @@ const endsCut = (file: string): boolean => {
   }
 }
 
-const isOf = (sessionID: string) => (line: unknown) => typeof line === "object" && line !== null && (line as { sessionID?: unknown }).sessionID === sessionID
-
-export const layer = (file: string, cadence: Cadence) =>
+export const layer = (file: string, cadence: Cadence, retention: Retention = DEFAULT_RETENTION) =>
   Layer.effect(
     Ledger,
     make(
       {
-        read: (sessionID) =>
+        key: resolve(file),
+        read: () =>
           Effect.sync(() => {
             try {
-              return linesIn(readFileSync(file, "utf8")).filter(isOf(sessionID))
+              return linesIn(readFileSync(file, "utf8"))
             } catch {
               return []
             }
@@ -61,7 +66,26 @@ export const layer = (file: string, cadence: Cadence) =>
               // Dropped: see the header.
             }
           }),
+        replace: (lines) =>
+          Effect.sync(() => {
+            try {
+              const next = `${file}.compact-${process.pid}`
+              writeFileSync(next, lines.map((line) => `${JSON.stringify(line)}\n`).join(""))
+              renameSync(next, file)
+            } catch {
+              // Kept as it was: the next decision past the threshold tries again.
+            }
+          }),
+        size: () =>
+          Effect.sync(() => {
+            try {
+              return statSync(file).size
+            } catch {
+              return 0
+            }
+          }),
       },
       cadence,
+      retention,
     ),
   )
