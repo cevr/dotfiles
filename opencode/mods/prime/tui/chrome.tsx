@@ -1,5 +1,6 @@
 // The frame around the transcript in the Prime look: a one-line top bar, a
-// text splash, the detail-mode hint and the goal line above the editor, and
+// text splash, the hint line (with the update notice) and the goal line
+// above the editor, and
 // the tray, rule, dock line (subagents, shells, wakes; drawn only while one
 // is active) and a live row per subagent under it. The words are
 // chrome.ts's; this file draws them.
@@ -19,7 +20,6 @@ import {
 } from "../chrome.ts"
 import { inboxOf, loader, queuedRow, SEND_COMMAND, sendHint, waitingPrompts } from "../pending.ts"
 import { elapsed } from "../clock.ts"
-import { detailHint, type Detail } from "../detail.ts"
 import { GOAL_LINGER_MS, goalLine, goalShown, type Goal } from "../goal.ts"
 import { navigationHint, neighbour, othersWorking, subagentOrder, topTitle } from "../subagent.ts"
 import { UPDATE_LEAD, UPDATE_REST, upstreamNotice } from "../update.ts"
@@ -110,11 +110,12 @@ export function Splash(props: { host: Host; sessionID: string }) {
 }
 
 /**
- * The hints above the composer: how to move among subagents and, while a
+ * The line above the composer: how to move among subagents and, while a
  * turn runs with a prompt waiting, the key that interrupts it and sends
- * (pending.ts `sendHint`) on the left; the detail mode on the right.
+ * (pending.ts `sendHint`) on the left; the update notice on the right. It
+ * keeps its row while both are empty, so the composer never jumps.
  */
-export function ModeHint(props: { host: Host; sessionID: string; detail: Accessor<Detail> }) {
+export function HintLine(props: { host: Host; sessionID: string }) {
   const family = useFamily(props.host, () => props.sessionID)
   const send = createMemo(() =>
     sendHint({
@@ -127,13 +128,11 @@ export function ModeHint(props: { host: Host; sessionID: string; detail: Accesso
     [navigationHint({ child: family.child(), others: family.others() }), send()].filter(Boolean).join(" · "),
   )
   return (
-    <box flexDirection="row" justifyContent="space-between" marginTop={1} flexShrink={0}>
+    <box flexDirection="row" justifyContent="space-between" gap={2} height={1} marginTop={1} flexShrink={0}>
       <text wrapMode="none" truncate fg={props.host.theme().text.faint} paddingLeft={GUTTER}>
         {navigation()}
       </text>
-      <text wrapMode="none" flexShrink={0} fg={props.host.theme().text.faint}>
-        {detailHint(props.detail())}
-      </text>
+      <UpdateNotice host={props.host} />
     </box>
   )
 }
@@ -167,8 +166,8 @@ function useGoal(host: Host, sessionID: () => string | undefined): Accessor<Goal
  * than its service, then `upstream +12` (` · merge blocked`) while upstream
  * OpenCode has commits the installed build lacks (update.ts). Quiet: each
  * lead muted, the rest faint, no toast. Nothing while neither holds. The
- * dock's model line holds it in a session, the home footer's status on the
- * home screen.
+ * right end of the line above the composer holds it in a session
+ * (`HintLine`), the home footer's status on the home screen.
  */
 export function UpdateNotice(props: { host: Host }) {
   const theme = () => props.host.theme()
@@ -239,8 +238,7 @@ export function Dock(props: { host: Host; sessionID?: string }) {
   })
   return (
     <box flexDirection="column" flexGrow={1} flexShrink={1}>
-      <box flexDirection="row" height={1} gap={2}>
-        <UpdateNotice host={props.host} />
+      <box flexDirection="row" height={1}>
         <box flexGrow={1} />
         <text wrapMode="none" truncate fg={theme().text.faint}>
           {[model(), usage()].filter(Boolean).join(" · ")}

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { partOf, type AssistantMessage } from "./session.ts"
-import { contextUsage, type Metered } from "./usage.ts"
+import { contextUsage, effectiveWindow, type Metered } from "./usage.ts"
 
 const model = { providerID: "anthropic", id: "opus" }
 const tokens = (input: number) => ({ input, output: 200, reasoning: 0, cache: { read: 800, write: 0 } })
@@ -25,9 +25,48 @@ describe("contextUsage", () => {
     expect(contextUsage([step("a", 100)], window(8000), "gone")).toBeUndefined()
   })
 
+  test("asks the window for the step's own model and agent", () => {
+    const seen: Array<[string, string | undefined]> = []
+    const usage = contextUsage([{ ...step("a", 1000), agent: "planner" }], (ref, agent) => {
+      seen.push([ref.id, agent])
+      return 8000
+    })
+    expect(usage).toEqual({ tokens: 2000, percent: 25 })
+    expect(seen).toEqual([["opus", "planner"]])
+  })
+
   test("is undefined until a step reports tokens", () => {
     expect(contextUsage([{ id: "a", type: "assistant", model }], window(8000))).toBeUndefined()
     expect(contextUsage([], window(8000))).toBeUndefined()
+  })
+})
+
+describe("effectiveWindow", () => {
+  test("a 1M model under a 400k compaction window reads 207k as 52%, not 21%", () => {
+    const window = effectiveWindow({ context: 1_000_000 }, 400_000)
+    expect(window).toBe(400_000)
+    const usage = contextUsage([{ ...step("a", 0), tokens: { input: 207_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } }], () => window)
+    expect(usage).toEqual({ tokens: 207_000, percent: 52 })
+  })
+
+  test("a window under the cap keeps its own: a 200k worker reads against 200k", () => {
+    expect(effectiveWindow({ context: 200_000 }, 400_000)).toBe(200_000)
+  })
+
+  test("with no compaction window, or a malformed one, the model's window", () => {
+    for (const cap of [undefined, 0, -5, 1.5, "400000", null]) expect(effectiveWindow({ context: 1_000_000 }, cap)).toBe(1_000_000)
+  })
+
+  test("the model's window is its input limit within its context, either alone when the other is unknown", () => {
+    expect(effectiveWindow({ context: 400_000, input: 272_000 }, undefined)).toBe(272_000)
+    expect(effectiveWindow({ context: 0, input: 272_000 }, undefined)).toBe(272_000)
+    expect(effectiveWindow({ context: 400_000, input: 272_000 }, 200_000)).toBe(200_000)
+  })
+
+  test("an unknown model takes the cap, and nothing is known with neither", () => {
+    expect(effectiveWindow(undefined, 400_000)).toBe(400_000)
+    expect(effectiveWindow({ context: 0 }, 400_000)).toBe(400_000)
+    expect(effectiveWindow(undefined, undefined)).toBeUndefined()
   })
 })
 

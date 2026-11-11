@@ -1,7 +1,8 @@
 // The update notice. An install builds a new OpenCode and restarts the
 // service onto it, while a TUI already open keeps the build it started with:
 // it then runs an older build than its service, the newest installed one.
-// The notice says so, in a corner (the dock's model line, the home footer),
+// The notice says so, in a corner (the right end of the line above the
+// composer, the home footer),
 // until the TUI is restarted; it never shows while the two builds match.
 // Beside it, how far upstream OpenCode has moved past the installed build,
 // as `bun run daily` last counted it, and whether its merge is blocked.

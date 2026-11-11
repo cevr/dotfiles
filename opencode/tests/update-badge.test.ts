@@ -3,8 +3,9 @@
 // The owner (2026-11-11): an install restarts the service onto the new build
 // while a TUI already open keeps the one it started with (five workbox TUIs on
 // prime.d22f11a9, the service on prime.cd6d8ecd), and nothing said so. Prime
-// now draws `update available · restart to update` in the dock's model line
-// (the home footer on the home screen) while the service's `/api/info`
+// now draws `update available · restart to update` at the right end of the
+// line above the composer, where the owner had the standing Ctrl+O hint
+// dropped for it (2026-11-11), and in the home footer on the home screen, while the service's `/api/info`
 // version differs from the TUI's own, reading it again on each reconnect.
 //
 // The fork runs from source in a scratch HOME, as tests/dock-reconnect.test.ts
@@ -239,10 +240,16 @@ describe.skipIf(!fork)("the update notice", () => {
         held = false
         const full = `${NOTICE}  ·  upstream +12 · merge blocked`
         const shown = await until(screen, (text) => text.includes(full), (last) => `the notice never showed after the restart:\n${last}`, 30_000)
-        // The dock's model line holds it, under the composer: one row, at its left end.
-        const rows = shown.split("\n").filter((line) => line.includes(full))
-        expect(rows).toHaveLength(1)
-        expect(rows[0]?.trimStart().startsWith(NOTICE)).toBe(true)
+        // The line above the composer holds it, at its right end, where no Ctrl+O hint stands any more; the model line under the composer no longer does.
+        const lines = shown.split("\n")
+        const at = lines.findIndex((line) => line.includes(full))
+        expect(lines.filter((line) => line.includes(full))).toHaveLength(1)
+        expect(lines[at]?.trimEnd().endsWith(full)).toBe(true)
+        // Nothing to its left on this screen (no subagent to move to): blank cells fill the row up to it.
+        expect(lines[at]?.indexOf(full)).toBeGreaterThan(40)
+        // Right above the composer's rail; it shows once, so the model line under the composer is without it.
+        expect(lines[at + 1]).toMatch(/^ ┃/)
+        expect(shown).not.toContain("Ctrl+O to")
         expect(shown).toContain(title)
       } finally {
         await host.stop()

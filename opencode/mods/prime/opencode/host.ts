@@ -10,7 +10,7 @@ import type { Goal } from "../goal.ts"
 import { partOf } from "../session.ts"
 import type { Host } from "../tui/host.ts"
 import { updateAvailable, type UpstreamReading } from "../update.ts"
-import { contextUsage } from "../usage.ts"
+import { contextUsage, effectiveWindow } from "../usage.ts"
 import { openPending } from "./pending.ts"
 import { openShells } from "./shells.ts"
 import { cancelWake, readWakes } from "./wakes.ts"
@@ -44,9 +44,15 @@ export function host(
       const session = data.session.get(sessionID)
       if (!session) return undefined
       const models = data.location.model.list(session.location)
+      const agents = data.location.agent.list(session.location)
+      // Against the window compaction plans for: the model's, capped by the step's agent's compaction window.
       return contextUsage(
         data.session.message.list(sessionID),
-        (model) => models?.find((item) => item.providerID === model.providerID && item.id === model.id)?.limit.context,
+        (model, agent) =>
+          effectiveWindow(
+            models?.find((item) => item.providerID === model.providerID && item.id === model.id)?.limit,
+            agents?.find((item) => item.id === agent)?.request.settings["compactionWindow"],
+          ),
         session.revert?.messageID,
       )
     },
