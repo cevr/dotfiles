@@ -57,7 +57,10 @@ which the Prime look replaces, and no per-agent compaction window. The fork adds
 
 `/pool` opens a host-owned panel, which becomes fullscreen on a narrow
 terminal. It shows pool accounts, holds, 5-hour and 7-day usage and reset
-times; live agents with their call-log descriptions; and each orchestrate
+times, and each rate-limit reset an account holds with its kind (5-hour,
+weekly, Fable, full or Codex), its expiry and what it clears; the resets the
+pool works (asked, offered on demand, claimed before they expired); live
+agents with their call-log descriptions; and each orchestrate
 run's unit states. Reads refresh every two seconds while open, retain the
 last reading on errors, and stop when closed. The pane takes focus when it
 opens; Esc or `q` closes it, and `/pool` from the prompt toggles it.

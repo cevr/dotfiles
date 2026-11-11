@@ -11,6 +11,7 @@
  * its reset.
  */
 import type { ClaimAnswer, QuotaReading, QuotaRefusal, QuotaResets, QuotaStatus, QuotaWindow, ResetCredit } from "@dotfiles/opencode-pool/quota"
+import { grantKind } from "@dotfiles/opencode-pool/quota"
 import { isRecord } from "./json.ts"
 import type { RateLimitCategory } from "./rate-limit.ts"
 
@@ -191,15 +192,37 @@ function modelWindows(body: Record<string, unknown>): ReadonlyArray<QuotaWindow>
     if (isRecord(entry) && typeof entry.display_name === "string" && entry.display_name !== "")
       add(percentWindow(`7d:${entry.display_name}`, entry.utilization, entry.resets_at))
   }
-  for (const entry of Array.isArray(body.limits) ? body.limits : []) {
-    if (!isRecord(entry) || !isRecord(entry.scope) || !isRecord(entry.scope.model)) continue
+  const limits = Array.isArray(body.limits) ? body.limits : []
+  // `weekly_scoped_shares` names a `limits` entry by its index: its allowance, and the use it took, as percents of the weekly window.
+  const shares = new Map<number, { ofWeekly?: number; weeklyUsed?: number }>()
+  const share = (value: unknown, positive: boolean) =>
+    typeof value === "number" && Number.isFinite(value) && (positive ? value > 0 : value >= 0) ? Math.min(value / 100, 1) : undefined
+  for (const entry of Array.isArray(body.weekly_scoped_shares) ? body.weekly_scoped_shares : []) {
+    if (!isRecord(entry) || typeof entry.limit_index !== "number") continue
+    const ofWeekly = share(entry.allowance_percent_of_weekly, true)
+    const weeklyUsed = share(entry.used_percent_of_weekly, false)
+    if (ofWeekly !== undefined || weeklyUsed !== undefined)
+      shares.set(entry.limit_index, { ...(ofWeekly === undefined ? {} : { ofWeekly }), ...(weeklyUsed === undefined ? {} : { weeklyUsed }) })
+  }
+  limits.forEach((entry, index) => {
+    if (!isRecord(entry) || !isRecord(entry.scope) || !isRecord(entry.scope.model)) return
     const model = entry.scope.model.display_name
     const group = typeof entry.group === "string" ? (LIMIT_GROUPS[entry.group] ?? entry.group) : undefined
-    if (typeof model !== "string" || model === "" || group === undefined) continue
-    add(percentWindow(`${group}:${model}`, entry.percent, entry.resets_at))
+    if (typeof model !== "string" || model === "" || group === undefined) return
+    const window = percentWindow(`${group}:${model}`, entry.percent, entry.resets_at)
+    add(window === undefined ? window : { ...window, ...shares.get(index) })
+  })
+  // A model's window `model_scoped` carried first takes the shares its `limits` entry names.
+  for (const [index, shared] of shares) {
+    const entry = limits[index]
+    const model = isRecord(entry) && isRecord(entry.scope) && isRecord(entry.scope.model) ? entry.scope.model.display_name : undefined
+    const name = typeof model === "string" ? `7d:${model}` : undefined
+    const held = name === undefined ? undefined : found.get(name)
+    if (name !== undefined && held !== undefined) found.set(name, { ...shared, ...held })
   }
   return [...found.values()]
 }
+
 
 /**
  * The reset grants of `cedar_ember` (asked for with `?cedar_ember=1`): each
@@ -218,12 +241,18 @@ function readResets(block: unknown, now: number): QuotaResets | undefined {
     const expiresAt = isoMs(grant.ends_at)
     const usable = grant.paused !== true && grant.usable_now === true && (expiresAt === undefined || expiresAt > now)
     const clears = Array.isArray(grant.clears) ? grant.clears.filter((name): name is string => typeof name === "string") : undefined
+    const givesBack = grant.gives_back_weekly === true
     credits.push({
       id: grant.id,
       count: left,
       usable,
       ...(expiresAt === undefined ? {} : { expiresAt }),
       ...(clears === undefined ? {} : { clears }),
+      kind: grantKind({ clears: clears ?? [], type: grant.type, givesBack }),
+      ...(givesBack ? { givesBack } : {}),
+      // Claude Code reads a grant without the field as one that needs a limit.
+      requiresLimit: grant.use_requires_limit !== false,
+      ...(grant.paused === true ? { paused: true } : {}),
     })
   }
   const live = credits.filter((credit) => credit.usable && credit.count > 0)

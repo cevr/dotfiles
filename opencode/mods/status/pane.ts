@@ -22,11 +22,66 @@ export const PaneAccount = Schema.Struct({
       windows: Schema.Array(
         Schema.Struct({ name: Schema.String, utilization: Schema.Number, resetAt: Schema.optionalKey(Schema.Number) }),
       ),
-      resets: Schema.optionalKey(Schema.Struct({ available: Schema.Number, nextExpiresAt: Schema.optionalKey(Schema.Number) })),
+      resets: Schema.optionalKey(
+        Schema.Struct({
+          available: Schema.Number,
+          nextExpiresAt: Schema.optionalKey(Schema.Number),
+          credits: Schema.optionalKey(
+            Schema.Array(
+              Schema.Struct({
+                count: Schema.Number,
+                usable: Schema.Boolean,
+                expiresAt: Schema.optionalKey(Schema.Number),
+                clears: Schema.optionalKey(Schema.Array(Schema.String)),
+                kind: Schema.optionalKey(Schema.String),
+                givesBack: Schema.optionalKey(Schema.Boolean),
+                requiresLimit: Schema.optionalKey(Schema.Boolean),
+                paused: Schema.optionalKey(Schema.Boolean),
+              }),
+            ),
+          ),
+        }),
+      ),
     }),
   ),
 })
 export type PaneAccount = typeof PaneAccount.Type
+type PaneCredit = NonNullable<NonNullable<NonNullable<PaneAccount["reading"]>["resets"]>["credits"]>[number]
+
+/** A reset's kind as the row names it (the pool's resets.ts `KIND_LABEL`). */
+const KINDS: Readonly<Record<string, string>> = {
+  session: "5-hour reset",
+  weekly: "weekly reset",
+  fable: "Fable reset",
+  full: "full reset",
+  codex: "Codex reset",
+}
+
+/** A provider's window name as the row says it; Claude Code calls `seven_day_overage_included` the Fable limit. */
+const CLEARS: Readonly<Record<string, string>> = {
+  five_hour: "5h",
+  seven_day: "weekly",
+  seven_day_overage_included: "Fable week",
+  seven_day_opus: "Opus week",
+  seven_day_sonnet: "Sonnet week",
+}
+
+/**
+ * One reset an account holds: `  Fable reset ×2 · until 2027-02-01 · clears 5h,
+ * Fable week; gives back Fable's part of the weekly · needs a limit`. A Codex
+ * credit restarts every window. A spent or expired one is left out.
+ */
+const creditLine = (pool: string, credit: PaneCredit, now: number): string | undefined => {
+  if (credit.count <= 0 || (credit.expiresAt !== undefined && credit.expiresAt <= now)) return undefined
+  const kind = credit.kind ?? (pool === "openai" ? "codex" : undefined)
+  const name = kind === undefined ? "reset" : (KINDS[kind] ?? kind)
+  const clears =
+    kind === "codex"
+      ? "clears every window"
+      : `clears ${(credit.clears ?? []).map((window) => CLEARS[window] ?? window).join(", ") || "unread"}${credit.givesBack === true ? "; gives back Fable's part of the weekly" : ""}`
+  const state = credit.paused === true ? " · paused" : credit.usable ? "" : credit.requiresLimit === true ? " · needs a limit" : " · not claimable now"
+  return `  ${name}${credit.count > 1 ? ` ×${credit.count}` : ""}${credit.expiresAt === undefined ? "" : ` · until ${day(credit.expiresAt)}`} · ${clears}${state}`
+}
 
 /** The pool's status answer as the pane reads it: each pool's accounts, by integration id. */
 export const PanePools = Schema.Record(Schema.String, Schema.Struct({ accounts: Schema.Array(PaneAccount) }))
@@ -44,8 +99,9 @@ export interface AccountRow {
   readonly title: string
   /**
    * One line per window: `  5h 23% · reset <time>`; then each model's own
-   * window, `  Fable 7d 12% · reset <time>`; then `  resets 2 · until <date>`
-   * when the account holds resets it can claim.
+   * window, `  Fable 7d 12% · reset <time>`; then each reset the account
+   * holds, with its kind, expiry and what it clears (`creditLine`), or
+   * `  resets 2 · until <date>` when only their count was read.
    */
   readonly windows: ReadonlyArray<string>
 }
@@ -53,11 +109,15 @@ export interface AccountRow {
 /** `YYYY-MM-DD` of an epoch-ms time. */
 const day = (at: number) => stamp(at).slice(0, 10)
 
-/** Every pool's accounts, in the order the pool lists them. */
-export const accountRows = (pools: PanePools): ReadonlyArray<AccountRow> =>
+/** Every pool's accounts, in the order the pool lists them; `now` leaves out a reset already expired. */
+export const accountRows = (pools: PanePools, now = Date.now()): ReadonlyArray<AccountRow> =>
   Object.entries(pools).flatMap(([pool, entry]) =>
     entry.accounts.map((account) => {
       const resets = account.reading?.resets
+      const credits = (resets?.credits ?? []).flatMap((credit) => {
+        const line = creditLine(pool, credit, now)
+        return line === undefined ? [] : [line]
+      })
       return {
         held: account.hold !== undefined,
         title: `${pool} / ${account.credentialID} · ${account.hold ? `held (${account.hold.kind}) until ${stamp(account.hold.until)}` : "available"}`,
@@ -71,9 +131,12 @@ export const accountRows = (pools: PanePools): ReadonlyArray<AccountRow> =>
             if (at < 0) return []
             return [`  ${window.name.slice(at + 1)} ${window.name.slice(0, at)} ${Math.round(window.utilization * 100)}% · reset ${stamp(window.resetAt)}`]
           }),
-          ...(resets !== undefined && resets.available > 0
-            ? [`  resets ${resets.available}${resets.nextExpiresAt === undefined ? "" : ` · until ${day(resets.nextExpiresAt)}`}`]
-            : []),
+          // Each reset listed, else the count when only the count was read.
+          ...(credits.length > 0
+            ? credits
+            : resets !== undefined && resets.available > 0
+              ? [`  resets ${resets.available}${resets.nextExpiresAt === undefined ? "" : ` · until ${day(resets.nextExpiresAt)}`}`]
+              : []),
         ],
       }
     }),
@@ -165,6 +228,8 @@ export const PaneResets = Schema.Struct({
       at: Schema.Number,
       outcome: Schema.optionalKey(Schema.String),
       message: Schema.optionalKey(Schema.String),
+      kind: Schema.optionalKey(Schema.String),
+      told: Schema.optionalKey(Schema.String),
     }),
   ),
   claims: Schema.Array(
@@ -207,13 +272,25 @@ const WEEKLY: Readonly<Record<string, string>> = { moved: "weekly reset moved", 
  * Codex · work · reset · weekly reset moved · <time>`). None when the pool
  * has worked none.
  */
+const WHY: Readonly<Record<string, string>> = { expiring: " (expiring unused)", offer: " (offered on demand)" }
+
+/** A reset's provider and kind as its row names them: `Claude Fable reset`, or the provider alone when no kind was read. */
+const resetName = (reset: { readonly provider: string; readonly kind?: string }) => {
+  const provider = PROVIDER_NAMES[reset.provider] ?? reset.provider
+  return reset.kind === undefined || reset.kind === "codex" ? provider : `${provider} ${KINDS[reset.kind] ?? reset.kind}`
+}
+
 export const resetRows = (resets: PaneResets): ReadonlyArray<ResetRow> => [
   ...resets.resets
     .filter((reset) => reset.stage === "asked" || reset.stage === "claiming" || reset.stage === "failed")
     .map((reset) => ({
       asking: reset.stage === "asked",
-      text: `${PROVIDER_NAMES[reset.provider] ?? reset.provider} · ${reset.label} · ${STAGES[reset.stage] ?? reset.stage}${reset.why === "expiring" ? " (credit expiring)" : ""} · ${stamp(reset.at)}`,
+      text: `${resetName(reset)} · ${reset.label} · ${STAGES[reset.stage] ?? reset.stage}${WHY[reset.why] ?? ""} · ${stamp(reset.at)}`,
     })),
+  // A reset claimed on its own, and what the owner was told.
+  ...resets.resets
+    .filter((reset) => reset.told !== undefined)
+    .map((reset) => ({ asking: false, text: `${resetName(reset)} · ${reset.label} · ${reset.told} · ${stamp(reset.at)}` })),
   ...resets.claims.map((claim) => ({
     asking: false,
     text: `claimed ${PROVIDER_NAMES[claim.provider] ?? claim.provider} · ${claim.label} · ${claim.outcome}${claim.message === undefined ? "" : ` (${claim.message})`} · ${WEEKLY[claim.weekly] ?? claim.weekly} · ${stamp(claim.at)}`,

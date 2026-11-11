@@ -174,7 +174,8 @@ describe('readUsageBody', () => {
     expect(readUsageBody(measured, NOW)?.windows).toEqual([
       { name: '5h', utilization: 0.01, resetAt: Date.parse('2026-11-10T02:30:00.291433+00:00') },
       { name: '7d', utilization: 0.09, resetAt: Date.parse('2026-11-16T09:00:00.291455+00:00') },
-      { name: '7d:Fable', utilization: 0.12, resetAt: Date.parse('2026-11-16T09:00:00+00:00') },
+      // `weekly_scoped_shares` names Fable's entry (index 2): its whole allowance is half the weekly window, and its use took none of it.
+      { name: '7d:Fable', utilization: 0.12, resetAt: Date.parse('2026-11-16T09:00:00+00:00'), ofWeekly: 0.5, weeklyUsed: 0 },
     ])
     // The CLI's `model_scoped` form (T3 Code's claudeUsageLimits.ts) reads the
     // same, and one model's window is read once whichever form carries it.
@@ -233,16 +234,20 @@ describe('readUsageBody', () => {
       available: 3,
       nextExpiresAt: Date.parse('2027-01-28T00:00:00Z'),
       credits: [
+        // The measured grant gives back to the weekly window: a Fable reset by Claude Code's rule, whatever its `type`.
         {
           id: 'g-1',
           count: 2,
           usable: true,
           expiresAt: Date.parse('2027-02-01T00:00:00Z'),
           clears: ['five_hour', 'seven_day_overage_included'],
+          kind: 'fable',
+          givesBack: true,
+          requiresLimit: false,
         },
-        { id: 'g-2', count: 1, usable: false, expiresAt: Date.parse('2027-01-25T00:00:00Z') },
-        { id: 'g-3', count: 1, usable: true, expiresAt: Date.parse('2027-01-28T00:00:00Z') },
-        { id: 'g-old', count: 3, usable: false, expiresAt: Date.parse('2020-01-01T00:00:00Z') },
+        { id: 'g-2', count: 1, usable: false, expiresAt: Date.parse('2027-01-25T00:00:00Z'), kind: 'full', requiresLimit: true, paused: true },
+        { id: 'g-3', count: 1, usable: true, expiresAt: Date.parse('2027-01-28T00:00:00Z'), kind: 'full', requiresLimit: true },
+        { id: 'g-old', count: 3, usable: false, expiresAt: Date.parse('2020-01-01T00:00:00Z'), kind: 'full', requiresLimit: true },
       ],
     })
     // As measured on 2026-11-09 with an old claude-cli user agent: ineligible, no grant. That is a reading of none.
@@ -253,6 +258,26 @@ describe('readUsageBody', () => {
     })
     // A body without the block (the plain endpoint) says nothing of resets.
     expect(readUsageBody({ seven_day: { utilization: 9, resets_at: null }, cedar_ember: null }, NOW)?.resets).toBe(undefined)
+  })
+
+  test("names each grant's kind as Claude Code 2.1.318 does: a give-back is fable, else its type, else by what it clears", () => {
+    const kinds = (grants: ReadonlyArray<Record<string, unknown>>) =>
+      readUsageBody(
+        {
+          seven_day: { utilization: 9, resets_at: null },
+          cedar_ember: { eligible: true, grants: grants.map((grant, at) => ({ id: `g-${at}`, resets_left: 1, usable_now: true, ...grant })) },
+        },
+        NOW,
+      )?.resets?.credits.map((credit) => credit.kind)
+    expect(
+      kinds([
+        { clears: ['five_hour'] },
+        { clears: ['seven_day'] },
+        { clears: ['five_hour', 'seven_day'] },
+        { clears: ['five_hour'], type: 'weekly' },
+        { clears: ['five_hour', 'seven_day_overage_included'], type: 'full', gives_back_weekly: true },
+      ]),
+    ).toEqual(['session', 'weekly', 'full', 'weekly', 'fable'])
   })
 
   test('is undefined for a body without windows', () => {

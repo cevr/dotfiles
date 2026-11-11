@@ -70,6 +70,39 @@ describe("accountRows", () => {
     expect(resetsLine({ anthropic: { accounts: [{ credentialID: "a", reading: { windows: [], resets: { available: 0 } } }] } })).toBeUndefined()
   })
 
+  test("each reset listed shows its kind, expiry and what it clears, and whether it can be claimed now; one spent or expired is left out", () => {
+    const pools = {
+      anthropic: {
+        accounts: [
+          {
+            credentialID: "gent:alpha",
+            reading: {
+              windows: [],
+              resets: {
+                available: 2,
+                credits: [
+                  { count: 2, usable: true, expiresAt: Date.parse("2027-02-01T00:00:00Z"), clears: ["five_hour", "seven_day_overage_included"], kind: "fable", givesBack: true },
+                  { count: 1, usable: false, expiresAt: Date.parse("2027-01-28T00:00:00Z"), clears: ["seven_day"], kind: "weekly", requiresLimit: true },
+                  { count: 1, usable: false, clears: ["five_hour"], kind: "session", paused: true },
+                  { count: 0, usable: false, clears: ["five_hour"], kind: "session" },
+                  { count: 1, usable: false, expiresAt: now - 1, clears: ["five_hour"], kind: "session" },
+                ],
+              },
+            },
+          },
+        ],
+      },
+      openai: { accounts: [{ credentialID: "chatgpt", reading: { windows: [], resets: { available: 1, credits: [{ count: 1, usable: true, expiresAt: Date.parse("2026-11-20T00:00:00Z") }] } } }] },
+    }
+    const decoded = Schema.decodeUnknownSync(PanePools)(pools)
+    expect(accountRows(decoded, now)[0]?.windows.slice(2)).toEqual([
+      "  Fable reset ×2 · until 2027-02-01 · clears 5h, Fable week; gives back Fable's part of the weekly",
+      "  weekly reset · until 2027-01-28 · clears weekly · needs a limit",
+      "  5-hour reset · clears 5h · paused",
+    ])
+    expect(accountRows(decoded, now)[1]?.windows.slice(2)).toEqual(["  Codex reset · until 2026-11-20 · clears every window"])
+  })
+
   test("no pools, no rows", () => {
     expect(accountRows({})).toEqual([])
     expect(accountRows({ anthropic: { accounts: [] } })).toEqual([])
@@ -174,6 +207,23 @@ describe("resetRows", () => {
         { asking: true, text: "Claude · Max 1 · asked the owner, waiting for an answer · 2026-11-04 15:00Z" },
         { asking: false, text: "claimed Codex · work · reset · weekly reset moved · 2026-11-04 14:59Z" },
         { asking: false, text: "Claude · Max 2 · question withdrawn (the hold lifted) · 2026-11-04 14:58Z" },
+      ]),
+    )
+  })
+
+  test("a reset names its kind; an offer and one expiring say so; one claimed on its own shows what the owner was told", () => {
+    const reset = { pool: "anthropic", provider: "claude", credentialID: "cred-a", label: "Max 1", creditID: "g", requestID: "pool-x", attempts: 0 }
+    const answer = {
+      resets: [
+        { ...reset, key: "k2", why: "offer", stage: "asked", at: now, kind: "weekly" },
+        { ...reset, key: "k1", why: "expiring", stage: "settled", at: now - 60_000, kind: "fable", told: "The pool claimed the Fable reset on account Max 1 before it expired unused." },
+      ],
+      claims: [],
+    }
+    expect(Option.map(Schema.decodeUnknownOption(PaneResets)(answer), resetRows)).toEqual(
+      Option.some([
+        { asking: true, text: "Claude weekly reset · Max 1 · asked the owner, waiting for an answer (offered on demand) · 2026-11-04 15:00Z" },
+        { asking: false, text: "Claude Fable reset · Max 1 · The pool claimed the Fable reset on account Max 1 before it expired unused. · 2026-11-04 14:59Z" },
       ]),
     )
   })

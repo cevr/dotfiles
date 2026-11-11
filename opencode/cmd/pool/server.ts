@@ -68,6 +68,14 @@
  *   the account's weekly reset, and claims only on a yes. After a claim it reads
  *   the account again and records whether the weekly reset moved. `resets`
  *   answers what is being worked and the claims made, for the /pool pane.
+ *   A reset about to expire unused (Claude's too) is claimed on its own once
+ *   the window it gives back cannot reset by itself first, and the owner is
+ *   told after in the tray of the session that waited last. While a start
+ *   waits, a reset is offered for a week-long window an account has (nearly)
+ *   spent when, at its burn this period, the use given back would mostly be
+ *   spent before the natural reset (early in the week, not late), with the
+ *   fleet's starts in flight. The pace raises an account's line by what a
+ *   reset in hand gives back, and starts it again from a claim.
  *
  * `started` records a new agent (orchestrate calls it once a subagent starts),
  * `report` answers a peer with this host's starts and its readings (never a

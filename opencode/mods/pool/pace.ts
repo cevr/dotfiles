@@ -66,13 +66,44 @@ const blockedUntil = (account: AccountStatus, now: number, model: string | undef
 }
 
 /**
+ * What an account's resets do to its spend-evenly line (resets.ts
+ * `pacePlans`). A reset gives use back but keeps the weekly reset date, so it
+ * is worth most spent early: while the account holds one that gives back
+ * `spare` of the week, the line is raised by that much, fading with the week
+ * left, so the first 100% may go fast. Once one was claimed at `rebase.at`,
+ * leaving the week at `rebase.from`, the line starts again there and spends
+ * the rest evenly to the weekly reset.
+ */
+export interface PacePlan {
+  readonly spare?: number
+  readonly rebase?: { readonly at: number; readonly from: number }
+}
+
+/** An account's spend-evenly line now: the share of its week it may have used. */
+export const lineOf = (resetAt: number, now: number, plan: PacePlan | undefined): number => {
+  const left = (resetAt - now) / WEEK
+  const rebase = plan?.rebase
+  const base =
+    rebase !== undefined && rebase.at <= now && rebase.at > resetAt - WEEK && resetAt > rebase.at
+      ? rebase.from + (TARGET - rebase.from) * ((now - rebase.at) / (resetAt - rebase.at))
+      : TARGET * (1 - left)
+  return base + LEEWAY + (plan?.spare ?? 0) * Math.max(left, 0)
+}
+
+/**
  * The pace of a pool whose accounts read `accounts` at `now`, with the agents
  * `inflight` charged on top, for a start of `model` when one is named. A
  * model's own weekly window (`7d:Fable`) holds only that model's starts; the
  * account's 5-hour and weekly windows hold every start, since every model's
- * requests spend them.
+ * requests spend them. `plans` moves an account's line by its resets.
  */
-export function poolPace(accounts: ReadonlyArray<AccountStatus>, now: number, inflight: Inflight = NO_INFLIGHT, model?: string): Pace {
+export function poolPace(
+  accounts: ReadonlyArray<AccountStatus>,
+  now: number,
+  inflight: Inflight = NO_INFLIGHT,
+  model?: string,
+  plans: Readonly<Record<string, PacePlan>> = {},
+): Pace {
   if (!accounts.length) return { ok: true, measured: false, reason: "no pooled account readings" }
   const available = accounts.filter((a) => blockedUntil(a, now, model) === undefined)
   if (!available.length) {
@@ -90,7 +121,9 @@ export function poolPace(accounts: ReadonlyArray<AccountStatus>, now: number, in
   }
   const known = accounts.flatMap((a) => {
     const w = a.reading?.windows.find((w) => w.name === "7d")
-    return w?.resetAt !== undefined && w.resetAt > now && w.resetAt <= now + WEEK ? [{ used: w.utilization, resetAt: w.resetAt }] : []
+    return w?.resetAt !== undefined && w.resetAt > now && w.resetAt <= now + WEEK
+      ? [{ used: w.utilization, resetAt: w.resetAt, plan: plans[a.credentialID] }]
+      : []
   })
   const short = available.flatMap((a) => {
     const resets = (a.reading?.windows ?? []).flatMap((w) =>
@@ -105,7 +138,7 @@ export function poolPace(accounts: ReadonlyArray<AccountStatus>, now: number, in
   const read = known.reduce((n, a) => n + a.used, 0)
   const charged = inflight.starts.length * inflight.cost
   const spent = read + charged
-  const allowance = known.reduce((n, a) => n + TARGET * (1 - (a.resetAt - now) / WEEK) + LEEWAY, 0)
+  const allowance = known.reduce((n, a) => n + lineOf(a.resetAt, now, a.plan), 0)
   if (spent <= allowance + 1e-9) return { ok: true, measured: true, reason: "the pool is within its weekly pace" }
   const catchesUp = now + ((spent - allowance) * WEEK) / (known.length * TARGET)
   const settles = inflight.starts.length ? [Math.min(...inflight.starts) + inflight.settleMs + 1] : []
