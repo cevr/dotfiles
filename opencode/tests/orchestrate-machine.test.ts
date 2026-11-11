@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { RULES } from "../mods/orchestrate/machine.ts"
-import type { Result, Spec } from "./orchestrate/run.ts"
+import type { MoveResult, Result, Spec } from "./orchestrate/run.ts"
 import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -48,12 +48,12 @@ interface MachineResult extends Result {
 /** Words of the machine block that nothing else in the run says. */
 const BLOCK = "ONE fresh verifier per batch"
 
-const run = async (): Promise<MachineResult> => {
-  const base = join(scratch, "machine")
+const run = async <R extends Result = MachineResult>(scenario: "machine" | "move" = "machine"): Promise<R> => {
+  const base = join(scratch, scenario)
   const home = join(base, "home")
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
-  const spec = { scenario: "machine", base, fork: resolve(fork ?? ""), plugin: join(ROOT, "cmd/orchestrate"), now: "2026-11-04T15:00:00Z" } as unknown as Spec
+  const spec = { scenario, base, fork: resolve(fork ?? ""), plugin: join(ROOT, "cmd/orchestrate"), now: "2026-11-04T15:00:00Z" } as unknown as Spec
   writeFileSync(file, JSON.stringify(spec))
   const child = owned([process.execPath, join(import.meta.dir, "orchestrate/run.ts"), file], {
     env: {
@@ -74,8 +74,8 @@ const run = async (): Promise<MachineResult> => {
   await child.exited
   clearTimeout(timer)
   const result = join(base, "result.json")
-  if (child.exitCode !== 0 || !existsSync(result)) throw new Error(`the machine run failed (exit ${child.exitCode}):\n${stdout}\n${stderr}`)
-  return JSON.parse(readFileSync(result, "utf8")) as MachineResult
+  if (child.exitCode !== 0 || !existsSync(result)) throw new Error(`the ${scenario} run failed (exit ${child.exitCode}):\n${stdout}\n${stderr}`)
+  return JSON.parse(readFileSync(result, "utf8")) as R
 }
 
 const textOf = (value: unknown) => JSON.stringify(value)
@@ -128,6 +128,24 @@ describe.skipIf(!fork)("a root that compacts mid-run and drifts still lands as a
       expect(result.ledger.find((line) => line.kind === "BatchLanded")).toMatchObject({ units: ["alpha", "beta", "gamma"] })
       expect(result.ledger.find((line) => line.kind === "VerifierStarted")).toMatchObject({ batch: "batch-1", units: ["alpha", "beta", "gamma"] })
       expect(kinds).not.toContain("Departed")
+    },
+    200_000,
+  )
+})
+
+// The verifier's location probe (round 1, M1): a root that moves between two
+// directories is decided by two plugin copies, one per location, over one
+// ledger. Each must see the other's lines.
+describe.skipIf(!fork)("a root that moves between locations is held to one machine", () => {
+  test(
+    "a land of one of two ready units made in two places is refused; a run that keeps the machine across moves is never refused",
+    async () => {
+      const result = await run<MoveResult>("move")
+      expect(result.partial.filter((line) => line.kind === "Refused").map((line) => line.rule)).toEqual(["LandPartial"])
+      expect(result.legal.filter((line) => line.kind === "Refused")).toEqual([])
+      expect(result.legal.filter((line) => line.kind === "BatchLanded").map((line) => line.units)).toEqual([["legal-a", "legal-b"], ["legal-c"]])
+      expect(result.legal.find((line) => line.kind === "VerifierEnded")).toMatchObject({ batch: "batch-1", verdict: "changes" })
+      expect(result.riftLands).toEqual([["legal-a", "legal-b"], ["legal-c"]])
     },
     200_000,
   )

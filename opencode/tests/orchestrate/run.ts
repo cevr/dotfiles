@@ -23,15 +23,20 @@
  *   with a fixture `rift` tool written beside the fake pace plugin and the
  *   plugin's ledger in the scratch dir; the result carries the lands, the
  *   root's children, its ledger lines and its own requests.
+ * - `move`: two roots, each turn one `probe:` call, move between `work` and
+ *   `other` (two plugin copies, one per location) between their steps: one
+ *   lands one of two ready units, the other keeps the machine through a land,
+ *   a verifier's hand-back and the next land; the result carries each one's
+ *   ledger lines and the lands.
  *
  * @module
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { ESCAPE_TASK, isMachineRoot, MACHINE_TASK, machineTokens, RESTART_TASK, ROOT_TASK, serve, UNITS_TASK } from "./sim.ts"
+import { ESCAPE_TASK, HAND_BACK, isMachineRoot, MACHINE_TASK, machineTokens, PROBE, RESTART_TASK, ROOT_TASK, serve, UNITS_TASK } from "./sim.ts"
 
 export interface Spec {
-  readonly scenario: "subagents" | "compaction" | "units" | "restart" | "machine"
+  readonly scenario: "subagents" | "compaction" | "units" | "restart" | "machine" | "move"
   readonly base: string
   readonly fork: string
   readonly plugin: string
@@ -76,6 +81,16 @@ export interface MachineResult extends Result {
   readonly rootRequests: ReadonlyArray<{ readonly last: string; readonly messages: ReadonlyArray<unknown> }>
 }
 
+/** What the `move` scenario adds (tests/orchestrate-machine.test.ts). */
+export interface MoveResult extends Result {
+  /** The `rifts` of each land the fixture rift tool ran, in order. */
+  readonly riftLands: ReadonlyArray<ReadonlyArray<string>>
+  /** The ledger's lines of the root that lands one of two ready units after its moves. */
+  readonly partial: ReadonlyArray<Record<string, unknown>>
+  /** The ledger's lines of the root that keeps the machine across its moves. */
+  readonly legal: ReadonlyArray<Record<string, unknown>>
+}
+
 const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
 const work = join(spec.base, "work")
 const config = join(spec.base, "config")
@@ -89,7 +104,8 @@ const sim = serve(spec.scenario === "machine" ? machineTokens : typeof tokens ==
 const riftPlugin = join(spec.base, "fake-rift")
 const riftLog = join(spec.base, "rift-lands.jsonl")
 const ledgerFile = join(spec.base, "machine.jsonl")
-if (spec.scenario === "machine") {
+const machined = spec.scenario === "machine" || spec.scenario === "move"
+if (machined) {
   mkdirSync(riftPlugin, { recursive: true })
   writeFileSync(join(riftPlugin, "package.json"), JSON.stringify({ type: "module", exports: { "./server": "./server.js" } }))
   writeFileSync(
@@ -160,11 +176,11 @@ const content = {
         unitLog: join(spec.plugin, "../../../skills/orchestrate/scripts/log.ts"),
         ...codexOption,
         ...(spec.resumeBackoffMs === undefined ? {} : { resume: { backoffMs: spec.resumeBackoffMs } }),
-        ...(spec.scenario === "machine" ? { ledger: ledgerFile } : {}),
+        ...(machined ? { ledger: ledgerFile } : {}),
       },
     },
     ...(spec.pace !== undefined ? [{ package: pacePlugin }] : []),
-    ...(spec.scenario === "machine" ? [{ package: riftPlugin }] : []),
+    ...(machined ? [{ package: riftPlugin }] : []),
   ],
 }
 
@@ -185,6 +201,7 @@ interface Embedded {
     readonly prompt: (input: { sessionID: string; text: string }) => Promise<unknown>
     readonly context: (input: { sessionID: string }) => Promise<unknown>
     readonly interrupt: (input: { sessionID: string }) => Promise<unknown>
+    readonly move: (input: { sessionID: string; directory: string }) => Promise<unknown>
   }
   readonly experimental: { readonly session: { readonly wait: (input: { sessionID: string }) => Promise<void> } }
   readonly close: () => Promise<void>
@@ -261,6 +278,52 @@ try {
       sessions[name] = { messages: await messages(id) }
     const children = [...(await childrenOf(root.id)), ...(await childrenOf(escaped.id))].map((id) => ({ id }))
     result = { children, sessions, seen: sim.seen, log: [] }
+  } else if (spec.scenario === "move") {
+    const other = join(spec.base, "other")
+    mkdirSync(other, { recursive: true })
+    const call = (sessionID: string, name: string, input: Record<string, unknown>) => turn(sessionID, `${PROBE}${JSON.stringify({ name, input })}`)
+    const implement = (sessionID: string, unit: string) =>
+      call(sessionID, "subagent", { agent: "implementor", description: `implementor ${unit} r1`, prompt: `${HAND_BACK} implementor ${unit} r1: ready /nonexistent/loop-probe-x/request.md` })
+    const moveTo = async (sessionID: string, directory: string) => {
+      await opencode.sessions.move({ sessionID, directory })
+      await opencode.experimental.session.wait({ sessionID })
+    }
+    // A root that drifts across a move: a ready unit here, one there, then a land of the first alone.
+    const partial = await opencode.sessions.create({ location })
+    await implement(partial.id, "move-a")
+    await moveTo(partial.id, other)
+    await implement(partial.id, "move-b")
+    await moveTo(partial.id, work)
+    await call(partial.id, "rift", { action: "land", rifts: ["move-a"] })
+    // A root that keeps the machine across moves: both units land, the batch's verifier hands back, the next unit lands.
+    const legal = await opencode.sessions.create({ location })
+    await implement(legal.id, "legal-a")
+    await moveTo(legal.id, other)
+    await implement(legal.id, "legal-b")
+    await moveTo(legal.id, work)
+    await call(legal.id, "rift", { action: "land", rifts: ["legal-a", "legal-b"] })
+    await moveTo(legal.id, other)
+    await call(legal.id, "subagent", { agent: "verifier", description: "verifier batch-1 r1", prompt: `${HAND_BACK} verifier batch-1 r1: changes /nonexistent/loop-probe-x/findings.md` })
+    await moveTo(legal.id, work)
+    await implement(legal.id, "legal-c")
+    await call(legal.id, "rift", { action: "land", rifts: ["legal-c"] })
+    const lines = (existsSync(ledgerFile) ? readFileSync(ledgerFile, "utf8").split("\n") : []).flatMap((line) => {
+      try {
+        return [JSON.parse(line) as Record<string, unknown>]
+      } catch {
+        return []
+      }
+    })
+    const moved: MoveResult = {
+      children: [],
+      sessions: {},
+      seen: [],
+      log: [],
+      riftLands: (existsSync(riftLog) ? readFileSync(riftLog, "utf8").split("\n").filter((line) => line !== "") : []).map((line) => JSON.parse(line) as ReadonlyArray<string>),
+      partial: lines.filter((line) => line.sessionID === partial.id),
+      legal: lines.filter((line) => line.sessionID === legal.id),
+    }
+    result = moved
   } else if (spec.scenario === "machine") {
     const root = await opencode.sessions.create({ location })
     await turn(root.id, MACHINE_TASK)

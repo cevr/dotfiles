@@ -29,6 +29,8 @@ export const SUMMARY = "## Objective\n- sim summary"
 export const UNITS_TASK = "units"
 /** A task whose last line is `handback: <line>` answers with that line first. */
 export const HAND_BACK = "handback:"
+/** A root turn that makes one given call: `probe:` and `{ name, input }` as JSON. */
+export const PROBE = "probe:"
 /** A root task that calls one foreground subagent on `HANG_TASK`, then closes. */
 export const RESTART_TASK = "restart-root"
 /** The same, for the root the user interrupts. */
@@ -134,6 +136,12 @@ export const reply = (request: ChatRequest): Reply => {
     .join("\n")
   if (system.includes("You name conversations")) return { kind: "text", text: "Orchestrate run" }
   const last = text(messages.at(-1)?.content)
+  // A probe turn (`probe:{"name":…,"input":…}`): the root makes that one call, then says it is done.
+  const probed = messages.findLastIndex((message) => message.role === "user" && text(message.content).startsWith(PROBE))
+  if (probed >= 0) {
+    const asked = JSON.parse(text(messages[probed]!.content).slice(PROBE.length)) as { name: string; input: Record<string, unknown> }
+    return messages.slice(probed + 1).some((message) => message.role === "tool") ? { kind: "text", text: "probe done" } : { kind: "tool", ...asked }
+  }
   if (last.includes("You MUST summarize the conversation")) return { kind: "text", text: isMachineRoot({ system, messages }) ? MACHINE_SUMMARY : SUMMARY }
   const task = lastLine(text(messages.find((message) => message.role === "user")?.content))
   const results = messages.filter((message) => message.role === "tool").length
