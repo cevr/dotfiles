@@ -15,6 +15,8 @@
 //   early in the week and claimed on a yes; a Fable reset about to expire
 //   unused is claimed on its own, empties Fable's week and gives its part of
 //   the weekly use back, and the owner is told in the tray after.
+// - One spent week, two weekly resets about to expire: one is claimed, and
+//   the reading after it (the week back to 0%) keeps the second.
 import { afterAll, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -405,6 +407,51 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
       // Each claim once.
       await Bun.sleep(7000)
       expect(anthropic.claims).toHaveLength(2)
+    },
+    TIMEOUT_MS,
+  )
+
+  test(
+    "one spent week with two weekly resets about to expire spends one: the reading after it shows the week back, so the second is kept",
+    async () => {
+      const now = Date.now()
+      const accounts = { e: fakeAccount() }
+      // The round-1 verifier's case: the week spent, resetting in three days; two weekly grants ending in two hours.
+      let quota: FakeQuota = { fiveHour: { utilization: 0.2, resetAt: now + HOUR }, sevenDay: { utilization: 1, resetAt: now + 3 * DAY } }
+      const claimed = new Set<string>()
+      const grantsOf = (): ReadonlyArray<FakeGrant> =>
+        ["g1", "g2"].map((id) => ({ id, resetsLeft: claimed.has(id) ? 0 : 1, endsAt: now + 2 * HOUR, clears: ["seven_day"], type: "weekly" as const }))
+      const anthropic = startFakeAnthropic({
+        accounts,
+        quota: () => quota,
+        grants: grantsOf,
+        claim: (_account, grant) => {
+          const found = grantsOf().find((item) => item.id === grant)
+          if (found !== undefined) quota = claimEffect(quota, found)
+          claimed.add(grant)
+          return "reset"
+        },
+      })
+      stops.push(anthropic.stop)
+      const { pool, log } = await serve("two-grants", accounts, anthropic.url, now)
+      await until(
+        async () => {
+          await pool("pace", { providerID: "anthropic", sessionID: SESSION })
+          return anthropic.claims.length
+        },
+        (count) => count > 0,
+        () => `a claim (${log()})`,
+      )
+      // Three sweeps (6 s each) after it, each reading the week back to 0%: no second grant goes. Asked every second
+      // (a connection idle past the server's keep-alive is closed under the next request).
+      for (let second = 0; second < 20; second++) {
+        await Bun.sleep(SECOND)
+        await pool("pace", { providerID: "anthropic", sessionID: SESSION })
+      }
+      expect(anthropic.claims.map(({ account, grant, result }) => ({ account, grant, result }))).toEqual([{ account: "e", grant: "g1", result: "reset" }])
+      const settled = (await pool("resets")) as Resets
+      expect(settled.claims).toHaveLength(1)
+      expect(settled.claims[0]?.after?.find((window) => window.name === "7d")?.utilization).toBe(0)
     },
     TIMEOUT_MS,
   )
