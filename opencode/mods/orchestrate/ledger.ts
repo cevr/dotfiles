@@ -85,6 +85,8 @@ const Unit = Schema.Struct({
 const State = Schema.Struct({
   units: Schema.Record(Schema.String, Unit),
   verifier: Schema.optionalKey(Schema.Struct({ batch: Schema.String, since: Schema.Number, child: Schema.optionalKey(Schema.String) })),
+  findings: Schema.optionalKey(Schema.Record(Schema.String, Schema.Struct({ batch: Schema.String, into: Schema.optionalKey(Schema.String) }))),
+  carried: Schema.optionalKey(Schema.Record(Schema.String, Schema.Struct({ batch: Schema.String, into: Schema.String }))),
 })
 
 /** A root's whole state as one line, stamped with its last line's time. */
@@ -127,7 +129,8 @@ export const stateOf = (cadence: Cadence, lines: ReadonlyArray<unknown>): Machin
   return state
 }
 
-const holds = (state: MachineState) => Object.keys(state.units).length > 0 || state.verifier !== undefined
+const holds = (state: MachineState) =>
+  Object.keys(state.units).length > 0 || state.verifier !== undefined || state.findings !== undefined || state.carried !== undefined
 const isAudit = (line: unknown) => isRecord(line) && (line.kind === "Departed" || line.kind === "Refused")
 
 /**

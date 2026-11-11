@@ -18,7 +18,7 @@ const flat = (text: string) => text.replace(/\s+/g, " ")
 
 describe("the machine's words are the skill's", () => {
   test("each rule quotes SKILL.md word for word, under the name a departure names it by", () => {
-    expect(Object.keys(RULES).sort()).toEqual(["BatchNotDue", "BatchUnverified", "LandPartial", "VerifierPerUnit", "VerifierRunning"])
+    expect(Object.keys(RULES).sort()).toEqual(["BatchNotDue", "FindingUnfolded", "LandPartial", "VerdictPending", "VerifierPerUnit", "VerifierRunning"])
     for (const [rule, { name, words }] of Object.entries(RULES)) {
       expect([rule, words.length > 20 && flat(skill).includes(flat(words))]).toEqual([rule, true])
       expect([rule, name.length > 0 && skill.includes(name)]).toEqual([rule, true])
@@ -32,6 +32,7 @@ describe("the machine's words are the skill's", () => {
     expect(machine!.startsWith("## The machine")).toBe(true)
     expect(machine).toContain("verify: ONE fresh verifier per batch, on the merged head")
     expect(machine).toContain("4. **Fan out what follows**")
+    expect(machine).toContain("**The pipeline.**")
     expect(machine).not.toContain("**States.**")
   })
 

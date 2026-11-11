@@ -1,28 +1,33 @@
 // The batch machine one root runs, as the plugin's ledger decides it
 // (machine.ts): a model-based test. A small reference model of the skill's
-// machine (the shadow below: sets of units by state, and whether a verifier
-// runs) and the Machine decider take the same generated command sequences;
-// each step must agree on the outcome (accepted, or refused by which rule),
-// and the invariants are checked on every state the decider reaches:
+// machine (the shadow below: sets of units by state, whether a verifier
+// runs, the last verdicts' findings and where each was folded) and the
+// Machine decider take the same generated command sequences; each step must
+// agree on the outcome (accepted, or refused by which rule), and the
+// invariants are checked on every state the decider reaches:
 //
 //   I1  never two verifiers at once, unless the start departed from it;
 //   I2  a verifier that starts without a departure names a batch, and covers
 //       every landed unit (with none landed, every ready one: a land by hand);
 //   I3  a land that passes without a departure names every ready unit, and
 //       comes only when the cadence is met or no implementor is running;
-//   I4  no land passes while an earlier land is unverified, unless it departed;
+//   I4  no land passes while a landed batch has no verdict (no verifier yet,
+//       or its verifier still runs), or while a finding of the last verdict
+//       is not folded into a unit it lands, unless it departed;
 //   I5  a unit is in `verify` only while a verifier runs;
-//   L1  the guard never deadlocks a compliant root: once the oldest ready unit
-//       has waited the cadence's time, landing every ready unit passes (after
-//       a verifier start for what is landed), and a batch verifier start
-//       passes whenever none runs and something is landed;
+//   I6  an implementor's start is never refused: the next batch fans out
+//       while a verifier runs (the pipeline);
+//   L1  the guard never deadlocks a compliant root: the verifier's verdict
+//       comes in, each finding is folded into a unit that hands back ready,
+//       and once the oldest ready unit has waited the cadence's time,
+//       landing every ready unit passes;
 //   L2  every refused command passes when it states a departure, and records
 //       it under the rule it broke.
 //
-// Then the stories of the audited roots, the notes that ride on a start's
-// answer, and the brief a compacted root gets. That each rule's words are the
-// skill's own is git/machine-words.test.ts (this folder's root files read no
-// file).
+// Then the stories of the audited roots and of the pipeline, the notes that
+// ride on a start's answer, and the brief a compacted root gets. That each
+// rule's words are the skill's own is git/machine-words.test.ts (this
+// folder's root files read no file).
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import {
@@ -37,12 +42,14 @@ import {
   machine,
   type MachineState,
   notesOf,
+  reportOf,
   type Rule,
   RULES,
   Spawned,
   Start,
   startOf,
   unitOfRift,
+  verifierPromptOf,
 } from "./machine.ts"
 
 const CADENCE: Cadence = { ready: 3, waitMs: 30 * 60_000 }
@@ -69,6 +76,10 @@ type ShadowState = "implement" | "ended" | "ready" | "landed" | "verify"
 interface Shadow {
   readonly units: Map<string, { state: ShadowState; since: number; direct: boolean }>
   verifier: string | undefined
+  /** The last verdicts' findings not landed yet: the batch, and the unit each was folded into. */
+  readonly findings: Map<string, { batch: string; into: string | undefined }>
+  /** Findings folded into units that landed, for the next verifier. */
+  readonly carried: Map<string, { batch: string; into: string }>
 }
 const BATCH = /^batch-/
 const inState = (shadow: Shadow, ...states: ReadonlyArray<ShadowState>) => [...shadow.units].filter(([, unit]) => states.includes(unit.state)).map(([name]) => name)
@@ -88,6 +99,8 @@ const notDue = (shadow: Shadow, now: number) => {
   const oldest = Math.min(...ready.map((unit) => shadow.units.get(unit)!.since))
   return now - oldest < CADENCE.waitMs && inState(shadow, "implement").length > 0
 }
+/** The findings a land of `lands` leaves unfolded. */
+const unfolded = (shadow: Shadow, lands: ReadonlyArray<string>) => [...shadow.findings].filter(([, finding]) => finding.into === undefined || !lands.includes(finding.into)).map(([key]) => key)
 /** The rules `command` breaks on `shadow`, in the order they are checked. */
 const broken = (shadow: Shadow, command: Command, now: number): ReadonlyArray<Rule> => {
   if (command._tag === "Start" && command.role === "verifier") {
@@ -101,7 +114,8 @@ const broken = (shadow: Shadow, command: Command, now: number): ReadonlyArray<Ru
     const lands = matched(shadow, command.rifts)
     if (lands.length === 0) return []
     const rules: Array<Rule> = []
-    if (inState(shadow, "landed").length > 0 && shadow.verifier === undefined) rules.push("BatchUnverified")
+    if (inState(shadow, "landed", "verify").length > 0) rules.push("VerdictPending")
+    if (unfolded(shadow, lands).length > 0) rules.push("FindingUnfolded")
     if (inState(shadow, "ready").length > lands.length) rules.push("LandPartial")
     if (notDue(shadow, now)) rules.push("BatchNotDue")
     return rules
@@ -112,7 +126,14 @@ const broken = (shadow: Shadow, command: Command, now: number): ReadonlyArray<Ru
 const apply = (shadow: Shadow, command: Command, now: number): void => {
   switch (command._tag) {
     case "Start": {
-      if (command.role === "implementor") shadow.units.set(command.name, { state: "implement", since: now, direct: command.direct })
+      if (command.role === "implementor") {
+        shadow.units.set(command.name, { state: "implement", since: now, direct: command.direct })
+        // Its own unit's findings, and those its folds name, are folded into it.
+        for (const [key, finding] of shadow.findings) {
+          const of = key.split("/")[0]!
+          if (of === command.name || (command.folds ?? []).some((ref) => ref === key || ref === of)) finding.into = command.name
+        }
+      }
       if (command.role !== "verifier") return
       if (!BATCH.test(command.name) && shadow.units.size === 0) return
       const named = shadow.units.get(command.name)
@@ -135,15 +156,28 @@ const apply = (shadow: Shadow, command: Command, now: number): void => {
         else shadow.units.delete(unit)
       }
       shadow.verifier = undefined
+      if (command.verdict === "none") return
+      shadow.carried.clear()
+      if (command.verdict === "changes") for (const key of command.findings ?? []) shadow.findings.set(key, { batch: command.name, into: undefined })
       return
     }
     case "Land":
       return
-    case "Landed":
-      for (const unit of matched(shadow, command.rifts)) {
+    case "Landed": {
+      const lands = matched(shadow, command.rifts)
+      for (const unit of lands) {
         if (shadow.units.get(unit)!.direct) shadow.units.delete(unit)
         else shadow.units.set(unit, { ...shadow.units.get(unit)!, state: "landed", since: now })
       }
+      if (lands.length === 0) return
+      for (const [key, finding] of shadow.findings) {
+        if (finding.into === undefined) shadow.findings.delete(key)
+        else if (lands.includes(finding.into)) {
+          shadow.carried.set(key, { batch: finding.batch, into: finding.into })
+          shadow.findings.delete(key)
+        }
+      }
+    }
   }
 }
 
@@ -159,16 +193,25 @@ const UNITS = ["alpha", "beta", "gamma", "delta", "eps"] as const
 const riftFor = (unit: string, pick: number) => [unit, `feat/${unit}`, `/home/me/.rifts/repo/${unit}`, `run-${unit}`][pick % 4]!
 
 const command = (random: () => number, shadow: Shadow): Command => {
-  const pick = <A>(list: ReadonlyArray<A>): A => list[Math.floor(random() * list.length)]!
+  const pick = <A,>(list: ReadonlyArray<A>): A => list[Math.floor(random() * list.length)]!
   const departs = random() < 0.08 ? { departs: "the owner asked for this one alone" } : {}
   const roll = random()
-  if (roll < 0.3) return Start.make({ role: "implementor", name: pick(UNITS), round: 1 + Math.floor(random() * 5), direct: random() < 0.1 })
+  if (roll < 0.3) {
+    // Now and then a fold: a finding by its key, or every finding of a unit, maybe one that is no open finding's.
+    const open = [...shadow.findings.keys()]
+    const folds = random() < 0.4 ? [random() < 0.15 || open.length === 0 ? `${pick(UNITS)}/M9` : random() < 0.5 ? pick(open) : pick(open).split("/")[0]!] : []
+    return Start.make({ role: "implementor", name: pick(UNITS), round: 1 + Math.floor(random() * 5), direct: random() < 0.1, ...(folds.length === 0 ? {} : { folds }) })
+  }
   if (roll < 0.55) return HandBack.make({ role: "implementor", name: pick(UNITS), verdict: pick(["ready", "ready", "ready", "blocked", "none"] as const) })
   if (roll < 0.68) {
     const name = random() < 0.7 ? `batch-${1 + Math.floor(random() * 3)}` : pick(UNITS)
     return Start.make({ role: "verifier", name, round: 1, direct: false, ...departs })
   }
-  if (roll < 0.78) return HandBack.make({ role: "verifier", name: shadow.verifier ?? "batch-1", verdict: pick(["accepted", "changes", "stuck", "none"] as const) })
+  if (roll < 0.78) {
+    const verdict = pick(["accepted", "changes", "changes", "stuck", "none"] as const)
+    const findings = inState(shadow, "verify").flatMap((unit) => (random() < 0.5 ? [`${unit}/M${1 + Math.floor(random() * 2)}`] : []))
+    return HandBack.make({ role: "verifier", name: shadow.verifier ?? "batch-1", verdict, ...(verdict === "changes" && findings.length > 0 ? { findings } : {}) })
+  }
   const ready = inState(shadow, "ready")
   // Mostly the whole ready set, sometimes a part of it or a Rift that is no unit's.
   const some = ready.filter(() => random() < 0.8)
@@ -180,11 +223,17 @@ const command = (random: () => number, shadow: Shadow): Command => {
 const SEQUENCES = 1500
 const STEPS = 45
 
+const statesOf = (state: MachineState) => Object.fromEntries(Object.entries(state.units).map(([name, unit]) => [name, unit.state]))
+const findingsOf = (state: MachineState) => Object.fromEntries(Object.entries(state.findings ?? {}).map(([key, finding]) => [key, `${finding.batch}:${finding.into ?? "-"}`]))
+const shadowFindings = (shadow: Shadow) => Object.fromEntries([...shadow.findings].map(([key, finding]) => [key, `${finding.batch}:${finding.into ?? "-"}`]))
+const carriedOf = (state: MachineState) => Object.fromEntries(Object.entries(state.carried ?? {}).map(([key, finding]) => [key, `${finding.batch}:${finding.into}`]))
+const shadowCarried = (shadow: Shadow) => Object.fromEntries([...shadow.carried].map(([key, finding]) => [key, `${finding.batch}:${finding.into}`]))
+
 describe("the machine against its reference model", () => {
   test(`${SEQUENCES} generated runs agree on every outcome and keep the invariants`, async () => {
     for (let seed = 1; seed <= SEQUENCES; seed++) {
       const random = rng(seed)
-      const shadow: Shadow = { units: new Map(), verifier: undefined }
+      const shadow: Shadow = { units: new Map(), verifier: undefined, findings: new Map(), carried: new Map() }
       let state = M.initial
       let now = 1_800_000_000_000
       for (let step = 0; step < STEPS; step++) {
@@ -194,6 +243,8 @@ describe("the machine against its reference model", () => {
         const rules = broken(shadow, next, now)
         const departs = "departs" in next && next.departs !== undefined
         const outcome = await decide(state, next, now)
+        // I6: an implementor's start is never refused.
+        if (next._tag === "Start" && next.role === "implementor") expect([where, "events" in outcome]).toEqual([where, true])
 
         if (rules.length > 0 && !departs) {
           // Refused by the first rule it breaks, in the rule's own words; the state stays.
@@ -212,13 +263,16 @@ describe("the machine against its reference model", () => {
 
         const readyBefore = inState(shadow, "ready")
         const landedBefore = inState(shadow, "landed")
+        const pendingBefore = inState(shadow, "landed", "verify")
+        const unfoldedBefore = next._tag === "Land" ? unfolded(shadow, matched(shadow, next.rifts)) : []
         apply(shadow, next, now)
         state = evolve(state, outcome.events)
 
         // The decider's state is the shadow's.
-        const units = Object.fromEntries(Object.entries(state.units).map(([name, unit]) => [name, unit.state]))
+        const units = statesOf(state)
         expect([where, units]).toEqual([where, Object.fromEntries([...shadow.units].map(([name, unit]) => [name, unit.state]))])
         expect([where, state.verifier?.batch]).toEqual([where, shadow.verifier])
+        expect([where, findingsOf(state), carriedOf(state)]).toEqual([where, shadowFindings(shadow), shadowCarried(shadow)])
         // I5: a unit is in `verify` only while a verifier runs.
         if (state.verifier === undefined) expect([where, Object.values(units).includes("verify")]).toEqual([where, false])
         // I2: a verifier that starts with no departure names a batch and covers all that was ready or landed.
@@ -227,25 +281,32 @@ describe("the machine against its reference model", () => {
           expect([where, BATCH.test(started.batch)]).toEqual([where, true])
           expect([where, [...started.units].sort()]).toEqual([where, [...(landedBefore.length > 0 ? landedBefore : readyBefore)].sort()])
         }
-        // I3, I4: a land that passes with no departure took every ready unit, with nothing landed left unverified.
+        // I3, I4: a land that passes with no departure took every ready unit, with no verdict pending and every finding folded into it.
         if (next._tag === "Land" && departed.length === 0 && matched({ ...shadow }, next.rifts).length > 0) {
           expect([where, matched(shadow, next.rifts).sort()]).toEqual([where, [...readyBefore].sort()])
-          expect([where, landedBefore.length === 0 || shadow.verifier !== undefined]).toEqual([where, true])
+          expect([where, pendingBefore, unfoldedBefore]).toEqual([where, [], []])
         }
       }
 
-      // L1: a compliant root is never stuck. Verify what is landed, wait out the cadence, land every ready unit.
+      // L1: a compliant root is never stuck. The verdict comes in, each finding is folded into a unit that hands back ready, and every ready unit lands.
       const end = `seed ${seed} at its end`
-      if (state.verifier !== undefined) {
-        const done = await decide(state, HandBack.make({ role: "verifier", name: state.verifier.batch, verdict: "accepted" }), now)
-        expect([end, "events" in done]).toEqual([end, true])
+      const step = async (next: Command) => {
+        const done = await decide(state, next, now)
+        expect([end, JSON.stringify(next), "events" in done]).toEqual([end, JSON.stringify(next), true])
         if ("events" in done) state = evolve(state, done.events)
       }
+      if (state.verifier !== undefined) await step(HandBack.make({ role: "verifier", name: state.verifier.batch, verdict: "accepted" }))
       if (Object.values(state.units).some((unit) => unit.state === "landed")) {
-        const verify = await decide(state, Start.make({ role: "verifier", name: "batch-9", round: 1, direct: false }), now)
-        expect([end, "events" in verify]).toEqual([end, true])
-        if ("events" in verify) state = evolve(state, verify.events)
+        await step(Start.make({ role: "verifier", name: "batch-9", round: 1, direct: false }))
+        await step(HandBack.make({ role: "verifier", name: "batch-9", verdict: "accepted" }))
       }
+      const open = Object.keys(state.findings ?? {})
+      if (open.length > 0) {
+        await step(Start.make({ role: "implementor", name: "fixer", round: 1, direct: false, folds: open }))
+        await step(HandBack.make({ role: "implementor", name: "fixer", verdict: "ready" }))
+      }
+      // Each finding folded into a unit still implementing lands when that unit hands back ready.
+      for (const [name, unit] of Object.entries(state.units)) if (unit.state === "implement") await step(HandBack.make({ role: "implementor", name, verdict: "ready" }))
       const ready = Object.entries(state.units).filter(([, unit]) => unit.state === "ready").map(([name]) => name)
       if (ready.length > 0) {
         const land = await decide(state, Land.make({ rifts: ready }), now + CADENCE.waitMs)
@@ -292,11 +353,106 @@ describe("the machine's stories", () => {
     if ("refused" in last) expect(last.message).toContain("beta")
   })
 
-  test("a second land with the first one's units unverified is refused until a verifier starts", async () => {
+  test("a second land is refused until the first one's verdict is in: before its verifier starts, and while it runs", async () => {
     const first: ReadonlyArray<readonly [Command, number]> = [[impl("alpha"), 0], [ready("alpha"), MIN], [Land.make({ rifts: ["alpha"] }), 2 * MIN], [Landed.make({ rifts: ["alpha"] }), 3 * MIN], [impl("beta"), 4 * MIN], [ready("beta"), 5 * MIN]]
-    expect((await run([...first, [Land.make({ rifts: ["beta"] }), 6 * MIN]])).last).toMatchObject({ refused: "BatchUnverified" })
-    const verified = await run([...first, [Start.make({ role: "verifier", name: "batch-1", round: 1, direct: false }), 6 * MIN], [Land.make({ rifts: ["beta"] }), 7 * MIN]])
-    expect(verified.last).toEqual({ events: [] })
+    expect((await run([...first, [Land.make({ rifts: ["beta"] }), 6 * MIN]])).last).toMatchObject({ refused: "VerdictPending" })
+    const verifying: ReadonlyArray<readonly [Command, number]> = [...first, [Start.make({ role: "verifier", name: "batch-1", round: 1, direct: false }), 6 * MIN]]
+    const running = await run([...verifying, [Land.make({ rifts: ["beta"] }), 7 * MIN]])
+    expect(running.last).toMatchObject({ refused: "VerdictPending" })
+    if ("refused" in running.last) expect(running.last.message).toContain("Verifier batch-1 still runs")
+    const verdict = await run([...verifying, [HandBack.make({ role: "verifier", name: "batch-1", verdict: "accepted" }), 8 * MIN], [Land.make({ rifts: ["beta"] }), 9 * MIN]])
+    expect(verdict.last).toEqual({ events: [] })
+  })
+
+  test("the pipeline: the next batch fans out while a verifier runs; the verdict folds into a running implementor and a new fix unit; the next batch lands and its verifier checks the folds", async () => {
+    const verifier = (name: string) => Start.make({ role: "verifier", name, round: 1, direct: false })
+    const steps: Array<readonly [Command, number]> = [
+      [impl("auth"), 0],
+      [impl("billing"), 0],
+      [ready("auth"), MIN],
+      [ready("billing"), MIN],
+      [Land.make({ rifts: ["auth", "billing"] }), 2 * MIN],
+      [Landed.make({ rifts: ["auth", "billing"] }), 2 * MIN],
+      [verifier("batch-1"), 3 * MIN],
+      // Batch 2 fans out while batch-1's verifier runs: no rule holds an implementor.
+      [impl("search"), 4 * MIN],
+      [impl("export"), 4 * MIN],
+      [ready("search"), 5 * MIN],
+    ]
+    const fanned = await run(steps)
+    expect("events" in fanned.last).toBe(true)
+    expect(fanned.state.units.search?.state).toBe("ready")
+    // A land while the verifier runs is refused: the verdict is not in.
+    expect((await run([...steps, [Land.make({ rifts: ["search"] }), 6 * MIN]])).last).toMatchObject({ refused: "VerdictPending" })
+    steps.push([HandBack.make({ role: "verifier", name: "batch-1", verdict: "changes", findings: ["auth/M1", "billing/M1"] }), 40 * MIN])
+    // The verdict is in, its findings are not folded: refused, naming each.
+    const unfolded = await run([...steps, [Land.make({ rifts: ["search"] }), 41 * MIN]])
+    expect(unfolded.last).toMatchObject({ refused: "FindingUnfolded" })
+    if ("refused" in unfolded.last) {
+      expect(unfolded.last.message).toContain(RULES.FindingUnfolded.words)
+      expect(unfolded.last.message).toContain("auth/M1 (not folded)")
+      expect(unfolded.last.message).toContain('departs: "<why>"')
+    }
+    // auth/M1 goes to export's running implementor, as a round message; billing/M1 to a new fix unit.
+    steps.push([Start.make({ role: "implementor", name: "export", round: 1, direct: false, folds: ["auth/M1"] }), 42 * MIN])
+    steps.push([Start.make({ role: "implementor", name: "billing-fix1", round: 1, direct: false, folds: ["billing/M1"] }), 42 * MIN])
+    const folded = await run(steps)
+    expect(folded.state.findings).toEqual({ "auth/M1": { batch: "batch-1", into: "export" }, "billing/M1": { batch: "batch-1", into: "billing-fix1" } })
+    expect(briefOf(folded.state, T0 + 43 * MIN, CADENCE)).toContain("next batch: units search (ready), export (implement), billing-fix1 (implement); folded findings: batch-1 auth/M1 → export, batch-1 billing/M1 → billing-fix1")
+    // Folded into units still implementing: the land waits for them.
+    expect((await run([...steps, [Land.make({ rifts: ["search"] }), 70 * MIN]])).last).toMatchObject({ refused: "FindingUnfolded" })
+    steps.push([ready("export"), 50 * MIN], [ready("billing-fix1"), 51 * MIN])
+    const landed = await run([...steps, [Land.make({ rifts: ["search", "export", "billing-fix1"] }), 52 * MIN], [Landed.make({ rifts: ["search", "export", "billing-fix1"] }), 52 * MIN]])
+    expect(landed.last).toMatchObject({ events: [{ _tag: "BatchLanded" }] })
+    expect(landed.state.findings).toBeUndefined()
+    expect(landed.state.carried).toEqual({ "auth/M1": { batch: "batch-1", into: "export" }, "billing/M1": { batch: "batch-1", into: "billing-fix1" } })
+    // Batch 2's one verifier covers its units and checks batch-1's findings as folded; its prompt names them.
+    const start = verifier("batch-2")
+    expect(notesOf(landed.state, start, T0 + 53 * MIN, CADENCE).join("\n")).toContain("auth/M1 → export, billing/M1 → billing-fix1")
+    expect(verifierPromptOf(landed.state, start)).toContain("- batch-1 auth/M1 → export")
+    const two = await decide(landed.state, start, T0 + 53 * MIN)
+    expect(two).toEqual({ events: [expect.objectContaining({ _tag: "VerifierStarted", batch: "batch-2", units: ["search", "export", "billing-fix1"], findings: ["auth/M1 → export", "billing/M1 → billing-fix1"] })] })
+    if ("events" in two) {
+      const after = evolve(landed.state, two.events)
+      expect(briefOf(after, T0 + 54 * MIN, CADENCE)).toContain("batch-2 verifying: search, export, billing-fix1; checks as folded: auth/M1 → export, billing/M1 → billing-fix1")
+      const done = evolve(after, [{ _tag: "VerifierEnded", batch: "batch-2", verdict: "accepted", at: T0 + 60 * MIN }])
+      expect(done).toEqual({ units: {} })
+    }
+  })
+
+  test("a unit's own next round folds its findings by itself; a fold naming no open finding is said, not refused", async () => {
+    const steps: ReadonlyArray<readonly [Command, number]> = [
+      [impl("auth"), 0],
+      [ready("auth"), MIN],
+      [Landed.make({ rifts: ["auth"] }), 2 * MIN],
+      [Start.make({ role: "verifier", name: "batch-1", round: 1, direct: false }), 3 * MIN],
+      [HandBack.make({ role: "verifier", name: "batch-1", verdict: "changes", findings: ["auth/B1", "auth/M2"] }), 4 * MIN],
+    ]
+    const { state } = await run(steps)
+    const next = impl("auth", 2)
+    expect(notesOf(state, next, T0 + 5 * MIN, CADENCE).join("\n")).toContain("folded into auth: auth/B1, auth/M2")
+    expect((await run([...steps, [next, 5 * MIN]])).state.findings).toEqual({ "auth/B1": { batch: "batch-1", into: "auth" }, "auth/M2": { batch: "batch-1", into: "auth" } })
+    const stray = Start.make({ role: "implementor", name: "search", round: 1, direct: false, folds: ["auth/M9"] })
+    expect(notesOf(state, stray, T0 + 5 * MIN, CADENCE).join("\n")).toContain("no open finding is named auth/M9")
+    expect(notesOf(state, stray, T0 + 5 * MIN, CADENCE).join("\n")).toContain("not folded yet: auth/B1, auth/M2")
+  })
+
+  test("a land that departs with a finding unfolded passes, and the finding goes with the departure", async () => {
+    const { state, last } = await run([
+      [impl("auth"), 0],
+      [ready("auth"), MIN],
+      [Landed.make({ rifts: ["auth"] }), 2 * MIN],
+      [Start.make({ role: "verifier", name: "batch-1", round: 1, direct: false }), 3 * MIN],
+      [HandBack.make({ role: "verifier", name: "batch-1", verdict: "changes", findings: ["auth/M1"] }), 4 * MIN],
+      [impl("search"), 5 * MIN],
+      [ready("search"), 6 * MIN],
+      [Land.make({ rifts: ["search"], departs: "the owner takes auth/M1 as a known limit" }), 7 * MIN],
+      [Landed.make({ rifts: ["search"] }), 8 * MIN],
+    ])
+    expect(last).toMatchObject({ events: [{ _tag: "BatchLanded" }] })
+    expect(state.findings).toBeUndefined()
+    const departed = await run([[impl("auth"), 0], [ready("auth"), MIN], [Landed.make({ rifts: ["auth"] }), 2 * MIN], [Start.make({ role: "verifier", name: "batch-1", round: 1, direct: false }), 3 * MIN], [HandBack.make({ role: "verifier", name: "batch-1", verdict: "changes", findings: ["auth/M1"] }), 4 * MIN], [impl("search"), 5 * MIN], [ready("search"), 6 * MIN], [Land.make({ rifts: ["search"], departs: "known limit" }), 7 * MIN]])
+    expect(departed.last).toEqual({ events: [expect.objectContaining({ _tag: "Departed", rule: "FindingUnfolded", why: "known limit" })] })
   })
 
   test("a pilot alone, three ready, and the oldest's thirty minutes all pass; a direct unit closes at its land", async () => {
@@ -342,6 +498,12 @@ describe("the machine's stories", () => {
     expect(handBackOf("verifier", "**verifier batch-1 r1: accepted** /tmp/run/batch-1-findings.md")).toEqual(HandBack.make({ role: "verifier", name: "batch-1", verdict: "accepted" }))
     expect(handBackOf("implementor", "implementor alpha r2: ready /u/round-2-request.md")).toMatchObject({ verdict: "ready" })
     expect(handBackOf("implementor", "verifier alpha r2: accepted x")).toBeUndefined()
+    expect(startOf("implementor", "implementor billing r1 (folds: auth/M2, search) (departs: owner)")).toEqual(
+      Start.make({ role: "implementor", name: "billing", round: 1, direct: false, folds: ["auth/M2", "search"], departs: "owner" }),
+    )
+    expect(reportOf("**verifier batch-1 r1: changes** `/tmp/run/batch-1-findings.md`.")).toBe("/tmp/run/batch-1-findings.md")
+    expect(reportOf("verifier batch-1 r1: accepted, see notes")).toBeUndefined()
+    expect(reportOf("not a hand-back /tmp/x.md")).toBeUndefined()
   })
 
   test("a step's session is kept until its hand-back, and a refusal says how to depart", async () => {
