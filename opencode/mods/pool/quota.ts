@@ -29,6 +29,13 @@ export const QuotaWindow = Schema.Struct({
    * 2026-11-09 with Fable's week 12% used).
    */
   weeklyUsed: Schema.optionalKey(Schema.Number),
+  /**
+   * When this window (its use, reset and shares) was read, when not with the
+   * reading that holds it: a window carried over from an older reading
+   * (`carryOver`) keeps the older's time, so a fresh reading never makes it
+   * look fresh (resets.ts `freshView`).
+   */
+  at: Schema.optionalKey(Schema.Number),
 })
 export type QuotaWindow = typeof QuotaWindow.Type
 
@@ -178,10 +185,10 @@ export const limitsModel = (scope: string, modelID: string): boolean => {
 export const carryOver = (held: QuotaReading | undefined, next: QuotaReading, now: number): QuotaReading => {
   if (held === undefined) return next
   const named = new Set(next.windows.map((window) => window.name))
-  const kept = held.windows.filter(
-    (window) => !accountWide(window) && !named.has(window.name) && window.resetAt !== undefined && window.resetAt > now,
-  )
-  // Carried resets keep the time they were read: a claim no one asked for needs them fresh (resets.ts `freshEvidence`).
+  // Carried windows and resets keep the time they were read: a claim no one asked for needs each fresh (resets.ts `freshView`).
+  const kept = held.windows
+    .filter((window) => !accountWide(window) && !named.has(window.name) && window.resetAt !== undefined && window.resetAt > now)
+    .map((window) => ({ at: window.at ?? held.at, ...window }))
   const resets = next.resets === undefined && held.resets !== undefined ? { resets: { at: held.resets.at ?? held.at, ...held.resets } } : {}
   return kept.length === 0 && Object.keys(resets).length === 0 ? next : { ...next, windows: [...next.windows, ...kept], ...resets }
 }
@@ -239,6 +246,7 @@ export function asReading(value: unknown): QuotaReading | undefined {
       ...(finite(window.resetAt) ? { resetAt: window.resetAt } : {}),
       ...(finite(window.ofWeekly) && window.ofWeekly > 0 ? { ofWeekly: Math.min(window.ofWeekly, 1) } : {}),
       ...(finite(window.weeklyUsed) && window.weeklyUsed >= 0 ? { weeklyUsed: Math.min(window.weeklyUsed, 1) } : {}),
+      ...(finite(window.at) ? { at: window.at } : {}),
     })
   }
   const refusal = value.refusal

@@ -110,7 +110,7 @@ describe("use it or lose it", () => {
           const due = resetsIn > expiresIn && (used >= 1 || (expiresIn <= EXPIRING_MS && used >= 0.5))
           const label = `used ${used}, expires in ${expiresIn / HOUR} h, week resets in ${resetsIn / HOUR} h`
           expect(tags(events), label).toEqual(due ? ["ClaimDue"] : [])
-          if (due) expect(events[0], label).toMatchObject({ _tag: "ClaimDue", reset: { key: expiringKey("claude", "anthropic", "a", "7d", T0 + resetsIn), why: "expiring", kind: "weekly", stage: "claiming" } })
+          if (due) expect(events[0], label).toMatchObject({ _tag: "ClaimDue", reset: { key: expiringKey("claude", "a", "7d", T0 + resetsIn), why: "expiring", kind: "weekly", stage: "claiming" } })
         }
   })
 
@@ -144,7 +144,7 @@ describe("use it or lose it", () => {
 
   test("a Codex credit too: its week spent and outliving the credit, it is claimed with no start waiting", () => {
     const view = pool("codex", [account("c", [window("7d", 1, T0 + 2 * DAY)], [{ id: "credit", count: 1, usable: true, status: "available", expiresAt: T0 + 3 * HOUR }]), roomy])
-    expect(run([[T0, Review.make({ pools: [view] })]]).events).toMatchObject([{ _tag: "ClaimDue", reset: { key: expiringKey("codex", "openai", "c", "7d", T0 + 2 * DAY), kind: "codex" } }])
+    expect(run([[T0, Review.make({ pools: [view] })]]).events).toMatchObject([{ _tag: "ClaimDue", reset: { key: expiringKey("codex", "c", "7d", T0 + 2 * DAY), kind: "codex" } }])
   })
 
   test("a reset not claimable now (it needs a limit, or is paused) is left", () => {
@@ -154,7 +154,7 @@ describe("use it or lose it", () => {
 
   test("once claimed the owner is told after, in the session that waited last; a claim that did not go through tells no one", () => {
     const view = pool("claude", [account("a", [window("7d", 1, T0 + 3 * DAY)], [grant("g", T0 + 2 * HOUR, WEEKLY)]), roomy])
-    const key = expiringKey("claude", "anthropic", "a", "7d", T0 + 3 * DAY)
+    const key = expiringKey("claude", "a", "7d", T0 + 3 * DAY)
     const claimed = run([
       [T0 - MINUTE, NoteWait.make({ pool: "openai", sessionID: "ses_old" })],
       [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
@@ -216,7 +216,7 @@ describe("offered on demand", () => {
         why: "offer",
         sessionID: "ses_root",
         header: "Reset now · a",
-        key: offerKey("claude", "anthropic", "a", "weekly", T0 + 6 * DAY),
+        key: offerKey("claude", "a", "weekly", T0 + 6 * DAY),
         question:
           "weekly reset on account a now? Demand: a start is held and 3 starts are in flight across the fleet. It gives back weekly 100% → 0%. " +
           "6.0 days remain before the weekly window resets by itself (2026-11-15), which a claim does not move; " +
@@ -232,7 +232,7 @@ describe("offered on demand", () => {
       [T0 + MINUTE, Review.make({ pools: [offerView(1, 1)] })],
     ])
     expect(tags(asked.events)).toEqual(["WaitNoted", "OwnerAsked"])
-    const key = offerKey("claude", "anthropic", "a", "weekly", T0 + 6 * DAY)
+    const key = offerKey("claude", "a", "weekly", T0 + 6 * DAY)
     // A no: the same account, kind and window period is not asked again, however long a start waits.
     let declined = run([[T0 + 2 * MINUTE, TakeAnswer.make({ key, answer: "Don't claim" })]], asked.state)
     for (let now = T0 + HOUR; now < T0 + 2 * DAY; now += HOUR) {
@@ -262,7 +262,7 @@ describe("offered on demand", () => {
     const claimed = run([
       [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
       [T0, Review.make({ pools: [pool("claude", [stale(T0), roomy])] })],
-      [T0 + MINUTE, SettleClaim.make({ key: expiringKey("claude", "anthropic", "a", "7d:Fable", T0 + 5 * DAY), outcome: "reset", before: [] })],
+      [T0 + MINUTE, SettleClaim.make({ key: expiringKey("claude", "a", "7d:Fable", T0 + 5 * DAY), outcome: "reset", before: [] })],
     ])
     expect(tags(claimed.events)).toEqual(["WaitNoted", "ClaimDue", "ClaimSettled", "OwnerTold"])
     // The same stale reading, reviewed again with a start waiting: no offer of the grant just claimed.
@@ -357,7 +357,7 @@ describe("a Fable reset", () => {
       [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
       [T0, Review.make({ pools: [view] })],
     ])
-    expect(events[1]).toMatchObject({ _tag: "OwnerAsked", reset: { kind: "fable", key: offerKey("claude", "anthropic", "a", "fable", T0 + 6 * DAY) } })
+    expect(events[1]).toMatchObject({ _tag: "OwnerAsked", reset: { kind: "fable", key: offerKey("claude", "a", "fable", T0 + 6 * DAY) } })
     const asked = events[1]
     if (asked?._tag !== "OwnerAsked") throw new Error("not asked")
     expect(asked.reset.question).toContain("Fable reset on account a now?")
@@ -371,7 +371,7 @@ describe("a Fable reset", () => {
       [T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })],
       [T0, Review.make({ pools: [view] })],
     ])
-    expect(events[1]).toMatchObject({ _tag: "OwnerAsked", reset: { key: offerKey("claude", "anthropic", "a", "fable", T0 + 6 * DAY) } })
+    expect(events[1]).toMatchObject({ _tag: "OwnerAsked", reset: { key: offerKey("claude", "a", "fable", T0 + 6 * DAY) } })
   })
 })
 

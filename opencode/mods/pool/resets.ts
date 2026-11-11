@@ -18,13 +18,22 @@
 //   expires, or that restores nothing, is left. The owner is told after
 //   (`OwnerTold`).
 //
-// Spending without the owner is guarded: a claim no one asked for needs
-// fresh evidence (the account read within FRESH_MS, after its last claim);
-// an account takes one claim at a time, and nothing more is claimed,
-// offered or asked on it until a reading newer than the claim shows what it
-// did (`settling`); an expiring claim is keyed by account, window and period,
-// not credit, so a window period takes one; and `Review.auto: false` (the
-// owner's kill switch) claims nothing no one asked for.
+// Spending is guarded at three levels:
+// - Here, the decision: a claim no one asked for rests only on the account's
+//   fields read within FRESH_MS and after its last claim, each by its own
+//   read time (`freshView`: a window carried over from an older reading is
+//   unread). An account is its credential, whichever pool lists it; it takes
+//   one claim at a time, and nothing more is claimed, offered or asked on it
+//   until a reading newer than the claim shows what it did (`settling`). An
+//   expiring claim is keyed by account, window and period, not credit or
+//   pool, so a window period takes one. `Review.auto: false` (the owner's
+//   kill switch) claims nothing no one asked for.
+// - The model, the send: one claim at a time per provider in the process,
+//   each judged again on a reading taken right before it (`staleReason`):
+//   the provider is the authority, so a claim made since from any pool or
+//   host shows there, and what no longer pays is recorded unsent.
+// - The fleet: only one host, the claimer, sends claims; the others offer,
+//   and forward a yes to it (`ForwardedClaim`).
 // - Demand: a reset gives use back but keeps the weekly reset date, so it is
 //   worth most early in the week. When a start waits, or several are in
 //   flight across the fleet (`demandOf`),
@@ -368,21 +377,23 @@ export const holdKey = (provider: ResetProvider, pool: string, credentialID: str
   `${provider}:${pool}:${credentialID}:${Math.floor(until / KEY_BUCKET_MS)}`
 
 /**
- * The key of a reset claimed before it expires: the account, the window it is
- * the last chance for, and that window's period; not the credit. So a window
- * period takes one claim on its own, whichever credit serves it, and the claim
- * sent again (a retry, a restart) has the same request id.
+ * The key of a reset claimed before it expires: the account (its credential,
+ * whichever pool lists it), the window it is the last chance for, and that
+ * window's period; not the credit. So a window period takes one claim on its
+ * own, whichever credit or pool serves it, and the claim sent again (a retry,
+ * a restart) has the same request id.
  */
-export const expiringKey = (provider: ResetProvider, pool: string, credentialID: string, window: string, resetAt: number) =>
-  `${provider}-expiring:${pool}:${credentialID}:${window}:${Math.floor(resetAt / KEY_BUCKET_MS)}`
+export const expiringKey = (provider: ResetProvider, credentialID: string, window: string, resetAt: number) =>
+  `${provider}-expiring:${credentialID}:${window}:${Math.floor(resetAt / KEY_BUCKET_MS)}`
 
 /**
- * The key of an offer: once per account, kind and week (the weekly window's
- * period, else the offered window's), whichever window the offer ranks first:
- * a no to a Fable reset for Fable's week holds for the weekly window too.
+ * The key of an offer: once per account (whichever pool lists it), kind and
+ * week (the weekly window's period, else the offered window's), whichever
+ * window the offer ranks first: a no to a Fable reset for Fable's week holds
+ * for the weekly window too.
  */
-export const offerKey = (provider: ResetProvider, pool: string, credentialID: string, kind: ResetKind, weekResetAt: number) =>
-  `offer:${provider}:${pool}:${credentialID}:${kind}:${Math.floor(weekResetAt / KEY_BUCKET_MS)}`
+export const offerKey = (provider: ResetProvider, credentialID: string, kind: ResetKind, weekResetAt: number) =>
+  `offer:${provider}:${credentialID}:${kind}:${Math.floor(weekResetAt / KEY_BUCKET_MS)}`
 
 /** FNV-1a, 32 bits, as 8 hex digits. */
 const fnv = (text: string) => {
@@ -498,7 +509,37 @@ export const SettleClaim = Schema.TaggedStruct("SettleClaim", {
 })
 export interface SettleClaim extends Schema.Schema.Type<typeof SettleClaim> {}
 
-export type Command = NoteWait | Review | TakeAnswer | SettleClaim
+/**
+ * A claim another host of the fleet sends this one, the fleet's claimer: the
+ * owner said yes there. Its key and request id are the asking host's, so the
+ * same yes sent again is the same claim; the account is named by the reset it
+ * spends (`creditID`), which only that account lists, and the claimer finds
+ * it among its own logins.
+ */
+export const ForwardedClaim = Schema.Struct({
+  host: Schema.String,
+  key: Schema.String,
+  provider: ResetProvider,
+  creditID: Schema.String,
+  requestID: Schema.String,
+  why: ResetWhy,
+  label: Schema.String,
+})
+export type ForwardedClaim = typeof ForwardedClaim.Type
+
+/** The key a forwarded claim is worked under on the claimer. */
+export const forwardedKey = (claim: Pick<ForwardedClaim, "host" | "key">) => `forwarded:${claim.host}:${claim.key}`
+
+/** Work a forwarded claim on the account `credentialID` of `pool`, the one whose reading lists its reset. */
+export const TakeForwarded = Schema.TaggedStruct("TakeForwarded", {
+  claim: ForwardedClaim,
+  pool: Schema.String,
+  credentialID: Schema.String,
+  label: Schema.String,
+})
+export interface TakeForwarded extends Schema.Schema.Type<typeof TakeForwarded> {}
+
+export type Command = NoteWait | Review | TakeAnswer | SettleClaim | TakeForwarded
 
 export const WaitNoted = Schema.TaggedStruct("WaitNoted", { pool: Schema.String, wait: Wait })
 export interface WaitNoted extends Schema.Schema.Type<typeof WaitNoted> {}
@@ -576,15 +617,19 @@ const retries = (reset: Reset, current: ReadonlySet<string>) =>
 /** Whether a reset was claimed on its own: before it expired, or a Codex credit for a held start. */
 const automatic = (reset: Pick<Reset, "why" | "provider">) => reset.why === "expiring" || (reset.why === "held" && reset.provider === "codex")
 
-const onAccount = (reset: Pick<Reset, "pool" | "credentialID">, pool: string, credentialID: string) =>
-  reset.pool === pool && reset.credentialID === credentialID
+/**
+ * Whether a reset is on an account. An account is its credential, the same
+ * in every pool of the host, never a pool's: two pools that list one
+ * credential hold one account, and spend it once.
+ */
+const onAccount = (reset: Pick<Reset, "credentialID">, credentialID: string) => reset.credentialID === credentialID
 
-/** When a claim was last sent on an account, or came back: none when none was. */
-const lastClaimAt = (state: ResetsState, pool: string, credentialID: string): number | undefined => {
+/** When a claim was last sent on an account, or came back, through any pool: none when none was. */
+const lastClaimAt = (state: ResetsState, credentialID: string): number | undefined => {
   const times = [
-    ...state.claims.filter((claim) => onAccount(claim, pool, credentialID)).map((claim) => claim.at),
+    ...state.claims.filter((claim) => onAccount(claim, credentialID)).map((claim) => claim.at),
     ...Object.values(state.resets)
-      .filter((reset) => onAccount(reset, pool, credentialID) && reset.attempts > 0)
+      .filter((reset) => onAccount(reset, credentialID) && reset.attempts > 0)
       .map((reset) => reset.at),
   ]
   return times.length === 0 ? undefined : Math.max(...times)
@@ -600,27 +645,33 @@ const readAt = (account: AccountStatus): number | undefined =>
  * claim did. A settling account takes no other claim, offer or question: one
  * claim at a time per account, each judged on a reading that shows the last.
  */
-const settling = (state: ResetsState, current: ReadonlySet<string>, pool: string, account: AccountStatus, now: number): boolean => {
+const settling = (state: ResetsState, current: ReadonlySet<string>, account: AccountStatus, now: number): boolean => {
   const busy = Object.values(state.resets).some(
-    (reset) =>
-      onAccount(reset, pool, account.credentialID) &&
-      ((reset.stage === "claiming" && now - reset.at < RETRY_MS) || retries(reset, current)),
+    (reset) => onAccount(reset, account.credentialID) && ((reset.stage === "claiming" && now - reset.at < RETRY_MS) || retries(reset, current)),
   )
   if (busy) return true
-  const last = lastClaimAt(state, pool, account.credentialID)
+  const last = lastClaimAt(state, account.credentialID)
   const read = readAt(account)
   return last !== undefined && (read === undefined || read <= last)
 }
 
 /**
- * Whether an account's reading may authorize a claim no one asked for: its
- * windows and resets read within FRESH_MS, after its last claim.
+ * The account as evidence for a claim no one asked for: only the fields read
+ * within FRESH_MS and after its last claim, each by its own read time. A
+ * window carried over from an older reading keeps that reading's time
+ * (quota.ts `carryOver`), so a fresh reading around it never makes it fresh:
+ * it is left out, as if unread, and its shares with it. The resets likewise.
+ * None when no window or no reset is fresh: nothing to spend on.
  */
-const freshEvidence = (state: ResetsState, pool: string, account: AccountStatus, now: number): boolean => {
-  const read = readAt(account)
-  if (read === undefined || now - read >= FRESH_MS) return false
-  const last = lastClaimAt(state, pool, account.credentialID)
-  return last === undefined || read > last
+export const freshView = (state: ResetsState, account: AccountStatus, now: number): AccountStatus | undefined => {
+  const reading = account.reading
+  if (reading === undefined) return undefined
+  const last = lastClaimAt(state, account.credentialID)
+  const fresh = (at: number) => now - at < FRESH_MS && (last === undefined || at > last)
+  const windows = reading.windows.filter((window) => fresh(window.at ?? reading.at))
+  const resets = reading.resets
+  if (windows.length === 0 || resets === undefined || !fresh(resets.at ?? reading.at)) return undefined
+  return { ...account, reading: { ...reading, windows } }
 }
 
 /** A reset's fields from its hold. */
@@ -659,7 +710,7 @@ const currentKeys = (pools: ReadonlyArray<PoolView>, now: number): ReadonlySet<s
         const until = spentUntil(account, now)
         const held = until === undefined ? [] : [holdKey(view.provider, view.id, account.credentialID, until)]
         const periods = (account.reading?.windows ?? []).flatMap((window) =>
-          window.resetAt === undefined || window.resetAt <= now ? [] : [expiringKey(view.provider, view.id, account.credentialID, window.name, window.resetAt)],
+          window.resetAt === undefined || window.resetAt <= now ? [] : [expiringKey(view.provider, account.credentialID, window.name, window.resetAt)],
         )
         return [...held, ...periods]
       }),
@@ -675,7 +726,7 @@ const currentKeys = (pools: ReadonlyArray<PoolView>, now: number): ReadonlySet<s
 /**
  * The Codex claim due in a pool: one credit when every account is held and a
  * start waits (an expiring one is `expiringDue`'s), on an account read fresh
- * (`freshEvidence`) and not settling a claim.
+ * (`freshView`) and not settling a claim.
  */
 const codexDue = (
   state: ResetsState,
@@ -689,12 +740,12 @@ const codexDue = (
   const busy = Object.values(state.resets).some((reset) => reset.pool === view.id && reset.why === "held" && active(reset, current, now))
   const claudeHeld = pools.some((other) => other.provider === "claude" && allSpent(other.accounts, now) && waiting(state, other.id, now) !== undefined)
   if (!busy && allSpent(view.accounts, now) && (waiting(state, view.id, now) !== undefined || claudeHeld)) {
-    const candidates = view.accounts.flatMap((account) => {
+    const candidates = view.accounts.flatMap((held) => {
+      const account = freshView(state, held, now)
+      if (account === undefined || claiming.has(account.credentialID) || settling(state, current, account, now)) return []
       const until = spentUntil(account, now)
       const credit = usableCredits(account, now)[0]
       if (until === undefined || credit === undefined) return []
-      if (claiming.has(accountKey(view.id, account.credentialID)) || !freshEvidence(state, view.id, account, now)) return []
-      if (settling(state, current, view.id, account, now)) return []
       const key = holdKey("codex", view.id, account.credentialID, until)
       return state.resets[key] === undefined ? [{ account, credit, key }] : []
     })
@@ -707,9 +758,6 @@ const codexDue = (
 }
 
 // ── Use it or lose it ──
-
-/** An account as a set member: its pool and credential. */
-const accountKey = (pool: string, credentialID: string) => `${pool}\u0000${credentialID}`
 
 /**
  * The window a usable reset is due for now so it is not lost, if any. Only a
@@ -734,17 +782,18 @@ export const expiringOf = (view: PoolView, account: AccountStatus, credit: Reset
 
 /**
  * Each pool's resets due so they are not lost: at most one per account, on
- * fresh evidence (`freshEvidence`), never on an account settling a claim, and
- * once per window period (`expiringKey`).
+ * the fields of it read fresh (`freshView`), never on an account settling a
+ * claim, and once per window period (`expiringKey`).
  */
 const expiringDue = (state: ResetsState, pools: ReadonlyArray<PoolView>, current: ReadonlySet<string>, now: number): ReadonlyArray<ClaimDue> =>
   pools.flatMap((view) =>
-    view.accounts.flatMap((account) => {
-      if (!freshEvidence(state, view.id, account, now) || settling(state, current, view.id, account, now)) return []
+    view.accounts.flatMap((held) => {
+      const account = freshView(state, held, now)
+      if (account === undefined || settling(state, current, account, now)) return []
       for (const credit of usableCredits(account, now)) {
         const give = expiringOf(view, account, credit, now)
         if (give?.resetAt === undefined) continue
-        const key = expiringKey(view.provider, view.id, account.credentialID, give.window, give.resetAt)
+        const key = expiringKey(view.provider, account.credentialID, give.window, give.resetAt)
         if (state.resets[key] !== undefined) continue
         const reset = resetOf(view, account, credit, key, "expiring", "claiming", now)
         return [ClaimDue.make({ reset: { ...reset, buys: buysOf(effectOf(view.provider, account, credit, view.ratios)) } })]
@@ -860,7 +909,7 @@ export const offerOf = (view: PoolView, account: AccountStatus, credit: ResetCre
     const elapsed = Math.max(length - left, MINUTE)
     const expected = Math.min(restored, (give.from / elapsed) * left)
     if (expected < WORTH_SHARE * restored) return []
-    const key = offerKey(view.provider, view.id, account.credentialID, kind, weekly(account)?.resetAt ?? give.resetAt)
+    const key = offerKey(view.provider, account.credentialID, kind, weekly(account)?.resetAt ?? give.resetAt)
     return [{ account, credit, kind, gives, window: give.window, resetAt: give.resetAt, restored, left, elapsed, expected, key }]
   })
   return candidates.toSorted((left, right) => right.expected - left.expected)[0]
@@ -920,7 +969,7 @@ const offerDue = (state: ResetsState, view: PoolView, current: ReadonlySet<strin
   if (demand === undefined) return []
   if (Object.values(state.resets).some((reset) => reset.pool === view.id && reset.stage === "asked")) return []
   const best = view.accounts
-    .filter((account) => !claiming.has(accountKey(view.id, account.credentialID)) && !settling(state, current, view.id, account, now))
+    .filter((account) => !claiming.has(account.credentialID) && !settling(state, current, account, now))
     .flatMap((account) =>
       usableCredits(account, now).flatMap((credit) => {
         const offer = offerOf(view, account, credit, now)
@@ -959,7 +1008,7 @@ const claudeDue = (state: ResetsState, view: PoolView, current: ReadonlySet<stri
     const until = spentUntil(account, now)
     const credit = usableCredits(account, now)[0]
     if (until === undefined || credit === undefined) return []
-    if (claiming.has(accountKey(view.id, account.credentialID)) || settling(state, current, view.id, account, now)) return []
+    if (claiming.has(account.credentialID) || settling(state, current, account, now)) return []
     const key = holdKey("claude", view.id, account.credentialID, until)
     if (state.resets[key] !== undefined) return []
     const weekSpent = spentWindows(account, now).some((window) => window.name === "7d")
@@ -995,24 +1044,24 @@ const review = (state: ResetsState, command: Review, now: number): ReadonlyArray
     events.push(AskWithdrawn.make({ key: reset.key, at: now, why }))
   }
   let after: ResetsState = { ...state, resets: Object.fromEntries(Object.entries(state.resets).filter(([key]) => !withdrawn.has(key))) }
-  // The accounts a claim is due on in this review: one each, and no question or offer on them.
+  // The accounts (credentials, whichever pool lists them) a claim is due on in this review: one each, and no question or offer on them.
   const claiming = new Set<string>()
   const accountOf = (reset: Reset) =>
     command.pools.find((view) => view.id === reset.pool)?.accounts.find((account) => account.credentialID === reset.credentialID)
   // A claim that did not go through goes again, the same claim, while its hold lasts; one no one asked for, only on fresh evidence.
   for (const reset of Object.values(after.resets)) {
-    if (!retries(reset, current) || now - reset.at < RETRY_MS) continue
+    if (!retries(reset, current) || now - reset.at < RETRY_MS || claiming.has(reset.credentialID)) continue
     const account = accountOf(reset)
-    if (automatic(reset) && (!auto || account === undefined || !freshEvidence(state, reset.pool, account, now))) continue
-    claiming.add(accountKey(reset.pool, reset.credentialID))
+    if (automatic(reset) && (!auto || account === undefined || freshView(state, account, now) === undefined)) continue
+    claiming.add(reset.credentialID)
     events.push(ClaimDue.make({ reset: { ...reset, stage: "claiming", at: now } }))
   }
   // A reset about to be lost is claimed first, the account's open questions withdrawn: the claim changes what they ask about.
-  const expiring = auto ? expiringDue(after, command.pools, current, now).filter((event) => !claiming.has(accountKey(event.reset.pool, event.reset.credentialID))) : []
-  for (const event of expiring) {
-    claiming.add(accountKey(event.reset.pool, event.reset.credentialID))
+  for (const event of auto ? expiringDue(after, command.pools, current, now) : []) {
+    if (claiming.has(event.reset.credentialID)) continue
+    claiming.add(event.reset.credentialID)
     for (const reset of Object.values(after.resets))
-      if (reset.stage === "asked" && onAccount(reset, event.reset.pool, event.reset.credentialID)) {
+      if (reset.stage === "asked" && onAccount(reset, event.reset.credentialID)) {
         withdrawn.add(reset.key)
         events.push(AskWithdrawn.make({ key: reset.key, at: now, why: "a reset is being claimed on the account first" }))
       }
@@ -1021,11 +1070,15 @@ const review = (state: ResetsState, command: Review, now: number): ReadonlyArray
   after = { ...after, resets: Object.fromEntries(Object.entries(after.resets).filter(([key]) => !withdrawn.has(key))) }
   for (const view of command.pools) {
     const due = view.provider === "codex" ? (auto ? codexDue(after, view, command.pools, current, now, claiming) : []) : claudeDue(after, view, current, now, claiming)
+    // A pool reviewed after another sees what the other decided: an account two pools list is asked about, or claimed on, once.
+    after = due.reduce(evolve, after)
     events.push(...due)
     // One question per pool at a time: an offer waits while a held start's question is asked.
     if (due.some((event) => event._tag === "OwnerAsked")) continue
-    for (const event of due) if (event._tag === "ClaimDue") claiming.add(accountKey(event.reset.pool, event.reset.credentialID))
-    events.push(...offerDue(after, view, current, now, claiming))
+    for (const event of due) if (event._tag === "ClaimDue") claiming.add(event.reset.credentialID)
+    const offered = offerDue(after, view, current, now, claiming)
+    after = offered.reduce(evolve, after)
+    events.push(...offered)
   }
   const stale = Object.values(state.resets).flatMap((reset) =>
     reset.stage !== "asked" && reset.stage !== "claiming" && !current.has(reset.key) && now - reset.at >= KEEP_MS ? [reset.key] : [],
@@ -1041,9 +1094,9 @@ const takeAnswer = (state: ResetsState, command: TakeAnswer, now: number): Reado
   if (reset === undefined || reset.stage !== "asked") return []
   if (command.answer === undefined || !isYes(command.answer)) return [AnswerDeclined.make({ key: command.key, at: now })]
   // A yes to a question asked before another claim on the account was sent, or while one is: the question no longer says what a claim would do.
-  const last = lastClaimAt(state, reset.pool, reset.credentialID)
+  const last = lastClaimAt(state, reset.credentialID)
   const inFlight = Object.values(state.resets).some(
-    (other) => other.key !== reset.key && onAccount(other, reset.pool, reset.credentialID) && (other.stage === "claiming" || (other.stage === "failed" && other.attempts < MAX_ATTEMPTS)),
+    (other) => other.key !== reset.key && onAccount(other, reset.credentialID) && (other.stage === "claiming" || (other.stage === "failed" && other.attempts < MAX_ATTEMPTS)),
   )
   if (inFlight || (last !== undefined && last >= reset.at))
     return [AskWithdrawn.make({ key: reset.key, at: now, why: "the account was claimed on meanwhile" })]
@@ -1087,6 +1140,55 @@ const settleClaim = (state: ResetsState, command: SettleClaim, now: number): Rea
   return [settled, OwnerTold.make({ key: reset.key, at: now, text, ...(newest?.sessionID === undefined ? {} : { sessionID: newest.sessionID }) })]
 }
 
+/**
+ * A forwarded claim is sent once, under the asking host's request id: again
+ * only once it came back failed or was lost in flight past RETRY_MS (the
+ * asking host sends it again then), never once settled.
+ */
+const takeForwarded = (state: ResetsState, command: TakeForwarded, now: number): ReadonlyArray<Event> => {
+  const key = forwardedKey(command.claim)
+  const held = state.resets[key]
+  if (held !== undefined && (held.stage === "settled" || (held.stage === "claiming" && now - held.at < RETRY_MS) || held.attempts >= MAX_ATTEMPTS)) return []
+  return [
+    ClaimDue.make({
+      reset: {
+        key,
+        pool: command.pool,
+        provider: command.claim.provider,
+        credentialID: command.credentialID,
+        label: command.label,
+        creditID: command.claim.creditID,
+        requestID: command.claim.requestID,
+        why: command.claim.why,
+        stage: "claiming",
+        at: now,
+        attempts: held?.attempts ?? 0,
+      },
+    }),
+  ]
+}
+
+/**
+ * Why a claim decided earlier is no longer to be sent, judged on the
+ * account as read right before it is sent, under the claim lock (model.ts);
+ * undefined: send it. The provider's reading is the authority: a claim made
+ * since on the account, from any pool or host, shows in it. The reset must
+ * still be listed and claimable; one claimed before it expires must still be
+ * due (`expiringOf`); a Codex credit for a held start needs the account still
+ * held; and any must still give back at least MIN_RESTORE of a window.
+ */
+export const staleReason = (view: PoolView, account: AccountStatus, reset: Pick<Reset, "creditID" | "why" | "provider">, now: number): string | undefined => {
+  const credit = usableCredits(account, now).find((item) => item.id === reset.creditID)
+  if (credit === undefined) return "the reset is no longer listed as claimable"
+  if (reset.why === "expiring") return expiringOf(view, account, credit, now) === undefined ? "it no longer saves a window from going unused" : undefined
+  if (reset.why === "held" && reset.provider === "codex" && spentUntil(account, now) === undefined) return "no spent window holds the account any more"
+  // A grant that does not say what it clears is judged by the hold it was asked about.
+  if (reset.provider === "claude" && credit.clears === undefined)
+    return spentUntil(account, now) === undefined ? "no spent window holds the account any more" : undefined
+  const restores = effectOf(view.provider, account, credit, view.ratios).some((give) => give.from - give.to >= MIN_RESTORE)
+  return restores ? undefined : "it would give nothing back now"
+}
+
 export const Resets: Decider<ResetsState, Command, Event> = {
   initial: empty,
   decide: (state, command, now) => {
@@ -1099,6 +1201,8 @@ export const Resets: Decider<ResetsState, Command, Event> = {
         return Effect.succeed(takeAnswer(state, command, now))
       case "SettleClaim":
         return Effect.succeed(settleClaim(state, command, now))
+      case "TakeForwarded":
+        return Effect.succeed(takeForwarded(state, command, now))
     }
   },
   evolve: (state, event) => evolve(state, event),

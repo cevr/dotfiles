@@ -451,7 +451,8 @@ describe("an account is held", () => {
     const headers: QuotaReading = { at: T0 + 2 * HOUR, status: "allowed", windows: [{ name: "7d", utilization: 0.6, resetAt: T0 + 10 * HOUR }] }
     const carried: QuotaReading = {
       ...headers,
-      windows: [...headers.windows, { name: "7d:Fable", utilization: 0.3, resetAt: T0 + 10 * HOUR }],
+      // The carried window names when it was read too: a fresh reading around it does not make it fresh.
+      windows: [...headers.windows, { at: usage.at, name: "7d:Fable", utilization: 0.3, resetAt: T0 + 10 * HOUR }],
       // Carried resets name when they were read, the usage reading's time, so a claim no one asked for sees their age.
       resets: { at: usage.at, ...resets },
     }

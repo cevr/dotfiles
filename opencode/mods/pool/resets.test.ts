@@ -201,7 +201,7 @@ describe("Codex", () => {
   test("a credit expiring within a day is claimed on a half-spent week, with no start waiting; not on a fresh week", () => {
     const half = run([[T0, Review.make({ pools: [codex([account("codex-a", { sevenDay: 0.5, credits: [codexCredit("ending", 20 * HOUR)] })])] })]])
     expect(half.events).toHaveLength(1)
-    expect(half.events[0]).toMatchObject({ _tag: "ClaimDue", reset: { key: expiringKey("codex", "openai", "codex-a", "7d", T0 + 4.5 * DAY), why: "expiring", creditID: "ending" } })
+    expect(half.events[0]).toMatchObject({ _tag: "ClaimDue", reset: { key: expiringKey("codex", "codex-a", "7d", T0 + 4.5 * DAY), why: "expiring", creditID: "ending" } })
     const again = run([[T0 + MINUTE, Review.make({ pools: [codex([account("codex-a", { sevenDay: 0.5, credits: [codexCredit("ending", 20 * HOUR)] })])] })]], half.state)
     expect(again.events).toEqual([])
     const fresh = run([[T0, Review.make({ pools: [codex([account("codex-a", { sevenDay: 0.4, credits: [codexCredit("ending", 20 * HOUR)] })])] })]])

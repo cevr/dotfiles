@@ -16,7 +16,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { fold } from "@dotfiles/decider/decider"
-import type { QuotaWindow, ResetCredit } from "./quota.ts"
+import { carryOver, type QuotaWindow, type ResetCredit } from "./quota.ts"
 import {
   type Command,
   effectOf,
@@ -34,6 +34,7 @@ import {
   type ResetsState,
   Review,
   SettleClaim,
+  staleReason,
   TakeAnswer,
 } from "./resets.ts"
 import type { AccountStatus } from "./status.ts"
@@ -184,7 +185,7 @@ describe("B1: one claim at a time per account", () => {
   test("the key and the request id name the account, the window and its period, not the grant", () => {
     const one = claimsOf(review([account([window("7d", 1, T0 + 3 * DAY)], [grant("g1", T0 + 2 * HOUR, WEEKLY)])]).events)[0]!
     const other = claimsOf(review([account([window("7d", 1, T0 + 3 * DAY)], [grant("g2", T0 + 2 * HOUR, WEEKLY)])]).events)[0]!
-    expect(one.key).toBe(expiringKey("claude", "anthropic", "a", "7d", T0 + 3 * DAY))
+    expect(one.key).toBe(expiringKey("claude", "a", "7d", T0 + 3 * DAY))
     expect(other.key).toBe(one.key)
     expect(other.requestID).toBe(one.requestID)
     // A restart keeps it: the state round-trips through JSON and the retry is the same claim.
@@ -227,6 +228,136 @@ describe("B1: one claim at a time per account", () => {
   })
 })
 
+describe("B1 across pools and hosts: an account is its login, and a claim is judged again on the provider's reading", () => {
+  /** A pool `id` listing `accounts`, the same logins as another pool may. */
+  const pool = (id: string, accounts: ReadonlyArray<AccountStatus>, provider: "claude" | "codex" = "claude"): PoolView => ({ ...view(accounts, {}, provider), id })
+
+  test("one login listed by two pools, in either order, Claude's expiring grant or Codex's held start: one claim", () => {
+    const spent = account([window("7d", 1, T0 + 3 * DAY)], [grant("g1", T0 + 2 * HOUR, WEEKLY), grant("g2", T0 + 2 * HOUR, WEEKLY)])
+    for (const ids of [
+      ["pool-a", "pool-b"],
+      ["pool-b", "pool-a"],
+    ] as const) {
+      const claude = run([[T0, Review.make({ pools: ids.map((id) => pool(id, [spent, roomy])) })]])
+      expect(claimsOf(claude.events), ids.join(" then ")).toHaveLength(1)
+      // Codex: every account spent and a start waiting in each pool.
+      const codex = run([
+        ...ids.map((id) => [T0, NoteWait.make({ pool: id, sessionID: "ses_root" })] as const),
+        [T0, Review.make({ pools: ids.map((id) => pool(id, [account([window("7d", 1, T0 + 3 * DAY)], [grant("c", T0 + 20 * DAY, {})])], "codex")) })],
+      ])
+      expect(claimsOf(codex.events), `codex ${ids.join(" then ")}`).toHaveLength(1)
+    }
+  })
+
+  test("one login listed by two pools with a start waiting in each: one offer, not one per pool", () => {
+    const item = account([window("5h", 0.2, T0 + 3 * HOUR), window("7d", 0.95, T0 + 4 * DAY)], [grant("w", T0 + 60 * DAY, WEEKLY)])
+    const { events } = run([
+      [T0, NoteWait.make({ pool: "pool-a", sessionID: "ses_a" })],
+      [T0, NoteWait.make({ pool: "pool-b", sessionID: "ses_b" })],
+      [T0, Review.make({ pools: [pool("pool-a", [item, roomy]), pool("pool-b", [item, roomy])], auto: false })],
+    ])
+    expect(asksOf(events)).toHaveLength(1)
+  })
+
+  test("a yes on an offer made in one pool, after the login was claimed on through another pool: withdrawn, nothing claimed", () => {
+    const offer = account([window("5h", 0.2, T0 + 3 * HOUR), window("7d", 0.95, T0 + 6 * DAY)], [grant("w", T0 + 60 * DAY, WEEKLY)])
+    const offered = run([
+      [T0, NoteWait.make({ pool: "pool-a", sessionID: "ses_root" })],
+      [T0, Review.make({ pools: [pool("pool-a", [offer, roomy])], auto: false })],
+    ])
+    const ask = asksOf(offered.events)[0]!
+    const spent = account([window("7d", 1, T0 + 3 * DAY)], [grant("g", T0 + 2 * HOUR, WEEKLY)], T0 + 1)
+    const other = run([[T0 + 1, Review.make({ pools: [pool("pool-a", [offer, roomy]), pool("pool-b", [spent, roomy])] })]], offered.state)
+    expect(claimsOf(other.events)).toHaveLength(1)
+    // The claim through the other pool withdraws the question (its account is the login, not the pool); the yes after it spends nothing.
+    expect(other.events.filter((event) => event._tag === "AskWithdrawn")).toMatchObject([{ key: ask.key }])
+    const yes = run([[T0 + 2, TakeAnswer.make({ key: ask.key, answer: "Claim it" })]], other.state)
+    expect(claimsOf(yes.events)).toEqual([])
+  })
+
+  test("decided on divergent host readings, sent one after the other, each judged again on the provider's reading: no grant spent for nothing, and full grants spend one", () => {
+    const WINDOW_OF: Readonly<Record<string, string>> = { five_hour: "5h", seven_day: "7d" }
+    const expiresAt = T0 + 2 * HOUR
+    const grids = [0.2, 0.8, 1].flatMap((five) => [0.8, 1].map((seven) => [five, seven] as const))
+    const kinds = [
+      ["full", [grant("g1", expiresAt, FULL), grant("g2", expiresAt, FULL)]],
+      ["mixed", [grant("g1", expiresAt, SESSION), grant("g2", expiresAt, WEEKLY), grant("g3", expiresAt, FULL)]],
+    ] as const
+    let sentAny = 0
+    for (const [kind, grants] of kinds)
+      for (const truth of grids)
+        for (const [leftFive, leftSeven] of grids)
+          for (const [rightFive, rightSeven] of grids) {
+            // Each host's own fresh reading, the grants listed in another order: each decides alone, its own store.
+            const read = (five: number, seven: number, credits: ReadonlyArray<ResetCredit>) =>
+              account([window("5h", five, T0 + 4 * HOUR), window("7d", seven, T0 + 3 * DAY)], credits)
+            const decided = [read(leftFive, leftSeven, grants), read(rightFive, rightSeven, grants.toReversed())].flatMap((host) => claimsOf(review([host]).events))
+            // The provider: the account as it is, its grants spent as claims arrive.
+            const windows = new Map([
+              ["5h", truth[0]],
+              ["7d", truth[1]],
+            ])
+            const left = new Map(grants.map((item) => [item.id, item.count]))
+            const sent: Array<{ readonly creditID: string; readonly restored: number }> = []
+            for (const reset of decided) {
+              const now = T0 + 1
+              const credits = grants.map((item) => ({ ...item, count: left.get(item.id) ?? 0, usable: (left.get(item.id) ?? 0) > 0 }))
+              const fresh = account(
+                [...windows].map(([name, utilization]) => window(name, utilization, name === "5h" ? T0 + 4 * HOUR : T0 + 3 * DAY)),
+                credits.filter((item) => item.usable),
+                now,
+              )
+              if (staleReason(view([fresh, roomy]), fresh, reset, now) !== undefined) continue
+              const credit = grants.find((item) => item.id === reset.creditID)!
+              left.set(credit.id, (left.get(credit.id) ?? 0) - 1)
+              let restored = 0
+              for (const name of credit.clears ?? []) {
+                const at = WINDOW_OF[name]!
+                restored = Math.max(restored, windows.get(at) ?? 0)
+                windows.set(at, 0)
+              }
+              sent.push({ creditID: credit.id, restored })
+            }
+            sentAny += sent.length
+            const label = `${kind}: truth ${truth}, left ${leftFive}/${leftSeven}, right ${rightFive}/${rightSeven}, sent ${JSON.stringify(sent)}`
+            expect(
+              sent.every((claim) => claim.restored >= MIN_RESTORE),
+              label,
+            ).toBe(true)
+            if (kind === "full") expect(sent.length, label).toBeLessThanOrEqual(1)
+          }
+    expect(sentAny).toBeGreaterThan(0)
+  })
+})
+
+describe("M1 per field: each window and share is as fresh as its own read", () => {
+  test("a Fable window carried over from an older reading, with the week and the grants read fresh, spends nothing, whatever its share's source; read fresh, the same window does", () => {
+    const expiresAt = T0 + 2 * HOUR
+    const shares = [{ weeklyUsed: 0.5 }, { ofWeekly: 1 }, {}] as const
+    for (const share of shares)
+      for (const age of [0, FRESH_MS - 1, FRESH_MS, 2 * HOUR, 2 * DAY]) {
+        const fable = window("7d:Fable", 1, T0 + 3 * DAY, share)
+        const old = { at: T0 - age, windows: [fable] }
+        const next = { at: T0, windows: [window("7d", 0.2, T0 + 3 * DAY)], resets: { available: 1, credits: [grant("f", expiresAt, FABLE)] } }
+        const reading = carryOver(old, next, T0)
+        const label = `share ${JSON.stringify(share)}, Fable window read ${age / MINUTE} min before`
+        const { events } = review([{ ...account([], []), reading }])
+        if (age >= FRESH_MS) expect(claimsOf(events), label).toEqual([])
+      }
+    // Control: read with the rest, the Fable window's share is spend evidence.
+    const read = account([window("7d", 0.2, T0 + 3 * DAY), window("7d:Fable", 1, T0 + 3 * DAY, { weeklyUsed: 0.5 })], [grant("f", expiresAt, FABLE)])
+    expect(claimsOf(review([read]).events)).toHaveLength(1)
+  })
+
+  test("a window that names its own read time is judged by it, not by the reading's: stale, it is no evidence", () => {
+    const expiresAt = T0 + 2 * HOUR
+    for (const age of [0, FRESH_MS - 1, FRESH_MS, 2 * DAY]) {
+      const item = account([window("5h", 0.1, T0 + 3 * HOUR), window("7d", 1, T0 + 3 * DAY, { at: T0 - age })], [grant("g", expiresAt, WEEKLY)])
+      expect(claimsOf(review([item]).events).length, `the week read ${age / MINUTE} min before`).toBe(age < FRESH_MS ? 1 : 0)
+    }
+  })
+})
+
 describe("M3: a declined offer suppresses its account, kind and week", () => {
   const credit = grant("g", T0 + 60 * DAY, { ...FABLE, clears: ["seven_day_overage_included"] })
   const item = (own: number, week: number, weekResets = T0 + 6 * DAY) =>
@@ -238,7 +369,7 @@ describe("M3: a declined offer suppresses its account, kind and week", () => {
       [T0, Review.make({ pools: [view([item(1, 0.95), roomy])] })],
     ])
     const ask = asksOf(first.events)[0]!
-    expect(ask.key).toBe(offerKey("claude", "anthropic", "a", "fable", T0 + 6 * DAY))
+    expect(ask.key).toBe(offerKey("claude", "a", "fable", T0 + 6 * DAY))
     const declined = run([[T0 + 1, TakeAnswer.make({ key: ask.key, answer: "Don't claim" })]], first.state).state
     for (const own of [0.3, 0.5, 0.9, 1])
       for (const week of [0.9, 0.95, 1]) {
