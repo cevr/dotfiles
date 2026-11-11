@@ -6,7 +6,19 @@
     "out/**",
     "media/**"
   ],
+  "jsPlugins": [
+    "./lint/test-env.ts"
+  ],
   "overrides": [
+    {
+      "files": [
+        "**/*.test.ts",
+        "**/*.test.tsx"
+      ],
+      "rules": {
+        "dotfiles/no-module-env-in-tests": "error"
+      }
+    },
     {
       "files": [
         "decider/*.ts"
