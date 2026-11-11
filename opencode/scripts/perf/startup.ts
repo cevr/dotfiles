@@ -13,7 +13,8 @@
 //
 // bun scripts/perf/startup.ts (--fork <checkout> | --bin <compiled opencode>) --db <file> --session <id> --out <dir>
 //   [--plugins <comma list of TUI plugin paths>] [--ready <text the session shows>] [--limit 180000]
-//   [--cols 160] [--rows 45] [--prof <ms,...>] [--cli <json merged into cli.json>]
+//   [--cols 160] [--rows 45] [--prof <ms,...>] [--cli <json merged into cli.json>] [--hold <ms past ready>]
+// `end` is the TUI's CPU and RSS when the run stops, `peakRss` the most it held.
 //
 // The server and TUI run in process groups of their own, killed at the end.
 // Point `--db` only at a copy: the server writes to it.
@@ -39,6 +40,8 @@ const limit = Number(opt("limit", "180000"))
 const cols = Number(opt("cols", "160"))
 const rows = Number(opt("rows", "45"))
 const profAt = (opt("prof") ?? "").split(",").filter(Boolean).map(Number)
+// `--hold 30000`: stay that long past ready, for the work a session starts in the background.
+const hold = Number(opt("hold", "0"))
 if ((!fork && !bin) || !db || !session || !out)
   throw new Error("usage: (--fork <checkout> | --bin <compiled opencode>) --db <file> --session <id> --out <dir>")
 
@@ -161,6 +164,7 @@ let ready: { ms: number; cpu: number; rss: number } | undefined
 const typed = "zqxj"
 let key: { sent: number; echoed?: number } | undefined
 const profiles = [...profAt]
+let peakRss = 0
 while (Date.now() - started < limit) {
   await Bun.sleep(50)
   const ms = Date.now() - started
@@ -195,8 +199,9 @@ while (Date.now() - started < limit) {
       console.log(`key echoed at ${ms} ms`)
     }
   }
-  if (ready && profiles.length === 0 && ms - ready.ms > 3000 && key?.echoed !== undefined) break
-  if (ready && ms - ready.ms > 30_000) break
+  peakRss = Math.max(peakRss, cpu(tuiPid).rss)
+  if (ready && profiles.length === 0 && ms - ready.ms > Math.max(3000, hold) && key?.echoed !== undefined) break
+  if (ready && ms - ready.ms > Math.max(30_000, hold)) break
   if (!existsSync(`/proc/${tuiPid}`) && process.platform === "linux") break
 }
 const end = { ms: Date.now() - started, ...cpu(tuiPid) }
@@ -217,6 +222,7 @@ const result = {
   open: first && ready ? ready.ms - first.ms : undefined,
   interactive: key?.echoed,
   end,
+  peakRss,
   cols,
   rows,
 }
