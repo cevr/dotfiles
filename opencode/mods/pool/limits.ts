@@ -35,6 +35,8 @@ export const RECENT_MS = 7 * DAY
 const RESET_ROUND_MS = 10 * MINUTE
 /** A fall of more than this (points) under the same reset is a reset inside the period. */
 const FALL_POINTS = 1.5
+/** A family's share of a window's weighted tokens under which it is left out of the fit. */
+export const MIN_SHARE = 0.01
 /** A row's sums are recounted while its period ended less than this ago; older rows are final. */
 const OPEN_MS = DAY
 
@@ -244,15 +246,42 @@ export const reportOf = (state: LimitsState, now: number): LimitsReport => ({
   ),
 })
 
-/** The state with a peer's report taken in: its sums on each row this host holds. */
+/** A row key without its login: the pool, the window and the period. */
+const periodOf = (key: string) => {
+  const [pool, , ...rest] = key.split("|")
+  return [pool, ...rest].join("|")
+}
+
+/**
+ * The state with a peer's report taken in: its sums on each row this host
+ * holds. A host may know one account by another login id (a ChatGPT account
+ * signed in on each host has an id per host): a row the peer names that this
+ * host does not hold is the one row here of the same pool, window and period,
+ * when there is exactly one.
+ */
 export const takePeer = (state: LimitsState, peer: string, report: LimitsReport): LimitsState => {
   const rows: Record<string, LimitRow> = { ...state.rows }
+  const byPeriod = new Map<string, Array<string>>()
+  for (const key of Object.keys(rows)) byPeriod.set(periodOf(key), [...(byPeriod.get(periodOf(key)) ?? []), key])
   for (const { key, sums } of report.rows) {
-    const row = rows[key]
-    if (row !== undefined) rows[key] = { ...row, peers: { ...row.peers, [peer]: sums } }
+    const same = byPeriod.get(periodOf(key)) ?? []
+    const target = rows[key] !== undefined ? key : same.length === 1 ? same[0] : undefined
+    const row = target === undefined ? undefined : rows[target]
+    if (target !== undefined && row !== undefined) rows[target] = { ...row, peers: { ...row.peers, [peer]: sums } }
   }
   return { ...state, peerSince: { ...state.peerSince, [peer]: report.since }, rows }
 }
+
+/** The state with every row of the account whose period a reset claimed at `at` cut short broken: its start is not known. */
+export const resetInside = (state: LimitsState, pool: string, credentialID: string, at: number): LimitsState => ({
+  ...state,
+  rows: Object.fromEntries(
+    Object.entries(state.rows).map(([key, row]) => [
+      key,
+      row.pool === pool && row.credentialID === credentialID && row.start < at && at <= row.at ? { ...row, broken: true } : row,
+    ]),
+  ),
+})
 
 const total = (sums: Sums | undefined) => Object.values(sums ?? {}).reduce((sum, family) => sum + family.raw, 0)
 
@@ -306,6 +335,8 @@ export interface WindowTally {
   /** Rows fitted. */
   readonly rows: number
   readonly families: ReadonlyArray<FamilyEstimate>
+  /** Families with under MIN_SHARE of the window's tokens, left out of the fit (their tokens too), with their Mtok. */
+  readonly ignored?: ReadonlyArray<{ readonly family: string; readonly mtok: number }>
 }
 
 /** The tally: the rows of the last 7 days, and every row kept. */
@@ -413,7 +444,12 @@ export const fitRows = (rows: ReadonlyArray<LimitRow>): ReadonlyArray<WindowTall
   return [...groups.values()]
     .map((group): WindowTally => {
       const sums = group.map(allSums)
-      const families = [...new Set(sums.flatMap((s) => Object.keys(s)))].sort()
+      const seen = [...new Set(sums.flatMap((s) => Object.keys(s)))].sort()
+      const weightOf = (family: string) => sums.reduce((t, s) => t + (s[family]?.w ?? 0), 0)
+      const all = seen.reduce((t, family) => t + weightOf(family), 0)
+      // A family with a sliver of the tokens cannot be told from noise: its column would soak up the residual.
+      const families = seen.filter((family) => weightOf(family) >= MIN_SHARE * all)
+      const ignored = seen.filter((family) => !families.includes(family)).map((family) => ({ family, mtok: weightOf(family) / 1e6 }))
       const weighted = nnls(group.map((row, i) => ({ y: row.rise, x: families.map((f) => (sums[i]![f]?.w ?? 0) / 1e6) })), families.length)
       const raw = nnls(group.map((row, i) => ({ y: row.rise, x: families.map((f) => (sums[i]![f]?.raw ?? 0) / 1e6) })), families.length)
       return {
@@ -428,6 +464,7 @@ export const fitRows = (rows: ReadonlyArray<LimitRow>): ReadonlyArray<WindowTall
           mtok: sums.reduce((t, s) => t + (s[family]?.w ?? 0), 0) / 1e6,
           rawMtok: sums.reduce((t, s) => t + (s[family]?.raw ?? 0), 0) / 1e6,
         })),
+        ...(ignored.length === 0 ? {} : { ignored }),
       }
     })
     .sort((a, b) => `${a.pool}|${a.window}`.localeCompare(`${b.pool}|${b.window}`))

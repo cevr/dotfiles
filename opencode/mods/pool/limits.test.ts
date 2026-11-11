@@ -9,6 +9,7 @@ import {
   observe,
   recount,
   reportOf,
+  resetInside,
   rowKey,
   tally,
   takePeer,
@@ -163,6 +164,41 @@ describe("attribution", () => {
     expect(opus.mtok).toBeCloseTo(3, 9)
     expect(opus.weighted.rate).toBeCloseTo(1, 9)
     expect(tally(mine, at).peers).toEqual({ workbox: T0 })
+  })
+})
+
+describe("confounds", () => {
+  test("a family with a sliver of a window's tokens is left out of the fit, not given the residual", () => {
+    const state = periods(
+      [
+        [10, 0.01],
+        [4, 0],
+        [12, 0.02],
+      ],
+      1,
+      1,
+    )
+    const [window] = tally(state, T0 + 4 * HOUR).recent
+    expect(window!.families.map((f) => f.family)).toEqual(["Opus"])
+    expect(window!.ignored).toEqual([{ family: "Fable", mtok: expect.closeTo(0.03, 9) }])
+  })
+
+  test("a claimed reset inside a period breaks it; one after its last reading leaves it", () => {
+    const resetAt = T0 + 7 * DAY
+    const state = observe(emptyState(T0), "anthropic", "a", reading(T0 + 2 * DAY, [{ name: "7d", utilization: 0.4, resetAt }]))
+    const key = rowKey("anthropic", "a", "7d", resetAt)
+    expect(resetInside(state, "anthropic", "a", T0 + DAY).rows[key]!.broken).toBe(true)
+    expect(resetInside(state, "anthropic", "a", T0 + 3 * DAY).rows[key]!.broken).toBeUndefined()
+    expect(resetInside(state, "anthropic", "b", T0 + DAY).rows[key]!.broken).toBeUndefined()
+  })
+
+  test("a peer that knows the account by another login id adds its tokens to the one row of the same period", () => {
+    const resetAt = T0 + 7 * DAY
+    const at = T0 + DAY
+    const week = (credentialID: string) => observe(emptyState(T0), "openai", credentialID, reading(at, [{ name: "7d", utilization: 0.05, resetAt }]))
+    const peer = recount(week("cred-peer"), [use(T0 + HOUR, "cred-peer", "gpt-6.1-sol", 4e6, "openai")], at)
+    const mine = takePeer(recount(week("cred-mine"), [use(T0 + HOUR, "cred-mine", "gpt-6.1-sol", 1e6, "openai")], at), "workbox", reportOf(peer, at))
+    expect(tally(mine, at).recent[0]!.families[0]).toMatchObject({ family: "sol", mtok: 5, weighted: { rate: 1 } })
   })
 })
 
