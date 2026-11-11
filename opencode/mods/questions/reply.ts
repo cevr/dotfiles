@@ -119,7 +119,7 @@ export const noticeOf = (asker: Asker, given: ReadonlyArray<Answered>): Letter =
   const dismissed = given.filter((entry) => entry.dismissed === true).map((entry) => entry.question)
   const ids = answered.map(({ question }) => question.id)
   const only = answered.length === 1 ? answered[0] : undefined
-  const same = answered.map(({ question, answer }) => matches(answer, question.assume))
+  const same = answered.map(({ question, answer }) => matches(answer, question))
   const head =
     only !== undefined
       ? `The subagent ${asker.name} had its background question ${only.question.id} answered; the answer went to it:`
@@ -155,7 +155,7 @@ export const noticeOf = (asker: Asker, given: ReadonlyArray<Answered>): Letter =
 export const letterOf = (given: ReadonlyArray<Answered>): Letter => {
   const answered = given.filter((entry) => entry.dismissed !== true)
   const dismissed = given.filter((entry) => entry.dismissed === true).map((entry) => entry.question)
-  const same = answered.map(({ question, answer }) => matches(answer, question.assume))
+  const same = answered.map(({ question, answer }) => matches(answer, question))
   const only = answered.length === 1 ? answered[0] : undefined
   const body = only !== undefined ? textOfOne(only, same[0] === true) : answered.length === 0 ? "" : textOfMany(answered, same)
   const named = dismissed.map(dismissedLine).join("\n")

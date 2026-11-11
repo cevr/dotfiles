@@ -11,7 +11,7 @@ export const AskedQuestion = Schema.Struct({
   question: Schema.String.annotate({ description: "The question, self-contained: the user reads it later, maybe in another context" }),
   header: Schema.optional(Schema.String).annotate({ description: `A short label for the question (at most ${MAX_HEADER} characters)` }),
   options: Schema.optional(Schema.Array(Choice)).annotate({ description: `At most ${MAX_OPTIONS} choices; the user may also type their own answer` }),
-  assume: Schema.String.annotate({ description: "What you do until an answer arrives. You continue on it now" }),
+  assume: Schema.String.annotate({ description: "What you do until an answer arrives. You continue on it now. When it is one of your options, start with that option's label: the user sees that option marked (assumed)" }),
 })
 
 export const AskInput = toolInput(Schema.Struct({

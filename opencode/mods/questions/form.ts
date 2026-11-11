@@ -11,15 +11,19 @@
 // `ask_user_async:<question id>` for the form session's own question and
 // `ask_user_async:<session id>:<question id>` for a subagent's, a prefix no
 // host form uses.
-import { normalize, type Given, type Question } from "./question.ts"
+import { assumedChoice, isRecommended, type Given, type Question } from "./question.ts"
 import { excerpt } from "./reply.ts"
 
 /** What a field key starts with. */
 export const KEY_PREFIX = "ask_user_async:"
 /** The form's title. */
 export const TITLE = "Background questions"
-/** Marks the assumed choice. */
+/** Marks the assumed choice, as "(Recommended)" marks the recommended one. */
 export const ASSUMED = "assumed"
+
+/** A label with the assumed mark: "X (assumed)", or "X (recommended, assumed)" for a label marked "(Recommended)". */
+export const assumedLabel = (label: string): string =>
+  isRecommended(label) ? label.replace(/\s*\(recommended\)\s*$/i, ` (recommended, ${ASSUMED})`) : `${label} (${ASSUMED})`
 /** How much of the question a tab's label keeps when it has no header. */
 export const TAB = 24
 /** What the form replies for a dismissed question: a value no typed answer is. */
@@ -65,8 +69,9 @@ export interface FormInput {
   readonly fields: readonly [FormField, ...Array<FormField>]
 }
 
-const option = (label: string, description: string | undefined): FormOption => ({
-  value: label,
+/** An option that answers `value`, shown as `label`. */
+const option = (value: string, description: string | undefined, label = value): FormOption => ({
+  value,
   label,
   ...(description === undefined ? {} : { description }),
 })
@@ -74,18 +79,20 @@ const option = (label: string, description: string | undefined): FormOption => (
 /**
  * The question as a field: its choices with the assumed one first (where the
  * built-in tool puts its recommended choice, and where the cursor starts),
- * marked `assumed`; with no choice naming the assumption, the assumption is a
- * choice of its own at the top. The host adds "Type your own answer" last.
+ * its label marked "(assumed)" as a recommended one is marked "(Recommended)",
+ * one option when it is both; it answers with its own label, unmarked. With no
+ * choice the assumption names (`assumedChoice`), the assumption is a choice of
+ * its own at the top, marked the same. The host adds "Type your own answer" last.
  * `asker` names the subagent that asked, when the form is another session's:
  * the key then names the asking session too, and the question says who asks.
  */
 export const fieldOf = (question: Question, asker?: string): FormField => {
   const choices = question.options ?? []
-  const assumed = choices.find((choice) => normalize(choice.label) === normalize(question.assume))
+  const assumed = assumedChoice(question)
   const first =
     assumed === undefined
-      ? option(question.assume, ASSUMED)
-      : option(assumed.label, assumed.description === undefined ? ASSUMED : `${ASSUMED} · ${assumed.description}`)
+      ? option(question.assume, undefined, assumedLabel(question.assume))
+      : option(assumed.label, assumed.description, assumedLabel(assumed.label))
   return {
     key: asker === undefined ? `${KEY_PREFIX}${question.id}` : `${KEY_PREFIX}${question.sessionID}:${question.id}`,
     type: "string",

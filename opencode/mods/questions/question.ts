@@ -94,8 +94,42 @@ export const normalize = (text: string): string => text.replace(/\s+/g, " ").tri
 /** The question form sends an option chosen with a note as `<option> (note: <note>)`. */
 const withoutNote = (answer: string): string => answer.replace(/ \(note: [\s\S]*\)$/, "")
 
-/** Whether an answer says what the agent assumed. */
-export const matches = (answer: string, assume: string): boolean => normalize(withoutNote(answer)) === normalize(assume)
+/** A label's "(Recommended)" mark at its end, as the built-in question tool asks models to write it. */
+const RECOMMENDED = /\s*\(recommended\)\s*$/i
+
+/** Whether a choice's label carries the "(Recommended)" mark. */
+export const isRecommended = (label: string): boolean => RECOMMENDED.test(label)
+
+/** A label as the assumption would name it: without its "(Recommended)" mark, compared as the user means it. */
+const bare = (label: string): string => normalize(label.replace(RECOMMENDED, ""))
+
+/**
+ * The choice the assumption names, if any: the one whose label, without a
+ * "(Recommended)" mark, is the assumption, or with which the assumption starts
+ * as whole words ("8080" in "8080, the dev default"). The longest such label
+ * wins; with none, the assumption is no choice.
+ */
+export const assumedChoice = (question: { readonly options?: ReadonlyArray<Choice> | undefined; readonly assume: string }): Choice | undefined => {
+  const assume = normalize(question.assume)
+  const named = (question.options ?? []).filter((choice) => {
+    const label = bare(choice.label)
+    if (label === "") return false
+    if (assume === label || assume === normalize(choice.label)) return true
+    return assume.startsWith(label) && !/[\p{L}\p{N}_]/u.test(assume.charAt(label.length))
+  })
+  return named.toSorted((left, right) => bare(right.label).length - bare(left.label).length)[0]
+}
+
+/**
+ * Whether an answer says what the agent assumed: the assumption itself, or the
+ * choice it names (what the form records when that choice is picked).
+ */
+export const matches = (answer: string, question: { readonly options?: ReadonlyArray<Choice> | undefined; readonly assume: string }): boolean => {
+  const given = normalize(withoutNote(answer))
+  if (given === normalize(question.assume)) return true
+  const choice = assumedChoice(question)
+  return choice !== undefined && given === normalize(choice.label)
+}
 
 // ── Commands ──
 
