@@ -223,12 +223,17 @@ const instead = (state: MachineState, rule: Rule, now: number, cadence: Cadence)
 
 /** The refusal's message: the rule in the skill's words, the state, what to do instead, and how to go against it. */
 export const refusalOf = (state: MachineState, rule: Rule, call: Command, now: number, cadence: Cadence): string => {
-  const how = call._tag === "Land" ? 'departs: "<why>" in the land\'s input' : "(departs: <why>) at the end of the call's description"
+  const how =
+    call._tag === "Land"
+      ? `add departs: "<why>" to the land's input: rift({ action: "land", rifts: [${call.rifts.map((rift) => JSON.stringify(rift)).join(", ")}], departs: "<why>" })`
+      : call._tag === "Start"
+        ? `end the call's description with (departs: <why>): description "${call.role} ${call.name} r${call.round} (departs: <why>)"`
+        : "state (departs: <why>) in the call"
   return [
     `orchestrate: refused by the machine (${RULES[rule].name}): "${RULES[rule].words}"`,
     `Now: ready ${list(unitsIn(state, "ready"))}; implementing ${list(unitsIn(state, "implement"))}; landed and not verified ${list(unitsIn(state, "landed"))}${state.verifier === undefined ? "" : `; verifier ${state.verifier.batch} running`}.`,
     instead(state, rule, now, cadence),
-    `Only to go against it on purpose, state why: ${how}. The plugin records it as a departure.`,
+    `To go against the rule on purpose (the owner asked, or the run's rules depart from it), make the same call again and ${how}. It then passes, and the plugin records the departure.`,
   ].join("\n")
 }
 

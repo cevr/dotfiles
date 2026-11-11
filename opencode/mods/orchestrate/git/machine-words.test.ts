@@ -9,6 +9,7 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { machineOf } from "../../../scripts/agents.ts"
 import { RULES } from "../machine.ts"
 
 const ROOT = join(import.meta.dir, "../../..")
@@ -32,5 +33,11 @@ describe("the machine's words are the skill's", () => {
     expect(machine).toContain("verify: ONE fresh verifier per batch, on the merged head")
     expect(machine).toContain("4. **Fan out what follows**")
     expect(machine).not.toContain("**States.**")
+  })
+
+  test("a SKILL.md with no machine section fails the script that writes the block", () => {
+    expect(machineOf(skill)).toBe(JSON.parse(readFileSync(join(ROOT, "mods/orchestrate/agents.json"), "utf8")).machine)
+    expect(() => machineOf(skill.replace("## The machine", "## A machine"))).toThrow("no machine section")
+    expect(() => machineOf(skill.replace("**States.**", "States:"))).toThrow("no machine section")
   })
 })
