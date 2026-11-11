@@ -36,6 +36,12 @@ export interface FakeWindow {
 export interface FakeQuota {
   readonly fiveHour: FakeWindow
   readonly sevenDay: FakeWindow
+  /**
+   * Fable's own week, when the account has one: listed in `limits` as a
+   * `weekly_scoped` entry, with its allowance as a share of the weekly window
+   * (`weekly_scoped_shares`), as the endpoint answered on 2026-11-09.
+   */
+  readonly fable?: FakeWindow & { readonly ofWeekly: number }
 }
 
 /** What one request is answered with. */
@@ -98,16 +104,55 @@ export interface FakeAnthropicOptions {
   readonly token?: (account: string) => FakeTokenAnswer
   /** The `cedar_ember` reset grants the usage endpoint lists for an account (asked with `?cedar_ember=1`). Default none. */
   readonly grants?: (account: string) => ReadonlyArray<FakeGrant>
-  /** The answer to a claim of a grant. Default `reset`, and `already_used` for a request id claimed before. */
+  /**
+   * The answer to a claim of a grant. Default `reset`, and `already_used` for
+   * a request id claimed before. A `reset` answers the windows the grant
+   * clears (`cleared`, with `seven_day` for one that gives back) and the
+   * weekly reset, read after the hook ran.
+   */
   readonly claim?: (account: string, grant: string) => FakeClaimResult
 }
 
-/** A reset grant as the usage endpoint lists it. */
+/**
+ * A reset grant as the usage endpoint lists it, in the fields Claude Code
+ * 2.1.318 reads: a Fable reset gives back to the weekly window
+ * (`gives_back_weekly`) what Fable used of it.
+ */
 export interface FakeGrant {
   readonly id: string
   readonly resetsLeft: number
   readonly endsAt: number
   readonly clears?: ReadonlyArray<string>
+  readonly type?: "session" | "weekly" | "full"
+  readonly givesBackWeekly?: boolean
+  /** Default false: usable whenever it is listed. */
+  readonly useRequiresLimit?: boolean
+}
+
+const WINDOW_OF: Readonly<Record<string, "fiveHour" | "sevenDay" | "fable">> = {
+  five_hour: "fiveHour",
+  seven_day: "sevenDay",
+  seven_day_overage_included: "fable",
+}
+
+/**
+ * What a claim of `grant` does to `quota`, as the owner describes a Fable
+ * reset (2026-11-11): each window it clears reads empty, and one that gives
+ * back takes off the weekly window the part Fable's week used of it (its use
+ * times its allowance share); the weekly reset stays.
+ */
+export const claimEffect = (quota: FakeQuota, grant: FakeGrant): FakeQuota => {
+  let next: FakeQuota = quota
+  for (const name of grant.clears ?? []) {
+    const field = WINDOW_OF[name]
+    const window = field === undefined ? undefined : next[field]
+    if (field !== undefined && window !== undefined) next = { ...next, [field]: { ...window, utilization: 0 } }
+  }
+  if (grant.givesBackWeekly === true && quota.fable !== undefined) {
+    const part = quota.fable.utilization * quota.fable.ofWeekly
+    next = { ...next, sevenDay: { ...next.sevenDay, utilization: Math.max(0, quota.sevenDay.utilization - part) } }
+  }
+  return next
 }
 
 /** What a claim answers: a `result`, or a 429. */
@@ -377,9 +422,29 @@ export const startFakeAnthropic = (options: FakeAnthropicOptions): FakeAnthropic
       resets_at: new Date(value.resetAt).toISOString(),
     })
     const grants = new URL(request.url).searchParams.get("cedar_ember") === "1" ? (options.grants?.(account) ?? []) : undefined
+    const fable = quota.fable
     return Response.json({
       five_hour: window(quota.fiveHour),
       seven_day: window(quota.sevenDay),
+      // Fable's week as measured on 2026-11-09: a `weekly_scoped` entry of `limits`, its share named by index.
+      ...(fable === undefined
+        ? {}
+        : {
+            limits: [
+              { kind: "session", group: "session", percent: quota.fiveHour.utilization * 100, resets_at: new Date(quota.fiveHour.resetAt).toISOString(), scope: null },
+              { kind: "weekly_all", group: "weekly", percent: quota.sevenDay.utilization * 100, resets_at: new Date(quota.sevenDay.resetAt).toISOString(), scope: null },
+              {
+                kind: "weekly_scoped",
+                group: "weekly",
+                percent: fable.utilization * 100,
+                resets_at: new Date(fable.resetAt).toISOString(),
+                scope: { model: { id: null, display_name: "Fable" }, surface: null },
+              },
+            ],
+            weekly_scoped_shares: [
+              { limit_index: 2, used_percent_of_weekly: fable.utilization * fable.ofWeekly * 100, allowance_percent_of_weekly: fable.ofWeekly * 100 },
+            ],
+          }),
       ...(grants === undefined
         ? {}
         : {
@@ -391,8 +456,12 @@ export const startFakeAnthropic = (options: FakeAnthropicOptions): FakeAnthropic
                 ends_at: new Date(grant.endsAt).toISOString(),
                 paused: false,
                 usable_now: grant.resetsLeft > 0,
+                use_requires_limit: grant.useRequiresLimit ?? false,
+                gives_back_weekly: grant.givesBackWeekly ?? false,
+                ...(grant.type === undefined ? {} : { type: grant.type }),
                 ...(grant.clears === undefined ? {} : { clears: grant.clears }),
               })),
+              weekly_resets_at: new Date(quota.sevenDay.resetAt).toISOString(),
             },
           }),
     })
@@ -418,7 +487,16 @@ export const startFakeAnthropic = (options: FakeAnthropicOptions): FakeAnthropic
     const status = result === "unauthorized" ? 403 : result === "rate-limited" ? 429 : 200
     record(request, path, account, status)
     if (status !== 200) return new Response(errorBody("permission_error", result), { status })
-    return Response.json({ result })
+    if (result !== "reset" || account === undefined) return Response.json({ result })
+    // A reset answers what it cleared, as Claude Code reads the answer: a give-back clears into the weekly window too.
+    const grant = (options.grants?.(account) ?? []).find((item) => item.id === body.grant_id)
+    const cleared = [...(grant?.clears ?? []), ...(grant?.givesBackWeekly === true ? ["seven_day"] : [])]
+    return Response.json({
+      result,
+      cleared,
+      resets_left: Math.max(0, (grant?.resetsLeft ?? 1) - 1),
+      weekly_resets_at: new Date(quotaOf(account).sevenDay.resetAt).toISOString(),
+    })
   }
 
   /** A refresh as JSON (the auth plugin's) or as a form (gent's). */
