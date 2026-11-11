@@ -46,6 +46,8 @@ export default OpenCodeDriver.use(
       tabs: { mode: "off" },
       theme: { name: "prime", mode: "dark" },
       plugins: [`${root}/cmd/prime`],
+      // Each call its own row, as these frames read them; the default (low) folds a turn's calls into one.
+      session: { verbosity: "medium" },
     },
     tui: { viewport: { cols: 150, rows: 50 } },
     project: { git: true, files: { ".opencode/themes/prime.json": readFileSync(`${root}/themes/prime.json`, "utf8") } },
