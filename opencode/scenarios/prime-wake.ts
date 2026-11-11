@@ -1,9 +1,9 @@
 // A worker that waits on its own background shell command, in the Prime look
 // with the orchestrate plugin: it moves a shell command to the background
-// and ends its turn, the shell's stop notice wakes it, and only the answer it
-// writes then reaches the parent. Once as a background worker (its answer
-// comes back as the parent's stop notice), once in the foreground (as the
-// subagent call's result). Replayed against OpenCode with a scripted model.
+// and ends its turn, so OpenCode reports its waiting line to the parent with
+// the work still running; the shell's stop notice wakes it, and the answer it
+// writes then reaches the parent as a second report. Replayed against
+// OpenCode with a scripted model.
 //
 // The shell command waits for a release file the scenario writes once it has
 // the waiting frame, so the waiting state lasts as long as the frame takes to
@@ -11,14 +11,13 @@
 // waiting row draws, and then the frame never comes.
 // Run: OPENCODE_DEV=<opencode checkout> OPENCODE_DRIVE_MEDIA_DIR=<dir> bunx opencode-drive run scenarios/prime-wake.ts
 //
-// The parent's model says which answer it got: `Root heard: …` for the one
-// written after the shell, `Root heard too early.` for the one the worker
-// wrote before it, while it still waited.
+// The parent's model says which report it got: `Root heard: …` for the
+// answer written after the shell, `Root heard it waits.` for the line the
+// worker wrote before it, while it still waited.
 //
 // It writes, under SCENARIO_OUT:
-// - `wake-bg-waiting`: the background worker has ended its turn and waits on its shell;
-// - `wake-bg-done`: its answer has reached the parent;
-// - `wake-fg-waiting`, `wake-fg-done`: the same for the foreground worker.
+// - `wake-bg-waiting`: the worker has ended its turn and waits on its shell;
+// - `wake-bg-done`: its answer has reached the parent.
 // Each frame is a `.txt` of its text and a `.json` of its styled lines. A
 // wait that times out writes `<frame>.timeout.txt` and keeps the run's server
 // and TUI logs in `<frame>.logs`.
@@ -33,60 +32,47 @@ type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string }> }> 
 const text = (frame: Frame) => frame.lines.map((l) => l.spans.map((s) => s.text).join("").trimEnd()).join("\n")
 
 const ASK = "Run the slow check in a background worker."
-const AGAIN = "Now run it once more in the foreground."
 const STARTED = "Worker started."
 const WAITING = "Waiting for the check."
-const TOO_EARLY = "Root heard too early."
-// Each worker moves its shell command to the background, ends its turn, and answers once its shell's notice wakes it.
-const WORKERS = {
-  background: {
-    id: "call_bg",
-    description: "Run the slow check",
-    prompt: "Worker brief B.",
-    shell: "call_sleep_b",
-    release: `${out}/release-bg`,
-    answer: "Background check passed after its shell.",
-    heard: "Root heard: the background check passed.",
-  },
-  foreground: {
-    id: "call_fg",
-    description: "Check it in the foreground",
-    prompt: "Worker brief F.",
-    shell: "call_sleep_f",
-    release: `${out}/release-fg`,
-    answer: "Foreground check passed after its shell.",
-    heard: "Root heard: the foreground check passed.",
-  },
+const HEARD_WAITING = "Root heard it waits."
+// The worker moves its shell command to the background, ends its turn, and answers once its shell's notice wakes it.
+const WORKER = {
+  id: "call_bg",
+  description: "Run the slow check",
+  prompt: "Worker brief B.",
+  shell: "call_sleep_b",
+  release: `${out}/release-bg`,
+  answer: "Background check passed after its shell.",
+  heard: "Root heard: the background check passed.",
 }
-type Worker = (typeof WORKERS)[keyof typeof WORKERS]
 
 const finish = (words: string) => Stream.make(Llm.text(words), Llm.finish())
 
 /** The worker's slow check: it ends once the scenario writes its release file, or after two minutes. */
-const check = (worker: Worker) => `for i in $(seq 600); do [ -e '${worker.release}' ] && exit 0; sleep 0.2; done`
+const check = `for i in $(seq 600); do [ -e '${WORKER.release}' ] && exit 0; sleep 0.2; done`
 
-/** A worker's next step: start its shell, then wait, then answer once the shell's notice is in. */
-const work = (worker: Worker, request: string) => {
-  if (!request.includes(worker.shell))
+/** The worker's next step: start its shell, then wait, then answer once the shell's notice is in. */
+const work = (request: string) => {
+  if (!request.includes(WORKER.shell))
     return Stream.make(
-      Llm.toolCall({ index: 0, id: worker.shell, name: "shell", input: { command: check(worker), background: true } }),
+      Llm.toolCall({ index: 0, id: WORKER.shell, name: "shell", input: { command: check, background: true } }),
       Llm.finish("tool-calls"),
     )
   // The shell's stop notice: `<shell id="…" state="completed" command="…">`.
-  if (request.includes("<shell id=")) return finish(worker.answer)
+  if (request.includes("<shell id=")) return finish(WORKER.answer)
   return finish(WAITING)
 }
 
-/** The parent's next step for one worker: start it, then say which answer it got. */
-const lead = (worker: Worker, request: string, input: Record<string, unknown>, started: string) => {
-  if (!request.includes(worker.id))
+/** The parent's next step: start the worker, then say which report it got. */
+const lead = (request: string) => {
+  if (!request.includes(WORKER.id))
     return Stream.make(
-      Llm.toolCall({ index: 0, id: worker.id, name: "subagent", input: { description: worker.description, prompt: worker.prompt, ...input } }),
+      Llm.toolCall({ index: 0, id: WORKER.id, name: "subagent", input: { description: WORKER.description, prompt: WORKER.prompt } }),
       Llm.finish("tool-calls"),
     )
-  if (request.includes(worker.answer)) return finish(worker.heard)
-  if (request.includes(WAITING)) return finish(TOO_EARLY)
-  return finish(started)
+  if (request.includes(WORKER.answer)) return finish(WORKER.heard)
+  if (request.includes(WAITING)) return finish(HEARD_WAITING)
+  return finish(STARTED)
 }
 
 export default OpenCodeDriver.use(
@@ -95,7 +81,7 @@ export default OpenCodeDriver.use(
     config: {
       autoupdate: false,
       username: "Demo",
-      // A Wednesday afternoon, so the Sabbath never stops the workers; the call log stays in the run's output.
+      // A Wednesday afternoon, so the Sabbath never stops the worker; the call log stays in the run's output.
       plugins: [{ package: `${root}/cmd/orchestrate`, options: { now: "2026-11-04T15:00:00Z", log: `${out}/agents.jsonl` } }],
     },
     tuiConfig: {
@@ -117,13 +103,9 @@ export default OpenCodeDriver.use(
       yield* llm.serve((req) => {
         const s = JSON.stringify(req)
         if (s.includes("You name conversations")) return finish("slow check")
-        // A worker's request carries its brief but never the parent's prompt.
-        if (!s.includes(ASK)) {
-          if (s.includes(WORKERS.background.prompt)) return work(WORKERS.background, s)
-          if (s.includes(WORKERS.foreground.prompt)) return work(WORKERS.foreground, s)
-        }
-        if (s.includes(AGAIN)) return lead(WORKERS.foreground, s, {}, "Running it.")
-        return lead(WORKERS.background, s, { background: true }, STARTED)
+        // The worker's request carries its brief but never the parent's prompt.
+        if (!s.includes(ASK) && s.includes(WORKER.prompt)) return work(s)
+        return lead(s)
       })
       // Under load the host's startup panel can still sit beneath the rows; a
       // frame is ready only once it has gone.
@@ -146,25 +128,15 @@ export default OpenCodeDriver.use(
           writeFileSync(`${out}/${name}.json`, JSON.stringify(frame))
           console.log("screenshot:", yield* ui.screenshot(name))
         })
-      const waiting = (frame: string, worker: Worker) =>
-        frame.split("\n").some((line) => line.includes(`◈ worker gpt  ${worker.description}  ${WAITING} · `))
-      const heard = (frame: string, worker: Worker) => frame.includes(worker.heard) || frame.includes(TOO_EARLY)
+      const waiting = (frame: string) =>
+        frame.split("\n").some((line) => line.includes(`◈ worker gpt  ${WORKER.description}  ${WAITING} · `))
 
       yield* ui.submit(ASK)
-      const release = (worker: Worker) => Effect.sync(() => writeFileSync(worker.release, ""))
-
-      // The worker has said it waits and ended its turn; its shell still runs, until the release.
-      yield* until("wake-bg-waiting", (frame) => frame.includes(STARTED) && waiting(frame, WORKERS.background))
+      // The worker has said it waits and ended its turn, and the parent has its waiting report; its shell still runs, until the release.
+      yield* until("wake-bg-waiting", (frame) => frame.includes(HEARD_WAITING) && waiting(frame))
       yield* save("wake-bg-waiting")
-      yield* release(WORKERS.background)
-      yield* until("wake-bg-done", (frame) => heard(frame, WORKERS.background))
+      yield* Effect.sync(() => writeFileSync(WORKER.release, ""))
+      yield* until("wake-bg-done", (frame) => frame.includes(WORKER.heard))
       yield* save("wake-bg-done")
-
-      yield* ui.submit(AGAIN)
-      yield* until("wake-fg-waiting", (frame) => waiting(frame, WORKERS.foreground))
-      yield* save("wake-fg-waiting")
-      yield* release(WORKERS.foreground)
-      yield* until("wake-fg-done", (frame) => heard(frame, WORKERS.foreground))
-      yield* save("wake-fg-done")
     }),
 )

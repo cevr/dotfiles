@@ -1,10 +1,11 @@
 // Opus first, Codex second, in real OpenCode with the Prime look: the
 // orchestrate and wakes plugins, a stand-in pool whose pace holds every new
 // agent on the first model's provider, and a second provider standing in for
-// Codex, with two sol models. The parent starts a planner in the foreground (Codex plans and verifies, never implements);
+// Codex, with two sol models. The parent starts a planner (Codex plans and verifies, never implements);
 // the pool holds its model, the Codex admission script admits the newest
-// sol, so the worker starts at once on it instead of latching, runs, and its
-// answer, led by the line saying where it ran and why, reaches the parent.
+// sol, so the worker starts at once on it instead of latching; the call's
+// result, led by the line saying where it ran and why, and then its answer
+// reach the parent.
 // Replayed against OpenCode with a scripted model.
 // Run: OPENCODE_DEV=<opencode checkout> SCENARIO_OUT=out bunx opencode-drive run scenarios/prime-fallback.ts
 //

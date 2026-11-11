@@ -147,7 +147,8 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       const tools = result.seen.find((request) => request.task === UNTYPED_TASK)!.tools
       expect(tools).not.toContain("subagent")
       expect(tools).toContain("shell")
-      // The call log: what was asked, what ran and why, then each child's session and outcome.
+      // The call log: what was asked, what ran and why, then each child's session and how its call
+      // ended: running, since OpenCode runs every subagent in the background.
       const calls = result.log.filter((line) => line.kind === "call")
       expect(calls.map(({ asked, agent, reason, model }) => ({ asked, agent, reason, model }))).toEqual([
         { asked: undefined, agent: "worker", reason: "untyped", model: undefined },
@@ -155,8 +156,8 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       ])
       const done = result.log.filter((line) => line.kind === "done")
       expect(done.map(({ child, status }) => ({ child, status }))).toEqual([
-        { child: byAgent.worker!.id, status: "completed" },
-        { child: byAgent.verifier!.id, status: "completed" },
+        { child: byAgent.worker!.id, status: "running" },
+        { child: byAgent.verifier!.id, status: "running" },
       ])
       expect(done.map((line) => line.callID)).toEqual(calls.map((line) => line.callID))
     },
@@ -233,25 +234,27 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   )
 
   test(
-    "restart: a foreground subagent a shutdown cut is resumed once in the background and its parent told once; one the user interrupted is not",
+    "restart: a subagent a shutdown cut is resumed once, by OpenCode's own restart notice and never again by the plugin, and its parent hears its answer",
     async () => {
       const result = await run("restart", { scenario: "restart", now: WEDNESDAY, resumeBackoffMs: [500, 500, 500] })
       type Message = { type: string; text?: string; metadata?: Record<string, unknown>; content?: ReadonlyArray<{ type: string; text?: string }> }
       const messages = (name: string) => result.sessions[name]!.messages as Message[]
-      const resumes = (name: string) => messages(name).filter((message) => message.type === "user" && message.text?.startsWith("Your turn ended when OpenCode restarted"))
+      const prompts = (name: string) => messages(name).filter((message) => message.type === "user" && message.text?.startsWith("Your turn ended when OpenCode restarted"))
+      const restarts = (name: string) => messages(name).filter((message) => message.type === "synthetic" && message.metadata?.notice === "restart")
       const notices = (name: string) => messages(name).filter((message) => message.type === "synthetic" && message.metadata?.source === "orchestrate")
-      // The cut child got the resume prompt once, and answered after it.
-      expect(resumes("child").length).toBe(1)
-      const after = messages("child").slice(messages("child").indexOf(resumes("child")[0]!) + 1)
+      // OpenCode runs every subagent in the background and continues a cut one itself: the child got
+      // its restart notice once, answered after it, and the plugin added no resume of its own.
+      expect(restarts("child").length).toBe(1)
+      expect(prompts("child")).toEqual([])
+      const after = messages("child").slice(messages("child").indexOf(restarts("child")[0]!) + 1)
       expect(after.some((message) => message.type === "assistant" && message.content?.some((part) => part.text?.startsWith("sim: ")))).toBe(true)
-      // The call log has its one resume, in its parent's call.
-      const resumed = result.log.filter((line) => line.kind === "resumed")
-      expect(resumed.map(({ child, cause, attempt, description }) => ({ child, cause, attempt, description }))).toEqual([
-        { child: result.children[0]!.id, cause: "restart", attempt: 1, description: "restart-root child" },
-      ])
-      // Its parent was told once, naming it; the interrupted root and its child were left alone.
-      expect(notices("root").map((message) => message.metadata?.children)).toEqual([[result.children[0]!.id]])
-      expect(resumes("escapedChild")).toEqual([])
+      expect(result.log.filter((line) => line.kind === "resumed")).toEqual([])
+      expect(notices("root")).toEqual([])
+      // Its parent heard the answer through OpenCode's subagent report.
+      const child = result.children[0]!.id
+      expect(messages("root").some((message) => JSON.stringify(message).includes(`<subagent sessionID=\\"${child}\\"`))).toBe(true)
+      // The plugin never resumed the interrupted root's child either.
+      expect(prompts("escapedChild")).toEqual([])
       expect(notices("escaped")).toEqual([])
       // No child was made again.
       expect(result.children.length).toBe(2)

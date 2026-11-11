@@ -13,11 +13,12 @@
  * - `compaction`: a planner session and a worker session, two prompts each.
  * - `units`: the root starts the implementor of `work/tmp/orchestrate/web/auth`,
  *   which hands back; the result carries that unit's `log.md`.
- * - `restart`: on a database file, two roots each call a foreground
- *   subagent whose model request hangs; the user interrupts the second root,
- *   then OpenCode shuts down while the first waits, and starts again on the
- *   same database. The run ends once the first root's child answered after
- *   the plugin resumed it, or after a minute.
+ * - `restart`: on a database file, two roots each call a subagent (in the
+ *   background, as OpenCode runs every subagent) whose model request hangs;
+ *   the user interrupts the second root, then OpenCode shuts down while the
+ *   first's child works, and starts again on the same database. The run ends
+ *   once the first root's child answered after it was resumed (by OpenCode's
+ *   own restart notice or the plugin's prompt), or after a minute.
  * - `machine`: the root runs the sim's machine task (three implementors, a
  *   compaction, a refused verifier and land, the batch's land and verifier),
  *   with a fixture `rift` tool written beside the fake pace plugin and the
@@ -283,8 +284,13 @@ try {
     opencode = await open()
     // Resumed, answered after the resume prompt, and its parent told.
     const answered = async () => {
-      const list = (await messages(child)) as ReadonlyArray<{ type: string; text?: string; time?: { completed?: unknown } }>
-      const resumed = list.findIndex((message) => message.type === "user" && message.text?.startsWith("Your turn ended when OpenCode restarted") === true)
+      const list = (await messages(child)) as ReadonlyArray<{ type: string; text?: string; metadata?: Record<string, unknown>; time?: { completed?: unknown } }>
+      // OpenCode's own restart notice, or the plugin's resume prompt.
+      const resumed = list.findIndex(
+        (message) =>
+          (message.type === "synthetic" && message.metadata?.notice === "restart") ||
+          (message.type === "user" && message.text?.startsWith("Your turn ended when OpenCode restarted") === true),
+      )
       return resumed >= 0 && list.slice(resumed + 1).some((message) => message.type === "assistant" && message.time?.completed !== undefined)
     }
     const done = await until(answered, 60_000)
@@ -500,6 +506,10 @@ try {
     const root = await opencode.sessions.create({ location })
     await turn(root.id, `${UNITS_TASK} ${unit}`)
     const page = await opencode.sessions.list({ parentID: root.id, directory: work })
+    // The implementor runs in the background (OpenCode runs every subagent so): its hand-back
+    // lands when it goes idle, after the root's own turn ended.
+    for (const child of page.data) await opencode.experimental.session.wait({ sessionID: child.id })
+    await opencode.experimental.session.wait({ sessionID: root.id })
     const file = join(unit, "log.md")
     const unitLog = existsSync(file)
       ? readFileSync(file, "utf8")
