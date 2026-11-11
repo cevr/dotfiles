@@ -799,10 +799,11 @@
                   "!effect/*",
                   "*/**/effect",
                   "!@dotfiles/opencode-subagents/*",
+                  "!@dotfiles/opencode-cache/line",
                   "!./*.ts",
                   "!bun:test"
                 ],
-                "message": "The Prime domain fence: its domain files import effect, the subagent rows' domain (@dotfiles/opencode-subagents/*), the mod's own root files and bun:test only; never @opencode/*, @opentui/*, solid-js, node:*, bun or one of the mod's folders. (`*/**/effect` takes back what `!effect` lets through: any path ending in `effect`, such as @opencode/plugin/effect.)"
+                "message": "The Prime domain fence: its domain files import effect, the subagent rows' domain (@dotfiles/opencode-subagents/*), the cache mod's line measures (@dotfiles/opencode-cache/line), the mod's own root files and bun:test only; never @opencode/*, @opentui/*, solid-js, node:*, bun or one of the mod's folders. (`*/**/effect` takes back what `!effect` lets through: any path ending in `effect`, such as @opencode/plugin/effect.)"
               }
             ]
           }

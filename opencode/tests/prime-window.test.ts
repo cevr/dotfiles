@@ -33,6 +33,7 @@ describe.skipIf(!fork)("the tray's context share under an agent's compaction win
         SCENARIO_PRIME: "1",
         SCENARIO_THEME: "prime",
         SCENARIO_WINDOW: "128000",
+        SCENARIO_CACHED: "60000",
         SCENARIO_OUT: out,
         SCENARIO_LABEL: "window",
         OPENCODE_DRIVE_MEDIA_DIR: join(out, "media"),
@@ -45,8 +46,9 @@ describe.skipIf(!fork)("the tray's context share under an agent's compaction win
     frame = readFileSync(join(out, "window.txt"), "utf8")
   }, 300_000)
 
-  test("64k on a 262k model whose agent compacts at 128k reads 50%", () => {
-    expect(frame).toMatch(/^ {20,}gpt-sim-model · 64k \(50%\)$/m)
+  test("64k on a 262k model whose agent compacts at 128k reads 50%, then the turn's cache share", () => {
+    // The turn's one metered step read 60k of its 63k prompt tokens from the cache: 95%, after the context share, right-aligned.
+    expect(frame).toMatch(/^ {20,}gpt-sim-model · 64k \(50%\) · cache 95%$/m)
     expect(frame).not.toContain("(24%)")
   })
 })

@@ -292,6 +292,7 @@
       "name": "@dotfiles/opencode-prime",
       "version": "0.0.0",
       "dependencies": {
+        "@dotfiles/opencode-cache": "workspace:*",
         "@dotfiles/opencode-subagents": "workspace:*",
         "@dotfiles/opencode-wake": "workspace:*",
       },
