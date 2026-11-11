@@ -5,9 +5,11 @@
 // files again for the merged sources (a clean merge can leave them stale),
 // runs the repository's gate once, pushes to the default branch, trashes the landed Rifts, then
 // runs the repository's accept check once, in the background, on everything
-// the batch changed, and wakes the calling session with its result. The
-// repository names its commands in its warm source's Git config
-// (`rift.gate`, `rift.accept`), so the tool knows no repository's checks.
+// the batch changed, and wakes the calling session with its result; then the
+// repository's own post-land work (`rift.postLand`), the same way, waking it
+// with its report. The repository names its commands in its warm source's
+// Git config (`rift.gate`, `rift.accept`, `rift.postLand`), so the tool knows
+// no repository's checks.
 // A repository that lands through pull requests sets `rift.push` false: the
 // batch is merged, gated and checked the same way, nothing goes to the
 // default branch, every Rift stays, and each one is answered green or red (a
@@ -46,6 +48,27 @@ export interface LandConfig {
   readonly push: boolean
   /** `rift.pushBranches` (default false): with `rift.push` false, push each green Rift's own branch, for its pull request. */
   readonly pushBranches: boolean
+  /**
+   * `rift.postLand`: the repository's own work after a pushed batch (the
+   * dotfiles merge upstream OpenCode into their fork), a shell line run in
+   * the integration Rift in the background after the accept check, one at a
+   * time with it, with RIFT_LAND_BASE, RIFT_LAND_HEAD and
+   * RIFT_POST_LAND_REPORT set: what it writes to that file is the report the
+   * session is woken with. Skipped while the host is loaded past its cores;
+   * the next land runs it again.
+   */
+  readonly postLand: string | undefined
+}
+
+/** A post-land step's run: the check's run, and the report it wrote, when it wrote one. */
+export interface PostLanded extends Ran {
+  readonly report: string | undefined
+}
+
+/** The host's 1-minute load and its cores, read before a post-land step. */
+export interface HostLoad {
+  readonly load: number
+  readonly cores: number
 }
 
 /** Where a batch starts: origin's newest default branch, checked out in the integration Rift. */
@@ -127,7 +150,7 @@ export const digest = (output: string, limit = 12): string => {
 const branches = (units: ReadonlyArray<Unit>): string => units.map((unit) => unit.branch).join(", ")
 
 /** The answer to a land that pushed. */
-export const landedText = (landed: Landed, integration: string, accepting: boolean): string => {
+export const landedText = (landed: Landed, integration: string, accepting: boolean, postLand = false): string => {
   const removed = landed.units.filter((unit) => !landed.kept.some((kept) => kept.path === unit.path))
   return [
     `Landed ${landed.units.length} Rift(s) as one push: ${landed.pushed} to ${landed.main} (merged ${branches(landed.units)}; the gate passed in ${landed.gate.seconds}s).`,
@@ -137,8 +160,24 @@ export const landedText = (landed: Landed, integration: string, accepting: boole
     accepting
       ? `The accept check runs in the background in ${integration} on the batch since ${landed.base.slice(0, 9)}; this session is woken with its result.`
       : "No rift.accept is configured, so no check runs after the push.",
+    ...(postLand
+      ? [`Then the repository's post-land step (rift.postLand) runs there in the background${accepting ? ", after the accept check" : ""}; this session is woken with its report, and the next land waits for it.`]
+      : []),
   ].join("\n")
 }
+
+/** The wake a post-land step sends: its report (else its output's last lines), and how it ended. */
+export const postLandedText = (units: ReadonlyArray<Unit>, ran: PostLanded): string =>
+  [
+    ran.code === 0
+      ? `rift land: the post-land step after ${branches(units)} ran in ${ran.seconds}s. Log: ${ran.log}`
+      : `rift land: the post-land step after ${branches(units)} FAILED (exit ${ran.code}) in ${ran.seconds}s. The batch is already pushed. Log: ${ran.log}`,
+    ran.report !== undefined && ran.report.trim() !== "" ? ran.report.trimEnd() : digest(ran.output, 20),
+  ].join("\n")
+
+/** The wake a post-land step skipped under load sends. */
+export const postLandSkippedText = (units: ReadonlyArray<Unit>, load: HostLoad): string =>
+  `rift land: the post-land step after ${branches(units)} was skipped: the 1-minute load is ${load.load.toFixed(1)}, at or past the host's ${load.cores} cores. The next land runs it again.`
 
 /** The wake a background accept check sends. */
 export const acceptedText = (units: ReadonlyArray<Unit>, accept: Ran): string =>

@@ -4,7 +4,7 @@
 // the directory each session runs in and the notices that wake one. Each states its failure; `laws.ts` states
 // what every implementation owes.
 import { Context, type Effect, Schema } from "effect"
-import type { LandConfig, Merged, Ran, Started, Unit } from "./land.ts"
+import type { HostLoad, LandConfig, Merged, PostLanded, Ran, Started, Unit } from "./land.ts"
 import type { Workspace } from "./workspace.ts"
 
 /** A Rift or Git command failed; `message` is what it said. */
@@ -85,6 +85,13 @@ export class Landing extends Context.Service<
     readonly regenerate: (integration: string, config: LandConfig) => Effect.Effect<ReadonlyArray<string>, RiftFailed>
     /** Runs the repository's `command` (a shell line) in `path`, keeping its output in a log; never fails on its exit code. */
     readonly check: (path: string, label: "gate" | "accept", command: string, env: Readonly<Record<string, string>>) => Effect.Effect<Ran, RiftFailed>
+    /**
+     * Runs the repository's post-land `command` in `path` like a check (heavy, its output in a log), with
+     * RIFT_POST_LAND_REPORT set to a fresh file; answers the run and what the command wrote there.
+     */
+    readonly postLand: (path: string, command: string, env: Readonly<Record<string, string>>) => Effect.Effect<PostLanded, RiftFailed>
+    /** The host's 1-minute load and its cores. */
+    readonly hostLoad: Effect.Effect<HostLoad>
     /** Pushes HEAD to `<main>` on origin when it holds origin's newest `<main>`; answers the pushed commit, `<hash> <subject>`. */
     readonly push: (path: string, main: string) => Effect.Effect<string, RiftFailed>
     /** Pushes the Rift at `unit.path`'s branch to the same branch on origin, never forced; answers the pushed commit, `<hash> <subject>`. */

@@ -1556,6 +1556,7 @@ knows no repository's commands:
 | `rift.regenerate` | the shell line, run at the repository root, that writes them again: on such a conflict, and after every batch's merges and install, before the gate |
 | `rift.push` | a Git boolean, default true; false checks the batch without pushing the default branch or removing a Rift |
 | `rift.pushBranches` | a Git boolean, default false; with `rift.push` false, push each green Rift's own branch |
+| `rift.postLand` | the repository's own work after a pushed batch: a shell line run in the integration Rift in the background after the accept check, one at a time with it, heavy like it, with `RIFT_LAND_BASE`, `RIFT_LAND_HEAD` (the pushed commit) and `RIFT_POST_LAND_REPORT` set; what it writes to that file is the report the land's session is woken with (else its output's last lines). Skipped while the 1-minute load is at or past the host's cores, and said so; the next land runs it again. The integration Rift stays busy until it ends |
 | `workrift.main` | the default branch; else origin's HEAD, else `main` |
 
 The gate and the acceptance run always run heavy, through the guard's
@@ -1574,7 +1575,16 @@ for role in planner implementor verifier; do
   git config --add rift.generated codex/agents/$role.toml
 done
 git config rift.regenerate 'bun skills/orchestrate/scripts/agents.ts && cd opencode && bun scripts/agents.ts'
+git config rift.postLand 'cd opencode && OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=$HOME/Developer/personal/.rifts/gent/untrack-local-settings bun scripts/post-land.ts'
 ```
+
+Its post-land step (`scripts/post-land.ts`) merges upstream OpenCode into the
+fork's `prime-look` on the Mac that owns the fork (`mergeUpstream`, as
+`bun run daily`'s step 0 does, under the same lock), refreshes
+`upstream.json` for the TUI's corner, and reports the outcome with the fork
+work it calls for (`scripts/fork-work.ts`): conflicts to resolve, fork
+commits upstream now also makes, and fork commits marked to drop once an
+upstream change merges. On the workbox it does nothing.
 
 A path in these values is written with `$HOME`, never `~`: `sh` leaves a
 `~` after `=` in a command's argument as it is, so `env OPENCODE_DEV=~/…`

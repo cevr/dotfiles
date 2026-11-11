@@ -31,7 +31,7 @@ import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } from "../testbeds/gamut/gamut.ts"
 import { checkFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
-import { forkChecks, mergeUpstream, syncFork, upstreamReading } from "./upstream.ts"
+import { forkChecks, mergeUpstream, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
 
 const MODS = resolve(import.meta.dir, "../mods")
 const CMD = resolve(import.meta.dir, "../cmd")
@@ -298,7 +298,8 @@ if (import.meta.main) {
   await linkFork()
 
   // After the links, since the merge's acceptance tests load the mods through them.
-  const outcome = await upstream(false)
+  // Under the lock a land's post-land step (scripts/post-land.ts) merges under too.
+  const outcome = (await withUpstreamLock(state, () => upstream(false))) ?? { kind: "skipped" as const, reason: "a land's post-land step is merging upstream now" }
   if (outcome.kind === "skipped") console.log(`upstream: skipped (${outcome.reason})`)
   if (outcome.kind === "merged") {
     if ((await $`git -C ${fork} rev-parse HEAD`.text()).trim() === outcome.merge) {
