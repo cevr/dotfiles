@@ -151,7 +151,12 @@ export const reply = (request: ChatRequest): Reply => {
       }
     return { kind: "text", text: "root: the implementor handed back" }
   }
-  if (task.startsWith(HAND_BACK)) return { kind: "text", text: `${task.slice(HAND_BACK.length).trim()}\nThe gate is green.` }
+  // A hand-back line anywhere in the task: a verifier's prompt ends with the findings the plugin appends after it.
+  const handBack = text(messages.find((message) => message.role === "user")?.content)
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith(HAND_BACK))
+  if (handBack !== undefined && !task.startsWith(UNITS_TASK)) return { kind: "text", text: `${handBack.slice(HAND_BACK.length).trim()}\nThe gate is green.` }
   if (isMachineRoot({ system, messages })) return machineStep(messages)?.[1] ?? { kind: "text", text: "root: lost the machine script" }
   if (task === ROOT_TASK && offersSubagent) {
     if (results === 0)

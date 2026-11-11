@@ -1,7 +1,8 @@
 // The dotfiles' post-land step (scripts/post-land.ts) over stand-in steps: no fork, no network,
-// no push. And the lock it shares with daily's step 0 (scripts/upstream.ts `withUpstreamLock`).
+// no push. And the lock it shares with daily's step 0 (scripts/upstream.ts `withUpstreamLock`), raced by
+// real processes (scripts/upstream-lock-child.ts).
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ForkWork } from "./fork-work.ts"
@@ -103,22 +104,116 @@ describe("the post-land step", () => {
 describe("the upstream lock", () => {
   const scratch = mkdtempSync(join(tmpdir(), "upstream-lock-"))
   afterAll(() => rmSync(scratch, { recursive: true, force: true }))
+  const CHILD = join(import.meta.dir, "upstream-lock-child.ts")
 
-  test("runs the merge holding it and lets it go; a live holder skips it; a dead holder's lock is taken over", async () => {
-    const lock = join(scratch, "upstream.lock")
-    expect(await withUpstreamLock(scratch, async () => existsSync(lock))).toBe(true)
-    expect(existsSync(lock)).toBe(false)
-    writeFileSync(lock, `${process.pid}\n`)
-    let ran = false
-    expect(
-      await withUpstreamLock(scratch, async () => {
-        ran = true
+  interface Event {
+    readonly role: string
+    readonly phase: "start" | "end" | "tried"
+  }
+
+  /** Starts `roles` as real racing processes on `state` (each in its own process group), opens the barrier, and answers their events. */
+  const race = async (state: string, roles: ReadonlyArray<string>, extra: Record<string, string> = {}) => {
+    const children = roles.map((role) =>
+      Bun.spawn([process.execPath, CHILD], {
+        detached: true,
+        env: { ...process.env, LOCK_STATE: state, LOCK_ROLE: role, LOCK_RACERS: String(roles.length), ...extra },
+        stdout: "pipe",
+        stderr: "pipe",
       }),
-    ).toBeUndefined()
-    expect(ran).toBe(false)
-    // A pid no process holds (past the kernel's pid range).
-    writeFileSync(lock, "99999999\n")
-    expect(await withUpstreamLock(scratch, async () => "merged")).toBe("merged")
-    expect(existsSync(lock)).toBe(false)
+    )
+    try {
+      writeFileSync(join(state, "go"), "")
+      const codes = await Promise.all(children.map((child) => child.exited))
+      const events = readFileSync(join(state, "events"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Event)
+      return { codes, events }
+    } finally {
+      for (const child of children) if (child.exitCode === null) process.kill(-child.pid, "SIGKILL")
+    }
+  }
+
+  /** The most merges running at once, from the events in the order they were written. */
+  const overlap = (events: ReadonlyArray<Event>) => {
+    let running = 0
+    let most = 0
+    for (const event of events) {
+      if (event.phase === "start") running++
+      if (event.phase === "end") running--
+      most = Math.max(most, running)
+    }
+    return most
+  }
+
+  const fresh = (name: string) => {
+    const state = join(scratch, name)
+    mkdirSync(state, { recursive: true })
+    return state
+  }
+
+  test("in one process: runs the merge holding it and answers it; the lock file stays, saying who held it", async () => {
+    const state = fresh("one")
+    expect(await withUpstreamLock(state, async () => readFileSync(join(state, "upstream.lock"), "utf8"))).toBe(`${process.pid}\n`)
+    expect(existsSync(join(state, "upstream.lock"))).toBe(true)
+    expect(await withUpstreamLock(state, async () => "again")).toBe("again")
   })
+
+  test("two real processes racing a stale lock left by a crash (a dead pid in it): exactly one merges, the other runs nothing", async () => {
+    for (let round = 0; round < 5; round++) {
+      const state = fresh(`stale-${round}`)
+      writeFileSync(join(state, "upstream.lock"), "99999999\n")
+      const { codes, events } = await race(state, ["daily", "post-land"])
+      expect(codes).toEqual([0, 0])
+      expect(events.filter((event) => event.phase === "start")).toHaveLength(1)
+      expect(events.filter((event) => event.phase === "tried")).toHaveLength(1)
+      expect(overlap(events)).toBe(1)
+    }
+  }, 60_000)
+
+  test("four racers, each round: never two merges at once, exactly one merges", async () => {
+    for (let round = 0; round < 3; round++) {
+      const state = fresh(`four-${round}`)
+      const { codes, events } = await race(state, ["a", "b", "c", "d"])
+      expect(codes).toEqual([0, 0, 0, 0])
+      expect(events.filter((event) => event.phase === "start")).toHaveLength(1)
+      expect(events.filter((event) => event.phase === "tried")).toHaveLength(3)
+      expect(overlap(events)).toBe(1)
+    }
+  }, 60_000)
+
+  test("a holder cut while it holds the lock (it exits without releasing) leaves no lock behind: the next merge runs", async () => {
+    const state = fresh("crash")
+    const cut = await race(state, ["cut"], { LOCK_CRASH: "1" })
+    expect(cut.codes).toEqual([3])
+    expect(cut.events.map((event) => event.phase)).toEqual(["start"])
+    expect(await withUpstreamLock(state, async () => "merged")).toBe("merged")
+  }, 60_000)
+
+  test("while a real process holds it, this one runs nothing", async () => {
+    const state = fresh("held")
+    // The child holds until one other racer (this process) has said it tried.
+    const child = Bun.spawn([process.execPath, CHILD], {
+      detached: true,
+      env: { ...process.env, LOCK_STATE: state, LOCK_ROLE: "holder", LOCK_RACERS: "2" },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    try {
+      writeFileSync(join(state, "go"), "")
+      const deadline = Date.now() + 10_000
+      while (!(existsSync(join(state, "events")) && readFileSync(join(state, "events"), "utf8").includes('"start"')) && Date.now() < deadline) await Bun.sleep(5)
+      let ran = false
+      expect(
+        await withUpstreamLock(state, async () => {
+          ran = true
+        }),
+      ).toBeUndefined()
+      expect(ran).toBe(false)
+      appendFileSync(join(state, "events"), `${JSON.stringify({ role: "test", phase: "tried", at: Date.now() })}\n`)
+      expect(await child.exited).toBe(0)
+    } finally {
+      if (child.exitCode === null) process.kill(-child.pid, "SIGKILL")
+    }
+  }, 60_000)
 })

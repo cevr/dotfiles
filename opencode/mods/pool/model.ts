@@ -529,30 +529,38 @@ export const layer = (config: Config) =>
           return { fresh, why }
         })
 
-      interface Sent {
-        readonly answer: ClaimAnswer
-        readonly before: ReadonlyArray<QuotaWindow>
-        readonly lease?: string
-      }
+      type Sent =
+        | { readonly _tag: "sent"; readonly answer: ClaimAnswer; readonly before: ReadonlyArray<QuotaWindow>; readonly lease?: string }
+        | { readonly _tag: "unreachable"; readonly peers: ReadonlyArray<string> }
       const failed = (message: string): ClaimAnswer => ({ outcome: "failed", message })
+      const settles = (answer: ClaimAnswer, before: ReadonlyArray<QuotaWindow>, lease?: string): Sent => ({
+        _tag: "sent",
+        answer,
+        before,
+        ...(lease === undefined ? {} : { lease }),
+      })
 
       /**
-       * Send a claim under the provider's claim lock and the account's lease:
-       * judge it on the account read now, ask every peer for the lease (each
-       * for at most `leaseWaitMs`), and send it only when none refused; a
-       * peer that did not answer is passed over once a second fresh reading
-       * still finds it worth it, and the record says so. The lease is released
-       * to the peers that granted it, with the claim's time when it went
-       * through. Backed off (a peer refused, or holds the lease): `failed`,
-       * to go again while the hold lasts; no longer worth it: settled unsent.
+       * Send a claim under the provider's claim lock and the fleet's lease
+       * for the provider (lease.ts): judge it on the account read now, ask
+       * every peer for the lease (each for at most `leaseWaitMs`), and go on
+       * only as `verdict` allows: every peer granted, or the owner said yes
+       * and no peer that answered refused. A claim no one asked for with a
+       * peer unreachable is not sent: `unreachable`, for the owner's question.
+       * Then hold the lease, read the account again right before the send,
+       * and send only when that reading still finds the claim worth it and
+       * the lease still holds. The lease is released to the peers that
+       * granted it, with the claim's time whenever one was sent.
+       * Backed off (a peer refused): `failed`, to go again while the hold
+       * lasts; no longer worth it: settled unsent.
        */
       const sendClaim = (where: Pooled, reset: ResetsModel.Reset): Effect.Effect<Sent> =>
         leases.lock(reset.provider).withPermits(1)(
           Effect.gen(function* () {
             const first = yield* judge(where, reset)
-            if (first.fresh === undefined) return { answer: failed(first.why ?? "unread"), before: [] }
+            if (first.fresh === undefined) return settles(failed(first.why ?? "unread"), [])
             const before = first.fresh.windows
-            if (first.why !== undefined) return { answer: { outcome: "nothing-to-reset", message: `not sent: ${first.why}` }, before }
+            if (first.why !== undefined) return settles({ outcome: "nothing-to-reset", message: `not sent: ${first.why}` }, before)
             const host = fleetConfig.host
             const requestedAt = yield* Clock.currentTimeMillis
             const ask = {
@@ -563,24 +571,17 @@ export const layer = (config: Config) =>
               requestedAt,
               holdMs: leaseMs,
             }
+            // A claim this host sent lately on the account, a restart ago too, that the reading may not show yet.
+            const out = ResetsModel.claimOut(yield* resetsStore.read, reset.provider, ask.readAt, reset.credentialID)
+            if (out !== undefined) return settles(failed(`backed off: ${out}`), before)
             const busy = yield* leases.begin(host, ask)
-            if (busy !== undefined) return { answer: failed(`backed off: ${busy}`), before }
-            const answers = yield* Effect.forEach(
-              peers.names,
-              (peer) =>
-                peers.lease(peer, Lease.LeaseAsk.make({ host, ...ask })).pipe(
-                  Effect.timeout(leaseWaitMs),
-                  Effect.option,
-                  Effect.map((answer) => ({ peer, answer: Option.getOrUndefined(answer) })),
-                ),
-              { concurrency: "unbounded" },
-            )
-            const granted = answers.flatMap((item) => (item.answer?.granted === true ? [item.peer] : []))
-            const refused = answers.flatMap((item) => (item.answer !== undefined && !item.answer.granted ? [`${item.peer}: ${item.answer.reason ?? "refused"}`] : []))
-            const silent = answers.flatMap((item) => (item.answer === undefined ? [item.peer] : []))
-            const release = (claimedAt: number | undefined) =>
+            if (busy !== undefined) return settles(failed(`backed off: ${busy}`), before)
+            let claimedAt: number | undefined
+            let granted: ReadonlyArray<string> = []
+            // However this ends (an answer, a refusal, an interruption), the lease ends here and with every peer that granted it.
+            const release = Effect.suspend(() =>
               Effect.andThen(
-                leases.finish(ask.id, claimedAt),
+                leases.finish(ask.id),
                 Effect.forEach(
                   granted,
                   (peer) =>
@@ -589,30 +590,41 @@ export const layer = (config: Config) =>
                       .pipe(Effect.timeout(leaseWaitMs), Effect.ignore),
                   { concurrency: "unbounded", discard: true },
                 ),
+              ),
+            )
+            return yield* Effect.gen(function* () {
+              const answers = yield* Effect.forEach(
+                peers.names,
+                (peer) =>
+                  peers.lease(peer, Lease.LeaseAsk.make({ host, ...ask })).pipe(
+                    Effect.timeout(leaseWaitMs),
+                    Effect.option,
+                    Effect.map((answer) => ({ peer, answer: Option.getOrUndefined(answer) })),
+                  ),
+                { concurrency: "unbounded" },
               )
-            if (refused.length > 0) {
-              yield* release(undefined)
-              return { answer: failed(`backed off: ${refused.join("; ")}`), before }
-            }
-            const fallback = silent.length === 0 ? undefined : `fallback: ${silent.join(", ")} did not answer in ${leaseWaitMs / 1000} s; sent on a fresh reading`
-            const lease = fallback ?? (granted.length === 0 ? undefined : `granted by ${granted.join(", ")}`)
-            const noted = lease === undefined ? {} : { lease }
-            // A peer passed over may have claimed meanwhile: the account read again says so.
-            const second = silent.length === 0 ? first : yield* judge(where, reset)
-            if (second.fresh === undefined || second.why !== undefined) {
-              yield* release(undefined)
-              return second.fresh === undefined
-                ? { answer: failed(second.why ?? "unread"), before, ...noted }
-                : { answer: { outcome: "nothing-to-reset", message: `not sent: ${second.why}` }, before: second.fresh.windows, ...noted }
-            }
-            if (!(yield* leases.hold(ask.id, leaseMs))) {
-              yield* release(undefined)
-              return { answer: failed("backed off: a peer that asked first holds the lease"), before }
-            }
-            const answer = yield* quota.claim(where.id, { credentialID: reset.credentialID, creditID: reset.creditID, requestID: reset.requestID })
-            const through = answer.outcome === "reset" || answer.outcome === "already-redeemed"
-            yield* release(through ? yield* Clock.currentTimeMillis : undefined)
-            return { answer, before: second.fresh.windows, ...noted }
+              granted = answers.flatMap((item) => (item.answer?.granted === true ? [item.peer] : []))
+              const verdict = Lease.verdict(answers, reset.yes === true)
+              if (verdict._tag === "refused") return settles(failed(`backed off: ${verdict.reasons.join("; ")}`), before)
+              if (verdict._tag === "unreachable") return { _tag: "unreachable", peers: verdict.peers } satisfies Sent
+              const lease =
+                verdict.passedOver.length > 0
+                  ? `the owner's yes; ${verdict.passedOver.join(", ")} unreachable${verdict.granted.length === 0 ? "" : `; granted by ${verdict.granted.join(", ")}`}`
+                  : verdict.granted.length === 0
+                    ? undefined
+                    : `granted by ${verdict.granted.join(", ")}`
+              if (!(yield* leases.hold(ask.id))) return settles(failed("backed off: the lease ended or went to a peer that asked first"), before, lease)
+              // Right before the send: a claim made meanwhile, from any pool or host, shows in the account read again.
+              const second = yield* judge(where, reset)
+              if (second.fresh === undefined) return settles(failed(second.why ?? "unread"), before, lease)
+              if (second.why !== undefined) return settles({ outcome: "nothing-to-reset", message: `not sent: ${second.why}` }, second.fresh.windows, lease)
+              if (!(yield* leases.holds(ask.id))) return settles(failed("backed off: the lease ended before the send"), second.fresh.windows, lease)
+              claimedAt = yield* Clock.currentTimeMillis
+              yield* sendResets(ResetsModel.NoteSend.make({ key: reset.key }))
+              const answer = yield* quota.claim(where.id, { credentialID: reset.credentialID, creditID: reset.creditID, requestID: reset.requestID })
+              claimedAt = yield* Clock.currentTimeMillis
+              return settles(answer, second.fresh.windows, lease)
+            }).pipe(Effect.ensuring(release))
           }),
         )
 
@@ -620,12 +632,21 @@ export const layer = (config: Config) =>
        * Send a claim the aggregate decided (`sendClaim`), then read the account's
        * usage again, record the outcome with the windows before and after and
        * how the fleet agreed to it, and log what it did to them: whether the
-       * weekly reset moved answers what a Claude grant does to the week.
+       * weekly reset moved answers what a Claude grant does to the week. A
+       * claim no one asked for that found a peer unreachable becomes the
+       * owner's question (`NoAgreement`).
        */
       const claim = Effect.fn("Pool.claim")(function* (reset: ResetsModel.Reset) {
         const where = poolOf(PoolId.make(reset.pool))
         if (where === undefined) return
-        const { answer, before, lease } = yield* sendClaim(where, reset)
+        const sent = yield* sendClaim(where, reset)
+        if (sent._tag === "unreachable") {
+          yield* Effect.logWarning(`pool resets: did not claim a ${reset.provider} reset on ${reset.label} on its own: ${sent.peers.join(", ")} unreachable; asking the owner`)
+          const now = yield* Clock.currentTimeMillis
+          const sessionID = [...askers.values()].filter((asker) => now - asker.at < ResetsModel.WAIT_MS).toSorted((left, right) => right.at - left.at)[0]?.sessionID
+          return yield* carry(yield* sendResets(ResetsModel.NoAgreement.make({ key: reset.key, unreachable: sent.peers, ...(sessionID === undefined ? {} : { sessionID }) })))
+        }
+        const { answer, before, lease } = sent
         // A claim that emptied the windows frees the account; the reading taken next holds it again if a window is still spent.
         if (answer.outcome === "reset" || answer.outcome === "already-redeemed")
           yield* apply(where.pool, where.id, ClearHold.make({ credentialID: reset.credentialID }))
@@ -650,8 +671,14 @@ export const layer = (config: Config) =>
         yield* carry(settled.filter((event) => event._tag === "OwnerTold"))
       })
 
+      /** A peer's lease message: an ask is refused while a claim this host sent may not show in the asker's reading (its store keeps it across a restart), else the table answers. */
       const lease = (message: LeaseMessage): Effect.Effect<LeaseAnswer> =>
-        message._tag === "Ask" ? leases.answer(fleetConfig.host, message) : Effect.as(leases.release(message), { granted: true })
+        message._tag === "Release"
+          ? Effect.as(leases.release(message), { granted: true })
+          : Effect.flatMap(resetsStore.read, (state) => {
+              const out = ResetsModel.claimOut(state, message.provider, message.readAt)
+              return out === undefined ? leases.answer(fleetConfig.host, message) : Effect.succeed({ granted: false, reason: out })
+            })
 
       /** Carry out what the aggregate decided. */
       const carry = (events: ReadonlyArray<ResetsModel.Event>): Effect.Effect<void> =>
@@ -663,7 +690,7 @@ export const layer = (config: Config) =>
                 return claim(event.reset)
               case "OwnerAsked": {
                 const offer = event.reset.why === "offer"
-                const what = offer ? `a ${event.reset.provider} reset offer` : "a Claude reset"
+                const what = offer ? `a ${event.reset.provider} reset offer` : event.reset.why === "expiring" || event.reset.provider === "codex" ? `a ${event.reset.provider} reset no peer agreed to` : "a Claude reset"
                 return owner
                   .ask({
                     sessionID: event.reset.sessionID ?? "",
@@ -671,7 +698,7 @@ export const layer = (config: Config) =>
                     question: event.reset.question ?? "",
                     header: event.reset.header ?? ResetsModel.claudeHeader(event.reset.label),
                     options: [{ label: ResetsModel.CLAIM }, { label: ResetsModel.KEEP }],
-                    assume: offer ? ResetsModel.OFFER_ASSUME : ResetsModel.ASSUME,
+                    assume: ResetsModel.assumeOf(event.reset),
                   })
                   .pipe(
                     Effect.tap((asked) =>
@@ -709,6 +736,7 @@ export const layer = (config: Config) =>
                 // A notice not yet read goes with its reset.
                 return Effect.forEach(event.keys, (key) => owner.withdraw(ResetsModel.toldKey(key)), { discard: true })
               case "WaitNoted":
+              case "ClaimSent":
               case "ClaimSettled":
                 return Effect.void
             }

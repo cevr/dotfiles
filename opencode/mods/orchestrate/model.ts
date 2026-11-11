@@ -56,6 +56,7 @@ import {
   startOf as stepOfCall,
   unresolvedOf,
   verifierPromptOf,
+  workspaceOf,
 } from "./machine.ts"
 import { formatRef, namesModel, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
 import { codexFallback, effort, isCodexModel, isRole, Reason, route, unspecific, WORKER } from "./role.ts"
@@ -859,8 +860,11 @@ export const machineLayer = (config: MachineConfig) =>
         const child = typeof fields.sessionID === "string" && fields.sessionID !== "" ? fields.sessionID : undefined
         const routed = route(fields.agent, config.fullAgent, description).agent
         const agent = child !== undefined && unspecific(fields.agent) ? ((yield* sessions.agentOf(child)) ?? routed) : routed
-        const command = stepOfCall(agent, description)
-        if (command === undefined) return { notes: [] }
+        const step = stepOfCall(agent, description)
+        if (step === undefined) return { notes: [] }
+        // An implementor's own workspace, as its brief names it: the ledger knows its unit by it at the land.
+        const workspace = step.role === "implementor" ? workspaceOf(typeof fields.prompt === "string" ? fields.prompt : undefined) : undefined
+        const command = workspace === undefined ? step : { ...step, workspaces: [workspace] }
         const at = yield* now
         let notes: ReadonlyArray<string> = []
         let prompt: string | undefined

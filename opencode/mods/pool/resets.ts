@@ -32,11 +32,12 @@
 //   judged again on a reading taken right before it (`staleReason`): the
 //   provider is the authority, so a claim made since from any pool or host
 //   shows there, and what no longer pays is recorded unsent.
-// - The fleet: no host is the master. Before a claim, a host asks each peer
-//   it reaches for the account's lease (lease.ts); a peer that does not
-//   answer in time is passed over on a fresh reading, as a fallback the
-//   claim's record names. Two hosts that both claim one account's reset for
-//   one period send one request id (`claimRequestID`).
+// - The fleet: no host is the master. A claim no one asked for is sent only
+//   once every peer the fleet knows of granted the provider's lease
+//   (lease.ts); while a peer cannot be reached the pool asks the owner
+//   instead (`NoAgreement`), since that peer may be claiming too, and a yes
+//   sends it (`Reset.yes`). The request id (`claimRequestID`) stays the one
+//   the claim was decided with; no provider is relied on to dedupe it.
 // - Demand: a reset gives use back but keeps the weekly reset date, so it is
 //   worth most early in the week. When a start waits, or several are in
 //   flight across the fleet (`demandOf`),
@@ -103,6 +104,13 @@ export const DEMAND_STARTS = 3
  * default), and after the account's last claim. Older data is shown, never spent on.
  */
 export const FRESH_MS = 15 * MINUTE
+/**
+ * How long after a claim is sent a reading may not show it yet: the
+ * provider's lag, the request's time, and the hosts' clock skew, all assumed
+ * below it. No claim is sent on a reading taken earlier than this after
+ * another of the provider's (`claimOut`, and the fleet's leases, lease.ts).
+ */
+export const SETTLE_MS = 5 * MINUTE
 
 /** Whose resets a pool holds: Claude grants are asked about, Codex credits claimed. */
 export const ResetProvider = Schema.Literals(["claude", "codex"])
@@ -156,6 +164,10 @@ export const Reset = Schema.Struct({
   buys: Schema.optionalKey(Schema.String),
   /** What the owner was told after it was claimed on its own. */
   told: Schema.optionalKey(Schema.String),
+  /** The owner said yes: the claim rests on the owner, and is sent past a peer that cannot be reached (lease.ts `verdict`). */
+  yes: Schema.optionalKey(Schema.Boolean),
+  /** When its claim was last sent, recorded right before the send: a restart remembers it (`claimOut`). */
+  sentAt: Schema.optionalKey(Schema.Number),
 })
 export type Reset = typeof Reset.Type
 
@@ -418,10 +430,10 @@ const fnv = (text: string) => {
 export const requestIdOf = (key: string) => `pool-${fnv(key)}${fnv(`${key}#`)}${fnv(`#${key}`)}`
 
 /**
- * The provider account a reading is of, as every host that reads it names
- * it: the ids of the resets it lists (usable or spent), which the provider
- * gives that account alone. A login's id is the host's; these are the
- * provider's. Empty when the reading lists none: no claim is made then.
+ * The ids of the resets a reading lists (usable or spent), which the
+ * provider gives that account alone: the account in a claim's request id
+ * and its lease's record. Two hosts' lists of one account may differ (one
+ * lags), so the fleet's lease is the provider's, not these ids'.
  */
 export const grantsOf = (account: Pick<AccountStatus, "reading">): ReadonlyArray<string> =>
   [...new Set((account.reading?.resets?.credits ?? []).map((credit) => credit.id))].toSorted()
@@ -432,8 +444,9 @@ export const grantsOf = (account: Pick<AccountStatus, "reading">): ReadonlyArray
  * the reset's kind, the period it serves (the 5-hour window's for a 5-hour
  * reset, the hold's for a Codex credit, else the week) and how many resets of
  * the kind are left. Never the window a host ranked first, the grant it
- * picked, the pool or the host: two hosts that both claim one account's reset
- * for one period send one id, and a provider that keys on it spends one.
+ * picked, the pool or the host. A provider's dedupe of it is a bonus, never
+ * the guard: hosts whose lists of the grants differ decide other ids, and
+ * the fleet's lease (lease.ts) is what keeps a claim to one.
  * The resets left set apart a second claim of the kind in the period once
  * the first shows in a reading. A claim sent again keeps the id it was
  * decided with (`Reset.requestID`).
@@ -547,7 +560,23 @@ export const SettleClaim = Schema.TaggedStruct("SettleClaim", {
 })
 export interface SettleClaim extends Schema.Schema.Type<typeof SettleClaim> {}
 
-export type Command = NoteWait | Review | TakeAnswer | SettleClaim
+/**
+ * A claim no one asked for found no agreement: the peers named could not be
+ * reached, so it was not sent; the owner is asked instead, in the session
+ * that waited last, else in `sessionID` (the model's newest asker).
+ */
+export const NoAgreement = Schema.TaggedStruct("NoAgreement", {
+  key: Schema.String,
+  unreachable: Schema.Array(Schema.String),
+  sessionID: Schema.optionalKey(Schema.String),
+})
+export interface NoAgreement extends Schema.Schema.Type<typeof NoAgreement> {}
+
+/** A claim is about to be sent: recorded first, so a restart mid-send still knows of it. */
+export const NoteSend = Schema.TaggedStruct("NoteSend", { key: Schema.String })
+export interface NoteSend extends Schema.Schema.Type<typeof NoteSend> {}
+
+export type Command = NoteWait | Review | TakeAnswer | SettleClaim | NoAgreement | NoteSend
 
 export const WaitNoted = Schema.TaggedStruct("WaitNoted", { pool: Schema.String, wait: Wait })
 export interface WaitNoted extends Schema.Schema.Type<typeof WaitNoted> {}
@@ -594,7 +623,29 @@ export const toldKey = (key: string) => `told:${key}`
 export const SEEN = "OK"
 export const SEEN_ASSUME = "Nothing to do: the pool claimed it"
 
-export type Event = WaitNoted | ClaimDue | OwnerAsked | AnswerDeclined | AskWithdrawn | ClaimSettled | ResetsForgotten | OwnerTold
+/** A claim is being sent now. */
+export const ClaimSent = Schema.TaggedStruct("ClaimSent", { key: Schema.String, at: Schema.Number })
+export interface ClaimSent extends Schema.Schema.Type<typeof ClaimSent> {}
+
+export type Event = WaitNoted | ClaimDue | OwnerAsked | AnswerDeclined | AskWithdrawn | ClaimSettled | ResetsForgotten | OwnerTold | ClaimSent
+
+/**
+ * Why no claim of `provider` is sent on a reading taken at `readAt`: a claim
+ * of it this host sent (any pool, before a restart too) that the reading may
+ * not show yet (SETTLE_MS). On this host's own account (`credentialID`, its
+ * login) only its claims count; on a peer's, whose login names no account
+ * here, every claim of the provider. None when there is none.
+ */
+export const claimOut = (state: ResetsState, provider: ResetProvider, readAt: number, credentialID?: string): string | undefined => {
+  const out = Object.values(state.resets).find(
+    (reset) =>
+      reset.provider === provider &&
+      (credentialID === undefined || onAccount(reset, credentialID)) &&
+      reset.sentAt !== undefined &&
+      readAt < reset.sentAt + SETTLE_MS,
+  )
+  return out?.sentAt === undefined ? undefined : `a claim sent on ${out.label} at ${new Date(out.sentAt).toISOString()} may not show yet in the reading`
+}
 
 // ── Review ──
 
@@ -622,8 +673,9 @@ const active = (reset: Reset, current: ReadonlySet<string>, now: number) =>
 const retries = (reset: Reset, current: ReadonlySet<string>) =>
   (reset.stage === "failed" || reset.stage === "claiming") && reset.attempts < MAX_ATTEMPTS && current.has(reset.key)
 
-/** Whether a reset was claimed on its own: before it expired, or a Codex credit for a held start. */
-const automatic = (reset: Pick<Reset, "why" | "provider">) => reset.why === "expiring" || (reset.why === "held" && reset.provider === "codex")
+/** Whether a reset is claimed on its own, no one asked: before it expired, or a Codex credit for a held start, unless the owner said yes. */
+const automatic = (reset: Pick<Reset, "why" | "provider" | "yes">) =>
+  reset.yes !== true && (reset.why === "expiring" || (reset.why === "held" && reset.provider === "codex"))
 
 /**
  * Whether a reset is on an account. An account is its credential, the same
@@ -1102,13 +1154,60 @@ const takeAnswer = (state: ResetsState, command: TakeAnswer, now: number): Reado
   if (reset === undefined || reset.stage !== "asked") return []
   if (command.answer === undefined || !isYes(command.answer)) return [AnswerDeclined.make({ key: command.key, at: now })]
   // A yes to a question asked before another claim on the account was sent, or while one is: the question no longer says what a claim would do.
-  const last = lastClaimAt(state, reset.credentialID)
+  // Its own unsent attempt (a claim that found no agreement and asked instead) is not another claim.
+  const last = lastClaimAt({ ...state, resets: Object.fromEntries(Object.entries(state.resets).filter(([key]) => key !== reset.key)) }, reset.credentialID)
   const inFlight = Object.values(state.resets).some(
     (other) => other.key !== reset.key && onAccount(other, reset.credentialID) && (other.stage === "claiming" || (other.stage === "failed" && other.attempts < MAX_ATTEMPTS)),
   )
   if (inFlight || (last !== undefined && last >= reset.at))
     return [AskWithdrawn.make({ key: reset.key, at: now, why: "the account was claimed on meanwhile" })]
-  return [ClaimDue.make({ reset: { ...reset, stage: "claiming", at: now } })]
+  return [ClaimDue.make({ reset: { ...reset, stage: "claiming", at: now, yes: true } })]
+}
+
+/** The question a claim no one asked for asks when a peer cannot be reached: why it is due, what it gives back, and who may be claiming too. */
+export const unagreedQuestion = (reset: Pick<Reset, "label" | "kind" | "why" | "buys">, unreachable: ReadonlyArray<string>): string => {
+  const kind = reset.kind === undefined ? "A reset" : KIND_LABEL[reset.kind].replace(/^./, (first) => first.toUpperCase())
+  const due = reset.why === "expiring" ? "It would expire unused otherwise." : "Every Codex account is held and a start waits."
+  const gives = reset.buys === undefined ? "" : ` It gives back ${reset.buys}.`
+  const one = unreachable.length === 1
+  return (
+    `${kind} on account ${reset.label} now? ${due}${gives} ` +
+    `${unreachable.join(", ")} ${one ? "is" : "are"} unreachable, so I can't rule out ${one ? "it" : "them"} claiming too. Claim it?`
+  )
+}
+
+/** The header of a question a claim with no agreement asks, at most 30 characters. */
+export const unagreedHeader = (label: string) => {
+  const header = `Reset now? · ${label}`
+  return header.length <= 30 ? header : `${header.slice(0, 29)}…`
+}
+
+/** What the pool does with such a question until an answer arrives. */
+export const UNAGREED_ASSUME = "Don't claim: a peer may be claiming it"
+
+/** What the pool does until the owner answers a reset's question: an offer's, a claim with no agreement's, a held start's. */
+export const assumeOf = (reset: Pick<Reset, "why" | "provider" | "yes">) => (reset.why === "offer" ? OFFER_ASSUME : automatic(reset) ? UNAGREED_ASSUME : ASSUME)
+
+const noAgreement = (state: ResetsState, command: NoAgreement, now: number): ReadonlyArray<Event> => {
+  const reset = state.resets[command.key]
+  if (reset === undefined || reset.stage !== "claiming" || !automatic(reset)) return []
+  const sessionID =
+    Object.values(state.waits)
+      .filter((wait) => wait.sessionID !== undefined)
+      .toSorted((left, right) => right.at - left.at)[0]?.sessionID ?? command.sessionID
+  return [
+    OwnerAsked.make({
+      reset: {
+        ...reset,
+        stage: "asked",
+        at: now,
+        question: unagreedQuestion(reset, command.unreachable),
+        header: unagreedHeader(reset.label),
+        message: `not sent: no agreement, ${command.unreachable.join(", ")} unreachable`,
+        ...(sessionID === undefined ? {} : { sessionID }),
+      },
+    }),
+  ]
 }
 
 /** The weekly window's reset before and after a claim: moved by more than a minute, kept, or not read on both sides. */
@@ -1139,7 +1238,7 @@ const settleClaim = (state: ResetsState, command: SettleClaim, now: number): Rea
     ...(command.lease === undefined ? {} : { lease: command.lease }),
   }
   const settled = ClaimSettled.make({ claim, stage: retryable(command.outcome) ? "failed" : "settled" })
-  if (reset.why !== "expiring" || (command.outcome !== "reset" && command.outcome !== "already-redeemed")) return [settled]
+  if (reset.why !== "expiring" || reset.yes === true || (command.outcome !== "reset" && command.outcome !== "already-redeemed")) return [settled]
   // Claimed on its own so it was not lost: the owner is told after, in the session that waited last.
   const newest = Object.values(state.waits)
     .filter((wait) => wait.sessionID !== undefined)
@@ -1182,6 +1281,10 @@ export const Resets: Decider<ResetsState, Command, Event> = {
         return Effect.succeed(takeAnswer(state, command, now))
       case "SettleClaim":
         return Effect.succeed(settleClaim(state, command, now))
+      case "NoAgreement":
+        return Effect.succeed(noAgreement(state, command, now))
+      case "NoteSend":
+        return Effect.succeed(state.resets[command.key]?.stage === "claiming" ? [ClaimSent.make({ key: command.key, at: now })] : [])
     }
   },
   evolve: (state, event) => evolve(state, event),
@@ -1219,6 +1322,10 @@ export const evolve = (state: ResetsState, event: Event): ResetsState => {
     case "OwnerTold": {
       const reset = state.resets[event.key]
       return reset === undefined ? state : { ...state, resets: { ...state.resets, [event.key]: { ...reset, told: event.text } } }
+    }
+    case "ClaimSent": {
+      const reset = state.resets[event.key]
+      return reset === undefined ? state : { ...state, resets: { ...state.resets, [event.key]: { ...reset, sentAt: event.at } } }
     }
   }
 }
