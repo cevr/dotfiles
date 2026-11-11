@@ -41,6 +41,12 @@ export class IdleCompactor extends Context.Service<
   {
     /** A model request of the session starts: it refreshes the cache. */
     readonly requestStarted: (sessionID: string) => Effect.Effect<void>
+    /**
+     * A compaction request of the session starts: it reads the prefix from cache, so it refreshes it, but it wakes
+     * nothing. The host's background summary of an idle session is one, outside any execution, so no settle follows
+     * it: a timer set before it is set again from it.
+     */
+    readonly refreshed: (sessionID: string) => Effect.Effect<void>
     /** Input was queued for the session or an execution started: no compaction now. */
     readonly woke: (sessionID: string) => Effect.Effect<void>
     /** The session's background work as it went idle, described; empty when none runs. */
@@ -72,7 +78,7 @@ const seconds = (ms: number) => Math.round(ms / 1_000)
 const usd = (amount: number) => Math.round(amount * 10_000) / 10_000
 
 /** What made the compactor decide. */
-type Trigger = "settled" | "timer" | "resume" | "catalog"
+type Trigger = "settled" | "timer" | "resume" | "catalog" | "refresh"
 
 /** Skips of a session that could not compact whatever its cache: logged at debug. */
 const QUIET: ReadonlySet<Reason> = new Set<Reason>(["no-request", "too-small", "no-cache"])
@@ -251,6 +257,14 @@ export const layer = (policy: Policy) =>
             const state = watch(sessionID)
             state.startedAt = yield* Clock.currentTimeMillis
             yield* wake(sessionID)
+          }),
+        refreshed: (sessionID) =>
+          Effect.gen(function* () {
+            const state = watch(sessionID)
+            state.startedAt = yield* Clock.currentTimeMillis
+            // No timer: the session runs (its settle decides) or was not due; the idle compaction's own request
+            // comes after its timer left.
+            if (state.timer !== undefined) yield* decide(sessionID, "refresh")
           }),
         woke: wake,
         background: (sessionID, jobs) => Effect.sync(() => void (watch(sessionID).jobs = jobs)),

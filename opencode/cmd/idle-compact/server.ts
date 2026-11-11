@@ -13,7 +13,9 @@
  * providers' lifetimes.
  *
  * - `model.request` (any request but a title's): the cache's last refresh;
- *   the session's timer is cancelled.
+ *   the session's timer is cancelled. A compaction request (the host's
+ *   background summary of an idle session, which no settle follows) refreshes
+ *   the cache without cancelling: a timer set is set again from it.
  * - `session.inbox.enqueued`, `session.execution.started`: the timer is cancelled.
  * - `experimental.idle`: the background work still running as the session
  *   goes idle, logged with the decision. It does not hold the timer back: its
@@ -126,7 +128,10 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
       const compactor = Context.get(services, Model.IdleCompactor)
 
       // A title request runs on its own small prompt and leaves the session's cache as it was.
-      yield* ctx.session.hook("model.request", (event) => (event.kind === "title" ? Effect.void : compactor.requestStarted(event.sessionID)))
+      // A compaction request (the host's background summary of an idle session among them) refreshes it, waking nothing.
+      yield* ctx.session.hook("model.request", (event) =>
+        event.kind === "title" ? Effect.void : event.kind === "compaction" ? compactor.refreshed(event.sessionID) : compactor.requestStarted(event.sessionID),
+      )
       yield* ctx.session.hook("experimental.idle", (event) =>
         compactor.background(
           event.sessionID,
