@@ -39,7 +39,9 @@ export function subagentOrder(sessions: ReadonlyArray<SessionNode>, sessionID: s
   const started = (session: SessionNode) => session.time?.created ?? 0
   for (const session of sessions.toSorted((a, b) => started(a) - started(b))) {
     if (!session.parentID) continue
-    children.set(session.parentID, [...(children.get(session.parentID) ?? []), session.id])
+    const siblings = children.get(session.parentID)
+    if (siblings) siblings.push(session.id)
+    else children.set(session.parentID, [session.id])
   }
   let root = sessionID
   const seen = new Set<string>()

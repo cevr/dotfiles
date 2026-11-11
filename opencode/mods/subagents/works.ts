@@ -24,6 +24,18 @@ export const latched = (session: Session) =>
   session.time.busy === undefined &&
   session.outcome === undefined
 
+/** `sessions` by parent id, each list in the order given; linear, for families of hundreds. */
+export function childrenOf(sessions: ReadonlyArray<Session>): Map<string, Session[]> {
+  const children = new Map<string, Session[]>()
+  for (const session of sessions) {
+    if (!session.parentID) continue
+    const siblings = children.get(session.parentID)
+    if (siblings) siblings.push(session)
+    else children.set(session.parentID, [session])
+  }
+  return children
+}
+
 const kept = new WeakMap<Family, (id: string) => Works | undefined>()
 
 /**
@@ -43,9 +55,7 @@ export function worksNow(family: Family): (id: string) => Works | undefined {
 
 function worksOf(family: Family): (id: string) => Works | undefined {
   const byID = new Map(family.sessions.map((session) => [session.id, session]))
-  const children = new Map<string, Session[]>()
-  for (const session of family.sessions)
-    if (session.parentID) children.set(session.parentID, [...(children.get(session.parentID) ?? []), session])
+  const children = childrenOf(family.sessions)
   const known = new Map<string, Works | undefined>()
   // `path` holds the sessions being worked out: a cycle in the parents counts nothing twice.
   const of = (id: string, path: ReadonlySet<string>): Works | undefined => {
