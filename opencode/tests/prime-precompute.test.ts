@@ -10,6 +10,7 @@ import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Requests } from "../scenarios/prime-precompute.ts"
+import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 
 const fork = process.env.OPENCODE_DEV
@@ -20,10 +21,10 @@ const names = ["held", "swapped"] as const
 const frames = {} as Record<(typeof names)[number], ReadonlyArray<string>>
 let seen: Requests = { requests: [], next: 0 }
 
-/** The frame's transcript from the first prompt to Prime's mode hint, blank rows dropped. */
+/** The frame's transcript from the first prompt to Prime's hint line (tests/composer.ts), blank rows dropped. */
 function transcript(frame: ReadonlyArray<string>): ReadonlyArray<string> {
   const start = frame.findIndex((line) => line.includes("┃ Check the build."))
-  const end = frame.findIndex((line, index) => index > start && /mode \(Ctrl\+O/.test(line))
+  const end = hintRow(frame)
   return frame.slice(start, end < 0 ? undefined : end).filter((line) => line.trim() !== "")
 }
 
