@@ -181,8 +181,10 @@ export default OpenCodeDriver.use(
       const result = { subagents: SUBAGENTS, windowMs: WINDOW_MS, quiet, orchestrator }
       writeFileSync(`${out}/paint.json`, JSON.stringify(result))
       console.log("paint:", JSON.stringify(result))
-      // Every worker's answer ends before the driver checks each model response settled.
+      // Every worker's answer ends before the driver checks each model response settled: the dock
+      // counts no working subagent. (A worker's last words show on its row only between their chunk
+      // and its finish, a moment a capture every 200 ms can miss; once done, the row reads `1 step`.)
       yield* Deferred.succeed(finished, true)
-      yield* until("finished", (frame) => WORKERS.every((i) => frame.includes(`Worker ${i} done.`)), 100)
+      yield* until("finished", (frame) => frame.includes("◆ 0 subagents"), 300)
     }),
 )

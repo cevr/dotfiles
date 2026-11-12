@@ -167,9 +167,13 @@ export default OpenCodeDriver.use(
         })
 
       yield* ui.submit(ASK)
-      // Prime's dock counts running subagents; hold the reviewer until it shows.
+      // Prime's dock counts running subagents; hold the reviewer until it shows and the parent's
+      // turn has ended (no `Executing` loader): the dock counts the reviewer as soon as it starts,
+      // a step before the parent's last model step answers, which a loaded host can stretch past a capture.
       yield* until(`${label}-running`, (frame) =>
-        process.env.SCENARIO_PRIME ? text(frame).includes("◆ 1 subagent") : text(frame).includes("code-reviewer"),
+        process.env.SCENARIO_PRIME
+          ? text(frame).includes("◆ 1 subagent") && !text(frame).includes("Executing")
+          : text(frame).includes("code-reviewer"),
       )
       yield* save(`${label}-running`)
       yield* Deferred.succeed(review, undefined)
