@@ -719,40 +719,6 @@ const mergeFiles = Effect.fn("EffectDebt.mergeFiles")(function* (argv: ReadonlyA
   yield* Console.log(`effect-debt: merged ${target} by key`)
 })
 
-/** The merge drivers' one definition, from the dotfiles checkout's root: install.sh reads it too. */
-export const MERGE_DRIVERS = "opencode/merge-drivers.gitconfig"
-
-/** The files `.gitattributes` routes to the driver, from the dotfiles checkout's root. */
-const ROUTED = [`opencode/${POLICY}`, `opencode/${DEBT_CONFIG}`]
-
-const gitIn = (checkout: string, ...argv: ReadonlyArray<string>) => spawn(["git", "-C", checkout, ...argv], checkout, 30_000)
-
-/** A git command that must succeed: its output, or a DebtError naming it. */
-const gitOk = (checkout: string, ...argv: ReadonlyArray<string>) =>
-  gitIn(checkout, ...argv).pipe(
-    Effect.filterOrFail(
-      (answer) => answer.code === 0,
-      (answer) => new DebtError({ problems: [`git ${argv.join(" ")} in ${checkout} exited ${answer.code}: ${answer.stderr.trim()}`] }),
-    ),
-    Effect.map((answer) => answer.stdout.trim()),
-  )
-
-/**
- * Registers the merge driver `effect-debt` in the dotfiles `checkout`'s git config, as install.sh
- * does, when its `.gitattributes` routes a file to it and the config names no such driver: the
- * update plugin never runs install.sh, and a checkout without the driver merges the policy by line.
- * A driver the config already names stays as it is.
- */
-export const registerMergeDriver = Effect.fn("EffectDebt.registerMergeDriver")(function* (checkout: string) {
-  const attributes = yield* gitOk(checkout, "check-attr", "merge", "--", ...ROUTED)
-  if (!attributes.split("\n").some((line) => line.endsWith(": merge: effect-debt"))) return "unrouted" as const
-  const named = yield* Effect.forEach(["name", "driver"], (key) => gitIn(checkout, "config", "--get", `merge.effect-debt.${key}`))
-  if (named.every((answer) => answer.code === 0)) return "present" as const
-  for (const key of ["name", "driver"]) yield* gitOk(checkout, "config", `merge.effect-debt.${key}`, yield* gitOk(checkout, "config", "-f", MERGE_DRIVERS, "--get", `merge.effect-debt.${key}`))
-  yield* Console.log(`effect-debt: registered the merge driver effect-debt in ${checkout}`)
-  return "registered" as const
-})
-
 const MODE_RUNS = {
   report,
   check,

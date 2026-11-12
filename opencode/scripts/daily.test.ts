@@ -7,7 +7,7 @@ import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/rift/process/landing.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, installedFile, launcher, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, launcher, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions, unlocked } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
@@ -467,18 +467,43 @@ describe("the fork move", () => {
     2000,
   )
 
-  test("moves the fork to origin and installs inside the step it hands the checks lock", () => {
+  test("each step daily runs on prime-look starts and ends while its lock is held: the move and its install under the checks lock, the fork tests under the accept lock, the install after a merge under the checks lock", () => {
     const events: Array<string> = []
-    const holds = <A,>(step: () => Promise<A>) => {
-      events.push("hold")
-      return step()
-    }
+    /** A lock that records when it is taken and, once the step it was handed has settled, let go. */
+    const recording =
+      (lock: string) =>
+      <A,>(step: () => Promise<A>) =>
+        Effect.runPromise(
+          Effect.sync(() => events.push(`${lock} taken`)).pipe(
+            Effect.andThen(Effect.promise(step)),
+            Effect.ensuring(Effect.sync(() => events.push(`${lock} let go`))),
+          ),
+        )
+    /** An asynchronous step: its start, a pause, its end. */
+    const timed = <A,>(name: string, value: A) =>
+      Effect.sync(() => events.push(`${name} starts`)).pipe(
+        Effect.andThen(Effect.sleep("5 millis")),
+        Effect.andThen(Effect.sync(() => events.push(`${name} ends`))),
+        Effect.as(value),
+      )
     const sync = () => {
       events.push("sync")
       return moved()
     }
-    expect(moveFork(holds, sync, Effect.succeed("b"), Effect.sync(() => events.push("install")), none)).resolves.toEqual(moved())
-    expect(events).toEqual(["hold", "sync", "install"])
+    const steps = forkSteps({ move: recording("checks"), tests: recording("accept") }, { sync, head: Effect.succeed("b"), install: timed("install", "installed"), checks: (dir) => timed("tests", dir), log: none })
+    expect(steps.move()).resolves.toEqual(moved())
+    expect(events.splice(0)).toEqual(["checks taken", "sync", "install starts", "install ends", "checks let go"])
+    expect(steps.checks("merge")).resolves.toBe("merge")
+    expect(events.splice(0)).toEqual(["accept taken", "tests starts", "tests ends", "accept let go"])
+    expect(steps.reinstall()).resolves.toBe("installed")
+    expect(events.splice(0)).toEqual(["checks taken", "install starts", "install ends", "checks let go"])
+  })
+
+  test("installs the dotfiles workspace only after registering the merge driver in daily's own checkout, the dotfiles root; a checkout that routes nothing to the driver fails before the install", () => {
+    expect(DOTFILES).toBe(resolve(".."))
+    const installs: Array<string> = []
+    expect(installDotfiles(resolve("."), Effect.sync(() => installs.push("install")))).rejects.toThrow("routes no file to the merge driver effect-debt")
+    expect(installs).toEqual([])
   })
 
   test(

@@ -10,6 +10,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Order, Result, Schema, type Scope } from "effect"
 import { mergeConfig, mergePolicy } from "./effect-debt-merge.ts"
+import { MERGE_DRIVERS, registerMergeDriver } from "./merge-driver.ts"
 import {
   compare,
   type Counts,
@@ -22,14 +23,12 @@ import {
   HOST_BRIDGES,
   type Inputs,
   LINT_MANIFEST,
-  MERGE_DRIVERS,
   overridePairs,
   parseOptions,
   POLICY,
   Policy,
   policyProblems,
   readInstalled,
-  registerMergeDriver,
   serialize,
   serializeConfig,
   spawn,

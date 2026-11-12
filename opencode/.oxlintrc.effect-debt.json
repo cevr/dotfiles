@@ -205,6 +205,31 @@
       "rules": {
         "effect/noNodeBuiltinImport": "off"
       }
+    },
+    {
+      "files": [
+        "scripts/merge-driver.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
+        "scripts/runtime-imports.test.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "scripts/daily.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
     }
   ]
 }
