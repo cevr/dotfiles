@@ -1,10 +1,10 @@
 /**
- * gent's credential store as a source of pool accounts, read in place: the
- * store stays the one copy of each login, and this module reads and refreshes
- * it the way gent does, so gent and OpenCode always hold the same token.
+ * The pool's login store as a source of pool accounts, read in place: the
+ * store stays the one copy of each login, and every process that uses it
+ * reads and refreshes it the same way, so they always hold the same token.
  *
- * gent keeps each Claude account it signed in to as a JSON file, one per
- * label, at `<dir>/.slots/anthropic/<label>`, marked `metadata.owner: "gent"`.
+ * The store keeps each Claude account signed in to it as a JSON file, one per
+ * label, at `<dir>/.slots/anthropic/<label>`, marked with a `metadata.owner`.
  * Anthropic spends a refresh token when it is traded, so a copy of a login in
  * two stores breaks the other the first time one refreshes; here there is no
  * copy.
@@ -13,17 +13,16 @@
  * time: once it expires within the refresh-ahead window (five minutes plus a
  * jitter of up to two minutes, fixed per label, so accounts signed in or
  * refreshed together drift apart instead of expiring in one burst), or when
- * the provider rejected it. The refresh runs as gent's does
- * (`makeCredentialCache` and `ownedStore` in gent's extensions): under gent's
- * lock for the provider (an exclusive SQLite transaction on
- * `<dir>/.locks/anthropic.lock.db`, taken by every gent process), the file is
+ * the provider rejected it. The refresh runs under the store's lock for the
+ * provider (an exclusive SQLite transaction on
+ * `<dir>/.locks/anthropic.lock.db`, taken by every process that refreshes), the file is
  * read again, a token another writer refreshed meanwhile is served as it is,
  * and only a token still due is traded at the token endpoint. The answer is
- * written atomically, mode 0600, in gent's exact shape, keeping the sign-in's
+ * written atomically, mode 0600, in the store's exact shape, keeping the sign-in's
  * `signedInAt` and `metadata`.
  *
  * A refresh ahead of time never costs a request its token. While the stored
- * token is still good for more than gent's last minute (`FRESH_ENOUGH_MS`) and
+ * token is still good for more than its last minute (`FRESH_ENOUGH_MS`) and
  * no provider rejected it, a refresh that cannot happen now (the endpoint
  * paused the store, the last trade was too recent, a 429, a 5xx, a timeout, a
  * lock held too long) serves the stored token, and a later request tries
@@ -41,12 +40,12 @@
  *
  * A failed refresh writes nothing: the refresh token in the file is still the
  * one to retry with. A refresh that worked but whose write failed keeps the
- * new tokens in memory (gent's `PendingPersist`); the next resolve writes them
+ * new tokens in memory; the next resolve writes them
  * under the lock, but only while the file still holds the login they replace.
  *
- * Only accounts gent signed in to are listed. The default entry and linked
- * slots are Claude Code's own logins: gent refreshes those through Claude
- * Code's keychain or directory and its held rotations, so this source leaves
+ * Only accounts signed in to the store itself (an `owner` in their metadata)
+ * are listed. The default entry and linked slots are Claude Code's own logins,
+ * refreshed through Claude Code's keychain or directory, so this source leaves
  * them alone.
  *
  * No token is ever logged or put in an error message.
@@ -68,8 +67,8 @@ import { basename, dirname, join, resolve } from "node:path"
 import { Context, Effect, Logger, Schema } from "effect"
 
 /** The token endpoint Claude Code and the Anthropic auth plugin refresh at, and Claude Code's public client id. */
-export const GENT_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
-export const GENT_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+export const CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+export const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 /**
  * The `user-agent` a trade names, Claude Code's own (the Anthropic auth
  * plugin's refresh sends it too). It is set outright: OpenCode's binary
@@ -77,19 +76,19 @@ export const GENT_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
  * endpoint's edge answers that agent, as it does `curl/*`, with a 429 every
  * time while it trades for any other.
  */
-export const GENT_USER_AGENT = "axios/1.13.6"
-/** The prefix of a gent account's credential id in the pool. */
-export const GENT_PREFIX = "gent:"
+export const CLAUDE_USER_AGENT = "axios/1.13.6"
+/** The prefix of a store account's credential id in the pool. */
+export const STORE_PREFIX = "store:"
 
 const PROVIDER = "anthropic"
-/** gent's `FRESH_ENOUGH_MS`: a token in its last minute is refreshed before it is sent. */
+/** A token in its last minute is refreshed before it is sent. */
 const FRESH_ENOUGH_MS = 60_000
-/** gent's `OAUTH_TOKEN_TIMEOUT`. */
+/** How long a trade waits for the token endpoint. */
 const TOKEN_TIMEOUT_MS = 15_000
-/** gent's lock poll: every 20 ms, 1500 times (about 30 seconds). */
+/** The lock poll: every 20 ms, 1500 times (about 30 seconds). */
 const LOCK_POLL_MS = 20
 const LOCK_POLLS = 1500
-/** gent's default token lifetime when the answer names none (`parseOAuthResponse`). */
+/** The token lifetime when the answer names none. */
 const DEFAULT_EXPIRES_IN_S = 36_000
 /** How soon a credential that failed for a passing reason is tried again. */
 const RETRY_MS = 60_000
@@ -106,12 +105,12 @@ export const REFRESH_AHEAD_MS = 5 * 60_000
 export const REFRESH_JITTER_MS = 120_000
 /** The least time between two trades from one store in this process. */
 export const REFRESH_GAP_MS = 3_000
-/** gent's `CredentialSlot` pattern; `default` is the default entry, never a slot. */
+/** A slot label; `default` is the default entry, never a slot. */
 const SLOT = /^[a-z0-9_-]{1,32}$/
-const STAGING_TAG = ".gent-write-"
+const STAGING_TAG = ".store-write-"
 
-/** A stored gent OAuth sign-in, as gent's `AuthInfo` encodes it. */
-export interface GentStoredOAuth {
+/** A stored OAuth sign-in, as the store's slot file holds it. */
+export interface StoredOAuth {
   readonly _tag?: "Oauth"
   readonly type: "oauth"
   readonly access: string
@@ -128,41 +127,41 @@ interface Tokens {
   readonly expires: number
 }
 
-/** Why a gent account cannot serve a request now. Never carries a token. */
-export const GentFailureKind = Schema.Literals([
+/** Why a store account cannot serve a request now. Never carries a token. */
+export const StoreFailureKind = Schema.Literals([
   /** The label holds no sign-in any more. */
   "signed-out",
-  /** The label holds a sign-in gent does not own (Claude Code's), or a file that does not decode. */
+  /** The label holds a sign-in the store does not own (Claude Code's), or a file that does not decode. */
   "not-owned",
-  /** The token endpoint refused the refresh token: sign in again in gent. */
+  /** The token endpoint refused the refresh token: sign in again. */
   "rejected",
   /** The token endpoint did not answer usefully (transport, timeout, 429, 5xx): try again shortly. */
   "unavailable",
-  /** gent's lock stayed held for the whole wait. */
+  /** The store's lock stayed held for the whole wait. */
   "busy",
   /** The refresh worked but its write failed; the new tokens are held in memory. */
   "persist",
 ])
-export type GentFailureKind = typeof GentFailureKind.Type
+export type StoreFailureKind = typeof StoreFailureKind.Type
 
-export class GentCredentialError extends Schema.TaggedError<GentCredentialError>()("GentCredentialError", {
-  kind: GentFailureKind,
+export class StoreCredentialError extends Schema.TaggedError<StoreCredentialError>()("StoreCredentialError", {
+  kind: StoreFailureKind,
   message: Schema.String,
   /** When the account may be tried again (epoch ms); absent until the owner signs in again. */
   retryAt: Schema.optionalKey(Schema.Number),
 }) {}
 
 /** The store's files could not be read (not a missing file: a permission or a disk failure). */
-export class GentStoreUnreadable extends Schema.TaggedError<GentStoreUnreadable>()("GentStoreUnreadable", {
+export class StoreUnreadable extends Schema.TaggedError<StoreUnreadable>()("StoreUnreadable", {
   path: Schema.String,
   message: Schema.String,
 }) {}
 
-const failure = (kind: GentFailureKind, message: string, retryAt?: number) =>
-  new GentCredentialError({ kind, message, ...(retryAt === undefined ? {} : { retryAt }) })
+const failure = (kind: StoreFailureKind, message: string, retryAt?: number) =>
+  new StoreCredentialError({ kind, message, ...(retryAt === undefined ? {} : { retryAt }) })
 
-export interface GentSourceOptions {
-  /** gent's auth directory; `~` is the home directory. */
+export interface StoreSourceOptions {
+  /** The store's directory; `~` is the home directory. */
   readonly dir: string
   /** The token endpoint; tests point it at a fake. */
   readonly tokenURL?: string
@@ -186,10 +185,10 @@ export interface GentSourceOptions {
  * same for a label every time, in every process, and spread across labels.
  */
 export const refreshJitter = (label: string, maxMs: number = REFRESH_JITTER_MS): number =>
-  maxMs <= 0 ? 0 : createHash("sha256").update(`gent-refresh:${label}`).digest().readUInt32BE(0) % (Math.floor(maxMs) + 1)
+  maxMs <= 0 ? 0 : createHash("sha256").update(`store-refresh:${label}`).digest().readUInt32BE(0) % (Math.floor(maxMs) + 1)
 
-/** An account gent holds, or a label this source leaves alone and why. */
-export interface GentListing {
+/** An account the store holds, or a label this source leaves alone and why. */
+export interface StoreListing {
   readonly accounts: ReadonlyArray<string>
   readonly skipped: ReadonlyArray<{ readonly label: string; readonly reason: string }>
 }
@@ -215,7 +214,7 @@ const parseJson = (text: string): { readonly value: unknown } | undefined => {
 }
 
 /** A stored OAuth sign-in, checked field by field, or `undefined`. */
-export const decodeGentOAuth = (text: string): GentStoredOAuth | undefined => {
+export const decodeStoredOAuth = (text: string): StoredOAuth | undefined => {
   const value = parseJson(text)?.value
   if (!isRecord(value) || value.type !== "oauth") return undefined
   const { access, refresh, expires, accountId, metadata, signedInAt } = value
@@ -234,16 +233,19 @@ export const decodeGentOAuth = (text: string): GentStoredOAuth | undefined => {
   }
 }
 
-/** gent's `isGentOwned`: an account gent signed in to itself. */
-export const isGentOwned = (stored: GentStoredOAuth) => stored.metadata?.owner === "gent"
+/**
+ * An account signed in to the store itself: its metadata names an owner. A linked Claude Code
+ * login (`metadata.source: "claude-code"`) and the default entry name none.
+ */
+export const isStoreOwned = (stored: StoredOAuth) =>
+  (stored.metadata?.owner ?? "") !== "" && stored.metadata?.source !== "claude-code"
 
 /**
- * The file gent writes after a refresh of an account it owns: its `AuthInfo`
- * encoding, compact, in the schema's field order. The Anthropic driver drops
- * `accountId` (`toStoredClaude`), which encodes as `null`; the store keeps the
- * sign-in's `metadata` and `signedInAt`.
+ * The file a refresh of an owned account writes: compact, in the slot
+ * file's field order. A refresh drops `accountId`, which encodes as `null`;
+ * the store keeps the sign-in's `metadata` and `signedInAt`.
  */
-export const encodeGentRefresh = (stored: GentStoredOAuth, next: Tokens): string =>
+export const encodeRefresh = (stored: StoredOAuth, next: Tokens): string =>
   JSON.stringify({
     _tag: "Oauth",
     type: "oauth",
@@ -258,11 +260,11 @@ export const encodeGentRefresh = (stored: GentStoredOAuth, next: Tokens): string
 const attempt = <A>(run: () => Promise<A>) => Effect.tryPromise({ try: run, catch: (cause) => cause })
 
 /**
- * gent's `writeFileAtomic` for a credential: a sibling staging file created
+ * An atomic write of a slot file: a sibling staging file created
  * exclusively with mode 0600, synced, then renamed over the file a link at
  * `path` points to. A failed write removes its staging file.
  */
-export const writeGentFileAtomic = (path: string, content: string): Effect.Effect<void, unknown> =>
+export const writeSlotAtomic = (path: string, content: string): Effect.Effect<void, unknown> =>
   Effect.gen(function* () {
     const target = yield* Effect.try({ try: () => realpathSync(path), catch: () => path }).pipe(Effect.orElseSucceed(() => path))
     const staging = join(dirname(target), `.${basename(target)}${STAGING_TAG}${randomBytes(4).toString("hex")}`)
@@ -284,7 +286,7 @@ const isBusy = (error: unknown) => isRecord(error) && error.code === "SQLITE_BUS
 
 const BUSY = Symbol("busy")
 
-/** One try at gent's lock: the open connection holding it, or BUSY while another holds it. */
+/** One try at the store's lock: the open connection holding it, or BUSY while another holds it. */
 const begin = (file: string): Effect.Effect<Database | typeof BUSY> =>
   Effect.try({ try: () => new Database(file, { create: true }), catch: (cause) => cause }).pipe(
     Effect.flatMap((db) =>
@@ -304,20 +306,19 @@ const begin = (file: string): Effect.Effect<Database | typeof BUSY> =>
   )
 
 /**
- * Run `use` while holding gent's lock for the provider: an exclusive SQLite
+ * Run `use` while holding the store's lock for the provider: an exclusive SQLite
  * transaction on `<dir>/.locks/<provider>.lock.db`, opened with no busy
- * timeout and polled while another connection holds it, as gent's
- * `fileProviderLock` does. Closing the connection ends the transaction and
+ * timeout and polled while another connection holds it. Closing the connection ends the transaction and
  * frees the lock; the OS frees it if the process dies.
  */
-export const withGentLock = <A, E, R>(
+export const withStoreLock = <A, E, R>(
   dir: string,
   use: Effect.Effect<A, E, R>,
   polls: number = LOCK_POLLS,
-): Effect.Effect<A, E | GentCredentialError, R> => {
+): Effect.Effect<A, E | StoreCredentialError, R> => {
   const locks = join(dir, ".locks")
   const file = join(locks, `${encodeURIComponent(PROVIDER)}.lock.db`)
-  const take = (poll: number): Effect.Effect<Database, GentCredentialError> =>
+  const take = (poll: number): Effect.Effect<Database, StoreCredentialError> =>
     begin(file).pipe(
       Effect.flatMap((db) => {
         if (db !== BUSY) return Effect.succeed(db)
@@ -325,7 +326,7 @@ export const withGentLock = <A, E, R>(
           return Effect.fail(
             failure(
               "busy",
-              "gent's credential store is busy: its Anthropic lock stayed held for the whole wait",
+              "the login store is busy: its Anthropic lock stayed held for the whole wait",
               Date.now() + RETRY_MS,
             ),
           )
@@ -375,7 +376,7 @@ function pauseFor(retryAfter: string | null, now: number): number {
 }
 
 /** What the token endpoint said when it last failed a trade from a store: never a token. */
-export interface GentRefreshCause {
+export interface StoreRefreshCause {
   /** Its HTTP status; none when it did not answer (transport, timeout). */
   readonly status?: number
   /** Its `server` header: the edge (Cloudflare) or Anthropic. */
@@ -390,27 +391,24 @@ export interface GentRefreshCause {
  * `failingSince` to `lastFailureAt`, and the cause of the last one that went
  * out. A refresh, or a refusal (the endpoint answered), ends the run.
  */
-export interface GentRefreshRecord {
+export interface StoreRefreshRecord {
   readonly failingSince?: number
   readonly lastFailureAt?: number
   readonly failures: number
-  readonly cause?: GentRefreshCause
+  readonly cause?: StoreRefreshCause
   /** Until when (epoch ms) the endpoint asked the store to wait; 0 when it never did. */
   readonly pausedUntil: number
 }
 
-/** A login whose refresh token the token endpoint refused, still in its file: it needs a sign-in in gent. */
-export interface GentLostLogin {
+/** A login whose refresh token the token endpoint refused, still in its file: it needs a new sign-in. */
+export interface StoreLostLogin {
   readonly credentialID: string
   readonly label: string
   /** When (epoch ms) the endpoint first refused that refresh token. */
   readonly since: number
-  /** The command that signs it in again in gent, for this store. */
-  readonly command: string
+  /** Its slot file, `~` for the home directory: where a new sign-in must be written. */
+  readonly slot: string
 }
-
-/** gent's own auth directory, when `GENT_AUTH_DIRECTORY` names none. */
-const GENT_DEFAULT_DIR = "~/.gent/auth"
 
 /** `dir` as the owner types it: `~` for the home directory. */
 const tildeOf = (dir: string) => {
@@ -418,17 +416,9 @@ const tildeOf = (dir: string) => {
   return dir === home ? "~" : dir.startsWith(`${home}/`) ? `~${dir.slice(home.length)}` : dir
 }
 
-const shellQuote = (text: string) => (/^[\w@%+=:,./~-]+$/.test(text) ? text : `'${text.replaceAll("'", `'\\''`)}'`)
-
-/**
- * The command that signs `label` in again in gent, over the store at `dir`
- * (absolute): gent's sign-in to a Claude account into that slot
- * (gent's apps/tui/docs/cli.md), naming the store unless it is gent's own.
- */
-export const gentSignInCommand = (dir: string, label: string): string => {
-  const store = resolve(expandHome(dir)) === resolve(expandHome(GENT_DEFAULT_DIR)) ? "" : `GENT_AUTH_DIRECTORY=${shellQuote(tildeOf(dir))} `
-  return `${store}gent auth login anthropic --method "Sign in to a Claude account" --slot ${label}`
-}
+/** The slot file of `label` in the store at `dir` (absolute), as the owner types it: `~` for the home directory. */
+export const slotPath = (dir: string, label: string): string =>
+  tildeOf(join(resolve(expandHome(dir)), ".slots", encodeURIComponent(PROVIDER), encodeURIComponent(label)))
 
 /** One store's state in this process: refreshes held for a write, and tokens a provider rejected. */
 interface StoreState {
@@ -442,7 +432,7 @@ interface StoreState {
   failingSince: number | undefined
   lastFailureAt: number | undefined
   failures: number
-  cause: GentRefreshCause | undefined
+  cause: StoreRefreshCause | undefined
   /** The tail of this process's queue for the lock: one refresh at a time per store. */
   queue: Promise<unknown>
   /** Until when (epoch ms) the token endpoint asked this store to wait; no refresh goes out before. */
@@ -452,7 +442,7 @@ interface StoreState {
 }
 
 /** Shared by every setup in the process, whichever copy of this module it loaded. */
-const STATES = Symbol.for("dotfiles-opencode.pool.gent-stores")
+const STATES = Symbol.for("dotfiles-opencode.pool.login-stores")
 
 const freshState = (): StoreState => ({
   pending: new Map(),
@@ -490,7 +480,7 @@ const stateOf = (dir: string): StoreState => {
 
 /**
  * One refresh at a time per store in this process, whichever copy of this
- * module (or of Effect) runs it; gent's lock orders them across processes. A
+ * module (or of Effect) runs it; the store's lock orders them across processes. A
  * Promise is the queue because it is what every copy shares.
  */
 const serialized = <A, E>(state: StoreState, run: Effect.Effect<A, E>): Effect.Effect<A, E> =>
@@ -505,10 +495,10 @@ const serialized = <A, E>(state: StoreState, run: Effect.Effect<A, E>): Effect.E
   })
 
 /** A label's sign-in: `null` when the label holds none, `undefined` when its file does not decode. */
-type Stored = GentStoredOAuth | undefined | null
+type Stored = StoredOAuth | undefined | null
 
-/** A gent store's Anthropic accounts, read and refreshed in place. */
-export class GentSource {
+/** A login store's Anthropic accounts, read and refreshed in place. */
+export class StoreSource {
   readonly dir: string
   private readonly slots: string
   private readonly tokenURL: string
@@ -520,10 +510,10 @@ export class GentSource {
   private readonly context: Context.Context<never>
   private readonly state: StoreState
 
-  constructor(options: GentSourceOptions) {
+  constructor(options: StoreSourceOptions) {
     this.dir = resolve(expandHome(options.dir))
     this.slots = join(this.dir, ".slots", encodeURIComponent(PROVIDER))
-    this.tokenURL = options.tokenURL ?? GENT_TOKEN_URL
+    this.tokenURL = options.tokenURL ?? CLAUDE_TOKEN_URL
     this.fetch = options.fetch ?? globalThis.fetch
     this.now = options.now ?? Date.now
     this.lockPolls = options.lockPolls ?? LOCK_POLLS
@@ -536,23 +526,23 @@ export class GentSource {
 
   /** The pool's credential id of a label. */
   static id(label: string) {
-    return `${GENT_PREFIX}${label}`
+    return `${STORE_PREFIX}${label}`
   }
 
   owns(credentialID: string) {
     return this.labelOf(credentialID) !== undefined
   }
 
-  /** The slot label of one of this store's credential ids (`gent:<label>`); none for another id. */
+  /** The slot label of one of this store's credential ids (`store:<label>`); none for another id. */
   label(credentialID: string): string | undefined {
     return this.labelOf(credentialID)
   }
 
-  /** The accounts gent signed in to, by label, and the labels this source leaves alone. */
-  readonly listing: Effect.Effect<GentListing, GentStoreUnreadable> = Effect.suspend(() => {
+  /** The accounts signed in to the store, by label, and the labels this source leaves alone. */
+  readonly listing: Effect.Effect<StoreListing, StoreUnreadable> = Effect.suspend(() => {
     const names = this.names()
     if (names === undefined) return Effect.succeed({ accounts: [], skipped: [] })
-    return Effect.gen({ self: this }, function* (this: GentSource) {
+    return Effect.gen({ self: this }, function* (this: StoreSource) {
       const accounts: Array<string> = []
       const skipped: Array<{ label: string; reason: string }> = []
       for (const name of names.sort()) {
@@ -562,23 +552,23 @@ export class GentSource {
         const stored = yield* this.read(label)
         if (stored === null) continue
         if (stored === undefined) skipped.push({ label, reason: "does not decode as an OAuth sign-in" })
-        else if (!isGentOwned(stored)) skipped.push({ label, reason: "a linked Claude Code login, which gent refreshes itself" })
-        else accounts.push(GentSource.id(label))
+        else if (!isStoreOwned(stored)) skipped.push({ label, reason: "a linked Claude Code login, which Claude Code refreshes itself" })
+        else accounts.push(StoreSource.id(label))
       }
       return { accounts, skipped }
     })
   })
 
   /** `listing`, for a caller outside Effect. An unreadable store throws, as a failed read does. */
-  list(): GentListing {
+  list(): StoreListing {
     return Effect.runSync(this.listing)
   }
 
-  /** The token to send now for `credentialID`, refreshed under gent's lock when it must be. */
-  resolveEffect(credentialID: string): Effect.Effect<{ access: string; expires: number }, GentCredentialError | GentStoreUnreadable> {
-    return Effect.gen({ self: this }, function* (this: GentSource) {
+  /** The token to send now for `credentialID`, refreshed under the store's lock when it must be. */
+  resolveEffect(credentialID: string): Effect.Effect<{ access: string; expires: number }, StoreCredentialError | StoreUnreadable> {
+    return Effect.gen({ self: this }, function* (this: StoreSource) {
       const label = this.labelOf(credentialID)
-      if (label === undefined) return yield* failure("signed-out", "Not a gent account")
+      if (label === undefined) return yield* failure("signed-out", "Not a store account")
       const stored = yield* this.owned(label, yield* this.read(label))
       const served = { access: stored.access, expires: stored.expires }
       const settled = !this.state.pending.has(label) && this.state.rejected.get(label) !== stored.refresh
@@ -589,9 +579,9 @@ export class GentSource {
       if (usable && this.held() !== undefined) return served
       // Under the lock the file is read again and a failed trade serves what it holds; a lock
       // held for the whole wait serves the token read here.
-      return yield* serialized(this.state, withGentLock(this.dir, this.refreshLocked(label), this.lockPolls)).pipe(
+      return yield* serialized(this.state, withStoreLock(this.dir, this.refreshLocked(label), this.lockPolls)).pipe(
         Effect.catchIf(
-          (error) => usable && error._tag === "GentCredentialError" && error.kind === "busy",
+          (error) => usable && error._tag === "StoreCredentialError" && error.kind === "busy",
           () => Effect.succeed(served),
         ),
       )
@@ -609,11 +599,11 @@ export class GentSource {
    * else nothing. Never trades, never takes the lock.
    */
   peekEffect(credentialID: string): Effect.Effect<{ access: string; expires: number } | undefined> {
-    return Effect.gen({ self: this }, function* (this: GentSource) {
+    return Effect.gen({ self: this }, function* (this: StoreSource) {
       const label = this.labelOf(credentialID)
       if (label === undefined) return undefined
       const stored = yield* this.read(label).pipe(Effect.orElseSucceed((): Stored => null))
-      if (!stored || !isGentOwned(stored)) return undefined
+      if (!stored || !isStoreOwned(stored)) return undefined
       if (this.state.pending.has(label) || this.state.rejected.get(label) === stored.refresh || !this.fresh(stored.expires))
         return undefined
       return { access: stored.access, expires: stored.expires }
@@ -627,8 +617,7 @@ export class GentSource {
 
   /**
    * A provider rejected `access`. When the store still holds it, the next
-   * resolve refreshes the login whatever its expiry says, as gent's
-   * `invalidate` does; a token the store already replaced changes nothing.
+   * resolve refreshes the login whatever its expiry says; a token the store already replaced changes nothing.
    * A store that cannot be read changes nothing either.
    */
   rejected(credentialID: string, access: string): void {
@@ -639,28 +628,28 @@ export class GentSource {
   }
 
   /**
-   * The logins that need a sign-in in gent: each whose file still holds the
+   * The logins that need a new sign-in: each whose file still holds the
    * refresh token the token endpoint refused. One whose file holds another
-   * login now (refreshed here or by gent, or signed in again) or none is
+   * login now (refreshed here or by another process, or signed in again) or none is
    * forgotten; one whose file cannot be read stays.
    */
-  readonly lost: Effect.Effect<ReadonlyArray<GentLostLogin>> = Effect.suspend(() =>
-    Effect.gen({ self: this }, function* (this: GentSource) {
-      const lost: Array<GentLostLogin> = []
+  readonly lost: Effect.Effect<ReadonlyArray<StoreLostLogin>> = Effect.suspend(() =>
+    Effect.gen({ self: this }, function* (this: StoreSource) {
+      const lost: Array<StoreLostLogin> = []
       for (const [label, refused] of [...this.state.refused].sort(([a], [b]) => a.localeCompare(b))) {
         const stored = yield* this.read(label).pipe(Effect.orElseSucceed((): Stored | "unread" => "unread"))
         if (stored !== "unread" && stored?.refresh !== refused.refresh) {
           this.state.refused.delete(label)
           continue
         }
-        lost.push({ credentialID: GentSource.id(label), label, since: refused.since, command: gentSignInCommand(this.dir, label) })
+        lost.push({ credentialID: StoreSource.id(label), label, since: refused.since, slot: slotPath(this.dir, label) })
       }
       return lost
     }),
   )
 
   /** How this store's trades have gone since the endpoint last answered one. */
-  readonly refreshes: Effect.Effect<GentRefreshRecord> = Effect.sync(() => ({
+  readonly refreshes: Effect.Effect<StoreRefreshRecord> = Effect.sync(() => ({
     ...(this.state.failingSince === undefined ? {} : { failingSince: this.state.failingSince }),
     ...(this.state.lastFailureAt === undefined ? {} : { lastFailureAt: this.state.lastFailureAt }),
     failures: this.state.failures,
@@ -669,8 +658,8 @@ export class GentSource {
   }))
 
   private labelOf(credentialID: string): string | undefined {
-    if (!credentialID.startsWith(GENT_PREFIX)) return undefined
-    const label = credentialID.slice(GENT_PREFIX.length)
+    if (!credentialID.startsWith(STORE_PREFIX)) return undefined
+    const label = credentialID.slice(STORE_PREFIX.length)
     return SLOT.test(label) && label !== "default" ? label : undefined
   }
 
@@ -696,23 +685,23 @@ export class GentSource {
   }
 
   /** The label's sign-in, `null` when the label holds none, `undefined` when its file does not decode. */
-  private read(label: string): Effect.Effect<Stored, GentStoreUnreadable> {
+  private read(label: string): Effect.Effect<Stored, StoreUnreadable> {
     const path = this.file(label)
     return Effect.try({ try: () => readFileSync(path, "utf8"), catch: (cause) => cause }).pipe(
-      Effect.map((text): Stored => decodeGentOAuth(text)),
+      Effect.map((text): Stored => decodeStoredOAuth(text)),
       Effect.catch((cause) =>
         isRecord(cause) && cause.code === "ENOENT"
           ? Effect.succeed(null)
-          : Effect.fail(new GentStoreUnreadable({ path, message: messageOf(cause) })),
+          : Effect.fail(new StoreUnreadable({ path, message: messageOf(cause) })),
       ),
     )
   }
 
-  private owned(label: string, stored: Stored): Effect.Effect<GentStoredOAuth, GentCredentialError> {
-    if (stored === null) return Effect.fail(failure("signed-out", `The gent account "${label}" was removed. Sign in again in gent.`))
-    if (stored === undefined || !isGentOwned(stored))
+  private owned(label: string, stored: Stored): Effect.Effect<StoredOAuth, StoreCredentialError> {
+    if (stored === null) return Effect.fail(failure("signed-out", `The store account "${label}" was removed. Sign in to it again.`))
+    if (stored === undefined || !isStoreOwned(stored))
       return Effect.fail(
-        failure("not-owned", `The gent label "${label}" holds no account gent signed in to; the pool leaves it alone`),
+        failure("not-owned", `The store label "${label}" holds no account signed in to the store; the pool leaves it alone`),
       )
     return Effect.succeed(stored)
   }
@@ -733,13 +722,13 @@ export class GentSource {
   }
 
   /**
-   * Under gent's lock: settle a held write, then serve the stored token or
+   * Under the store's lock: settle a held write, then serve the stored token or
    * refresh it. A stored token still good past its last minute is served when
    * the trade cannot happen now; one that is not waits out the gap after the
    * last trade, and fails on a pause or a failed trade.
    */
-  private refreshLocked(label: string): Effect.Effect<{ access: string; expires: number }, GentCredentialError | GentStoreUnreadable> {
-    return Effect.gen({ self: this }, function* (this: GentSource) {
+  private refreshLocked(label: string): Effect.Effect<{ access: string; expires: number }, StoreCredentialError | StoreUnreadable> {
+    return Effect.gen({ self: this }, function* (this: StoreSource) {
       const stored = yield* this.owned(label, yield* this.read(label))
       const served = { access: stored.access, expires: stored.expires }
 
@@ -780,15 +769,15 @@ export class GentSource {
     })
   }
 
-  private write(label: string, stored: GentStoredOAuth, next: Tokens, replaces: string): Effect.Effect<void, GentCredentialError> {
-    return writeGentFileAtomic(this.file(label), encodeGentRefresh(stored, next)).pipe(
+  private write(label: string, stored: StoredOAuth, next: Tokens, replaces: string): Effect.Effect<void, StoreCredentialError> {
+    return writeSlotAtomic(this.file(label), encodeRefresh(stored, next)).pipe(
       Effect.catch(() =>
         Effect.suspend(() => {
           this.state.pending.set(label, { next, replaces })
           return Effect.fail(
             failure(
               "persist",
-              `The gent account "${label}" refreshed but its file could not be written; the next request writes it again`,
+              `The store account "${label}" refreshed but its file could not be written; the next request writes it again`,
               this.now() + RETRY_MS,
             ),
           )
@@ -798,23 +787,23 @@ export class GentSource {
   }
 
   /**
-   * gent's `refreshViaOAuthClient`: a form POST that trades the refresh token.
+   * A form POST that trades the refresh token.
    * Logged at info with the label and the outcome, never a token.
    */
-  private trade(label: string, refreshToken: string): Effect.Effect<Tokens, GentCredentialError> {
+  private trade(label: string, refreshToken: string): Effect.Effect<Tokens, StoreCredentialError> {
     return Effect.suspend(() => {
       const paused = this.state.pausedUntil
       if (this.now() < paused)
         return Effect.fail(
           failure(
             "unavailable",
-            `The gent account "${label}" could not refresh: the token endpoint asked to wait until ${new Date(paused).toISOString()}`,
+            `The store account "${label}" could not refresh: the token endpoint asked to wait until ${new Date(paused).toISOString()}`,
             paused,
           ),
         )
       return this.post(label, refreshToken).pipe(
-        Effect.tap((next) => Effect.logInfo(`gent refresh "${label}": refreshed, expires ${new Date(next.expires).toISOString()}`)),
-        Effect.tapError((error) => Effect.logInfo(`gent refresh "${label}": ${error.kind}: ${error.message}`)),
+        Effect.tap((next) => Effect.logInfo(`store refresh "${label}": refreshed, expires ${new Date(next.expires).toISOString()}`)),
+        Effect.tapError((error) => Effect.logInfo(`store refresh "${label}": ${error.kind}: ${error.message}`)),
       )
     }).pipe(
       Effect.tap(() => Effect.sync(() => this.answered(label, undefined))),
@@ -848,23 +837,23 @@ export class GentSource {
   }
 
   /** What the endpoint said when it failed the trade that just went out. */
-  private caused(cause: GentRefreshCause) {
+  private caused(cause: StoreRefreshCause) {
     this.state.cause = cause
   }
 
-  private post(label: string, refreshToken: string): Effect.Effect<Tokens, GentCredentialError> {
-    return Effect.gen({ self: this }, function* (this: GentSource) {
+  private post(label: string, refreshToken: string): Effect.Effect<Tokens, StoreCredentialError> {
+    return Effect.gen({ self: this }, function* (this: StoreSource) {
       const unavailable = (why: string) =>
-        failure("unavailable", `The gent account "${label}" could not refresh: ${why}`, this.now() + RETRY_MS)
+        failure("unavailable", `The store account "${label}" could not refresh: ${why}`, this.now() + RETRY_MS)
       this.state.lastTradeAt = this.now()
       const { status, body, retryAfter, server } = yield* Effect.tryPromise({
         try: async () => {
           const response = await this.fetch(this.tokenURL, {
             method: "POST",
-            headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": GENT_USER_AGENT },
+            headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": CLAUDE_USER_AGENT },
             body: new URLSearchParams({
               grant_type: "refresh_token",
-              client_id: GENT_CLIENT_ID,
+              client_id: CLAUDE_CLIENT_ID,
               refresh_token: refreshToken,
             }).toString(),
             redirect: "error",
@@ -894,20 +883,20 @@ export class GentSource {
         this.state.pausedUntil = Math.max(before, this.now() + pauseFor(retryAfter, this.now()))
         if (before <= this.now())
           yield* Effect.logWarning(
-            `gent refresh: the token endpoint answered 429; every refresh from ${this.dir} waits until ${new Date(this.state.pausedUntil).toISOString()}`,
+            `store refresh: the token endpoint answered 429; every refresh from ${this.dir} waits until ${new Date(this.state.pausedUntil).toISOString()}`,
           )
         return yield* failure(
           "unavailable",
-          `The gent account "${label}" could not refresh: the token endpoint answered 429 (${limitDetail(server, retryAfter, body)})`,
+          `The store account "${label}" could not refresh: the token endpoint answered 429 (${limitDetail(server, retryAfter, body)})`,
           this.state.pausedUntil,
         )
       }
       if (status >= 500) return yield* unavailable(`the token endpoint answered ${status}`)
       if (status >= 400)
-        return yield* failure("rejected", `The gent account "${label}" could not refresh (${status}). Sign in to it again in gent.`)
+        return yield* failure("rejected", `The store account "${label}" could not refresh (${status}). Sign in to it again.`)
       const parsed = parseJson(body)?.value
       if (!isRecord(parsed) || typeof parsed.access_token !== "string" || parsed.access_token === "")
-        return yield* failure("rejected", `The gent account "${label}" refresh answered without an access token`)
+        return yield* failure("rejected", `The store account "${label}" refresh answered without an access token`)
       const expiresIn = finite(parsed.expires_in) ? parsed.expires_in : DEFAULT_EXPIRES_IN_S
       return {
         access: parsed.access_token,

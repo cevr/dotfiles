@@ -20,9 +20,8 @@ export type CacheFamily = "anthropic" | "openai"
  * - OpenAI caches implicitly: a prompt of 1,024 tokens or more is cached with
  *   no marker, and "cached prefixes generally remain active for 5 to 10
  *   minutes of inactivity" (platform.openai.com, Prompt caching). In practice
- *   it lasts longer: gent measured 238 of 244 requests after a 5-10 minute gap
- *   and 108 of 110 after a 10-30 minute gap still reading it
- *   (gent packages/extensions/src/providers.ts:856, RESPONSES_PROMPT_CACHE_TTL).
+ *   it lasts longer: 238 of 244 requests measured after a 5-10 minute gap
+ *   and 108 of 110 after a 10-30 minute gap still read it.
  *   30 minutes is that measured guess. Since OpenAI reports no cache writes,
  *   a miss inside it is never called a changed prefix (miss.ts).
  */

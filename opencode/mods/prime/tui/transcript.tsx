@@ -34,8 +34,7 @@ const USER_RAIL = {
 /**
  * The reader's prompt as fx's user card draws it (user_message_card.zig): a
  * heavy `┃` rail on every row, wrapped and blank rows too, a space, then the
- * text as typed, bold, on the terminal's own background (gent's UserRow, less
- * its panel). The rail is the text colour, as fx's marker and the rail
+ * text as typed, bold, on the terminal's own background, with no panel. The rail is the text colour, as fx's marker and the rail
  * composer are. What came with the prompt (files, skills, agents) is one
  * muted line under the text. A prompt the runner has not taken draws nothing
  * here, and its row takes no gap (cmd/prime/tui.tsx's layout rule); it enters

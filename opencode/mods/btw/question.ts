@@ -1,12 +1,11 @@
 // A side question: what the reader typed after /btw or into the pane's ask
 // line, checked; the name its fork takes; and the note the fork's model reads
-// before each question (gent's @gent/btw forkQuestionText, without the
-// question: the fork admits the note as a hidden synthetic message and the
-// question as the reader's own prompt, so its transcript and the pane show
+// before each question (without the question: the fork admits the note as
+// a hidden synthetic message and the question as the reader's own prompt, so its transcript and the pane show
 // the bare question).
 import { Effect, Schema } from "effect"
 
-/** The longest question the fork is asked, in characters (gent's limit). */
+/** The longest question the fork is asked, in characters. */
 export const MAXIMUM_QUESTION_CHARS = 8000
 
 /** The longest question a fork's name carries before it is cut, in characters. */

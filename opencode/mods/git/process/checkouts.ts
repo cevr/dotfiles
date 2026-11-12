@@ -3,7 +3,7 @@
 // `diff.autoRefreshIndex=false` keeps `git diff` from writing it (and running
 // `post-index-change`), so a read never takes `index.lock` from the agent's
 // own `git commit`. `--no-ext-diff --no-textconv` keep the repository's config
-// from choosing a program to run. Ported from gent's @gent/git.
+// from choosing a program to run.
 //
 // A read finds the checkout (`git rev-parse`), reads its status (`git status
 // --porcelain=v2 --branch -z --untracked-files=all`), counts its tracked

@@ -4,7 +4,7 @@
 //
 // - Prefer-upstream candidates: fork commits (`upstream..prime-look`, merges left out) whose added
 //   lines upstream's new commits (`merge-base..upstream`, the commits this merge brings) also add in
-//   the same file, and upstream's new commits that name an issue or PR `opencode/AGENTS.md` links to
+//   the same file (files the fork's .gitattributes marks linguist-generated left out), and upstream's new commits that name an issue or PR `opencode/AGENTS.md` links to
 //   a fork change. Each is one to ask the owner about before dropping ours.
 // - Linked issues and PRs (AGENTS.md's "Upstream issues for the fork's changes now") that upstream
 //   has closed or merged since, read through `lookup` (gh in production).
@@ -13,10 +13,17 @@
 import { existsSync, readFileSync } from "node:fs"
 
 const decoder = new TextDecoder()
-const git = (dir: string, ...args: ReadonlyArray<string>) => {
-  const ran = Bun.spawnSync(["git", "-C", dir, ...args], { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, stdout: "pipe", stderr: "pipe" })
+/** Runs git with `stdin` as its input (empty for the commands that read none). */
+const gitWith = (stdin: string, dir: string, ...args: ReadonlyArray<string>) => {
+  const ran = Bun.spawnSync(["git", "-C", dir, ...args], {
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    stdin: new TextEncoder().encode(stdin),
+    stdout: "pipe",
+    stderr: "pipe",
+  })
   return { ok: ran.exitCode === 0, out: decoder.decode(ran.stdout).trim() }
 }
+const git = (dir: string, ...args: ReadonlyArray<string>) => gitWith("", dir, ...args)
 
 /** An upstream issue or PR AGENTS.md links to a fork change. */
 export interface Linked {
@@ -102,6 +109,27 @@ const commits = (dir: string, range: string): ReadonlyArray<Commit> => {
     })
 }
 
+/**
+ * The files of `files` that the `.gitattributes` at `source` marks `linguist-generated` (the fork's
+ * generated list: packages/protocol/openapi.json, the client's generated types). Both sides regenerate
+ * them, so a line they share there says nothing about the change itself.
+ */
+const generated = (dir: string, source: string, files: ReadonlyArray<string>): ReadonlySet<string> => {
+  if (files.length === 0) return new Set()
+  const ran = gitWith(files.join("\0"), dir, "check-attr", "-z", "--stdin", `--source=${source}`, "linguist-generated")
+  if (!ran.ok) return new Set()
+  const fields = ran.out.split("\0")
+  const marked = new Set<string>()
+  for (let at = 0; at + 2 < fields.length; at += 3) {
+    const [file = "", , value = ""] = fields.slice(at, at + 3)
+    if (value === "set" || value === "true") marked.add(file)
+  }
+  return marked
+}
+
+/** The commit with its generated files' lines left out. */
+const authored = (commit: Commit, skip: ReadonlySet<string>): Commit => ({ ...commit, added: new Map([...commit.added].filter(([file]) => !skip.has(file))) })
+
 /** Names `#n`, not a longer number starting with it. */
 const names = (text: string, number: number) => new RegExp(`#${number}(?!\\d)`).test(text)
 
@@ -161,8 +189,11 @@ export const droppable = (input: Pick<ForkWorkInput, "fork" | "branch" | "upstre
 
 export const forkWork = async (input: ForkWorkInput): Promise<ForkWork> => {
   const since = git(input.fork, "merge-base", input.before, input.upstream).out
-  const fresh = since === "" ? [] : commits(input.fork, `${since}..${input.upstream}`)
-  const ours = commits(input.fork, `${input.upstream}..${input.branch}`)
+  const theirs = since === "" ? [] : commits(input.fork, `${since}..${input.upstream}`)
+  const mine = commits(input.fork, `${input.upstream}..${input.branch}`)
+  const skip = generated(input.fork, input.branch, [...new Set(mine.flatMap((commit) => [...commit.added.keys()]))])
+  const fresh = theirs.map((commit) => authored(commit, skip))
+  const ours = mine.map((commit) => authored(commit, skip))
   const linked = linkedIssues(input.agents)
   const candidates: Array<Candidate> = []
   for (const fork of ours) {

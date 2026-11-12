@@ -1,6 +1,6 @@
 // What /btw and its pane do, between the keys and the btw model: run one
 // handler, say a refusal or a failure as a toast, hold the question on its
-// way so the pane can show it before the fork does (gent's makeForkPane), and
+// way so the pane can show it before the fork does, and
 // keep what each session's fork reads as for the pane to draw. A reading is
 // taken when a handler is done and, while a pane watches the session, a
 // moment after each host event about its fork; one reading runs at a time per

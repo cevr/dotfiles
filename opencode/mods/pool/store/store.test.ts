@@ -1,8 +1,8 @@
-// The gent source's refresh timing against a fake token endpoint and a fake
-// clock: when a token is refreshed, what a refresh that cannot happen serves,
-// how trades from one store are spaced, what the read that never trades
-// returns, and what is logged. The store is gent's file layout in a temporary
-// directory; gent's lock is the real SQLite lock. Every token is a fake.
+// The login store source's refresh timing against a fake token endpoint and a
+// fake clock: when a token is refreshed, what a refresh that cannot happen
+// serves, how trades from one store are spaced, what the read that never trades
+// returns, and what is logged. The store is its slot-file layout in a temporary
+// directory; its lock is the real SQLite lock. Every token is a fake.
 import { afterAll, describe, expect, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -10,21 +10,22 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { Context, Effect, Logger } from "effect"
 import {
-  GENT_PREFIX,
-  GENT_USER_AGENT,
-  GentCredentialError,
-  GentSource,
-  gentSignInCommand,
+  STORE_PREFIX,
+  CLAUDE_USER_AGENT,
+  StoreCredentialError,
+  StoreSource,
+  isStoreOwned,
+  slotPath,
   REFRESH_AHEAD_MS,
   REFRESH_GAP_MS,
   REFRESH_JITTER_MS,
   refreshJitter,
-  withGentLock,
+  withStoreLock,
 } from "./store.ts"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
-const root = mkdtempSync(join(tmpdir(), "gent-store-"))
+const root = mkdtempSync(join(tmpdir(), "login-store-"))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
 const token = (kind: string) => `fake-${kind}-${randomBytes(12).toString("hex")}`
@@ -43,7 +44,7 @@ const agents: Array<string | null> = []
 
 interface Bench {
   readonly dir: string
-  readonly source: GentSource
+  readonly source: StoreSource
   /** The fake clock, epoch ms. */
   readonly clock: { now: number }
   readonly trades: Array<Trade>
@@ -51,12 +52,12 @@ interface Bench {
   readonly logs: Array<{ readonly level: string; readonly text: string }>
   /** Every token written to the store or answered by the endpoint. */
   readonly tokens: Array<string>
-  /** Sign `label` in, as gent does, expiring at `expires`. */
+  /** Sign `label` in to the store, expiring at `expires`. */
   readonly signIn: (label: string, expires: number) => { readonly access: string; readonly refresh: string }
   readonly file: (label: string) => string
 }
 
-/** A gent store, a fake endpoint answering each trade with `answer()`, and a clock a trade's wait moves. */
+/** A login store, a fake endpoint answering each trade with `answer()`, and a clock a trade's wait moves. */
 const bench = (answer: () => Answer = () => "rotate", options: { lockPolls?: number } = {}): Bench => {
   const dir = mkdtempSync(join(root, "store-"))
   const slots = join(dir, ".slots/anthropic")
@@ -81,7 +82,7 @@ const bench = (answer: () => Answer = () => "rotate", options: { lockPolls?: num
     tokens.push(next.access_token, next.refresh_token)
     return Response.json(next)
   }
-  const source = new GentSource({
+  const source = new StoreSource({
     dir,
     tokenURL: "http://token.invalid/v1/oauth/token",
     fetch,
@@ -104,7 +105,7 @@ const bench = (answer: () => Answer = () => "rotate", options: { lockPolls?: num
       tokens.push(login.access, login.refresh)
       writeFileSync(
         join(slots, label),
-        JSON.stringify({ _tag: "Oauth", type: "oauth", ...login, expires, accountId: null, metadata: { owner: "gent" } }),
+        JSON.stringify({ _tag: "Oauth", type: "oauth", ...login, expires, accountId: null, metadata: { owner: "store" } }),
         { mode: 0o600 },
       )
       return login
@@ -113,15 +114,15 @@ const bench = (answer: () => Answer = () => "rotate", options: { lockPolls?: num
   }
 }
 
-const id = (label: string) => `${GENT_PREFIX}${label}`
+const id = (label: string) => `${STORE_PREFIX}${label}`
 
-const failure = async (run: Promise<unknown>): Promise<GentCredentialError> => {
+const failure = async (run: Promise<unknown>): Promise<StoreCredentialError> => {
   const outcome = await run.then(
     () => undefined,
     (error: unknown) => error,
   )
-  if (outcome instanceof GentCredentialError) return outcome
-  return expect.unreachable(`expected a GentCredentialError, got ${String(outcome)}`)
+  if (outcome instanceof StoreCredentialError) return outcome
+  return expect.unreachable(`expected a StoreCredentialError, got ${String(outcome)}`)
 }
 
 /** When a label's token falls due: the refresh-ahead window plus its jitter. */
@@ -160,7 +161,7 @@ describe("a token is refreshed ahead of its expiry", () => {
     signIn("alpha", clock.now)
     const from = agents.length
     await source.resolve(id("alpha"))
-    expect(agents.slice(from)).toEqual([GENT_USER_AGENT])
+    expect(agents.slice(from)).toEqual([CLAUDE_USER_AGENT])
   })
 })
 
@@ -189,13 +190,13 @@ describe("a refresh that cannot happen serves a token that is still good", () =>
     expect(trades).toHaveLength(1)
   })
 
-  test("a lock gent holds for the whole wait serves the stored token", async () => {
+  test("a lock another process holds for the whole wait serves the stored token", async () => {
     const { dir, source, clock, trades, signIn } = bench(() => "rotate", { lockPolls: 2 })
     const login = signIn("alpha", clock.now + 3 * MINUTE)
     const release = Promise.withResolvers<void>()
     const taken = Promise.withResolvers<void>()
     const held = Effect.runPromise(
-      withGentLock(dir, Effect.sync(() => taken.resolve()).pipe(Effect.andThen(Effect.promise(() => release.promise)))),
+      withStoreLock(dir, Effect.sync(() => taken.resolve()).pipe(Effect.andThen(Effect.promise(() => release.promise)))),
     )
     await taken.promise
     const served = await source.resolve(id("alpha"))
@@ -277,7 +278,7 @@ describe("logging", () => {
     const { source, clock, logs, tokens, signIn } = bench(() => answer)
     signIn("alpha", clock.now - 1000)
     await source.resolve(id("alpha"))
-    expect(logs).toEqual([{ level: "Info", text: expect.stringContaining('gent refresh "alpha": refreshed') }])
+    expect(logs).toEqual([{ level: "Info", text: expect.stringContaining('store refresh "alpha": refreshed') }])
 
     answer = "rate-limited"
     clock.now += REFRESH_GAP_MS
@@ -288,16 +289,16 @@ describe("logging", () => {
     const pauseEnd = new Date(clock.now + 5 * MINUTE).toISOString()
     expect(logs.slice(1)).toEqual([
       { level: "Warn", text: expect.stringContaining(`waits until ${pauseEnd}`) },
-      { level: "Info", text: expect.stringContaining('gent refresh "beta": unavailable') },
+      { level: "Info", text: expect.stringContaining('store refresh "beta": unavailable') },
     ])
     for (const { text } of logs) for (const secret of tokens) expect(text).not.toContain(secret)
   })
 })
 
 describe("a login whose refresh token the endpoint refused is lost until its file changes", () => {
-  const lost = (source: GentSource) => Effect.runPromise(source.lost)
+  const lost = (source: StoreSource) => Effect.runPromise(source.lost)
 
-  test("a refusal lists the login, since its first refusal, with the command that signs it in again", async () => {
+  test("a refusal lists the login, since its first refusal, with the slot file to sign it in to again", async () => {
     let answer: Answer = "refused"
     const { dir, source, clock, signIn } = bench(() => answer)
     signIn("alpha", clock.now - 1000)
@@ -308,7 +309,7 @@ describe("a login whose refresh token the endpoint refused is lost until its fil
       credentialID: id("alpha"),
       label: "alpha",
       since: first,
-      command: `GENT_AUTH_DIRECTORY=${dir} gent auth login anthropic --method "Sign in to a Claude account" --slot alpha`,
+      slot: join(dir, ".slots/anthropic/alpha"),
     }
     expect(await lost(source)).toEqual([entry])
 
@@ -317,13 +318,13 @@ describe("a login whose refresh token the endpoint refused is lost until its fil
     expect((await failure(source.resolve(id("alpha")))).kind).toBe("rejected")
     expect(await lost(source)).toEqual([entry])
 
-    // The owner signs in again in gent: the file holds another login.
+    // The owner signs in again: the file holds another login.
     answer = "rotate"
     signIn("alpha", clock.now + 8 * HOUR)
     expect(await lost(source)).toEqual([])
   })
 
-  test("our own refresh, gent's, or a removed label clears it", async () => {
+  test("our own refresh, another process's, or a removed label clears it", async () => {
     let answer: Answer = "refused"
     const { dir, source, clock, signIn } = bench(() => answer)
     signIn("alpha", clock.now - 1000)
@@ -337,25 +338,22 @@ describe("a login whose refresh token the endpoint refused is lost until its fil
 
     answer = "rotate"
     await source.resolve(id("alpha"))
-    // gent refreshed beta in its own process: another login in the file.
+    // Another process refreshed beta: another login in the file.
     signIn("beta", clock.now + 8 * HOUR)
     rmSync(join(dir, ".slots/anthropic/gamma"))
     expect(await lost(source)).toEqual([])
   })
 
-  test("the command names no store for gent's own directory, and the home directory as ~", () => {
-    expect(gentSignInCommand(join(homedir(), ".gent/auth"), "work")).toBe(
-      'gent auth login anthropic --method "Sign in to a Claude account" --slot work',
+  test("the slot file names the home directory as ~", () => {
+    expect(slotPath(join(homedir(), ".local/share/opencode-prime/pool-auth"), "work")).toBe(
+      "~/.local/share/opencode-prime/pool-auth/.slots/anthropic/work",
     )
-    expect(gentSignInCommand(join(homedir(), ".local/share/opencode-prime/pool-auth"), "work")).toBe(
-      'GENT_AUTH_DIRECTORY=~/.local/share/opencode-prime/pool-auth gent auth login anthropic --method "Sign in to a Claude account" --slot work',
-    )
-    expect(gentSignInCommand("/tmp/a store", "work")).toStartWith("GENT_AUTH_DIRECTORY='/tmp/a store' gent auth login")
+    expect(slotPath("/tmp/a store", "work")).toBe("/tmp/a store/.slots/anthropic/work")
   })
 })
 
 describe("a run of trades the endpoint fails is recorded with its cause", () => {
-  const record = (source: GentSource) => Effect.runPromise(source.refreshes)
+  const record = (source: StoreSource) => Effect.runPromise(source.refreshes)
 
   test("a 429 starts the run with its status and server; a paused trade extends it and keeps the cause", async () => {
     let answer: Answer = "rate-limited"
@@ -419,14 +417,29 @@ describe("a store's state outlives a hot reload", () => {
     // What the module before the lost-login alert kept for a store: no refusals, no failure run.
     const older = { pending: new Map(), rejected: new Map(), queue: Promise.resolve(), pausedUntil: 1234, lastTradeAt: 5678 }
     const global = globalThis as unknown as Record<symbol, Map<string, unknown> | undefined>
-    const states = (global[Symbol.for("dotfiles-opencode.pool.gent-stores")] ??= new Map())
+    const states = (global[Symbol.for("dotfiles-opencode.pool.login-stores")] ??= new Map())
     states.set(dir, older)
-    const source = new GentSource({ dir, tokenURL: "http://token.invalid/v1/oauth/token" })
+    const source = new StoreSource({ dir, tokenURL: "http://token.invalid/v1/oauth/token" })
     expect(await Effect.runPromise(source.lost)).toEqual([])
     expect((await Effect.runPromise(source.refreshes)).failures).toBe(0)
     // The older copy's pause and spacing still hold.
     expect(states.get(dir)).toBe(older)
     expect(older.pausedUntil).toBe(1234)
     expect(older.lastTradeAt).toBe(5678)
+  })
+})
+
+describe("which sign-ins the store owns", () => {
+  const unmarked = { type: "oauth" as const, access: "a", refresh: "r", expires: 1 }
+  const signIn = (metadata: Record<string, string>) => ({ ...unmarked, metadata })
+  test("any sign-in naming an owner, whichever wrote it; never a linked Claude Code login or one naming none", () => {
+    // The owner mark the files already on disk carry is kept as written; any owner counts.
+    expect(isStoreOwned(signIn({ owner: "store" }))).toBe(true)
+    expect(isStoreOwned(signIn({ owner: "someone-else" }))).toBe(true)
+    expect(isStoreOwned(signIn({ owner: "store", source: "claude-code" }))).toBe(false)
+    expect(isStoreOwned(signIn({ source: "claude-code" }))).toBe(false)
+    expect(isStoreOwned(signIn({}))).toBe(false)
+    expect(isStoreOwned(unmarked)).toBe(false)
+    expect(isStoreOwned(signIn({ owner: "" }))).toBe(false)
   })
 })

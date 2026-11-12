@@ -25,9 +25,10 @@ const SUITES = [
   "tests/mail-start.test.ts",
   "tests/pool-failover.test.ts",
   "tests/pool-fleet.test.ts",
-  "tests/pool-gent-opencode.test.ts",
-  "tests/pool-gent-refresh.test.ts",
   "tests/pool-resets.test.ts",
+  "tests/pool-store-opencode.test.ts",
+  "tests/pool-store-refresh.test.ts",
+  "tests/pool-store.test.ts",
   "tests/reconnect-session.test.ts",
   "tests/update-badge.test.ts",
 ]

@@ -79,7 +79,7 @@ import { GUTTER, type PartProps } from "./transcript.tsx"
 
 /** Lines of output under a row before the rest is counted. */
 const HEAD_LINES = 5
-/** The columns a header or a row has after its glyph or connector: the transcript's insets, the gutter, the lead and its space, and the terminal's last column, kept free as gent keeps it. */
+/** The columns a header or a row has after its glyph or connector: the transcript's insets, the gutter, the lead and its space, and the terminal's last column, kept free. */
 const LEAD_COLUMNS = 2 + GUTTER + 2 + 1
 
 /** The columns a group's line has for its words. */

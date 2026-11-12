@@ -9,7 +9,7 @@
  * itself leaves its last screen to read. `hostCall` is the client: gamut's
  * `send`, `keys`, `read`, `wait`, `restart` and `down` go through it.
  *
- * Ported from gent's `packages/e2e/src/pty-host.ts` as plain Bun: one JSON
+ * Plain Bun: one JSON
  * request per connection, one JSON reply, then the connection closes.
  *
  * @module

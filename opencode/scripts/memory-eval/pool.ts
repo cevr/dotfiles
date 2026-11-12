@@ -2,8 +2,8 @@
 // as OpenCode's Anthropic auth plugin sends it. Nothing here re-implements the
 // pool or the plugin; it drives their modules from a script.
 //
-// - Accounts: the Claude accounts gent signed in to (mods/pool/gent/store.ts),
-//   read and refreshed in place under gent's lock, as the pool plugin reads
+// - Accounts: the Claude accounts signed in to the login store (mods/pool/store/store.ts),
+//   read and refreshed in place under the store's lock, as the pool plugin reads
 //   them. OpenCode's own logins are left alone: the server refreshes those, and
 //   a refresh token is spent when it is traded, so a second refresher would
 //   sign the server out.
@@ -42,19 +42,19 @@ import { stripToolPrefix, ToolNameAliasTable } from "../../mods/anthropic-auth/t
 import { CLAUDE_CODE_VERSION, compareClaudeCodeVersions, parseClaudeCodeVersionRejection } from "../../mods/anthropic-auth/version.ts"
 import { AccountPool, type AccountPoolState, type Command, empty } from "../../mods/pool/account-pool.ts"
 import { DEFAULT_RULES, held, type Mark, placedOn, type Rules, shouldFailOver, status, type Step } from "../../mods/pool/accounts.ts"
-import { GentSource } from "../../mods/pool/gent/store.ts"
+import { StoreSource } from "../../mods/pool/store/store.ts"
 import { type Pace, poolPace } from "../../mods/pool/pace.ts"
 import type { QuotaReading } from "../../mods/pool/quota.ts"
 import type { AccountStatus, Hold } from "../../mods/pool/status.ts"
 
-/** The gent store the owner's pool plugin reads (its `sources` option in ~/.config/opencode/opencode.json). */
-export const GENT_DIR = join(homedir(), ".local/share/opencode-prime/pool-auth")
+/** The login store the owner's pool plugin reads (its `sources` option in ~/.config/opencode/opencode.json). */
+export const STORE_DIR = join(homedir(), ".local/share/opencode-prime/pool-auth")
 /** The live pool's integration. */
 export const POOL = "anthropic"
 /** The prefix of the sessions seeded from the live pool, so they are never the eval's. */
 const LIVE = "live:"
 
-/** Where the accounts' tokens come from: gent's store, or a fake in tests. */
+/** Where the accounts' tokens come from: the login store, or a fake in tests. */
 export interface Source {
   readonly list: () => ReadonlyArray<string>
   readonly resolve: (credentialID: string) => Promise<{ readonly access: string; readonly expires: number }>
@@ -62,8 +62,8 @@ export interface Source {
   readonly rejected?: (credentialID: string, access: string) => void
 }
 
-export const gentSource = (dir: string = GENT_DIR): Source => {
-  const source = new GentSource({ dir })
+export const storeSource = (dir: string = STORE_DIR): Source => {
+  const source = new StoreSource({ dir })
   return {
     list: () => source.list().accounts,
     resolve: (credentialID) => source.resolve(credentialID),
@@ -186,7 +186,7 @@ export class Pool {
 
   private apply(command: Command): void {
     const decided = Effect.runSync(Effect.result(this.model.decide(this.state, command, this.now())))
-    if (Result.isFailure(decided)) throw new PoolLimit(`no account to place ${command._tag} on: the gent store lists none`)
+    if (Result.isFailure(decided)) throw new PoolLimit(`no account to place ${command._tag} on: the login store lists none`)
     this.state = fold(this.model, decided.success, this.state)
   }
 
@@ -196,7 +196,7 @@ export class Pool {
   }
 
   /**
-   * Read the accounts and the live pool again: gent's accounts are the pool's,
+   * Read the accounts and the live pool again: the store's accounts are the pool's,
    * and each one's live holds, readings, load and sessions join the local
    * state (the newer reading, the longer hold). A live pool that does not
    * answer leaves the local state as it is.

@@ -299,7 +299,7 @@ const peerReport = (host: string, at: number): Report => ({
   host,
   at,
   starts: [{ providerID: "anthropic", at: at - 60_000 }],
-  readings: [{ pool: "anthropic", credentialID: "gent:alpha", reading: reading(at - 30_000, 0.4) }],
+  readings: [{ pool: "anthropic", credentialID: "store:alpha", reading: reading(at - 30_000, 0.4) }],
 })
 
 export const peersLaws = (name: string, layer: (world: PeersWorld) => Layer.Layer<Peers>) =>

@@ -1,4 +1,4 @@
-// Skill tiers, as gent has them. A local skill sits in the project: a skill
+// Skill tiers. A local skill sits in the project: a skill
 // folder (`.opencode/skills`, `.opencode/skill`, `.claude/skills`,
 // `.agents/skills`) in the working directory or one of its parents. A global
 // skill sits in the user's: OpenCode's config directory and `~/.claude/skills`,

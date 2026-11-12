@@ -2,7 +2,7 @@
 // checks what OpenCode sees: the credential header, the retry decision, the
 // ledger's keys, the sign-in marks and the pool's RPC answers. On the live
 // adapters it checks how they reach the host's integration, quota RPC and
-// storage. tests/pool-failover.test.ts and tests/pool-gent-opencode.test.ts
+// storage. tests/pool-failover.test.ts and tests/pool-store-opencode.test.ts
 // run it in OpenCode.
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -13,6 +13,7 @@ import { TestClock } from "effect/testing"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
 import * as FleetTest from "@dotfiles/opencode-pool/memory/fleet"
+import { LEGACY_PREFIX } from "@dotfiles/opencode-pool/legacy-ids"
 import * as LedgerTest from "@dotfiles/opencode-pool/memory/ledger"
 import * as LimitsLive from "@dotfiles/opencode-pool/opencode/limits"
 import type { LimitsAnswer } from "@dotfiles/opencode-pool/model"
@@ -24,7 +25,7 @@ import * as ResetsTest from "@dotfiles/opencode-pool/memory/resets"
 import type { Pace } from "@dotfiles/opencode-pool/pace"
 import type { QuotaReading } from "@dotfiles/opencode-pool/quota"
 import type { PublishedReading } from "@dotfiles/opencode-pool/service"
-import { GentSource } from "@dotfiles/opencode-pool/gent/store"
+import { StoreSource } from "@dotfiles/opencode-pool/store/store"
 import type { Alerts, FleetStatus, PoolsStatus, Report, ResetsStatus, SessionAnswer, SessionLogins } from "@dotfiles/opencode-pool/status"
 import { spentAccount, startFakeChatGPT } from "../../tests/fake-chatgpt.ts"
 import Pool, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, live, make } from "./server.ts"
@@ -410,8 +411,8 @@ describe("the options", () => {
       [{ sweepMinutes: "10" }, '["sweepMinutes"]'],
       [{ sweepMinutes: Number.POSITIVE_INFINITY }, '["sweepMinutes"]'],
       [{ sources: [{ kind: "other", dir: "/x" }] }, '["sources"][0]["kind"]'],
-      [{ sources: [{ kind: "gent", dir: "" }] }, '["sources"][0]["dir"]'],
-      [{ sources: [{ kind: "gent", dir: "/x", tokenURL: 7 }] }, '["sources"][0]["tokenURL"]'],
+      [{ sources: [{ kind: "store", dir: "" }] }, '["sources"][0]["dir"]'],
+      [{ sources: [{ kind: "store", dir: "/x", tokenURL: 7 }] }, '["sources"][0]["tokenURL"]'],
       [{ cacheLifeMs: "1h" }, '["cacheLifeMs"]'],
       [{ cacheLifeMs: 0 }, '["cacheLifeMs"]'],
     ]
@@ -1035,12 +1036,12 @@ describe("on the live adapters", () => {
       }),
     ))
 
-  test("a gent store joins the anthropic pool, which OpenCode then offers without a login of its own", () => {
-    const dir = mkdtempSync(join(tmpdir(), "pool-gent-"))
+  test("a login store joins the anthropic pool, which OpenCode then offers without a login of its own", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pool-store-"))
     return scenario(
       Effect.gen(function* () {
-        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "gent", dir }] }, world(), live)
-        expect((yield* plugin.status).anthropic?.sources).toEqual([{ kind: "gent", dir, accounts: [], skipped: [] }])
+        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, world(), live)
+        expect((yield* plugin.status).anthropic?.sources).toEqual([{ kind: "store", dir, accounts: [], skipped: [] }])
         let activation = "auto"
         const editor = {
           get: () => ({ provider: { activation } }),
@@ -1056,33 +1057,59 @@ describe("on the live adapters", () => {
       }),
     ).finally(() => rmSync(dir, { recursive: true, force: true }))
   })
+
+  test("a hold an older pool kept under a store login's legacy id still holds that login, under its id now", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pool-store-"))
+    mkdirSync(join(dir, ".slots/anthropic"), { recursive: true })
+    // A store sign-in good until 2100, held until then too.
+    writeFileSync(
+      join(dir, ".slots/anthropic/work"),
+      '{"_tag":"Oauth","type":"oauth","access":"fake-access-legacy","refresh":"fake-refresh-legacy","expires":4102444800000,"accountId":null,"metadata":{"owner":"store"}}',
+      { mode: 0o600 },
+    )
+    const state = world()
+    const hold = { kind: "usage-limit" as const, until: 4102444800000, at: 1 }
+    state.storage.set(`anthropic/hold/${LEGACY_PREFIX}work`, hold)
+    return scenario(
+      Effect.gen(function* () {
+        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, state, live)
+        // The held login is passed over.
+        expect(yield* plugin.request("ses_1")).not.toBe("store:work")
+        const status = yield* plugin.status
+        const work = status.anthropic?.accounts.find((account) => account.credentialID === "store:work")
+        expect(work?.hold).toEqual(hold)
+        expect(state.storage.has(`anthropic/hold/${LEGACY_PREFIX}work`)).toBe(false)
+        expect(state.storage.get("anthropic/hold/store:work")).toEqual(hold)
+      }).pipe(Effect.ensuring(Effect.sync(() => rmSync(dir, { recursive: true, force: true })))),
+    )
+  })
 })
 
 describe("the alerts RPC", () => {
-  /** A gent store with one expired login, and a source over it that trades at a fake endpoint answering `status`. */
+  /** A login store with one expired login, and a source over it that trades at a fake endpoint answering `status`. */
   const store = (status: number, headers: Record<string, string> = {}) => {
     const dir = mkdtempSync(join(tmpdir(), "pool-alerts-"))
     mkdirSync(join(dir, ".slots/anthropic"), { recursive: true })
     const login = { access: "fake-access-alerts", refresh: "fake-refresh-alerts" }
     writeFileSync(
       join(dir, ".slots/anthropic/work"),
-      JSON.stringify({ _tag: "Oauth", type: "oauth", ...login, expires: Date.now() - 1000, accountId: null, metadata: { owner: "gent" } }),
+      JSON.stringify({ _tag: "Oauth", type: "oauth", ...login, expires: Date.now() - 1000, accountId: null, metadata: { owner: "store" } }),
       { mode: 0o600 },
     )
     // A second source over the directory shares the plugin's state for it, as every copy in the process does.
-    const trader = new GentSource({
+    const trader = new StoreSource({
       dir,
       fetch: async () => Response.json({ error: "refused" }, { status, headers }),
     })
-    const trade = Effect.promise(() => trader.resolve("gent:work").then(() => "served", () => "failed"))
+    const trade = Effect.promise(() => trader.resolve("store:work").then(() => "served", () => "failed"))
     return { dir, login, trade }
   }
 
-  test("names a gent login the endpoint refused, with the command that signs it in again, and never its token", () => {
+  test("names a store login the endpoint refused, with the slot file to sign it in to again, and never its token", () => {
     const { dir, login, trade } = store(400)
     return scenario(
       Effect.gen(function* () {
-        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "gent", dir }] }, world(), live)
+        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, world(), live)
         expect(yield* plugin.alerts).toEqual({ lost: [], outages: [] })
         expect(yield* trade).toBe("failed")
         const alerts = yield* plugin.alerts
@@ -1090,10 +1117,10 @@ describe("the alerts RPC", () => {
           lost: [
             {
               pool: "anthropic",
-              credentialID: "gent:work",
+              credentialID: "store:work",
               label: "work",
               since: expect.any(Number),
-              command: `GENT_AUTH_DIRECTORY=${dir} gent auth login anthropic --method "Sign in to a Claude account" --slot work`,
+              slot: join(dir, ".slots/anthropic/work"),
             },
           ],
           outages: [],
@@ -1109,7 +1136,7 @@ describe("the alerts RPC", () => {
     return scenario(
       Effect.gen(function* () {
         // A threshold of 30 ms: one 429 that pauses the store for ten minutes is out once it passes.
-        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "gent", dir }], refreshOutageMinutes: 0.0005 }, world(), live)
+        const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }], refreshOutageMinutes: 0.0005 }, world(), live)
         expect(yield* trade).toBe("failed")
         yield* Effect.promise(() => new Promise((done) => setTimeout(done, 50)))
         expect(yield* plugin.alerts).toEqual({
@@ -1136,7 +1163,7 @@ describe("the alerts RPC", () => {
     }
   })
 
-  test("a pool with no gent store has no alerts", () =>
+  test("a pool with no login store has no alerts", () =>
     scenario(
       Effect.gen(function* () {
         expect(yield* (yield* start()).alerts).toEqual({ lost: [], outages: [] })
@@ -1163,7 +1190,7 @@ describe("the fleet", () => {
           // cred-a is read only there; a login this pool does not list is left out.
           readings: [
             { pool: "anthropic", credentialID: "cred-a", reading: week(0.45, now - 500) },
-            { pool: "anthropic", credentialID: "gent:elsewhere", reading: week(1, now - 500) },
+            { pool: "anthropic", credentialID: "store:elsewhere", reading: week(1, now - 500) },
           ],
         })
         state.peers.set("laptop", { down: "ssh: connect to host laptop port 22: Connection refused" })

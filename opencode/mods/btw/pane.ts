@@ -1,6 +1,6 @@
 // What the /btw pane draws, as plain data (tui/pane.tsx draws it): its title,
 // each exchange as a question and what stands for its answer, and the key
-// hints under the ask line (gent's ForkPane).
+// hints under the ask line.
 import { Option } from "effect"
 import type { OpenFork } from "./side-question.ts"
 import { replyOf, type Turn } from "./turns.ts"

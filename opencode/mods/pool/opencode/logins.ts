@@ -1,11 +1,11 @@
 // A pool's logins: its integration's OAuth logins, as OpenCode lists them,
-// then each gent store's (gent/store.ts). The list is trusted for a short
-// while, a gent store's logins join even when the integration cannot be read,
+// then each login store's (store/store.ts). The list is trusted for a short
+// while, a login store's logins join even when the integration cannot be read,
 // and a login is marked as needing a sign-in only when that changes.
 import { Clock, Effect, Layer } from "effect"
 import type { PoolId } from "../account-pool.ts"
 import type { RefreshRecord, StoreLostLogin } from "../alerts.ts"
-import type { GentListing, GentSource } from "../gent/store.ts"
+import type { StoreListing, StoreSource } from "../store/store.ts"
 import { Logins, LoginsUnavailable } from "../service.ts"
 import type { SourceStatus } from "../status.ts"
 
@@ -36,7 +36,7 @@ export interface Integration<C extends Connection> {
 /** An outside store whose logins join a pool. */
 export interface Store {
   readonly dir: string
-  readonly listing: Effect.Effect<GentListing, { readonly message: string }>
+  readonly listing: Effect.Effect<StoreListing, { readonly message: string }>
   /** The store's own name for one of its logins; none for a login it does not hold. */
   readonly label: (credentialID: string) => string | undefined
   /** Its logins the token endpoint refused and their files still hold. */
@@ -68,7 +68,7 @@ export const layer = <C extends Connection>(integration: Integration<C>, stores:
       const listed = (pool: PoolId) =>
         Effect.forEach(stores(pool), (store) =>
           store.listing.pipe(
-            Effect.map((listing): SourceStatus => ({ kind: "gent", dir: store.dir, accounts: listing.accounts, skipped: listing.skipped })),
+            Effect.map((listing): SourceStatus => ({ kind: "store", dir: store.dir, accounts: listing.accounts, skipped: listing.skipped })),
             Effect.mapError((error) => new LoginsUnavailable({ pool, message: error.message })),
           ),
         )
@@ -120,8 +120,8 @@ export const layer = <C extends Connection>(integration: Integration<C>, stores:
     }),
   )
 
-/** A gent store as the pool lists it. */
-export const gentStore = (source: GentSource): Store => ({
+/** A login store as the pool lists it. */
+export const storeSource = (source: StoreSource): Store => ({
   dir: source.dir,
   listing: source.listing,
   label: (credentialID) => source.label(credentialID),

@@ -2,7 +2,7 @@
 // the plugin (`make`) on a promise-shaped mock of the host's integration,
 // with the network, the environment and the clock the test controls, and
 // drives the hooks, methods and quota RPC it registers as OpenCode would.
-// tests/pool-gent.test.ts and testbeds/anthropic-auth.ts run it in OpenCode.
+// tests/pool-store.test.ts and testbeds/anthropic-auth.ts run it in OpenCode.
 import { describe, expect, mock, test } from 'bun:test'
 import { Clock, Effect, Exit, Logger, Scope } from 'effect'
 import { REQUIRED_BETAS } from '@dotfiles/opencode-anthropic-auth/betas'

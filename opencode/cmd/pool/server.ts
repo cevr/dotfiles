@@ -1,7 +1,7 @@
 /**
  * The pool as an OpenCode server plugin. The composition root: it decodes the
  * options, builds the pool model (`@dotfiles/opencode-pool/model`) on its
- * outside systems (its `opencode/` and `gent/` implementations), and answers
+ * outside systems (its `opencode/` and `store/` implementations), and answers
  * OpenCode's hooks with it.
  *
  * For each pooled provider it chooses the login each request goes out on
@@ -29,10 +29,10 @@
  *   this lifetime (`CACHE_TTL_HEADER`, which the auth plugin writes on the
  *   request's cache breakpoints) while each follows the last within it.
  * - `sources`: other stores whose logins join a pool beside OpenCode's own, read
- *   in place, never copied. Default none. `[{ kind: "gent", dir: "~/.local/share/opencode-prime/pool-auth" }]`
- *   adds the Claude accounts gent signed in to (`@dotfiles/opencode-pool/gent/store`) to the
- *   `anthropic` pool as `gent:<label>`; the pool refreshes their tokens under
- *   gent's lock and the auth plugin takes them from it (`registerCredentialSource`).
+ *   in place, never copied. Default none. `[{ kind: "store", dir: "~/.local/share/opencode-prime/pool-auth" }]`
+ *   adds the Claude accounts signed in to that login store (`@dotfiles/opencode-pool/store/store`) to the
+ *   `anthropic` pool as `store:<label>`; the pool refreshes their tokens under
+ *   the store's lock and the auth plugin takes them from it (`registerCredentialSource`).
  *   `tokenURL` points a source's refresh elsewhere, for tests. The `anthropic`
  *   provider is then available without a login of OpenCode's own, as a
  *   configured provider is (unless the config disables it).
@@ -128,8 +128,8 @@
  *   each sweep writes the tally there, and a peer's report adds the tokens it
  *   sent on the same logins. `limits` answers the tally and its line.
  *
- * `alerts` names every gent login whose refresh token the token endpoint
- * refused, with the command that signs it in again, until its file holds
+ * `alerts` names every store login whose refresh token the token endpoint
+ * refused, with the slot file to sign it in to again, until its file holds
  * another login, and every source whose refreshes are out, with the
  * endpoint's last status, `server` and `retry-after`. The status mod's TUI
  * shows them in the sidebar and as a toast.
@@ -141,11 +141,12 @@ import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
 import * as ChatGPT from "@dotfiles/opencode-pool/chatgpt/usage"
-import { GentSource, registerCredentialSource } from "@dotfiles/opencode-pool/gent/store"
+import { StoreSource, registerCredentialSource } from "@dotfiles/opencode-pool/store/store"
 import * as Model from "@dotfiles/opencode-pool/model"
 import * as FleetStoreLive from "@dotfiles/opencode-pool/opencode/fleet"
 import * as LedgerLive from "@dotfiles/opencode-pool/opencode/ledger"
 import * as LoginsLive from "@dotfiles/opencode-pool/opencode/logins"
+import { migrate } from "@dotfiles/opencode-pool/opencode/migrate"
 import * as OwnerLive from "@dotfiles/opencode-pool/opencode/owner"
 import * as PushStoreLive from "@dotfiles/opencode-pool/opencode/pushes"
 import * as WorkloadLive from "@dotfiles/opencode-pool/opencode/workload"
@@ -188,8 +189,8 @@ const withDefault =
   <S extends Schema.Codec<A, any, never, never>>(schema: S) =>
     schema.pipe(Schema.withDecodingDefaultType(Effect.succeed(fallback)))
 
-const GentStoreOption = Schema.Struct({
-  kind: Schema.Literal("gent"),
+const LoginStoreOption = Schema.Struct({
+  kind: Schema.Literal("store"),
   dir: Schema.NonEmptyString,
   tokenURL: Schema.optional(Schema.String),
 })
@@ -217,7 +218,7 @@ export const Options = Schema.Struct({
   ),
   sweepMinutes: Schema.Finite.pipe(withDefault(10)),
   cacheLifeMs: Schema.Finite.check(Schema.isGreaterThan(0)).pipe(withDefault(CACHE_LIFE_MS)),
-  sources: Schema.Array(GentStoreOption).pipe(withDefault<ReadonlyArray<typeof GentStoreOption.Type>>([])),
+  sources: Schema.Array(LoginStoreOption).pipe(withDefault<ReadonlyArray<typeof LoginStoreOption.Type>>([])),
   refreshOutageMinutes: Schema.Finite.check(Schema.isGreaterThan(0)).pipe(withDefault(OUTAGE_AFTER_MS / 60_000)),
   paced: Schema.Record(Schema.String, PoolId).pipe(withDefault<Readonly<Record<string, PoolId>>>({})),
   usageURL: Schema.optional(Schema.String),
@@ -282,26 +283,26 @@ const chatgptSources = (ctx: Plugin.Context, options: Options) =>
     return sources
   })
 
-/** gent keeps Claude accounts: they join the pool of the `anthropic` provider. */
-const gentPool = (options: Options): PoolId | undefined => options.providers.anthropic
+/** A login store keeps Claude accounts: they join the pool of the `anthropic` provider. */
+const storePool = (options: Options): PoolId | undefined => options.providers.anthropic
 
 /**
- * The gent stores the options name, each read in place. One per directory per
+ * The login stores the options name, each read in place. One per directory per
  * process. Each logs its refreshes to the host's log through `context`.
  */
-const gentSources = (options: Options, context: Context.Context<never>) =>
-  gentPool(options) === undefined
+const storeSources = (options: Options, context: Context.Context<never>) =>
+  storePool(options) === undefined
     ? []
     : options.sources.map(
         (source) =>
-          new GentSource({ dir: source.dir, context, ...(source.tokenURL === undefined ? {} : { tokenURL: source.tokenURL }) }),
+          new StoreSource({ dir: source.dir, context, ...(source.tokenURL === undefined ? {} : { tokenURL: source.tokenURL }) }),
       )
 
 /** The outside systems as OpenCode provides them: its integrations, the auth plugins' quota RPC, the plugin's storage. */
 export const live = (
   ctx: Plugin.Context,
   options: Options,
-  sources: ReadonlyArray<GentSource>,
+  sources: ReadonlyArray<StoreSource>,
   chatgpt: ReadonlyMap<PoolId, ChatGPT.Source>,
 ): Layer.Layer<Externals | Limits | PushStore | Workload> =>
     Layer.mergeAll(
@@ -312,7 +313,7 @@ export const live = (
             ctx.integration.get({ integrationID: Integration.ID.make(pool) }).pipe(Effect.map((integration) => integration.data.connections)),
           status: (pool, connection, status) => ctx.integration.connection.status({ integrationID: pool, connection, status }),
         },
-        (pool) => (pool === gentPool(options) ? sources.map(LoginsLive.gentStore) : []),
+        (pool) => (pool === storePool(options) ? sources.map(LoginsLive.storeSource) : []),
       ),
       QuotaLive.layer((pool) => {
         const paced = chatgpt.get(pool)
@@ -374,14 +375,14 @@ const FIRST_SWEEP = "1 second"
 
 /**
  * The plugin on `externals`: the live systems in OpenCode, test layers in the
- * seam tests. `externals` gets the gent sources the options name, so the
+ * seam tests. `externals` gets the store sources the options name, so the
  * plugin registers with the auth plugin exactly the sources the pool lists.
  */
 export const make = (
   externals: (
     ctx: Plugin.Context,
     options: Options,
-    sources: ReadonlyArray<GentSource>,
+    sources: ReadonlyArray<StoreSource>,
     chatgpt: ReadonlyMap<PoolId, ChatGPT.Source>,
   ) => Layer.Layer<Externals>,
 ) =>
@@ -393,8 +394,10 @@ export const make = (
         Effect.mapError((error) => new Error(`dotfiles-opencode.pool: invalid options: ${error.message}`)),
         Effect.orDie,
       )
+      // State an older pool wrote names store logins by their legacy id: renamed before anything reads it.
+      yield* migrate(ctx.storage)
       // The plugin's context carries the host's loggers.
-      const sources = gentSources(options, yield* Effect.context<never>())
+      const sources = storeSources(options, yield* Effect.context<never>())
       const chatgpt = yield* chatgptSources(ctx, options)
       const services = yield* Layer.build(
         Model.layer({
@@ -415,17 +418,17 @@ export const make = (
       )
       const pool = Context.get(services, Model.Pool)
 
-      // The auth plugin takes a gent account's token from its source.
-      const gent = gentPool(options)
-      if (gent !== undefined)
+      // The auth plugin takes a store account's token from its source.
+      const anthropic = storePool(options)
+      if (anthropic !== undefined)
         for (const source of sources)
           yield* Effect.acquireRelease(
-            Effect.sync(() => registerCredentialSource(gent, source)),
+            Effect.sync(() => registerCredentialSource(anthropic, source)),
             (unregister) => Effect.sync(unregister),
           )
 
       // OpenCode offers a provider only when it holds a login for it or the config
-      // names it: gent's accounts are logins it cannot see, so the pool names it.
+      // names it: a store's accounts are logins it cannot see, so the pool names it.
       if (sources.length > 0)
         yield* ctx.provider.transform((editor) => {
           if (editor.get("anthropic")?.provider.activation === "auto")

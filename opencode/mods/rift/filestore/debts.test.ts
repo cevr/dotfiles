@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Context, Deferred, Effect, Fiber, Layer, Option, Schema } from "effect"
+import { Clock, Context, Deferred, Effect, Fiber, Layer, Option, Schema } from "effect"
 import { noDebts, owe, OwedPostLand, type Debts } from "../owed.ts"
 import { PostLandClaim, PostLandDebts } from "../service.ts"
 import { debtsFile, layer } from "./debts.ts"
@@ -84,7 +84,75 @@ describe("the owed post-land steps' file", () => {
         }),
       ),
     ))
+
+  // The claim holder pays the step it ran with `update` while it holds the claim: the claim and a change are
+  // two locks, so the change never waits on the claim its own caller holds.
+  test("a change made while holding the claim goes through at once, waiting or not", () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const scratch = mkdtempSync(join(tmpdir(), "rift-nested-"))
+          yield* Effect.addFinalizer(() => Effect.sync(() => rmSync(scratch, { recursive: true, force: true })))
+          const file = debtsFile(join(scratch, "rift-land"))
+          const store = yield* instanceAt(file)
+          const change = (head: string) => store.debts.update((before) => ({ ...before, owed: owe(before.owed, { ...owing(head, 1), source: `/code/${head}` }) }))
+          const held = yield* Effect.timeoutOption(store.claim.hold(change("held")), "2 seconds")
+          const free = yield* Effect.timeoutOption(store.claim.holdIfFree(change("free")), "2 seconds")
+          expect(Option.map(held, (debts) => debts.owed.length)).toEqual(Option.some(1))
+          expect(Option.flatMap(free, (ran) => Option.map(ran, (debts) => debts.owed.length))).toEqual(Option.some(2))
+        }),
+      ),
+    ))
+
+  // Real processes, as the server and `bun run daily` (or two servers) are: each writer makes COUNT changes
+  // at once with the others, and every change of every writer is kept.
+  for (const writers of [2, 3]) {
+    test(
+      `${writers} processes changing the file at once lose no change`,
+      () =>
+        Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const scratch = mkdtempSync(join(tmpdir(), "rift-writers-"))
+              yield* Effect.addFinalizer(() => Effect.sync(() => rmSync(scratch, { recursive: true, force: true })))
+              const file = debtsFile(join(scratch, "rift-land"))
+              const names = Array.from({ length: writers }, (_, index) => `w${index}`)
+              const startAt = (yield* Clock.currentTimeMillis) + 1_500
+              const codes = yield* Effect.forEach(names, (name) => writer(file, name, startAt), { concurrency: writers })
+              const kept = (yield* (yield* debtsAt(file)).read).owed.map((owed) => owed.source).toSorted()
+              const made = names.flatMap((name) => Array.from({ length: COUNT }, (_, index) => `/code/${name}-${index}`)).toSorted()
+              expect({ kept: kept.length, lost: made.filter((source) => !kept.includes(source)).length, codes }).toEqual({ kept: made.length, lost: 0, codes: names.map(() => 0) })
+              expect(kept).toEqual(made)
+            }),
+          ),
+        ),
+      60_000,
+    )
+  }
 })
+
+/** How many changes each writer process makes. */
+const COUNT = 100
+const FIXTURE = require.resolve("./debts-writer.fixture.ts")
+/** The writers whose process has ended: one never signalled after it is gone. */
+const exited = new Set<number>()
+
+/**
+ * One writer process (debts-writer.fixture.ts) over `file`, in a process group of its own, killed with its
+ * group when the scope ends before it does or when it outlasts 45 seconds; answers its exit code.
+ */
+const writer = (file: string, name: string, startAt: number) =>
+  Effect.acquireRelease(
+    Effect.sync(() => Bun.spawn([process.execPath, FIXTURE, file, name, String(COUNT), String(startAt)], { detached: true, stdout: "inherit", stderr: "inherit" })),
+    (child) =>
+      Effect.sync(() => {
+        if (!exited.has(child.pid)) process.kill(-child.pid, "SIGKILL")
+      }),
+  ).pipe(
+    Effect.flatMap((child) => Effect.tap(Effect.promise(() => child.exited), () => Effect.sync(() => exited.add(child.pid)))),
+    Effect.timeoutOption("45 seconds"),
+    Effect.map((code) => Option.getOrElse(code, () => -1)),
+  )
 
 const instanceAt = (file: string) =>
   Effect.map(Layer.build(layer(file)), (services) => ({ debts: Context.get(services, PostLandDebts), claim: Context.get(services, PostLandClaim) }))

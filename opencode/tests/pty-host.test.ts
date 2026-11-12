@@ -1,7 +1,6 @@
 // The terminal host keeps one program on a live pty and answers other
 // processes on a Unix socket: each test serves a real shell program and calls
-// the host through the same client gamut uses. Ported from gent's
-// packages/e2e/tests/pty-host.test.ts.
+// the host through the same client gamut uses.
 import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"

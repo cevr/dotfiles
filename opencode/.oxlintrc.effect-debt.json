@@ -164,6 +164,7 @@
         "mods/update/model.test.ts",
         "mods/update/git/source.test.ts",
         "mods/update/process/mark.test.ts",
+        "mods/update/process/pin.test.ts",
         "mods/update/process/service-layer.test.ts",
         "mods/orchestrate/git/fleet-record.test.ts"
       ],
@@ -210,15 +211,6 @@
     },
     {
       "files": [
-        "scripts/accept-gent.test.ts"
-      ],
-      "rules": {
-        "effect/noGlobals": "off",
-        "effect/noNodeBuiltinImport": "off"
-      }
-    },
-    {
-      "files": [
         "tests/scratch-cases.ts"
       ],
       "rules": {
@@ -243,11 +235,20 @@
     },
     {
       "files": [
+        "mods/pool/opencode/migrate.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
         "mods/rift/filestore/debts.test.ts"
       ],
       "rules": {
         "effect/noEffectRunInTests": "off",
-        "effect/noNodeBuiltinImport": "off"
+        "effect/noNodeBuiltinImport": "off",
+        "effect/noGlobals": "off"
       }
     },
     {

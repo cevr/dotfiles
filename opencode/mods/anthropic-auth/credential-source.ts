@@ -1,5 +1,5 @@
 // A credential another plugin keeps outside OpenCode's credential store (the
-// pool's gent logins): the token it hands out, checked, and when a failure
+// pool's login store): the token it hands out, checked, and when a failure
 // says the credential may be tried again. The registry the plugins meet in is
 // `registry/credential-sources.ts`; the contract this plugin reads it through
 // is `CredentialSources` in service.ts.

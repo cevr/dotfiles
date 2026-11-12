@@ -105,7 +105,7 @@ function entriesOf(message: AssistantMessage, from = 0, to = message.content.len
 
 /**
  * The run around part `key` (a call, or a thought with words in it): one
- * step's calls and thoughts, as gent draws a run without `acrossSteps`, so
+ * step's calls and thoughts, never across steps, so
  * each model step (a kernel cell, a batch of parallel calls) is a group of
  * its own and the newest call is always a line at the transcript's end.
  * Within the step, thoughts and blank text between calls do not end the run;
@@ -169,7 +169,7 @@ type Kind = { readonly key: string; readonly past: string; readonly running: str
 const plural = (word: string) => (count: number) => `${count} ${word}${count === 1 ? "" : "s"}`
 const times = (word: string) => (count: number) => `${word} ${count}×`
 
-/** What a call does, in words: one kind per tool family, as gent's header names them. */
+/** What a call does, in words: one kind per tool family, as the header names them. */
 export function kind(tool: string, part?: ToolPart): Kind {
   if (tool === "read") return { key: "read", past: "Read", running: "Reading", unit: plural("file") }
   if (tool === "grep" || tool === "glob")
@@ -219,7 +219,7 @@ function startsInBackground(row: Row) {
 
 const IN_THE_BACKGROUND = " in the background"
 
-/** A cell whose code spells out no call it can name: `ran code`, never the code (gent's `CODE_KIND`). */
+/** A cell whose code spells out no call it can name: `ran code`, never the code. */
 const CODE: Kind = {
   key: "code",
   past: "Ran",
@@ -264,7 +264,7 @@ export function truncate(text: string, width: number) {
 }
 
 /**
- * The header's words, as gent's `activityHeaderRuns`: ended kinds first, the
+ * The header's words: ended kinds first, the
  * largest count first (ties keep the order they ran in), then the kinds
  * still running, then the failures and the cancels. Only the first phrase is
  * capitalised. Wider than `width` columns, kinds drop from the right; the
@@ -487,7 +487,7 @@ export type LeadTone = "error" | "accent" | "warning" | "muted"
 /**
  * The group's glyph: `✗` when a call failed, a blinking `○`/`●` while one
  * runs or a thought streams (`streaming`), else `●`, warning-coloured after a nonzero exit or a cancel (a cut
- * call is no failure, as in gent).
+ * call is no failure).
  */
 export function groupLead(
   calls: ReadonlyArray<Call>,
@@ -526,7 +526,7 @@ export function hasBody(body: ReturnType<typeof callBody>) {
 
 /**
  * Subjects joined by commas, as many as fit `width` columns, then `+N`
- * counting the rest (gent's `formatActivityRow`). The first always shows.
+ * counting the rest. The first always shows.
  */
 export function listed(subjects: ReadonlyArray<string>, width = Number.POSITIVE_INFINITY) {
   const text = (kept: number) => {
@@ -565,7 +565,7 @@ export function subject(row: Row, width = Number.POSITIVE_INFINITY): string {
 }
 
 /**
- * What a row says ended it, after gent's `failureWord`: a command's exit
+ * What a row says ended it: a command's exit
  * status, `failed`, or `cancelled`, in its tone; for a command the host moved
  * to the background, that it did, muted. None for a row that ran or still
  * runs.
@@ -595,8 +595,8 @@ export function subjectRoom(row: Row, width: number, timer: string) {
 const MIN_REASON = 4
 
 /**
- * A failure as the collapsed level's one line under the header, after gent's
- * `failureRowRuns`: `Read a.ts · failed · File not found: a.ts`, `Ran pytest
+ * A failure as the collapsed level's one line under the header:
+ * `Read a.ts · failed · File not found: a.ts`, `Ran pytest
  * · exit 1`. Narrow, the reason is cut, then dropped; the verb and the ending
  * always show. `width` counts the columns after the connector.
  */

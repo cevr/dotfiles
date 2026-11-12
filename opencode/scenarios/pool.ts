@@ -10,11 +10,11 @@ const out = process.env.SCENARIO_OUT ?? "out"
 const theme = process.env.SCENARIO_THEME ?? "prime"
 const now = Date.parse("2026-11-04T15:00:00Z")
 const accounts = [
-  { credentialID: "gent:alpha", live: 1, load: 1, noRoom: false, reading: { at: now, windows: [{ name: "5h", utilization: 0.23, resetAt: now + 3600000 }, { name: "7d", utilization: 0.44, resetAt: now + 86400000 }] } },
-  { credentialID: "gent:beta", live: 0, load: 2, noRoom: true, hold: { kind: "usage-limit", until: now + 7200000, at: now }, reading: { at: now, windows: [{ name: "5h", utilization: 1, resetAt: now + 7200000 }, { name: "7d", utilization: 0.72, resetAt: now + 172800000 }] } },
+  { credentialID: "store:alpha", live: 1, load: 1, noRoom: false, reading: { at: now, windows: [{ name: "5h", utilization: 0.23, resetAt: now + 3600000 }, { name: "7d", utilization: 0.44, resetAt: now + 86400000 }] } },
+  { credentialID: "store:beta", live: 0, load: 2, noRoom: true, hold: { kind: "usage-limit", until: now + 7200000, at: now }, reading: { at: now, windows: [{ name: "5h", utilization: 1, resetAt: now + 7200000 }, { name: "7d", utilization: 0.72, resetAt: now + 172800000 }] } },
 ]
 const poolRpc = { id: "dotfiles-opencode.pool", methods: { status: { input: { type: "object" }, output: { type: "object" } }, session: { input: { type: "object", properties: { sessionID: { type: "string" }, providerID: { type: "string" } }, required: ["sessionID"] }, output: { type: "object" } } }, events: {} }
-// The session method names gent:alpha as the session's account, its windows
+// The session method names store:alpha as the session's account, its windows
 // resetting a fixed while after the call, so the sidebar's relative times hold.
 const sessionQuery = `${out}/pool-session-query.json`
 const stateFile = `${out}/pool-state`
@@ -29,7 +29,7 @@ const fake = `export default {id: "fixture.pool", async setup(ctx) {
   }, session: async (input) => {
     await Bun.write(${JSON.stringify(sessionQuery)}, JSON.stringify(input));
     const at = Date.now();
-    return {account: {pool: "anthropic", credentialID: "gent:alpha", label: "alpha", on: "placed", reading: {at, windows: [
+    return {account: {pool: "anthropic", credentialID: "store:alpha", label: "alpha", on: "placed", reading: {at, windows: [
       {name: "5h", utilization: 0.23, resetAt: at + 5400000},
       {name: "7d", utilization: 0.44, resetAt: at + 88200000},
     ]}}};
@@ -77,15 +77,15 @@ export default OpenCodeDriver.use({
   yield* until((frame) => frame.includes("Loading accounts…"))
   writeFileSync(`${out}/pool-loading.txt`, text(yield* ui.capture()))
   writeFileSync(stateFile, "normal")
-  yield* until((frame) => frame.includes("gent:beta") && frame.includes("wake · implement"))
+  yield* until((frame) => frame.includes("store:beta") && frame.includes("wake · implement"))
   const frame = yield* ui.capture()
   writeFileSync(`${out}/pool.txt`, text(frame))
   console.log("screenshot:", yield* ui.screenshot("pool"))
   writeFileSync(stateFile, "error")
-  yield* until((frame) => frame.includes("Pool unavailable; keeping last reading") && frame.includes("gent:alpha"))
+  yield* until((frame) => frame.includes("Pool unavailable; keeping last reading") && frame.includes("store:alpha"))
   writeFileSync(`${out}/pool-error.txt`, text(yield* ui.capture()))
   writeFileSync(stateFile, "empty")
-  yield* until((frame) => frame.includes("No pool accounts.") && !frame.includes("gent:alpha"))
+  yield* until((frame) => frame.includes("No pool accounts.") && !frame.includes("store:alpha"))
   writeFileSync(`${out}/pool-empty.txt`, text(yield* ui.capture()))
   // The pane takes focus when it opens; Esc hands it back to the prompt.
   yield* ui.press("escape")

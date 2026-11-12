@@ -9,7 +9,9 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Effect, Layer, Option, Queue, Schema, Stream } from "effect"
+import { Clock, Effect, Fiber, Layer, Option, Queue, Schema, Stream } from "effect"
+import { TestClock } from "effect/testing"
+import { RESTART_NOTICE } from "@dotfiles/opencode-orchestrate/restart-hold"
 import { type Latch, type LatchAsk, Opened } from "@dotfiles/opencode-wake/latch"
 import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import { KEEP } from "@dotfiles/opencode-orchestrate/compaction"
@@ -34,11 +36,11 @@ import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { NO_INFLIGHT, poolPace } from "@dotfiles/opencode-pool/pace"
 import type { AccountStatus } from "@dotfiles/opencode-pool/status"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
-import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
+import { KNOWLTON, rest } from "@dotfiles/opencode-orchestrate/sabbath"
 import { Branches, Findings, type FindingsRead, Liveness, type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import { DEFAULT_CADENCE, RULES } from "@dotfiles/opencode-orchestrate/machine"
 import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
-import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, dropsAsked, greenOf, make, Options, SKILL_DIR, UNIT_LOG } from "./server.ts"
+import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, greenOf, make, Options, SKILL_DIR, UNIT_LOG } from "./server.ts"
 
 /** The orchestrate skill's log.ts in this checkout: the units' logs are written for real, in scratch dirs. */
 const LOG_SCRIPT = join(import.meta.dir, "../../../skills/orchestrate/scripts/log.ts")
@@ -93,6 +95,8 @@ interface World {
   readonly fleet?: Array<FleetTest.Asked>
   /** What recording each of them answers; `Off` (nothing said) when not named. */
   readonly fleetOutcome?: (asked: FleetTest.Asked) => FleetOutcome
+  /** The drops journal log.ts writes and the plugin reads; none by default. */
+  readonly drops?: string
 }
 
 /** A tool as the host's tool editor hands it out: only what the plugin touches. */
@@ -131,6 +135,8 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     const rpc: Record<string, Record<string, (input: unknown) => Effect.Effect<unknown>>> = {}
     // The host's event stream, which the test publishes into.
     const published = yield* Queue.unbounded<Record<string, unknown>>()
+    // Each session's messages as the host's `session.context` answers them, which the test sets.
+    const contexts = new Map<string, ReadonlyArray<unknown>>()
     const register = (name: string, callback: Hook) =>
       Effect.sync(() => {
         ;(hooks[name] ??= []).push(callback)
@@ -146,8 +152,13 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
           }),
         reload: () => Effect.void,
       },
-      session: { hook: register, get: () => Effect.succeed({ location: { directory: "/work" } }) },
+      session: {
+        hook: register,
+        get: () => Effect.succeed({ location: { directory: "/work" } }),
+        context: (input: { readonly sessionID: string }) => Effect.sync(() => [...(contexts.get(input.sessionID) || [])]),
+      },
       location: { directory: "/work" },
+      shell: { hook: register },
       event: { subscribe: () => Stream.fromQueue(published) },
       tool: {
         hook: register,
@@ -195,7 +206,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
         : OpenCodePoolPace.layer(world.poolAsk, () => Effect.succeed({})),
       CodexAdmissionTest.layer(world.codex ?? (() => undefined)),
       OpenCodeLatches.layer(keep, start),
-      FileUnitLogs.layer(LOG_SCRIPT),
+      FileUnitLogs.layer(LOG_SCRIPT, { journal: world.drops ?? "/nonexistent/loop-probe-x/drops.jsonl" }),
       StepLogTest.layer(world.steps ?? {}),
       OpenCodeRuns.layer(() => Effect.succeed({ agents: [], runs: world.runs ?? [], errors: [] })),
       Layer.succeed(RootHolds, { of: (sessionID: string) => Effect.succeed(world.holds?.[sessionID] ?? NO_HOLDS) }),
@@ -268,7 +279,11 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     }
     /** A session's compaction ended: the host's durable event, with its id. */
     const compacted = (sessionID: string, id: string) => Queue.offer(published, { id, type: "session.compaction.ended", data: { sessionID } })
-    return { call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, draft, nudges, notes, ledger, briefs, compacted }
+    /** One model request of the session through the `model.request` hooks: done once every hook let it go. */
+    const modelRequest = Effect.fn("OrchestrateServerTest.modelRequest")(function* (sessionID: string) {
+      for (const hook of hooks["model.request"] || []) yield* hook({ sessionID, agent: "build", kind: "primary", headers: {} })
+    })
+    return { contexts, modelRequest, call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, draft, nudges, notes, ledger, briefs, compacted }
   })
 
 /** Waits for the plugin's background work: `check` passes within a second. */
@@ -1739,9 +1754,19 @@ describe("the batch machine", () => {
     Effect.sync(() => mkdtempSync(join(tmpdir(), "orchestrate-run-"))),
     (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
   )
-  /** A shell line run for real in `cwd`: its output, both streams, as the shell tool answers with it. */
+  /** A run's drops journal: where log.ts, run from the root's shell, writes each drop, and the plugin reads them. */
+  const journalOf = (run: string) => join(run, "drops.jsonl")
+  /**
+   * A shell line run for real in `cwd`: its output, both streams, as the shell tool answers with it. Run as the
+   * root's (`spawnRoot`), it has the session and the run's journal the host and the plugin give it; otherwise no
+   * session, so a test run from an OpenCode shell never writes the owner's journal.
+   */
   const spawnShell = (line: string, cwd: string) => {
-    const ran = spawnSync(["/bin/zsh", "-c", line], { cwd })
+    const ran = spawnSync(["/usr/bin/env", "-u", "OPENCODE_SESSION_ID", "/bin/zsh", "-c", line], { cwd })
+    return `${ran.stdout}${ran.stderr}`
+  }
+  const spawnRoot = (line: string, cwd: string, journal: string) => {
+    const ran = spawnSync(["/usr/bin/env", "OPENCODE_SESSION_ID=root", `ORCHESTRATE_DROPS=${journal}`, "/bin/zsh", "-c", line], { cwd })
     return `${ran.stdout}${ran.stderr}`
   }
   /** `unit`'s dir in `run`, its log moved by the skill's log.ts (`new decide r1`). */
@@ -1750,8 +1775,8 @@ describe("the batch machine", () => {
     spawnShell(`bun ${LOG_SCRIPT} ${join(run, unit)} ${move}`, run)
   }
   /** The root's shell call, run for real in `cwd` (the call's `workdir`, when its input names one), through the plugin's hooks. */
-  const shell = (plugin: Plugin, input: { readonly command: string; readonly workdir?: string }, cwd: string) =>
-    plugin.finish({ tool: "shell", input, status: "completed", result: { content: [{ type: "text", text: spawnShell(input.command, cwd) }] } })
+  const shell = (plugin: Plugin, input: { readonly command: string; readonly workdir?: string }, cwd: string, journal: string) =>
+    plugin.finish({ tool: "shell", input, status: "completed", result: { content: [{ type: "text", text: spawnRoot(input.command, cwd, journal) }] } })
 
   test("a verifier for one unit is refused in the skill's words before anything starts; the batch's starts", () =>
     scenario(
@@ -2395,7 +2420,7 @@ describe("the batch machine", () => {
           ses_fg: { agent: "implementor" },
           ses_d: { agent: "implementor", lastWords: "implementor delta r1: ready x" },
         })
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions, findings: { [report]: ["alpha/M1", "alpha/M2", "alpha/M3"] } })
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, findings: { [report]: ["alpha/M1", "alpha/M2", "alpha/M3"] }, drops: journalOf(run) })
         const land = (rifts: ReadonlyArray<string>) => plugin.call("rift", "root", { action: "land", rifts })
         yield* begin(plugin, implementor("alpha"), "ses_a")
         yield* plugin.idle("ses_a")
@@ -2412,55 +2437,152 @@ describe("the batch machine", () => {
         for (const unit of ["a-fix", "b-fix", "g-fix"]) logged(run, unit, "new decide r1")
         const dropped = () => plugin.ledger.filter((_, at) => kinds(plugin)[at] === "UnitDropped")
         // The first move is refused (b-fix is in decide, not implement), the second written: a-fix alone is dropped.
-        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} ${run}/b-fix implement dropped r1 x; bun ${LOG_SCRIPT} ${run}/a-fix decide dropped r1 x` }, tmpdir())
+        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} ${run}/b-fix implement dropped r1 x; bun ${LOG_SCRIPT} ${run}/a-fix decide dropped r1 x` }, tmpdir(), journalOf(run))
         expect(dropped()).toEqual([expect.objectContaining({ unit: "a-fix", released: ["alpha/M1"] })])
         // Another unit's move, and a move asked of no log, drop nothing.
-        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} ${run}/g-fix decide implement r2 again` }, tmpdir())
-        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} ${run}/nowhere decide dropped r1 x` }, tmpdir())
+        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} ${run}/g-fix decide implement r2 again` }, tmpdir(), journalOf(run))
+        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} ${run}/nowhere decide dropped r1 x` }, tmpdir(), journalOf(run))
         expect(dropped()).toHaveLength(1)
         // Two moves in one line, both written, relative to the call's workdir: both are dropped.
-        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} --current b-fix dropped r1 x && bun ${LOG_SCRIPT} g-fix implement dropped r2 x`, workdir: run }, run)
+        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} --current b-fix dropped r1 x && bun ${LOG_SCRIPT} g-fix implement dropped r2 x`, workdir: run }, run, journalOf(run))
         expect(dropped().slice(1)).toEqual([expect.objectContaining({ unit: "b-fix", released: ["alpha/M2"] }), expect.objectContaining({ unit: "g-fix", released: ["alpha/M3"] })])
         expect((yield* land(["delta"])).refused).toBeUndefined()
         expect(kinds(plugin)).not.toContain("Departed")
       }),
     ))
 
-  // r1 M1's guard: over every line of up to three log.ts moves, each asking dropped or another state and each
-  // written or refused by log.ts itself, the units dropped are exactly those asked whose log.md ends in dropped.
-  test("property: the units a log.ts line drops are exactly the asked ones log.ts moved to dropped", () =>
+  const DroppedLine = Schema.Struct({ kind: Schema.Literal("UnitDropped"), unit: Schema.String })
+  const decodeDropped = Schema.decodeUnknownOption(DroppedLine)
+  /** The units the ledger dropped, one entry per `UnitDropped`. */
+  const droppedUnits = (plugin: Plugin) => plugin.ledger.flatMap((line) => Option.toArray(Option.map(decodeDropped(line), (dropped) => dropped.unit)))
+  /** Whether `unit`'s log.md ends in a move to dropped: what log.ts wrote. */
+  const endsDropped = (run: string, unit: string) => / → dropped r\d+(?: [^\n]*)?$/.test(readFileSync(join(run, unit, "log.md"), "utf8").trim())
+
+  /**
+   * One way a root's shell call runs a log.ts move: its input, where it runs, how it ends, and whether it answers
+   * before log.ts writes (`hook-first`: a command it backgrounded, or one still running when the call timed out).
+   */
+  interface Call {
+    readonly input: { readonly command: string; readonly workdir?: string }
+    readonly cwd: string
+    readonly status: "completed" | "error"
+    readonly order: "run-first" | "hook-first"
+  }
+  type Move = (dir: string) => string
+  const FORMS = {
+    absolute: (run: string, unit: string, move: Move): Call => ({ input: { command: move(`${run}/${unit}`) }, cwd: "/", status: "completed", order: "run-first" }),
+    relative: (run: string, unit: string, move: Move): Call => ({ input: { command: move(unit), workdir: run }, cwd: run, status: "completed", order: "run-first" }),
+    variable: (run: string, unit: string, move: Move): Call => ({ input: { command: `RUN=${run}; ${move(`$RUN/${unit}`)}` }, cwd: "/", status: "completed", order: "run-first" }),
+    braced: (run: string, unit: string, move: Move): Call => ({ input: { command: `RUN=${run}; ${move(`"\${RUN}/${unit}"`)}` }, cwd: "/", status: "completed", order: "run-first" }),
+    cd: (run: string, unit: string, move: Move): Call => ({ input: { command: `cd ${run} && ${move(unit)}` }, cwd: "/", status: "completed", order: "run-first" }),
+    backgrounded: (run: string, unit: string, move: Move): Call => ({ input: { command: `${move(`${run}/${unit}`)} &` }, cwd: "/", status: "completed", order: "hook-first" }),
+    "timed out": (run: string, unit: string, move: Move): Call => ({ input: { command: `cd ${run}; ${move(unit)}` }, cwd: "/", status: "error", order: "hook-first" }),
+  }
+  const FORM_NAMES: ReadonlyArray<keyof typeof FORMS> = ["absolute", "relative", "variable", "braced", "cd", "backgrounded", "timed out"]
+  /** The call through the plugin's after hook, its command run for real by the root's shell: before the hook answers, or after. */
+  const RUNS = {
+    "run-first": (plugin: Plugin, call: Call, journal: string) =>
+      Effect.suspend(() => plugin.finish({ tool: "shell", input: call.input, status: call.status, result: { content: [{ type: "text", text: spawnRoot(call.input.command, call.cwd, journal) }] } })),
+    "hook-first": (plugin: Plugin, call: Call, journal: string) =>
+      plugin.finish({ tool: "shell", input: call.input, status: call.status, result: { content: [{ type: "text", text: "still running" }] } }).pipe(Effect.andThen(Effect.sync(() => spawnRoot(call.input.command, call.cwd, journal)))),
+  }
+
+  /** One trial: up to three units, each moved by a call of the form `forms` gives it, then two lands; the counts of drops per unit, and what each log.md ends in. */
+  const dropTrial = (trial: number, forms: (at: number) => keyof typeof FORMS, from: () => string) =>
+    Effect.gen(function* () {
+      const run = yield* scratchRun
+      const journal = journalOf(run)
+      const units = Array.from({ length: 1 + (trial % 3) }, (_, at) => `t${trial}-u${at}`)
+      const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps(Object.fromEntries(units.map((unit) => [`ses_${unit}`, { agent: "implementor" }]))), drops: journal })
+      for (const unit of units) {
+        yield* begin(plugin, implementor(unit), `ses_${unit}`)
+        logged(run, unit, "new decide r1")
+      }
+      // A move from decide is written, one from implement refused, by log.ts itself.
+      const named = units.map((unit, at) => ({ unit, form: forms(at) }))
+      for (const { unit, form } of named) {
+        const call = FORMS[form](run, unit, (dir) => `bun ${LOG_SCRIPT} ${dir} ${from()} dropped r1 x`)
+        yield* RUNS[call.order](plugin, call, journal)
+      }
+      // The next land sees a drop written after its call answered; one more sees nothing new.
+      yield* plugin.call("rift", "root", { action: "land", rifts: units })
+      yield* plugin.call("rift", "root", { action: "land", rifts: units })
+      return {
+        forms: named.map(({ form }) => form),
+        seen: units.map((unit) => [unit, droppedUnits(plugin).filter((each) => each === unit).length]),
+        written: units.map((unit) => [unit, Number(endsDropped(run, unit))]),
+      }
+    })
+
+  // orch-followups r2 M1 (a repeat of r1 M1) and orch-late-drop item 1: the hook read the unit dir off the command's
+  // text, so a dir named through a variable or after a `cd` was missed, and so was a drop log.ts wrote after the
+  // call answered (backgrounded, or a call that timed out). What log.ts wrote decides now, through its drops journal.
+  // Over every form a root's line names the dir in, each move written or refused by log.ts itself, the ledger drops
+  // each written drop exactly once and a refused one never.
+  test("property: whatever form names the unit dir and whenever log.ts writes, each written drop ends its unit exactly once and a refused one none", () =>
+    scenario(
+      Effect.gen(function* () {
+        const rng = rngOf(11)
+        const pick = <A,>(list: ReadonlyArray<A>): A => list[Math.floor(rng() * list.length)]!
+        const formsSeen = new Set<string>()
+        // Each trial's first unit takes the forms in turn, twice over; the others pick.
+        for (let trial = 0; trial < 2 * FORM_NAMES.length; trial++) {
+          const result = yield* dropTrial(trial, (at) => [FORM_NAMES[trial % FORM_NAMES.length]!, pick(FORM_NAMES), pick(FORM_NAMES)][at]!, () => pick(["decide", "implement"]))
+          for (const form of result.forms) formsSeen.add(form)
+          expect([trial, result.forms, result.seen]).toEqual([trial, result.forms, result.written])
+        }
+        expect([...formsSeen].toSorted()).toEqual([...FORM_NAMES].toSorted())
+      }),
+    ), 120_000)
+
+  // orch-late-drop item 1's acceptance: a drop log.ts writes after the call's hook read the journal ends its unit at
+  // the next land, and only once.
+  test("orch-late-drop 1: a drop written after its shell call answered ends its unit at the next land, once", () =>
     scenario(
       Effect.gen(function* () {
         const run = yield* scratchRun
-        const rng = rngOf(7)
-        const logs = FileUnitLogs.make(LOG_SCRIPT)
-        const pick = <A,>(list: ReadonlyArray<A>): A => list[Math.floor(rng() * list.length)]!
-        // Each trial runs log.ts for real, up to six times: 30 trials cover every mix of k ≤ 3 moves many times over.
-        for (let trial = 0; trial < 30; trial++) {
-          const units = Array.from({ length: 1 + Math.floor(rng() * 3) }, (_, i) => `t${trial}-u${i}`)
-          // Each unit sits in decide; a move from implement is refused, one from decide is written.
-          for (const unit of units) logged(run, unit, "new decide r1")
-          const moves = units.map((unit) => ({ unit, to: pick(["dropped", "implement"]), from: pick(["decide", "implement"]) }))
-          const line = moves.map((move) => `bun ${LOG_SCRIPT} ${run}/${move.unit} ${move.from} ${move.to} r2 x`).reduce((all, command) => `${all} ${pick([";", "&&", "||", "|"])} ${command}`)
-          spawnShell(line, run)
-          const asked = dropsAsked("shell", line)
-          const confirmed = yield* Effect.forEach(asked, (dir) => logs.droppedIn(dir, Option.none()))
-          const ends = units.filter((unit) => /→ dropped r\d+/.test(readFileSync(join(run, unit, "log.md"), "utf8").trim().split("\n").at(-1)!))
-          expect([line, confirmed.flatMap(Option.toArray)]).toEqual([line, ends])
-        }
+        const journal = journalOf(run)
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor" } }), drops: journal })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        logged(run, "alpha", "new decide r1")
+        const call = FORMS.backgrounded(run, "alpha", (dir) => `bun ${LOG_SCRIPT} ${dir} decide dropped r1 superseded`)
+        yield* plugin.finish({ tool: "shell", input: call.input, status: "completed", result: { content: [{ type: "text", text: "backgrounded" }] } })
+        expect(droppedUnits(plugin)).toEqual([])
+        spawnRoot(call.input.command, call.cwd, journal)
+        yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })
+        expect(droppedUnits(plugin)).toEqual(["alpha"])
+        yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })
+        yield* begin(plugin, implementor("beta"), "ses_a")
+        expect(droppedUnits(plugin)).toEqual(["alpha"])
       }),
     ), 60_000)
 
-  test("the units a shell line asks log.ts to drop, as written: each command's, in order, whatever log.ts then did", () => {
-    const log = "bun ~/.claude/skills/orchestrate/scripts/log.ts"
-    expect(dropsAsked("shell", `${log} /run/auth decide dropped r3 superseded`)).toEqual(["/run/auth"])
-    expect(dropsAsked("bash", `${log} --current "/tmp/orchestrate/p5/auth/" dropped r3`)).toEqual(["/tmp/orchestrate/p5/auth/"])
-    expect(dropsAsked("shell", `${log} /run/a implement dropped r1 x; ${log} /run/b decide dropped r1 x`)).toEqual(["/run/a", "/run/b"])
-    expect(dropsAsked("shell", `${log} /run/a decide dropped r1 x && ${log} /run/b decide dropped r1 x`)).toEqual(["/run/a", "/run/b"])
-    expect(dropsAsked("shell", `${log} /run/auth verify implement r2; ${log} /run/db decide dropped r2`)).toEqual(["/run/db"])
-    expect(dropsAsked("shell", "echo dropped")).toEqual([])
-    expect(dropsAsked("rift", `${log} /run/auth decide dropped r3`)).toEqual([])
-  })
+  // orch-followups r2 M2: only log.md's last line counts. A drop log.ts wrote and the root then undid (`dropped →
+  // decide`) is no drop; a unit revived (`dropped → implement r2`) whose later drop log.ts refused stays live.
+  test("orch-followups r2 M2: a drop undone in the same line, and a revived unit's refused drop, end nothing; only log.md's last line counts", () =>
+    scenario(
+      Effect.gen(function* () {
+        const run = yield* scratchRun
+        const journal = journalOf(run)
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_u: { agent: "implementor" }, ses_v: { agent: "implementor" }, ses_v2: { agent: "implementor" } }), drops: journal })
+        const root = (command: string) => shell(plugin, { command }, tmpdir(), journal)
+        yield* begin(plugin, implementor("undone"), "ses_u")
+        yield* begin(plugin, implementor("revived"), "ses_v")
+        logged(run, "undone", "new decide r1")
+        logged(run, "revived", "new decide r1")
+        // Dropped and undone in one line: log.ts journaled the drop, but the log's last line moves the unit on.
+        yield* root(`bun ${LOG_SCRIPT} ${run}/undone decide dropped r1 x; bun ${LOG_SCRIPT} ${run}/undone dropped decide r1 undo`)
+        // Dropped for real, then revived at r2; a later drop from the wrong state is refused.
+        yield* root(`bun ${LOG_SCRIPT} ${run}/revived decide dropped r1 x`)
+        expect(droppedUnits(plugin)).toEqual(["revived"])
+        yield* begin(plugin, { ...implementor("revived"), description: "implementor revived r2" }, "ses_v2")
+        yield* root(`bun ${LOG_SCRIPT} ${run}/revived dropped implement r2 again; bun ${LOG_SCRIPT} ${run}/revived decide dropped r2 x`)
+        expect(readFileSync(join(run, "revived", "log.md"), "utf8")).toContain("dropped → implement r2 again")
+        yield* plugin.call("rift", "root", { action: "land", rifts: ["undone", "revived"] })
+        expect(droppedUnits(plugin)).toEqual(["revived"])
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitStarted", unit: "revived", round: 2 }))
+      }),
+    ), 60_000)
 
   test("a checked land lands only the Rifts it answered green or pending, by their paths and branches, each with the unit its input named", () => {
     const text = ["Checked 2 Rift(s) as one batch", "- run/alpha (/r/run-alpha): green", "- run/beta (/r/run-beta): red; conflict", "- run/gamma (/r/scratch): pending"].join("\n")
@@ -2470,6 +2592,49 @@ describe("the batch machine", () => {
     ])
     expect(greenOf([{ rift: "alpha" }], "Landed 1 Rift(s) as one push")).toEqual([{ rift: "alpha" }])
   })
+})
+
+// orch-late-drop item 2: a restart in the Sabbath rest (a crash, a restart by hand) resumes the turns the old server
+// left running; each waits for the rest's end before its next model request. Outside the rest it goes as today.
+describe("a turn resumed after a restart", () => {
+  const FRIDAY_NIGHT = Date.parse("2026-10-30T23:00:00Z")
+  const END = rest(FRIDAY_NIGHT, KNOWLTON).end
+  const resumed = (created: number) => [
+    { type: "user", text: "go", time: { created: created - 3_600_000 } },
+    { type: "synthetic", text: "The server restarted while you were working.", metadata: { notice: RESTART_NOTICE }, time: { created } },
+  ]
+  /** The plugin on the test clock at `now`, with `root`'s turn resumed by a restart notice written then. */
+  const restarted = (now: number) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(now)
+      const plugin = yield* start({})
+      plugin.contexts.set("root", resumed(now))
+      return plugin
+    })
+
+  test("in the rest, the resumed turn makes no model request until the rest ends; a prompt's turn asks at once", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* restarted(FRIDAY_NIGHT)
+        plugin.contexts.set("other", [{ type: "user", text: "go", time: { created: FRIDAY_NIGHT } }])
+        yield* plugin.modelRequest("other")
+        const held = yield* Effect.forkChild(plugin.modelRequest("root"))
+        yield* TestClock.adjust(END - FRIDAY_NIGHT - 60_000)
+        expect(held.pollUnsafe()).toBeUndefined()
+        yield* TestClock.adjust(60_000)
+        yield* Fiber.join(held)
+        expect(yield* Clock.currentTimeMillis).toBe(END)
+      }).pipe(Effect.provide(TestClock.layer())),
+    ))
+
+  test("outside the rest, the resumed turn asks at once", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* restarted(Date.parse(WEDNESDAY))
+        yield* plugin.modelRequest("root")
+        expect(yield* Clock.currentTimeMillis).toBe(Date.parse(WEDNESDAY))
+      }).pipe(Effect.provide(TestClock.layer())),
+    ))
 })
 
 describe("the options", () => {
@@ -2483,6 +2648,7 @@ describe("the options", () => {
     fullAgent: false,
     codex: { providers: ["openai"], script: CODEX_BUDGET },
     unitLog: UNIT_LOG,
+    drops: FileUnitLogs.DROPS_JOURNAL,
     skill: SKILL_DIR,
   }
 
@@ -2506,9 +2672,11 @@ describe("the options", () => {
       fullAgent: true,
       codex: { providers: ["openai", "sim"], script: CODEX_BUDGET },
       unitLog: UNIT_LOG,
+      drops: FileUnitLogs.DROPS_JOURNAL,
       skill: SKILL_DIR,
     })
     expect(decode({ skill: "/s" }).skill).toBe("/s")
+    expect(decode({ drops: "/d.jsonl" }).drops).toBe("/d.jsonl")
     expect(decode({ codex: false }).codex).toBe(false)
     expect(decode({ codex: { pool: true } }).codex).toEqual({ ...defaults.codex, pool: true })
     expect(decode({ planner: { model: "anthropic/claude-fable-5-2" } }).planner).toEqual({ model: "anthropic/claude-fable-5-2" })

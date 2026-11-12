@@ -119,7 +119,7 @@ describe("sidebarLines", () => {
   test("reads the pool's answer, which carries more than it draws, and not a malformed one", () => {
     const decode = Schema.decodeUnknownOption(SidebarAnswer)
     const answer = {
-      account: { pool: "anthropic", credentialID: "gent:alpha", label: "alpha", on: "placed", reading: { at: now, windows: [] } },
+      account: { pool: "anthropic", credentialID: "store:alpha", label: "alpha", on: "placed", reading: { at: now, windows: [] } },
     }
     expect(Option.isSome(decode(answer))).toBe(true)
     expect(Option.isSome(decode({}))).toBe(true)

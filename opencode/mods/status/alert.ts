@@ -16,7 +16,7 @@ export const AlertsAnswer = Schema.Struct({
       credentialID: Schema.String,
       label: Schema.String,
       since: Schema.Number,
-      command: Schema.String,
+      slot: Schema.String,
     }),
   ),
   outages: Schema.Array(
@@ -70,13 +70,13 @@ const outageKey = (outage: Outage) => `outage:${outage.pool}:${outage.dir}:${out
 
 /**
  * The lines the sidebar's Pool section draws first: for each lost login its
- * label and the command that signs it in again, for each outage how long it
+ * label and the slot file to sign it in to again, for each outage how long it
  * has lasted and the cause. Nothing when the pool has no alert.
  */
 export const alertLines = (answer: AlertsAnswer, now: number): ReadonlyArray<SidebarLine> => [
   ...answer.lost.flatMap((login): ReadonlyArray<SidebarLine> => [
     { text: `${login.label} · signed out`, tone: "error" },
-    { text: `sign in again in gent: ${login.command}`, tone: "warning" },
+    { text: `sign in again into ${login.slot}`, tone: "warning" },
   ]),
   ...answer.outages.map(
     (outage): SidebarLine => ({ text: `refresh failing ${lasted(now - outage.since)} · ${causeText(outage.cause)}`, tone: "error" }),
@@ -88,7 +88,7 @@ export const alertToasts = (answer: AlertsAnswer, now: number): ReadonlyArray<Al
   ...answer.lost.map((login) => ({
     key: lostKey(login),
     title: `Pool login ${login.label} is signed out`,
-    message: `The token endpoint refused its refresh token. Sign in again in gent: ${login.command}`,
+    message: `The token endpoint refused its refresh token. Sign it in again into ${login.slot}`,
   })),
   ...answer.outages.map((outage) => ({
     key: outageKey(outage),
@@ -98,7 +98,7 @@ export const alertToasts = (answer: AlertsAnswer, now: number): ReadonlyArray<Al
 ]
 
 /**
- * gent's login alert's rule: toast each alert the owner has not seen, and
+ * The login alert's rule: toast each alert the owner has not seen, and
  * forget the ones no longer listed, so one that clears and comes back toasts
  * again. `seen` is the keys toasted so far; the answer's `seen` replaces it.
  */

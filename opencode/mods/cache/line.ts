@@ -10,7 +10,7 @@ export const ROW_MIN_USD = 0.1
 /** A cost under this is not named: it rounds to nothing. */
 const MIN_NAMED_USD = 0.01
 
-/** pi's rule, as gent's: a row for a miss of at least 20k tokens or 10 cents. */
+/** pi's rule: a row for a miss of at least 20k tokens or 10 cents. */
 export const showsRow = (miss: Miss, costUsd: number): boolean => miss.missedTokens >= ROW_MIN_TOKENS || costUsd >= ROW_MIN_USD
 
 /** `850`, `48k`, `1.2M`. */
