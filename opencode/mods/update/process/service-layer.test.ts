@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { serve, spawnSync, write } from "bun"
-import { Cause, Effect, Exit, Option, Schema } from "effect"
+import { Cause, Effect, Exit, Layer, Option, Schema } from "effect"
 import { Base64 } from "effect/encoding"
 import { readText } from "../filestore/files.ts"
 import { describeHealth, Health, healthOf } from "../health.ts"
@@ -25,21 +25,6 @@ const POOL = "/d/opencode/cmd/pool"
 
 /** A fixture's JSON text. */
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
-
-/** The launcher (`opencode api <method> <path> …`): a shell script that answers each path from a file in `dir`. */
-const launcherScript = (dir: string) =>
-  [
-    "#!/bin/sh",
-    `case "$3" in`,
-    `  /api/plugin) cat '${dir}/plugin.json' ;;`,
-    `  /api/rpc/dotfiles-opencode.pool/status) cat '${dir}/pool.json' ;;`,
-    `  /api/integration) cat '${dir}/integration.json' ;;`,
-    `  /api/rpc/dotfiles-opencode.update/placement) cat '${dir}/placement.json' ;;`,
-    `  /api/location) printf '%s\\n' "$@" > '${dir}/asked' ;;`,
-    `  *) echo "unknown $3" >&2; exit 1 ;;`,
-    "esac",
-    "",
-  ].join("\n")
 
 /** The settings of a host whose checkout, state and launcher are all in `dir`. */
 const settingsIn = (dir: string): Settings => ({
@@ -116,7 +101,7 @@ interface Seen {
  * reads it as it reads the service. It answers how `body` ended and what the host saw; the service
  * and the directory go after.
  */
-const onHostSeen = <A, E>(answers: Answers, body: Effect.Effect<A, E, Service>) =>
+const onHostSeen = <A, E>(answers: Answers, body: Effect.Effect<A, E, Service | Resident>) =>
   Effect.acquireUseRelease(
     Effect.sync(() => {
       const dir = spawnSync(["mktemp", "-d", "-t", "update-service"]).stdout.toString().trim()
@@ -126,17 +111,17 @@ const onHostSeen = <A, E>(answers: Answers, body: Effect.Effect<A, E, Service>) 
     ({ dir, asked, server }) =>
       lay(dir, answers).pipe(
         Effect.andThen(Effect.promise(() => write(`${dir}/service.json`, json({ url: server.url.href, password: PASSWORD, pid: 1, id: "x", version: "test" })))),
-        Effect.andThen(body.pipe(Effect.exit, Effect.provide(ServiceLayer.layer(settingsIn(dir), {}, `${dir}/service.json`)))),
+        Effect.andThen(body.pipe(Effect.exit, Effect.provide(Layer.mergeAll(ServiceLayer.layer(settingsIn(dir), {}, `${dir}/service.json`), ResidentLayer.layer(dir, `${dir}/service.json`))))),
         Effect.flatMap((exit) => readText(`${dir}/launched`).pipe(Effect.map((launched) => ({ exit, seen: { asked: [...asked], launched } satisfies Seen })))),
       ),
     ({ dir, server }) => Effect.promise(() => server.stop(true)).pipe(Effect.andThen(Effect.sync(() => void spawnSync(["rm", "-rf", dir])))),
   )
 
 /** `body` on a scratch host (`onHostSeen`), failing as `body` fails. */
-const onHost = <A, E>(answers: Answers, body: Effect.Effect<A, E, Service>) => Effect.runPromise(onHostSeen(answers, body).pipe(Effect.flatMap(({ exit }) => exit)))
+const onHost = <A, E>(answers: Answers, body: Effect.Effect<A, E, Service | Resident>) => Effect.runPromise(onHostSeen(answers, body).pipe(Effect.flatMap(({ exit }) => exit)))
 
 /** One case on a scratch host: `check` on how `body` ended and what the host saw. */
-const seeing = <A, E>(answers: Answers, body: Effect.Effect<A, E, Service>, check: (exit: Exit.Exit<A, E>, seen: Seen) => void) =>
+const seeing = <A, E>(answers: Answers, body: Effect.Effect<A, E, Service | Resident>, check: (exit: Exit.Exit<A, E>, seen: Seen) => void) =>
   Effect.runPromise(onHostSeen(answers, body).pipe(Effect.map(({ exit, seen }) => check(exit, seen))))
 
 const read = Service.use((service) => service.read)
@@ -259,44 +244,24 @@ describe("the service layer's reading of where the service runs (the update plug
     ))
 })
 
-/** What an ask for the resident location left: how it ended, what the launcher was asked, and the host's directory. */
-interface Asked {
-  readonly exit: Exit.Exit<void, unknown>
-  readonly asked: Option.Option<ReadonlyArray<string>>
-  readonly dir: string
-}
+const loadResident = Resident.use((resident) => resident.load)
 
-/**
- * Asks for the resident location on a scratch host whose launcher is `launcher(dir)` (the fake
- * launcher records what it was asked, in `asked`), then runs `check` on what the ask left.
- */
-const askResident = (launcher: (dir: string) => string, check: (asked: Asked) => void) =>
-  Effect.runPromise(
-    Effect.acquireUseRelease(
-      Effect.sync(() => spawnSync(["mktemp", "-d", "-t", "update-resident"]).stdout.toString().trim()),
-      (dir) =>
-        Effect.promise(() => write(`${dir}/opencode`, launcher(dir))).pipe(
-          Effect.andThen(Effect.sync(() => void spawnSync(["chmod", "755", `${dir}/opencode`]))),
-          Effect.andThen(Resident.use((resident) => resident.load).pipe(Effect.provide(ResidentLayer.layer(settingsIn(dir), {})), Effect.exit)),
-          Effect.flatMap((exit) => readText(`${dir}/asked`).pipe(Effect.map((asked) => check({ exit, asked: Option.map(asked, (text) => text.trim().split("\n")), dir })))),
-        ),
-      (dir) => Effect.sync(() => void spawnSync(["rm", "-rf", dir])),
-    ),
-  )
+describe("the watchdog's ask for the resident location (the plugin's Resident layer)", () => {
+  const host: Answers = { config: { model: "openai/sol-6", plugins: [POOL] }, pool: { openai: { accounts: [account] } }, integrations: [] }
 
-describe("the resident location, asked through the launcher", () => {
-  test("asks the service for the resident location as the launcher does after service start", () =>
-    askResident(launcherScript, ({ exit, asked, dir }) => {
+  test("asks the registered service over HTTP, with its password, in the resident location, and never spawns `opencode api`", () =>
+    seeing(host, loadResident, (exit, seen) => {
       expect(Exit.isSuccess(exit)).toBe(true)
-      expect(asked).toEqual(Option.some(["api", "GET", "/api/location", "-H", `x-opencode-directory:${encodeURIComponent(dir)}`]))
+      expect(seen.asked).toEqual(["/api/location"])
+      expect(seen.launched).toEqual(Option.none())
     }))
 
-  test("a launcher that does not run is a failed step, which the watchdog logs", () =>
-    askResident(
-      () => "",
-      ({ exit, asked }) => {
-        expect(Exit.isFailure(exit)).toBe(true)
-        expect(asked).toEqual(Option.none())
-      },
+  test("with no service registered, the ask is a failed step, which the watchdog logs", () =>
+    Effect.runPromise(
+      loadResident.pipe(
+        Effect.provide(ResidentLayer.layer("/nonexistent/loop-probe-x", "/nonexistent/loop-probe-x/service.json")),
+        Effect.exit,
+        Effect.map((exit) => expect(Option.map(Exit.findErrorOption(exit), (failed) => [failed.step, failed.message])).toEqual(Option.some(["load the resident location", "no service is registered in /nonexistent/loop-probe-x/service.json"]))),
+      ),
     ))
 })

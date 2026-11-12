@@ -1,28 +1,20 @@
-import { Duration, Effect, Layer } from "effect"
-import { Resident, UpdateFailed } from "../service.ts"
-import type { Settings } from "../settings.ts"
-import { run } from "./run.ts"
-
-/** How long the ask may take: a service that does not answer by then is asked again at the next watch. */
-export const RESIDENT_TIMEOUT = Duration.minutes(1)
-
-/** The header that names the resident location to the service. */
-export const residentHeader = (resident: string): string => `x-opencode-directory:${encodeURIComponent(resident)}`
+import { Effect, Layer } from "effect"
+import { FetchHttpClient, HttpClient } from "effect/http"
+import { Resident } from "../service.ts"
+import { asker, BOOT } from "./service.ts"
 
 /**
- * The resident location as the launcher reaches it: `api GET /api/location` in it loads it, and is
- * a no-op once it runs. The same ask the launcher makes after `service start`.
+ * The resident location as the registered service answers it: `GET /api/location` in it loads it,
+ * and is a no-op once it runs; the same ask the launcher makes after `service start`. It goes over
+ * HTTP to the address and password the service registers (`registration`, the health check's
+ * reader), never through `opencode api`, whose `Service.ensure` stops a service that misses three
+ * 2 s probes: under load the watchdog would kill the service it watches.
  */
-export const layer = (settings: Settings, env: Readonly<globalThis.Record<string, string>>) =>
-  Layer.succeed(
+export const layer = (resident: string, registration: string) =>
+  Layer.effect(
     Resident,
-    Resident.of({
-      load: run("load the resident location", [settings.launcher, "api", "GET", "/api/location", "-H", residentHeader(settings.resident)], { cwd: settings.checkout, env }).pipe(
-        Effect.timeoutOrElse({
-          duration: RESIDENT_TIMEOUT,
-          orElse: () => Effect.fail(new UpdateFailed({ step: "load the resident location", message: `no answer in ${Duration.format(RESIDENT_TIMEOUT)}` })),
-        }),
-        Effect.asVoid,
-      ),
+    Effect.gen(function* () {
+      const { answered } = asker(yield* HttpClient.HttpClient, registration, resident)
+      return Resident.of({ load: answered(BOOT).pipe(Effect.asVoid) })
     }),
-  )
+  ).pipe(Layer.provide(FetchHttpClient.layer))

@@ -107,19 +107,54 @@ interface Answer {
 }
 
 /** One ask of the service, in the resident location. */
-interface Ask {
+export interface Ask {
   readonly step: string
   readonly method: "GET" | "POST"
   readonly path: string
   readonly body: Option.Option<string>
 }
 
-const get = (step: string, path: string): Ask => ({ step, method: "GET", path, body: Option.none() })
+export const get = (step: string, path: string): Ask => ({ step, method: "GET", path, body: Option.none() })
 const rpc = (step: string, id: string): Ask => ({ step, method: "POST", path: `/api/rpc/${id}`, body: Option.some(`{"input":{}}`) })
 
 /** The asks that boot the resident location and wait for its plugins (`/api/model` waits up to 5 s for them, then answers 503). */
-const BOOT = get("load the resident location", "/api/location")
+export const BOOT = get("load the resident location", "/api/location")
 const ACTIVATED = get("wait for the resident location's plugins", "/api/model")
+
+/**
+ * The registered service's reader: asks over HTTP to the address and with the password the
+ * service registers (`registration`), in the `resident` location, never through `opencode api`
+ * (its `Service.ensure` stops a service that misses three 2 s probes). The handoff's health check
+ * and the plugin's watchdog (`resident.ts`) read the service through it.
+ */
+export const asker = (client: HttpClient.HttpClient, registration: string, resident: string) => {
+  /** One ask: its answer, whatever its status; a service that is not registered or does not answer fails the step. */
+  const ask = Effect.fn("Service.ask")(function* (asked: Ask) {
+    const found = Option.flatMap(yield* readText(registration), decodeRegistration)
+    if (Option.isNone(found)) return yield* new UpdateFailed({ step: asked.step, message: `no service is registered in ${registration}` })
+    const request = HttpClientRequest.make(asked.method)(new URL(asked.path, found.value.url), { headers: { "x-opencode-directory": encodeURIComponent(resident) } })
+    const authed = Option.match(Option.fromNullishOr(found.value.password), {
+      onNone: () => request,
+      onSome: (password) => HttpClientRequest.basicAuth(request, "opencode", Redacted.make(password)),
+    })
+    const sent = Option.match(asked.body, { onNone: () => authed, onSome: (body) => HttpClientRequest.bodyText(authed, body, "application/json") })
+    return yield* client.execute(sent).pipe(
+      Effect.flatMap((response) => response.text.pipe(Effect.map((text): Answer => ({ status: response.status, text })))),
+      Effect.timeoutOrElse({ duration: ASK_TIMEOUT, orElse: () => Effect.fail(new UpdateFailed({ step: asked.step, message: `no answer in ${Duration.format(ASK_TIMEOUT)}` })) }),
+      Effect.catchTag("HttpClientError", (failed) => Effect.fail(new UpdateFailed({ step: asked.step, message: failed.message }))),
+    )
+  })
+  /** An ask that must succeed: its body, or the step failed with what the service said. */
+  const answered = (asked: Ask) =>
+    ask(asked).pipe(
+      Effect.filterOrFail(
+        (answer) => answer.status >= 200 && answer.status < 300,
+        (answer) => new UpdateFailed({ step: asked.step, message: `${answer.status} ${answer.text.slice(0, 300)}` }),
+      ),
+      Effect.map((answer) => answer.text),
+    )
+  return { ask, answered }
+}
 
 /**
  * The service as the handoff reaches it. The restart goes through the launcher (`service restart`).
@@ -136,32 +171,7 @@ export const layer = (settings: Settings, env: Readonly<globalThis.Record<string
   return Layer.effect(
     Service,
     Effect.gen(function* () {
-      const client = yield* HttpClient.HttpClient
-      /** One ask: its answer, whatever its status; a service that is not registered or does not answer fails the step. */
-      const ask = Effect.fn("Service.ask")(function* (asked: Ask) {
-        const found = Option.flatMap(yield* readText(registration), decodeRegistration)
-        if (Option.isNone(found)) return yield* new UpdateFailed({ step: asked.step, message: `no service is registered in ${registration}` })
-        const request = HttpClientRequest.make(asked.method)(new URL(asked.path, found.value.url), { headers: { "x-opencode-directory": encodeURIComponent(settings.resident) } })
-        const authed = Option.match(Option.fromNullishOr(found.value.password), {
-          onNone: () => request,
-          onSome: (password) => HttpClientRequest.basicAuth(request, "opencode", Redacted.make(password)),
-        })
-        const sent = Option.match(asked.body, { onNone: () => authed, onSome: (body) => HttpClientRequest.bodyText(authed, body, "application/json") })
-        return yield* client.execute(sent).pipe(
-          Effect.flatMap((response) => response.text.pipe(Effect.map((text): Answer => ({ status: response.status, text })))),
-          Effect.timeoutOrElse({ duration: ASK_TIMEOUT, orElse: () => Effect.fail(new UpdateFailed({ step: asked.step, message: `no answer in ${Duration.format(ASK_TIMEOUT)}` })) }),
-          Effect.catchTag("HttpClientError", (failed) => Effect.fail(new UpdateFailed({ step: asked.step, message: failed.message }))),
-        )
-      })
-      /** An ask that must succeed: its body, or the step failed with what the service said. */
-      const answered = (asked: Ask) =>
-        ask(asked).pipe(
-          Effect.filterOrFail(
-            (answer) => answer.status >= 200 && answer.status < 300,
-            (answer) => new UpdateFailed({ step: asked.step, message: `${answer.status} ${answer.text.slice(0, 300)}` }),
-          ),
-          Effect.map((answer) => answer.text),
-        )
+      const { ask, answered } = asker(yield* HttpClient.HttpClient, registration, settings.resident)
       /** An ask that may fail: its body when it succeeds, none otherwise. */
       const optional = (asked: Ask) =>
         ask(asked).pipe(Effect.map((answer) => Option.liftPredicate(answer.text, () => answer.status >= 200 && answer.status < 300)), Effect.orElseSucceed(() => Option.none<string>()))
