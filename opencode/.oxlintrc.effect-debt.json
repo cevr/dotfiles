@@ -11,7 +11,7 @@
     "media/**"
   ],
   "jsPlugins": [
-    "oxlint-plugin-effect/plugin"
+    "./lint/node_modules/oxlint-plugin-effect/dist/plugin.js"
   ],
   "settings": {
     "effect": {

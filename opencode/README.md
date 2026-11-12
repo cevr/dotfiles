@@ -2775,9 +2775,14 @@ owner's servers or TUIs.
 `bun run lint` is oxlint, then the Effect debt ratchet. oxlint's errors are the
 layout fence (`.oxlintrc.json`, one import override per context; see
 `ARCHITECTURE.md`) and the rules of `oxlint-plugin-effect` the workspace
-already keeps (the plugin is pinned; it needs `effect` 4.1, so the root's
-`effect` is 4.1.0, the fork's, and `package.json`'s `overrides` move
-opencode-drive's `@effect/platform-node` to 4.1.0 with it): the 20 recommended rules it had
+already keeps. The plugin is pinned in the `lint` workspace (`lint/package.json`),
+never the root: it needs `effect` 4.1, and the lint workspace's own `effect`
+4.1.0 meets that peer, while the root's `effect` stays at what opencode-drive
+and the OpenCode SDK are built against (4.0.1, with their 4.0.1 platform
+packages). Moving the root's `effect` breaks every real-OpenCode scenario in
+`HttpApiClient`; `scripts/effect-debt.ts --check` refuses a root dependency on
+the plugin, and `scripts/effect-debt.test.ts` holds opencode-drive to the
+versions it pins. The kept rules are the 20 recommended rules it had
 no finding of, and `requireSuppressionReason` (a suppression names its rule
 and gives a reason after ` -- `). Two files keep one finding each a newer
 commit brought, as an exact-file override in `.oxlintrc.json` and a budget:
