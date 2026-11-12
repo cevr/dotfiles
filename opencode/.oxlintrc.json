@@ -20,6 +20,7 @@
         "mods/git/process/fake-gh.ts",
         "mods/herdr/herdr/fake-server.ts",
         "mods/kernel/catalog.fixture.ts",
+        "mods/wake/process/readiness.ts",
         "testbeds/gamut/sim-model.ts"
       ]
     }
@@ -1039,6 +1040,20 @@
       ],
       "rules": {
         "effect/noTryCatch": "error"
+      }
+    },
+    {
+      "files": [
+        "mods/wake/process/runner.test.ts",
+        "mods/wake/process/checks.test.ts",
+        "mods/wake/process/readiness.ts",
+        "mods/wake/process/readiness.test.ts"
+      ],
+      "rules": {
+        "effect/noFixedWaitInTests": "error",
+        "effect/noNewPromise": "error",
+        "effect/noPromiseChainsInTests": "error",
+        "effect/noTestLifecycleHooks": "error"
       }
     }
   ]

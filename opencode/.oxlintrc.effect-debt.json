@@ -23,6 +23,7 @@
         "mods/git/process/fake-gh.ts",
         "mods/herdr/herdr/fake-server.ts",
         "mods/kernel/catalog.fixture.ts",
+        "mods/wake/process/readiness.ts",
         "testbeds/gamut/sim-model.ts"
       ]
     }
@@ -140,6 +141,23 @@
       "rules": {
         "effect/noEffectRunInTests": "off",
         "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "scripts/effect-process-policy.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/wake/process/readiness.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
       }
     },
     {

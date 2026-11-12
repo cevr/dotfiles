@@ -2927,6 +2927,8 @@ its reason, and only for a capability no installed Effect service offers:
 | `scripts/effect-isolation.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge, and a real-process harness building throwaway lint workspaces and child `bun test` runs |
 | `scripts/effect-small-rules.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge, and a real-process harness building throwaway lint workspaces for real oxlint runs |
 | `scripts/effect-domain-policy.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge, and a real-process harness building throwaway lint workspaces from the real configs and legacy files for real oxlint runs |
+| `scripts/effect-process-policy.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge, and a real-process harness building throwaway lint workspaces from the real config for real oxlint runs |
+| `mods/wake/process/readiness.test.ts` | `noEffectRunInTests` | the Bun test bridge: the generated model suite of the test-only readiness wait runs its Effect once with `Effect.runPromise` |
 | `mods/update/model.test.ts` | `noEffectRunInTests` | the Bun test bridge: the update model run on its fake git, build and exec seams under a `TestClock` |
 | `mods/update/git/source.test.ts` | `noEffectRunInTests` | the Bun test bridge: the advance step run on a scratch git checkout with real bun |
 | `mods/orchestrate/git/fleet-record.test.ts` | `noEffectRunInTests` | the Bun test bridge: a batch's verified target recorded over scratch git repositories |
