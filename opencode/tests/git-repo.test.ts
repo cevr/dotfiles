@@ -22,7 +22,8 @@ import {
   parseSync,
   Visitor,
 } from "oxc-parser"
-import { GIT_VALUE_OPTIONS, gitSubcommand } from "../mods/guard/verdict.ts"
+import { gitSubcommand } from "../mods/guard/verdict.ts"
+import { type GitGlobalOptions, gitGlobalOptions } from "./git-options.ts"
 import { gitClone, gitInit, QUIET_GIT } from "./git-repo.ts"
 import { scratch } from "./scratch.ts"
 
@@ -106,13 +107,30 @@ const argvOf = (call: CallExpression, wrappers: ReadonlyMap<string, Template>): 
   return Option.some(flat.slice(git + 1))
 }
 
-/** Git's subcommand in `argv`, read by mods/guard/verdict.ts's reader; a word not written as a literal is none. */
-const subcommandOf = (argv: ReadonlyArray<Item>): Option.Option<string> => {
+/**
+ * What git runs for `argv`, read by mods/guard/verdict.ts's reader: its subcommand, none when that
+ * word is not written as a literal; and whether an option before it is one the reader does not
+ * know, so the subcommand cannot be read at all.
+ */
+interface ReadArgv {
+  readonly subcommand: Option.Option<string>
+  readonly unreadable: boolean
+}
+
+const readArgv = (argv: ReadonlyArray<Item>): ReadArgv => {
   const words = argv.map((word) => {
     if (word.kind === "literal") return word.text
     return "\u0000"
   })
-  return Option.filter(Option.fromNullishOr(gitSubcommand(words).name), (name) => name !== "\u0000")
+  const read = gitSubcommand(words)
+  if (read.kind === "unreadable") return { subcommand: Option.none(), unreadable: true }
+  return { subcommand: Option.filter(Option.some(read.name), (name) => name !== "\u0000" && name !== ""), unreadable: false }
+}
+
+/** Whether a call's git argv makes a repository, or cannot be read and so fails closed as one that might. */
+const makesRepository = (argv: ReadonlyArray<Item>) => {
+  const read = readArgv(argv)
+  return read.unreadable || Option.exists(read.subcommand, (name) => MAKES_REPOSITORY.has(name))
 }
 
 /** A function a file names: `const f = (…) => …`, `const f = function …`, `function f …`. */
@@ -166,7 +184,7 @@ const templateOf = (fn: Function | ArrowFunctionExpression, calls: ReadonlyArray
     calls.filter((call) => call.start >= fn.start && call.end <= fn.end),
     (call) =>
       Option.flatMap(
-        Option.filter(argvOf(call, known), (argv) => Option.isNone(subcommandOf(argv)) && argv.some((word) => Option.isSome(slot(word)))),
+        Option.filter(argvOf(call, known), (argv) => !readArgv(argv).unreadable && Option.isNone(readArgv(argv).subcommand) && argv.some((word) => Option.isSome(slot(word)))),
         (argv): Option.Option<Template> => Option.some({ kind: "argv", words: argv.map((word) => Option.getOrElse(slot(word), () => word)) }),
       ),
   )
@@ -199,7 +217,7 @@ const rawSites = (file: string, text: string): ReadonlyArray<string> => {
   const lines = text.split("\n")
   return Arr.dedupe(
     parsed.calls
-      .filter((call) => Option.exists(Option.flatMap(argvOf(call, wrappers), subcommandOf), (name) => MAKES_REPOSITORY.has(name)))
+      .filter((call) => Option.exists(argvOf(call, wrappers), makesRepository))
       .map((call) => text.slice(0, call.start).split("\n").length),
   ).map((line) => `${line}: ${Option.getOrElse(Arr.get(lines, line - 1), () => "").trim()}`)
 }
@@ -236,6 +254,9 @@ const SAMPLE = [
   "expect(log).toEqual([\"git clone x\", \"git init y\"])",
   "const commitTo = (remote: string, branch: string) => git(scratch, \"clone\", \"--branch\", branch, remote, \".\")",
   "commitTo(upstream, \"dev\")",
+  "Bun.spawnSync([\"git\", \"--attr-source\", \"HEAD\", \"init\", dir])",
+  "Bun.spawnSync([\"git\", \"--not-a-git-option\", \"status\"])",
+  "Bun.spawnSync([\"git\", \"--attr-source\", \"init\", \"status\"])",
 ].join("\n")
 
 /** A seeded generator (mulberry32), so a failing case names its seed and replays. */
@@ -251,8 +272,11 @@ const generator = (seed: number) => {
   return { pick, count: (below: number) => Math.floor(next() * below) }
 }
 
-/** Git's global options that take no value, from git 2.56's `git --help`, and the `=` forms of valued ones. */
-const BARE_OPTIONS = ["-p", "-P", "--paginate", "--no-pager", "--bare", "--no-replace-objects", "--no-lazy-fetch", "--no-optional-locks", "--no-advice", "--literal-pathspecs", "--git-dir=/nonexistent/loop-probe-x"]
+/** Running the installed git for its options (tests/git-options.ts), then 400 cases: a loaded machine gets room. */
+const PROBE_MS = 60_000
+
+/** Options git does not know, which a reader cannot read past: a case with one before the subcommand is a site whatever follows. */
+const UNKNOWN_OPTIONS = ["--not-a-git-option", "-Z", "--not-a-git-option=init"]
 
 /** Words a case puts where a value, a subcommand's argument or a wrapper's leading argument goes; the decoys are git's own subcommand names. */
 const WORDS = ["init", "clone", "/nonexistent/loop-probe-x", "core.pager=cat", "-q"]
@@ -260,7 +284,7 @@ const WORDS = ["init", "clone", "/nonexistent/loop-probe-x", "core.pager=cat", "
 /** The subcommands a case runs: the two that make a repository, and others. */
 const SUBCOMMANDS = ["init", "clone", "status", "commit", "fetch", "rev-parse"]
 
-/** A generated case: test code with one call that runs git, and whether git's subcommand there makes a repository. */
+/** A generated case: test code with one call that runs git, and whether git's subcommand there makes a repository (or cannot be read). */
 interface Case {
   readonly code: string
   readonly makes: boolean
@@ -268,12 +292,22 @@ interface Case {
 
 const quoted = (words: ReadonlyArray<string>) => words.map((word) => JSON.stringify(word)).join(", ")
 
-/** A case with git's global options in any order (each valued one with its value), a subcommand, its arguments, in one of the call shapes test code writes. */
-const generate = (random: ReturnType<typeof generator>): Case => {
-  const globals = Array.from({ length: random.count(4) }, () => {
-    const valued = random.pick([...GIT_VALUE_OPTIONS])
-    return random.pick([[random.pick(BARE_OPTIONS)], [valued, random.pick(WORDS)]])
-  }).flat()
+/**
+ * A case with the installed git's global options in any order (each valued one with its value as
+ * the next word or after `=`), now and then one git does not know, then a subcommand and its
+ * arguments, in one of the call shapes test code writes. The options come from git itself
+ * (tests/git-options.ts), not from the reader's tables, so an option the tables lack is generated.
+ */
+const generate = (random: ReturnType<typeof generator>, git: GitGlobalOptions): Case => {
+  const option = () => {
+    const valued = random.pick(git.valued)
+    const value = random.pick(WORDS)
+    // Only a long option takes its value after `=` in the same word.
+    const joined = Arr.filter([[`${valued}=${value}`]], () => valued.startsWith("--"))
+    return random.pick([[random.pick(git.passing)], [valued, value], ...joined, [random.pick(UNKNOWN_OPTIONS)]])
+  }
+  const globals = Array.from({ length: random.count(4) }, option).flat()
+  const unknown = globals.some((word) => UNKNOWN_OPTIONS.includes(word))
   const sub = random.pick(SUBCOMMANDS)
   const after = Array.from({ length: random.count(3) }, () => random.pick(WORDS))
   const argv = [...globals, sub, ...after]
@@ -287,7 +321,7 @@ const generate = (random: ReturnType<typeof generator>): Case => {
     `const named = (sub: string, target: string) => Bun.spawnSync(["git", ${[...globals.map((word) => JSON.stringify(word)), "sub", "target"].join(", ")}])\nnamed(${JSON.stringify(sub)}, ${lead})`,
     `const gx = (cwd: string, ...args: ReadonlyArray<string>) => Bun.spawnSync(["git", ...args], { cwd })\nconst at = (...args: ReadonlyArray<string>) => gx(dir, ...args)\nat(${quoted(argv)})`,
   ]
-  return { code: random.pick(forms), makes: MAKES_REPOSITORY.has(sub) }
+  return { code: random.pick(forms), makes: unknown || MAKES_REPOSITORY.has(sub) }
 }
 
 describe("a test's temp git repository", () => {
@@ -303,15 +337,20 @@ describe("a test's temp git repository", () => {
   })
 
   test("a call that runs git's init or clone is a site, through any wrapper; a command string in an expectation, a rift init or a commit message is not", () => {
-    expect(rawSites("sample.ts", SAMPLE).map((site) => Number(site.split(":")[0]))).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 25])
+    expect(rawSites("sample.ts", SAMPLE).map((site) => Number(site.split(":")[0]))).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 25, 27, 28])
   })
 
-  test("over generated git argv in every call shape, a call is a site exactly when git's subcommand there is init or clone", () => {
-    for (const seed of Arr.range(1, 400)) {
-      const { code, makes } = generate(generator(seed))
-      expect({ seed, code, site: rawSites("case.ts", code).length > 0 }).toEqual({ seed, code, site: makes })
-    }
-  })
+  test(
+    "over generated git argv with the installed git's options in every call shape, a call is a site exactly when git's subcommand is init or clone, or an option before it is unknown",
+    () => {
+      const git = gitGlobalOptions()
+      for (const seed of Arr.range(1, 400)) {
+        const { code, makes } = generate(generator(seed), git)
+        expect({ seed, code, site: rawSites("case.ts", code).length > 0 }).toEqual({ seed, code, site: makes })
+      }
+    },
+    PROBE_MS,
+  )
 
   test("no test file makes a repository with a raw git init or clone: each goes through gitInit or gitClone", () => {
     const raw = testFiles()

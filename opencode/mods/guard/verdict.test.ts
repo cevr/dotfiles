@@ -39,13 +39,20 @@ describe("the verdict denies", () => {
 
   test("git reset --hard, whatever global options come before it", () => {
     expect(reasonOf("git reset --hard")).toBe("`git reset --hard` discards uncommitted work; stash it (`git stash -u`) or commit first")
-    for (const command of ["git reset --hard HEAD~1", "git -C repo reset --hard", "git -c core.pager=cat reset --hard", "git --git-dir repo/.git --work-tree repo reset --hard", "git --config-env core.pager=PAGER reset --hard"])
+    for (const command of ["git reset --hard HEAD~1", "git -C repo reset --hard", "git -c core.pager=cat reset --hard", "git --git-dir repo/.git --work-tree repo reset --hard", "git --config-env core.pager=PAGER reset --hard", "git --attr-source HEAD reset --hard", "git --no-pager --git-dir=repo/.git reset --hard"])
       expect([command, judge(command)._tag]).toEqual([command, "Deny"])
   })
 
   test("a forced git clean with -d, -x or -X that is not a dry run", () => {
     expect(reasonOf("git clean -fdx")).toBe("`git clean -fdx` deletes untracked files for good; run it with -n first and remove what you mean by path")
-    for (const command of ["git clean -fd", "git clean -f -x", "git clean --force -d", "git clean -fX"]) expect([command, judge(command)._tag]).toEqual([command, "Deny"])
+    for (const command of ["git clean -fd", "git clean -f -x", "git clean --force -d", "git clean -fX", "git --attr-source HEAD clean -fdx"]) expect([command, judge(command)._tag]).toEqual([command, "Deny"])
+  })
+
+  test("a git command with a global option the guard does not know, whatever follows: what git runs cannot be read", () => {
+    expect(reasonOf("git --some-new-option HEAD reset --hard")).toBe(
+      "`git --some-new-option HEAD reset --hard` passes git `--some-new-option`, an option the guard does not know, so it cannot tell what git runs; spell the command without it",
+    )
+    for (const command of ["git --some-new-option status", "git -C repo -Z log", "git --some-new-option=x reset --soft"]) expect([command, judge(command)._tag]).toEqual([command, "Deny"])
   })
 
   test("any simple command of a chained line, through prefixes, groups and assignments", () => {
@@ -127,6 +134,9 @@ describe("the verdict allows", () => {
       "git clean --dry-run --force -d",
       "git clean -f",
       "git status",
+      "git --no-pager -C repo --literal-pathspecs log",
+      "git --attr-source HEAD --exec-path=/usr/lib/git-core status",
+      "git --version",
       "trash ~",
     ])
       expect([command, judge(command)._tag]).toEqual([command, "Allow"])

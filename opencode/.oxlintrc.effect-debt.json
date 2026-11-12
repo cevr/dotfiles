@@ -222,6 +222,15 @@
     },
     {
       "files": [
+        "tests/git-options.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
         "tests/wait.ts"
       ],
       "rules": {
