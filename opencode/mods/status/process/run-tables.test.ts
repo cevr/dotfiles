@@ -18,11 +18,6 @@ const scratch = Effect.acquireRelease(
   (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
 )
 
-const git = (cwd: string, ...args: ReadonlyArray<string>) =>
-  Effect.sync(() => Bun.spawnSync(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore" }).exitCode).pipe(
-    Effect.flatMap((code) => (code === 0 ? Effect.void : Effect.die(new Error(`git ${args.join(" ")} exited ${code}`)))),
-  )
-
 const STATUS_SCRIPT = `
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
