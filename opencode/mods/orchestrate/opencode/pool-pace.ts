@@ -49,7 +49,7 @@ export const layer = (ask: Ask, tell: Tell) =>
       function* (providerID: string) {
         yield* tell({ providerID }).pipe(Effect.timeoutOption(TIMEOUT))
       },
-      Effect.catchCause(() => Effect.void),
+      Effect.catchCause((cause) => Effect.logWarning("orchestrate: the pool was not told of a start", cause)),
     ),
   })
 

@@ -4,6 +4,6 @@
   "type": "module",
   "devDependencies": {
     "effect": "4.1.0",
-    "oxlint-plugin-effect": "0.32.1"
+    "oxlint-plugin-effect": "0.32.2"
   }
 }

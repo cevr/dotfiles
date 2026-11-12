@@ -305,10 +305,8 @@ const command = (random: () => number, shadow: Shadow): Command => {
     const name = pick(UNITS)
     const round = 1 + Math.floor(random() * 5)
     // Its Rift, as its description names it: one of its own round's, a scratch one any unit may share, or none.
-    const rift = pick([[], [], [`/home/me/.rifts/repo/${name}-${round}`], [`/home/me/.rifts/repo/${name}-${round}`], [`/home/me/.rifts/repo/scratch-${Math.floor(random() * 7)}`]])
-    const start = Start.make({ role: "implementor", name, round, direct: random() < 0.1, ...(folds.length === 0 ? {} : { folds }) })
-    // `rift` holds at most one path: the start names it, or none.
-    return rift.reduce((made, path) => Start.make({ ...made, rift: path }), start)
+    const rift = pick([{}, {}, { rift: `/home/me/.rifts/repo/${name}-${round}` }, { rift: `/home/me/.rifts/repo/${name}-${round}` }, { rift: `/home/me/.rifts/repo/scratch-${Math.floor(random() * 7)}` }])
+    return Start.make({ role: "implementor", name, round, direct: random() < 0.1, ...(folds.length === 0 ? {} : { folds }), ...rift })
   }
   if (roll < 0.55) return HandBack.make({ role: "implementor", name: pick(UNITS), verdict: pick(["ready", "ready", "ready", "blocked", "stuck", "none"] as const) })
   if (roll < 0.68) {

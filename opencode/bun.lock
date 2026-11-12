@@ -215,7 +215,7 @@
       "name": "@dotfiles/lint",
       "devDependencies": {
         "effect": "4.1.0",
-        "oxlint-plugin-effect": "0.32.1",
+        "oxlint-plugin-effect": "0.32.2",
       },
     },
     "mods/anthropic-auth": {
@@ -734,7 +734,7 @@
 
     "@dotfiles/lint/effect": ["effect@4.1.0", "", {}, "sha512-lGx2MJJyrXA8RZb2UpQ/0Nkb5Utaimby7oD92+18noBxLPE85IFOvptdzau8dvcxAOwfwHo9iqapbKeFzqQM/Q=="],
 
-    "@dotfiles/lint/oxlint-plugin-effect": ["oxlint-plugin-effect@0.32.1", "", { "dependencies": { "@oxlint/plugins": "^1.64.0" }, "peerDependencies": { "effect": ">=4.1.0 <5" } }, "sha512-nqCPTaU2yX0VJ4yoIvsIQJos4hJdGvGKbartR3dpX8UkQY7+5wJQkaRNwKZyWeKZnfr0V2rZxaLOF8mOE9LKfQ=="],
+    "@dotfiles/lint/oxlint-plugin-effect": ["oxlint-plugin-effect@0.32.2", "", { "dependencies": { "@oxlint/plugins": "^1.64.0" }, "peerDependencies": { "effect": ">=4.1.0 <5" } }, "sha512-T6KIH+avZD0voahEX2y1Y2l5758O9NwZydV31xihRpUav9is/1z6BXuhpLM2KoxzItVfR690yGpSylL4sxsyKg=="],
 
     "opencode-drive/@types/bun": ["@types/bun@1.4.2", "", { "dependencies": { "bun-types": "1.4.2" } }, "sha512-GimotNn7+ZV0uVArItBbriZsR1oNf0+WTzPkdcFrzShI7k2norL0uzEaJT8T33dWr7O/c9ZDuAFQrctKCi72oQ=="],
 
