@@ -17,7 +17,10 @@ export interface Build extends Schema.Schema.Type<typeof Build> {}
  * `version`, `command` and `previous` (`@opencode/util/installed-build`): an open TUI moves onto the
  * installed build only from a build listed in `previous`, and a client of such a build starts the
  * service on the installed build. The update adds what it needs and the fork ignores: the commits
- * the build came from, and `good`, the last build that passed a health check after its restart.
+ * the build came from; `good`, the last build that passed a health check after its restart; and
+ * `staged`, a build daily built ahead and no restart has installed yet: the record names a build as
+ * installed only once the handoff restarts onto it (`promoted`), and as good only once its health
+ * check passes (`proven`).
  */
 export const Record = Schema.Struct({
   version: Schema.String,
@@ -26,6 +29,7 @@ export const Record = Schema.Struct({
   dotfiles: Schema.optionalKey(Schema.String),
   fork: Schema.optionalKey(Schema.String),
   good: Schema.optionalKey(Build),
+  staged: Schema.optionalKey(Build),
 })
 export interface Record extends Schema.Schema.Type<typeof Record> {}
 
@@ -78,10 +82,36 @@ export const proven = (record: Record): Record =>
 /**
  * The record that rolls back to the last good build: that build installed again, the failed one
  * listed as superseded so every TUI on it follows. None when there is no good build, or the good
- * build is the one that failed.
+ * build is the one that failed: the same version and the same commits (a dotfiles-only target keeps
+ * the version, and rolls back its commit).
  */
 export const rolledBack = (record: Record): Option.Option<Record> =>
   goodOf(record).pipe(
-    Option.filter((good) => good.version !== record.version),
+    Option.filter((good) => good.version !== record.version || good.dotfiles !== record.dotfiles || good.fork !== record.fork),
     Option.map((good) => nextRecord(Option.some(record), good, Arr.empty())),
   )
+
+/**
+ * The record once daily built `build` ahead of its restart: the installed build stays the running
+ * one, and `build` waits as `staged`. With no record yet (a first install by hand) the build is
+ * named installed too, since no other build runs, and still waits as staged for its proof. The
+ * builds in the share directory join `previous`, never the running one or the staged one.
+ */
+export const stagedRecord = (last: Option.Option<Record>, build: Build, installed: ReadonlyArray<string>): Record =>
+  Option.match(last, {
+    onNone: () => ({ ...nextRecord(Option.none(), build, installed), staged: build }),
+    onSome: (record) => ({
+      ...record,
+      previous: Arr.dedupe([...(record.previous ?? Arr.empty<string>()), ...installedVersions(installed)])
+        .filter((version) => version !== record.version && version !== build.version)
+        .slice(-PREVIOUS_KEPT),
+      staged: build,
+    }),
+  })
+
+/** The record once the handoff restarts onto the staged build: it is the installed build, not yet good. */
+export const promoted = (record: Record): Record =>
+  Option.match(Option.fromNullishOr(record.staged), { onNone: () => record, onSome: (build) => nextRecord(Option.some(record), build, Arr.empty()) })
+
+/** The staged build, when one waits for its restart. */
+export const stagedOf = (record: Record): Option.Option<Build> => Option.fromNullishOr(record.staged)

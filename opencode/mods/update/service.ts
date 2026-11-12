@@ -3,6 +3,7 @@ import type { SessionView } from "./gate.ts"
 import type { Reading } from "./health.ts"
 import type { Record } from "./record.ts"
 import type { Target } from "./target.ts"
+import type { Rejected } from "./update.ts"
 
 /** A step of an update failed: which, and what its command said. */
 export class UpdateFailed extends Schema.TaggedError<UpdateFailed>()("UpdateFailed", {
@@ -73,6 +74,20 @@ export class Records extends Context.Service<
     readonly write: (record: Record) => Effect.Effect<void, UpdateFailed>
   }
 >()("dotfiles-opencode/update/Records") {}
+
+/**
+ * The target this host failed on (`update.ts` `Rejected`), in the update's own directory: a failed
+ * advance or build, or a restart that did not prove healthy. Writing never fails the run: a lost
+ * rejection costs one more try of that target.
+ */
+export class Rejections extends Context.Service<
+  Rejections,
+  {
+    /** None when nothing failed, or the file does not read. */
+    readonly read: Effect.Effect<Option.Option<Rejected>>
+    readonly write: (rejected: Rejected) => Effect.Effect<void>
+  }
+>()("dotfiles-opencode/update/Rejections") {}
 
 /** The update's own log: one line per step, never a notification. */
 export class Log extends Context.Service<

@@ -32,7 +32,7 @@ import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } f
 import { checkFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { forkChecks, mergeUpstream, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
-import { flagValue, headOf, installedText, restartThroughHandoff, settingsFor, updateEntry } from "../mods/update/process/install.ts"
+import { flagValue, headOf, restartThroughHandoff, stagedText, settingsFor, updateEntry } from "../mods/update/process/install.ts"
 
 const MODS = resolve(import.meta.dir, "../mods")
 const CMD = resolve(import.meta.dir, "../cmd")
@@ -341,11 +341,11 @@ if (import.meta.main) {
   copyFileSync(built, staged)
   chmodSync(staged, 0o755)
   renameSync(staged, binary)
-  // Before the service restart below: the TUIs that see it restart read this record to know they may follow.
+  // Staged, not installed: the handoff installs it as it restarts, and the health check proves it (mods/update).
   const record = installedFile(home)
   mkdirSync(dirname(record), { recursive: true })
   const checkout = dirname(dirname(MODS))
-  writeFileSync(`${record}.${process.pid}`, installedText(readFileSync(record, { encoding: "utf8", flag: "a+" }), { version, command: [binary], dotfiles: headOf(checkout), fork: forkTarget[0] ?? headOf(fork) }, readdirSync(share)))
+  writeFileSync(`${record}.${process.pid}`, stagedText(readFileSync(record, { encoding: "utf8", flag: "a+" }), { version, command: [binary], dotfiles: headOf(checkout), fork: forkTarget[0] ?? headOf(fork) }, readdirSync(share)))
   renameSync(`${record}.${process.pid}`, record)
   const link = join(home, ".local/bin/opencode")
   mkdirSync(dirname(link), { recursive: true })
@@ -404,5 +404,9 @@ if (import.meta.main) {
   console.log(`roles: ${Object.entries(models).map(([role, model]) => `${role} ${model}`).join(", ")}`)
   console.log(planner === undefined ? "planner first: none (no Fable in the catalog), so Opus" : `planner first: ${planner}, then Opus, then Codex when the pool holds it`)
   if (args.has("--stage")) console.log("staged: the update plugin restarts the service once every root session is idle")
-  else console.log(`restart: the update's handoff exited ${restartThroughHandoff(settings, process.env.PATH ?? "", "daily by hand")}; its lines are in ${settings.state}/update.log`)
+  else {
+    const code = restartThroughHandoff(settings, "daily by hand")
+    console.log(`restart: the update's handoff exited ${code} (0 only for a proven build); its lines are in ${settings.state}/update.log`)
+    process.exitCode = code
+  }
 }

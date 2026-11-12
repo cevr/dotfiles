@@ -3,16 +3,28 @@ import { Effect, Fiber, Layer, Option } from "effect"
 import { TestClock } from "effect/testing"
 import type { SessionView } from "./gate.ts"
 import type { Reading } from "./health.ts"
-import { GATE_POLL, handoff, Updater, updaterLayer } from "./model.ts"
-import type { Record } from "./record.ts"
-import { Builder, Configs, Handoff, Log, Notice, Records, Service, Sessions, Source, UpdateFailed } from "./service.ts"
+import { EXIT_CODES, GATE_POLL, handoff, Updater, updaterLayer } from "./model.ts"
+import { type Build, proven, type Record, stagedRecord } from "./record.ts"
+import { Builder, Configs, Handoff, Log, Notice, Records, Rejections, Service, Sessions, Source, UpdateFailed } from "./service.ts"
 import type { Target } from "./target.ts"
+import type { Rejected } from "./update.ts"
 
 /** 2026-11-11T17:00:00Z, a Wednesday noon in Knowlton. */
 const WEDNESDAY_NOON = 1_794_416_400_000
 
 const TARGET: Target = { dotfiles: "d".repeat(40), fork: "f".repeat(40), batch: "batch-7" }
 const PRIOR = "c".repeat(40)
+const SHORT = `dotfiles ${"d".repeat(10)}, fork ${"f".repeat(10)} (batch-7)`
+
+const build = (version: string, dotfiles: string, fork = "f".repeat(40)): Build => ({ version, command: [`/s/opencode-${version}`], dotfiles, fork })
+/** The last proven build, on the prior dotfiles commit and another fork commit. */
+const GOOD = build("2.2.6-prime.aaaaaaaa", PRIOR, "e".repeat(40))
+/** The target's build, as daily's stage names it. */
+const NEW = build("2.2.7-prime.bbbbbbbb", TARGET.dotfiles)
+/** A host on the good build, proven. */
+const onGood = (): Option.Option<Record> => Option.some(proven({ version: GOOD.version, command: GOOD.command, dotfiles: GOOD.dotfiles, fork: GOOD.fork }))
+/** The same host once daily staged the target's build. */
+const stagedTarget = (): Option.Option<Record> => Option.some(stagedRecord(onGood(), NEW, []))
 
 /** The host as the fakes hold it: what each seam was asked, in order, and what it answers. */
 interface World {
@@ -20,21 +32,43 @@ interface World {
   readonly lines: Array<string>
   views: ReadonlyArray<SessionView>
   record: Option.Option<Record>
+  rejected: Option.Option<Rejected>
   readonly readings: Array<Reading>
-  readonly stageFails: boolean
+  stageFails: boolean
+  sessionsFail: boolean
+  /** How many restarts still fail before one goes through. */
+  restartFailures: number
+  reinstallFails: boolean
+  /** The commits whose advance fails. */
+  advanceFails: ReadonlyArray<string>
 }
 
-const world = (at: Partial<Pick<World, "views" | "record" | "readings" | "stageFails">> = {}): World => ({
+const world = (at: Partial<Omit<World, "calls" | "lines">> = {}): World => ({
   calls: [],
   lines: [],
   views: [],
   record: Option.none(),
+  rejected: Option.none(),
   readings: [],
   stageFails: false,
+  sessionsFail: false,
+  restartFailures: 0,
+  reinstallFails: false,
+  advanceFails: [],
   ...at,
 })
 
 const session = (id: string, at: Partial<Omit<SessionView, "id">> = {}): SessionView => ({ id, parentID: Option.none(), busy: false, compacting: false, ...at })
+
+const failure = (step: string) => Effect.fail(new UpdateFailed({ step, message: `${step} exited 1` }))
+
+/** A record as one call line: the installed version, then the good and staged ones. */
+const recordLine = (record: Record) =>
+  [
+    `record ${record.version}`,
+    ...Option.toArray(Option.map(Option.fromNullishOr(record.good), (good) => `good ${good.version}`)),
+    ...Option.toArray(Option.map(Option.fromNullishOr(record.staged), (staged) => `staged ${staged.version}`)),
+  ].join(" ")
 
 /** Fake git, build and exec: each seam records its call and answers from the world. */
 const fakes = (host: World) =>
@@ -44,21 +78,40 @@ const fakes = (host: World) =>
       Source.of({
         verified: Effect.succeed(Option.some(TARGET)),
         head: Effect.succeed(PRIOR),
-        advance: (commit) => Effect.sync(() => void host.calls.push(`advance ${commit.slice(0, 1)}`)),
-        reinstall: Effect.sync(() => void host.calls.push("reinstall")),
+        advance: (commit) =>
+          Effect.suspend(() => {
+            host.calls.push(`advance ${commit.slice(0, 1)}`)
+            if (host.advanceFails.includes(commit)) return failure("install the dependencies")
+            return Effect.void
+          }),
+        reinstall: Effect.suspend(() => {
+          host.calls.push("reinstall")
+          if (host.reinstallFails) return failure("install the dependencies again")
+          return Effect.void
+        }),
       }),
     ),
     Layer.succeed(
       Builder,
       Builder.of({
         stage: (target) =>
-          Effect.sync(() => host.calls.push(`stage ${target.batch}`)).pipe(
-            Effect.andThen(Effect.suspend(() => Effect.when(Effect.fail(new UpdateFailed({ step: "build", message: "bun build exited 1" })), Effect.sync(() => host.stageFails)))),
-            Effect.asVoid,
-          ),
+          Effect.suspend(() => {
+            host.calls.push(`stage ${target.batch}`)
+            if (host.stageFails) return failure("build")
+            host.record = Option.some(stagedRecord(host.record, NEW, []))
+            return Effect.void
+          }),
       }),
     ),
-    Layer.succeed(Sessions, Sessions.of({ all: Effect.sync(() => host.views) })),
+    Layer.succeed(
+      Sessions,
+      Sessions.of({
+        all: Effect.suspend(() => {
+          if (host.sessionsFail) return failure("list the sessions")
+          return Effect.succeed(host.views)
+        }),
+      }),
+    ),
     Layer.succeed(Handoff, Handoff.of({ start: (reason) => Effect.sync(() => void host.calls.push(`handoff ${reason}`)) })),
     Layer.succeed(
       Records,
@@ -67,7 +120,18 @@ const fakes = (host: World) =>
         write: (record) =>
           Effect.sync(() => {
             host.record = Option.some(record)
-            host.calls.push(`record ${record.version}${Option.match(Option.fromNullishOr(record.good), { onNone: () => "", onSome: (good) => ` good ${good.version}` })}`)
+            host.calls.push(recordLine(record))
+          }),
+      }),
+    ),
+    Layer.succeed(
+      Rejections,
+      Rejections.of({
+        read: Effect.sync(() => host.rejected),
+        write: (rejected) =>
+          Effect.sync(() => {
+            host.rejected = Option.some(rejected)
+            host.calls.push(`reject ${rejected.step}`)
           }),
       }),
     ),
@@ -77,14 +141,19 @@ const fakes = (host: World) =>
     Layer.succeed(
       Service,
       Service.of({
-        restart: Effect.sync(() => void host.calls.push("restart")),
-        read: Effect.suspend(() => Option.match(Option.fromNullishOr(host.readings.shift()), { onNone: () => Effect.fail(new UpdateFailed({ step: "read", message: "no reading" })), onSome: Effect.succeed })),
+        restart: Effect.suspend(() => {
+          host.calls.push("restart")
+          if (host.restartFailures === 0) return Effect.void
+          host.restartFailures -= 1
+          return failure("restart the service")
+        }),
+        read: Effect.suspend(() => Option.match(Option.fromNullishOr(host.readings.shift()), { onNone: () => failure("read"), onSome: Effect.succeed })),
       }),
     ),
   )
 
 /** Runs `body` on the fakes under a test clock set to a Wednesday noon. */
-const run = <A>(host: World, body: Effect.Effect<A, UpdateFailed, Updater | Service | Source | Records | Configs | Notice | Log>) =>
+const run = <A>(host: World, body: Effect.Effect<A, UpdateFailed, Updater | Service | Source | Records | Rejections | Configs | Notice | Log>) =>
   Effect.runPromise(
     Effect.gen(function* () {
       yield* TestClock.setTime(WEDNESDAY_NOON)
@@ -92,18 +161,36 @@ const run = <A>(host: World, body: Effect.Effect<A, UpdateFailed, Updater | Serv
     }).pipe(Effect.provide(Layer.provideMerge(updaterLayer({ fetchEvery: GATE_POLL }), fakes(host))), Effect.provide(TestClock.layer())),
   )
 
+/** One check of the plugin's, run to its end with the clock moved past its gate polls. */
+const check = (reason: string) =>
+  Effect.gen(function* () {
+    const fiber = yield* Effect.forkChild((yield* Updater).check(reason))
+    yield* settle
+    yield* TestClock.adjust(GATE_POLL)
+    yield* Fiber.join(fiber)
+  })
+
+/** A handoff run to its end, its health polls moved along by the clock. */
+const handOff = Effect.gen(function* () {
+  const fiber = yield* Effect.forkChild(handoff("batch-7"))
+  yield* settle
+  yield* TestClock.adjust("10 minutes")
+  return yield* Fiber.join(fiber)
+})
+
 /** Lets every forked fiber run until it waits on the clock. */
 const settle = Effect.forEach(Array.from({ length: 20 }), () => Effect.yieldNow, { discard: true })
 
 const POOL = "/d/opencode/cmd/pool"
 const healthy: Reading = { configured: [POOL], listed: [{ path: Option.some(POOL), failed: Option.none() }], accounts: Option.some(7) }
 const failedPool: Reading = { configured: [POOL], listed: [{ path: Option.some(POOL), failed: Option.some("Cannot find package '@dotfiles/opencode-status'") }], accounts: Option.none() }
+const POOL_FAILED = "pool: Cannot find package '@dotfiles/opencode-status'"
 
-const build = (version: string, dotfiles: string) => ({ version, command: [`/s/opencode-${version}`] as const, dotfiles, fork: "f".repeat(40) })
+const notices = (host: World) => host.calls.filter((call) => call.startsWith("notice "))
 
-describe("the update on its seams", () => {
+describe("the updater on its seams", () => {
   test("a busy root holds the restart; once the roots are idle, running subagents do not, and the build is handed off", () => {
-    const host = world({ views: [session("ses_root", { busy: true }), session("ses_sub", { parentID: Option.some("ses_root"), busy: true })] })
+    const host = world({ record: onGood(), views: [session("ses_root", { busy: true }), session("ses_sub", { parentID: Option.some("ses_root"), busy: true })] })
     return run(
       host,
       Effect.gen(function* () {
@@ -112,80 +199,234 @@ describe("the update on its seams", () => {
         yield* settle
         yield* TestClock.adjust(GATE_POLL)
         yield* settle
-        expect(host.calls).toEqual([`advance d`, "keep config", "stage batch-7"])
+        expect(host.calls).toEqual(["advance d", "keep config", "stage batch-7"])
         expect(host.lines).toContain("restart held: root sessions at work: ses_root")
         host.views = [session("ses_root"), session("ses_sub", { parentID: Option.some("ses_root"), busy: true })]
         yield* TestClock.adjust(GATE_POLL)
         yield* Fiber.join(fiber)
-        expect(host.calls).toEqual([`advance d`, "keep config", "stage batch-7", `handoff dotfiles ${"d".repeat(10)}, fork ${"f".repeat(10)} (batch-7)`])
+        expect(host.calls).toEqual(["advance d", "keep config", "stage batch-7", `handoff ${SHORT}`])
         expect(host.lines.some((line) => /^restart: .* after 1m of waiting$/.test(line))).toBe(true)
       }),
     )
   })
 
-  test("a failed build moves the dotfiles back and restarts nothing", () => {
-    const host = world({ stageFails: true })
+  test("the staged build is not the installed one: the record keeps the running build until the handoff installs it", () => {
+    const host = world({ record: onGood(), stageFails: false })
     return run(
       host,
       Effect.gen(function* () {
-        yield* (yield* Updater).check("interval")
-        expect(host.calls).toEqual([`advance d`, "keep config", "stage batch-7", `advance c`])
-        expect(host.lines.at(-1)).toBe("update failed at build: bun build exited 1")
+        yield* check("interval")
+        expect(Option.map(host.record, (record) => [record.version, record.dotfiles, record.staged?.version])).toEqual(Option.some([GOOD.version, PRIOR, NEW.version]))
       }),
     )
   })
 
-  test("a host on the target does nothing", () => {
-    const host = world({ record: Option.some({ ...build("2.2.7-prime.bbbbbbbb", TARGET.dotfiles), fork: TARGET.fork }) })
+  test("P6: a failed build moves the dotfiles and the config back and rejects the target: later checks build nothing", () => {
+    const host = world({ record: onGood(), stageFails: true })
     return run(
       host,
       Effect.gen(function* () {
-        yield* (yield* Updater).check("interval")
+        yield* check("interval")
+        expect(host.calls).toEqual(["advance d", "keep config", "stage batch-7", "advance c", "restore config", "reject build"])
+        expect(host.lines.at(-1)).toBe("update failed at build: build exited 1")
+        host.calls.length = 0
+        yield* check("interval")
+        yield* check("asked")
+        expect(host.calls).toEqual([])
+        expect(host.lines.at(-1)).toBe(`check (asked): ${SHORT} failed at build (build exited 1); waiting for another target`)
+      }),
+    )
+  })
+
+  test("a failed advance (its install) rejects the target too", () => {
+    const host = world({ record: onGood(), advanceFails: [TARGET.dotfiles] })
+    return run(
+      host,
+      Effect.gen(function* () {
+        yield* check("interval")
+        host.calls.length = 0
+        yield* check("interval")
+        expect(host.calls).toEqual([])
+        expect(Option.map(host.rejected, (rejected) => rejected.step)).toEqual(Option.some("advance"))
+      }),
+    )
+  })
+
+  test("a host on the target, proven, does nothing", () => {
+    const host = world({ record: Option.some(proven({ version: NEW.version, command: NEW.command, dotfiles: NEW.dotfiles, fork: NEW.fork })) })
+    return run(
+      host,
+      Effect.gen(function* () {
+        yield* check("interval")
         expect(host.calls).toEqual([])
       }),
     )
   })
 
-  test("a healthy restart proves the build and clears the corner", () => {
-    const host = world({ record: Option.some(build("2.2.7-prime.bbbbbbbb", "d".repeat(40))), readings: [healthy] })
+  test("P5, M1: a failed session read while the build waits ends the run; the next check restarts onto the staged build without building it again", () => {
+    const host = world({ record: onGood(), sessionsFail: true })
     return run(
       host,
       Effect.gen(function* () {
-        expect(yield* handoff("batch-7")).toBe("proven")
-        expect(host.calls).toEqual(["restart", "record 2.2.7-prime.bbbbbbbb good 2.2.7-prime.bbbbbbbb", "notice cleared"])
+        yield* check("interval")
+        expect(host.calls).toEqual(["advance d", "keep config", "stage batch-7"])
+        expect(host.lines.at(-1)).toBe("update failed at list the sessions: list the sessions exited 1")
+        host.sessionsFail = false
+        host.calls.length = 0
+        yield* check("interval")
+        expect(host.calls).toEqual([`handoff ${SHORT}`])
       }),
     )
   })
 
-  test("a plugin that fails after the restart and the reinstall rolls back to the last good build and dotfiles commit", () => {
-    const good = build("2.2.6-prime.aaaaaaaa", PRIOR)
-    const host = world({ record: Option.some({ ...build("2.2.7-prime.bbbbbbbb", "d".repeat(40)), good }), readings: [failedPool, failedPool, healthy] })
+  test("a build installed by a restart outside the handoff (a crash, a reboot) is not proven: the next check restarts onto it through the handoff", () => {
+    const host = world({ record: Option.some({ version: NEW.version, command: NEW.command, dotfiles: NEW.dotfiles, fork: NEW.fork, good: GOOD }) })
     return run(
       host,
       Effect.gen(function* () {
-        expect(yield* handoff("batch-7")).toBe("rolled-back")
+        yield* check("interval")
+        expect(host.calls).toEqual([`handoff ${SHORT}`])
+      }),
+    )
+  })
+
+  test("once the restart is handed off, later checks wait for it", () => {
+    const host = world({ record: stagedTarget() })
+    return run(
+      host,
+      Effect.gen(function* () {
+        yield* check("interval")
+        yield* check("asked")
+        expect(host.calls).toEqual([`handoff ${SHORT}`])
+      }),
+    )
+  })
+})
+
+describe("the handoff on its seams", () => {
+  test("installs the staged build, restarts, and a healthy restart proves it and clears the corner", () => {
+    const host = world({ record: stagedTarget(), readings: [healthy] })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("proven")
+        expect(host.calls).toEqual([`record ${NEW.version} good ${GOOD.version}`, "restart", `record ${NEW.version} good ${NEW.version}`, "notice cleared"])
+        expect(EXIT_CODES.proven).toBe(0)
+      }),
+    )
+  })
+
+  test("P1: a plugin that fails after the restart and the reinstall rolls back to the good build and dotfiles commit, and the target is never tried again", () => {
+    const host = world({ record: stagedTarget(), readings: [failedPool, failedPool, healthy] })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("rolled-back")
         expect(host.calls).toEqual([
+          `record ${NEW.version} good ${GOOD.version}`,
           "restart",
           "reinstall",
           "restart",
           "advance c",
           "restore config",
-          "record 2.2.6-prime.aaaaaaaa good 2.2.6-prime.aaaaaaaa",
+          `record ${GOOD.version} good ${GOOD.version}`,
           "restart",
-          "notice pool: Cannot find package '@dotfiles/opencode-status'; rolled back",
+          `notice ${POOL_FAILED}; rolled back`,
+          "reject health",
         ])
-        expect(Option.map(host.record, (record) => record.previous)).toEqual(Option.some(["2.2.7-prime.bbbbbbbb"]))
+        expect(Option.map(host.record, (record) => record.previous)).toEqual(Option.some([NEW.version]))
+        host.calls.length = 0
+        yield* check("interval")
+        yield* check("interval")
+        expect(host.calls).toEqual([])
+        expect(EXIT_CODES["rolled-back"]).not.toBe(0)
+      }),
+    )
+  })
+
+  test("P2: a restart that fails once is a sick reading: it reinstalls, restarts and proves the build", () => {
+    const host = world({ record: stagedTarget(), restartFailures: 1, readings: [healthy] })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("proven")
+        expect(host.calls.slice(1)).toEqual(["restart", "reinstall", "restart", `record ${NEW.version} good ${NEW.version}`, "notice cleared"])
+      }),
+    )
+  })
+
+  test("a restart that keeps failing rolls back, and a rollback that cannot restart gives up with the notice", () => {
+    const host = world({ record: stagedTarget(), restartFailures: 3 })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("gave-up")
+        expect(host.calls.slice(1)).toEqual([
+          "restart",
+          "reinstall",
+          "restart",
+          "advance c",
+          "restore config",
+          `record ${GOOD.version} good ${GOOD.version}`,
+          "restart",
+          "notice service restart: restart the service exited 1",
+          "reject health",
+        ])
+        expect(EXIT_CODES["gave-up"]).not.toBe(0)
+      }),
+    )
+  })
+
+  test("a restart that fails twice, then a healthy rollback, ends rolled back with the notice", () => {
+    const host = world({ record: stagedTarget(), restartFailures: 2, readings: [healthy] })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("rolled-back")
+        expect(notices(host)).toEqual(["notice service restart: restart the service exited 1; rolled back"])
+      }),
+    )
+  })
+
+  test("P3: a reinstall that fails goes on to the rollback, which ends healthy, with the notice", () => {
+    const host = world({ record: stagedTarget(), reinstallFails: true, readings: [failedPool, healthy] })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("rolled-back")
+        expect(host.calls.slice(1)).toEqual([
+          "restart",
+          "reinstall",
+          "advance c",
+          "restore config",
+          `record ${GOOD.version} good ${GOOD.version}`,
+          "restart",
+          "notice reinstall: install the dependencies again exited 1; rolled back",
+          "reject health",
+        ])
+      }),
+    )
+  })
+
+  test("P4: a rollback whose checkout move fails gives up with the notice and rejects the target", () => {
+    const host = world({ record: stagedTarget(), advanceFails: [PRIOR], readings: [failedPool, failedPool] })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("gave-up")
+        expect(notices(host)).toEqual([`notice ${POOL_FAILED}; rollback at install the dependencies: install the dependencies exited 1`])
+        expect(Option.map(host.rejected, (rejected) => [rejected.dotfiles, rejected.step])).toEqual(Option.some([TARGET.dotfiles, "health"]))
       }),
     )
   })
 
   test("with no good build to go back to, it gives up and the corner names the failed plugin", () => {
-    const host = world({ record: Option.some(build("2.2.7-prime.bbbbbbbb", "d".repeat(40))), readings: [failedPool, failedPool] })
+    const host = world({ record: Option.some(stagedRecord(Option.none(), NEW, [])), readings: [failedPool, failedPool] })
     return run(
       host,
       Effect.gen(function* () {
-        expect(yield* handoff("batch-7")).toBe("gave-up")
-        expect(host.calls).toEqual(["restart", "reinstall", "restart", "notice pool: Cannot find package '@dotfiles/opencode-status'"])
+        expect(yield* handOff).toBe("gave-up")
+        expect(host.calls.slice(1)).toEqual(["restart", "reinstall", "restart", `notice ${POOL_FAILED}`, "reject health"])
       }),
     )
   })

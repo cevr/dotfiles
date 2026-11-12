@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { type Build, nextRecord, parseRecord, proven, type Record, recordText, rolledBack } from "./record.ts"
+import { type Build, goodOf, nextRecord, parseRecord, promoted, proven, type Record, recordText, rolledBack, stagedOf, stagedRecord } from "./record.ts"
 
 const build = (commit: string, dotfiles = "d1", fork = "f1"): Build => ({ version: `2.2.7-prime.${commit}`, command: [`/s/opencode-2.2.7-prime.${commit}`], dotfiles, fork })
 
@@ -44,6 +44,40 @@ describe("the installed build's record", () => {
     expect(Option.map(back, (record) => [record.version, record.dotfiles, record.fork])).toEqual(Option.some(["2.2.7-prime.aaaaaaaa", "d1", "f1"]))
     expect(Option.map(back, (record) => record.previous)).toEqual(Option.some(["2.2.7-prime.bbbbbbbb"]))
     expect(Option.map(back, (record) => record.good)).toEqual(Option.some(build("aaaaaaaa", "d1", "f1")))
+  })
+
+  test("a dotfiles-only target keeps the version, and still rolls back to the good dotfiles commit", () => {
+    const first = proven(nextRecord(Option.none(), build("aaaaaaaa", "d1", "f1"), []))
+    const failed = nextRecord(Option.some(first), build("aaaaaaaa", "d2", "f1"), [])
+    expect(Option.map(rolledBack(failed), (record) => record.dotfiles)).toEqual(Option.some("d1"))
+  })
+
+  test("M1: a staged build waits beside the running one; the handoff installs it, and only its proof makes it good", () => {
+    const running = proven(nextRecord(Option.none(), build("aaaaaaaa", "d1", "f1"), []))
+    const staged = stagedRecord(Option.some(running), build("bbbbbbbb", "d2", "f2"), ["opencode-2.2.7-prime.aaaaaaaa", "opencode-2.2.6-prime.cccccccc", "opencode-2.2.7-prime.bbbbbbbb"])
+    expect([staged.version, staged.dotfiles, staged.good, staged.staged, staged.previous]).toEqual([
+      "2.2.7-prime.aaaaaaaa",
+      "d1",
+      build("aaaaaaaa", "d1", "f1"),
+      build("bbbbbbbb", "d2", "f2"),
+      ["2.2.6-prime.cccccccc"],
+    ])
+    expect(stagedOf(staged)).toEqual(Option.some(build("bbbbbbbb", "d2", "f2")))
+    const installed = promoted(staged)
+    expect([installed.version, installed.dotfiles, installed.good, stagedOf(installed), installed.previous]).toEqual([
+      "2.2.7-prime.bbbbbbbb",
+      "d2",
+      build("aaaaaaaa", "d1", "f1"),
+      Option.none(),
+      ["2.2.6-prime.cccccccc", "2.2.7-prime.aaaaaaaa"],
+    ])
+    expect(promoted(installed)).toEqual(installed)
+    expect(parseRecord(recordText(staged))).toEqual(Option.some(staged))
+  })
+
+  test("a first install by hand names its build installed and staged, with no good build yet", () => {
+    const first = stagedRecord(Option.none(), build("aaaaaaaa"), [])
+    expect([first.version, goodOf(first), stagedOf(first)]).toEqual(["2.2.7-prime.aaaaaaaa", Option.none(), Option.some(build("aaaaaaaa"))])
   })
 
   test("there is no rollback without a good build, or when the good build is the one that failed", () => {

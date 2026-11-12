@@ -42,15 +42,5 @@ export const targetOfTag = (text: string): Option.Option<Target> => {
   return decodeMessage(text.slice(split + 2).trim()).pipe(Option.filter((target) => object?.[1] === target.dotfiles))
 }
 
-/** What a host built, as its installed record keeps it. */
-export interface Installed {
-  readonly dotfiles: Option.Option<string>
-  readonly fork: Option.Option<string>
-}
-
-/** Whether the installed build is the target's: the same dotfiles and fork commits. */
-export const onTarget = (installed: Installed, target: Target): boolean =>
-  Option.contains(installed.dotfiles, target.dotfiles) && Option.contains(installed.fork, target.fork)
-
 /** A short name for a target in a log line. */
 export const shortTarget = (target: Target): string => `dotfiles ${target.dotfiles.slice(0, 10)}, fork ${target.fork.slice(0, 10)} (${target.batch})`
