@@ -1015,6 +1015,20 @@
       "rules": {
         "effect/noTryCatch": "error"
       }
+    },
+    {
+      "files": [
+        "mods/wake/process/runner.test.ts",
+        "mods/wake/process/checks.test.ts",
+        "mods/wake/process/readiness.ts",
+        "mods/wake/process/readiness.test.ts"
+      ],
+      "rules": {
+        "effect/noFixedWaitInTests": "error",
+        "effect/noNewPromise": "error",
+        "effect/noPromiseChainsInTests": "error",
+        "effect/noTestLifecycleHooks": "error"
+      }
     }
   ]
 }

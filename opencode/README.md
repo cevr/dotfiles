@@ -2857,6 +2857,7 @@ its reason, and only for a capability no installed Effect service offers:
 | `scripts/effect-isolation.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge, and a real-process harness building throwaway lint workspaces and child `bun test` runs |
 | `scripts/effect-small-rules.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge, and a real-process harness building throwaway lint workspaces for real oxlint runs |
 | `scripts/effect-domain-policy.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge, and a real-process harness building throwaway lint workspaces from the real configs and legacy files for real oxlint runs |
+| `scripts/effect-process-policy.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge, and a real-process harness building throwaway lint workspaces from the real config for real oxlint runs |
 | `mods/wake/process/readiness.test.ts` | `noEffectRunInTests` | the Bun test bridge: the generated model suite of the test-only readiness wait runs its Effect once with `Effect.runPromise` |
 
 No other rule can be exempted (`EXEMPTABLE` in the script): a test-global

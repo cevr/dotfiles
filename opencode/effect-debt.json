@@ -99,6 +99,8 @@
     {"file":"scripts/effect-small-rules.test.ts","rule":"effect/noNodeBuiltinImport","reason":"real-process harness: it builds throwaway lint workspaces for real oxlint runs with node:fs, node:os and node:path; the root has no Effect platform layer"},
     {"file":"scripts/effect-domain-policy.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: the root has no Effect test runner, so each bun:test case runs its Effect with Effect.runPromise"},
     {"file":"scripts/effect-domain-policy.test.ts","rule":"effect/noNodeBuiltinImport","reason":"real-process harness: it builds throwaway lint workspaces from the real configs and the real legacy files for real oxlint runs with node:fs, node:os and node:path; the root has no Effect platform layer"},
+    {"file":"scripts/effect-process-policy.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: the root has no Effect test runner, so each bun:test case runs its Effect with Effect.runPromise"},
+    {"file":"scripts/effect-process-policy.test.ts","rule":"effect/noNodeBuiltinImport","reason":"real-process harness: it builds throwaway lint workspaces from the real config for real oxlint runs with node:fs, node:os and node:path; the root has no Effect platform layer"},
     {"file":"mods/wake/process/readiness.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: the root has no Effect test runner, so the generated model suite runs its Effect once with Effect.runPromise"}
   ],
   "budgets": {

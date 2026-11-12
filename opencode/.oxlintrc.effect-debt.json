@@ -145,6 +145,15 @@
     },
     {
       "files": [
+        "scripts/effect-process-policy.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
         "mods/wake/process/readiness.test.ts"
       ],
       "rules": {
