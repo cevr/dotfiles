@@ -1032,6 +1032,30 @@ describe("the planner's first model", () => {
   const options = { now: WEDNESDAY, planner: { model: "anthropic/claude-fable" } }
   const room = () => ({ ok: true, measured: true, reason: "scripted room" })
   const line = (logged: ReadonlyArray<string>) => JSON.parse(logged[0]!) as Record<string, unknown>
+  const day = 86_400_000
+  /** The pool's own pace over one account: room in its 5-hour and weekly windows, and Fable's week `fableUsed`; each ask recorded in `asked`. */
+  const fablePool = (fableUsed: number, asked: Array<unknown>): OpenCodePoolPace.Ask => {
+    const account: AccountStatus = {
+      credentialID: "a",
+      load: 0,
+      live: 0,
+      noRoom: false,
+      reading: {
+        at: now,
+        windows: [
+          { name: "5h", utilization: 0.1, resetAt: now + 3_600_000 },
+          { name: "7d", utilization: 0.1, resetAt: now + 3 * day },
+          { name: "7d:Fable", utilization: fableUsed, resetAt: now + 2 * day },
+        ],
+      },
+    }
+    return (input) =>
+      Effect.sync(() => {
+        asked.push(input)
+        return poolPace([account], now, NO_INFLIGHT, input.model)
+      })
+  }
+  const FABLE_SPENT = "anthropic/claude-fable#medium held: every pool account has spent claude-fable's own weekly window"
 
   test("every new planner start runs on the first model at the planner's effort, whatever its description, and its line names it", () =>
     scenario(
@@ -1102,36 +1126,15 @@ describe("the planner's first model", () => {
   test("the account's Fable week is spent and its main windows are free: the planner starts on Opus, and its line says why", () =>
     scenario(
       Effect.gen(function* () {
-        const day = 86_400_000
-        // The pool's own pace over one account: room in its 5-hour and weekly windows, none in Fable's week.
-        const account: AccountStatus = {
-          credentialID: "a",
-          load: 0,
-          live: 0,
-          noRoom: false,
-          reading: {
-            at: now,
-            windows: [
-              { name: "5h", utilization: 0.1, resetAt: now + 3_600_000 },
-              { name: "7d", utilization: 0.1, resetAt: now + 3 * day },
-              { name: "7d:Fable", utilization: 1, resetAt: now + 2 * day },
-            ],
-          },
-        }
         const asked: Array<unknown> = []
-        const poolAsk: OpenCodePoolPace.Ask = (input) =>
-          Effect.sync(() => {
-            asked.push(input)
-            return poolPace([account], now, NO_INFLIGHT, input.model)
-          })
-        const plugin = yield* start(options, { model, variants: ["medium"], others: [fable, sol], poolAsk, codex: room })
+        const plugin = yield* start(options, { model, variants: ["medium"], others: [fable, sol], poolAsk: fablePool(1, asked), codex: room })
         const planner = yield* plugin.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x" })
         expect(planner.input).toMatchObject({ model: "anthropic/claude-opus#medium" })
         const started = line(plugin.logged())
         expect(started).toMatchObject({
           model: "anthropic/claude-opus#medium",
           pace: { ok: true, measured: true },
-          first: { model: "anthropic/claude-fable", fellBack: "anthropic/claude-fable#medium held: every pool account has spent claude-fable's own weekly window" },
+          first: { model: "anthropic/claude-fable", fellBack: FABLE_SPENT },
         })
         expect(started.fallback).toBeUndefined()
         // The pool is asked of each model by its bare id, as its windows name models, from the session whose start would wait.
@@ -1172,6 +1175,67 @@ describe("the planner's first model", () => {
         const latch = { kind: "latch", id: "w000001", directory: "/work", setAt: now, ...plugin.kept[0]!, child: "ses_latched1" }
         expect(yield* later.open(latch)).toEqual({ outcome: "opened" })
         expect(line(later.logged())).toMatchObject({ kind: "call", model: "anthropic/claude-opus#medium", first })
+      }),
+    ))
+
+  test("over the Sabbath a planner latches on its first model until work resumes, as every role latches on its own: no pace asked, never moved to Opus", () =>
+    scenario(
+      Effect.gen(function* () {
+        const asked: Array<unknown> = []
+        const codexAsked: Array<string> = []
+        // Fable's week is spent too: still no pace is asked, and the planner is not moved to Opus.
+        const friday = yield* start(
+          { ...options, now: FRIDAY_EVENING },
+          { model, variants: ["medium"], others: [fable, sol], poolAsk: fablePool(1, asked), codex: (id) => (codexAsked.push(id), room()) },
+        )
+        const call = yield* friday.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x" })
+        expect(call.input).toMatchObject({ model: "anthropic/claude-fable#medium", sessionID: "ses_latched1" })
+        expect(friday.kept[0]).toMatchObject({ hold: "sabbath", subagent: { model: "anthropic/claude-fable#medium" }, context: { reason: "kept" } })
+        expect(friday.kept[0]!.context).toEqual({ reason: "kept" })
+        const latched = line(friday.logged())
+        expect(latched).toMatchObject({ kind: "latched", agent: "planner", model: "anthropic/claude-fable#medium", hold: "sabbath" })
+        expect(latched.first).toBeUndefined()
+        expect(latched.fallback).toBeUndefined()
+        expect(asked).toEqual([])
+        expect(codexAsked).toEqual([])
+        // An implementor and a verifier latch on their own model the same way.
+        for (const [agent, description] of [["implementor", "implementor billing r1"], ["verifier", "verifier batch-1 r1"]] as const) {
+          const role = yield* friday.call("subagent", "root", { agent, description, prompt: "x" })
+          expect(role.refused, String(role.refused?.message)).toBeUndefined()
+          expect(role.input).toMatchObject({ model: "anthropic/claude-opus#medium" })
+        }
+        expect(friday.kept.map((kept) => kept.hold)).toEqual(["sabbath", "sabbath", "sabbath"])
+        expect(asked).toEqual([])
+      }),
+    ))
+
+  test("once work resumes, a planner latched over the Sabbath opens on its first model, or takes the chain (Opus, then sol) when the pool holds it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const friday = yield* start({ ...options, now: FRIDAY_EVENING }, { model, variants: ["medium"], others: [fable, sol] })
+        yield* friday.call("subagent", "root", { agent: "planner", description: "planner billing r1", prompt: "x" })
+        const latch = { kind: "latch", id: "w000001", directory: "/work", setAt: now, ...friday.kept[0]!, child: "ses_latched1" }
+        // Fable has room: it opens on Fable, with nothing to explain.
+        const free = yield* start(options, { model, variants: ["medium"], others: [fable, sol], poolAsk: fablePool(0.2, []), codex: room })
+        expect(yield* free.open(latch)).toEqual({ outcome: "opened" })
+        expect(free.ran[0]!.input).toMatchObject({ model: "anthropic/claude-fable#medium", sessionID: "ses_latched1" })
+        expect(line(free.logged())).toMatchObject({ kind: "call", model: "anthropic/claude-fable#medium" })
+        expect(line(free.logged()).first).toBeUndefined()
+        // Fable's week spent: it opens on Opus at the planner's effort, and the line says why.
+        const spent = yield* start(options, { model, variants: ["medium"], others: [fable, sol], poolAsk: fablePool(1, []), codex: room })
+        expect(yield* spent.open(latch)).toEqual({ outcome: "opened" })
+        expect(spent.ran[0]!.input).toMatchObject({ model: "anthropic/claude-opus#medium" })
+        expect(line(spent.logged())).toMatchObject({ kind: "call", model: "anthropic/claude-opus#medium", first: { model: "anthropic/claude-fable", fellBack: FABLE_SPENT } })
+        // Fable and Opus held, Codex with room: it opens on sol.
+        const held = { anthropic: { ok: false, measured: true, reason: "all pool accounts are held", retryAt: now + 600_000 } }
+        const both = yield* start(options, { model, variants: ["medium"], others: [fable, sol], pool: held, codex: room })
+        expect(yield* both.open(latch)).toEqual({ outcome: "opened" })
+        expect(both.ran[0]!.input).toMatchObject({ model: "openai/gpt-6.1-sol#high" })
+        expect(line(both.logged())).toMatchObject({
+          model: "openai/gpt-6.1-sol#high",
+          fallback: "anthropic/claude-opus#medium held: all pool accounts are held",
+          first: { model: "anthropic/claude-fable", fellBack: "anthropic/claude-fable#medium held: all pool accounts are held" },
+        })
       }),
     ))
 

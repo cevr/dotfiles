@@ -2625,9 +2625,11 @@ The planner goes on the newest Fable first (the owner's call, 2026-11-12:
 never a pinned id, as orchestrate's `planner: { model }` option. A new
 planner start that names no model of its own runs on it at the planner's
 effort (medium); a follow-up keeps its model. When the host does not offer
-it, its pace holds it (Fable's own week spent, or the pool's pace), or over
-the Sabbath, the start takes the chain above, Opus then Codex, and its line
-carries `first: { model, fellBack }` saying why. No other role has a first
+it, or its pace holds it (Fable's own week spent, or the pool's pace), the
+start takes the chain above, Opus then Codex, and its line carries
+`first: { model, fellBack }` saying why. Over the Sabbath the planner does
+what every role does: it latches on its own model, Fable, asking no pace, and
+when work resumes its open takes the same chain. No other role has a first
 model, so an implementor, verifier or worker never starts on Fable. The
 option replaced the planner A/B of 2026-11-10 (`experiment`, half the
 planner units on Fable); `models.ts --experiment` still reads that run's

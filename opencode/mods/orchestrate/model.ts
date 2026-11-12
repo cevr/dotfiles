@@ -343,8 +343,10 @@ export const layer = (config: Config) =>
        * A new planner start on the planner's first model (`config.planner`),
        * when it names no model of its own: at the role's effort, with its pace
        * as asked, when the host offers that model and its pace has room;
-       * otherwise, or over the Sabbath, it takes the role's chain (its own
-       * model, then Codex) and `first` says why. None for any other start.
+       * otherwise it takes the role's chain (its own model, then Codex) and
+       * `first` says why. Over the Sabbath it does what every role does there:
+       * it latches on its own model, the first one, asking no pace, and its
+       * open takes the chain (`openLatch`). None for any other start.
        */
       const firstOf = Effect.fnUntraced(function* (
         sessionID: string,
@@ -359,10 +361,10 @@ export const layer = (config: Config) =>
         const first = config.planner?.model
         if (first === undefined || start.agent !== "planner" || start.followUp || start.namedModel) return undefined
         const fell = (fellBack: string) => ({ first: { model: first, fellBack } satisfies FirstRecord, model: undefined, paced: undefined })
-        if (start.resting) return fell("the Sabbath")
         const model = yield* models.at(sessionID, first, start.level === "" ? undefined : start.level)
         const ref = parseModel(model)
         if (model === undefined || ref === undefined) return fell(`${first} is not offered`)
+        if (start.resting) return { first: undefined, model, paced: undefined }
         const { hold, replies } = yield* holdOf(ref, start.agent, sessionID)
         if (hold !== undefined) return fell(`${model} held: ${hold.reason}`)
         const asked: Asked = {
@@ -514,16 +516,30 @@ export const layer = (config: Config) =>
         const resting = resumesAt(now, config.place) !== undefined
         // Its first model before its fallback; a latch with no fallback is decided on the model it was made on.
         const kept = Option.getOrUndefined(Schema.decodeUnknownOption(LatchModels)(latch.context.models))
-        const primary = kept?.primary ?? latch.model
-        const paced = resting || ran ? undefined : yield* paceOf(latch.parent, latch.agent, primary)
+        // A planner latched on its first model (over the Sabbath) takes the planner's chain at its open, as a new
+        // start would: the first model, else its own at its effort, then Codex.
+        const firstRef = parseModel(config.planner?.model)
+        const onFirstModel = latch.agent === "planner" && firstRef !== undefined && latch.model !== undefined && namesModel(latch.model, firstRef)
+        const level = isRole(latch.agent) ? effort(latch.agent) : undefined
+        const tried =
+          !resting && !ran && kept === undefined && onFirstModel
+            ? yield* firstOf(latch.parent, { agent: latch.agent, followUp: false, namedModel: false, level, resting: false })
+            : undefined
+        const own = tried !== undefined && tried.model === undefined && level !== undefined && level !== "" ? yield* models.variant(latch.parent, latch.agent, level) : undefined
+        const primary = tried?.model ?? own ?? kept?.primary ?? latch.model
+        const paced = resting || ran ? undefined : (tried?.paced ?? (yield* paceOf(latch.parent, latch.agent, primary)))
+        // The chain's Codex fallback, offered as a new start's is; a latch made with one keeps its own.
+        const offered =
+          tried !== undefined && paced?.hold !== undefined && paced.ref !== undefined ? yield* fallbackOf(latch.parent, paced.ref, latch.agent, latch.description) : undefined
         const fallbackAt = parseModel(kept?.fallback)
         const fallbackPaced = paced?.hold !== undefined && fallbackAt !== undefined ? yield* holdOf(fallbackAt, latch.agent, latch.parent) : undefined
         const fallbackHold = fallbackPaced?.hold
-        const asked: Asked = { ...paced?.asked, ...(fallbackPaced === undefined ? {} : fallbackAsked(fallbackPaced.replies)) }
+        const asked: Asked = { ...paced?.asked, ...(fallbackPaced === undefined ? {} : fallbackAsked(fallbackPaced.replies)), ...offered?.asked }
         const fallback: Fallback | undefined =
-          kept === undefined || paced?.hold === undefined ? undefined : { model: kept.fallback, ...(fallbackHold === undefined ? {} : { hold: fallbackHold }) }
+          offered?.fallback ??
+          (kept === undefined || paced?.hold === undefined ? undefined : { model: kept.fallback, ...(fallbackHold === undefined ? {} : { hold: fallbackHold }) })
         const reason = Schema.decodeUnknownOption(Reason)(latch.context.reason)
-        const first = Option.getOrUndefined(Schema.decodeUnknownOption(LatchFirst)(latch.context.first))
+        const first = tried?.first ?? Option.getOrUndefined(Schema.decodeUnknownOption(LatchFirst)(latch.context.first))
         const events = yield* ToolCall.decide(
           ToolCall.initial,
           OpenLatch.make({
