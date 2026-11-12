@@ -7,7 +7,8 @@
 // not recorded … NotOpen`, which a submit logged once per other directory).
 // The same run has a root session and a subagent of it: the subagent's
 // question, answered in the root's form, wakes the subagent with the letter,
-// and the root, not woken, reads a notice of it at its next turn.
+// and the root, not woken by the notice, reads it at its next turn (which
+// OpenCode starts with the subagent's idle report).
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -87,8 +88,13 @@ describe.skipIf(!fork)("questions with two directories open on one server", () =
     expect(messagesOf(subagent.child).filter((message) => message.metadata?.source === "questions")).toHaveLength(1)
     expect(JSON.stringify(subagent.child)).toContain(LETTER)
     expect(JSON.stringify(subagent.child)).toContain(ANSWERED)
-    // The notice did not wake the root; its next turn read it.
-    expect(JSON.stringify(subagent.untold)).not.toContain(ROOT_TOLD)
+    // The notice did not wake the root: OpenCode wakes it with each of the subagent's idle reports, and the
+    // notice adds no turn of its own, so every root turn after its first starts on a report.
+    const untold = messagesOf(subagent.untold)
+    const reports = untold.filter((message) => message.type === "synthetic" && message.metadata?.source === "subagent")
+    expect(reports.length).toBeGreaterThan(0)
+    // At most: reports that arrive together share one turn.
+    expect(untold.filter((message) => message.type === "assistant").length).toBeLessThanOrEqual(1 + reports.length)
     expect(JSON.stringify(subagent.root)).toContain(NOTICE)
     expect(JSON.stringify(subagent.root)).toContain(ROOT_TOLD)
     expect(JSON.stringify(subagent.root)).not.toContain(LETTER)

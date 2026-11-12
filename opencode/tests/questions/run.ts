@@ -10,8 +10,9 @@
  * the /answer form for it (`session.form.create`, as the TUI does) and submits
  * an answer, waits for the letter and the turn it wakes. Last, a root session
  * and a subagent of it (its child session): the subagent asks, the form in the
- * root answers it, the subagent wakes on the letter, and the root, not woken,
- * takes one more turn, which reads the notice. It writes the sessions'
+ * root answers it, the subagent wakes on the letter, and the root, not woken by
+ * the notice (only by OpenCode's idle reports of the subagent), takes one more
+ * turn, which reads the notice. It writes the sessions'
  * messages and every warning the server logged to `<base>/result.json`.
  *
  * @module
