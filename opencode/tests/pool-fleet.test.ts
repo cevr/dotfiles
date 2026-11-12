@@ -17,7 +17,7 @@ import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { ROOT } from "../scripts/agents.ts"
 import { fleetRows, type PaneFleet } from "../mods/status/pane.ts"
 import { fakeAccount, startFakeAnthropic } from "./fake-anthropic.ts"
-import { gentAvailable, gentSource, openGentStore } from "./gent/store.ts"
+import { gentAvailable, openGentStore } from "./gent/store.ts"
 import { ROOT_TASK, serve } from "./orchestrate/sim.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -25,7 +25,7 @@ import { keptScratch } from "./scratch.ts"
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork) && gentAvailable()
 if (!ready) {
-  console.warn(`tests/pool-fleet.test.ts: skipped. Set OPENCODE_DEV to the fork, and gent to ${gentSource()} (or set GENT_SOURCE).`)
+  console.warn("tests/pool-fleet.test.ts: skipped. Set OPENCODE_DEV to the fork and GENT_SOURCE to a gent checkout.")
 }
 
 const HOUR = 3_600_000

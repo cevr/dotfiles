@@ -20,6 +20,7 @@ import { $ } from "bun"
 import { listing, type Proc, servers, stop, survivors, table, watch } from "./leaks.ts"
 import { checkFork } from "./fork.ts"
 import { acceptanceTests, load, packageOf, reach, ROOT, SHARED } from "./reach.ts"
+import { gentSkipped } from "../tests/gent/store.ts"
 
 /** How long a finished run's processes have to end before one still running counts as leaked. */
 const LEAK_GRACE_MS = 5000
@@ -67,8 +68,14 @@ if (affected) {
   }
   if (files.length === 0) process.exit(0)
 }
+/**
+ * The run's closing lines: gent's suites skip without gent's checkout, and the run says so in
+ * one line at its end (after the files, under --list), not in a warning among the passes.
+ */
+const summary = [gentSkipped(files)].filter((line) => line !== "")
+const print = console.log
 if (own.includes("--list")) {
-  for (const file of files) console.log(file)
+  for (const line of [...files, ...summary]) print(line)
   process.exit(0)
 }
 
@@ -149,6 +156,7 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   })
 const code = await child.exited
 if (stopping) await new Promise(() => {})
+for (const line of summary) print(`\n${line}`)
 process.exit((await leaked(watching.stop())) ? code || 1 : code)
 
 /** Whether the run left a server or drive behind; stops those and names every survivor. */

@@ -111,7 +111,7 @@ if (import.meta.main) {
           host: hostname(),
           skip: false,
           dryRun: false,
-          checks: (dir) => acceptLock(() => forkChecks(opencode, fork, env.GENT_SOURCE || join(home, "Developer/personal/.rifts/gent/untrack-local-settings"))(dir)),
+          checks: (dir) => acceptLock(() => forkChecks(opencode, fork, env.GENT_SOURCE || "")(dir)),
           landing: checksLock,
           worktree: join(state, "upstream-merge"),
           report,

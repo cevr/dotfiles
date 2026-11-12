@@ -192,6 +192,15 @@
     },
     {
       "files": [
+        "scripts/accept-gent.test.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
         "tests/scratch-cases.ts"
       ],
       "rules": {

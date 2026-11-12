@@ -1640,15 +1640,15 @@ launcher (`heavyArgv` in `mods/guard/launcher.ts`): `nice -n 10`, and where
 This repository's warm source sets:
 
 ```sh
-git config rift.gate 'cd opencode && OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=$HOME/Developer/personal/.rifts/gent/untrack-local-settings bun run gate'
-git config rift.accept 'cd opencode && env -u ANTHROPIC_BASE_URL OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=$HOME/Developer/personal/.rifts/gent/untrack-local-settings bun run accept:affected "$RIFT_LAND_BASE"'
+git config rift.gate 'cd opencode && OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look bun run gate'
+git config rift.accept 'cd opencode && env -u ANTHROPIC_BASE_URL OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look bun run accept:affected "$RIFT_LAND_BASE"'
 git config rift.generated opencode/mods/orchestrate/agents.json
 for role in planner implementor verifier; do
   git config --add rift.generated agents/$role.md
   git config --add rift.generated codex/agents/$role.toml
 done
 git config rift.regenerate 'bun skills/orchestrate/scripts/agents.ts && cd opencode && bun scripts/agents.ts'
-git config rift.postLand 'cd opencode && OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look GENT_SOURCE=$HOME/Developer/personal/.rifts/gent/untrack-local-settings bun scripts/post-land.ts'
+git config rift.postLand 'cd opencode && OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look bun scripts/post-land.ts'
 ```
 
 Its post-land step (`scripts/post-land.ts`) merges upstream OpenCode into the
@@ -2986,9 +2986,11 @@ drops the links), and install only when changing the lock file. Link-fork, and
 with it the gate, typecheck, accept and daily, first checks that `OPENCODE_DEV`
 is an OpenCode checkout on this machine whose `packages/tui/node_modules` all
 resolve (`scripts/fork.ts`), and stops before touching anything when it is not:
-a Mac path on the workbox would leave every TUI plugin without `solid-js`. If working in a Rift, set `GENT_SOURCE` to
-its source checkout so the gent pool integration tests run instead of
-skipping.
+a Mac path on the workbox would leave every TUI plugin without `solid-js`. The gent pool
+integration tests (`GENT_SUITES` in `tests/gent/store.ts`) need gent's checkout and assume
+no path for it: with `GENT_SOURCE` unset, or naming no directory, they skip, and
+`bun run accept` ends with one `SKIPPED: gent suites (…): no gent checkout (…)` line. Set
+`GENT_SOURCE` to a gent checkout to run them.
 
 The deterministic acceptance seams are the session API (the guard, compaction
 at the agents' window, the Sabbath, held starts and subagent pace), the pool RPC and quota

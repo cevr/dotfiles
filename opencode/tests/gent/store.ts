@@ -5,13 +5,49 @@
 import { existsSync } from "node:fs"
 import { join, resolve } from "node:path"
 
-/** gent's checkout: `GENT_SOURCE`, else beside this repository. */
-export const gentSource = (): string =>
-  resolve(process.env.GENT_SOURCE || join(import.meta.dir, "../../../../gent"))
+/** The environment the gent suites read `GENT_SOURCE` from. */
+export type Env = Readonly<Partial<Record<string, string>>>
 
+/** This process's environment. */
+const hostEnv = (): Env => process.env
+
+/** gent's checkout: `GENT_SOURCE`, resolved, and empty when it is unset. No path is assumed. */
+export const gentSource = (env: Env = hostEnv()): string => {
+  const named = env.GENT_SOURCE || ""
+  return named && resolve(named)
+}
+
+/**
+ * Whether the gent suites can run: `GENT_SOURCE` names a directory. A directory that is not
+ * gent's checkout fails the suites rather than skipping them.
+ */
+export const gentAvailable = (env: Env = hostEnv()): boolean => {
+  const source = gentSource(env)
+  return source !== "" && existsSync(source)
+}
+
+/** The acceptance suites that need gent's checkout, each skipped without it. */
+export const GENT_SUITES: ReadonlyArray<string> = [
+  "tests/pool-fleet.test.ts",
+  "tests/pool-gent-opencode.test.ts",
+  "tests/pool-gent-refresh.test.ts",
+  "tests/pool-gent.test.ts",
+]
+
+/**
+ * The one line a run of `files` prints when gent's suites among them skip for lack of gent's
+ * checkout, and empty when gent is there or no file of the run needs it.
+ */
+export const gentSkipped = (files: ReadonlyArray<string>, env: Env = hostEnv()): string => {
+  const suites = GENT_SUITES.filter((suite) => files.some((file) => file === suite || file.endsWith(`/${suite}`)))
+  if (gentAvailable(env) || suites.length === 0) return ""
+  const source = gentSource(env)
+  const why = (source && `GENT_SOURCE=${source} does not exist`) || "GENT_SOURCE is not set"
+  return `SKIPPED: gent suites (${suites.length}: ${suites.join(", ")}): no gent checkout (${why})`
+}
+
+/** gent's core package, where the suites load gent's store from. */
 const core = () => join(gentSource(), "packages/core")
-
-export const gentAvailable = (): boolean => existsSync(join(core(), "src/runtime/provider.ts"))
 
 export interface Tokens {
   readonly access: string

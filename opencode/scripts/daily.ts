@@ -350,7 +350,7 @@ if (import.meta.main) {
     sync: () => syncFork({ fork, dryRun: args.has("--dry-run"), to: forkTarget[0], log: console.log }),
     head: Effect.promise(() => $`git -C ${fork} rev-parse HEAD`.text()),
     install: Effect.promise(() => $`bun install --frozen-lockfile`.cwd(fork).quiet()),
-    checks: (dir) => Effect.promise(() => forkChecks(resolve(MODS, ".."), fork, env.GENT_SOURCE || join(home, "Developer/personal/.rifts/gent/untrack-local-settings"))(dir)),
+    checks: (dir) => Effect.promise(() => forkChecks(resolve(MODS, ".."), fork, env.GENT_SOURCE || "")(dir)),
     log: console.log,
   })
   const upstream = (dryRun: boolean) =>

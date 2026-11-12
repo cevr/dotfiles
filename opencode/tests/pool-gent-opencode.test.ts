@@ -11,7 +11,7 @@ import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAnswer, type FakeRequestInfo } from "./fake-anthropic.ts"
-import { gentAvailable, gentSource, openGentStore } from "./gent/store.ts"
+import { gentAvailable, openGentStore } from "./gent/store.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 
@@ -19,7 +19,7 @@ const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork) && gentAvailable()
 if (!ready) {
   console.warn(
-    `tests/pool-gent-opencode.test.ts: skipped. Set OPENCODE_DEV to the fork, and gent to ${gentSource()} (or set GENT_SOURCE).`,
+    "tests/pool-gent-opencode.test.ts: skipped. Set OPENCODE_DEV to the fork and GENT_SOURCE to a gent checkout.",
   )
 }
 
