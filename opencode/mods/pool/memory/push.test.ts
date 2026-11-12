@@ -226,7 +226,7 @@ describe("proactive push", () => {
     w.readings.set("a", reading(T0, 0.2, 0.95, T0 + 5 * DAY, [grant("g-a", T0 + 30 * DAY, WEEKLY)]))
     w.readings.set("b", reading(T0, 0.2, 0.95, T0 + 5 * DAY, [grant("g-b", T0 + 30 * DAY, WEEKLY)]))
     // Four units being implemented, two planned, one landed: six queued.
-    w.work.runs = [{ name: "ergo", units: [...queued("implement", 4).units, ...queued("plan", 2).units, { unit: "done", state: "merged 0f0f0f0" }] }]
+    w.work.runs = [{ name: "ergo", session: "ses_orchestrator", units: [...queued("implement", 4).units, ...queued("plan", 2).units, { unit: "done", state: "merged 0f0f0f0" }] }]
     const pool = yield* w.pool
     // The run's orchestrator asks the pace: the pool knows where to ask.
     yield* pool.pace("anthropic", "claude-opus-5-5", "ses_orchestrator")
@@ -282,6 +282,89 @@ describe("proactive push", () => {
         expect(w.owner.asked.filter((question) => question.key.startsWith("push:"))).toHaveLength(2)
       }),
     ))
+
+  // Round 2's Q1: the run names the session that started its steps (the status RPC, from orchestrate's call log), and its push is that session's tree's.
+  test("Q1 after an unrelated session asks the pace, the run's question is still asked in the run's orchestrator tree, and a yes covers that tree, not the stranger's", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const w = world()
+        w.owner.parents.set("ses_orch", "ses_owner")
+        const weekAt = T0 + 5 * DAY
+        w.readings.set("a", reading(T0, 0.2, 0.95, weekAt, [grant("g-a", T0 + 30 * DAY, WEEKLY)]))
+        w.readings.set("b", reading(T0, 0.2, 0.95, weekAt, [grant("g-b", T0 + 30 * DAY, WEEKLY)]))
+        w.work.runs = [{ name: "ergo", session: "ses_orch", units: queued("implement", 6).units }]
+        const pool = yield* w.pool
+        yield* pool.pace("anthropic", "claude-opus-5-5", "ses_orch")
+        yield* TestClock.adjust(MINUTE)
+        yield* pool.pace("anthropic", "claude-opus-5-5", "ses_stranger")
+        yield* pool.reviewPushes
+        const asked = w.owner.asked.filter((question) => question.key.startsWith("push:") && !question.key.includes("#"))
+        expect(asked.map((question) => question.sessionID)).toEqual(["ses_owner"])
+        yield* OwnerTest.answer(w.owner, asked[0]!.key, START)
+        yield* pool.reviewResets
+        expect((yield* pool.push({ action: "status" })).pushes.map((push) => push.scope)).toEqual([{ host: "workbox", sessionID: "ses_owner", run: "ergo" }])
+        for (let start = 0; start < 3; start++) yield* pool.started("anthropic")
+        expect(yield* pool.pace("anthropic", "claude-opus-5-5", "ses_orch")).toMatchObject({ ok: true })
+        expect(yield* pool.pace("anthropic", "claude-opus-5-5", "ses_stranger")).toMatchObject({ ok: false, soft: true })
+        // Weeks spent: the stranger's held start claims nothing.
+        w.readings.set("a", reading(T0 + 2 * MINUTE, 1, 1, weekAt, [grant("g-a", T0 + 30 * DAY, WEEKLY)]))
+        w.readings.set("b", reading(T0 + 2 * MINUTE, 1, 1, weekAt, [grant("g-b", T0 + 30 * DAY, WEEKLY)]))
+        yield* TestClock.adjust(MINUTE)
+        yield* pool.pace("anthropic", "claude-opus-5-5", "ses_stranger")
+        yield* settle
+        expect(w.claims).toEqual([])
+      }),
+    ))
+
+  test("a run whose session is not known, or whose tree has not asked the pace lately, is asked about nowhere", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const w = world()
+        w.readings.set("a", reading(T0, 0.2, 0.95, T0 + 5 * DAY, [grant("g-a", T0 + 30 * DAY, WEEKLY)]))
+        w.readings.set("b", reading(T0, 0.2, 0.95, T0 + 5 * DAY, [grant("g-b", T0 + 30 * DAY, WEEKLY)]))
+        w.work.runs = [{ name: "ergo", units: queued("implement", 6).units }, { name: "idle", session: "ses_gone", units: queued("plan", 6).units }]
+        const pool = yield* w.pool
+        yield* pool.pace("anthropic", "claude-opus-5-5", "ses_stranger")
+        yield* pool.reviewPushes
+        expect(w.owner.asked.filter((question) => question.key.startsWith("push:") && !question.key.includes("#"))).toEqual([])
+      }),
+    ))
+
+  // A property over askers from several trees: whatever asks the pace, and in what order, a yes to the run's question lifts no hold outside the run's tree.
+  for (const seed of [1, 2, 3, 4, 5, 6]) {
+    test(`property, seed ${seed}: a yes to a run's question lifts no hold outside the run's tree`, () =>
+      onTestClock(
+        Effect.gen(function* () {
+          let s = seed
+          const next = () => {
+            s = (s * 1103515245 + 12345) % 2147483648
+            return s / 2147483648
+          }
+          const w = world()
+          const trees = ["ses_owner", "ses_a", "ses_b"]
+          w.owner.parents.set("ses_orch", "ses_owner")
+          for (const tree of trees.slice(1)) w.owner.parents.set(`${tree}_child`, tree)
+          w.readings.set("a", reading(T0, 0.2, 0.95, T0 + 5 * DAY, [grant("g-a", T0 + 30 * DAY, WEEKLY)]))
+          w.readings.set("b", reading(T0, 0.2, 0.95, T0 + 5 * DAY, [grant("g-b", T0 + 30 * DAY, WEEKLY)]))
+          w.work.runs = [{ name: "ergo", session: "ses_orch", units: queued("implement", 6).units }]
+          const pool = yield* w.pool
+          const sessions = ["ses_orch", "ses_a_child", "ses_b_child", "ses_a", "ses_b"]
+          for (let step = 0; step < 6; step++) {
+            yield* pool.pace("anthropic", "claude-opus-5-5", sessions[Math.floor(next() * sessions.length)]!)
+            yield* TestClock.adjust(Math.floor(next() * 10) * MINUTE)
+            yield* pool.reviewPushes
+          }
+          for (const question of w.owner.asked.filter((item) => item.key.startsWith("push:") && !item.key.includes("#"))) {
+            expect(question.sessionID).toBe("ses_owner")
+            yield* OwnerTest.answer(w.owner, question.key, START)
+          }
+          yield* pool.reviewResets
+          for (let start = 0; start < 3; start++) yield* pool.started("anthropic")
+          for (const outside of ["ses_a_child", "ses_b_child", "ses_a", "ses_b"]) expect((yield* pool.pace("anthropic", "claude-opus-5-5", outside)).ok).toBe(false)
+          for (const push of (yield* pool.push({ action: "status" })).pushes) expect(push.scope.sessionID).toBe("ses_owner")
+        }),
+      ))
+  }
 })
 
 describe("use it or lose it", () => {
@@ -423,7 +506,7 @@ describe("the owner's limits", () => {
         const w = world()
         w.readings.set("a", reading(T0, 0.2, 0.95, T0 + 5 * DAY, [grant("g-a", T0 + 30 * DAY, WEEKLY)]))
         w.readings.set("b", reading(T0, 0.2, 0.95, T0 + 5 * DAY, [grant("g-b", T0 + 30 * DAY, WEEKLY)]))
-        w.work.runs = [{ name: "ergo", units: Array.from({ length: 6 }, (_, at) => ({ unit: `u${at}`, state: "implement" })) }]
+        w.work.runs = [{ name: "ergo", session: "ses_orch_1", units: Array.from({ length: 6 }, (_, at) => ({ unit: `u${at}`, state: "implement" })) }]
         const pool = yield* w.pool
         const runQuestions = () => w.owner.asked.filter((question) => question.key.startsWith("push:") && !question.key.includes("#"))
         yield* pool.pace("anthropic", "claude-opus-5-5", "ses_orch_1")
@@ -431,9 +514,10 @@ describe("the owner's limits", () => {
         expect(runQuestions().map((question) => question.key)).toEqual(["push:workbox:*:ergo"])
         yield* OwnerTest.answer(w.owner, runQuestions()[0]!.key, NOT_NOW)
         yield* pool.reviewResets
-        // Handed off: other orchestrator sessions ask the pace through the week; the run is not asked about again.
+        // Handed off: other orchestrator sessions own the run (they start its steps) and ask the pace through the week; the run is not asked about again.
         for (const [hours, session] of [[1, "ses_orch_2"], [30, "ses_orch_3"], [100, "ses_orch_2"]] as const) {
           yield* TestClock.adjust(hours * HOUR)
+          w.work.runs = w.work.runs.map((run) => ({ ...run, session }))
           yield* pool.pace("anthropic", "claude-opus-5-5", session)
           yield* pool.reviewPushes
         }

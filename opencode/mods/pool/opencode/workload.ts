@@ -2,8 +2,8 @@
 // average against its cores (node:os), and the orchestrate runs of the
 // directory this instance serves over the status plugin's RPC
 // (`dotfiles-opencode.status`, its `status` method: each run's units with the
-// state the orchestrate status script derives), read with the pool's own
-// schema. No status plugin, a failure, a timeout or an answer that is not one
+// state the orchestrate status script derives, and the session that owns it),
+// read with the pool's own schema. No status plugin, a failure, a timeout or an answer that is not one
 // is no runs.
 import { cpus, loadavg } from "node:os"
 import { Effect, Layer, Option, Schema } from "effect"
@@ -20,6 +20,7 @@ const Answer = Schema.Struct({
   runs: Schema.Array(
     Schema.Struct({
       name: Schema.String,
+      session: Schema.optionalKey(Schema.String),
       units: Schema.Array(Schema.Struct({ unit: Schema.String, state: Schema.String })),
     }),
   ),
@@ -36,7 +37,7 @@ export const layer = (status: Status, load: () => HostLoad = osLoad) =>
       Effect.timeoutOption(TIMEOUT),
       Effect.map((answer) => Option.flatMap(answer, decode)),
       Effect.map((answer) =>
-        Option.isNone(answer) ? [] : answer.value.runs.map((run) => ({ name: run.name, units: run.units.map(({ unit, state }) => ({ unit, state })) })),
+        Option.isNone(answer) ? [] : answer.value.runs.map((run) => ({ name: run.name, ...(run.session === undefined ? {} : { session: run.session }), units: run.units.map(({ unit, state }) => ({ unit, state })) })),
       ),
       Effect.catchCause(() => Effect.succeed([])),
       Effect.withSpan("Workload.runs"),

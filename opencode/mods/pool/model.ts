@@ -497,6 +497,8 @@ export const layer = (config: Config) =>
        * next start names one again.
        */
       const askers = new Map<string, { readonly at: number; readonly sessionID: string }>()
+      /** Each session that asked the pace, with when it last did: a run is asked about only while its tree is at work. Kept in memory, pruned as it is read. */
+      const pacedBy = new Map<string, number>()
       const askerOf = (pool: string, now: number) => {
         const asker = askers.get(pool)
         return asker !== undefined && now - asker.at < ResetsModel.WAIT_MS ? asker.sessionID : undefined
@@ -937,15 +939,24 @@ export const layer = (config: Config) =>
         yield* takePushAnswers
         if (Object.keys(config.resets ?? {}).length === 0) return
         const now = yield* Clock.currentTimeMillis
-        // The session that asked the pace last, in this instance: the run's orchestrator, whose tray the owner reads.
-        const asker = [...askers.values()].filter((item) => now - item.at < PUSH_ASKER_MS).toSorted((left, right) => right.at - left.at)[0]
-        if (asker === undefined) return
-        const root = yield* owner.root(asker.sessionID)
+        // The sessions at work: those that asked the pace lately, and their trees' roots.
+        for (const [sessionID, at] of pacedBy) if (now - at >= PUSH_ASKER_MS) pacedBy.delete(sessionID)
+        const recent = [...pacedBy].toSorted((left, right) => right[1] - left[1]).map(([sessionID]) => sessionID)
+        if (recent.length === 0) return
+        const working = new Set(yield* Effect.forEach(recent, owner.root))
         const queued = runs.flatMap((run) => {
           const units = run.units.filter((unit) => PushModel.QUEUED_STATES.includes(unit.state)).length
-          return units === 0 ? [] : [{ run: run.name, units }]
+          return units === 0 ? [] : [{ run: run.name, units, session: run.session }]
         })
-        for (const { run, units } of queued) yield* propose(`run ${run}`, units, { host: fleetConfig.host, sessionID: root, run }, root)
+        // A run's question goes to the tree that owns the run, and a yes covers that tree; a run with no known owner, or whose tree is not at work, is asked about nowhere.
+        for (const { run, units, session } of queued) {
+          if (session === undefined) continue
+          const root = yield* owner.root(session)
+          if (!working.has(root)) continue
+          yield* propose(`run ${run}`, units, { host: fleetConfig.host, sessionID: root, run }, root)
+        }
+        // The resets question names no run: it goes to the tree that asked the pace last.
+        const root = yield* owner.root(recent[0]!)
         // Resets that would expire unused at the current burn are budget going to waste: the owner is asked once a week per pool, queued work or not.
         const views = yield* resetViews
         const load = yield* hostLoad
@@ -1105,6 +1116,7 @@ export const layer = (config: Config) =>
         const id = measuredBy(config, providerID)
         const now = yield* Clock.currentTimeMillis
         if (id !== undefined && sessionID !== undefined && config.resets?.[id] !== undefined) askers.set(id, { at: now, sessionID })
+        if (sessionID !== undefined) pacedBy.set(sessionID, now)
         if (answer.ok || !answer.measured) return answer
         // A push active on this host covers the start when its scope names no session, or the root of the start's.
         const active = PushModel.activeOn(yield* pushStore.read, fleetConfig.host, now)

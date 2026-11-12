@@ -138,9 +138,11 @@ export class PushStore extends Context.Service<
   }
 >()("dotfiles-opencode/pool/PushStore") {}
 
-/** One orchestrate run as the pool reads it: its name and each unit's state (the orchestrate status script's). */
+/** One orchestrate run as the pool reads it: its name, the session that owns it, and each unit's state (the orchestrate status script's). */
 export interface RunWork {
   readonly name: string
+  /** The session that owns the run (the status RPC's, from orchestrate's call log: it started the latest step of one of its units); none when no step was started. */
+  readonly session?: string
   readonly units: ReadonlyArray<{ readonly unit: string; readonly state: string }>
 }
 
