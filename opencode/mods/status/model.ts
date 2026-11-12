@@ -5,7 +5,7 @@
 import { Context, Effect, Layer, Result } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import { AgentCalls, live, runSession } from "./agent-calls.ts"
-import { unitsOf } from "./run-table.ts"
+import { driftOf, unitsOf } from "./run-table.ts"
 import { CallLog, RunTables } from "./service.ts"
 import type { Snapshot } from "./status.ts"
 
@@ -34,7 +34,14 @@ export const layer = Layer.effect(
           list.map((run) => {
             const units = unitsOf(run.table)
             const session = Result.isSuccess(calls) ? runSession(calls.success, units.map((unit) => unit.unit)) : undefined
-            return { name: run.name, ...(run.dir === undefined ? {} : { dir: run.dir }), ...(session === undefined ? {} : { session }), units }
+            const drift = driftOf(run.table)
+            return {
+              name: run.name,
+              ...(run.dir === undefined ? {} : { dir: run.dir }),
+              ...(session === undefined ? {} : { session }),
+              units,
+              ...(drift === undefined ? {} : { drift }),
+            }
           }),
         )
         return {

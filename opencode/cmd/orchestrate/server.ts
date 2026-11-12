@@ -44,9 +44,10 @@
  *   variant; `bun run daily` writes the newest Fable). A new planner start
  *   that names no model of its own (or the role's) runs on it at the
  *   planner's effort; a follow-up keeps its model. One the host does not
- *   offer `model` for, whose pace holds it, or over the Sabbath, takes the
- *   role's chain (its own model, then Codex), and its line records
- *   `first: { model, fellBack }`. Only the planner has a first model. Absent,
+ *   offer `model` for, or whose pace holds it, takes the role's chain (its
+ *   own model, then Codex), and its line records `first: { model, fellBack }`.
+ *   Over the Sabbath it latches on `model` as every role latches on its own,
+ *   and its open takes the same chain. Only the planner has a first model. Absent,
  *   the planner starts on its own model like every role.
  *
  * - Skill drift: when a root that owns a run goes idle and the installed
@@ -100,7 +101,10 @@
  *   land's input, lets the call through and records it. A step whose session
  *   no longer works is handed back as `none` first. After a root's
  *   compaction, it gets one message (no new turn): SKILL.md's machine section
- *   and its run from the ledger (the brief).
+ *   and its run from the ledger (the brief), with its drift from the machine
+ *   (mods/orchestrate/drift.ts: 0 is a clean run). Each verdict adds that
+ *   drift as a line to its run's log.md (the run its report is in), which the
+ *   skill's status.ts reads for the /pool pane's run row and the runs' trend.
  *   Options: `ledger` (default `~/.cache/orchestrate/machine.jsonl`),
  *   `cadence: { ready, waitMs }` (default 3 and 30 minutes), `guard`:
  *   `refuse` (default) or `warn` (the call passes, its answer carries the

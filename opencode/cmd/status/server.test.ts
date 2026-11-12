@@ -109,7 +109,10 @@ describe("the status RPC", () => {
           AgentReturned.make({ sessionID: "ses_1", callID: "b", status: "completed" }),
         )
         state.runs.tables.set(REPO, [
-          { name: "port", table: "| Unit | State | Round | Since |\n| --- | --- | --- | --- |\n| wake | implement | 1 | 2026-11-04T15:00Z |\n" },
+          {
+            name: "port",
+            table: "| Unit | State | Round | Since |\n| --- | --- | --- | --- |\n| wake | implement | 1 | 2026-11-04T15:00Z |\n\nDrift: 4 after batch-1 changes (2026-11-04T16:00Z): 2 off cadence ×2\n",
+          },
           { name: "empty", table: "| Unit | State | Round | Since |\n" },
         ])
         state.runs.tables.set("/elsewhere", [{ name: "other", table: "| x | y | 1 | z |" }])
@@ -117,7 +120,7 @@ describe("the status RPC", () => {
         expect(yield* plugin.status).toEqual({
           agents: [{ sessionID: "ses_1", callID: "a", agent: "worker", description: "implementor pane r1", child: "ses_a", status: "running" }],
           runs: [
-            { name: "port", session: "ses_orch", units: [{ unit: "wake", state: "implement", round: "1", since: "2026-11-04T15:00Z" }] },
+            { name: "port", session: "ses_orch", units: [{ unit: "wake", state: "implement", round: "1", since: "2026-11-04T15:00Z" }], drift: "4 after batch-1 changes (2026-11-04T16:00Z): 2 off cadence ×2" },
             { name: "empty", units: [] },
           ],
           errors: [],
