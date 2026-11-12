@@ -13,6 +13,7 @@ import {
   INTEGRATION,
   LandRefused,
   LandStopped,
+  POST_LAND,
   acceptedText,
   checkAcceptedText,
   checkedText,
@@ -105,6 +106,8 @@ export const layer = Layer.effect(
     const scope = yield* Scope.Scope
     // One accept check at a time: each one fills the machine.
     const accepts = yield* Semaphore.make(1)
+    /** One post-land step at a time, in the post-land Rifts, apart from the integration Rifts' work. */
+    const postLands = yield* Semaphore.make(1)
     // Each integration Rift at work, with what it is doing.
     const busy = new Map<string, string>()
 
@@ -192,18 +195,22 @@ export const layer = Layer.effect(
         )
 
     /**
-     * The repository's post-land step in the integration Rift, one at a time with the accept checks, then the wake
-     * with its report. Skipped, and said so, while the host's load is at or past its cores: the next land runs it
-     * again. Runs in the background.
+     * The repository's post-land step in the source's post-land Rift (POST_LAND), put at origin's newest `main`
+     * first, then the wake with its report. It holds its own lock, never the integration Rift: the next land
+     * goes on while it runs, and two post-land steps never overlap. Skipped, and said so, while the host's load
+     * is at or past its cores: the next land runs it again. Runs in the background.
      */
-    const postLand = (sessionID: string, integration: string, units: ReadonlyArray<Unit>, command: string, base: string, head: string) =>
-      accepts
+    const postLand = (sessionID: string, source: string, main: string, units: ReadonlyArray<Unit>, command: string, base: string, head: string) =>
+      postLands
         .withPermits(1)(
           Effect.gen(function* () {
             const load = yield* landing.hostLoad
             if (load.load >= load.cores)
               return yield* notices.wake(sessionID, { text: postLandSkippedText(units, load), description: "rift land · post-land skipped (load)" })
-            const ran = yield* landing.postLand(integration, command, { RIFT_LAND_BASE: base, RIFT_LAND_HEAD: head })
+            const path = yield* keptRift(source, POST_LAND)
+            const started = yield* landing.start(path, main)
+            yield* landing.install(path, started.previous)
+            const ran = yield* landing.postLand(path, command, { RIFT_LAND_BASE: base, RIFT_LAND_HEAD: head })
             yield* notices.wake(sessionID, { text: postLandedText(units, ran), description: `rift land · post-land ${ran.code === 0 ? "ran" : "failed"}` })
           }),
         )
@@ -264,18 +271,19 @@ export const layer = Layer.effect(
       const workspace = yield* rifts.inspect(path)
       if (workspace.source) return yield* new LandRefused({ path, reason: "is a warm source; land a Rift made from one." })
       if (baseName(path) === INTEGRATION) return yield* new LandRefused({ path, reason: "is the integration Rift land merges in; land the Rifts it merged." })
+      if (baseName(path) === POST_LAND) return yield* new LandRefused({ path, reason: "is the Rift the post-land step runs in; it holds no work to land." })
       if (!workspace.git || workspace.branch === undefined) return yield* new LandRefused({ path, reason: "is not on a Git branch." })
       const own = yield* landing.ownChanges(path, source)
       if (own.length > 0) return yield* new LandRefused({ path, reason: `holds uncommitted changes; commit them first:\n${some(own)}` })
       return { path, branch: workspace.branch } satisfies Unit
     })
 
-    /** The source's integration Rift: the one named INTEGRATION, made on first use. */
-    const integrationOf = (source: string) =>
+    /** The source's Rift named `name` on its own branch (INTEGRATION, POST_LAND), made on first use and kept. */
+    const keptRift = (source: string, name: string) =>
       rifts.list(source).pipe(
         Effect.flatMap((paths) => {
-          const found = paths.find((path) => baseName(path) === INTEGRATION)
-          return found === undefined ? rifts.create({ source, from: source, name: INTEGRATION, branch: INTEGRATION }) : Effect.succeed(found)
+          const found = paths.find((path) => baseName(path) === name)
+          return found === undefined ? rifts.create({ source, from: source, name, branch: name }) : Effect.succeed(found)
         }),
       )
 
@@ -290,7 +298,7 @@ export const layer = Layer.effect(
       const gateCommand = config.gate
       if (gateCommand === undefined) return yield* new GateMissing({ source })
 
-      const integration = yield* integrationOf(source).pipe(Effect.mapError((failure) => new LandStopped({ path: source, step: "start", detail: failure.message })))
+      const integration = yield* keptRift(source, INTEGRATION).pipe(Effect.mapError((failure) => new LandStopped({ path: source, step: "start", detail: failure.message })))
       // One batch at a time in an integration Rift, its accept check included.
       if (busy.has(integration)) return yield* new LandRefused({ path: integration, reason: `is busy: ${busy.get(integration)}. Land again after its wake.` })
       busy.set(integration, "a batch is landing")
@@ -356,18 +364,15 @@ export const layer = Layer.effect(
           if (why !== undefined) kept.push({ path: unit.path, why })
         }
         const landed: Landed = { units, main: config.main, base: started.base, pushed, gate, locks: [...new Set(locks)], kept }
-        // After the push, in the background and in order: the accept check, then the repository's post-land step.
+        // After the push, in the background and in order: the accept check, holding the integration Rift, then the post-land step.
         const head = pushed.split(" ")[0] ?? ""
-        const background = [
-          ...(config.accept === undefined ? [] : [accept(sessionID, integration, units, config.accept, started.base)]),
-          ...(config.postLand === undefined ? [] : [postLand(sessionID, integration, units, config.postLand, started.base, head)]),
-        ]
-        if (background.length > 0) {
-          const what = [config.accept === undefined ? [] : ["the accept check"], config.postLand === undefined ? [] : ["the post-land step"]].flat().join(" and ")
-          busy.set(integration, `${what} of ${branchList(units)} ${background.length > 1 ? "run" : "runs"} there`)
+        const after = config.postLand === undefined ? Effect.void : postLand(sessionID, source, config.main, units, config.postLand, started.base, head)
+        if (config.accept !== undefined) {
+          busy.set(integration, `the accept check of ${branchList(units)} runs there`)
           accepting = true
-          yield* Effect.forkIn(Effect.all(background, { discard: true }).pipe(Effect.ensuring(Effect.sync(() => busy.delete(integration)))), scope)
-        }
+          const checked = accept(sessionID, integration, units, config.accept, started.base).pipe(Effect.ensuring(Effect.sync(() => busy.delete(integration))))
+          yield* Effect.forkIn(Effect.andThen(checked, after), scope)
+        } else if (config.postLand !== undefined) yield* Effect.forkIn(after, scope)
         return {
           text: landedText(landed, integration, config.accept !== undefined, config.postLand !== undefined),
           metadata: { action: "land" as const, source, path: integration, rifts: paths },

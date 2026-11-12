@@ -2,7 +2,7 @@
 // the Rifts and what the model reads back. It sits here because the domain
 // fence keeps the root's files off its folders.
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer, Predicate } from "effect"
+import { Deferred, Effect, Layer, Predicate, Queue } from "effect"
 import * as MemoryLanding from "./landing.ts"
 import * as MemoryNotices from "./notices.ts"
 import * as MemoryRifts from "./rifts.ts"
@@ -38,25 +38,27 @@ const make = (made: Bench, sessions: Record<string, string> = { ses_1: "/code/ap
     ),
   )
 
+/** `body` over one tool's life in the bench's world; the tool's background work stops with it. */
+const within = <A>(made: Bench, body: (tool: typeof Model.RiftTool.Service) => Effect.Effect<A>) =>
+  Effect.runPromise(Effect.scoped(Effect.flatMap(Model.RiftTool, body).pipe(Effect.provide(make(made)))))
+
+/** One call's answer text, or the words of its failure (`refused: …`). */
+const answerOf = (tool: typeof Model.RiftTool.Service, input: RiftInput, sessionID = "ses_1") =>
+  tool.run(sessionID, input).pipe(
+    Effect.map((answer) => answer.text),
+    Effect.catch((failure) => Effect.succeed(`${Predicate.isTagged(failure, "RiftFailed") || Predicate.isTagged(failure, "SessionUnreadable") ? "failed" : "refused"}: ${Model.explain(failure)}`)),
+  )
+
 /** The answer text of each call in turn, or the words of its failure (`refused: …`), within one tool's life. */
 const calls = (made: Bench | MemoryRifts.World, inputs: ReadonlyArray<RiftInput>, sessionID = "ses_1") =>
-  Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const tool = yield* Model.RiftTool
-        const answers: Array<string> = []
-        for (const input of inputs)
-          answers.push(
-            yield* tool.run(sessionID, input).pipe(
-              Effect.map((answer) => answer.text),
-              Effect.catch((failure) => Effect.succeed(`${Predicate.isTagged(failure, "RiftFailed") || Predicate.isTagged(failure, "SessionUnreadable") ? "failed" : "refused"}: ${Model.explain(failure)}`)),
-            ),
-          )
-        // The background accept checks finish before the tool goes.
-        yield* Effect.sleep("20 millis")
-        return answers
-      }).pipe(Effect.provide(make("sources" in made ? bench(made) : made))),
-    ),
+  within("sources" in made ? bench(made) : made, (tool) =>
+    Effect.gen(function* () {
+      const answers: Array<string> = []
+      for (const input of inputs) answers.push(yield* answerOf(tool, input, sessionID))
+      // The background accept checks finish before the tool goes.
+      yield* Effect.sleep("20 millis")
+      return answers
+    }),
   )
 
 /** One call's answer text, or the words of its failure. */
@@ -145,6 +147,7 @@ describe("the rift tool", () => {
 describe("land", () => {
   const OTHER = "/code/.rifts/app/feat-y"
   const INTEGRATE = "/code/.rifts/app/integrate"
+  const POST_LAND = "/code/.rifts/app/post-land"
   const configured = { [SOURCE]: MemoryLanding.config("main", "bun run gate", "bun run accept") }
   const two = () => bench(MemoryRifts.world([SOURCE], [MemoryRifts.clean(FEAT, "feat/x"), MemoryRifts.clean(OTHER, "feat/y")]), MemoryLanding.world(configured))
 
@@ -184,15 +187,26 @@ describe("land", () => {
         MemoryLanding.world({ [SOURCE]: MemoryLanding.config("main", "bun run gate", accept, { postLand: "bun scripts/post-land.ts" }) }),
       )
 
-    test("each pushed batch runs the post-land step once, in the integration Rift after the accept check, with the batch's base and head, and wakes the session with its report", async () => {
+    test("each pushed batch runs the post-land step once, after the accept check, in its own Rift put at origin's main, with the batch's base and head, and wakes the session with its report", async () => {
       const made = withPostLand("bun run accept")
       made.landing.postLandRun = { code: 0, output: "lots of output\n", report: "upstream: merged 3 commits and pushed prime-look\nfork work: none\n" }
       const [answer] = await calls(made, [{ action: "land", rifts: ["feat-x"] }])
       expect(answer).toEndWith(
-        `Then the repository's post-land step (rift.postLand) runs there in the background, after the accept check; this session is woken with its report, and the next land waits for it.`,
+        `Then the repository's post-land step (rift.postLand) runs in the background after the accept check, in its own Rift (post-land), one at a time; this session is woken with its report. The next land need not wait for it.`,
       )
-      expect(made.landing.steps.slice(-3)).toEqual([`accept ${INTEGRATE} base0`, "load", `post-land ${INTEGRATE} base0 abc1234`])
+      expect(made.landing.steps.slice(-6)).toEqual([
+        `accept ${INTEGRATE} base0`,
+        "load",
+        `start ${POST_LAND} main`,
+        "install",
+        `post-land ${POST_LAND} base0 abc1234`,
+        `ended post-land ${POST_LAND}`,
+      ])
       expect(made.landing.steps.filter((step) => step.startsWith("post-land"))).toHaveLength(1)
+      expect([...made.rifts.rifts.keys()].sort()).toEqual([INTEGRATE, OTHER, POST_LAND].sort())
+      expect(await call(made.rifts, { action: "land", rifts: ["post-land"] })).toBe(
+        `refused: Did not land anything: ${POST_LAND} is the Rift the post-land step runs in; it holds no work to land.`,
+      )
       expect(made.woken.map((woken) => woken.notice.description)).toEqual(["rift land · accept passed", "rift land · post-land ran"])
       expect(made.woken[1]!.notice.text).toBe(
         "rift land: the post-land step after feat/x ran in 4s. Log: /logs/post-land.log\nupstream: merged 3 commits and pushed prime-look\nfork work: none",
@@ -201,12 +215,32 @@ describe("land", () => {
       const again = withPostLand(undefined)
       await calls(again, [{ action: "land", rifts: ["feat-x"] }])
       await calls(again, [{ action: "land", rifts: ["feat-y"] }])
-      // While it runs, the next land waits: one at a time.
-      const busy = withPostLand(undefined)
-      const [, second] = await calls(busy, [{ action: "land", rifts: ["feat-x"] }, { action: "land", rifts: ["feat-y"] }])
-      expect(second).toBe(`refused: Did not land anything: ${INTEGRATE} is busy: the post-land step of feat/x runs there. Land again after its wake.`)
-      expect(again.landing.steps.filter((step) => step.startsWith("post-land"))).toEqual([`post-land ${INTEGRATE} base0 abc1234`, `post-land ${INTEGRATE} base0 abc1234`])
+      expect(again.landing.steps.filter((step) => step.startsWith("post-land"))).toEqual([`post-land ${POST_LAND} base0 abc1234`, `post-land ${POST_LAND} base0 abc1234`])
     })
+
+    const overlapping = (made: Bench) => {
+      const ran = (step: string) => step.includes(`post-land ${POST_LAND}`)
+      return within(made, (tool) =>
+        Effect.gen(function* () {
+          const started = yield* Queue.unbounded<string>()
+          const release = yield* Deferred.make<string>()
+          made.landing.postLandHold = Queue.offer(started, "started").pipe(Effect.andThen(Deferred.await(release)), Effect.asVoid)
+          expect(yield* answerOf(tool, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+          yield* Queue.take(started)
+          // The first post-land step runs on: the next land merges, gates and pushes, and its own step waits for the lock.
+          expect(yield* answerOf(tool, { action: "land", rifts: ["feat-y"] })).toStartWith("Landed 1 Rift(s) as one push")
+          expect(made.landing.steps.indexOf("merge feat/y")).toBeGreaterThan(made.landing.steps.indexOf(`post-land ${POST_LAND} base0 abc1234`))
+          expect(made.landing.steps.filter(ran)).toEqual([`post-land ${POST_LAND} base0 abc1234`])
+          yield* Deferred.succeed(release, "released")
+          yield* Queue.take(started)
+          expect(made.landing.steps.filter(ran).slice(0, 3)).toEqual([`post-land ${POST_LAND} base0 abc1234`, `ended post-land ${POST_LAND}`, `post-land ${POST_LAND} base0 abc1234`])
+        }),
+      )
+    }
+
+    test("a land while a post-land step runs goes on, and its own post-land step waits for the first to end: two never overlap", () => overlapping(withPostLand(undefined)))
+
+    test("with an accept check too, the integration Rift is free once it ends, while the post-land step still runs", () => overlapping(withPostLand("bun run accept")))
 
     test("a failed post-land step wakes with its exit and output; one under load is skipped and said to run at the next land; no step is run for a batch that was not pushed", async () => {
       const failed = withPostLand(undefined)

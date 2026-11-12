@@ -13,7 +13,7 @@ import { availableParallelism, loadavg } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { DEFAULT_LIMITS, heavyArgv, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
 import { Effect, Layer } from "effect"
-import { type HostLoad, INTEGRATION, type LandConfig, type Merged, type PostLanded, type Ran, type Started, type Unit } from "../land.ts"
+import { type HostLoad, type LandConfig, type Merged, type PostLanded, type Ran, type Started, type Unit } from "../land.ts"
 import { Landing, RiftFailed } from "../service.ts"
 import { commands, lines } from "./command.ts"
 
@@ -135,8 +135,8 @@ export const layer = (options: Options) => {
     const previous = yield* trimmed(integration, "rev-parse", "HEAD")
     yield* spawn(["git", "-C", integration, "merge", "--abort"], integration)
     yield* git(integration, "fetch", "-q", "origin")
-    // The integration Rift holds no one's work: a gate that rewrote files (a lint fix) leaves nothing behind.
-    yield* git(integration, "checkout", "-q", "-f", "-B", INTEGRATION, `origin/${main}`)
+    // The integration Rift holds no one's work: a gate that rewrote files (a lint fix) leaves nothing behind; its branch is named for it.
+    yield* git(integration, "checkout", "-q", "-f", "-B", basename(integration), `origin/${main}`)
     return { base: yield* trimmed(integration, "rev-parse", "HEAD"), previous } satisfies Started
   })
 

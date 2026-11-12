@@ -60,7 +60,8 @@ export class Landing extends Context.Service<
     /** The Rift's uncommitted changes (`git status --porcelain` lines, untracked files one by one) whose file differs from the same file in its warm source. */
     readonly ownChanges: (path: string, source: string) => Effect.Effect<ReadonlyArray<string>, RiftFailed>
     /**
-     * Puts the integration Rift at origin's newest `<main>`, on its own branch:
+     * Puts the integration Rift (or the post-land Rift) at origin's newest `<main>`, on its own branch (named
+     * for the Rift's directory):
      * repairs a stale multi-pack index, aborts a merge left in progress,
      * fetches origin and checks the branch out there afresh, dropping any
      * tracked change a gate left (the integration Rift holds no one's work).
