@@ -25,8 +25,25 @@ const REAL = process.cwd()
 const CLI_TIMEOUT = 120_000
 const TEST_TIMEOUT = 240_000
 
-/** The try statements the domain kept when the rule became an error; the inventory only shrinks. */
-const LEGACY_CEILING = 9
+/**
+ * The files whose try statements the domain kept when the rule became an error, each with its
+ * count. The inventory only shrinks: a file leaves it once its tries are gone, and no file joins
+ * it, even one whose budget would keep the total under nine.
+ */
+const LEGACY_TRIES: ReadonlyArray<{ readonly file: string; readonly count: number }> = [
+  { file: "decider/tool-input.ts", count: 1 },
+  { file: "mods/anthropic-auth/json.ts", count: 1 },
+  { file: "mods/anthropic-auth/tool-alias.ts", count: 1 },
+  { file: "mods/guard/kill.ts", count: 1 },
+  { file: "mods/kernel/tools.ts", count: 1 },
+  { file: "mods/kernel/wire.ts", count: 1 },
+  { file: "mods/wake/wake.ts", count: 1 },
+  { file: "mods/web/fetch.ts", count: 2 },
+]
+
+/** The legacy files a budget names past the pinned inventory: one not in it, or over its pinned count. */
+const unpinned = (budgets: ReadonlyArray<{ readonly file: string; readonly count: number }>) =>
+  Arr.filter(budgets, (entry) => !Arr.some(LEGACY_TRIES, (pinned) => pinned.file === entry.file && entry.count <= pinned.count))
 
 /** The globs the domain override leaves to the test and boundary policy. */
 const NOT_DOMAIN = ["**/*.test.*", "**/*.spec.*", "**/*.bench.*", "mods/*/laws.ts"]
@@ -475,8 +492,21 @@ describe(`${HARD_CONFIG}: the production domain's syntax rules over generated pa
       })),
     )
     expect(Arr.filter(legacy, (file) => !existsSync(path.join(REAL, file)))).toEqual([])
-    expect(Arr.reduce(legacyBudgets(), 0, (sum, entry) => sum + entry.count)).toBeLessThanOrEqual(LEGACY_CEILING)
+    expect(unpinned(legacyBudgets())).toEqual([])
     expect(Arr.filter(legacy, (file) => !inDomain(file))).toEqual([])
+  })
+
+  test("a new file cannot take a fixed legacy file's place in the try inventory, though the total stays at nine", () => {
+    const added = { file: "mods/web/search.ts", count: 1 }
+    const swapped = [...Arr.drop(LEGACY_TRIES, 1), added]
+    const raised = Arr.map(LEGACY_TRIES, (entry) => ({ ...entry, count: entry.count + Number(entry.file === "mods/guard/kill.ts") }))
+    expect({
+      swappedTotal: Arr.reduce(swapped, 0, (sum, entry) => sum + entry.count),
+      swapped: unpinned(swapped),
+      raised: unpinned(raised),
+      pinned: unpinned(LEGACY_TRIES),
+      shrunk: unpinned(Arr.drop(LEGACY_TRIES, 3)),
+    }).toEqual({ swappedTotal: 9, swapped: [added], raised: [{ file: "mods/guard/kill.ts", count: 2 }], pinned: [], shrunk: [] })
   })
 
   test.concurrent(
