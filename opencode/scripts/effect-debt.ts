@@ -27,7 +27,16 @@ export const POLICY = "effect-debt.json"
 export const DEBT_CONFIG = ".oxlintrc.effect-debt.json"
 export const HARD_CONFIG = ".oxlintrc.json"
 const PLUGIN = "oxlint-plugin-effect"
-const PRESET = "node_modules/oxlint-plugin-effect/presets/recommended.json"
+
+/**
+ * The plugin is a dev dependency of the `lint` workspace, never of the root: its `effect` peer
+ * (>=4.1) resolves to the lint workspace's own `effect`, so the runtime's `effect` (the root's,
+ * which opencode-drive and the OpenCode SDK are built against) does not move with it.
+ */
+export const LINT_MANIFEST = "lint/package.json"
+const LINT_MODULES = "lint/node_modules"
+export const PLUGIN_ENTRY = `./${LINT_MODULES}/${PLUGIN}/dist/plugin.js`
+const PRESET = `${LINT_MODULES}/${PLUGIN}/presets/recommended.json`
 const MEASURE_CONFIG = "node_modules/.cache/effect-debt/measure.json"
 
 /** The pseudo-rule counting lint suppression directives per file, so a new one cannot hide debt. */
@@ -142,14 +151,18 @@ const DebtConfig = Schema.Struct({
   plugins: Schema.Tuple([]),
   categories: Schema.Struct({ correctness: Schema.Literal("off") }),
   ignorePatterns: Strings,
-  jsPlugins: Schema.Tuple([Schema.Literal(`${PLUGIN}/plugin`)]),
+  jsPlugins: Schema.Tuple([Schema.Literal(PLUGIN_ENTRY)]),
   settings: Settings,
   rules: Rules,
   overrides: Schema.optionalKey(Schema.Array(Override)),
 })
 const HardConfig = Schema.Struct({ ignorePatterns: Strings, settings: Settings })
 const Preset = Schema.Struct({ plugins: Schema.Tuple([]), jsPlugins: Strings, rules: Rules })
-const Manifest = Schema.Struct({ devDependencies: Schema.Struct({ oxlint: Schema.String, [PLUGIN]: Schema.String }) })
+const Manifest = Schema.Struct({
+  devDependencies: Schema.Struct({ oxlint: Schema.String, [PLUGIN]: Schema.optionalKey(Schema.String) }),
+  dependencies: Schema.optionalKey(Schema.Struct({ [PLUGIN]: Schema.optionalKey(Schema.String) })),
+})
+const LintManifest = Schema.Struct({ devDependencies: Schema.Struct({ effect: Schema.String, [PLUGIN]: Schema.String }) })
 const Installed = Schema.Struct({ version: Schema.String })
 const Exemption = Schema.Struct({ file: Schema.String, rule: Schema.String, reason: Schema.String })
 const Budgets = Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Int))
@@ -328,17 +341,29 @@ export interface Inputs {
   readonly hard: typeof HardConfig.Type
   readonly preset: typeof Preset.Type
   readonly manifest: typeof Manifest.Type
+  readonly lintManifest: typeof LintManifest.Type
   readonly plugin: string
+  readonly pluginEffect: string
   readonly oxlint: string
 }
 
 const versionProblems = (inputs: Inputs) => {
-  const plugin = [inputs.manifest.devDependencies[PLUGIN], inputs.plugin, inputs.policy.plugin]
+  const plugin = [inputs.lintManifest.devDependencies[PLUGIN], inputs.plugin, inputs.policy.plugin]
+  const effect = [inputs.lintManifest.devDependencies.effect, inputs.pluginEffect]
   const oxlint = [inputs.manifest.devDependencies.oxlint, inputs.oxlint, inputs.policy.oxlint]
+  const rooted = [inputs.manifest.devDependencies[PLUGIN], inputs.manifest.dependencies?.[PLUGIN]]
   return [
     ...Arr.flatMap([plugin], (found) => {
       if (new Set(found).size === 1) return []
-      return [`${PLUGIN} drifted: package.json pins ${found[0]}, installed ${found[1]}, policy ${found[2]}`]
+      return [`${PLUGIN} drifted: ${LINT_MANIFEST} pins ${found[0]}, installed ${found[1]}, policy ${found[2]}`]
+    }),
+    ...Arr.flatMap([effect], (found) => {
+      if (new Set(found).size === 1) return []
+      return [`the plugin's effect drifted: ${LINT_MANIFEST} pins ${found[0]}, ${LINT_MODULES}/effect is ${found[1]}`]
+    }),
+    ...Arr.flatMap(rooted, (pin) => {
+      if ((pin ?? "") === "") return []
+      return [`package.json depends on ${PLUGIN} ${pin}; it belongs to ${LINT_MANIFEST} alone, so its effect peer cannot move the runtime's effect`]
     }),
     ...Arr.flatMap([oxlint], (found) => {
       if (new Set(found).size === 1) return []
@@ -429,8 +454,8 @@ export const budgetsOf = (policy: Policy): Counts =>
 /** The rules a policy knows: the preset's, and the suppression count. */
 export const knownRules = (policy: Policy) => new Set([...policy.rules, SUPPRESSION])
 
-const versionOf = (root: string, name: string) =>
-  readJson(root, path.join("node_modules", name, "package.json"), Installed, "ignore").pipe(Effect.map((installed) => installed.version))
+const versionOf = (root: string, modules: string, name: string) =>
+  readJson(root, path.join(modules, name, "package.json"), Installed, "ignore").pipe(Effect.map((installed) => installed.version))
 
 const readInstalled = (root: string) =>
   Effect.all({
@@ -438,8 +463,10 @@ const readInstalled = (root: string) =>
     hard: readJson(root, HARD_CONFIG, HardConfig, "ignore"),
     preset: readJson(root, PRESET, Preset, "ignore"),
     manifest: readJson(root, "package.json", Manifest, "ignore"),
-    plugin: versionOf(root, PLUGIN),
-    oxlint: versionOf(root, "oxlint"),
+    lintManifest: readJson(root, LINT_MANIFEST, LintManifest, "ignore"),
+    plugin: versionOf(root, LINT_MODULES, PLUGIN),
+    pluginEffect: versionOf(root, LINT_MODULES, "effect"),
+    oxlint: versionOf(root, "node_modules", "oxlint"),
   })
 
 /** The command line: one mode and the workspace it runs over. */
@@ -580,7 +607,7 @@ const tightenPolicy = Effect.fn("EffectDebt.tightenPolicy")(function* (options: 
 const measure = Effect.fn("EffectDebt.measure")(function* (options: Options) {
   const installed = yield* readInstalled(options.root)
   const config = path.join(options.root, MEASURE_CONFIG)
-  const raw = { plugins: [], categories: { correctness: "off" }, jsPlugins: installed.preset.jsPlugins, rules: installed.preset.rules }
+  const raw = { plugins: [], categories: { correctness: "off" }, jsPlugins: [path.join(options.root, PLUGIN_ENTRY)], rules: installed.preset.rules }
   yield* Effect.try({
     try: () => {
       mkdirSync(path.dirname(config), { recursive: true })

@@ -1,0 +1,9 @@
+{
+  "name": "@dotfiles/lint",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "effect": "4.1.0",
+    "oxlint-plugin-effect": "0.32.1"
+  }
+}

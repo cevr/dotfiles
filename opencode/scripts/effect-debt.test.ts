@@ -5,7 +5,7 @@
  * forbidden and accepted fixtures in every path class.
  */
 import { describe, expect, test } from "bun:test"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Schema, type Scope } from "effect"
@@ -14,6 +14,7 @@ import {
   type Counts,
   DEBT_CONFIG,
   HARD_CONFIG,
+  LINT_MANIFEST,
   parseOptions,
   POLICY,
   Policy,
@@ -161,6 +162,36 @@ describe("compare: per exact (file, rule), no credit, no headroom", () => {
   })
 })
 
+const Pinned = Schema.fromJsonString(
+  Schema.Struct({
+    version: Schema.String,
+    dependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+    devDependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+    peerDependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  }),
+)
+
+/** The package a module directory resolves `name` to, beside it in the install's isolated layout. */
+const installedBeside = (moduleDir: string, name: string) => {
+  const real = realpathSync(path.join(REAL, moduleDir))
+  const scope = real.slice(0, real.lastIndexOf("/node_modules/") + "/node_modules".length)
+  return Schema.decodeUnknownSync(Pinned)(readFileSync(path.join(scope, name, "package.json"), "utf8"))
+}
+
+describe("the plugin never moves the runtime's effect", () => {
+  test("opencode-drive runs on the effect and platform packages it pins; the plugin on the lint workspace's effect", () => {
+    const root = Schema.decodeUnknownSync(Pinned)(`{"version":"0",${readReal("package.json").slice(1)}`)
+    const drive = installedBeside("node_modules/opencode-drive", "opencode-drive")
+    expect(installedBeside("node_modules/opencode-drive", "effect").version).toBe(drive.peerDependencies?.effect ?? "")
+    expect(root.devDependencies?.effect).toBe(drive.peerDependencies?.effect ?? "")
+    for (const name of ["@effect/platform-node", "@effect/platform-node-shared"])
+      expect({ name, version: installedBeside("node_modules/opencode-drive", name).version }).toEqual({ name, version: drive.dependencies?.[name] ?? "" })
+    expect(Object.keys({ ...root.devDependencies, ...root.dependencies })).not.toContain("oxlint-plugin-effect")
+    const lint = Schema.decodeUnknownSync(Pinned)(`{"version":"0",${readReal(LINT_MANIFEST).slice(1)}`)
+    expect(installedBeside("lint/node_modules/oxlint-plugin-effect", "effect").version).toBe(lint.devDependencies?.effect ?? "")
+  })
+})
+
 /** A temporary directory of its own, outside the repo, removed when the scope closes. */
 const scratch = Effect.acquireRelease(
   Effect.sync(() => mkdtempSync(path.join(tmpdir(), "effect-debt-"))),
@@ -198,6 +229,8 @@ const workspace = Effect.fn("EffectDebtTest.workspace")(function* () {
   const root = yield* scratch
   symlinkSync(path.join(REAL, "node_modules"), path.join(root, "node_modules"))
   put(root, "package.json", readReal("package.json"))
+  put(root, LINT_MANIFEST, readReal(LINT_MANIFEST))
+  symlinkSync(path.join(REAL, "lint/node_modules"), path.join(root, "lint/node_modules"))
   put(root, HARD_CONFIG, hardConfigText())
   put(root, DEBT_CONFIG, readReal(DEBT_CONFIG))
   for (const exemption of realPolicy.exemptions) put(root, exemption.file, "export const placeholder = 1\n")
@@ -351,6 +384,13 @@ describe("effect-debt --check over a real workspace", () => {
           expect((yield* cli(root, "--check")).stderr).toContain("oxlint-plugin-effect drifted")
           writePolicy(root, budgets, { oxlint: "1.88.0" })
           expect((yield* cli(root, "--check")).stderr).toContain("oxlint drifted")
+          writePolicy(root, budgets)
+          put(root, "package.json", readReal("package.json").replace('"oxlint": ', '"oxlint-plugin-effect": "0.32.1",\n    "oxlint": '))
+          expect((yield* cli(root, "--check")).stderr).toContain(`package.json depends on oxlint-plugin-effect 0.32.1; it belongs to ${LINT_MANIFEST} alone`)
+          put(root, "package.json", readReal("package.json"))
+          put(root, LINT_MANIFEST, readReal(LINT_MANIFEST).replace('"effect": "4.1.0"', '"effect": "4.1.1"'))
+          expect((yield* cli(root, "--check")).stderr).toContain("the plugin's effect drifted")
+          put(root, LINT_MANIFEST, readReal(LINT_MANIFEST))
           writePolicy(root, { ...budgets, "root.ts": { ...budgets["root.ts"], "effect/noSuchRule": 1, "effect/noAs": 0 } })
           const unknown = yield* cli(root, "--check")
           expect(unknown.stderr).toContain("unknown rule effect/noSuchRule")
