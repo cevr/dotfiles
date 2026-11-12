@@ -86,6 +86,7 @@ import {
   Fleet,
   Ledger,
   Liveness,
+  type LoggedDrop,
   Models,
   Remind,
   PoolPace,
@@ -797,11 +798,11 @@ export class Machines extends Context.Service<
     /** The Rifts a land of `root` answered green. */
     readonly landed: (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget> }) => Effect.Effect<void>
     /**
-     * `root` ran log.ts moving the units in `dirs` to `dropped` (relative ones from `workdir`, else the root's
-     * directory). Each whose log.md now ends in that move ends, and the findings it held go with it (machine.ts
-     * `Drop`); one whose move log.ts refused, or did not write, stays.
+     * `root` ran a shell call: each unit its shell calls moved to `dropped` by log.ts (`UnitLogs.drops`, what
+     * log.ts wrote) ends, and the findings it held go with it (machine.ts `Drop`). A start, a land and a
+     * hand-back read the drops too, so one written after its call returned (backgrounded, timed out) ends there.
      */
-    readonly dropped: (input: { readonly root: string; readonly dirs: ReadonlyArray<string>; readonly workdir: Option.Option<string> }) => Effect.Effect<void>
+    readonly dropped: (root: string) => Effect.Effect<void>
     /** A session went idle: a step's hand-back moves its unit or ends its verifier. */
     readonly handBack: (sessionID: string) => Effect.Effect<void>
     /** The root's run as its ledger holds it, its dead steps handed back first; empty for a root that runs no unit. */
@@ -813,6 +814,17 @@ export class Machines extends Context.Service<
     readonly compacted: (sessionID: string) => Effect.Effect<BriefOutcome>
   }
 >()("dotfiles-opencode/orchestrate/Machines") {}
+
+/**
+ * The `Drop` of each unit the root's log.md files say it dropped, unless the state holds that unit at a later round
+ * (started again since: revived). The machine decides a drop of a unit already gone to nothing, so a drop read again
+ * at every call ends its unit once.
+ */
+export const dropsOf = (logged: ReadonlyArray<LoggedDrop>, state: MachineState): ReadonlyArray<Drop> =>
+  logged.flatMap((drop) => {
+    const revived = Option.exists(Option.fromNullishOr(state.units[drop.unit]), (unit) => unit.round > drop.round)
+    return Option.toArray(Option.liftPredicate(Drop.make({ unit: drop.unit }), () => !revived))
+  })
 
 /** The machine's handlers: the plugin feeds each call it sees, and the ledger decides it. */
 export const machineLayer = (config: MachineConfig) =>
@@ -986,19 +998,22 @@ export const machineLayer = (config: MachineConfig) =>
         const at = yield* now
         let notes: ReadonlyArray<string> = []
         let prompt: string | undefined
+        const logged = yield* unitLogs.drops(input.root)
         const decided = yield* reconciled(input.root, at, (heard) =>
           ledger.decide(
             input.root,
             at,
             (state) =>
               Effect.gen(function* () {
+                // A unit the root logged dropped since the last call it made ends first, as its drop's own call would.
+                const drops = dropsOf(logged, state)
                 const dead = command.role === "verifier" ? yield* reconcile(input.root, state, heard) : []
                 // An unresolved verdict's report that reads now opens its findings first: this start may fold them.
                 const read = yield* reread(state)
-                const seen = yield* advance(state, read, at)
+                const seen = yield* advance(state, [...drops, ...read], at)
                 notes = notesOf(seen, command, at, config.cadence)
                 prompt = verifierPromptOf(seen, command)
-                return [...dead, ...read, command]
+                return [...drops, ...dead, ...read, command]
               }),
             config.mode,
           ),
@@ -1031,11 +1046,13 @@ export const machineLayer = (config: MachineConfig) =>
       const land = Effect.fn("Machines.land")(function* (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget>; readonly departs?: string }) {
         const command = Land.make({ rifts: input.rifts, ...(input.departs === undefined ? {} : { departs: input.departs }) })
         const at = yield* now
+        const logged = yield* unitLogs.drops(input.root)
         const decided = yield* reconciled(input.root, at, (heard) =>
           ledger.decide(
             input.root,
             at,
-            (state) => Effect.all([reconcile(input.root, state, heard), reread(state)]).pipe(Effect.map(([dead, read]) => [...dead, ...read, command])),
+            (state) =>
+              Effect.all([reconcile(input.root, state, heard), reread(state)]).pipe(Effect.map(([dead, read]) => [...dropsOf(logged, state), ...dead, ...read, command])),
             config.mode,
           ),
         )
@@ -1046,14 +1063,9 @@ export const machineLayer = (config: MachineConfig) =>
         yield* ledger.decide(input.root, yield* now, () => Effect.succeed([Landed.make({ rifts: input.rifts })])).pipe(Effect.ignore)
       })
 
-      const dropped = Effect.fn("Machines.dropped")(function* (input: { readonly root: string; readonly dirs: ReadonlyArray<string>; readonly workdir: Option.Option<string> }) {
-        if (input.dirs.length === 0) return
-        const rootDirectory = Option.fromNullishOr(yield* sessions.directoryOf(input.root))
-        const directory = Option.orElse(input.workdir, () => rootDirectory)
-        // What log.ts wrote decides, never what the command asked: a refused move leaves its unit as it was.
-        const units = yield* Effect.forEach(input.dirs, (dir) => unitLogs.droppedIn(dir, directory))
-        const drops = [...new Set(units.flatMap(Option.toArray))].map((unit) => Drop.make({ unit }))
-        if (drops.length > 0) yield* ledger.decide(input.root, yield* now, () => Effect.succeed(drops)).pipe(Effect.ignore)
+      const dropped = Effect.fn("Machines.dropped")(function* (root: string) {
+        const logged = yield* unitLogs.drops(root)
+        if (logged.length > 0) yield* ledger.decide(root, yield* now, (state) => Effect.succeed(dropsOf(logged, state))).pipe(Effect.ignore)
       })
 
       const handBack = Effect.fn("Machines.handBack")(function* (sessionID: string) {
@@ -1068,7 +1080,8 @@ export const machineLayer = (config: MachineConfig) =>
         const said = back.value
         // The session that handed back is the step's: a step started before its session was known gets it here.
         const at = yield* now
-        const decided = yield* ledger.decide(root, at, () => Effect.succeed([said])).pipe(Effect.orElseSucceed(() => undefined))
+        const logged = yield* unitLogs.drops(root)
+        const decided = yield* ledger.decide(root, at, (state) => Effect.succeed([...dropsOf(logged, state), said])).pipe(Effect.orElseSucceed(() => undefined))
         // A verdict a reconcile read first was concluded there: the ledger then decides this hand-back to nothing.
         const ended = decided?.events.find((event) => event._tag === "VerifierEnded")
         if (ended !== undefined) yield* conclude(root, at, { batch: ended.batch, child: sessionID, verdict: ended.verdict })

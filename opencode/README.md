@@ -581,6 +581,20 @@ unit dir being the one a path in the prompt or the hand-back names, else the
 one `tmp/orchestrate/<run>/<unit>` in the session's checkout. None found, a
 move the orchestrator already logged, or one log.ts refuses writes nothing.
 
+A unit the root drops (`log.ts <unit dir> <from> dropped r<N>`) ends on its
+machine and releases its findings. log.ts says which: each move to
+`dropped` it writes from an OpenCode shell (`OPENCODE_SESSION_ID`) is also a
+line in the drops journal (option `drops`, default
+`~/.cache/orchestrate/drops.jsonl`, handed to every shell as
+`ORCHESTRATE_DROPS`), naming the session and the unit dir it resolved. After
+each of the root's shell calls, and before each start, land and hand-back it
+decides, the plugin reads the root's lines and drops each unit whose
+`log.md` still ends in that move, unless the ledger holds it at a later
+round (revived). The command's text never counts, so a dir named through a
+variable or after a `cd`, or a drop written after its call answered
+(backgrounded, timed out), ends its unit once; a refused move writes no
+line, and an older drop under a later move is no drop.
+
 The worker's ceiling (`capEffort` in `role.ts`): a call that runs as the
 worker on a model at `#max`, asked by the call or inherited (a new worker
 naming no model runs on its agent's model, else its parent's, at that

@@ -38,6 +38,10 @@
  *   the pool cannot. Without it the script alone answers.
  * - `unitLog`: the orchestrate skill's log.ts that writes each unit's moves,
  *   default `~/.claude/skills/orchestrate/scripts/log.ts`.
+ * - `drops`: the drops journal log.ts writes a line to for each move to
+ *   `dropped` an OpenCode session's shell ran (the session and the unit dir),
+ *   default `~/.cache/orchestrate/drops.jsonl`; every shell the host spawns
+ *   gets it as `ORCHESTRATE_DROPS`, which log.ts reads.
  * - `skill`: the orchestrate skill's dir, whose git history versions it,
  *   default `~/.claude/skills/orchestrate`.
  * - `fleet`: `{ dotfiles, fork }`, the checkouts `bun run daily` installs from.
@@ -66,7 +70,10 @@
  *   `<run dir>/<unit>/log.md` through log.ts `--current`. The unit dir is the
  *   one a path in the prompt or the hand-back names, else the one
  *   `tmp/orchestrate/<run>/<unit>` in the session's checkout; none found, or a
- *   move already logged, writes nothing.
+ *   move already logged, writes nothing. A unit the root drops by log.ts ends on
+ *   its machine: log.ts journals each drop it writes (`drops`), and the plugin
+ *   reads the root's after each of its shell calls and before each start, land
+ *   and hand-back, each confirmed by the unit's log.md's last line.
  *
  * - Latch: a new subagent the Sabbath or the pace holds latches instead of
  *   being refused. The call answers at once, as a background subagent's
@@ -121,7 +128,7 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Array as Arr, Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
+import { Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { QUEUE } from "@dotfiles/opencode-queue/queue"
@@ -237,6 +244,7 @@ export const Options = Schema.Struct({
   fullAgent: Schema.Boolean.pipe(withDefault(false)),
   codex: Schema.Union([Schema.Literal(false), Codex]).pipe(withDefault<false | typeof Codex.Type>(CODEX_DEFAULT)),
   unitLog: Schema.String.pipe(withDefault(UNIT_LOG)),
+  drops: Schema.String.pipe(withDefault(UnitLogsLive.DROPS_JOURNAL)),
   skill: Schema.String.pipe(withDefault(SKILL_DIR)),
   fleet: Schema.optional(Schema.Struct({ dotfiles: Schema.String, fork: Schema.String })),
 })
@@ -308,7 +316,7 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
         ),
       (sessionID) => ctx.session.context({ sessionID: sessionID as SessionID }),
     ),
-    UnitLogsLive.layer(options.unitLog),
+    UnitLogsLive.layer(options.unitLog, { journal: options.drops }),
     ModelsLive.layer({
       session: (sessionID) =>
         ctx.session.get({ sessionID: sessionID as SessionID }).pipe(
@@ -456,37 +464,6 @@ const landOf = (tool: string, input: unknown): { readonly rifts: ReadonlyArray<L
 
 /** The shell tool, by its name and its former one. */
 const SHELLS = new Set(["shell", "bash"])
-
-/** A shell call's input: its command, and the directory it runs in when it names one. */
-const ShellInput = Schema.Struct({ command: Schema.String, workdir: Schema.optionalKey(Schema.String) })
-const decodeShell = Schema.decodeUnknownOption(ShellInput)
-
-/** One shell word, its quotes dropped (an unmatched group joins as nothing). */
-const WORD = /"([^"]*)"|'([^']*)'|([^\s"']+)/g
-/** Where one command of a shell line ends. */
-const SEPARATOR = /;|&&|\|\||\|/
-
-/** The unit dir one command asks `log.ts` to move to `dropped`: its first argument, as written. */
-const dropAskedBy = (command: string): Option.Option<string> => {
-  const words = Array.from(command.matchAll(WORD), (match) => match.slice(1).join(""))
-  return Arr.findFirstIndex(words, (word) => /(?:^|\/)log\.ts$/.test(word)).pipe(
-    Option.map((at) => words.slice(at + 1).filter((word) => word !== "--current")),
-    // `<dir> <from> dropped` or, with `--current`, `<dir> dropped`: the move names it before its round.
-    Option.filter((args) => args.slice(1, 3).includes("dropped")),
-    Option.flatMap((args) => Arr.head(args)),
-  )
-}
-
-/**
- * The unit dirs a root's shell call asks the orchestrate skill's `log.ts` to move to `dropped`
- * (`log.ts <unit dir> <from> dropped r<N>`, or `log.ts --current <unit dir> dropped r<N>`), every command of the
- * line in order. Only asked: which moves log.ts wrote is each unit's log.md's to say (`Machines.dropped`), since
- * its answer does not say which command wrote which line. None for any other call.
- */
-export const dropsAsked = (tool: string, command: string): ReadonlyArray<string> => {
-  if (!SHELLS.has(tool)) return []
-  return command.split(SEPARATOR).flatMap((part) => Option.toArray(dropAskedBy(part)))
-}
 
 const callKey = (sessionID: string, callID: string) => `${sessionID}/${callID}`
 
@@ -861,15 +838,16 @@ export const make = (
           yield* machines.handBack(event.sessionID)
         }),
       )
-      // A unit the root logged `dropped` ends on its machine, and the findings it held go with it: each unit the
-      // call asked to drop whose log.md log.ts moved there.
-      yield* ctx.tool.hook("execute.after", (event) => {
-        if (event.status !== "completed") return Effect.void
-        return Option.match(decodeShell(event.input), {
-          onNone: () => Effect.void,
-          onSome: (shell) => machines.dropped({ root: event.sessionID, dirs: dropsAsked(event.tool, shell.command), workdir: Option.fromNullishOr(shell.workdir) }),
-        })
-      })
+      // A unit the root logged `dropped` ends on its machine, and the findings it held go with it: after each of its
+      // shell calls, each unit log.ts journaled a written drop of for the session (whatever the command's text), whose
+      // log.md still ends there. A start, a land and a hand-back read them too, for a drop that lands later.
+      yield* ctx.tool.hook("execute.after", (event) => Effect.asVoid(Effect.when(machines.dropped(event.sessionID), Effect.sync(() => SHELLS.has(event.tool)))))
+      // Every command OpenCode spawns writes its drops to the journal this plugin reads (log.ts `ORCHESTRATE_DROPS`).
+      yield* ctx.shell.hook("create.before", (invocation) =>
+        Effect.sync(() => {
+          invocation.env.ORCHESTRATE_DROPS = options.drops
+        }),
+      )
       yield* ctx.tool.hook("execute.after", (event) => {
         if (event.tool !== SUBAGENT) {
           const land = landOf(event.tool, event.input)
