@@ -8,18 +8,18 @@
 // each, the session is still compacted once. The rule and its timer are tested
 // beside their code in mods/idle-compact and cmd/idle-compact.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import type { Result, Spec, Started } from "./idle-compact/run.ts"
 import { ANSWER, BACKGROUND_SECONDS, EARLY_MS, MARGIN_SECONDS, SUMMARY, TTL_SECONDS } from "./idle-compact/sim.ts"
 import { owned } from "./owned.ts"
+import { scratch as scratchDir } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/idle-compact.test.ts: the OpenCode run skips. Set OPENCODE_DEV to the fork.")
 
 const ROOT = resolve(import.meta.dir, "..")
-const scratch = mkdtempSync(join(tmpdir(), "idle-compact-e2e-"))
+const scratch = scratchDir("idle-compact-e2e-").path
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** One run of real OpenCode in a scratch home; see tests/idle-compact/run.ts. */

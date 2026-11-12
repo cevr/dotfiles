@@ -7,8 +7,8 @@
 // Every shell call runs in a git repository the run makes in a scratch dir.
 // The guard on its own is tested beside its code in mods/guard and cmd/guard.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { getPriority, tmpdir } from "node:os"
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { getPriority } from "node:os"
 import { join, resolve } from "node:path"
 import { DIRTY, git, KEPT_FILE } from "./guard/repo.ts"
 import type { Result, Spec } from "./guard/run.ts"
@@ -29,12 +29,13 @@ import {
   SLEEP_TASK,
 } from "./guard/sim.ts"
 import { owned } from "./owned.ts"
+import { scratch as scratchDir } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/guard.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
 
 const ROOT = resolve(import.meta.dir, "..")
-const scratch = mkdtempSync(join(tmpdir(), "guard-e2e-"))
+const scratch = scratchDir("guard-e2e-").path
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** One run of real OpenCode in a scratch home; see tests/guard/run.ts. */

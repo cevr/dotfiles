@@ -21,18 +21,18 @@
 //   6. `verifier batch-1 r1`                      → starts, hands back `accepted`;
 //   7. a closing line.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { RULES } from "../mods/orchestrate/machine.ts"
 import type { MoveResult, PipelineResult, Result, Spec } from "./orchestrate/run.ts"
 import { owned } from "./owned.ts"
+import { scratch as scratchDir } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/orchestrate-machine.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 
 const ROOT = resolve(import.meta.dir, "..")
-const scratch = mkdtempSync(join(tmpdir(), "orchestrate-machine-"))
+const scratch = scratchDir("orchestrate-machine-").path
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** What the `machine` scenario adds to a run's result. */

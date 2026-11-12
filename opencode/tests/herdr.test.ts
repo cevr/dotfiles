@@ -3,12 +3,12 @@
 // the TUI believes it runs in herdr pane wtest:p1, and herdr hears the session
 // go to work, what runs, and go idle again.
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { rmSync } from "node:fs"
 import { join } from "node:path"
 import type { Received } from "../mods/herdr/laws.ts"
 import { listen } from "../mods/herdr/herdr/fake-server.ts"
 import { owned } from "./owned.ts"
+import { scratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/herdr.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -18,7 +18,7 @@ const field = (request: Received, key: string): unknown =>
 
 describe.skipIf(!fork)("the herdr reporter in a real TUI", () => {
   test("a turn that runs a shell command reports working, with the command as its label, then idle, and releases the pane on exit", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "herdr-"))
+    const dir = scratch("herdr-").path
     const server = listen(join(dir, "herdr.sock"))
     if ("failed" in server) throw new Error(`the fake herdr could not listen: ${server.failed}`)
     try {

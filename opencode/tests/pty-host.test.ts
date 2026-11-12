@@ -3,10 +3,10 @@
 // the host through the same client gamut uses. Ported from gent's
 // packages/e2e/tests/pty-host.test.ts.
 import { afterEach, describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { HostError, hostCall, rowsSince, serve, type HostScreen, type ServedHost } from "../testbeds/gamut/pty-host.ts"
+import { scratch as scratchDir } from "./scratch.ts"
 
 describe("rows since the last read", () => {
   test("an unchanged screen adds nothing", () => {
@@ -54,7 +54,7 @@ const until = async <A>(what: string, check: () => Promise<A | undefined> | A | 
 }
 
 const scratch = () => {
-  const dir = mkdtempSync(join(tmpdir(), "ocg-pty-host-"))
+  const dir = scratchDir("ocg-pty-host-").path
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
   return dir
 }

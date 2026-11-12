@@ -29,7 +29,7 @@
 // report); a picker selection and prompt sent into the gap arrive; a TUI opened
 // on a stopped or restarting background service opens its session.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { cpSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
@@ -301,7 +301,7 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
   let child: { readonly id: string }
   beforeAll(
     ...kept.setup(async () => {
-      if (binary) cpSync(binary, scratchBinary)
+      if (binary) copyFileSync(binary, scratchBinary)
       for (const dir of [work, home, join(home, ".config"), join(home, ".config/opencode")]) mkdirSync(dir)
       writeFileSync(
         join(home, ".config/opencode/opencode.json"),

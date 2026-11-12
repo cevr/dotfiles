@@ -8,18 +8,18 @@
 // the number and the list (decider/tool-input.ts). The plugin on
 // its own is tested beside its code in mods/memory and cmd/memory.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { main } from "../cmd/memory/cli.ts"
 import type { Result, Spec } from "./memory/run.ts"
 import { AGAIN_TASK, DEPLOY, DEPLOY_FIXED, LATE, RECALL_TASK, REPEAT, SAVE_TASK, STRINGS_TASK } from "./memory/sim.ts"
+import { scratch as scratchDir } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/memory.test.ts: the OpenCode run skips. Set OPENCODE_DEV to the fork.")
 
 const ROOT = resolve(import.meta.dir, "..")
-const scratch = mkdtempSync(join(tmpdir(), "memory-e2e-"))
+const scratch = scratchDir("memory-e2e-").path
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** One run of real OpenCode in a scratch home; see tests/memory/run.ts. */

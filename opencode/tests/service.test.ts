@@ -6,12 +6,12 @@
 // `service_failed`). Under load the fork's boot takes seconds after its file
 // appears; here the stand-in stays starting until the test ends its boot.
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { ready } from "./service.ts"
+import { scratch } from "./scratch.ts"
 
-const root = mkdtempSync(join(tmpdir(), "service-ready-"))
+const root = scratch("service-ready-").path
 const servers: Array<{ stop: (force: boolean) => unknown }> = []
 afterAll(() => {
   for (const server of servers) server.stop(true)

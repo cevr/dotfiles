@@ -10,17 +10,17 @@
 // and the root, not woken by the notice, reads it at its next turn, which
 // OpenCode starts with the subagent's next idle report.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./questions/run.ts"
 import { answeredAfter, ANSWERED, IDLE, isNotice, isReport, LETTER, messagesOf, NOTICE, ROOT_TOLD } from "./questions/sim.ts"
+import { scratch as scratchDir } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/questions-locations.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 
 const ROOT = resolve(import.meta.dir, "..")
-const scratch = mkdtempSync(join(tmpdir(), "questions-locations-"))
+const scratch = scratchDir("questions-locations-").path
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** One run of real OpenCode in a scratch home; see tests/questions/run.ts. */

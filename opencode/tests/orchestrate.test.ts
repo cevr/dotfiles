@@ -3,8 +3,7 @@
 // the scripted model: the paces, the guard, compaction per role, a unit's log.md, and the Sabbath stop.
 // The plugin's rules on their own are tested beside mods/orchestrate and cmd/orchestrate.
 import { afterAll, describe, expect, test } from "bun:test"
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { build, DEFAULT_SOURCE, OUT, parseAgent, ROOT } from "../scripts/agents.ts"
 import { definitions, effort, ROLES } from "../mods/orchestrate/role.ts"
@@ -12,6 +11,7 @@ import { KEEP } from "../mods/orchestrate/compaction.ts"
 import type { Result, Spec } from "./orchestrate/run.ts"
 import { REVIEW_TASK, SUMMARY, UNTYPED_TASK } from "./orchestrate/sim.ts"
 import { owned } from "./owned.ts"
+import { scratch as scratchDir } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 const skill = existsSync(join(DEFAULT_SOURCE, "scripts/agents.ts"))
@@ -19,7 +19,7 @@ const CLAUDE_AGENTS = resolve(ROOT, "../agents")
 if (!fork) console.warn("tests/orchestrate.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
 if (!skill) console.warn(`tests/orchestrate.test.ts: the agent checks skip. No orchestrate skill at ${DEFAULT_SOURCE}.`)
 
-const scratch = mkdtempSync(join(tmpdir(), "orchestrate-"))
+const scratch = scratchDir("orchestrate-").path
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** Friday 30 October 2026, 19:00 in Knowlton (EDT): after sunset, in the Sabbath. */

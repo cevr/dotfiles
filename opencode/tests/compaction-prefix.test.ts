@@ -8,18 +8,18 @@
 // a prompt cache then reads the whole conversation instead of the tools and
 // the first system blocks. The plugins' own hooks are tested beside their code.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import type { Mode, Result, Spec } from "./compaction-prefix/run.ts"
 import { NOTE, type Seen } from "./compaction-prefix/sim.ts"
 import { owned } from "./owned.ts"
+import { scratch as scratchDir } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/compaction-prefix.test.ts: the OpenCode run skips. Set OPENCODE_DEV to the fork.")
 
 const ROOT = resolve(import.meta.dir, "..")
-const scratch = mkdtempSync(join(tmpdir(), "compaction-prefix-e2e-"))
+const scratch = scratchDir("compaction-prefix-e2e-").path
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** One run of real OpenCode in a scratch home; see tests/compaction-prefix/run.ts. */

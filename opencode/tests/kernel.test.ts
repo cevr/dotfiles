@@ -5,18 +5,18 @@
 // memory mod loaded its tools are offered beside the kernel and called directly, and a cell's
 // shell handle keeps a command's output through a wait. The kernel on its own is tested beside its code in mods/kernel.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./kernel/run.ts"
 import { ATTACH_CELL, ATTACH_TASK, cells, DONE, HELLO, KERNEL_TASK, MEMORY_TASK, SHELL_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
 import { owned } from "./owned.ts"
+import { scratch as scratchDir } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/kernel.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
 
 const ROOT = resolve(import.meta.dir, "..")
-const scratch = mkdtempSync(join(tmpdir(), "kernel-e2e-"))
+const scratch = scratchDir("kernel-e2e-").path
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** One run of real OpenCode in a scratch home; see tests/kernel/run.ts. */
