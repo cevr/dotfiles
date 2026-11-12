@@ -84,6 +84,26 @@ export class HandoffMark extends Context.Service<
   }
 >()("dotfiles-opencode/update/HandoffMark") {}
 
+/** A build file a prune deleted, and how many bytes it held. */
+export interface Pruned {
+  readonly name: string
+  readonly bytes: number
+}
+
+/**
+ * The builds in the share directory (`~/.local/share/opencode-prime`, `opencode-<version>`), each
+ * about 225 MB. A prune deletes the ones `builds.ts` `prunable` names: none of the record's builds
+ * a TUI or a rollback needs, none a process runs, and nothing when the running executables do not
+ * read.
+ */
+export class Builds extends Context.Service<
+  Builds,
+  {
+    /** Deletes the builds `record` no longer needs, answering each; fails, deleting none, when what runs does not read. */
+    readonly prune: (record: Record) => Effect.Effect<ReadonlyArray<Pruned>, UpdateFailed>
+  }
+>()("dotfiles-opencode/update/Builds") {}
+
 /** The installed record (`record.ts`). */
 export class Records extends Context.Service<
   Records,

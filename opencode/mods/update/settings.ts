@@ -50,6 +50,9 @@ export const modeOf = (host: string): Settings["mode"] => {
   return "ff"
 }
 
+/** The share directory daily copies each build into, `opencode-<version>` (`scripts/daily.ts`). */
+export const shareDir = (home: string): string => `${home}/.local/share/opencode-prime`
+
 /** The settings in the handoff's environment variable. */
 export const SettingsJson = Schema.fromJsonString(Settings)
 

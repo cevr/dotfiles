@@ -5,7 +5,7 @@ import type { SessionView } from "./gate.ts"
 import type { Reading } from "./health.ts"
 import { EXIT_CODES, GATE_POLL, handoff, HEALTH_DEADLINE, HEALTH_POLL, intervalChecks, Updater, updaterLayer } from "./model.ts"
 import { type Build, proven, type Record, stagedRecord } from "./record.ts"
-import { Builder, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Resident, Service, Sessions, Source, UpdateFailed } from "./service.ts"
+import { Builder, Builds, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Resident, Service, Sessions, Source, UpdateFailed } from "./service.ts"
 import type { Target } from "./target.ts"
 import { HANDOFF_LIMIT, type Rejected, type Running } from "./update.ts"
 import { RESIDENT_DELAY, watch } from "./watch.ts"
@@ -47,6 +47,8 @@ interface World {
   /** How many restarts still fail before one goes through. */
   restartFailures: number
   reinstallFails: boolean
+  /** Whether the prune of old builds cannot read what runs. */
+  pruneFails: boolean
   /** The commits whose advance fails. */
   advanceFails: ReadonlyArray<string>
   /** The providers the service had a login for before the restart; none when that read fails. */
@@ -72,6 +74,7 @@ const world = (at: Partial<Omit<World, "calls" | "lines" | "beats">> = {}): Worl
   sessionsFail: false,
   restartFailures: 0,
   reinstallFails: false,
+  pruneFails: false,
   advanceFails: [],
   before: Option.some([]),
   ...at,
@@ -169,6 +172,18 @@ const fakes = (host: World) =>
           }),
       }),
     ),
+    Layer.succeed(
+      Builds,
+      Builds.of({
+        // The call notes the record it prunes by, and whether the handoff's mark is still held then.
+        prune: (record) =>
+          Effect.suspend(() => {
+            host.calls.push([`prune ${record.version}`, ...Option.toArray(Option.map(host.mark, () => "under the mark"))].join(" "))
+            if (host.pruneFails) return failure("list the running processes")
+            return Effect.succeed([{ name: "opencode-2.2.5-prime.old", bytes: 225_000_000 }])
+          }),
+      }),
+    ),
     Layer.succeed(Configs, Configs.of({ keep: Effect.sync(() => void host.calls.push("keep config")), restore: Effect.sync(() => void host.calls.push("restore config")) })),
     Layer.succeed(Log, Log.of({ line: (text) => Effect.sync(() => void host.lines.push(text)) })),
     Layer.succeed(
@@ -192,7 +207,7 @@ const fakes = (host: World) =>
   )
 
 /** Runs `body` on the fakes under a test clock set to a Wednesday noon. */
-const run = <A>(host: World, body: Effect.Effect<A, UpdateFailed, Updater | HandoffMark | Service | Source | Records | Rejections | Configs | Notice | Log | Heartbeat>) =>
+const run = <A>(host: World, body: Effect.Effect<A, UpdateFailed, Updater | Builds | HandoffMark | Service | Source | Records | Rejections | Configs | Notice | Log | Heartbeat>) =>
   Effect.runPromise(
     Effect.gen(function* () {
       yield* TestClock.setTime(WEDNESDAY_NOON)
@@ -382,6 +397,55 @@ describe("the updater on its seams", () => {
   })
 })
 
+describe("old builds, pruned after a proven install", () => {
+  const prunes = (host: World) => host.calls.filter((call) => call.startsWith("prune "))
+
+  test("a proven build prunes once, last, by the record it proved, while the handoff still holds its mark (no stage copies a build meanwhile), and logs each build with its size", () => {
+    const host = world({ record: stagedTarget(), readings: [healthy] })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("proven")
+        expect(prunes(host)).toEqual([`prune ${NEW.version} under the mark`])
+        expect(host.lines.slice(-2)).toEqual(["prune: deleted the old build opencode-2.2.5-prime.old (225.0 MB)", "prune: 1 old builds deleted, 225.0 MB freed"])
+      }),
+    )
+  })
+
+  test("a rollback prunes nothing", () => {
+    const host = world({ record: stagedTarget(), readings: [failedPool, failedPool, healthy] })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("rolled-back")
+        expect(prunes(host)).toEqual([])
+      }),
+    )
+  })
+
+  test("a give-up prunes nothing", () => {
+    const host = world({ record: stagedTarget(), restartFailures: 3 })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("gave-up")
+        expect(prunes(host)).toEqual([])
+      }),
+    )
+  })
+
+  test("a prune that cannot read what runs keeps every build, says why, and the build stays proven", () => {
+    const host = world({ record: stagedTarget(), readings: [healthy], pruneFails: true })
+    return run(
+      host,
+      Effect.gen(function* () {
+        expect(yield* handOff).toBe("proven")
+        expect(host.lines.at(-1)).toBe("prune: every build kept: list the running processes: list the running processes exited 1")
+      }),
+    )
+  })
+})
+
 describe("the handoff on its seams", () => {
   test("installs the staged build, restarts, and a healthy restart proves it and clears the corner", () => {
     const host = world({ record: stagedTarget(), readings: [healthy] })
@@ -389,7 +453,7 @@ describe("the handoff on its seams", () => {
       host,
       Effect.gen(function* () {
         expect(yield* handOff).toBe("proven")
-        expect(host.calls).toEqual([`record ${NEW.version} good ${GOOD.version}`, "restart", `record ${NEW.version} good ${NEW.version}`, "notice cleared"])
+        expect(host.calls).toEqual([`record ${NEW.version} good ${GOOD.version}`, "restart", `record ${NEW.version} good ${NEW.version}`, "notice cleared", `prune ${NEW.version} under the mark`])
         expect(EXIT_CODES.proven).toBe(0)
       }),
     )
@@ -429,7 +493,7 @@ describe("the handoff on its seams", () => {
       host,
       Effect.gen(function* () {
         expect(yield* handOff).toBe("proven")
-        expect(host.calls.slice(1)).toEqual(["restart", "reinstall", "restart", `record ${NEW.version} good ${NEW.version}`, "notice cleared"])
+        expect(host.calls.slice(1)).toEqual(["restart", "reinstall", "restart", `record ${NEW.version} good ${NEW.version}`, "notice cleared", `prune ${NEW.version} under the mark`])
       }),
     )
   })
@@ -531,7 +595,7 @@ describe("the handoff on its seams", () => {
       host,
       Effect.gen(function* () {
         expect(yield* handOff).toBe("proven")
-        expect(host.calls.slice(1)).toEqual(["restart", `record ${NEW.version} good ${NEW.version}`, "notice healthy, but no anthropic login: sign in with opencode auth login"])
+        expect(host.calls.slice(1)).toEqual(["restart", `record ${NEW.version} good ${NEW.version}`, "notice healthy, but no anthropic login: sign in with opencode auth login", `prune ${NEW.version} under the mark`])
         expect(host.lines).toContain("handoff (first): healthy, but no anthropic login: sign in with opencode auth login")
       }),
     )
