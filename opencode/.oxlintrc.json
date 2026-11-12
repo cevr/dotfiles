@@ -20,6 +20,7 @@
         "mods/git/process/fake-gh.ts",
         "mods/herdr/herdr/fake-server.ts",
         "mods/kernel/catalog.fixture.ts",
+        "mods/wake/process/readiness.ts",
         "testbeds/gamut/sim-model.ts"
       ]
     }

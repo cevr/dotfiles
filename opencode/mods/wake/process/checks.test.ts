@@ -2,11 +2,12 @@
 // no shell startup file read, the output kept to its tail, and the whole
 // process group killed past the time and on interruption.
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Effect, Fiber } from "effect"
 import { environmentOf, run } from "./checks.ts"
+import { notYet, type Policy, ready, waitFor } from "./readiness.ts"
 
 const dir = mkdtempSync(path.join(tmpdir(), "wake-checks-"))
 const alive = (pid: number) => {
@@ -17,6 +18,25 @@ const alive = (pid: number) => {
     return false
   }
 }
+
+/** How long a real process gets to show a change the test waits on, probed every 10 ms. */
+const SOON: Policy = { within: "5 seconds", every: "10 millis" }
+
+/** The pid a check's command wrote to `file`, once it has written one. */
+const pidIn = (file: string) =>
+  Effect.sync(() => {
+    if (!existsSync(file)) return notYet(`${path.basename(file)} not written`)
+    const pid = Number(readFileSync(file, "utf8"))
+    if (pid > 0) return ready(pid)
+    return notYet(`${path.basename(file)} holds no pid`)
+  })
+
+/** Ready once `pid` names no live process. */
+const gone = (pid: number) =>
+  Effect.sync(() => {
+    if (alive(pid)) return notYet(`${pid} alive`)
+    return ready(pid)
+  })
 
 describe("a check", () => {
   test("gives the command's exit code, stdout and stderr, run in its directory", async () => {
@@ -41,31 +61,32 @@ describe("a check", () => {
     expect(check.stdout.endsWith("line1999\n")).toBe(true)
   })
 
-  test("past its time is stopped, with its group, and reads as timed out", async () => {
-    const pidFile = path.join(dir, "timeout.pid")
-    const started = Date.now()
-    const check = await Effect.runPromise(run(`sleep 30 & echo $! > ${pidFile}; echo waiting; wait`, dir, 300))
-    expect(check.timedOut).toBe(true)
-    expect(check.stdout).toBe("waiting\n")
-    expect(Date.now() - started).toBeLessThan(5000)
-    const pid = Number(await Bun.file(pidFile).text())
-    await Bun.sleep(100)
-    expect(alive(pid)).toBe(false)
-  })
-
-  test("an interrupted check kills its group", async () => {
-    const pidFile = path.join(dir, "interrupt.pid")
-    const pid = await Effect.runPromise(
+  test("past its time is stopped, with its group, and reads as timed out", () =>
+    Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(run(`sleep 30 & echo $! > ${pidFile}; wait`, dir, 60_000))
-        yield* Effect.sleep(300)
-        yield* Fiber.interrupt(fiber)
-        return Number(yield* Effect.promise(() => Bun.file(pidFile).text()))
+        const pidFile = path.join(dir, "timeout.pid")
+        const started = Date.now()
+        const check = yield* run(`sleep 30 & echo $! > ${pidFile}; echo waiting; wait`, dir, 300)
+        expect(check.timedOut).toBe(true)
+        expect(check.stdout).toBe("waiting\n")
+        expect(Date.now() - started).toBeLessThan(5000)
+        const pid = yield* waitFor("the timed-out check's pid file", pidIn(pidFile), SOON)
+        yield* waitFor(`the timed-out check's background sleep ${pid} gone`, gone(pid), SOON)
+        expect(alive(pid)).toBe(false)
       }),
-    )
-    await Bun.sleep(100)
-    expect(alive(pid)).toBe(false)
-  })
+    ))
+
+  test("an interrupted check kills its group", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const pidFile = path.join(dir, "interrupt.pid")
+        const fiber = yield* Effect.forkChild(run(`sleep 30 & echo $! > ${pidFile}; wait`, dir, 60_000))
+        const pid = yield* waitFor("the running check's pid file", pidIn(pidFile), SOON)
+        yield* Fiber.interrupt(fiber)
+        yield* waitFor(`the interrupted check's background sleep ${pid} gone`, gone(pid), SOON)
+        expect(alive(pid)).toBe(false)
+      }),
+    ))
 
   test("a background child left behind does not hold the check open", async () => {
     const started = Date.now()

@@ -85,6 +85,7 @@
     "mods/git/process/fake-gh.ts",
     "mods/herdr/herdr/fake-server.ts",
     "mods/kernel/catalog.fixture.ts",
+    "mods/wake/process/readiness.ts",
     "testbeds/gamut/sim-model.ts"
   ],
   "exemptions": [
@@ -97,7 +98,8 @@
     {"file":"scripts/effect-small-rules.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: the root has no Effect test runner, so each bun:test case runs its Effect with Effect.runPromise"},
     {"file":"scripts/effect-small-rules.test.ts","rule":"effect/noNodeBuiltinImport","reason":"real-process harness: it builds throwaway lint workspaces for real oxlint runs with node:fs, node:os and node:path; the root has no Effect platform layer"},
     {"file":"scripts/effect-domain-policy.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: the root has no Effect test runner, so each bun:test case runs its Effect with Effect.runPromise"},
-    {"file":"scripts/effect-domain-policy.test.ts","rule":"effect/noNodeBuiltinImport","reason":"real-process harness: it builds throwaway lint workspaces from the real configs and the real legacy files for real oxlint runs with node:fs, node:os and node:path; the root has no Effect platform layer"}
+    {"file":"scripts/effect-domain-policy.test.ts","rule":"effect/noNodeBuiltinImport","reason":"real-process harness: it builds throwaway lint workspaces from the real configs and the real legacy files for real oxlint runs with node:fs, node:os and node:path; the root has no Effect platform layer"},
+    {"file":"mods/wake/process/readiness.test.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: the root has no Effect test runner, so the generated model suite runs its Effect once with Effect.runPromise"}
   ],
   "budgets": {
     "cmd/anthropic-auth/server.test.ts": {"effect/noAs":49,"effect/noAsyncFunction":561,"effect/noChainedTypeAssertions":16,"effect/noComments":20,"effect/noConditionalEmptyObjectSpread":1,"effect/noEffectRunInTests":2,"effect/noGlobals":194,"effect/noKnownValueWidening":4,"effect/noModuleMocks":26,"effect/noNewError":15,"effect/noNewPromise":37,"effect/noNullish":34,"effect/noObjectParameters":1,"effect/noPromiseChainsInTests":8,"effect/noTernary":6,"effect/noThrowStatement":12,"effect/noTryCatch":46,"effect/noUnknownParameters":14,"effect/noUnknownReturns":1,"effect/noUnsafeDictionaryType":1},
@@ -812,9 +814,9 @@
     "mods/wake/opencode/opener.ts": {"effect/noComments":4,"effect/noTernary":1,"effect/preferServiceOf":1},
     "mods/wake/opencode/store.test.ts": {"effect/noAsyncFunction":2,"effect/noComments":2,"effect/noConditionalEmptyObjectSpread":1,"effect/noEffectRunInTests":1,"effect/noNullish":2,"effect/noTernary":1},
     "mods/wake/opencode/store.ts": {"effect/noComments":11,"effect/noConditionalEmptyObjectSpread":1,"effect/noNullish":5,"effect/noTernary":1,"effect/preferServiceOf":1},
-    "mods/wake/process/checks.test.ts": {"effect/noAsyncFunction":17,"effect/noComments":3,"effect/noEffectRunInTests":7,"effect/noFixedWaitInTests":3,"effect/noGlobals":10,"effect/noNodeBuiltinImport":2,"effect/noTryCatch":1},
+    "mods/wake/process/checks.test.ts": {"effect/noAsyncFunction":10,"effect/noComments":3,"effect/noEffectRunInTests":7,"effect/noGlobals":6,"effect/noNodeBuiltinImport":2,"effect/noTryCatch":1},
     "mods/wake/process/checks.ts": {"effect/noAs":1,"effect/noAsyncFunction":3,"effect/noComments":10,"effect/noGlobals":2,"effect/noNewPromise":1,"effect/noNullish":3,"effect/noTernary":5,"effect/noTryCatch":3,"effect/preferServiceOf":1},
-    "mods/wake/process/runner.test.ts": {"effect/noAsyncFunction":62,"effect/noComments":17,"effect/noEffectRunInTests":30,"effect/noFixedWaitInTests":4,"effect/noGlobals":14,"effect/noModulePathFacts":1,"effect/noNewError":2,"effect/noNodeBuiltinImport":2,"effect/noNullish":6,"effect/noTernary":1,"effect/noTestLifecycleHooks":1,"effect/noThrowStatement":2,"effect/noTryCatch":1},
+    "mods/wake/process/runner.test.ts": {"effect/noComments":17,"effect/noEffectRunInTests":2,"effect/noGlobals":4,"effect/noModulePathFacts":1,"effect/noNodeBuiltinImport":2,"effect/noNullish":6,"effect/noTernary":1},
     "mods/wake/process/runner.ts": {"effect/noAs":2,"effect/noComments":8,"effect/noConditionalEmptyObjectSpread":3,"effect/noGlobals":3,"effect/noNodeBuiltinImport":2,"effect/noNullish":18,"effect/noTernary":7,"effect/noTryCatch":5,"effect/preferServiceOf":1},
     "mods/wake/process/supervise.ts": {"effect/noAs":3,"effect/noAsyncFunction":7,"effect/noComments":33,"effect/noConditionalEmptyObjectSpread":1,"effect/noGlobals":15,"effect/noNodeBuiltinImport":2,"effect/noNullish":21,"effect/noTernary":6,"effect/noTryCatch":4,"effect/noUnknownParameters":1},
     "mods/wake/service.ts": {"effect/noComments":6,"effect/noNullish":5},
