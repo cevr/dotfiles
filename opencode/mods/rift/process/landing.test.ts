@@ -378,6 +378,15 @@ describe("process Landing", () => {
     )
   })
 
+  test("exclusivelySync fails, without running its step, when flock does not take the lock (EINTR, EBADF)", () => {
+    const made = bench()
+    const file = join(made.scratch, "locks", "checks.lock")
+    const steps: Array<string> = []
+    expect(() => exclusivelySync(file, () => -1)(() => steps.push("step"))).toThrow(`${file}: flock returned -1`)
+    expect(steps).toEqual([])
+    expect(exclusivelySync(file)(() => steps.push("step"))).toBe(1)
+  })
+
   test("hostLoad reads the 1-minute load and the cores", async () => {
     const load = await bench().run((landing) => landing.hostLoad)
     expect(load.cores).toBeGreaterThan(0)

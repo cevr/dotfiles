@@ -86,10 +86,11 @@ export const exclusively =
 /**
  * For a script outside Effect: runs `step`, a synchronous one, holding the lock on `file` exclusively, or
  * as is when `file` is empty. It blocks its thread while it waits for the lock: a script's step has
- * nothing else to do meanwhile.
+ * nothing else to do meanwhile. A `lock` call that does not take it (libc's `flock`, interrupted or
+ * handed a bad descriptor) fails with a RiftFailed and runs no step.
  */
 export const exclusivelySync =
-  (file: string) =>
+  (file: string, lock: (descriptor: number, operation: number) => number = flock) =>
   <A>(step: () => A): A =>
     Option.match(named(file), {
       onNone: step,
@@ -98,11 +99,16 @@ export const exclusivelySync =
           Effect.acquireUseRelease(
             Effect.sync(() => {
               mkdirSync(dirname(path), { recursive: true })
-              const descriptor = openSync(path, "a+")
-              flock(descriptor, OPERATIONS.exclusive)
-              return descriptor
+              return openSync(path, "a+")
             }),
-            () => Effect.sync(step),
+            (descriptor) =>
+              Effect.sync(() => lock(descriptor, OPERATIONS.exclusive)).pipe(
+                Effect.filterOrFail(
+                  (code) => code === 0,
+                  (code) => new RiftFailed({ operation: "flock", message: `${path}: flock returned ${code}` }),
+                ),
+                Effect.andThen(Effect.sync(step)),
+              ),
             (descriptor) => Effect.sync(() => closeSync(descriptor)),
           ),
         ),
