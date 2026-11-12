@@ -972,6 +972,48 @@
       "rules": {
         "effect/noReflectApply": "off"
       }
+    },
+    {
+      "files": [
+        "decider/*.ts",
+        "mods/*/*.ts"
+      ],
+      "excludeFiles": [
+        "**/*.test.*",
+        "**/*.spec.*",
+        "**/*.bench.*",
+        "mods/*/laws.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "error",
+        "effect/noModuleLevelMutableState": "error",
+        "effect/noNewPromise": "error",
+        "effect/noNodeBuiltinImport": "error",
+        "effect/noThrowStatement": "error"
+      }
+    },
+    {
+      "files": [
+        "decider/*.ts",
+        "mods/*/*.ts"
+      ],
+      "excludeFiles": [
+        "**/*.test.*",
+        "**/*.spec.*",
+        "**/*.bench.*",
+        "mods/*/laws.ts",
+        "decider/tool-input.ts",
+        "mods/anthropic-auth/json.ts",
+        "mods/anthropic-auth/tool-alias.ts",
+        "mods/guard/kill.ts",
+        "mods/kernel/tools.ts",
+        "mods/kernel/wire.ts",
+        "mods/wake/wake.ts",
+        "mods/web/fetch.ts"
+      ],
+      "rules": {
+        "effect/noTryCatch": "error"
+      }
     }
   ]
 }

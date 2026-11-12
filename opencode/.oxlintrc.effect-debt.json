@@ -132,6 +132,15 @@
         "effect/noEffectRunInTests": "off",
         "effect/noNodeBuiltinImport": "off"
       }
+    },
+    {
+      "files": [
+        "scripts/effect-domain-policy.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
     }
   ]
 }
