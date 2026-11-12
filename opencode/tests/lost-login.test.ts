@@ -43,10 +43,16 @@ describe.skipIf(!fork)("a lost store login in the TUI", () => {
     // The toast, before the section: its title and the same slot file.
     const toast = readFileSync(join(out, "lost-login-toast.txt"), "utf8")
     expect(toast).toContain("Pool login alpha is signed out")
-    // The toast wraps beside the session pane, so its lines interleave with it.
-    expect(toast).toContain("The token endpoint refused its refresh token. Sign it")
-    expect(toast).toContain("in again into ")
-    expect(toast).toContain("store-auth/.slots/anthropic/alpha")
+    // The toast's box sits beside the session pane, so its lines interleave with it: read its
+    // column, each row up to the box's right border, from the message's first row to the box's
+    // first blank row, however many rows the slot file's path wraps to.
+    const toastRows = toast.split("\n")
+    const message = toastRows.findIndex((row) => row.includes("The token endpoint refused"))
+    const toastColumn = toastRows[message]?.indexOf("The token endpoint refused") ?? -1
+    expect(toastColumn).toBeGreaterThan(-1)
+    const inBox = toastRows.slice(message).map((row) => row.slice(toastColumn).split("┃")[0] ?? "")
+    const said = Arr.takeWhile(inBox, (row) => row.trim() !== "").join("")
+    expect(squeeze(said)).toStartWith(squeeze(`The token endpoint refused its refresh token. Sign it in again into ${slot}`))
     // alpha was asked for again and the refresh went through: both are gone.
     expect(readFileSync(join(out, "lost-login-asked"), "utf8")).toBe("2 resolved")
     const cleared = readFileSync(join(out, "lost-login-cleared.txt"), "utf8")

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { expect, test } from "bun:test"
 import { Effect } from "effect"
-import { quietRepo } from "../../../tests/git-repo.ts"
+import { gitInit } from "../../../tests/git-repo.ts"
 import { runTablesLaws } from "../laws.ts"
 import type { RunTable } from "../run-table.ts"
 import { RunTables } from "../service.ts"
@@ -17,11 +17,6 @@ const scratch = Effect.acquireRelease(
   Effect.sync(() => realpathSync(mkdtempSync(join(tmpdir(), "status-run-tables-")))),
   (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
 )
-
-const git = (cwd: string, ...args: ReadonlyArray<string>) =>
-  Effect.sync(() => Bun.spawnSync(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore" }).exitCode).pipe(
-    Effect.flatMap((code) => (code === 0 ? Effect.void : Effect.die(new Error(`git ${args.join(" ")} exited ${code}`)))),
-  )
 
 const STATUS_SCRIPT = `
 import { existsSync, readFileSync } from "node:fs"
@@ -39,8 +34,7 @@ const repositoryOf = (tables: ReadonlyArray<RunTable>) =>
     const outside = join(dir, "outside")
     mkdirSync(repository)
     mkdirSync(outside)
-    yield* git(repository, "init", "-q")
-    quietRepo(repository)
+    gitInit(repository, ["-q"])
     const runs = join(repository, "tmp/orchestrate")
     for (const { name, table } of tables) {
       mkdirSync(join(runs, name), { recursive: true })

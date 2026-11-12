@@ -4,7 +4,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { quietRepo } from "../tests/git-repo.ts"
+import { gitInit } from "../tests/git-repo.ts"
 import { dropMarkers, forkWork, forkWorkText, linkedIssues, type Lookup } from "./fork-work.ts"
 
 const AGENTS = [
@@ -17,9 +17,11 @@ const AGENTS = [
 const scratch = mkdtempSync(join(tmpdir(), "fork-work-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
+/** The fixtures' git env: a fixed identity, and no global config. */
+const GIT_ENV = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_CONFIG_GLOBAL: "/dev/null" }
 const sh = (dir: string, ...args: ReadonlyArray<string>) => {
   const ran = Bun.spawnSync(["git", "-C", dir, ...args], {
-    env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_CONFIG_GLOBAL: "/dev/null" },
+    env: GIT_ENV,
     stdout: "pipe",
     stderr: "pipe",
   })
@@ -47,9 +49,8 @@ const WAIT = ["export const waitsOnOwnWork = (job: Job) => job.background.length
  */
 const fixture = () => {
   const dir = mkdtempSync(join(scratch, "repo-"))
-  sh(dir, "init", "-q", "-b", "dev")
-  quietRepo(dir)
-  commit(dir, "init", { "src/job.ts": "export {}\n", "src/theme.ts": "export {}\n" })
+  gitInit(dir, ["-q", "-b", "dev"], GIT_ENV)
+  commit(dir, "base", { "src/job.ts": "export {}\n", "src/theme.ts": "export {}\n" })
   sh(dir, "checkout", "-q", "-b", "prime-look")
   const wait = commit(dir, "feat: a subagent waits on its own background work", { "src/job.ts": `export {}\n${WAIT.join("\n")}\n` })
   const theme = commit(dir, "feat: the Prime theme's composer tab hook", { "src/theme.ts": "export {}\nexport const composerTab = (tab: Tab) => registerComposerTab(tab.id, tab)\n" })
@@ -132,9 +133,9 @@ describe("forkWork on a fixture fork", () => {
 
   test("lines shared only in files the fork's .gitattributes marks linguist-generated make no candidate", () => {
     const dir = mkdtempSync(join(scratch, "repo-"))
-    sh(dir, "init", "-q", "-b", "dev")
+    gitInit(dir, ["-q", "-b", "dev"], GIT_ENV)
     const SCHEMA = ['"McpConnected": {', '"type": "object",', '"required": ["server", "status"],', '"$ref": "#/components/schemas/McpStatus"']
-    commit(dir, "init", {
+    commit(dir, "base", {
       ".gitattributes": "packages/protocol/openapi.json linguist-generated\npackages/client/src/promise/generated/** linguist-generated\n",
       "packages/protocol/openapi.json": "{}\n",
       "packages/client/src/promise/generated/types.ts": "export {}\n",
