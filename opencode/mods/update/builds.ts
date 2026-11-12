@@ -1,5 +1,5 @@
 import { Array as Arr, Option } from "effect"
-import { installedVersions, type Record } from "./record.ts"
+import type { Record } from "./record.ts"
 
 /**
  * How many of the record's superseded builds stay on disk, the newest: a TUI on one of them moves
@@ -12,8 +12,32 @@ export const PREVIOUS_ON_DISK = 3
 /** The name of a build's file in the share directory. */
 export const buildName = (version: string): string => `opencode-${version}`
 
-/** Whether a share directory entry is a build (`opencode-<version>`); anything else (`pool-auth`, a loader) never goes. */
-export const isBuild = (name: string): boolean => installedVersions([name]).length === 1
+/**
+ * The name daily copies a build to before it renames it to `buildName`: `<build name>.<pid>`. It
+ * never parses as a build (`buildVersion`), so a prune never takes a copy in flight.
+ */
+export const stagingName = (version: string, pid: number): string => `${buildName(version)}.${pid}`
+
+/**
+ * The one name grammar of a build file, as daily names it (`pin.ts` `versionOf`): `opencode-`, a
+ * release version (`X.Y.Z`, with any prerelease), `-prime.` and the fork commit's first eight hex.
+ */
+const BUILD_NAME = /^opencode-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?-prime\.[0-9a-f]{8})$/
+
+/** The version of a share directory entry that is a build; none for anything else (a copy in flight, `pool-auth`, a loader). */
+export const buildVersion = (name: string): Option.Option<string> => Option.fromNullishOr(BUILD_NAME.exec(name)?.[1])
+
+/** Whether a share directory entry is a build (`buildVersion`); anything else never goes. */
+export const isBuild = (name: string): boolean => Option.isSome(buildVersion(name))
+
+/**
+ * How recently changed a build must not be for a prune to take it: a defense behind the builds
+ * lock, so a build some writer put there without the lock is never deleted while it may be new.
+ */
+export const FRESH_MS = 10 * 60 * 1000
+
+/** Whether a file last changed (`changed`, its newer of mtime and ctime) within `FRESH_MS` of `now`, or after it. */
+export const isFresh = (changed: number, now: number, freshMs: number = FRESH_MS): boolean => changed > now - freshMs
 
 /** The last path component of a file path, with Linux's ` (deleted)` mark of an unlinked executable dropped. */
 export const baseName = (path: string): string => path.replace(/ \(deleted\)$/, "").split("/").at(-1) ?? path

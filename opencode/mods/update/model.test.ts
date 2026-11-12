@@ -175,13 +175,15 @@ const fakes = (host: World) =>
     Layer.succeed(
       Builds,
       Builds.of({
-        // The call notes the record it prunes by, and whether the handoff's mark is still held then.
-        prune: (record) =>
-          Effect.suspend(() => {
-            host.calls.push([`prune ${record.version}`, ...Option.toArray(Option.map(host.mark, () => "under the mark"))].join(" "))
-            if (host.pruneFails) return failure("list the running processes")
-            return Effect.succeed([{ name: "opencode-2.2.5-prime.old", bytes: 225_000_000 }])
-          }),
+        // The call notes the record it reads itself (under its lock), and whether the handoff's mark is still held then.
+        prune: (read) =>
+          read.pipe(
+            Effect.flatMap((record) => {
+              host.calls.push([`prune ${Option.match(record, { onNone: () => "no record", onSome: (each) => each.version })}`, ...Option.toArray(Option.map(host.mark, () => "under the mark"))].join(" "))
+              if (host.pruneFails) return failure("list the running processes")
+              return Effect.succeed([{ name: "opencode-2.2.5-prime.old", bytes: 225_000_000 }])
+            }),
+          ),
       }),
     ),
     Layer.succeed(Configs, Configs.of({ keep: Effect.sync(() => void host.calls.push("keep config")), restore: Effect.sync(() => void host.calls.push("restore config")) })),

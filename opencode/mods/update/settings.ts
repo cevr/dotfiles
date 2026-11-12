@@ -53,6 +53,13 @@ export const modeOf = (host: string): Settings["mode"] => {
 /** The share directory daily copies each build into, `opencode-<version>` (`scripts/daily.ts`). */
 export const shareDir = (home: string): string => `${home}/.local/share/opencode-prime`
 
+/**
+ * The builds lock, an exclusive `flock(2)` on this file: daily holds it from the copy of a build into
+ * the share directory through the staged record's write, and a prune from its record read through its
+ * last delete, so a prune never sees a build the record does not name yet.
+ */
+export const buildsLock = (home: string): string => `${home}/.local/state/opencode-prime/builds.lock`
+
 /** The settings in the handoff's environment variable. */
 export const SettingsJson = Schema.fromJsonString(Settings)
 

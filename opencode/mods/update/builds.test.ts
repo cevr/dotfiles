@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { baseName, buildName, isBuild, PREVIOUS_ON_DISK, prunable } from "./builds.ts"
+import { baseName, buildName, buildVersion, FRESH_MS, isBuild, isFresh, PREVIOUS_ON_DISK, prunable, stagingName } from "./builds.ts"
 import type { Build, Record } from "./record.ts"
 
 const SHARE = "/home/u/.local/share/opencode-prime"
@@ -60,10 +60,20 @@ describe("which old builds a prune deletes", () => {
     expect(prunable(NAMES, RECORD, Option.none())).toEqual([])
   })
 
-  test("(e) only `opencode-<version>` entries are builds: the pool's auth, a loader, a handoff dir and the launcher's name never go", () => {
-    expect(["pool-auth", "anthropic-auth", "handoff-claude-2026-11-05", "opencode", "opencode-latest", "opencode-2.2.7-prime.x.tmp"].map(isBuild)).toEqual([false, false, false, false, false, true])
+  test("(e) only `opencode-<release>-prime.<8 hex>` entries are builds: the pool's auth, a loader, a handoff dir, the launcher's name and daily's copy in flight never go", () => {
+    const names = ["pool-auth", "anthropic-auth", "handoff-claude-2026-11-05", "opencode", "opencode-latest", "opencode-2.2.7-prime.x.tmp", stagingName(V[7], 71234), "opencode-2.2.7-prime.0000000"]
+    expect(names.map(isBuild)).toEqual(names.map(() => false))
+    expect([buildName(V[0]), "opencode-2.3.0-beta.1-prime.abcdef12"].map(isBuild)).toEqual([true, true])
+    expect(buildVersion(stagingName(V[7], 71234))).toEqual(Option.none())
+    expect(prunable([stagingName(V[0], 71234)], { ...build(V[6]), previous: [] }, nothingRuns)).toEqual([])
     const record: Record = { ...build(V[6]), previous: [] }
     expect(prunable(["pool-auth", "anthropic-auth", "handoff-claude-2026-11-05", "opencode", "opencode-latest"], record, nothingRuns)).toEqual([])
+  })
+
+  test("a build changed within ten minutes is fresh, by its newer time; an older one is not", () => {
+    const now = 1_000_000_000
+    expect(FRESH_MS).toBe(10 * 60 * 1000)
+    expect([now, now - FRESH_MS + 1, now - FRESH_MS, now - FRESH_MS - 1].map((changed) => isFresh(changed, now))).toEqual([true, true, false, false])
   })
 
   test("a path's last component names the build, without Linux's unlinked mark", () => {

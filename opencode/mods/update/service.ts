@@ -93,14 +93,19 @@ export interface Pruned {
 /**
  * The builds in the share directory (`~/.local/share/opencode-prime`, `opencode-<version>`), each
  * about 225 MB. A prune deletes the ones `builds.ts` `prunable` names: none of the record's builds
- * a TUI or a rollback needs, none a process runs, and nothing when the running executables do not
- * read.
+ * a TUI or a rollback needs, none a process runs, none changed lately, and nothing when the running
+ * executables do not read. It holds the builds lock (`settings.ts` `buildsLock`) that daily's stage
+ * holds too, so the record it reads names every build in the directory it lists.
  */
 export class Builds extends Context.Service<
   Builds,
   {
-    /** Deletes the builds `record` no longer needs, answering each; fails, deleting none, when what runs does not read. */
-    readonly prune: (record: Record) => Effect.Effect<ReadonlyArray<Pruned>, UpdateFailed>
+    /**
+     * Under the builds lock, reads the record with `read` and deletes the builds it no longer needs,
+     * answering each; with no record, none. Fails, deleting none, when the lock stays held or what
+     * runs does not read.
+     */
+    readonly prune: (read: Effect.Effect<Option.Option<Record>>) => Effect.Effect<ReadonlyArray<Pruned>, UpdateFailed>
   }
 >()("dotfiles-opencode/update/Builds") {}
 

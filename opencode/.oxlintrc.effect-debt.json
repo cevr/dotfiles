@@ -167,6 +167,7 @@
         "mods/update/process/pin.test.ts",
         "mods/update/process/service-layer.test.ts",
         "mods/update/filestore/builds.test.ts",
+        "mods/update/filestore/stage.test.ts",
         "mods/update/process/placement.test.ts",
         "cmd/update/server.test.ts",
         "mods/orchestrate/git/fleet-record.test.ts"
@@ -284,7 +285,8 @@
     {
       "files": [
         "mods/stall/filestore/captures.ts",
-        "mods/update/filestore/builds.ts"
+        "mods/update/filestore/builds.ts",
+        "mods/update/filestore/stage.ts"
       ],
       "rules": {
         "effect/noNodeBuiltinImport": "off"
