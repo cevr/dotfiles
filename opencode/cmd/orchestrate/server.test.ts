@@ -2487,53 +2487,78 @@ describe("the batch machine", () => {
       plugin.finish({ tool: "shell", input: call.input, status: call.status, result: { content: [{ type: "text", text: "still running" }] } }).pipe(Effect.andThen(Effect.sync(() => spawnRoot(call.input.command, call.cwd, journal)))),
   }
 
-  /** One trial: up to three units, each moved by a call of the form `forms` gives it, then two lands; the counts of drops per unit, and what each log.md ends in. */
-  const dropTrial = (trial: number, forms: (at: number) => keyof typeof FORMS, from: () => string) =>
+  /** The reader trials run beside their units: `reader` hands back ready, `starter` starts when asked. */
+  const READER = { ses_reader: { agent: "implementor", lastWords: "implementor reader r1: ready x" }, ses_starter: { agent: "implementor" } }
+  /**
+   * Where a trial's late drop is first read: the root's next shell call, its next start, a step's hand-back, or its
+   * next land. Each is a call the plugin reads the root's drops at.
+   */
+  const READS = {
+    shell: (plugin: Plugin) => plugin.finish({ tool: "shell", input: { command: "true" }, status: "completed", result: { content: [{ type: "text", text: "" }] } }),
+    start: (plugin: Plugin) => begin(plugin, implementor("starter"), "ses_starter"),
+    "hand-back": (plugin: Plugin) => plugin.idle("ses_reader"),
+    land: (plugin: Plugin) => Effect.asVoid(plugin.call("rift", "root", { action: "land", rifts: ["reader"] })),
+  }
+  const READ_NAMES: ReadonlyArray<keyof typeof READS> = ["shell", "start", "hand-back", "land"]
+
+  /**
+   * One trial: up to three units, each moved by a call of the form `forms` gives it, the calls that answer before
+   * log.ts writes last, so the last one's drop is first seen at the `read` point. Then the first unit dropped is
+   * started again at r2, its log.md still ending in its r1 drop (no dir found to log the start in), and two lands
+   * follow. The counts of drops per unit right after the read and at the end, and what each log.md ends in.
+   */
+  const dropTrial = (trial: number, forms: (at: number) => keyof typeof FORMS, from: () => string, read: keyof typeof READS) =>
     Effect.gen(function* () {
       const run = yield* scratchRun
       const journal = journalOf(run)
       const units = Array.from({ length: 1 + (trial % 3) }, (_, at) => `t${trial}-u${at}`)
-      const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps(Object.fromEntries(units.map((unit) => [`ses_${unit}`, { agent: "implementor" }]))), drops: journal })
+      const sessions = Object.fromEntries(units.flatMap((unit) => [[`ses_${unit}`, { agent: "implementor" }], [`ses_${unit}_r2`, { agent: "implementor" }]]))
+      const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ...sessions, ...READER }), drops: journal })
+      yield* begin(plugin, implementor("reader"), "ses_reader")
       for (const unit of units) {
         yield* begin(plugin, implementor(unit), `ses_${unit}`)
         logged(run, unit, "new decide r1")
       }
       // A move from decide is written, one from implement refused, by log.ts itself.
       const named = units.map((unit, at) => ({ unit, form: forms(at) }))
-      for (const { unit, form } of named) {
-        const call = FORMS[form](run, unit, (dir) => `bun ${LOG_SCRIPT} ${dir} ${from()} dropped r1 x`)
-        yield* RUNS[call.order](plugin, call, journal)
-      }
-      // The next land sees a drop written after its call answered; one more sees nothing new.
+      const calls = named.map(({ unit, form }) => FORMS[form](run, unit, (dir) => `bun ${LOG_SCRIPT} ${dir} ${from()} dropped r1 x`))
+      for (const call of [...calls.filter((call) => call.order === "run-first"), ...calls.filter((call) => call.order === "hook-first")]) yield* RUNS[call.order](plugin, call, journal)
+      yield* READS[read](plugin)
+      const countsOf = () => units.map((unit) => [unit, droppedUnits(plugin).filter((each) => each === unit).length])
+      const atRead = countsOf()
+      const written = units.map((unit) => [unit, Number(endsDropped(run, unit))])
+      // A unit dropped and started again at r2 is live: the old drop its log.md still ends in drops nothing more.
+      const revived = units.filter((unit) => endsDropped(run, unit)).slice(0, 1)
+      for (const unit of revived) yield* begin(plugin, { ...implementor(unit), description: `implementor ${unit} r2` }, `ses_${unit}_r2`)
+      yield* READS.shell(plugin)
       yield* plugin.call("rift", "root", { action: "land", rifts: units })
-      yield* plugin.call("rift", "root", { action: "land", rifts: units })
-      return {
-        forms: named.map(({ form }) => form),
-        seen: units.map((unit) => [unit, droppedUnits(plugin).filter((each) => each === unit).length]),
-        written: units.map((unit) => [unit, Number(endsDropped(run, unit))]),
-      }
+      return { forms: named.map(({ form }) => form), atRead, atEnd: countsOf(), written }
     })
 
   // orch-followups r2 M1 (a repeat of r1 M1) and orch-late-drop item 1: the hook read the unit dir off the command's
   // text, so a dir named through a variable or after a `cd` was missed, and so was a drop log.ts wrote after the
   // call answered (backgrounded, or a call that timed out). What log.ts wrote decides now, through its drops journal.
-  // Over every form a root's line names the dir in, each move written or refused by log.ts itself, the ledger drops
-  // each written drop exactly once and a refused one never.
-  test("property: whatever form names the unit dir and whenever log.ts writes, each written drop ends its unit exactly once and a refused one none", () =>
+  // Over every form a root's line names the dir in, each move written or refused by log.ts itself, and every point a
+  // late drop is first read at (r1 M1: a shell call, a start, a hand-back, a land), the ledger drops each written drop
+  // exactly once by that point and a refused one never, and a unit started again at r2 is not dropped again.
+  test("property: whatever form names the unit dir, whenever log.ts writes and wherever it is read, each written drop ends its unit exactly once and a refused one none", () =>
     scenario(
       Effect.gen(function* () {
         const rng = rngOf(11)
         const pick = <A,>(list: ReadonlyArray<A>): A => list[Math.floor(rng() * list.length)]!
         const formsSeen = new Set<string>()
-        // Each trial's first unit takes the forms in turn, twice over; the others pick.
-        for (let trial = 0; trial < 2 * FORM_NAMES.length; trial++) {
-          const result = yield* dropTrial(trial, (at) => [FORM_NAMES[trial % FORM_NAMES.length]!, pick(FORM_NAMES), pick(FORM_NAMES)][at]!, () => pick(["decide", "implement"]))
+        const readsSeen = new Set<string>()
+        // Each trial's first unit takes the forms in turn, and the trials the read points in turn; the rest pick.
+        for (let trial = 0; trial < 4 * FORM_NAMES.length; trial++) {
+          const read = READ_NAMES[trial % READ_NAMES.length]!
+          const result = yield* dropTrial(trial, (at) => [FORM_NAMES[trial % FORM_NAMES.length]!, pick(FORM_NAMES), pick(FORM_NAMES)][at]!, () => pick(["decide", "implement"]), read)
           for (const form of result.forms) formsSeen.add(form)
-          expect([trial, result.forms, result.seen]).toEqual([trial, result.forms, result.written])
+          readsSeen.add(read)
+          expect([trial, read, result.forms, result.atRead, result.atEnd]).toEqual([trial, read, result.forms, result.written, result.written])
         }
-        expect([...formsSeen].toSorted()).toEqual([...FORM_NAMES].toSorted())
+        expect([[...formsSeen].toSorted(), [...readsSeen].toSorted()]).toEqual([[...FORM_NAMES].toSorted(), [...READ_NAMES].toSorted()])
       }),
-    ), 120_000)
+    ), 240_000)
 
   // orch-late-drop item 1's acceptance: a drop log.ts writes after the call's hook read the journal ends its unit at
   // the next land, and only once.
@@ -2554,6 +2579,62 @@ describe("the batch machine", () => {
         yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })
         yield* begin(plugin, implementor("beta"), "ses_a")
         expect(droppedUnits(plugin)).toEqual(["alpha"])
+      }),
+    ), 60_000)
+
+  /** A plugin whose root dropped alpha by a backgrounded log.ts call that wrote after the call's hook read the journal. */
+  const droppedLate = (sessions: Readonly<Record<string, { readonly agent: string; readonly lastWords?: string }>>, before: (plugin: Plugin) => Effect.Effect<void, unknown>) =>
+    Effect.gen(function* () {
+      const run = yield* scratchRun
+      const journal = journalOf(run)
+      const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor" }, ...sessions }), drops: journal })
+      yield* begin(plugin, implementor("alpha"), "ses_a")
+      yield* before(plugin)
+      logged(run, "alpha", "new decide r1")
+      const call = FORMS.backgrounded(run, "alpha", (dir) => `bun ${LOG_SCRIPT} ${dir} decide dropped r1 superseded`)
+      yield* RUNS[call.order](plugin, call, journal)
+      expect(droppedUnits(plugin)).toEqual([])
+      return plugin
+    })
+
+  // orch-late-drop r1 M1: a late drop is read at the next start and the next hand-back too, not only at a land or a
+  // shell call (mutants V2 and V3 left every test green).
+  test("orch-late-drop r1 M1: a drop written after its shell call answered ends its unit at the root's next start", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* droppedLate({ ses_b: { agent: "implementor" } }, () => Effect.void)
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        expect(droppedUnits(plugin)).toEqual(["alpha"])
+      }),
+    ), 60_000)
+
+  test("orch-late-drop r1 M1: a drop written after its shell call answered ends its unit at a step's next hand-back", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* droppedLate({ ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" } }, (plugin) => begin(plugin, implementor("beta"), "ses_b"))
+        yield* plugin.idle("ses_b")
+        expect(droppedUnits(plugin)).toEqual(["alpha"])
+      }),
+    ), 60_000)
+
+  // orch-late-drop r1 M1 (mutant V5): a unit started again at a later round is live, though its log.md still ends in
+  // its old drop when the plugin found no dir to log the start in.
+  test("orch-late-drop r1 M1: a unit started again at r2 whose log.md still ends in its r1 drop is not dropped again", () =>
+    scenario(
+      Effect.gen(function* () {
+        const run = yield* scratchRun
+        const journal = journalOf(run)
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor" }, ses_a2: { agent: "implementor" } }), drops: journal })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        logged(run, "alpha", "new decide r1")
+        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} ${run}/alpha decide dropped r1 x` }, "/", journal)
+        expect(droppedUnits(plugin)).toEqual(["alpha"])
+        yield* begin(plugin, { ...implementor("alpha"), description: "implementor alpha r2" }, "ses_a2")
+        expect(endsDropped(run, "alpha")).toBe(true)
+        yield* shell(plugin, { command: "true" }, "/", journal)
+        yield* plugin.call("rift", "root", { action: "land", rifts: ["alpha"] })
+        expect(droppedUnits(plugin)).toEqual(["alpha"])
+        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitStarted", unit: "alpha", round: 2 }))
       }),
     ), 60_000)
 
