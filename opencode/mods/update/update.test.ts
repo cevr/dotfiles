@@ -51,6 +51,22 @@ describe("an update run's plan", () => {
     }
   })
 
+  test("a target rejected at health holds only that target: a newer one, by its dotfiles or its fork, installs from wherever the give-up left the host", () => {
+    const old = proven(record("c".repeat(40), "c".repeat(40)))
+    const installed = nextRecord(Option.some(old), TARGET_BUILD, [])
+    // The workbox on 2026-11-12: the handoff gave up with the rejected build installed and not good.
+    const states: ReadonlyArray<Option.Option<Record>> = [Option.some(old), Option.some(stagedRecord(Option.some(old), TARGET_BUILD, [])), Option.some(installed), rolledBack(installed)]
+    const rejected: Rejected = { dotfiles: TARGET.dotfiles, fork: TARGET.fork, step: "health", cause: "anthropic-auth: not loaded" }
+    const newer = [
+      { ...TARGET, dotfiles: "d".repeat(40), batch: "batch-8" },
+      { ...TARGET, fork: "e".repeat(40), batch: "batch-8" },
+    ]
+    for (const state of states) {
+      expect(plan(Option.some(TARGET), state, Option.some(rejected), Option.none())._tag).toBe("Rejected")
+      for (const target of newer) expect(plan(Option.some(target), state, Option.some(rejected), Option.none())).toEqual(Plan.Update({ target }))
+    }
+  })
+
   test("B1: a running handoff holds every plan, whatever the record, the rejection or the target", () => {
     const old = proven(record("c".repeat(40), "c".repeat(40)))
     const running = { pid: 4242, at: NOW - 60_000 }
