@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, plannerExperiment, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, installedFile, installedRecord, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, plannerExperiment, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
@@ -414,6 +414,31 @@ describe("the upstream merge", () => {
     expect(tests).toContain("./tests/orchestrate.test.ts")
     expect(tests).not.toContain("./tests/mail-peer.test.ts")
     expect(tests.every((file) => /\/(prime-[^/]+|tui-cpu|mail|orchestrate)\.test\.ts$/.test(file))).toBe(true)
+  })
+})
+
+describe("the installed build's record", () => {
+  test("names the new build and every build it superseded, never itself", () => {
+    const record = installedRecord(
+      { version: "2.2.7-prime.bbbbbbbb", command: ["/s/opencode-2.2.7-prime.bbbbbbbb"], previous: ["2.2.5-prime.aaaaaaaa"] },
+      "2.2.7-prime.cccccccc",
+      "/s/opencode-2.2.7-prime.cccccccc",
+      ["opencode-2.2.6-prime.dddddddd", "opencode-2.2.7-prime.cccccccc", "anthropic-auth", "opencode-2.2.7-prime.bbbbbbbb"],
+    )
+    expect(record).toEqual({
+      version: "2.2.7-prime.cccccccc",
+      command: ["/s/opencode-2.2.7-prime.cccccccc"],
+      previous: ["2.2.5-prime.aaaaaaaa", "2.2.7-prime.bbbbbbbb", "2.2.6-prime.dddddddd"],
+    })
+  })
+
+  test("starts from the builds installed beside it when there is no record yet", () => {
+    expect(installedRecord({}, "2.2.8", "/s/opencode-2.2.8", ["opencode-2.2.7"]).previous).toEqual(["2.2.7"])
+  })
+
+  test("lives in OpenCode's state directory, which XDG_STATE_HOME moves", () => {
+    expect(installedFile("/h", {})).toBe("/h/.local/state/opencode/installed.json")
+    expect(installedFile("/h", { XDG_STATE_HOME: "/x" })).toBe("/x/opencode/installed.json")
   })
 })
 

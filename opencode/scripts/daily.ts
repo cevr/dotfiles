@@ -24,7 +24,7 @@
 //    `~/.local/state/opencode-daily/upstream.json` for the TUI's corner (`upstreamReading`), then
 //    restarts the background service so it loads the server plugins.
 import { $ } from "bun"
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
@@ -93,6 +93,31 @@ export const launcher = (binary: string, resident: string): string => {
  * for this location whenever it starts or restarts the service.
  */
 export const residentDir = (home: string): string => join(home, ".local/state/opencode-prime/resident")
+
+/**
+ * OpenCode's record of the installed build, `<XDG state>/opencode/installed.json` (the fork's
+ * `@opencode/util/installed-build`). An open TUI moves onto the installed build only from a build listed in `previous`,
+ * and a client of such a build starts the background service on the installed build, never its own: builds of one
+ * release carry no order among themselves, so this list is what says which are older. `previous` keeps the last
+ * record's builds and every build still installed beside this one (`opencode-<version>` in `share`).
+ */
+export const installedRecord = (
+  last: Json,
+  version: string,
+  binary: string,
+  installed: ReadonlyArray<string>,
+): { version: string; command: [string]; previous: string[] } => {
+  const earlier = [
+    ...(Array.isArray(last.previous) ? last.previous.filter((item): item is string => typeof item === "string") : []),
+    ...(typeof last.version === "string" ? [last.version] : []),
+    // A copy a crash left staged (`opencode-<version>.<pid>`) adds a name no build reports: harmless.
+    ...installed.flatMap((name) => /^opencode-(\d+\.\d+\.\d+.*)$/.exec(name)?.[1] ?? []),
+  ]
+  return { version, command: [binary], previous: [...new Set(earlier)].filter((item) => item !== version).slice(-200) }
+}
+
+export const installedFile = (home: string, env: Record<string, string | undefined> = process.env): string =>
+  join(env.XDG_STATE_HOME || join(home, ".local/state"), "opencode/installed.json")
 export const residentConfig: Json = { experimental: { location_idle_timeout: false } }
 
 /**
@@ -336,6 +361,11 @@ if (import.meta.main) {
   copyFileSync(built, staged)
   chmodSync(staged, 0o755)
   renameSync(staged, binary)
+  // Before the service restart below: the TUIs that see it restart read this record to know they may follow.
+  const record = installedFile(home)
+  mkdirSync(dirname(record), { recursive: true })
+  writeFileSync(`${record}.${process.pid}`, `${JSON.stringify(installedRecord(readJson(record), version, binary, readdirSync(share)), null, 2)}\n`)
+  renameSync(`${record}.${process.pid}`, record)
   const link = join(home, ".local/bin/opencode")
   mkdirSync(dirname(link), { recursive: true })
   rmSync(link, { force: true })
