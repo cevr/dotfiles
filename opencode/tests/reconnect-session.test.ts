@@ -47,6 +47,15 @@ const SERVER_PLUGINS = ["orchestrate", "guard", "kernel", "status", "queue", "gi
 const BACK_WITHIN_MS = 20_000
 /** How long the booting case refuses the session after the restarted service can serve. */
 const BOOTING_MS = 8_000
+/**
+ * How long a TUI has to start and draw: from source on a host the batch's
+ * acceptance run fills, it took over 8 s. A window the TUI must see (a service
+ * down or booting) opens once the TUI is up, never on the clock before it starts.
+ */
+const START_MS = 60_000
+const WAITING = /Waiting for the OpenCode server/
+/** What a TUI that gives up on an unreachable or booting service shows. */
+const GAVE_UP = /Could not reach|Unable to connect|did not provide|UnexpectedStatus|cli process failed/
 
 // ToastSurface lives at top=1/right=2, at most 60 columns wide, with
 // SplitBorder's vertical edges and an `x` close affordance. Match that UI,
@@ -316,7 +325,9 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
         const badFrames: string[] = []
         let recording = false
         // Opened while the service still boots (an install restarted it a moment before): the TUI waits for it.
-        if (starting) unavailableUntil = Date.now() + BOOTING_MS
+        // The window runs from the TUI's first refused request, not from before the TUI starts.
+        const refusedBefore = refusedRequests.length
+        if (starting) unavailableUntil = Number.POSITIVE_INFINITY
         const host = serve({ socket, cwd: home, command: command as [string, ...string[]], env: { ...env, ...(binary ? { BUN_OPTIONS: "" } : {}), ...password }, cols: 120, rows: 40 }, (rows) => {
           if (!recording) return
           const frame = rows.join("\n")
@@ -332,7 +343,11 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
           return rows.join("\n")
         }
         const showing = (text: string) => text.includes(marker)
-        await until(screen, showing, (last) => `${name}: the TUI never showed ${marker}:\n${last}`, 60_000)
+        if (starting) {
+          await until(() => refusedRequests.length, (count) => count > refusedBefore, () => `${name}: the TUI never asked the booting service`, START_MS)
+          unavailableUntil = Date.now() + BOOTING_MS
+        }
+        await until(screen, showing, (last) => `${name}: the TUI never showed ${marker}:\n${last}`, START_MS)
         if (busy) {
           await client.session.prompt({ sessionID, text: "hold" })
           await until(screen, (text) => text.includes("holding"), (last) => `${name}: the turn never started:\n${last}`, 30_000)
@@ -423,8 +438,9 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
       mkdirSync(empty, { recursive: true })
       type Open = { readonly name: string; readonly args: ReadonlyArray<string>; readonly mode: "down" | "booting" | "ready"; readonly cwd?: string; readonly shows?: RegExp }
       const open = async ({ name, args, mode, cwd = opened, shows = /opened-transcript-marker/ }: Open) => {
+        // Down or booting until the TUI says it waits, however long the TUI takes to start on this host.
         if (mode === "down") proxy.down()
-        if (mode === "booting") unavailableUntil = Date.now() + BOOTING_MS
+        if (mode === "booting") unavailableUntil = Number.POSITIVE_INFINITY
         const socket = join(root, `${name}.sock`)
         const badFrames: string[] = []
         const frames: string[] = []
@@ -437,16 +453,19 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
         hosts.push(host)
         await until(() => existsSync(socket), Boolean, () => `${name}: the terminal host`, 10_000)
         const screen = async () => (await hostCall(socket, { op: "read", scope: "screen" })).rows.join("\n")
-        // While the service cannot serve, the terminal says the TUI waits for it.
-        if (mode !== "ready") await until(screen, (text) => /Waiting for the OpenCode server/.test(text), (last) => `${name}: no waiting line while the service cannot serve:\n${last}`, BOOTING_MS)
-        if (mode === "down") {
+        // While the service cannot serve, the terminal says the TUI waits for it; a TUI that gives up says so at once.
+        if (mode !== "ready") {
+          const said = await until(screen, (text) => WAITING.test(text) || GAVE_UP.test(text), (last) => `${name}: no waiting line while the service cannot serve:\n${last}`, START_MS)
+          expect(said, `${name}: no waiting line while the service cannot serve`).toMatch(WAITING)
+          // It keeps waiting a while after it says so; then the service serves.
           await Bun.sleep(BOOTING_MS / 2)
           proxy.up()
+          unavailableUntil = 0
         }
-        await until(screen, (text) => shows.test(text), (last) => `${name}: the TUI never showed ${shows}:\n${last}`, BOOTING_MS + BACK_WITHIN_MS)
+        await until(screen, (text) => shows.test(text), (last) => `${name}: the TUI never showed ${shows}:\n${last}`, mode === "ready" ? START_MS : BACK_WITHIN_MS)
         await host.stop()
         unavailableUntil = 0
-        expect(frames.filter((frame) => /Could not reach|Unable to connect|did not provide|UnexpectedStatus|cli process failed/.test(frame)), `${name}: a failure in any frame`).toEqual([])
+        expect(frames.filter((frame) => GAVE_UP.test(frame)), `${name}: a failure in any frame`).toEqual([])
         expect(badFrames, `${name}: error toast while the service could not serve`).toEqual([])
       }
       const cases: ReadonlyArray<Open> = [
