@@ -30,10 +30,16 @@ describe.skipIf(!fork)("the herdr reporter in a real TUI", () => {
       })
       const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
       if (code !== 0) throw new Error(`the herdr scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}`)
-      const received = server.received()
-      const log = JSON.stringify(received, null, 1)
+      const log = JSON.stringify(server.received(), null, 1)
+      const bySeq = new Map<string, Received>()
+      for (const request of server.received()) {
+        const seq = String(field(request, "seq"))
+        if (bySeq.has(seq)) expect(bySeq.get(seq), `a seq sent twice is a retry of one request:\n${log}`).toEqual(request)
+        else bySeq.set(seq, request)
+      }
+      const received: ReadonlyArray<Received> = [...bySeq.values()]
 
-      // Every request names our pane, our source and our agent, and counts upward.
+      // Every request (a retry, sent as it was when herdr answers late, counts once) names our pane, our source and our agent, and counts upward.
       for (const request of received) {
         expect(field(request, "pane_id")).toBe("wtest:p1")
         expect(field(request, "source")).toBe("dotfiles:opencode")
@@ -41,7 +47,6 @@ describe.skipIf(!fork)("the herdr reporter in a real TUI", () => {
       }
       const seqs = received.map((request) => Number(field(request, "seq")))
       expect(seqs, log).toEqual([...seqs].sort((a, b) => a - b))
-      expect(new Set(seqs).size).toBe(seqs.length)
 
       const states = received.filter((request) => request.method === "pane.report_agent")
       const working = states.findIndex((request) => field(request, "state") === "working")
@@ -53,9 +58,10 @@ describe.skipIf(!fork)("the herdr reporter in a real TUI", () => {
       expect(field(states[working] ?? { method: "", params: {} }, "resume_argv")).toEqual(["opencode", "-s", session])
       expect(field(states[idle] ?? { method: "", params: {} }, "agent_session_id")).toBe(session)
 
-      const labels = received.filter((request) => request.method === "pane.report_metadata").map((request) => field(request, "state_labels"))
+      const metadata = received.filter((request) => request.method === "pane.report_metadata")
+      const labels = metadata.map((request) => field(request, "state_labels"))
       expect(labels, log).toContainEqual({ working: "shell: sleep 2 && echo checked" })
-      const titles = received.filter((request) => request.method === "pane.report_metadata").map((request) => field(request, "title"))
+      const titles = metadata.map((request) => field(request, "title"))
       expect(titles, log).toContain("herdr check")
 
       // Closing the TUI releases the pane.
