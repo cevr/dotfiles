@@ -48,7 +48,61 @@ models, a one-hour prompt cache for Claude
 (`providers.anthropic.settings.cache.ttl: "1h"`), background compaction
 (`experimental.background_compaction: true`, see Idle compaction) and `autoupdate: false`, and into `cli.json` Prime, status, the queue, background questions and the
 Prime theme. Every other key and plugin there is kept. Rerun it after a fork
-change.
+change. At its end it writes what the host now runs to
+`~/.local/state/opencode/installed.json`, OpenCode's own record of the
+installed build (the version, the binary, the builds it superseded), with the
+dotfiles and fork commits and the last build that passed a health check
+(`mods/update/record.ts`). By hand it then restarts the service through the
+update's handoff (below), so its health check and recovery run too.
+
+## The update
+
+Each host's OpenCode updates itself. The update is a server plugin
+(`cmd/update`, its model in `mods/update`) that daily loads on every host;
+only the resident location's copy acts, so a host runs one updater.
+
+- **The target.** An accepted batch verdict records what every host installs:
+  orchestrate (its `fleet` option, `{ dotfiles, fork }`, which daily writes)
+  takes the verifier's checkout, when it is one of the dotfiles or the fork, and
+  pushes an annotated tag to the dotfiles origin as `refs/fleet/verified`
+  (`mods/orchestrate/git/fleet.ts`). The tag points at the verified dotfiles
+  commit; its message is `{dotfiles, fork, batch}`. One ref, written whole,
+  read with one fetch, and recorded only when origin holds both commits.
+- **The check.** At start, every ten minutes and when asked (RPC
+  `dotfiles-opencode.update` `check`), the plugin fetches the ref and compares
+  it with `installed.json`. A host on the target does nothing. One check runs
+  at a time; a newer target during a run is the next run.
+- **Advance.** The dotfiles checkout moves to the target's commit
+  (fast-forward on the Mac, back by `reset --keep` when the target is older;
+  on the workbox, a Syncthing follower, a reset that keeps
+  `codex/config.toml`, `skills/.system/` and `workbox/herdr-config.toml` and
+  drops Syncthing's conflict copies), then `bun install --frozen-lockfile` in
+  `opencode/` and the fork's links. A failed install moves the checkout back.
+  Nothing else moves the checkout.
+- **Build ahead.** `bun scripts/daily.ts --stage --fork-target <sha>` from
+  the advanced checkout: the fork to the target's commit (on the Mac, upstream
+  merged first, step 0), the build, the configs and `installed.json`, with no
+  restart. A failed stage moves the dotfiles and the configs back.
+- **The wait.** The restart waits until no root session on the host runs a
+  turn or a compaction, and never in the Sabbath rest
+  (`mods/orchestrate/sabbath.ts`). Subagents do not hold it: the restart cuts
+  them and the server resumes them. A cut subagent finds OpenCode's note "The
+  server restarted while you were working. Continue from where you left off
+  without repeating completed work." as its newest message and runs its turn
+  again (up to ten times per turn); its parent hears it end as usual. No
+  timeout: the log says how long it waited. A newer target while it waits is built ahead first.
+- **The handoff.** A detached process (`cmd/update/handoff.ts`) outlives the
+  service it restarts: `opencode service restart`, then the health check
+  (every configured local plugin loaded in the resident location, and the
+  pool's status answering accounts, which spends nothing). A failure
+  reinstalls the dependencies and restarts once; still failing, it rolls back
+  to the last good build and dotfiles commit in `installed.json` and restarts
+  on it. TUIs follow by themselves.
+
+There is no load gate and no notification (the owner's call). Each step is a
+line in `~/.local/state/opencode-update/update.log`; a failed update also
+shows in Prime's TUI corner (`update failed · <plugin>: <cause>`), read from
+daily's `upstream.json`, so it shows without the failed plugin.
 
 Why a fork: stock OpenCode's plugin API covers the pool, the `/pool` pane,
 the orchestrate guard, the Sabbath and the pace hold. It has no hook for the
@@ -408,7 +462,7 @@ role's session outlives it; the main session keeps the provider's hour),
 routes each subagent call to a role, starts a new planner on the newest Fable first, starts a new Opus start the pace holds on
 Codex instead, latches one both hold, writes each role's start and hand-back to its unit's
 `log.md`, and stops agent work over the Sabbath. Its
-options are `log`, `now`, `place`, `fullAgent`, `codex`, `planner`, `unitLog`, `skill`, `ledger`, `cadence` and `guard`.
+options are `log`, `now`, `place`, `fullAgent`, `codex`, `planner`, `unitLog`, `skill`, `ledger`, `cadence`, `guard` and `fleet` (the checkouts an accepted verdict records the verified target from; The update).
 An absent option takes its default. A
 malformed one stops the plugin at setup, with a message that names it.
 
@@ -2859,6 +2913,7 @@ its reason, and only for a capability no installed Effect service offers:
 | `scripts/effect-domain-policy.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge, and a real-process harness building throwaway lint workspaces from the real configs and legacy files for real oxlint runs |
 | `scripts/effect-process-policy.test.ts` | `noEffectRunInTests`, `noNodeBuiltinImport` | the Bun test bridge, and a real-process harness building throwaway lint workspaces from the real config for real oxlint runs |
 | `mods/wake/process/readiness.test.ts` | `noEffectRunInTests` | the Bun test bridge: the generated model suite of the test-only readiness wait runs its Effect once with `Effect.runPromise` |
+| `mods/update/model.test.ts` | `noEffectRunInTests` | the Bun test bridge: the update model run on its fake git, build and exec seams under a `TestClock` |
 
 No other rule can be exempted (`EXEMPTABLE` in the script): a test-global
 write, a fixed wait, a module mock, a swallowed failure or a style rule is

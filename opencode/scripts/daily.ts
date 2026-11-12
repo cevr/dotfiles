@@ -1,7 +1,7 @@
 // `bun run daily`: makes the fork, with these mods loaded, the `opencode` a new terminal runs.
 //
-// 0. Fast-forwards the fork checkout's prime-look to origin/prime-look, which may have moved from
-//    another checkout; a branch with commits origin lacks, or uncommitted tracked changes, is left
+// 0. Fast-forwards the fork checkout's prime-look to origin/prime-look (`--fork-target <sha>`: to the
+//    update's verified fork commit, mods/update) from another checkout; a branch with commits origin lacks, or uncommitted tracked changes, is left
 //    as it is and said so (scripts/upstream.ts `syncFork`). Then, on the Mac, which owns the fork, merges upstream OpenCode into prime-look first, in a
 //    worktree of its own, and lands it only when the merge is clean and its checks pass
 //    (scripts/upstream.ts); a conflict or a red check leaves prime-look as it was, writes
@@ -20,9 +20,9 @@
 //    agents' models, no auto-update) and `cli.json` (TUI plugins, the Prime theme), keeping
 //    every other key and plugin. Paths are this checkout's, so nothing machine-specific is
 //    committed.
-// 4. Writes how far upstream/dev is past the build, and whether its merge is blocked, to
-//    `~/.local/state/opencode-daily/upstream.json` for the TUI's corner (`upstreamReading`), then
-//    restarts the background service so it loads the server plugins.
+// 4. Writes upstream/dev's lead for the TUI's corner (`upstreamReading`), then restarts the service
+//    through the update's handoff (mods/update: health check, reinstall, rollback). `--stage` (the
+//    update plugin's build ahead) restarts nothing: the plugin does, once every root session is idle.
 import { $ } from "bun"
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, hostname } from "node:os"
@@ -32,6 +32,7 @@ import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } f
 import { checkFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { forkChecks, mergeUpstream, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
+import { flagValue, headOf, installedText, restartThroughHandoff, settingsFor, updateEntry } from "../mods/update/process/install.ts"
 
 const MODS = resolve(import.meta.dir, "../mods")
 const CMD = resolve(import.meta.dir, "../cmd")
@@ -96,26 +97,8 @@ export const residentDir = (home: string): string => join(home, ".local/state/op
 
 /**
  * OpenCode's record of the installed build, `<XDG state>/opencode/installed.json` (the fork's
- * `@opencode/util/installed-build`). An open TUI moves onto the installed build only from a build listed in `previous`,
- * and a client of such a build starts the background service on the installed build, never its own: builds of one
- * release carry no order among themselves, so this list is what says which are older. `previous` keeps the last
- * record's builds and every build still installed beside this one (`opencode-<version>` in `share`).
+ * `@opencode/util/installed-build`), written through the update's record (mods/update/record.ts).
  */
-export const installedRecord = (
-  last: Json,
-  version: string,
-  binary: string,
-  installed: ReadonlyArray<string>,
-): { version: string; command: [string]; previous: string[] } => {
-  const earlier = [
-    ...(Array.isArray(last.previous) ? last.previous.filter((item): item is string => typeof item === "string") : []),
-    ...(typeof last.version === "string" ? [last.version] : []),
-    // A copy a crash left staged (`opencode-<version>.<pid>`) adds a name no build reports: harmless.
-    ...installed.flatMap((name) => /^opencode-(\d+\.\d+\.\d+.*)$/.exec(name)?.[1] ?? []),
-  ]
-  return { version, command: [binary], previous: [...new Set(earlier)].filter((item) => item !== version).slice(-200) }
-}
-
 export const installedFile = (home: string, env: Record<string, string | undefined> = process.env): string =>
   join(env.XDG_STATE_HOME || join(home, ".local/state"), "opencode/installed.json")
 export const residentConfig: Json = { experimental: { location_idle_timeout: false } }
@@ -189,11 +172,12 @@ export const plannerModel = (catalog: Catalog): string | undefined => {
 /**
  * Orchestrate's plugin entry: a Codex provider's new agents take the pool's pace first, which
  * paces OpenAI on the ChatGPT account (`poolEntry`'s `paced`); the admission script answers only
- * when the pool has no measure of it. With `planner`, the planner's first model.
+ * when the pool has no measure of it. With `planner`, the planner's first model. `fleet` names the
+ * dotfiles and fork checkouts an accepted verdict records the verified target from (mods/update).
  */
-export const orchestrateEntry = (orchestrate: string, planner?: string): PluginEntry => ({
+export const orchestrateEntry = (orchestrate: string, fleet: { readonly dotfiles: string; readonly fork: string }, planner?: string): PluginEntry => ({
   package: orchestrate,
-  options: { codex: { pool: true }, ...(planner === undefined ? {} : { planner: { model: planner } }) },
+  options: { codex: { pool: true }, fleet, ...(planner === undefined ? {} : { planner: { model: planner } }) },
 })
 
 /**
@@ -278,6 +262,9 @@ const writeJson = (path: string, value: Json) => {
 
 if (import.meta.main) {
   const home = homedir()
+  const args = new Set(process.argv)
+  // From the update plugin (mods/update): the verified target's fork commit, built instead of origin's prime-look.
+  const forkTarget = flagValue([...args], "--fork-target")
   const checked = checkFork(process.env.OPENCODE_DEV || DEFAULT_FORK)
   if ("problem" in checked) throw new Error(checked.problem)
   const fork = checked.fork
@@ -289,7 +276,7 @@ if (import.meta.main) {
     mergeUpstream({
       fork,
       host: hostname(),
-      skip: process.argv.includes("--no-upstream"),
+      skip: args.has("--no-upstream"),
       dryRun,
       checks: forkChecks(resolve(import.meta.dir, ".."), fork, process.env.GENT_SOURCE || join(home, "Developer/personal/.rifts/gent/untrack-local-settings")),
       worktree: join(state, "upstream-merge"),
@@ -297,8 +284,8 @@ if (import.meta.main) {
       log: console.log,
     })
   // Before the merge and the build, so neither starts from a prime-look origin has moved past.
-  const synced = syncFork({ fork, dryRun: process.argv.includes("--dry-run"), log: console.log })
-  if (process.argv.includes("--dry-run")) {
+  const synced = syncFork({ fork, dryRun: args.has("--dry-run"), to: forkTarget[0], log: console.log })
+  if (args.has("--dry-run")) {
     const outcome = await upstream(true)
     if (outcome.kind === "skipped") console.log(`upstream: skipped (${outcome.reason})`)
     console.log("dry run: nothing merged, built or installed")
@@ -335,7 +322,7 @@ if (import.meta.main) {
   const target = `cli-${process.platform}-${process.arch}`
   const built = join(cli, "dist", target, "bin/opencode")
 
-  if (!process.argv.includes("--skip-build")) {
+  if (!args.has("--skip-build")) {
     console.log(`building ${version} from ${fork}`)
     await $`bun run script/build.ts --single --skip-install --skip-web-ui`
       .cwd(cli)
@@ -357,7 +344,8 @@ if (import.meta.main) {
   // Before the service restart below: the TUIs that see it restart read this record to know they may follow.
   const record = installedFile(home)
   mkdirSync(dirname(record), { recursive: true })
-  writeFileSync(`${record}.${process.pid}`, `${JSON.stringify(installedRecord(readJson(record), version, binary, readdirSync(share)), null, 2)}\n`)
+  const checkout = dirname(dirname(MODS))
+  writeFileSync(`${record}.${process.pid}`, installedText(readFileSync(record, { encoding: "utf8", flag: "a+" }), { version, command: [binary], dotfiles: headOf(checkout), fork: forkTarget[0] ?? headOf(fork) }, readdirSync(share)))
   renameSync(`${record}.${process.pid}`, record)
   const link = join(home, ".local/bin/opencode")
   mkdirSync(dirname(link), { recursive: true })
@@ -365,6 +353,7 @@ if (import.meta.main) {
   writeJson(join(residentDir(home), "opencode.json"), residentConfig)
   writeFileSync(link, launcher(binary, residentDir(home)), { mode: 0o755 })
 
+  const settings = settingsFor({ host: hostname(), home, state: dirname(dirname(record)), checkout, fork, bun: process.execPath, resident: residentDir(home), launcher: link })
   const auth = anthropicAuthPlugin
   const gent = gentAuthDir()
   const pool = pluginDir("pool")
@@ -373,7 +362,7 @@ if (import.meta.main) {
   const server: PluginEntry[] = [
     auth,
     poolEntry(pool, existsSync(gent) ? gent : undefined, { host: hostname() }),
-    orchestrateEntry(pluginDir("orchestrate"), planner),
+    orchestrateEntry(pluginDir("orchestrate"), { dotfiles: checkout, fork }, planner),
     pluginDir("guard"),
     pluginDir("kernel"),
     pluginDir("status"),
@@ -389,6 +378,7 @@ if (import.meta.main) {
     pluginDir("cache"),
     pluginDir("web"),
     pluginDir("memory"),
+    updateEntry(pluginDir("update"), settings),
     BUILTIN_SCHEDULE_OFF,
   ]
   // Earlier runs loaded the auth plugin through a loader directory here; its entry is replaced too.
@@ -404,15 +394,15 @@ if (import.meta.main) {
 
   // Upstream against this build, for the TUI's corner (mods/prime/update.ts), written before the
   // restart that makes every open TUI reconnect and read it again.
-  const reading = upstreamReading(fork, join(state, "upstream-conflict.md"), outcome.kind === "skipped" && !process.argv.includes("--no-upstream"))
+  const reading = upstreamReading(fork, join(state, "upstream-conflict.md"), outcome.kind === "skipped" && !args.has("--no-upstream"))
   if (reading === undefined) rmSync(upstreamFile(home, process.env.XDG_STATE_HOME), { force: true })
   else writeJson(upstreamFile(home, process.env.XDG_STATE_HOME), reading)
   console.log(reading === undefined ? "upstream: no upstream/dev to count against" : `upstream: ${reading.commits} commits past this build${reading.blocked ? ", merge blocked" : ""}`)
 
-  const restart = await $`${link} service restart`.nothrow().quiet()
   console.log(`opencode -> ${binary} (${reported})`)
   console.log(`server plugins: ${server.map(packageOf).join(", ")}`)
   console.log(`roles: ${Object.entries(models).map(([role, model]) => `${role} ${model}`).join(", ")}`)
   console.log(planner === undefined ? "planner first: none (no Fable in the catalog), so Opus" : `planner first: ${planner}, then Opus, then Codex when the pool holds it`)
-  console.log(restart.exitCode === 0 ? "background service restarted" : `service restart exited ${restart.exitCode}: ${restart.stderr.toString().trim()}`)
+  if (args.has("--stage")) console.log("staged: the update plugin restarts the service once every root session is idle")
+  else console.log(`restart: the update's handoff exited ${restartThroughHandoff(settings, process.env.PATH ?? "", "daily by hand")}; its lines are in ${settings.state}/update.log`)
 }

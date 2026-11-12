@@ -33,6 +33,11 @@ describe("upstreamNotice", () => {
     expect(upstreamNotice(reading(12, true))).toEqual({ lead: "upstream +12", rest: " · merge blocked" })
   })
 
+  test("says first that the host's last update failed, with the plugin and the cause, whatever upstream holds", () => {
+    expect(upstreamNotice({ ...reading(0, false), failed: "pool: Cannot find package; rolled back" })).toEqual({ lead: "update failed", rest: " · pool: Cannot find package; rolled back" })
+    expect(upstreamNotice({ ...reading(12, true), failed: "guard: not loaded" })).toEqual({ lead: "update failed", rest: " · guard: not loaded" })
+  })
+
   test("shows nothing when the build is current, or with no reading", () => {
     expect(upstreamNotice(reading(0, false))).toBeUndefined()
     expect(upstreamNotice(reading(0, true))).toBeUndefined()

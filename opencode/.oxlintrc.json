@@ -421,6 +421,32 @@
     },
     {
       "files": [
+        "mods/update/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!./*.ts",
+                  "!bun:test",
+                  "!@dotfiles/opencode-orchestrate/sabbath"
+                ],
+                "message": "The update domain fence: its domain files import effect, their own root files, orchestrate's Sabbath clock and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of its folders (git/, process/, filestore/, opencode/)."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
         "mods/mail/*.ts"
       ],
       "rules": {

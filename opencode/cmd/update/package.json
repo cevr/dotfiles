@@ -1,0 +1,13 @@
+{
+  "name": "@dotfiles/opencode-cmd-update",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The host's self-update as an OpenCode server plugin (server), and the handoff that restarts the service from outside it (handoff.ts, run by bun): the composition roots of @dotfiles/opencode-update.",
+  "exports": {
+    "./server": "./server.ts"
+  },
+  "dependencies": {
+    "@dotfiles/opencode-update": "workspace:*"
+  }
+}

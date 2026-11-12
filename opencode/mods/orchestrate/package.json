@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@dotfiles/decider": "workspace:*",
-    "@dotfiles/opencode-wake": "workspace:*"
+    "@dotfiles/opencode-wake": "workspace:*",
+    "@dotfiles/opencode-update": "workspace:*"
   }
 }
