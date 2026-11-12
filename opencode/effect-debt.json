@@ -601,7 +601,7 @@
     "mods/prime/group.ts": {"complexity":1,"effect/noKnownValueWidening":5,"effect/noNullish":11,"effect/noRuntimeTypeof":3,"effect/noTernary":32},
     "mods/prime/kernel.test.ts": {"effect/noConditionalEmptyObjectSpread":3,"effect/noNullish":15,"effect/noTernary":7,"effect/noUnknownParameters":1,"effect/noUnsafeDictionaryType":2},
     "mods/prime/kernel.ts": {"effect/noConditionalEmptyObjectSpread":4,"effect/noNullish":7,"effect/noRuntimeTypeof":6,"effect/noTernary":15},
-    "mods/prime/notice.ts": {"effect/noConditionalEmptyObjectSpread":2,"effect/noNullish":12,"effect/noRuntimeTypeof":2,"effect/noTernary":19},
+    "mods/prime/notice.ts": {"effect/noConditionalEmptyObjectSpread":1,"effect/noNullish":9,"effect/noRuntimeTypeof":2,"effect/noTernary":18},
     "mods/prime/opencode/build.ts": {"effect/noGlobals":1,"effect/noNullish":5},
     "mods/prime/opencode/goal.ts": {"effect/noConditionalEmptyObjectSpread":1,"effect/noNullish":10,"effect/noTernary":3},
     "mods/prime/opencode/host.ts": {"effect/noNullish":5,"effect/noTernary":1},

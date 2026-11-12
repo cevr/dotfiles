@@ -21,7 +21,18 @@ const root = join(import.meta.dir, "..")
 const SETTLED = "The worker has the CSV fix; nothing else needs me now."
 const STARTED = "A worker is on the CSV quoting."
 const NOTED = "Noted: the CSV fix is in."
-const frames: Record<"streaming" | "details" | "all" | "overview", Saved> = {} as never
+const NOTICE = "  ● General finished · Fix CSV quoting"
+/** The worker's whole answer under the notice's header. */
+const BODY = [
+  "  └ CSV quoting fixed.",
+  "    Quoted fields keep their commas.",
+  "    Escaped quotes stay doubled.",
+  "    Empty fields stay empty.",
+  "    Newlines in a field keep their quotes.",
+  "    The writer and the reader agree.",
+  "    All 12 tests pass.",
+]
+const frames: Record<"streaming" | "details" | "all" | "overview" | "opened" | "closed", Saved> = {} as never
 
 /** The theme's `text.muted` and `text.faint`. */
 const MUTED = "#a1a1aa"
@@ -78,6 +89,8 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
     frames.details = load("thoughts")
     frames.all = load("thoughts-all")
     frames.overview = load("thoughts-overview")
+    frames.opened = load("thoughts-opened")
+    frames.closed = load("thoughts-closed")
   }, 300_000))
 
   test("a streaming thought is a one-node group headed Thinking, its glyph in the accent", kept.test(() => {
@@ -111,26 +124,43 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
     expect(fg(frames.details, "  ● Thought", 2)).toBe(MUTED)
   }))
 
-  test("a finished worker's notice is a group like the ordinary tool group below it", kept.test(() => {
-    expect(slice(frames.details, "  ● General finished · Fix CSV quoting", 8)).toEqual([
-      "  ● General finished · Fix CSV quoting",
-      "  └ CSV quoting fixed.",
-      "    Quoted fields keep their commas.",
-      "    All 12 tests pass.",
+  test("a finished worker's notice is a group like the ordinary tool group below it, its header alone by default", kept.test(() => {
+    // The owner's scrawl of 2026-11-12: the answer under the header shows only on Ctrl+O or a click.
+    expect(slice(frames.details, NOTICE, 5)).toEqual([
+      NOTICE,
       "",
       "  ● Ran printf 'csv ok\\n'",
       "    │ csv ok",
       "",
     ])
+    expect(frames.details.lines.join("\n")).not.toContain("CSV quoting fixed.")
+    expect(frames.details.lines.join("\n")).not.toContain("lines (ctrl+o)")
     expect(frames.details.lines).toContain(`  ${NOTED}`)
-    // Both headers share the glyph's colour and column; the notice's body is muted like a reply.
-    const notice = "  ● General finished · Fix CSV quoting"
+    // Both headers share the glyph's colour and column.
     const ran = "  ● Ran printf 'csv ok\\n'"
-    expect(fg(frames.details, notice, 2)).toBe(MUTED)
-    expect(fg(frames.details, notice, 2)).toBe(fg(frames.details, ran, 2))
-    expect(fg(frames.details, "  └ CSV quoting fixed.", 4)).toBe(MUTED)
+    expect(fg(frames.details, NOTICE, 2)).toBe(MUTED)
+    expect(fg(frames.details, NOTICE, 2)).toBe(fg(frames.details, ran, 2))
     // The old `↳` line is gone.
     expect(frames.details.lines.join("\n")).not.toContain("↳")
+  }))
+
+  test("Ctrl+O from the default shows the notice's whole answer, muted like a reply", kept.test(() => {
+    expect(frames.details.lines.join("\n")).not.toContain("CSV quoting fixed.")
+    expect(slice(frames.all, NOTICE, 8)).toEqual([NOTICE, ...BODY])
+    expect(fg(frames.all, "  └ CSV quoting fixed.", 4)).toBe(MUTED)
+  }))
+
+  test("a click on the notice opens its whole answer in place, and a second click closes it", kept.test(() => {
+    // Still the parent session: no ` › ` crumb of a subagent, the same top line, the parent's own rows.
+    expect(frames.opened.lines[0]).toBe(frames.details.lines[0])
+    expect(frames.opened.lines[0]).not.toContain(" › ")
+    expect(frames.opened.lines).toContain(`  ${NOTED}`)
+    // Every line of the answer, no head and no count.
+    expect(slice(frames.opened, NOTICE, 8)).toEqual([NOTICE, ...BODY])
+    expect(frames.opened.lines.join("\n")).not.toContain("lines (ctrl+o)")
+    expect(frames.closed.lines[0]).toBe(frames.details.lines[0])
+    expect(slice(frames.closed, NOTICE, 3)).toEqual([NOTICE, "", "  ● Ran printf 'csv ok\\n'"])
+    expect(frames.closed.lines.join("\n")).not.toContain("CSV quoting fixed.")
   }))
 
   test("at All the whole thought hangs under its node, and the notice keeps its group", kept.test(() => {
@@ -143,12 +173,7 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
       "  │ The CSV fix goes to a worker.",
     ])
     expect(slice(frames.all, "  ● Thought", 3)).toEqual(["  ● Thought", "  └ thinking", `    ${SETTLED}`])
-    expect(slice(frames.all, "  ● General finished · Fix CSV quoting", 4)).toEqual([
-      "  ● General finished · Fix CSV quoting",
-      "  └ CSV quoting fixed.",
-      "    Quoted fields keep their commas.",
-      "    All 12 tests pass.",
-    ])
+    expect(slice(frames.all, NOTICE, 8)).toEqual([NOTICE, ...BODY])
   }))
 
   test("the Overview shows no thoughts: a thought-only step draws nothing, a notice only its header", kept.test(() => {
