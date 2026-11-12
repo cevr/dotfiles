@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { readdirSync, readFileSync } from "node:fs"
+import { closeSync, openSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { GENT_SUITES, gentAvailable, gentSkipped, gentSource } from "../tests/gent/store.ts"
 import { scratch } from "../tests/scratch.ts"
@@ -29,18 +29,25 @@ describe("the acceptance run without gent's checkout", () => {
     expect(ran.lines.filter((line) => line !== "").at(-1)).toBe(skipLine("GENT_SOURCE is not set"))
   })
 
-  test("a real run of gent's suites alone, with GENT_SOURCE unset, skips them and ends with the SKIPPED line", () => {
+  test("a real run of gent's suites alone, with GENT_SOURCE unset, skips them and ends with the SKIPPED line, after the run's report", () => {
     using dir = scratch("accept-gent-run-")
+    // One file takes both streams, as a `2>&1` log does: bun test reports on stderr, accept on stdout, so
+    // only their order in one file shows whether the SKIPPED line comes after the run or before it.
+    const log = join(dir.path, "accept.log")
+    const fd = openSync(log, "w")
     const child = Bun.spawnSync([process.execPath, "scripts/accept.ts", ...GENT_SUITES], {
       cwd: ROOT,
       env: { ...process.env, OPENCODE_DEV: "", GENT_SOURCE: "", ACCEPT_LOCK: join(dir.path, "accept.lock") },
-      stdout: "pipe",
-      stderr: "pipe",
+      stdout: fd,
+      stderr: fd,
     })
-    const out = child.stdout.toString().split("\n").filter((line) => line !== "")
+    closeSync(fd)
+    const out = readFileSync(log, "utf8").split("\n").filter((line) => line !== "")
+    const ran = out.findIndex((line) => /Ran \d+ tests across 4 files/.test(line))
     expect(child.exitCode).toBe(0)
-    expect(child.stderr.toString()).toMatch(/Ran \d+ tests across 4 files/)
+    expect(ran).toBeGreaterThanOrEqual(0)
     expect(out.at(-1)).toBe(skipLine("GENT_SOURCE is not set"))
+    expect(out.findIndex((line) => line.startsWith("SKIPPED: gent suites"))).toBeGreaterThan(ran)
     expect(out.filter((line) => line.startsWith("SKIPPED: gent suites"))).toHaveLength(1)
   }, 120_000)
 
