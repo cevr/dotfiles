@@ -35,6 +35,12 @@ export const UpstreamReading = Schema.Struct({
   upstream: Schema.String,
   build: Schema.String,
   at: Schema.String,
+  /**
+   * The host's last update failed after its restart: the plugin and the cause, and whether it
+   * rolled back. The update's handoff writes it (mods/update), so the owner sees a failed plugin
+   * without that plugin; a proven build or the next install clears it.
+   */
+  failed: Schema.optionalKey(Schema.String),
 })
 export type UpstreamReading = typeof UpstreamReading.Type
 
@@ -61,6 +67,7 @@ export function parseUpstream(text: string): UpstreamReading | undefined {
  * upstream commit, or with no reading.
  */
 export function upstreamNotice(reading: UpstreamReading | undefined): { readonly lead: string; readonly rest: string } | undefined {
+  if (reading?.failed) return { lead: "update failed", rest: ` · ${reading.failed}` }
   if (reading === undefined || reading.commits <= 0) return undefined
   return { lead: `upstream +${reading.commits}`, rest: reading.blocked ? " · merge blocked" : "" }
 }

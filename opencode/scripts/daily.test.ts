@@ -5,12 +5,13 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
-import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, installedFile, installedRecord, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
+import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, installedFile, launcher, mailEntry, mergeCli, mergeServer, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
 import { exposedTests, HELD_BRANCH, mergeUpstream, syncFork, type Options as UpstreamOptions } from "./upstream.ts"
 
 const MODS = "/repo/opencode/mods"
 const CMD = "/repo/opencode/cmd"
 const AUTH = "/home/.local/share/opencode-prime/anthropic-auth"
+const CHECKOUTS = { dotfiles: "/repo", fork: "/fork" }
 
 describe("the server config", () => {
   test("puts our plugins first, replaces our old entries and keeps everyone else's", () => {
@@ -114,9 +115,9 @@ describe("the pool's fleet", () => {
     })
   })
 
-  test("orchestrate asks the pool first for a Codex provider's agents, so they pace on every host's spend", () => {
-    const entry = orchestrateEntry(`${MODS}/orchestrate`)
-    expect(entry).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true } } })
+  test("orchestrate asks the pool first for a Codex provider's agents, and names the checkouts an accepted verdict records the verified target from", () => {
+    const entry = orchestrateEntry(`${MODS}/orchestrate`, CHECKOUTS)
+    expect(entry).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true }, fleet: CHECKOUTS } })
     // It replaces the bare entry an older run wrote, as every entry from our dirs is.
     expect(mergeServer({ plugins: [`${MODS}/orchestrate`] }, [entry], {}, [MODS]).plugins).toEqual([entry])
   })
@@ -129,15 +130,15 @@ describe("the pool's fleet", () => {
     } } }
     const planner = plannerModel(catalog as never)
     expect(planner).toBe("anthropic/claude-fable-5-2")
-    const entry = orchestrateEntry(`${MODS}/orchestrate`, planner)
-    expect(entry).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true }, planner: { model: "anthropic/claude-fable-5-2" } } })
+    const entry = orchestrateEntry(`${MODS}/orchestrate`, CHECKOUTS, planner)
+    expect(entry).toEqual({ package: `${MODS}/orchestrate`, options: { codex: { pool: true }, fleet: CHECKOUTS, planner: { model: "anthropic/claude-fable-5-2" } } })
     // The planner A/B's option an earlier run wrote goes with its entry.
     const earlier = { package: `${MODS}/orchestrate`, options: { codex: { pool: true }, experiment: { role: "planner", model: "anthropic/claude-fable-5-1", share: 0.2 } } }
     expect(mergeServer({ plugins: [earlier, "/x"] }, [entry], {}, [MODS]).plugins).toEqual([entry, "/x"])
     // A catalog with no Fable names no first model, and the entry names none: the planner runs on Opus.
     expect(plannerModel({ anthropic: { models: {} } } as never)).toBeUndefined()
-    expect(mergeServer({ plugins: [earlier] }, [orchestrateEntry(`${MODS}/orchestrate`, undefined)], {}, [MODS]).plugins).toEqual([
-      { package: `${MODS}/orchestrate`, options: { codex: { pool: true } } },
+    expect(mergeServer({ plugins: [earlier] }, [orchestrateEntry(`${MODS}/orchestrate`, CHECKOUTS, undefined)], {}, [MODS]).plugins).toEqual([
+      { package: `${MODS}/orchestrate`, options: { codex: { pool: true }, fleet: CHECKOUTS } },
     ])
   })
 })
@@ -405,6 +406,16 @@ describe("the upstream merge", () => {
     expect(f.head(f.fork, "prime-look")).toBe(before)
   })
 
+  test("with a target commit, the fork fast-forwards to it and no further, though origin is past it", () => {
+    const f = fixture()
+    commitTo(f.origin, "prime-look", { "c.txt": "verified\n" })
+    const verified = f.head(f.origin, "prime-look")
+    commitTo(f.origin, "prime-look", { "c.txt": "not verified yet\n" })
+    expect(syncFork({ fork: f.fork, dryRun: false, to: verified, log: () => {} })).toMatchObject({ kind: "fast-forwarded", to: verified, commits: 1 })
+    expect(f.head(f.fork, "prime-look")).toBe(verified)
+    expect(syncFork({ fork: f.fork, dryRun: false, to: verified, log: () => {} })).toEqual({ kind: "current" })
+  })
+
   test("the checks run Prime's, the TUI's CPU, mail and orchestrate acceptance tests", () => {
     const tests = exposedTests(resolve(import.meta.dir, ".."))
     expect(tests).toContain("./tests/prime-rows.test.ts")
@@ -417,24 +428,6 @@ describe("the upstream merge", () => {
 })
 
 describe("the installed build's record", () => {
-  test("names the new build and every build it superseded, never itself", () => {
-    const record = installedRecord(
-      { version: "2.2.7-prime.bbbbbbbb", command: ["/s/opencode-2.2.7-prime.bbbbbbbb"], previous: ["2.2.5-prime.aaaaaaaa"] },
-      "2.2.7-prime.cccccccc",
-      "/s/opencode-2.2.7-prime.cccccccc",
-      ["opencode-2.2.6-prime.dddddddd", "opencode-2.2.7-prime.cccccccc", "anthropic-auth", "opencode-2.2.7-prime.bbbbbbbb"],
-    )
-    expect(record).toEqual({
-      version: "2.2.7-prime.cccccccc",
-      command: ["/s/opencode-2.2.7-prime.cccccccc"],
-      previous: ["2.2.5-prime.aaaaaaaa", "2.2.7-prime.bbbbbbbb", "2.2.6-prime.dddddddd"],
-    })
-  })
-
-  test("starts from the builds installed beside it when there is no record yet", () => {
-    expect(installedRecord({}, "2.2.8", "/s/opencode-2.2.8", ["opencode-2.2.7"]).previous).toEqual(["2.2.7"])
-  })
-
   test("lives in OpenCode's state directory, which XDG_STATE_HOME moves", () => {
     expect(installedFile("/h", {})).toBe("/h/.local/state/opencode/installed.json")
     expect(installedFile("/h", { XDG_STATE_HOME: "/x" })).toBe("/x/opencode/installed.json")

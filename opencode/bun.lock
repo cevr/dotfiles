@@ -179,6 +179,13 @@
         "@dotfiles/opencode-anthropic-auth": "workspace:*",
       },
     },
+    "cmd/update": {
+      "name": "@dotfiles/opencode-cmd-update",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-update": "workspace:*",
+      },
+    },
     "cmd/wake": {
       "name": "@dotfiles/opencode-cmd-wake",
       "version": "0.0.0",
@@ -355,6 +362,14 @@
       "name": "@dotfiles/opencode-tool-names",
       "version": "0.0.0",
     },
+    "mods/update": {
+      "name": "@dotfiles/opencode-update",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/opencode-orchestrate": "workspace:*",
+        "@dotfiles/opencode-prime": "workspace:*",
+      },
+    },
     "mods/wake": {
       "name": "@dotfiles/opencode-wake",
       "version": "0.0.0",
@@ -421,6 +436,8 @@
 
     "@dotfiles/opencode-cmd-tool-names": ["@dotfiles/opencode-cmd-tool-names@workspace:cmd/tool-names"],
 
+    "@dotfiles/opencode-cmd-update": ["@dotfiles/opencode-cmd-update@workspace:cmd/update"],
+
     "@dotfiles/opencode-cmd-wake": ["@dotfiles/opencode-cmd-wake@workspace:cmd/wake"],
 
     "@dotfiles/opencode-cmd-web": ["@dotfiles/opencode-cmd-web@workspace:cmd/web"],
@@ -462,6 +479,8 @@
     "@dotfiles/opencode-subagents": ["@dotfiles/opencode-subagents@workspace:mods/subagents"],
 
     "@dotfiles/opencode-tool-names": ["@dotfiles/opencode-tool-names@workspace:mods/tool-names"],
+
+    "@dotfiles/opencode-update": ["@dotfiles/opencode-update@workspace:mods/update"],
 
     "@dotfiles/opencode-wake": ["@dotfiles/opencode-wake@workspace:mods/wake"],
 

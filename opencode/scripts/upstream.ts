@@ -296,9 +296,10 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
  * branch may have moved from another checkout (the workbox, an agent's Rift), and a stale one
  * would redo merges origin already holds and build old code. Only a fast-forward: a branch with
  * commits origin lacks, or a checkout with uncommitted tracked changes, is left as it is and the
- * run goes on with it. Untracked files never stop it.
+ * run goes on with it. Untracked files never stop it. With `to` (a commit origin's branch holds:
+ * the update's verified fork commit), it goes no further than that commit.
  */
-export const syncFork = (options: { readonly fork: string; readonly dryRun: boolean; readonly log: (line: string) => void }): SyncOutcome => {
+export const syncFork = (options: { readonly fork: string; readonly dryRun: boolean; readonly to?: string; readonly log: (line: string) => void }): SyncOutcome => {
   const { fork, log } = options
   const tracking = `refs/remotes/origin/${BRANCH}`
   const fetched = git(fork, "fetch", "--quiet", "origin", `+refs/heads/${BRANCH}:${tracking}`)
@@ -307,7 +308,7 @@ export const syncFork = (options: { readonly fork: string; readonly dryRun: bool
     return { kind: "fetch-failed", error: fetched.err }
   }
   const local = must(fork, "rev-parse", `refs/heads/${BRANCH}`)
-  const remote = must(fork, "rev-parse", tracking)
+  const remote = options.to ?? must(fork, "rev-parse", tracking)
   const behind = Number(must(fork, "rev-list", "--count", `${local}..${remote}`))
   if (behind === 0) return { kind: "current" }
   const leave = (reason: string): SyncOutcome => {
