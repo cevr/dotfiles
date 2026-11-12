@@ -88,6 +88,8 @@ const bench = (workrift: boolean) =>
 /**
  * A `rift` that copies as the real one (`REAL_RIFT`) does, then drops the new Rift's files of the pack
  * `DROP_PACK` names: what the APFS copy of the dotfiles' warm source did on 2026-11-12, again and again.
+ * With `REPACK_SOURCE` "true", the warm source at `SOURCE` then folds every pack into one (as a gc does)
+ * before the tool's repair reads it, so the pack the copy's multi-pack index names is found nowhere.
  */
 const DROPPING_RIFT = `#!/usr/bin/env bun
 import { readdirSync, unlinkSync } from "node:fs"
@@ -98,12 +100,20 @@ process.stdout.write(out)
 if (ran.exitCode === 0 && process.argv[2] === "create") {
   const pack = join(out.trim().split("\\n").at(-1), ".git/objects/pack")
   for (const file of readdirSync(pack)) if (file.startsWith(process.env.DROP_PACK)) unlinkSync(join(pack, file))
+  if (process.env.REPACK_SOURCE === "true") {
+    for (const argv of [["repack", "-a", "-d", "-q"], ["multi-pack-index", "write", "--no-progress"]]) {
+      if (Bun.spawnSync(["git", "-C", process.env.SOURCE, ...argv], { stdout: "inherit", stderr: "inherit" }).exitCode !== 0) process.exit(9)
+    }
+  }
 }
 process.exit(ran.exitCode)
 `
 
-/** A warm source with three packs and a multi-pack index naming them, whose `rift` drops the newest pack (the one holding HEAD) from each copy. */
-const droppingBench = Effect.acquireRelease(
+/**
+ * A warm source with four packs and a multi-pack index naming them, whose `rift` drops the newest pack (the
+ * one holding HEAD) from each copy; with `repack`, the source then repacks it away before the repair.
+ */
+const droppingBench = (repack: boolean) => Effect.acquireRelease(
   Effect.sync(() => {
     const scratch = mkdtempSync(join(tmpdir(), "rift-packs-"))
     const bin = join(scratch, "bin")
@@ -132,10 +142,11 @@ const droppingBench = Effect.acquireRelease(
       .filter((file) => !before.has(file))
       .map((file) => file.slice(0, -".pack".length))
       .join(" ")
-    const env = { ...base, REAL_RIFT: REAL_RIFT ?? "rift", DROP_PACK: newest }
+    const real = sh(source, base, "pwd", "-P").trim()
+    const env = { ...base, REAL_RIFT: REAL_RIFT ?? "rift", DROP_PACK: newest, SOURCE: real, REPACK_SOURCE: String(repack) }
     sh(source, env, "git", "multi-pack-index", "write")
     sh(source, env, "rift", "init", "--here")
-    return { scratch, env, newest, source: sh(source, env, "pwd", "-P").trim(), layer: ProcessRifts.layer({ workrift: false, env }) }
+    return { scratch, env, newest, source: real, layer: ProcessRifts.layer({ workrift: false, env }) }
   }),
   (made) => Effect.sync(() => rmSync(made.scratch, { recursive: true, force: true })),
 )
@@ -147,7 +158,7 @@ if (runnable) {
     "a pack the source's multi-pack index names and the copy dropped is in the new Rift, which reads every object",
     () =>
       check(
-        () => droppingBench,
+        () => droppingBench(false),
         (made) =>
           Effect.gen(function* () {
             const rifts = yield* Rifts
@@ -156,6 +167,23 @@ if (runnable) {
             sh(path, made.env, "git", "multi-pack-index", "verify", "--no-progress")
             expect(sh(path, made.env, "git", "log", "--format=%s").trim().split("\n")).toEqual(["commit 4", "commit 3", "commit 2", "commit 1"])
             sh(path, made.env, "git", "rev-list", "--objects", "--all")
+          }),
+      ),
+    30_000,
+  )
+  test(
+    "a multi-pack index naming a pack the copy dropped and the source has since repacked away is written again from the packs there are",
+    () =>
+      check(
+        () => droppingBench(true),
+        (made) =>
+          Effect.gen(function* () {
+            const rifts = yield* Rifts
+            const path = yield* rifts.create({ source: made.source, from: made.source, name: "repacked", branch: "repacked" })
+            expect(readdirSync(join(path, ".git/objects/pack")).filter((file) => file.startsWith(made.newest))).toEqual([])
+            sh(path, made.env, "git", "multi-pack-index", "verify", "--no-progress")
+            sh(path, made.env, "git", "fsck", "--connectivity-only")
+            expect(sh(path, made.env, "git", "log", "--format=%s").trim().split("\n")).toEqual(["commit 4", "commit 3", "commit 2", "commit 1"])
           }),
       ),
     30_000,
