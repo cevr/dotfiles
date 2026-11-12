@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { argv, spawnSync, write } from "bun"
+import { argv, file, spawnSync, write } from "bun"
 import { Effect, Exit } from "effect"
 import { gitInit } from "../../../tests/git-repo.ts"
 import { Source } from "../service.ts"
@@ -18,6 +18,8 @@ const GIT_ENV = {
 /** A package with no dependencies, and one whose dependency its lockfile lacks. */
 const EMPTY_PACKAGE = `{ "name": "scratch", "private": true, "dependencies": {} }`
 const MISSING_PACKAGE = `{ "name": "scratch", "private": true, "dependencies": { "missing": "file:./does-not-exist" } }`
+/** A package whose workspaces are its `mods/*`, as the dotfiles' opencode/ is. */
+const WORKSPACES_PACKAGE = `{ "name": "scratch", "private": true, "workspaces": ["mods/*"] }`
 
 /** The Bun running this test. */
 const BUN = argv[0]
@@ -71,6 +73,41 @@ describe("the advance step over real git and bun", () => {
             expect(Exit.isFailure(exit)).toBe(true)
             expect(sh(root, ["git", "rev-parse", "HEAD"]).out).toBe(a)
             expect(sh(root, ["git", "status", "--porcelain", "--untracked-files=no"]).out).toBe("")
+            spawnSync(["rm", "-rf", root])
+          }),
+        ),
+      60_000,
+    )
+  }
+
+  for (const mode of ["ff", "reset"] as const) {
+    test(
+      `R1 (${mode}): moving back past a commit that added a workspace package installs the older commit, frozen, with no trace of that package`,
+      () =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const root = sh(".", ["mktemp", "-d", "-t", "update-source"]).out
+            gitInit(root, ["-q", "-b", "main"], GIT_ENV)
+            yield* files(root, [
+              [".gitignore", "node_modules\n"],
+              ["opencode/package.json", WORKSPACES_PACKAGE],
+              ["opencode/scripts/link-fork.ts", ""],
+              ["opencode/mods/old/package.json", `{ "name": "old", "private": true }`],
+            ])
+            expect(sh(`${root}/opencode`, [BUN, "install"]).code).toBe(0)
+            sh(root, ["git", "add", "-A"])
+            sh(root, ["git", "commit", "-qm", "good"])
+            const good = sh(root, ["git", "rev-parse", "HEAD"]).out
+            // The newer commit adds a workspace package (as d2796409 added cmd/stall), installed there.
+            yield* files(root, [["opencode/mods/added/package.json", `{ "name": "added", "private": true }`]])
+            expect(sh(`${root}/opencode`, [BUN, "install"]).code).toBe(0)
+            sh(root, ["git", "add", "-A"])
+            sh(root, ["git", "commit", "-qm", "newer"])
+            const exit = yield* advance(root, mode, good)
+            expect(Exit.isSuccess(exit)).toBe(true)
+            expect(sh(root, ["git", "rev-parse", "HEAD"]).out).toBe(good)
+            expect(yield* Effect.promise(() => file(`${root}/opencode/mods/added/package.json`).exists())).toBe(false)
+            expect(sh(root, ["git", "status", "--porcelain"]).out).toBe("")
             spawnSync(["rm", "-rf", root])
           }),
         ),
