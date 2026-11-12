@@ -80,4 +80,15 @@ describe.skipIf(!fork)("every transcript row starts in one column in the Prime l
     const call = row(frame, TURN.call).column
     expect(columns(frame, kinds)).toEqual(Object.fromEntries(Object.keys(kinds).map((kind) => [kind, call])))
   })
+
+  test("low, unfolded: the calls it holds sit on medium's rails and gaps, row for row, up to the notice", () => {
+    expect(turn(frames["indent-low"]!)).toEqual(turn(frames["indent-medium"]!))
+  })
 })
+
+/** The turn's rows from its first call through the notice, blank rows included. */
+function turn(frame: ReadonlyArray<string>) {
+  const first = frame.indexOf(row(frame, TURN.call).line)
+  const last = frame.indexOf(row(frame, TURN.notice).line)
+  return frame.slice(first, last + 1).map((line) => line.trimEnd())
+}

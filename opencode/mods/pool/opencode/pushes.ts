@@ -16,8 +16,9 @@ const askKey = (key: string) => `${ASKS}${encodeURIComponent(key)}`
 
 const decodePush = Schema.decodeUnknownOption(Push)
 const decodeAsk = Schema.decodeUnknownOption(PushAsk)
-const encodePush = Schema.encodeSync(Push)
-const encodeAsk = Schema.encodeSync(PushAsk)
+// As JSON: a scope's absent keys are typed `never`, which the storage's JSON type does not take as is.
+const encodePush = Schema.encodeSync(Schema.toCodecJson(Push))
+const encodeAsk = Schema.encodeSync(Schema.toCodecJson(PushAsk))
 
 const EMPTY: PushState = { pushes: {}, asks: {} }
 

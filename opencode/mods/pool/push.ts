@@ -50,12 +50,16 @@ export const QUEUED_STATES: ReadonlyArray<string> = ["plan", "implement"]
 /** Whether a unit's state (the orchestrate status script's) is done: merged, dropped or stuck. */
 export const closedState = (state: string): boolean => state.startsWith("merged") || state === "dropped" || state.startsWith("stuck")
 
-/** Where a push applies: the host its starts run on, and within it a session's tree (its root) and an orchestrate run, when named. */
-export const PushScope = Schema.Struct({
-  host: Schema.String,
-  sessionID: Schema.optionalKey(Schema.String),
-  run: Schema.optionalKey(Schema.String),
-})
+/**
+ * Where a push applies: a whole host, or a session's tree (its root) on it,
+ * and then an orchestrate run, when named. A run is always within a tree: the
+ * pool cannot tell which sessions a run's are, so a run-only scope cannot be
+ * built, and a push for a run never reaches past the tree it was started from.
+ */
+export const PushScope = Schema.Union([
+  Schema.Struct({ host: Schema.String, sessionID: Schema.optionalKey(Schema.Never), run: Schema.optionalKey(Schema.Never) }),
+  Schema.Struct({ host: Schema.String, sessionID: Schema.String, run: Schema.optionalKey(Schema.String) }),
+])
 export type PushScope = typeof PushScope.Type
 
 /** The resets the owner approved: at most `max`, of `kinds` and on `accounts` (an id or label) when named; `asNeeded` as the owner put it. */
@@ -112,8 +116,13 @@ export type PushState = typeof PushState.Type
 
 export const empty: PushState = { pushes: {}, asks: {} }
 
-/** A scope as one key: the host, the session's root, the run. */
-export const scopeKey = (scope: PushScope) => `${scope.host}:${scope.sessionID ?? "*"}:${scope.run ?? "*"}`
+/**
+ * A scope as one key: the host and the session's root, or the host and the
+ * run. A run's key names no session: its work is the same whichever session
+ * asked about it, so a no holds for the run, and a new push for it replaces
+ * the last.
+ */
+export const scopeKey = (scope: PushScope) => (scope.run === undefined ? `${scope.host}:${scope.sessionID ?? "*"}:*` : `${scope.host}:*:${scope.run}`)
 
 /** The question's key in the owner's tray. */
 export const askKey = (key: string) => `push:${key}`
@@ -244,8 +253,12 @@ const askPush = (state: PushState, command: AskPush, now: number): ReadonlyArray
   const key = `${scopeKey(command.scope)}${command.about === undefined ? "" : `#${command.about}`}`
   const asked = state.asks[key]
   if (asked !== undefined && now - asked.at < ASK_EVERY_MS) return []
+  // A push of the whole host covers every question there, one of the asking session's tree covers its questions, and one for the run covers the run's, whichever session started it.
   const covered = activeOn(state, command.scope.host, now).some(
-    (push) => covers(push, command.scope.sessionID) && (push.scope.run === undefined || push.scope.run === command.scope.run),
+    (push) =>
+      push.scope.sessionID === undefined ||
+      (push.scope.run === undefined && push.scope.sessionID === command.scope.sessionID) ||
+      (push.scope.run !== undefined && push.scope.run === command.scope.run),
   )
   if (covered) return []
   return [
@@ -321,9 +334,10 @@ export const evolve = (state: PushState, event: Event): PushState => {
  * the host); `plan` without starting, for `units` of queued work: a plan that
  * needs resets asks the owner once (the proactive question). `host` names the
  * host the push is for (default this one; a peer's is forwarded to it, with
- * the host as its scope); `session: true` scopes it to the calling session's
- * tree (`sessionID`, the caller's, set by the tool); `run` to an orchestrate
- * run, which ends it when it closes. `until`: an ISO time, or `"done"` (the
+ * the host as its scope, and the host named by none: the peer knows itself by
+ * its own name); `session: true` scopes it to the calling session's tree
+ * (`sessionID`, the caller's, set by the tool); `run` names the orchestrate
+ * run that tree drives, which ends the push when it closes. `until`: an ISO time, or `"done"` (the
  * default) for until the work is done; `hours` instead of `until`. `resets`:
  * how many resets the owner approves, `asNeeded` when said "as needed up to
  * N"; `kinds` and `accounts` narrow which.
@@ -335,7 +349,7 @@ const requestFields = {
   goal: Schema.optionalKey(Schema.String).annotate({ description: "The work the push is for, in the owner's words. Required to start." }),
   host: Schema.optionalKey(Schema.String).annotate({ description: "The fleet host the push is for (its fleet name, e.g. workbox); default this host." }),
   session: Schema.optionalKey(Schema.Boolean).annotate({ description: "true: only this session's tree (its subagents); default the whole host." }),
-  run: Schema.optionalKey(Schema.String).annotate({ description: "The orchestrate run (its directory's name) the push is for: it ends when the run closes." }),
+  run: Schema.optionalKey(Schema.String).annotate({ description: "The orchestrate run (its directory's name) this session drives: the push covers this session's tree, as session does, and ends when the run closes." }),
   until: Schema.optionalKey(Schema.String).annotate({ description: 'When it ends: an ISO 8601 time, or "done" (the default) for until the work is done, at most 7 days.' }),
   hours: Schema.optionalKey(Schema.Finite).annotate({ description: "Instead of until: it ends this many hours from now." }),
   resets: Schema.optionalKey(Schema.Finite).annotate({ description: "How many resets the owner approved; default 0 (the push only lifts the spend-evenly hold)." }),
@@ -353,7 +367,7 @@ export type PushToolInput = typeof PushToolInput.Type
 /** What the `pool_push` tool tells the model. */
 export const PUSH_DESCRIPTION = [
   "Start, read, end or plan a push: an owner-approved, time-boxed spend plan that uses rate-limit resets to get a body of work done. Call it only when the owner asked for a push, or said yes to one.",
-  "While a push is active in its scope (a host, and optionally this session's tree or an orchestrate run), agents start without the spend-evenly hold (planners and verifiers stay on Opus), and a start held for real lack of quota claims one of the push's approved resets (the most valuable first, one at a time, through the fleet's lease) and goes on. Outside the scope nothing changes. It ends by itself at its end time, when its run closes, or on end.",
+  "While a push is active in its scope (a whole host, or this session's tree, which a run's push also is), agents start without the spend-evenly hold (planners and verifiers stay on Opus), and a start held for real lack of quota claims one of the push's approved resets (the most valuable first, one at a time, through the fleet's lease) and goes on. Outside the scope nothing changes. It ends by itself at its end time, when its run closes, or on end.",
   "Answers with the plan, measured from the pool: what the scope can spend before its windows reset by themselves, what each approved reset adds, when each would likely be claimed at the current burn, and the host's load against its cores (a push raises no CPU gate).",
 ].join("\n\n")
 

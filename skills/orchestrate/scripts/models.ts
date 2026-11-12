@@ -5,9 +5,12 @@
 // come from the unit's verdict files and log. OpenCode's rounds (each subagent
 // start, and whether it started, latched or was denied) come from the orchestrate
 // mod's call log. Run it on each host: units and transcripts live where they ran.
-// `--experiment` prints only the model experiment's view (models/experiment.ts): per arm of the
-// role the mod splits across two models, the starts, tokens and cost per start, and the units' fates,
-// counted from EXPERIMENT_SINCE (models/experiment.ts) unless --since says otherwise.
+// `--experiment` prints only the finished planner A/B's view (models/experiment.ts): from
+// EXPERIMENT_SINCE the mod started half the planner units on Fable and half on Opus, until the owner
+// made Fable the planner (2026-11-12, the mod's `planner` option) and new starts stopped carrying an
+// arm. It reads the call-log lines that carry one, so the comparison stays readable: per arm, the
+// starts, tokens and cost per start, and the units' fates, counted from EXPERIMENT_SINCE unless
+// --since says otherwise. Fable's planner rows since then are in the main view, by phase and model.
 // Both views add the limit % of one account each agent spent (models/limits.ts), from the OpenCode
 // pool's limit tally ($XDG_STATE_HOME/opencode-pool/limits.json, or --limits <file>, the output of
 // opencode/scripts/pool-limits.ts --json): per arm per plan, and per phase and model family per
@@ -26,7 +29,7 @@ import { ROOTS, unitDirs } from './runs.ts';
 
 const args = process.argv.slice(2);
 const sinceAt = args.indexOf('--since');
-// The planner experiment's arms run from EXPERIMENT_SINCE: its view counts no start before it unless --since says so.
+// The planner A/B's arms ran from EXPERIMENT_SINCE: its view counts no start before it unless --since says so.
 const since = sinceAt >= 0 ? Date.parse(args[sinceAt + 1]) : args.includes('--experiment') ? EXPERIMENT_SINCE : Date.now() - 7 * 86400e3;
 const json = args.includes('--json');
 // The pool's limit rates (models/limits.ts): the tally file it writes, or --limits <file> (pool-limits.ts --json's output).

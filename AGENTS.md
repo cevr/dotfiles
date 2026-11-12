@@ -16,7 +16,7 @@
 - Devbox: the exe devbox `bite-cristian` IS the Bite workbox. Herdr machine `Workbox` (session `bite`) = SSH alias `bite-workbox` (Tailscale, port 2222) = host `bite-cristian`. Use `herdr --machine Workbox …`; never add another herdr machine for it.
 - Principles: `~/Developer/personal/dotfiles/principles/` — read before architectural decisions or code review.
 - Issue tracker: personal repos → GitHub Issues via `gh`; `~/Developer/work` (Bite) → Linear via the `linear` skill.
-- Models: Opus first. Every role, the verifier too, runs on the newest Claude Opus; never a pinned version. Codex is the fallback for planners and verifiers only, used only when Opus is held: newest sol at `high` (a verifier at `medium`). Codex never implements: an implementor waits for Opus.
+- Models: Fable plans, Opus first for the rest. The planner runs on the newest Claude Fable at medium, on Opus when the pool holds Fable; every other role, the verifier too, runs on the newest Claude Opus; never a pinned version, never Sonnet. Codex is the fallback for planners and verifiers only, used only when Opus is held: newest sol at `high` (a verifier at `medium`). Codex never implements: an implementor waits for Opus.
 
 ## Conventions
 
