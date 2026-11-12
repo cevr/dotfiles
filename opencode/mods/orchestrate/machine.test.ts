@@ -13,12 +13,12 @@
 //       comes only when the cadence is met or no implementor is running;
 //   I4  no land passes while a landed batch has no verdict (no verifier yet,
 //       or its verifier still runs), or while a finding of the last verdict
-//       is folded into no unit, or into one it does not land that is neither
-//       still implementing (that one rides with its unit's land) nor ended
-//       (that one is settled, never open again), unless it departed;
+//       is folded into no unit, or into a ready one it does not land (one
+//       still implementing, blocked or stuck rides with its unit's land), unless it departed;
 //   I5  a unit is in `verify` only while a verifier runs;
 //   I6  an implementor's start is never refused: the next batch fans out
 //       while a verifier runs (the pipeline);
+//   I7  a folded finding leaves the open findings only into its unit's land or at a verdict;
 //   L1  the guard never deadlocks a compliant root: the verifier's verdict
 //       comes in, each finding is folded into a unit that hands back ready,
 //       and once the oldest ready unit has waited the cadence's time,
@@ -202,7 +202,7 @@ const apply = (shadow: Shadow, command: Command, now: number): void => {
       if (command.verdict === "none") return
       shadow.carried.clear()
       // A finding folded into a unit the verdict took out was checked already; one folded into a unit that ended is settled.
-      for (const [key, finding] of shadow.findings) if (finding.into !== undefined && (!shadow.units.has(finding.into) || intoEnded(shadow, finding))) shadow.findings.delete(key)
+      for (const [key, finding] of shadow.findings) if (finding.into !== undefined && !shadow.units.has(finding.into)) shadow.findings.delete(key)
       // A `changes` whose findings did not read is unresolved, never an empty set.
       if (command.verdict === "changes" && command.findings === undefined) shadow.unresolved.add(command.name)
       if (command.verdict === "changes") for (const key of command.findings ?? []) shadow.findings.set(key, { batch: command.name, into: undefined })
@@ -216,7 +216,6 @@ const apply = (shadow: Shadow, command: Command, now: number): void => {
       return
     case "Landed": {
       const lands = matched(shadow, command.rifts)
-      if (lands.length > 0) for (const [key, finding] of shadow.findings) if (intoEnded(shadow, finding) && !lands.some((unit) => unit === finding.into)) shadow.findings.delete(key)
       for (const unit of lands) {
         if (shadow.units.get(unit)!.direct) shadow.units.delete(unit)
         else {
@@ -268,7 +267,7 @@ const command = (random: () => number, shadow: Shadow): Command => {
     const folds = random() < 0.4 ? [random() < 0.15 || open.length === 0 ? `${pick(UNITS)}/M9` : random() < 0.5 ? pick(open) : pick(open).split("/")[0]!] : []
     return Start.make({ role: "implementor", name: pick(UNITS), round: 1 + Math.floor(random() * 5), direct: random() < 0.1, ...(folds.length === 0 ? {} : { folds }) })
   }
-  if (roll < 0.55) return HandBack.make({ role: "implementor", name: pick(UNITS), verdict: pick(["ready", "ready", "ready", "blocked", "none"] as const) })
+  if (roll < 0.55) return HandBack.make({ role: "implementor", name: pick(UNITS), verdict: pick(["ready", "ready", "ready", "blocked", "stuck", "none"] as const) })
   if (roll < 0.68) {
     const name = random() < 0.7 ? `batch-${1 + Math.floor(random() * 3)}` : pick(UNITS)
     return Start.make({ role: "verifier", name, round: 1, direct: false, ...departs })
@@ -336,8 +335,12 @@ describe("the machine against its reference model", () => {
         const pendingBefore = verdictDue(shadow)
         const coverBefore = coverOf(shadow)
         const unfoldedBefore = next._tag === "Land" ? [...unfolded(shadow, matched(shadow, next.rifts)), ...shadow.unresolved] : []
+        const foldedBefore = Object.entries(findingsOf(state)).filter(([, finding]) => !finding.endsWith(":-")).map(([key]) => key)
         apply(shadow, next, now)
         state = evolve(state, outcome.events)
+        // I7: a folded finding rides with its unit, whatever state it is in, until its land carries it or a verdict ends it.
+        if (next._tag !== "HandBack" || next.role !== "verifier")
+          expect([where, foldedBefore.filter((key) => !(key in findingsOf(state)) && !(key in carriedOf(state)))]).toEqual([where, []])
 
         // The decider's state is the shadow's.
         const units = statesOf(state)
@@ -501,7 +504,7 @@ describe("the machine's stories", () => {
     }
   })
 
-  test("a finding folded into a long redesign still implementing holds no land of three independent ready units; it rides with the redesign's later land, whose verifier is told it; one not folded still holds the land, one folded into an ended unit is settled", async () => {
+  test("a finding folded into a long redesign still implementing holds no land of three independent ready units; it rides with the redesign's later land, whose verifier is told it; one not folded still holds the land, one folded into a blocked unit rides with it", async () => {
     const verifier = (name: string) => Start.make({ role: "verifier", name, round: 1, direct: false })
     const steps: Array<readonly [Command, number]> = [
       [impl("redesign"), 0],
@@ -544,16 +547,16 @@ describe("the machine's stories", () => {
     expect(await decide(later.state, verifier("batch-3"), T0 + 92 * MIN)).toEqual({
       events: [expect.objectContaining({ _tag: "VerifierStarted", batch: "batch-3", units: ["redesign"], findings: ["redesign/M1 → redesign"] })],
     })
-    // Folded into a unit whose implementor ended without ready: settled, it holds no land, and a land without it drops it.
+    // Folded into a unit whose implementor is blocked: it holds no land, and rides with the unit's own later land.
     const endedSteps: Array<readonly [Command, number]> = [
       ...steps.slice(0, 12),
       [impl("redesign", 2), 30 * MIN],
       [HandBack.make({ role: "implementor", name: "redesign", verdict: "blocked" }), 25 * MIN],
     ]
     expect(runNow([...endedSteps, [Land.make({ rifts: ["a", "b", "c"] }), 31 * MIN]]).last).toEqual({ events: [] })
-    const settled = runNow([...endedSteps, [Landed.make({ rifts: ["a", "b", "c"] }), 31 * MIN]])
-    expect(settled.state.findings).toBeUndefined()
-    expect(settled.state.carried).toBeUndefined()
+    const blocked = runNow([...endedSteps, [Landed.make({ rifts: ["a", "b", "c"] }), 31 * MIN]])
+    expect(blocked.state.findings).toEqual({ "redesign/M1": { batch: "batch-1", into: "redesign" } })
+    expect(blocked.state.carried).toBeUndefined()
   })
 
   test("a unit's own next round folds its findings by itself; a fold naming no open finding is said, not refused", async () => {
@@ -673,6 +676,48 @@ describe("the machine's stories", () => {
     expect(after.findings).toBeUndefined()
     expect(after.carried).toBeUndefined()
     expect(briefOf(after, T0 + 4 * MIN, CADENCE)).not.toContain("folded findings")
+  })
+
+  test("ledger-stale r2 M1: in every state its unit can be in when another unit lands (implement, ready, blocked, stuck, stuck on quota, died, decide and rewrite), a folded finding rides with its unit to that unit's own land, whose verifier checks it", () => {
+    const verifier = (name: string) => Start.make({ role: "verifier", name, round: 1, direct: false })
+    const said = (verdict: "blocked" | "stuck" | "none") => HandBack.make({ role: "implementor", name: "u", verdict })
+    const quota = handBackOf("implementor", "implementor u r2: stuck (quota) the pool is held until 14:00")
+    expect(quota).toEqual(said("stuck"))
+    const later = ["v"]
+    const reach = {
+      implement: { steps: [], lands: later, own: true },
+      ready: { steps: [ready("u")], lands: ["v", "u"], own: false },
+      blocked: { steps: [said("blocked")], lands: later, own: true },
+      stuck: { steps: [said("stuck")], lands: later, own: true },
+      "stuck (quota)": { steps: [HandBack.make({ ...said("stuck"), ...quota })], lands: later, own: true },
+      died: { steps: [said("none")], lands: later, own: true },
+      "decide, then its rewrite": { steps: [said("stuck"), impl("u", 1)], lands: later, own: true },
+    }
+    const checked = Object.entries(reach).map(([state, { steps, lands, own: resumes }]) => {
+      const before: Array<readonly [Command, number]> = [
+        [impl("u"), 0],
+        [ready("u"), MIN],
+        [Landed.make({ rifts: ["u"] }), 2 * MIN],
+        [verifier("batch-1"), 3 * MIN],
+        [HandBack.make({ role: "verifier", name: "batch-1", verdict: "changes", findings: ["u/M1"] }), 4 * MIN],
+        [impl("u", 2), 5 * MIN],
+        ...steps.map((step) => [step, 6 * MIN] as const),
+        [impl("v"), 7 * MIN],
+        [ready("v"), 8 * MIN],
+      ]
+      const other = runNow([...before, [Land.make({ rifts: lands }), 40 * MIN]]).last
+      const landed: Array<readonly [Command, number]> = [...before, [Landed.make({ rifts: lands }), 40 * MIN], [verifier("batch-2"), 41 * MIN]]
+      const own: Array<readonly [Command, number]> = [
+        ...landed,
+        [HandBack.make({ role: "verifier", name: "batch-2", verdict: "accepted" }), 42 * MIN],
+        [ready("u"), 50 * MIN],
+        [Land.make({ rifts: ["u"] }), 81 * MIN],
+        [Landed.make({ rifts: ["u"] }), 81 * MIN],
+        [verifier("batch-3"), 82 * MIN],
+      ]
+      return { state, other, checks: runNow([landed, own].at(Number(resumes))!).last }
+    })
+    expect(checked).toEqual(Object.keys(reach).map((state) => ({ state, other: { events: [] }, checks: { events: [expect.objectContaining({ findings: ["u/M1 → u"] })] } })))
   })
 
   test("a checkpoint written before that fix heals at the next verdict: a finding folded into a unit no longer in the state goes", async () => {

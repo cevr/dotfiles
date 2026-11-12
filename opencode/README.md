@@ -711,9 +711,11 @@ call against it at the point of action (`mods/orchestrate/machine.ts`).
   verdict, its verifier not started or still running, whatever round its
   units have moved on to (VerdictPending), a land with a finding of the last
   verdict folded into no unit, or into a ready unit the land does not take
-  (a finding folded into a running implementor holds no land: it rides with
-  that unit's later land, whose verifier is told it; one folded into a unit
-  that ended is settled, never open again, and the next land drops it), or with a `changes` whose
+  (a finding folded into a running implementor, or one that handed back
+  blocked or stuck or died, holds no land: it rides with that unit's later
+  land, whose verifier is told it; only a ledger's unit ended with no
+  hand-back on record, from before hand-backs were kept, has its findings
+  settled at the next land or verdict), or with a `changes` whose
   report did not read (FindingUnfolded: an unread report is never an empty
   set; the plugin reads it again before each start and land), a land that leaves a ready unit out
   (LandPartial). No rule holds an implementor's start. A refused call
