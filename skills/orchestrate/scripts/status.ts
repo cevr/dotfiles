@@ -11,15 +11,36 @@
 //   line over the plan.md one over the default (cadence.ts).
 //   Warns when `<run dir>/plan.md` is over 40 KB.
 //   A former state name shows as its current one (`review` as `verify`).
+//   Under the table, the run's drift from the machine: the last drift line of `<run dir>/log.md`
+//   (drift.ts), which the OpenCode orchestrate plugin writes at each verdict.
+//
+// Usage: bun status.ts --trend [--since YYYY-MM-DD] [root...]
+//   Each run's drift across runs (run dirs as runs.ts finds them, default the last 30 days): its last
+//   reading, its readings verdict by verdict, and whether the newer runs drift less than the older.
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { cadenceOf, formatCadence } from './cadence.ts';
+import { driftRow, runReadings, trendTable } from './drift.ts';
+import { ROOTS, runDirs } from './runs.ts';
 import { currentState } from './transition.ts';
 
-const dir = process.argv[2];
+const args = process.argv.slice(2);
+if (args[0] === '--trend') {
+  const at = args.indexOf('--since');
+  const since = at >= 0 ? Date.parse(args[at + 1] ?? '') : Date.now() - 30 * 86400e3;
+  if (Number.isNaN(since)) {
+    console.error('usage: bun status.ts --trend [--since YYYY-MM-DD] [root...]');
+    process.exit(2);
+  }
+  const roots = args.slice(1).filter((a, i, all) => a !== '--since' && all[i - 1] !== '--since');
+  console.log(trendTable(runDirs(roots.length ? roots : ROOTS, since)));
+  process.exit(0);
+}
+
+const dir = args[0];
 if (!dir || !existsSync(dir)) {
-  console.error('usage: bun status.ts <run dir>');
+  console.error('usage: bun status.ts <run dir>\n       bun status.ts --trend [--since YYYY-MM-DD] [root...]');
   process.exit(2);
 }
 
@@ -55,6 +76,9 @@ const rows = readdirSync(dir, { withFileTypes: true })
 console.log('| Unit | State | Round | Since | Cause | Cadence |');
 console.log('| ---- | ----- | ----- | ----- | ----- | ------- |');
 for (const r of rows) console.log(`| ${r.unit} | ${r.state} | ${r.round} | ${r.since} | ${r.cause} | ${r.cadence} |`);
+
+const drift = runReadings(dir).at(-1);
+if (drift) console.log(`\n${driftRow(drift)}`);
 
 // The root re-reads plan.md after every compaction; a large one costs every re-read.
 const planKb = existsSync(plan) ? statSync(plan).size / 1024 : 0;
