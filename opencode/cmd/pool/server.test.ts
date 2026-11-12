@@ -5,7 +5,7 @@
 // storage. tests/pool-failover.test.ts and tests/pool-gent-opencode.test.ts
 // run it in OpenCode.
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect, Layer, Queue, Schedule, Schema, Stream } from "effect"
@@ -188,8 +188,9 @@ const start = (
         }),
       events: { subscribe: () => Stream.fromQueue(state.owner.beats) },
     }
+    const hostOptions = { limitsFile: scratchLimits(), ...options }
     const host = {
-      options: { limitsFile: scratchLimits(), ...options },
+      options: hostOptions,
       session: {
         get: ({ sessionID }: { readonly sessionID: string }) => {
           const source = state.forks.get(sessionID)
@@ -341,6 +342,8 @@ const start = (
       yield* (yield* registered(hooks, "experimental.ws.receive"))({ sessionID, agent: "build", model: { ...model, providerID }, kind: "primary", frame })
     })
     return {
+      /** The tally file the live adapters keep: the options' own, else this start's scratch one. */
+      limitsFile: String(hostOptions.limitsFile),
       send,
       request,
       respond,
@@ -981,6 +984,24 @@ describe("the RPC", () => {
 })
 
 describe("on the live adapters", () => {
+  test("a step's tokens reach the tally file this start names, at the next sweep", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const plugin = yield* start({ sweepMinutes: 5 }, world(), live)
+        yield* TestClock.adjust(HOUR)
+        expect(yield* plugin.request("ses_1")).toBe("cred-a")
+        const opus = { providerID: "anthropic", id: "claude-opus-5-5" }
+        const million = { input: 1_000_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+        yield* plugin.emit({ type: "session.step.started", data: { sessionID: "ses_1", assistantMessageID: "msg_1", model: opus } })
+        yield* plugin.emit({ type: "session.step.ended", data: { sessionID: "ses_1", cost: 4, assistantMessageID: "msg_1", tokens: million } })
+        yield* plugin.publish({ credentialID: "cred-a", reading: { at: HOUR, windows: [{ name: "5h", utilization: 0.02, resetAt: 5 * HOUR }] } })
+        yield* TestClock.adjust("5 minutes")
+        yield* settle
+        const written = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ line: Schema.NullOr(Schema.String) })))(readFileSync(plugin.limitsFile, "utf8"))
+        expect(written.line).toContain("Opus")
+      }),
+    ))
+
   test("the pool reads the integration's OAuth logins and its quota RPC, keeps holds in storage, and asks a refused login to sign in", () =>
     scenario(
       Effect.gen(function* () {
