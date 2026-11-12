@@ -7,7 +7,7 @@ import { describe, expect, mock, test } from 'bun:test'
 import { Clock, Effect, Exit, Logger, Scope } from 'effect'
 import { REQUIRED_BETAS } from '@dotfiles/opencode-anthropic-auth/betas'
 import { describeConnection } from '@dotfiles/opencode-anthropic-auth/rate-limit'
-import { CREDENTIAL_SOURCES } from '@dotfiles/opencode-anthropic-auth/registry/credential-sources'
+import { processRegistry } from '@dotfiles/opencode-anthropic-auth/registry/credential-sources'
 import {
   ANTHROPIC_CLAUDE_CODE_VERSION_ENV_VAR,
   CLAUDE_CODE_VERSION,
@@ -108,11 +108,15 @@ const environment: { -readonly [K in keyof Env]: Env[K] } = {
   versionOverride: undefined,
 }
 
+/** The credential sources the tests register, handed to the plugin in place of the process's registry. */
+const sourceRegistry = new Map<string, Set<unknown>>()
+
 /** One process's worth of shared state, as the default export keeps it. */
 const subject = make({
   fetch: (input, init) => network.fetch(input, init),
   env: () => ({ ...environment }),
   shared: makeShared(),
+  registry: () => sourceRegistry,
 })
 
 /** What each log level reaches: the spy a test set, else nothing. */
@@ -4026,12 +4030,7 @@ describe('credential choice, wire extras and quota readings', () => {
   })
 
   describe('a credential another plugin keeps (a credential source)', () => {
-    type Registry = Map<string, Set<unknown>>
-    const registry = (): Registry => {
-      const global = globalThis as unknown as Record<symbol, Registry>
-      global[CREDENTIAL_SOURCES] ??= new Map()
-      return global[CREDENTIAL_SOURCES]
-    }
+    const registry = () => sourceRegistry
 
     function withSource(
       resolve: (id: string) => Promise<{ access: string; expires: number }>,
@@ -4071,6 +4070,9 @@ describe('credential choice, wire extras and quota readings', () => {
         expect(source.resolve).toHaveBeenCalledWith('src:one')
         expect(ctx.integration.get).not.toHaveBeenCalled()
         expect(ctx.integration.connection.resolve).not.toHaveBeenCalled()
+        // The source reached the plugin through the registry the tests hand it, never the process's.
+        const held = processRegistry().get('anthropic')
+        expect(held instanceof Set && held.has(source)).toBe(false)
       } finally {
         remove()
       }

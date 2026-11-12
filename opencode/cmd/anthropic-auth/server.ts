@@ -81,6 +81,8 @@ export interface Options {
   /** Read once per setup. */
   readonly env: () => Env
   readonly shared: Shared
+  /** Where the credential sources other plugins register are read: the process's registry, or a test's own. */
+  readonly registry: SourcesLive.RegistryRead
 }
 
 export const INSECURE_WARNING =
@@ -126,7 +128,7 @@ export const make = (options: Options) =>
               EntropyLive.layer,
               TokenLive.layer(options.fetch),
               UsageLive.layer(options.fetch, endpoint),
-              SourcesLive.layer(INTEGRATION_ID),
+              SourcesLive.layer(INTEGRATION_ID, options.registry),
               QuotaLive.layer(emit),
               IntegrationLive.layer({
                 connections: ctx.integration.get({ integrationID }).pipe(Effect.map((integration) => integration.data.connections)),
@@ -224,4 +226,4 @@ const processEnv = (): Env => ({
   versionOverride: process.env[ANTHROPIC_CLAUDE_CODE_VERSION_ENV_VAR],
 })
 
-export default make({ fetch: (input, init) => fetch(input, init), env: processEnv, shared: makeShared() })
+export default make({ fetch: (input, init) => fetch(input, init), env: processEnv, shared: makeShared(), registry: SourcesLive.processRegistry })
