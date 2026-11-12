@@ -2932,6 +2932,19 @@ packages, both configs and the policy. Nested configs are ignored.
 JSON, and `--measure` the unmodified preset's counts (no test globs, no
 exemptions). `--bootstrap` wrote the first policy and refuses once one exists.
 
+Parallel units edit both files at once, so git merges them by key, never by
+line: `.gitattributes` routes them to the merge driver `effect-debt`, which
+`install.sh` registers in the checkout's git config (a Rift copied from it
+inherits it) as `bun opencode/scripts/effect-debt.ts --merge %O %A %B %P`
+(`scripts/effect-debt-merge.ts`). Names, exemptions (per file and rule) and
+overrides (per first file, their files and rules as sets) keep each side's
+additions and drop each side's removals; a budget takes the side that changed
+it, and one both sides changed differently takes both changes,
+`ours + theirs - base`, dropped at zero. A value both sides changed
+differently in any other way (the provenance, an exemption's reason, a rule's
+setting) is left to `git merge-file`, with conflict markers. `--check` holds
+the merged budgets to their counts as ever.
+
 A host exemption switches one rule off for one exact file, in both
 `.oxlintrc.effect-debt.json`'s overrides and the policy's `exemptions` with
 its reason, and only for a capability no installed Effect service offers:

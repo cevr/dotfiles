@@ -15,12 +15,15 @@
  * classification, no host exemptions); `--tighten` lowers budgets to the current counts and
  * never raises one; `--bootstrap` writes the first policy, only when none exists, with
  * budgets for files tracked at HEAD. `--root`, `--oxlint` and `--timeout-ms` point it at
- * another workspace, linter or deadline.
+ * another workspace, linter or deadline. `--merge <base> <ours> <theirs> <path>` is git's
+ * merge driver for the two files (`.gitattributes`): it merges them by key, never by line
+ * (`effect-debt-merge.ts`), and fails without writing when it cannot.
  */
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import path from "node:path"
-import { Array as Arr, Console, Data, Effect, Exit, Option, Order, Schema } from "effect"
+import { Array as Arr, Console, Data, Effect, Exit, Option, Order, Result, Schema } from "effect"
 import { parseSync } from "oxc-parser"
+import { type Merged, mergeConfig, mergePolicy } from "./effect-debt-merge.ts"
 
 /** The policy, the enforcing inventory config and the hard config, relative to the root. */
 export const POLICY = "effect-debt.json"
@@ -164,6 +167,8 @@ const DebtConfig = Schema.Struct({
   rules: Rules,
   overrides: Schema.optionalKey(Schema.Array(Override)),
 })
+/** `.oxlintrc.effect-debt.json`: the enforcing inventory config. */
+export type DebtConfig = typeof DebtConfig.Type
 const HardConfig = Schema.Struct({ ignorePatterns: Strings, settings: Settings })
 const Preset = Schema.Struct({ plugins: Schema.Tuple([]), jsPlugins: Strings, rules: Rules })
 const Manifest = Schema.Struct({
@@ -582,6 +587,10 @@ export const serialize = (policy: Policy) => {
   return `{\n${Arr.map(fields, (field) => `  ${field}`).join(",\n")}\n}\n`
 }
 
+/** The enforcing config as reviewed source: two-space JSON, each rule's `["error", { "max": n }]` on its own line. */
+export const serializeConfig = (config: DebtConfig) =>
+  `${Schema.encodeSync(Schema.fromJsonString(DebtConfig, { space: 2 }))(config).replaceAll(/\[\n\s+"error",\n\s+\{\n\s+"max": (\d+)\n\s+\}\n\s+\]/gu, '["error", { "max": $1 }]')}\n`
+
 const writePolicy = (root: string, policy: Policy) =>
   Effect.try({ try: () => writeFileSync(path.join(root, POLICY), serialize(policy)), catch: () => new DebtError({ problems: [`cannot write ${POLICY}`] }) })
 
@@ -661,6 +670,44 @@ const bootstrap = Effect.fn("EffectDebt.bootstrap")(function* (options: Options)
   yield* Console.log(`effect-debt: wrote ${POLICY} (${total(budgets)} budgeted diagnostics); give each exemption its reason`)
 })
 
+const MERGE_USAGE = "usage: bun scripts/effect-debt.ts --merge <base> <ours> <theirs> <path>, as git's merge driver effect-debt (%O %A %B %P)"
+
+/** One side's merge: its three files decoded, merged by key and printed, or a problem that leaves the file to git's line merge. */
+const mergeSides = <A>(
+  target: string,
+  files: readonly [string, string, string],
+  read: (label: string) => (text: string) => Effect.Effect<A, DebtError>,
+  merge: (base: A, ours: A, theirs: A) => Merged<A>,
+  print: (merged: A) => string,
+) =>
+  Effect.gen(function* () {
+    const side = (file: string) => readText(file).pipe(Effect.flatMap(read(`${target} (${file})`)))
+    const [base, ours, theirs] = yield* Effect.all([side(files[0]), side(files[1]), side(files[2])])
+    const merged = merge(base, ours, theirs)
+    if (Result.isFailure(merged)) return yield* fail(`${target}: ${merged.failure} changed differently on both sides; left to git's line merge`)
+    return print(merged.success)
+  })
+
+/**
+ * The merge driver: merges `effect-debt.json` or `.oxlintrc.effect-debt.json` by key into
+ * `ours`, git's `%A`. A side that does not decode, or a value both sides changed differently,
+ * fails without writing, and the driver's command falls back to `git merge-file`.
+ */
+const mergeFiles = Effect.fn("EffectDebt.mergeFiles")(function* (argv: ReadonlyArray<string>) {
+  const [base = "", ours = "", theirs = "", target = ""] = argv
+  if (argv.length !== 4) return yield* fail(`${MERGE_USAGE}; got ${argv.join(" ")}`)
+  const files = [base, ours, theirs] as const
+  const sides = {
+    [POLICY]: () => mergeSides(target, files, (label) => decode(Policy, label, "error"), mergePolicy, serialize),
+    [DEBT_CONFIG]: () => mergeSides(target, files, (label) => decode(DebtConfig, label, "error"), mergeConfig, serializeConfig),
+  }
+  const merge = Option.fromUndefinedOr(Object.entries(sides).find(([name]) => name === path.basename(target)))
+  if (Option.isNone(merge)) return yield* fail(`${target} is neither ${POLICY} nor ${DEBT_CONFIG}; ${MERGE_USAGE}`)
+  const text = yield* merge.value[1]()
+  yield* Effect.try({ try: () => writeFileSync(ours, text), catch: () => new DebtError({ problems: [`cannot write ${ours}`] }) })
+  yield* Console.log(`effect-debt: merged ${target} by key`)
+})
+
 const MODE_RUNS = {
   report,
   check,
@@ -672,8 +719,10 @@ const MODE_RUNS = {
 
 /** The whole command: a failure prints its problems and sets exit code 1. */
 export const main = (argv: ReadonlyArray<string>, cwd: string) =>
-  parseOptions(argv, cwd).pipe(
-    Effect.flatMap((options) => MODE_RUNS[options.mode](options)),
+  Effect.suspend(() => {
+    if (argv[0] === "--merge") return mergeFiles(argv.slice(1))
+    return Effect.flatMap(parseOptions(argv, cwd), (options) => MODE_RUNS[options.mode](options))
+  }).pipe(
     Effect.catchTag("DebtError", (error) =>
       Console.error(Arr.map(error.problems, (problem) => `effect-debt: ${problem}`).join("\n")).pipe(
         Effect.andThen(

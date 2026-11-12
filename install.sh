@@ -13,6 +13,10 @@ ln -sf "$DOTFILES_DIR/gitignore_global" ~/.gitignore_global
 
 # Git hooks for this checkout (post-merge installs the OpenCode workspace)
 git -C "$DOTFILES_DIR" config core.hooksPath githooks
+# The Effect lint policy merges by key (opencode/.gitattributes); a side it cannot read, or a
+# value both sides changed differently, falls back to git's line merge with conflict markers
+git -C "$DOTFILES_DIR" config merge.effect-debt.name "Effect lint policy, merged by key"
+git -C "$DOTFILES_DIR" config merge.effect-debt.driver 'bun opencode/scripts/effect-debt.ts --merge %O %A %B %P || git merge-file --diff3 -L ours -L base -L theirs %A %O %B'
 
 # Ghostty
 mkdir -p ~/Library/Application\ Support/com.mitchellh.ghostty

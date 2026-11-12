@@ -1,0 +1,4 @@
+# The Effect lint policy and its enforcing config merge by key, never by line: git's merge
+# driver effect-debt (bun scripts/effect-debt.ts --merge), registered by install.sh.
+/effect-debt.json merge=effect-debt
+/.oxlintrc.effect-debt.json merge=effect-debt
