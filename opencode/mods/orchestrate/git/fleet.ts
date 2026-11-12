@@ -1,5 +1,5 @@
 import { tagObject, type Target, targetOfTag, VERIFIED_REF } from "@dotfiles/opencode-update/target"
-import { file, readableStreamToText, spawn, write } from "bun"
+import { file, readableStreamToText, spawn } from "bun"
 import { Array as Arr, Clock, Effect, Layer, Option, Semaphore } from "effect"
 import { type Commits, FleetOutcome } from "../fleet.ts"
 import { Fleet } from "../service.ts"
@@ -72,9 +72,14 @@ interface Ran {
   readonly text: string
 }
 
-/** One command of `program` (git) in `cwd`; none when it does not start. */
-const run = (program: string, cwd: string, args: ReadonlyArray<string>): Effect.Effect<Option.Option<Ran>> =>
-  Effect.try(() => spawn([program, "-C", cwd, ...args], { stdin: "ignore", stdout: "pipe", stderr: "ignore" })).pipe(
+/** One command of `program` (git) in `cwd`, `input` on its stdin (empty for most); none when it does not start. */
+const run = (program: string, cwd: string, args: ReadonlyArray<string>, input = ""): Effect.Effect<Option.Option<Ran>> =>
+  Effect.try(() => {
+    const child = spawn([program, "-C", cwd, ...args], { stdin: "pipe", stdout: "pipe", stderr: "ignore" })
+    child.stdin.write(input)
+    child.stdin.end()
+    return child
+  }).pipe(
     Effect.flatMap((child) =>
       Effect.all({ code: Effect.tryPromise(() => child.exited), text: Effect.tryPromise(() => readableStreamToText(child.stdout)) }, { concurrency: 2 }),
     ),
@@ -83,8 +88,8 @@ const run = (program: string, cwd: string, args: ReadonlyArray<string>): Effect.
   )
 
 /** One git command in `cwd`: its output, trimmed; none when it fails. */
-const git = (program: string, cwd: string, args: ReadonlyArray<string>): Effect.Effect<Option.Option<string>> =>
-  run(program, cwd, args).pipe(Effect.map((ran) => Option.map(Option.filter(ran, (each) => each.code === 0), (each) => each.text)))
+const git = (program: string, cwd: string, args: ReadonlyArray<string>, input = ""): Effect.Effect<Option.Option<string>> =>
+  run(program, cwd, args, input).pipe(Effect.map((ran) => Option.map(Option.filter(ran, (each) => each.code === 0), (each) => each.text)))
 
 /** A full commit name read in `cwd`. */
 const commitAt = (program: string, cwd: string, revision: string) => git(program, cwd, ["rev-parse", "--verify", "--quiet", `${revision}^{commit}`])
@@ -120,13 +125,12 @@ const publish = (program: string, checkouts: Checkouts, wanted: Target, pushes: 
           reason: `dotfiles ${wanted.dotfiles.slice(0, 10)} and fork ${wanted.fork.slice(0, 10)} do not both descend from the current target (dotfiles ${was.dotfiles.slice(0, 10)}, fork ${was.fork.slice(0, 10)}, ${was.batch}): a batch behind it never moves the fleet back`,
         })
     }
-    const gitDir = yield* git(program, checkouts.dotfiles, ["rev-parse", "--absolute-git-dir"])
-    if (Option.isNone(gitDir)) return FleetOutcome.Refused({ reason: "the dotfiles checkout has no git directory" })
-    const tagFile = `${gitDir.value}/fleet-verified.tag`
     const at = (yield* Clock.currentTimeMillis) / 1000
-    yield* Effect.tryPromise(() => write(tagFile, tagObject(wanted, { ...TAGGER, at }))).pipe(Effect.ignore)
-    const tag = yield* git(program, checkouts.dotfiles, ["hash-object", "-t", "tag", "-w", tagFile])
+    const tag = yield* git(program, checkouts.dotfiles, ["hash-object", "-t", "tag", "-w", "--stdin"], tagObject(wanted, { ...TAGGER, at }))
     if (Option.isNone(tag)) return FleetOutcome.Refused({ reason: "git refused the tag object" })
+    const named = Option.flatMap(yield* git(program, checkouts.dotfiles, ["cat-file", "tag", tag.value]), targetOfTag)
+    if (!Option.exists(named, (each) => sameAs(wanted, Option.some(each)) && each.batch === wanted.batch))
+      return FleetOutcome.Refused({ reason: `the tag object git stored (${tag.value.slice(0, 10)}) does not name dotfiles ${wanted.dotfiles.slice(0, 10)}, fork ${wanted.fork.slice(0, 10)} (${wanted.batch}): nothing pushed` })
     const done = yield* git(program, checkouts.dotfiles, ["push", "--quiet", `--force-with-lease=${VERIFIED_REF}:${lease}`, "origin", `${tag.value}:${VERIFIED_REF}`])
     if (Option.isSome(done)) {
       yield* git(program, checkouts.dotfiles, ["update-ref", VERIFIED_REF, tag.value])

@@ -151,6 +151,65 @@ const otherHostPublishes = (root: string, targets: ReadonlyArray<{ readonly dotf
     return `${root}/bin/git`
   })
 
+/** A tag object for `target` as another host wrote it, stored in `root/<name>.tag`. */
+const tagFile = (root: string, name: string, target: { readonly dotfiles: string; readonly fork: string; readonly batch: string }) =>
+  Effect.promise(() => write(`${root}/${name}.tag`, tagObject(target, { name: "other", email: "other@example.invalid", at: 1_794_416_400 }))).pipe(Effect.as(`${root}/${name}.tag`))
+
+/** Another host, a clone of the dotfiles origin, publishes `target` now. */
+const otherHostPublishesNow = (root: string, target: { readonly dotfiles: string; readonly fork: string; readonly batch: string }) =>
+  Effect.gen(function* () {
+    sh(root, ["git", "clone", "-q", `${root}/dotfiles.git`, "other"])
+    const oid = sh(`${root}/other`, ["git", "hash-object", "-t", "tag", "-w", yield* tagFile(root, "now", target)])
+    sh(`${root}/other`, ["git", "push", "--quiet", "origin", `+${oid}:${VERIFIED_REF}`])
+  })
+
+describe("the tag object a record pushes", () => {
+  test(
+    "the verifier's probe: a stale tag file left unwritable in the git directory is never what is pushed; the record publishes its own target",
+    () =>
+      onRepositories(3, (root, [d1, d2, d3], [f1]) =>
+        Effect.gen(function* () {
+          yield* record(root, "batch-x", both(d1, f1))
+          const stale = `${root}/dotfiles/.git/fleet-verified.tag`
+          yield* Effect.promise(() => write(stale, tagObject({ dotfiles: d1, fork: f1, batch: "batch-x" }, { name: "t", email: "t@example.invalid", at: 1_794_416_400 })))
+          sh(root, ["chmod", "444", stale])
+          yield* otherHostPublishesNow(root, { dotfiles: d2, fork: f1, batch: "batch-n" })
+          expect(yield* record(root, "batch-y", both(d3, f1))).toEqual(FleetOutcome.Recorded({ target: { dotfiles: d3, fork: f1, batch: "batch-y" } }))
+          expect(recorded(root)).toEqual(Option.some({ dotfiles: d3, fork: f1, batch: "batch-y" }))
+        }),
+      ),
+    60_000,
+  )
+
+  test(
+    "a stored tag object that does not name the batch's commits is refused, saying so, and nothing is pushed",
+    () =>
+      onRepositories(3, (root, [d1, d2, d3], [f1]) =>
+        Effect.gen(function* () {
+          yield* record(root, "batch-x", both(d1, f1))
+          yield* otherHostPublishesNow(root, { dotfiles: d2, fork: f1, batch: "batch-n" })
+          const wrong = yield* tagFile(root, "wrong", { dotfiles: d1, fork: f1, batch: "batch-x" })
+          yield* Effect.promise(() =>
+            write(
+              `${root}/bin/git`,
+              [
+                "#!/bin/sh",
+                `if [ "$1" = "-C" ] && [ "$2" = '${root}/dotfiles' ] && [ "$3" = "hash-object" ]; then exec '${REAL_GIT}' -C "$2" hash-object -t tag -w '${wrong}'; fi`,
+                `exec '${REAL_GIT}' "$@"`,
+                "",
+              ].join("\n"),
+              { createPath: true },
+            ),
+          )
+          sh(root, ["chmod", "755", `${root}/bin/git`])
+          expect(refused(yield* record(root, "batch-y", both(d3, f1), `${root}/bin/git`))).toContain(`does not name dotfiles ${d3.slice(0, 10)}, fork ${f1.slice(0, 10)} (batch-y): nothing pushed`)
+          expect(recorded(root)).toEqual(Option.some({ dotfiles: d2, fork: f1, batch: "batch-n" }))
+        }),
+      ),
+    60_000,
+  )
+})
+
 describe("two hosts recording at once (the lease)", () => {
   test(
     "a host whose read target another host replaced before its push re-reads it: a batch behind the new target is refused, and the fleet never moves back",
