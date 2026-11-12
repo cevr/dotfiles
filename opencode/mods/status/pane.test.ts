@@ -2,7 +2,7 @@
 // running agents named by their call, unit lines, and which read failed.
 import { describe, expect, test } from "bun:test"
 import { Option, Schema } from "effect"
-import { accountRows, agentRows, fleetRows, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, stamp, unavailable, unitLine } from "./pane.ts"
+import { accountRows, agentRows, fleetRows, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, runLine, stamp, unavailable, unitLine } from "./pane.ts"
 
 const now = Date.parse("2026-11-04T15:00:00Z")
 
@@ -230,6 +230,13 @@ describe("resetRows", () => {
 
   test("a pool that has worked no reset draws none", () => {
     expect(resetRows({ resets: [], claims: [] })).toEqual([])
+  })
+})
+
+describe("runLine", () => {
+  test("a run with its drift from the machine, and one no verdict scored yet", () => {
+    expect(runLine({ name: "p5", drift: "0 after batch-1 accepted (2026-11-12T01:35Z)" })).toBe("p5 · drift 0 after batch-1 accepted (2026-11-12T01:35Z)")
+    expect(runLine({ name: "fresh" })).toBe("fresh")
   })
 })
 

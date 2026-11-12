@@ -1825,6 +1825,8 @@ describe("the batch machine", () => {
         expect(brief.text).toStartWith("## The machine")
         expect(brief.text).toContain("ONE fresh verifier per batch")
         expect(brief.text).toContain("Your run now, from the plugin's ledger:\nready: alpha")
+        // The run's drift from the machine so far: none yet.
+        expect(brief.text).toContain("\ndrift 0 (clean)\n\nRe-read")
         expect(brief.text).toEndWith("Re-read ~/.claude/skills/orchestrate/SKILL.md and protocol.md, and your plan, before any other action.")
       }),
     ))
@@ -1871,7 +1873,8 @@ describe("the batch machine", () => {
           ses_g: { agent: "implementor", lastWords: "implementor gamma r1: ready x" },
           ses_f: { agent: "implementor", lastWords: "implementor alpha-fix1 r1: ready x" },
         })
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true, ses_g: true }, findings: { [report]: ["alpha/M1", "alpha/M2"] } })
+        const logged: Array<{ readonly near: string; readonly line: string }> = []
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, alive: { ses_v: true, ses_g: true }, findings: { [report]: ["alpha/M1", "alpha/M2"] }, records: { seen: new Map(), logged } })
         const land = (rifts: ReadonlyArray<string>) => plugin.call("rift", "root", { action: "land", rifts })
         const landed = (rifts: ReadonlyArray<string>) =>
           plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: `Landed ${rifts.length} Rift(s) as one push` }] } })
@@ -1889,6 +1892,8 @@ describe("the batch machine", () => {
         // The verdict is in: its findings are read from its report, and the land waits for them to be folded.
         yield* plugin.idle("ses_v")
         expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "VerifierEnded", batch: "batch-1", verdict: "changes", findings: ["alpha/M1", "alpha/M2"] }))
+        // The verdict adds the root's drift to its run's log.md, by its report: the early land's refusal.
+        expect(logged).toEqual([{ near: report, line: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\dZ drift 1 after batch-1 changes: 1 refused ×1$/) }])
         const unfolded = yield* land(["beta"])
         expect(unfolded.refused?.message).toContain(RULES.FindingUnfolded.words)
         expect(unfolded.refused?.message).toContain("alpha/M1 (not folded)")

@@ -101,7 +101,10 @@
  *   land's input, lets the call through and records it. A step whose session
  *   no longer works is handed back as `none` first. After a root's
  *   compaction, it gets one message (no new turn): SKILL.md's machine section
- *   and its run from the ledger (the brief).
+ *   and its run from the ledger (the brief), with its drift from the machine
+ *   (mods/orchestrate/drift.ts: 0 is a clean run). Each verdict adds that
+ *   drift as a line to its run's log.md (the run its report is in), which the
+ *   skill's status.ts reads for the /pool pane's run row and the runs' trend.
  *   Options: `ledger` (default `~/.cache/orchestrate/machine.jsonl`),
  *   `cadence: { ready, waitMs }` (default 3 and 30 minutes), `guard`:
  *   `refuse` (default) or `warn` (the call passes, its answer carries the

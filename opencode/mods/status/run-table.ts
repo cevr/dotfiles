@@ -20,3 +20,14 @@ export const unitsOf = (table: string): ReadonlyArray<Unit> =>
     const row = { unit, state, round: round ?? "", since: since ?? "" }
     return [cadence ? { ...row, cadence } : row]
   })
+
+/**
+ * The run's drift from the batch machine, as the status script prints it under the table
+ * (`Drift: 35 after batch-n accepted (2026-11-12T03:40Z): 1 unfolded land ×6, …`): the text after
+ * `Drift: `. None when the run has no drift line yet.
+ */
+export const driftOf = (table: string): string | undefined =>
+  table
+    .split("\n")
+    .flatMap((line) => (line.startsWith("Drift: ") ? [line.slice("Drift: ".length).trim()] : []))
+    .at(-1)

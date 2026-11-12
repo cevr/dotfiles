@@ -1,7 +1,25 @@
 // The status script's table as units: its rows, never its header or rule, and
 // never a row with no unit or no state.
 import { describe, expect, test } from "bun:test"
-import { unitsOf } from "./run-table.ts"
+import { driftOf, unitsOf } from "./run-table.ts"
+
+describe("driftOf", () => {
+  test("the line under the table is the run's drift, and no unit", () => {
+    const table = [
+      "| Unit | State | Round | Since | Cause | Cadence |",
+      "| ---- | ----- | ----- | ----- | ----- | ------- |",
+      "| push | implement | 2 | 2026-11-12T02:45Z | round-1-findings.md | 3 ready or 30 min |",
+      "",
+      "Drift: 35 after batch-n accepted (2026-11-12T03:40Z): 1 unfolded land ×6, 3 departed ×4",
+    ].join("\n")
+    expect(driftOf(table)).toBe("35 after batch-n accepted (2026-11-12T03:40Z): 1 unfolded land ×6, 3 departed ×4")
+    expect(unitsOf(table).map((unit) => unit.unit)).toEqual(["push"])
+  })
+
+  test("a table with no drift line has none", () => {
+    expect(driftOf("| Unit | State |\n| a | plan |")).toBeUndefined()
+  })
+})
 
 describe("unitsOf", () => {
   test("each row is a unit; the header and the rule are not", () => {

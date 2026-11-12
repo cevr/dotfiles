@@ -148,6 +148,13 @@ export interface LimitRow {
    * its own window's `weeklyUsed` (`7d:Fable` reports Fable's part of `7d`).
    */
   readonly parts?: Readonly<Record<string, number>>
+  /**
+   * By the model's name, the allowance share (`ofWeekly`) its part is the
+   * provider's arithmetic of: the part equals the own week's use times the
+   * share, as is or rounded half up. Such a part restates the own week; it
+   * measures nothing of its own.
+   */
+  readonly shares?: Readonly<Record<string, number>>
   /** A reset came inside the period: its start is not known, and the row is left out. */
   readonly broken?: boolean
   /** This host's tokens on the account from `start` to `at`. */
@@ -169,6 +176,12 @@ export const emptyState = (since: number): LimitsState => ({ since, peerSince: {
 export const rowKey = (pool: string, credentialID: string, window: string, resetAt: number) =>
   `${pool}|${credentialID}|${window}|${Math.round(resetAt / RESET_ROUND_MS) * RESET_ROUND_MS}`
 
+/** Whether a reported part (points) is the own week's use (points) times the share, as is or rounded half up to a whole point. */
+export const restates = (part: number, use: number, share: number): boolean => {
+  const product = Math.round(use * share * 1e6) / 1e6
+  return Math.abs(part - product) < 1e-6 || Math.abs(part - Math.floor(product + 0.5)) < 1e-6
+}
+
 /**
  * The state with a reading of one account taken in: each window with a reset
  * and a length is its period's newest reading. An older reading changes
@@ -186,9 +199,12 @@ export const observe = (state: LimitsState, pool: string, credentialID: string, 
     const broken = held?.broken === true || (held !== undefined && rise < held.rise - FALL_POINTS)
     // A model's own window of this one (`7d:Fable` of `7d`) may say what part of this one its model took.
     const parts: Record<string, number> = {}
+    const shares: Record<string, number> = {}
     for (const scoped of reading.windows) {
       const scope = scopeOf(scoped.name)
-      if (scope !== undefined && scoped.name === `${window.name}:${scope}` && scoped.weeklyUsed !== undefined) parts[scope] = scoped.weeklyUsed * 100
+      if (scope === undefined || scoped.name !== `${window.name}:${scope}` || scoped.weeklyUsed === undefined) continue
+      parts[scope] = scoped.weeklyUsed * 100
+      if (scoped.ofWeekly !== undefined && restates(parts[scope], scoped.utilization * 100, scoped.ofWeekly)) shares[scope] = scoped.ofWeekly
     }
     rows ??= { ...state.rows }
     rows[key] = {
@@ -200,6 +216,7 @@ export const observe = (state: LimitsState, pool: string, credentialID: string, 
       at: reading.at,
       rise,
       ...(Object.keys(parts).length > 0 ? { parts } : {}),
+      ...(Object.keys(shares).length > 0 ? { shares } : {}),
       ...(broken ? { broken: true } : {}),
       own: held?.own ?? {},
       peers: held?.peers ?? {},
@@ -346,6 +363,12 @@ export interface FamilyEstimate {
   readonly rawMtok: number
   /** Its points are the part of each rise its readings report (`LimitRow.parts`), not the fit's share. */
   readonly reported?: true
+  /**
+   * Every reported part was the model's own-week use times this allowance
+   * share (`LimitRow.shares`): the weekly points per own-week point are then
+   * the provider's share, not a measurement.
+   */
+  readonly share?: number
 }
 
 export interface WindowTally {
@@ -353,6 +376,8 @@ export interface WindowTally {
   readonly window: string
   /** Rows fitted. */
   readonly rows: number
+  /** The newest reading of its rows, epoch ms. */
+  readonly last: number
   readonly families: ReadonlyArray<FamilyEstimate>
   /** Families with under MIN_SHARE of the window's tokens, left out of the fit (their tokens too), with their Mtok. */
   readonly ignored?: ReadonlyArray<{ readonly family: string; readonly mtok: number }>
@@ -510,13 +535,17 @@ export const fitRows = (rows: ReadonlyArray<LimitRow>): ReadonlyArray<WindowTall
       }
       const own = reported.flatMap((family) => {
         const scope = scopeOfFamily(family)!
-        const points = group.flatMap((row, i) => (row.parts?.[scope] === undefined ? [] : [{ y: row.parts[scope]!, s: sums[i]! }]))
-        return fit(points, [family]).map((estimate) => ({ ...estimate, reported: true as const }))
+        const rows = group.flatMap((row, i) => (row.parts?.[scope] === undefined ? [] : [{ row, y: row.parts[scope]!, s: sums[i]! }]))
+        // When every part restates the own week at one share, that share is the ratio, not the fit's.
+        const shares = new Set(rows.map(({ row }) => row.shares?.[scope]))
+        const share = shares.size === 1 ? [...shares][0] : undefined
+        return fit(rows, [family]).map((estimate) => ({ ...estimate, reported: true as const, ...(share === undefined ? {} : { share }) }))
       })
       return {
         pool: group[0]!.pool,
         window: group[0]!.window,
         rows: group.length,
+        last: Math.max(...group.map((row) => row.at)),
         families: [...fit(rest, families), ...own].sort((a, b) => a.family.localeCompare(b.family)),
         ...(ignored.length === 0 ? {} : { ignored }),
       }
@@ -564,6 +593,14 @@ const waitingOf = (state: LimitsState, fitted: ReadonlyArray<WindowTally>): Read
     .sort((a, b) => `${a.pool}|${a.window}`.localeCompare(`${b.pool}|${b.window}`))
 }
 
+/** Weekly points per own-week point: fitted from the two windows (`tally`), or the provider's allowance share (`api`). */
+export interface WeeklyRatio {
+  readonly rate: number
+  readonly low?: number
+  readonly high?: number
+  readonly source: "tally" | "api"
+}
+
 /**
  * Weekly points per point of each model's own week in a pool, by the own
  * week's name (`7d:Fable`): the model's rate on the weekly window over its
@@ -571,12 +608,12 @@ const waitingOf = (state: LimitsState, fitted: ReadonlyArray<WindowTally>): Read
  * divides the low end of one by the high end of the other, and the other way.
  * The last 7 days' fit when it has the model on both windows, else every
  * row's. None for a model either fit lacks or rates 0 on its own week.
+ * When the model's weekly points are parts that restate its own week at one
+ * allowance share (`FamilyEstimate.share`), the ratio is that share, from the
+ * provider (`api`): dividing the two fits would only measure the rounding.
  */
-export const weeklyRatios = (
-  tally: Tally,
-  pool: string,
-): Readonly<Record<string, { readonly rate: number; readonly low?: number; readonly high?: number; readonly source: "tally" }>> => {
-  const ratios: Record<string, { rate: number; low?: number; high?: number; source: "tally" }> = {}
+export const weeklyRatios = (tally: Tally, pool: string): Readonly<Record<string, WeeklyRatio>> => {
+  const ratios: Record<string, WeeklyRatio> = {}
   for (const windows of [tally.cumulative, tally.recent]) {
     const weekly = windows.find((window) => window.pool === pool && window.window === "7d")
     if (weekly === undefined) continue
@@ -584,7 +621,12 @@ export const weeklyRatios = (
       const scope = scopeOf(own.window)
       if (scope === undefined) continue
       const ownRate = own.families.find((family) => family.n > 0 && limitsModel(scope, family.family))?.weighted
-      const weeklyRate = weekly.families.find((family) => family.n > 0 && limitsModel(scope, family.family))?.weighted
+      const weeklyFamily = weekly.families.find((family) => family.n > 0 && limitsModel(scope, family.family))
+      const weeklyRate = weeklyFamily?.weighted
+      if (weeklyFamily?.share !== undefined) {
+        ratios[own.window] = { rate: weeklyFamily.share, source: "api" }
+        continue
+      }
       if (ownRate === undefined || weeklyRate === undefined || !(ownRate.rate > 0)) continue
       const low = weeklyRate.low !== undefined && ownRate.high !== undefined && ownRate.high > 0 ? weeklyRate.low / ownRate.high : undefined
       const high = weeklyRate.high !== undefined && ownRate.low !== undefined && ownRate.low > 0 ? weeklyRate.high / ownRate.low : undefined
@@ -602,6 +644,10 @@ const range = (rate: Rate) => (rate.low === undefined || rate.high === undefined
 
 const minute = (at: number) => `${new Date(at).toISOString().slice(0, 16).replace("T", " ")}Z`
 
+/** A weekly ratio as the line says it: `weekly/own 0.54 measured`, or `weekly/own 0.50 provider's share`. */
+export const ratioText = (ratio: WeeklyRatio): string =>
+  `weekly/own ${num(ratio.rate)}${ratio.source === "api" ? " provider's share" : ` measured${range(ratio)}`}`
+
 /** Why a model's own week has no rate yet, from its `Waiting`. */
 export const waitingText = (waiting: Waiting): string =>
   [
@@ -613,9 +659,11 @@ export const waitingText = (waiting: Waiting): string =>
  * The tally on one line, per family on the shared week (`7d`), with a model's
  * own week after it and the weekly points one own-week point costs:
  * `limit/Mtok 7d: Opus 0.90% 0.70–1.1 n 12 · Fable 0.80% 0.60–1.0 n 5 (own
- * week 1.6% 1.2–2.0 n 5; weekly/own 0.50) · sol 0.40% n 3 (last 7 days)`.
- * The 5-hour window when no row of a week is usable yet. A model's own week
- * with no shared rate follows alone (`Fable own week 2.1% n 1`), and one with
+ * week 1.6% 1.2–2.0 n 5; weekly/own 0.50 provider's share) · sol 0.40% n 3
+ * (last 7 days)`; a ratio fitted from the two windows says `measured` and
+ * its range. The 5-hour window when no row of a week is usable yet. A model's
+ * own week with no shared rate follows alone (`Fable own week 2.1% n 1`), one
+ * fitted only in older periods with its age (`… (9 d old: …)`), and one with
  * no rate yet says why (`Fable own week: none yet (…)`). None when nothing is
  * fitted or waiting.
  */
@@ -636,13 +684,18 @@ export const limitsLine = (tally: Tally): string | undefined => {
         if (own === undefined) return `${f.family} ${num(f.weighted.rate)}%${range(f.weighted)} n ${f.n}`
         told.add(`${w.pool}|${own.window}`)
         const ratio = weeklyRatios(tally, w.pool)[own.window]
-        return `${f.family} ${num(f.weighted.rate)}%${range(f.weighted)} n ${f.n} (own week ${num(own.rate.weighted.rate)}%${range(own.rate.weighted)} n ${own.rate.n}${ratio === undefined ? "" : `; weekly/own ${num(ratio.rate)}`})`
+        return `${f.family} ${num(f.weighted.rate)}%${range(f.weighted)} n ${f.n} (own week ${num(own.rate.weighted.rate)}%${range(own.rate.weighted)} n ${own.rate.n}${ratio === undefined ? "" : `; ${ratioText(ratio)}`})`
       }),
   )
   // A model's own week whose model has no rate on the shared one.
   for (const o of owns)
     if (!told.has(`${o.pool}|${o.window}`))
       for (const g of o.families.filter((g) => g.n > 0)) parts.push(`${g.family} own week ${num(g.weighted.rate)}%${range(g.weighted)} n ${g.n}`)
+  // A model's own week fitted only in older periods: its last rate, with its age.
+  if (windows !== tally.cumulative)
+    for (const o of tally.cumulative.filter((o) => scopeOf(o.window) !== undefined && !owns.some((w) => w.pool === o.pool && w.window === o.window)))
+      for (const g of o.families.filter((g) => g.n > 0))
+        parts.push(`${g.family} own week ${num(g.weighted.rate)}%${range(g.weighted)} n ${g.n} (${Math.floor((tally.at - o.last) / DAY)} d old: no period of the last 7 days has its tokens)`)
   // A model's own week read with no rate yet.
   for (const waiting of tally.waiting ?? []) {
     const scope = scopeOf(waiting.window)
