@@ -3,7 +3,7 @@
 // `--fork`) in a scratch HOME with this checkout's server plugins, configured as
 // `bun run daily` configures them; never the owner's running service.
 //
-//   bun scripts/perf/plugin-start.ts [--locations 4] [--binary <path> | --fork <checkout>]
+//   bun scripts/perf/plugin-start.ts [--locations 4] [--alone 0] [--binary <path> | --fork <checkout>]
 //     [--only kernel,memory] [--data] [--json out.json] [--cpu-prof <dir>]
 //
 // The service exports its Effect spans over OTLP to a receiver here, so the times are
@@ -46,6 +46,13 @@ export interface Options {
   /** The command that runs OpenCode: the installed binary, or the fork's CLI from source. */
   readonly launch: { readonly base: ReadonlyArray<string>; readonly env: Record<string, string> }
   readonly locations: number
+  /**
+   * Locations opened one at a time once the others answer, each after the last
+   * answers. Their setups run on a service no other location holds busy, so they
+   * time each plugin's own setup; the ones opened together share one JS thread,
+   * and a setup that awaits once spans the other locations' work meanwhile.
+   */
+  readonly alone?: number
   readonly plugins?: ReadonlyArray<Entry>
   /** Copies of the owner's plugin data in the scratch HOME (see `copyData`). */
   readonly data?: boolean
@@ -59,6 +66,8 @@ export interface Location {
   readonly served: number
   /** The skills RPC's first answer, NaN without the skills plugin. */
   readonly live: number
+  /** Opened on its own (`Options.alone`), not with the others. */
+  readonly alone: boolean
 }
 
 export interface Measure {
@@ -145,7 +154,7 @@ export const measure = async (options: Options): Promise<Measure> => {
     },
   })
 
-  const directories = Array.from({ length: options.locations }, (_, index) => {
+  const directories = Array.from({ length: options.locations + (options.alone ?? 0) }, (_, index) => {
     const directory = join(root, "work", `location-${index}`)
     mkdirSync(directory, { recursive: true })
     Bun.spawnSync(["git", "init", "-q", directory])
@@ -209,23 +218,30 @@ export const measure = async (options: Options): Promise<Measure> => {
     const ready = since()
     const headers = (directory: string) => ({ ...auth, "x-opencode-directory": encodeURIComponent(directory), "content-type": "application/json" })
     const skills = plugins.some((entry) => nameOf(entry) === "skills")
-    const locations = await Promise.all(
-      directories.map(async (directory): Promise<Location> => {
-        const asked = since()
-        await (await fetch(new URL("/api/location", service.url), { headers: headers(directory) })).body?.cancel()
-        const served = since()
-        if (!skills) return { directory, asked, served, live: Number.NaN }
-        await until(
-          async () => {
-            const response = await fetch(new URL("/api/rpc/dotfiles-opencode.skills/catalog", service.url), { method: "POST", headers: headers(directory), body: JSON.stringify({ input: {} }) }).catch(() => undefined)
-            await response?.body?.cancel()
-            return response?.ok ? true : undefined
-          },
-          () => `the skills RPC in ${directory}`,
-        )
-        return { directory, asked, served, live: since() }
-      }),
-    )
+    const open = async (directory: string, alone: boolean): Promise<Location> => {
+      const asked = since()
+      await (await fetch(new URL("/api/location", service.url), { headers: headers(directory) })).body?.cancel()
+      const served = since()
+      if (!skills) return { directory, asked, served, live: Number.NaN, alone }
+      await until(
+        async () => {
+          const response = await fetch(new URL("/api/rpc/dotfiles-opencode.skills/catalog", service.url), { method: "POST", headers: headers(directory), body: JSON.stringify({ input: {} }) }).catch(() => undefined)
+          await response?.body?.cancel()
+          return response?.ok ? true : undefined
+        },
+        () => `the skills RPC in ${directory}`,
+      )
+      return { directory, asked, served, live: since(), alone }
+    }
+    const locations = await Promise.all(directories.slice(0, options.locations).map((directory) => open(directory, false)))
+    // A location answers before its last setups end (the host's own plugins load after ours):
+    // the next opens once every location's `Plugin.activate` span has come in.
+    const activated = (count: number) =>
+      until(async () => (spans.filter((span) => span.name === "Plugin.activate").length >= count ? true : undefined), () => `${count} locations' setups`)
+    for (const directory of directories.slice(options.locations)) {
+      await activated(locations.length)
+      locations.push(await open(directory, true))
+    }
     // The batch span processor flushes every few seconds: wait until two flushes bring nothing new.
     for (let last = -1; last !== spans.length; ) {
       last = spans.length
@@ -246,7 +262,10 @@ export interface PluginRow {
   readonly plugin: string
   /** Per location, in the order the locations resolved. */
   readonly load: ReadonlyArray<number>
+  /** In the locations opened together. */
   readonly setup: ReadonlyArray<number>
+  /** In the locations opened one at a time (`Options.alone`). */
+  readonly alone: ReadonlyArray<number>
 }
 
 /** Per plugin of ours: its module load and its setup in each location. */
@@ -259,13 +278,21 @@ export const rows = (result: Measure): ReadonlyArray<PluginRow> => {
     .filter((span) => span.name === "PluginSupervisor.resolve")
     .sort(byStart)
     .map((resolved) => (children.get(resolved.id) ?? []).filter((span) => span.name === "PluginModule.load").sort(byStart))
-  const setups = result.spans.filter((span) => span.name === "Plugin.load").sort(byStart)
-  return result.plugins.map((plugin, index) => ({
-    plugin,
-    load: loads.flatMap((location) => (location[index] ? [location[index].end - location[index].start] : [])),
+  // The locations opened alone start after every other location's setups ended.
+  const aloneFrom = Math.min(...result.locations.filter((location) => location.alone).map((location) => result.t0 + location.asked))
+  return result.plugins.map((plugin, index) => {
     // `dotfiles-opencode.<name>`, and the vendored auth plugin's `ex-machina.anthropic-auth`.
-    setup: setups.filter((span) => [`dotfiles-opencode.${plugin}`, `ex-machina.${plugin}`].includes(span.attributes["plugin.id"] ?? "")).map((span) => span.end - span.start),
-  }))
+    const setups = result.spans
+      .filter((span) => span.name === "Plugin.load" && [`dotfiles-opencode.${plugin}`, `ex-machina.${plugin}`].includes(span.attributes["plugin.id"] ?? ""))
+      .sort(byStart)
+    const took = (span: Span) => span.end - span.start
+    return {
+      plugin,
+      load: loads.flatMap((location) => (location[index] ? [location[index].end - location[index].start] : [])),
+      setup: setups.filter((span) => span.start < aloneFrom).map(took),
+      alone: setups.filter((span) => span.start >= aloneFrom).map(took),
+    }
+  })
 }
 
 /** Each location's span of a name (`PluginSupervisor.resolve`, `Plugin.activate`), as ms. */
@@ -286,6 +313,7 @@ if (import.meta.main) {
   const result = await measure({
     launch: fork ? forkLaunch(resolve(fork), process.execPath) : { base: [arg("binary") ?? installedBinary()], env: {} },
     locations: Number(arg("locations") ?? 4),
+    alone: Number(arg("alone") ?? 0),
     plugins: SERVER_PLUGINS.filter((entry) => only === undefined || only.includes(nameOf(entry))),
     data: process.argv.includes("--data"),
     cpuProfile: arg("cpu-prof"),
@@ -293,10 +321,10 @@ if (import.meta.main) {
   const s = (value: number) => `${(value / 1000).toFixed(2)}s`
   const list = (values: ReadonlyArray<number>) => values.map((value) => value.toFixed(0)).join(" ")
   console.log(`service: listening ${s(result.listening)}, /api/info 200 at ${s(result.ready)} (503 before)`)
-  for (const location of result.locations) console.log(`${location.directory.split("/").at(-1)}: asked ${s(location.asked)}, served ${s(location.served)}, plugins live ${s(location.live)}`)
+  for (const location of result.locations) console.log(`${location.directory.split("/").at(-1)}${location.alone ? " (alone)" : ""}: asked ${s(location.asked)}, served ${s(location.served)}, plugins live ${s(location.live)}`)
   console.log(`per location, ms: module loads (PluginSupervisor.resolve) ${list(perLocation(result, "PluginSupervisor.resolve"))}; setups (Plugin.activate) ${list(perLocation(result, "Plugin.activate"))}`)
-  console.log("\nplugin          module load ms per location     setup ms per location")
-  for (const row of rows(result)) console.log(`${row.plugin.padEnd(16)}${list(row.load).padEnd(32)}${list(row.setup)}`)
+  console.log("\nplugin          module load ms per location     setup ms per location (together | alone)")
+  for (const row of rows(result)) console.log(`${row.plugin.padEnd(16)}${list(row.load).padEnd(32)}${list(row.setup)}${row.alone.length > 0 ? ` | ${list(row.alone)}` : ""}`)
   const out = arg("json")
   if (out) writeFileSync(out, JSON.stringify(result))
 }
