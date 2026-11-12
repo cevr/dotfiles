@@ -141,6 +141,7 @@ const KEPT_REFUSED = {
   "a mkdirSync, a spread it cannot read": `mkdirSync(kept.path, { ...options })`,
   "a mkdirSync, options a parameter": `const makeIn = (given: object) => mkdirSync(kept.path, given)`,
   "a mkdirSync, options a let": `let loose = { recursive: false }; mkdirSync(kept.path, loose)`,
+  "a recursive mkdirSync, options a const another scope shadows": `const shadowed = { recursive: true }; mkdirSync(kept.path, shadowed); const flatten = () => { const shadowed = { recursive: false }; return shadowed }`,
   "a recursive mkdirSync, held in a const": `const makeDir = fs.mkdirSync; makeDir(kept.path, { recursive: true })`,
   "a mkdtempSync, renamed by a destructuring": `const { mkdtempSync: makeTemp } = fs; makeTemp(join(kept.path, "x-"))`,
   "a cpSync": `cpSync("/nonexistent/loop-probe-x", join(kept.path, "a/b"))`,
@@ -205,7 +206,7 @@ const noKept = (statement: string) => statement.replaceAll("kept.path", `"/nonex
 const KEPT_CASES: ReadonlyArray<Case> = [
   ...keptCross(KEPT_REFUSED, 1),
   ...keptCross(KEPT_ALLOWED, 0),
-  ...Object.entries(KEPT_REFUSED).map(([form, statement]) => ({ name: `${form} in a file with no Kept`, code: noKept(statement), errors: LOOSE_REFUSED.has(form) ? 1 : 0 })),
+  ...Object.entries(KEPT_REFUSED).map(([form, statement]) => ({ name: `${form} in a file with no Kept`, code: noKept(statement), errors: Number(LOOSE_REFUSED.has(form)) })),
   ...KEPT_FILES,
   { name: "a file that only imports keptScratch", code: `import { keptScratch } from "./scratch.ts"\nmkdirSync("/nonexistent/loop-probe-x", { recursive: true })`, errors: 0 },
   { name: "every refused form in one Kept file", code: `${KEPT}\n${Object.values(KEPT_REFUSED).join("\n")}`, errors: Object.keys(KEPT_REFUSED).length },

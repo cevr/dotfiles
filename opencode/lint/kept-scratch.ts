@@ -59,7 +59,8 @@ interface Property {
 /** `id = init` in a `const`, `let` or `var`. */
 interface Declarator {
   readonly id?: Node
-  readonly init?: Node | null
+  /** The value; oxlint gives a missing one as null, read through `|| NONE`. */
+  readonly init?: Node
 }
 
 interface Context {
@@ -92,60 +93,74 @@ const nameOf = (node: Node = NONE, computed = false): string => {
 /** What a file declares: its renames (local name → the name it stands for) and its consts. */
 interface Scope {
   readonly renames: Map<string, string>
-  /** A const's value; `undefined` for a name declared more than once or by `let`/`var`. */
-  readonly consts: Map<string, Node | undefined>
+  /** A const's value; NONE for a name declared more than once or by `let`/`var`. */
+  readonly consts: Map<string, Node>
 }
+
+/** The value a name's const holds; NONE for one with no const, or more than one binding. */
+const constOf = (scope: Scope, name: string): Node => scope.consts.get(name) || NONE
 
 /** The node a value stands for: a const's identifier is followed to the const's value. */
 const resolve = (scope: Scope, node: Node = NONE, depth = 0): Node => {
   const at = bare(node)
   if (at.type !== "Identifier" || depth >= DEPTH) return at
-  const init = scope.consts.get(String(at.name))
-  return init === undefined ? at : resolve(scope, init, depth + 1)
+  const init = constOf(scope, String(at.name))
+  if (init === NONE) return at
+  return resolve(scope, init, depth + 1)
 }
 
 /** The name a call's callee ends in: `f(…)` → f, `a.f(…)` and `a["f"](…)` → f, `Bun.write(…)` → Bun.write; renames followed. */
 const calleeName = (scope: Scope, callee: Node = NONE, depth = 0): string => {
   const at = bare(callee)
-  if (at.type === "Identifier") {
-    const name = String(at.name)
-    const renamed = scope.renames.get(name)
-    if (renamed !== undefined) return renamed
-    const init = scope.consts.get(name)
-    return init === undefined || depth >= DEPTH ? name : calleeName(scope, init, depth + 1) || name
-  }
+  if (at.type === "Identifier") return identifierName(scope, String(at.name), depth)
   if (at.type !== "MemberExpression") return ""
   const name = nameOf(at.property, at.computed)
-  return name === "write" && nameOf(bare(at.object)) === "Bun" ? "Bun.write" : name
+  if (name === "write" && nameOf(bare(at.object)) === "Bun") return "Bun.write"
+  return name
+}
+
+/** The name a called identifier stands for: its rename, or the callee its const holds, or itself. */
+const identifierName = (scope: Scope, name: string, depth: number): string => {
+  const renamed = scope.renames.get(name) || ""
+  if (renamed !== "") return renamed
+  const init = constOf(scope, name)
+  if (init === NONE || depth >= DEPTH) return name
+  return calleeName(scope, init, depth + 1) || name
 }
 
 /** How an options argument sets a key: left out, the literal `false`, or anything else (set, or unreadable). */
 type Setting = "absent" | "false" | "set"
 
 /** How `options` sets `key`, a later member overriding an earlier one, spreads followed. */
-const setting = (scope: Scope, options: Node | undefined, key: string): Setting => {
+const setting = (scope: Scope, options: Node, key: string): Setting => {
   const at = resolve(scope, options)
   if (at === NONE || at.type === "Literal" || (at.type === "Identifier" && at.name === "undefined")) return "absent"
   if (at.type !== "ObjectExpression") return "set"
   let found: Setting = "absent"
   for (const property of at.properties || []) {
-    if (property.type !== "Property") {
-      const spread = setting(scope, property.argument, key)
-      if (spread !== "absent") found = spread
-      continue
-    }
-    const name = nameOf(property.key, property.computed)
-    if (name === key) found = isFalse(resolve(scope, property.value)) ? "false" : "set"
-    else if (name === "") found = "set"
+    const each = member(scope, property, key)
+    if (each !== "absent") found = each
   }
   return found
 }
 
-/** Whether a node is the literal `false`. */
-const isFalse = (node: Node): boolean => node.type === "Literal" && node.value === false
+/** How one member of an options object sets `key`: a spread is read in turn, a computed key it cannot name is unreadable. */
+const member = (scope: Scope, property: Property, key: string): Setting => {
+  if (property.type !== "Property") return setting(scope, property.argument || NONE, key)
+  const name = nameOf(property.key, property.computed)
+  if (name === key) return literalFalse(resolve(scope, property.value))
+  if (name === "") return "set"
+  return "absent"
+}
+
+/** "false" for the literal `false`, "set" for anything else. */
+const literalFalse = (node: Node): Setting => {
+  if (node.type === "Literal" && node.value === false) return "false"
+  return "set"
+}
 
 /** Whether `options` leaves `key` out or sets it to the literal `false`. */
-const off = (scope: Scope, options: Node | undefined, key: string): boolean => setting(scope, options, key) !== "set"
+const off = (scope: Scope, options: Node, key: string): boolean => setting(scope, options, key) !== "set"
 
 const MKDIR = new Set(["mkdirSync", "mkdir"])
 const COPY = new Set(["cpSync", "cp"])
@@ -163,12 +178,19 @@ const LOOSE =
 /** The message a call earns; "" for none. */
 const refusal = (scope: Scope, call: Node, name: string, kept: boolean): string => {
   const args = call.arguments || []
-  if (!kept) return name === "tmpdir" ? LOOSE : ""
-  if (MKDIR.has(name) && !off(scope, args[1], "recursive")) return RECURSIVE
+  if (!kept && name === "tmpdir") return LOOSE
+  if (!kept) return ""
+  if (MKDIR.has(name) && !off(scope, args[1] || NONE, "recursive")) return RECURSIVE
   if (COPY.has(name)) return PARENTS
-  if (name === "Bun.write" && setting(scope, args[2], "createPath") !== "false") return PARENTS
+  if (name === "Bun.write" && setting(scope, args[2] || NONE, "createPath") !== "false") return PARENTS
   if (TEMP.has(name)) return OUTSIDE
   return ""
+}
+
+/** A declarator's value when its declaration is a `const`; NONE for a `let` or `var`, whose value may change. */
+const constant = (declaration: Node, declarator: Declarator): Node => {
+  if (declaration.kind !== "const") return NONE
+  return declarator.init || NONE
 }
 
 /** The file that makes the scratch folders, and so the one file under tests/ that calls tmpdir(). */
@@ -179,8 +201,9 @@ const keptSuiteFolders = {
     const scope: Scope = { renames: new Map(), consts: new Map() }
     const calls: Array<Node> = []
     /** A name a declaration binds: a const keeps its value, anything else (or a second binding) is unreadable. */
-    const bind = (name: string, init: Node | undefined) => {
-      scope.consts.set(name, scope.consts.has(name) ? undefined : init)
+    const bind = (name: string, init: Node) => {
+      if (scope.consts.has(name)) scope.consts.set(name, NONE)
+      else scope.consts.set(name, init)
     }
     return {
       ImportSpecifier: (node: Node) => {
@@ -190,7 +213,7 @@ const keptSuiteFolders = {
       VariableDeclaration: (node: Node) => {
         for (const each of node.declarations || []) {
           const id = each.id || NONE
-          if (id.type === "Identifier") bind(String(id.name), node.kind === "const" ? (each.init ?? undefined) : undefined)
+          if (id.type === "Identifier") bind(String(id.name), constant(node, each))
           if (id.type !== "ObjectPattern") continue
           // `const { mkdtempSync: m } = fs`: m is mkdtempSync.
           for (const property of id.properties || []) {
