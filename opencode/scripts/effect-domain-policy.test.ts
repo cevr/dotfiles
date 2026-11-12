@@ -79,6 +79,9 @@ const rooted = (text: string) => text.replaceAll('"./lint/', `"${path.join(REAL,
 
 const touchesDomainRules = (override: Override) => Arr.some(Object.keys(override.rules ?? {}), (rule) => RULE_IDS.includes(rule))
 
+/** The domain's own overrides: a domain rule set over a domain glob. Another unit may raise a domain rule for its exact files elsewhere. */
+const isDomainOverride = (override: Override) => touchesDomainRules(override) && Arr.some(override.files, (file) => DOMAIN_FILES.includes(file))
+
 /** The hard config without the overrides that set a domain rule: what every path outside the domain must lint as. */
 const baselineText = () => {
   const codec = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json))
@@ -439,8 +442,14 @@ describe(`${HARD_CONFIG}: the production domain's syntax rules over generated pa
 
   test("the domain overrides name the domain by glob, leave out only tests, specs, benchmarks, mod laws and the exact legacy try files, and only ever raise their rules to errors", () => {
     const all = overrides()
-    const domain = Arr.filter(all, touchesDomainRules)
+    const domain = Arr.filter(all, isDomainOverride)
     const legacy = Arr.map(legacyBudgets(), (entry) => entry.file)
+    const elsewhere = Arr.filter(all, (override) => touchesDomainRules(override) && !isDomainOverride(override))
+    expect(
+      Arr.flatMap(elsewhere, (override) =>
+        Arr.filter([...override.files, ...(override.excludeFiles ?? [])], (file) => /[*?[\]{}!]/u.test(file) || inDomain(file)),
+      ),
+    ).toEqual([])
     const switchedDown = Arr.flatMap(all, (override) =>
       Arr.map(
         Arr.filter(Object.entries(override.rules ?? {}), ([rule, setting]) => RULE_IDS.includes(rule) && setting !== "error"),
