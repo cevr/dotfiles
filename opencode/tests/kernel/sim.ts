@@ -12,6 +12,8 @@
  *   pixel.png, then a closing line.
  * - The task `kernel memory`, when `memory_save` is offered directly: one
  *   direct `memory_save` call, then a closing line.
+ * - The task `<shell line>\nkernel drop`: one `kernel` call whose cell starts `implementor alpha r1` and then
+ *   runs the shell line through `tools.shell`, then a closing line.
  * - Anything else: one line.
  *
  * @module
@@ -84,6 +86,20 @@ export const SUBAGENT_TASK = "kernel subagent"
 /** One kernel call that starts a subagent from a cell and prints why it could not. */
 export const SUBAGENT_CELL = `try {\n  await tools.subagent({ agent: "worker", description: "probe from a cell", prompt: "Say hi" })\n  console.log("started")\n} catch (error) {\n  console.log("refused: " + (error instanceof Error ? error.message : String(error)))\n}`
 
+/** The drop task, after its shell line: `<line>\nkernel drop`. */
+export const DROP_TASK = "kernel drop"
+/**
+ * One kernel call that starts alpha's implementor, runs the drop task's shell line (no backtick in it) through
+ * `tools.shell`, and prints the shell's output.
+ */
+const dropCell = (task: string) =>
+  [
+    `await tools.subagent({ agent: "implementor", description: "implementor alpha r1", prompt: "Say hi" })`,
+    `const run = await tools.shell({ command: \`${task.slice(0, -DROP_TASK.length).trim()}\` })`,
+    `await run.wait()`,
+    `run.output`,
+  ].join("\n")
+
 export const ATTACH_TASK = "kernel attach"
 /** The image the attach task's cell attaches, in the work dir. */
 export const PIXEL_FILE = "pixel.png"
@@ -127,6 +143,14 @@ export const cells = (file: string) => [
   `note + "!"`,
 ]
 
+/** The tasks that run one kernel cell and then close, each with its cell (from the task's text). */
+const ONE_CELL: ReadonlyArray<readonly [string, (task: string) => string]> = [
+  [SUBAGENT_TASK, () => SUBAGENT_CELL],
+  [DROP_TASK, dropCell],
+  [SHELL_TASK, () => SHELL_CELL],
+  [ATTACH_TASK, () => ATTACH_CELL],
+]
+
 const reply = (request: ChatRequest, file: string): Reply => {
   const messages = request.messages ?? []
   const system = messages
@@ -136,15 +160,12 @@ const reply = (request: ChatRequest, file: string): Reply => {
   if (system.includes("You name conversations")) return { kind: "text", text: "Kernel run" }
   const results = messages.filter((message) => message.role === "tool").length
   const offersKernel = (request.tools ?? []).some((tool) => tool.function?.name === "kernel")
-  if (firstUser(messages).endsWith(SUBAGENT_TASK) && offersKernel)
-    return results === 0 ? { kind: "tool", name: "kernel", input: { code: SUBAGENT_CELL } } : { kind: "text", text: DONE }
+  const task = firstUser(messages)
+  for (const [name, cell] of ONE_CELL)
+    if (task.endsWith(name) && offersKernel) return results === 0 ? { kind: "tool", name: "kernel", input: { code: cell(task) } } : { kind: "text", text: DONE }
   const offersSave = (request.tools ?? []).some((tool) => tool.function?.name === "memory_save")
   if (firstUser(messages).endsWith(MEMORY_TASK) && offersSave)
     return results === 0 ? { kind: "tool", name: "memory_save", input: { text: MEMORY_NOTE, scope: "global" } } : { kind: "text", text: DONE }
-  if (firstUser(messages).endsWith(SHELL_TASK) && offersKernel)
-    return results === 0 ? { kind: "tool", name: "kernel", input: { code: SHELL_CELL } } : { kind: "text", text: DONE }
-  if (firstUser(messages).endsWith(ATTACH_TASK) && offersKernel)
-    return results === 0 ? { kind: "tool", name: "kernel", input: { code: ATTACH_CELL } } : { kind: "text", text: DONE }
   if (firstUser(messages).endsWith(KERNEL_TASK) && offersKernel) {
     const code = cells(file)[results]
     if (code !== undefined) return { kind: "tool", name: "kernel", input: { code } }

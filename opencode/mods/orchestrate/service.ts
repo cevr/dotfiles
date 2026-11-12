@@ -33,6 +33,11 @@ export class UnitLogs extends Context.Service<
   {
     readonly find: (input: { readonly unit: string; readonly named: ReadonlyArray<string>; readonly directory?: string }) => Effect.Effect<string | undefined>
     readonly append: (unitDir: string, transition: Transition) => Effect.Effect<void>
+    /**
+     * The unit whose dir `path` names (absolute, `~/`, or relative to `directory`), when its log.md's last move is
+     * to `dropped`: what log.ts wrote, never what a command asked. None for any other dir or log.
+     */
+    readonly droppedIn: (path: string, directory: Option.Option<string>) => Effect.Effect<Option.Option<string>>
   }
 >()("dotfiles-opencode/orchestrate/UnitLogs") {}
 

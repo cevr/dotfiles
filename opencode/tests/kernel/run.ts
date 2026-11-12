@@ -65,7 +65,7 @@ const content = {
       package: spec.plugin,
       options: { denyExecute: spec.denyExecute, timeoutMs: 20_000, ...(spec.codeOnly === undefined ? {} : { codeOnly: spec.codeOnly }) },
     },
-    ...(spec.orchestrate ? [{ package: spec.orchestrate.plugin, options: { now: spec.orchestrate.now, log: join(spec.base, "agents.jsonl") } }] : []),
+    ...(spec.orchestrate ? [{ package: spec.orchestrate.plugin, options: { now: spec.orchestrate.now, log: join(spec.base, "agents.jsonl"), ledger: join(spec.base, "machine.jsonl") } }] : []),
     ...(spec.memory ? [{ package: spec.memory.plugin, options: { path: join(spec.base, "memory.db") } }] : []),
   ],
 }

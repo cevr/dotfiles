@@ -796,8 +796,12 @@ export class Machines extends Context.Service<
     readonly land: (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget>; readonly departs?: string }) => Effect.Effect<Passed, Refused>
     /** The Rifts a land of `root` answered green. */
     readonly landed: (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget> }) => Effect.Effect<void>
-    /** `root` logged `unit` dropped: the unit ends, and the findings it held go with it (machine.ts `Drop`). */
-    readonly dropped: (input: { readonly root: string; readonly unit: string }) => Effect.Effect<void>
+    /**
+     * `root` ran log.ts moving the units in `dirs` to `dropped` (relative ones from `workdir`, else the root's
+     * directory). Each whose log.md now ends in that move ends, and the findings it held go with it (machine.ts
+     * `Drop`); one whose move log.ts refused, or did not write, stays.
+     */
+    readonly dropped: (input: { readonly root: string; readonly dirs: ReadonlyArray<string>; readonly workdir: Option.Option<string> }) => Effect.Effect<void>
     /** A session went idle: a step's hand-back moves its unit or ends its verifier. */
     readonly handBack: (sessionID: string) => Effect.Effect<void>
     /** The root's run as its ledger holds it, its dead steps handed back first; empty for a root that runs no unit. */
@@ -823,6 +827,7 @@ export const machineLayer = (config: MachineConfig) =>
       const branches = yield* Branches
       const records = yield* RunRecords
       const fleet = yield* Fleet
+      const unitLogs = yield* UnitLogs
       const inFlight = new Map<string, InFlight>()
 
       const flying = (root: string, role: Start["role"], name: string) =>
@@ -1041,8 +1046,14 @@ export const machineLayer = (config: MachineConfig) =>
         yield* ledger.decide(input.root, yield* now, () => Effect.succeed([Landed.make({ rifts: input.rifts })])).pipe(Effect.ignore)
       })
 
-      const dropped = Effect.fn("Machines.dropped")(function* (input: { readonly root: string; readonly unit: string }) {
-        yield* ledger.decide(input.root, yield* now, () => Effect.succeed([Drop.make({ unit: input.unit })])).pipe(Effect.ignore)
+      const dropped = Effect.fn("Machines.dropped")(function* (input: { readonly root: string; readonly dirs: ReadonlyArray<string>; readonly workdir: Option.Option<string> }) {
+        if (input.dirs.length === 0) return
+        const rootDirectory = Option.fromNullishOr(yield* sessions.directoryOf(input.root))
+        const directory = Option.orElse(input.workdir, () => rootDirectory)
+        // What log.ts wrote decides, never what the command asked: a refused move leaves its unit as it was.
+        const units = yield* Effect.forEach(input.dirs, (dir) => unitLogs.droppedIn(dir, directory))
+        const drops = [...new Set(units.flatMap(Option.toArray))].map((unit) => Drop.make({ unit }))
+        if (drops.length > 0) yield* ledger.decide(input.root, yield* now, () => Effect.succeed(drops)).pipe(Effect.ignore)
       })
 
       const handBack = Effect.fn("Machines.handBack")(function* (sessionID: string) {
