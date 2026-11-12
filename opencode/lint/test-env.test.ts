@@ -140,6 +140,7 @@ const KEPT_REFUSED = {
   "a recursive mkdirSync, a spread of a const": `const deepSpread = { recursive: true }; mkdirSync(kept.path, { ...deepSpread })`,
   "a mkdirSync, a spread it cannot read": `mkdirSync(kept.path, { ...options })`,
   "a mkdirSync, options a parameter": `const makeIn = (given: object) => mkdirSync(kept.path, given)`,
+  "a mkdirSync, options a destructured const": `const { picked } = { picked: 1, recursive: false }; mkdirSync(kept.path, picked)`,
   "a mkdirSync, options a let": `let loose = { recursive: false }; mkdirSync(kept.path, loose)`,
   "a recursive mkdirSync, options a const another scope shadows": `const shadowed = { recursive: true }; mkdirSync(kept.path, shadowed); const flatten = () => { const shadowed = { recursive: false }; return shadowed }`,
   "a recursive mkdirSync, held in a const": `const makeDir = fs.mkdirSync; makeDir(kept.path, { recursive: true })`,
@@ -156,15 +157,76 @@ const KEPT_REFUSED = {
 /** The refused forms that are refused in a file with no Kept as well: they make a folder straight under tmpdir(). */
 const LOOSE_REFUSED = new Set(["a tmpdir()", "an os.tmpdir()"])
 
+/** A mkdir a Kept file may make whose options come from a const: the const's name, its declaration, the call. */
+interface ConstOptions {
+  readonly name: string
+  readonly declaration: string
+  readonly call: string
+}
+
+/** The allowed forms that read their options through a const, by form. */
+const CONST_OPTIONS = {
+  "a mkdirSync, recursive: false in a const": { name: "flatOptions", declaration: `const flatOptions = { recursive: false }`, call: `mkdirSync(join(kept.path, "a"), flatOptions)` },
+  "a mkdirSync, a shorthand recursive: false from a const": { name: "recursive", declaration: `const recursive = false`, call: `mkdirSync(join(kept.path, "a"), { recursive })` },
+  "a mkdirSync, a spread of a const with no recursive": { name: "modeOnly", declaration: `const modeOnly = { mode: 0o700 }`, call: `mkdirSync(join(kept.path, "a"), { ...modeOnly })` },
+} satisfies Record<string, ConstOptions>
+
+/** Every binding that shadows a const's name where the call reads it, so the call's options are not the const's. */
+const SHADOWS = {
+  "a parameter": (name: string, call: string) => `const viaParameter = (${name}) => ${call}`,
+  "a destructured parameter": (name: string, call: string) => `const viaPattern = ({ ${name} }) => ${call}`,
+  "a parameter with a default": (name: string, call: string) => `const viaDefault = (${name} = {}) => ${call}`,
+  "a rest parameter": (name: string, call: string) => `const viaRest = (...${name}) => ${call}`,
+  "a function's parameter": (name: string, call: string) => `function viaFunction(${name}) { ${call} }`,
+  "a catch parameter": (name: string, call: string) => `try { void 0 } catch (${name}) { ${call} }`,
+  "a let in an inner block": (name: string, call: string) => `{ let ${name} = pick(); ${call} }`,
+}
+
+/** Each const-options form with its name shadowed where the call reads it: refused, as options the rule cannot read. */
+const SHADOWED: ReadonlyArray<Case> = Object.entries(CONST_OPTIONS).flatMap(([form, each]) =>
+  Object.entries(SHADOWS).map(([shadow, wrap]) => ({ name: `${form}, shadowed by ${shadow}`, code: `${KEPT}\n${each.declaration}\n${wrap(each.name, each.call)}`, errors: 1 })),
+)
+
+/** A refused callee: where it is imported from, the namespace object it is a member of, and a call's arguments. */
+interface Callee {
+  readonly from: string
+  readonly object: string
+  readonly args: string
+}
+
+/** Every callee a Kept file refuses, by its exported name. */
+const CALLEES = {
+  mkdirSync: { from: "node:fs", object: "fs", args: `kept.path, { recursive: true }` },
+  mkdir: { from: "node:fs/promises", object: "fsp", args: `kept.path, { recursive: true }` },
+  mkdtempSync: { from: "node:fs", object: "fs", args: `join(kept.path, "x-")` },
+  mkdtemp: { from: "node:fs/promises", object: "fsp", args: `join(kept.path, "x-")` },
+  tmpdir: { from: "node:os", object: "os", args: `` },
+  cpSync: { from: "node:fs", object: "fs", args: `"/nonexistent/loop-probe-x", join(kept.path, "a")` },
+  cp: { from: "node:fs/promises", object: "fsp", args: `"/nonexistent/loop-probe-x", join(kept.path, "a")` },
+  write: { from: "bun", object: "Bun", args: `join(kept.path, "a/b"), "x"` },
+} satisfies Record<string, Callee>
+
+/** Every rename the rule's header lists, as a whole Kept file calling the callee through it. */
+const RENAMES = {
+  "renamed on import": (name: string, callee: Callee) => `import { ${name} as renamed } from "${callee.from}"\n${KEPT}\nvoid renamed(${callee.args})`,
+  "imported as is": (name: string, callee: Callee) => `import { ${name} } from "${callee.from}"\n${KEPT}\nvoid ${name}(${callee.args})`,
+  "renamed by a destructuring": (name: string, callee: Callee) => `${KEPT}\nconst { ${name}: renamed } = ${callee.object}\nvoid renamed(${callee.args})`,
+  "destructured as is": (name: string, callee: Callee) => `${KEPT}\nconst { ${name} } = ${callee.object}\nvoid ${name}(${callee.args})`,
+  "held in a const": (name: string, callee: Callee) => `${KEPT}\nconst renamed = ${callee.object}.${name}\nvoid renamed(${callee.args})`,
+}
+
+/** Every refused callee through every rename: each refused. */
+const RENAMED: ReadonlyArray<Case> = Object.entries(CALLEES).flatMap(([name, callee]) =>
+  Object.entries(RENAMES).map(([rename, write]) => ({ name: `${name} ${rename}`, code: write(name, callee), errors: 1 })),
+)
+
 /** Calls a Kept file may make. */
 const KEPT_ALLOWED = {
   "a plain mkdirSync": `mkdirSync(join(kept.path, "a"))`,
   "a mkdirSync, recursive: false": `mkdirSync(join(kept.path, "a"), { recursive: false })`,
   "a mkdirSync with a mode": `mkdirSync(join(kept.path, "a"), { mode: 0o700 })`,
   "a mkdirSync with a mode for options": `mkdirSync(join(kept.path, "a"), 0o700)`,
-  "a mkdirSync, recursive: false in a const": `const flatOptions = { recursive: false }; mkdirSync(join(kept.path, "a"), flatOptions)`,
-  "a mkdirSync, a shorthand recursive: false from a const": `const recursive = false; mkdirSync(join(kept.path, "a"), { recursive })`,
-  "a mkdirSync, a spread of a const with no recursive": `const modeOnly = { mode: 0o700 }; mkdirSync(join(kept.path, "a"), { ...modeOnly })`,
+  ...Object.fromEntries(Object.entries(CONST_OPTIONS).map(([form, each]) => [form, `${each.declaration}; ${each.call}`])),
   "a mkdirSync, recursive: false after a spread that sets it": `mkdirSync(join(kept.path, "a"), { ...{ recursive: true }, recursive: false })`,
   "a kept.dir": `const d = kept.dir("run-")`,
   "a recursive rmSync": `rmSync(join(kept.path, "a"), { recursive: true, force: true })`,
@@ -176,10 +238,13 @@ const KEPT_ALLOWED = {
 
 /** Forms that stand at a module's top (imports), each a whole file, and the refusals each earns. */
 const KEPT_FILES: ReadonlyArray<Case> = [
-  { name: "a mkdtempSync renamed on import", code: `import { mkdtempSync as makeTemp } from "node:fs"\n${KEPT}\nmakeTemp(join(kept.path, "x-"))`, errors: 1 },
-  { name: "a recursive mkdirSync renamed on import", code: `import { mkdirSync as makeDir } from "node:fs"\n${KEPT}\nmakeDir(kept.path, { recursive: true })`, errors: 1 },
+  { name: "r1 M1 p1: options through a parameter named as a const", code: `${KEPT}\nconst options = { recursive: false }\nconst make = (options: object) => mkdirSync(kept.path, options)\nmake({ recursive: true })`, errors: 1 },
+  { name: "r1 M1 p4: a destructured parameter named as a const", code: `${KEPT}\nconst recursive = false\nconst make = ({ recursive }: { recursive: boolean }) => mkdirSync(kept.path, { recursive })\nmake({ recursive: true })`, errors: 1 },
+  { name: "r1 M2 p2: Bun.write destructured", code: `${KEPT}\nconst { write } = Bun\nvoid write(join(kept.path, "a/b"), "x")`, errors: 1 },
+  { name: "a write destructured from another object", code: `${KEPT}\nconst { write } = stream\nvoid write(join(kept.path, "a/b"), "x")`, errors: 0 },
+  { name: "a write imported from another module", code: `import { write } from "./stream.ts"\n${KEPT}\nvoid write(join(kept.path, "a/b"), "x")`, errors: 0 },
+  { name: "a parameter named as a refused callee, matched by its own name", code: `${KEPT}\nconst viaParameter = (mkdtempSync) => mkdtempSync(join(kept.path, "x-"))`, errors: 1 },
   { name: "a renamed import called before it is imported", code: `${KEPT}\nmakeTemp(join(kept.path, "x-"))\nimport { mkdtempSync as makeTemp } from "node:fs"`, errors: 1 },
-  { name: "a cpSync renamed on import", code: `import { cpSync as copy } from "node:fs"\n${KEPT}\ncopy("/nonexistent/loop-probe-x", join(kept.path, "a"))`, errors: 1 },
   { name: "keptScratch renamed on import", code: `import { keptScratch as holdSuite } from "./scratch.ts"\nconst kept = holdSuite(true, "case-")\nmkdirSync(kept.path, { recursive: true })`, errors: 1 },
   { name: "a tmpdir renamed on import, in a file with no Kept", code: `import { tmpdir as systemTemp } from "node:os"\nvoid systemTemp()`, errors: 1 },
   { name: "a harmless import renamed to a refused name", code: `import { join as mkdtempSync } from "node:path"\n${KEPT}\nmkdtempSync(kept.path, "a")`, errors: 0 },
@@ -208,6 +273,8 @@ const KEPT_CASES: ReadonlyArray<Case> = [
   ...keptCross(KEPT_ALLOWED, 0),
   ...Object.entries(KEPT_REFUSED).map(([form, statement]) => ({ name: `${form} in a file with no Kept`, code: noKept(statement), errors: Number(LOOSE_REFUSED.has(form)) })),
   ...KEPT_FILES,
+  ...SHADOWED,
+  ...RENAMED,
   { name: "a file that only imports keptScratch", code: `import { keptScratch } from "./scratch.ts"\nmkdirSync("/nonexistent/loop-probe-x", { recursive: true })`, errors: 0 },
   { name: "every refused form in one Kept file", code: `${KEPT}\n${Object.values(KEPT_REFUSED).join("\n")}`, errors: Object.keys(KEPT_REFUSED).length },
 ]
