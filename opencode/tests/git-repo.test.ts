@@ -178,42 +178,43 @@ const interpolated = (expression: TemplateLiteral["expressions"][number]) => {
   return HOLE
 }
 
-/** Whether a word is an environment assignment before a command (`NAME=value`). */
-const isAssignment = (word: Item) => word.kind === "literal" && /^[A-Za-z_][A-Za-z0-9_]*=/.test(word.text)
-
 /**
- * Where a Bun shell command starts: after a list or pipe operator (`;`, `&&`, `||`, `|`, `&`),
- * a line end, a subshell's `(` or `)`, a command substitution's `$(` (its `(`), or a backquote. A
- * command starts at each, so splitting there leaves every command on its own, nested ones included.
+ * What ends a word in a Bun shell template: blanks, and every character of the shell's syntax that
+ * can stand between two words with no blank (list and pipe operators, subshells, substitution,
+ * backquotes, redirections). Quotes join, as the shell joins them.
  */
-const COMMAND_START = /[;&|\n()\x60]/
+const SHELL_BREAK = /[\s;&|()\x60<>]+/
+
+/** Whether a word names git: `git`, or a path to it (`/usr/bin/git`). */
+const namesGit = (word: Item) => word.kind === "literal" && word.text.split("/").pop() === "git"
 
 /**
- * The git argv of each command in a Bun shell template that runs git, in every command position:
- * the template's text (as Bun reads it, raw) with its line continuations (backslash, line end)
- * joined and its escaped backquotes read as backquotes, split into commands at COMMAND_START,
- * each into words at blanks with its quotes dropped and its leading `NAME=value` assignments
- * skipped. A word holding an interpolation that is not a plain string literal is not read.
+ * The git argv each `git` in a Bun shell template could run: for every word that names git,
+ * the words after it, to the template's end. No command position is parsed, so git after any
+ * keyword, operator or wrapper Bun's shell has is read (a word git where no command stands is
+ * read too, failing closed). The text is read raw, as Bun reads it, with its quotes and escaping
+ * backslashes dropped (so an escaped backquote is a backquote, and `in\it` is init), then split at
+ * SHELL_BREAK. A word holding an interpolation that is not a plain string literal is not read.
+ *
+ * A line continuation (backslash, line end) is read both ways a shell may take it: as a blank,
+ * which is Bun 1.4's reading (`git\⏎init` runs init, `gi\⏎t` runs no git), and as nothing, the
+ * POSIX reading (`in\⏎it` is init). A git either reading finds is read.
  */
 const shellArgvs = (template: TemplateLiteral): ReadonlyArray<ReadonlyArray<Item>> => {
   const text = template.quasis
     .map((quasi, index) => quasi.value.raw + Option.getOrElse(Option.map(Arr.get(template.expressions, index), interpolated), () => ""))
     .join("")
-    .replaceAll("\\\n", " ")
-    .replaceAll("\\\x60", "\x60")
-  const commands = text.split(COMMAND_START).map((command) =>
-    command
-      .replace(/['"]/g, "")
-      .split(/\s+/)
+  return [" ", ""].flatMap((continuation) => {
+    const words = text
+      .replaceAll("\\\n", continuation)
+      .replace(/['"\\]/g, "")
+      .split(SHELL_BREAK)
       .filter((word) => word !== "")
       .map((word): Item => {
         if (word.includes(HOLE)) return OTHER
         return { kind: "literal", text: word }
-      }),
-  )
-  return commands.flatMap((words) => {
-    const command = Arr.dropWhile(words, isAssignment)
-    return Arr.filter([command.slice(1)], () => Option.exists(Arr.head(command), (head) => head.kind === "literal" && head.text === "git"))
+      })
+    return words.flatMap((word, index) => Arr.filter([words.slice(index + 1)], () => namesGit(word)))
   })
 }
 
@@ -325,6 +326,23 @@ const SAMPLE = [
   "await $`echo \\`git clone ${source}\\``",
   "await $`echo '(git status)' && ls`",
   "await $`git \\\n  init -q`",
+  "await $`if true; then git init -q; fi`",
+  "await $`if false; then :; else git clone /nonexistent/loop-probe-x/a b; fi`",
+  "await $`if git init -q; then :; fi`",
+  "await $`{ git init -q; }`",
+  "await $`! git init -q`",
+  "await $`/usr/bin/git init -q`",
+  "await $`f() { git clone a b; }; f`",
+  "await $`echo --git-dir init`",
+  "await $`git status <<< init`",
+  "await $`while git -C x init; do :; done`",
+  "await $`true&&git init`",
+  "await $`git init</dev/null`",
+  "await $`git status && git init -q`",
+  "await $`git in\\it -q`",
+  "await $`git\\\ninit -q`",
+  "await $`gi\\\nt init -q`",
+  "await $`echo x|git clone a b`",
 ].join("\n")
 
 /** A seeded generator (mulberry32), so a failing case names its seed and replays. */
@@ -410,8 +428,13 @@ const BACKQUOTE = "\\\x60"
 
 /**
  * The shell forms a command can stand in, each wrapping the text `command` in a Bun shell line:
- * after or before another command with each list or pipe operator, or a line end; in a subshell;
- * in a command substitution, bare, as an argument or quoted; in backquotes.
+ * after or before another command with each list or pipe operator (spaced or not), or a line end;
+ * in a subshell, nested or not; in a command substitution, bare, as an argument or quoted; in
+ * backquotes; in each part of an if, while, until, for and case; after `!`, `time`, `exec`,
+ * `command` and `env`; in a group; in a function's body; before or inside a here-string. Some are
+ * bash that Bun 1.4's shell does not run (`&`, while, until, for, case, `!`, exec, groups,
+ * functions, here-strings): the reader parses no grammar, so git in them is read all the same, and
+ * a later Bun that runs them needs no change here.
  */
 const WRAPPERS: ReadonlyArray<(command: string) => string> = [
   (command) => `echo init; ${command}`,
@@ -428,16 +451,50 @@ const WRAPPERS: ReadonlyArray<(command: string) => string> = [
   (command) => `echo $(${command})`,
   (command) => `echo "$(${command})"`,
   (command) => `echo ${BACKQUOTE}${command}${BACKQUOTE}`,
+  (command) => `true&&${command}`,
+  (command) => `true;${command}`,
+  (command) => `false||${command}`,
+  (command) => `echo|${command}`,
+  (command) => `( (${command}) )`,
+  (command) => `if ${command}; then :; fi`,
+  (command) => `if true; then ${command}; fi`,
+  (command) => `if false; then :; else ${command}; fi`,
+  (command) => `if false; then :; elif ${command}; then :; fi`,
+  (command) => `if false; then :; elif true; then ${command}; fi`,
+  (command) => `if true\nthen\n${command}\nfi`,
+  (command) => `while ${command}; do break; done`,
+  (command) => `until ${command}; do :; done`,
+  (command) => `for each in init clone; do ${command}; done`,
+  (command) => `case init in init) ${command};; esac`,
+  (command) => `! ${command}`,
+  (command) => `time ${command}`,
+  (command) => `exec ${command}`,
+  (command) => `command ${command}`,
+  (command) => `env A=init ${command}`,
+  (command) => `{ ${command}; }`,
+  (command) => `{ ${command};}`,
+  (command) => `f() { ${command}; }; f`,
+  (command) => `function f { ${command}; }; f`,
+  (command) => `${command} <<< init`,
+  (command) => `cat <<< $(${command})`,
 ]
 
 /**
- * A case of a git command in a Bun shell template, in every command position Bun's shell has: the
- * command's words, now and then joined by a line continuation, after `NAME=value` assignments,
- * then wrapped in up to three of WRAPPERS, nested.
+ * A case of a git command in a Bun shell template, wherever Bun's shell can run it: the command's
+ * words, now and then joined by a line continuation between two words or inside one, after
+ * `NAME=value` assignments, then wrapped in up to three of WRAPPERS, nested.
  */
 const generateShell = (random: ReturnType<typeof generator>, git: GitGlobalOptions): Case => {
-  const { argv, makes } = gitCall(random, git)
-  const words = ["git", ...argv]
+  const { globals, argv, makes } = gitCall(random, git)
+  // A continuation inside `git` or the subcommand, now and then: the POSIX shell joins its halves,
+  // Bun 1.4 splits them; the reader reads both, so the case is a site as when unsplit.
+  const target = random.pick([0, 1 + globals.length])
+  const inside = random.pick([false, true])
+  const words = ["git", ...argv].map((word, index) => {
+    if (!inside || index !== target) return word
+    const at = 1 + random.count(word.length - 1)
+    return `${word.slice(0, at)}\\\n${word.slice(at)}`
+  })
   const cut = 1 + random.count(words.length)
   const joiner = random.pick([" ", " \\\n  "])
   const command = [words.slice(0, cut).join(" "), words.slice(cut).join(" ")].filter((part) => part !== "").join(joiner)
@@ -458,8 +515,8 @@ describe("a test's temp git repository", () => {
     expect({ work: settings(work), bare: settings(bare), clone: settings(clone) }).toEqual({ work: QUIET, bare: QUIET, clone: QUIET })
   })
 
-  test("a call or Bun shell command that runs git's init or clone is a site, through any wrapper; a command string in an expectation, a rift init or a commit message is not", () => {
-    expect(rawSites("sample.ts", SAMPLE).map((site) => Number(site.split(":")[0]))).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 25, 27, 28, 30, 31, 32, 36, 37, 38, 40])
+  test("a call that runs git's init or clone, or a git init or clone anywhere in a Bun shell template, is a site, through any wrapper; a command string in an expectation, a rift init or a commit message is not", () => {
+    expect(rawSites("sample.ts", SAMPLE).map((site) => Number(site.split(":")[0]))).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 25, 27, 28, 30, 31, 32, 36, 37, 38, 40, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55, 56, 58, 60])
   })
 
   test(
@@ -475,7 +532,7 @@ describe("a test's temp git repository", () => {
   )
 
   test(
-    "over generated git commands in every Bun shell command position, a template is a site exactly when git's subcommand is init or clone, or an option before it is unknown",
+    "over generated git commands wrapped in Bun shell syntax (operators, subshells, substitution, keywords, groups, functions, here-strings), nested, a template is a site exactly when git's subcommand is init or clone, or an option before it is unknown",
     () => {
       const git = gitGlobalOptions()
       for (const seed of Arr.range(1, 400)) {
