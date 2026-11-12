@@ -1,6 +1,8 @@
-// The model experiment's view (`models.ts --experiment`): the orchestrate mod
-// starts a share of one role's units on a trial model (its experiment.ts) and
-// records each new start's arm in the call log. Per arm: the starts, what each
+// The finished planner A/B's view (`models.ts --experiment`): from 2026-11-10
+// until 2026-11-12 the orchestrate mod started half the planner units on Fable
+// (the trial) and half on Opus (the control), and recorded each new start's arm
+// in the call log; since then Fable is the planner and no line carries an arm,
+// so this view reads the lines of that run. Per arm: the starts, what each
 // cost in tokens and at each model's price, and what became of the units
 // downstream. Pure, so the tests feed it fixture lines.
 import { basename } from 'node:path';
@@ -9,7 +11,7 @@ import type { Outcome } from './outcomes.ts';
 import { familyOf, limitOf, limitText, sumLimits, type Limit, type Rates } from './limits.ts';
 import { costOf, type Tokens } from './prices.ts';
 
-/** The planner experiment (Fable against Opus) runs from here: its view's default start. */
+/** The planner A/B (Fable against Opus) ran from here: its view's default start. */
 export const EXPERIMENT_SINCE = Date.parse('2026-11-10T15:45:00Z');
 
 /** Below this many starts in an arm, the view says the comparison is too small to call. */
@@ -141,7 +143,7 @@ export function armStats(rounds: Round[], tokensOf: (child: string) => Tokens | 
 
 /** The view's lines: a header, one row per arm, and whether n is enough to call. */
 export function experimentTable(stats: ReturnType<typeof armStats>): string[] {
-  if (!stats) return ['Experiment: no start in the call log carries an arm (is the mod\'s `experiment` option set?)'];
+  if (!stats) return ['Experiment: no start in the call log carries an arm (the planner A/B ran from 2026-11-10 to 2026-11-12; since then Fable is the planner and new lines carry no arm)'];
   const { role, trial, models, arms } = stats;
   const k = (x: number) => (x / 1e3).toFixed(1);
   const lines = [
