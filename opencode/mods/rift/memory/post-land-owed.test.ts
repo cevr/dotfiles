@@ -2,8 +2,9 @@
 // lands, load readings, clock steps and server restarts, on a TestClock, against the handler over memory.
 // A post-land step runs for some minutes of its own; the test checks, at each run's start and end, that
 // two never run at once, that each run is the newest land's (so a superseded step never runs), that no
-// land's step runs twice or after a newer one ran, and that none runs while the load is at or past the
-// cores unless the oldest unpaid land has waited the max wait; and, once the load is calm long enough, that
+// land's step runs twice or after a newer one ran, and that none runs unless every load reading the tool
+// took in the settle window before it (a land's, the minute check's, a server's before a restart) was under
+// the cores, or the oldest unpaid land has waited the max wait; and, once the load is calm long enough, that
 // the newest land's step ran exactly once and nothing is owed. A restart keeps the owed steps: the same
 // memory World serves the next tool, as the file does a restarted server.
 import { describe, expect, test } from "bun:test"
@@ -111,10 +112,13 @@ const worldOf = (next: () => number) => {
     if (Option.exists(newest, (land) => land.head !== head)) violation("not the newest land's step")
     if (seen.completed.includes(head)) violation("a step that already ran")
     if (seen.landed.findIndex((land) => land.head === head) <= paidThrough(seen)) violation("a step a newer run had paid")
-    if (Option.exists(Option.fromNullishOr(landing.load), (load) => load.load >= load.cores)) {
+    // The settle window: every load reading the tool took in the SETTLE before this run (from a land, the
+    // minute check, or a server before a restart) was under the cores, else this is the max wait's run.
+    const loadedLately = landing.readings.some((reading) => reading.load.load >= reading.load.cores && now - reading.at < Duration.toMillis(SETTLE))
+    if (loadedLately) {
       seen.forced += 1
       const oldest = Option.fromNullishOr(seen.landed[paidThrough(seen) + 1])
-      if (!Option.exists(oldest, (land) => now - land.at >= Duration.toMillis(MAX_WAIT))) violation("under load before the max wait")
+      if (!Option.exists(oldest, (land) => now - land.at >= Duration.toMillis(MAX_WAIT))) violation("a reading at or past the cores in the settle window before it, before the max wait")
     }
     seen.started.push(head)
     seen.startedAt.push(now / MINUTE)
@@ -210,7 +214,7 @@ const play = (seed: number, ops: ReadonlyArray<Op>) =>
 const judge = (seed: number, world: World) => {
   const newest = Option.fromNullishOr(world.seen.landed.at(-1))
   const ranNewest = Option.match(newest, { onNone: () => 1, onSome: (land) => world.seen.completed.filter((head) => head === land.head).length })
-  expect({ seed, violations: world.seen.violations, newestRuns: ranNewest, owed: world.debts.owed.length, running: world.seen.running }).toEqual({
+  expect({ seed, violations: world.seen.violations, newestRuns: ranNewest, owed: world.debts.debts.owed.length, running: world.seen.running }).toEqual({
     seed,
     violations: [],
     newestRuns: 1,
@@ -264,6 +268,47 @@ describe("an owed post-land step", () => {
         ])
         expect(world.landing.steps.filter((step) => step.startsWith(`post-land ${POST_LAND}`))).toEqual([`post-land ${POST_LAND} base0 h1`])
         judge(1, world)
+      }),
+    ))
+
+  test("a land that reads the load at or past the cores restarts the settle window for the minute check (round 1's M1)", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const ops: ReadonlyArray<Op> = [
+          Op.Load({ load: 30 }),
+          Op.Land(), // minute 0: owed (h1)
+          Op.Load({ load: 2 }),
+          Op.Wait({ minutes: 4 }), // the checks at 1..4 read calm
+          Op.Load({ load: 30 }),
+          Op.Land(), // minute 4: the land reads 30 and defers (h2)
+          Op.Load({ load: 2 }),
+          Op.Wait({ minutes: 8 }),
+        ]
+        const world = yield* play(11, ops)
+        // The last reading at or past the cores was the land's at minute 4: the step waits a whole window, to minute 9 or later.
+        expect(world.seen.started).toEqual(["h2"])
+        expect(world.seen.startedAt[0]).toBeGreaterThanOrEqual(9)
+        judge(11, world)
+      }),
+    ))
+
+  test("after a run, a land that reads the load at or past the cores waits a fresh settle window", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const ops: ReadonlyArray<Op> = [
+          Op.Load({ load: 30 }),
+          Op.Land(), // minute 0: owed (h1)
+          Op.Load({ load: 2 }),
+          Op.Wait({ minutes: 10 }), // calm from minute 1, runs at 6, ends by 10
+          Op.Load({ load: 30 }),
+          Op.Land(), // minute 10: the land reads 30 and defers (h2)
+          Op.Load({ load: 2 }),
+          Op.Wait({ minutes: 8 }),
+        ]
+        const world = yield* play(12, ops)
+        expect(world.seen.started).toEqual(["h1", "h2"])
+        expect(world.seen.startedAt[1]).toBeGreaterThanOrEqual(15)
+        judge(12, world)
       }),
     ))
 

@@ -5,7 +5,7 @@
 // what every implementation owes.
 import { Context, type Effect, Schema } from "effect"
 import type { HostLoad, LandConfig, Merged, PostLanded, Ran, Started, Unit } from "./land.ts"
-import type { OwedPostLand } from "./owed.ts"
+import type { Debts } from "./owed.ts"
 import type { Workspace } from "./workspace.ts"
 
 /** A Rift or Git command failed; `message` is what it said. */
@@ -103,14 +103,14 @@ export class Landing extends Context.Service<
   }
 >()("dotfiles-opencode/rift/Landing") {}
 
-/** The post-land steps owed, one per warm source (`owed.ts`), kept where a server restart finds them. */
+/** The post-land steps owed, one per warm source, and the newest load reading at or past the cores (`owed.ts`), kept where a server restart finds them. */
 export class PostLandDebts extends Context.Service<
   PostLandDebts,
   {
-    /** Every owed step as last written; none before the first write, and none when what was written cannot be read. */
-    readonly read: Effect.Effect<ReadonlyArray<OwedPostLand>, RiftFailed>
-    /** Replaces every owed step with `owed`. */
-    readonly write: (owed: ReadonlyArray<OwedPostLand>) => Effect.Effect<void, RiftFailed>
+    /** What was last written; `noDebts` before the first write, and when what was written cannot be read. */
+    readonly read: Effect.Effect<Debts, RiftFailed>
+    /** Replaces what is kept with `debts`. */
+    readonly write: (debts: Debts) => Effect.Effect<void, RiftFailed>
   }
 >()("dotfiles-opencode/rift/PostLandDebts") {}
 

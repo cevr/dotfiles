@@ -318,13 +318,16 @@ describe("land", () => {
         text: "rift land: the post-land step after feat/x is owed: the 1-minute load is 12.5, at or past the host's 10 cores. It runs once the load has stayed under 10 for 5 minutes (read every 1 min), or at the first land after 6 hours owed whatever the load; a later land's step replaces it. This session is woken with its report.",
         description: "rift land · post-land owed (load)",
       })
-      expect(loaded.debts.owed.map((owed) => owed.lands.map((land) => land.head))).toEqual([["abc1234"]])
-      // The next land, on a calm host, runs it once, for both batches, and pays it.
+      expect(loaded.debts.debts.owed.map((owed) => owed.lands.map((land) => land.head))).toEqual([["abc1234"]])
+      // The next land reads a calm host, but the load was past the cores moments ago: the step stays owed, for both batches.
+      // (A land past the settle window runs it: memory/post-land-owed.test.ts, on a TestClock.)
       loaded.landing.load = { load: 2, cores: 10 }
       await calls(loaded, [{ action: "land", rifts: ["feat-y"] }])
-      expect(loaded.landing.steps.filter((step) => step.startsWith("post-land"))).toHaveLength(1)
-      expect(loaded.woken[1]!.notice.text).toStartWith("rift land: the post-land step after feat/x, feat/y ran in 4s.")
-      expect(loaded.debts.owed).toEqual([])
+      expect(loaded.landing.steps.filter((step) => step.startsWith("post-land"))).toEqual([])
+      expect(loaded.woken[1]!.notice.text).toStartWith(
+        "rift land: the post-land step after feat/x, feat/y is owed: the 1-minute load is 2.0, but it was at or past the host's 10 cores 0 min ago.",
+      )
+      expect(loaded.debts.debts.owed.map((owed) => owed.lands.length)).toEqual([2])
       const red = withPostLand("bun run accept")
       red.landing.checks.set(`${INTEGRATE} gate`, { code: 1, output: "1 fail\n" })
       await calls(red, [{ action: "land", rifts: ["feat-x"] }])

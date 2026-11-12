@@ -1,10 +1,12 @@
 // The post-land step a land owes. A land's post-land step (`rift.postLand`) is owed from the push until it
 // has run; while the host is loaded past its cores it stays owed rather than being dropped. One step is owed
 // per warm source, over every land since one last ran: a later land's replaces the one owed (only the newest
-// runs), kept beside the land logs so a server restart keeps it. The rift plugin's check, every CHECK_EVERY,
-// runs an owed step once the 1-minute load has stayed under the cores for SETTLE; a land runs its own at
-// once on a calm host, and once the step has been owed MAX_WAIT, whatever the load (heavy, so nice'd), and
-// says so. This file holds the rules and the words; model.ts runs them.
+// runs), kept beside the land logs so a server restart keeps it. Every load reading the tool takes, a land's
+// or the minute check's, feeds one settle window (`Readings`): one at or past the cores restarts it. The
+// rift plugin's check, every CHECK_EVERY, runs an owed step once its readings have stayed under the cores
+// for SETTLE; a land runs its own at once when no reading in the last SETTLE was at or past them, and once
+// the step has been owed MAX_WAIT, whatever the load (heavy, so nice'd), and says so. This file holds the
+// rules and the words; model.ts runs them.
 import { Array as Arr, Duration, Option, Schema } from "effect"
 import type { HostLoad, Unit } from "./land.ts"
 
@@ -41,6 +43,16 @@ export const OwedPostLand = Schema.Struct({
   lands: Schema.NonEmptyArray(OwedLand),
 })
 export type OwedPostLand = typeof OwedPostLand.Type
+
+/** What the store keeps: the owed steps, and the newest load reading at or past the cores (`Readings.loadedAt`). */
+export const Debts = Schema.Struct({
+  owed: Schema.Array(OwedPostLand),
+  loadedAt: Schema.OptionFromOptionalKey(Schema.Finite),
+})
+export type Debts = typeof Debts.Type
+
+/** Nothing owed, and no reading at or past the cores. */
+export const noDebts: Debts = { owed: [], loadedAt: Option.none() }
 
 /** RIFT_LAND_BASE: the oldest owed land's base, so the step sees every batch it covers. */
 export const baseOf = (owed: OwedPostLand): string => Arr.headNonEmpty(owed.lands).base
@@ -96,31 +108,58 @@ export type Trigger = "land" | "settled"
 /** What an owed step does now: runs, runs past the load (a land, past MAX_WAIT), or stays owed. */
 export type Verdict = "run" | "forced" | "defer"
 
-/** The rule: a calm host runs it; a loaded one defers it, unless a land finds it owed MAX_WAIT or more. */
-export const verdict = (owed: OwedPostLand, load: HostLoad, now: number, trigger: Trigger): Verdict => {
-  if (!overloaded(load)) return "run"
+/**
+ * What the tool's load readings say, from every reader (a land, the minute check). `calmSince`: the first of
+ * the unbroken run of readings under the cores up to now (none after a reading at or past them, and none
+ * before this server's first reading). `loadedAt`: the newest reading at or past the cores, kept with the
+ * owed steps so a restart keeps it.
+ */
+export interface Readings {
+  readonly calmSince: Option.Option<number>
+  readonly loadedAt: Option.Option<number>
+}
+
+/** The readings after one more, taken at `now`: one at or past the cores restarts the settle window. */
+export const observe = (before: Readings, load: HostLoad, now: number): Readings => {
+  if (overloaded(load)) return { calmSince: Option.none(), loadedAt: Option.some(now) }
+  return { calmSince: Option.orElse(before.calmSince, () => Option.some(now)), loadedAt: before.loadedAt }
+}
+
+const atLeast = (from: number, now: number, duration: Duration.Duration): boolean => Duration.isGreaterThanOrEqualTo(Duration.millis(now - from), duration)
+
+/** Whether this server's readings have stayed under the cores for SETTLE by `now`: the minute check's rule. */
+export const settled = (readings: Readings, now: number): boolean => Option.exists(readings.calmSince, (since) => atLeast(since, now, SETTLE))
+
+/** Whether no reading in the SETTLE before `now` was at or past the cores: a land's rule. */
+export const quiet = (readings: Readings, now: number): boolean => !Option.exists(readings.loadedAt, (at) => !atLeast(at, now, SETTLE))
+
+/**
+ * The rule, over the readings with the one just taken: a land runs it when no reading in the last SETTLE was
+ * at or past the cores, the minute check when the readings have stayed under them for SETTLE; else it stays
+ * owed, unless a land finds it owed MAX_WAIT or more, which runs it whatever the load.
+ */
+export const verdict = (owed: OwedPostLand, readings: Readings, now: number, trigger: Trigger): Verdict => {
+  if (trigger === "land" && quiet(readings, now)) return "run"
+  if (trigger === "settled" && settled(readings, now)) return "run"
   if (trigger === "land" && overdue(owed, now)) return "forced"
   return "defer"
 }
-
-/** Since when the load has stayed under the cores, after one more reading: none while it is at or past them. */
-export const calmSince = (before: Option.Option<number>, load: HostLoad, now: number): Option.Option<number> => {
-  if (overloaded(load)) return Option.none()
-  return Option.orElse(before, () => Option.some(now))
-}
-
-/** Whether the load has stayed under the cores for SETTLE by `now`. */
-export const settled = (calm: Option.Option<number>, now: number): boolean =>
-  Option.exists(calm, (since) => Duration.isGreaterThanOrEqualTo(Duration.millis(now - since), SETTLE))
 
 const branches = (units: ReadonlyArray<Unit>): string => units.map((unit) => unit.branch).join(", ")
 
 const minutesOf = (duration: Duration.Duration): number => Math.round(Duration.toMinutes(duration))
 
+/** Why the load holds a step back: the reading now, else the last one at or past the cores. */
+const loadWords = (load: HostLoad, readings: Readings, now: number): string => {
+  if (overloaded(load)) return `the 1-minute load is ${load.load.toFixed(1)}, at or past the host's ${load.cores} cores.`
+  const ago = Option.getOrElse(Option.map(readings.loadedAt, (at) => Math.round((now - at) / Duration.toMillis(Duration.minutes(1)))), () => 0)
+  return `the 1-minute load is ${load.load.toFixed(1)}, but it was at or past the host's ${load.cores} cores ${ago} min ago.`
+}
+
 /** The wake a land whose post-land step is deferred sends. */
-export const deferredText = (owed: OwedPostLand, load: HostLoad): string =>
+export const deferredText = (owed: OwedPostLand, load: HostLoad, readings: Readings, now: number): string =>
   [
-    `rift land: the post-land step after ${branches(unitsOf(owed))} is owed: the 1-minute load is ${load.load.toFixed(1)}, at or past the host's ${load.cores} cores.`,
+    `rift land: the post-land step after ${branches(unitsOf(owed))} is owed: ${loadWords(load, readings, now)}`,
     `It runs once the load has stayed under ${load.cores} for ${minutesOf(SETTLE)} minutes (read every ${minutesOf(CHECK_EVERY)} min), or at the first land after ${minutesOf(MAX_WAIT) / 60} hours owed whatever the load; a later land's step replaces it. This session is woken with its report.`,
   ].join(" ")
 

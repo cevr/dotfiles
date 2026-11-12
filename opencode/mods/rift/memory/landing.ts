@@ -1,7 +1,7 @@
 // Landing held in memory, for the model's tests: each repository's config,
 // each Rift's own changes, the merge of each branch, the checks, the push,
 // and the steps taken, in order, for the test to read.
-import { Effect, Layer } from "effect"
+import { Clock, Effect, Layer } from "effect"
 import type { HostLoad, LandConfig, Merged, PostLanded, Ran, Unit } from "../land.ts"
 import { Landing, RiftFailed } from "../service.ts"
 
@@ -28,6 +28,8 @@ export interface World {
   readonly checkHold: Record<"gate" | "accept", Effect.Effect<void>>
   /** The host's load the post-land step reads first; absent: idle on 8 cores. */
   load: HostLoad | undefined
+  /** Every load reading taken, with its time on the Effect clock. */
+  readonly readings: Array<{ readonly at: number; readonly load: HostLoad }>
   /** What Git says when the push fails. */
   pushFails: string | undefined
   /** The pushed commit's hash for each push, counted from 1; at first, `abc1234` for every one. */
@@ -68,6 +70,7 @@ export const world = (configs: Readonly<Record<string, LandConfig>> = {}): World
   postLandHold: Effect.void,
   checkHold: { gate: Effect.void, accept: Effect.void },
   load: undefined,
+  readings: [],
   pushFails: undefined,
   headOf: () => "abc1234",
   pushes: 0,
@@ -115,9 +118,11 @@ export const layer = (state: World) =>
         const scripted = state.postLandRun ?? { code: 0, output: "post-land ran\n", report: "post-land: nothing to do\n" }
         return { ...scripted, seconds: 4, log: "/logs/post-land.log" } satisfies PostLanded
       }),
-      hostLoad: Effect.sync(() => {
+      hostLoad: Effect.map(Clock.currentTimeMillis, (at) => {
         state.steps.push("load")
-        return state.load ?? { load: 0.5, cores: 8 }
+        const load = state.load ?? { load: 0.5, cores: 8 }
+        state.readings.push({ at, load })
+        return load
       }),
       push: Effect.fn("Landing.push")(function* (path: string, main: string) {
         state.steps.push(`push ${path}`)

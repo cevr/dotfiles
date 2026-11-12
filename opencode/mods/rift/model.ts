@@ -8,7 +8,7 @@
 // calls this and nothing else.
 import { Clock, Context, Effect, Layer, Option, Predicate, Scope, Semaphore } from "effect"
 import { findRift, resolvePath } from "./find.ts"
-import { CHECK_EVERY, baseOf, calmSince, deferredText, forcedLine, headOf, owe, pay, settled, unitsOf, verdict, type Trigger } from "./owed.ts"
+import { CHECK_EVERY, baseOf, deferredText, forcedLine, headOf, observe, overloaded, owe, pay, settled, unitsOf, verdict, type Debts, type Trigger } from "./owed.ts"
 import {
   GateMissing,
   INTEGRATION,
@@ -211,7 +211,27 @@ export const layer = Layer.effect(
     /** Read-modify-writes of the owed post-land steps, one at a time. */
     const owing = (yield* Semaphore.make(1)).withPermits(1)
     /** The source's owed post-land step, if any. */
-    const owedOf = (source: string) => Effect.map(debts.read, (all) => Option.fromNullishOr(all.find((owed) => owed.source === source)))
+    const owedOf = (source: string) => Effect.map(debts.read, (kept) => Option.fromNullishOr(kept.owed.find((owed) => owed.source === source)))
+    /** Changes the owed steps, one change at a time. */
+    const changeOwed = (change: (owed: Debts["owed"]) => Debts["owed"]) => owing(Effect.flatMap(debts.read, (kept) => debts.write({ ...kept, owed: change(kept.owed) })))
+
+    /** The start of this server's unbroken run of load readings under the cores; the newest reading at or past them is kept with the owed steps. */
+    let calmSince = Option.none<number>()
+    /**
+     * One load reading, from any reader (a land's step, the minute check), into the one settle window
+     * (`observe`, owed.ts): a reading at or past the cores restarts it, and is kept so a restart keeps it too.
+     */
+    const reading = owing(
+      Effect.gen(function* () {
+        const load = yield* landing.hostLoad
+        const now = yield* Clock.currentTimeMillis
+        const kept = yield* debts.read
+        const readings = observe({ calmSince, loadedAt: kept.loadedAt }, load, now)
+        calmSince = readings.calmSince
+        if (overloaded(load)) yield* debts.write({ ...kept, loadedAt: readings.loadedAt })
+        return { load, readings, now }
+      }),
+    )
 
     /**
      * The source's owed post-land step, if one is still owed, in its post-land Rift (POST_LAND), put at
@@ -227,11 +247,10 @@ export const layer = Layer.effect(
           const found = yield* owedOf(source)
           if (Option.isNone(found)) return
           const owed = found.value
-          const load = yield* landing.hostLoad
-          const now = yield* Clock.currentTimeMillis
-          const decided = verdict(owed, load, now, trigger)
+          const { load, readings, now } = yield* reading
+          const decided = verdict(owed, readings, now, trigger)
           if (decided === "defer") {
-            if (trigger === "land") yield* notices.wake(owed.sessionID, { text: deferredText(owed, load), description: "rift land · post-land owed (load)" })
+            if (trigger === "land") yield* notices.wake(owed.sessionID, { text: deferredText(owed, load, readings, now), description: "rift land · post-land owed (load)" })
             return
           }
           const result = yield* Effect.result(
@@ -245,7 +264,7 @@ export const layer = Layer.effect(
             }),
           )
           // Paid once it ran, red or not: a failed run would fail the same at the next check.
-          yield* owing(Effect.flatMap(debts.read, (all) => debts.write(pay(all, source, headOf(owed)))))
+          yield* changeOwed((all) => pay(all, source, headOf(owed)))
           if (result._tag === "Failure") return yield* notices.wake(owed.sessionID, notRun(unitsOf(owed), result.failure))
           const ran = result.success
           const lines = [postLandedText(unitsOf(owed), ran)]
@@ -261,22 +280,16 @@ export const layer = Layer.effect(
     const postLand = (sessionID: string, source: string, main: string, units: ReadonlyArray<Unit>, command: string, base: string, head: string) =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis
-        yield* owing(Effect.flatMap(debts.read, (all) => debts.write(owe(all, { source, main, command, sessionID, land: { base, head, units, at: now } }))))
+        yield* changeOwed((all) => owe(all, { source, main, command, sessionID, land: { base, head, units, at: now } }))
         yield* runOwed(source, "land")
       }).pipe(Effect.catch((failure: RiftFailed) => notices.wake(sessionID, notRun(units, failure))))
 
-    /** Since when the load has stayed under the host's cores, by the periodic check while a step is owed. */
-    let calm = Option.none<number>()
-    /** One periodic check: read the load while a step is owed, and run each owed step once it settled. */
+    /** One periodic check: read the load while a step is owed, and run each owed step once the readings settled. */
     const check = Effect.gen(function* () {
-      const all = yield* debts.read
-      if (all.length === 0) {
-        calm = Option.none()
-        return
-      }
-      const now = yield* Clock.currentTimeMillis
-      calm = calmSince(calm, yield* landing.hostLoad, now)
-      if (!settled(calm, now)) return
+      const all = (yield* debts.read).owed
+      if (all.length === 0) return
+      const { readings, now } = yield* reading
+      if (!settled(readings, now)) return
       yield* Effect.forEach(all, (owed) => runOwed(owed.source, "settled"), { discard: true })
     }).pipe(Effect.catch(() => Effect.void))
     yield* Effect.forkIn(Effect.forever(Effect.andThen(Effect.sleep(CHECK_EVERY), check)), scope)
