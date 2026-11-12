@@ -20,7 +20,8 @@ import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../../testbeds/anthropic-auth.ts"
 import { forkLaunch } from "../../testbeds/gamut/gamut.ts"
 import { pluginDir } from "../daily.ts"
-import { Data, Effect, Option, Schedule } from "effect"
+import { Data, Effect, Option, Result, Schedule } from "effect"
+import { spawnSync } from "bun"
 
 /** Fewer locations set up than opened, after 90 s of looking. */
 class SetupsPending extends Data.TaggedError("SetupsPending")<{ readonly count: number }> {}
@@ -70,6 +71,11 @@ export interface Location {
   readonly served: number
   /** The skills RPC's first answer, NaN without the skills plugin. */
   readonly live: number
+  /**
+   * CPU ms the service's processes spent from `asked` to `live` (NaN without the skills plugin). Unlike the wall
+   * times it barely moves with the host's load: a service starved of CPU waits longer but works no more.
+   */
+  readonly cpu: number
   /** Opened on its own (`Options.alone`), not with the others. */
   readonly alone: boolean
 }
@@ -119,6 +125,43 @@ interface OtlpSpan {
 }
 type OtlpTraces = { readonly resourceSpans?: ReadonlyArray<{ readonly scopeSpans?: ReadonlyArray<{ readonly spans?: ReadonlyArray<OtlpSpan> }> }> }
 const ms = (nanos: string) => Number(BigInt(nanos) / 1000n) / 1000
+
+/** `ps`'s `time` (`[[D-]H:]M:SS.ss`, as macOS writes it) in ms. */
+export const psTime = (text: string): number => {
+  const [clock = "", days = "0"] = text.split("-").toReversed()
+  return clock.split(":").reduce((total, part) => total * 60 + Number(part), 0) * 1000 + Number(days) * 86_400_000
+}
+
+/** One `/proc/<pid>/stat` line's process group and CPU time (user and system), in clock ticks. */
+export const procStat = (line: string) => {
+  // The command name may hold spaces and parentheses: the fields start after its last ')'.
+  const fields = line.slice(line.lastIndexOf(")") + 2).split(" ")
+  return { group: Number(fields[2]), ticks: Number(fields[11]) + Number(fields[12]) }
+}
+
+/** Linux's clock ticks per second for `/proc` CPU times (`getconf CLK_TCK`). */
+const TICKS = 100
+
+/** CPU ms the live processes of a process group have spent: from `/proc` on Linux, `ps` elsewhere. */
+export const groupCpu = (group: number): number => {
+  if (existsSync("/proc/self/stat"))
+    return (
+      (readdirSync("/proc")
+        .filter((name) => /^\d+$/.test(name))
+        // A process may end between the listing and the read: it has nothing left to count.
+        .map((pid) => Result.getOrElse(Result.try(() => procStat(readFileSync(`/proc/${pid}/stat`, "utf8"))), () => ({ group: -1, ticks: 0 })))
+        .filter((stat) => stat.group === group)
+        .reduce((ticks, stat) => ticks + stat.ticks, 0) *
+        1000) /
+      TICKS
+    )
+  const listed = spawnSync(["ps", "-A", "-o", "pgid=,time="]).stdout.toString()
+  return listed
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+    .filter(([pgid]) => Number(pgid) === group)
+    .reduce((total, [, time]) => total + psTime(time ?? "0:00"), 0)
+}
 
 export const measure = async (options: Options): Promise<Measure> => {
   const plugins = options.plugins ?? SERVER_PLUGINS
@@ -225,9 +268,10 @@ export const measure = async (options: Options): Promise<Measure> => {
     const skills = plugins.some((entry) => nameOf(entry) === "skills")
     const open = async (directory: string, alone: boolean): Promise<Location> => {
       const asked = since()
+      const cpuAsked = groupCpu(child.pid)
       await (await fetch(new URL("/api/location", service.url), { headers: headers(directory) })).body?.cancel()
       const served = since()
-      if (!skills) return { directory, asked, served, live: Number.NaN, alone }
+      if (!skills) return { directory, asked, served, live: Number.NaN, cpu: Number.NaN, alone }
       await until(
         async () => {
           const response = await fetch(new URL("/api/rpc/dotfiles-opencode.skills/catalog", service.url), { method: "POST", headers: headers(directory), body: JSON.stringify({ input: {} }) }).catch(() => undefined)
@@ -236,7 +280,8 @@ export const measure = async (options: Options): Promise<Measure> => {
         },
         () => `the skills RPC in ${directory}`,
       )
-      return { directory, asked, served, live: since(), alone }
+      const live = since()
+      return { directory, asked, served, live, cpu: groupCpu(child.pid) - cpuAsked, alone }
     }
     /** A location answers before the host's own plugins end its setups: the next opens once every `Plugin.activate` span is in. */
     const activated = (count: number) =>
@@ -336,7 +381,8 @@ if (import.meta.main) {
   const list = (values: ReadonlyArray<number>) => values.map((value) => value.toFixed(0)).join(" ")
   console.log(`service: listening ${s(result.listening)}, /api/info 200 at ${s(result.ready)} (503 before)`)
   const name = (location: Location) => location.directory.split("/").at(-1)
-  for (const location of result.locations) console.log(`${name(location)}: asked ${s(location.asked)}, served ${s(location.served)}, plugins live ${s(location.live)}`)
+  for (const location of result.locations)
+    console.log(`${name(location)}: asked ${s(location.asked)}, served ${s(location.served)}, plugins live ${s(location.live)} (service CPU ${s(location.cpu)} meanwhile)`)
   console.log(`per location, ms: module loads (PluginSupervisor.resolve) ${list(perLocation(result, "PluginSupervisor.resolve"))}; setups (Plugin.activate) ${list(perLocation(result, "Plugin.activate"))}`)
   console.log(`\nplugin          module load ms per location     setup ms per location (together | alone: ${result.locations.filter((location) => location.alone).map(name).join(" ")})`)
   for (const row of rows(result)) console.log(`${row.plugin.padEnd(16)}${list(row.load).padEnd(32)}${list(row.setup)} | ${list(row.alone)}`)
