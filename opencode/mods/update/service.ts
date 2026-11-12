@@ -1,6 +1,7 @@
 import { Context, type Effect, type Option, Schema } from "effect"
 import type { SessionView } from "./gate.ts"
 import type { Reading } from "./health.ts"
+import type { Placement } from "./placement.ts"
 import type { Record } from "./record.ts"
 import type { Target } from "./target.ts"
 import type { Rejected, Running } from "./update.ts"
@@ -114,6 +115,17 @@ export class Log extends Context.Service<
     readonly line: (text: string) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/update/Log") {}
+
+/** Where the service process runs (`placement.ts`), as the plugin inside it places and reads it. */
+export class Placer extends Context.Service<
+  Placer,
+  {
+    /** Asks the user manager for the service's own scope unless it runs there already; answers where it runs then. */
+    readonly place: Effect.Effect<Placement>
+    /** Where the service runs now. */
+    readonly observe: Effect.Effect<Placement>
+  }
+>()("dotfiles-opencode/update/Placer") {}
 
 /** The background service, as the handoff restarts and reads it from outside. */
 export class Service extends Context.Service<

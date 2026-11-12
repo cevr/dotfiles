@@ -124,7 +124,7 @@ only the resident location's copy acts, so a host runs one updater.
   the resident location, the pool's status answering accounts, which
   spends nothing, and a login, a pool account or a stored credential, for
   each provider the configured models use: the default model, each agent's
-  and the planner's). A provider that had a login before the restart and
+  and the planner's; on Linux, the service in its own scope, below). A provider that had a login before the restart and
   has none after it fails like a plugin; one that had none before either
   is reported (`no anthropic login: sign in with opencode auth login`, in
   the log and the notice), never rolled back, since a rollback cannot bring
@@ -135,6 +135,19 @@ only the resident location's copy acts, so a host runs one updater.
   proven (exit 0, the build recorded good), rolled back (exit 2) or given up
   (exit 1); either failure shows the owner's notice and rejects the target.
   TUIs follow by themselves.
+- **The service's own scope.** On Linux the background service
+  (`opencode serve --service`) asks the user manager, as the plugin loads,
+  to move it into a transient `opencode-service-<pid>.scope` in `app.slice`
+  at `CPUWeight=1000` and `IOWeight=1000` (`mods/update/placement.ts`;
+  `busctl --user call … StartTransientUnit` with its pid). A TUI starts the
+  service from its own cgroup (a herdr unit, an SSH login), where it would
+  share its CPU weight with every agent's job; in its own scope it wins the
+  CPU under load. A fixed `opencode.service` would not hold: a TUI's
+  `service ensure` races any restart for the port. The plugin answers where
+  the service runs (`dotfiles-opencode.update` `placement`), and the health
+  check fails a service that runs outside its scope under the user manager.
+  A Mac has no cgroups; the service runs where its TUI started it, and heavy
+  commands run at nice 10 (Shell policy).
 - **One handoff at a time.** The handoff marks
   `~/.local/state/opencode-update/handoff.json` with its pid before it
   names the staged build installed, and drops the mark once the build is
@@ -1537,7 +1550,7 @@ the `heavy` option: by default `bun test`, `bun run test`, the gate, check,
 typecheck and accept scripts, `npm`/`pnpm`/`yarn` test, `tsc`, `tsgo`,
 `tsgolint`, `vitest`, `jest`, `playwright test`, `turbo`, `go test`,
 `go build`, `go vet`, `golangci-lint` and `cargo` test, build, check,
-clippy, nextest and bench (`heavy.ts`). `go run` and `cargo run` are not:
+clippy, nextest and bench, and `du` (`heavy.ts`). `go run` and `cargo run` are not:
 what they start usually lives on, and their build is mostly cached.
 A pattern's last word also matches its `:` scripts (`bun run test:e2e`).
 The launchers agents put in front are read through, with their options and
@@ -1554,7 +1567,9 @@ machine at once is the orchestrator's to size (the orchestrate skill's
 The policy rides the shell's `create.before` hook, which sees every command
 OpenCode spawns, the user's `!` too. For a heavy one it swaps only the shell
 for a launcher of the same file name (`~/.cache/opencode/guard-launchers/<hash>/zsh`),
-which runs `exec nice -n 10 '/bin/zsh' "$@"`; where `systemd-run --user
+which runs `exec nice -n 10 '/bin/zsh' "$@"`; on Linux with `ionice` on the
+PATH it adds `ionice -c3`, the idle I/O class, so a heavy check's disk
+reads wait behind the service's. Where `systemd-run --user
 --scope` works (probed once), it runs the shell in a transient scope with
 `MemoryMax=12G` and `CPUWeight=20` (`nice` has no effect between cgroups).
 The command, its echo in the transcript and the permission check stay as

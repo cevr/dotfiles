@@ -166,6 +166,7 @@
         "mods/update/process/mark.test.ts",
         "mods/update/process/pin.test.ts",
         "mods/update/process/service-layer.test.ts",
+        "mods/update/process/placement.test.ts",
         "mods/orchestrate/git/fleet-record.test.ts"
       ],
       "rules": {

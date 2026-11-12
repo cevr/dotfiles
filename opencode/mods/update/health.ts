@@ -1,4 +1,5 @@
 import { Array as Arr, Data, Option } from "effect"
+import { describePlacement, Placement } from "./placement.ts"
 
 /** A plugin as the service lists it (`/api/plugin`): where it loads from, and whether it runs. */
 export interface Listed {
@@ -19,6 +20,11 @@ export interface Reading {
   readonly providers: ReadonlyArray<string>
   /** The providers with a usable login: an account in the pool, or a stored credential or key. */
   readonly logins: ReadonlyArray<string>
+  /**
+   * Where the service runs, as the update plugin in it answers (`placement.ts`); none when it does
+   * not answer, as a build from before the placement does not.
+   */
+  readonly placement: Option.Option<Placement>
 }
 
 /** The restarted service's health. */
@@ -46,7 +52,9 @@ const nameOf = (path: string): string => path.split("/").filter((part) => part !
  * provider the configured models use. A plugin not listed yet is reported as not loaded; the caller
  * reads again until its deadline before it believes that. A provider with no login that had one
  * before the restart (`before`, the providers the old service had a login for) is sick, as a
- * failed plugin is; one that had none before is `Unsigned`.
+ * failed plugin is; one that had none before is `Unsigned`. Where a user systemd manages the
+ * service and it answers that it runs outside its own scope (`placement.ts`), it is sick for good:
+ * it shares its CPU weight with every TUI and job again.
  */
 export const healthOf = (reading: Reading, before: ReadonlyArray<string>): Health => {
   for (const path of reading.configured) {
@@ -55,6 +63,8 @@ export const healthOf = (reading: Reading, before: ReadonlyArray<string>): Healt
     const failure = listed.value.failed
     if (Option.isSome(failure)) return Health.Sick({ plugin: nameOf(path), cause: failure.value, final: true })
   }
+  const unplaced = Option.filter(reading.placement, Placement.guards.Unplaced)
+  if (Option.isSome(unplaced)) return Health.Sick({ plugin: "placement", cause: `the service runs ${describePlacement(unplaced.value)}`, final: true })
   if (!Option.exists(reading.accounts, (count) => count > 0))
     return Health.Sick({ plugin: "pool", final: false, cause: Option.match(reading.accounts, { onNone: () => "the status RPC did not answer", onSome: () => "the status RPC answered with no accounts" }) })
   const missing = [...new Set(reading.providers)].filter((provider) => !reading.logins.includes(provider))
