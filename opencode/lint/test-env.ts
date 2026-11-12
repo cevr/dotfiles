@@ -2,9 +2,9 @@
 //
 // `dotfiles/no-module-env-in-tests`: a test file that writes the environment
 // while it is loaded changes it for every other test file the same `bun test`
-// process loads after it, and never puts it back. Set it in a hook or a test
-// and restore it there (beforeAll/afterAll), or pass the value to the code
-// under test instead.
+// process loads after it, and never puts it back. Pass the value to the code
+// under test instead (a child's own env object, an option, a service), as
+// effect/noTestGlobals asks of every test-global write, at load time or not.
 //
 // "While it is loaded" is module scope, a static class block or field, an
 // IIFE, and the body of a `describe` callback (which runs at collection,
@@ -139,7 +139,7 @@ const runsAtLoad = (node: Node): boolean => {
 }
 
 const MESSAGE =
-  "A test file writes process.env while it loads (module scope or a describe body), so it leaks into every later test file in the run: set it in beforeAll and restore it in afterAll, or pass the value in."
+  "A test file writes process.env while it loads (module scope or a describe body), so it leaks into every later test file in the run: pass the value in (a child's own env object, an option or a service), never write the process's."
 
 const noModuleEnvInTests = {
   create: (context: Context) => {
