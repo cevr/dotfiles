@@ -6,6 +6,7 @@
 // is unreachable.
 import { Effect, Layer, Schema } from "effect"
 import { LeaseAnswer, type LeaseMessage } from "../lease.ts"
+import { PushAnswer, type PushRequest } from "../push.ts"
 import { Peers, PeerUnreachable } from "../service.ts"
 import { Report } from "../status.ts"
 
@@ -34,8 +35,12 @@ export const sshCommand = (destination: string): ReadonlyArray<string> => [
 /** How long a lease message's SSH run may take, the handshake included: past it the child is stopped (the asker stopped waiting earlier, model.ts). */
 export const LEASE_TIMEOUT_MS = 15_000
 
+/** How long a push request's SSH run may take: the peer plans on its pool, which reads its accounts. */
+export const PUSH_TIMEOUT_MS = 30_000
+
 const decodeReport = Schema.decodeUnknownOption(Schema.fromJsonString(Report))
 const decodeAnswer = Schema.decodeUnknownOption(Schema.fromJsonString(LeaseAnswer))
+const decodePush = Schema.decodeUnknownOption(Schema.fromJsonString(PushAnswer))
 
 /** The last line of what a failed command wrote, for the log and the pane. */
 const lastLine = (text: string) =>
@@ -51,6 +56,7 @@ export const layer = (peers: ReadonlyArray<Peer>, timeoutMs = TIMEOUT_MS) =>
     Effect.gen(function* () {
       const program = yield* Effect.promise(() => Bun.file(new URL("./report.ts", import.meta.url)).text())
       const leaseProgram = yield* Effect.promise(() => Bun.file(new URL("./lease.ts", import.meta.url)).text())
+      const pushProgram = yield* Effect.promise(() => Bun.file(new URL("./push.ts", import.meta.url)).text())
       const byName = new Map(peers.map((peer) => [peer.name, peer]))
 
       const run = (peer: Peer, text = program, timeout = timeoutMs) =>
@@ -94,6 +100,18 @@ export const layer = (peers: ReadonlyArray<Peer>, timeoutMs = TIMEOUT_MS) =>
             if (answer._tag === "None") return yield* new PeerUnreachable({ peer: name, message: "its answer is not a lease's" })
             return answer.value
           }).pipe(Effect.withSpan("Peers.lease", { attributes: { peer: name } })),
+        push: (name: string, request: PushRequest) =>
+          Effect.gen(function* () {
+            const peer = byName.get(name)
+            if (peer === undefined) return yield* new PeerUnreachable({ peer: name, message: "not a peer" })
+            const text = `globalThis.POOL_PUSH = ${JSON.stringify(request)};\n${pushProgram}`
+            const { out, err, code, killed } = yield* run(peer, text, PUSH_TIMEOUT_MS)
+            if (killed) return yield* new PeerUnreachable({ peer: name, message: `no answer in ${PUSH_TIMEOUT_MS / 1000}s` })
+            if (code !== 0) return yield* new PeerUnreachable({ peer: name, message: lastLine(err) ?? `exited ${code}` })
+            const answer = decodePush(out)
+            if (answer._tag === "None") return yield* new PeerUnreachable({ peer: name, message: "its answer is not a push's" })
+            return answer.value
+          }).pipe(Effect.withSpan("Peers.push", { attributes: { peer: name } })),
       }
     }),
   )

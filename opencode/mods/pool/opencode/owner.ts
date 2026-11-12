@@ -73,4 +73,5 @@ export const layer = (host: Host) =>
       Stream.retry(Schedule.spaced(RESUBSCRIBE)),
       Stream.catchCause(() => Stream.empty),
     ),
+    root: (sessionID) => rootOf(host, sessionID),
   })
