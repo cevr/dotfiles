@@ -118,9 +118,6 @@ const sim = Bun.serve({
   },
 })
 
-/** The proxy's and the test's clock, in epoch ms. */
-const now = () => Date.now()
-
 const until = async <A>(read: () => Promise<A> | A, done: (value: A) => boolean, label: (last: A) => string, ms: number): Promise<A> => {
   const deadline = Date.now() + ms
   let last = await read()
@@ -167,17 +164,16 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
   /**
    * The service as the TUI reaches it: every request passes to the service
    * the service file names now, except the event stream while `held` (503, as
-   * a service between processes answers) and the read of what runs while
-   * `refuseActiveUntil` (503 `service_starting`, as a service still booting
-   * answers) or while `failActive` counts down (500). `drop` ends every open
-   * event stream and holds new ones.
+   * a service between processes answers) and the TUI's next reads of what runs
+   * while `refuseActive` (503 `service_starting`, as a service still booting
+   * answers) or `failActive` (500) counts down. Counted in the TUI's own reads,
+   * never on a clock it may not reach in time. `drop` ends every open event
+   * stream and holds new ones.
    */
   let held = false
-  let refuseActiveUntil = 0
-  /** The refusal window, opened at the TUI's first read of what runs once the stream is back, not on the clock before it. */
-  let refuseActiveFor = 0
+  let refuseActive = 0
   let failActive = 0
-  /** The TUI's reads of what runs turned away (refused or failed), and when the service first answered one: SETTLE_MS runs from then. */
+  /** The TUI's reads of what runs turned away, and when the service first answered one: SETTLE_MS runs from then. */
   let activeTurnedAway = 0
   let activeServedAt = 0
   const streams = new Set<AbortController>()
@@ -190,11 +186,8 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
       const event = url.pathname === "/api/event"
       if (event && held) return unavailable()
       const reading = url.pathname === "/api/session/active"
-      if (reading && refuseActiveFor > 0) {
-        refuseActiveUntil = now() + refuseActiveFor
-        refuseActiveFor = 0
-      }
-      if (reading && now() < refuseActiveUntil) {
+      if (reading && refuseActive > 0) {
+        refuseActive--
         activeTurnedAway++
         return unavailable()
       }
@@ -203,7 +196,7 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
         activeTurnedAway++
         return Response.json({ code: "internal" }, { status: 500 })
       }
-      if (reading && activeServedAt === 0) activeServedAt = now()
+      if (reading && activeServedAt === 0) activeServedAt = Date.now()
       const target = await ready(serviceFile, () => "the service behind the proxy")
       const headers = new Headers(request.headers)
       headers.delete("host")
@@ -307,9 +300,9 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
   /**
    * One restart under a TUI that shows a new parent with two working
    * children. After the new service serves, the proxy refuses the TUI's read
-   * of what runs for `refuseActiveMs` and fails the next `failActiveReads`.
+   * of what runs `refuseActiveReads` times and fails the next `failActiveReads`.
    */
-  const scenario = async (name: string, { refuseActiveMs = 0, failActiveReads = 0 }: { readonly refuseActiveMs?: number; readonly failActiveReads?: number } = {}) => {
+  const scenario = async (name: string, { refuseActiveReads = 0, failActiveReads = 0 }: { readonly refuseActiveReads?: number; readonly failActiveReads?: number } = {}) => {
     const OpenCode = await boot()
     const service = await ready(serviceFile, () => "the service")
     const client = OpenCode.make({ baseUrl: service.url, headers: auth(service) })
@@ -349,7 +342,7 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
       const running = await active(after)
       expect(children.filter((child) => child.id in running)).toEqual([])
 
-      refuseActiveFor = refuseActiveMs
+      refuseActive = refuseActiveReads
       failActive = failActiveReads
       activeTurnedAway = 0
       activeServedAt = 0
@@ -363,12 +356,11 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
         (last) => `${name}: the dock still shows ${stale(last).join(", ") || "a subagent count"} (the new service answered the TUI's read of what runs at ${activeServedAt}, 0 for never; ${activeTurnedAway} reads turned away):\n${last}`,
         START_MS + SETTLE_MS,
       )
-      expect(now() - activeServedAt, `${name}: ms from the TUI's first answered read of what runs until the dock settled`).toBeLessThan(SETTLE_MS)
-      if (refuseActiveMs > 0 || failActiveReads > 0) expect(activeTurnedAway, `${name}: reads of what runs turned away`).toBeGreaterThan(0)
+      expect(Date.now() - activeServedAt, `${name}: ms from the TUI's first answered read of what runs until the dock settled`).toBeLessThan(SETTLE_MS)
+      if (refuseActiveReads > 0 || failActiveReads > 0) expect(activeTurnedAway, `${name}: reads of what runs turned away`).toBeGreaterThan(0)
     } finally {
       held = false
-      refuseActiveUntil = 0
-      refuseActiveFor = 0
+      refuseActive = 0
       failActive = 0
       await host.stop()
     }
@@ -376,7 +368,7 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
 
   test("rows of turns that ended while the TUI was away leave the dock once it reconnects", () => scenario("reconnect"), TIMEOUT_MS)
 
-  test("they leave it when the new service still boots as the TUI reconnects, as the owner's did", () => scenario("booting", { refuseActiveMs: 3_000 }), TIMEOUT_MS)
+  test("they leave it when the new service still boots as the TUI reconnects, as the owner's did", () => scenario("booting", { refuseActiveReads: 3 }), TIMEOUT_MS)
 
   test("they leave it when the TUI's first read of what runs after the reconnect fails", () => scenario("failed-read", { failActiveReads: 1 }), TIMEOUT_MS)
 })

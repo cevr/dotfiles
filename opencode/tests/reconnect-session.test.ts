@@ -147,14 +147,11 @@ const until = async <A>(read: () => Promise<A> | A, done: (value: A) => boolean,
   let last = await read()
   while (!done(last)) {
     if (Date.now() > deadline) return expect.unreachable(label(last))
-    await hold(250)
+    await Bun.sleep(250)
     last = await read()
   }
   return last
 }
-
-/** A wait after something the test saw happen, never one that stands in for it; none when `ms` has passed. */
-const hold = (ms: number) => Bun.sleep(Math.max(0, ms))
 
 /**
  * The leader, then `key`, until `opened` shows. A TUI on a loaded host can drop
@@ -411,14 +408,14 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
     // A new service process, not the old one answering.
     expect((await pid(after)).pid).not.toBe(before.pid)
     // Every deadline after this runs from when the TUI can be served again.
-    await hold(servesAt - Date.now())
+    await until(() => Date.now(), (now) => now >= servesAt, () => `${name}: the booting window`, BOOTING_MS + 1_000)
     await until(screen, showing, (last) => `${name}: ${BACK_WITHIN_MS / 1000}s after the restart the TUI does not show ${marker}:\n${last}`, BACK_WITHIN_MS)
     if (draft) await until(screen, (text) => text.includes(draftText) && showing(text), (last) => `${name}: the draft is gone after the restart:\n${last}`, BACK_WITHIN_MS)
     // And it is live on the new service: a turn sent there shows up, so the screen is not a stale frame.
     const live = OpenCode.make({ baseUrl: after.url, headers: { authorization: `Basic ${btoa(`opencode:${after.password}`)}` } })
     if (gone !== undefined) {
       // Nothing can run there now; the session stays on screen, and stays.
-      await hold(5_000)
+      await Bun.sleep(5_000)
       expect(showing(await screen())).toBe(true)
       await host.stop()
       expect(badFrames, `${name}: error toast during restart`).toEqual([])
@@ -481,7 +478,7 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
         if (mode !== "ready") {
           const said = await until(screen, (text) => WAITING.test(text) || GAVE_UP.test(text), (last) => `${name}: no waiting line while the service cannot serve:\n${last}`, START_MS)
           expect(said, `${name}: no waiting line while the service cannot serve`).toMatch(WAITING)
-          await hold(BOOTING_MS / 2)
+          await Bun.sleep(BOOTING_MS / 2)
           proxy.up()
           unavailableUntil = 0
         }
@@ -605,10 +602,10 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
         await hostCall(socket, { op: "keys", names: ["enter"] })
       }
       if (cache !== "uncached") await submit()
-      await hold(BOOTING_MS / 2)
-      proxy.up()
-      await hold(BOOTING_MS / 2)
-      unavailableUntil = 0
+      const servesAt = Date.now() + BOOTING_MS
+      unavailableUntil = servesAt
+      setTimeout(proxy.up, BOOTING_MS / 2)
+      await until(() => Date.now(), (now) => now >= servesAt, () => "the booting window", BOOTING_MS + 1_000)
       if (cache === "uncached") {
         await until(screen, (text) => text.includes("Reconnect parent") && text.includes("sim-model") && !/\bSessions\b|Connection lost|Reconnecting to the server/.test(text), (last) => `uncached selection did not wait for its session:\n${last}`, BACK_WITHIN_MS)
         await submit()
