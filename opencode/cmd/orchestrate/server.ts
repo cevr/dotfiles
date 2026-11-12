@@ -21,7 +21,9 @@
  *   user's instructions word for word.
  * - Sabbath: from Friday sunset to 30 minutes after Saturday's at the owner's
  *   place, no subagent starts and a running subagent's next tool call is
- *   refused so it ends its turn. The main session answers as always.
+ *   refused so it ends its turn. The main session answers as always. A turn
+ *   the server resumed after a restart in the rest makes no model request
+ *   until the rest ends (restart-hold.ts).
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `log`: path of the call log, default `~/.cache/orchestrate/opencode-agents.jsonl`.
@@ -128,7 +130,7 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
+import { Clock, Context, Effect, Layer, Option, Schema, SchemaGetter, Stream } from "effect"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { QUEUE } from "@dotfiles/opencode-queue/queue"
@@ -159,7 +161,8 @@ import { DEFAULT_CADENCE, type LandEntry, type LandTarget, type Refused } from "
 import * as GitBranches from "@dotfiles/opencode-orchestrate/git/branches"
 import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import { definitions, MACHINE_BLOCK, ROLE_CACHE_TTL, ROLES } from "@dotfiles/opencode-orchestrate/role"
-import { KNOWLTON, local, Place, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
+import { heldUntil } from "@dotfiles/opencode-orchestrate/restart-hold"
+import { KNOWLTON, local, Place, rest, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
 import {
   type Branches,
   type CallLog,
@@ -688,6 +691,21 @@ export const make = (
           })
         }
       })
+
+      // A turn the server resumed after a restart inside the Sabbath rest (a crash, a restart by hand) makes no
+      // model request until the rest ends (restart-hold.ts); any other request, and every one outside it, goes at once.
+      const sabbathClock = Option.match(Option.fromNullishOr(options.now), { onNone: () => Clock.currentTimeMillis, onSome: Effect.succeed })
+      yield* ctx.session.hook("model.request", (event) =>
+        Effect.gen(function* () {
+          const at = yield* sabbathClock
+          if (!rest(at, options.place).on) return
+          const messages: ReadonlyArray<unknown> = yield* ctx.session.context({ sessionID: event.sessionID }).pipe(Effect.orElseSucceed(() => []))
+          const until = heldUntil(messages, at, options.place)
+          if (Option.isNone(until)) return
+          yield* Effect.logInfo(`orchestrate: ${event.sessionID}'s turn, resumed after a restart in the Sabbath, waits until ${local(until.value, options.place)}`)
+          yield* Effect.sleep(until.value - at)
+        }),
+      )
 
       // The keep-list goes after the conversation as its own user message, which the host's summary prompt follows,
       // so the compaction request keeps the conversation's cached prefix (system, tools and messages as the normal

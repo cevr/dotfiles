@@ -500,7 +500,7 @@ role's session outlives it; the main session keeps the provider's hour),
 routes each subagent call to a role, starts a new planner on the newest Fable first, starts a new Opus start the pace holds on
 Codex instead, latches one both hold, writes each role's start and hand-back to its unit's
 `log.md`, and stops agent work over the Sabbath. Its
-options are `log`, `now`, `place`, `fullAgent`, `codex`, `planner`, `unitLog`, `skill`, `ledger`, `cadence`, `guard` and `fleet` (the checkouts an accepted verdict records the verified target from; The update).
+options are `log`, `now`, `place`, `fullAgent`, `codex`, `planner`, `unitLog`, `drops`, `skill`, `ledger`, `cadence`, `guard` and `fleet` (the checkouts an accepted verdict records the verified target from; The update).
 An absent option takes its default. A
 malformed one stops the plugin at setup, with a message that names it.
 
@@ -594,6 +594,15 @@ round (revived). The command's text never counts, so a dir named through a
 variable or after a `cd`, or a drop written after its call answered
 (backgrounded, timed out), ends its unit once; a refused move writes no
 line, and an older drop under a later move is no drop.
+
+A restart in the Sabbath rest (a crash, a restart by hand; the update never
+restarts then) resumes every turn the old server left running, each opened
+by the fork's synthetic notice marked `notice: "restart"`. The
+`model.request` hook (`restart-hold.ts`) holds each model request of a turn
+whose notice was written within the rest until the rest ends (30 minutes
+after Saturday's sunset, the window `sabbath.ts` gives the update's gate and
+the latch), and the server log says so. A turn resumed before the rest, a
+prompt's turn, and every request outside the rest go at once.
 
 The worker's ceiling (`capEffort` in `role.ts`): a call that runs as the
 worker on a model at `#max`, asked by the call or inherited (a new worker

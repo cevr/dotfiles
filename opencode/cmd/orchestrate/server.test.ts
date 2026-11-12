@@ -9,7 +9,9 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Effect, Layer, Option, Queue, Schema, Stream } from "effect"
+import { Clock, Effect, Fiber, Layer, Option, Queue, Schema, Stream } from "effect"
+import { TestClock } from "effect/testing"
+import { RESTART_NOTICE } from "@dotfiles/opencode-orchestrate/restart-hold"
 import { type Latch, type LatchAsk, Opened } from "@dotfiles/opencode-wake/latch"
 import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import { KEEP } from "@dotfiles/opencode-orchestrate/compaction"
@@ -34,7 +36,7 @@ import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { NO_INFLIGHT, poolPace } from "@dotfiles/opencode-pool/pace"
 import type { AccountStatus } from "@dotfiles/opencode-pool/status"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
-import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
+import { KNOWLTON, rest } from "@dotfiles/opencode-orchestrate/sabbath"
 import { Branches, Findings, type FindingsRead, Liveness, type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import { DEFAULT_CADENCE, RULES } from "@dotfiles/opencode-orchestrate/machine"
 import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
@@ -133,6 +135,8 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     const rpc: Record<string, Record<string, (input: unknown) => Effect.Effect<unknown>>> = {}
     // The host's event stream, which the test publishes into.
     const published = yield* Queue.unbounded<Record<string, unknown>>()
+    // Each session's messages as the host's `session.context` answers them, which the test sets.
+    const contexts = new Map<string, ReadonlyArray<unknown>>()
     const register = (name: string, callback: Hook) =>
       Effect.sync(() => {
         ;(hooks[name] ??= []).push(callback)
@@ -148,7 +152,11 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
           }),
         reload: () => Effect.void,
       },
-      session: { hook: register, get: () => Effect.succeed({ location: { directory: "/work" } }) },
+      session: {
+        hook: register,
+        get: () => Effect.succeed({ location: { directory: "/work" } }),
+        context: (input: { readonly sessionID: string }) => Effect.sync(() => [...(contexts.get(input.sessionID) || [])]),
+      },
       location: { directory: "/work" },
       shell: { hook: register },
       event: { subscribe: () => Stream.fromQueue(published) },
@@ -271,7 +279,11 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     }
     /** A session's compaction ended: the host's durable event, with its id. */
     const compacted = (sessionID: string, id: string) => Queue.offer(published, { id, type: "session.compaction.ended", data: { sessionID } })
-    return { call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, draft, nudges, notes, ledger, briefs, compacted }
+    /** One model request of the session through the `model.request` hooks: done once every hook let it go. */
+    const modelRequest = Effect.fn("OrchestrateServerTest.modelRequest")(function* (sessionID: string) {
+      for (const hook of hooks["model.request"] || []) yield* hook({ sessionID, agent: "build", kind: "primary", headers: {} })
+    })
+    return { contexts, modelRequest, call, finish, logged, hooks, transforms, runTool, ran, open, kept, subagent, idle, enqueue, draft, nudges, notes, ledger, briefs, compacted }
   })
 
 /** Waits for the plugin's background work: `check` passes within a second. */
@@ -2580,6 +2592,49 @@ describe("the batch machine", () => {
     ])
     expect(greenOf([{ rift: "alpha" }], "Landed 1 Rift(s) as one push")).toEqual([{ rift: "alpha" }])
   })
+})
+
+// orch-late-drop item 2: a restart in the Sabbath rest (a crash, a restart by hand) resumes the turns the old server
+// left running; each waits for the rest's end before its next model request. Outside the rest it goes as today.
+describe("a turn resumed after a restart", () => {
+  const FRIDAY_NIGHT = Date.parse("2026-10-30T23:00:00Z")
+  const END = rest(FRIDAY_NIGHT, KNOWLTON).end
+  const resumed = (created: number) => [
+    { type: "user", text: "go", time: { created: created - 3_600_000 } },
+    { type: "synthetic", text: "The server restarted while you were working.", metadata: { notice: RESTART_NOTICE }, time: { created } },
+  ]
+  /** The plugin on the test clock at `now`, with `root`'s turn resumed by a restart notice written then. */
+  const restarted = (now: number) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(now)
+      const plugin = yield* start({})
+      plugin.contexts.set("root", resumed(now))
+      return plugin
+    })
+
+  test("in the rest, the resumed turn makes no model request until the rest ends; a prompt's turn asks at once", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* restarted(FRIDAY_NIGHT)
+        plugin.contexts.set("other", [{ type: "user", text: "go", time: { created: FRIDAY_NIGHT } }])
+        yield* plugin.modelRequest("other")
+        const held = yield* Effect.forkChild(plugin.modelRequest("root"))
+        yield* TestClock.adjust(END - FRIDAY_NIGHT - 60_000)
+        expect(held.pollUnsafe()).toBeUndefined()
+        yield* TestClock.adjust(60_000)
+        yield* Fiber.join(held)
+        expect(yield* Clock.currentTimeMillis).toBe(END)
+      }).pipe(Effect.provide(TestClock.layer())),
+    ))
+
+  test("outside the rest, the resumed turn asks at once", () =>
+    scenario(
+      Effect.gen(function* () {
+        const plugin = yield* restarted(Date.parse(WEDNESDAY))
+        yield* plugin.modelRequest("root")
+        expect(yield* Clock.currentTimeMillis).toBe(Date.parse(WEDNESDAY))
+      }).pipe(Effect.provide(TestClock.layer())),
+    ))
 })
 
 describe("the options", () => {
