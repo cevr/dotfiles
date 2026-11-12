@@ -683,35 +683,76 @@ describe("the machine's stories", () => {
     expect((await run([[Start.make({ role: "verifier", name: "review-of-pr", round: 1, direct: false }), 0]])).last).toEqual({ events: [] })
   })
 
-  test("a Rift is its unit's by the unit the land names, its branch, else its own name; anything else is no unit", () => {
+  test("a Rift is its unit's by the unit the land names, the Rift its implementor was started on, its branch, else its own name; anything else is no unit", () => {
     // By name, branch, workrift's Rift name or path: the last segment, by the name rule.
     expect(unitOfEntry("auth", ["auth", "web"])).toBe("auth")
     expect(unitOfEntry("feat/auth", ["auth", "web"])).toBe("auth")
     expect(unitOfEntry("p5/auth", ["auth", "web"])).toBe("auth")
     expect(unitOfEntry("feat-auth", ["auth", "web"])).toBe("auth")
     expect(unitOfEntry("/home/me/.rifts/repo/auth/", ["auth"])).toBe("auth")
-    // A later round's numbered Rift or branch is its unit's, unless the full name is a unit.
+    // A later round's numbered Rift or branch is its unit's.
     expect(unitOfEntry("reset-use-3", ["reset-use", "land-upstream"])).toBe("reset-use")
     expect(unitOfEntry("feat/land-upstream-2", ["reset-use", "land-upstream"])).toBe("land-upstream")
     expect(unitOfEntry("/u/.rifts/dotfiles/land-upstream-2", ["reset-use", "land-upstream"])).toBe("land-upstream")
-    expect(unitOfEntry("auth-2", ["auth", "auth-2"])).toBe("auth-2")
     expect(unitOfEntry("fix-auth", ["auth", "fix-auth"])).toBe("fix-auth")
+    expect(unitOfEntry("upstream-1111", ["upstream-1111", "web"])).toBe("upstream-1111")
+    expect(unitOfEntry("upstream-1111-2", ["upstream-1111", "web"])).toBe("upstream-1111")
     // Unknown is none: another prefix, another word, a suffix that is no round.
     expect(unitOfEntry("wf10-auth", ["auth"])).toBeUndefined()
     expect(unitOfEntry("fix-auth", ["auth"])).toBeUndefined()
     expect(unitOfEntry("author", ["auth"])).toBeUndefined()
     expect(unitOfEntry("auth-2x", ["auth"])).toBeUndefined()
-    // Two readings naming two units: none, never a guess.
+    // A name read two ways, as one unit's exact name and another's round, is none, never the exact-name guess
+    // (unit-map r1 M1: db's round-2 Rift `db-2` on `p5/db-2`, with a unit `db-2` in the run).
+    expect(unitOfEntry({ rift: "/u/.rifts/app/db-2", branch: "p5/db-2" }, ["db", "db-2"])).toBeUndefined()
+    expect(unitOfEntry("db-2", ["db", "db-2"])).toBeUndefined()
+    expect(unitOfEntry("db-2-3", ["db", "db-2"])).toBe("db-2")
     expect(unitOfName("feat-web-2", ["web-2", "feat-web"])).toBeUndefined()
     expect(unitOfName("feat-web-2", ["web", "feat-web"])).toBeUndefined()
-    expect(unitOfName("feat-web", ["web", "feat-web"])).toBe("feat-web")
+    expect(unitOfName("feat-web", ["web", "feat-web"])).toBeUndefined()
+    // The Rift a unit's implementor was started on is that unit's, by path or name, whatever it is called or on.
+    const rifts = { db: ["/u/.rifts/app/db-2"], "db-2": ["/u/.rifts/app/db-2-first"] }
+    expect(unitOfEntry({ rift: "/u/.rifts/app/db-2", branch: "p5/db-2" }, ["db", "db-2"], rifts)).toBe("db")
+    expect(unitOfEntry("db-2", ["db", "db-2"], rifts)).toBe("db")
+    expect(unitOfEntry("/u/.rifts/app/db-2-first/", ["db", "db-2"], rifts)).toBe("db-2")
+    // Two units started on one Rift: none.
+    expect(unitOfEntry("/u/.rifts/app/x", ["db", "web"], { db: ["/u/.rifts/app/x"], web: ["/u/.rifts/app/x"] })).toBeUndefined()
     // The branch read from the Rift decides, whatever the Rift is called; a branch of no unit is none.
     expect(unitOfEntry({ rift: "/u/.rifts/app/scratch-17", branch: "feat/web-3" }, ["api", "web"])).toBe("web")
     expect(unitOfEntry({ rift: "/u/.rifts/app/api", branch: "feat/web" }, ["api", "web"])).toBe("web")
     expect(unitOfEntry({ rift: "/u/.rifts/app/web", branch: "integrate" }, ["api", "web"])).toBeUndefined()
-    // The unit the land names is the unit, when it is one.
-    expect(unitOfEntry({ rift: "/u/.rifts/app/scratch", unit: "web" }, ["api", "web"])).toBe("web")
+    // The unit the land names is the unit, when it is one, over any Rift a start named.
+    expect(unitOfEntry({ rift: "/u/.rifts/app/db-2", unit: "db-2" }, ["db", "db-2"], rifts)).toBe("db-2")
     expect(unitOfEntry({ rift: "/u/.rifts/app/web", unit: "nope" }, ["api", "web"])).toBeUndefined()
+  })
+
+  test("an implementor's description names its Rift as (rift: <path>); its unit keeps each round's", async () => {
+    expect(startOf("implementor", "implementor db r2 (rift: /u/.rifts/app/db-2/)")).toEqual(Start.make({ role: "implementor", name: "db", round: 2, direct: false, rift: "/u/.rifts/app/db-2" }))
+    expect(startOf("implementor", "implementor db r2 (folds: db/M1) (rift: ~/.rifts/app/db-2)")).toMatchObject({ name: "db", folds: ["db/M1"], rift: "~/.rifts/app/db-2" })
+    expect(startOf("implementor", "db r2 implementor (rift: /u/.rifts/app/db-2)")).toMatchObject({ name: "db", round: 2, rift: "/u/.rifts/app/db-2" })
+    expect(startOf("verifier", "verifier batch-1 r1 (rift: /u/x)")).not.toHaveProperty("rift")
+    const { state } = await run([[startOf("implementor", "implementor db r1 (rift: /u/.rifts/app/db)")!, 0], [startOf("implementor", "implementor db r2 (rift: /u/.rifts/app/db-2)")!, MIN]])
+    expect(state.units.db?.rifts).toEqual(["/u/.rifts/app/db", "/u/.rifts/app/db-2"])
+  })
+
+  test("unit-map r1 M1: with units db and db-2, db's round-2 Rift lands as db when its start named it, and as no unit by name alone", async () => {
+    const steps: Array<readonly [Command, number]> = [
+      [startOf("implementor", "implementor db-2 r1 (rift: /u/.rifts/app/db-2-first)")!, 0],
+      [startOf("implementor", "implementor db r2 (rift: /u/.rifts/app/db-2)")!, 0],
+      [ready("db-2"), MIN],
+      [ready("db"), MIN],
+    ]
+    // By the Rift the start named: db's, never db-2's.
+    const alone = await run([...steps, [Land.make({ rifts: ["/u/.rifts/app/db-2"], departs: "probe" }), 2 * MIN], [Landed.make({ rifts: [{ rift: "/u/.rifts/app/db-2", branch: "p5/db-2" }] }), 2 * MIN]])
+    expect(alone.last).toEqual({ events: [expect.objectContaining({ _tag: "BatchLanded", units: ["db"] })] })
+    // With no start naming it, the name and branch read two ways: no unit, so the land is none of the machine's.
+    const unnamed: Array<readonly [Command, number]> = [[impl("db-2"), 0], [impl("db", 2), 0], [ready("db-2"), MIN], [ready("db"), MIN]]
+    expect((await run([...unnamed, [Land.make({ rifts: [{ rift: "/u/.rifts/app/db-2", branch: "p5/db-2" }] }), 2 * MIN]])).last).toEqual({ events: [] })
+    // The refusal of a partial land names each ready unit's Rift as { path, unit }, from the starts when they named one.
+    const partial = await run([...steps, [Land.make({ rifts: ["/u/.rifts/app/db-2"] }), 2 * MIN]])
+    expect("refused" in partial.last && partial.last.message).toContain(
+      'rifts: [{ path: "/u/.rifts/app/db-2-first", unit: "db-2" }, { path: "/u/.rifts/app/db-2", unit: "db" }]',
+    )
   })
 
   test("a later round in a Rift of another name lands as its unit by its branch or the unit the land names; one it cannot place is no unit's, and the land is partial", async () => {
@@ -743,7 +784,7 @@ describe("the machine's stories", () => {
     expect("refused" in refused.last && refused.last.message).toContain('rifts: ["reset-use-3", { path: "/u/.rifts/dotfiles/lu", unit: "nope" }], departs')
   })
 
-  test("property: over arbitrary unit names and numbered rounds, a land's entry is its own unit's, an exact name's, or none; with no name another's extension, always its own", async () => {
+  test("property: over arbitrary unit names, colliding ones included (db and db-2, a and feat-a), and numbered rounds, a land's entry is its own unit's or none; by the Rift its start named or { path, unit }, always its own", async () => {
     const random = rng(1112)
     const pick = <A,>(list: ReadonlyArray<A>): A => list[Math.floor(random() * list.length)]!
     // Names from a tiny alphabet, with numbered and `feat-` parts, so names collide: `a`, `a-2`, `feat-a`, `a-b`.
@@ -753,11 +794,17 @@ describe("the machine's stories", () => {
         .join("-")
     const extends_ = (longer: string, shorter: string) => longer.startsWith(`feat-${shorter}`) || new RegExp(`^${shorter.replace(/[^a-z0-9]/g, "\\$&")}-\\d+$`).test(longer)
     let independentTrials = 0
+    let collidingTrials = 0
     for (let trial = 0; trial < 400; trial++) {
-      const units = [...new Set(Array.from({ length: 1 + Math.floor(random() * 5) }, name))].filter((unit) => !/^\d|-\d+$/.test(unit) || random() < 0.5)
-      if (units.length === 0) continue
+      const drawn = [...new Set(Array.from({ length: 1 + Math.floor(random() * 5) }, name))]
+      // Half the runs also hold a unit named as another's later round, or as its workrift Rift: the r1 M1 pairs.
+      const units = [...new Set([...drawn, ...(random() < 0.5 ? [`${pick(drawn)}-${2 + Math.floor(random() * 3)}`] : []), ...(random() < 0.2 ? [`feat-${pick(drawn)}`] : [])])]
       const independent = units.every((u) => !u.startsWith("feat-") && units.every((v) => u === v || !extends_(v, u)))
       if (independent) independentTrials++
+      if (units.some((u) => units.some((v) => u !== v && extends_(v, u)))) collidingTrials++
+      // Each unit's Rift as its start named it: called after another unit's later round, so its name misleads.
+      const own = Object.fromEntries(units.map((unit, i) => [unit, `/h/.rifts/r/${pick(units)}-${2 + i}`]))
+      const recorded = Object.fromEntries(units.map((unit) => [unit, [own[unit]!]]))
       for (const unit of units) {
         const round = 2 + Math.floor(random() * 11)
         const other = pick(units)
@@ -768,35 +815,48 @@ describe("the machine's stories", () => {
           `/h/.rifts/r/${unit}`,
           `${unit}-${round}`,
           `feat/${unit}-${round}`,
+          `p5/${unit}-${round}`,
           `feat-${unit}`,
           `feat-${unit}-${round}`,
           `/h/.rifts/r/${unit}-${round}`,
           { rift: `/h/.rifts/r/scratch-${round}`, branch: `feat/${unit}-${round}` },
+          { rift: `/h/.rifts/r/${unit}-${round}`, branch: `p5/${unit}-${round}` },
           // A Rift called for another unit, on this unit's branch: the branch decides.
           { rift: `/h/.rifts/r/${other}`, branch: `feat/${unit}` },
-          { rift: `/h/.rifts/r/${other}-${round}`, unit },
         ]
         for (const form of forms) {
           const got = unitOfEntry(form, units)
-          const read = typeof form === "string" ? form.split("/").at(-1)! : form.unit === undefined ? form.branch!.split("/").at(-1)! : undefined
           const where = JSON.stringify([trial, units, unit, form])
-          // A name that is exactly another unit's is that unit's; else never a unit it does not spell exactly
-          // (itself, or as workrift's `feat-<name>`): its own, or none.
-          const spelled = read === undefined ? [] : [read, ...(read.startsWith("feat-") ? [read.slice("feat-".length)] : [])]
-          if (read !== undefined && read !== unit && units.includes(read)) expect([where, got]).toEqual([where, read])
-          else expect([where, got === unit || got === undefined || spelled.includes(got) ? "own, spelled or none" : got]).toEqual([where, "own, spelled or none"])
+          // Never another unit: its own, or none.
+          expect([where, got === unit || got === undefined ? "own or none" : got]).toEqual([where, "own or none"])
           if (independent) expect([where, got]).toEqual([where, unit])
         }
+        // By what the land or the ledger says, it is always its own.
+        for (const form of [{ rift: `/h/.rifts/r/${other}-${round}`, unit }, own[unit]!, `${own[unit]!}/`, own[unit]!.split("/").at(-1)!, { rift: own[unit]!, branch: `p5/${other}` }]) {
+          const where = JSON.stringify([trial, units, unit, form, recorded])
+          expect([where, unitOfEntry(form, units, recorded)]).toEqual([where, unit])
+        }
       }
-      if (!independent) continue
-      // Through the machine: every unit ready, landed by Rifts in any form, is one batch of exactly them.
-      const steps: Array<readonly [Command, number]> = units.flatMap((unit) => [[impl(unit, 1 + Math.floor(random() * 4)), 0] as const, [ready(unit), MIN] as const])
-      const rifts = units.map((unit) => riftFor(unit, Math.floor(random() * 7)))
+      // Through the machine: every unit started on its Rift and ready, landed by those Rifts (or { path, unit }), is
+      // one batch of exactly them; with no name another's extension, by Rifts in any form too.
+      const steps: Array<readonly [Command, number]> = units.flatMap((unit) => [
+        [Start.make({ role: "implementor", name: unit, round: 1 + Math.floor(random() * 4), direct: false, rift: own[unit]! }), 0] as const,
+        [ready(unit), MIN] as const,
+      ])
+      // A name form that is another unit's started Rift by name is that unit's (the ledger's word wins): not drawn here.
+      const byName = (unit: string): LandTarget | undefined => {
+        const form = riftFor(unit, Math.floor(random() * 7))
+        const name = typeof form === "string" ? form.split("/").at(-1)! : undefined
+        return units.some((other) => other !== unit && own[other]!.endsWith(`/${name}`)) ? undefined : form
+      }
+      const rifts = units.map((unit): LandTarget => (independent && random() < 0.5 ? byName(unit) : undefined) ?? (random() < 0.5 ? own[unit]! : { rift: `/h/.rifts/r/x-${unit}`, unit }))
       const landed = await run([...steps, [Land.make({ rifts }), 31 * MIN], [Landed.make({ rifts }), 31 * MIN]])
       const batch = "events" in landed.last ? landed.last.events.map((event) => (event._tag === "BatchLanded" ? [...event.units].sort() : event._tag)) : landed.last
-      expect([trial, rifts, batch]).toEqual([trial, rifts, [[...units].sort()]])
+      const where = JSON.stringify([trial, units, own, rifts])
+      expect(`${where} landed ${JSON.stringify(batch)}`).toBe(`${where} landed ${JSON.stringify([[...units].sort()])}`)
     }
     expect(independentTrials).toBeGreaterThan(50)
+    expect(collidingTrials).toBeGreaterThan(100)
   })
 
   test("the notes ride on a start's answer: a due batch, a landed batch with no verifier, a fourth round", async () => {

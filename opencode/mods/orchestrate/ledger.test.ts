@@ -40,3 +40,12 @@ test("a ledger written when starts recorded a workspace still reads: the workspa
   expect(stateOf(DEFAULT_CADENCE, lines.slice(0, 1))).toEqual({ units: { alpha: { state: "implement", round: 2, since: T, direct: false } } })
   expect(stateOf(DEFAULT_CADENCE, lines.slice(1))).toEqual({ units: { beta: { state: "ready", round: 1, since: T, direct: false } } })
 })
+
+test("a unit's Rifts, as its starts named them, are kept through a compaction's checkpoint", () => {
+  const lines = [
+    lineOfEvent("root", UnitStarted.make({ unit: "db", round: 1, direct: false, rift: "/u/.rifts/app/db", at: T })),
+    lineOfEvent("root", UnitStarted.make({ unit: "db", round: 2, direct: false, rift: "/u/.rifts/app/db-2", at: T + MIN })),
+  ]
+  const kept = compact(DEFAULT_CADENCE, retention, T + 2 * MIN, lines)
+  expect(stateOf(DEFAULT_CADENCE, kept).units.db?.rifts).toEqual(["/u/.rifts/app/db", "/u/.rifts/app/db-2"])
+})

@@ -24,7 +24,6 @@ const label = "prime"
 const frames: Record<"running" | "details" | "all" | "overview", Saved> = {} as never
 
 // Prime's palette, from prime-agent-ui.md and the measured render.
-const ACCENT = "#7c6faf"
 const ERROR = "#d06f82"
 const SUCCESS = "#7da876"
 const BAND = "#1a1a1f"
@@ -167,6 +166,9 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       "      3           try:",
       "  ● Ran code-reviewer",
       "    │ ✉ Agent message · ↓ code-reviewer",
+      // OpenCode runs every subagent in the background: its answer comes back as a completion notice group.
+      "  ● General finished · code-reviewer",
+      "  └ Approved: the loop now makes every attempt.",
       // The step that made two calls in parallel: one header, a tree row per call.
       "  ✗ Searched 1 pattern · read 1 file · 1 failed",
       "  ├ Searched /retries/ in src",
@@ -183,19 +185,21 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     // Each step's group stacks tight; the next step's group opens a blank row below it.
     expect(at[1]).toBe(at[0]! + 1)
     expect(at.slice(7, 12)).toEqual(Array.from({ length: 5 }, (_, index) => at[7]! + index))
-    expect(at.slice(14, 18)).toEqual(Array.from({ length: 4 }, (_, index) => at[14]! + index))
+    expect(at[15]).toBe(at[14]! + 1)
+    expect(at.slice(16, 20)).toEqual(Array.from({ length: 4 }, (_, index) => at[16]! + index))
     expect(details.lines[at[12]! - 1]).toBe("")
     expect(details.lines[at[14]! - 1]).toBe("")
+    expect(details.lines[at[16]! - 1]).toBe("")
     // Answer text and a group sit a blank row apart.
     expect(details.lines[at[2]! - 1]).toBe("")
     expect(details.lines[at[7]! - 1]).toBe("")
-    expect(details.lines[at[18]! - 1]).toBe("")
+    expect(details.lines[at[20]! - 1]).toBe("")
     // The thought's label reads as a call row's verb does; its words are faint.
     expect(cell(details, "└ thinking", 2).fg).toBe(MUTED)
     expect(cell(details, "Look at the test first").fg).toBe(FAINT)
-    // Details keeps the diff's far context and the agent's reply collapsed.
+    // Details keeps the diff's far context collapsed, and the call's background-start answer.
     expect(details.text).not.toContain("backoff(i)")
-    expect(details.text).not.toContain("Approved: the loop")
+    expect(details.text).not.toContain("working in the background")
   })
 
   test("the dock: an empty hint line, fx rail composer, tray with context use, rule, and no activity counts with nothing active", () => {
@@ -219,26 +223,19 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     expect(cellAt(details, hint + 1, 3).bg).not.toBe(BAND)
   })
 
-  test("while the reviewer runs: a running group, the Executing line and one subagent", () => {
+  test("while the reviewer runs: its call has returned, the parent waits idle, and the dock counts one subagent", () => {
     const running = frames.running
-    // The reviewer's step is its own group, under the edit's: the running call is the newest line, with no connector.
+    // OpenCode runs every subagent in the background: the call ends as the reviewer starts, a group of its own
+    // under the edit's, and the parent's turn ends with no loader while the reviewer works.
     expect(running.text).toMatch(/^ {2}● Edited src\/net\.py \+1 \/ -1$/m)
-    expect(running.text).toMatch(/^ {2}[○●] Running code-reviewer$/m)
-    expect(running.text).not.toMatch(/[├└] Running code-reviewer/)
-    expect(running.text).toMatch(/^ {2}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Executing · \d+s$/m)
+    const call = indexOf(running, /^ {2}● Ran code-reviewer$/)
+    expect(call).toBeGreaterThan(0)
+    expect(running.lines[call + 1]).toBe("    │ ✉ Agent message · ↓ code-reviewer")
+    expect(running.text).not.toContain("Executing")
     expect(running.text).toMatch(row(" ◆ 1 subagent  ·  0 shells"))
-    expect(running.text).not.toContain("Agent message")
+    expect(running.text).toMatch(/^ \S general gpt {2}code-reviewer {2}/m)
+    expect(running.text).not.toContain("General finished")
     expect(running.text).not.toContain("reviewer approved")
-    // The loader is the transcript's last row, a blank row under the running group (Prime's loader: a spacer, then the spinner).
-    const executing = running.lines.findIndex((line) => line.includes("Executing"))
-    expect(running.lines[executing - 1]!.trim()).toBe("")
-    expect(running.lines[executing - 2]).toContain("Running code-reviewer")
-    const spinner = running.lines[executing]!.trim()[0]!
-    expect(cell(running, spinner).fg).toBe(ACCENT)
-    // The running group's glyph blinks in the accent.
-    const header = running.lines.find((line) => line.includes("Running code-reviewer"))!
-    const glyph = header.trim()[0]!
-    expect(cell(running, `${glyph} Running code-reviewer`).fg).toBe(ACCENT)
     expect(cell(running, "◆ 1 subagent").fg).toBe(SUCCESS)
   })
 
@@ -254,9 +251,11 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       "  ✓ patch · src/net.py · ↑ 6 lines · <t>",
       "    ╰─ src/net.py +1 -1",
       "      6               backoff(i)",
-      "  ✓ subagent · Review the diff in src/net.py. · ↑ 1 ↓ 1 lines · <t>",
+      // The call's own answer is OpenCode's background-start note; the reviewer's answer is its completion notice.
+      "  ✓ subagent · Review the diff in src/net.py. · ↑ 1 ↓ 4 lines · <t>",
       "    │ ✉ Agent message · ↓ code-reviewer",
-      "    ╰─ Approved: the loop now makes every attempt.",
+      "  ● General finished · code-reviewer",
+      "  └ Approved: the loop now makes every attempt.",
       // The step with two parallel calls keeps its header and tree.
       "  ✗ Searched 1 pattern · read 1 file · 1 failed",
       "  ├ ✓ grep · retries in src · ↑ 1 ↓ 5 lines · <t>",
@@ -270,8 +269,8 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     })
     expect(at).toEqual([...at].sort((a, b) => a - b))
     // The rail runs unbroken from the group's first row to its last, through every body, and stops there.
-    const first = at[10]!
-    const last = at[12]!
+    const first = at[11]!
+    const last = at[13]!
     for (const line of all.lines.slice(first, last + 1)) expect(line).toMatch(/^ {2}[├│└](?: |$)/)
     expect(all.lines[last + 1]).toBe("")
     // All opens the thought whole, hung under its node as a call's body hangs.
@@ -297,6 +296,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       // A header per step.
       "  ● Edited 1 file",
       "  ● Ran 1 agent",
+      "  ● General finished · code-reviewer",
       "  ✗ Searched 1 pattern · read 1 file · 1 failed",
       // gent's failure row: what failed, its failure word, then the reason.
       "  └ Read out/traces.jsonl · failed · File not found: out/traces.jsonl",
