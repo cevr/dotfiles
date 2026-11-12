@@ -1,6 +1,7 @@
 // A subagent row drawn as one line.
 import { describe, expect, test } from "bun:test"
-import { columns, duration, fit, format, glyph, sameSegments, SPINNER, STALE_MS, stateTone, SYMBOLS, type FormatOptions } from "./line.ts"
+import { columns, duration, fit, format, glyph, sameSegments, SPINNER, STALE_MS, stateTone, SYMBOLS, type FormatOptions, type Kind, type Segment } from "./line.ts"
+import type { Paths } from "./same.ts"
 import type { Row, State } from "./subagent-row.ts"
 
 const OPUS = { name: "opus", version: "5.5" }
@@ -32,6 +33,7 @@ const stuck = row({
   elapsed: 37 * MIN,
   quiet: 26 * MIN,
 })
+const KINDS: ReadonlyArray<Kind> = ["mark", "lead", "role", "model", "unit", "update", "time", "stale", "faint"]
 const STATES: ReadonlyArray<State> = ["working", "waiting", "blocked", "latched", "idle", "cancelled", "done", "failed"]
 const WORDS = /(^|\s)(working|waiting|blocked|latched|idle|cancelled|done|failed)(\s|$)/
 
@@ -78,6 +80,22 @@ describe("two drawings of a row", () => {
     expect(sameSegments(at(72_000), at(73_000))).toBe(false)
     expect(sameSegments(at(72_000), format(row({ elapsed: 72_000, state: "waiting" }), 80, { spinner: "◆" }))).toBe(false)
     expect(sameSegments(at(72_000), at(72_000).slice(1))).toBe(false)
+  })
+
+  test("two drawings differ when any one segment differs in any one field", () => {
+    const drawn = format(row({}), 80, { spinner: "◆" })
+    expect(sameSegments(drawn, drawn.map((segment) => ({ ...segment })))).toBe(true)
+    // One entry per field of `Segment`: a field added to it fails typecheck here until it has one.
+    const change = {
+      text: (segment: Segment) => [{ ...segment, text: `${segment.text}x` }],
+      kind: (segment: Segment) => KINDS.values().filter((kind) => kind !== segment.kind).map((kind) => ({ ...segment, kind })).toArray(),
+    } satisfies { readonly [P in Paths<Segment>]: (segment: Segment) => ReadonlyArray<Segment> }
+    const copies = Object.entries(change).flatMap(([field, apply]) =>
+      drawn.flatMap((segment, index) => apply(segment).map((other) => ({ seen: `${field} of segment ${index} as ${other.kind}`, drawing: drawn.with(index, other) }))),
+    )
+    // Each segment once with new text, and once as each other kind.
+    expect(copies.length).toBe(drawn.length * KINDS.length)
+    expect(copies.filter((copy) => sameSegments(drawn, copy.drawing)).map((copy) => copy.seen)).toEqual([])
   })
 })
 

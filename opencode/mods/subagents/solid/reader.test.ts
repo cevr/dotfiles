@@ -4,8 +4,9 @@
 // which never re-runs a computation, so this file takes the reactive build
 // OpenCode loads.
 import { expect, mock, test } from "bun:test"
-import type { Session } from "../family.ts"
+import type { Latch, Session, Shell } from "../family.ts"
 import { message, read, type Reads } from "../opencode/view.ts"
+import type { Paths } from "../same.ts"
 
 // The builds' files carry no types of their own; the imports below take solid-js's.
 const REACTIVE = { core: "solid-js/dist/solid.js", store: "solid-js/store/dist/store.js" }
@@ -187,26 +188,74 @@ test("the rows of a family are worked out once, however many views read them", a
   expect(rows[0]!().map((row) => row.update)).toEqual(["child0 step 1", "child1 step 1", "child2 step 1 more", "child3 step 1"])
 })
 
+/** `value` without its field `key`: an optional field left absent. */
+const without = <T, K extends keyof T>(value: T, key: K): Omit<T, K> => {
+  const { [key]: _, ...rest } = value
+  return rest
+}
+
 test("two readings of a session are the same while every field it carries is, and its messages are the same array", () => {
   const messages: Session["messages"] = []
-  const base: Session = { id: "a", parentID: "root", time: { created: 1 }, running: true, shells: [{ id: "sh1", command: "bun test" }], permissions: [], questions: [], messages }
-  expect(sameSession(base, { ...base, time: { created: 1 }, shells: [{ id: "sh1", command: "bun test" }], permissions: [] })).toBe(true)
-  const changed: ReadonlyArray<Session> = [
-    { ...base, title: "Fix it" },
-    { ...base, agent: "general" },
-    { ...base, model: "claude-opus-5-5" },
-    { ...base, outcome: "failed" },
-    { ...base, running: false },
-    { ...base, time: { created: 1, busy: 2 } },
-    { ...base, time: { created: 1, updated: 3 } },
-    { ...base, latch: { hold: "pace", reason: "too many", opensAt: 5, at: 4 } },
-    { ...base, shells: [{ id: "sh1", command: "bun test", description: "the suite" }] },
-    { ...base, shells: [] },
-    { ...base, permissions: ["edit a.ts"] },
-    { ...base, questions: ["Which?"] },
-    { ...base, messages: [] },
-  ]
-  expect(changed.filter((session) => sameSession(base, session))).toEqual([])
+  // Every field present, optional ones too, so each can be changed or left out.
+  const latch: Latch = { hold: "pace", reason: "too many", opensAt: 5, at: 4, cancelledAt: 6, failed: "no slot" }
+  const shell: Shell = { id: "sh1", command: "bun test", description: "the suite" }
+  const time: Session["time"] = { created: 1, busy: 2, idle: 3, updated: 4 }
+  const base: Session = {
+    id: "a",
+    parentID: "root",
+    title: "Fix it",
+    agent: "general",
+    model: "claude-opus-5-5",
+    outcome: "succeeded",
+    time,
+    running: true,
+    shells: [shell, { id: "sh2", command: "bun x" }],
+    latch,
+    permissions: ["edit a.ts"],
+    questions: ["Which?"],
+    messages,
+  }
+  // A new reading with new objects and lists that say the same is the same.
+  const again: Session = { ...base, time: { ...time }, latch: { ...latch }, shells: base.shells.map((s) => ({ ...s })), permissions: ["edit a.ts"], questions: ["Which?"] }
+  expect(sameSession(base, again)).toBe(true)
+  // The copies that differ from it in one field each, one entry per field path of `Session`:
+  // a field added to `Session` fails typecheck here until it has its entry.
+  const withLatch = (over: Partial<Latch>): Session => ({ ...base, latch: { ...latch, ...over } })
+  const withTime = (over: Partial<Session["time"]>): Session => ({ ...base, time: { ...time, ...over } })
+  const withShell = (over: Shell): Session => ({ ...base, shells: [over, base.shells[1]!] })
+  const changed = {
+    id: [{ ...base, id: "b" }],
+    parentID: [{ ...base, parentID: "other" }, without(base, "parentID")],
+    title: [{ ...base, title: "Fix that" }, without(base, "title")],
+    agent: [{ ...base, agent: "worker" }, without(base, "agent")],
+    model: [{ ...base, model: "gpt-6" }, without(base, "model")],
+    outcome: [{ ...base, outcome: "failed" }, without(base, "outcome")],
+    time: [{ ...base, time: { created: 1 } }],
+    "time.created": [withTime({ created: 9 })],
+    "time.busy": [withTime({ busy: 9 }), { ...base, time: without(time, "busy") }],
+    "time.idle": [withTime({ idle: 9 }), { ...base, time: without(time, "idle") }],
+    "time.updated": [withTime({ updated: 9 }), { ...base, time: without(time, "updated") }],
+    running: [{ ...base, running: false }],
+    shells: [{ ...base, shells: [shell] }, { ...base, shells: [] }],
+    "shells[].id": [withShell({ ...shell, id: "sh9" })],
+    "shells[].command": [withShell({ ...shell, command: "bun y" })],
+    "shells[].description": [withShell({ ...shell, description: "other" }), withShell(without(shell, "description"))],
+    latch: [without(base, "latch")],
+    "latch.hold": [withLatch({ hold: "sabbath" })],
+    "latch.reason": [withLatch({ reason: "other" })],
+    "latch.opensAt": [withLatch({ opensAt: 9 })],
+    "latch.at": [withLatch({ at: 9 })],
+    "latch.cancelledAt": [withLatch({ cancelledAt: 9 }), { ...base, latch: without(latch, "cancelledAt") }],
+    "latch.failed": [withLatch({ failed: "other" }), { ...base, latch: without(latch, "failed") }],
+    permissions: [{ ...base, permissions: ["edit b.ts"] }, { ...base, permissions: [] }],
+    questions: [{ ...base, questions: ["What?"] }, { ...base, questions: [] }],
+    // Compared as one value: the transcript memo keeps the array while no item changes.
+    messages: [{ ...base, messages: [...messages] }],
+  } satisfies { readonly [P in Paths<Session, "messages">]: ReadonlyArray<Session> }
+  const copies = Object.entries(changed).flatMap(([path, sessions]) => sessions.map((session, index) => ({ path: `${path}#${index}`, session })))
+  expect(copies.filter((copy) => sameSession(base, copy.session)).map((copy) => copy.path)).toEqual([])
+  // And the other way round, an absent field read first.
+  expect(copies.filter((copy) => sameSession(copy.session, base)).map((copy) => copy.path)).toEqual([])
 })
 
 test("a session update that changes nothing the family carries keeps the family, and nothing that reads it runs", () => {
