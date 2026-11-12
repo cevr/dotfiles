@@ -8,7 +8,14 @@
 // - Input arrives or an execution starts (`woke`): the timer is cancelled.
 // - An execution ends (`settled`), or the recent sessions are looked at again
 //   (`resume`: once the plugin starts, and when the catalog changes): the
-//   facts are read and the timer set.
+//   facts are read and the timer set. A catalog change looks again only when
+//   what the decisions read of it (`Sessions.catalog`) differs from the last
+//   look's: the host publishes every Location's catalog again whenever
+//   another Location opens.
+// - A decision reads the session's record first (`Sessions.standing`): a
+//   subagent's session (unless the policy says so) or one that runs is skipped
+//   at debug there, without reading its context or children, the costly
+//   reads an orchestrator's hundreds of subagent ends would each make.
 // - The timer fires: the facts are read again, and the session compacts only
 //   if nothing woke it while they were read.
 // - Background work as the session goes idle (`background`) is kept to log
@@ -29,11 +36,11 @@
 //
 // One copy decides: the host runs a copy of the plugin per location, and every
 // copy hears every session's events. Each decision first asks whether the
-// session is this copy's (`Sessions.serves`); one of another location is
+// session is this copy's (`Sessions.standing`); one of another location is
 // dropped without a word, so a session's idle window gets one decision, one
 // line and at most one compaction, from the copy its hooks reach.
 import { Clock, Context, Effect, Fiber, Layer, Option, Scope } from "effect"
-import { billFor, Decision, due, type Facts, type Policy, type Reason, thresholdOf } from "./idle.ts"
+import { billFor, Decision, due, type Facts, type Policy, type Reason, ruledOut, thresholdOf } from "./idle.ts"
 import { Sessions } from "./service.ts"
 
 export class IdleCompactor extends Context.Service<
@@ -139,18 +146,26 @@ export const layer = (policy: Policy) =>
       const decide: (sessionID: string, trigger: Trigger) => Effect.Effect<void> = Effect.fn("IdleCompactor.decide")(
         function* (sessionID, trigger) {
           // Another location's session is its own copy's to decide.
-          const served = yield* Effect.result(sessions.serves(sessionID))
+          const standing = yield* Effect.result(sessions.standing(sessionID))
           // Every copy reads this: at debug, so the info log keeps one line per decision.
-          if (served._tag === "Failure")
+          if (standing._tag === "Failure")
             return yield* cancel(watch(sessionID)).pipe(
               Effect.andThen(
                 Effect.logDebug("idle-compact: not compacting").pipe(
-                  Effect.annotateLogs({ sessionID, trigger, reason: "unreadable", error: served.failure.message }),
+                  Effect.annotateLogs({ sessionID, trigger, reason: "unreadable", error: standing.failure.message }),
                 ),
               ),
             )
-          if (!served.success) return yield* drop(sessionID)
+          if (!standing.success.serves) return yield* drop(sessionID)
           const state = watch(sessionID)
+          // A subagent's session, or one that runs, is told by its record: its context and children are not read.
+          const out = ruledOut(standing.success, policy)
+          if (Option.isSome(out))
+            return yield* cancel(state).pipe(
+              Effect.andThen(
+                Effect.logDebug("idle-compact: not compacting").pipe(Effect.annotateLogs({ sessionID, trigger, reason: out.value })),
+              ),
+            )
           const generation = state.generation
           const read = yield* Effect.result(sessions.facts(sessionID))
           // Something woke the session while its facts were read: the next settle decides.
@@ -251,6 +266,21 @@ export const layer = (policy: Policy) =>
           )
         })
 
+      /** Decide for the recent sessions. */
+      const look = (trigger: "resume" | "catalog") =>
+        sessions.recent.pipe(
+          // The start's look is for sessions idle before the plugin ran. One this copy has seen since (a request,
+          // a wake, a settle) has had or will get its own decision, on fresher facts: on a loaded host the look,
+          // held back by the catalog's settle, comes after a turn's end and would decide its idle window twice.
+          Effect.map((ids) => (trigger === "resume" ? ids.filter((sessionID) => !watches.has(sessionID)) : ids)),
+          Effect.flatMap((ids) => Effect.forEach(ids, (sessionID) => decide(sessionID, trigger), { discard: true })),
+          Effect.catchTag("SessionUnreadable", (error) =>
+            Effect.logInfo("idle-compact: cannot list the sessions").pipe(Effect.annotateLogs({ trigger, error: error.message })),
+          ),
+        )
+      /** The catalog's key at the last look: a catalog change that keeps it is no change. None when it could not be read. */
+      let looked: Option.Option<string> = Option.none()
+
       return IdleCompactor.of({
         requestStarted: (sessionID) =>
           Effect.gen(function* () {
@@ -271,16 +301,16 @@ export const layer = (policy: Policy) =>
         settled: (sessionID) => decide(sessionID, "settled"),
         forget: drop,
         resume: (trigger) =>
-          sessions.recent.pipe(
-            // The start's look is for sessions idle before the plugin ran. One this copy has seen since (a request,
-            // a wake, a settle) has had or will get its own decision, on fresher facts: on a loaded host the look,
-            // held back by the catalog's settle, comes after a turn's end and would decide its idle window twice.
-            Effect.map((ids) => (trigger === "resume" ? ids.filter((sessionID) => !watches.has(sessionID)) : ids)),
-            Effect.flatMap((ids) => Effect.forEach(ids, (sessionID) => decide(sessionID, trigger), { discard: true })),
-            Effect.catchTag("SessionUnreadable", (error) =>
-              Effect.logInfo("idle-compact: cannot list the sessions").pipe(Effect.annotateLogs({ trigger, error: error.message })),
-            ),
-          ),
+          Effect.gen(function* () {
+            const key = yield* Effect.option(sessions.catalog)
+            // The host publishes a Location's catalog again when another Location opens; unchanged, it decides
+            // nothing anew. One that cannot be read is looked at again: the decisions say what they could not read.
+            if (trigger === "catalog" && Option.exists(key, (read) => Option.contains(looked, read)))
+              return yield* Effect.logDebug("idle-compact: the catalog is unchanged, no look").pipe(Effect.annotateLogs({ trigger }))
+            looked = key
+            yield* look(trigger)
+          }),
       })
     }),
   )
+

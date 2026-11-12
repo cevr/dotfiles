@@ -132,10 +132,20 @@ const ttlOf = (last: LastRequest, policy: Pick<Policy, "ttl">) => Option.orElse(
 export const billFor = (last: LastRequest, policy: Pick<Policy, "ttl">): Option.Option<Bill> =>
   Option.flatMap(Option.orElse(last.ttl, () => policy.ttl), (ttl) => billOf(last.price, last.prompt, ttl))
 
+/**
+ * Why the session does not compact, from its record alone (whose it is and whether it runs), before its context is
+ * read; none when its context must say.
+ */
+export const ruledOut = (session: Pick<Facts, "child" | "running">, policy: Pick<Policy, "subagents">): Option.Option<Reason> => {
+  if (session.child && !policy.subagents) return Option.some("subagent-session")
+  if (session.running) return Option.some("running")
+  return Option.none()
+}
+
 /** Whether and when the session compacts, judged at `now` (epoch ms). */
 export const due = (facts: Facts, now: number, policy: Policy): Decision => {
-  if (facts.child && !policy.subagents) return skip("subagent-session")
-  if (facts.running) return skip("running")
+  const out = ruledOut(facts, policy)
+  if (Option.isSome(out)) return skip(out.value)
   if (facts.compacted) return skip("compacted")
   if (Option.isNone(facts.last)) return skip("no-request")
   if (facts.onSummary) return skip("no-new-work")

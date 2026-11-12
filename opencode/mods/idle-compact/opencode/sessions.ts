@@ -7,8 +7,12 @@
 //   `time.idle` the end of the last completed one (session.ts:44-50); it runs
 //   while busy is later than idle.
 // - child: `Session.Info.parentID` (session.ts:34).
-// - busy: the session's children (`session.list({ parentID })`) that run,
-//   for the log.
+// - busy: the session's newest children (`session.list({ parentID })`, a
+//   page of `CHILDREN`) that run, for the log.
+// - catalog: the location's model, provider and agent lists (`model.list`,
+//   `provider.list`, `agent.list`), the fields the reads below take of them,
+//   as one key that tells a real catalog change from the host publishing an
+//   unchanged one again.
 // - last: the newest assistant message with usage after the last compaction
 //   (`Session.Message.Assistant`, session-message.ts:222-246): `tokens.input +
 //   tokens.cache.read + tokens.cache.write` is the prompt, `time.created` the
@@ -47,11 +51,11 @@
 // normalized, with no trailing separator, and the same workspace.
 import { posix } from "node:path"
 import { Agent, type Plugin } from "@opencode/plugin/effect"
-import { DateTime, Effect, Layer, Option } from "effect"
+import { DateTime, Effect, Layer, Option, Schema } from "effect"
 import { parseTTL, ttlOf } from "../cache.ts"
 import type { Facts, LastRequest } from "../idle.ts"
 import type { Rate } from "../price.ts"
-import { CompactionRefused, Sessions, SessionUnreadable } from "../service.ts"
+import { CatalogUnreadable, CompactionRefused, Sessions, SessionUnreadable } from "../service.ts"
 
 /** Where a session runs, or which sessions a copy of the plugin serves: a directory, within a workspace or not. */
 export interface Place {
@@ -115,8 +119,10 @@ export interface Host {
   /** The location this copy of the plugin runs for. */
   readonly location: Place
   readonly session: (sessionID: string) => Effect.Effect<SessionView, unknown>
+  /** The session's whole context: the costly read. */
   readonly messages: (sessionID: string) => Effect.Effect<ReadonlyArray<MessageView>, unknown>
-  readonly children: (sessionID: string) => Effect.Effect<ReadonlyArray<SessionView>, unknown>
+  /** The session's newest children, at most `limit` of them: they are read only to log the ones that run. */
+  readonly children: (sessionID: string, limit: number) => Effect.Effect<ReadonlyArray<SessionView>, unknown>
   /**
    * The model the session's request ran on; undefined when the catalog no longer has it. It fails when the catalog
    * or the model's provider cannot be read.
@@ -127,6 +133,11 @@ export interface Host {
   ) => Effect.Effect<ModelView | undefined, unknown>
   /** The agent's own cache lifetime (`request.settings.cacheTTL`), undefined when it sets none; fails when the agent cannot be read. */
   readonly agentTTL: (agentID: string, directory: string) => Effect.Effect<string | undefined, unknown>
+  /**
+   * What this location's catalog says of every model, provider and agent that a decision reads (lifetimes, windows,
+   * prices), as plain data: equal data decides alike.
+   */
+  readonly catalog: Effect.Effect<unknown, unknown>
   /** The recent main sessions, newest first; those of other locations may be among them. */
   readonly roots: Effect.Effect<ReadonlyArray<SessionView>, unknown>
   readonly compact: (sessionID: string) => Effect.Effect<void, unknown>
@@ -137,6 +148,12 @@ export const messageOf = (cause: unknown): string => {
   if (typeof cause === "object" && cause !== null && "message" in cause && typeof cause.message === "string") return cause.message
   return String(cause)
 }
+
+/** Whether it is a subagent's session. */
+const isChild = (session: SessionView): boolean => Option.isSome(Option.fromUndefinedOr(session.parentID))
+
+/** The catalog's data as its key: its JSON. */
+const encodeKey = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))
 
 /** Whether an execution of the session runs. */
 export const running = (session: SessionView): boolean =>
@@ -181,19 +198,29 @@ const requested = Effect.fn("Sessions.requested")(function* (host: Host, message
   return { model, configured: own !== undefined && Option.isSome(parseTTL(own)) ? own : model.ttl }
 })
 
+/**
+ * How many of a session's newest children it reads, to log those that run: an orchestrator has hundreds, and the
+ * ones that run are among its newest.
+ */
+export const CHILDREN = 20
+
 export const layer = (host: Host) =>
   Layer.succeed(
     Sessions,
     Sessions.of({
-      serves: (sessionID) =>
+      standing: (sessionID) =>
         host.session(sessionID).pipe(
-          Effect.map((session) => samePlace(session, host.location)),
+          Effect.map((session) => ({
+            serves: samePlace(session, host.location),
+            child: isChild(session),
+            running: running(session),
+          })),
           Effect.mapError((cause) => new SessionUnreadable({ sessionID, message: messageOf(cause) })),
         ),
       facts: Effect.fn("Sessions.facts")(function* (sessionID: string) {
         const unreadable = (cause: unknown) => new SessionUnreadable({ sessionID, message: messageOf(cause) })
         const [session, messages, children] = yield* Effect.all(
-          [host.session(sessionID), host.messages(sessionID), host.children(sessionID)],
+          [host.session(sessionID), host.messages(sessionID), host.children(sessionID, CHILDREN)],
           { concurrency: "unbounded" },
         ).pipe(Effect.mapError(unreadable))
         const found = lastRequest(messages)
@@ -227,7 +254,7 @@ export const layer = (host: Host) =>
             ),
         })
         return {
-          child: session.parentID !== undefined,
+          child: isChild(session),
           running: running(session),
           busy: children.filter(running).map((child) => `subagent ${child.title ?? child.id}`),
           last,
@@ -240,6 +267,10 @@ export const layer = (host: Host) =>
       recent: host.roots.pipe(
         Effect.map((sessions) => sessions.filter((session) => samePlace(session, host.location)).map((session) => session.id)),
         Effect.mapError((cause) => new SessionUnreadable({ sessionID: "*", message: messageOf(cause) })),
+      ),
+      catalog: host.catalog.pipe(
+        Effect.flatMap(encodeKey),
+        Effect.mapError((cause) => new CatalogUnreadable({ message: messageOf(cause) })),
       ),
     }),
   )
@@ -275,8 +306,9 @@ interface CompactHost {
 const RECENT = 50
 
 /** The host's reads and compaction through the plugin context. */
-export const fromContext = (ctx: Plugin.Context) =>
-  layer({
+export const fromContext = (ctx: Plugin.Context) => {
+  const location = { directory: ctx.location.directory }
+  return layer({
     location: { directory: ctx.location.directory, workspaceID: ctx.location.workspaceID },
     session: (sessionID) => ctx.session.get({ sessionID: sessionID as SessionID }).pipe(Effect.map(sessionView)),
     messages: (sessionID) =>
@@ -295,8 +327,10 @@ export const fromContext = (ctx: Plugin.Context) =>
           }),
         ),
       ),
-    children: (sessionID) =>
-      ctx.session.list({ parentID: sessionID as SessionID }).pipe(Effect.map((page) => page.data.map(sessionView))),
+    children: (sessionID, limit) =>
+      ctx.session
+        .list({ parentID: sessionID as SessionID, order: "desc", limit })
+        .pipe(Effect.map((page) => page.data.map(sessionView))),
     model: (ref, directory) =>
       Effect.gen(function* () {
         const models = yield* ctx.model.list({ location: { directory } })
@@ -330,9 +364,29 @@ export const fromContext = (ctx: Plugin.Context) =>
           return typeof ttl === "string" ? ttl : undefined
         }),
       ),
+    // What `model` and `agentTTL` read, for every entry, in the catalog's own order.
+    catalog: Effect.all(
+      [ctx.model.list({ location }), ctx.provider.list({ location }), ctx.agent.list({ location })],
+      { concurrency: "unbounded" },
+    ).pipe(
+      Effect.map(([models, providers, agents]) => ({
+        models: models.data.map((model) => [
+          model.providerID,
+          model.id,
+          model.modelID,
+          model.canonical,
+          model.settings?.cache?.ttl,
+          model.limit,
+          model.cost,
+        ]),
+        providers: providers.data.map((provider) => [provider.id, provider.settings?.cache?.ttl]),
+        agents: agents.data.map((agent) => [agent.id, agent.request.settings?.["cacheTTL"]]),
+      })),
+    ),
     roots: ctx.session.list({ parentID: null, directory: ctx.location.directory, order: "desc", limit: RECENT }).pipe(Effect.map((page) => page.data.map(sessionView))),
     compact: (sessionID) => {
       const host: CompactHost = ctx.session
       return host.compact({ sessionID: sessionID as SessionID, reason: "auto" })
     },
   })
+}
