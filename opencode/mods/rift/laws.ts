@@ -25,7 +25,11 @@ export interface RiftBench {
   readonly switchTo: (path: string, branch: string) => Effect.Effect<void>
 }
 
-const check = <A, E>(bench: () => Effect.Effect<RiftBench, never, Scope.Scope>, body: (bench: RiftBench) => Effect.Effect<A, E, Rifts>) =>
+/** Runs `body` over a fresh bench, its Rifts provided, the bench's scope closed after; for an implementation's own cases too. */
+export const check = <B extends { readonly layer: Layer.Layer<Rifts> }, A, E>(
+  bench: () => Effect.Effect<B, never, Scope.Scope>,
+  body: (bench: B) => Effect.Effect<A, E, Rifts>,
+) =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
