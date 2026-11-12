@@ -24,6 +24,8 @@ export interface World {
   postLandRun: { readonly code: number; readonly output: string; readonly report: string | undefined } | undefined
   /** What each post-land step runs before it ends, standing for a long run; at first, nothing. */
   postLandHold: Effect.Effect<void>
+  /** What each gate and accept check runs before it ends, standing for a long run; at first, nothing. */
+  readonly checkHold: Record<"gate" | "accept", Effect.Effect<void>>
   /** The host's load the post-land step reads first; absent: idle on 8 cores. */
   load: HostLoad | undefined
   /** What Git says when the push fails. */
@@ -60,6 +62,7 @@ export const world = (configs: Readonly<Record<string, LandConfig>> = {}): World
   checks: new Map(),
   postLandRun: undefined,
   postLandHold: Effect.void,
+  checkHold: { gate: Effect.void, accept: Effect.void },
   load: undefined,
   pushFails: undefined,
   branchFails: new Map(),
@@ -98,7 +101,7 @@ export const layer = (state: World) =>
           state.steps.push(label === "accept" ? `accept ${path} ${env["RIFT_LAND_BASE"] ?? ""}` : `gate ${path}`)
           const scripted = state.checks.get(`${path} ${label}`) ?? { code: 0, output: "1 pass\n" }
           return { ...scripted, seconds: 3, log: `/logs/${label}.log` }
-        }),
+        }).pipe(Effect.tap(() => state.checkHold[label])),
       postLand: Effect.fn("Landing.postLand")(function* (path: string, _command: string, env: Readonly<Record<string, string>>) {
         state.steps.push(`post-land ${path} ${env["RIFT_LAND_BASE"] ?? ""} ${env["RIFT_LAND_HEAD"] ?? ""}`)
         yield* state.postLandHold

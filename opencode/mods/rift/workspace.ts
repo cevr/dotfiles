@@ -67,7 +67,13 @@ export class WorkUnsaved extends Schema.TaggedError<WorkUnsaved>()("WorkUnsaved"
   stashes: Schema.Number,
 }) {}
 
-export type RemoveRefused = SourceKept | SessionInside | ChildrenKept | WorkUnsaved
+/** A land's step (a batch, its accept check, a post-land step) runs in the Rift now; `force` does not override it. */
+export class StepRunning extends Schema.TaggedError<StepRunning>()("StepRunning", {
+  path: Schema.String,
+  step: Schema.String,
+}) {}
+
+export type RemoveRefused = SourceKept | SessionInside | ChildrenKept | WorkUnsaved | StepRunning
 
 /** Whether `path` is `directory` or holds it. */
 export const holds = (path: string, directory: string): boolean => directory === path || directory.startsWith(`${path.replace(/\/+$/, "")}/`)
@@ -108,6 +114,8 @@ export const explainRefusal = (refusal: RemoveRefused): string => {
       return `This session runs in ${refusal.directory}, inside ${refusal.path}. Move the session out first (session_move to the source), then remove it.`
     case "ChildrenKept":
       return `${refusal.path} has Rifts of its own, which would go with it. Remove them first:\n${some(refusal.children)}`
+    case "StepRunning":
+      return `${refusal.path} is busy: ${refusal.step}. Remove it after its wake.`
     case "WorkUnsaved": {
       if (!refusal.git) return `${refusal.path} is not a Git checkout, so its unsaved work cannot be checked. Pass force: true to remove it anyway.`
       const parts = [

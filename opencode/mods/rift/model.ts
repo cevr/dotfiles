@@ -6,7 +6,7 @@
 // session through Notices. A repository with `rift.push` false is checked,
 // not pushed: each Rift answered green or red, every Rift kept. The plugin
 // calls this and nothing else.
-import { Context, Effect, Layer, Scope, Semaphore } from "effect"
+import { Context, Effect, Layer, Predicate, Scope, Semaphore } from "effect"
 import { findRift, resolvePath } from "./find.ts"
 import {
   GateMissing,
@@ -45,7 +45,7 @@ import {
   type RiftInput,
 } from "./rift.ts"
 import { Landing, Notices, Rifts, SessionDirectories, Workbox, type NotOnWorkbox, type RiftFailed, type SessionUnreadable, type WorkboxCommand } from "./service.ts"
-import { explainRefusal, removal, type RemoveRefused, type Workspace } from "./workspace.ts"
+import { explainRefusal, removal, StepRunning, type RemoveRefused, type Workspace } from "./workspace.ts"
 
 export { resolvePath }
 
@@ -108,7 +108,7 @@ export const layer = Layer.effect(
     const accepts = yield* Semaphore.make(1)
     /** One post-land step at a time, in the post-land Rifts, apart from the integration Rifts' work. */
     const postLands = yield* Semaphore.make(1)
-    // Each integration Rift at work, with what it is doing.
+    // Each kept Rift at work (an integration Rift, a post-land Rift), with what it is doing.
     const busy = new Map<string, string>()
 
     /** The Rift `target` names among `source`'s: a path (absolute, or against `directory`), else a name. */
@@ -145,6 +145,10 @@ export const layer = Layer.effect(
       return { text: listed(source, workspaces), metadata: { action: "list" as const, source } }
     })
 
+    /** Succeeds unless a land's step runs in the Rift at `path` (the integration Rift, the post-land Rift). */
+    const idle = (path: string) =>
+      Effect.filterOrFail(Effect.sync(() => busy.get(path)), Predicate.isUndefined, (step) => new StepRunning({ path, step: String(step) }))
+
     const remove = Effect.fn("RiftTool.remove")(function* (directory: string, source: string, input: RiftInput) {
       const workspace = yield* rifts.inspect(yield* locate(directory, source, input))
       const withChildren = input.withChildren === true
@@ -152,8 +156,8 @@ export const layer = Layer.effect(
       if (withChildren) {
         // Each Rift that goes holds no unsaved work; the children are going too, so they keep none back.
         const all = yield* subtree(workspace)
-        yield* Effect.forEach(all, (each) => removal({ ...each, children: [] }, request), { discard: true })
-      } else yield* removal(workspace, request)
+        yield* Effect.forEach(all, (each) => Effect.andThen(idle(each.path), removal({ ...each, children: [] }, request)), { discard: true })
+      } else yield* Effect.andThen(idle(workspace.path), removal(workspace, request))
       yield* rifts.remove(workspace.path, { withChildren })
       return {
         text: removed(workspace),
@@ -208,9 +212,12 @@ export const layer = Layer.effect(
             if (load.load >= load.cores)
               return yield* notices.wake(sessionID, { text: postLandSkippedText(units, load), description: "rift land · post-land skipped (load)" })
             const path = yield* keptRift(source, POST_LAND)
-            const started = yield* landing.start(path, main)
-            yield* landing.install(path, started.previous)
-            const ran = yield* landing.postLand(path, command, { RIFT_LAND_BASE: base, RIFT_LAND_HEAD: head })
+            busy.set(path, `the post-land step of ${branchList(units)} runs there`)
+            const ran = yield* Effect.gen(function* () {
+              const started = yield* landing.start(path, main)
+              yield* landing.install(path, started.previous)
+              return yield* landing.postLand(path, command, { RIFT_LAND_BASE: base, RIFT_LAND_HEAD: head })
+            }).pipe(Effect.ensuring(Effect.sync(() => busy.delete(path))))
             yield* notices.wake(sessionID, { text: postLandedText(units, ran), description: `rift land · post-land ${ran.code === 0 ? "ran" : "failed"}` })
           }),
         )
@@ -444,6 +451,7 @@ export const explain = (failure: Failure): string => {
     case "SessionInside":
     case "ChildrenKept":
     case "WorkUnsaved":
+    case "StepRunning":
       return explainRefusal(failure)
     case "GateMissing":
     case "LandRefused":
