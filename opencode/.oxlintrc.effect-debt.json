@@ -225,6 +225,14 @@
         "effect/noGlobals": "off",
         "effect/noNodeBuiltinImport": "off"
       }
+    },
+    {
+      "files": [
+        "scripts/daily.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
     }
   ]
 }
