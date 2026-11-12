@@ -93,6 +93,7 @@ const FAILING_CASES = [
   "timing-out > hangs",
   "setup-timing-out > setup",
   "closing-after-timeout > hangs",
+  "late-writer > hangs then writes",
   "closing-after-late-setup > setup",
 ]
 
