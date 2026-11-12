@@ -19,6 +19,8 @@
 //   I6  an implementor's start is never refused: the next batch fans out
 //       while a verifier runs (the pipeline);
 //   I7  a folded finding leaves the open findings only into its unit's land or at a verdict;
+//   S1  the persisted form is the ledger: a twin run read back from its Checkpoint line every
+//       third step is the same state and decides every call as the run that never stopped;
 //   L1  the guard never deadlocks a compliant root: the verifier's verdict
 //       comes in, each finding is folded into a unit that hands back ready,
 //       and once the oldest ready unit has waited the cadence's time,
@@ -31,7 +33,9 @@
 // rule's words are the skill's own is git/machine-words.test.ts (this
 // folder's root files read no file).
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
+import { lineOfCheckpoint } from "./ledger.ts"
+import { checkpointOf } from "./line.ts"
 import {
   briefOf,
   type Cadence,
@@ -75,6 +79,10 @@ const decideNow = (state: MachineState, command: Command, now: number): Outcome 
   )
 const decide = async (state: MachineState, command: Command, now: number): Promise<Outcome> => decideNow(state, command, now)
 const evolve = (state: MachineState, events: ReadonlyArray<Event>) => events.reduce(M.evolve, state)
+const JsonLine = Schema.fromJsonString(Schema.Unknown)
+/** A state as the ledger keeps it through a compaction: its checkpoint line, written as JSON and read back. */
+const restored = (state: MachineState): MachineState =>
+  checkpointOf(Schema.decodeUnknownSync(JsonLine)(Schema.encodeSync(JsonLine)(lineOfCheckpoint("ses_root", 0, state))))!
 
 // ── The reference model ──
 
@@ -305,6 +313,7 @@ describe("the machine against its reference model", () => {
       const random = rng(seed)
       const shadow: Shadow = { units: new Map(), verifier: undefined, covering: [], pending: new Set(), unresolved: new Set(), findings: new Map(), carried: new Map() }
       let state = M.initial
+      let resumed = M.initial
       let now = 1_800_000_000_000
       for (let step = 0; step < STEPS; step++) {
         now += Math.floor(random() * 20 * MIN)
@@ -313,6 +322,16 @@ describe("the machine against its reference model", () => {
         const rules = broken(shadow, next, now)
         const departs = "departs" in next && next.departs !== undefined
         const outcome = await decide(state, next, now)
+        // S1: the persisted form is the ledger. A run read back from its checkpoint every third step is the same state,
+        // and decides every call as the run that never stopped.
+        if ((step + seed) % 3 === 0) {
+          const back = restored(resumed)
+          expect([where, back]).toEqual([where, resumed])
+          resumed = back
+        }
+        const resumedOutcome = decideNow(resumed, next, now)
+        expect([where, resumedOutcome]).toEqual([where, outcome])
+        if ("events" in resumedOutcome) resumed = evolve(resumed, resumedOutcome.events)
         // I6: an implementor's start is never refused.
         if (next._tag === "Start" && next.role === "implementor") expect([where, "events" in outcome]).toEqual([where, true])
 
@@ -557,6 +576,8 @@ describe("the machine's stories", () => {
     const blocked = runNow([...endedSteps, [Landed.make({ rifts: ["a", "b", "c"] }), 31 * MIN]])
     expect(blocked.state.findings).toEqual({ "redesign/M1": { batch: "batch-1", into: "redesign" } })
     expect(blocked.state.carried).toBeUndefined()
+    const compacted = runNow([[Landed.make({ rifts: ["a", "b", "c"] }), 31 * MIN]], restored(runNow(endedSteps).state))
+    expect(compacted.state.findings).toEqual({ "redesign/M1": { batch: "batch-1", into: "redesign" } })
   })
 
   test("a unit's own next round folds its findings by itself; a fold naming no open finding is said, not refused", async () => {

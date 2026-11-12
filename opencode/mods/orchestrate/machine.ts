@@ -234,52 +234,62 @@ export class Refused extends Schema.TaggedError<Refused>()("Refused", { rule: Ru
 
 // ── The state ──
 
-export type UnitState = "implement" | "ended" | "ready" | "landed" | "verify"
+/**
+ * The state's schema is the ledger's: a `Checkpoint` line (line.ts) decodes a root's state with it, so a field the
+ * machine keeps is the field a compaction keeps. There is no second shape of a unit or a state.
+ */
+export const UnitState = Schema.Literals(["implement", "ended", "ready", "landed", "verify"])
+export type UnitState = typeof UnitState.Type
 
-export interface Unit {
-  readonly state: UnitState
-  readonly round: number
+export const Unit = Schema.Struct({
+  state: UnitState,
+  round: Schema.Number,
   /** When it entered its state (epoch ms). */
-  readonly since: number
-  readonly direct: boolean
+  since: Schema.Number,
+  direct: Schema.Boolean,
   /** Its implementor's session, once known. */
-  readonly child?: string
+  child: Schema.optionalKey(Schema.String),
   /** The Rifts its implementors were started on, by `(rift: <path>)` in their descriptions; absent when none named one. */
-  readonly rifts?: ReadonlyArray<string>
+  rifts: Schema.optionalKey(Schema.Array(Schema.String)),
   /**
    * What an `ended` unit's hand-back said (`blocked`, `stuck`, `none` for one that died): it may go on, so its
    * findings ride with it. Absent on a unit a ledger ended before this was kept: one the ledger lost track of.
    */
-  readonly said?: Verdict
-}
+  said: Schema.optionalKey(Verdict),
+})
+export interface Unit extends Schema.Schema.Type<typeof Unit> {}
 
 /** A finding of a verdict: the verifier's batch, and the unit it was folded into, once it was. */
-export interface Finding {
-  readonly batch: string
-  readonly into?: string
-}
+export const Finding = Schema.Struct({ batch: Schema.String, into: Schema.optionalKey(Schema.String) })
+export interface Finding extends Schema.Schema.Type<typeof Finding> {}
 
-export interface MachineState {
-  readonly units: Readonly<Record<string, Unit>>
+/** A finding folded into a unit that landed: its batch and that unit. */
+const Carried = Schema.Struct({ batch: Schema.String, into: Schema.String })
+
+export const MachineState = Schema.Struct({
+  units: Schema.Record(Schema.String, Unit),
   /**
    * The running verifier: its batch, since when, the units it covers (as it
    * started; a covered unit's next round leaves its unit slot, not this),
    * and its session once known.
    */
-  readonly verifier?: { readonly batch: string; readonly since: number; readonly units?: ReadonlyArray<string>; readonly child?: string }
+  verifier: Schema.optionalKey(
+    Schema.Struct({ batch: Schema.String, since: Schema.Number, units: Schema.optionalKey(Schema.Array(Schema.String)), child: Schema.optionalKey(Schema.String) }),
+  ),
   /**
    * The units landed with no verifier started over them yet, whatever round
    * each has moved on to since; absent when none. With the verifier, it is
    * what makes a verdict pending: no unit's state says it.
    */
-  readonly unverified?: ReadonlyArray<string>
+  unverified: Schema.optionalKey(Schema.Array(Schema.String)),
   /** The last verdicts' findings not landed yet, by `<unit>/<id>`; absent when none. */
-  readonly findings?: Readonly<Record<string, Finding>>
+  findings: Schema.optionalKey(Schema.Record(Schema.String, Finding)),
   /** Findings folded into units that landed, for the next verifier to check as folded; absent when none. */
-  readonly carried?: Readonly<Record<string, Required<Finding>>>
+  carried: Schema.optionalKey(Schema.Record(Schema.String, Carried)),
   /** The `changes` verdicts whose findings are not known (their report did not read), by batch; absent when none. */
-  readonly unresolved?: Readonly<Record<string, Unresolved>>
-}
+  unresolved: Schema.optionalKey(Schema.Record(Schema.String, Unresolved)),
+})
+export interface MachineState extends Schema.Schema.Type<typeof MachineState> {}
 
 /** The units in any of `states`, in the order they entered the state record. */
 export const unitsIn = (state: MachineState, ...states: ReadonlyArray<UnitState>): ReadonlyArray<string> =>
