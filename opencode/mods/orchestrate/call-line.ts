@@ -40,8 +40,8 @@ const admissions = (asked: Asked | undefined) => ({
 /**
  * Why a new planner start runs on the role's chain (its own model, then Codex)
  * instead of the planner's first model (the plugin's `planner` option): that
- * model, and why (`<model> held: <reason>`, `<model> is not offered`, `the
- * Sabbath`). A type, not an interface, so a latch's JSON context can keep it.
+ * model, and why (`<model> held: <reason>`, `<model> is not offered`). A
+ * type, not an interface, so a latch's JSON context can keep it.
  */
 export type FirstRecord = {
   readonly model: string

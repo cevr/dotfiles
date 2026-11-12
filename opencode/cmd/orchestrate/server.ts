@@ -44,9 +44,10 @@
  *   variant; `bun run daily` writes the newest Fable). A new planner start
  *   that names no model of its own (or the role's) runs on it at the
  *   planner's effort; a follow-up keeps its model. One the host does not
- *   offer `model` for, whose pace holds it, or over the Sabbath, takes the
- *   role's chain (its own model, then Codex), and its line records
- *   `first: { model, fellBack }`. Only the planner has a first model. Absent,
+ *   offer `model` for, or whose pace holds it, takes the role's chain (its
+ *   own model, then Codex), and its line records `first: { model, fellBack }`.
+ *   Over the Sabbath it latches on `model` as every role latches on its own,
+ *   and its open takes the same chain. Only the planner has a first model. Absent,
  *   the planner starts on its own model like every role.
  *
  * - Skill drift: when a root that owns a run goes idle and the installed
