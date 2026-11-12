@@ -238,7 +238,7 @@ describe("process Landing", () => {
       Effect.gen(function* () {
         rmSync(started, { force: true })
         rmSync(go, { force: true })
-        const running = yield* Effect.forkChild(landing.check(made.integration, label, `touch "${started}"; while [ ! -f "${go}" ]; do sleep 0.02; done`, {}))
+        const running = yield* Effect.forkChild(landing.check(made.integration, label, `touch "${started}"; i=0; while [ ! -f "${go}" ] && [ $i -lt 500 ]; do sleep 0.02; i=$((i + 1)); done`, {}))
         yield* appeared(started)
         const seen = { checksExclusive: yield* free(locks.checks, "exclusive"), checksShared: yield* free(locks.checks, "shared"), accept: yield* free(locks.accept, "exclusive") }
         writeFileSync(go, "")
