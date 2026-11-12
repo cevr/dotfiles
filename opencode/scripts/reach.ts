@@ -17,7 +17,7 @@
 //   `cmd/` or `mods/` when it names the folder itself (`"cmd"`), as a loader of
 //   all plugins does.
 // Every key also covers the shared inputs: the root manifest, lock file,
-// bunfig and tsconfig, these scripts, Bun's version and the OpenCode
+// bunfig, tsconfig, the lint policy, these scripts, Bun's version and the OpenCode
 // checkout in OPENCODE_DEV, whose modules the packages link.
 import { existsSync, readFileSync } from "node:fs"
 import { createHash } from "node:crypto"
@@ -27,7 +27,19 @@ import { $ } from "bun"
 export const ROOT = path.resolve(import.meta.dir, "..")
 
 /** Inputs every test shares; a change to one re-runs everything. */
-export const SHARED = ["package.json", "bun.lock", "bunfig.toml", "tsconfig.json", "scripts/reach.ts", "scripts/gate.ts", "scripts/link-fork.ts"]
+export const SHARED = [
+  "package.json",
+  "bun.lock",
+  "bunfig.toml",
+  "tsconfig.json",
+  ".oxlintrc.json",
+  ".oxlintrc.effect-debt.json",
+  "effect-debt.json",
+  "scripts/effect-debt.ts",
+  "scripts/reach.ts",
+  "scripts/gate.ts",
+  "scripts/link-fork.ts",
+]
 
 const SOURCE = /\.(ts|tsx|js|mjs)$/
 const TEST = /\.test\.tsx?$/
