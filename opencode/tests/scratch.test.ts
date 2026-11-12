@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { Array as Arr } from "effect"
 import { existsSync, readdirSync } from "node:fs"
 import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -36,6 +37,50 @@ const SUITES = [
 /** How long the suites get together, well past their usual 20 seconds. */
 const SUITES_MS = 240_000
 
+/**
+ * How long each of the suites' tests may take in the child run. Without `--timeout` Bun gives a test
+ * 5 seconds, a budget `bun run test` and the gate never hold the suites to (they pass 300 seconds);
+ * under a 300 load a test past it failed this check with no folder left (batch av). A minute still
+ * lets a hung test end inside SUITES_MS, so the run's report names it.
+ */
+const SUITE_TEST_MS = 60_000
+
+/**
+ * What a child `bun test` run reports: its exit code, its "Ran … tests across … files" line, and
+ * each failure as `<file> > <test> | <its error lines>`, so a red check on the run names the inner
+ * test that failed and why. Bun prints, under the header of the file it runs:
+ * - a failed test's error before its `(fail)` line, from `error:` (or `SomeError:`) to the first stack line;
+ * - a timeout after it, as `^ this test timed out after …`;
+ * - an error outside any test under `# Unhandled error between tests`, reported as `(between tests)`.
+ */
+const childReport = (code: number, output: string) => {
+  const failed: Array<string> = []
+  const context = { file: "", block: new Array<string>(), unhandled: false }
+  const errorLine = (line: string) => /^(error:|\w*Error\b|[A-Z]{3,}:)/.test(line.trim())
+  const report = (name: string, lines: ReadonlyArray<string>) =>
+    failed.push([`${context.file} > ${name}`, ...lines.flatMap((each) => each.trim() || [])].join(" | "))
+  for (const line of output.split("\n")) {
+    const header = /^\S+\.[jt]sx?:$/.test(line)
+    const fail = line.startsWith("(fail) ")
+    if (header) context.file = line.slice(0, -1)
+    if (fail) {
+      const error = Arr.takeWhile(Arr.dropWhile(context.block, (each) => !errorLine(each)), (each) => !/^\s+at /.test(each))
+      report(line.slice("(fail) ".length).replace(/ \[[\d.]+m?s\]$/, ""), error)
+    }
+    if (/^\s*\^ this test timed out/.test(line)) failed[failed.length - 1] += ` | ${line.trim()}`
+    if (context.unhandled && errorLine(line)) report("(between tests)", [line])
+    if (context.unhandled && errorLine(line)) context.unhandled = false
+    if (line.startsWith("# Unhandled error between tests")) context.unhandled = true
+    context.block = [...context.block, line]
+    if (header || fail || /^\((pass|skip|todo)\) /.test(line)) context.block = []
+  }
+  return { code, ran: output.split("\n").find((line) => /^Ran \d+ tests? across \d+ files?/.test(line)), failed }
+}
+
+/** Checks that a child run over `files` test files passed: a red one names each failure and its error. */
+const expectPassed = (code: number, output: string, files: number) =>
+  expect(childReport(code, output)).toEqual({ code: 0, ran: expect.stringContaining(`across ${files} file`), failed: [] })
+
 describe("a scratch directory", () => {
   test("is there while its block runs and gone once it ends", () => {
     const made: Array<string> = []
@@ -52,7 +97,7 @@ describe("a scratch directory", () => {
     async () => {
       using tmp = scratch("scratch-guard-")
       const before = readdirSync(tmp.path)
-      const child = owned([process.execPath, "test", ...SUITES.map((suite) => `./${suite}`)], {
+      const child = owned([process.execPath, "test", "--timeout", String(SUITE_TEST_MS), ...SUITES.map((suite) => `./${suite}`)], {
         cwd: fileURLToPath(new URL("..", import.meta.url)),
         env: { ...process.env, OPENCODE_DEV: "", TMPDIR: tmp.path },
         stdin: "ignore",
@@ -61,7 +106,7 @@ describe("a scratch directory", () => {
       })
       const stderr = await new Response(child.stderr).text()
       const code = await child.exited
-      expect({ code, ran: stderr.match(/Ran \d+ tests across \d+ files/)?.[0] }).toEqual({ code: 0, ran: expect.stringContaining(`across ${SUITES.length} files`) })
+      expectPassed(code, stderr, SUITES.length)
       expect(readdirSync(tmp.path)).toEqual(before)
     },
     SUITES_MS,
@@ -140,6 +185,19 @@ describe("an e2e suite's directory", () => {
       const { code, output, left } = await runCases(tmp.path)
       const failed = FAILING_CASES.filter((name) => output.includes(`(fail) ${name}`))
       expect({ code, failed, left, namedKept: /kept: |kept the failed/.test(output) }).toEqual({ code: 1, failed: FAILING_CASES, left: [], namedKept: false })
+    },
+    CASES_MS,
+  )
+
+  test(
+    "a red child run names each failing test, its error, a timeout and an error between tests",
+    async () => {
+      using tmp = scratch("scratch-cases-")
+      const { code, output } = await runCases(tmp.path)
+      const check = () => expectPassed(code, output, 1)
+      expect(check).toThrow(/tests\/scratch-cases\.ts > failing > first \| error: expect\(received\)\.toBe\(expected\) \| Expected: \\?"removed\\?" \| Received: \\?"kept\\?"/)
+      expect(check).toThrow(/tests\/scratch-cases\.ts > timing-out > hangs \| \^ this test timed out after 50ms/)
+      expect(check).toThrow(/tests\/scratch-cases\.ts > \(between tests\) \| ENOENT: no such file or directory/)
     },
     CASES_MS,
   )
