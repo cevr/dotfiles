@@ -18,6 +18,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Option, Order, Schema, type Scope } from "effect"
+import { type CallExpression, parseSync, Visitor } from "oxc-parser"
 import { DEBT_CONFIG, HARD_CONFIG, POLICY, Policy, ruleOf, spawn } from "./effect-debt.ts"
 
 const REAL = process.cwd()
@@ -312,4 +313,49 @@ describe(`${HARD_CONFIG}: the wake process tests' wait and lifecycle rules over 
       ),
     TEST_TIMEOUT,
   )
+})
+
+/** The real-process test files: each Bun test that runs an Effect there must end it before Bun's limit. */
+const PROCESS_TESTS = ["mods/wake/process/runner.test.ts", "mods/wake/process/checks.test.ts"]
+
+/** One `test(...)` call of a file: its source, whether its callback runs an Effect, and whether it is bounded. */
+interface TestCall {
+  readonly file: string
+  readonly source: string
+  readonly runsEffect: boolean
+  readonly bounded: boolean
+}
+
+/** Whether a call's callee is `test` or a member of it, such as `test.concurrent`. */
+const callsTest = (call: CallExpression) =>
+  (call.callee.type === "Identifier" && call.callee.name === "test") ||
+  (call.callee.type === "MemberExpression" && call.callee.object.type === "Identifier" && call.callee.object.name === "test")
+
+/** A test call is bounded when its callback is `() => Effect.runPromise(bounded(...))` and its third argument is `testLimitMs(...)`. */
+const testCallsOf = (file: string): ReadonlyArray<TestCall> => {
+  const text = readFileSync(path.join(REAL, file), "utf8")
+  const slice = (node: { readonly start: number; readonly end: number }) => text.slice(node.start, node.end)
+  const calls: Array<CallExpression> = []
+  new Visitor({ CallExpression: (call) => Arr.forEach(Arr.filter([call], callsTest), (found) => calls.push(found)) }).visit(parseSync(file, text).program)
+  return Arr.map(calls, (call) => {
+    const argument = (index: number) => Option.getOrElse(Option.map(Arr.get(call.arguments, index), slice), () => "")
+    const callback = argument(1)
+    const limit = argument(2)
+    return {
+      file,
+      source: slice(call).slice(0, 120),
+      runsEffect: /\bEffect\b|\brun[A-Z]\w*\(/u.test(callback),
+      bounded: /^\(\) => Effect\.runPromise\(bounded\(/u.test(callback) && /^testLimitMs\(/u.test(limit),
+    }
+  })
+}
+
+describe("the wake process tests end every Effect before Bun's test limit", () => {
+  test("each Bun test that runs an Effect goes through the one bounded helper of its file, whose Bun limit is testLimitMs of its bounds; no other test runs an Effect", () => {
+    const calls = Arr.flatMap(PROCESS_TESTS, testCallsOf)
+    expect(Arr.filter(calls, (call) => call.runsEffect && !call.bounded)).toEqual([])
+    expect(Arr.map(PROCESS_TESTS, (file) => Arr.filter(calls, (call) => call.file === file && call.bounded).length)).toEqual(Arr.map(PROCESS_TESTS, () => 1))
+    const runs = Arr.map(PROCESS_TESTS, (file) => (readFileSync(path.join(REAL, file), "utf8").match(/\bEffect\.run(?:Promise|Fork|Callback)\w*\(/gu) ?? []).length)
+    expect(runs).toEqual(Arr.map(PROCESS_TESTS, () => 1))
+  })
 })
