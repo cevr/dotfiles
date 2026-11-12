@@ -967,10 +967,10 @@ export const machineLayer = (config: MachineConfig) =>
         // The session that handed back is the step's: a step started before its session was known gets it here.
         const at = yield* now
         const decided = yield* ledger.decide(root, at, () => Effect.succeed([said])).pipe(Effect.orElseSucceed(() => undefined))
-        // Each verdict adds the root's drift to its run's log.md (its report's run); an accepted one records the fleet target.
+        // Each verdict adds the root's drift to its run's log.md (its report's run); an accepted one records the fleet target its batch file names.
         const ended = decided?.events.find((event) => event._tag === "VerifierEnded")
-        if (ended?.verdict === "accepted") yield* fleet.record({ directory: Option.fromNullishOr(yield* sessions.directoryOf(sessionID)), batch: ended.batch })
         const report = reportOf(words)
+        if (ended?.verdict === "accepted") yield* fleet.record({ report: Option.fromNullishOr(report), batch: ended.batch })
         if (ended === undefined || ended.verdict === "none" || report === undefined) return
         const directory = yield* sessions.directoryOf(sessionID)
         const line = logLineOf(yield* ledger.drift(root), at, ended.batch, ended.verdict)
