@@ -1,4 +1,4 @@
-// The /btw pane (gent's ForkPane), in the host's session panel: the fork's
+// The /btw pane, in the host's session panel: the fork's
 // name, each question it was asked with its answer as the transcript draws
 // markdown, a question on its way, and an ask line. The answers are the
 // controller's reading of the fork, which it keeps current while the pane is

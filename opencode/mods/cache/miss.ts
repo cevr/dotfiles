@@ -1,8 +1,7 @@
 // Prompt-cache misses: a session's requests (steps) folded into the prefixes a
 // step was billed for again although the previous request had cached them,
-// each with its cause over the cache lifetime. A port of gent's
-// `@gent/cache` fold (apps/tui/src/extensions/cache.client.tsx) over
-// OpenCode's session messages instead of gent's event log.
+// each with its cause over the cache lifetime, folded over OpenCode's
+// session messages.
 
 /** A miss at or under this is cache breakpoint granularity, not a lost prefix. */
 export const NOISE_FLOOR_TOKENS = 1024

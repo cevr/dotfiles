@@ -3,7 +3,7 @@
 // answered, notice.ts), and how a step ended badly. Workers that finish
 // together read as one group (`● 3 agents finished`, a node per worker); the
 // first notice of the burst draws it and the rest draw nothing. A step's end
-// draws gent's session row: `↻` a retry, `■` an interrupt, `✗` an error, and
+// draws its session row: `↻` a retry, `■` an interrupt, `✗` an error, and
 // nothing for a step that ended well (Prime closes a turn with no agent,
 // model or duration line; step-end.ts).
 import { createMemo, For, Show, type Accessor } from "solid-js"

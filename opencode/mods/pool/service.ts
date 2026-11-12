@@ -35,7 +35,7 @@ export class LoginsUnavailable extends Schema.TaggedError<LoginsUnavailable>()("
 
 /**
  * The provider's subscription logins: its integration's OAuth logins in
- * order, then each outside store's (gent's). The list is read again at most
+ * order, then each login store's. The list is read again at most
  * every so often unless `force` asks for it now.
  */
 export class Logins extends Context.Service<

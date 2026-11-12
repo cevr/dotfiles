@@ -2,7 +2,7 @@
 // and each path that differs from its base with its line counts. The parsers
 // read git's machine output (`git status --porcelain=v2 --branch -z`, `git
 // diff --numstat -z`); the process/ implementation runs git and hands them
-// its output. Ported from gent's @gent/git (apps/tui/src/extensions/git.client.tsx).
+// its output.
 import { Schema } from "effect"
 
 /** Where the branch stands. Every name is absent when git names none. */

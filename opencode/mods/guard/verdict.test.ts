@@ -1,6 +1,6 @@
 // The verdict on its own: each rule, the force-push allowance, paths read
 // from the call's directory, `~` and `$HOME`, chained lines, `sh -c` and
-// `eval`, and what stays allowed. The cases gent's floor tests are here too.
+// `eval`, and what stays allowed.
 import { describe, expect, test } from "bun:test"
 import { message, repoCandidates, verdict } from "./verdict.ts"
 

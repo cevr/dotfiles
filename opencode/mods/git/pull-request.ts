@@ -2,7 +2,7 @@
 // sidebar and the /git pane say it: `#123 Title · open · checks ✓ · review
 // required`. `gh` is an optional program: none on PATH, a checkout with no
 // GitHub remote, a branch with no request and a `gh` that is not signed in
-// all show no request. Ported from gent's @gent/git.
+// all show no request.
 import { Schema } from "effect"
 
 /**

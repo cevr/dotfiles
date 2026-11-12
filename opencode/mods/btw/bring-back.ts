@@ -1,5 +1,5 @@
 // Bringing a fork's answer back into the session it came from: one synthetic
-// message on that session (gent's btw.merge, ctrl+s). Gent's merge names the
+// message on that session (ctrl+s). A merge could name the
 // fork's messages by id for the model to read with its read_session tool;
 // OpenCode has no tool that reads another session, so the message carries the
 // question and the answer themselves, the answer cut at ANSWER_CHARS.

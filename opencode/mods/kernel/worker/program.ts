@@ -1,7 +1,7 @@
 /**
  * The kernel's worker: one Bun process per session that runs model-written
  * TypeScript at global scope, so top-level bindings persist between calls.
- * Ported from gent's `cell-worker-boundary.ts`, without Effect.
+ * Plain TypeScript, without Effect.
  *
  * - Each cell compiles with `Bun.Transpiler` in replMode and runs through
  *   indirect eval: its declarations become globals, its last expression is

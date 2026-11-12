@@ -1,7 +1,6 @@
 // The wake tools as the agent sees them: their names, inputs and
-// descriptions, adapted from gent's (packages/extensions/src/wake.ts). The
-// names take `_` where gent's take `.`: a tool name with a dot is refused by
-// Anthropic's API.
+// descriptions. The names take `_`, never `.`: a tool name with a dot is
+// refused by Anthropic's API.
 import { Schema } from "effect"
 import { toolInput } from "@dotfiles/decider/tool-input"
 import { DEFAULT_JOB_TIMEOUT_SECONDS, DEFAULT_WAIT_MS, MAX_JOB_TIMEOUT_SECONDS, MAX_WAIT_MS } from "./job.ts"

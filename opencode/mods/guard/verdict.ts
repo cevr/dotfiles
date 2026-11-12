@@ -1,7 +1,6 @@
 // The guard's rule: the few shell commands that lose work for good are
 // refused, everything else runs. The Claude Code hook's rules
-// (claude/hooks/guard-destructive.ts) with the floor of gent's guard
-// (packages/extensions/src/guard.ts) under them:
+// (claude/hooks/guard-destructive.ts) with a floor under them:
 //
 // - A recursive `rm` (forced or not: with no terminal, `rm` never prompts) of
 //   the root, the home or a directory that holds it, the directory the
