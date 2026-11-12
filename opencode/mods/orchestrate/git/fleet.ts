@@ -26,13 +26,13 @@ const COMMIT = /^(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}$/
 const PART = /(?:^|\n|[.;]\s+)(?:-\s+)?(Dotfiles|Fork)\b/g
 
 /** The words that mark the commit after them as a part's head: `head Y`, `X → Y`, `X -> Y`. */
-const HEAD_MARKS = new Set(["head", "→", "->"])
+export const HEAD_MARKS: ReadonlySet<string> = new Set(["head", "→", "->"])
 
 /** The words that mark the commit after them as a base: `base X`, `from X`. */
-const BASE_BEFORE = new Set(["base", "from"])
+export const BASE_BEFORE: ReadonlySet<string> = new Set(["base", "from"])
 
 /** The words that mark the commit before them as a base: an arrow or a range (`X → …`, `X..Y`, `X to …`). */
-const BASE_AFTER = new Set(["→", "->", "=>", "⇒", "..", "...", "to"])
+export const BASE_AFTER: ReadonlySet<string> = new Set(["→", "->", "=>", "⇒", "..", "...", "to"])
 
 /** A spaced word's words: itself when it is an arrow or a range, else its pieces between punctuation. */
 const piecesOf = (word: string): ReadonlyArray<string> => {
