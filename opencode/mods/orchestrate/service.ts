@@ -18,6 +18,12 @@ export class CallLog extends Context.Service<
   { readonly append: (line: CallLine) => Effect.Effect<void> }
 >()("dotfiles-opencode/orchestrate/CallLog") {}
 
+/** A unit whose log.md ends in a move to `dropped`: its name (its dir's last segment) and that move's round. */
+export interface LoggedDrop {
+  readonly unit: string
+  readonly round: number
+}
+
 /**
  * The units' logs (each `<run dir>/<unit>/log.md`), written through the orchestrate skill's log.ts.
  * - `find`: the unit's dir: the first of `named` (paths the prompt or the hand-back named, maybe relative to
@@ -34,10 +40,13 @@ export class UnitLogs extends Context.Service<
     readonly find: (input: { readonly unit: string; readonly named: ReadonlyArray<string>; readonly directory?: string }) => Effect.Effect<string | undefined>
     readonly append: (unitDir: string, transition: Transition) => Effect.Effect<void>
     /**
-     * The unit whose dir `path` names (absolute, `~/`, or relative to `directory`), when its log.md's last move is
-     * to `dropped`: what log.ts wrote, never what a command asked. None for any other dir or log.
+     * The units `session`'s shell calls moved to `dropped` and that are there still: each unit dir the drops journal
+     * names for it (log.ts writes a line there with each written drop, `journalDrop`), once, whose log.md's last move
+     * is to `dropped`, with that move's round. What log.ts wrote decides, never a command's text, so a dir named
+     * through a variable or after a `cd`, or a drop written after its call returned, counts the same; a refused
+     * move writes no line, and a unit moved on since (revived) is not there still. None when the journal does not read.
      */
-    readonly droppedIn: (path: string, directory: Option.Option<string>) => Effect.Effect<Option.Option<string>>
+    readonly drops: (session: string) => Effect.Effect<ReadonlyArray<LoggedDrop>>
   }
 >()("dotfiles-opencode/orchestrate/UnitLogs") {}
 

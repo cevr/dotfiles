@@ -14,8 +14,9 @@
 //   `--current` moves from the unit's current state (`new` with no log) and writes nothing when the
 //   unit is already in `to` at round N: the OpenCode orchestrate plugin writes a role's start and
 //   hand-back this way, so a move the orchestrator logged first is not logged twice.
-import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { currentState, transitions } from './transition.ts';
 
 export const STATES = ['plan', 'implement', 'verify', 'decide', 'ready', 'waiting(pr)', 'merged', 'blocked', 'stuck', 'stuck(quota)', 'stuck(size)', 'dropped'];
@@ -69,5 +70,24 @@ if (import.meta.main) {
   if ('already' in r) { console.log(`unchanged: ${r.already}`); process.exit(0); }
   if ('refused' in r) { console.error(`log.ts refused: ${r.refused}`); process.exit(1); }
   appendFileSync(path, `${log && !log.endsWith('\n') ? '\n' : ''}${r.line}\n`);
+  if (currentState(to) === 'dropped') journalDrop(dir);
   console.log(r.line);
+}
+
+/**
+ * A written move to `dropped`, run from an OpenCode session's shell (`OPENCODE_SESSION_ID`), is also a line in the
+ * drops journal (`ORCHESTRATE_DROPS`, default `~/.cache/orchestrate/drops.jsonl`): the session and the unit dir as
+ * this process resolved it. The OpenCode orchestrate plugin reads it to end the unit on that root's machine, whatever
+ * way the command named the dir and whenever it finished. A journal that cannot be written loses nothing log.md keeps.
+ */
+function journalDrop(dir: string) {
+  const session = process.env.OPENCODE_SESSION_ID;
+  if (!session) return;
+  const journal = process.env.ORCHESTRATE_DROPS || join(homedir(), '.cache', 'orchestrate', 'drops.jsonl');
+  try {
+    mkdirSync(dirname(journal), { recursive: true });
+    appendFileSync(journal, `${JSON.stringify({ session, dir: resolve(dir), at: Date.now() })}\n`);
+  } catch (error) {
+    console.error(`log.ts: the drops journal ${journal} was not written: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
