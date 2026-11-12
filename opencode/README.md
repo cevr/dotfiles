@@ -640,6 +640,16 @@ call against it at the point of action (`mods/orchestrate/machine.ts`).
   running implementor (its `sessionID`) or a new fix unit. The next land
   carries the folded findings to the next batch verifier, whose prompt ends
   with them and whose start answers with them.
+- **A land's units.** A unit is named by its role call's description
+  (`implementor <unit> rN`); no prompt is read. A Rift a land names is a
+  unit's by what the land says: the unit an entry names (`{ path, unit }`),
+  else the branch checked out at an entry's path (read before the land runs,
+  since a pushed land trashes the Rift), else the entry itself. A branch or
+  name is read by its last segment: a unit's exact name wins, and
+  `<unit>-<n>` (a later round's Rift or branch) or workrift's `feat-<unit>`
+  is that unit's when `<unit>` is one. A reading that names no unit, or two,
+  is none: the land goes through as none of the machine's, never as another
+  unit's (`unitOfEntry`).
 - **Departures.** The same call passes with `(departs: <why>)` at the end of
   a role call's description, or `departs: "<why>"` in a land's input; the
   ledger records a `Departed` line per rule it broke.
@@ -1462,7 +1472,8 @@ workbox in a week). One input, with an `action`:
   Rift by path (it starts with `/` or `.`), by name, or by its branch: exact
   first (the name, or the branch), then the branch with `/` as `-`
   (`mods/rift/find.ts`); an entry two Rifts answer to is refused, naming both
-  with their branches. Before touching any, it refuses a warm source, a Rift off any branch, a Rift with its own
+  with their branches. An entry may be `{ path, unit }`: the land lands its
+  path, and the orchestrate plugin records it as that unit's. Before touching any, it refuses a warm source, a Rift off any branch, a Rift with its own
   uncommitted changes (a file the same as in the warm source does not count)
   and a repository with no gate. Then, in the source's integration Rift
   (`integrate`, made on first use and kept): repair a stale multi-pack index,

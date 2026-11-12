@@ -5,7 +5,7 @@
 // started lends and claims nothing; and the verdict sends a claim no one asked
 // for only on every peer's grant.
 import { describe, expect, test } from "bun:test"
-import { answer, begin, emptyTable, finish, hold, holds, LEASE_MS, LeaseAsk, type LeaseTable, QUIET_MS, release, SETTLE_MS, started, verdict } from "./lease.ts"
+import { answer, begin, emptyTable, finish, hold, LEASE_MS, LeaseAsk, type LeaseTable, QUIET_MS, release, SETTLE_MS, started, verdict } from "./lease.ts"
 
 const T0 = Date.parse("2026-11-11T12:00:00Z")
 const ACCOUNT = { provider: "claude" as const, grants: ["g1", "g2"] }
@@ -89,8 +89,7 @@ describe("a lease lent", () => {
     const [, lender] = answer(emptyTable, "workbox", ask, T0)
     const [held, holding] = hold(borrower, ask.id, T0 + 10_000)
     expect(held).toBe(true)
-    expect(holds(holding, ask.id, T0 + LEASE_MS - 1)).toBe(true)
-    expect(holds(holding, ask.id, T0 + LEASE_MS)).toBe(false)
+    expect(holding.own[0]?.expiresAt).toBe(T0 + LEASE_MS)
     // The lender's lease runs at least as long.
     expect(begin(lender, "workbox", askOf("workbox", T0 + LEASE_MS - 1), T0 + LEASE_MS - 1)[0]).toContain("mac holds")
     // An ask that waited past its lease holds nothing.
@@ -105,13 +104,16 @@ describe("a lease lent", () => {
 })
 
 describe("a claim seen", () => {
-  test("a released claim refuses an ask on a reading taken before SETTLE_MS after it, and grants one on a later reading", () => {
+  test("a released claim refuses every ask for SETTLE_MS after it arrived, on the lender's clock; the claimer's and the asker's times count for nothing (round 5, M1: clocks minutes apart)", () => {
     const [, lent] = answer(emptyTable, "workbox", askOf("mac", T0), T0)
-    const seen = release(lent, { _tag: "Release", host: "mac", id: `mac:${T0}`, ...ACCOUNT, claimedAt: T0 + 10 }, T0 + 10)
-    const later = T0 + 10 + SETTLE_MS
-    expect(answer(seen, "workbox", askOf("other", later, T0 + 10), later)[0]).toMatchObject({ granted: false, reason: expect.stringContaining("may not show yet") })
-    expect(answer(seen, "workbox", askOf("other", later, later - 1), later)[0]).toMatchObject({ granted: false })
-    expect(answer(seen, "workbox", askOf("other", later, later), later)[0]).toEqual({ granted: true })
+    // The claimer's clock ten minutes behind the lender's: its claimedAt says nothing here.
+    const seen = release(lent, { _tag: "Release", host: "mac", id: `mac:${T0}`, ...ACCOUNT, claimedAt: T0 + 10 - 2 * SETTLE_MS }, T0 + 10)
+    const before = T0 + 10 + SETTLE_MS - 1
+    // An asker whose clock runs ten minutes ahead: its reading's time is no proof the reading shows the claim.
+    expect(answer(seen, "workbox", askOf("other", before + 2 * SETTLE_MS, before + 2 * SETTLE_MS), before)[0]).toMatchObject({ granted: false, reason: expect.stringContaining("may not show yet") })
+    expect(answer(seen, "workbox", askOf("other", before, before), before)[0]).toMatchObject({ granted: false })
+    // SETTLE_MS on, by the lender's clock: granted, whatever the asker's clock says.
+    expect(answer(seen, "workbox", askOf("other", T0 - 2 * SETTLE_MS, T0 - 2 * SETTLE_MS), before + 1)[0]).toEqual({ granted: true })
   })
 
   test("a peer's claim holds off this host's own next claim alike; a finished lease of its own holds nothing (its sends its Resets store keeps)", () => {

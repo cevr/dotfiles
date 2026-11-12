@@ -277,6 +277,14 @@ export type FindingsRead = { readonly _tag: "Read"; readonly findings: ReadonlyA
 
 export class Findings extends Context.Service<Findings, { readonly read: (report: string) => Effect.Effect<FindingsRead> }>()("dotfiles-opencode/orchestrate/Findings") {}
 
+/**
+ * The branch checked out in a Rift (a land's entry by path, `~/` for home): what names its unit
+ * (`feat/<unit>`). None when it cannot be read: no checkout there, a detached HEAD, no git.
+ */
+export class Branches extends Context.Service<Branches, { readonly of: (path: string) => Effect.Effect<string | undefined> }>()(
+  "dotfiles-opencode/orchestrate/Branches",
+) {}
+
 /** Whether a step's session still works: it runs a turn, is latched, or keeps background work of its own. */
 export class Liveness extends Context.Service<Liveness, { readonly alive: (sessionID: string) => Effect.Effect<boolean> }>()(
   "dotfiles-opencode/orchestrate/Liveness",

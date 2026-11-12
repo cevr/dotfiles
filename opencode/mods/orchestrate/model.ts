@@ -45,6 +45,9 @@ import {
   handBackOf as stepHandBackOf,
   Land,
   Landed,
+  entryOf,
+  type LandEntry,
+  type LandTarget,
   machine,
   type MachineState,
   notesOf,
@@ -56,7 +59,6 @@ import {
   startOf as stepOfCall,
   unresolvedOf,
   verifierPromptOf,
-  workspaceOf,
 } from "./machine.ts"
 import { formatRef, namesModel, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
 import { codexFallback, effort, isCodexModel, isRole, Reason, route, unspecific, WORKER } from "./role.ts"
@@ -65,6 +67,7 @@ import { codexFallback, effort, isCodexModel, isRole, Reason, route, unspecific,
 const onCodex = (agent: string) => agent === "planner" || agent === "verifier"
 import { resumesAt, SabbathRest, type Place } from "./sabbath.ts"
 import {
+  Branches,
   CallLog,
   CodexAdmission,
   type Decided,
@@ -761,10 +764,15 @@ export class Machines extends Context.Service<
     readonly start: (input: { readonly root: string; readonly key: string; readonly input: unknown }) => Effect.Effect<Passed, Refused>
     /** The call `key` answered: its child's session, or none when it did not start. */
     readonly started: (input: { readonly root: string; readonly key: string; readonly child?: string }) => Effect.Effect<void>
+    /**
+     * A land's Rifts as the machine knows them: each entry by path (`/…`, `~/…`) with the branch checked
+     * out there, when it reads. Read once, before the land: a pushed land trashes its Rifts.
+     */
+    readonly resolve: (rifts: ReadonlyArray<LandTarget>) => Effect.Effect<ReadonlyArray<LandEntry>>
     /** A `rift` land of `root`, about to run. */
-    readonly land: (input: { readonly root: string; readonly rifts: ReadonlyArray<string>; readonly departs?: string }) => Effect.Effect<Passed, Refused>
+    readonly land: (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget>; readonly departs?: string }) => Effect.Effect<Passed, Refused>
     /** The Rifts a land of `root` answered green. */
-    readonly landed: (input: { readonly root: string; readonly rifts: ReadonlyArray<string> }) => Effect.Effect<void>
+    readonly landed: (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget> }) => Effect.Effect<void>
     /** A session went idle: a step's hand-back moves its unit or ends its verifier. */
     readonly handBack: (sessionID: string) => Effect.Effect<void>
     /** The root's run as its ledger holds it, its dead steps handed back first; empty for a root that runs no unit. */
@@ -787,6 +795,7 @@ export const machineLayer = (config: MachineConfig) =>
       const liveness = yield* Liveness
       const remind = yield* Remind
       const findings = yield* Findings
+      const branches = yield* Branches
       const inFlight = new Map<string, InFlight>()
 
       const flying = (root: string, role: Start["role"], name: string) =>
@@ -860,11 +869,9 @@ export const machineLayer = (config: MachineConfig) =>
         const child = typeof fields.sessionID === "string" && fields.sessionID !== "" ? fields.sessionID : undefined
         const routed = route(fields.agent, config.fullAgent, description).agent
         const agent = child !== undefined && unspecific(fields.agent) ? ((yield* sessions.agentOf(child)) ?? routed) : routed
-        const step = stepOfCall(agent, description)
-        if (step === undefined) return { notes: [] }
-        // An implementor's own workspace, as its brief names it: the ledger knows its unit by it at the land.
-        const workspace = step.role === "implementor" ? workspaceOf(typeof fields.prompt === "string" ? fields.prompt : undefined) : undefined
-        const command = workspace === undefined ? step : { ...step, workspaces: [workspace] }
+        // The step is its description's alone: no prompt is read (a land knows a unit by its Rift's branch, unitOfEntry).
+        const command = stepOfCall(agent, description)
+        if (command === undefined) return { notes: [] }
         const at = yield* now
         let notes: ReadonlyArray<string> = []
         let prompt: string | undefined
@@ -896,7 +903,19 @@ export const machineLayer = (config: MachineConfig) =>
         yield* ledger.decide(input.root, yield* now, () => Effect.succeed([Spawned.make({ role: step.role, name: step.name, child })])).pipe(Effect.ignore)
       })
 
-      const land = Effect.fn("Machines.land")(function* (input: { readonly root: string; readonly rifts: ReadonlyArray<string>; readonly departs?: string }) {
+      const resolve = Effect.fn("Machines.resolve")(function* (rifts: ReadonlyArray<LandTarget>) {
+        return yield* Effect.forEach(
+          rifts,
+          (target) => {
+            const entry = entryOf(target)
+            if (entry.unit !== undefined || entry.branch !== undefined || !/^(?:\/|~\/)/.test(entry.rift)) return Effect.succeed(entry)
+            return branches.of(entry.rift).pipe(Effect.map((branch): LandEntry => (branch === undefined ? entry : { ...entry, branch })))
+          },
+          { concurrency: 4 },
+        )
+      })
+
+      const land = Effect.fn("Machines.land")(function* (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget>; readonly departs?: string }) {
         const command = Land.make({ rifts: input.rifts, ...(input.departs === undefined ? {} : { departs: input.departs }) })
         const decided = yield* ledger.decide(
           input.root,
@@ -907,7 +926,7 @@ export const machineLayer = (config: MachineConfig) =>
         return { notes: warnedNote(decided) }
       })
 
-      const landed = Effect.fn("Machines.landed")(function* (input: { readonly root: string; readonly rifts: ReadonlyArray<string> }) {
+      const landed = Effect.fn("Machines.landed")(function* (input: { readonly root: string; readonly rifts: ReadonlyArray<LandTarget> }) {
         yield* ledger.decide(input.root, yield* now, () => Effect.succeed([Landed.make({ rifts: input.rifts })])).pipe(Effect.ignore)
       })
 
@@ -943,7 +962,7 @@ export const machineLayer = (config: MachineConfig) =>
         )
       })
 
-      return { start, started, land, landed, handBack, brief, compacted }
+      return { start, started, resolve, land, landed, handBack, brief, compacted }
     }),
   )
 

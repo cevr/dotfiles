@@ -280,7 +280,8 @@ export const layer = Layer.effect(
       )
 
     const land = Effect.fn("RiftTool.land")(function* (sessionID: string, directory: string, source: string, input: RiftInput) {
-      const targets = input.rifts ?? []
+      // A `{ path, unit }` entry is its path here: the unit is the orchestrate plugin's.
+      const targets = (input.rifts ?? []).map((target) => (typeof target === "string" ? target : target.path))
       if (targets.length === 0) return yield* new RiftsMissing()
       // Every Rift is found and checked before any is touched.
       const paths = yield* Effect.forEach(targets, (target) => findRift(directory, source, target).pipe(Effect.provideService(Rifts, rifts)))

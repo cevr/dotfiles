@@ -106,8 +106,6 @@ export const Start = Schema.TaggedStruct("Start", {
   direct: Schema.Boolean,
   folds: Schema.optionalKey(Schema.Array(Schema.String)),
   departs: Schema.optionalKey(Schema.String),
-  /** An implementor's: the workspace its brief names as its own (`workspaceOf`), its unit's from now on. */
-  workspaces: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 export interface Start extends Schema.Schema.Type<typeof Start> {}
 
@@ -142,12 +140,25 @@ export interface HandBack extends Schema.Schema.Type<typeof HandBack> {}
 export const ReportRead = Schema.TaggedStruct("ReportRead", { batch: Schema.String, findings: Schema.Array(Schema.String) })
 export interface ReportRead extends Schema.Schema.Type<typeof ReportRead> {}
 
+/**
+ * One Rift a land names, as the land's input and the Rift itself say (never a brief):
+ * - `rift`: the input's entry, a path, a Rift's name or a branch;
+ * - `branch`: the branch checked out there, when the plugin read it;
+ * - `unit`: the unit the input names it for (`rifts: [{ path, unit }]`).
+ */
+export const LandEntry = Schema.Struct({ rift: Schema.String, branch: Schema.optionalKey(Schema.String), unit: Schema.optionalKey(Schema.String) })
+export interface LandEntry extends Schema.Schema.Type<typeof LandEntry> {}
+
+/** A land's Rift: its entry as a string, or with what the plugin knows of it. */
+export const LandTarget = Schema.Union([Schema.String, LandEntry])
+export type LandTarget = typeof LandTarget.Type
+
 /** A `rift` land about to run, with the Rifts it names. */
-export const Land = Schema.TaggedStruct("Land", { rifts: Schema.Array(Schema.String), departs: Schema.optionalKey(Schema.String) })
+export const Land = Schema.TaggedStruct("Land", { rifts: Schema.Array(LandTarget), departs: Schema.optionalKey(Schema.String) })
 export interface Land extends Schema.Schema.Type<typeof Land> {}
 
 /** The Rifts a land answered green. */
-export const Landed = Schema.TaggedStruct("Landed", { rifts: Schema.Array(Schema.String) })
+export const Landed = Schema.TaggedStruct("Landed", { rifts: Schema.Array(LandTarget) })
 export interface Landed extends Schema.Schema.Type<typeof Landed> {}
 
 /** The session a started step runs in, once the plugin knows it: what the ledger checks is still alive. */
@@ -159,14 +170,7 @@ export type Command = Start | HandBack | Land | Landed | Spawned | ReportRead
 
 // ── The events ──
 
-/** A unit's round started; `workspaces`, the Rifts its implementor was started in, are the unit's as well as any it had. */
-export const UnitStarted = Schema.TaggedStruct("UnitStarted", {
-  unit: Schema.String,
-  round: Schema.Number,
-  direct: Schema.Boolean,
-  workspaces: Schema.optionalKey(Schema.Array(Schema.String)),
-  at: Schema.Number,
-})
+export const UnitStarted = Schema.TaggedStruct("UnitStarted", { unit: Schema.String, round: Schema.Number, direct: Schema.Boolean, at: Schema.Number })
 export interface UnitStarted extends Schema.Schema.Type<typeof UnitStarted> {}
 
 export const UnitHandedBack = Schema.TaggedStruct("UnitHandedBack", { unit: Schema.String, ready: Schema.Boolean, at: Schema.Number })
@@ -228,11 +232,6 @@ export interface Unit {
   readonly direct: boolean
   /** Its implementor's session, once known. */
   readonly child?: string
-  /**
-   * The Rifts its implementors were started in (paths, as their prompts named them): a land names the unit by
-   * any of them, whatever the Rift is called (`reset-use-3` for unit `reset-use`). Absent when none was named.
-   */
-  readonly workspaces?: ReadonlyArray<string>
 }
 
 /** A finding of a verdict: the verifier's batch, and the unit it was folded into, once it was. */
@@ -323,68 +322,59 @@ const unverifiedOf = (state: MachineState): ReadonlyArray<string> => [...new Set
 /** The units the running verifier covers: as it started, else (an older checkpoint) those in `verify`. */
 const coveredOf = (state: MachineState): ReadonlyArray<string> => state.verifier?.units ?? unitsIn(state, "verify")
 
-/** A path as a brief writes it: absolute or from home, up to a space, a quote, a bracket or a comma. */
-const PATH = String.raw`(?:~|/)[^\s\x60'"()<>[\],]*`
+// ── A land's Rifts and their units ──
+//
+// A unit is named by its role call's description (`implementor <unit> rN`). A Rift a land names is a unit's
+// by what the land's input and the Rift itself say, never by a brief: an implementor's prompt may name any
+// Rift (a "do not touch" line, another unit's), so no prompt is read for workspaces. In order:
+//
+// 1. the unit the input names it for (`{ path, unit }`), when that is a unit; any other is no unit;
+// 2. else its branch, when the plugin read it from the Rift: `feat/<unit>`, or a later round's
+//    `feat/<unit>-<n>` (any prefix: `<run>/<unit>` too), by the name rule on its last segment;
+// 3. else the entry itself, by the name rule on its last segment: a unit's name, a branch, or a Rift's
+//    path or name (`<unit>`, `<unit>-<n>`, workrift's `feat-<unit>`).
+//
+// The name rule: a unit's exact name wins. Otherwise `<name>-<n>` is unit `<name>`'s when `<name>` is a unit
+// (and `feat-<name>…` read as `<name>…` too); two readings that name different units, or none, are no unit.
+// An entry that names no unit lands as none of the machine's: never another unit's.
 
-/**
- * Where a brief says the implementor works, first match wins: a `Workspace:` or `Rift:` line (the
- * spec's and a round message's), "you work in the Rift <path>", or the spec's `## Workspace` heading
- * with its path below. Every other path a prompt names (a "do not touch" line, a log directory,
- * another unit's Rift) is none of this unit's.
- */
-const OWN_WORKSPACE: ReadonlyArray<RegExp> = [
-  new RegExp(String.raw`^[\s>*_-]*(?:workspace|rift)[*_]*\s*:[*_\s]*\x60?(${PATH})`, "im"),
-  new RegExp(String.raw`\bwork(?:s|ing)?\s+in\s+(?:the\s+|a\s+|its\s+|your\s+)?(?:rift|worktree|workspace)\s+\x60?(${PATH})`, "i"),
-  new RegExp(String.raw`^#+\s*workspace\s*\n+\s*\x60?(${PATH})`, "im"),
-]
+/** A land's target as an entry. */
+export const entryOf = (target: LandTarget): LandEntry => (typeof target === "string" ? { rift: target } : target)
 
-/**
- * The workspace an implementor's start names as its own (`OWN_WORKSPACE`), trailing punctuation and
- * slashes dropped; none when the brief names none. Never a path the brief only mentions.
- */
-export const workspaceOf = (prompt: string | undefined): string | undefined => {
-  for (const pattern of OWN_WORKSPACE) {
-    const path = pattern.exec(prompt ?? "")?.[1]?.replace(/[.,;:!?]+$/, "").replace(/\/+$/, "")
-    if (path !== undefined && path.length > 1) return path
-  }
-  return undefined
+/** The last `/` segment of a path or branch, trailing slashes dropped. */
+const lastSegment = (text: string) => text.trim().replace(/\/+$/, "").split("/").at(-1) ?? ""
+
+/** The unit `name` (a Rift's name, a branch's last segment) is, by the name rule; none when no reading or two disagree. */
+export const unitOfName = (name: string, units: ReadonlyArray<string>): string | undefined => {
+  if (units.includes(name)) return name
+  const readings = name.startsWith("feat-") ? [name, name.slice("feat-".length)] : [name]
+  const found = new Set(
+    readings.flatMap((reading) => {
+      if (units.includes(reading)) return [reading]
+      const base = /^(.+)-\d+$/.exec(reading)?.[1]
+      return base !== undefined && units.includes(base) ? [base] : []
+    }),
+  )
+  return found.size === 1 ? [...found][0] : undefined
 }
 
-/** A land's entry names `workspace`: its whole path, or its last segments (`reset-use-3`, `dotfiles/reset-use-3`). */
-const namesWorkspace = (entry: string, workspace: string) => entry === workspace || workspace.endsWith(`/${entry}`)
-
-const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-
-/**
- * The unit a land's entry names, or none, never a wrong one:
- *
- * 1. a unit's exact name, as the entry or its last segment (`web`, `feat/web`, `…/.rifts/app/web`)
- *    always wins;
- * 2. else the unit whose recorded workspace (`workspaces`: the Rift each round's brief named as
- *    its own) the entry names; two units holding it is none;
- * 3. else by name: `<run>/<unit>`, workrift's `<run>-<unit>`, a later round's `<unit>-3`; the
- *    longest unit name that fits wins (`fix-auth` over `auth`).
- */
-export const unitOfRift = (rift: string, units: ReadonlyArray<string>, workspaces: Readonly<Record<string, ReadonlyArray<string>>> = {}): string | undefined => {
-  const entry = rift.trim().replace(/\/+$/, "")
-  const last = entry.split("/").at(-1) ?? entry
-  if (units.includes(entry)) return entry
-  if (units.includes(last)) return last
-  const owners = units.filter((unit) => (workspaces[unit] ?? []).some((workspace) => namesWorkspace(entry, workspace)))
-  if (owners.length > 1) return undefined
-  if (owners.length === 1) return owners[0]
-  return units.filter((unit) => new RegExp(`(?:^|[/-])${escaped(unit)}(?:-\\d+)?$`).test(entry)).sort((a, b) => b.length - a.length)[0]
+/** The unit a land's entry is: by the unit the input names, else its branch, else its own name; none, never a wrong one. */
+export const unitOfEntry = (target: LandTarget, units: ReadonlyArray<string>): string | undefined => {
+  const entry = entryOf(target)
+  if (entry.unit !== undefined) return units.includes(entry.unit) ? entry.unit : undefined
+  return unitOfName(lastSegment(entry.branch ?? entry.rift), units)
 }
 
-/** Each unit's workspaces, as the ledger holds them. */
-const workspacesIn = (state: MachineState): Readonly<Record<string, ReadonlyArray<string>>> =>
-  Object.fromEntries(Object.entries(state.units).flatMap(([name, unit]) => (unit.workspaces === undefined ? [] : [[name, unit.workspaces]])))
+/** A land's target as the root wrote it in the land's input: its entry, or `{ path, unit }`. */
+const inputOf = (target: LandTarget): string => {
+  const entry = entryOf(target)
+  return entry.unit === undefined ? JSON.stringify(entry.rift) : `{ path: ${JSON.stringify(entry.rift)}, unit: ${JSON.stringify(entry.unit)} }`
+}
 
 /** The ready units a land's `rifts` name. */
-const named = (state: MachineState, rifts: ReadonlyArray<string>): ReadonlyArray<string> => {
+const named = (state: MachineState, rifts: ReadonlyArray<LandTarget>): ReadonlyArray<string> => {
   const all = Object.keys(state.units)
-  const workspaces = workspacesIn(state)
-  return unitsIn(state, "ready").filter((unit) => rifts.some((rift) => unitOfRift(rift, all, workspaces) === unit))
+  return unitsIn(state, "ready").filter((unit) => rifts.some((rift) => unitOfEntry(rift, all) === unit))
 }
 
 /** Why the ready units' batch is due now (`3 ready`, `alpha ready 42 min`), or none. */
@@ -452,7 +442,7 @@ const instead = (state: MachineState, rule: Rule, call: Command, now: number, ca
       ].join(" ")
     }
     case "LandPartial":
-      return `Land every ready unit in one call: rift({ action: "land", rifts: [${ready.map((unit) => JSON.stringify(unit)).join(", ")}] }) (each by its Rift's name, branch or path).`
+      return `Land every ready unit in one call: rift({ action: "land", rifts: [${ready.map((unit) => JSON.stringify(unit)).join(", ")}] }) (each by its Rift's path, name or branch; one whose branch is not \`feat/<unit>\` as { path, unit: "<unit>" }).`
   }
 }
 
@@ -460,7 +450,7 @@ const instead = (state: MachineState, rule: Rule, call: Command, now: number, ca
 export const refusalOf = (state: MachineState, rule: Rule, call: Command, now: number, cadence: Cadence): string => {
   const how =
     call._tag === "Land"
-      ? `add departs: "<why>" to the land's input: rift({ action: "land", rifts: [${call.rifts.map((rift) => JSON.stringify(rift)).join(", ")}], departs: "<why>" })`
+      ? `add departs: "<why>" to the land's input: rift({ action: "land", rifts: [${call.rifts.map(inputOf).join(", ")}], departs: "<why>" })`
       : call._tag === "Start"
         ? `end the call's description with (departs: <why>): description "${call.role} ${call.name} r${call.round} (departs: <why>)"`
         : "state (departs: <why>) in the call"
@@ -492,13 +482,7 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           // No rule holds an implementor: the next batch fans out while a verifier runs.
           if (command.role === "implementor")
             return [
-              UnitStarted.make({
-                unit: command.name,
-                round: command.round,
-                direct: command.direct,
-                ...(command.workspaces === undefined || command.workspaces.length === 0 ? {} : { workspaces: command.workspaces }),
-                at: now,
-              }),
+              UnitStarted.make({ unit: command.name, round: command.round, direct: command.direct, at: now }),
               ...foldsOf(state, command).map((finding) => FindingFolded.make({ finding, into: command.name, at: now })),
             ]
           const batch = BATCH.test(command.name)
@@ -567,9 +551,7 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
         const prior = state.units[event.unit]?.state
         const verifier = prior === "verify" && state.verifier !== undefined && state.verifier.units === undefined ? { ...state.verifier, units: coveredOf(state) } : state.verifier
         const unverified = prior === "landed" ? [...new Set([...(state.unverified ?? []), event.unit])] : state.unverified
-        // The unit keeps the workspaces of its earlier rounds: a land may name any of them.
-        const workspaces = [...new Set([...(state.units[event.unit]?.workspaces ?? []), ...(event.workspaces ?? [])])]
-        units[event.unit] = { state: "implement", round: event.round, since: event.at, direct: event.direct, ...(workspaces.length === 0 ? {} : { workspaces }) }
+        units[event.unit] = { state: "implement", round: event.round, since: event.at, direct: event.direct }
         return tidy({ ...state, units, ...(verifier === undefined ? {} : { verifier }), ...(unverified === undefined ? {} : { unverified }) })
       }
       case "UnitHandedBack": {

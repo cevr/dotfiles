@@ -1,10 +1,14 @@
 // The fleet's spend authority as a small state machine, checked exhaustively
 // over small bounds: hosts × links up or down × answers lost × restarts ×
-// time × the owner's yes or none. Each host runs the claim of model.ts
-// (`sendClaim`) step by step on the real lease table (lease.ts): read the
-// account, begin, ask every peer, the `verdict`, hold, read again right
-// before the send, check the lease still holds, send, finish and release.
-// Every interleaving of those steps with the environment's is explored.
+// time × clock skew × the owner's yes or none. Each host runs the claim of
+// model.ts (`sendClaim`) step by step on the real lease table (lease.ts):
+// read the account, begin, ask every peer, the `verdict`, hold, read again
+// right before the send, send, finish and release. Every interleaving of
+// those steps with the environment's is explored.
+//
+// Each host has its own clock, off the real time by a fixed amount (up to
+// twice SETTLE_MS either way): every lease call, ask, release and sent claim
+// a host makes carries its clock; the provider's lag runs on real time.
 //
 // The provider is adversarial: each host picked another grant under another
 // request id, so nothing is deduped, and a reading may lag a claim by up to
@@ -15,7 +19,9 @@
 // yes sent a claim past a peer that could not be reached (the owner is the
 // authority in a partition). The mutants below (the old fallback that passes
 // over a silent peer unasked, no read right before the send, a restart that
-// forgets the claims it sent, answers that ask the lease table alone) each
+// forgets the claims it sent, answers that ask the lease table alone, and
+// round 5's comparison of the asker's reading time with the claimer's
+// claim time, two clocks) each
 // break it, so the model reaches the cases that matter. A host's sends are
 // kept as its Resets store keeps them (resets.ts `claimOut`): a restart
 // keeps them; the lease table goes with the process, and starts quiet.
@@ -64,6 +70,8 @@ interface Bounds {
   readonly lag: boolean
   /** Claims made outside the fleet (the owner in Claude's app): only where readings do not lag, since no host could see one then. */
   readonly outside: number
+  /** Each host's clock, ahead of the real time by this much (behind when negative). */
+  readonly clocks?: ReadonlyArray<number>
 }
 
 /** A change the model may break, to show the property depends on it. */
@@ -78,7 +86,12 @@ interface Mutant {
   readonly storeSilent?: boolean
   /** A restarted host forgets the claims it sent (no `claimOut`). */
   readonly forgets?: boolean
+  /** Round 5: a peer's claim is seen at the claimer's `claimedAt`, and an ask judged by the asker's `readAt`: two clocks compared. */
+  readonly crossClock?: boolean
 }
+
+/** `host`'s clock at the world's real time. */
+const clock = (world: World, bounds: Bounds, host: number) => world.now + (bounds.clocks?.[host] ?? 0)
 
 const pair = (left: number, right: number) => (left < right ? `${left}-${right}` : `${right}-${left}`)
 
@@ -133,9 +146,10 @@ const next = (world: World, bounds: Bounds, mutant: Mutant): ReadonlyArray<World
           continue
         }
         const id = `${name}:${proc.runs}`
-        const ask = { id, provider: "claude" as const, grants: [`g${host}`], readAt: world.now, requestedAt: world.now, holdMs: Lease.LEASE_MS }
-        const kept = mutant.forgets !== true && world.sent[host]!.some((at) => world.now < at + Lease.SETTLE_MS) ? "a claim out" : undefined
-        const [why, table] = kept !== undefined ? [kept, world.tables[host]!] : Lease.begin(world.tables[host]!, name, ask, world.now)
+        const local = clock(world, bounds, host)
+        const ask = { id, provider: "claude" as const, grants: [`g${host}`], readAt: local, requestedAt: local, holdMs: Lease.LEASE_MS }
+        const kept = mutant.forgets !== true && world.sent[host]!.some((at) => local < at + Lease.SETTLE_MS) ? "a claim out" : undefined
+        const [why, table] = kept !== undefined ? [kept, world.tables[host]!] : Lease.begin(world.tables[host]!, name, ask, local)
         const tables = replace(world.tables, host, table)
         out.push(
           why !== undefined
@@ -147,8 +161,8 @@ const next = (world: World, bounds: Bounds, mutant: Mutant): ReadonlyArray<World
                   pc: "asking",
                   runs: proc.runs + 1,
                   id,
-                  readAt: world.now,
-                  requestedAt: world.now,
+                  readAt: local,
+                  requestedAt: local,
                   answers: Array.from({ length: bounds.hosts }, (_, peer): Answer => (peer === host ? "silent" : "pending")),
                 }),
               },
@@ -169,8 +183,10 @@ const next = (world: World, bounds: Bounds, mutant: Mutant): ReadonlyArray<World
           out.push(answered("silent"))
           continue
         }
-        const claimOut = mutant.forgets !== true && mutant.storeSilent !== true && world.sent[peer]!.some((at) => world.procs[host]!.readAt! < at + Lease.SETTLE_MS)
-        const [answer, table] = claimOut ? ([{ granted: false, reason: "a claim out" }, world.tables[peer]!] as const) : Lease.answer(world.tables[peer]!, NAMES[peer]!, askOf(world, host), world.now)
+        // The peer judges the ask on its own clock; round 5's mutant, by the asker's reading time.
+        const judged = mutant.crossClock === true ? proc.readAt! : clock(world, bounds, peer)
+        const claimOut = mutant.forgets !== true && mutant.storeSilent !== true && world.sent[peer]!.some((at) => judged < at + Lease.SETTLE_MS)
+        const [answer, table] = claimOut ? ([{ granted: false, reason: "a claim out" }, world.tables[peer]!] as const) : Lease.answer(world.tables[peer]!, NAMES[peer]!, askOf(world, host), judged)
         const tables = replace(world.tables, peer, table)
         out.push(answered(answer, tables))
         // The peer answered, and the answer was lost on the way back.
@@ -182,7 +198,7 @@ const next = (world: World, bounds: Bounds, mutant: Mutant): ReadonlyArray<World
         if (verdict._tag === "refused") out.push(end(world, host, "idle"))
         else if (verdict._tag === "unreachable") out.push(end(world, host, "done"))
         else {
-          const [held, table] = Lease.hold(world.tables[host]!, proc.id!, world.now)
+          const [held, table] = Lease.hold(world.tables[host]!, proc.id!, clock(world, bounds, host))
           out.push(
             held
               ? { ...world, tables: replace(world.tables, host, table), procs: replace(world.procs, host, { ...proc, pc: "held", passedOver: verdict.passedOver.length > 0 }) }
@@ -195,14 +211,14 @@ const next = (world: World, bounds: Bounds, mutant: Mutant): ReadonlyArray<World
     if (proc.pc === "held")
       for (const claimable of mutant.noRejudge === true ? [true] : reads(world, bounds)) {
         if (!claimable) out.push(end(world, host, "done"))
-        else if (!Lease.holds(world.tables[host]!, proc.id!, world.now)) out.push(end(world, host, "idle"))
         else {
+          const local = clock(world, bounds, host)
           const spent = {
             ...world,
-            sent: replace(world.sent, host, [...world.sent[host]!, world.now]),
+            sent: replace(world.sent, host, [...world.sent[host]!, local]),
             spends: [...world.spends, { host, at: world.now, partitioned: proc.passedOver === true && bounds.yes[host] === true }],
           }
-          out.push(end(spent, host, "done", world.now))
+          out.push(end(spent, host, "done", local))
         }
       }
   }
@@ -213,7 +229,12 @@ const next = (world: World, bounds: Bounds, mutant: Mutant): ReadonlyArray<World
     out.push(
       world.down.includes(pair(from, item.to))
         ? { ...world, releases }
-        : { ...world, releases, tables: replace(world.tables, item.to, Lease.release(world.tables[item.to]!, item.message, world.now)) },
+        : {
+            ...world,
+            releases,
+            // Taken on the receiver's clock; round 5's mutant, at the claimer's `claimedAt`.
+            tables: replace(world.tables, item.to, Lease.release(world.tables[item.to]!, item.message, mutant.crossClock === true ? (item.message.claimedAt ?? clock(world, bounds, item.to)) : clock(world, bounds, item.to))),
+          },
     )
   })
   if (world.budget.outside > 0 && world.spends.length === 0)
@@ -230,7 +251,7 @@ const next = (world: World, bounds: Bounds, mutant: Mutant): ReadonlyArray<World
       // The process goes: its table, its run (a claim not yet sent is never sent) and its releases on their way. Its store keeps the claim to go again.
       out.push({
         ...world,
-        tables: replace(world.tables, host, mutant.noQuiet === true ? Lease.emptyTable : Lease.started(world.now)),
+        tables: replace(world.tables, host, mutant.noQuiet === true ? Lease.emptyTable : Lease.started(clock(world, bounds, host))),
         procs: replace(world.procs, host, { pc: proc.runs < bounds.runs ? "idle" : "done", runs: proc.runs }),
         releases: world.releases.filter((item) => item.message.host !== NAMES[host]),
         budget: { ...world.budget, restart: world.budget.restart - 1 },
@@ -281,6 +302,8 @@ const TWO: Omit<Bounds, "yes"> = { hosts: 2, runs: 2, advance: 2, cut: 1, restar
 /** Two hosts whose readings do not lag, and a claim made outside the fleet. */
 const OUTSIDE: Omit<Bounds, "yes"> = { ...TWO, lag: false, outside: 1 }
 const THREE: Omit<Bounds, "yes"> = { hosts: 3, runs: 1, advance: 1, cut: 1, restart: 0, lost: 0, lag: true, outside: 0 }
+/** The second host's clock against the first's: SETTLE_MS (round 5's M1 needed that much) or twice it, ahead or behind. */
+const SKEWS = [-2 * Lease.SETTLE_MS, -Lease.SETTLE_MS, Lease.SETTLE_MS, 2 * Lease.SETTLE_MS]
 const YES2: ReadonlyArray<ReadonlyArray<boolean>> = [
   [false, false],
   [true, false],
@@ -303,6 +326,15 @@ describe("the spend authority, every interleaving within small bounds", () => {
     expect(found.spendsOne).toBe(true)
   }, 60_000)
 
+  test("two hosts whose clocks are SETTLE_MS or twice it apart, either way, each with or without the owner's yes: the same", () => {
+    for (const skew of SKEWS)
+      for (const yes of YES2) {
+        const found = explore({ ...TWO, yes, clocks: [0, skew] })
+        expect(found.counterexample, `skew ${skew} yes ${yes}`).toBeUndefined()
+        expect(found.spendsOne, `skew ${skew} yes ${yes}`).toBe(true)
+      }
+  }, 300_000)
+
   test("three hosts, none with a yes: one grant at most", () => {
     const found = explore({ ...THREE, yes: [false, false, false] })
     expect(found.counterexample).toBeUndefined()
@@ -320,6 +352,11 @@ describe("the model reaches what breaks it", () => {
     const found = explore({ ...OUTSIDE, yes: [false, false] }, { noRejudge: true })
     expect(found.counterexample?.spends.length).toBe(2)
   })
+
+  test("a host that judges a peer's claim by the claimer's clock and an ask by the asker's (round 5, M1) spends two grants once the clocks are SETTLE_MS apart, and only then", () => {
+    for (const skew of [Lease.SETTLE_MS, -Lease.SETTLE_MS]) expect(explore({ ...TWO, yes: [false, false], clocks: [0, skew] }, { crossClock: true }).counterexample?.spends.length, `skew ${skew}`).toBe(2)
+    expect(explore({ ...TWO, yes: [false, false] }, { crossClock: true }).counterexample).toBeUndefined()
+  }, 120_000)
 
   test("a restarted host that forgets the claim it sent spends two grants", () => {
     const found = explore({ ...TWO, yes: [false, false] }, { forgets: true })

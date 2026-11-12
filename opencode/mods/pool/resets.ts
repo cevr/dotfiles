@@ -106,9 +106,10 @@ export const DEMAND_STARTS = 3
 export const FRESH_MS = 15 * MINUTE
 /**
  * How long after a claim is sent a reading may not show it yet: the
- * provider's lag, the request's time, and the hosts' clock skew, all assumed
- * below it. No claim is sent on a reading taken earlier than this after
- * another of the provider's (`claimOut`, and the fleet's leases, lease.ts).
+ * provider's lag and the request's time, assumed below it. No claim is sent
+ * on a reading taken earlier than this after another of the provider's
+ * (`claimOut`, and the fleet's leases, lease.ts), each host measuring it on
+ * its own clock, so the hosts' clocks may differ by any amount.
  */
 export const SETTLE_MS = 5 * MINUTE
 
@@ -630,21 +631,23 @@ export interface ClaimSent extends Schema.Schema.Type<typeof ClaimSent> {}
 export type Event = WaitNoted | ClaimDue | OwnerAsked | AnswerDeclined | AskWithdrawn | ClaimSettled | ResetsForgotten | OwnerTold | ClaimSent
 
 /**
- * Why no claim of `provider` is sent on a reading taken at `readAt`: a claim
- * of it this host sent (any pool, before a restart too) that the reading may
- * not show yet (SETTLE_MS). On this host's own account (`credentialID`, its
- * login) only its claims count; on a peer's, whose login names no account
- * here, every claim of the provider. None when there is none.
+ * Why no claim of `provider` goes on at `now`, this host's clock: a claim of
+ * it this host sent (any pool, before a restart too) less than SETTLE_MS
+ * before, which a reading may not show yet. The claim goes on only on a
+ * reading taken after this, so it does. On this host's own account
+ * (`credentialID`, its login) only its claims count; for a peer's ask, whose
+ * login names no account here, every claim of the provider. Never another
+ * host's time: clocks differ. None when there is none.
  */
-export const claimOut = (state: ResetsState, provider: ResetProvider, readAt: number, credentialID?: string): string | undefined => {
+export const claimOut = (state: ResetsState, provider: ResetProvider, now: number, credentialID?: string): string | undefined => {
   const out = Object.values(state.resets).find(
     (reset) =>
       reset.provider === provider &&
       (credentialID === undefined || onAccount(reset, credentialID)) &&
       reset.sentAt !== undefined &&
-      readAt < reset.sentAt + SETTLE_MS,
+      now < reset.sentAt + SETTLE_MS,
   )
-  return out?.sentAt === undefined ? undefined : `a claim sent on ${out.label} at ${new Date(out.sentAt).toISOString()} may not show yet in the reading`
+  return out?.sentAt === undefined ? undefined : `a claim sent on ${out.label} at ${new Date(out.sentAt).toISOString()} may not show yet in a reading`
 }
 
 // ── Review ──
