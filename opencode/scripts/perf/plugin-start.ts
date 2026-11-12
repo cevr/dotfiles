@@ -20,6 +20,10 @@ import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../../testbeds/anthropic-auth.ts"
 import { forkLaunch } from "../../testbeds/gamut/gamut.ts"
 import { pluginDir } from "../daily.ts"
+import { Data, Effect, Option, Schedule } from "effect"
+
+/** Fewer locations set up than opened, after 90 s of looking. */
+class SetupsPending extends Data.TaggedError("SetupsPending")<{ readonly count: number }> {}
 
 type Entry = string | { readonly package: string; readonly options: Record<string, unknown> }
 
@@ -154,7 +158,8 @@ export const measure = async (options: Options): Promise<Measure> => {
     },
   })
 
-  const directories = Array.from({ length: options.locations + (options.alone ?? 0) }, (_, index) => {
+  const { alone: aloneCount = 0 } = options
+  const directories = Array.from({ length: options.locations + aloneCount }, (_, index) => {
     const directory = join(root, "work", `location-${index}`)
     mkdirSync(directory, { recursive: true })
     Bun.spawnSync(["git", "init", "-q", directory])
@@ -233,15 +238,24 @@ export const measure = async (options: Options): Promise<Measure> => {
       )
       return { directory, asked, served, live: since(), alone }
     }
-    const locations = await Promise.all(directories.slice(0, options.locations).map((directory) => open(directory, false)))
-    // A location answers before its last setups end (the host's own plugins load after ours):
-    // the next opens once every location's `Plugin.activate` span has come in.
+    /** A location answers before the host's own plugins end its setups: the next opens once every `Plugin.activate` span is in. */
     const activated = (count: number) =>
-      until(async () => (spans.filter((span) => span.name === "Plugin.activate").length >= count ? true : undefined), () => `${count} locations' setups`)
-    for (const directory of directories.slice(options.locations)) {
-      await activated(locations.length)
-      locations.push(await open(directory, true))
-    }
+      Effect.sync(() => spans.filter((span) => span.name === "Plugin.activate").length).pipe(
+        Effect.filterOrFail(
+          (seen) => seen >= count,
+          () => new SetupsPending({ count }),
+        ),
+        Effect.retry({ schedule: Schedule.spaced("20 millis"), times: 4_500 }),
+      )
+    const locations = await Effect.runPromise(
+      Effect.gen(function* () {
+        const together = yield* Effect.promise(() => Promise.all(directories.slice(0, options.locations).map((directory) => open(directory, false))))
+        const alone = yield* Effect.forEach(directories.slice(options.locations), (directory, index) =>
+          activated(options.locations + index).pipe(Effect.andThen(Effect.promise(() => open(directory, true)))),
+        )
+        return [...together, ...alone]
+      }),
+    )
     // The batch span processor flushes every few seconds: wait until two flushes bring nothing new.
     for (let last = -1; last !== spans.length; ) {
       last = spans.length
@@ -278,7 +292,7 @@ export const rows = (result: Measure): ReadonlyArray<PluginRow> => {
     .filter((span) => span.name === "PluginSupervisor.resolve")
     .sort(byStart)
     .map((resolved) => (children.get(resolved.id) ?? []).filter((span) => span.name === "PluginModule.load").sort(byStart))
-  // The locations opened alone start after every other location's setups ended.
+  /** The locations opened alone start after every other location's setups ended. */
   const aloneFrom = Math.min(...result.locations.filter((location) => location.alone).map((location) => result.t0 + location.asked))
   return result.plugins.map((plugin, index) => {
     // `dotfiles-opencode.<name>`, and the vendored auth plugin's `ex-machina.anthropic-auth`.
@@ -313,7 +327,7 @@ if (import.meta.main) {
   const result = await measure({
     launch: fork ? forkLaunch(resolve(fork), process.execPath) : { base: [arg("binary") ?? installedBinary()], env: {} },
     locations: Number(arg("locations") ?? 4),
-    alone: Number(arg("alone") ?? 0),
+    alone: Number(Option.getOrElse(Option.fromNullishOr(arg("alone")), () => "0")),
     plugins: SERVER_PLUGINS.filter((entry) => only === undefined || only.includes(nameOf(entry))),
     data: process.argv.includes("--data"),
     cpuProfile: arg("cpu-prof"),
@@ -321,10 +335,11 @@ if (import.meta.main) {
   const s = (value: number) => `${(value / 1000).toFixed(2)}s`
   const list = (values: ReadonlyArray<number>) => values.map((value) => value.toFixed(0)).join(" ")
   console.log(`service: listening ${s(result.listening)}, /api/info 200 at ${s(result.ready)} (503 before)`)
-  for (const location of result.locations) console.log(`${location.directory.split("/").at(-1)}${location.alone ? " (alone)" : ""}: asked ${s(location.asked)}, served ${s(location.served)}, plugins live ${s(location.live)}`)
+  const name = (location: Location) => location.directory.split("/").at(-1)
+  for (const location of result.locations) console.log(`${name(location)}: asked ${s(location.asked)}, served ${s(location.served)}, plugins live ${s(location.live)}`)
   console.log(`per location, ms: module loads (PluginSupervisor.resolve) ${list(perLocation(result, "PluginSupervisor.resolve"))}; setups (Plugin.activate) ${list(perLocation(result, "Plugin.activate"))}`)
-  console.log("\nplugin          module load ms per location     setup ms per location (together | alone)")
-  for (const row of rows(result)) console.log(`${row.plugin.padEnd(16)}${list(row.load).padEnd(32)}${list(row.setup)}${row.alone.length > 0 ? ` | ${list(row.alone)}` : ""}`)
+  console.log(`\nplugin          module load ms per location     setup ms per location (together | alone: ${result.locations.filter((location) => location.alone).map(name).join(" ")})`)
+  for (const row of rows(result)) console.log(`${row.plugin.padEnd(16)}${list(row.load).padEnd(32)}${list(row.setup)} | ${list(row.alone)}`)
   const out = arg("json")
   if (out) writeFileSync(out, JSON.stringify(result))
 }
