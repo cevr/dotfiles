@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test"
-import { Clock, type Duration, Effect, Fiber, Layer, Option } from "effect"
+import { Clock, Duration, Effect, Fiber, Layer, Option } from "effect"
 import { TestClock } from "effect/testing"
 import type { SessionView } from "./gate.ts"
 import type { Reading } from "./health.ts"
-import { EXIT_CODES, GATE_POLL, handoff, Updater, updaterLayer } from "./model.ts"
+import { EXIT_CODES, GATE_POLL, handoff, intervalChecks, Updater, updaterLayer } from "./model.ts"
 import { type Build, proven, type Record, stagedRecord } from "./record.ts"
-import { Builder, Configs, Handoff, HandoffMark, Log, Notice, Records, Rejections, Service, Sessions, Source, UpdateFailed } from "./service.ts"
+import { Builder, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Resident, Service, Sessions, Source, UpdateFailed } from "./service.ts"
 import type { Target } from "./target.ts"
 import type { Rejected, Running } from "./update.ts"
+import { RESIDENT_DELAY, watch } from "./watch.ts"
 
 /** 2026-11-11T17:00:00Z, a Wednesday noon in Knowlton. */
 const WEDNESDAY_NOON = 1_794_416_400_000
@@ -27,6 +28,8 @@ const NEW = build("2.2.7-prime.bbbbbbbb", TARGET.dotfiles)
 const onGood = (): Option.Option<Record> => Option.some(proven({ version: GOOD.version, command: GOOD.command, dotfiles: GOOD.dotfiles, fork: GOOD.fork }))
 /** The same host once daily staged the target's build. */
 const stagedTarget = (): Option.Option<Record> => Option.some(stagedRecord(onGood(), NEW, []))
+/** A host on the target's build, proven. */
+const onTarget = (): Option.Option<Record> => Option.some(proven({ version: NEW.version, command: NEW.command, dotfiles: NEW.dotfiles, fork: NEW.fork }))
 
 /** The host as the fakes hold it: what each seam was asked, in order, and what it answers. */
 interface World {
@@ -48,11 +51,17 @@ interface World {
   advanceFails: ReadonlyArray<string>
   /** The providers the service had a login for before the restart; none when that read fails. */
   before: Option.Option<ReadonlyArray<string>>
+  /** How many reads of the verified target still die (a defect, not a failed step). */
+  verifiedDeaths: number
+  /** When each check was stamped (epoch ms). */
+  readonly beats: Array<number>
 }
 
-const world = (at: Partial<Omit<World, "calls" | "lines">> = {}): World => ({
+const world = (at: Partial<Omit<World, "calls" | "lines" | "beats">> = {}): World => ({
   calls: [],
   lines: [],
+  beats: [],
+  verifiedDeaths: 0,
   views: [],
   record: Option.none(),
   rejected: Option.none(),
@@ -86,7 +95,11 @@ const fakes = (host: World) =>
     Layer.succeed(
       Source,
       Source.of({
-        verified: Effect.succeed(Option.some(TARGET)),
+        verified: Effect.suspend(() => {
+          if (host.verifiedDeaths === 0) return Effect.succeed(Option.some(TARGET))
+          host.verifiedDeaths -= 1
+          return Effect.die(new Error("git fetch: the origin's ref did not parse"))
+        }),
         head: Effect.succeed(PRIOR),
         advance: (commit) =>
           Effect.suspend(() => {
@@ -158,6 +171,10 @@ const fakes = (host: World) =>
     ),
     Layer.succeed(Configs, Configs.of({ keep: Effect.sync(() => void host.calls.push("keep config")), restore: Effect.sync(() => void host.calls.push("restore config")) })),
     Layer.succeed(Log, Log.of({ line: (text) => Effect.sync(() => void host.lines.push(text)) })),
+    Layer.succeed(
+      Heartbeat,
+      Heartbeat.of({ beat: Clock.currentTimeMillis.pipe(Effect.map((at) => void host.beats.push(at))), last: Effect.sync(() => Option.fromNullishOr(host.beats.at(-1))) }),
+    ),
     Layer.succeed(Notice, Notice.of({ show: (text) => Effect.sync(() => void host.calls.push(`notice ${text}`)), clear: Effect.sync(() => void host.calls.push("notice cleared")) })),
     Layer.succeed(
       Service,
@@ -175,7 +192,7 @@ const fakes = (host: World) =>
   )
 
 /** Runs `body` on the fakes under a test clock set to a Wednesday noon. */
-const run = <A>(host: World, body: Effect.Effect<A, UpdateFailed, Updater | HandoffMark | Service | Source | Records | Rejections | Configs | Notice | Log>) =>
+const run = <A>(host: World, body: Effect.Effect<A, UpdateFailed, Updater | HandoffMark | Service | Source | Records | Rejections | Configs | Notice | Log | Heartbeat>) =>
   Effect.runPromise(
     Effect.gen(function* () {
       yield* TestClock.setTime(WEDNESDAY_NOON)
@@ -313,6 +330,41 @@ describe("the updater on its seams", () => {
       Effect.gen(function* () {
         yield* check("interval")
         expect(host.calls).toEqual([`handoff ${SHORT}`])
+      }),
+    )
+  })
+
+  test("a check that dies is logged and ends its run: the next check runs, and every check is stamped", () => {
+    const host = world({ record: onTarget(), verifiedDeaths: 1 })
+    return run(
+      host,
+      Effect.gen(function* () {
+        yield* check("interval")
+        yield* check("interval")
+        expect(host.lines).toEqual(["check (interval) died: Error: git fetch: the origin's ref did not parse", `check (interval): installed is ${SHORT}`])
+        expect(host.beats).toHaveLength(2)
+      }),
+    )
+  })
+
+  test("the interval checks go on after a check that dies: one a poll after the start, then one every interval", () => {
+    const host = world({ record: onTarget(), verifiedDeaths: 1 })
+    const every = Duration.minutes(10)
+    return run(
+      host,
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(intervalChecks((yield* Updater).check, every))
+        yield* settle
+        yield* TestClock.adjust(GATE_POLL)
+        yield* settle
+        expect(host.lines).toEqual(["check (interval) died: Error: git fetch: the origin's ref did not parse"])
+        for (const _ of [1, 2]) {
+          yield* TestClock.adjust(every)
+          yield* TestClock.adjust(GATE_POLL)
+          yield* settle
+        }
+        expect(host.lines.slice(1)).toEqual([`check (interval): installed is ${SHORT}`, `check (interval): installed is ${SHORT}`])
+        yield* Fiber.interrupt(fiber)
       }),
     )
   })
@@ -573,6 +625,108 @@ describe("one handoff at a time", () => {
       Effect.gen(function* () {
         yield* check("interval")
         expect(host.calls).toEqual([`handoff ${SHORT}`])
+      }),
+    )
+  })
+})
+
+/** 2026-11-12T15:41:15Z, when a TUI's `service ensure` started the workbox's service. */
+const STARTED = 1_794_498_075_000
+const EVERY = Duration.minutes(10)
+
+/**
+ * The service as a watchdog sees it: whether the resident location runs, and the update's stamps
+ * and log. While the resident location runs, its copy checks once an interval; a service a TUI
+ * started does not run it until asked.
+ */
+interface ServiceWorld {
+  residentLoaded: boolean
+  asks: number
+  /** How many asks still fail. */
+  askFailures: number
+  readonly beats: Array<number>
+  readonly lines: Array<string>
+}
+
+const serviceWorld = (at: Partial<Omit<ServiceWorld, "beats" | "lines">> = {}): ServiceWorld => ({ residentLoaded: false, asks: 0, askFailures: 0, beats: [], lines: [], ...at })
+
+const watchFakes = (host: ServiceWorld) =>
+  Layer.mergeAll(
+    Layer.succeed(
+      Resident,
+      Resident.of({
+        load: Effect.suspend(() => {
+          host.asks += 1
+          if (host.askFailures === 0) return Effect.sync(() => void (host.residentLoaded = true))
+          host.askFailures -= 1
+          return failure("load the resident location")
+        }),
+      }),
+    ),
+    Layer.succeed(Heartbeat, Heartbeat.of({ beat: Effect.void, last: Effect.sync(() => Option.fromNullishOr(host.beats.at(-1))) })),
+    Layer.succeed(Log, Log.of({ line: (text) => Effect.sync(() => void host.lines.push(text)) })),
+  )
+
+/** `body` with the watchdog of a copy outside the resident location running, under a test clock at the service's start. */
+const watching = (host: ServiceWorld, body: Effect.Effect<void>) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* TestClock.setTime(STARTED)
+      const fiber = yield* Effect.forkChild(watch(EVERY))
+      yield* settle
+      yield* body
+      yield* Fiber.interrupt(fiber)
+    }).pipe(Effect.provide(watchFakes(host)), Effect.provide(TestClock.layer())),
+  )
+
+/** Moves the clock on by `count` intervals; while the resident location runs, it checks once in each, half way. */
+const intervals = (host: ServiceWorld, count: number) =>
+  Effect.forEach(
+    Array.from({ length: count }),
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(Duration.divideUnsafe(EVERY, 2))
+        yield* settle
+        if (host.residentLoaded) host.beats.push(yield* Clock.currentTimeMillis)
+        yield* TestClock.adjust(Duration.divideUnsafe(EVERY, 2))
+        yield* settle
+      }),
+    { discard: true },
+  )
+
+describe("the watchdog outside the resident location", () => {
+  test("a service a TUI started never loads the resident location: the TUI location's copy asks for it once it loaded, and the checks start", () => {
+    const host = serviceWorld()
+    return watching(
+      host,
+      Effect.gen(function* () {
+        expect(host.asks).toBe(0)
+        yield* TestClock.adjust(RESIDENT_DELAY)
+        yield* settle
+        expect([host.asks, host.residentLoaded]).toEqual([1, true])
+        yield* intervals(host, 4)
+        expect(host.asks).toBe(1)
+        expect(host.lines).toEqual([])
+      }),
+    )
+  })
+
+  test("checks that stop for more than two intervals are logged, and the service is asked for the resident location again", () => {
+    const host = serviceWorld({ askFailures: 1 })
+    return watching(
+      host,
+      Effect.gen(function* () {
+        yield* TestClock.adjust(RESIDENT_DELAY)
+        yield* settle
+        expect(host.lines).toEqual(["watchdog: asking the service for its resident location failed at load the resident location: load the resident location exited 1"])
+        yield* intervals(host, 1)
+        expect(host.asks).toBe(1)
+        yield* intervals(host, 1)
+        expect([host.asks, host.residentLoaded]).toEqual([2, true])
+        expect(host.lines.at(-1)).toBe("watchdog: no update check for 20m 10s (more than 2 intervals); asking the service for its resident location")
+        yield* intervals(host, 3)
+        expect(host.asks).toBe(2)
+        expect(host.lines).toHaveLength(2)
       }),
     )
   })

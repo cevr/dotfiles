@@ -1,8 +1,8 @@
-import { Array as Arr, Clock, Context, Duration, Effect, Layer, Option, Ref } from "effect"
+import { Array as Arr, Clock, Context, Duration, Effect, Layer, Option, Ref, Schedule } from "effect"
 import { describeGate, Gate, gate, rootsOf } from "./gate.ts"
 import { describeHealth, final, Health, healthOf, provenNotice, recover, Recovery, type Stage } from "./health.ts"
 import { type Build, buildOf, goodOf, promoted, proven, rolledBack } from "./record.ts"
-import { Builder, Configs, Handoff, HandoffMark, Log, Notice, Records, Rejections, Service, Sessions, Source, type UpdateFailed } from "./service.ts"
+import { Builder, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Service, Sessions, Source, type UpdateFailed } from "./service.ts"
 import { shortTarget, type Target } from "./target.ts"
 import { ask, ended, IDLE, Plan, plan, runningOf, superseded } from "./update.ts"
 
@@ -33,6 +33,13 @@ export class Updater extends Context.Service<
   }
 >()("dotfiles-opencode/update/Updater") {}
 
+/**
+ * The interval checks: one `GATE_POLL` after the start, then every `every` after each ends. A
+ * check never fails (`Updater.check`), so the repeat never ends.
+ */
+export const intervalChecks = (check: (reason: string) => Effect.Effect<void>, every: Duration.Duration) =>
+  check("interval").pipe(Effect.delay(GATE_POLL), Effect.repeat(Schedule.spaced(every)))
+
 /** How a waiting run ended: the gate opened, or a newer target came first. */
 type Waited = "open" | "superseded"
 
@@ -50,6 +57,7 @@ export const updaterLayer = (policy: Policy) =>
       const rejections = yield* Rejections
       const configs = yield* Configs
       const log = yield* Log
+      const heartbeat = yield* Heartbeat
       const runs = yield* Ref.make(IDLE)
       const handedOff = yield* Ref.make(Option.none<Target>())
 
@@ -129,9 +137,12 @@ export const updaterLayer = (policy: Policy) =>
         })
       })
 
+      // A run that fails, or dies, is logged and ends like any other: the run state goes back to
+      // idle and the next check runs, so neither the interval's repeat nor a later request stops.
       const loop: (reason: string) => Effect.Effect<void> = Effect.fn("Updater.loop")(function* (reason: string) {
         const rerun = yield* once(reason).pipe(
           Effect.catchTag("UpdateFailed", (failed: UpdateFailed) => log.line(`update failed at ${failed.step}: ${failed.message}`).pipe(Effect.as(false))),
+          Effect.catchDefect((defect) => log.line(`check (${reason}) died: ${String(defect).split("\n")[0]}`).pipe(Effect.as(false))),
         )
         const [again] = yield* Ref.modify(runs, (state) => {
           const [next, runsNext] = ended(state)
@@ -141,6 +152,7 @@ export const updaterLayer = (policy: Policy) =>
       })
 
       const check = Effect.fn("Updater.check")(function* (reason: string) {
+        yield* heartbeat.beat
         const start = yield* Ref.modify(runs, (state) => {
           const [go, next] = ask(state)
           return [go, next]

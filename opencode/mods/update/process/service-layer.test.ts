@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import { spawnSync, write } from "bun"
-import { Effect, Option, Schema } from "effect"
+import { Effect, Exit, Option, Schema } from "effect"
+import { readText } from "../filestore/files.ts"
 import { describeHealth, Health, healthOf } from "../health.ts"
 import { Placement } from "../placement.ts"
-import { Service } from "../service.ts"
+import { Resident, Service } from "../service.ts"
 import type { Settings } from "../settings.ts"
+import * as ResidentLayer from "./resident.ts"
 import * as ServiceLayer from "./service.ts"
 
 /** What the fake launcher answers from: the server config, the pool's status, the integration list. */
@@ -30,6 +32,7 @@ const launcherScript = (dir: string) =>
     `  /api/rpc/dotfiles-opencode.pool/status) cat '${dir}/pool.json' ;;`,
     `  /api/integration) cat '${dir}/integration.json' ;;`,
     `  /api/rpc/dotfiles-opencode.update/placement) cat '${dir}/placement.json' ;;`,
+    `  /api/location) printf '%s\\n' "$@" > '${dir}/asked' ;;`,
     `  *) echo "unknown $3" >&2; exit 1 ;;`,
     "esac",
     "",
@@ -161,5 +164,47 @@ describe("the service layer's reading of where the service runs (the update plug
           expect(healthOf(reading, [])).toEqual(Health.Healthy())
         }),
       ),
+    ))
+})
+
+/** What an ask for the resident location left: how it ended, what the launcher was asked, and the host's directory. */
+interface Asked {
+  readonly exit: Exit.Exit<void, unknown>
+  readonly asked: Option.Option<ReadonlyArray<string>>
+  readonly dir: string
+}
+
+/**
+ * Asks for the resident location on a scratch host whose launcher is `launcher(dir)` (the fake
+ * launcher records what it was asked, in `asked`), then runs `check` on what the ask left.
+ */
+const askResident = (launcher: (dir: string) => string, check: (asked: Asked) => void) =>
+  Effect.runPromise(
+    Effect.acquireUseRelease(
+      Effect.sync(() => spawnSync(["mktemp", "-d", "-t", "update-resident"]).stdout.toString().trim()),
+      (dir) =>
+        Effect.promise(() => write(`${dir}/opencode`, launcher(dir))).pipe(
+          Effect.andThen(Effect.sync(() => void spawnSync(["chmod", "755", `${dir}/opencode`]))),
+          Effect.andThen(Resident.use((resident) => resident.load).pipe(Effect.provide(ResidentLayer.layer(settingsIn(dir), {})), Effect.exit)),
+          Effect.flatMap((exit) => readText(`${dir}/asked`).pipe(Effect.map((asked) => check({ exit, asked: Option.map(asked, (text) => text.trim().split("\n")), dir })))),
+        ),
+      (dir) => Effect.sync(() => void spawnSync(["rm", "-rf", dir])),
+    ),
+  )
+
+describe("the resident location, asked through the launcher", () => {
+  test("asks the service for the resident location as the launcher does after service start", () =>
+    askResident(launcherScript, ({ exit, asked, dir }) => {
+      expect(Exit.isSuccess(exit)).toBe(true)
+      expect(asked).toEqual(Option.some(["api", "GET", "/api/location", "-H", `x-opencode-directory:${encodeURIComponent(dir)}`]))
+    }))
+
+  test("a launcher that does not run is a failed step, which the watchdog logs", () =>
+    askResident(
+      () => "",
+      ({ exit, asked }) => {
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(asked).toEqual(Option.none())
+      },
     ))
 })

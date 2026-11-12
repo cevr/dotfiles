@@ -4,6 +4,7 @@ import type { Listed } from "../health.ts"
 import { Placement } from "../placement.ts"
 import { Service, UpdateFailed } from "../service.ts"
 import type { Settings } from "../settings.ts"
+import { residentHeader } from "./resident.ts"
 import { run, spawned } from "./run.ts"
 
 const PluginList = Schema.Struct({
@@ -92,7 +93,7 @@ export const configuredOf = (text: string): ReadonlyArray<string> =>
 /** The service as the launcher reaches it: `service restart`, and `api` calls in the resident location. */
 export const layer = (settings: Settings, env: Readonly<globalThis.Record<string, string>>) => {
   const place = { cwd: settings.checkout, env }
-  const resident = `x-opencode-directory:${encodeURIComponent(settings.resident)}`
+  const resident = residentHeader(settings.resident)
   const server = settings.config.find((path) => path.endsWith("/opencode.json")) ?? ""
   /** The pool's status answer; none when it does not answer. */
   const pool = spawned("ask the pool", [settings.launcher, "api", "POST", "/api/rpc/dotfiles-opencode.pool/status", "-H", resident, "-d", `{"input":{}}`], place).pipe(

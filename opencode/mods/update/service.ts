@@ -116,6 +116,33 @@ export class Log extends Context.Service<
   }
 >()("dotfiles-opencode/update/Log") {}
 
+/**
+ * When the updater last ran a check: a stamp in the update's own directory, which every copy of
+ * the plugin reads. A stamp that does not write or read is none: the watchdog then counts from
+ * its own start.
+ */
+export class Heartbeat extends Context.Service<
+  Heartbeat,
+  {
+    /** Stamps a check, now. */
+    readonly beat: Effect.Effect<void>
+    /** The last check's stamp (epoch ms); none before the first. */
+    readonly last: Effect.Effect<Option.Option<number>>
+  }
+>()("dotfiles-opencode/update/Heartbeat") {}
+
+/**
+ * The service's resident location, the one whose copy of the plugin updates. A service a TUI
+ * started (its `service ensure`) loads only the TUI's location; `load` asks it for the resident
+ * location too, as the launcher does after `service start`.
+ */
+export class Resident extends Context.Service<
+  Resident,
+  {
+    readonly load: Effect.Effect<void, UpdateFailed>
+  }
+>()("dotfiles-opencode/update/Resident") {}
+
 /** Where the service process runs (`placement.ts`), as the plugin inside it places and reads it. */
 export class Placer extends Context.Service<
   Placer,
