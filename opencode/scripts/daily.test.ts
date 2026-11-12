@@ -467,6 +467,20 @@ describe("the fork move", () => {
     2000,
   )
 
+  test("moves the fork to origin and installs inside the step it hands the checks lock", () => {
+    const events: Array<string> = []
+    const holds = <A,>(step: () => Promise<A>) => {
+      events.push("hold")
+      return step()
+    }
+    const sync = () => {
+      events.push("sync")
+      return moved()
+    }
+    expect(moveFork(holds, sync, Effect.succeed("b"), Effect.sync(() => events.push("install")), none)).resolves.toEqual(moved())
+    expect(events).toEqual(["hold", "sync", "install"])
+  })
+
   test(
     "installs nothing when the fork did not move",
     kept.test(() => expect(moveFork(scratchLocks().move, () => ({ kind: "current" }), Effect.succeed("b"), Effect.die("installed"), none)).resolves.toEqual({ kind: "current" })),
