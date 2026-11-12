@@ -16,20 +16,29 @@
 // - it is quiet: its leases started (a restart) less than QUIET_MS ago,
 //   so it may have lent a lease it no longer remembers;
 // - it lent the lease to another host, and that lease is live;
-// - it was told of a peer's claim on the provider (a release) that a
-//   reading taken before SETTLE_MS after it may not show yet (the
-//   provider's lag), or it sent one itself: the claims its Resets store
-//   keeps across a restart (resets.ts `claimOut`, which model.ts asks
-//   first, for a peer's ask and for its own claim alike);
+// - less than SETTLE_MS ago, by its own clock, it was told of a peer's claim
+//   on the provider (a release, seen when it arrives) or sent one itself
+//   (the claims its Resets store keeps across a restart, resets.ts
+//   `claimOut`, which model.ts asks first, for a peer's ask and for its own
+//   claim alike): a reading may not show that claim yet;
 // - it is claiming itself: from its hold until its claim comes back;
 // - it is asking at once and asked first: the earlier ask, then the lower
 //   host name, the same on both sides; the loser yields.
 //
-// The asker's hold never outlasts what it asked for (`requestedAt + holdMs`),
-// so the lender's lease, lent at least that long, covers it. Once held, the
-// host reads the account again and sends only if the lease still holds.
-// Every sent claim is released with its time, whatever came back: a claim
-// that may have gone through holds the next off for SETTLE_MS.
+// No time of one host is compared with another's: the hosts' clocks may be
+// minutes apart. Each host judges by its own clock how long ago it saw or
+// sent a claim, and the claim is sent only on a reading taken after every
+// grant: after each peer judged, on its own clock, that SETTLE_MS had passed
+// since the last claim it knew of, so that reading shows it (the provider's
+// lag is assumed below SETTLE_MS). The ask's `readAt` and a release's
+// `claimedAt` are for the record. Only the ask order's tie-break compares
+// two hosts' times, and both sides compare them alike.
+//
+// The asker's hold never outlasts what it asked for (`requestedAt + holdMs`,
+// its own clock). Once held, the lease is the host's until its claim comes
+// back (a held lease refuses every ask), and the host reads the account
+// again before it sends. Every sent claim is released, whatever came back:
+// a claim that may have gone through holds the next off for SETTLE_MS.
 //
 // The table is pure: `answer`, `begin`, `hold`, `finish` and `release` each
 // return the new table. `make` keeps one table per host behind the `Leases`
@@ -62,7 +71,7 @@ const LeaseFields = {
   grants: Schema.Array(Schema.String),
 }
 
-/** A host asks for a provider's lease, on a reading taken at `readAt`, at `requestedAt`, to hold for `holdMs`. */
+/** A host asks for a provider's lease, at `requestedAt` to hold for `holdMs` (its clock; `readAt`, its reading's time, is for the record). */
 export const LeaseAsk = Schema.TaggedStruct("Ask", { ...LeaseFields, readAt: Schema.Number, requestedAt: Schema.Number, holdMs: Schema.Number })
 export type LeaseAsk = typeof LeaseAsk.Type
 
@@ -99,7 +108,7 @@ export interface Lent extends Scoped {
   readonly expiresAt: number
 }
 
-/** A peer's claim this host was told of. */
+/** A peer's claim this host was told of, `at` when the telling arrived, by this host's clock. */
 export interface Seen extends Scoped {
   readonly at: number
 }
@@ -130,12 +139,12 @@ const prune = (table: LeaseTable, now: number): LeaseTable => ({
 
 const stamp = (at: number) => new Date(at).toISOString()
 
-/** Why the provider is not free for a lease asked by `asker` on a reading at `readAt`, by what was lent and seen; none when it is. */
-const taken = (table: LeaseTable, ask: Scoped & { readonly readAt: number }, asker: string): string | undefined => {
-  const lent = table.lent.find((item) => item.host !== asker && item.provider === ask.provider)
-  if (lent !== undefined) return `${lent.host} holds the ${ask.provider} lease until ${stamp(lent.expiresAt)}`
-  const seen = table.seen.find((item) => item.provider === ask.provider && ask.readAt < item.at + SETTLE_MS)
-  if (seen !== undefined) return `a claim at ${stamp(seen.at)} may not show yet in a reading from ${stamp(ask.readAt)}`
+/** Why the provider is not free at `now` (this host's clock) for a lease asked by `asker`, by what was lent and seen; none when it is. */
+const taken = (table: LeaseTable, provider: ResetProvider, asker: string, now: number): string | undefined => {
+  const lent = table.lent.find((item) => item.host !== asker && item.provider === provider)
+  if (lent !== undefined) return `${lent.host} holds the ${provider} lease until ${stamp(lent.expiresAt)}`
+  const seen = table.seen.find((item) => item.provider === provider && now < item.at + SETTLE_MS)
+  if (seen !== undefined) return `a claim told of at ${stamp(seen.at)} may not show yet in a reading`
   return undefined
 }
 
@@ -144,7 +153,7 @@ export const answer = (table: LeaseTable, self: string, ask: LeaseAsk, now: numb
   const current = prune(table, now)
   const refuse = (reason: string) => [{ granted: false, reason }, current] as const
   if (current.quietUntil !== undefined && now < current.quietUntil) return refuse(`${self} started lately and lends nothing until ${stamp(current.quietUntil)}`)
-  const why = taken(current, ask, ask.host)
+  const why = taken(current, ask.provider, ask.host, now)
   if (why !== undefined) return refuse(why)
   const mine = current.own.find((item) => item.stage !== "yielded" && item.provider === ask.provider)
   if (mine?.stage === "held") return refuse(`${self} is claiming on ${ask.provider}`)
@@ -157,13 +166,13 @@ export const answer = (table: LeaseTable, self: string, ask: LeaseAsk, now: numb
   return [{ granted: true }, { ...current, own, lent }]
 }
 
-/** A peer released its lease: lent no more, and its claim, if it sent one, seen. */
+/** A peer released its lease: lent no more, and its claim, if it sent one, seen now, by this host's clock (never the peer's `claimedAt`). */
 export const release = (table: LeaseTable, message: LeaseRelease, now: number): LeaseTable => {
   const current = prune(table, now)
   return {
     ...current,
     lent: current.lent.filter((item) => !(item.host === message.host && item.id === message.id)),
-    seen: message.claimedAt === undefined ? current.seen : [...current.seen, { provider: message.provider, at: message.claimedAt }],
+    seen: message.claimedAt === undefined ? current.seen : [...current.seen, { provider: message.provider, at: now }],
   }
 }
 
@@ -175,7 +184,7 @@ export const begin = (
   now: number,
 ): readonly [string | undefined, LeaseTable] => {
   const current = prune(table, now)
-  const why = taken(current, ask, self) ?? (current.own.some((item) => item.stage !== "yielded" && item.provider === ask.provider) ? `a ${ask.provider} claim is in hand here` : undefined)
+  const why = taken(current, ask.provider, self, now) ?? (current.own.some((item) => item.stage !== "yielded" && item.provider === ask.provider) ? `a ${ask.provider} claim is in hand here` : undefined)
   if (why !== undefined) return [why, current]
   const own: Own = { id: ask.id, provider: ask.provider, grants: ask.grants, readAt: ask.readAt, requestedAt: ask.requestedAt, stage: "asking", expiresAt: ask.requestedAt + ask.holdMs }
   return [undefined, { ...current, own: [...current.own.filter((item) => item.id !== ask.id), own] }]
@@ -187,10 +196,6 @@ export const hold = (table: LeaseTable, id: string, now: number): readonly [bool
   if (mine === undefined || mine.stage !== "asking" || mine.expiresAt <= now) return [false, table]
   return [true, { ...table, own: table.own.map((item) => (item === mine ? { ...item, stage: "held" as const } : item)) }]
 }
-
-/** Whether this host still holds the lease `id` at `now`: checked right before the claim is sent. */
-export const holds = (table: LeaseTable, id: string, now: number): boolean =>
-  table.own.some((item) => item.id === id && item.stage === "held" && item.expiresAt > now)
 
 /** The claim is done (or not sent): the lease ends. A claim this host sent its Resets store keeps (resets.ts `claimOut`), not this table. */
 export const finish = (table: LeaseTable, id: string): LeaseTable => ({ ...table, own: table.own.filter((item) => item.id !== id) })
@@ -229,7 +234,6 @@ export class Leases extends Context.Service<
     readonly release: (message: LeaseRelease) => Effect.Effect<void>
     readonly begin: (self: string, ask: Pick<LeaseAsk, "id" | "provider" | "grants" | "readAt" | "requestedAt" | "holdMs">) => Effect.Effect<string | undefined>
     readonly hold: (id: string) => Effect.Effect<boolean>
-    readonly holds: (id: string) => Effect.Effect<boolean>
     readonly finish: (id: string) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/pool/Leases") {}
@@ -261,7 +265,6 @@ export const make = (options: { readonly quietMs?: number } = {}): Leases["Servi
     release: (message) => change((current, at) => [undefined, release(current, message, at)] as const),
     begin: (self, ask) => change((current, at) => begin(current, self, ask, at)),
     hold: (id) => change((current, at) => hold(current, id, at)),
-    holds: (id) => change((current, at) => [holds(current, id, at), current] as const),
     finish: (id) => change((current) => [undefined, finish(current, id)] as const),
   }
 }

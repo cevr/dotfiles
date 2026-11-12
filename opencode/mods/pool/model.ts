@@ -547,9 +547,11 @@ export const layer = (config: Config) =>
        * only as `verdict` allows: every peer granted, or the owner said yes
        * and no peer that answered refused. A claim no one asked for with a
        * peer unreachable is not sent: `unreachable`, for the owner's question.
-       * Then hold the lease, read the account again right before the send,
-       * and send only when that reading still finds the claim worth it and
-       * the lease still holds. The lease is released to the peers that
+       * Then hold the lease (held, it refuses every peer's ask until it is
+       * finished here), read the account again right before the send, and
+       * send only when that reading still finds the claim worth it: a reading
+       * taken after every grant, so after each peer judged on its own clock
+       * that the claims it knew of settled. The lease is released to the peers that
        * granted it, with the claim's time whenever one was sent.
        * Backed off (a peer refused): `failed`, to go again while the hold
        * lasts; no longer worth it: settled unsent.
@@ -571,8 +573,8 @@ export const layer = (config: Config) =>
               requestedAt,
               holdMs: leaseMs,
             }
-            // A claim this host sent lately on the account, a restart ago too, that the reading may not show yet.
-            const out = ResetsModel.claimOut(yield* resetsStore.read, reset.provider, ask.readAt, reset.credentialID)
+            // A claim this host sent on the account less than SETTLE_MS ago by its clock, a restart ago too: a reading may not show it yet.
+            const out = ResetsModel.claimOut(yield* resetsStore.read, reset.provider, requestedAt, reset.credentialID)
             if (out !== undefined) return settles(failed(`backed off: ${out}`), before)
             const busy = yield* leases.begin(host, ask)
             if (busy !== undefined) return settles(failed(`backed off: ${busy}`), before)
@@ -618,7 +620,6 @@ export const layer = (config: Config) =>
               const second = yield* judge(where, reset)
               if (second.fresh === undefined) return settles(failed(second.why ?? "unread"), before, lease)
               if (second.why !== undefined) return settles({ outcome: "nothing-to-reset", message: `not sent: ${second.why}` }, second.fresh.windows, lease)
-              if (!(yield* leases.holds(ask.id))) return settles(failed("backed off: the lease ended before the send"), second.fresh.windows, lease)
               claimedAt = yield* Clock.currentTimeMillis
               yield* sendResets(ResetsModel.NoteSend.make({ key: reset.key }))
               const answer = yield* quota.claim(where.id, { credentialID: reset.credentialID, creditID: reset.creditID, requestID: reset.requestID })
@@ -671,13 +672,18 @@ export const layer = (config: Config) =>
         yield* carry(settled.filter((event) => event._tag === "OwnerTold"))
       })
 
-      /** A peer's lease message: an ask is refused while a claim this host sent may not show in the asker's reading (its store keeps it across a restart), else the table answers. */
+      /**
+       * A peer's lease message: an ask is refused while a claim this host sent
+       * (its store keeps it across a restart) is less than SETTLE_MS old by
+       * this host's clock, else the table answers. The asker's times are
+       * never compared with this host's: clocks differ.
+       */
       const lease = (message: LeaseMessage): Effect.Effect<LeaseAnswer> =>
         message._tag === "Release"
           ? Effect.as(leases.release(message), { granted: true })
-          : Effect.flatMap(resetsStore.read, (state) => {
-              const out = ResetsModel.claimOut(state, message.provider, message.readAt)
-              return out === undefined ? leases.answer(fleetConfig.host, message) : Effect.succeed({ granted: false, reason: out })
+          : Effect.gen(function* () {
+              const out = ResetsModel.claimOut(yield* resetsStore.read, message.provider, yield* Clock.currentTimeMillis)
+              return out === undefined ? yield* leases.answer(fleetConfig.host, message) : { granted: false, reason: out }
             })
 
       /** Carry out what the aggregate decided. */

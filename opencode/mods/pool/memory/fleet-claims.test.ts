@@ -17,7 +17,7 @@
 //   reading right before the send: nothing more is spent.
 // - A restarted host lends nothing while a lease it lent may be live.
 import { describe, expect, test } from "bun:test"
-import { Context, Effect, Layer, Schema, Stream } from "effect"
+import { Clock, Context, Effect, Layer, Schema, Stream } from "effect"
 import { PoolId } from "../account-pool.ts"
 import { CACHE_LIFE_MS } from "../accounts.ts"
 import * as Lease from "../lease.ts"
@@ -358,6 +358,128 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
         expect(account.spent().map((claim) => claim.requestID)).toEqual(["claude-app"])
         const [record] = yield* records(workbox)
         expect(record).toMatchObject({ outcome: "nothing-to-reset", message: expect.stringMatching(/^not sent: /), lease: "granted by mac" })
+      }),
+    ))
+})
+
+/** A clock `ms` ahead of the real one (behind when negative). */
+const shifted = (ms: number): Clock.Clock => {
+  const real = Effect.runSync(Effect.clockWith(Effect.succeed))
+  return {
+    currentTimeMillisUnsafe: () => real.currentTimeMillisUnsafe() + ms,
+    currentTimeMillis: Effect.sync(() => real.currentTimeMillisUnsafe() + ms),
+    currentTimeNanosUnsafe: () => real.currentTimeNanosUnsafe() + BigInt(ms) * 1_000_000n,
+    currentTimeNanos: Effect.sync(() => real.currentTimeNanosUnsafe() + BigInt(ms) * 1_000_000n),
+    monotonicTimeNanosUnsafe: () => real.monotonicTimeNanosUnsafe(),
+    monotonicTimeNanos: real.monotonicTimeNanos,
+    sleep: (duration) => real.sleep(duration),
+  }
+}
+
+/** A host's pool on its own clock: its sweeps, and its answers to the other's lease messages. */
+const onClock = (host: Host, ms: number): Model.Pool["Service"] => {
+  const clock = shifted(ms)
+  const pool = host.pool!
+  const timed = new Proxy(pool, {
+    get: (target, key) => {
+      const value: unknown = Reflect.get(target, key)
+      if (Effect.isEffect(value)) return Effect.provideService(value, Clock.Clock, clock)
+      if (typeof value !== "function") return value
+      return (...args: ReadonlyArray<unknown>) => {
+        const out: unknown = Reflect.apply(value, target, args)
+        return Effect.isEffect(out) ? Effect.provideService(out, Clock.Clock, clock) : out
+      }
+    },
+  })
+  host.pool = timed
+  return timed
+}
+
+describe("the hosts' clocks minutes apart (round 5, M1): no time of one host is compared with another's", () => {
+  // The workbox's clock against the Mac's, in minutes: SETTLE_MS is 5.
+  for (const [minutes, differ] of [
+    [0, false],
+    [4, false],
+    [6, false],
+    [6, true],
+    [5.5, true],
+    [-6, true],
+    [12, true],
+  ] as const)
+    test(`the workbox ${Math.abs(minutes)} min ${minutes < 0 ? "behind" : "ahead"}${differ ? ", its grant list lagging (only g2: another request id)" : ""}, its reading seconds later not showing the Mac's claim: one claim sent`, () =>
+      scoped(
+        Effect.gen(function* () {
+          const { account, left, right } = verifierCase(Date.now())
+          const hosts = fleet(account)
+          hosts.mac.view.snapshot = left
+          yield* hosts.start
+          const mac = onClock(hosts.mac, 0)
+          const workbox = onClock(hosts.workbox, minutes * MINUTE)
+          yield* mac.sweep
+          expect(account.spent()).toHaveLength(1)
+          hosts.workbox.view.snapshot = { ...right, at: Date.now() + minutes * MINUTE, ...(differ ? { resets: { available: 1, credits: [right.resets!.credits[0]!] } } : {}) }
+          hosts.workbox.view.lags = true
+          yield* workbox.sweep
+          expect(account.sent).toHaveLength(1)
+          const [record] = yield* records(workbox)
+          expect(record?.message).toMatch(/^backed off: .*may not show yet/)
+        }),
+      ))
+
+  test("the Mac's release lost and the workbox's loan to it run out, the workbox 6 min ahead: the Mac's store refuses the workbox's ask on the Mac's clock; one claim sent", () =>
+    scoped(
+      Effect.gen(function* () {
+        const { account, left, right } = verifierCase(Date.now())
+        const hosts = fleet(account)
+        hosts.mac.view.snapshot = left
+        const claim = account.claim
+        // The link goes as the Mac's claim goes out: its release never reaches the workbox.
+        account.claim = (input) => {
+          hosts.mac.link = "down"
+          return claim(input)
+        }
+        yield* hosts.start
+        const mac = onClock(hosts.mac, 0)
+        const workbox = onClock(hosts.workbox, 6 * MINUTE)
+        yield* mac.sweep
+        expect(account.spent()).toHaveLength(1)
+        yield* sleep(LEASE_MS + 50)
+        hosts.workbox.view.snapshot = { ...right, at: Date.now() + 6 * MINUTE, resets: { available: 1, credits: [right.resets!.credits[0]!] } }
+        hosts.workbox.view.lags = true
+        yield* workbox.sweep
+        expect(account.sent).toHaveLength(1)
+        const [record] = yield* records(workbox)
+        expect(record?.message).toMatch(/^backed off: mac: a claim sent on Claude A at .* may not show yet/)
+      }),
+    ))
+})
+
+describe("a host's own claim (test strength, round 5)", () => {
+  test("its release to the peer lost and the peer's loan run out, the host reads the account again, lagging its claim and ranking another window first (another decision): its store holds its own next claim off; one grant spent", () =>
+    scoped(
+      Effect.gen(function* () {
+        const { account, left, right } = verifierCase(Date.now())
+        const hosts = fleet(account)
+        hosts.workbox.view.snapshot = right
+        const claim = account.claim
+        account.claim = (input) => {
+          hosts.workbox.link = "down"
+          return claim(input)
+        }
+        const [, workbox] = yield* hosts.start
+        yield* workbox.sweep
+        expect(account.spent()).toHaveLength(1)
+        // The Mac never heard of the claim, and its loan has run out: it would grant again.
+        yield* sleep(LEASE_MS + 50)
+        hosts.workbox.link = "up"
+        account.claim = claim
+        // Read again: the provider has not shown the claim yet, and this reading ranks the five-hour window first: another reset's key.
+        hosts.workbox.view.snapshot = { ...left, at: Date.now() }
+        hosts.workbox.view.lags = true
+        yield* workbox.sweep
+        expect(account.sent).toHaveLength(1)
+        const made = yield* records(workbox)
+        expect(made.some((record) => /^backed off: a claim sent on Claude A at .* may not show yet/.test(record.message ?? ""))).toBe(true)
       }),
     ))
 })
