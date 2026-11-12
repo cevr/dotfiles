@@ -64,6 +64,7 @@ export const files = (settings: Settings) => ({
   mark: `${settings.state}/handoff.json`,
   kept: `${settings.state}/config-kept`,
   rejected: `${settings.state}/rejected.json`,
+  checked: `${settings.state}/checked`,
 })
 
 /** How often the plugin looks for a new target. */
