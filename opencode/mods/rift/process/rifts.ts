@@ -4,7 +4,7 @@
 // branch and carries over gh stack metadata; everything else asks `rift` and
 // `git` directly, on either machine. A command that fails is a RiftFailed
 // carrying what it printed.
-import { existsSync } from "node:fs"
+import { constants, copyFileSync, existsSync, readdirSync, rmSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { Effect, Layer } from "effect"
 import { RiftFailed, Rifts, type CreateRequest } from "../service.ts"
@@ -57,6 +57,46 @@ export const layer = (options: Options) => {
       return yield* git(path, "switch", "--no-track", "-c", branch)
     }).pipe(Effect.mapError((error) => new RiftFailed({ operation: error.operation, message: `the Rift ${path} was made, but ${error.message}` })))
 
+  /** The absolute path of `objects/pack` in the repository at `path`. */
+  const packDirectory = (path: string) =>
+    git(path, "rev-parse", "--path-format=absolute", "--git-path", "objects/pack").pipe(Effect.map((out) => out.trim()))
+
+  /**
+   * Gives a new Rift every pack its copy dropped. `rift create` copies the source with one
+   * `clonefile` of its directory, which APFS clones as if file by file (its man page discourages
+   * it): on 2026-11-12 Rift after Rift came out without a pack the source held, while the
+   * multi-pack index the copy did carry still named it, and Git then read no object of it, so
+   * the branch switch failed. Every complete pack of the source (its `.idx` written last, so
+   * a fetch still writing one is skipped) the Rift lacks is cloned again; a multi-pack index
+   * that still fails Git's own check names a pack found nowhere, and is written again from the
+   * packs there are.
+   */
+  const restorePacks = Effect.fn("Rifts.restorePacks")(function* (path: string, source: string) {
+    const from = yield* packDirectory(source)
+    const to = yield* packDirectory(path)
+    const held = new Set(readdirSync(to))
+    const complete = new Set(
+      readdirSync(from)
+        .filter((file) => /^pack-[0-9a-f]+\.idx$/.test(file))
+        .map((file) => file.slice(0, -".idx".length)),
+    )
+    const dropped = readdirSync(from)
+      .filter((file) => complete.has(file.slice(0, file.lastIndexOf("."))) && !file.endsWith(".keep") && !held.has(file))
+      // The `.idx` last: Git takes a pack as there once its index is.
+      .sort((a, b) => Number(a.endsWith(".idx")) - Number(b.endsWith(".idx")))
+    yield* Effect.try({
+      try: () => {
+        for (const file of dropped) copyFileSync(join(from, file), join(to, file), constants.COPYFILE_FICLONE)
+      },
+      catch: (cause) => new RiftFailed({ operation: "restore packs", message: `the Rift ${path} was made, but ${String(cause)}` }),
+    })
+    const midx = join(to, "multi-pack-index")
+    if (existsSync(midx) && (yield* spawn(["git", "-C", path, "multi-pack-index", "verify", "--no-progress"], path)).code !== 0) {
+      rmSync(midx, { force: true })
+      yield* spawn(["git", "-C", path, "multi-pack-index", "write", "--no-progress"], path)
+    }
+  })
+
   const create = Effect.fn("Rifts.create")(function* (request: CreateRequest) {
     if (options.workrift) {
       // From the caller's checkout, so workrift imports its gh stack metadata; the source is named outright.
@@ -68,6 +108,7 @@ export const layer = (options: Options) => {
     const out = yield* run(["rift", "create", request.source, "--copy-all", "--name", request.name], request.source)
     const path = lines(out).at(-1)
     if (path === undefined) return yield* new RiftFailed({ operation: "rift create", message: "it printed no workspace path" })
+    if (existsSync(join(path, ".git"))) yield* restorePacks(path, request.source)
     yield* checkout(path, request.branch)
     return path
   })
