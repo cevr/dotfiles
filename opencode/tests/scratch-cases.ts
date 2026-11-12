@@ -63,6 +63,12 @@ describe("closing-after-timeout", () => {
   test("closes", () => kept.done())
 })
 
+describe("late-writer", () => {
+  const kept = keptScratch(true, "kept-late-writer-")
+  const writeLate = () => Effect.runPromise(Effect.sleep(`${HANG_MS * 3} millis`).pipe(Effect.andThen(Effect.sync(() => kept.dir("scenario-"))), Effect.asVoid))
+  test("hangs then writes", kept.test(writeLate), HANG_MS)
+})
+
 describe("closing-after-late-setup", () => {
   const kept = keptScratch(true, "kept-closing-after-late-setup-", true)
   test("setup", ...kept.setup(late, HANG_MS))

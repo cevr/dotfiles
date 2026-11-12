@@ -31,7 +31,7 @@ export type Body = () => PromiseLike<void> | void
 export interface Kept {
   /** The suite's directory; "" for a suite that does not run. */
   readonly path: string
-  /** A fresh directory inside it, for one scenario's output. */
+  /** A fresh directory inside it, for one scenario's output; after the suite's end it throws ENOENT and makes nothing. */
   readonly dir: (prefix: string) => string
   /** A test's body, run once the suite's directory exists. */
   readonly test: (body: Body) => () => Promise<void>
@@ -55,14 +55,17 @@ const suitePath = (runs: boolean, prefix: string) => {
  */
 export const keptScratch = (runs: boolean, prefix: string, closesItself = false): Kept => {
   const path = suitePath(runs, prefix)
+  const suite = { ended: false }
+  /** Makes the folder until the suite ends; after, a body Bun gave up on gets none, and its `dir` fails. */
   const make = () => {
-    if (path !== "") mkdirSync(path, { recursive: true })
+    if (path !== "" && !suite.ended) mkdirSync(path, { recursive: true })
   }
   const run = async (body: Body) => {
     make()
     await body()
   }
   const done = () => {
+    suite.ended = true
     if (path !== "") removeScratch(path)
   }
   if (runs && !closesItself) afterAll(done)
