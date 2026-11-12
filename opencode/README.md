@@ -641,15 +641,20 @@ call against it at the point of action (`mods/orchestrate/machine.ts`).
   carries the folded findings to the next batch verifier, whose prompt ends
   with them and whose start answers with them.
 - **A land's units.** A unit is named by its role call's description
-  (`implementor <unit> rN`); no prompt is read. A Rift a land names is a
-  unit's by what the land says: the unit an entry names (`{ path, unit }`),
-  else the branch checked out at an entry's path (read before the land runs,
-  since a pushed land trashes the Rift), else the entry itself. A branch or
-  name is read by its last segment: a unit's exact name wins, and
-  `<unit>-<n>` (a later round's Rift or branch) or workrift's `feat-<unit>`
-  is that unit's when `<unit>` is one. A reading that names no unit, or two,
+  (`implementor <unit> rN`); no prompt is read. An implementor's description
+  may end `(rift: <path>)`: the ledger keeps that Rift as the unit's, across
+  rounds. A Rift a land names is a unit's by what the land and the ledger
+  say: the unit an entry names (`{ path, unit }`), else the unit whose start
+  named that Rift (by path, or a name that is its last segment; two such
+  units is none), else the branch checked out at an entry's path (read
+  before the land runs, since a pushed land trashes the Rift), else the
+  entry itself. A branch or name is read by its last segment, every way it
+  reads: as a unit's exact name, as `<unit>-<n>` (a later round's Rift or
+  branch), and through workrift's `feat-<unit>`. One unit among the readings
+  is that unit; none, or two (`db-2` when both `db` and `db-2` are units),
   is none: the land goes through as none of the machine's, never as another
-  unit's (`unitOfEntry`).
+  unit's (`unitOfEntry`). A LandPartial refusal names each ready unit's Rift
+  as `{ path, unit }` from the ledger.
 - **Departures.** The same call passes with `(departs: <why>)` at the end of
   a role call's description, or `departs: "<why>"` in a land's input; the
   ledger records a `Departed` line per rule it broke.
