@@ -63,7 +63,8 @@ const NATIVE_PARSER = [/^(@[^/]+\/)?oxc-parser([@/]|$)/]
 
 /** Whether `target`, reached from the checkout at `root`, is one of `forbidden`. */
 const forbiddenAt = (root: string, target: string, forbidden: ReadonlyArray<RegExp>) => {
-  const name = path.isAbsolute(target) ? path.relative(root, target) : target
+  let name = target
+  if (path.isAbsolute(target)) name = path.relative(root, target)
   return forbidden.some((pattern) => pattern.test(name))
 }
 
