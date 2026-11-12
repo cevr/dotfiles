@@ -222,6 +222,23 @@
     },
     {
       "files": [
+        "tests/wait.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
+      }
+    },
+    {
+      "files": [
+        "tests/wait.test.ts"
+      ],
+      "rules": {
+        "effect/noAsyncFunction": "off",
+        "effect/noGlobals": "off"
+      }
+    },
+    {
+      "files": [
         "tests/git-repo.test.ts"
       ],
       "rules": {

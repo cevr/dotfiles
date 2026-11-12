@@ -17,6 +17,7 @@ import * as MemoryOpener from "@dotfiles/opencode-wake/memory/opener"
 import * as MemoryRunner from "@dotfiles/opencode-wake/memory/runner"
 import * as MemoryStore from "@dotfiles/opencode-wake/memory/store"
 import { Armed, Cancelled, Due, Pending, WAKES } from "@dotfiles/opencode-wake/wake"
+import { waitUntil } from "../../tests/wait.ts"
 import WakePlugin, { make, SCHEDULE_TOOLS } from "./server.ts"
 
 type Host = Parameters<(typeof WakePlugin)["effect"]>[0]
@@ -34,12 +35,9 @@ interface Added {
 const DIR = "/work/app"
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
 const settle = (ms = 20) => Effect.promise(() => new Promise<void>((done) => setTimeout(done, ms)))
-/** Waits, a few ms at a time, until `done` holds or `ms` pass. */
-const until = (done: () => boolean, ms = 3_000) =>
-  Effect.gen(function* () {
-    const by = Date.now() + ms
-    while (!done() && Date.now() < by) yield* settle(10)
-  })
+
+/** Waits, in real time, until `done` holds (tests/wait.ts); a wait that never ends fails naming `what`. */
+const waitFor = (what: string, done: () => boolean) => Effect.promise(() => waitUntil(what, done))
 
 interface Doubles {
   readonly store: MemoryStore.MemoryWakes
@@ -228,7 +226,7 @@ describe("the wake tools", () => {
         const receipt = yield* plugin.call("monitor", { command: "gh pr list", intervalSeconds: 1, repeat: "change", note: "A review changed." })
         expect(receipt).toContain("fires each time its matching output changes")
         expect(receipt).toContain("the first match is the baseline")
-        yield* until(() => plugin.inbox().length > 0)
+        yield* waitFor("a wake in the plugin's inbox", () => plugin.inbox().length > 0)
         const [letter] = plugin.inbox()
         expect(letter?.resume).toBe(true)
         expect(letter?.letter.text).toMatch(/^⏰ Monitor w[0-9a-z]{6} changed \(fire 1\): `gh pr list`\./)
@@ -289,7 +287,7 @@ describe("the plugin's events and start", () => {
         expect((yield* plugin.pending("ses_root")).entries.map((entry) => [entry.kind, entry.note, entry.child])).toEqual([["latch", "Add the export", answer.child]])
         expect(yield* plugin.call("wake_list", {})).toContain(`- ${answer.id}: latch`)
         // The wakes look again no sooner than MIN_RECHECK_MS (1 s) after a latch.
-        yield* until(() => plugin.doubles.opener.asked.length > 0)
+        yield* waitFor("the opener to be asked", () => plugin.doubles.opener.asked.length > 0)
         yield* settle()
         expect(plugin.doubles.opener.asked.map((asked) => asked.id)).toEqual([answer.id])
         expect((yield* plugin.pending("ses_root")).entries).toEqual([])
