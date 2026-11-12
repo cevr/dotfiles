@@ -29,6 +29,7 @@ import {
   toolRun,
   verb,
 } from "./group.ts"
+import { nextDetail, type Detail } from "./detail.ts"
 import { noticeApart, noticeBurst, noticeGroup, noticeLines, noticeResult } from "./notice.ts"
 import type { AssistantMessage, Fields, Message, Part, SyntheticMessage, ToolPart, ToolState } from "./session.ts"
 
@@ -557,18 +558,53 @@ describe("a notice as a tool-call group", () => {
     expect(group.child).toBeUndefined()
   })
 
-  test("a click opens a finished worker's whole answer at any level, and the next click closes it", () => {
+  test("a click opens a finished worker's whole answer below All; All shows it whole, clicked or not", () => {
     const body = Array.from({ length: 9 }, (_, index) => `line ${index + 1}`).join("\n")
     const group = noticeGroup([worker("completed", body)], "n1")!
     const whole = ["└ line 1", ...Array.from({ length: 8 }, (_, index) => `  line ${index + 2}`)]
     expect(drawn(noticeLines(group, "details", true))).toEqual(whole)
     expect(drawn(noticeLines(group, "overview", true))).toEqual(whole)
     expect(drawn(noticeLines(group, "all"))).toEqual(whole)
-    // At All the click closes it to its header.
-    expect(noticeLines(group, "all", true)).toEqual([])
+    // Ctrl+O to All shows every body (spec goal 2): a notice clicked open, or clicked shut, is no exception.
+    expect(drawn(noticeLines(group, "all", true))).toEqual(whole)
     // A burst opens every worker's whole answer.
     const burst = noticeGroup([worker("completed", "A done.\nmore", "n1"), worker("completed", "B done.", "n2")], "n1")!
     expect(drawn(noticeLines(burst, "details", true))).toEqual(["├ Fix money parsing · A done.", "│ more", "└ Fix money parsing · B done."])
+  })
+
+  test("property: over every sequence of up to 8 clicks and Ctrl+Os, a finished notice is whole at All, and below All whole iff its clicks are odd", () => {
+    const group = noticeGroup([worker("completed", "line 1\nline 2\nline 3")], "n1")!
+    const whole = ["└ line 1", "  line 2", "  line 3"]
+    type Event = "click" | "ctrl+o"
+    // Every sequence of length 0 to 8: each length's, extended by one event, makes the next's.
+    const all: Event[][] = [[]]
+    let last: Event[][] = [[]]
+    for (let length = 1; length <= 8; length++) {
+      last = last.flatMap((rest): Event[][] => [[...rest, "click"], [...rest, "ctrl+o"]])
+      all.push(...last)
+    }
+    let checked = 0
+    for (const events of all) {
+      {
+        // The TUI's state: the level (Details at start; Ctrl+O cycles it) and this notice's own open flag.
+        let detail: Detail = "details"
+        let opened = false
+        for (const event of events) {
+          if (event === "click") opened = !opened
+          else detail = nextDetail(detail)
+        }
+        // The reference model, from counts alone.
+        const presses = events.filter((event) => event === "ctrl+o").length
+        const clicks = events.length - presses
+        const level = (["details", "all", "overview"] as const)[presses % 3]
+        const shown = level === "all" || clicks % 2 === 1
+        const lines = noticeLines(group, detail, opened)
+        if (shown) expect(drawn(lines)).toEqual(whole)
+        else expect(lines).toEqual([])
+        checked++
+      }
+    }
+    expect(checked).toBe(511)
   })
 
   test("a failure, a cancel and a shell keep their tree below All, and a click on a failure opens its session", () => {

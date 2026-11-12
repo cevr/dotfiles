@@ -10,7 +10,8 @@
 // - `<label>`: after the parent's last reply, in Details mode;
 // - `<label>-all` and `<label>-overview`: after each Ctrl+O;
 // - `<label>-opened` and `<label>-closed`: back at Details, after a click on
-//   the finished worker's notice, then after a second click.
+//   the finished worker's notice, then after a second click;
+// - `<label>-reopened-all`: clicked open once more, then Ctrl+O to All.
 // Each frame is a `.txt` of its text and a `.json` of its styled lines.
 import { Deferred, Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
@@ -159,5 +160,12 @@ export default OpenCodeDriver.use(
       yield* click("finished · Fix CSV quoting")
       yield* until(`${label}-closed`, (frame) => !frame.includes(ANSWER_LAST))
       yield* save(`${label}-closed`)
+      // Clicked open again (on the header's first word, a word away from the last click), then Ctrl+O to All: it stays whole.
+      yield* click(NOTICE)
+      yield* until(`${label}-reopened`, (frame) => frame.includes(ANSWER_LAST))
+      yield* ui.press("o", { ctrl: true })
+      // All draws the first step's whole thought.
+      yield* until(`${label}-reopened-all`, (frame) => frame.includes("Read money.py first, then run its test."))
+      yield* save(`${label}-reopened-all`)
     }),
 )
