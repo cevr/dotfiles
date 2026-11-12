@@ -2573,13 +2573,13 @@ describe("the batch machine", () => {
     ), 60_000)
 
   /** A plugin whose root dropped alpha by a backgrounded log.ts call that wrote after the call's hook read the journal. */
-  const droppedLate = (sessions: Readonly<Record<string, { readonly agent: string; readonly lastWords?: string }>>, before: (plugin: Plugin) => Effect.Effect<void, unknown>) =>
+  const droppedLate = (sessions: Readonly<Record<string, { readonly agent: string; readonly lastWords?: string }>>, first: (plugin: Plugin) => Effect.Effect<void, unknown>) =>
     Effect.gen(function* () {
       const run = yield* scratchRun
       const journal = journalOf(run)
       const plugin = yield* start({ now: WEDNESDAY }, { sessions: steps({ ses_a: { agent: "implementor" }, ...sessions }), drops: journal })
       yield* begin(plugin, implementor("alpha"), "ses_a")
-      yield* before(plugin)
+      yield* first(plugin)
       logged(run, "alpha", "new decide r1")
       const call = FORMS.backgrounded(run, "alpha", (dir) => `bun ${LOG_SCRIPT} ${dir} decide dropped r1 superseded`)
       yield* RUNS[call.order](plugin, call, journal)

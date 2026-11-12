@@ -519,8 +519,8 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
       const target = await client.session.create({ location: { directory: work }, title: "Reconnect managed" })
       await client.session.prompt({ sessionID: target.id, text: "say managed-transcript-marker" })
       await client.experimental.session.wait({ sessionID: target.id })
-      const open = async (name: string, before: () => Promise<unknown>) => {
-        const pending = before()
+      const open = async (name: string, meanwhile: () => Promise<unknown>) => {
+        const pending = meanwhile()
         const socket = join(root, `${name}.sock`)
         const frames: string[] = []
         const badFrames: string[] = []
