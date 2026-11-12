@@ -9,9 +9,22 @@
 // and checks that a session's idle window gets one decision and one compaction.
 // tests/idle-compact.test.ts runs it in OpenCode, on a scripted model.
 import { describe, expect, test } from "bun:test"
-import { Duration, Effect, Exit, Logger, PubSub, References, Schema, type Scope, Stream } from "effect"
+import { Context, Duration, Effect, Exit, Layer, Logger, Option, PubSub, References, Schema, type Scope, Stream } from "effect"
 import { TestClock } from "effect/testing"
-import { CHILDREN, type Host as SessionsHost, layer as sessionsLayer, type MessageView, type ModelView } from "@dotfiles/opencode-idle-compact/opencode/sessions"
+import {
+  type CatalogAgent,
+  type CatalogModel,
+  type CatalogProvider,
+  CHILDREN,
+  type Host as SessionsHost,
+  hostOf,
+  layer as sessionsLayer,
+  type MessageView,
+  type ModelView,
+  type Reads,
+} from "@dotfiles/opencode-idle-compact/opencode/sessions"
+import { Sessions } from "@dotfiles/opencode-idle-compact/service"
+import { AbsolutePath } from "@opencode/schema/schema"
 import IdleCompact, { make, Options, SETTLE } from "./server.ts"
 
 type Host = Parameters<(typeof IdleCompact)["effect"]>[0]
@@ -857,6 +870,198 @@ describe("one copy per location", () => {
         expect(state.compactions).toEqual([])
         expect(logs.filter((line) => line.annotations["sessionID"] === "ses_far")).toEqual([])
       }).pipe(Effect.provideService(References.MinimumLogLevel, "Debug")),
+    ))
+})
+
+describe("the OpenCode adapter's reads of the plugin context", () => {
+  /** Catalog entries with fields no decision reads beside those it does. */
+  type GenModel = CatalogModel & { readonly name: string; readonly status: string; readonly limit: { readonly output: number } }
+  type GenProvider = CatalogProvider & { readonly name: string }
+  type GenAgent = CatalogAgent & { readonly description: string; readonly request: { readonly settings: { readonly timeout?: number } } }
+  interface Catalog {
+    readonly models: ReadonlyArray<GenModel>
+    readonly providers: ReadonlyArray<GenProvider>
+    readonly agents: ReadonlyArray<GenAgent>
+  }
+
+  const missing = (what: string) => Effect.fail(`no ${what}`)
+  /** The plugin context over `catalog`, keeping the session lists it is asked for; it answers no other session read. */
+  const contextOver = (catalog: Catalog, listed: Array<unknown> = []): Reads => ({
+    location: { directory: AbsolutePath.make("/work") },
+    session: {
+      get: () => Effect.die("no session read"),
+      context: () => Effect.die("no context read"),
+      compact: () => Effect.die("no compaction"),
+      list: (input) => Effect.sync(() => ({ data: [], kept: listed.push(input) })),
+    },
+    model: { list: () => Effect.succeed({ data: catalog.models }) },
+    provider: {
+      list: () => Effect.succeed({ data: catalog.providers }),
+      get: (input) =>
+        Option.match(Option.fromUndefinedOr(catalog.providers.find((provider) => provider.id === input.providerID)), {
+          onNone: () => missing(input.providerID),
+          onSome: (data) => Effect.succeed({ data }),
+        }),
+    },
+    agent: {
+      list: () => Effect.succeed({ data: catalog.agents }),
+      get: (input) =>
+        Option.match(Option.fromUndefinedOr(catalog.agents.find((agent) => agent.id === input.agentID)), {
+          onNone: () => missing(input.agentID),
+          onSome: (data) => Effect.succeed({ data }),
+        }),
+    },
+  })
+
+  /** A seeded source of numbers in [0, 1), so a failing case comes back on its seed. */
+  const numbers = (seed: number) => {
+    let state = seed
+    return () => {
+      state = (state + 0x6d2b79f5) | 0
+      let mixed = Math.imul(state ^ (state >>> 15), 1 | state)
+      mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed
+      return ((mixed ^ (mixed >>> 14)) >>> 0) / 4_294_967_296
+    }
+  }
+  const pick = <A,>(next: () => number, first: A, ...rest: ReadonlyArray<A>): A => [first, ...rest][Math.floor(next() * (rest.length + 1))] ?? first
+  const TTLS = ["5m", "1h", "2h"] as const
+  /** `value`, or absent in about a third of the cases. */
+  const maybe = <A,>(next: () => number, value: A) => Option.getOrUndefined(Option.liftPredicate(value, () => next() < 0.7))
+  /** A lifetime other than `ttl`. */
+  const otherTTL = (ttl?: string) => TTLS.find((candidate) => candidate !== ttl)
+  const cost = (next: () => number) => ({ input: pick(next, 1, 3, 15), output: pick(next, 5, 15, 75), cache: { read: pick(next, 0.1, 0.3), write: pick(next, 3.75, 6) } })
+
+  const generate = (next: () => number): Catalog => ({
+    providers: ["anthropic", "openai", "acme"].map((id) => ({ id, name: `${id} provider`, settings: { cache: { ttl: maybe(next, pick(next, ...TTLS)) } } })),
+    models: [0, 1, 2].map((index) => ({
+      providerID: pick(next, "anthropic", "openai", "acme"),
+      id: `m${index}`,
+      modelID: pick(next, `claude-${index}`, `gpt-5.${index + 5}`),
+      canonical: maybe(next, pick(next, "anthropic", "openai")),
+      name: `model ${index}`,
+      status: "active",
+      settings: { cache: { ttl: maybe(next, pick(next, ...TTLS)) } },
+      limit: { context: pick(next, 0, 200_000, 1_000_000), input: maybe(next, pick(next, 100_000, 272_000)), output: 32_000 },
+      cost: pick(next, [], [cost(next)], [cost(next), { ...cost(next), tier: { size: 200_000 } }]),
+    })),
+    agents: ["build", "verifier"].map((id) => ({
+      id,
+      description: `${id} agent`,
+      request: { settings: { cacheTTL: maybe(next, pick<unknown>(next, "5m", "1h", 300)), timeout: 60_000 } },
+    })),
+  })
+
+  type Mutation = (catalog: Catalog, next: () => number) => Catalog
+  /** One model, picked by `next`, changed by `change`. */
+  const model =
+    (change: (entry: GenModel) => GenModel): Mutation =>
+    (catalog, next) => {
+      const target = Math.floor(next() * catalog.models.length)
+      return { ...catalog, models: catalog.models.map((entry, index) => (index === target && change(entry)) || entry) }
+    }
+  const provider =
+    (change: (entry: GenProvider) => GenProvider): Mutation =>
+    (catalog, next) => {
+      const target = pick(next, "anthropic", "openai", "acme")
+      return { ...catalog, providers: catalog.providers.map((entry) => (entry.id === target && change(entry)) || entry) }
+    }
+  const agent =
+    (change: (entry: GenAgent) => GenAgent): Mutation =>
+    (catalog, next) => {
+      const target = pick(next, "build", "verifier")
+      return { ...catalog, agents: catalog.agents.map((entry) => (entry.id === target && change(entry)) || entry) }
+    }
+  /** Its first price changed by `change`; a model the catalog does not price gets one. */
+  const price = (change: (entry: GenModel["cost"][number]) => GenModel["cost"][number]) =>
+    model((entry) => ({ ...entry, cost: [change(entry.cost[0] ?? { input: 1, output: 5, cache: { read: 0.1, write: 3.75 } }), ...entry.cost.slice(1)] }))
+
+  /** Every field a decision reads, and some it does not, each changed alone. */
+  const MUTATIONS: ReadonlyArray<{ readonly field: string; readonly read: boolean; readonly apply: Mutation }> = [
+    { field: "model cache.ttl", read: true, apply: model((entry) => ({ ...entry, settings: { cache: { ttl: otherTTL(entry.settings?.cache?.ttl) } } })) },
+    { field: "provider cache.ttl", read: true, apply: provider((entry) => ({ ...entry, settings: { cache: { ttl: otherTTL(entry.settings?.cache?.ttl) } } })) },
+    { field: "agent cacheTTL", read: true, apply: agent((entry) => ({ ...entry, request: { settings: { ...entry.request.settings, cacheTTL: "30m" } } })) },
+    { field: "model limit.context", read: true, apply: model((entry) => ({ ...entry, limit: { ...entry.limit, context: entry.limit.context + 50_000 } })) },
+    { field: "model limit.input", read: true, apply: model((entry) => ({ ...entry, limit: { ...entry.limit, input: (entry.limit.input ?? 0) + 7_000 } })) },
+    { field: "model canonical", read: true, apply: model((entry) => ({ ...entry, canonical: ["anthropic", "openai", "acme"].find((candidate) => candidate !== entry.canonical) })) },
+    { field: "model modelID", read: true, apply: model((entry) => ({ ...entry, modelID: `${entry.modelID}-next` })) },
+    { field: "cost input", read: true, apply: price((entry) => ({ ...entry, input: entry.input + 1 })) },
+    { field: "cost output", read: true, apply: price((entry) => ({ ...entry, output: entry.output + 1 })) },
+    { field: "cost cache.read", read: true, apply: price((entry) => ({ ...entry, cache: { ...entry.cache, read: entry.cache.read + 1 } })) },
+    { field: "cost cache.write", read: true, apply: price((entry) => ({ ...entry, cache: { ...entry.cache, write: entry.cache.write + 1 } })) },
+    { field: "cost tier", read: true, apply: price((entry) => ({ ...entry, tier: { size: (entry.tier?.size ?? 0) + 100_000 } })) },
+    { field: "model name", read: false, apply: model((entry) => ({ ...entry, name: `${entry.name}, renamed` })) },
+    { field: "model status", read: false, apply: model((entry) => ({ ...entry, status: "deprecated" })) },
+    { field: "model limit.output", read: false, apply: model((entry) => ({ ...entry, limit: { ...entry.limit, output: entry.limit.output + 1 } })) },
+    { field: "provider name", read: false, apply: provider((entry) => ({ ...entry, name: `${entry.name}, renamed` })) },
+    { field: "agent description", read: false, apply: agent((entry) => ({ ...entry, description: `${entry.description}, again` })) },
+    { field: "agent timeout", read: false, apply: agent((entry) => ({ ...entry, request: { settings: { ...entry.request.settings, timeout: 1 } } })) },
+  ]
+
+  const encode = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))
+  /** What the decisions read of `catalog` through the adapter: every model's view, every agent's lifetime, as one text. */
+  const readsOf = (catalog: Catalog) => {
+    const host = hostOf(contextOver(catalog))
+    const read = <A,>(effect: Effect.Effect<A, unknown>) => effect.pipe(Effect.orElseSucceed(() => "unreadable"))
+    return Effect.all({
+      models: Effect.forEach(catalog.models, (entry) => read(host.model({ providerID: entry.providerID, id: entry.id }, "/work"))),
+      agents: Effect.forEach(catalog.agents, (entry) => read(host.agentTTL(entry.id, "/work"))),
+    }).pipe(Effect.flatMap(encode))
+  }
+  /** The catalog's key, as the compactor reads it to decide whether to look again. */
+  const keyOf = Effect.fn("IdleCompactServerTest.keyOf")(function* (catalog: Catalog) {
+    const built = yield* Layer.build(sessionsLayer(hostOf(contextOver(catalog))))
+    return yield* Context.get(built, Sessions).catalog
+  })
+
+  test("over generated catalogs: a change to a field a decision reads changes the key, and a change to any other keeps it", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const changed = new Map<string, number>()
+        for (let seed = 1; seed <= 60; seed += 1) {
+          const next = numbers(seed)
+          const before = generate(next)
+          const [readsBefore, keyBefore] = [yield* readsOf(before), yield* keyOf(before)]
+          for (const mutation of MUTATIONS) {
+            const after = mutation.apply(before, next)
+            const readsDiffer = (yield* readsOf(after)) !== readsBefore
+            const keyDiffers = (yield* keyOf(after)) !== keyBefore
+            const label = `seed ${seed}, ${mutation.field}`
+            // The key changes exactly when what the decisions read does.
+            expect(keyDiffers, label).toBe(readsDiffer)
+            if (!mutation.read) expect(readsDiffer, label).toBe(false)
+            changed.set(mutation.field, (changed.get(mutation.field) ?? 0) + Number(keyDiffers))
+          }
+        }
+        // Not vacuous: every field a decision reads changed the key in some case.
+        for (const mutation of MUTATIONS.filter((entry) => entry.read)) expect(changed.get(mutation.field), mutation.field).toBeGreaterThan(0)
+      }),
+    ))
+
+  test("a model's lifetime is its own cache.ttl, else its provider's; an agent's is its own cacheTTL", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const catalog = generate(numbers(1))
+        const host = hostOf(
+          contextOver({
+            ...catalog,
+            providers: [{ id: "anthropic", name: "Anthropic", settings: { cache: { ttl: "1h" } } }],
+            models: [{ ...catalog.models[0]!, providerID: "anthropic", id: "own", settings: { cache: { ttl: "5m" } } }, { ...catalog.models[0]!, providerID: "anthropic", id: "inherits", settings: {} }],
+            agents: [{ id: "verifier", description: "", request: { settings: { cacheTTL: "5m" } } }],
+          }),
+        )
+        expect((yield* host.model({ providerID: "anthropic", id: "own" }, "/work"))?.ttl).toBe("5m")
+        expect((yield* host.model({ providerID: "anthropic", id: "inherits" }, "/work"))?.ttl).toBe("1h")
+        expect(yield* host.agentTTL("verifier", "/work")).toBe("5m")
+      }),
+    ))
+
+  test("a session's children are read as one page of the newest, however many it has", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const listed: Array<unknown> = []
+        yield* hostOf(contextOver(generate(numbers(1)), listed)).children("ses_1", CHILDREN)
+        expect(listed).toEqual([{ parentID: "ses_1", order: "desc", limit: CHILDREN }])
+      }),
     ))
 })
 
