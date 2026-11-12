@@ -4,7 +4,7 @@
 // another program's log lines), so its cases fold events directly.
 import { describe, expect, test } from "bun:test"
 import { fold } from "@dotfiles/decider/decider"
-import { AgentCalled, AgentCalls, AgentReturned, live } from "./agent-calls.ts"
+import { AgentCalled, AgentCalls, AgentReturned, live, runSession, stepUnit } from "./agent-calls.ts"
 
 const called = (sessionID: string, callID: string, agent = "worker", fields: { description?: string; child?: string } = {}) =>
   AgentCalled.make({ sessionID, callID, agent, ...fields })
@@ -64,5 +64,28 @@ describe("AgentCalls", () => {
 
   test("no events, no calls", () => {
     expect(liveOf()).toEqual([])
+  })
+})
+
+describe("a run's session", () => {
+  test("a step's unit, in both of the skill's forms; prose names none", () => {
+    expect(stepUnit("implementor push r2")).toBe("push")
+    expect(stepUnit("verifier batch-3 r1")).toBe("batch-3")
+    expect(stepUnit("push r2 implementor")).toBe("push")
+    expect(stepUnit("closure-flake verifier r1 (Opus)")).toBe("closure-flake")
+    for (const prose of ["Fix the verifier's timeout", "Ask the planner about X", "Fix verifier", "r2 verifier", undefined]) expect(stepUnit(prose)).toBeUndefined()
+  })
+
+  test("the session that started the latest step of one of the run's units owns it, returned or not; a run with no step has none", () => {
+    const state = fold(AgentCalls, [
+      called("ses_old", "a", "planner", { description: "planner wake r1" }),
+      called("ses_new", "b", "implementor", { description: "implementor sleep r1" }),
+      returned("ses_new", "b", { status: "completed" }),
+      called("ses_other", "c", "implementor", { description: "implementor elsewhere r1" }),
+      called("ses_new", "d", "worker", { description: "Ask the planner about wake" }),
+    ])
+    expect(runSession(state, ["wake", "sleep"])).toBe("ses_new")
+    expect(runSession(state, ["wake"])).toBe("ses_old")
+    expect(runSession(state, ["nothing"])).toBeUndefined()
   })
 })

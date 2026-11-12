@@ -75,3 +75,34 @@ export const live = (state: AgentCallsState): ReadonlyArray<AgentCall> =>
     .sort((left, right) => left.order - right.order)
     .map((entry) => entry.call)
     .filter((call) => call.status !== "completed" && call.status !== "error")
+
+/**
+ * The unit an orchestrate step's description names, in the skill's two forms:
+ * `<role> <unit> r<N>`, or `<unit>[ rN] <role>[ rN][ (note)]`. The same
+ * reading as orchestrate's described.ts, which the status domain may not
+ * import; prose that only mentions a role names none.
+ */
+export const stepUnit = (description: string | undefined): string | undefined => {
+  const text = (description ?? "").trim().replace(/\s+/g, " ")
+  const first = /^(?:planner|implementor|verifier) (\S+)/.exec(text)?.[1]
+  if (first !== undefined) return first
+  const suffix = /^([a-z0-9#][a-z0-9._#/-]*)(?: r\d+)? (?:planner|implementor|verifier)(?: r\d+)?(?: \([^()]*\))?$/.exec(text)?.[1]
+  return suffix === undefined || /^r\d+$/.test(suffix) ? undefined : suffix
+}
+
+/**
+ * The session that owns a run: the one that started the latest step of one of
+ * its `units` (a root owns a run once it starts one of its steps, as
+ * orchestrate's idle.ts reads it), over every call the log recorded, live or
+ * returned. None when no step of the run was started.
+ */
+export const runSession = (state: AgentCallsState, units: ReadonlyArray<string>): string | undefined => {
+  const names = new Set(units)
+  let latest: { readonly order: number; readonly sessionID: string } | undefined
+  for (const { order, call } of HashMap.toValues(state.calls)) {
+    const unit = stepUnit(call.description)
+    if (unit === undefined || !names.has(unit)) continue
+    if (latest === undefined || order > latest.order) latest = { order, sessionID: call.sessionID }
+  }
+  return latest?.sessionID
+}

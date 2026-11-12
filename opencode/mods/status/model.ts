@@ -4,7 +4,7 @@
 // AgentCalls view, and the runs' tables parse into units.
 import { Context, Effect, Layer, Result } from "effect"
 import { fold } from "@dotfiles/decider/decider"
-import { AgentCalls, live } from "./agent-calls.ts"
+import { AgentCalls, live, runSession } from "./agent-calls.ts"
 import { unitsOf } from "./run-table.ts"
 import { CallLog, RunTables } from "./service.ts"
 import type { Snapshot } from "./status.ts"
@@ -24,15 +24,18 @@ export const layer = Layer.effect(
     const runTables = yield* RunTables
     return {
       snapshot: Effect.fn("Status.snapshot")(function* (directory: string) {
-        const [agents, runs] = yield* Effect.all(
-          [
-            callLog.events.pipe(Effect.map((events) => live(fold(AgentCalls, events))), Effect.result),
-            runTables.list(directory).pipe(
-              Effect.map((tables) => tables.map((run) => ({ name: run.name, ...(run.dir === undefined ? {} : { dir: run.dir }), units: unitsOf(run.table) }))),
-              Effect.result,
-            ),
-          ],
+        const [calls, tables] = yield* Effect.all(
+          [callLog.events.pipe(Effect.map((events) => fold(AgentCalls, events)), Effect.result), runTables.list(directory).pipe(Effect.result)],
           { concurrency: "unbounded" },
+        )
+        const agents = Result.map(calls, live)
+        // A run names its orchestrator when the call log can be read and shows a step of one of its units.
+        const runs = Result.map(tables, (list) =>
+          list.map((run) => {
+            const units = unitsOf(run.table)
+            const session = Result.isSuccess(calls) ? runSession(calls.success, units.map((unit) => unit.unit)) : undefined
+            return { name: run.name, ...(run.dir === undefined ? {} : { dir: run.dir }), ...(session === undefined ? {} : { session }), units }
+          }),
         )
         return {
           agents: Result.getOrElse(agents, () => []),
