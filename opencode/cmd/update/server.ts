@@ -8,6 +8,7 @@ import { GATE_POLL, Updater, updaterLayer } from "@dotfiles/opencode-update/mode
 import * as Sessions from "@dotfiles/opencode-update/opencode/sessions"
 import * as Builder from "@dotfiles/opencode-update/process/builder"
 import * as Handoff from "@dotfiles/opencode-update/process/handoff"
+import * as HandoffMark from "@dotfiles/opencode-update/process/mark"
 import { UPDATE } from "@dotfiles/opencode-update/rpc"
 import { every, files, Options, stepEnv } from "@dotfiles/opencode-update/settings"
 import { Config, Context, Effect, Layer, Schedule, Schema } from "effect"
@@ -22,6 +23,7 @@ export const live = (ctx: Plugin.Context, options: Options, env: Readonly<global
     Builder.layer(options, env),
     Sessions.layer(ctx),
     Handoff.layer(options, env),
+    HandoffMark.layer(files(options).mark, process.pid),
     Records.layer(options.record),
     Rejections.layer(files(options).rejected),
     Configs.layer({ config: options.config, kept: files(options).kept }),

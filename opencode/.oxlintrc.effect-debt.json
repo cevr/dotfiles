@@ -164,6 +164,7 @@
       "files": [
         "mods/update/model.test.ts",
         "mods/update/git/source.test.ts",
+        "mods/update/process/mark.test.ts",
         "mods/orchestrate/git/fleet-record.test.ts"
       ],
       "rules": {

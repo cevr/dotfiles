@@ -3,7 +3,7 @@ import type { SessionView } from "./gate.ts"
 import type { Reading } from "./health.ts"
 import type { Record } from "./record.ts"
 import type { Target } from "./target.ts"
-import type { Rejected } from "./update.ts"
+import type { Rejected, Running } from "./update.ts"
 
 /** A step of an update failed: which, and what its command said. */
 export class UpdateFailed extends Schema.TaggedError<UpdateFailed>()("UpdateFailed", {
@@ -64,6 +64,24 @@ export class Handoff extends Context.Service<
     readonly start: (reason: string) => Effect.Effect<void, UpdateFailed>
   }
 >()("dotfiles-opencode/update/Handoff") {}
+
+/**
+ * The running handoff's mark (`update.ts` `Running`): the handoff holds it while it runs, and
+ * every check reads it, with whether its process lives, before it plans. A mark that does not
+ * write, or does not read, holds nothing: the check plans as before.
+ */
+export class HandoffMark extends Context.Service<
+  HandoffMark,
+  {
+    /** Marks this process as the running handoff, from now. */
+    readonly hold: Effect.Effect<void>
+    /** Drops the mark, when it is this process's. */
+    readonly release: Effect.Effect<void>
+    readonly read: Effect.Effect<Option.Option<Running>>
+    /** Whether process `pid` lives (read with `ps`, never a signal). */
+    readonly alive: (pid: number) => Effect.Effect<boolean>
+  }
+>()("dotfiles-opencode/update/HandoffMark") {}
 
 /** The installed record (`record.ts`). */
 export class Records extends Context.Service<

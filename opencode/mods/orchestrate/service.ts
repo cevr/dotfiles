@@ -4,6 +4,7 @@
 import { Context, type Effect, type Option, Schema } from "effect"
 import type { CallLine } from "./call-line.ts"
 import type { Drift } from "./drift.ts"
+import type { FleetOutcome } from "./fleet.ts"
 import type { Holds, Run } from "./idle.ts"
 import type { Command as MachineCommand, Event as MachineEvent, MachineState, Refused } from "./machine.ts"
 import type { ModelRef, PaceReply } from "./pace.ts"
@@ -332,15 +333,16 @@ export class RunRecords extends Context.Service<
 
 /**
  * The fleet's verified target (mods/update/target.ts): what every host's update plugin installs.
- * - `record`: a batch was accepted, its verifier's `report` in the run dir: record the heads the batch
- *   file beside it (`<run dir>/<batch>.md`) names as verified at, with the current target's commit for a
- *   repository it does not name, as the verified target. Never a checkout's HEAD. Never fails: a batch
- *   file that does not read or names no head, a commit origin lacks, or a push refused records nothing,
- *   and says why in the server's log; the next accepted batch records again.
+ * - `record`: a batch was accepted, its verifier's `report` in the run dir: record the dotfiles and
+ *   fork heads the batch file beside it (`<run dir>/<batch>.md`) names as verified at, both required,
+ *   as the verified target. Never a checkout's HEAD, never a kept commit. Never fails: it answers
+ *   the outcome (`fleet.ts`), and `Refused` with why when it records nothing (a batch file that does
+ *   not name both heads, a commit the checkouts or origin lack, a head behind the current target, a
+ *   push refused).
  */
 export class Fleet extends Context.Service<
   Fleet,
-  { readonly record: (input: { readonly report: Option.Option<string>; readonly batch: string }) => Effect.Effect<void> }
+  { readonly record: (input: { readonly report: Option.Option<string>; readonly batch: string }) => Effect.Effect<FleetOutcome> }
 >()("dotfiles-opencode/orchestrate/Fleet") {}
 
 /** Steers a session with one note, marked `DRIFT_MARK`, which wakes it if idle. */

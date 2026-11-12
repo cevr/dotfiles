@@ -5,6 +5,7 @@ import * as Records from "@dotfiles/opencode-update/filestore/records"
 import * as Rejections from "@dotfiles/opencode-update/filestore/rejections"
 import * as Source from "@dotfiles/opencode-update/git/source"
 import { EXIT_CODES, handoff } from "@dotfiles/opencode-update/model"
+import * as HandoffMark from "@dotfiles/opencode-update/process/mark"
 import * as Service from "@dotfiles/opencode-update/process/service"
 import { files, HANDOFF_SETTINGS, type Settings, SettingsJson, stepEnv } from "@dotfiles/opencode-update/settings"
 import { argv } from "bun"
@@ -17,6 +18,7 @@ export const live = (settings: Settings, env: Readonly<globalThis.Record<string,
     Source.layer({ root: settings.checkout, mode: settings.mode, bun: settings.bun, fork: settings.fork, env }),
     Records.layer(settings.record),
     Rejections.layer(files(settings).rejected),
+    HandoffMark.layer(files(settings).mark, process.pid),
     Configs.layer({ config: settings.config, kept: files(settings).kept }),
     Notice.layer(settings.notice),
     Log.layer(files(settings).log, settings.host),

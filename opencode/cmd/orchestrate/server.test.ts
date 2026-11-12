@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Effect, Layer, Queue, Schema, Stream } from "effect"
+import { Effect, Layer, Option, Queue, Schema, Stream } from "effect"
 import { type Latch, type LatchAsk, Opened } from "@dotfiles/opencode-wake/latch"
 import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import { KEEP } from "@dotfiles/opencode-orchestrate/compaction"
@@ -24,6 +24,7 @@ import * as OpenCodeLatches from "@dotfiles/opencode-orchestrate/opencode/latche
 import { type Holds, MARK, NO_HOLDS, type Run } from "@dotfiles/opencode-orchestrate/idle"
 import * as StepLogTest from "@dotfiles/opencode-orchestrate/memory/step-log"
 import * as FleetTest from "@dotfiles/opencode-orchestrate/memory/fleet"
+import { FLEET_DESCRIPTION, FleetOutcome } from "@dotfiles/opencode-orchestrate/fleet"
 import { RECHECK_MS } from "@dotfiles/opencode-orchestrate/model"
 import * as OpenCodePoolPace from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
 import * as OpenCodeRuns from "@dotfiles/opencode-orchestrate/opencode/runs"
@@ -89,6 +90,8 @@ interface World {
   readonly branches?: Readonly<Record<string, string>>
   /** The verified targets the plugin asked to record. */
   readonly fleet?: Array<FleetTest.Asked>
+  /** What recording each of them answers; `Off` (nothing said) when not named. */
+  readonly fleetOutcome?: (asked: FleetTest.Asked) => FleetOutcome
 }
 
 /** A tool as the host's tool editor hands it out: only what the plugin touches. */
@@ -199,7 +202,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       OpenCodeSteer.tellLayer((input) => (world.refuseNudge === undefined ? Effect.sync(() => void notes.push(input)) : Effect.fail(new Error(world.refuseNudge)))),
       SkillTest.skill(world.skill ?? { history: [] }),
       SkillTest.records(world.records ?? { seen: new Map() }),
-      FleetTest.layer(world.fleet ?? []),
+      FleetTest.layer(world.fleet ?? [], world.fleetOutcome),
     )
     const nudges: Array<OpenCodeSteer.Synthetic> = []
     const notes: Array<OpenCodeSteer.Synthetic> = []
@@ -2167,7 +2170,50 @@ describe("the batch machine", () => {
         yield* land(["beta"])
         yield* begin(plugin, { agent: "verifier", description: "verifier batch-2 r1", prompt: "v", background: true }, "ses_w")
         yield* plugin.idle("ses_w")
-        expect(fleet).toEqual([{ report: "/run/batch-2-findings.md", batch: "batch-2" }])
+        yield* eventually(() => expect(fleet).toEqual([{ report: "/run/batch-2-findings.md", batch: "batch-2" }]))
+      }),
+    ))
+
+  test("M1, M2: an accepted batch whose target is refused says NOT published where the orchestrator reads it: its root's context and the run's log.md; a published one only logs", () =>
+    scenario(
+      Effect.gen(function* () {
+        const fleet: Array<FleetTest.Asked> = []
+        const logged: Array<{ readonly near: string; readonly line: string }> = []
+        const sessions = {
+          ...steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" } }),
+          ses_v: { parentID: "root", agent: "verifier", lastWords: "verifier batch-1 r1: accepted /run/batch-1-findings.md", directory: "/checkouts/dotfiles" },
+          ses_w: { parentID: "root", agent: "verifier", lastWords: "verifier batch-2 r1: accepted /run/batch-2-findings.md", directory: "/checkouts/dotfiles" },
+        }
+        const target = { dotfiles: "d".repeat(40), fork: "f".repeat(40), batch: "batch-1" }
+        const outcomes = new Map<string, FleetOutcome>([
+          ["batch-1", FleetOutcome.Recorded({ target })],
+          ["batch-2", FleetOutcome.Refused({ reason: "the batch file /run/batch-2.md lacks the fork head" })],
+        ])
+        const fleetOutcome = (asked: FleetTest.Asked) => Option.getOrElse(Option.fromNullishOr(outcomes.get(asked.batch)), () => FleetOutcome.Off())
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, fleet, fleetOutcome, records: { seen: new Map(), logged } })
+        const land = (rifts: ReadonlyArray<string>) =>
+          Effect.gen(function* () {
+            yield* plugin.call("rift", "root", { action: "land", rifts })
+            yield* plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: "Landed" }] } })
+          })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        yield* land(["alpha"])
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        yield* plugin.idle("ses_v")
+        yield* eventually(() => expect(logged.some((each) => each.line.includes("fleet: batch-1 accepted; published the verified target"))).toBe(true))
+        expect(plugin.briefs.filter((brief) => brief.description === FLEET_DESCRIPTION)).toEqual([])
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        yield* plugin.idle("ses_b")
+        yield* land(["beta"])
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-2 r1", prompt: "v", background: true }, "ses_w")
+        yield* plugin.idle("ses_w")
+        const said = "fleet: batch-2 accepted, but NOT published: the batch file /run/batch-2.md lacks the fork head. Every host stays on the last published target."
+        yield* eventually(() => expect(plugin.briefs.filter((brief) => brief.description === FLEET_DESCRIPTION)).toHaveLength(1))
+        const [told] = plugin.briefs.filter((brief) => brief.description === FLEET_DESCRIPTION)
+        expect([told?.sessionID, told?.text.endsWith(said)]).toEqual(["root", true])
+        const refusals = logged.filter((each) => each.line.endsWith(said))
+        expect(refusals.map((each) => each.near)).toEqual(["/run/batch-2-findings.md"])
       }),
     ))
 
