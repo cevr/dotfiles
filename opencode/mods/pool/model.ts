@@ -1003,9 +1003,11 @@ export const layer = (config: Config) =>
           const host = request.host ?? fleetConfig.host
           if (host !== fleetConfig.host) {
             if (!peers.names.includes(host)) return yield* answered(false, `No host ${host}: this is ${fleetConfig.host}, and its peers are ${peers.names.join(", ") || "none"}.`)
-            // The caller's session is this host's, not the peer's: a push for a peer is scoped to its host (and run).
-            const { sessionID: _caller, session: _session, ...rest } = request
-            const forwarded: PushRequest = { ...rest, host }
+            // The caller's session is this host's, not the peer's: a push for a peer covers that whole host, so it names no session, nor a run (a run is a session's).
+            if (request.action === "start" && (request.session === true || request.run !== undefined))
+              return yield* answered(false, `A push for ${host} covers that whole host: this session's tree and runs are ${fleetConfig.host}'s. Start it without session or run, or from a session on ${host}.`)
+            // Nor does it name the host: the peer knows itself by its own name (the Mac's "workbox" is "bite-cristian" there), and a request with none is for itself.
+            const { sessionID: _caller, session: _session, host: _host, ...forwarded } = request
             return yield* peers.push(host, forwarded).pipe(
               Effect.catchTag("PeerUnreachable", (error) => answered(false, `${host} cannot be reached: ${error.message}. Nothing changed.`)),
             )
@@ -1029,7 +1031,7 @@ export const layer = (config: Config) =>
               const goal = request.goal ?? "the queued work"
               if (request.units !== undefined && request.units > 0 && request.sessionID !== undefined) {
                 const root = yield* owner.root(request.sessionID)
-                const scope: PushModel.PushScope = { host, sessionID: root, ...(request.run === undefined ? {} : { run: request.run }) }
+                const scope: PushModel.PushScope = request.run === undefined ? { host, sessionID: root } : { host, sessionID: root, run: request.run }
                 const proposed = yield* propose(goal, request.units, scope, root)
                 return yield* answered(true, proposed.asked ? `Asked the owner in the session's tray:\n${proposed.text}` : proposed.text)
               }
@@ -1050,13 +1052,13 @@ export const layer = (config: Config) =>
               if (until !== undefined && Number.isNaN(until)) return yield* answered(false, `"${request.until}" is not a time: give an ISO time, or "done".`)
               const endsAt = request.hours !== undefined ? now + request.hours * 3_600_000 : until
               if (endsAt !== undefined && endsAt <= now) return yield* answered(false, "That end time has passed already.")
-              const session = request.session === true ? request.sessionID : undefined
-              const root = session === undefined ? undefined : yield* owner.root(session)
-              const scope: PushModel.PushScope = {
-                host,
-                ...(root === undefined ? {} : { sessionID: root }),
-                ...(request.run === undefined ? {} : { run: request.run }),
-              }
+              // A run is the calling session's: its push covers the caller's tree, as `session` does, and nothing outside it.
+              const tree = request.session === true || request.run !== undefined
+              if (tree && request.sessionID === undefined)
+                return yield* answered(false, "A push for a session's tree or a run needs the calling session: start it from that session, or for the whole host.")
+              const root = tree && request.sessionID !== undefined ? yield* owner.root(request.sessionID) : undefined
+              const scope: PushModel.PushScope =
+                root === undefined ? { host } : request.run === undefined ? { host, sessionID: root } : { host, sessionID: root, run: request.run }
               const events = yield* sendPush(
                 PushModel.StartPush.make({
                   goal,
