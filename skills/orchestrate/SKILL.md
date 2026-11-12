@@ -136,7 +136,7 @@ Host: <claude|codex|opencode> · Heavy: <workers> × <threads> + batch lane <thr
 ## Review later     (points the user wants batched, e.g. visual polish)
 ```
 
-A unit's state lives in its `log.md`, never in a table: `bun ~/.claude/skills/orchestrate/scripts/status.ts <run dir>` prints every unit's state, round, time, cause and cadence. `Agents` holds the current implementor's agent id, so round 2 reaches the same agent; `Result` holds `merged <hash>` or `dropped`.
+A unit's state lives in its `log.md`, never in a table: `bun ~/.claude/skills/orchestrate/scripts/status.ts <run dir>` prints every unit's state, round, time, cause and cadence, and under them the run's drift from the machine: on OpenCode the plugin scores the root's ledger at each verdict (0 is a clean run; refusals, departures, unfolded lands, per-unit verifiers, off-cadence batches and stale ledger state each weighted by owner impact) and appends it to the run's own `<run dir>/log.md`. `status.ts --trend` shows it across runs. `Agents` holds the current implementor's agent id, so round 2 reaches the same agent; `Result` holds `merged <hash>` or `dropped`.
 
 Done when every unit has a row with its dependencies, and `plan.md` lists the reserved actions.
 
