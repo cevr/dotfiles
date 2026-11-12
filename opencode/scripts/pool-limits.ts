@@ -95,7 +95,14 @@ export const table = (windows: ReadonlyArray<WindowTally>): ReadonlyArray<string
 /** Each pool's weekly points per own-week point, and every window read with no row fitted yet. */
 export const notes = (computed: Tally): ReadonlyArray<string> => [
   ...[...new Set(computed.cumulative.map((w) => w.pool))].flatMap((pool) =>
-    Object.entries(weeklyRatios(computed, pool)).map(([window, ratio]) => `  ${pool} ${window}: ${rate(ratio)} weekly points per own-week point`),
+    Object.entries(weeklyRatios(computed, pool)).map(
+      ([window, ratio]) =>
+        `  ${pool} ${window}: ${rate(ratio)} weekly points per own-week point, ${
+          ratio.source === "api"
+            ? "the provider's allowance share: every reported weekly part is the own week's use times it, rounded half up"
+            : "measured: the weekly fit over the own week's"
+        }`,
+    ),
   ),
   ...(computed.waiting ?? []).map((waiting) => `  ${waiting.pool} ${waiting.window}: none yet (${waitingText(waiting)})`),
 ]
