@@ -67,8 +67,8 @@ const bench = () => {
   const x = clone("feat-x", "feat/x")
   const y = clone("feat-y", "feat/y")
   const settings = { main: "main", gate: undefined, accept: undefined, generated: ["gen.txt"], regenerate: "ls pkgs > gen.txt", push: true, pushBranches: false, postLand: undefined }
-  const run = <A, E>(use: (landing: typeof Landing.Service) => Effect.Effect<A, E>) =>
-    Effect.runPromise(Effect.flatMap(Landing, use).pipe(Effect.provide(ProcessLanding.layer({ logs: join(scratch, "logs"), env: ENV }))))
+  const run = <A, E>(use: (landing: typeof Landing.Service) => Effect.Effect<A, E>, logs = join(scratch, "logs")) =>
+    Effect.runPromise(Effect.flatMap(Landing, use).pipe(Effect.provide(ProcessLanding.layer({ logs, env: ENV }))))
   return { scratch, origin, source, integration, x, y, settings, run }
 }
 
@@ -280,6 +280,39 @@ describe("process Landing", () => {
         expect(yield* waits(landing, "accept", locks.accept)).toEqual({ early: false, before: false, code: 0, after: true })
         expect(yield* waits(landing, "accept", locks.checks)).toEqual({ early: false, before: false, code: 0, after: true })
       }),
+    )
+  })
+
+  test("a script outside a land (bun run daily) takes the host's land locks: its fork move waits for a running gate, its fork tests for a running accept check", () => {
+    const made = bench()
+    const env = { XDG_CACHE_HOME: join(made.scratch, "cache") }
+    const locks = ProcessLanding.hostLocks(env)
+    const note = join(made.scratch, "note")
+    writeFileSync(note, "ran")
+    /** While the tool runs a `label` check (its command waits, at most 10 s, for a go file), `daily` starts: whether it ended before the check let go, and what it answered after. */
+    const whileChecking = (landing: typeof Landing.Service, label: "gate" | "accept", daily: () => Promise<string>) =>
+      Effect.gen(function* () {
+        const started = join(made.scratch, `${label}.started`)
+        const go = join(made.scratch, `${label}.go`)
+        const check = yield* Effect.forkChild(
+          landing.check(made.integration, label, `touch "${started}"; i=0; while [ ! -f "${go}" ] && [ $i -lt 500 ]; do sleep 0.02; i=$((i + 1)); done`, {}),
+        )
+        yield* appeared(started)
+        const waiting = yield* Effect.forkChild(Effect.promise(daily))
+        const early = yield* Fiber.join(waiting).pipe(Effect.timeoutOption("300 millis"))
+        writeFileSync(go, "")
+        yield* Fiber.join(check)
+        return { early: Option.isSome(early), after: yield* Fiber.join(waiting) }
+      })
+    return made.run(
+      (landing) =>
+        Effect.gen(function* () {
+          expect(locks.files).toEqual(ProcessLanding.lockFiles(join(made.scratch, "cache", "rift-land")))
+          expect(yield* whileChecking(landing, "gate", () => locks.move(() => promises.readFile(note, "utf8")))).toEqual({ early: false, after: "ran" })
+          expect(yield* whileChecking(landing, "accept", () => locks.tests(() => promises.readFile(note, "utf8")))).toEqual({ early: false, after: "ran" })
+          expect(yield* whileChecking(landing, "gate", () => locks.tests(() => promises.readFile(note, "utf8")))).toEqual({ early: true, after: "ran" })
+        }),
+      ProcessLanding.landLogs(env),
     )
   })
 

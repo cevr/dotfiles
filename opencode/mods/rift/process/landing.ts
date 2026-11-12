@@ -9,14 +9,14 @@
 // committed when the install rewrote it. `rift.regenerate` runs after every
 // batch's merges, and what it rewrote is committed.
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs"
-import { availableParallelism, loadavg } from "node:os"
+import { availableParallelism, homedir, loadavg } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { DEFAULT_LIMITS, heavyArgv, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
 import { Effect, Layer } from "effect"
 import { type HostLoad, type LandConfig, type Merged, type PostLanded, type Ran, type Started, type Unit } from "../land.ts"
 import { Landing, RiftFailed } from "../service.ts"
 import { commands, lines } from "./command.ts"
-import { holding, type LockMode } from "./flock.ts"
+import { exclusively, exclusivelySync, holding, type LockMode } from "./flock.ts"
 
 export interface Options {
   /** Where each check's log is written, `<rift name>.<gate|accept>.log`. */
@@ -46,6 +46,22 @@ export const checkArgv = (command: string, log: string, scope: boolean): Readonl
 export const lockFiles = (logs: string) => ({ checks: join(logs, "locks", "checks.lock"), accept: join(logs, "locks", "accept.lock") })
 
 type LockFiles = ReturnType<typeof lockFiles>
+
+/**
+ * This host's land logs and their lock files, `${XDG_CACHE_HOME:-~/.cache}/rift-land` read from `env`: the one
+ * place the rift tool (cmd/rift) and a script that takes its locks (scripts/daily.ts) find them.
+ */
+export const landLogs = (env: NodeJS.ProcessEnv): string => join(env["XDG_CACHE_HOME"] || join(homedir(), ".cache"), "rift-land")
+
+/**
+ * This host's land locks for a script that changes what a land's checks read outside any land (`bun run
+ * daily`): `move` runs a change to the fork checkout (a fast-forward, an install) holding the checks lock,
+ * `moveSync` the same for a synchronous one, and `tests` runs the fork's tests holding the accept lock.
+ */
+export const hostLocks = (env: NodeJS.ProcessEnv) => {
+  const files = lockFiles(landLogs(env))
+  return { files, move: exclusively(files.checks), moveSync: exclusivelySync(files.checks), tests: exclusively(files.accept) }
+}
 
 /** The locks each check holds while it runs; a post-land step takes its own, by the paths it is given. */
 const CHECK_LOCKS: Readonly<Record<"gate" | "accept" | "post-land", (files: LockFiles) => ReadonlyArray<readonly [string, LockMode]>>> = {

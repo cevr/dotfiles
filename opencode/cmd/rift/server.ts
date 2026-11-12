@@ -19,8 +19,6 @@
  *   workflow on top of Rift), and offer its own commands; default: whether
  *   `workrift` is on PATH.
  */
-import { homedir } from "node:os"
-import { join } from "node:path"
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Schema } from "effect"
 import * as Model from "@dotfiles/opencode-rift/model"
@@ -47,7 +45,7 @@ type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 type SyntheticInput = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 
 /** Where a land's gate and accept logs go. */
-export const landLogs = (): string => join(process.env["XDG_CACHE_HOME"] || join(homedir(), ".cache"), "rift-land")
+export const landLogs = (): string => ProcessLanding.landLogs(process.env)
 
 /** The outside systems as Rift, Git, the workbox and OpenCode provide them. */
 export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externals> =>

@@ -31,7 +31,8 @@ import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } from "../testbeds/gamut/gamut.ts"
 import { checkFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
-import { forkChecks, mergeUpstream, syncFork, unlocked, upstreamReading, withUpstreamLock } from "./upstream.ts"
+import { hostLocks } from "../mods/rift/process/landing.ts"
+import { forkChecks, mergeUpstream, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
 import { flagValue, headOf, restartThroughHandoff, stagedText, settingsFor, updateEntry } from "../mods/update/process/install.ts"
 
 const MODS = resolve(import.meta.dir, "../mods")
@@ -265,27 +266,35 @@ if (import.meta.main) {
   const args = new Set(process.argv)
   // From the update plugin (mods/update): the verified target's fork commit, built instead of origin's prime-look.
   const forkTarget = flagValue([...args], "--fork-target")
-  const checked = checkFork(process.env.OPENCODE_DEV || DEFAULT_FORK)
+  const env = process.env
+  const checked = checkFork(env.OPENCODE_DEV || DEFAULT_FORK)
   if ("problem" in checked) throw new Error(checked.problem)
   const fork = checked.fork
   const cli = join(fork, "packages/cli")
   if (!existsSync(join(cli, "script/build.ts"))) throw new Error(`no OpenCode checkout at ${fork}: expected packages/cli/script/build.ts; set OPENCODE_DEV`)
   // Step 0 (the Mac only): merge upstream OpenCode into prime-look (scripts/upstream.ts).
   const state = join(home, ".local/state/opencode-daily")
+  const locks = hostLocks(env)
   const upstream = (dryRun: boolean) =>
     mergeUpstream({
       fork,
       host: hostname(),
       skip: args.has("--no-upstream"),
       dryRun,
-      landing: unlocked,
-      checks: forkChecks(resolve(import.meta.dir, ".."), fork, process.env.GENT_SOURCE || join(home, "Developer/personal/.rifts/gent/untrack-local-settings")),
+      landing: locks.moveSync,
+      checks: (dir) => locks.tests(() => forkChecks(resolve(import.meta.dir, ".."), fork, env.GENT_SOURCE || join(home, "Developer/personal/.rifts/gent/untrack-local-settings"))(dir)),
       worktree: join(state, "upstream-merge"),
       report: join(state, "upstream-conflict.md"),
       log: console.log,
     })
   // Before the merge and the build, so neither starts from a prime-look origin has moved past.
-  const synced = syncFork({ fork, dryRun: args.has("--dry-run"), to: forkTarget[0], log: console.log })
+  locks.moveSync(() => {
+    const synced = syncFork({ fork, dryRun: args.has("--dry-run"), to: forkTarget[0], log: console.log })
+    // The build skips its install; the commits from origin may have changed the fork's dependencies.
+    if (synced.kind !== "fast-forwarded" || Bun.spawnSync(["git", "-C", fork, "rev-parse", "HEAD"]).stdout.toString().trim() !== synced.to) return
+    const installed = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], { cwd: fork, env, stdout: "pipe", stderr: "pipe" })
+    if (installed.exitCode !== 0) console.log(`daily: bun install in ${fork} failed: ${installed.stderr.toString().trim().split("\n").at(-1)}`)
+  })
   if (args.has("--dry-run")) {
     const outcome = await upstream(true)
     if (outcome.kind === "skipped") console.log(`upstream: skipped (${outcome.reason})`)
@@ -298,9 +307,7 @@ if (import.meta.main) {
   // older checkout's whole-directory link into the fork, and again after it, because an install that
   // changes a package's node_modules drops links it did not make. The TUI plugins resolve `solid-js`
   // through those links at load time (scripts/link-fork.ts).
-  const linkFork = () => $`bun ${join(import.meta.dir, "link-fork.ts")}`.env({ ...process.env, OPENCODE_DEV: fork }).quiet()
-  // The build skips its install; the commits from origin may have changed the fork's dependencies.
-  if (synced.kind === "fast-forwarded" && (await $`git -C ${fork} rev-parse HEAD`.text()).trim() === synced.to) await $`bun install --frozen-lockfile`.cwd(fork).quiet()
+  const linkFork = () => $`bun ${join(import.meta.dir, "link-fork.ts")}`.env({ ...env, OPENCODE_DEV: fork }).quiet()
   await linkFork()
   await $`bun install --frozen-lockfile`.cwd(resolve(import.meta.dir, "..")).quiet()
   await linkFork()
@@ -312,7 +319,7 @@ if (import.meta.main) {
   if (outcome.kind === "merged") {
     if ((await $`git -C ${fork} rev-parse HEAD`.text()).trim() === outcome.merge) {
       // The build skips its install; the merge may have changed the fork's dependencies.
-      await $`bun install --frozen-lockfile`.cwd(fork).quiet()
+      await locks.move(() => $`bun install --frozen-lockfile`.cwd(fork).quiet())
       await linkFork()
     } else console.log(`upstream: ${fork} does not have prime-look checked out, so this build leaves the merge out`)
   }
@@ -327,7 +334,7 @@ if (import.meta.main) {
     console.log(`building ${version} from ${fork}`)
     await $`bun run script/build.ts --single --skip-install --skip-web-ui`
       .cwd(cli)
-      .env({ ...process.env, OPENCODE_CHANNEL: "latest", OPENCODE_VERSION: version })
+      .env({ ...env, OPENCODE_CHANNEL: "latest", OPENCODE_VERSION: version })
       .quiet()
   }
   const reported = (await $`${built} --version`.text()).trim()
@@ -396,8 +403,8 @@ if (import.meta.main) {
   // Upstream against this build, for the TUI's corner (mods/prime/update.ts), written before the
   // restart that makes every open TUI reconnect and read it again.
   const reading = upstreamReading(fork, join(state, "upstream-conflict.md"), outcome.kind === "skipped" && !args.has("--no-upstream"))
-  if (reading === undefined) rmSync(upstreamFile(home, process.env.XDG_STATE_HOME), { force: true })
-  else writeJson(upstreamFile(home, process.env.XDG_STATE_HOME), reading)
+  if (reading === undefined) rmSync(upstreamFile(home, env.XDG_STATE_HOME), { force: true })
+  else writeJson(upstreamFile(home, env.XDG_STATE_HOME), reading)
   console.log(reading === undefined ? "upstream: no upstream/dev to count against" : `upstream: ${reading.commits} commits past this build${reading.blocked ? ", merge blocked" : ""}`)
 
   console.log(`opencode -> ${binary} (${reported})`)
