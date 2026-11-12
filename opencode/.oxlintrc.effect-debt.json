@@ -200,6 +200,14 @@
       "rules": {
         "effect/noEffectRunInTests": "off"
       }
+    },
+    {
+      "files": [
+        "mods/rift/process/flock.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
     }
   ]
 }

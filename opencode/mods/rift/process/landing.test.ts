@@ -6,8 +6,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Deferred, Effect, Fiber, Option, Schedule } from "effect"
 import { Landing } from "../service.ts"
+import { hold, type LockMode } from "./flock.ts"
 import * as ProcessLanding from "./landing.ts"
 
 const ENV = {
@@ -212,6 +213,74 @@ describe("process Landing", () => {
     // A report left by the last run is never read as this one's.
     const silent = await made.run((landing) => landing.postLand(made.integration, "echo quiet; exit 2", {}))
     expect(silent).toMatchObject({ code: 2, output: "quiet\n", report: undefined })
+  })
+
+  /** Whether `file` can be taken in `mode` within a moment: no other holder excludes it. */
+  const free = (file: string, mode: LockMode) => Effect.scoped(hold(file, mode)).pipe(Effect.timeoutOption("150 millis"), Effect.map(Option.isSome))
+
+  /** Waits, briefly, until `file` exists. */
+  const appeared = (file: string) =>
+    Effect.sync(() => existsSync(file)).pipe(
+      Effect.filterOrFail(
+        (exists) => exists,
+        () => `${file} never appeared`,
+      ),
+      Effect.retry({ schedule: Schedule.spaced("20 millis"), times: 250 }),
+    )
+
+  test("a gate holds the checks lock shared; an accept check holds it shared and the accept lock exclusive; a post-land step holds neither and is told both", () => {
+    const made = bench()
+    const locks = ProcessLanding.lockFiles(join(made.scratch, "logs"))
+    const started = join(made.scratch, "started")
+    const go = join(made.scratch, "go")
+    /** What a holder outside the check could take while `label` runs. */
+    const during = (landing: typeof Landing.Service, label: "gate" | "accept") =>
+      Effect.gen(function* () {
+        rmSync(started, { force: true })
+        rmSync(go, { force: true })
+        const running = yield* Effect.forkChild(landing.check(made.integration, label, `touch "${started}"; while [ ! -f "${go}" ]; do sleep 0.02; done`, {}))
+        yield* appeared(started)
+        const seen = { checksExclusive: yield* free(locks.checks, "exclusive"), checksShared: yield* free(locks.checks, "shared"), accept: yield* free(locks.accept, "exclusive") }
+        writeFileSync(go, "")
+        yield* Fiber.join(running)
+        return seen
+      })
+    return made.run((landing) =>
+      Effect.gen(function* () {
+        expect(yield* during(landing, "gate")).toEqual({ checksExclusive: false, checksShared: true, accept: true })
+        expect(yield* during(landing, "accept")).toEqual({ checksExclusive: false, checksShared: true, accept: false })
+        const told = yield* landing.postLand(made.integration, 'printf "%s %s" "$RIFT_LAND_CHECKS_LOCK" "$RIFT_LAND_ACCEPT_LOCK" > "$RIFT_POST_LAND_REPORT"', {})
+        expect(told.report).toBe(`${locks.checks} ${locks.accept}`)
+        expect({ checks: yield* free(locks.checks, "exclusive"), accept: yield* free(locks.accept, "exclusive") }).toEqual({ checks: true, accept: true })
+      }),
+    )
+  })
+
+  test("a gate waits while a post-land step holds the checks lock (its fork update), and an accept check while it holds the accept lock (its fork tests); each runs once it lets go", () => {
+    const made = bench()
+    const locks = ProcessLanding.lockFiles(join(made.scratch, "logs"))
+    /** `label` started while another process holds `file` exclusively: it has not run before the holder lets go, and runs after. */
+    const waits = (landing: typeof Landing.Service, label: "gate" | "accept", file: string) =>
+      Effect.gen(function* () {
+        const ran = join(made.scratch, `${label}.${basename(file)}.ran`)
+        const held = yield* Deferred.make<string>()
+        const release = yield* Deferred.make<string>()
+        yield* Effect.forkChild(Effect.scoped(hold(file, "exclusive").pipe(Effect.andThen(Deferred.succeed(held, "held")), Effect.andThen(Deferred.await(release)))))
+        yield* Deferred.await(held)
+        const check = yield* Effect.forkChild(landing.check(made.integration, label, `touch "${ran}"`, {}))
+        const early = yield* Fiber.join(check).pipe(Effect.timeoutOption("300 millis"))
+        const before = existsSync(ran)
+        yield* Deferred.succeed(release, "released")
+        const ended = yield* Fiber.join(check)
+        return { early: Option.isSome(early), before, code: ended.code, after: existsSync(ran) }
+      })
+    return made.run((landing) =>
+      Effect.gen(function* () {
+        expect(yield* waits(landing, "gate", locks.checks)).toEqual({ early: false, before: false, code: 0, after: true })
+        expect(yield* waits(landing, "accept", locks.accept)).toEqual({ early: false, before: false, code: 0, after: true })
+        expect(yield* waits(landing, "accept", locks.checks)).toEqual({ early: false, before: false, code: 0, after: true })
+      }),
+    )
   })
 
   test("hostLoad reads the 1-minute load and the cores", async () => {

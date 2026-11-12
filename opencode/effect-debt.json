@@ -114,7 +114,8 @@
     {"file":"tests/scratch-cases.ts","rule":"effect/noEffectRunInTests","reason":"Bun test bridge: a case that must outlive its Bun timeout runs Effect.never with Effect.runPromise, the one body that never returns without a timer or a new Promise"},
     {"file":"tests/scratch.test.ts","rule":"effect/noAsyncFunction","reason":"real-process harness: the leak guard awaits a child bun test run of the suites; the root has no Effect test runner"},
     {"file":"tests/scratch.test.ts","rule":"effect/noGlobals","reason":"real-process harness: the child bun test run inherits this process's env with its own TMPDIR and no OPENCODE_DEV"},
-    {"file":"tests/scratch.test.ts","rule":"effect/noNodeBuiltinImport","reason":"real-process harness: the leak guard lists the child's temp directory with node:fs; the root has no Effect platform layer"}
+    {"file":"tests/scratch.test.ts","rule":"effect/noNodeBuiltinImport","reason":"real-process harness: the leak guard lists the child's temp directory with node:fs; the root has no Effect platform layer"},
+    {"file":"mods/rift/process/flock.ts","rule":"effect/noNodeBuiltinImport","reason":"flock(2) adapter: the lock needs a raw file descriptor for libc's flock through bun:ffi, which node:fs's openSync and closeSync give and no Effect platform layer here does"}
   ],
   "budgets": {
     "cmd/anthropic-auth/server.test.ts": {"effect/noAs":49,"effect/noAsyncFunction":561,"effect/noChainedTypeAssertions":16,"effect/noComments":20,"effect/noConditionalEmptyObjectSpread":1,"effect/noEffectRunInTests":2,"effect/noGlobals":194,"effect/noKnownValueWidening":4,"effect/noModuleMocks":26,"effect/noNewError":15,"effect/noNewPromise":37,"effect/noNullish":34,"effect/noObjectParameters":1,"effect/noPromiseChainsInTests":8,"effect/noTernary":6,"effect/noThrowStatement":12,"effect/noTryCatch":46,"effect/noUnknownParameters":14,"effect/noUnknownReturns":1,"effect/noUnsafeDictionaryType":1},
