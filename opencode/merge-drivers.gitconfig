@@ -1,0 +1,7 @@
+# The git merge drivers .gitattributes names, defined once: install.sh and `bun run daily`
+# (scripts/effect-debt.ts registerMergeDriver) copy them into the checkout's git config.
+# The Effect lint policy merges by key; a side it cannot read, or a value both sides changed
+# differently, falls back to git's line merge with conflict markers.
+[merge "effect-debt"]
+	name = Effect lint policy, merged by key
+	driver = bun opencode/scripts/effect-debt.ts --merge %O %A %B %P || git merge-file --diff3 -L ours -L base -L theirs %A %O %B

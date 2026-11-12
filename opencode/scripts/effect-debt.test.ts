@@ -21,12 +21,14 @@ import {
   HOST_BRIDGES,
   type Inputs,
   LINT_MANIFEST,
+  MERGE_DRIVERS,
   overridePairs,
   parseOptions,
   POLICY,
   Policy,
   policyProblems,
   readInstalled,
+  registerMergeDriver,
   serialize,
   serializeConfig,
   spawn,
@@ -954,6 +956,48 @@ describe("merge by key: two units' edits of the policy and its config merge with
         const short = yield* driver(other, other)
         expect({ code: short.code, stderr: short.stderr }).toEqual({ code: 1, stderr: expect.stringContaining("usage:") })
         expect(readFileSync(other, "utf8")).toBe("{}\n")
+      }),
+    ))
+})
+
+describe("the merge driver's registration (bun run daily, and the update plugin's daily --stage)", () => {
+  const DOTFILES = path.dirname(REAL)
+  /** A dotfiles checkout with the real driver definition; `routed` writes the real `.gitattributes`. */
+  const checkout = Effect.fn("EffectDebtTest.checkout")(function* (routed: boolean) {
+    const root = yield* scratch
+    yield* git(root, "init", "-q")
+    put(root, MERGE_DRIVERS, readFileSync(path.join(DOTFILES, MERGE_DRIVERS), "utf8"))
+    if (routed) put(root, "opencode/.gitattributes", readReal(".gitattributes"))
+    return root
+  })
+  const configured = (root: string, key: string) => spawn(["git", "config", "--get", `merge.effect-debt.${key}`], root, CLI_TIMEOUT).pipe(Effect.map((answer) => answer.stdout.trim()))
+  /** What install.sh registers, read from the shared definition, so a drift in either shows. */
+  const installed = (key: string) =>
+    spawn(["git", "config", "-f", path.join(DOTFILES, MERGE_DRIVERS), "--get", `merge.effect-debt.${key}`], DOTFILES, CLI_TIMEOUT).pipe(Effect.map((answer) => answer.stdout.trim()))
+
+  test("registers the driver install.sh registers when .gitattributes names merge=effect-debt and the config lacks it", () =>
+    runScoped(
+      Effect.gen(function* () {
+        const root = yield* checkout(true)
+        expect(yield* registerMergeDriver(root)).toBe("registered")
+        expect(yield* configured(root, "name")).toBe("Effect lint policy, merged by key")
+        expect(yield* configured(root, "driver")).toBe("bun opencode/scripts/effect-debt.ts --merge %O %A %B %P || git merge-file --diff3 -L ours -L base -L theirs %A %O %B")
+        expect([yield* configured(root, "name"), yield* configured(root, "driver")]).toEqual([yield* installed("name"), yield* installed("driver")])
+        expect(yield* registerMergeDriver(root)).toBe("present")
+      }),
+    ))
+
+  test("leaves the config alone when it already names a driver, or when no attribute routes a file to it", () =>
+    runScoped(
+      Effect.gen(function* () {
+        const mine = yield* checkout(true)
+        yield* git(mine, "config", "merge.effect-debt.name", "mine")
+        yield* git(mine, "config", "merge.effect-debt.driver", "my-driver %O %A %B")
+        expect(yield* registerMergeDriver(mine)).toBe("present")
+        expect([yield* configured(mine, "name"), yield* configured(mine, "driver")]).toEqual(["mine", "my-driver %O %A %B"])
+        const unrouted = yield* checkout(false)
+        expect(yield* registerMergeDriver(unrouted)).toBe("unrouted")
+        expect(yield* configured(unrouted, "driver")).toBe("")
       }),
     ))
 })

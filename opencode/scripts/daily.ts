@@ -33,6 +33,7 @@ import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } f
 import { checkFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { hostLocks } from "../mods/rift/process/landing.ts"
+import { registerMergeDriver } from "./effect-debt.ts"
 import { forkChecks, mergeUpstream, type SyncOutcome, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
 import { flagValue, headOf, restartThroughHandoff, stagedText, settingsFor, updateEntry } from "../mods/update/process/install.ts"
 
@@ -334,7 +335,7 @@ if (import.meta.main) {
   // through those links at load time (scripts/link-fork.ts).
   const linkFork = () => $`bun ${join(import.meta.dir, "link-fork.ts")}`.env({ ...env, OPENCODE_DEV: fork }).quiet()
   await linkFork()
-  await $`bun install --frozen-lockfile`.cwd(resolve(import.meta.dir, "..")).quiet()
+  await Effect.runPromise(registerMergeDriver(resolve(MODS, "../..")).pipe(Effect.andThen(Effect.promise(() => $`bun install --frozen-lockfile`.cwd(resolve(MODS, "..")).quiet()))))
   await linkFork()
 
   // After the links, since the merge's acceptance tests load the mods through them.
