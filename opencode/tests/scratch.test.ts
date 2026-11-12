@@ -65,3 +65,72 @@ describe("a scratch directory", () => {
     SUITES_MS,
   )
 })
+
+/**
+ * Runs the kept-directory cases in a child `bun test` with `tmp` as its TMPDIR, then reads what it
+ * left there and its report. tests/scratch-cases.ts has no `.test.` in its name, so only this run
+ * picks it up.
+ */
+const runCases = async (tmp: string, ...args: ReadonlyArray<string>) => {
+  const child = owned([process.execPath, "test", "./tests/scratch-cases.ts", ...args], {
+    cwd: fileURLToPath(new URL("..", import.meta.url)),
+    env: { ...process.env, TMPDIR: tmp },
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "pipe",
+  })
+  const output = await new Response(child.stderr).text()
+  return { code: await child.exited, output, left: readdirSync(tmp) }
+}
+
+/** How long a child run of the cases gets: they hang for 50 ms at most. */
+const CASES_MS = 60_000
+
+describe("an e2e suite's kept directory", () => {
+  test(
+    "goes when the suite passes, and stays, named in its output, when a test or setup fails or runs out of time",
+    async () => {
+      using tmp = scratch("scratch-cases-")
+      const { code, output, left } = await runCases(tmp.path)
+      const kept = (prefix: string) => left.filter((name) => name.startsWith(prefix))
+      const named = (prefix: string) =>
+        kept(prefix).map((name) => ({
+          name,
+          inError: output.includes(`(its frames and logs, kept: ${tmp.path}/${name})`),
+          atEnd: output.includes(`kept the failed suite's frames and logs: ${tmp.path}/${name}`),
+        }))
+      const keptAndNamed = (prefix: string) => [{ name: expect.stringMatching(new RegExp(`^${prefix}`)), inError: true, atEnd: true }]
+      expect(code).toBe(1)
+      expect({
+        passing: kept("kept-passing-"),
+        closing: kept("kept-closes-"),
+        skipped: kept("kept-skipped-"),
+        failing: named("kept-failing-"),
+        setupFailing: named("kept-setup-failing-"),
+        timingOut: named("kept-timing-out-"),
+        setupTimingOut: named("kept-setup-timing-out-"),
+        closingAfterTimeout: named("kept-closing-after-timeout-"),
+      }).toEqual({
+        passing: [],
+        closing: [],
+        skipped: [],
+        failing: keptAndNamed("kept-failing-"),
+        setupFailing: keptAndNamed("kept-setup-failing-"),
+        timingOut: keptAndNamed("kept-timing-out-"),
+        setupTimingOut: [{ name: expect.stringMatching(/^kept-setup-timing-out-/), inError: false, atEnd: true }],
+        closingAfterTimeout: keptAndNamed("kept-closing-after-timeout-"),
+      })
+    },
+    CASES_MS,
+  )
+
+  test(
+    "goes when a -t filter runs only some of a passing suite's tests",
+    async () => {
+      using tmp = scratch("scratch-cases-")
+      const { code, output, left } = await runCases(tmp.path, "-t", "^passing first$")
+      expect({ code, passed: output.match(/(\d+) pass/)?.[1], left }).toEqual({ code: 0, passed: "1", left: [] })
+    },
+    CASES_MS,
+  )
+})
