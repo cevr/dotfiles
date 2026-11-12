@@ -1,34 +1,51 @@
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { moves, repositoryAt, repositoryOf, targetOf } from "./fleet.ts"
+import { batchFileOf, headsOf, moves, targetOf } from "./fleet.ts"
 
 const D1 = "1".repeat(40)
 const D2 = "2".repeat(40)
 const F1 = "a".repeat(40)
 const F2 = "b".repeat(40)
 
+const heads = (dotfiles: Option.Option<string>, fork: Option.Option<string>) => ({ dotfiles, fork })
+
 describe("the verified target an accepted batch records", () => {
-  test("an ssh and an https URL of one repository are the same repository", () => {
-    expect(repositoryOf("git@github.com:cevr/dotfiles.git")).toBe("github.com/cevr/dotfiles")
-    expect(repositoryOf("https://github.com/cevr/dotfiles")).toBe("github.com/cevr/dotfiles")
-    expect(repositoryOf("ssh://git@github.com/cevr/dotfiles.git/")).toBe("github.com/cevr/dotfiles")
-    expect(repositoryOf("https://github.com/cevr/opencode.git")).not.toBe(repositoryOf("git@github.com:cevr/dotfiles.git"))
+  test("B3: the heads come from the batch file's header, in each form the orchestrator writes it", () => {
+    const cases: ReadonlyArray<readonly [string, ReturnType<typeof heads>]> = [
+      ["Dotfiles: base 4add04ba, head 452ac9c9; Rift /r/dotfiles/verify-1112w detached at it.", heads(Option.some("452ac9c9"), Option.none())],
+      [
+        "Dotfiles: base 0a749179, head 956fb113; your Rift /r/verify-1112n is detached at it. Fork prime-look: base 8ad069aebe (batch m), head 312da8de96 (daily's upstream merge).",
+        heads(Option.some("956fb113"), Option.some("312da8de96")),
+      ],
+      ["Dotfiles: base fb1a4b09, head cae5b1cf (origin/main); your Rift /r/verify-1111g is detached at it. Fork unchanged (13a380890b).", heads(Option.some("cae5b1cf"), Option.some("13a380890b"))],
+      ["Dotfiles: base 21b6372d, head 1cd183bb (origin/main). Fork unchanged (prime-look 13a380890b).", heads(Option.some("1cd183bb"), Option.some("13a380890b"))],
+      ["Dotfiles: 0eb81d14 (no dotfiles change; your Rift /r/verify-1111l). Fork prime-look: base 484d7f1042 (accepted in batch k), head 5c088c6dc3.", heads(Option.some("0eb81d14"), Option.some("5c088c6dc3"))],
+      ["Dotfiles: base f0581cb3, head 947768ed; your Rift is detached at it. Fork prime-look a5777f303a (unchanged).", heads(Option.some("947768ed"), Option.some("a5777f303a"))],
+      ["Dotfiles: base ea3e2db7, head f0581cb3 (lands 3472fd43, f0581cb3). Fork prime-look: a5777f303a (upstream merge of 2 commits).", heads(Option.some("f0581cb3"), Option.some("a5777f303a"))],
+      ["# batch q\n\nFork (anomalyco fork, branch prime-look): base a15bd0c6f4, head f785c92b7e; checkout at it.", heads(Option.none(), Option.some("f785c92b7e"))],
+      ["- Dotfiles source containing landed head: `/r/integrate`, head `8874a7d267abb8a46c1684c8c99476d11a2e6e2f`.", heads(Option.some("8874a7d267abb8a46c1684c8c99476d11a2e6e2f"), Option.none())],
+      ["Dotfiles: base 65bd0ae9, head origin/main (push-window merge).", heads(Option.none(), Option.none())],
+      ["Verify the units below and decide.", heads(Option.none(), Option.none())],
+    ]
+    for (const [text, expected] of cases) expect([text, headsOf(text)]).toEqual([text, expected])
   })
 
-  test("the verifier's checkout is of the dotfiles, the fork or neither, by its origin", () => {
-    const origins = { dotfiles: Option.some("git@github.com:cevr/dotfiles.git"), fork: Option.some("https://github.com/cevr/opencode") }
-    expect(repositoryAt(Option.some("https://github.com/cevr/dotfiles"), origins)).toBe("dotfiles")
-    expect(repositoryAt(Option.some("git@github.com:cevr/opencode.git"), origins)).toBe("fork")
-    expect(repositoryAt(Option.some("git@github.com:bite/app.git"), origins)).toBe("neither")
-    expect(repositoryAt(Option.none(), origins)).toBe("neither")
-    expect(repositoryAt(Option.some("git@github.com:cevr/opencode.git"), { ...origins, fork: Option.none() })).toBe("neither")
+  test("the first header that names a head wins over later prose", () => {
+    expect(headsOf("Dotfiles: base 1111111a, head 2222222b.\n\nThe dotfiles head 3333333c was rejected. Fork prime-look: base 4444444d, head 5555555e.")).toEqual(
+      heads(Option.some("2222222b"), Option.some("5555555e")),
+    )
   })
 
-  test("a dotfiles batch pairs its commit with the fork's checkout; a fork batch with the dotfiles already verified", () => {
+  test("a repository the batch does not name keeps the current target's commit; with no current target nothing is recorded", () => {
     const current = Option.some({ dotfiles: D1, fork: F1, batch: "batch-1" })
-    expect(targetOf({ repository: "dotfiles", head: D2, batch: "batch-2", fork: F2, current, main: D1 })).toEqual({ dotfiles: D2, fork: F2, batch: "batch-2" })
-    expect(targetOf({ repository: "fork", head: F2, batch: "batch-3", fork: F1, current, main: D2 })).toEqual({ dotfiles: D1, fork: F2, batch: "batch-3" })
-    expect(targetOf({ repository: "fork", head: F2, batch: "batch-3", fork: F1, current: Option.none(), main: D2 })).toEqual({ dotfiles: D2, fork: F2, batch: "batch-3" })
+    expect(targetOf({ heads: heads(Option.some(D2), Option.some(F2)), current, batch: "batch-2" })).toEqual(Option.some({ dotfiles: D2, fork: F2, batch: "batch-2" }))
+    expect(targetOf({ heads: heads(Option.some(D2), Option.none()), current, batch: "batch-2" })).toEqual(Option.some({ dotfiles: D2, fork: F1, batch: "batch-2" }))
+    expect(targetOf({ heads: heads(Option.none(), Option.some(F2)), current, batch: "batch-3" })).toEqual(Option.some({ dotfiles: D1, fork: F2, batch: "batch-3" }))
+    expect(targetOf({ heads: heads(Option.some(D2), Option.none()), current: Option.none(), batch: "batch-2" })).toEqual(Option.none())
+  })
+
+  test("the batch file sits beside the verifier's report", () => {
+    expect(batchFileOf("/t/verify-1112w/batch-2026-11-12w-findings.md", "batch-2026-11-12w")).toBe("/t/verify-1112w/batch-2026-11-12w.md")
   })
 
   test("recording the commits already recorded moves nothing", () => {

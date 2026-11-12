@@ -62,6 +62,7 @@ export const files = (settings: Settings) => ({
   stage: `${settings.state}/stage.log`,
   handoff: `${settings.state}/handoff.log`,
   kept: `${settings.state}/config-kept`,
+  rejected: `${settings.state}/rejected.json`,
 })
 
 /** How often the plugin looks for a new target. */

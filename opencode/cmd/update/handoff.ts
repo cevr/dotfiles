@@ -2,8 +2,9 @@ import * as Configs from "@dotfiles/opencode-update/filestore/configs"
 import * as Log from "@dotfiles/opencode-update/filestore/log"
 import * as Notice from "@dotfiles/opencode-update/filestore/notice"
 import * as Records from "@dotfiles/opencode-update/filestore/records"
+import * as Rejections from "@dotfiles/opencode-update/filestore/rejections"
 import * as Source from "@dotfiles/opencode-update/git/source"
-import { handoff } from "@dotfiles/opencode-update/model"
+import { EXIT_CODES, handoff } from "@dotfiles/opencode-update/model"
 import * as Service from "@dotfiles/opencode-update/process/service"
 import { files, HANDOFF_SETTINGS, type Settings, SettingsJson, stepEnv } from "@dotfiles/opencode-update/settings"
 import { argv } from "bun"
@@ -15,6 +16,7 @@ export const live = (settings: Settings, env: Readonly<globalThis.Record<string,
     Service.layer(settings, env),
     Source.layer({ root: settings.checkout, mode: settings.mode, bun: settings.bun, fork: settings.fork, env }),
     Records.layer(settings.record),
+    Rejections.layer(files(settings).rejected),
     Configs.layer({ config: settings.config, kept: files(settings).kept }),
     Notice.layer(settings.notice),
     Log.layer(files(settings).log, settings.host),
@@ -23,9 +25,10 @@ export const live = (settings: Settings, env: Readonly<globalThis.Record<string,
 /**
  * The handoff, a process of its own that outlives the service it restarts (`process/handoff.ts`
  * starts it detached): restart, health check, recovery (`model.ts` `handoff`). Its settings come in
- * `DOTFILES_UPDATE_SETTINGS`, its reason as its argument.
+ * `DOTFILES_UPDATE_SETTINGS`, its reason as its argument. It answers its exit code: 0 only for a
+ * proven build (`EXIT_CODES`), 1 when its settings do not read.
  */
-export const main = handoff(argv.slice(2).join(" "))
+export const main = handoff(argv.slice(2).join(" ")).pipe(Effect.map((outcome) => EXIT_CODES[outcome]))
 
 /** The implementations, from the settings in the environment. */
 export const Live = Layer.unwrap(
@@ -36,4 +39,19 @@ export const Live = Layer.unwrap(
   }),
 )
 
-if (import.meta.main) Effect.runFork(main.pipe(Effect.provide(Live)))
+/** The exit code of the whole run: the outcome's, or 1 for settings that do not read. */
+export const run = main.pipe(
+  Effect.provide(Live),
+  Effect.catch((error) => Effect.logError(`the handoff's settings do not read: ${error.message}`).pipe(Effect.as(EXIT_CODES["gave-up"]))),
+)
+
+if (import.meta.main)
+  Effect.runFork(
+    run.pipe(
+      Effect.tap((code) =>
+        Effect.sync(() => {
+          process.exitCode = code
+        }),
+      ),
+    ),
+  )

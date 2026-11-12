@@ -2141,7 +2141,7 @@ describe("the batch machine", () => {
       }),
     ))
 
-  test("an accepted verdict asks the fleet to record the verified target from the verifier's checkout; changes asks nothing", () =>
+  test("B3: an accepted verdict asks the fleet to record the target its batch file names, by the verifier's report, never its checkout; changes asks nothing", () =>
     scenario(
       Effect.gen(function* () {
         const fleet: Array<FleetTest.Asked> = []
@@ -2167,7 +2167,7 @@ describe("the batch machine", () => {
         yield* land(["beta"])
         yield* begin(plugin, { agent: "verifier", description: "verifier batch-2 r1", prompt: "v", background: true }, "ses_w")
         yield* plugin.idle("ses_w")
-        expect(fleet).toEqual([{ directory: "/checkouts/dotfiles", batch: "batch-2" }])
+        expect(fleet).toEqual([{ report: "/run/batch-2-findings.md", batch: "batch-2" }])
       }),
     ))
 

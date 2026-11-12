@@ -332,14 +332,15 @@ export class RunRecords extends Context.Service<
 
 /**
  * The fleet's verified target (mods/update/target.ts): what every host's update plugin installs.
- * - `record`: an accepted batch's verifier ran in `directory`; when that is a checkout of the dotfiles
- *   or of the fork, record its commit with the other repository's as the verified target. Never fails:
- *   a checkout of neither, a commit origin lacks, or a push refused records nothing, and says why in
- *   the server's log; the next accepted batch records again.
+ * - `record`: a batch was accepted, its verifier's `report` in the run dir: record the heads the batch
+ *   file beside it (`<run dir>/<batch>.md`) names as verified at, with the current target's commit for a
+ *   repository it does not name, as the verified target. Never a checkout's HEAD. Never fails: a batch
+ *   file that does not read or names no head, a commit origin lacks, or a push refused records nothing,
+ *   and says why in the server's log; the next accepted batch records again.
  */
 export class Fleet extends Context.Service<
   Fleet,
-  { readonly record: (input: { readonly directory: Option.Option<string>; readonly batch: string }) => Effect.Effect<void> }
+  { readonly record: (input: { readonly report: Option.Option<string>; readonly batch: string }) => Effect.Effect<void> }
 >()("dotfiles-opencode/orchestrate/Fleet") {}
 
 /** Steers a session with one note, marked `DRIFT_MARK`, which wakes it if idle. */

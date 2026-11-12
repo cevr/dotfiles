@@ -2,6 +2,7 @@ import { Plugin } from "@opencode/plugin/effect"
 import * as Configs from "@dotfiles/opencode-update/filestore/configs"
 import * as Log from "@dotfiles/opencode-update/filestore/log"
 import * as Records from "@dotfiles/opencode-update/filestore/records"
+import * as Rejections from "@dotfiles/opencode-update/filestore/rejections"
 import * as Source from "@dotfiles/opencode-update/git/source"
 import { GATE_POLL, Updater, updaterLayer } from "@dotfiles/opencode-update/model"
 import * as Sessions from "@dotfiles/opencode-update/opencode/sessions"
@@ -22,6 +23,7 @@ export const live = (ctx: Plugin.Context, options: Options, env: Readonly<global
     Sessions.layer(ctx),
     Handoff.layer(options, env),
     Records.layer(options.record),
+    Rejections.layer(files(options).rejected),
     Configs.layer({ config: options.config, kept: files(options).kept }),
     Log.layer(files(options).log, options.host),
   )
