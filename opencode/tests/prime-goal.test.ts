@@ -45,7 +45,7 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-goal.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("Prime's dock and goal line", () => {
   const kept = keptScratch(Boolean(fork), "prime-goal-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-goal-")
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/prime-goal.ts"], {
       cwd: join(import.meta.dir, ".."),
@@ -62,7 +62,7 @@ describe.skipIf(!fork)("Prime's dock and goal line", () => {
         lines: readFileSync(join(out, `${label}-${name}.txt`), "utf8").split("\n"),
         frame: JSON.parse(readFileSync(join(out, `${label}-${name}.json`), "utf8")),
       }
-  }), 240_000)
+  }, 240_000))
 
   test("the dock: shells, then the wakes in the success colour; no goal before one is set", kept.test(() => {
     const dock = frames.dock

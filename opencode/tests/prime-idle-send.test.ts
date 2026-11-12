@@ -47,7 +47,7 @@ const rows = (frame: string) => frame.split("\n").filter((line) => ROW.test(line
 
 describe.skipIf(!fork)("a prompt sent to an idle session is no queued prompt, in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-idle-send-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-idle-send-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-idle-send.ts"], {
       cwd: root,
@@ -62,7 +62,7 @@ describe.skipIf(!fork)("a prompt sent to an idle session is no queued prompt, in
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = JSON.parse(readFileSync(join(out, `${name}.json`), "utf8"))
-  }), 300_000)
+  }, 300_000))
 
   test.each([
     ["first", FIRST],

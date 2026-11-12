@@ -41,7 +41,7 @@ function rows(frame: ReadonlyArray<string>): ReadonlyArray<string> {
 
 describe.skipIf(!fork)("a subagent latched on the pace (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-latch-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-latch-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-latch.ts"], {
       cwd: root,
@@ -55,7 +55,7 @@ describe.skipIf(!fork)("a subagent latched on the pace (OPENCODE_DEV)", () => {
     listing = (JSON.parse(readFileSync(join(out, "latch-wakes.json"), "utf8")) as { request: string }).request
     calls = jsonl(join(out, "agents.jsonl"))
     paces = jsonl(join(out, "pace.jsonl"))
-  }), 300_000)
+  }, 300_000))
 
   test("the held foreground call answers latched at once, and the parent goes on", kept.test(() => {
     expect(frames["latch-latched"].join("\n")).toContain("Latched; I will hear back.")

@@ -40,7 +40,7 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-shells.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("background shells in Prime", () => {
   const kept = keptScratch(Boolean(fork), "prime-shells-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-shells-")
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/prime-shells.ts"], {
       cwd: join(import.meta.dir, ".."),
@@ -54,7 +54,7 @@ describe.skipIf(!fork)("background shells in Prime", () => {
     if (code !== 0) throw new Error(`prime-shells scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
     for (const name of names) frames[name] = readFileSync(join(out, `${label}-${name}.txt`), "utf8").split("\n")
     requests = JSON.parse(readFileSync(join(out, `${label}-requests.json`), "utf8"))
-  }), 240_000)
+  }, 240_000))
 
   test("past its limit, a foreground call moves to the background: its row says so, and the dock counts it", kept.test(() => {
     const moved = frames.moved

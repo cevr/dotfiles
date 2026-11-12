@@ -35,7 +35,7 @@ const LATER = "  ◌ after the turn · Afterwards tag the release."
 
 describe.skipIf(!fork)("prompts sent during a compaction wait above the composer as one list, in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-queued-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-queued-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-queued.ts"], {
       cwd: root,
@@ -50,7 +50,7 @@ describe.skipIf(!fork)("prompts sent during a compaction wait above the composer
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
-  }), 300_000)
+  }, 300_000))
 
   test("while the compaction runs: no prompt in the transcript, one list of all three, and the compaction's one timed row", kept.test(() => {
     const shown = above(frames.queued)

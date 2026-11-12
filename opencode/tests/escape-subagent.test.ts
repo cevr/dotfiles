@@ -34,7 +34,7 @@ const ASK = "Fix the money parsing in a worker."
 
 describe.skipIf(!fork)("Escape in a subagent's view closes its picker first, then goes back to the parent, never interrupting (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "escape-subagent-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("escape-subagent-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/escape-subagent.ts"], {
       cwd: root,
@@ -45,7 +45,7 @@ describe.skipIf(!fork)("Escape in a subagent's view closes its picker first, the
     const [code, stdout, stderr] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of readdirSync(out)) if (name.endsWith(".txt")) saved.set(name, readFileSync(join(out, name), "utf8"))
-  }), 300_000)
+  }, 300_000))
 
   test("the subagent's view opens on its picker", kept.test(() => {
     expect(picker("picker")).toBe(true)

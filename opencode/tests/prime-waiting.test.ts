@@ -42,7 +42,7 @@ function panel(frame: ReadonlyArray<string>) {
 
 describe.skipIf(!fork)("a waiting subagent's wait ends with no notice (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-waiting-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-waiting-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-waiting.ts"], {
       cwd: root,
@@ -54,7 +54,7 @@ describe.skipIf(!fork)("a waiting subagent's wait ends with no notice (OPENCODE_
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
     requests = JSON.parse(readFileSync(join(out, "prime-waiting-requests.json"), "utf8"))
-  }), 300_000)
+  }, 300_000))
 
   test("while its shells run, its row waits and the dock counts it", kept.test(() => {
     expect(dock(frames["waiting-rows"])).toEqual({

@@ -26,7 +26,7 @@ let busy: string
 
 describe.skipIf(!fork)("the TUI's CPU while a long session and its subagents stream (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "tui-cpu-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("tui-cpu-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/tui-cpu.ts"], {
       cwd: root,
@@ -44,7 +44,7 @@ describe.skipIf(!fork)("the TUI's CPU while a long session and its subagents str
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     result = JSON.parse(readFileSync(join(out, "cpu.json"), "utf8"))
     busy = readFileSync(join(out, "busy.txt"), "utf8")
-  }), 300_000)
+  }, 300_000))
 
   test("the measured window is the working session: its answer streams and three subagent rows work", kept.test(() => {
     expect(busy).toContain("main word")

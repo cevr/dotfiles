@@ -28,7 +28,7 @@ function split(name: string) {
 
 describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "escape-states-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("escape-states-")
     for (const which of cases) {
       const run = owned(["bunx", "opencode-drive", "run", "scenarios/escape-states.ts"], {
@@ -41,7 +41,7 @@ describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE
       if (code !== 0) throw new Error(`the ${which} case exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     }
     for (const name of readdirSync(out)) if (name.endsWith(".txt")) saved.set(name, readFileSync(join(out, name), "utf8"))
-  }), 400_000)
+  }, 400_000))
 
   for (const which of ["steer", "queue"] as const)
     test(`a ${which === "steer" ? "steer" : "queued prompt"} sent while the model works: one Escape stops the run and puts the prompt back in the composer`, kept.test(() => {

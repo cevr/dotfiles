@@ -36,8 +36,11 @@ export interface Kept {
   readonly dir: (prefix: string) => string
   /** A test's body: a failure, or a timeout it never returns from, keeps the directory and names it. */
   readonly test: (body: Body) => () => Promise<void>
-  /** A `beforeAll` body: a failure, or a timeout, keeps the directory and names it. */
-  readonly setup: (body: Body) => () => Promise<void>
+  /**
+   * A `beforeAll` body and its timeout, spread into the hook: `beforeAll(...kept.setup(body, ms))`.
+   * A failure, or a timeout, keeps the directory and names it, even when the body returns later.
+   */
+  readonly setup: (body: Body, timeoutMs: number) => readonly [() => Promise<void>, number]
   /** Ends the suite: removes the directory, or keeps and names it when a setup or test failed or never returned. */
   readonly done: () => void
 }
@@ -79,16 +82,25 @@ export const keptScratch = (runs: boolean, prefix: string, closesItself = false)
     if (error instanceof Error) error.message = `${error.message}\n${keptLine(path)}`
     return error
   }
-  /** Runs a body; one Bun gives up on at its timeout stays running, which `done` reads as a failure. */
-  const run = (body: Body, each: Settled): Promise<void> => {
+  /** A body Bun gave up on: the suite failed, whatever the body does later. */
+  const outlived = (what: string) => {
+    state.failed = true
+    console.error(`a ${what} outlived its timeout ${keptLine(path)}`)
+  }
+  /**
+   * Runs a body and hands `ended` the milliseconds it took; one Bun gives up on at its timeout
+   * stays running, which `done` reads as a failure.
+   */
+  const run = (body: Body, ended: (tookMs: number) => void): Promise<void> => {
     make()
     state.running += 1
+    const started = performance.now()
     return Effect.runPromise(
       Effect.tryPromise({ try: async () => body(), catch: (error) => named(error) }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
             state.running -= 1
-            each.settled = true
+            ended(performance.now() - started)
           }),
         ),
       ),
@@ -104,13 +116,19 @@ export const keptScratch = (runs: boolean, prefix: string, closesItself = false)
     test: (body) => () => {
       const each: Settled = { settled: false }
       onTestFinished(() => {
-        if (each.settled) return
-        state.failed = true
-        console.error(`a test outlived its timeout ${keptLine(path)}`)
+        if (!each.settled) outlived("test")
       })
-      return run(body, each)
+      return run(body, () => {
+        each.settled = true
+      })
     },
-    setup: (body) => () => run(body, { settled: false }),
+    setup: (body, timeoutMs) => [
+      () =>
+        run(body, (tookMs) => {
+          if (tookMs > timeoutMs) outlived("setup")
+        }),
+      timeoutMs,
+    ],
     done,
   }
 }

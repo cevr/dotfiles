@@ -48,7 +48,7 @@ function fg(needle: string, offset = 0) {
 
 describe.skipIf(!fork)("a kernel cell's description in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-kernel-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-kernel-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-kernel.ts"], {
       cwd: root,
@@ -60,7 +60,7 @@ describe.skipIf(!fork)("a kernel cell's description in the Prime look (OPENCODE_
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     lines = readFileSync(join(out, "kernel.txt"), "utf8").split("\n")
     frame = JSON.parse(readFileSync(join(out, "kernel.json"), "utf8"))
-  }), 300_000)
+  }, 300_000))
 
   test("Details: the described cell's header is its description over its nested rows; the others count what they ran", kept.test(() => {
     expect(transcript()).toEqual([

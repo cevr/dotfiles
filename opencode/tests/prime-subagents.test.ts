@@ -52,7 +52,7 @@ function expectSubagent(frame: ReadonlyArray<string>, worker: (typeof WORKERS)[n
 
 describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-subagents-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-subagents-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-subagents.ts"], {
       cwd: root,
@@ -67,7 +67,7 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `subagents-${name}.txt`), "utf8").split("\n")
-  }), 300_000)
+  }, 300_000))
 
   test("while subagents run, the main session says Down reaches them", kept.test(() => {
     expect(frames.started[0]).not.toContain("›")

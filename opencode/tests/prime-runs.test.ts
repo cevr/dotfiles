@@ -44,7 +44,7 @@ const row = (line: string) =>
 
 describe.skipIf(!fork)("a message between two calls starts a new group in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-runs-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-runs-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-runs.ts"], {
       cwd: root,
@@ -59,7 +59,7 @@ describe.skipIf(!fork)("a message between two calls starts a new group in the Pr
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `${files[name]}.txt`), "utf8").split("\n")
-  }), 300_000)
+  }, 300_000))
 
   test("while it runs, the long command after the text is its own row, the newest in the transcript", kept.test(() => {
     const shown = transcript(frames.running)

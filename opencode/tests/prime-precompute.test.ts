@@ -30,7 +30,7 @@ function transcript(frame: ReadonlyArray<string>): ReadonlyArray<string> {
 
 describe.skipIf(!fork)("an automatic compaction swaps in the summary written in the background, in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-precompute-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-precompute-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-precompute.ts"], {
       cwd: root,
@@ -46,7 +46,7 @@ describe.skipIf(!fork)("an automatic compaction swaps in the summary written in 
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
     seen = JSON.parse(readFileSync(join(out, "requests.json"), "utf8")) as Requests
-  }), 300_000)
+  }, 300_000))
 
   test("the summary is written once, in the background, as the first turn ends: no row shows it", kept.test(() => {
     const summaries = seen.requests.filter((request) => request.kind === "summary")

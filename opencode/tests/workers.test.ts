@@ -16,7 +16,7 @@ const frames: Record<"started" | "finished", ReadonlyArray<string>> = {} as neve
 
 describe.skipIf(!fork)("background workers in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "workers-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-workers-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-workers.ts"], {
       cwd: root,
@@ -33,7 +33,7 @@ describe.skipIf(!fork)("background workers in the Prime look (OPENCODE_DEV)", ()
     const lines = (name: string) => readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
     frames.started = lines("workers-started")
     frames.finished = lines("workers")
-  }), 300_000)
+  }, 300_000))
 
   test("three steps that each start a worker, a moment apart, read as one group with a row per worker", kept.test(() => {
     const at = frames.started.indexOf("  ● Started 3 agents")

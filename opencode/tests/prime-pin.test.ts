@@ -33,7 +33,7 @@ const look = (saved: Saved, y: number) =>
 
 describe.skipIf(!fork)("the ask pinned over the transcript in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-pin-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-pin-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-pin.ts"], {
       cwd: root,
@@ -52,7 +52,7 @@ describe.skipIf(!fork)("the ask pinned over the transcript in the Prime look (OP
         text: readFileSync(join(out, `${name}.txt`), "utf8").split("\n"),
         lines: JSON.parse(readFileSync(join(out, `${name}.json`), "utf8")).lines,
       })
-  }), 300_000)
+  }, 300_000))
 
   test("at the bottom nothing is pinned: the first row is the answer", kept.test(() => {
     expect(frame("pin-bottom").text[FIRST]).toMatch(/^ {2}- two item \d\d$/)

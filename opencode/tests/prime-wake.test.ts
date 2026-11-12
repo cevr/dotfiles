@@ -29,7 +29,7 @@ function rows(frame: ReadonlyArray<string>): ReadonlyArray<string> {
 
 describe.skipIf(!fork)("a worker waiting on its own background shell (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-wake-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-wake-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-wake.ts"], {
       cwd: root,
@@ -44,7 +44,7 @@ describe.skipIf(!fork)("a worker waiting on its own background shell (OPENCODE_D
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code} (its frames and logs: ${out}):\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `wake-${name}.txt`), "utf8").split("\n")
-  }), 300_000)
+  }, 300_000))
 
   test("a worker that ended its turn to wait on its shell reads waiting, by its still symbol and what it said after starting the shell, and counts", kept.test(() => {
     expect(frames["bg-waiting"].join("\n")).toContain("Worker started.")

@@ -54,7 +54,7 @@ function slice(saved: Saved, first: string, count: number) {
 
 describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-thoughts-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-thoughts-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-thoughts.ts"], {
       cwd: root,
@@ -78,7 +78,7 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
     frames.details = load("thoughts")
     frames.all = load("thoughts-all")
     frames.overview = load("thoughts-overview")
-  }), 300_000)
+  }, 300_000))
 
   test("a streaming thought is a one-node group headed Thinking, its glyph in the accent", kept.test(() => {
     // The glyph blinks ● / ○; the frame may catch either.

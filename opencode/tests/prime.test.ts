@@ -78,7 +78,7 @@ function load(out: string, name: string): Saved {
 
 describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-scenario-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-demo.ts"], {
       cwd: root,
@@ -104,7 +104,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     frames.details = load(out, label)
     frames.all = load(out, `${label}-all`)
     frames.overview = load(out, `${label}-overview`)
-  }), 300_000)
+  }, 300_000))
 
   test("the top bar centres the title and the cost", kept.test(() => {
     for (const saved of Object.values(frames)) {

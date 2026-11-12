@@ -35,7 +35,7 @@ describe.skipIf(!fork).each(["ctrl", "leader"])("%s chord interrupts a turn stuc
   let tool = ""
   let requests: ReadonlyArray<ReadonlyArray<string>> = []
 
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir(`escape-send-${chord}-`)
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/escape-send.ts"], {
       cwd: root,
@@ -50,7 +50,7 @@ describe.skipIf(!fork).each(["ctrl", "leader"])("%s chord interrupts a turn stuc
     checked = readFileSync(join(out, "checked.txt"), "utf8")
     tool = readFileSync(join(out, "tool.txt"), "utf8")
     requests = JSON.parse(readFileSync(join(out, "requests.json"), "utf8"))
-  }), 300_000)
+  }, 300_000))
 
   test("before the press: the shell runs, one prompt is queued, the draft is in the composer and the hint names the key", kept.test(() => {
     // The running call's dot pulses.

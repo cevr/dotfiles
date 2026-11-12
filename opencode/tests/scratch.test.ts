@@ -103,6 +103,7 @@ describe("an e2e suite's kept directory", () => {
       expect(code).toBe(1)
       expect({
         passing: kept("kept-passing-"),
+        setupPassing: kept("kept-setup-passing-"),
         closing: kept("kept-closes-"),
         skipped: kept("kept-skipped-"),
         failing: named("kept-failing-"),
@@ -110,8 +111,10 @@ describe("an e2e suite's kept directory", () => {
         timingOut: named("kept-timing-out-"),
         setupTimingOut: named("kept-setup-timing-out-"),
         closingAfterTimeout: named("kept-closing-after-timeout-"),
+        closingAfterLateSetup: named("kept-closing-after-late-setup-"),
       }).toEqual({
         passing: [],
+        setupPassing: [],
         closing: [],
         skipped: [],
         failing: keptAndNamed("kept-failing-"),
@@ -119,6 +122,7 @@ describe("an e2e suite's kept directory", () => {
         timingOut: keptAndNamed("kept-timing-out-"),
         setupTimingOut: [{ name: expect.stringMatching(/^kept-setup-timing-out-/), inError: false, atEnd: true }],
         closingAfterTimeout: keptAndNamed("kept-closing-after-timeout-"),
+        closingAfterLateSetup: keptAndNamed("kept-closing-after-late-setup-"),
       })
     },
     CASES_MS,

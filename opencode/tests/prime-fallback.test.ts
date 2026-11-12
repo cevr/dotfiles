@@ -33,7 +33,7 @@ const NOTE = "orchestrate: this agent runs on codex/gpt-6.1-sol#high, the Codex 
 
 describe.skipIf(!fork)("a held subagent falls back to Codex (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-fallback-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-fallback-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-fallback.ts"], {
       cwd: root,
@@ -48,7 +48,7 @@ describe.skipIf(!fork)("a held subagent falls back to Codex (OPENCODE_DEV)", () 
     paces = jsonl(join(out, "pace.jsonl"))
     admits = jsonl<ReadonlyArray<string>>(join(out, "admit.jsonl"))
     requests = JSON.parse(readFileSync(join(out, "fallback-requests.json"), "utf8")) as typeof requests
-  }), 300_000)
+  }, 300_000))
 
   test("the pool holds the first model, and the admission script is asked about the newest sol for the role", kept.test(() => {
     expect(paces.map((line) => (line.started === true ? `started ${line.providerID}` : `${line.ok === true ? "ok" : "held"} ${line.providerID}`))).toEqual([

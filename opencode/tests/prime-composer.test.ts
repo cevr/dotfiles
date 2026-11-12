@@ -29,7 +29,7 @@ function panel(frame: ReadonlyArray<string>) {
 
 describe.skipIf(!fork)("the composer panel's Wakes and Monitors tabs (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-composer-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-composer-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-composer.ts"], {
       cwd: root,
@@ -40,7 +40,7 @@ describe.skipIf(!fork)("the composer panel's Wakes and Monitors tabs (OPENCODE_D
     const [code, stdout, stderr] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `composer-${name}.txt`), "utf8").split("\n")
-  }), 300_000)
+  }, 300_000))
 
   test("↓ on the empty prompt opens the panel, its host tabs first, then Wakes and Monitors", kept.test(() => {
     expect(panel(frames.panel).tabs).toMatch(/^Subagents {2}Shell {2}Terminals {2}Wakes {2}Monitors\b/)

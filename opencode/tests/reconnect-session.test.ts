@@ -301,7 +301,7 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
   let parent: { readonly id: string }
   let child: { readonly id: string }
   beforeAll(
-    kept.setup(async () => {
+    ...kept.setup(async () => {
       for (const dir of [work, join(home, ".config/opencode")]) mkdirSync(dir, { recursive: true })
       writeFileSync(
         join(home, ".config/opencode/opencode.json"),
@@ -338,8 +338,7 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
       child = await client.session.create({ parentID: parent.id, title: "Reconnect child" })
       await client.session.prompt({ sessionID: child.id, text: "say child-transcript-marker" })
       await client.experimental.session.wait({ sessionID: child.id })
-    }),
-    60_000,
+    }, 60_000),
   )
 
   /** A session of its own with `marker` in its transcript, so no other case's turns scroll it away. */

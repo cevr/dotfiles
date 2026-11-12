@@ -57,10 +57,10 @@ const TURN = {
 }
 
 describe.skipIf(!fork)("every transcript row starts in one column in the Prime look (OPENCODE_DEV)", () => {
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     await run("medium")
     await run("low")
-  }), 600_000)
+  }, 600_000))
 
   test("medium: each call, the grouped run, the inline tool, the prose and the notice start in the call rows' column", kept.test(() => {
     const frame = frames["indent-medium"]!

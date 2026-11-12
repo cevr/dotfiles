@@ -32,7 +32,7 @@ const dock = (frame: ReadonlyArray<string>) => {
 
 describe.skipIf(!fork)("Escape cancels within the grace and interrupts after it, in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-escape-")
-  beforeAll(kept.setup(async () => {
+  beforeAll(...kept.setup(async () => {
     const out = kept.dir("prime-escape-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-escape.ts"], {
       cwd: root,
@@ -47,7 +47,7 @@ describe.skipIf(!fork)("Escape cancels within the grace and interrupts after it,
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
-  }), 300_000)
+  }, 300_000))
 
   test("just after sending, the Dock shows no Escape hint", kept.test(() => {
     // The Dock is drawn (its tray row is there), and its top row carries no hint.
