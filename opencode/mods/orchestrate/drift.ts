@@ -201,12 +201,26 @@ export const driftOf = (cadence: Cadence, lines: ReadonlyArray<unknown>): Drift 
   return { counts, departures, dropped }
 }
 
+/** What the score is made of: `1 unfolded land ×6, 1 departed ×4, 3 refused ×1`; empty for a clean run. */
+export const partsOf = (drift: Drift): string =>
+  KINDS.filter((kind) => drift.counts[kind] > 0)
+    .map((kind) => `${drift.counts[kind]} ${LABELS[kind]} ×${WEIGHTS[kind]}`)
+    .join(", ")
+
 /** The drift as one line: `drift 0 (clean)`, or `drift 13: 1 unfolded land ×6, 1 departed ×4, 3 refused ×1`. */
 export const driftLine = (drift: Drift): string => {
-  const score = scoreOf(drift)
-  if (score === 0) return "drift 0 (clean)"
-  const parts = KINDS.filter((kind) => drift.counts[kind] > 0).map((kind) => `${drift.counts[kind]} ${LABELS[kind]} ×${WEIGHTS[kind]}`)
-  return `drift ${score}: ${parts.join(", ")}`
+  const parts = partsOf(drift)
+  return parts === "" ? "drift 0 (clean)" : `drift ${scoreOf(drift)}: ${parts}`
+}
+
+/**
+ * The line a verdict adds to its run's log.md (the orchestrate skill's status.ts reads the last one):
+ * `2026-11-12T01:35Z drift 13 after batch-k accepted: 1 unfolded land ×6, …`. It holds no arrow, so no
+ * reader of unit transitions takes it for one.
+ */
+export const logLineOf = (drift: Drift, at: number, batch: string, verdict: string): string => {
+  const parts = partsOf(drift)
+  return `${new Date(at).toISOString().slice(0, 16)}Z drift ${scoreOf(drift)} after ${batch} ${verdict}${parts === "" ? "" : `: ${parts}`}`
 }
 
 /** The newest `n` departures, each with its rules and why (a stale rule marked). */

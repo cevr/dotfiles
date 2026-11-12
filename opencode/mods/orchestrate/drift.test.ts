@@ -3,7 +3,7 @@
 // ledger of that day is filestore/drift.test.ts.
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { CLEAN, departureLines, type Drift, driftLine, driftOf, scoreOf, WEIGHTS } from "./drift.ts"
+import { CLEAN, departureLines, type Drift, driftLine, driftOf, logLineOf, scoreOf, WEIGHTS } from "./drift.ts"
 import { lineOfEvent, lineOfRefusal, type Line } from "./ledger.ts"
 import { type Command, DEFAULT_CADENCE, type Event, HandBack, Land, Landed, machine, type MachineState, Start } from "./machine.ts"
 
@@ -88,6 +88,8 @@ describe("each kind of drift", () => {
     expect(drift.counts).toMatchObject({ refused: 1, departed: 1, unfoldedLand: 1 })
     expect(drift.dropped).toEqual(["a/M1"])
     expect(driftLine(drift)).toBe("drift 11: 1 unfolded land ×6, 1 departed ×4, 1 refused ×1")
+    expect(logLineOf(drift, T + 9 * MIN, "batch-2", "accepted")).toBe("2027-01-15T08:09Z drift 11 after batch-2 accepted: 1 unfolded land ×6, 1 departed ×4, 1 refused ×1")
+    expect(logLineOf(CLEAN, T, "batch-1", "changes")).toBe("2027-01-15T08:00Z drift 0 after batch-1 changes")
   })
 
   test("a land over a verdict whose findings are not known drops them too", () => {

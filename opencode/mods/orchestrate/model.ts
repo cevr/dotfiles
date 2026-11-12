@@ -90,6 +90,7 @@ import {
   UnitLogs,
 } from "./service.ts"
 import { descriptionOf, type Drift, noteOf, stepOf } from "./skill-drift.ts"
+import { departureLines, driftLine, logLineOf, scoreOf } from "./drift.ts"
 import { armFor, type ArmRecord, type Experiment } from "./experiment.ts"
 import { handBackOf, startOf, type Transition, unitDirsIn } from "./unit-log.ts"
 import { isStep } from "./described.ts"
@@ -796,6 +797,7 @@ export const machineLayer = (config: MachineConfig) =>
       const remind = yield* Remind
       const findings = yield* Findings
       const branches = yield* Branches
+      const records = yield* RunRecords
       const inFlight = new Map<string, InFlight>()
 
       const flying = (root: string, role: Start["role"], name: string) =>
@@ -942,14 +944,27 @@ export const machineLayer = (config: MachineConfig) =>
         // does not read, or none named, leaves the verdict unresolved: never an empty set of findings.
         const said = back.role === "verifier" && back.verdict === "changes" ? HandBack.make({ ...back, ...(yield* readReport(reportOf(words))) }) : back
         // The session that handed back is the step's: a step started before its session was known gets it here.
-        yield* ledger.decide(root, yield* now, () => Effect.succeed([said])).pipe(Effect.ignore)
+        const at = yield* now
+        const decided = yield* ledger.decide(root, at, () => Effect.succeed([said])).pipe(Effect.orElseSucceed(() => undefined))
+        // Each verdict adds the root's drift to its run's log.md, the run being the one its report is in.
+        const ended = decided?.events.find((event) => event._tag === "VerifierEnded")
+        const report = reportOf(words)
+        if (ended === undefined || ended.verdict === "none" || report === undefined) return
+        const directory = yield* sessions.directoryOf(sessionID)
+        const line = logLineOf(yield* ledger.drift(root), at, ended.batch, ended.verdict)
+        yield* records.log({ near: report, line, ...(directory === undefined ? {} : { directory }) })
       })
 
       const brief = Effect.fn("Machines.brief")(function* (root: string) {
         const at = yield* now
         const decided = yield* ledger.decide(root, at, (state) => Effect.all([reconcile(root, state), reread(state)]).pipe(Effect.map(([dead, read]) => [...dead, ...read]))).pipe(Effect.orElseSucceed(() => undefined))
         const state = decided?.state ?? (yield* ledger.state(root))
-        return briefOf(state, at, config.cadence)
+        const run = briefOf(state, at, config.cadence)
+        if (run === "") return run
+        // How far the run drifted from the machine so far, with its newest departures and why.
+        const drift = yield* ledger.drift(root)
+        const departures = departureLines(drift)
+        return [run, scoreOf(drift) === 0 ? driftLine(drift) : `${driftLine(drift)} (0 is a clean run)`, ...(departures.length === 0 ? [] : ["last departures:", ...departures.map((line) => `  ${line}`)])].join("\n")
       })
 
       const compacted = Effect.fn("Machines.compacted")(function* (sessionID: string) {

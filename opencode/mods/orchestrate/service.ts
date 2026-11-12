@@ -315,6 +315,10 @@ export class Skill extends Context.Service<
  * - `seen`: the skill version the run last saw (`SEEN_FILE`); none when never recorded.
  * - `see`: record it. Never fails: a lost record costs one repeated note.
  * - `departures`: the "Departs from" lines in the run's own top-level Markdown files, `<file>:<line>: <text>`.
+ * - `log`: append one line to the run's own log.md, the run being the one holding `near` (a verifier's report:
+ *   `<run dir>/batch-<k>-findings.md`, or a unit's `<run dir>/<unit>/round-N-findings.md`, a unit dir being one
+ *   that holds spec.md), relative to `directory` when not absolute (`~/` is home). Never fails: a path that
+ *   names no directory writes nothing, and a lost line costs the run one drift reading.
  */
 export class RunRecords extends Context.Service<
   RunRecords,
@@ -322,6 +326,7 @@ export class RunRecords extends Context.Service<
     readonly seen: (runDir: string) => Effect.Effect<string | undefined>
     readonly see: (runDir: string, version: string) => Effect.Effect<void>
     readonly departures: (runDir: string) => Effect.Effect<ReadonlyArray<string>>
+    readonly log: (input: { readonly near: string; readonly line: string; readonly directory?: string }) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/orchestrate/RunRecords") {}
 
