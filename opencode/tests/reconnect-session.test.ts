@@ -180,7 +180,6 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
   // service. The scratch service and typed fixture client stay on OPENCODE_DEV.
   const binary = process.env.OPENCODE_RECONNECT_TUI_BINARY
   const scratchBinary = join(root, "opencode-old")
-  if (binary) cpSync(binary, scratchBinary)
   const tui = binary ? [scratchBinary] : launch.base
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? "",
@@ -302,6 +301,7 @@ describe.skipIf(!fork)("a TUI on the background service across a service restart
   let child: { readonly id: string }
   beforeAll(
     ...kept.setup(async () => {
+      if (binary) cpSync(binary, scratchBinary)
       for (const dir of [work, join(home, ".config/opencode")]) mkdirSync(dir, { recursive: true })
       writeFileSync(
         join(home, ".config/opencode/opencode.json"),

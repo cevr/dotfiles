@@ -137,4 +137,22 @@ describe("an e2e suite's kept directory", () => {
     },
     CASES_MS,
   )
+
+  test.skipIf(!process.env.OPENCODE_DEV)(
+    "reconnect-session makes none when a -t filter runs none of its tests, with an old TUI binary to copy",
+    async () => {
+      using tmp = scratch("scratch-reconnect-")
+      const child = owned([process.execPath, "test", "./tests/reconnect-session.test.ts", "-t", "^no test is named this$"], {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: { ...process.env, TMPDIR: tmp.path, OPENCODE_RECONNECT_TUI_BINARY: fileURLToPath(import.meta.url) },
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "pipe",
+      })
+      const output = await new Response(child.stderr).text()
+      await child.exited
+      expect({ collected: /skipping [1-9]\d* tests/.test(output), left: readdirSync(tmp.path) }).toEqual({ collected: true, left: [] })
+    },
+    CASES_MS,
+  )
 })
