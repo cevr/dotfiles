@@ -28,7 +28,7 @@
 //    update plugin's build ahead) restarts nothing: the plugin does, once every root session is idle.
 import { $ } from "bun"
 import { Effect } from "effect"
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
@@ -38,8 +38,9 @@ import { upstreamFile } from "../mods/prime/update.ts"
 import { hostLocks } from "../mods/rift/process/landing.ts"
 import { MergeDriverError, registerMergeDriver } from "./merge-driver.ts"
 import { forkChecks, mergeUpstream, type SyncOutcome, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
-import { flagValue, headOf, restartThroughHandoff, stagedText, settingsFor, updateEntry } from "../mods/update/process/install.ts"
-import { shareDir } from "../mods/update/settings.ts"
+import { flagValue, headOf, restartThroughHandoff, settingsFor, updateEntry } from "../mods/update/process/install.ts"
+import { buildsLock, shareDir } from "../mods/update/settings.ts"
+import { stageBuild } from "../mods/update/filestore/stage.ts"
 import { releaseBuild, runDailyBuild } from "../mods/update/process/pin.ts"
 
 const MODS = resolve(import.meta.dir, "../mods")
@@ -408,20 +409,10 @@ if (import.meta.main) {
   const { commit: builtCommit, version, binary: built, reported } = await runDailyBuild({ fork, tree: join(state, "fork-build"), commit: forkTarget, bun: process.execPath, build, log: console.log })
 
   const share = shareDir(home)
-  mkdirSync(share, { recursive: true })
-  const binary = join(share, `opencode-${version}`)
-  // Copy beside it, then rename over it: Linux refuses to write a binary the running service executes
-  // (ETXTBSY), and a rename leaves that process on the old file.
-  const staged = `${binary}.${process.pid}`
-  copyFileSync(built, staged)
-  chmodSync(staged, 0o755)
-  renameSync(staged, binary)
-  // Staged, not installed: the handoff installs it as it restarts, and the health check proves it (mods/update).
   const record = installedFile(home)
-  mkdirSync(dirname(record), { recursive: true })
   const checkout = dirname(dirname(MODS))
-  writeFileSync(`${record}.${process.pid}`, stagedText(readFileSync(record, { encoding: "utf8", flag: "a+" }), { version, command: [binary], dotfiles: headOf(checkout), fork: builtCommit }, readdirSync(share)))
-  renameSync(`${record}.${process.pid}`, record)
+  // Under the builds lock, from the copy through the staged record (mods/update/filestore/stage.ts).
+  const binary = stageBuild({ built, share, version, record, lock: buildsLock(home), dotfiles: headOf(checkout), fork: builtCommit, pid: process.pid })
   const link = join(home, ".local/bin/opencode")
   mkdirSync(dirname(link), { recursive: true })
   rmSync(link, { force: true })

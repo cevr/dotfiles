@@ -180,23 +180,18 @@ const megabytes = (bytes: number): string => `${(bytes / 1_000_000).toFixed(1)} 
 
 /**
  * The old builds deleted once a build is proven (`Builds`), each logged with its size: the handoff's
- * last step, never before the health check passed, and never on a rollback or a give-up. A prune that
- * cannot read what runs deletes nothing, and says so; it never changes the handoff's outcome.
+ * last step, never before the health check passed, and never on a rollback or a give-up. The record
+ * is read inside the prune, under the builds lock. A prune that cannot take the lock or read what
+ * runs deletes nothing, and says so; it never changes the handoff's outcome.
  */
 const pruneBuilds = Effect.gen(function* () {
   const builds = yield* Builds
   const records = yield* Records
   const log = yield* Log
-  const record = yield* records.read
-  yield* Effect.forEach(
-    Option.toArray(record),
-    (current) =>
-      builds.prune(current).pipe(
-        Effect.tap((pruned) => Effect.forEach(pruned, (each) => log.line(`prune: deleted the old build ${each.name} (${megabytes(each.bytes)})`), { discard: true })),
-        Effect.tap((pruned) => log.line(`prune: ${pruned.length} old builds deleted, ${megabytes(pruned.reduce((sum, each) => sum + each.bytes, 0))} freed`)),
-        Effect.catch((failed) => log.line(`prune: every build kept: ${failed.step}: ${failed.message}`)),
-      ),
-    { discard: true },
+  yield* builds.prune(records.read).pipe(
+    Effect.tap((pruned) => Effect.forEach(pruned, (each) => log.line(`prune: deleted the old build ${each.name} (${megabytes(each.bytes)})`), { discard: true })),
+    Effect.tap((pruned) => log.line(`prune: ${pruned.length} old builds deleted, ${megabytes(pruned.reduce((sum, each) => sum + each.bytes, 0))} freed`)),
+    Effect.catch((failed) => log.line(`prune: every build kept: ${failed.step}: ${failed.message}`)),
   )
 })
 
@@ -300,8 +295,9 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Builds | Service 
       )
       yield* Option.match(provenNotice(health), { onNone: () => notice.clear, onSome: notice.show })
       yield* log.line("handoff: the build is proven and recorded as the good build")
-      // Under the mark still: the restarted service's check waits on it, so no stage copies a new
-      // build into the share directory while the prune lists it.
+      // The handoff's last step. The prune reads the record and lists the share directory under the
+      // builds lock daily's stage holds from its copy to its record write (`Builds`), not under this
+      // mark, which daily never reads.
       yield* pruneBuilds
       return "proven" satisfies Outcome
     }

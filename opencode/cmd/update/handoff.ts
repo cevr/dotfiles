@@ -8,15 +8,15 @@ import * as Source from "@dotfiles/opencode-update/git/source"
 import { EXIT_CODES, handoff } from "@dotfiles/opencode-update/model"
 import * as HandoffMark from "@dotfiles/opencode-update/process/mark"
 import * as Service from "@dotfiles/opencode-update/process/service"
-import { files, HANDOFF_SETTINGS, type Settings, SettingsJson, shareDir, stepEnv } from "@dotfiles/opencode-update/settings"
+import { buildsLock, files, HANDOFF_SETTINGS, type Settings, SettingsJson, shareDir, stepEnv } from "@dotfiles/opencode-update/settings"
 import { argv } from "bun"
 import { Config, Effect, Layer } from "effect"
 
 /** Every implementation the handoff runs on. */
-export const live = (settings: Settings, env: Readonly<globalThis.Record<string, string>>, registration: string, share: string) =>
+export const live = (settings: Settings, env: Readonly<globalThis.Record<string, string>>, registration: string, home: string) =>
   Layer.mergeAll(
     Service.layer(settings, env, registration),
-    Builds.layer(Builds.optionsOf(share, process.platform)),
+    Builds.layer(Builds.optionsOf(shareDir(home), buildsLock(home), process.platform)),
     Source.layer({ root: settings.checkout, mode: settings.mode, bun: settings.bun, fork: settings.fork, env }),
     Records.layer(settings.record),
     Rejections.layer(files(settings).rejected),
@@ -41,7 +41,7 @@ export const Live = Layer.unwrap(
     const path = yield* Config.String("PATH").pipe(Config.withDefault(""))
     const state = yield* Config.String("XDG_STATE_HOME").pipe(Config.option)
     const home = yield* Config.String("HOME").pipe(Config.withDefault(""))
-    return live(settings, stepEnv(settings, path), Service.registrationFile(state, home), shareDir(home))
+    return live(settings, stepEnv(settings, path), Service.registrationFile(state, home), home)
   }),
 )
 

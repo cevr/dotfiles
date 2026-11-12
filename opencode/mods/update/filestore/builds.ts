@@ -1,14 +1,21 @@
 import { spawn, readableStreamToText } from "bun"
 import { readdir, readlink, stat, unlink } from "node:fs/promises"
-import { Effect, Layer, Option } from "effect"
-import { prunable } from "../builds.ts"
+import { holdingIfFree } from "@dotfiles/opencode-rift/process/flock"
+import { Array as Arr, Clock, Data, Duration, Effect, Layer, Match, Option, Schedule } from "effect"
+import { FRESH_MS, isFresh, prunable } from "../builds.ts"
 import type { Record } from "../record.ts"
 import { Builds, type Pruned, UpdateFailed } from "../service.ts"
 
-/** Where the builds are and how this host lists the executables its processes run. */
+/** Where the builds are, how this host lists the executables its processes run, and the lock daily's stage shares. */
 export interface Options {
   /** The share directory daily copies each build into (`settings.ts` `shareDir`). */
   readonly share: string
+  /** The builds lock file (`settings.ts` `buildsLock`). */
+  readonly lock: string
+  /** How long a prune waits for daily's stage to drop the builds lock before it gives up, deleting nothing. */
+  readonly lockWaitMs: number
+  /** How recently changed a build stays, whatever the record says (`builds.ts` `FRESH_MS`). */
+  readonly freshMs: number
   readonly platform: string
   /** Linux's process directory, whose `<pid>/exe` links name each process's executable. */
   readonly proc: string
@@ -16,8 +23,16 @@ export interface Options {
   readonly ps: ReadonlyArray<string>
 }
 
-/** The options of this host: `~/.local/share/opencode-prime`, `/proc` on Linux, `ps` elsewhere. */
-export const optionsOf = (share: string, platform: string): Options => ({ share, platform, proc: "/proc", ps: ["ps", "-axo", "comm="] })
+/** The options of this host: `/proc` on Linux, `ps` elsewhere, two minutes' wait for the lock. */
+export const optionsOf = (share: string, lock: string, platform: string): Options => ({
+  share,
+  lock,
+  lockWaitMs: 2 * 60 * 1000,
+  freshMs: FRESH_MS,
+  platform,
+  proc: "/proc",
+  ps: ["ps", "-axo", "comm="],
+})
 
 const failed = (step: string) => (cause: unknown) => new UpdateFailed({ step, message: String(cause) })
 
@@ -56,10 +71,38 @@ const psRunning = (argv: ReadonlyArray<string>) =>
     Effect.map((ran) => ran.out.split("\n").map((line) => line.trim()).filter((line) => line !== "")),
   )
 
-/** Deletes one build, answering its size. */
-const removeBuild = (share: string, name: string) =>
-  Effect.tryPromise({ try: () => stat(`${share}/${name}`), catch: failed(`size ${name}`) }).pipe(
-    Effect.flatMap((info) => Effect.tryPromise({ try: () => unlink(`${share}/${name}`), catch: failed(`delete ${name}`) }).pipe(Effect.as<Pruned>({ name, bytes: info.size }))),
+/**
+ * Deletes one build, answering its size; none, leaving it, when it changed within `freshMs` of now
+ * (`builds.ts` `isFresh`, by the newer of its mtime and ctime: a copy keeps its source's mtime, and a
+ * rename moves only the ctime).
+ */
+const removeBuild = (share: string, name: string, freshMs: number) =>
+  Effect.all({ info: Effect.tryPromise({ try: () => stat(`${share}/${name}`), catch: failed(`size ${name}`) }), now: Clock.currentTimeMillis }).pipe(
+    Effect.flatMap(({ info, now }) =>
+      Option.match(Option.liftPredicate(info, (each) => !isFresh(Math.max(each.mtimeMs, each.ctimeMs), now, freshMs)), {
+        onNone: () => Effect.succeed(Option.none<Pruned>()),
+        onSome: (old) => Effect.tryPromise({ try: () => unlink(`${share}/${name}`), catch: failed(`delete ${name}`) }).pipe(Effect.as(Option.some<Pruned>({ name, bytes: old.size }))),
+      }),
+    ),
+  )
+
+/** How long a prune waits between asks for the builds lock. */
+const LOCK_PAUSE = Duration.millis(250)
+
+/** The lock is held by another holder still. */
+class Busy extends Data.TaggedError("Busy")<{}> {}
+
+/**
+ * Runs `effect` holding the builds lock (`settings.ts` `buildsLock`) exclusively, asking again every
+ * `LOCK_PAUSE` while another holder (daily's stage) has it, for `waitMs` at most; then it fails,
+ * running nothing.
+ */
+const underLock = <A>(file: string, waitMs: number, effect: Effect.Effect<A, UpdateFailed>): Effect.Effect<A, UpdateFailed> =>
+  holdingIfFree(file, effect).pipe(
+    Effect.mapError((error) => Match.value(error).pipe(Match.tag("RiftFailed", (rift) => new UpdateFailed({ step: "take the builds lock", message: rift.message })), Match.orElse((each) => each))),
+    Effect.flatMap(Option.match({ onNone: () => Effect.fail(new Busy()), onSome: Effect.succeed })),
+    Effect.retry({ while: (error) => error._tag === "Busy", schedule: Schedule.spaced(LOCK_PAUSE), times: Math.ceil(waitMs / Duration.toMillis(LOCK_PAUSE)) }),
+    Effect.catchTag("Busy", () => Effect.fail(new UpdateFailed({ step: "take the builds lock", message: `${file} stayed held for ${waitMs} ms` }))),
   )
 
 /** The executables of the running processes, by path: `/proc` on Linux, `ps` elsewhere. */
@@ -76,15 +119,24 @@ export const wouldPrune = (options: Options, record: Record) =>
   )
 
 /**
- * The Builds over the share directory. The running executables are read first; when they do not
- * read, the prune fails and deletes nothing (`builds.ts` `prunable`).
+ * The Builds over the share directory. Under the builds lock, the record is read, then the running
+ * executables, then the directory: when what runs does not read, the prune fails and deletes nothing
+ * (`builds.ts` `prunable`).
  */
 export const layer = (options: Options) => {
   const running = runningOf(options)
-  const prune = Effect.fn("Builds.prune")(function* (record: Record) {
-    const paths = yield* running
-    const names = yield* Effect.tryPromise({ try: () => readdir(options.share), catch: failed("list the builds") })
-    return yield* Effect.forEach(prunable(names, record, Option.some(paths)), (name) => removeBuild(options.share, name))
-  })
+  const prune = (read: Effect.Effect<Option.Option<Record>>) =>
+    underLock(
+      options.lock,
+      options.lockWaitMs,
+      Effect.gen(function* () {
+        const record = yield* read
+        if (Option.isNone(record)) return []
+        const paths = yield* running
+        const names = yield* Effect.tryPromise({ try: () => readdir(options.share), catch: failed("list the builds") })
+        const removed = yield* Effect.forEach(prunable(names, record.value, Option.some(paths)), (name) => removeBuild(options.share, name, options.freshMs))
+        return Arr.getSomes(removed)
+      }),
+    ).pipe(Effect.withSpan("Builds.prune"))
   return Layer.succeed(Builds, Builds.of({ prune }))
 }

@@ -380,6 +380,7 @@
       "dependencies": {
         "@dotfiles/opencode-orchestrate": "workspace:*",
         "@dotfiles/opencode-prime": "workspace:*",
+        "@dotfiles/opencode-rift": "workspace:*",
       },
     },
     "mods/wake": {
