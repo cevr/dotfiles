@@ -32,7 +32,7 @@ const BODY = [
   "    The writer and the reader agree.",
   "    All 12 tests pass.",
 ]
-const frames: Record<"streaming" | "details" | "all" | "overview" | "opened" | "closed", Saved> = {} as never
+const frames: Record<"streaming" | "details" | "all" | "overview" | "opened" | "closed" | "reopenedAll", Saved> = {} as never
 
 /** The theme's `text.muted` and `text.faint`. */
 const MUTED = "#a1a1aa"
@@ -91,6 +91,7 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
     frames.overview = load("thoughts-overview")
     frames.opened = load("thoughts-opened")
     frames.closed = load("thoughts-closed")
+    frames.reopenedAll = load("thoughts-reopened-all")
   }, 300_000))
 
   test("a streaming thought is a one-node group headed Thinking, its glyph in the accent", kept.test(() => {
@@ -161,6 +162,10 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
     expect(frames.closed.lines[0]).toBe(frames.details.lines[0])
     expect(slice(frames.closed, NOTICE, 3)).toEqual([NOTICE, "", "  ● Ran printf 'csv ok\\n'"])
     expect(frames.closed.lines.join("\n")).not.toContain("CSV quoting fixed.")
+  }))
+
+  test("a notice clicked open, then Ctrl+O to All, still shows its whole answer, as every notice does at All", kept.test(() => {
+    expect(slice(frames.reopenedAll, NOTICE, 8)).toEqual([NOTICE, ...BODY])
   }))
 
   test("at All the whole thought hangs under its node, and the notice keeps its group", kept.test(() => {

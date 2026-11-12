@@ -57,8 +57,8 @@ export type NoticeGroup = {
   /** Whether a failure or a cancel ended it: the overview keeps its reason. */
   readonly bad: boolean
   /**
-   * Whether it is workers that finished well: its tree shows only at All, or
-   * opened by a click (`noticeLines`), and a click opens no session.
+   * Whether it is workers that finished well: its tree shows at All, and
+   * below All only opened by a click (`noticeLines`); a click opens no session.
    */
   readonly folds: boolean
   /** The session a click on the header opens: a failed or cancelled worker's own. */
@@ -137,13 +137,14 @@ export type NoticeLine = {
  * The tree under a notice's header at a level, as fx hangs a call's output:
  * a node's first line behind its connector, the rest past it beside the
  * tree's rail while nodes follow. Workers that finished well (`folds`) show
- * none below All and every line at All; `opened` (a click) flips that.
- * Any other lone notice shows the head of its answer below All and counts
+ * every line at All, whatever was clicked; below All, every line while the
+ * notice is `opened` (its own clicks flip it, a level change leaves it) and
+ * none otherwise. Any other lone notice shows the head of its answer below All and counts
  * the rest (`… +N lines (ctrl+o)`); All shows every line. The overview shows
  * only a failure's or a cancel's first line.
  */
 export function noticeLines(group: NoticeGroup, detail: Detail, opened = false): NoticeLine[] {
-  if (group.folds) return (detail === "all") !== opened ? tree(group, "all") : []
+  if (group.folds) return detail === "all" || opened ? tree(group, "all") : []
   return tree(group, detail)
 }
 
