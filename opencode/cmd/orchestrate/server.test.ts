@@ -23,6 +23,7 @@ import * as FileUnitLogs from "@dotfiles/opencode-orchestrate/filestore/unit-log
 import * as OpenCodeLatches from "@dotfiles/opencode-orchestrate/opencode/latches"
 import { type Holds, MARK, NO_HOLDS, type Run } from "@dotfiles/opencode-orchestrate/idle"
 import * as StepLogTest from "@dotfiles/opencode-orchestrate/memory/step-log"
+import * as FleetTest from "@dotfiles/opencode-orchestrate/memory/fleet"
 import { RECHECK_MS } from "@dotfiles/opencode-orchestrate/model"
 import * as OpenCodePoolPace from "@dotfiles/opencode-orchestrate/opencode/pool-pace"
 import * as OpenCodeRuns from "@dotfiles/opencode-orchestrate/opencode/runs"
@@ -86,6 +87,8 @@ interface World {
   readonly findings?: Readonly<Record<string, ReadonlyArray<string>>>
   /** The branch checked out at each Rift path; a path not here reads none. */
   readonly branches?: Readonly<Record<string, string>>
+  /** The verified targets the plugin asked to record. */
+  readonly fleet?: Array<FleetTest.Asked>
 }
 
 /** A tool as the host's tool editor hands it out: only what the plugin touches. */
@@ -196,6 +199,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
       OpenCodeSteer.tellLayer((input) => (world.refuseNudge === undefined ? Effect.sync(() => void notes.push(input)) : Effect.fail(new Error(world.refuseNudge)))),
       SkillTest.skill(world.skill ?? { history: [] }),
       SkillTest.records(world.records ?? { seen: new Map() }),
+      FleetTest.layer(world.fleet ?? []),
     )
     const nudges: Array<OpenCodeSteer.Synthetic> = []
     const notes: Array<OpenCodeSteer.Synthetic> = []
@@ -2134,6 +2138,36 @@ describe("the batch machine", () => {
         yield* plugin.idle("ses_v")
         expect((yield* land(["alpha"])).refused).toBeUndefined()
         expect(plugin.ledger.filter((line) => (line as { kind: string }).kind === "Departed")).toEqual([])
+      }),
+    ))
+
+  test("an accepted verdict asks the fleet to record the verified target from the verifier's checkout; changes asks nothing", () =>
+    scenario(
+      Effect.gen(function* () {
+        const fleet: Array<FleetTest.Asked> = []
+        const sessions = {
+          ...steps({ ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" }, ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" } }),
+          ses_v: { parentID: "root", agent: "verifier", lastWords: "verifier batch-1 r1: changes /run/batch-1-findings.md", directory: "/checkouts/dotfiles" },
+          ses_w: { parentID: "root", agent: "verifier", lastWords: "verifier batch-2 r1: accepted /run/batch-2-findings.md", directory: "/checkouts/dotfiles" },
+        }
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, findings: { "/run/batch-1-findings.md": ["alpha/M1"] }, fleet })
+        const land = (rifts: ReadonlyArray<string>) =>
+          Effect.gen(function* () {
+            yield* plugin.call("rift", "root", { action: "land", rifts })
+            yield* plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: "Landed" }] } })
+          })
+        yield* begin(plugin, implementor("alpha"), "ses_a")
+        yield* plugin.idle("ses_a")
+        yield* land(["alpha"])
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
+        yield* plugin.idle("ses_v")
+        expect(fleet).toEqual([])
+        yield* begin(plugin, implementor("beta"), "ses_b")
+        yield* plugin.idle("ses_b")
+        yield* land(["beta"])
+        yield* begin(plugin, { agent: "verifier", description: "verifier batch-2 r1", prompt: "v", background: true }, "ses_w")
+        yield* plugin.idle("ses_w")
+        expect(fleet).toEqual([{ directory: "/checkouts/dotfiles", batch: "batch-2" }])
       }),
     ))
 

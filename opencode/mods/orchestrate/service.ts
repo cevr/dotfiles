@@ -1,7 +1,7 @@
 // The contracts the orchestrate model needs from outside, each with what its
 // implementations owe (laws.ts). Implementations live in the folders named
 // after their dependency: filestore/, opencode/, codex/ and memory/.
-import { Context, type Effect, Schema } from "effect"
+import { Context, type Effect, type Option, Schema } from "effect"
 import type { CallLine } from "./call-line.ts"
 import type { Drift } from "./drift.ts"
 import type { Holds, Run } from "./idle.ts"
@@ -329,6 +329,18 @@ export class RunRecords extends Context.Service<
     readonly log: (input: { readonly near: string; readonly line: string; readonly directory?: string }) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/orchestrate/RunRecords") {}
+
+/**
+ * The fleet's verified target (mods/update/target.ts): what every host's update plugin installs.
+ * - `record`: an accepted batch's verifier ran in `directory`; when that is a checkout of the dotfiles
+ *   or of the fork, record its commit with the other repository's as the verified target. Never fails:
+ *   a checkout of neither, a commit origin lacks, or a push refused records nothing, and says why in
+ *   the server's log; the next accepted batch records again.
+ */
+export class Fleet extends Context.Service<
+  Fleet,
+  { readonly record: (input: { readonly directory: Option.Option<string>; readonly batch: string }) => Effect.Effect<void> }
+>()("dotfiles-opencode/orchestrate/Fleet") {}
 
 /** Steers a session with one note, marked `DRIFT_MARK`, which wakes it if idle. */
 export class Tell extends Context.Service<

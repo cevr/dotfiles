@@ -40,6 +40,10 @@
  *   default `~/.claude/skills/orchestrate/scripts/log.ts`.
  * - `skill`: the orchestrate skill's dir, whose git history versions it,
  *   default `~/.claude/skills/orchestrate`.
+ * - `fleet`: `{ dotfiles, fork }`, the checkouts `bun run daily` installs from.
+ *   An accepted verdict whose verifier ran in a checkout of either records
+ *   the verified target every host's update plugin installs
+ *   (`refs/fleet/verified`, git/fleet.ts). Without it nothing is recorded.
  * - `planner`: `{ model }`, the planner's first model (`provider/id`, no
  *   variant; `bun run daily` writes the newest Fable). A new planner start
  *   that names no model of its own (or the role's) runs on it at the
@@ -131,6 +135,7 @@ import * as LedgerLive from "@dotfiles/opencode-orchestrate/filestore/ledger"
 import * as FindingsLive from "@dotfiles/opencode-orchestrate/filestore/findings"
 import * as StepLogLive from "@dotfiles/opencode-orchestrate/filestore/step-log"
 import * as RunRecordsLive from "@dotfiles/opencode-orchestrate/filestore/run-records"
+import * as GitFleet from "@dotfiles/opencode-orchestrate/git/fleet"
 import * as UnitLogsLive from "@dotfiles/opencode-orchestrate/filestore/unit-logs"
 import * as SkillLive from "@dotfiles/opencode-orchestrate/git/skill"
 import { Draft, IDLE, MARK } from "@dotfiles/opencode-orchestrate/idle"
@@ -163,6 +168,7 @@ import {
   type Remind,
   type RootHolds,
   type RunRecords,
+  type Fleet,
   type Runs,
   type Sessions,
   type Skill,
@@ -232,6 +238,7 @@ export const Options = Schema.Struct({
   codex: Schema.Union([Schema.Literal(false), Codex]).pipe(withDefault<false | typeof Codex.Type>(CODEX_DEFAULT)),
   unitLog: Schema.String.pipe(withDefault(UNIT_LOG)),
   skill: Schema.String.pipe(withDefault(SKILL_DIR)),
+  fleet: Schema.optional(Schema.Struct({ dotfiles: Schema.String, fork: Schema.String })),
 })
 export type Options = typeof Options.Type
 
@@ -256,6 +263,7 @@ export type Externals =
   | Remind
   | Findings
   | Branches
+  | Fleet
 
 /** How much background work a session keeps of its own, as its last idle listed it. */
 export type Background = (sessionID: string) => number
@@ -331,6 +339,7 @@ export const live = (ctx: Plugin.Context, options: Options, start: LatchesLive.S
     SteerLive.tellLayer(synthetic(ctx)),
     SkillLive.layer(options.skill),
     RunRecordsLive.layer,
+    GitFleet.layer(Option.fromNullishOr(options.fleet)),
   )
 
 /** A host time (epoch ms, a Date or a DateTime) as epoch ms. */

@@ -293,6 +293,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-update": "workspace:*",
         "@dotfiles/opencode-wake": "workspace:*",
       },
     },
