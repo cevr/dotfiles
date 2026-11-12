@@ -16,6 +16,7 @@ import { Effect, Layer } from "effect"
 import { type HostLoad, type LandConfig, type Merged, type PostLanded, type Ran, type Started, type Unit } from "../land.ts"
 import { Landing, RiftFailed } from "../service.ts"
 import { commands, lines } from "./command.ts"
+import { holding, type LockMode } from "./flock.ts"
 
 export interface Options {
   /** Where each check's log is written, `<rift name>.<gate|accept>.log`. */
@@ -35,6 +36,26 @@ export interface Options {
  */
 export const checkArgv = (command: string, log: string, scope: boolean): ReadonlyArray<string> =>
   heavyArgv(["sh", "-c", 'sh -c "$1" >"$2" 2>&1', "rift-land", command, log], DEFAULT_LIMITS, scope)
+
+/**
+ * The lock files a land's checks hold, under `logs`, one set per host. `checks`: every gate and accept check
+ * holds it shared, so a post-land step that changes what they read (the dotfiles' fork checkout) holds it
+ * exclusively for that short change alone. `accept`: each accept check holds it exclusively, and so does a
+ * post-land step's own heavy test run, so the two never run at once.
+ */
+export const lockFiles = (logs: string) => ({ checks: join(logs, "locks", "checks.lock"), accept: join(logs, "locks", "accept.lock") })
+
+type LockFiles = ReturnType<typeof lockFiles>
+
+/** The locks each check holds while it runs; a post-land step takes its own, by the paths it is given. */
+const CHECK_LOCKS: Readonly<Record<"gate" | "accept" | "post-land", (files: LockFiles) => ReadonlyArray<readonly [string, LockMode]>>> = {
+  gate: (files) => [[files.checks, "shared"]],
+  accept: (files) => [
+    [files.checks, "shared"],
+    [files.accept, "exclusive"],
+  ],
+  "post-land": () => [],
+}
 
 /** Each lock file, by name, to its installs: the frozen one, then the one that may rewrite it. */
 export const INSTALLS: Readonly<Record<string, readonly [string, string]>> = {
@@ -191,11 +212,13 @@ export const layer = (options: Options) => {
     return files
   })
 
+  const locks = lockFiles(options.logs)
   const check = Effect.fn("Landing.check")(function* (path: string, label: "gate" | "accept" | "post-land", command: string, env: Readonly<Record<string, string>>) {
     mkdirSync(options.logs, { recursive: true })
     const log = join(options.logs, `${basename(path)}.${label}.log`)
     const started = Date.now()
-    const ran = yield* spawn(checkArgv(command, log, yield* scope), path, env)
+    const argv = checkArgv(command, log, yield* scope)
+    const ran = yield* holding(CHECK_LOCKS[label](locks), spawn(argv, path, env))
     const output = existsSync(log) ? readFileSync(log, "utf8") : ran.stderr
     return { code: ran.code, seconds: Math.round((Date.now() - started) / 1000), log, output } satisfies Ran
   })
@@ -204,7 +227,7 @@ export const layer = (options: Options) => {
     mkdirSync(options.logs, { recursive: true })
     const report = join(options.logs, `${basename(path)}.post-land.report.md`)
     rmSync(report, { force: true })
-    const ran = yield* check(path, "post-land", command, { ...env, RIFT_POST_LAND_REPORT: report })
+    const ran = yield* check(path, "post-land", command, { ...env, RIFT_POST_LAND_REPORT: report, RIFT_LAND_CHECKS_LOCK: locks.checks, RIFT_LAND_ACCEPT_LOCK: locks.accept })
     return { ...ran, report: existsSync(report) ? readFileSync(report, "utf8") : undefined } satisfies PostLanded
   })
 

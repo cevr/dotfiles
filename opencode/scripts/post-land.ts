@@ -6,11 +6,12 @@
 // `bun run daily`'s step 0, under the same lock), refreshes `upstream.json` for the TUI's corner,
 // and writes one outcome line with the fork work (scripts/fork-work.ts) to `RIFT_POST_LAND_REPORT`
 // (stdout without it): the report the land's session is woken with. On any other host (the
-// workbox) it does nothing and says so.
+// workbox) it does nothing and says so. Under a land it holds the land's locks (mods/rift/process/flock.ts): the checks lock for each change to prime-look, which the land's gate and accept read, and the accept lock for the fork's tests, so they never run beside an accept check.
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { upstreamFile } from "../mods/prime/update.ts"
+import { exclusively, exclusivelySync } from "../mods/rift/process/flock.ts"
 import { checkFork } from "./fork.ts"
 import { type ForkWork, droppable, forkWork, forkWorkText, ghLookup, readAgents } from "./fork-work.ts"
 import { DEFAULT_FORK } from "../testbeds/gamut/gamut.ts"
@@ -21,8 +22,8 @@ export interface Steps {
   readonly host: string
   /** prime-look's commit now. */
   readonly head: () => string
-  /** Fast-forwards prime-look to origin's. */
-  readonly sync: () => void
+  /** Fast-forwards prime-look to origin's, under the land's checks lock when a land runs the step. */
+  readonly sync: () => void| Promise<void>
   /** The merge, under the lock daily's step 0 takes too; none while daily holds it. */
   readonly merge: () => Promise<Outcome | undefined>
   /** Writes `upstream.json` again; answers its line. */
@@ -89,17 +90,20 @@ export const postLand = async (steps: Steps): Promise<string> => {
 if (import.meta.main) {
   const home = homedir()
   const opencode = resolve(import.meta.dir, "..")
-  const checked = checkFork(process.env.OPENCODE_DEV || DEFAULT_FORK)
+  const env = process.env
+  const checked = checkFork(env.OPENCODE_DEV || DEFAULT_FORK)
   if ("problem" in checked) throw new Error(checked.problem)
   const fork = checked.fork
   const state = join(home, ".local/state/opencode-daily")
   const report = join(state, "upstream-conflict.md")
   const git = (...args: ReadonlyArray<string>) => Bun.spawnSync(["git", "-C", fork, ...args], { stdout: "pipe", stderr: "pipe" }).stdout.toString().trim()
   const agents = readAgents(join(opencode, "AGENTS.md"))
+  const checksLock = exclusivelySync(env.RIFT_LAND_CHECKS_LOCK || "")
+  const acceptLock = exclusively(env.RIFT_LAND_ACCEPT_LOCK || "")
   const text = await postLand({
     host: hostname(),
     head: () => git("rev-parse", `refs/heads/${BRANCH}`),
-    sync: () => void syncFork({ fork, dryRun: false, log: console.log }),
+    sync: () => checksLock(() => void syncFork({ fork, dryRun: false, log: console.log })),
     merge: () =>
       withUpstreamLock(state, () =>
         mergeUpstream({
@@ -107,14 +111,15 @@ if (import.meta.main) {
           host: hostname(),
           skip: false,
           dryRun: false,
-          checks: forkChecks(opencode, fork, process.env.GENT_SOURCE || join(home, "Developer/personal/.rifts/gent/untrack-local-settings")),
+          checks: (dir) => acceptLock(() => forkChecks(opencode, fork, env.GENT_SOURCE || join(home, "Developer/personal/.rifts/gent/untrack-local-settings"))(dir)),
+          landing: checksLock,
           worktree: join(state, "upstream-merge"),
           report,
           log: console.log,
         }),
       ),
     refresh: () => {
-      const file = upstreamFile(home, process.env.XDG_STATE_HOME)
+      const file = upstreamFile(home, env.XDG_STATE_HOME)
       const reading = upstreamReading(fork, report, false)
       if (reading === undefined) {
         rmSync(file, { force: true })
@@ -131,7 +136,7 @@ if (import.meta.main) {
     },
     report,
   })
-  const out = process.env.RIFT_POST_LAND_REPORT
+  const out = env.RIFT_POST_LAND_REPORT
   if (out === undefined || out === "") console.log(text)
   else writeFileSync(out, `${text}\n`)
 }

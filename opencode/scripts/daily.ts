@@ -31,7 +31,7 @@ import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
 import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } from "../testbeds/gamut/gamut.ts"
 import { checkFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
-import { forkChecks, mergeUpstream, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
+import { forkChecks, mergeUpstream, syncFork, unlocked, upstreamReading, withUpstreamLock } from "./upstream.ts"
 import { flagValue, headOf, restartThroughHandoff, stagedText, settingsFor, updateEntry } from "../mods/update/process/install.ts"
 
 const MODS = resolve(import.meta.dir, "../mods")
@@ -278,6 +278,7 @@ if (import.meta.main) {
       host: hostname(),
       skip: args.has("--no-upstream"),
       dryRun,
+      landing: unlocked,
       checks: forkChecks(resolve(import.meta.dir, ".."), fork, process.env.GENT_SOURCE || join(home, "Developer/personal/.rifts/gent/untrack-local-settings")),
       worktree: join(state, "upstream-merge"),
       report: join(state, "upstream-conflict.md"),
