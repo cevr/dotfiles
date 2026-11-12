@@ -16,12 +16,15 @@ export interface World {
    * the ones its source does not also hold on top of the `stashes` a test set.
    */
   readonly stashed: Map<string, ReadonlyArray<string>>
+  /** What each removal runs before it trashes, standing for a slow `rift remove`; at first, nothing. */
+  removeHold: Effect.Effect<void>
 }
 
 export const world = (sources: ReadonlyArray<string>, rifts: ReadonlyArray<Workspace> = []): World => ({
   sources: [...sources],
   rifts: new Map(rifts.map((workspace) => [workspace.path, workspace])),
   stashed: new Map(),
+  removeHold: Effect.void,
 })
 
 /** Stashes a change in the workspace at `path` (a source or a Rift), as `git stash` there would: a new commit atop its stash. */
@@ -86,6 +89,7 @@ export const layer = (state: World) =>
         if (workspace === undefined) return yield* new RiftFailed({ operation: "rift remove", message: `${path} is not a Rift workspace` })
         if (workspace.children.length > 0 && options?.withChildren !== true)
           return yield* new RiftFailed({ operation: "workrift remove", message: `${path} has child workspaces; pass --with-children to trash them too` })
+        yield* state.removeHold
         // Rift trashes the whole subtree.
         const drop = (each: string): void => {
           for (const child of state.rifts.get(each)?.children ?? []) drop(child)

@@ -2,7 +2,7 @@
 // the Rifts and what the model reads back. It sits here because the domain
 // fence keeps the root's files off its folders.
 import { describe, expect, test } from "bun:test"
-import { Deferred, Effect, Layer, Predicate, Queue } from "effect"
+import { Deferred, Effect, Fiber, Layer, Predicate, Queue } from "effect"
 import * as MemoryLanding from "./landing.ts"
 import * as MemoryNotices from "./notices.ts"
 import * as MemoryRifts from "./rifts.ts"
@@ -252,6 +252,28 @@ describe("land", () => {
     test("a land while a post-land step runs goes on, and its own post-land step waits for the first to end: two never overlap", () => overlapping(withPostLand(undefined)))
 
     test("with an accept check too, the integration Rift is free once it ends, while the post-land step still runs", () => overlapping(withPostLand("bun run accept")))
+
+    test("a land that starts while the integration Rift is being removed waits for the removal, then lands in a new one", () => {
+      const made = withPostLand("bun run accept")
+      return within(made, (tool) =>
+        Effect.gen(function* () {
+          expect(yield* answerOf(tool, { action: "land", rifts: ["feat-x"] })).toStartWith("Landed 1 Rift(s) as one push")
+          yield* settle
+          const release = yield* Deferred.make<string>()
+          made.rifts.removeHold = Effect.asVoid(Deferred.await(release))
+          const removing = yield* Effect.forkChild(answerOf(tool, { action: "remove", name: "integrate" }))
+          yield* settle
+          const starts = made.landing.steps.filter((step) => step.startsWith(`start ${INTEGRATE}`)).length
+          const landing = yield* Effect.forkChild(answerOf(tool, { action: "land", rifts: ["feat-y"] }))
+          yield* settle
+          expect(made.landing.steps.filter((step) => step.startsWith(`start ${INTEGRATE}`))).toHaveLength(starts)
+          yield* Deferred.succeed(release, "released")
+          expect(yield* Fiber.join(removing)).toStartWith(`Moved the Rift ${INTEGRATE}`)
+          expect(yield* Fiber.join(landing)).toStartWith("Landed 1 Rift(s) as one push")
+          expect(made.rifts.rifts.has(INTEGRATE)).toBe(true)
+        }),
+      )
+    })
 
     test("remove refuses the integration Rift while a land's accept check runs there; once it ends, it may go", () => {
       const made = withPostLand("bun run accept")

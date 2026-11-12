@@ -108,6 +108,9 @@ export const layer = Layer.effect(
     const accepts = yield* Semaphore.make(1)
     /** One post-land step at a time, in the post-land Rifts, apart from the integration Rifts' work. */
     const postLands = yield* Semaphore.make(1)
+    /** Finding a kept Rift and marking it busy, and a removal from its check to its trashing, one at a time: neither sees the other half done. */
+    const claims = yield* Semaphore.make(1)
+    const claimed = claims.withPermits(1)
     // Each kept Rift at work (an integration Rift, a post-land Rift), with what it is doing.
     const busy = new Map<string, string>()
 
@@ -211,8 +214,7 @@ export const layer = Layer.effect(
             const load = yield* landing.hostLoad
             if (load.load >= load.cores)
               return yield* notices.wake(sessionID, { text: postLandSkippedText(units, load), description: "rift land · post-land skipped (load)" })
-            const path = yield* keptRift(source, POST_LAND)
-            busy.set(path, `the post-land step of ${branchList(units)} runs there`)
+            const path = yield* claimed(Effect.tap(keptRift(source, POST_LAND), (kept) => Effect.sync(() => busy.set(kept, `the post-land step of ${branchList(units)} runs there`))))
             const ran = yield* Effect.gen(function* () {
               const started = yield* landing.start(path, main)
               yield* landing.install(path, started.previous)
@@ -305,10 +307,15 @@ export const layer = Layer.effect(
       const gateCommand = config.gate
       if (gateCommand === undefined) return yield* new GateMissing({ source })
 
-      const integration = yield* keptRift(source, INTEGRATION).pipe(Effect.mapError((failure) => new LandStopped({ path: source, step: "start", detail: failure.message })))
       // One batch at a time in an integration Rift, its accept check included.
-      if (busy.has(integration)) return yield* new LandRefused({ path: integration, reason: `is busy: ${busy.get(integration)}. Land again after its wake.` })
-      busy.set(integration, "a batch is landing")
+      const integration = yield* claimed(
+        Effect.gen(function* () {
+          const path = yield* keptRift(source, INTEGRATION).pipe(Effect.mapError((failure) => new LandStopped({ path: source, step: "start", detail: failure.message })))
+          if (busy.has(path)) return yield* new LandRefused({ path, reason: `is busy: ${busy.get(path)}. Land again after its wake.` })
+          busy.set(path, "a batch is landing")
+          return path
+        }),
+      )
       let accepting = false
       return yield* Effect.gen(function* () {
         const stopped = (step: LandStopped["step"], detail: string, path = integration) => new LandStopped({ path, step, detail })
@@ -421,7 +428,7 @@ export const layer = Layer.effect(
         case "list":
           return yield* list(yield* source())
         case "remove":
-          return yield* remove(directory, yield* source(), input)
+          return yield* claimed(remove(directory, yield* source(), input))
         case "land":
           return yield* land(sessionID, directory, yield* source(), input)
         default:
