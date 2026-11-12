@@ -2019,16 +2019,22 @@ describe("the batch machine", () => {
         yield* begin(plugin, { agent: "implementor", description: "implementor web r1", prompt: briefB, background: true }, "ses_web")
         yield* plugin.idle("ses_api")
         yield* plugin.idle("ses_web")
-        const land = (rifts: ReadonlyArray<unknown>) => plugin.call("rift", "root", { action: "land", rifts })
-        // web's Rift alone is web's, so the land leaves api out; a Rift of no unit's branch alone is none of the machine's.
+        const land = (rifts: ReadonlyArray<unknown>, departs?: string) => plugin.call("rift", "root", { action: "land", rifts, ...(departs === undefined ? {} : { departs }) })
+        const landed = (rifts: ReadonlyArray<unknown>) =>
+          plugin.finish({ tool: "rift", input: { action: "land", rifts }, status: "completed", result: { content: [{ type: "text", text: "Landed as one push" }] } })
+        // web's Rift alone is web's, so the land leaves api out; landed anyway, it is web that lands, never api.
         expect((yield* land(["/u/.rifts/app/web-3"])).refused?.message).toContain(RULES.LandPartial.words)
+        expect((yield* land(["/u/.rifts/app/web-3"], "probe")).refused).toBeUndefined()
+        yield* landed(["/u/.rifts/app/web-3"])
+        expect(plugin.ledger.at(-1)).toMatchObject({ kind: "BatchLanded", units: ["web"] })
+        // A Rift of no unit's branch is none of the machine's: it passes, though web's verdict is pending.
         expect((yield* land(["/u/.rifts/app/wip"])).refused).toBeUndefined()
-        // The same Rift named for api: the unit the land names wins.
-        expect((yield* land([{ path: "/u/.rifts/app/wip", unit: "api" }])).refused?.message).toContain(RULES.LandPartial.words)
-        const both = ["/u/.rifts/app/web-3", { path: "/u/.rifts/app/wip", unit: "api" }]
-        expect((yield* land(both)).refused).toBeUndefined()
-        yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: both }, status: "completed", result: { content: [{ type: "text", text: "Landed 2 Rift(s) as one push" }] } })
-        expect(plugin.ledger.at(-1)).toMatchObject({ kind: "BatchLanded", units: ["api", "web"] })
+        // The same Rift named for api is api's: held by the pending verdict, and landed anyway, api lands.
+        const named = [{ path: "/u/.rifts/app/wip", unit: "api" }]
+        expect((yield* land(named)).refused?.message).toContain(RULES.VerdictPending.words)
+        expect((yield* land(named, "probe")).refused).toBeUndefined()
+        yield* landed(named)
+        expect(plugin.ledger.at(-1)).toMatchObject({ kind: "BatchLanded", units: ["api"] })
       }),
     ))
 
