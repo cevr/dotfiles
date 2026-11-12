@@ -46,14 +46,13 @@ const logsUnder = (dir: string): string =>
 
 describe.skipIf(!ready)("a gent account whose refresh is rate-limited does not end the turn (real OpenCode, fake Anthropic)", () => {
   const kept = keptScratch(ready, "pool-gent-refresh-", true)
-  const root = kept.path
   afterAll(() => kept.done())
 
   test(
     "the turn completes on the second account, with no error row",
     kept.test(async () => {
       const accounts = { alpha: fakeAccount(), beta: fakeAccount() }
-      const store = join(root, "gent-auth")
+      const store = kept.dir("gent-auth-")
       const gent = await openGentStore(store)
       // alpha's token has expired: it must be refreshed before it is sent, and its refresh is rate-limited.
       await gent.signIn("alpha", { ...accounts.alpha, expires: Date.now() - 1000 })
@@ -69,8 +68,8 @@ describe.skipIf(!ready)("a gent account whose refresh is rate-limited does not e
         },
       })
       try {
-        const base = join(root, "run")
-        for (const dir of ["work", "home", "config", "plugins"]) mkdirSync(join(base, dir), { recursive: true })
+        const base = kept.dir("run-")
+        for (const dir of ["work", "home", "config", "plugins"]) mkdirSync(join(base, dir))
         const launch = forkLaunch(fork ?? "", process.execPath)
         writeFileSync(
           join(base, "work/opencode.json"),

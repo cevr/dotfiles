@@ -95,7 +95,6 @@ interface Resets {
 
 describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake ChatGPT)", () => {
   const kept = keptScratch(ready, "pool-resets-", true)
-  const root = kept.path
   const stops: Array<() => Promise<void>> = []
   afterAll(async () => {
     for (const stop of stops.reverse()) await stop()
@@ -108,9 +107,9 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
    * sweeping every 6 s. Its pool and questions RPCs, once the pool answers.
    */
   const serve = async (name: string, accounts: Readonly<Record<string, FakeAccount>>, anthropicURL: string, now: number, chatgptURL?: string) => {
-    const base = join(root, name)
+    const base = kept.dir(`${name}-`)
     const home = join(base, "home")
-    for (const dir of [join(base, "work"), join(home, ".config/opencode"), join(home, ".local/state")]) mkdirSync(dir, { recursive: true })
+    for (const dir of ["work", "home", "home/.config", "home/.config/opencode", "home/.local", "home/.local/state"]) mkdirSync(join(base, dir))
     writeFileSync(
       join(home, ".config/opencode/opencode.json"),
       JSON.stringify({

@@ -46,7 +46,6 @@ interface Run {
 
 describe.skipIf(!ready)("the pool fails a refused run over to the next login (real OpenCode, fake Anthropic)", () => {
   const kept = keptScratch(ready, "pool-failover-", true)
-  const root = kept.path
   let fake: FakeAnthropic | undefined
   afterAll(async () => {
     await fake?.stop()
@@ -59,8 +58,8 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
     url: string,
     pooled: boolean,
   ): Promise<Run> => {
-    const base = join(root, name)
-    for (const dir of ["work", "home", "config", "plugins"]) mkdirSync(join(base, dir), { recursive: true })
+    const base = kept.dir(`${name}-`)
+    for (const dir of ["work", "home", "config", "plugins"]) mkdirSync(join(base, dir))
     const launch = forkLaunch(fork!, process.execPath)
     writeFileSync(
       join(base, "work/opencode.json"),

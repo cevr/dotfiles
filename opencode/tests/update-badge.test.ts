@@ -172,10 +172,9 @@ describe.skipIf(!fork)("the update notice", () => {
     kept.done()
   })
 
-  /** What `bun run daily` writes for the TUI's corner: `commits` of upstream/dev past the build, the merge `blocked` or not. */
+  /** What `bun run daily` writes for the TUI's corner: `commits` of upstream/dev past the build, the merge `blocked` or not. Its folder is boot's. */
   const writeUpstream = (commits: number, blocked: boolean) => {
     const file = upstreamFile(home, env.XDG_STATE_HOME)
-    mkdirSync(dirname(file), { recursive: true })
     writeFileSync(file, JSON.stringify({ commits, blocked, upstream: "72616be4dbe772dc645640b5623cb3d6f4453bd3", build: "314c9607bf6ca4254f1a7b478a8d5deb15c3b910", at: new Date().toISOString() }))
   }
 
@@ -187,7 +186,8 @@ describe.skipIf(!fork)("the update notice", () => {
   /** The service, started once for every case, with Prime as the TUI's look. */
   const boot = () =>
     (booted ??= (async () => {
-      for (const dir of [work, join(home, ".config/opencode")]) mkdirSync(dir, { recursive: true })
+      const daily = dirname(upstreamFile(home, env.XDG_STATE_HOME))
+      for (const dir of [work, home, join(home, ".config"), join(home, ".config/opencode"), join(home, ".local"), env.XDG_STATE_HOME, daily]) mkdirSync(dir)
       writeFileSync(join(home, ".config/opencode/opencode.json"), JSON.stringify({}))
       writeFileSync(
         join(home, ".config/opencode/cli.json"),
