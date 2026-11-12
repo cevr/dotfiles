@@ -235,11 +235,24 @@ export const loginsToCopy = (named: Preset, preset: ResolvedPreset): ReadonlyArr
 
 /**
  * The Claude logins the pool reads, in gent's store format: `GAMUT_GENT_AUTH`, else
- * `~/.local/share/opencode-prime/pool-auth` of the caller's home (the run has its own). The
- * store moved there from `~/.gent/auth` when gent was removed from this machine.
+ * `~/.local/share/opencode-prime/pool-auth` of the caller's home (the run has its own), else
+ * gent's own `~/.gent/auth` where that is the one that exists. The store moved to the first from
+ * `~/.gent/auth` on the Mac when gent was removed from it; the workbox keeps `~/.gent/auth`. A
+ * host's store is found from its files, never from a variable only some launches set: the update
+ * plugin's stage runs with the service's environment, and a store it misses drops the pool's
+ * Claude logins (the workbox, 2026-11-12).
  */
-export const gentAuthDir = (env: Readonly<Record<string, string | undefined>> = process.env): string =>
-  resolve(env.GAMUT_GENT_AUTH || join(homedir(), ".local/share/opencode-prime/pool-auth"))
+export const gentAuthDir = (
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  home: string = homedir(),
+  exists: (path: string) => boolean = existsSync,
+): string => {
+  if (env.GAMUT_GENT_AUTH) return resolve(env.GAMUT_GENT_AUTH)
+  const store = join(home, ".local/share/opencode-prime/pool-auth")
+  const gents = join(home, ".gent/auth")
+  if (!exists(store) && exists(gents)) return resolve(gents)
+  return resolve(store)
+}
 
 export const usesSim = (preset: ResolvedPreset): boolean =>
   ROLES.some((role) => preset[role].provider === SIM_PROVIDER)
