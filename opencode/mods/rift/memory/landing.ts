@@ -22,13 +22,15 @@ export interface World {
   readonly checks: Map<string, { readonly code: number; readonly output: string }>
   /** The post-land step's exit, output and report; absent: 0, a report saying it ran. */
   postLandRun: { readonly code: number; readonly output: string; readonly report: string | undefined } | undefined
+  /** What each post-land step runs before it ends, standing for a long run; at first, nothing. */
+  postLandHold: Effect.Effect<void>
   /** The host's load the post-land step reads first; absent: idle on 8 cores. */
   load: HostLoad | undefined
   /** What Git says when the push fails. */
   pushFails: string | undefined
   /** Each branch whose own push fails, to what Git says. */
   readonly branchFails: Map<string, string>
-  /** The steps taken: `start <path> <main>`, `merge <branch>`, `install`, `regenerate`, `commit <files>` (what it rewrote, one commit), `gate <path>`, `push <path>`, `push-branch <branch>`, `sync <path>`, `accept <path> <RIFT_LAND_BASE>`, `load`, `post-land <path> <RIFT_LAND_BASE> <RIFT_LAND_HEAD>`. */
+  /** The steps taken: `start <path> <main>`, `merge <branch>`, `install`, `regenerate`, `commit <files>` (what it rewrote, one commit), `gate <path>`, `push <path>`, `push-branch <branch>`, `sync <path>`, `accept <path> <RIFT_LAND_BASE>`, `load`, `post-land <path> <RIFT_LAND_BASE> <RIFT_LAND_HEAD>`, `ended post-land <path>`. */
   readonly steps: Array<string>
 }
 
@@ -57,6 +59,7 @@ export const world = (configs: Readonly<Record<string, LandConfig>> = {}): World
   regenerateFails: undefined,
   checks: new Map(),
   postLandRun: undefined,
+  postLandHold: Effect.void,
   load: undefined,
   pushFails: undefined,
   branchFails: new Map(),
@@ -96,12 +99,13 @@ export const layer = (state: World) =>
           const scripted = state.checks.get(`${path} ${label}`) ?? { code: 0, output: "1 pass\n" }
           return { ...scripted, seconds: 3, log: `/logs/${label}.log` }
         }),
-      postLand: (path, _command, env) =>
-        Effect.sync((): PostLanded => {
-          state.steps.push(`post-land ${path} ${env["RIFT_LAND_BASE"] ?? ""} ${env["RIFT_LAND_HEAD"] ?? ""}`)
-          const scripted = state.postLandRun ?? { code: 0, output: "post-land ran\n", report: "post-land: nothing to do\n" }
-          return { ...scripted, seconds: 4, log: "/logs/post-land.log" }
-        }),
+      postLand: Effect.fn("Landing.postLand")(function* (path: string, _command: string, env: Readonly<Record<string, string>>) {
+        state.steps.push(`post-land ${path} ${env["RIFT_LAND_BASE"] ?? ""} ${env["RIFT_LAND_HEAD"] ?? ""}`)
+        yield* state.postLandHold
+        state.steps.push(`ended post-land ${path}`)
+        const scripted = state.postLandRun ?? { code: 0, output: "post-land ran\n", report: "post-land: nothing to do\n" }
+        return { ...scripted, seconds: 4, log: "/logs/post-land.log" } satisfies PostLanded
+      }),
       hostLoad: Effect.sync(() => {
         state.steps.push("load")
         return state.load ?? { load: 0.5, cores: 8 }

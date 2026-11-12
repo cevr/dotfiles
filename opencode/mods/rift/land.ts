@@ -6,8 +6,8 @@
 // runs the repository's gate once, pushes to the default branch, trashes the landed Rifts, then
 // runs the repository's accept check once, in the background, on everything
 // the batch changed, and wakes the calling session with its result; then the
-// repository's own post-land work (`rift.postLand`), the same way, waking it
-// with its report. The repository names its commands in its warm source's
+// repository's own post-land work (`rift.postLand`) in a Rift of its own
+// (POST_LAND), outside the integration Rift's lock, waking it with its report. The repository names its commands in its warm source's
 // Git config (`rift.gate`, `rift.accept`, `rift.postLand`), so the tool knows
 // no repository's checks.
 // A repository that lands through pull requests sets `rift.push` false: the
@@ -21,6 +21,14 @@ import { Schema } from "effect"
 
 /** The Rift every batch is merged in, one per warm source, kept between batches. */
 export const INTEGRATION = "integrate"
+
+/**
+ * The Rift the post-land step runs in, one per warm source, kept between lands and put at origin's newest
+ * default branch before each run. The step runs long (the dotfiles' merges upstream and runs the fork's
+ * checks and tests from it), so it has a Rift of its own: the integration Rift is free for the next land
+ * once the accept check ends, and nothing a land does there moves the files a post-land step is running.
+ */
+export const POST_LAND = "post-land"
 
 /** How a repository lands, from its warm source's Git config. */
 export interface LandConfig {
@@ -161,7 +169,9 @@ export const landedText = (landed: Landed, integration: string, accepting: boole
       ? `The accept check runs in the background in ${integration} on the batch since ${landed.base.slice(0, 9)}; this session is woken with its result.`
       : "No rift.accept is configured, so no check runs after the push.",
     ...(postLand
-      ? [`Then the repository's post-land step (rift.postLand) runs there in the background${accepting ? ", after the accept check" : ""}; this session is woken with its report, and the next land waits for it.`]
+      ? [
+          `Then the repository's post-land step (rift.postLand) runs in the background${accepting ? " after the accept check" : ""}, in its own Rift (${POST_LAND}), one at a time; this session is woken with its report. The next land need not wait for it.`,
+        ]
       : []),
   ].join("\n")
 }

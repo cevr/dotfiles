@@ -733,7 +733,7 @@
     "mods/rift/memory/rifts.ts": {"effect/noComments":5,"effect/noNullish":8,"effect/noTernary":3},
     "mods/rift/memory/session-directories.ts": {"effect/noComments":3,"effect/noNullish":2,"effect/noTernary":2},
     "mods/rift/memory/workbox.ts": {"effect/noComments":3,"effect/noNullish":2,"effect/noTernary":2},
-    "mods/rift/model.ts": {"complexity":1,"effect/maxCognitiveComplexity":1,"effect/noComments":20,"effect/noConditionalEmptyObjectSpread":2,"effect/noNullish":34,"effect/noRuntimeTypeof":1,"effect/noTernary":23,"effect/preferTaggedConstructors":1},
+    "mods/rift/model.ts": {"effect/maxCognitiveComplexity":1,"effect/noComments":20,"effect/noConditionalEmptyObjectSpread":2,"effect/noNullish":33,"effect/noRuntimeTypeof":1,"effect/noTernary":19,"effect/preferTaggedConstructors":1},
     "mods/rift/opencode/notices.test.ts": {"effect/noAsyncFunction":3,"effect/noComments":3,"effect/noEffectRunInTests":1,"effect/noNewError":1},
     "mods/rift/opencode/notices.ts": {"effect/noComments":4,"effect/noUnsafeDictionaryType":1},
     "mods/rift/opencode/session-directories.test.ts": {"effect/noComments":2,"effect/noNewError":1,"effect/noNullish":2,"effect/noTernary":2},
