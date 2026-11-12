@@ -8,7 +8,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import type { Result, Spec } from "./kernel/run.ts"
-import { ATTACH_CELL, ATTACH_TASK, cells, DONE, HELLO, KERNEL_TASK, MEMORY_TASK, SHELL_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
+import { ATTACH_CELL, ATTACH_TASK, cells, DONE, DROP_TASK, HELLO, KERNEL_TASK, MEMORY_TASK, SHELL_TASK, SUBAGENT_TASK } from "./kernel/sim.ts"
 import { owned } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 
@@ -19,8 +19,12 @@ const ROOT = resolve(import.meta.dir, "..")
 const scratch = scratchDir("kernel-e2e-").path
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
-/** One run of real OpenCode in a scratch home; see tests/kernel/run.ts. */
-const run = async (name: string, spec: Pick<Spec, "task" | "denyExecute" | "codeOnly" | "orchestrate" | "memory" | "images">): Promise<Result & { base: string }> => {
+/** One run of real OpenCode in a scratch home; see tests/kernel/run.ts. `check` reads its result before it is returned. */
+const run = async (
+  name: string,
+  spec: Pick<Spec, "task" | "denyExecute" | "codeOnly" | "orchestrate" | "memory" | "images">,
+  check: (result: Result & { base: string }) => void = () => {},
+): Promise<Result & { base: string }> => {
   const base = join(scratch, name)
   const home = join(base, "home")
   mkdirSync(home, { recursive: true })
@@ -46,7 +50,9 @@ const run = async (name: string, spec: Pick<Spec, "task" | "denyExecute" | "code
   const result = join(base, "result.json")
   if (child.exitCode !== 0 || !existsSync(result))
     throw new Error(`the ${name} run failed (exit ${child.exitCode}):\n${stdout}\n${stderr}`)
-  return { ...(JSON.parse(readFileSync(result, "utf8")) as Result), base }
+  const ran = { ...(JSON.parse(readFileSync(result, "utf8")) as Result), base }
+  check(ran)
+  return ran
 }
 
 interface ToolPart {
@@ -66,6 +72,15 @@ const toolParts = (messages: unknown): ToolPart[] =>
     .filter((part): part is ToolPart => part.type === "tool")
 
 const RUN_MS = 150_000
+
+/** The drop run's cell wrote alpha's move to dropped, and the root's ledger ended alpha once (its `UnitDropped`). */
+const droppedAlpha = (result: Result & { base: string }) => {
+  const [cell] = toolParts(result.messages)
+  expect((cell!.state.content ?? []).map((part) => part.text ?? "").join("")).toMatch(/implement → dropped r1 superseded/)
+  const dropped = readFileSync(join(result.base, "machine.jsonl"), "utf8").split("\n").filter((entry) => entry.includes('"kind":"UnitDropped"'))
+  expect(dropped).toHaveLength(1)
+  expect(dropped[0]).toContain('"unit":"alpha"')
+}
 
 describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   test(
@@ -208,6 +223,17 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(calls.filter((call) => call.kind === "call").map((call) => call.agent)).toEqual(["worker"])
       // OpenCode runs every subagent in the background: the call ends as the worker starts, so it logs `running`.
       expect(calls.filter((call) => call.kind === "done").map((call) => call.status)).toEqual(["running"])
+    },
+    RUN_MS,
+  )
+
+  test(
+    "a cell's tools.shell that drops a unit by log.ts runs through the orchestrate after hook: the unit ends on the root's ledger",
+    () => {
+      // alpha's log made and moved to dropped by the skill's log.ts, relative to the root's directory.
+      const log = `bun ${join(ROOT, "../skills/orchestrate/scripts/log.ts")}`
+      const line = `mkdir -p run/alpha && ${log} run/alpha new implement r1 && ${log} run/alpha implement dropped r1 superseded`
+      return run("drop", { task: `${line}\n${DROP_TASK}`, denyExecute: true, orchestrate: { plugin: join(ROOT, "cmd/orchestrate"), now: "2026-11-04T15:00:00Z" } }, droppedAlpha)
     },
     RUN_MS,
   )

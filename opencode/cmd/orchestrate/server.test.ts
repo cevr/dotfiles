@@ -4,6 +4,7 @@
 // opening, the call log's lines, the compaction prompt and the agents'
 // windows. tests/orchestrate.test.ts and tests/prime-latch.test.ts run it in
 // OpenCode.
+import { spawnSync } from "bun"
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -37,7 +38,7 @@ import { KNOWLTON } from "@dotfiles/opencode-orchestrate/sabbath"
 import { Branches, Findings, type FindingsRead, Liveness, type Offered, RootHolds } from "@dotfiles/opencode-orchestrate/service"
 import { DEFAULT_CADENCE, RULES } from "@dotfiles/opencode-orchestrate/machine"
 import * as MemoryLedger from "@dotfiles/opencode-orchestrate/memory/ledger"
-import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, droppedOf, greenOf, make, Options, SKILL_DIR, UNIT_LOG } from "./server.ts"
+import Orchestrate, { type Background, CODEX_BUDGET, DEFAULT_LEDGER, DEFAULT_LOG, dropsAsked, greenOf, make, Options, SKILL_DIR, UNIT_LOG } from "./server.ts"
 
 /** The orchestrate skill's log.ts in this checkout: the units' logs are written for real, in scratch dirs. */
 const LOG_SCRIPT = join(import.meta.dir, "../../../skills/orchestrate/scripts/log.ts")
@@ -1733,6 +1734,25 @@ describe("the batch machine", () => {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
 
+  /** A scratch run dir, removed with the test's scope. */
+  const scratchRun = Effect.acquireRelease(
+    Effect.sync(() => mkdtempSync(join(tmpdir(), "orchestrate-run-"))),
+    (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
+  )
+  /** A shell line run for real in `cwd`: its output, both streams, as the shell tool answers with it. */
+  const spawnShell = (line: string, cwd: string) => {
+    const ran = spawnSync(["/bin/zsh", "-c", line], { cwd })
+    return `${ran.stdout}${ran.stderr}`
+  }
+  /** `unit`'s dir in `run`, its log moved by the skill's log.ts (`new decide r1`). */
+  const logged = (run: string, unit: string, move: string) => {
+    mkdirSync(join(run, unit), { recursive: true })
+    spawnShell(`bun ${LOG_SCRIPT} ${join(run, unit)} ${move}`, run)
+  }
+  /** The root's shell call, run for real in `cwd` (the call's `workdir`, when its input names one), through the plugin's hooks. */
+  const shell = (plugin: Plugin, input: { readonly command: string; readonly workdir?: string }, cwd: string) =>
+    plugin.finish({ tool: "shell", input, status: "completed", result: { content: [{ type: "text", text: spawnShell(input.command, cwd) }] } })
+
   test("a verifier for one unit is refused in the skill's words before anything starts; the batch's starts", () =>
     scenario(
       Effect.gen(function* () {
@@ -2360,18 +2380,22 @@ describe("the batch machine", () => {
       }),
     ))
 
-  // orch-followups 3: a unit the root drops ends on its machine and releases its findings.
-  test("orch-followups 3: a root's log.ts move of a unit to dropped ends it on the ledger and releases its finding: the next land needs no departs", () =>
+  // orch-followups 3: a unit the root drops ends on its machine and releases its findings. r1 M1: which unit log.ts
+  // dropped is its log.md's to say, never the command line's: a refused move drops nothing.
+  test("orch-followups 3, r1 M1: each unit whose log.md a root's log.ts call moved to dropped ends on the ledger and releases its finding; one whose move log.ts refused keeps its own; the next land needs no departs", () =>
     scenario(
       Effect.gen(function* () {
+        const run = yield* scratchRun
         const report = "/run/batch-1-findings.md"
         const sessions = steps({
           ses_a: { agent: "implementor", lastWords: "implementor alpha r1: ready x" },
           ses_v: { agent: "verifier", lastWords: `verifier batch-1 r1: changes ${report}` },
-          ses_f: { agent: "implementor" },
-          ses_b: { agent: "implementor", lastWords: "implementor beta r1: ready x" },
+          ses_fa: { agent: "implementor" },
+          ses_fb: { agent: "implementor" },
+          ses_fg: { agent: "implementor" },
+          ses_d: { agent: "implementor", lastWords: "implementor delta r1: ready x" },
         })
-        const plugin = yield* start({ now: WEDNESDAY }, { sessions, findings: { [report]: ["alpha/M1"] } })
+        const plugin = yield* start({ now: WEDNESDAY }, { sessions, findings: { [report]: ["alpha/M1", "alpha/M2", "alpha/M3"] } })
         const land = (rifts: ReadonlyArray<string>) => plugin.call("rift", "root", { action: "land", rifts })
         yield* begin(plugin, implementor("alpha"), "ses_a")
         yield* plugin.idle("ses_a")
@@ -2379,34 +2403,63 @@ describe("the batch machine", () => {
         yield* plugin.finish({ tool: "rift", input: { action: "land", rifts: ["alpha"] }, status: "completed", result: { content: [{ type: "text", text: "Landed" }] } })
         yield* begin(plugin, { agent: "verifier", description: "verifier batch-1 r1", prompt: "v", background: true }, "ses_v")
         yield* plugin.idle("ses_v")
-        // alpha/M1 folds into a fix whose implementor dies and is never restarted; the root decides to drop it.
-        yield* begin(plugin, { agent: "implementor", description: "implementor alpha-fix1 r1 (folds: alpha/M1)", prompt: "fix", background: true }, "ses_f")
-        yield* begin(plugin, implementor("beta"), "ses_b")
-        yield* plugin.idle("ses_b")
-        const drop = (command: string, text: string) =>
-          plugin.finish({ tool: "shell", input: { command }, status: "completed", result: { content: [{ type: "text", text }] } })
-        // A refused move, and another unit's move, drop nothing.
-        yield* drop("bun ~/.claude/skills/orchestrate/scripts/log.ts /run/alpha-fix1 implement dropped r1", "log.ts refused: the unit is in decide, not implement")
-        yield* drop("bun ~/.claude/skills/orchestrate/scripts/log.ts /run/beta implement ready r1", "2026-11-04T15:00Z implement → ready r1")
-        expect(kinds(plugin)).not.toContain("UnitDropped")
-        yield* drop("cd /run && bun ~/.claude/skills/orchestrate/scripts/log.ts --current '/run/alpha-fix1/' dropped r1 not worth a round; echo ----", "2026-11-04T15:00Z decide → dropped r1 not worth a round\n----")
-        expect(plugin.ledger).toContainEqual(expect.objectContaining({ kind: "UnitDropped", unit: "alpha-fix1", released: ["alpha/M1"] }))
-        expect((yield* land(["beta"])).refused).toBeUndefined()
+        // Each finding folds into a fix whose implementor dies and is never restarted; delta is ready.
+        yield* begin(plugin, { agent: "implementor", description: "implementor a-fix r1 (folds: alpha/M1)", prompt: "fix", background: true }, "ses_fa")
+        yield* begin(plugin, { agent: "implementor", description: "implementor b-fix r1 (folds: alpha/M2)", prompt: "fix", background: true }, "ses_fb")
+        yield* begin(plugin, { agent: "implementor", description: "implementor g-fix r1 (folds: alpha/M3)", prompt: "fix", background: true }, "ses_fg")
+        yield* begin(plugin, implementor("delta"), "ses_d")
+        yield* plugin.idle("ses_d")
+        for (const unit of ["a-fix", "b-fix", "g-fix"]) logged(run, unit, "new decide r1")
+        const dropped = () => plugin.ledger.filter((_, at) => kinds(plugin)[at] === "UnitDropped")
+        // The first move is refused (b-fix is in decide, not implement), the second written: a-fix alone is dropped.
+        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} ${run}/b-fix implement dropped r1 x; bun ${LOG_SCRIPT} ${run}/a-fix decide dropped r1 x` }, tmpdir())
+        expect(dropped()).toEqual([expect.objectContaining({ unit: "a-fix", released: ["alpha/M1"] })])
+        // Another unit's move, and a move asked of no log, drop nothing.
+        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} ${run}/g-fix decide implement r2 again` }, tmpdir())
+        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} ${run}/nowhere decide dropped r1 x` }, tmpdir())
+        expect(dropped()).toHaveLength(1)
+        // Two moves in one line, both written, relative to the call's workdir: both are dropped.
+        yield* shell(plugin, { command: `bun ${LOG_SCRIPT} --current b-fix dropped r1 x && bun ${LOG_SCRIPT} g-fix implement dropped r2 x`, workdir: run }, run)
+        expect(dropped().slice(1)).toEqual([expect.objectContaining({ unit: "b-fix", released: ["alpha/M2"] }), expect.objectContaining({ unit: "g-fix", released: ["alpha/M3"] })])
+        expect((yield* land(["delta"])).refused).toBeUndefined()
         expect(kinds(plugin)).not.toContain("Departed")
       }),
     ))
 
-  test("a unit is dropped only by a log.ts move to dropped that wrote its line", () => {
+  // r1 M1's guard: over every line of up to three log.ts moves, each asking dropped or another state and each
+  // written or refused by log.ts itself, the units dropped are exactly those asked whose log.md ends in dropped.
+  test("property: the units a log.ts line drops are exactly the asked ones log.ts moved to dropped", () =>
+    scenario(
+      Effect.gen(function* () {
+        const run = yield* scratchRun
+        const rng = rngOf(7)
+        const logs = FileUnitLogs.make(LOG_SCRIPT)
+        const pick = <A,>(list: ReadonlyArray<A>): A => list[Math.floor(rng() * list.length)]!
+        // Each trial runs log.ts for real, up to six times: 30 trials cover every mix of k ≤ 3 moves many times over.
+        for (let trial = 0; trial < 30; trial++) {
+          const units = Array.from({ length: 1 + Math.floor(rng() * 3) }, (_, i) => `t${trial}-u${i}`)
+          // Each unit sits in decide; a move from implement is refused, one from decide is written.
+          for (const unit of units) logged(run, unit, "new decide r1")
+          const moves = units.map((unit) => ({ unit, to: pick(["dropped", "implement"]), from: pick(["decide", "implement"]) }))
+          const line = moves.map((move) => `bun ${LOG_SCRIPT} ${run}/${move.unit} ${move.from} ${move.to} r2 x`).reduce((all, command) => `${all} ${pick([";", "&&", "||", "|"])} ${command}`)
+          spawnShell(line, run)
+          const asked = dropsAsked("shell", line)
+          const confirmed = yield* Effect.forEach(asked, (dir) => logs.droppedIn(dir, Option.none()))
+          const ends = units.filter((unit) => /→ dropped r\d+/.test(readFileSync(join(run, unit, "log.md"), "utf8").trim().split("\n").at(-1)!))
+          expect([line, confirmed.flatMap(Option.toArray)]).toEqual([line, ends])
+        }
+      }),
+    ), 60_000)
+
+  test("the units a shell line asks log.ts to drop, as written: each command's, in order, whatever log.ts then did", () => {
     const log = "bun ~/.claude/skills/orchestrate/scripts/log.ts"
-    const wrote = "2026-11-04T15:00Z decide → dropped r3"
-    expect(droppedOf("shell", `${log} /run/auth decide dropped r3 superseded`, wrote)).toEqual(Option.some("auth"))
-    expect(droppedOf("bash", `${log} --current "/tmp/orchestrate/p5/auth/" dropped r3`, wrote)).toEqual(Option.some("auth"))
-    expect(droppedOf("shell", `${log} /run/auth decide dropped r3 && ${log} /run/db implement ready r1`, wrote)).toEqual(Option.some("auth"))
-    expect(droppedOf("shell", `${log} /run/auth verify implement r2; ${log} /run/db decide dropped r2`, wrote)).toEqual(Option.some("db"))
-    expect(droppedOf("shell", `${log} /run/auth decide dropped r3`, "log.ts refused: the unit is in verify, not decide")).toEqual(Option.none())
-    expect(droppedOf("shell", `${log} /run/auth verify implement r2`, "2026-11-04T15:00Z verify → implement r2")).toEqual(Option.none())
-    expect(droppedOf("shell", "echo dropped", wrote)).toEqual(Option.none())
-    expect(droppedOf("rift", `${log} /run/auth decide dropped r3`, wrote)).toEqual(Option.none())
+    expect(dropsAsked("shell", `${log} /run/auth decide dropped r3 superseded`)).toEqual(["/run/auth"])
+    expect(dropsAsked("bash", `${log} --current "/tmp/orchestrate/p5/auth/" dropped r3`)).toEqual(["/tmp/orchestrate/p5/auth/"])
+    expect(dropsAsked("shell", `${log} /run/a implement dropped r1 x; ${log} /run/b decide dropped r1 x`)).toEqual(["/run/a", "/run/b"])
+    expect(dropsAsked("shell", `${log} /run/a decide dropped r1 x && ${log} /run/b decide dropped r1 x`)).toEqual(["/run/a", "/run/b"])
+    expect(dropsAsked("shell", `${log} /run/auth verify implement r2; ${log} /run/db decide dropped r2`)).toEqual(["/run/db"])
+    expect(dropsAsked("shell", "echo dropped")).toEqual([])
+    expect(dropsAsked("rift", `${log} /run/auth decide dropped r3`)).toEqual([])
   })
 
   test("a checked land lands only the Rifts it answered green or pending, by their paths and branches, each with the unit its input named", () => {
