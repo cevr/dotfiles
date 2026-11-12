@@ -2,7 +2,7 @@ import { Array as Arr, Clock, Context, Duration, Effect, Layer, Option, Ref, Sch
 import { describeGate, Gate, gate, rootsOf } from "./gate.ts"
 import { describeHealth, final, Health, healthOf, provenNotice, recover, Recovery, type Stage } from "./health.ts"
 import { type Build, buildOf, goodOf, promoted, proven, rolledBack } from "./record.ts"
-import { Builder, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Service, Sessions, Source, type UpdateFailed } from "./service.ts"
+import { Builder, Builds, Configs, Handoff, HandoffMark, Heartbeat, Log, Notice, Records, Rejections, Service, Sessions, Source, type UpdateFailed } from "./service.ts"
 import { shortTarget, type Target } from "./target.ts"
 import { ask, ended, IDLE, Plan, plan, runningOf, superseded } from "./update.ts"
 
@@ -175,6 +175,31 @@ export type Outcome = "proven" | "rolled-back" | "gave-up"
 /** The handoff process's exit code for each outcome: only a proven build exits 0. */
 export const EXIT_CODES = { proven: 0, "rolled-back": 2, "gave-up": 1 } satisfies { readonly [outcome in Outcome]: number }
 
+/** Megabytes, to one decimal, for the log. */
+const megabytes = (bytes: number): string => `${(bytes / 1_000_000).toFixed(1)} MB`
+
+/**
+ * The old builds deleted once a build is proven (`Builds`), each logged with its size: the handoff's
+ * last step, never before the health check passed, and never on a rollback or a give-up. A prune that
+ * cannot read what runs deletes nothing, and says so; it never changes the handoff's outcome.
+ */
+const pruneBuilds = Effect.gen(function* () {
+  const builds = yield* Builds
+  const records = yield* Records
+  const log = yield* Log
+  const record = yield* records.read
+  yield* Effect.forEach(
+    Option.toArray(record),
+    (current) =>
+      builds.prune(current).pipe(
+        Effect.tap((pruned) => Effect.forEach(pruned, (each) => log.line(`prune: deleted the old build ${each.name} (${megabytes(each.bytes)})`), { discard: true })),
+        Effect.tap((pruned) => log.line(`prune: ${pruned.length} old builds deleted, ${megabytes(pruned.reduce((sum, each) => sum + each.bytes, 0))} freed`)),
+        Effect.catch((failed) => log.line(`prune: every build kept: ${failed.step}: ${failed.message}`)),
+      ),
+    { discard: true },
+  )
+})
+
 /** A step that failed on the restart path, as the health it leaves: sick, for good. */
 const failedStep = (step: string) => (failed: UpdateFailed) => Health.Sick({ plugin: step, cause: failed.message, final: true })
 
@@ -186,7 +211,7 @@ const failedStep = (step: string) => (failed: UpdateFailed) => Health.Sick({ plu
  * the handoff ends healthy, rolled back, or given up with the owner's notice, and never fails. A
  * build that does not end proven is rejected, so no check builds or restarts onto it again.
  */
-const steps: (reason: string) => Effect.Effect<Outcome, never, Service | Source | Records | Rejections | Configs | Notice | Log> = Effect.fn("Update.handoffSteps")(function* (reason: string) {
+const steps: (reason: string) => Effect.Effect<Outcome, never, Builds | Service | Source | Records | Rejections | Configs | Notice | Log> = Effect.fn("Update.handoffSteps")(function* (reason: string) {
   const service = yield* Service
   const source = yield* Source
   const records = yield* Records
@@ -275,6 +300,9 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Service | Source 
       )
       yield* Option.match(provenNotice(health), { onNone: () => notice.clear, onSome: notice.show })
       yield* log.line("handoff: the build is proven and recorded as the good build")
+      // Under the mark still: the restarted service's check waits on it, so no stage copies a new
+      // build into the share directory while the prune lists it.
+      yield* pruneBuilds
       return "proven" satisfies Outcome
     }
     if (Recovery.$is("RolledBack")(recovery)) return yield* end("rolled-back", tried, failure, `${describeHealth(failure)}; rolled back`)
@@ -303,5 +331,5 @@ const steps: (reason: string) => Effect.Effect<Outcome, never, Service | Source 
  * dropped once its outcome, good or rejected, is recorded. The restarted service's own check reads
  * the mark and waits, so one handoff runs at a time.
  */
-export const handoff = (reason: string): Effect.Effect<Outcome, never, HandoffMark | Service | Source | Records | Rejections | Configs | Notice | Log> =>
+export const handoff = (reason: string): Effect.Effect<Outcome, never, Builds | HandoffMark | Service | Source | Records | Rejections | Configs | Notice | Log> =>
   HandoffMark.use((mark) => mark.hold.pipe(Effect.andThen(steps(reason)), Effect.ensuring(mark.release)))

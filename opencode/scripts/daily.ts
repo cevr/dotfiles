@@ -39,6 +39,7 @@ import { hostLocks } from "../mods/rift/process/landing.ts"
 import { MergeDriverError, registerMergeDriver } from "./merge-driver.ts"
 import { forkChecks, mergeUpstream, type SyncOutcome, syncFork, upstreamReading, withUpstreamLock } from "./upstream.ts"
 import { flagValue, headOf, restartThroughHandoff, stagedText, settingsFor, updateEntry } from "../mods/update/process/install.ts"
+import { shareDir } from "../mods/update/settings.ts"
 import { releaseBuild, runDailyBuild } from "../mods/update/process/pin.ts"
 
 const MODS = resolve(import.meta.dir, "../mods")
@@ -406,7 +407,7 @@ if (import.meta.main) {
   const build = releaseBuild(process.execPath, `cli-${process.platform}-${process.arch}`, {}, args.has("--skip-build"))
   const { commit: builtCommit, version, binary: built, reported } = await runDailyBuild({ fork, tree: join(state, "fork-build"), commit: forkTarget, bun: process.execPath, build, log: console.log })
 
-  const share = join(home, ".local/share/opencode-prime")
+  const share = shareDir(home)
   mkdirSync(share, { recursive: true })
   const binary = join(share, `opencode-${version}`)
   // Copy beside it, then rename over it: Linux refuses to write a binary the running service executes
