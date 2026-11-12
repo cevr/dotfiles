@@ -292,8 +292,9 @@ describe("process Landing", () => {
     /** While the tool runs a `label` check (its command waits, at most 10 s, for a go file), `daily` starts: whether it ended before the check let go, and what it answered after. */
     const whileChecking = (landing: typeof Landing.Service, label: "gate" | "accept", daily: () => Promise<string>) =>
       Effect.gen(function* () {
-        const started = join(made.scratch, `${label}.started`)
-        const go = join(made.scratch, `${label}.go`)
+        const call = mkdtempSync(join(made.scratch, `${label}-`))
+        const started = join(call, "started")
+        const go = join(call, "go")
         const check = yield* Effect.forkChild(
           landing.check(made.integration, label, `touch "${started}"; i=0; while [ ! -f "${go}" ] && [ $i -lt 500 ]; do sleep 0.02; i=$((i + 1)); done`, {}),
         )
