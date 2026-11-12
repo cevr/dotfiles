@@ -15,6 +15,7 @@
 import { createMemo, createRoot, getOwner, onCleanup, type Accessor } from "solid-js"
 import type { Family, Message, Session, Shell } from "../family.ts"
 import { familyOf, message, read, sessionOf, shellsBySession, transcript, type Reads, type Transcript } from "../opencode/view.ts"
+import { keptMemo } from "./kept.ts"
 
 /**
  * `convert` kept per item: each object item gets one memo, which reads it
@@ -42,6 +43,43 @@ const sameList = <T>(a: ReadonlyArray<T>, b: ReadonlyArray<T>) => a.length === b
 const sameTranscript = (a: Transcript, b: Transcript) => a.model === b.model && sameList<Message>(a.messages, b.messages)
 const NONE: ReadonlyArray<Shell> = []
 
+/** A session's single-valued fields, each as a string (an absent one as `undefined`), in one order. */
+const scalars = (session: Session): ReadonlyArray<string> =>
+  [
+    session.id,
+    session.parentID,
+    session.title,
+    session.agent,
+    session.model,
+    session.outcome,
+    session.time.created,
+    session.time.busy,
+    session.time.idle,
+    session.time.updated,
+    session.latch?.hold,
+    session.latch?.reason,
+    session.latch?.opensAt,
+    session.latch?.at,
+    session.latch?.cancelledAt,
+    session.latch?.failed,
+    session.running,
+  ].map(String)
+const shellKey = (shell: Shell) => [shell.id, shell.command, shell.description].map(String).join("\n")
+
+/**
+ * Whether two readings of a session say the same: every field of the
+ * `Session` equal, the messages the same array (the transcript memo keeps it
+ * while no item changes). A host update to a field the `Session` does not
+ * carry (its cost, its tokens) then keeps the family as it was, and nothing
+ * that reads it runs. A field added to `Session` is compared here too.
+ */
+export const sameSession = (a: Session, b: Session): boolean =>
+  a.messages === b.messages &&
+  sameList(scalars(a), scalars(b)) &&
+  sameList(a.shells.map(shellKey), b.shells.map(shellKey)) &&
+  sameList(a.permissions, b.permissions) &&
+  sameList(a.questions, b.questions)
+
 type Kept<T> = { readonly value: Accessor<T>; readonly dispose: () => void }
 
 /** One session's memos: its transcript, read again only when one of its items changes, and its `Session`. */
@@ -53,7 +91,7 @@ function keepSession(
 ): Kept<Session> {
   return createRoot((dispose) => {
     const told = createMemo(() => transcript(reads.session.message.list(id), convert), undefined, { equals: sameTranscript })
-    const value = createMemo(() => sessionOf(reads, id, shells().get(id) ?? NONE, told()))
+    const value = keptMemo(() => sessionOf(reads, id, shells().get(id) ?? NONE, told()), sameSession)
     return { value, dispose }
   })
 }
