@@ -457,7 +457,8 @@ export const knownRules = (policy: Policy) => new Set([...policy.rules, SUPPRESS
 const versionOf = (root: string, modules: string, name: string) =>
   readJson(root, path.join(modules, name, "package.json"), Installed, "ignore").pipe(Effect.map((installed) => installed.version))
 
-const readInstalled = (root: string) =>
+/** What a workspace has installed and configured: everything `Inputs` holds but the policy. */
+export const readInstalled = (root: string) =>
   Effect.all({
     debt: readJson(root, DEBT_CONFIG, DebtConfig, "error"),
     hard: readJson(root, HARD_CONFIG, HardConfig, "ignore"),
