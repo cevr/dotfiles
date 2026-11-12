@@ -42,8 +42,8 @@
 //                    unit's next round takes over;
 //   FindingUnfolded  a land while a finding of the last verdict is not folded
 //                    into a unit, or is folded into a ready unit the land
-//                    leaves out (one folded into a unit that ended is settled:
-//                    never open again), or while a `changes`
+//                    leaves out (one folded into a unit that stopped rides with
+//                    its unit's later land), or while a `changes`
 //                    verdict's report did not read (`unresolved`: its
 //                    findings are not known, never none; the plugin reads
 //                    it again before each start and land, `ReportRead`);
@@ -184,7 +184,8 @@ export const UnitStarted = Schema.TaggedStruct("UnitStarted", {
 })
 export interface UnitStarted extends Schema.Schema.Type<typeof UnitStarted> {}
 
-export const UnitHandedBack = Schema.TaggedStruct("UnitHandedBack", { unit: Schema.String, ready: Schema.Boolean, at: Schema.Number })
+/** An implementor's hand-back; `said`, its verdict, is absent from lines written before it was kept. */
+export const UnitHandedBack = Schema.TaggedStruct("UnitHandedBack", { unit: Schema.String, ready: Schema.Boolean, said: Schema.optionalKey(Verdict), at: Schema.Number })
 export interface UnitHandedBack extends Schema.Schema.Type<typeof UnitHandedBack> {}
 
 export const BatchLanded = Schema.TaggedStruct("BatchLanded", { units: Schema.Array(Schema.String), at: Schema.Number })
@@ -245,6 +246,11 @@ export interface Unit {
   readonly child?: string
   /** The Rifts its implementors were started on, by `(rift: <path>)` in their descriptions; absent when none named one. */
   readonly rifts?: ReadonlyArray<string>
+  /**
+   * What an `ended` unit's hand-back said (`blocked`, `stuck`, `none` for one that died): it may go on, so its
+   * findings ride with it. Absent on a unit a ledger ended before this was kept: one the ledger lost track of.
+   */
+  readonly said?: Verdict
 }
 
 /** A finding of a verdict: the verifier's batch, and the unit it was folded into, once it was. */
@@ -291,13 +297,20 @@ const openFindings = (state: MachineState): ReadonlyArray<readonly [string, Find
 export const riding = (state: MachineState, finding: Finding): boolean => finding.into !== undefined && state.units[finding.into]?.state === "implement"
 
 /**
- * A finding folded into a unit whose implementor ended without a `ready` the plugin read: the unit was blocked,
- * stopped, or landed and verified by a hand-back or a land the ledger missed (the ledger of 2026-11-12, batches
- * af-ai). A finding whose unit has ended is never open again: it holds no land, and the next land settles it.
+ * A finding folded into a unit whose implementor stopped without a `ready` the plugin read (blocked, stuck, died):
+ * it holds no land, and rides with its unit's later land, as one still implementing does.
  */
 export const endedWith = (state: MachineState, finding: Finding): boolean => unitsIn(state, "ended").some((name) => name === finding.into)
 
-/** A folded finding that holds no land: its unit still implements (it rides), or has ended (it is settled). */
+/**
+ * A finding folded into an ended unit with no hand-back on record: a ledger written before hand-backs were kept,
+ * whose unit landed and was verified by a hand-back or a land it missed (the ledger of 2026-11-12, batches af-ai).
+ * Its unit has ended, so it is never open again: the next land or verdict settles it.
+ */
+export const settled = (state: MachineState, finding: Finding): boolean =>
+  Object.entries(state.units).some(([name, unit]) => name === finding.into && unit.state === "ended" && !("said" in unit))
+
+/** A folded finding that holds no land: its unit still implements, or stopped (it rides), or ended long ago (settled). */
 export const holdsNoLand = (state: MachineState, finding: Finding): boolean => riding(state, finding) || endedWith(state, finding)
 
 /**
@@ -569,8 +582,8 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
         case "HandBack": {
           if (command.role === "implementor") {
             const was = state.units[command.name]?.state
-            if (was === "implement") return [UnitHandedBack.make({ unit: command.name, ready: command.verdict === "ready", at: now })]
-            return was === "ended" && command.verdict === "ready" ? [UnitHandedBack.make({ unit: command.name, ready: true, at: now })] : []
+            if (was === "implement") return [UnitHandedBack.make({ unit: command.name, ready: command.verdict === "ready", said: command.verdict, at: now })]
+            return was === "ended" && command.verdict === "ready" ? [UnitHandedBack.make({ unit: command.name, ready: true, said: command.verdict, at: now })] : []
           }
           if (command.role === "verifier" && state.verifier?.batch === command.name) {
             if (command.verdict !== "changes") return [VerifierEnded.make({ batch: command.name, verdict: command.verdict, at: now })]
@@ -628,8 +641,9 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
       case "UnitHandedBack": {
         const unit = units[event.unit]
         if (unit === undefined) return state
-        const { child: _, ...rest } = unit
-        units[event.unit] = { ...rest, state: event.ready ? "ready" : "ended", since: event.at }
+        const { child: _, said: __, ...rest } = unit
+        if (event.ready || !("said" in event)) units[event.unit] = { ...rest, state: event.ready ? "ready" : "ended", since: event.at }
+        else units[event.unit] = { ...rest, state: "ended", since: event.at, said: event.said }
         return { ...state, units }
       }
       case "BatchLanded": {
@@ -639,14 +653,15 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
           if (unit === undefined) continue
           if (unit.direct) delete units[name]
           else {
-            units[name] = { ...unit, state: "landed", since: event.at }
+            const { said: _, ...rest } = unit
+            units[name] = { ...rest, state: "landed", since: event.at }
             unverified.add(name)
           }
         }
         // Each finding folded into a unit that landed goes to the next verifier; one not folded, or not
-        // known, was departed from; one folded into a unit that ended and did not land is settled.
+        // known, was departed from; one folded into a unit with no hand-back on record that did not land is settled.
         for (const [key, finding] of Object.entries(findings)) {
-          if (finding.into === undefined || (!event.units.includes(finding.into) && endedWith(state, finding))) delete findings[key]
+          if (finding.into === undefined || (!event.units.includes(finding.into) && settled(state, finding))) delete findings[key]
           else if (event.units.includes(finding.into)) {
             carried[key] = { batch: finding.batch, into: finding.into }
             delete findings[key]
@@ -687,7 +702,7 @@ export const machine = (cadence: Cadence = DEFAULT_CADENCE): Decider<MachineStat
         // The verdict is in: what it checked as folded is done, and its own findings open, or its debt when they did not read.
         // A finding folded into a unit no longer in the state was checked by a verdict already: a ledger written
         // before a verifier's start stood in for a land by hand kept it open (`standInFindings`), so it goes too.
-        for (const [key, finding] of Object.entries(findings)) if (finding.into !== undefined && (units[finding.into] === undefined || endedWith(state, finding))) delete findings[key]
+        for (const [key, finding] of Object.entries(findings)) if (finding.into !== undefined && (units[finding.into] === undefined || settled(state, finding))) delete findings[key]
         for (const key of event.findings ?? []) findings[key] = { batch: event.batch }
         const unresolved = { ...state.unresolved, ...(event.unresolved === undefined ? {} : { [event.batch]: event.unresolved }) }
         return tidy({ ...rest, units, findings, carried: {}, unresolved })
