@@ -8,6 +8,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { test } from "bun:test"
 import { Effect } from "effect"
+import { quietRepo } from "../../../tests/git-repo.ts"
 import { riftsLaws } from "../laws.ts"
 import * as ProcessRifts from "./rifts.ts"
 
@@ -45,6 +46,8 @@ const bench = (workrift: boolean) =>
       mkdirSync(join(source, "src"), { recursive: true })
       sh(scratch, env, "git", "init", "-q", "--bare", "-b", "main", origin)
       sh(source, env, "git", "init", "-q", "-b", "main")
+      quietRepo(origin)
+      quietRepo(source)
       writeFileSync(join(source, "README.md"), "app\n")
       writeFileSync(join(source, "src/index.ts"), "export {}\n")
       sh(source, env, "git", "add", "README.md", "src/index.ts")

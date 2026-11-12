@@ -193,6 +193,23 @@
     },
     {
       "files": [
+        "tests/git-repo.ts"
+      ],
+      "rules": {
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "tests/git-repo.test.ts"
+      ],
+      "rules": {
+        "effect/noGlobals": "off",
+        "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
         "scripts/accept-gent.test.ts"
       ],
       "rules": {

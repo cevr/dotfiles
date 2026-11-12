@@ -12,6 +12,7 @@ import { AgentCalled, AgentReturned } from "@dotfiles/opencode-status/agent-call
 import * as CallLog from "@dotfiles/opencode-status/memory/call-log"
 import * as RunTables from "@dotfiles/opencode-status/memory/run-tables"
 import { Snapshot, STATUS } from "@dotfiles/opencode-status/status"
+import { quietRepo } from "../../tests/git-repo.ts"
 import Status, { live, make, Options } from "./server.ts"
 
 type Host = Parameters<(typeof Status)["effect"]>[0]
@@ -180,6 +181,7 @@ const git = (cwd: string, ...args: ReadonlyArray<string>) =>
 const repository = (dir: string) =>
   Effect.gen(function* () {
     yield* git(dir, "init", "-q")
+    quietRepo(dir)
     writeFileSync(join(dir, "README"), "x")
     yield* git(dir, "add", "README")
     yield* git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")

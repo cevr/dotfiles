@@ -4,6 +4,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { quietRepo } from "../tests/git-repo.ts"
 import { dropMarkers, forkWork, forkWorkText, linkedIssues, type Lookup } from "./fork-work.ts"
 
 const AGENTS = [
@@ -47,6 +48,7 @@ const WAIT = ["export const waitsOnOwnWork = (job: Job) => job.background.length
 const fixture = () => {
   const dir = mkdtempSync(join(scratch, "repo-"))
   sh(dir, "init", "-q", "-b", "dev")
+  quietRepo(dir)
   commit(dir, "init", { "src/job.ts": "export {}\n", "src/theme.ts": "export {}\n" })
   sh(dir, "checkout", "-q", "-b", "prime-look")
   const wait = commit(dir, "feat: a subagent waits on its own background work", { "src/job.ts": `export {}\n${WAIT.join("\n")}\n` })

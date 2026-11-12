@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { tagObject, targetOfTag, VERIFIED_REF } from "@dotfiles/opencode-update/target"
 import { spawnSync, write } from "bun"
 import { Effect, Option } from "effect"
+import { quietRepo } from "../../../tests/git-repo.ts"
 import { FleetOutcome } from "../fleet.ts"
 import { recordOnce } from "./fleet.ts"
 
@@ -21,6 +22,8 @@ const sh = (cwd: string, command: ReadonlyArray<string>) => spawnSync([...comman
 const repository = (root: string, name: string, count: number) => {
   sh(root, ["git", "init", "-q", "--bare", "-b", "main", `${name}.git`])
   sh(root, ["git", "init", "-q", "-b", "main", name])
+  quietRepo(`${root}/${name}.git`)
+  quietRepo(`${root}/${name}`)
   const dir = `${root}/${name}`
   sh(dir, ["git", "remote", "add", "origin", `${root}/${name}.git`])
   const commits = Array.from({ length: count }, (_, at) => {
@@ -124,6 +127,7 @@ const REAL_GIT = spawnSync(["sh", "-c", "command -v git"]).stdout.toString().tri
 const otherHostPublishes = (root: string, targets: ReadonlyArray<{ readonly dotfiles: string; readonly fork: string; readonly batch: string }>) =>
   Effect.gen(function* () {
     sh(root, ["git", "clone", "-q", `${root}/dotfiles.git`, "other"])
+    quietRepo(`${root}/other`)
     const tags = yield* Effect.forEach(targets, (target, at) =>
       Effect.promise(() => write(`${root}/other/.git/tag-${at}`, tagObject(target, { name: "other", email: "other@example.invalid", at: 1_794_416_400 + at }))).pipe(
         Effect.map(() => sh(`${root}/other`, ["git", "hash-object", "-t", "tag", "-w", `${root}/other/.git/tag-${at}`])),
@@ -159,6 +163,7 @@ const tagFile = (root: string, name: string, target: { readonly dotfiles: string
 const otherHostPublishesNow = (root: string, target: { readonly dotfiles: string; readonly fork: string; readonly batch: string }) =>
   Effect.gen(function* () {
     sh(root, ["git", "clone", "-q", `${root}/dotfiles.git`, "other"])
+    quietRepo(`${root}/other`)
     const oid = sh(`${root}/other`, ["git", "hash-object", "-t", "tag", "-w", yield* tagFile(root, "now", target)])
     sh(`${root}/other`, ["git", "push", "--quiet", "origin", `+${oid}:${VERIFIED_REF}`])
   })

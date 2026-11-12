@@ -12,6 +12,7 @@
  */
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
+import { quietRepo } from "../git-repo.ts"
 import { serve, type Seen } from "./sim.ts"
 
 export interface Spec {
@@ -51,7 +52,9 @@ mkdirSync(join(spec.base, "code/work"), { recursive: true })
 const work = realpathSync(join(spec.base, "code/work"))
 const origin = join(spec.base, "origin.git")
 git(spec.base, "init", "-q", "--bare", "-b", "main", origin)
+quietRepo(origin)
 git(work, "init", "-q", "-b", "main")
+quietRepo(work)
 writeFileSync(join(work, "README.md"), "work\n")
 git(work, "add", "README.md")
 git(work, "commit", "-q", "-m", "first")

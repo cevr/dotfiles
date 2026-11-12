@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { argv, spawnSync, write } from "bun"
 import { Effect, Exit } from "effect"
+import { quietRepo } from "../../../tests/git-repo.ts"
 import { Source } from "../service.ts"
 import * as SourceLive from "./source.ts"
 
@@ -37,6 +38,7 @@ const files = (root: string, entries: ReadonlyArray<readonly [string, string]>) 
 const scratch = Effect.gen(function* () {
   const root = sh(".", ["mktemp", "-d", "-t", "update-source"]).out
   sh(root, ["git", "init", "-q", "-b", "main"])
+  quietRepo(root)
   yield* files(root, [
     [".gitignore", "node_modules\n"],
     ["opencode/package.json", EMPTY_PACKAGE],

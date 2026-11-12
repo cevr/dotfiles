@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
+import { quietRepo } from "../../../tests/git-repo.ts"
 import { Skill } from "../service.ts"
 import * as GitSkill from "./skill.ts"
 
@@ -30,6 +31,7 @@ const commit = (path: string, subject: string) => {
 
 mkdirSync(skillDir, { recursive: true })
 git("init", "-q")
+quietRepo(repo)
 const first = commit("skills/orchestrate/SKILL.md", "feat(orchestrate): first")
 const second = commit("skills/orchestrate/protocol.md", "feat(orchestrate): second")
 commit("README.md", "docs: outside the skill")

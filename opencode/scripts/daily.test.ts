@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
+import { quietRepo } from "../tests/git-repo.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/rift/process/landing.ts"
 import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, launcher, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
@@ -225,6 +226,7 @@ describe("the upstream merge", () => {
     using clone = scratchDir("daily-push-")
     const scratch = realpathSync(clone.path)
     git(scratch, "clone", "--quiet", "--branch", branch, remote, ".")
+    quietRepo(scratch)
     for (const [file, text] of Object.entries(files)) writeFileSync(join(scratch, file), text)
     git(scratch, "add", "-A")
     git(scratch, "commit", "--quiet", "-m", `change ${Object.keys(files).join(" ")}`)
@@ -242,6 +244,7 @@ describe("the upstream merge", () => {
     git(upstream, "init", "--quiet", "--bare")
     git(origin, "init", "--quiet", "--bare")
     git(seed, "init", "--quiet", "-b", "dev")
+    for (const dir of [upstream, origin, seed]) quietRepo(dir)
     writeFileSync(join(seed, "a.txt"), "one\n")
     git(seed, "add", "-A")
     git(seed, "commit", "--quiet", "-m", "root")
@@ -249,6 +252,7 @@ describe("the upstream merge", () => {
     git(seed, "push", "--quiet", origin, "dev:prime-look")
     const fork = join(root, "fork")
     git(root, "clone", "--quiet", "--branch", "prime-look", origin, fork)
+    quietRepo(fork)
     git(fork, "remote", "add", "upstream", upstream)
     const calls: string[] = []
     const options = (overrides: Partial<UpstreamOptions> = {}): UpstreamOptions => ({

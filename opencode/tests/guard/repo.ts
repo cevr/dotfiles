@@ -7,6 +7,7 @@
  */
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { quietRepo } from "../git-repo.ts"
 
 /** The tracked file, as committed and as left dirty. */
 export const KEPT_FILE = "kept.txt"
@@ -28,6 +29,7 @@ export const git = (work: string, ...args: ReadonlyArray<string>): string => {
 /** Makes `work` (an existing, empty directory) the repository; its HEAD. */
 export const makeRepo = (work: string): string => {
   git(work, "init", "--quiet")
+  quietRepo(work)
   writeFileSync(join(work, KEPT_FILE), COMMITTED)
   git(work, "add", KEPT_FILE)
   git(work, "commit", "--quiet", "-m", "first")
