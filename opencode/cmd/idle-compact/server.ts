@@ -23,9 +23,12 @@
  *   compacts on time, and a notice that comes first cancels the timer.
  * - `session.execution.succeeded`/`failed`/`interrupted`: decide, set the timer.
  * - `session.deleted`: the session is forgotten. Disposing the plugin ends every timer.
- * - At start, and on `provider.updated`, `model.updated` or `agent.updated`, once
- *   the catalog has been quiet for `SETTLE`: the recent main sessions are decided
- *   (again; the start's look skips one the plugin has seen since). A session's
+ * - At start, and on `provider.updated`, `model.updated` or `agent.updated` of
+ *   this copy's location, once the catalog has been quiet for `SETTLE`: the
+ *   recent main sessions are decided (again, when what the decisions read of
+ *   the catalog changed since the last look: the host publishes every
+ *   Location's catalog again when another Location opens; the start's look
+ *   skips one the plugin has seen since). A session's
  *   lifetime comes from the catalog's settings, which a reload rebuilds: OpenCode loads its config plugins after ours
  *   (packages/core/src/plugin/internal.ts `post`), so while it reloads ours, a
  *   provider reads without its configured `cache.ttl` and the lifetime falls back
@@ -41,7 +44,7 @@
  * OpenCode runs a copy of the plugin for each location (directory and
  * workspace) it serves. Every copy hears every session's events, but a
  * session's hooks reach only its own location's copy, so that copy alone
- * decides for it (`Sessions.serves`); the others drop it without a word.
+ * decides for it (`Sessions.standing`); the others drop it without a word.
  *
  * Each decision is logged: scheduled, compacting, or not and why, with what
  * compacting costs and avoids; at info, but at debug for a session that could not
@@ -147,8 +150,12 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
       yield* Effect.forkScoped(
         ctx.event.subscribe({ types: [...WAKES, ...ENDS, "session.deleted", ...CATALOG] }).pipe(
           Stream.runForEach((event) => {
-            if (event.type === "provider.updated" || event.type === "model.updated" || event.type === "agent.updated")
+            // Each Location publishes its own catalog's changes; another Location's is not this copy's to look at.
+            if (event.type === "provider.updated" || event.type === "model.updated" || event.type === "agent.updated") {
+              if (Option.exists(Option.fromUndefinedOr(event.location), (place) => !OpenCodeSessions.samePlace(place, ctx.location)))
+                return Effect.void
               return Queue.offer(looks, "catalog")
+            }
             const sessionID: string = event.data.sessionID
             if (event.type === "session.deleted") return compactor.forget(sessionID)
             if ((ENDS as ReadonlyArray<string>).includes(event.type)) return compactor.settled(sessionID)

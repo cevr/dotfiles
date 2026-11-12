@@ -9,20 +9,24 @@
 // and checks that a session's idle window gets one decision and one compaction.
 // tests/idle-compact.test.ts runs it in OpenCode, on a scripted model.
 import { describe, expect, test } from "bun:test"
-import { Effect, Exit, Logger, PubSub, References, Schema, type Scope, Stream } from "effect"
+import { Duration, Effect, Exit, Logger, PubSub, References, Schema, type Scope, Stream } from "effect"
 import { TestClock } from "effect/testing"
-import { type Host as SessionsHost, layer as sessionsLayer, type MessageView, type ModelView } from "@dotfiles/opencode-idle-compact/opencode/sessions"
-import IdleCompact, { make, Options } from "./server.ts"
+import { CHILDREN, type Host as SessionsHost, layer as sessionsLayer, type MessageView, type ModelView } from "@dotfiles/opencode-idle-compact/opencode/sessions"
+import IdleCompact, { make, Options, SETTLE } from "./server.ts"
 
 type Host = Parameters<(typeof IdleCompact)["effect"]>[0]
 type Hook = (event: Record<string, unknown>) => Effect.Effect<void>
 interface HostEvent {
   readonly type: string
+  /** The location it was published in; none for a host-wide one. */
+  readonly location?: { readonly directory: string }
   readonly data: { readonly sessionID?: string }
 }
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
+/** How long the catalog stays quiet before a look. */
+const SETTLE_MS = Duration.toMillis(SETTLE)
 
 /** One session of the world: its times, in test-clock ms, and its context. */
 interface WorldSession {
@@ -48,6 +52,8 @@ const world = () => {
   /** The catalog as the host reads it now: a reload changes it. */
   const catalog = { models: [...MODELS], agents: new Map<string, string | undefined>([["build", undefined]]), unreadable: false }
   const compactions: Array<string> = []
+  /** The host's heavy reads, as the plugin made them: a session's whole context, its children, the recent main sessions. */
+  const reads = { messages: new Array<string>(), children: new Array<{ readonly sessionID: string; readonly limit: number }>(), roots: 0 }
   const view = (id: string, session: WorldSession) => ({ id, ...session, directory: session.directory ?? "/work" })
   const host: SessionsHost = {
     location: { directory: "/work" },
@@ -55,14 +61,30 @@ const world = () => {
       const session = sessions.get(id)
       return session === undefined ? Effect.fail(new Error(`no session ${id}`)) : Effect.succeed(view(id, session))
     },
-    messages: (id) => Effect.succeed(sessions.get(id)?.messages ?? []),
-    children: (id) => Effect.succeed([...sessions].filter(([, session]) => session.parentID === id).map(([child, session]) => view(child, session))),
+    messages: (id) =>
+      Effect.sync(() => {
+        reads.messages.push(id)
+        return sessions.get(id)?.messages ?? []
+      }),
+    children: (id, limit) =>
+      Effect.sync(() => {
+        reads.children.push({ sessionID: id, limit })
+        return [...sessions]
+          .filter(([, session]) => session.parentID === id)
+          .map(([child, session]) => view(child, session))
+          .toReversed()
+          .slice(0, limit)
+      }),
     model: (ref) =>
       catalog.unreadable
         ? Effect.fail(new Error(`provider ${ref.providerID} cannot be read`))
         : Effect.succeed(catalog.models.find((model) => model.providerID === ref.providerID && model.modelID === ref.id)),
     agentTTL: (id) => (catalog.agents.has(id) ? Effect.succeed(catalog.agents.get(id)) : Effect.fail(new Error(`Agent not found: ${id}`))),
-    roots: Effect.sync(() => [...sessions].filter(([, session]) => session.parentID === undefined).map(([id, session]) => view(id, session))),
+    catalog: Effect.sync(() => ({ models: catalog.models, agents: [...catalog.agents] })),
+    roots: Effect.sync(() => {
+      reads.roots += 1
+      return [...sessions].filter(([, session]) => session.parentID === undefined).map(([id, session]) => view(id, session))
+    }),
     compact: (id) => Effect.sync(() => void compactions.push(id)),
   }
   const session = (id: string, fields: Partial<WorldSession> = {}): WorldSession => {
@@ -70,7 +92,7 @@ const world = () => {
     sessions.set(id, made)
     return made
   }
-  return { sessions, compactions, host, session, catalog }
+  return { sessions, compactions, host, session, catalog, reads }
 }
 type World = ReturnType<typeof world>
 
@@ -92,6 +114,7 @@ const start = (
     const events = at.bus ?? (yield* PubSub.unbounded<HostEvent>())
     const host = {
       options,
+      location: { directory: at.directory ?? "/work" },
       session: {
         hook: (name: string, callback: Hook) =>
           Effect.sync(() => {
@@ -108,9 +131,9 @@ const start = (
       for (const callback of hooks[name] ?? []) yield* callback(event)
     })
     const emit = (type: string, sessionID: string) => PubSub.publish(events, { type, data: { sessionID } }).pipe(Effect.andThen(settle))
-    /** The host publishes a catalog change, as it does once a reload is applied. */
+    /** The host publishes this copy's location's catalog change, as it does once a reload is applied. */
     const publish = (type: "provider.updated" | "model.updated" | "agent.updated") =>
-      PubSub.publish(events, { type, data: {} }).pipe(Effect.andThen(settle))
+      PubSub.publish(events, { type, location: { directory: at.directory ?? "/work" }, data: {} }).pipe(Effect.andThen(settle))
     const now = TestClock.testClockWith((clock) => Effect.sync(() => clock.currentTimeMillisUnsafe()))
 
     /**
@@ -519,6 +542,27 @@ describe("the idle compaction plugin", () => {
       }),
     ))
 
+  test("an execution end reads a main session's context and children once, and a subagent's neither", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        state.session("ses_root")
+        state.session("ses_child", { parentID: "ses_root" })
+        const plugin = yield* start(state)
+        // The first look reads the main session once.
+        yield* plugin.until(SETTLE_MS + 1)
+        expect(state.reads.messages).toEqual(["ses_root"])
+        state.reads.messages.length = 0
+        state.reads.children.length = 0
+        // An orchestrator's subagents end by the hundred: theirs is no main session's idle window to read.
+        for (let index = 0; index < 3; index += 1) yield* plugin.turn("ses_child")
+        expect(state.reads).toMatchObject({ messages: [], children: [] })
+        yield* plugin.turn("ses_root")
+        // Its children are read for the log alone: one page of the newest, however many it has.
+        expect(state.reads).toMatchObject({ messages: ["ses_root"], children: [{ sessionID: "ses_root", limit: CHILDREN }] })
+      }),
+    ))
+
   test("a deleted session's timer ends", () =>
     onTestClock(
       Effect.gen(function* () {
@@ -734,6 +778,61 @@ describe("one copy per location", () => {
           ["idle-compact: compaction scheduled", "refresh"],
           ["idle-compact: compacting the idle session before its cache expires", "timer"],
         ])
+      }),
+    ))
+
+  test("a second Location boots: every Location publishes its catalog again unchanged, and only the new copy looks at its sessions", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        const idle = (created: number): MessageView => ({
+          type: "assistant",
+          created,
+          tokens: { input: 1_000, cache: { read: 90_000, write: 0 } },
+          model: { providerID: "anthropic", id: "claude-x" },
+          agent: "build",
+        })
+        for (const id of ["ses_1", "ses_2", "ses_3"]) state.session(id, { busy: 0, idle: 1_000, messages: [idle(0)] })
+        state.session("ses_b", { directory: "/b", busy: 0, idle: 1_000, messages: [idle(0)] })
+        const bus = yield* PubSub.unbounded<HostEvent>()
+        const work = yield* start(state, {}, { directory: "/work", bus })
+        yield* work.until(SETTLE_MS + 1)
+        expect(state.reads.roots).toBe(1)
+        expect(state.reads.messages.toSorted()).toEqual(["ses_1", "ses_2", "ses_3"])
+        state.reads.roots = 0
+        state.reads.messages.length = 0
+
+        // /b opens: its copy starts, and the host publishes each Location's catalog again, unchanged.
+        const b = yield* start(state, {}, { directory: "/b", bus })
+        for (const copy of [work, b]) {
+          yield* copy.publish("provider.updated")
+          yield* copy.publish("model.updated")
+        }
+        yield* work.until((yield* work.now) + 2 * SETTLE_MS)
+        // One look, /b's first; /work's copy reads none of its sessions again.
+        expect(state.reads.roots).toBe(1)
+        expect(state.reads.messages).toEqual(["ses_b"])
+        // Its timers stand: each session still compacts on time, once.
+        yield* work.until(4 * MINUTE)
+        expect(state.compactions.toSorted()).toEqual(["ses_1", "ses_2", "ses_3", "ses_b"])
+      }),
+    ))
+
+  test("a catalog change published in another Location is that Location's copy's to look at", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        state.session("ses_1")
+        const bus = yield* PubSub.unbounded<HostEvent>()
+        const work = yield* start(state, {}, { directory: "/work", bus })
+        const a = yield* start(state, {}, { directory: "/a", bus })
+        yield* work.until(SETTLE_MS + 1)
+        state.reads.roots = 0
+        state.catalog.agents.set("verifier", "5m")
+        yield* a.publish("agent.updated")
+        yield* work.until((yield* work.now) + 2 * SETTLE_MS)
+        // /a's copy looks; /work's hears the event but it is not its Location's.
+        expect(state.reads.roots).toBe(1)
       }),
     ))
 

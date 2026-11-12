@@ -1,7 +1,7 @@
 // What every implementation of the Sessions contract owes, as a shared test
 // suite. Each implementation's test beside it runs the suite over its Layer.
 import { describe, expect, test } from "bun:test"
-import { Effect, type Layer, Option, type Scope } from "effect"
+import { Context, Effect, Layer, Option, type Scope } from "effect"
 import { CompactionRefused, Sessions, SessionUnreadable } from "./service.ts"
 
 /** One message of a session's context. */
@@ -115,7 +115,10 @@ const WORLD: World = {
   refuse: ["refused"],
 }
 
-const check = <A, E>(bench: (world: World) => Effect.Effect<Bench, never, Scope.Scope>, body: (made: Bench) => Effect.Effect<A, E, Sessions>) =>
+const check = <A, E>(
+  bench: (world: World) => Effect.Effect<Bench, never, Scope.Scope>,
+  body: (made: Bench) => Effect.Effect<A, E, Sessions | Scope.Scope>,
+) =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -265,14 +268,44 @@ export const sessionsLaws = (name: string, bench: (world: World) => Effect.Effec
       check(bench, () =>
         Effect.gen(function* () {
           const sessions = yield* Sessions
-          expect(yield* sessions.serves("idle")).toBe(true)
-          expect(yield* sessions.serves("worker")).toBe(true)
-          expect(yield* sessions.serves("trailing")).toBe(true)
-          expect(yield* sessions.serves("elsewhere")).toBe(false)
-          expect(yield* sessions.serves("workspace")).toBe(false)
-          const error = yield* Effect.flip(sessions.serves("gone"))
+          const serves = (sessionID: string) => Effect.map(sessions.standing(sessionID), (standing) => standing.serves)
+          expect(yield* serves("idle")).toBe(true)
+          expect(yield* serves("worker")).toBe(true)
+          expect(yield* serves("trailing")).toBe(true)
+          expect(yield* serves("elsewhere")).toBe(false)
+          expect(yield* serves("workspace")).toBe(false)
+          const error = yield* Effect.flip(sessions.standing("gone"))
           expect(error).toBeInstanceOf(SessionUnreadable)
           expect(error.sessionID).toBe("gone")
+        }),
+      ))
+
+    test("a session's standing tells a subagent's session and a running one, as its facts do", () =>
+      check(bench, () =>
+        Effect.gen(function* () {
+          const sessions = yield* Sessions
+          for (const sessionID of ["idle", "turn", "worker", "done"]) {
+            const { child, running } = yield* sessions.facts(sessionID)
+            expect(yield* sessions.standing(sessionID)).toEqual({ serves: true, child, running })
+          }
+          expect(yield* sessions.standing("worker")).toEqual({ serves: true, child: true, running: true })
+        }),
+      ))
+
+    test("the catalog reads as one key: the same catalog the same key, a changed lifetime another", () =>
+      check(bench, () =>
+        Effect.gen(function* () {
+          /** The key an implementation over `world` reads. */
+          const keyOf = Effect.fn("SessionsLaws.keyOf")(function* (world: World) {
+            const built = yield* Layer.build((yield* bench(world)).layer)
+            return yield* Context.get(built, Sessions).catalog
+          })
+          const once = yield* (yield* Sessions).catalog
+          expect(yield* (yield* Sessions).catalog).toBe(once)
+          expect(yield* keyOf(WORLD)).toBe(once)
+          const longer = WORLD.models.map((model) => ({ ...model, ttl: "2h" }))
+          expect(yield* keyOf({ ...WORLD, models: longer })).not.toBe(once)
+          expect(yield* keyOf({ ...WORLD, agents: { ...WORLD.agents, verifier: { cacheTTL: "1h" } } })).not.toBe(once)
         }),
       ))
   })

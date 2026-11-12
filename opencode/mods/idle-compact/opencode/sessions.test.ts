@@ -67,6 +67,7 @@ const host = (world: World, compacted: Array<string>): Host => {
       const agent = world.agents[id]
       return agent === undefined ? Effect.fail(new Error(`Agent not found: ${id}`)) : Effect.succeed(agent.cacheTTL)
     },
+    catalog: Effect.succeed({ models: world.models, agents: world.agents }),
     roots: Effect.succeed(
       Object.entries(world.sessions)
         .filter(([, session]) => session.parentID === undefined)
