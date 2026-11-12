@@ -37,6 +37,20 @@ describe("the verified target an accepted batch records", () => {
     )
   })
 
+  test("an arrow marks the head, never the base", () => {
+    expect(headsOf("Dotfiles: base 1111111a, head 2222222b. Fork: 5df8da5195 → 0efbe2f0ab (upstream merge).")).toEqual(heads(Option.some("2222222b"), Option.some("0efbe2f0ab")))
+    expect(headsOf("Dotfiles: 1111111a -> 2222222b. Fork: 5df8da5195→0efbe2f0ab")).toEqual(heads(Option.some("2222222b"), Option.some("0efbe2f0ab")))
+  })
+
+  test("a part naming two commits with no head marked is unreadable, so the publish refuses instead of guessing", () => {
+    const named = headsOf("Dotfiles: base 1111111a, head 2222222b. Fork: 5df8da5195 and 0efbe2f0ab.")
+    expect(named).toEqual(heads(Option.some("2222222b"), Option.none()))
+    expect(missingOf(named)).toEqual(["the fork head (`Fork prime-look: base X, head Y` or `Fork unchanged (Y)`)"])
+    expect(headsOf("Fork: base 5df8da5195, 0efbe2f0ab")).toEqual(heads(Option.none(), Option.none()))
+    expect(headsOf("Fork: 1111111a → 2222222b, head 3333333c")).toEqual(heads(Option.none(), Option.none()))
+    expect(headsOf("Fork: 5df8da5195 and 0efbe2f0ab. Fork prime-look: base 1111111a, head 2222222b")).toEqual(heads(Option.none(), Option.none()))
+  })
+
   test("M1: a batch file must name both heads; it says which it lacks, and no kept commit stands in", () => {
     expect(missingOf(heads(Option.some(D2), Option.some(F2)))).toEqual([])
     expect(missingOf(heads(Option.some(D2), Option.none()))).toEqual(["the fork head (`Fork prime-look: base X, head Y` or `Fork unchanged (Y)`)"])

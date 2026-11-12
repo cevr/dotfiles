@@ -25,27 +25,43 @@ const COMMIT = /^(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}$/
 /** Where a repository's part of a batch file's header starts: its name at a line's or a sentence's start. */
 const PART = /(?:^|\n|[.;]\s+)(?:-\s+)?(Dotfiles|Fork)\b/g
 
+/** The words that mark the commit after them as a part's head: `head Y`, `X → Y`, `X -> Y`. */
+const HEAD_MARKS = new Set(["head", "→", "->"])
+
+/** A part's words, an arrow standing as a word of its own (`X→Y` reads as `X → Y`). */
+const wordsOf = (part: string): ReadonlyArray<string> => part.replace(/→|->/g, " $& ").split(/[\s,;:.()`]+/)
+
 /**
- * The head a part of a batch file's header names: the commit after `head`, else the first commit
- * not after `base` (`Fork unchanged (prime-look 13a380890b)`, `Dotfiles: 0eb81d14 (no dotfiles
- * change)`). None when it names no commit (`head origin/main`).
+ * The head a part of a batch file's header names, never a base: the commit a head mark names
+ * (`head Y`, `X → Y`), else the part's only commit not after `base` (`Fork unchanged (prime-look
+ * 13a380890b)`, `Dotfiles: 0eb81d14 (no dotfiles change)`). None when it names no commit
+ * (`head origin/main`), and none when it names two or more without one marked head (`X and Y`, two
+ * marked heads that differ): the publish refuses rather than guess which is the head.
  */
 const headOfPart = (part: string): Option.Option<string> => {
-  const words = part.split(/[\s,;:.()`]+/)
-  const named = words.filter((each, at) => COMMIT.test(each) && words[at - 1] === "head")
-  const unnamed = words.filter((each, at) => COMMIT.test(each) && words[at - 1] !== "base")
-  return Arr.head([...named, ...unnamed])
+  const words = wordsOf(part)
+  const commits = words.filter((each) => COMMIT.test(each))
+  const marked = Arr.dedupe(words.filter((each, at) => COMMIT.test(each) && HEAD_MARKS.has(words[at - 1] ?? "")))
+  if (marked.length > 1) return Option.none()
+  if (marked.length === 1) return Arr.head(marked)
+  if (words.some((each, at) => COMMIT.test(each) && words[at - 1] === "base")) return Option.none()
+  return Option.filter(Arr.head(commits), () => commits.length === 1)
 }
 
 /**
  * The heads a batch file names, as the orchestrator writes its header: `Dotfiles: base X, head Y`,
- * `Fork prime-look: base X, head Y`, `Fork (…): base X, head Y`, `Fork unchanged (13a380890b)`.
- * Each repository's part runs to the next part; the first part that names a commit wins.
+ * `Fork prime-look: base X, head Y`, `Fork (…): base X, head Y`, `Fork: X → Y`, `Fork unchanged
+ * (13a380890b)`. Each repository's part runs to the next part; the first part that names a commit
+ * decides, so an unreadable one (two commits, no head marked) leaves the head unnamed.
  */
 export const headsOf = (text: string): Heads => {
   const starts = Arr.fromIterable(text.matchAll(PART)).map((match) => ({ name: match[1], at: match.index + match[0].length - match[1].length }))
   const parts = starts.map((start, at) => ({ name: start.name, text: text.slice(start.at, Option.getOrElse(Option.map(Option.fromNullishOr(starts[at + 1]), (next) => next.at), () => text.length)).split("\n")[0] }))
-  const first = (name: string) => Arr.head(parts.filter((part) => part.name === name).flatMap((part) => Option.toArray(headOfPart(part.text))))
+  const first = (name: string) =>
+    Option.flatMap(
+      Arr.head(parts.filter((part) => part.name === name && wordsOf(part.text).some((each) => COMMIT.test(each)))),
+      (part) => headOfPart(part.text),
+    )
   return { dotfiles: first("Dotfiles"), fork: first("Fork") }
 }
 
