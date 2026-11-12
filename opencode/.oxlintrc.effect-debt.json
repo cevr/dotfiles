@@ -318,7 +318,8 @@
     },
     {
       "files": [
-        "cmd/stall/server.test.ts"
+        "cmd/stall/server.test.ts",
+        "tests/plugin-start.test.ts"
       ],
       "rules": {
         "effect/noEffectRunInTests": "off"
