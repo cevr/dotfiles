@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { join, resolve } from "node:path"
 import { parseTTL } from "../mods/idle-compact/cache.ts"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
+import { loginStoreDir } from "../testbeds/gamut/gamut.ts"
 import { keptScratch, scratch as scratchDir } from "../tests/scratch.ts"
 import { hostLocks } from "../mods/rift/process/landing.ts"
 import { BUILTIN_BTW_OFF, BUILTIN_SCHEDULE_OFF, CLAUDE_CACHE_TTL, DOTFILES, forkSteps, installDotfiles, installedFile, launcher, mailEntry, mergeCli, mergeServer, moveFork, orchestrateEntry, peersOf, plannerModel, pluginDir, poolEntry, residentConfig, residentDir, roleModels } from "./daily.ts"
@@ -76,11 +77,22 @@ describe("the pool's entry", () => {
     expect(parseTTL(ttl)).toMatchObject({ _tag: "Some", value: 3_600_000 })
   })
 
-  test("adds gent's store as a source when it has one", () => {
-    expect(poolEntry(`${MODS}/pool`, "/home/.local/share/gent/auth")).toEqual({
+  test("adds the login store as a source when it has one", () => {
+    expect(poolEntry(`${MODS}/pool`, "/home/.local/share/opencode-prime/pool-auth")).toEqual({
       package: `${MODS}/pool`,
-      options: { cacheLifeMs: 3_600_000, sources: [{ kind: "gent", dir: "/home/.local/share/gent/auth" }] },
+      options: { cacheLifeMs: 3_600_000, sources: [{ kind: "store", dir: "/home/.local/share/opencode-prime/pool-auth" }] },
     })
+  })
+
+  test("on the MacBook and the workbox alike, the pool reads the login store in the home's opencode-prime data", () => {
+    for (const [host, home] of [
+      ["Cristians-MacBook-Pro.local", "/Users/cvr"],
+      ["bite-cristian", "/home/exedev"],
+    ] as const) {
+      expect(poolEntry(`${MODS}/pool`, loginStoreDir(home), { host })).toMatchObject({
+        options: { sources: [{ kind: "store", dir: `${home}/.local/share/opencode-prime/pool-auth` }] },
+      })
+    }
   })
 })
 
@@ -110,7 +122,7 @@ describe("the pool's fleet", () => {
   test("another host has no peers, and still paces OpenAI", () => {
     expect(poolEntry(`${MODS}/pool`, "/g", { host: "ci-runner" })).toMatchObject({
       options: {
-        sources: [{ kind: "gent", dir: "/g" }],
+        sources: [{ kind: "store", dir: "/g" }],
         paced: { openai: "openai" },
         fleet: { host: "ci-runner", peers: [] },
       },

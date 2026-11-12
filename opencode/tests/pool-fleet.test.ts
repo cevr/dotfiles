@@ -3,7 +3,7 @@
 // own scratch HOME, publishing its service file as the live one does.
 //
 // Host A runs orchestrate and the pool; its root session admits a wave of two
-// subagents on the scripted model. Host B runs the pool on two gent Claude
+// subagents on the scripted model. Host B runs the pool on two login store Claude
 // accounts read from the fake Anthropic usage endpoint, with A as a peer (read
 // by the real report.ts on stdin, against A's real service file, where SSH
 // would run it on the other host) and a third peer that cannot be reached.
@@ -17,15 +17,15 @@ import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { ROOT } from "../scripts/agents.ts"
 import { fleetRows, type PaneFleet } from "../mods/status/pane.ts"
 import { fakeAccount, startFakeAnthropic } from "./fake-anthropic.ts"
-import { gentAvailable, openGentStore } from "./gent/store.ts"
+import { openSlotStore } from "./store/store.ts"
 import { ROOT_TASK, serve } from "./orchestrate/sim.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 
 const fork = process.env.OPENCODE_DEV
-const ready = Boolean(fork) && gentAvailable()
+const ready = Boolean(fork)
 if (!ready) {
-  console.warn("tests/pool-fleet.test.ts: skipped. Set OPENCODE_DEV to the fork and GENT_SOURCE to a gent checkout.")
+  console.warn("tests/pool-fleet.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 }
 
 const HOUR = 3_600_000
@@ -169,10 +169,10 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
         script: () => ({ kind: "ok", text: "unused" }),
       })
       try {
-        const store = kept.dir("gent-auth-")
-        const gent = await openGentStore(store)
-        await gent.signIn("alpha", { ...accounts.alpha, expires: now + 8 * HOUR })
-        await gent.signIn("beta", { ...accounts.beta, expires: now + 8 * HOUR })
+        const store = kept.dir("store-auth-")
+        const logins = openSlotStore(store)
+        await logins.signIn("alpha", { ...accounts.alpha, expires: now + 8 * HOUR })
+        await logins.signIn("beta", { ...accounts.beta, expires: now + 8 * HOUR })
 
         const a = await start("host-a", {
           model: "sim/sim-model",
@@ -221,7 +221,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
                 package: poolPlugin,
                 options: {
                   sweepMinutes: 1,
-                  sources: [{ kind: "gent", dir: store, tokenURL: `${fake.url}/v1/oauth/token` }],
+                  sources: [{ kind: "store", dir: store, tokenURL: `${fake.url}/v1/oauth/token` }],
                   // A's scripted provider spends the same accounts as B's Claude agents.
                   paced: { sim: "anthropic" },
                   fleet: {

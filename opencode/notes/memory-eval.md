@@ -381,7 +381,7 @@ What the cells show:
   with each other, not with those rounds. One cross-model point anyway: the
   `kernel` arm saved 0 of 21 facts on Haiku 4.5 and 14 of 72 on Haiku 5.5.
 - **Through the pool, not the API key**, which had no credit left. The
-  transport is `scripts/memory-eval/pool.ts`: the 7 gent accounts, each
+  transport is `scripts/memory-eval/pool.ts`: the 7 login store accounts, each
   request shaped as the Anthropic auth plugin shapes it, and a local
   `AccountPool` seeded from the live pool's `status`. Before every episode
   the run asked the live pool's `pace` and its own accounts' pace. Both said
@@ -825,9 +825,9 @@ bun scripts/memory-eval/show.ts <out>/episodes.jsonl native orders --s2   # read
 ```
 
 Since round 3 requests go out on the pool's Claude accounts
-(`scripts/memory-eval/pool.ts`): the accounts gent signed in to, in the store
+(`scripts/memory-eval/pool.ts`): the accounts signed in to the login store, in the store
 the pool plugin reads (`~/.local/share/opencode-prime/pool-auth`, or
-`--gent-dir`), each request shaped as the Anthropic auth plugin shapes it and
+`--store-dir`), each request shaped as the Anthropic auth plugin shapes it and
 placed by a local copy of the pool's `AccountPool` seeded from the live
 pool's `status`. Before each episode the run asks the live pool's `pace` and
 its own accounts' pace, and stops on a no. `--api-key` sends with

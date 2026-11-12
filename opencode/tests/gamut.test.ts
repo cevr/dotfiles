@@ -14,11 +14,10 @@ import {
   DEFAULT_FORK,
   forkLaunch,
   formatReport,
-  gentAccounts,
-  gentAuthDir,
   isSettled,
   loginsToCopy,
   loginStep,
+  loginStoreDir,
   newestRelease,
   NO_RECORD,
   openTurnSessions,
@@ -39,6 +38,7 @@ import {
   selection,
   sendAwaitsTurn,
   serverPlugins,
+  storeAccounts,
   testSummary,
   WAIT_START,
   waitStep,
@@ -128,13 +128,13 @@ describe("presets", () => {
   })
 
   test("every preset resolves, and only the sim preset needs no login", () => {
-    const needs: Record<string, ReadonlyArray<string>> = { sim: [], haiku: ["anthropic"], "haiku-gent": ["anthropic"] }
+    const needs: Record<string, ReadonlyArray<string>> = { sim: [], haiku: ["anthropic"], "haiku-store": ["anthropic"] }
     for (const [name, preset] of Object.entries(PRESETS)) {
       const resolved = resolvePreset(preset, CATALOG)
       expect(providersNeeded(resolved)).toEqual(needs[name] ?? ["opencode-go"])
     }
-    // haiku-gent copies no login: the pool reads gent's accounts in place.
-    expect(loginsToCopy(PRESETS["haiku-gent"]!, resolvePreset(PRESETS["haiku-gent"]!, CATALOG))).toEqual([])
+    // haiku-store copies no login: the pool reads the login store's accounts in place.
+    expect(loginsToCopy(PRESETS["haiku-store"]!, resolvePreset(PRESETS["haiku-store"]!, CATALOG))).toEqual([])
     expect(loginsToCopy(PRESETS.haiku!, resolvePreset(PRESETS.haiku!, CATALOG))).toEqual(["anthropic"])
     const mixed = resolvePreset(PRESETS["glm-deepseek"]!, CATALOG)
     expect(selection(mixed.orchestrator)).toBe("opencode-go/glm-5.3#high")
@@ -220,32 +220,23 @@ describe("the run's config", () => {
     expect("plugins" in projectConfig(deepseek)).toBe(false)
   })
 
-  test("a run on gent's accounts gives the pool gent's store, and runs Haiku alone", () => {
-    const haiku = resolvePreset(PRESETS["haiku-gent"]!, CATALOG)
+  test("a run on the login store's accounts gives the pool the store, and runs Haiku alone", () => {
+    const haiku = resolvePreset(PRESETS["haiku-store"]!, CATALOG)
     for (const slot of Object.values(haiku)) expect(selection(slot, false)).toBe("anthropic/claude-haiku-5-5")
-    const plugins = serverPlugins(haiku, "/run/anthropic-auth", "/owner/.gent/auth")
+    const plugins = serverPlugins(haiku, "/run/anthropic-auth", "/owner/.local/share/opencode-prime/pool-auth")
     expect(plugins).toEqual([
       "/run/anthropic-auth",
-      { package: poolPlugin, options: { sources: [{ kind: "gent", dir: "/owner/.gent/auth" }] } },
+      { package: poolPlugin, options: { sources: [{ kind: "store", dir: "/owner/.local/share/opencode-prime/pool-auth" }] } },
     ])
     expect(projectConfig(haiku, undefined, plugins).plugins).toEqual(plugins)
-    // The store is the caller's, never the run's own home.
-    expect(gentAuthDir({ GAMUT_GENT_AUTH: "/elsewhere/auth" })).toBe("/elsewhere/auth")
-    expect(gentAuthDir({}, "/h", () => true)).toBe("/h/.local/share/opencode-prime/pool-auth")
+    // The store is the caller's, never the run's own home: the same path on every host.
+    expect(loginStoreDir("/h")).toBe("/h/.local/share/opencode-prime/pool-auth")
   })
 
-  test("a host whose gent store is gent's own (the workbox) is found from its files, with no variable set", () => {
-    const has = (paths: ReadonlyArray<string>) => (path: string) => paths.includes(path)
-    expect(gentAuthDir({}, "/h", has(["/h/.gent/auth"]))).toBe("/h/.gent/auth")
-    expect(gentAuthDir({}, "/h", has(["/h/.gent/auth", "/h/.local/share/opencode-prime/pool-auth"]))).toBe("/h/.local/share/opencode-prime/pool-auth")
-    expect(gentAuthDir({}, "/h", has([]))).toBe("/h/.local/share/opencode-prime/pool-auth")
-    expect(gentAuthDir({ GAMUT_GENT_AUTH: "/elsewhere/auth" }, "/h", has(["/h/.gent/auth"]))).toBe("/elsewhere/auth")
-  })
-
-  test("a gent store with no account the pool can use is refused, saying why", () => {
-    const dir = scratch("gamut-gent-").path
+  test("a login store with no account the pool can use is refused, saying why", () => {
+    const dir = scratch("gamut-store-").path
     try {
-      expect(() => gentAccounts(dir)).toThrow(`gent holds no Claude account the pool can use at ${dir}; sign in to one in gent`)
+      expect(() => storeAccounts(dir)).toThrow(`the login store holds no Claude account the pool can use at ${dir}; sign in to one`)
       mkdirSync(join(dir, ".slots/anthropic"), { recursive: true })
       const signIn = (owner: string | undefined) =>
         JSON.stringify({
@@ -257,9 +248,9 @@ describe("the run's config", () => {
           ...(owner === undefined ? {} : { metadata: { owner } }),
         })
       writeFileSync(join(dir, ".slots/anthropic/linked"), signIn(undefined), { mode: 0o600 })
-      expect(() => gentAccounts(dir)).toThrow("linked: a linked Claude Code login, which gent refreshes itself")
-      writeFileSync(join(dir, ".slots/anthropic/work"), signIn("gent"), { mode: 0o600 })
-      expect(gentAccounts(dir)).toEqual(["work"])
+      expect(() => storeAccounts(dir)).toThrow("linked: a linked Claude Code login, which Claude Code refreshes itself")
+      writeFileSync(join(dir, ".slots/anthropic/work"), signIn("store"), { mode: 0o600 })
+      expect(storeAccounts(dir)).toEqual(["work"])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

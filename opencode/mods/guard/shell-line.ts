@@ -1,6 +1,5 @@
 // A shell command line read as its simple commands, each a list of words with
-// their quotes removed: enough of the shell to see what runs, ported from
-// gent's guard floor (packages/extensions/src/guard.ts). Not a shell:
+// their quotes removed: enough of the shell to see what runs. Not a shell:
 // `$(...)`, backquotes and a script file are not read; `sh -c` and `eval`
 // are read by the verdict (verdict.ts), which hands their text back here.
 

@@ -9,7 +9,6 @@
 //
 // Usage: bun scripts/accept.ts [--affected [base]] [--list] [--parallel=N] [tests/<name>.test.ts ...] [-- <bun test flags>]
 // --list prints the files it would run and exits; named acceptance files narrow the run to them.
-// When gent's suites skip for lack of gent's checkout, the run's last line says so (SKIPPED: …).
 //
 // One run at a time per machine: each run already fills every core, so a second
 // one waits for the lock (ACCEPT_LOCK, default $TMPDIR/opencode-accept.lock)
@@ -21,7 +20,6 @@ import { $ } from "bun"
 import { listing, type Proc, servers, stop, survivors, table, watch } from "./leaks.ts"
 import { checkFork } from "./fork.ts"
 import { acceptanceTests, load, packageOf, reach, ROOT, SHARED } from "./reach.ts"
-import { gentSkipped } from "../tests/gent/store.ts"
 
 /** How long a finished run's processes have to end before one still running counts as leaked. */
 const LEAK_GRACE_MS = 5000
@@ -72,14 +70,8 @@ if (affected) {
 /** The acceptance files named on the command line (`tests/<name>.test.ts`): the run takes those alone. */
 const chosen = own.filter((arg) => files.includes(arg))
 if (chosen.length > 0) files = files.filter((file) => chosen.includes(file))
-/**
- * The run's closing lines: gent's suites skip without gent's checkout, and the run says so in
- * one line at its end (after the files, under --list), not in a warning among the passes.
- */
-const summary = [gentSkipped(files)].filter((line) => line !== "")
-const print = console.log
 if (own.includes("--list")) {
-  for (const line of [...files, ...summary]) print(line)
+  for (const file of files) console.log(file)
   process.exit(0)
 }
 
@@ -160,7 +152,6 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   })
 const code = await child.exited
 if (stopping) await new Promise(() => {})
-for (const line of summary) print(`\n${line}`)
 process.exit((await leaked(watching.stop())) ? code || 1 : code)
 
 /** Whether the run left a server or drive behind; stops those and names every survivor. */

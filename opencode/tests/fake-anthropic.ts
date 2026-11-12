@@ -4,7 +4,7 @@
  * `cedar_ember` reset grants when asked), `GET /api/oauth/profile`, the
  * claim of a grant (`POST /api/organizations/<org>/reset_rate_limits`) and
  * `POST /v1/oauth/token` (a JSON body, as the auth plugin sends, or a form,
- * as gent sends). It answers with the headers the real API sends a
+ * as the login store sends). It answers with the headers the real API sends a
  * Claude plan login: the unified quota headers on every answer, a refusal
  * included, and the classic `anthropic-ratelimit-*` pairs and `retry-after`
  * on a 429.
@@ -499,7 +499,7 @@ export const startFakeAnthropic = (options: FakeAnthropicOptions): FakeAnthropic
     })
   }
 
-  /** A refresh as JSON (the auth plugin's) or as a form (gent's). */
+  /** A refresh as JSON (the auth plugin's) or as a form (the login store's). */
   const tokenBody = async (request: Request): Promise<{ grant_type?: string; refresh_token?: string }> => {
     if ((request.headers.get("content-type") ?? "").includes("application/x-www-form-urlencoded")) {
       const form = new URLSearchParams(await request.text())

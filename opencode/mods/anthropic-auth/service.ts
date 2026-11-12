@@ -106,7 +106,7 @@ export interface Source {
   readonly rejected: (access: string) => Effect.Effect<void>
 }
 
-/** The credentials other plugins keep for the integration (the pool's gent logins). */
+/** The credentials other plugins keep for the integration (the pool's login store). */
 export class CredentialSources extends Context.Service<
   CredentialSources,
   {

@@ -122,8 +122,7 @@ const argv = (list: string) => Array.from(list.matchAll(/["'`]([^"'`]*)["'`]/g),
 const shellHead = (command: string) => (command.split(/\n|\||&&|;/)[0] ?? "").trim().split(/\s+/).slice(0, 3).join(" ")
 
 /**
- * The calls a cell's code spells out, after gent's `cellCalls` (fx's cell
- * intent): `tools.<name>(` and `tools["<name>"](`, Bun's shell and spawn,
+ * The calls a cell's code spells out, after fx's cell intent: `tools.<name>(` and `tools["<name>"](`, Bun's shell and spawn,
  * file reads and writes, globs and fetches. The tool names are the host's
  * (`shell`, `read`, `write`, `glob`, `webfetch`).
  */

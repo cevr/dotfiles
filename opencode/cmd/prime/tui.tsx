@@ -25,7 +25,7 @@ import { AssistantText, GUTTER, PinnedAsk, UserBand } from "@dotfiles/opencode-p
 import { createSignal, Show } from "solid-js"
 
 export default Plugin.define({
-  id: "gent.prime",
+  id: "dotfiles-opencode.prime",
   setup(context) {
     const goal = goals(context)
     const build = builds(context, () => readUpstream())

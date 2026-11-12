@@ -1,6 +1,5 @@
 /**
- * The code kernel as an OpenCode server plugin, ported from gent's `cell`
- * tool. The composition root: it decodes the options, builds the model
+ * The code kernel as an OpenCode server plugin. The composition root: it decodes the options, builds the model
  * (`@dotfiles/opencode-kernel/model`) on one implementation of each contract
  * in `@dotfiles/opencode-kernel/service`, and registers the `kernel` tool.
  *

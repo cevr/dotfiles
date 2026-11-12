@@ -144,7 +144,7 @@ describe("a kernel call's description", () => {
   })
 })
 
-describe("the calls a cell's code spells out (gent's cellCalls)", () => {
+describe("the calls a cell's code spells out", () => {
   test("tools by name and by key, Bun's shell, spawn, files, globs and fetches, in source order", () => {
     const code = [
       'const t = await tools["web-search"]({ q })',

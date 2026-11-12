@@ -32,7 +32,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSy
 import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../testbeds/anthropic-auth.ts"
-import { type Catalog, DEFAULT_FORK, gentAuthDir, loadCatalog, newestRelease } from "../testbeds/gamut/gamut.ts"
+import { type Catalog, DEFAULT_FORK, loadCatalog, loginStoreDir, newestRelease } from "../testbeds/gamut/gamut.ts"
 import { checkFork } from "./fork.ts"
 import { upstreamFile } from "../mods/prime/update.ts"
 import { hostLocks } from "../mods/rift/process/landing.ts"
@@ -152,15 +152,15 @@ export const FLEET: Readonly<Record<string, ReadonlyArray<{ readonly name: strin
 export const peersOf = (host: string) => FLEET[host.toLowerCase().replace(/\.local$/, "")] ?? []
 
 /**
- * The pool's plugin entry: Claude's cache lifetime, and gent's store as a source of logins when
- * `gent` (its directory) exists. On one of the owner's hosts (`fleet`) it also paces OpenAI's
+ * The pool's plugin entry: Claude's cache lifetime, and the login store as a source of logins when
+ * `store` (its directory) exists. On one of the owner's hosts (`fleet`) it also paces OpenAI's
  * agents on the ChatGPT account's own measure and reads the host's peers.
  */
-export const poolEntry = (pool: string, gent: string | undefined, fleet?: { readonly host: string }): PluginEntry => ({
+export const poolEntry = (pool: string, store: string | undefined, fleet?: { readonly host: string }): PluginEntry => ({
   package: pool,
   options: {
     cacheLifeMs: CLAUDE_CACHE_LIFE_MS,
-    ...(gent === undefined ? {} : { sources: [{ kind: "gent", dir: gent }] }),
+    ...(store === undefined ? {} : { sources: [{ kind: "store", dir: store }] }),
     ...(fleet === undefined ? {} : { paced: { openai: "openai" }, fleet: { host: fleet.host, peers: peersOf(fleet.host) } }),
   },
 })
@@ -354,7 +354,7 @@ if (import.meta.main) {
     sync: () => syncFork({ fork, dryRun: args.has("--dry-run"), to: forkTarget[0], log: console.log }),
     head: Effect.promise(() => $`git -C ${fork} rev-parse HEAD`.text()),
     install: Effect.promise(() => $`bun install --frozen-lockfile`.cwd(fork).quiet()),
-    checks: (dir) => Effect.promise(() => forkChecks(resolve(MODS, ".."), fork, env.GENT_SOURCE || "")(dir)),
+    checks: (dir) => Effect.promise(() => forkChecks(resolve(MODS, ".."), fork)(dir)),
     log: console.log,
   })
   const upstream = (dryRun: boolean) =>
@@ -429,13 +429,13 @@ if (import.meta.main) {
 
   const settings = settingsFor({ host: hostname(), home, state: dirname(dirname(record)), checkout, fork, bun: process.execPath, resident: residentDir(home), launcher: link })
   const auth = anthropicAuthPlugin
-  const gent = gentAuthDir()
+  const store = loginStoreDir(home)
   const pool = pluginDir("pool")
   const catalog = await loadCatalog(fork)
   const planner = plannerModel(catalog)
   const server: PluginEntry[] = [
     auth,
-    poolEntry(pool, existsSync(gent) ? gent : undefined, { host: hostname() }),
+    poolEntry(pool, existsSync(store) ? store : undefined, { host: hostname() }),
     orchestrateEntry(pluginDir("orchestrate"), { dotfiles: checkout, fork }, planner),
     pluginDir("guard"),
     pluginDir("kernel"),

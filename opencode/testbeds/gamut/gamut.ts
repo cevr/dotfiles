@@ -50,7 +50,7 @@ import {
 import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { GentSource } from "../../mods/pool/gent/store.ts"
+import { STORE_PREFIX, StoreSource } from "../../mods/pool/store/store.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../anthropic-auth.ts"
 import { type HostConfig, type HostScreen, hostCall, isKeyName, keys } from "./pty-host.ts"
 
@@ -93,11 +93,11 @@ export interface Preset {
   readonly roles: Readonly<Record<Role, Slot>>
   /**
    * Where the Claude logins come from: the owner's `opencode2`, copied into
-   * the run (the default), or `gent`: the accounts gent holds, which the pool
-   * reads and refreshes in place in gent's store (`gentAuthDir`), never
+   * the run (the default), or `store`: the accounts the login store holds,
+   * which the pool reads and refreshes in place (`loginStoreDir`), never
    * copied.
    */
-  readonly claudeLogins?: "gent"
+  readonly claudeLogins?: "store"
 }
 
 /**
@@ -142,11 +142,11 @@ export const PRESETS: Readonly<Record<string, Preset>> = {
       "the newest Claude Haiku in every role on the Claude subscription, through the Anthropic auth plugin and the account pool",
     roles: every({ model: "anthropic/claude-haiku", effort: "high" }),
   },
-  "haiku-gent": {
+  "haiku-store": {
     about:
-      "the newest Claude Haiku in every role on the Claude accounts gent holds, which the pool reads and refreshes in gent's own store",
+      "the newest Claude Haiku in every role on the Claude accounts the login store holds, which the pool reads and refreshes in place",
     roles: every({ model: "anthropic/claude-haiku", effort: "high" }),
-    claudeLogins: "gent",
+    claudeLogins: "store",
   },
 }
 
@@ -231,28 +231,16 @@ export const providersNeeded = (preset: ResolvedPreset): ReadonlyArray<string> =
 
 /** The providers whose logins `up` copies from the owner's `opencode2`: all but those another store keeps. */
 export const loginsToCopy = (named: Preset, preset: ResolvedPreset): ReadonlyArray<string> =>
-  providersNeeded(preset).filter((provider) => !(named.claudeLogins === "gent" && provider === POOLED_PROVIDER))
+  providersNeeded(preset).filter((provider) => !(named.claudeLogins === "store" && provider === POOLED_PROVIDER))
 
 /**
- * The Claude logins the pool reads, in gent's store format: `GAMUT_GENT_AUTH`, else
- * `~/.local/share/opencode-prime/pool-auth` of the caller's home (the run has its own), else
- * gent's own `~/.gent/auth` where that is the one that exists. The store moved to the first from
- * `~/.gent/auth` on the Mac when gent was removed from it; the workbox keeps `~/.gent/auth`. A
- * host's store is found from its files, never from a variable only some launches set: the update
- * plugin's stage runs with the service's environment, and a store it misses drops the pool's
- * Claude logins (the workbox, 2026-11-12).
+ * The login store the pool reads its Claude logins from, on every host:
+ * `~/.local/share/opencode-prime/pool-auth` of the caller's home (the run has its own). It is
+ * found from the home alone, never from a variable only some launches set: the update plugin's
+ * stage runs with the service's environment, and a store it misses drops the pool's Claude
+ * logins (the workbox, 2026-11-12).
  */
-export const gentAuthDir = (
-  env: Readonly<Record<string, string | undefined>> = process.env,
-  home: string = homedir(),
-  exists: (path: string) => boolean = existsSync,
-): string => {
-  if (env.GAMUT_GENT_AUTH) return resolve(env.GAMUT_GENT_AUTH)
-  const store = join(home, ".local/share/opencode-prime/pool-auth")
-  const gents = join(home, ".gent/auth")
-  if (!exists(store) && exists(gents)) return resolve(gents)
-  return resolve(store)
-}
+export const loginStoreDir = (home: string = homedir()): string => resolve(join(home, ".local/share/opencode-prime/pool-auth"))
 
 export const usesSim = (preset: ResolvedPreset): boolean =>
   ROLES.some((role) => preset[role].provider === SIM_PROVIDER)
@@ -309,27 +297,27 @@ export type PluginEntry = string | { readonly package: string; readonly options:
 /**
  * The server plugins a run on the Claude subscription loads, in this order:
  * the Anthropic auth plugin (`authPlugin`, its directory), then the
- * pool, which chooses the login each request goes out on. With `gentStore`
- * the pool also takes the Claude accounts gent holds there.
+ * pool, which chooses the login each request goes out on. With `loginStore`
+ * the pool also takes the Claude accounts that login store holds.
  */
 export const serverPlugins = (
   preset: ResolvedPreset,
   authPlugin: string,
-  gentStore?: string,
+  loginStore?: string,
 ): ReadonlyArray<PluginEntry> => {
   if (!usesPool(preset)) return []
-  if (gentStore === undefined) return [authPlugin, poolPlugin]
-  return [authPlugin, { package: poolPlugin, options: { sources: [{ kind: "gent", dir: gentStore }] } }]
+  if (loginStore === undefined) return [authPlugin, poolPlugin]
+  return [authPlugin, { package: poolPlugin, options: { sources: [{ kind: "store", dir: loginStore }] } }]
 }
 
-/** The Claude accounts gent holds at `dir`, by label; fails when it holds none the pool can use. */
-export const gentAccounts = (dir: string): ReadonlyArray<string> => {
-  const listing = new GentSource({ dir }).list()
+/** The Claude accounts the login store at `dir` holds, by label; fails when it holds none the pool can use. */
+export const storeAccounts = (dir: string): ReadonlyArray<string> => {
+  const listing = new StoreSource({ dir }).list()
   if (listing.accounts.length === 0) {
     const skipped = listing.skipped.map((each) => `${each.label}: ${each.reason}`).join("; ")
-    throw new Error(`gent holds no Claude account the pool can use at ${dir}${skipped === "" ? "" : ` (${skipped})`}; sign in to one in gent`)
+    throw new Error(`the login store holds no Claude account the pool can use at ${dir}${skipped === "" ? "" : ` (${skipped})`}; sign in to one`)
   }
-  return listing.accounts.map((id) => id.slice("gent:".length))
+  return listing.accounts.map((id) => id.slice(STORE_PREFIX.length))
 }
 
 /**
@@ -855,15 +843,15 @@ const up = async (args: UpArgs) => {
   if (missing.length > 0) {
     throw new Error(`no stored login for ${missing.join(", ")}; run: ${missing.map(loginStep).join(" && ")}`)
   }
-  const gentStore = named.claudeLogins === "gent" ? gentAuthDir() : undefined
-  if (gentStore !== undefined) gentAccounts(gentStore)
+  const loginStore = named.claudeLogins === "store" ? loginStoreDir() : undefined
+  if (loginStore !== undefined) storeAccounts(loginStore)
 
   const root = join(tmpdir(), `opencode-gamut-${Date.now()}`)
   // Until the state file names `root`, `down` cannot find it: a failed `up`
   // stops what it started and removes it here instead.
   const started: { simPid?: number } = {}
   try {
-    await prepareAndLaunch(args, launch, named, preset, root, started, gentStore)
+    await prepareAndLaunch(args, launch, named, preset, root, started, loginStore)
   } catch (error) {
     if (!existsSync(STATE_FILE)) {
       if (started.simPid !== undefined && (await isSim(started.simPid, root))) process.kill(started.simPid, "SIGKILL")
@@ -880,7 +868,7 @@ const prepareAndLaunch = async (
   preset: ResolvedPreset,
   root: string,
   started: { simPid?: number },
-  gentStore: string | undefined,
+  loginStore: string | undefined,
 ) => {
   const paths = runPaths(root)
   for (const dir of [paths.work, paths.home, paths.config, paths.data]) mkdirSync(dir, { recursive: true })
@@ -901,7 +889,7 @@ const prepareAndLaunch = async (
     join(CMD, "orchestrate"),
     { package: join(CMD, "status"), options: { log: join(paths.home, ".cache/orchestrate/opencode-agents.jsonl"), statusScript: join(homedir(), ".claude/skills/orchestrate/scripts/status.ts") } },
     { package: join(CMD, "queue"), options: { dir: join(paths.home, ".local/state/opencode-queue") } },
-    ...(usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin, gentStore) : [poolPlugin]),
+    ...(usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin, loginStore) : [poolPlugin]),
   ]
   await Bun.write(
     join(paths.work, "opencode.json"),
@@ -921,8 +909,8 @@ const prepareAndLaunch = async (
   console.log(
     `preset ${args.preset}  ${ROLES.map((role) => `${role} ${selection(preset[role])}`).join("  ")}`,
   )
-  if (gentStore !== undefined) {
-    console.log(`gent   ${gentStore}: the pool reads these accounts in place: ${gentAccounts(gentStore).join(", ")}`)
+  if (loginStore !== undefined) {
+    console.log(`store  ${loginStore}: the pool reads these accounts in place: ${storeAccounts(loginStore).join(", ")}`)
   }
   if (!args.build) console.log("--no-build: nothing to build either way; the fork runs from source")
 
@@ -1391,10 +1379,10 @@ const login = async (provider: string | undefined) => {
   }
 }
 
-/** gent's accounts at `dir` for `list`, or why there are none. */
-const gentListing = (dir: string): string => {
+/** The login store's accounts at `dir` for `list`, or why there are none. */
+const storeListing = (dir: string): string => {
   try {
-    return `${gentAccounts(dir).length} accounts`
+    return `${storeAccounts(dir).length} accounts`
   } catch (error) {
     return error instanceof Error ? error.message : String(error)
   }
@@ -1409,8 +1397,8 @@ const list = async () => {
     const needed = loginsToCopy(preset, resolved)
     const missing = await missingLogins(needed)
     const needs =
-      preset.claudeLogins === "gent"
-        ? `takes the Claude accounts gent holds at ${gentAuthDir()} (${gentListing(gentAuthDir())})`
+      preset.claudeLogins === "store"
+        ? `takes the Claude accounts the login store holds at ${loginStoreDir()} (${storeListing(loginStoreDir())})`
         : needed.length === 0
           ? "needs nothing"
           : `needs the ${needed.join(", ")} login (${missing.length === 0 ? "stored" : `missing: ${missing.map(loginStep).join(" && ")}`})`

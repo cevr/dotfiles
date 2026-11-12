@@ -174,7 +174,7 @@ describe("the group header", () => {
   })
 })
 
-describe("cancels and width, as gent's activityHeaderRuns", () => {
+describe("cancels and width, as the header's words", () => {
   test("a cut call is no failure: the header counts it as cancelled, in the warning tone, and its row stands alone", () => {
     const list = calls(call("read", { path: "a.ts" }), cut("bash", { command: "sleep 9" }), cut("bash", { command: "sleep 8" }, "tool.interrupted"))
     const runs = headerRuns(list)

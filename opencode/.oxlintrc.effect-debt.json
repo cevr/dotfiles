@@ -194,15 +194,6 @@
     },
     {
       "files": [
-        "scripts/accept-gent.test.ts"
-      ],
-      "rules": {
-        "effect/noGlobals": "off",
-        "effect/noNodeBuiltinImport": "off"
-      }
-    },
-    {
-      "files": [
         "tests/scratch-cases.ts"
       ],
       "rules": {
@@ -223,6 +214,14 @@
       ],
       "rules": {
         "effect/noNodeBuiltinImport": "off"
+      }
+    },
+    {
+      "files": [
+        "mods/pool/opencode/migrate.test.ts"
+      ],
+      "rules": {
+        "effect/noEffectRunInTests": "off"
       }
     },
     {

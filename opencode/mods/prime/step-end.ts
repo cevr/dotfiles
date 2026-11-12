@@ -1,5 +1,5 @@
 // How a step that ended badly reads in the transcript, without rendering:
-// gent's session rows, from the error and retry the host keeps on the
+// its session row, from the error and retry the host keeps on the
 // assistant message.
 import type { Detail } from "./detail.ts"
 
@@ -9,11 +9,11 @@ export type StepEnd = {
   readonly retry?: { readonly attempt: number; readonly at: number; readonly error: { readonly message: string } } | undefined
 }
 
-/** The lines a step's error keeps below All: a provider body can run long (gent's `ERROR_LINES`). */
+/** The lines a step's error keeps below All: a provider body can run long. */
 export const ERROR_LINES = 4
 
 /**
- * The row a step's end draws, after gent's session rows: `↻` a retry
+ * The row a step's end draws: `↻` a retry
  * (`Retrying in 3s · attempt 2 · Rate limit exceeded`, `Retrying now` once
  * due), `■` the reader's interrupt, `✗` an error that ended the turn (its
  * first `ERROR_LINES` lines below All, then the count of the rest). None for

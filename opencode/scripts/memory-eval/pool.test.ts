@@ -1,4 +1,4 @@
-// The eval's pool transport against a fake Anthropic, a fake gent store and a
+// The eval's pool transport against a fake Anthropic, a fake login store and a
 // fake live pool: no live call. It sends as the auth plugin does, places as the
 // pool does (away from the owner's live sessions and holds), fails over on a
 // 429 and stops when the pace or every account says so.
@@ -68,11 +68,11 @@ const account = (credentialID: string, fields: Partial<AccountStatus> = {}): Acc
 describe("the pool transport", () => {
   test("sends as the auth plugin does: OAuth headers, Claude Code's body, tool names under aliases and back", async () => {
     const fake = anthropic((_, seen) => ok(seen))
-    const pool = new Pool({ source: source(["gent:a"]), fetch: fake.fetcher, now: () => NOW })
+    const pool = new Pool({ source: source(["store:a"]), fetch: fake.fetcher, now: () => NOW })
     const sent = await pool.send("s1", body.model, body)
     const [request] = fake.seen
     expect(request!.url).toBe("https://api.anthropic.com/v1/messages")
-    expect(request!.headers.get("authorization")).toBe("Bearer token-of-gent:a")
+    expect(request!.headers.get("authorization")).toBe("Bearer token-of-store:a")
     expect(request!.headers.get("x-api-key")).toBeNull()
     expect(request!.headers.get("anthropic-beta")).toContain("oauth-2025-04-20")
     expect(request!.headers.get("anthropic-beta")).toContain("claude-code-20250219")
@@ -84,31 +84,31 @@ describe("the pool transport", () => {
     expect((request!.body["tools"] as Array<{ name: string }>)[0]!.name).toStartWith("mcp_")
     expect(sent.status).toBe(200)
     expect(JSON.parse(sent.text).content[0].name).toBe("memory_save")
-    expect(sent.credentialID).toBe("gent:a")
+    expect(sent.credentialID).toBe("store:a")
   })
 
   test("places away from the owner's live sessions and an account the live pool holds; leaves OpenCode's own logins alone", async () => {
     const fake = anthropic((_, seen) => ok(seen))
-    const accounts = [account("own-login"), account("gent:a", { live: 3, load: 5 }), account("gent:b"), account("gent:c", { hold: { kind: "rate-limit", until: NOW + HOUR, at: NOW } })]
-    const pool = new Pool({ source: source(["gent:a", "gent:b", "gent:c"]), live: live(accounts), fetch: fake.fetcher, now: () => NOW })
+    const accounts = [account("own-login"), account("store:a", { live: 3, load: 5 }), account("store:b"), account("store:c", { hold: { kind: "rate-limit", until: NOW + HOUR, at: NOW } })]
+    const pool = new Pool({ source: source(["store:a", "store:b", "store:c"]), live: live(accounts), fetch: fake.fetcher, now: () => NOW })
     await pool.refresh()
-    expect(pool.accounts).toEqual(["gent:a", "gent:b", "gent:c"])
-    expect((await pool.send("s1", body.model, body)).credentialID).toBe("gent:b")
+    expect(pool.accounts).toEqual(["store:a", "store:b", "store:c"])
+    expect((await pool.send("s1", body.model, body)).credentialID).toBe("store:b")
     // A session keeps its account, so its prompt cache stays there.
     pool.record("s1", 1)
-    expect((await pool.send("s1", body.model, body)).credentialID).toBe("gent:b")
+    expect((await pool.send("s1", body.model, body)).credentialID).toBe("store:b")
   })
 
   test("a 429 holds the account and fails over in the same send; with none left it throws PoolLimit", async () => {
-    const fake = anthropic((token, seen) => (token === "token-of-gent:a" ? usageLimit() : ok(seen)))
-    const pool = new Pool({ source: source(["gent:a", "gent:b"]), fetch: fake.fetcher, now: () => NOW })
-    expect((await pool.send("s1", body.model, body)).credentialID).toBe("gent:b")
-    expect(fake.seen.map((seen) => seen.headers.get("authorization"))).toEqual(["Bearer token-of-gent:a", "Bearer token-of-gent:b"])
-    expect(pool.line()).toContain("gent:a 5h 100%")
+    const fake = anthropic((token, seen) => (token === "token-of-store:a" ? usageLimit() : ok(seen)))
+    const pool = new Pool({ source: source(["store:a", "store:b"]), fetch: fake.fetcher, now: () => NOW })
+    expect((await pool.send("s1", body.model, body)).credentialID).toBe("store:b")
+    expect(fake.seen.map((seen) => seen.headers.get("authorization"))).toEqual(["Bearer token-of-store:a", "Bearer token-of-store:b"])
+    expect(pool.line()).toContain("store:a 5h 100%")
     expect(pool.line()).toContain("held (usage-limit)")
 
     const refusing = anthropic(() => usageLimit())
-    const exhausted = new Pool({ source: source(["gent:a", "gent:b"]), fetch: refusing.fetcher, now: () => NOW })
+    const exhausted = new Pool({ source: source(["store:a", "store:b"]), fetch: refusing.fetcher, now: () => NOW })
     const error = await exhausted.send("s1", body.model, body).catch((caught: unknown) => caught)
     expect(error).toBeInstanceOf(PoolLimit)
     expect((error as PoolLimit).retryAt).toBe(NOW + 2 * HOUR)
@@ -117,16 +117,16 @@ describe("the pool transport", () => {
 
   test("pace: the live pool's no, then the eval accounts' own readings, stop the run", async () => {
     const wait: Pace = { ok: false, measured: true, reason: "the pool's weekly pace is over", retryAt: NOW + HOUR }
-    const told = new Pool({ source: source(["gent:a"]), live: live([account("gent:a")], wait), now: () => NOW })
+    const told = new Pool({ source: source(["store:a"]), live: live([account("store:a")], wait), now: () => NOW })
     expect(await told.pace()).toMatchObject({ ok: false, reason: "live pool: the pool's weekly pace is over" })
 
     const full = { at: NOW, windows: [{ name: "5h", utilization: 0.95, resetAt: NOW + HOUR }] }
-    const near = new Pool({ source: source(["gent:a", "gent:b"]), live: live([account("gent:a", { reading: full }), account("gent:b", { reading: full })]), now: () => NOW })
+    const near = new Pool({ source: source(["store:a", "store:b"]), live: live([account("store:a", { reading: full }), account("store:b", { reading: full })]), now: () => NOW })
     const pace = await near.pace()
     expect(pace.ok).toBe(false)
     expect(pace.reason).toStartWith("eval accounts: ")
 
-    const room = new Pool({ source: source(["gent:a"]), live: live([account("gent:a")]), now: () => NOW })
+    const room = new Pool({ source: source(["store:a"]), live: live([account("store:a")]), now: () => NOW })
     expect((await room.pace()).ok).toBe(true)
   })
 
@@ -142,14 +142,14 @@ describe("the pool transport", () => {
 
   test("weekly: each account's 7-day reading in points; a rise past the limit names the account, a reset does not", async () => {
     const reading = (week: number) => ({ at: NOW, windows: [{ name: "7d", utilization: week, resetAt: NOW + 48 * HOUR }] })
-    const pool = new Pool({ source: source(["gent:a", "gent:b"]), live: live([account("gent:a", { reading: reading(0.42) })]), now: () => NOW })
+    const pool = new Pool({ source: source(["store:a", "store:b"]), live: live([account("store:a", { reading: reading(0.42) })]), now: () => NOW })
     await pool.refresh()
-    expect(pool.weekly()).toEqual({ "gent:a": 42, "gent:b": undefined })
+    expect(pool.weekly()).toEqual({ "store:a": 42, "store:b": undefined })
 
-    const start = { "gent:a": 42, "gent:b": 10, "gent:c": undefined }
-    expect(weeklyDrift(start, { "gent:a": 46, "gent:b": 14, "gent:c": 90 }, 5)).toBeUndefined()
-    expect(weeklyDrift(start, { "gent:a": 48, "gent:b": 17, "gent:c": 90 }, 5)).toEqual({ credentialID: "gent:b", points: 7 })
-    expect(weeklyDrift(start, { "gent:a": 2, "gent:b": 10 }, 5)).toBeUndefined()
+    const start = { "store:a": 42, "store:b": 10, "store:c": undefined }
+    expect(weeklyDrift(start, { "store:a": 46, "store:b": 14, "store:c": 90 }, 5)).toBeUndefined()
+    expect(weeklyDrift(start, { "store:a": 48, "store:b": 17, "store:c": 90 }, 5)).toEqual({ credentialID: "store:b", points: 7 })
+    expect(weeklyDrift(start, { "store:a": 2, "store:b": 10 }, 5)).toBeUndefined()
   })
 
   test("create sends through the pool, charges the ledger and waits out a hold that ends soon", async () => {
@@ -159,7 +159,7 @@ describe("the pool transport", () => {
       if (refusals-- > 0) return new Response("{}", { status: 429, headers: { "retry-after": "5" } })
       return ok(seen)
     })
-    const pool = new Pool({ source: source(["gent:a"]), fetch: fake.fetcher, now: () => now })
+    const pool = new Pool({ source: source(["store:a"]), fetch: fake.fetcher, now: () => now })
     useTransport(poolTransport(pool))
     const waited: Array<number> = []
     useSleep(async (ms) => {

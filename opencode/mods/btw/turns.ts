@@ -1,5 +1,5 @@
 // What the pane draws of a fork: its own exchanges, each question paired with
-// the text that answered it (gent's forkTurns). A fork's own messages are the
+// the text that answered it. A fork's own messages are the
 // ones made after the fork was: the history it copied keeps the times it had
 // in the session it came from (the fork's projector copies `time_created`,
 // packages/core/src/session/projector.ts:214-221), the same rule the host's

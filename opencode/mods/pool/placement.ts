@@ -1,5 +1,5 @@
 /**
- * Where a run goes: gent's placement walk, over plain data.
+ * Where a run goes: the placement walk, over plain data.
  *
  * The choice comes first, then the eligible accounts below their sustainable
  * live load by weekly reset (missing weekly readings last), then the others

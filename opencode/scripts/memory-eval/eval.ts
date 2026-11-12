@@ -5,7 +5,7 @@
 // Usage, from opencode/:
 //   bun scripts/memory-eval/eval.ts [--dry] [--repeats 8] [--cap 5] [--concurrency 4] [--model claude-haiku-5-5]
 //                                   [--arms none,ours,ours+pointer,native,kernel,ours+nudge,kernel+nudge,kernel+direct,kernel+direct+describe,kernel+direct+followup,kernel+direct+plain] [--scenarios webapp,dotfiles,billing,orders]
-//                                   [--out out/memory-eval/<stamp>] [--api-key] [--gent-dir <dir>]
+//                                   [--out out/memory-eval/<stamp>] [--api-key] [--store-dir <dir>]
 //                                   [--weekly-limit 5] [--owner-approved-opus]
 //
 // --dry runs one episode per arm. The run stops starting requests once --cap
@@ -17,12 +17,12 @@
 // own are asked, and a no stops the run, as does any eval account's weekly
 // reading rising more than --weekly-limit points since the start. `--model
 // claude-opus-5-5` runs only with `--owner-approved-opus`. `--api-key` sends with the API key
-// in OpenCode's auth file instead; `--gent-dir` names another gent store.
+// in OpenCode's auth file instead; `--store-dir` names another login store.
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { CapReached, keyTransport, Ledger, MODEL, poolTransport, useModel, useTransport } from "./api.ts"
 import { type Arm, ARMS, type EpisodeResult, runEpisode } from "./episode.ts"
-import { gentSource, liveServer, Pool, PoolLimit, weeklyDrift } from "./pool.ts"
+import { liveServer, Pool, PoolLimit, storeSource, weeklyDrift } from "./pool.ts"
 import { report } from "./report.ts"
 import { type Scenario, SCENARIOS } from "./scenarios.ts"
 
@@ -65,14 +65,14 @@ const results: Array<EpisodeResult> = []
 let next = 0
 let stopped = false
 
-const gentDir = flag("gent-dir")
-const pool = process.argv.includes("--api-key") ? undefined : new Pool({ source: gentSource(...(gentDir === undefined ? [] : [gentDir])), live: liveServer() })
+const storeDir = flag("store-dir")
+const pool = process.argv.includes("--api-key") ? undefined : new Pool({ source: storeSource(...(storeDir === undefined ? [] : [storeDir])), live: liveServer() })
 if (pool === undefined) useTransport(keyTransport())
 else {
   useTransport(poolTransport(pool))
   const pace = await pool.pace()
-  console.log(`pool: ${pool.accounts.length} gent accounts · ${pool.line()} · pace ${pace.ok ? "ok" : "no"}: ${pace.reason}`)
-  if (pool.accounts.length === 0) fail("the gent store lists no account: pass --gent-dir, or --api-key")
+  console.log(`pool: ${pool.accounts.length} store accounts · ${pool.line()} · pace ${pace.ok ? "ok" : "no"}: ${pace.reason}`)
+  if (pool.accounts.length === 0) fail("the login store lists no account: pass --store-dir, or --api-key")
   if (!pace.ok) fail(`the pool says wait: ${pace.reason}`)
 }
 const weeklyStart = pool?.weekly() ?? {}

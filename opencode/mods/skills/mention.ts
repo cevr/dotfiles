@@ -1,4 +1,4 @@
-// `$<skill>` tokens in a prompt's text, as gent writes them: `$` at the start
+// `$<skill>` tokens in a prompt's text: `$` at the start
 // of the text or after whitespace, then a skill id that does not start with a
 // digit, then an optional tier (`$review:global`, `$review:local`). Nothing
 // inside a code span or a fenced block counts, so `$5`, `a$b`, `` `$x` `` and a

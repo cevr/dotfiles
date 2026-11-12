@@ -128,7 +128,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       expect(saved.lines[first - 1]).not.toContain("┃")
       expect(saved.lines[first + 2]).not.toContain("┃")
     }
-    // fx and gent draw what the reader typed in bold.
+    // fx draws what the reader typed in bold, and so does Prime.
     const y = indexOf(frames.details, /^ ┃ Fix the flaky/)
     const span = frames.details.frame.lines[y]!.spans.find((item) => item.text.startsWith("Fix the flaky"))
     expect((span?.attributes ?? 0) & 1).toBe(1)
@@ -173,7 +173,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       // The step that made two calls in parallel: one header, a tree row per call.
       "  ✗ Searched 1 pattern · read 1 file · 1 failed",
       "  ├ Searched /retries/ in src",
-      // A row ends in gent's failure word; the reason is the output under it.
+      // A row ends in its failure word; the reason is the output under it.
       "  └ Read out/traces.jsonl · failed",
       "    │ File not found: out/traces.jsonl",
       "  The fix is in. 1 file changed, reviewer approved.",
@@ -299,7 +299,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
       "  ● Ran 1 agent",
       "  ● General finished · code-reviewer",
       "  ✗ Searched 1 pattern · read 1 file · 1 failed",
-      // gent's failure row: what failed, its failure word, then the reason.
+      // The failure row: what failed, its failure word, then the reason.
       "  └ Read out/traces.jsonl · failed · File not found: out/traces.jsonl",
       "  The fix is in. 1 file changed, reviewer approved.",
     ]

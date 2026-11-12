@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "`$<skill>` in the composer, as gent has it: the skills a token can name, by tier (local wins, `:global` reaches the shadowed one), and the tokens a sent prompt attaches.",
+  "description": "`$<skill>` in the composer: the skills a token can name, by tier (local wins, `:global` reaches the shadowed one), and the tokens a sent prompt attaches.",
   "exports": {
     "./*": "./*.ts"
   }
