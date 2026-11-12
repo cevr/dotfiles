@@ -174,7 +174,7 @@ const parse = (file: string, text: string): Parsed => {
 
 /** What an interpolation stands for in a shell template: a string literal's text when it is one plain word, else a word not read. */
 const interpolated = (expression: TemplateLiteral["expressions"][number]) => {
-  if (expression.type === "Literal" && Predicate.isString(expression.value) && /^[^\s;&|'"]+$/.test(expression.value)) return expression.value
+  if (expression.type === "Literal" && Predicate.isString(expression.value) && /^[^\s;&|'"()$\x60\\]+$/.test(expression.value)) return expression.value
   return HOLE
 }
 
@@ -182,13 +182,26 @@ const interpolated = (expression: TemplateLiteral["expressions"][number]) => {
 const isAssignment = (word: Item) => word.kind === "literal" && /^[A-Za-z_][A-Za-z0-9_]*=/.test(word.text)
 
 /**
- * The git argv of each command in a Bun shell template that runs git: the text split into commands
- * at `;`, `&`, `|` and line ends, each into words at blanks with its quotes dropped. A word
- * holding an interpolation that is not a plain string literal is not read.
+ * Where a Bun shell command starts: after a list or pipe operator (`;`, `&&`, `||`, `|`, `&`),
+ * a line end, a subshell's `(` or `)`, a command substitution's `$(` (its `(`), or a backquote. A
+ * command starts at each, so splitting there leaves every command on its own, nested ones included.
+ */
+const COMMAND_START = /[;&|\n()\x60]/
+
+/**
+ * The git argv of each command in a Bun shell template that runs git, in every command position:
+ * the template's text (as Bun reads it, raw) with its line continuations (backslash, line end)
+ * joined and its escaped backquotes read as backquotes, split into commands at COMMAND_START,
+ * each into words at blanks with its quotes dropped and its leading `NAME=value` assignments
+ * skipped. A word holding an interpolation that is not a plain string literal is not read.
  */
 const shellArgvs = (template: TemplateLiteral): ReadonlyArray<ReadonlyArray<Item>> => {
-  const text = template.quasis.map((quasi, index) => quasi.value.raw + Option.getOrElse(Option.map(Arr.get(template.expressions, index), interpolated), () => "")).join("")
-  const commands = text.split(/[;&|\n]+/).map((command) =>
+  const text = template.quasis
+    .map((quasi, index) => quasi.value.raw + Option.getOrElse(Option.map(Arr.get(template.expressions, index), interpolated), () => ""))
+    .join("")
+    .replaceAll("\\\n", " ")
+    .replaceAll("\\\x60", "\x60")
+  const commands = text.split(COMMAND_START).map((command) =>
     command
       .replace(/['"]/g, "")
       .split(/\s+/)
@@ -307,6 +320,11 @@ const SAMPLE = [
   "await $`git add -A && git commit -q -m init`",
   "await $`git ${args}`",
   "const text = dedent`git init`",
+  "await $`(git init -q)`",
+  "await $`echo $(git init -q)`",
+  "await $`echo \\`git clone ${source}\\``",
+  "await $`echo '(git status)' && ls`",
+  "await $`git \\\n  init -q`",
 ].join("\n")
 
 /** A seeded generator (mulberry32), so a failing case names its seed and replays. */
@@ -348,7 +366,15 @@ const quoted = (words: ReadonlyArray<string>) => words.map((word) => JSON.string
  * arguments, in one of the call shapes test code writes. The options come from git itself
  * (tests/git-options.ts), not from the reader's tables, so an option the tables lack is generated.
  */
-const generate = (random: ReturnType<typeof generator>, git: GitGlobalOptions): Case => {
+/** A generated git argv (the words after `git`): its global options, subcommand and arguments, and whether it makes a repository (or cannot be read). */
+interface GitCall {
+  readonly globals: ReadonlyArray<string>
+  readonly sub: string
+  readonly argv: ReadonlyArray<string>
+  readonly makes: boolean
+}
+
+const gitCall = (random: ReturnType<typeof generator>, git: GitGlobalOptions): GitCall => {
   const option = () => {
     const valued = random.pick(git.valued)
     const value = random.pick(WORDS)
@@ -361,6 +387,11 @@ const generate = (random: ReturnType<typeof generator>, git: GitGlobalOptions): 
   const sub = random.pick(SUBCOMMANDS)
   const after = Array.from({ length: random.count(3) }, () => random.pick(WORDS))
   const argv = [...globals, sub, ...after]
+  return { globals, sub, argv, makes: unknown || MAKES_REPOSITORY.has(sub) }
+}
+
+const generate = (random: ReturnType<typeof generator>, git: GitGlobalOptions): Case => {
+  const { globals, sub, argv, makes } = gitCall(random, git)
   const lead = random.pick(["\"/nonexistent/loop-probe-x\"", "\"init\"", "dir"])
   const forms = [
     `Bun.spawnSync([${quoted(["git", ...argv])}])`,
@@ -371,7 +402,48 @@ const generate = (random: ReturnType<typeof generator>, git: GitGlobalOptions): 
     `const named = (sub: string, target: string) => Bun.spawnSync(["git", ${[...globals.map((word) => JSON.stringify(word)), "sub", "target"].join(", ")}])\nnamed(${JSON.stringify(sub)}, ${lead})`,
     `const gx = (cwd: string, ...args: ReadonlyArray<string>) => Bun.spawnSync(["git", ...args], { cwd })\nconst at = (...args: ReadonlyArray<string>) => gx(dir, ...args)\nat(${quoted(argv)})`,
   ]
-  return { code: random.pick(forms), makes: unknown || MAKES_REPOSITORY.has(sub) }
+  return { code: random.pick(forms), makes }
+}
+
+/** A backquote, written escaped as it stands inside a template literal. */
+const BACKQUOTE = "\\\x60"
+
+/**
+ * The shell forms a command can stand in, each wrapping the text `command` in a Bun shell line:
+ * after or before another command with each list or pipe operator, or a line end; in a subshell;
+ * in a command substitution, bare, as an argument or quoted; in backquotes.
+ */
+const WRAPPERS: ReadonlyArray<(command: string) => string> = [
+  (command) => `echo init; ${command}`,
+  (command) => `${command}; echo clone`,
+  (command) => `cd /nonexistent/loop-probe-x && ${command}`,
+  (command) => `false || ${command}`,
+  (command) => `echo init | ${command}`,
+  (command) => `${command} | cat`,
+  (command) => `sleep 0 & ${command}`,
+  (command) => `echo init\n${command}`,
+  (command) => `(${command})`,
+  (command) => `( ${command} )`,
+  (command) => `$(${command})`,
+  (command) => `echo $(${command})`,
+  (command) => `echo "$(${command})"`,
+  (command) => `echo ${BACKQUOTE}${command}${BACKQUOTE}`,
+]
+
+/**
+ * A case of a git command in a Bun shell template, in every command position Bun's shell has: the
+ * command's words, now and then joined by a line continuation, after `NAME=value` assignments,
+ * then wrapped in up to three of WRAPPERS, nested.
+ */
+const generateShell = (random: ReturnType<typeof generator>, git: GitGlobalOptions): Case => {
+  const { argv, makes } = gitCall(random, git)
+  const words = ["git", ...argv]
+  const cut = 1 + random.count(words.length)
+  const joiner = random.pick([" ", " \\\n  "])
+  const command = [words.slice(0, cut).join(" "), words.slice(cut).join(" ")].filter((part) => part !== "").join(joiner)
+  const assigned = [...Array.from({ length: random.count(3) }, () => random.pick(["GIT_DIR=x", "A=init", "HOME=/nonexistent/loop-probe-x"])), command].join(" ")
+  const line = Array.from({ length: random.count(4) }, () => random.pick(WRAPPERS)).reduce((inner, wrap) => wrap(inner), assigned)
+  return { code: `await $\x60${line}\x60`, makes }
 }
 
 describe("a test's temp git repository", () => {
@@ -387,7 +459,7 @@ describe("a test's temp git repository", () => {
   })
 
   test("a call or Bun shell command that runs git's init or clone is a site, through any wrapper; a command string in an expectation, a rift init or a commit message is not", () => {
-    expect(rawSites("sample.ts", SAMPLE).map((site) => Number(site.split(":")[0]))).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 25, 27, 28, 30, 31, 32])
+    expect(rawSites("sample.ts", SAMPLE).map((site) => Number(site.split(":")[0]))).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 25, 27, 28, 30, 31, 32, 36, 37, 38, 40])
   })
 
   test(
@@ -401,6 +473,25 @@ describe("a test's temp git repository", () => {
     },
     PROBE_MS,
   )
+
+  test(
+    "over generated git commands in every Bun shell command position, a template is a site exactly when git's subcommand is init or clone, or an option before it is unknown",
+    () => {
+      const git = gitGlobalOptions()
+      for (const seed of Arr.range(1, 400)) {
+        const { code, makes } = generateShell(generator(seed), git)
+        expect({ seed, code, site: rawSites("case.ts", code).length > 0 }).toEqual({ seed, code, site: makes })
+      }
+    },
+    PROBE_MS,
+  )
+
+  test("the files the guard reads are every test file and every file under tests/ and testbeds/", () => {
+    const files = new Set(testFiles())
+    const under = (dir: string) => [...new Bun.Glob(`${dir}/**/*.ts`).scanSync({ cwd: ROOT })].filter((file) => !file.includes("node_modules/"))
+    expect(files).toContain("testbeds/gamut/gamut.ts")
+    expect([...under("tests"), ...under("testbeds"), "tests/git-repo.test.ts"].filter((file) => !files.has(file))).toEqual([])
+  })
 
   test("no test or testbed file makes a repository with a raw git init or clone: each goes through gitInit or gitClone", () => {
     const raw = testFiles()
