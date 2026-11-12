@@ -1,5 +1,5 @@
 {
-  "plugin": "0.32.1",
+  "plugin": "0.32.2",
   "oxlint": "1.89.0",
   "provenance": "bun scripts/effect-debt.ts --bootstrap at 956fb11325110722365b23efe73a190072f73ec4: .oxlintrc.effect-debt.json over 990 source files with oxlint-plugin-effect 0.32.1 and oxlint 1.89.0; budgets only for files tracked at that commit; re-bootstrapped in the ratchet's landing for the files main changed between 956fb113 and c64e8c9d (their counts at c64e8c9d; deleted files dropped); re-bootstrapped in the ratchet's landing for the files main changed between c64e8c9d and 6c43f365 (their counts at 6c43f365; deleted files dropped); re-bootstrapped in the ratchet's landing for the files main changed between 6c43f365 and 120769f4 (their counts at 120769f4; deleted files dropped)",
   "rules": [
